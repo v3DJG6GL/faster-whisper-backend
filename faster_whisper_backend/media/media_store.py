@@ -211,7 +211,7 @@ def resolve(media_id: str, *, user_id: "str | None") -> "tuple[str, str] | None"
 
 
 def probe_cache_get(media_id: str) -> "dict | None":
-    """Cached stream facts (url/package.probe_streams) for a retained file."""
+    """Cached stream facts (media/subtitle_mux.probe_streams) for a retained file."""
     entry = _REG.get(media_id)
     return entry.get("probe") if entry else None
 

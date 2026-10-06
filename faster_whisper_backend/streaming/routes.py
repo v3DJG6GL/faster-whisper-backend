@@ -71,12 +71,12 @@ from faster_whisper_backend.settings import config as cfg
 from faster_whisper_backend.settings import effective_config
 from faster_whisper_backend.settings import schema as settings_schema
 from faster_whisper_backend.settings import version as settings_version
-from faster_whisper_backend.core import decode_trace
+from faster_whisper_backend.transcription import decode_trace
 from faster_whisper_backend.core import jobs
 from faster_whisper_backend.stats import metrics
 from faster_whisper_backend.auth import rate_limit
-from faster_whisper_backend.core import receipt_hold
-from faster_whisper_backend.core import segment_guards
+from faster_whisper_backend.transcription import receipt_hold
+from faster_whisper_backend.transcription import segment_guards
 from faster_whisper_backend.core import store_common
 from faster_whisper_backend.core import templates
 from faster_whisper_backend.core import web_common
@@ -982,7 +982,7 @@ async def transcribe_stream(ws: WebSocket) -> None:
             max_wps = float(effective_config.cfg_for(final_model, "SEGMENT_MAX_WORDS_PER_S", ident) or 0)
             # Tail cuts inside a segment — AFTER the whole-segment verdicts, on
             # the survivors (a segment made up from start to end is still
-            # dropped whole). See core/segment_guards.py.
+            # dropped whole). See transcription/segment_guards.py.
             tail_limits = tx_guards.tail_guard_limits(final_model, ident)
             tail_cuts: list[dict] = []
             # Head cut (SEGMENT_HEAD_ECHO_MIN_WORDS): the decode repeating the

@@ -230,7 +230,7 @@ def _prune_defaults_to_removal(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 # Stats-registry prefixes of the NON-decode model families, which share
-# system_stats' loaded-model registry with whisper (whisper registers bare
+# runtime/model_registry's loaded-model registry with whisper (whisper registers bare
 # model names): translation._STATS_PREFIX / diarization._STATS_PREFIX /
 # bgm_separation._STATS_PREFIX.
 _NON_DECODE_PREFIXES = ("gguf:", "pyannote:", "uvr:")

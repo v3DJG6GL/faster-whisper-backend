@@ -385,3 +385,21 @@ def test_no_package_module_imports_main():
                     a.name == "faster_whisper_backend.main" for a in node.names):
                 offenders.append(f"{py.relative_to(pkg)}:{node.lineno}")
     assert not offenders, offenders
+
+
+# P18: the decode/job-pipeline modules left core/ (shared infra only) for
+# transcription/. No stale twin may stay importable under core — a patch on it
+# would silently miss every caller — and the receipt-hold hook follows it.
+_P18_MOVED = ("decode_trace", "segment_guards", "run_plan", "receipt_hold",
+              "jobs_store")
+
+
+@pytest.mark.parametrize("name", _P18_MOVED)
+def test_transcription_modules_left_core(name):
+    import importlib.util
+    assert importlib.util.find_spec(f"faster_whisper_backend.core.{name}") is None
+    assert importlib.util.find_spec(f"faster_whisper_backend.transcription.{name}") is not None
+    hooks = dict(_RESET_HOOKS)
+    assert f"faster_whisper_backend.core.{name}" not in hooks
+    if name == "receipt_hold":
+        assert hooks[f"faster_whisper_backend.transcription.{name}"] == "_reset_for_tests"

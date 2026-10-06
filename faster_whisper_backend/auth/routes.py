@@ -12,6 +12,10 @@ from faster_whisper_backend.auth import rate_limit as _rl
 from faster_whisper_backend.auth.dependencies import Permissions, get_current_user as _get_current_user_dep
 from faster_whisper_backend.core import store_common
 from faster_whisper_backend.settings import config as cfg
+from faster_whisper_backend import build_info
+from faster_whisper_backend.auth import api_keys_store as _ak
+from faster_whisper_backend.auth import dependencies as _auth
+from faster_whisper_backend.auth import sessions_store
 
 logger = logging.getLogger("whisper-api")
 _log_safe = store_common.log_safe
@@ -38,8 +42,6 @@ async def whoami(
     user_from_session_cookie on request.state) so the client can attach
     X-CSRF-Token without parsing the cookie. A 401 means no valid
     credential AND the server is locked down — the WebUI re-prompts."""
-    from faster_whisper_backend.auth import api_keys_store as _ak
-    from faster_whisper_backend import build_info
     perms = user.get("permissions")
     out = {
         "open_mode": not _ak.is_locked_down(),
@@ -102,9 +104,6 @@ async def login(request: Request, response: Response):
     route to turn one into a cookie, or its login gate loops forever.
     Returns the same shape as /auth/whoami so the client can populate chrome
     without a second round-trip. CSRF-exempt (no session exists yet)."""
-    from faster_whisper_backend.auth import api_keys_store as _ak
-    from faster_whisper_backend.auth import dependencies as _auth
-    from faster_whisper_backend.auth import sessions_store
     if not _ak.is_locked_down() and _auth.open_mode_host_ok(request):
         return {"open_mode": True}
     # Below the open-mode short-circuit on purpose: open mode checks no
@@ -162,7 +161,6 @@ async def logout(request: Request, response: Response):
     """Revoke the current session and clear its cookies. CSRF-protected
     like any other cookie-authenticated mutation (the WebUI sends the
     X-CSRF-Token header)."""
-    from faster_whisper_backend.auth import sessions_store
     raw = request.cookies.get(cfg.SESSION_COOKIE_NAME, "")
     if raw:
         sessions_store.revoke_session(raw)

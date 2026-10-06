@@ -15,8 +15,8 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from faster_whisper_backend.auth import rate_limit as _rl
 from faster_whisper_backend.auth.dependencies import get_current_user as _get_current_user_dep
 from faster_whisper_backend.core import jobs
-from faster_whisper_backend.core import receipt_hold
-from faster_whisper_backend.core import run_plan as _run_plan
+from faster_whisper_backend.transcription import receipt_hold
+from faster_whisper_backend.transcription import run_plan as _run_plan
 from faster_whisper_backend.core import store_common
 from faster_whisper_backend.core.languages import TRANSLATE_CODE_RE as _TRANSLATE_CODE_RE
 from faster_whisper_backend.runtime import preload

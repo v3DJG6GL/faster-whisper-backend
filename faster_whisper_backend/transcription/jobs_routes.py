@@ -1,6 +1,6 @@
 """Batch-run progress and the durable job resource: the progress / cancel
 routes for a run posted with a ``progress_id`` and GET/DELETE /v1/jobs*
-(core/jobs_store.py). The registries themselves live in
+(transcription/jobs_store.py). The registries themselves live in
 transcription/progress.py.
 """
 import asyncio
@@ -12,7 +12,7 @@ from fastapi.responses import JSONResponse as _JSONResponse
 
 from faster_whisper_backend.auth import rate_limit as _rl
 from faster_whisper_backend.auth.dependencies import get_current_user as _get_current_user_dep
-from faster_whisper_backend.core import jobs_store as _jobs_store
+from faster_whisper_backend.transcription import jobs_store as _jobs_store
 from faster_whisper_backend.media import media_store as url_media_store
 from faster_whisper_backend.transcription import progress as tx_progress
 
@@ -63,7 +63,7 @@ async def transcription_cancel(progress_id: str,
 
 
 # ── Server jobs: GET/DELETE /v1/jobs* ───────────────────────────────────────
-# The durable job resource (core/jobs_store.py): every batch run posted with
+# The durable job resource (transcription/jobs_store.py): every batch run posted with
 # a progress_id is a row a client can list, poll, fetch the result of and
 # cancel/delete — the connection that carried the POST is no longer the only
 # way to get the transcript. Owner-gated like the progress route: a foreign,
@@ -127,7 +127,6 @@ def _scrub_media_refs(payload: dict, *, user_id: "str | None") -> dict:
     each id against the media store and refresh its expiry, or drop the pair
     so the client never receives a dangling id. A video still pending when
     the run finished never got its id into the payload; the flag goes too."""
-    from faster_whisper_backend.media import media_store as _ums
     for id_key, exp_key in (("source_media_id", "source_media_expires_at"),
                             ("source_video_media_id",
                              "source_video_expires_at")):
@@ -135,9 +134,9 @@ def _scrub_media_refs(payload: dict, *, user_id: "str | None") -> dict:
             continue
         mid = payload.get(id_key)
         ok = (isinstance(mid, str) and url_media_store.MEDIA_ID_RE.match(mid)
-              and _ums.resolve_entry(mid, user_id=user_id) is not None)
+              and url_media_store.resolve_entry(mid, user_id=user_id) is not None)
         if ok:
-            payload[exp_key] = _ums.expires_at_unix(mid)
+            payload[exp_key] = url_media_store.expires_at_unix(mid)
         else:
             payload.pop(id_key, None)
             payload.pop(exp_key, None)

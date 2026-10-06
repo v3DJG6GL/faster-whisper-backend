@@ -9,11 +9,13 @@ import os
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse
 
+from faster_whisper_backend.auth import dependencies as auth_dependencies
 from faster_whisper_backend.auth.dependencies import get_current_user as _get_current_user_dep
 from faster_whisper_backend.auth.hosts import require_user_webui_host
 from faster_whisper_backend.core import templates
 from faster_whisper_backend.settings import config as cfg
 from faster_whisper_backend.settings import version as settings_version
+from faster_whisper_backend.core import web_common
 
 router = APIRouter()
 
@@ -124,8 +126,7 @@ def _logs_stream_reauth(request: Request, seen_version: int) -> int:
     current = settings_version.config_version()
     if current == seen_version:
         return seen_version
-    from faster_whisper_backend.auth.dependencies import resolve_user_for_page_sse
-    _require_logs_page_sse(resolve_user_for_page_sse(request, "logs"))
+    _require_logs_page_sse(auth_dependencies.resolve_user_for_page_sse(request, "logs"))
     return current
 
 
@@ -211,7 +212,6 @@ async def logs_viewer():
     # /logs/stream + /logs/older endpoints stack the host gate with their own
     # require_page("logs") check (bearer header or session cookie — EventSource
     # sends the cookie), so the data layer requires a "logs" API key.
-    from faster_whisper_backend.core import web_common
     return HTMLResponse(
         web_common.render_page(_LOG_VIEWER_HTML, current="logs"),
         headers={"Cache-Control": "no-store"},
@@ -223,7 +223,6 @@ async def logs_viewer():
     dependencies=[Depends(require_user_webui_host), Depends(_require_logs_page_sse)],
 )
 async def logs_stream(request: Request):
-    from faster_whisper_backend.core import web_common
     return web_common.sse_response(_stream_log_lines(request))
 
 
@@ -280,5 +279,4 @@ async def severity_snapshot():
     /settings, … — so the pill keeps live-updating wherever it's shown. A
     403/401 here fails the poller silently; the nav still shows the
     server-rendered count."""
-    from faster_whisper_backend.core import web_common
     return web_common.severity_counts()

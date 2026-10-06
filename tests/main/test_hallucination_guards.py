@@ -117,7 +117,7 @@ def test_batch_guard_disabled_keeps_everything(client, app_module, fake_model):
 
 
 # ---------------------------------------------------------------------------
-# Tail cuts inside a segment (core/segment_guards.py) — batch integration.
+# Tail cuts inside a segment (transcription/segment_guards.py) — batch integration.
 # Timings are the real ones the production server returned on 2026-09-19.
 # ---------------------------------------------------------------------------
 

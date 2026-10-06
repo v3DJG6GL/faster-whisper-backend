@@ -359,8 +359,8 @@ async def resolve(user_id: str = "", key_id: str = "", model: str = "",
         client_sim = None
         ck = effective_config._CONFIG_TO_CLIENT_KEY.get(fname)
         if ck and ck in sim_dict:
-            # Reflect the SAME gate the live decode path applies (main._apply_
-            # decode_overrides / batch+streaming overrides_ignored key off
+            # Reflect the SAME gate the live decode path applies (transcription.
+            # models._apply_decode_overrides / batch+streaming overrides_ignored key off
             # locked_client_keys): a field-level lock OR the per-identity decode
             # master gate being off (which locks every client key) → ignored.
             # Checking only r.locked would report "applied" for a key the server

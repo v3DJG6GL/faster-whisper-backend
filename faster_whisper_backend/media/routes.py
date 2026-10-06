@@ -26,6 +26,12 @@ from faster_whisper_backend.media import video as media_video
 from faster_whisper_backend.settings import config as cfg
 from faster_whisper_backend.transcription import models as tx_models
 from faster_whisper_backend.transcription import progress as tx_progress
+from faster_whisper_backend.audio import transcode as _transcode
+from faster_whisper_backend.media import download as _udl
+from faster_whisper_backend.media import language_check as _lc
+from faster_whisper_backend.media import segmented as _seg
+from faster_whisper_backend.media import subtitle_mux as _pk
+from faster_whisper_backend.media import subtitles as _subs
 
 logger = logging.getLogger("whisper-api")
 _log_safe = store_common.log_safe
@@ -107,7 +113,6 @@ async def _probe_link(url: str, what: str, failed: "str | None" = None):
     """The policy-gated probe a url-* route answers from: a rejected link is
     a client-safe 400, anything else a logged generic 500 (`failed`, else
     "<what> failed") — never a raw error."""
-    from faster_whisper_backend.media import download as _udl
     _uhost = media_video._url_host_for_log(url)
     try:
         return await _udl.probe(
@@ -132,7 +137,6 @@ async def url_preview(request: Request,
     still POST a URL whose preview failed; the download re-checks the same
     policy authoritatively. Client-safe 400s from the policy taxonomy."""
     _body, url = await _url_request(request, user, _url_preview_rate)
-    from faster_whisper_backend.media import download as _udl
     _uhost = media_video._url_host_for_log(url)
     logger.info("[url-dl] preview requested (host %s)", _uhost)
     info = await _probe_link(url, "preview", "link preview failed")
@@ -184,7 +188,6 @@ async def url_subtitles(request: Request,
     body, url = await _url_request(request, user, _url_subtitles_rate,
                                    switch="URL_SUBTITLES_ENABLED",
                                    what="subtitle download")
-    from faster_whisper_backend.media import subtitles as _subs
     ids = body.get("tracks")
     if (not isinstance(ids, list) or not 1 <= len(ids) <= _subs.MAX_FETCH
             or not all(isinstance(i, str) and _subs.TRACK_ID_RE.match(i)
@@ -229,8 +232,7 @@ async def url_media(media_id: str,
                             detail="media retention is not enabled on this server")
     if not url_media_store.MEDIA_ID_RE.match(media_id):
         raise HTTPException(status_code=422, detail="malformed media id")
-    from faster_whisper_backend.media import media_store as _ums
-    entry = _ums.resolve_entry(media_id, user_id=user.get("user_id"))
+    entry = url_media_store.resolve_entry(media_id, user_id=user.get("user_id"))
     if entry is None:
         raise HTTPException(status_code=404, detail="media not found")
     path, ext = entry["path"], entry["ext"]
@@ -261,7 +263,6 @@ async def _url_media_on_demand(user: dict, body: dict, url: str, what: str,
     `progress_id` (the shared cancel route aborts it), a fresh policy probe,
     then `await fetch(pid, validated_url, info)` for the route's own work
     and answer. Client-safe errors only: policy/download 400, cancel 499."""
-    from faster_whisper_backend.media import download as _udl
     _pid = tx_progress._claim_progress_id(body.get("progress_id"))
     _user_id = user.get("user_id")
     _uhost = media_video._url_host_for_log(url)
@@ -304,12 +305,10 @@ async def _download_link_audio(pid: "str | None", url: str,
     the SSRF guard) under the URL download semaphore; returns the media id,
     registered with `source_url` so a run of the same link can reuse it.
     Raises UrlDownloadError / UrlCancelled / _ClientCancelled."""
-    from faster_whisper_backend.media import download as _udl
-    from faster_whisper_backend.media import media_store as _ums
     with media_video._url_staging_job() as job:
         path = await media_video._guarded_audio_download(pid, url, job)
         size = os.path.getsize(path)
-        mid = await asyncio.to_thread(_ums.register, path, user_id=user_id,
+        mid = await asyncio.to_thread(url_media_store.register, path, user_id=user_id,
                                       source_url=url)
         if mid is None:
             raise _udl.UrlDownloadError("the server could not retain the audio")
@@ -327,9 +326,6 @@ async def _segmented_pieces(pid: "str | None", url: str, source: dict,
     (None, why) when that path cannot serve this stream — the caller then
     downloads the whole file, so nothing but a cancel escapes from here."""
     import urllib.error
-    from faster_whisper_backend.audio import transcode as _transcode
-    from faster_whisper_backend.media import download as _udl
-    from faster_whisper_backend.media import segmented as _seg
     t0 = time.perf_counter()
     try:
         with media_video._url_staging_job() as job:
@@ -372,7 +368,6 @@ async def url_media_video(request: Request,
     body, url = await _url_request(request, user, media_video._url_video_rate,
                                    switch="URL_VIDEO_ENABLED",
                                    what="video download")
-    from faster_whisper_backend.media import download as _udl
     max_height = media_video._clamp_video_height(body.get("max_height"))
     format_id = media_video._clean_video_format(body.get("format_id"))
 
@@ -413,12 +408,11 @@ async def url_media_audio(request: Request,
     download (policy, guard, caps, semaphore) a source_url transcription
     makes, so no limiter of its own; progress/cancel as the video route."""
     body, url = await _url_request(request, user, None)
-    from faster_whisper_backend.media import media_store as _ums
 
     async def _fetch(pid, url, info) -> dict:
         mid = await _download_link_audio(pid, url, user.get("user_id"))
-        entry = _ums.resolve_entry(mid, user_id=user.get("user_id")) or {}
-        return {"media_id": mid, "expires_at": _ums.expires_at_unix(mid),
+        entry = url_media_store.resolve_entry(mid, user_id=user.get("user_id")) or {}
+        return {"media_id": mid, "expires_at": url_media_store.expires_at_unix(mid),
                 "ext": entry.get("ext"), "bytes": entry.get("size")}
     return await _url_media_on_demand(user, body, url, "audio download", _fetch)
 
@@ -441,10 +435,6 @@ async def url_language(request: Request,
     body, url = await _url_request(request, user, _url_language_rate,
                                    switch="URL_LANGUAGE_CHECK_ENABLED",
                                    what="the language check")
-    from faster_whisper_backend.audio import transcode as _transcode
-    from faster_whisper_backend.media import download as _udl
-    from faster_whisper_backend.media import language_check as _lc
-    from faster_whisper_backend.media import media_store as _ums
     _model = body.get("model")
     model_name = tx_models._resolve_model_name(_model.strip() if isinstance(_model, str) else "")
     _user_id = user.get("user_id")
@@ -468,7 +458,7 @@ async def url_language(request: Request,
             _d0 = time.perf_counter()
             mid = await _download_link_audio(pid, url, _user_id)
             how = f"full download in {time.perf_counter() - _d0:.1f}s"
-            entry = _ums.resolve_entry(mid, user_id=_user_id)
+            entry = url_media_store.resolve_entry(mid, user_id=_user_id)
             if entry is None:
                 raise _udl.UrlDownloadError("the server could not retain the audio")
             try:
@@ -509,7 +499,7 @@ async def url_language(request: Request,
                       for p in pieces),
             how, model_name, wait_s, time.perf_counter() - t0)
         return {**result, "pieces": pieces, "media_id": mid,
-                "media_expires_at": _ums.expires_at_unix(mid) if mid else None}
+                "media_expires_at": url_media_store.expires_at_unix(mid) if mid else None}
     return await _url_media_on_demand(user, body, url, "language check", _check)
 
 
@@ -547,7 +537,6 @@ def _package_gate() -> None:
     if not getattr(cfg, "MEDIA_PACKAGE_ENABLED", True):
         raise HTTPException(status_code=403,
                             detail="media packaging is not enabled on this server")
-    from faster_whisper_backend.media import subtitle_mux as _pk
     caps = _pk.ffmpeg_capabilities()
     if not caps.available:
         raise HTTPException(status_code=503, detail=caps.reason or
@@ -556,11 +545,9 @@ def _package_gate() -> None:
 
 def _media_streams_for(entry: dict, media_id: str) -> "dict | None":
     """Cached codec facts for a retained file (probed once per id)."""
-    from faster_whisper_backend.media import media_store as _ums
-    cached = _ums.probe_cache_get(media_id)
+    cached = url_media_store.probe_cache_get(media_id)
     if cached is not None:
         return cached
-    from faster_whisper_backend.media import subtitle_mux as _pk
     try:
         facts = _pk.probe_streams(entry["path"]).as_dict()
     except ImportError:
@@ -569,7 +556,7 @@ def _media_streams_for(entry: dict, media_id: str) -> "dict | None":
         logger.info("[package] stream probe failed for %s: %s", media_id,
                     _log_safe(str(e)))
         facts = _pk.unreadable_streams().as_dict()
-    _ums.probe_cache_set(media_id, facts)
+    url_media_store.probe_cache_set(media_id, facts)
     return facts
 
 
@@ -584,7 +571,6 @@ async def upload_media(request: Request,
     {media_id, expires_at, bytes}; the file lives URL_MEDIA_TTL_S."""
     _package_gate()
     _media_upload_rate.hit(_rl.identity_key(user, request))
-    from faster_whisper_backend.media import media_store as _ums
     ext = (request.query_params.get("ext") or "").strip().lower()
     if not _MEDIA_EXT_RE.match(ext):
         raise HTTPException(status_code=422, detail="expected ?ext=<container>")
@@ -592,7 +578,7 @@ async def upload_media(request: Request,
     _clen = request.headers.get("content-length")
     if _clen and _clen.isdigit() and int(_clen) > cap:
         raise HTTPException(status_code=413, detail="upload too large")
-    part = os.path.join(_ums.staging_dir(), f"upload-{uuid.uuid4().hex}.{ext}.part")
+    part = os.path.join(url_media_store.staging_dir(), f"upload-{uuid.uuid4().hex}.{ext}.part")
     received = 0
     fd = os.open(part, os.O_WRONLY | os.O_CREAT | os.O_EXCL
                  | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0), 0o600)
@@ -626,7 +612,7 @@ async def upload_media(request: Request,
                                 detail="upload staging file vanished")
         part = None
         media_id = await asyncio.to_thread(
-            _ums.register, final, user_id=user.get("user_id"), kind="video")
+            url_media_store.register, final, user_id=user.get("user_id"), kind="video")
         if media_id is None:
             try:
                 os.unlink(final)
@@ -641,7 +627,7 @@ async def upload_media(request: Request,
             except OSError:
                 pass
     logger.info("[package] upload retained (%.1f MB, %s)", received / 1e6, ext)
-    return {"media_id": media_id, "expires_at": _ums.expires_at_unix(media_id),
+    return {"media_id": media_id, "expires_at": url_media_store.expires_at_unix(media_id),
             "bytes": received}
 
 
@@ -653,8 +639,7 @@ async def media_streams(media_id: str,
     _package_gate()
     if not url_media_store.MEDIA_ID_RE.match(media_id):
         raise HTTPException(status_code=422, detail="malformed media id")
-    from faster_whisper_backend.media import media_store as _ums
-    entry = _ums.resolve_entry(media_id, user_id=user.get("user_id"))
+    entry = url_media_store.resolve_entry(media_id, user_id=user.get("user_id"))
     if entry is None:
         raise HTTPException(status_code=404, detail="media not found")
     facts = await asyncio.to_thread(_media_streams_for, entry, media_id)
@@ -709,8 +694,6 @@ async def package_media(media_id: str, request: Request,
         raise HTTPException(status_code=422, detail="malformed media id")
     _key = _rl.identity_key(user, request)
     _media_package_rate.hit(_key)
-    from faster_whisper_backend.media import media_store as _ums
-    from faster_whisper_backend.media import subtitle_mux as _pk
     try:
         body = await request.json()
     except Exception:  # noqa: BLE001 — malformed body is a caller error
@@ -762,7 +745,7 @@ async def package_media(media_id: str, request: Request,
     filename = body.get("filename")
     stem = (_MEDIA_FILENAME_RE.sub("", filename).strip()[:80]
             if isinstance(filename, str) else "") or media_id
-    entry = _ums.resolve_entry(media_id, user_id=user.get("user_id"))
+    entry = url_media_store.resolve_entry(media_id, user_id=user.get("user_id"))
     if entry is None:
         raise HTTPException(status_code=404, detail="media not found")
     facts = await asyncio.to_thread(_media_streams_for, entry, media_id)

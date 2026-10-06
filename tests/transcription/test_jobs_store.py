@@ -1,11 +1,11 @@
-"""core/jobs_store — the durable job resource behind GET/DELETE /v1/jobs*."""
+"""transcription/jobs_store — the durable job resource behind GET/DELETE /v1/jobs*."""
 
 import sqlite3
 import time
 
 import pytest
 
-from faster_whisper_backend.core import jobs_store as js
+from faster_whisper_backend.transcription import jobs_store as js
 
 _TTL = 3600.0
 

@@ -1,6 +1,6 @@
 """Decode trace: what faster-whisper did INSIDE model.transcribe.
 
-Pins the three halves of faster_whisper_backend.core.decode_trace:
+Pins the three halves of faster_whisper_backend.transcription.decode_trace:
 
   * install() hooks a WhisperModel-shaped object (encode, generate_with_fallback,
     the CT2 `model.generate` behind a proxy) and is a no-op for test fakes;
@@ -14,7 +14,7 @@ import threading
 
 import pytest
 
-from faster_whisper_backend.core import decode_trace as dt
+from faster_whisper_backend.transcription import decode_trace as dt
 from tests.conftest import FakeInfo
 from faster_whisper_backend.transcription import receipt as tx_receipt
 

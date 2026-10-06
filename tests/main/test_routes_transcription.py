@@ -516,7 +516,7 @@ def test_progress_carries_plan_overall_and_eta(client, app_module):
     """A polled entry with a run plan behind it publishes the plan, the
     overall fraction and the ETA; an entry without one (the admin prompt
     lab's) answers None for all three, never a KeyError."""
-    from faster_whisper_backend.core import run_plan
+    from faster_whisper_backend.transcription import run_plan
     pid = "e" * 32
     plan = run_plan.RunPlan(kind="file")
     plan.set_stages(["transcribing", "translating"])

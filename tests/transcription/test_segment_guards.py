@@ -1,4 +1,4 @@
-"""core.segment_guards — the three tail-cut rules (pure, no app fixture).
+"""transcription.segment_guards — the three tail-cut rules (pure, no app fixture).
 
 The loop fixture carries the REAL word timings the production server returned on
 2026-09-19 for capture 7a8db5d1 (large-v3, hotwords + previous sentence as
@@ -7,7 +7,7 @@ prompt): real words end at 5.54 s, then a made-up tail stacked at the end.
 
 from types import SimpleNamespace as NS
 
-from faster_whisper_backend.core import segment_guards as sg
+from faster_whisper_backend.transcription import segment_guards as sg
 
 
 def _w(word, start, end, p=0.9):

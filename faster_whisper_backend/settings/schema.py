@@ -1269,7 +1269,7 @@ class AdminConfig(BaseModel):
         "STATS_RECENT_TRANSCRIPTIONS_COUNT", scope="server",
         group="Recent transcriptions")
 
-    # --- Server jobs (durable job resource, core/jobs_store.py) ---
+    # --- Server jobs (durable job resource, transcription/jobs_store.py) ---
     JOBS_ENABLED: bool | None = _F(
         "JOBS_ENABLED", scope="server", group="Jobs")
     JOBS_DB: Annotated[str, Field(min_length=1, max_length=512)] | None = _F(

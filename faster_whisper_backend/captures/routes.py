@@ -58,6 +58,9 @@ from faster_whisper_backend.pipeline import engine as pl_engine
 from faster_whisper_backend.core.web_common import require_user_webui_host
 from faster_whisper_backend.auth.dependencies import get_current_user, require_admin, require_page
 from faster_whisper_backend.core import templates
+from faster_whisper_backend.captures import merge as audio_merge
+from faster_whisper_backend.captures import samples_store as capture_samples_store
+from faster_whisper_backend.captures import vad_trim as audio_vad_trim
 
 logger = logging.getLogger("whisper-api")
 
@@ -154,7 +157,6 @@ def _assert_member_sample_not_locked(
     sid = row.get("sample_id")
     if not sid or user.get("is_admin"):
         return
-    from faster_whisper_backend.captures import samples_store as capture_samples_store
     sample = capture_samples_store.get_sample(sid)
     if sample is not None and sample.get("is_locked"):
         raise HTTPException(status.HTTP_409_CONFLICT, "sample is locked")
@@ -512,7 +514,6 @@ async def list_samples_api(
     would otherwise resolve to the single-capture handler and 404 — the
     UI's `load()` then silently swallows the failure and renders no
     groups, making merged groups invisible after creation."""
-    from faster_whisper_backend.captures import samples_store as capture_samples_store
     # Same owner scope as the list: `?user_id=a,b` narrows to several
     # speakers (the raw string bound as `user_id = ?` matched nothing).
     scope = _effective_owner_filter(user, user_filter)
@@ -1279,8 +1280,6 @@ def _preview_member_trims(
     member — a partial map would mix absolute and legacy offsets per member)."""
     if not getattr(cfg, "CAPTURES_VAD_TRIM_ENABLED_FOR_SAMPLES", False):
         return {}
-    from faster_whisper_backend.captures import merge as audio_merge
-    from faster_whisper_backend.captures import vad_trim as audio_vad_trim
     edge = capture_samples._global_edge_ms()
     max_gap = int(getattr(cfg, "CAPTURES_VAD_MARGIN_SAMPLE_INTERNAL_MS", 300))
     join_ms = int(capture_samples._global_silence_ms())
@@ -1330,7 +1329,6 @@ async def create_sample_api(
       - total audio + gap silence within the configured duration cap
       - members' audio files match (1 ch, 16 bit, 16 kHz)
     """
-    from faster_whisper_backend.captures import samples_store as capture_samples_store
     import uuid as _uuid
 
     member_ids = payload.member_ids
@@ -1409,7 +1407,6 @@ async def preview_merge_audio_api(
 
     Used by the /captures Auto-propose merges modal + the manual merge-
     modal to let users preview the merged audio before committing."""
-    from faster_whisper_backend.captures import merge as audio_merge
 
     _audio_rate.hit(rate_limit.identity_key(user, request))
 
@@ -1626,7 +1623,6 @@ def _insert_sample_with_sid(
     would otherwise join (and be rolled back with) this transaction. No
     path takes captures_store._lock before samples_store._lock (see
     store.py sweep_retention/delete_capture), so this order is acyclic."""
-    from faster_whisper_backend.captures import samples_store as capture_samples_store
 
     relpath = capture_samples_store._relpath_for(sid)
     now = time.time()
@@ -1681,7 +1677,6 @@ async def get_sample_api(
     sid: str,
     user: dict[str, Any] = Depends(get_current_user),
 ) -> JSONResponse:
-    from faster_whisper_backend.captures import samples_store as capture_samples_store
     g = capture_samples_store.get_sample(sid)
     if g is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "sample not found")
@@ -1815,7 +1810,6 @@ def _enrich_sample(g: dict[str, Any]) -> dict[str, Any]:
     (the member's own singleton card, or another admin tab) flow through
     to the group's Corrections section automatically — no in-DB chip
     storage needed at the group level."""
-    from faster_whisper_backend.captures import samples_store as capture_samples_store
     members = capture_samples_store.get_members(g["id"])
     _hydrate_members(members)
     usernames = api_keys_store.get_usernames(
@@ -1880,7 +1874,6 @@ def _refresh_final_if_stale(
     if parent_locked is None:
         sid = row.get("sample_id")
         if sid:
-            from faster_whisper_backend.captures import samples_store as capture_samples_store
             s = capture_samples_store.get_sample(sid)
             parent_locked = bool(s and s.get("is_locked"))
     if parent_locked:
@@ -2177,7 +2170,6 @@ async def patch_sample_api(
     payload: PatchSampleIn,
     user: dict[str, Any] = Depends(get_current_user),
 ) -> JSONResponse:
-    from faster_whisper_backend.captures import samples_store as capture_samples_store
     g = capture_samples_store.get_sample(sid)
     if g is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "sample not found")
@@ -2279,7 +2271,6 @@ async def regenerate_sample_api(
     global silence setting (so regenerate is how an existing sample adopts a
     changed global), refresh hashes, clear `is_stale`. Transcript is preserved
     (admin's edits stay)."""
-    from faster_whisper_backend.captures import samples_store as capture_samples_store
     g = capture_samples_store.get_sample(sid)
     if g is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "sample not found")
@@ -2322,7 +2313,6 @@ async def dissolve_sample_api(
     sid: str,
     user: dict[str, Any] = Depends(get_current_user),
 ) -> JSONResponse:
-    from faster_whisper_backend.captures import samples_store as capture_samples_store
     g = capture_samples_store.get_sample(sid)
     if g is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "sample not found")
@@ -2350,7 +2340,6 @@ def _ensure_sample_wav(g: dict[str, Any]) -> str:
     as a hard 404 to the user. The "Regenerate" button still exists
     for the legitimate force-rebuild case (user edited silence/join).
     """
-    from faster_whisper_backend.captures import samples_store as capture_samples_store
     try:
         abs_p = capture_samples_store.abs_path_for(g["merged_wav_relpath"])
     except ValueError:
@@ -2409,7 +2398,6 @@ async def get_sample_audio_api(
     """Stream the merged WAV, self-healing if it's missing on disk
     but reconstructable from member captures."""
     _audio_rate.hit(rate_limit.identity_key(user, request))
-    from faster_whisper_backend.captures import samples_store as capture_samples_store
     g = capture_samples_store.get_sample(sid)
     if g is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "sample not found")
@@ -2519,7 +2507,6 @@ def _build_export_stream(only_status: str | None, include_audio: bool):
     `audio_missing` rows leak only when `only_status='all'`, and even
     then the hard filter above drops them.
     """
-    from faster_whisper_backend.captures import samples_store as capture_samples_store
 
     buf = io.BytesIO()
     tar = tarfile.open(fileobj=buf, mode="w:gz", compresslevel=6)

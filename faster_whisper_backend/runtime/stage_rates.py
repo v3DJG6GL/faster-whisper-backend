@@ -1,6 +1,6 @@
 """Persisted ledger of LEARNED pipeline-stage throughput rates.
 
-The run plan (core/run_plan.py) estimates how long each stage of a job will
+The run plan (transcription/run_plan.py) estimates how long each stage of a job will
 take from a cost driver (bytes for a download, audio seconds for the GPU
 stages, segments × targets for translation) divided by a rate. Rates are
 learned from finished stages and keyed by what actually decides them — the

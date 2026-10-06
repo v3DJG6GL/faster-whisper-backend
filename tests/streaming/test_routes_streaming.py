@@ -666,7 +666,7 @@ def test_stream_final_arms_the_residual_stop_and_reports_it(app_module, monkeypa
     hands it to the trace capture, and the receipt's guards block shows the
     value (with the non-default marker once it is switched off)."""
     import logging
-    from faster_whisper_backend.core import decode_trace as dt
+    from faster_whisper_backend.transcription import decode_trace as dt
     from faster_whisper_backend.streaming import routes as streaming_routes
 
     monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
@@ -723,7 +723,7 @@ def test_stream_final_caps_tokens_and_samples_one_candidate(
     decode gets the token cap (through the trace capture) and
     STREAMING_FINAL_BEST_OF; partials keep their own knobs."""
     import logging
-    from faster_whisper_backend.core import decode_trace as dt
+    from faster_whisper_backend.transcription import decode_trace as dt
     from faster_whisper_backend.streaming import routes as streaming_routes
 
     monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
@@ -767,7 +767,7 @@ def test_stream_final_best_of_yields_to_a_client_override(app_module, fake_model
 
 
 # ---------------------------------------------------------------------------
-# Tail cuts inside a segment (core/segment_guards.py) on finals and previews.
+# Tail cuts inside a segment (transcription/segment_guards.py) on finals and previews.
 # Timings are the real ones the production server returned on 2026-09-19.
 # ---------------------------------------------------------------------------
 

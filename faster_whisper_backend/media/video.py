@@ -14,12 +14,13 @@ import time
 from contextlib import contextmanager
 
 from faster_whisper_backend.auth import rate_limit as _rl
-from faster_whisper_backend.core import jobs_store as _jobs_store
+from faster_whisper_backend.transcription import jobs_store as _jobs_store
 from faster_whisper_backend.core import store_common
 from faster_whisper_backend.media import media_store as url_media_store
 from faster_whisper_backend.settings import config as cfg
 from faster_whisper_backend.transcription import models as tx_models
 from faster_whisper_backend.transcription import progress as tx_progress
+from faster_whisper_backend.media import download as _udl
 
 logger = logging.getLogger("whisper-api")
 _log_safe = store_common.log_safe
@@ -34,8 +35,7 @@ def _prefetched_audio(media_id: "str | None", url: str,
     a caller could use to probe other users' ids."""
     if not isinstance(media_id, str) or not url_media_store.MEDIA_ID_RE.match(media_id):
         return None
-    from faster_whisper_backend.media import media_store as _ums
-    entry = _ums.resolve_entry(media_id, user_id=user_id)
+    entry = url_media_store.resolve_entry(media_id, user_id=user_id)
     if not entry or entry["kind"] != "audio" or entry.get("source_url") != url:
         return None
     return entry
@@ -83,7 +83,6 @@ def _clean_video_format(value) -> "str | None":
     the ladder, so a stale choice degrades to the height rule."""
     if not isinstance(value, str):
         return None
-    from faster_whisper_backend.media import download as _udl
     v = value.strip()
     return v if (v and _udl.FORMAT_ID_RE.match(v)) else None
 
@@ -119,8 +118,6 @@ async def _download_video_for_run(pid: "str | None", url: str, rung: dict, *,
     keep polling for `video.state` and still cancel the fetch. `job_row`:
     this run owns the durable job row under `pid`, whose stored result is
     patched with the outcome when it was written while we were pending."""
-    from faster_whisper_backend.media import download as _udl
-    from faster_whisper_backend.media import media_store as _ums
     state = _video_state(height=rung.get("height"),
                          container=rung.get("container") or "mkv",
                          total_bytes=rung.get("approx_bytes"),
@@ -188,12 +185,12 @@ async def _download_video_for_run(pid: "str | None", url: str, rung: dict, *,
                             size / float(_raw), rung.get("extractor"),
                             rung.get("protocol"))
             mid = await asyncio.to_thread(
-                _ums.register, path, user_id=user_id, kind="video",
+                url_media_store.register, path, user_id=user_id, kind="video",
                 protect=({protect} if protect else None))
             if mid is None:
                 _pub(state="failed", error="the server could not retain the video")
             else:
-                _pub(state="done", media_id=mid, expires_at=_ums.expires_at_unix(mid),
+                _pub(state="done", media_id=mid, expires_at=url_media_store.expires_at_unix(mid),
                      bytes=size)
                 logger.info("[url-dl] video retained (%s, %.1f MB, host %s)",
                             state["container"], size / 1e6, _url_host_for_log(url))
@@ -289,7 +286,6 @@ def _url_host_for_log(url: str) -> str:
     """Best-effort hostname for log lines — never the full URL (it can carry
     tokens/identifiers we don't want in logs). Delegates to the module that
     owns that contract."""
-    from faster_whisper_backend.media import download as _udl
     return _udl.host_for_log(url)
 
 
@@ -297,8 +293,7 @@ def _url_host_for_log(url: str) -> str:
 def _url_staging_job():
     """A private job dir in the media store's staging area for one link
     fetch, removed on every exit path (sweep() catches a crashed process)."""
-    from faster_whisper_backend.media import media_store as _ums
-    job = _ums.new_staging_job()
+    job = url_media_store.new_staging_job()
     try:
         yield job
     finally:
@@ -310,7 +305,6 @@ async def _guarded_audio_download(pid: "str | None", url: str, dest_dir: str,
     """A link's whole AUDIO into `dest_dir` through the guarded download()
     under the URL download semaphore, reporting under `pid` and honouring
     its cancel. Raises UrlDownloadError / UrlCancelled / _ClientCancelled."""
-    from faster_whisper_backend.media import download as _udl
     async with tx_models._get_url_download_semaphore():
         tx_progress._check_cancelled(pid)
         tx_progress._progress_set(pid, stage="downloading", progress=None)

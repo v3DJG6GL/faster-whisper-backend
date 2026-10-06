@@ -39,7 +39,7 @@ def _open_audio(src_path: str):
     # partly on the extension (AVPROBE_SCORE_EXTENSION). Without this, a
     # crafted concat/ffconcat, HLS playlist or SDP input can coax the demuxer
     # into following external file:// or http:// references — the classic
-    # ffmpeg local-file-read / SSRF surface. streaming_transport already pins
+    # ffmpeg local-file-read / SSRF surface. streaming/transport.py already pins
     # "-protocol_whitelist pipe" on the realtime path for exactly this reason;
     # a real clip is self-contained, so restricting the batch path to the
     # file protocol rejects nothing legitimate.

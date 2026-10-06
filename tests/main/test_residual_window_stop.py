@@ -10,7 +10,7 @@ siblings so a per-model / per-identity override reaches the decode.
 
 import logging
 
-from faster_whisper_backend.core import decode_trace as dt
+from faster_whisper_backend.transcription import decode_trace as dt
 from tests.conftest import FakeInfo, FakeSegment
 
 _FILE = {"file": ("a.wav", b"RIFFxxxxWAVE", "audio/wav")}

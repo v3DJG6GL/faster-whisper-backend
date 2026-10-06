@@ -24,7 +24,7 @@ from collections.abc import Callable
 
 from fastapi import HTTPException
 
-from faster_whisper_backend.core import decode_trace as _decode_trace
+from faster_whisper_backend.transcription import decode_trace as _decode_trace
 from faster_whisper_backend.core import jobs
 from faster_whisper_backend.runtime import model_registry
 from faster_whisper_backend.runtime import system_stats

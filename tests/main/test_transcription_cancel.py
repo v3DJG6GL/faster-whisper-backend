@@ -463,7 +463,7 @@ def test_cancel_landing_on_the_job_write_still_records_the_run(client, app_modul
 def test_a_field_only_progress_write_keeps_the_step(app_module):
     # `step` is sticky like `stage`: the keep_video task's `video=` ticks
     # omit it, and that means "unchanged" — not "the warm-up is over".
-    from faster_whisper_backend.core import run_plan
+    from faster_whisper_backend.transcription import run_plan
 
     class _Clock:
         t = 100.0

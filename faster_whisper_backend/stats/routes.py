@@ -49,6 +49,9 @@ log = logging.getLogger(__name__)
 from faster_whisper_backend.auth.dependencies import require_page
 from faster_whisper_backend.paths import REPO_ROOT
 from faster_whisper_backend.core import templates
+from faster_whisper_backend.auth import api_keys_store
+from faster_whisper_backend.stats import recent_transcriptions_store
+from faster_whisper_backend.stats import usage_store
 
 router = APIRouter(prefix="/stats")
 
@@ -316,7 +319,6 @@ def _unscrub(dim: str, labels: list[str], scrub: bool, caller_uid: str | None) -
     gave it (or, for older links, the opaque label it was shown), so each
     value is matched against every id the rollups know and against its
     opaque label. Unknown values are dropped rather than refused."""
-    from faster_whisper_backend.stats import usage_store
     if not scrub:
         return labels
     want = set(labels)
@@ -344,7 +346,6 @@ def _label_rows(rows: list[dict[str, Any]], by: str, *, scrub: bool,
     users/keys still resolve; sentinels stay literal. Non-admin "all"
     viewers get opaque labels instead — only their own rows keep a name
     (and are flagged `me`)."""
-    from faster_whisper_backend.auth import api_keys_store
     names = api_keys_store.get_usernames(
         [r["user_id"] for r in rows if r.get("user_id")])
 
@@ -433,7 +434,6 @@ async def stats_usage(
     owners / keys — as picked in the page's who / keys pickers, so a
     non-admin "all" viewer sends the opaque labels it was shown and they
     are mapped back here. `users` needs the "all" scope (403 for own)."""
-    from faster_whisper_backend.stats import usage_store
 
     # Normalise BEFORE the scope check: an unknown `by` collapses to "user"
     # and must not slip past the own-scope refusal below.
@@ -526,7 +526,6 @@ async def stats_pick(
     `keys` ranks the users by those keys only (the page sends its filter
     slice minus the picker's own dimension). Own scope may list its keys
     but not users (403)."""
-    from faster_whisper_backend.stats import usage_store
 
     if dim not in ("user", "key"):
         raise HTTPException(422, detail="dim must be user or key")
@@ -604,7 +603,6 @@ async def stats_jobs(
     first page. Scoped like the snapshot: own rows for "own", every user
     with identities scrubbed for non-admin "all", `?user=` preview for
     admins (403 for anyone else)."""
-    from faster_whisper_backend.stats import recent_transcriptions_store
 
     is_admin = bool(user.get("is_admin"))
     if user_q and not is_admin:
@@ -671,7 +669,6 @@ async def stats_tail(
     for "own", every user for "all", `?user=` preview for admins (403 for
     anyone else). The per-job rows keep USAGE_JOBS_RETENTION_DAYS; a window
     that starts earlier says so in range.truncated_to_days."""
-    from faster_whisper_backend.stats import usage_store
 
     is_admin = bool(user.get("is_admin"))
     if user_q and not is_admin:

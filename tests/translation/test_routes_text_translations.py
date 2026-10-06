@@ -135,7 +135,7 @@ def test_per_minute_backstop_429s_and_releases_the_held_receipt(
     bracket: over the ceiling the request 429s with the config field named,
     and a parked dictation receipt is handed back instead of left to the
     sweeper."""
-    from faster_whisper_backend.core import receipt_hold
+    from faster_whisper_backend.transcription import receipt_hold
 
     _enable(app_module, monkeypatch, TRANSLATE_RATE_PER_MIN=2)
     _stub_translate(monkeypatch)
@@ -488,7 +488,7 @@ def test_inflight_refusal_releases_the_held_receipt(client, app_module,
     """The in-flight acquire sits OUTSIDE the handler's try, so its 429 never
     reached the `except HTTPException` release. The parked dictation receipt
     must still be released — not left for the sweeper to log 90 s later."""
-    from faster_whisper_backend.core import receipt_hold
+    from faster_whisper_backend.transcription import receipt_hold
 
     _enable(app_module, monkeypatch)
     _stub_translate(monkeypatch)
@@ -512,7 +512,7 @@ def test_validation_reject_releases_the_held_receipt(client, app_module,
     """Every validation exit (422 shape, 413 size) runs inside the same
     release-on-reject bracket as the rate hit: a parked receipt must be
     handed back on a malformed request, not left for the 90 s sweeper."""
-    from faster_whisper_backend.core import receipt_hold
+    from faster_whisper_backend.transcription import receipt_hold
 
     _enable(app_module, monkeypatch)
     _stub_translate(monkeypatch)
@@ -690,7 +690,7 @@ def test_claimed_dictation_receipt_folds_into_the_utterance_row(
     """With a held receipt, the translation becomes a second stage on the
     utterance's recent-jobs row instead of a separate translate row — the
     /stats table shows ONE dictate job with transcribing + translating."""
-    from faster_whisper_backend.core import receipt_hold
+    from faster_whisper_backend.transcription import receipt_hold
     from faster_whisper_backend.stats import recent_transcriptions_store as rts
 
     _enable(app_module, monkeypatch)

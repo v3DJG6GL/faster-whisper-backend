@@ -18,6 +18,8 @@ from faster_whisper_backend.transcription import models as tx_models
 from faster_whisper_backend.transcription import progress as tx_progress
 from faster_whisper_backend.translation import engine as _tr
 from faster_whisper_backend.translation import gating as tr_gating
+from faster_whisper_backend.media import download as _udl
+from faster_whisper_backend.media import subtitle_mux as _pk
 
 router = APIRouter()
 
@@ -133,7 +135,6 @@ async def whoami_capabilities(user: dict = Depends(_get_current_user_dep)):
     caps["url_download_enabled"] = bool(
         getattr(cfg, "URL_DOWNLOAD_ENABLED", False))
     if caps["url_download_enabled"]:
-        from faster_whisper_backend.media import download as _udl
         caps["yt_dlp_version"] = _udl.yt_dlp_version()
     # The one media ceiling, so the client can label a preview's rungs over
     # the cap, size its own local copies and refuse an oversized upload
@@ -165,7 +166,6 @@ async def whoami_capabilities(user: dict = Depends(_get_current_user_dep)):
     # Additive: subtitle packaging (POST /v1/audio/media{,/{id}/package}).
     # The flag is always present; the detail block rides only when the
     # feature is on — its `reason` says why ffmpeg cannot (a stripped build).
-    from faster_whisper_backend.media import subtitle_mux as _pk
     _pk_on = bool(getattr(cfg, "MEDIA_PACKAGE_ENABLED", True))
     _pk_caps = _pk.ffmpeg_capabilities() if _pk_on else None
     caps["media_package_enabled"] = bool(_pk_on and _pk_caps and _pk_caps.available)

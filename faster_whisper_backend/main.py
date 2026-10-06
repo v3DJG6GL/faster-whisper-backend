@@ -25,8 +25,8 @@ from contextlib import asynccontextmanager
 # build_info with the rest of the server identity; imported this early —
 # before config — so it exists exactly as soon as it used to.
 from faster_whisper_backend.build_info import APP_VERSION, BOOT_ID, SERVER_NAME
-from faster_whisper_backend.core import decode_trace as _decode_trace
-from faster_whisper_backend.core import segment_guards
+from faster_whisper_backend.transcription import decode_trace as _decode_trace
+from faster_whisper_backend.transcription import segment_guards
 from faster_whisper_backend.core.languages import language_codes
 
 from faster_whisper_backend.settings import config as cfg
@@ -201,17 +201,37 @@ from faster_whisper_backend.transcription import guards as tx_guards
 from faster_whisper_backend.transcription import models as tx_models
 from faster_whisper_backend.transcription import receipt as tx_receipt
 
+# The stores the lifespan opens and sweeps, the optional stages (import-safe
+# without pyannote / audio-separator, which load inside their own load paths),
+# the link-download + media-retention helpers and the 1 Hz sampler. None of
+# them imports main, so they load at module level like the rest.
+from faster_whisper_backend.audio import bgm_separation as _bgm_separation
+from faster_whisper_backend.audio import diarization as _diarization
+from faster_whisper_backend.audio import transcode as _transcode
+from faster_whisper_backend.auth import dependencies as _auth
+from faster_whisper_backend.auth import sessions_store
+from faster_whisper_backend.captures import samples_store as capture_samples_store
+from faster_whisper_backend.captures import store as captures_store
+from faster_whisper_backend.client_settings import store as client_settings_store
+from faster_whisper_backend.media import download as url_download
+from faster_whisper_backend.media import subtitle_mux as _subtitle_mux
+from faster_whisper_backend.quick_config import recent_feed as qc_recent_feed
+from faster_whisper_backend.reports import store as reports_store
+from faster_whisper_backend.stats import recent_transcriptions_store
+from faster_whisper_backend.stats import sampler as _stats_sampler
+from faster_whisper_backend.stats import system_metrics_store
+from faster_whisper_backend.stats import usage_store
+
 # Single implementation lives in store_common so the stores can sanitise their
 # own audit lines without importing main (which imports them).
 _log_safe = store_common.log_safe
 
 
 async def _reports_retention_loop() -> None:
-    """Hourly retention sweep for the reports store. Lazy-imports
+    """Hourly retention sweep for the reports store. The sweep reads
     cfg.REPORTS_RETENTION_DAYS each tick so admin /settings edits take
     effect on the next cycle without a service restart. Cancellation
     on shutdown is the normal exit path."""
-    from faster_whisper_backend.reports import store as reports_store
     while True:
         try:
             await asyncio.sleep(3600)
@@ -226,8 +246,7 @@ async def _reports_retention_loop() -> None:
 
 async def _captures_retention_loop() -> None:
     """Hourly retention sweep for the captures store. Same shape as the
-    reports loop; lazy reads cfg.CAPTURES_RETENTION_DAYS each tick."""
-    from faster_whisper_backend.captures import store as captures_store
+    reports loop; the sweep reads cfg.CAPTURES_RETENTION_DAYS each tick."""
     while True:
         try:
             await asyncio.sleep(3600)
@@ -262,7 +281,6 @@ async def _usage_retention_loop() -> None:
     their retention. Same shape as the reports loop; the four knobs are
     read from cfg on every tick so a /settings edit applies without a
     restart."""
-    from faster_whisper_backend.stats import usage_store
     while True:
         try:
             await asyncio.sleep(3600)
@@ -289,7 +307,6 @@ async def _sessions_purge_loop() -> None:
     TTL a login loop grew both the sessions table and the in-memory index
     without bound. /auth/login takes any valid key and has no rate limit.
     Same shape as the retention loops above."""
-    from faster_whisper_backend.auth import sessions_store
     while True:
         try:
             await asyncio.sleep(3600)
@@ -337,18 +354,16 @@ async def _preload_extras() -> None:
                              ref, e)
     if getattr(cfg, "DIARIZATION_PRELOAD", False) and \
             getattr(cfg, "DIARIZATION_ENABLED", False):
-        from faster_whisper_backend.audio import diarization as _diar
         try:
             logger.info("Preloading the diarization pipeline")
-            await _diar._get_pipeline()
+            await _diarization._get_pipeline()
         except Exception as e:  # noqa: BLE001 — best-effort
             logger.error("Failed to preload the diarization pipeline: %s", e)
     if getattr(cfg, "BGM_SEPARATION_PRELOAD", False) and \
             getattr(cfg, "BGM_SEPARATION_ENABLED", False):
-        from faster_whisper_backend.audio import bgm_separation as _bgm
         try:
             logger.info("Preloading the BGM separation model")
-            await _bgm._get_separator()
+            await _bgm_separation._get_separator()
         except Exception as e:  # noqa: BLE001 — best-effort
             logger.error("Failed to preload the separation model: %s", e)
 
@@ -366,7 +381,6 @@ async def lifespan(app: FastAPI):
     # through this store, and with it still closed those rows were lost
     # with a "persist failed" warning. Needs only cfg + store_common.
     try:
-        from faster_whisper_backend.stats import recent_transcriptions_store
         recent_transcriptions_store.init_db(cfg.RECENT_TRANSCRIPTIONS_DB)
         logger.info(
             "Recent-transcriptions store initialized at %s",
@@ -379,7 +393,6 @@ async def lifespan(app: FastAPI):
     # GPU-busy share). Rolling telemetry, its own file. Adopts the
     # pre-split sys_samples rows out of the recent-transcriptions DB once.
     try:
-        from faster_whisper_backend.stats import system_metrics_store
         system_metrics_store.init_db(cfg.STATS_SYSTEM_METRICS_DB)
         # The one-shot legacy copy is its own best-effort step: the store is
         # open and serving by now, so a missing recent-transcriptions
@@ -405,7 +418,6 @@ async def lifespan(app: FastAPI):
     # without a connection it would log the same error every hour.
     usage_store_ready = False
     try:
-        from faster_whisper_backend.stats import usage_store
         usage_store.init_db(cfg.USAGE_DB)
         logger.info("Usage rollup store initialized at %s", cfg.USAGE_DB)
         usage_store_ready = True
@@ -433,7 +445,6 @@ async def lifespan(app: FastAPI):
     # operator believing the env key locked it down.
     open_mode_task = None
     try:
-        from faster_whisper_backend.auth import dependencies as _auth
         api_keys_store.init_db(cfg.API_KEYS_DB)
         bootstrap_key = getattr(cfg, "BOOTSTRAP_ADMIN_KEY", None)
         if bootstrap_key:
@@ -492,12 +503,10 @@ async def lifespan(app: FastAPI):
 
     evictor_task = asyncio.create_task(tx_models._idle_evictor())
     # The diarization pipeline gets its own idle unloader (module-local
-    # singleton, DIARIZATION_IDLE_TIMEOUT_S read live). Import is cheap and
-    # dependency-free — pyannote itself loads lazily on first use.
-    from faster_whisper_backend.audio import diarization as _diarization
+    # singleton, DIARIZATION_IDLE_TIMEOUT_S read live). pyannote itself loads
+    # lazily on first use.
     diarization_evictor_task = asyncio.create_task(
         _diarization.idle_evictor_loop())
-    from faster_whisper_backend.audio import bgm_separation as _bgm_separation
     bgm_evictor_task = asyncio.create_task(
         _bgm_separation.idle_evictor_loop())
     # The translation LRU gets its own idle unloader too (module-level
@@ -521,16 +530,14 @@ async def lifespan(app: FastAPI):
     # restart badge), so the janitor must already be running when an admin
     # flips it on; with the feature off both are no-ops. The TMPDIR sweep
     # reclaims what a hard restart (restart_service) orphaned.
-    from faster_whisper_backend.media import media_store as _url_media_store
-    _url_media_store.startup_reset()
+    url_media_store.startup_reset()
     restart_service.reclaim_hard_restart_orphans()
     url_media_janitor_task = asyncio.create_task(
-        _url_media_store.janitor_loop())
+        url_media_store.janitor_loop())
     # Subtitle packaging: probe ffmpeg's muxers/encoders ONCE, off the loop,
     # so /v1/me never pays for the two subprocesses on a request.
     try:
-        from faster_whisper_backend.media import subtitle_mux as _pk
-        _pk_caps = await asyncio.to_thread(_pk.ffmpeg_capabilities)
+        _pk_caps = await asyncio.to_thread(_subtitle_mux.ffmpeg_capabilities)
         if _pk_caps.available:
             logger.info("[package] ffmpeg %s: containers %s",
                         _pk_caps.version or "?",
@@ -547,10 +554,9 @@ async def lifespan(app: FastAPI):
     # the first pasted link; probe()/download() re-check and refuse anyway, so
     # a failure here is logged, never fatal. Skipped when yt-dlp isn't
     # installed at all — there is then nothing to guard.
-    from faster_whisper_backend.media import download as _url_download
-    if _url_download.yt_dlp_version():
+    if url_download.yt_dlp_version():
         try:
-            _url_download.guard_self_check(force=True)
+            url_download.guard_self_check(force=True)
         except Exception as _ge:  # noqa: BLE001 — guard_self_check already logged
             logger.error("[url-dl] link downloads will be refused: %s", _ge)
 
@@ -559,7 +565,6 @@ async def lifespan(app: FastAPI):
     # (API clients) and open mode keep working.
     sessions_purge_task = None
     try:
-        from faster_whisper_backend.auth import sessions_store
         sessions_store.init_db(cfg.SESSIONS_DB)
         logger.info("Session store initialized at %s", cfg.SESSIONS_DB)
         sessions_purge_task = asyncio.create_task(_sessions_purge_loop())
@@ -570,7 +575,6 @@ async def lifespan(app: FastAPI):
                         if usage_store_ready else None)
     # 1 Hz machine sampler: the GPU-busy share and the /stats history charts.
     # Needs the system-metrics store.
-    from faster_whisper_backend.stats import sampler as _stats_sampler
     stats_sampler_task = asyncio.create_task(_stats_sampler.loop())
 
     # Open the reports SQLite store (durable, plaintext dictation content
@@ -579,7 +583,6 @@ async def lifespan(app: FastAPI):
     # the reports surface is broken, but the /reports page will error.
     reports_sweep_task = None
     try:
-        from faster_whisper_backend.reports import store as reports_store
         reports_store.init_db(cfg.REPORTS_DB)
         reports_store.sweep_retention()
         logger.info("Reports store initialized at %s", cfg.REPORTS_DB)
@@ -594,7 +597,6 @@ async def lifespan(app: FastAPI):
     # degrades to 503s but transcription keeps working. No retention loop —
     # bounded at one row per account.
     try:
-        from faster_whisper_backend.client_settings import store as client_settings_store
         client_settings_store.init_db(cfg.CLIENT_SETTINGS_DB)
         logger.info(
             "Client-settings store initialized at %s", cfg.CLIENT_SETTINGS_DB
@@ -613,12 +615,10 @@ async def lifespan(app: FastAPI):
     # vice versa).
     captures_sweep_task = None
     try:
-        from faster_whisper_backend.captures import store as captures_store
         captures_store.init_db(cfg.CAPTURES_DB, cfg.CAPTURES_DIR)
         # capture_samples_store reuses the captures DB connection — single
         # SQLite file holds both tables. Init it before the first
         # sweep_retention(): the sweep's sample-expiry pass needs it.
-        from faster_whisper_backend.captures import samples_store as capture_samples_store
         capture_samples_store.init_db(captures_store._require_conn(), cfg.CAPTURES_DIR)
         captures_store.reconcile_on_startup()
         capture_samples_store.reconcile_on_startup()
@@ -817,18 +817,18 @@ from faster_whisper_backend.stats import metrics
 # Central running-jobs registry (transcribe/dictate/translate/download/preload)
 # — feeds /stats and the WebUI header activity cluster.
 from faster_whisper_backend.core import jobs
-from faster_whisper_backend.core import jobs_store as _jobs_store
+from faster_whisper_backend.transcription import jobs_store as _jobs_store
 
 # Model preloading. Imported here rather than lazily because call sites below
 # (the two `loaded` flag endpoints) and tx_progress._progress_set reach it on
 # hot paths. preload never imports main (it reaches the whisper cache through
 # transcription.models), so no cycle.
 from faster_whisper_backend.runtime import preload
-from faster_whisper_backend.core import run_plan as _run_plan
+from faster_whisper_backend.transcription import run_plan as _run_plan
 
 # Dictation receipts held open until their translation arrives on a separate
 # request. Imports nothing from the app, so no cycle.
-from faster_whisper_backend.core import receipt_hold
+from faster_whisper_backend.transcription import receipt_hold
 
 # Batch progress / cancel / plan registries and the job-ledger writes for runs
 # posted with a progress_id — see transcription/progress.py. Called through the
@@ -874,7 +874,6 @@ async def _csrf_mw(request: Request, call_next):
             cookie = request.cookies.get(cfg.SESSION_COOKIE_NAME, "")
             if cookie:
                 import hmac
-                from faster_whisper_backend.auth import sessions_store
                 sess = sessions_store.lookup_session(cookie)
                 # Hand the resolved row to auth.user_from_session_cookie via
                 # the shared scope state so the dependency does not look the
@@ -925,8 +924,7 @@ def _media_package_max_body_bytes() -> int:
     (MAX_TRACKS SRT files of MAX_SRT_BYTES each = 12 x 2 MiB today) with 2x
     headroom for JSON escaping — so a body that respects every per-track
     limit reaches the route and its 422s instead of a bare 413 here."""
-    from faster_whisper_backend.media import subtitle_mux as _pk
-    return _pk.MAX_TRACKS * _pk.MAX_SRT_BYTES * 2
+    return _subtitle_mux.MAX_TRACKS * _subtitle_mux.MAX_SRT_BYTES * 2
 
 
 @app.middleware("http")
@@ -1343,7 +1341,7 @@ async def transcribe(
     # durations were previously computed for log lines and discarded; now
     # they also persist as the recent-jobs row's stages.
     _stage_timings: "list[dict]" = []
-    # The server-owned plan behind the progress route (core/run_plan.py):
+    # The server-owned plan behind the progress route (transcription/run_plan.py):
     # seeded with the stages the Form args imply, refined as facts land,
     # ticked by every _progress_set, read by every poll.
     _rplan = _run_plan.RunPlan(kind="url" if source_url is not None else "file")
@@ -1509,8 +1507,6 @@ async def transcribe(
                 # BGM tmp_path swap and the finally's unlink, is unchanged.
                 # The download deliberately does NOT hold the inference
                 # semaphore (network-bound); it has its own, narrower one.
-                from faster_whisper_backend.media import download as _udl
-                from faster_whisper_backend.media import media_store as _ums
                 logger.info("[url-dl] transcribe-from-url requested (host %s)",
                             media_video._url_host_for_log(source_url))
                 _dl_t0 = time.perf_counter()
@@ -1518,7 +1514,7 @@ async def transcribe(
                 try:
                     tx_progress._check_cancelled(_pid)
                     # probe() validates the URL; info.url is the normalised one.
-                    _uinfo = await _udl.probe(
+                    _uinfo = await url_download.probe(
                         source_url,
                         timeout=float(getattr(cfg, "URL_PREVIEW_TIMEOUT_S", 20)))
                     _url = _uinfo.url
@@ -1544,7 +1540,7 @@ async def transcribe(
                                                _user_id)
                     if _reuse:
                         _reused_copy = await asyncio.to_thread(
-                            _ums.make_pipeline_copy, _reuse["path"])
+                            url_media_store.make_pipeline_copy, _reuse["path"])
                     if _reused_copy:
                         _dl_path = _reuse["path"]
                         logger.info("[url-dl] reusing the audio the language"
@@ -1569,11 +1565,11 @@ async def transcribe(
                         "secs": round(time.perf_counter() - _dl_t0, 2),
                         "detail": _uinfo.extractor_key or None,
                     })
-                except _udl.UrlCancelled:
+                except url_download.UrlCancelled:
                     logger.info("[url-dl] download cancelled by client "
                                 "(host %s)", media_video._url_host_for_log(source_url))
                     raise tx_progress._ClientCancelled() from None
-                except _udl.UrlDownloadError as _ue:
+                except url_download.UrlDownloadError as _ue:
                     # str() is client-safe by the module's contract.
                     logger.info("[url-dl] rejected (host %s): %s",
                                 media_video._url_host_for_log(source_url),
@@ -1599,17 +1595,17 @@ async def transcribe(
                     tmp_path, _source_media_id = _reused_copy, prefetched_media_id
                 else:
                     tmp_path = await asyncio.to_thread(
-                        _ums.make_pipeline_copy, _dl_path)
+                        url_media_store.make_pipeline_copy, _dl_path)
                     if tmp_path is None:
                         # Disk trouble (logged by the store) — generic 500 path.
                         raise RuntimeError("url pipeline copy failed")
                     # Retention is a playback nicety: None just means the
                     # client gets no audio copy, never a failed transcription.
                     _source_media_id = await asyncio.to_thread(
-                        _ums.register, _dl_path, user_id=_user_id,
+                        url_media_store.register, _dl_path, user_id=_user_id,
                         source_url=_url)
                 if _keep_video:
-                    _rung = _udl.pick_rung(_uinfo.video_ladder, _video_max_height,
+                    _rung = url_download.pick_rung(_uinfo.video_ladder, _video_max_height,
                                            _video_format)
                     if _rung is None:
                         _video_result = media_video._video_state(
@@ -1662,9 +1658,8 @@ async def transcribe(
                     # A hardlink of the spool (same TMPDIR): the pipeline may
                     # replace tmp_path with a vocals stem and unlinks it in
                     # the finally; this copy survives for the media store.
-                    from faster_whisper_backend.media import media_store as _ums_r
                     _retained_upload = await asyncio.to_thread(
-                        _ums_r.make_pipeline_copy, tmp_path)
+                        url_media_store.make_pipeline_copy, tmp_path)
 
             # word_timestamps: AND of the (per-model-overrideable) global
             # config knob and the per-request ask. Disabled (False) bypasses
@@ -1688,7 +1683,6 @@ async def transcribe(
             if (getattr(cfg, "CAPTURES_RECORDING_ENABLED", False)
                     and gate_word_ts):
                 try:
-                    from faster_whisper_backend.captures import store as captures_store
                     cap_max = int(getattr(cfg, "CAPTURES_MAX", 5000))
                     hard_lim = int(getattr(
                         cfg, "CAPTURES_RECORDING_AUDIO_BYTES_HARD_LIMIT",
@@ -1923,8 +1917,7 @@ async def transcribe(
                 *(["translating"] if _translate_to else [])])
             if _separate:
                 try:
-                    from faster_whisper_backend.audio import bgm_separation as _bgm_plan
-                    _sep_dev = _bgm_plan.actual_device() or _bgm_plan._resolve_device()
+                    _sep_dev = _bgm_separation.actual_device() or _bgm_separation._resolve_device()
                 except Exception:  # noqa: BLE001 — optional dep absent
                     _sep_dev = None
                 _rplan.set_stage_model("separating",
@@ -1932,8 +1925,7 @@ async def transcribe(
                                        device=_sep_dev)
             if _diarize:
                 try:
-                    from faster_whisper_backend.audio import diarization as _diar_plan
-                    _diar_dev = _diar_plan._resolve_device()
+                    _diar_dev = _diarization._resolve_device()
                 except Exception:  # noqa: BLE001
                     _diar_dev = None
                 _rplan.set_stage_model("diarizing",
@@ -2069,7 +2061,6 @@ async def transcribe(
                         "server (BGM_SEPARATION_ENABLED is off)")
                     _skip("separating")
                 else:
-                    from faster_whisper_backend.audio import bgm_separation as _bgm
                     try:
                         _sep_t0 = time.perf_counter()
                         _cur_stage = "separating"
@@ -2081,8 +2072,8 @@ async def transcribe(
                             # is loaded (a CUDA provider that fails to load
                             # falls back to CPU silently); the config-resolved
                             # device only before the first load.
-                            device=(_bgm.actual_device()
-                                    or _bgm._resolve_device()))
+                            device=(_bgm_separation.actual_device()
+                                    or _bgm_separation._resolve_device()))
                         tx_progress._check_cancelled(_pid)
                         # libsndfile can't open AAC/MP4-family containers
                         # (m4a/mp4/webm…): the separator would fall back to a
@@ -2099,14 +2090,13 @@ async def transcribe(
                                     .lstrip(".").lower())
                         if _sep_ext not in ("wav", "flac"):
                             try:
-                                from faster_whisper_backend.audio import transcode as _atc
                                 _tfd, _sep_wav = tempfile.mkstemp(
                                     prefix="sepsrc-", suffix=".wav")
                                 os.close(_tfd)
                                 _tc0 = time.perf_counter()
                                 tx_progress._progress_set(_pid, step="preparing")
                                 await asyncio.to_thread(
-                                    _atc.transcode_to_wav, tmp_path,
+                                    _transcode.transcode_to_wav, tmp_path,
                                     _sep_wav, rate=44100, layout="stereo")
                                 logger.info(
                                     "[bgm] input .%s → 44.1 kHz WAV for "
@@ -2136,7 +2126,7 @@ async def transcribe(
                                 # (~40 s on long inputs); the first demix
                                 # chunk clears it via the progress callback.
                                 tx_progress._progress_set(_pid, step="preparing")
-                                _vocals_path = await _bgm.separate(
+                                _vocals_path = await _bgm_separation.separate(
                                     _sep_src,
                                     model_filename=(_separation_model or None),
                                     progress_cb=lambda f: tx_progress._progress_set(
@@ -2174,9 +2164,9 @@ async def transcribe(
                         _rplan.stage_done("separating")
                     except tx_progress._ClientCancelled:
                         raise
-                    except _bgm.BgmCancelled:
+                    except _bgm_separation.BgmCancelled:
                         raise tx_progress._ClientCancelled() from None
-                    except _bgm.BgmSeparationError as _se:
+                    except _bgm_separation.BgmSeparationError as _se:
                         # str(_se) is client-safe by the module's contract.
                         _warnings.append(str(_se))
                         _stage_timings.append(tx_receipt._failed_stage(
@@ -2226,7 +2216,7 @@ async def transcribe(
                 resolved_model, "DECODE_SKIP_RESIDUAL_WINDOWS", ident))
             # Per-rung token limit scaled to the window's length: a decode
             # that loops otherwise runs to the model's hard limit at ~83 ms a
-            # token (core/decode_trace.py, "Token cap"). 0 = off.
+            # token (transcription/decode_trace.py, "Token cap"). 0 = off.
             _token_cap = float(effective_config.cfg_for(
                 resolved_model, "DECODE_TOKEN_CAP_PER_SECOND", ident) or 0.0)
 
@@ -2401,7 +2391,7 @@ async def transcribe(
             # Post-decode word-rate guard (SEGMENT_MAX_WORDS_PER_S): drops
             # hallucinated echo segments — see segment_exceeds_word_rate.
             _max_wps = float(effective_config.cfg_for(resolved_model, "SEGMENT_MAX_WORDS_PER_S", ident) or 0)
-            # Tail cuts inside a segment (core/segment_guards.py). They run
+            # Tail cuts inside a segment (transcription/segment_guards.py). They run
             # AFTER the whole-segment verdict, on the survivors: a segment made
             # up from start to end is still dropped whole rather than trimmed to
             # two garbage words.
@@ -2550,9 +2540,6 @@ async def transcribe(
                         "server (DIARIZATION_ENABLED is off)")
                     _skip("diarizing")
                 else:
-                    # The module itself is import-safe without the optional
-                    # deps (pyannote is imported inside the load path).
-                    from faster_whisper_backend.audio import diarization as _diar
                     try:
                         _diar_t0 = time.perf_counter()
                         _cur_stage = "diarizing"
@@ -2560,11 +2547,11 @@ async def transcribe(
                             _pid, stage="diarizing", progress=None,
                             position=None, last_text=None, step=None,
                             model=(_diarization_model or None),
-                            device=_diar._resolve_device())
+                            device=_diarization._resolve_device())
                         tx_progress._check_cancelled(_pid)
                         async with tx_models.get_inference_semaphore():
                             tx_progress._check_cancelled(_pid)
-                            _turns = await _diar.diarize(
+                            _turns = await _diarization.diarize(
                                 tmp_path,
                                 num_speakers=_spk.get("num_speakers"),
                                 min_speakers=_spk.get("min_speakers"),
@@ -2579,7 +2566,7 @@ async def transcribe(
                         # Pure-Python O(segments × turns) — off the loop so a
                         # long file doesn't stall every other request.
                         speakers_list = await asyncio.to_thread(
-                            _diar.assign_speakers, segments_list, _turns)
+                            _diarization.assign_speakers, segments_list, _turns)
                         logger.info(
                             "[diarize] %d turns → %d speakers across %d "
                             "segments in %.1fs",
@@ -2600,9 +2587,9 @@ async def transcribe(
                         _rplan.stage_done("diarizing")
                     except tx_progress._ClientCancelled:
                         raise
-                    except _diar.DiarizeCancelled:
+                    except _diarization.DiarizeCancelled:
                         raise tx_progress._ClientCancelled() from None
-                    except _diar.DiarizationError as _de:
+                    except _diarization.DiarizationError as _de:
                         # str(_de) is client-safe by the module's contract.
                         _warnings.append(str(_de))
                         _stage_timings.append(tx_receipt._failed_stage(
@@ -2881,7 +2868,6 @@ async def transcribe(
             # path is unchanged.
             if will_capture:
                 try:
-                    from faster_whisper_backend.captures import store as captures_store
                     audio_dur_s = float(getattr(info, "duration", 0.0) or 0.0)
                     min_s = float(getattr(cfg, "CAPTURES_RECORDING_MIN_DURATION_S", 0.5))
                     max_s = float(getattr(cfg, "CAPTURES_RECORDING_MAX_DURATION_S", 600.0))
@@ -3059,12 +3045,10 @@ async def transcribe(
 
             # Persist the trace to the durable recent-transcriptions store
             # (SQLite, WAL) and broadcast it to /quick-config SSE
-            # subscribers in one step. Lazy import keeps main.py decoupled
-            # at module-load time. metrics.record_transcription() in the
+            # subscribers in one step. metrics.record_transcription() in the
             # outer finally adds the timing half via UPSERT on the same
             # request_id.
             try:
-                from faster_whisper_backend.quick_config import recent_feed as qc_recent_feed
                 qc_recent_feed.record_trace(
                     request_id=request_id,
                     model=resolved_model,
@@ -3113,9 +3097,8 @@ async def transcribe(
             if _retained_upload is not None:
                 # Only a finished run retains its upload; the id rides on the
                 # same keys a link run uses (the export panel reads one).
-                from faster_whisper_backend.media import media_store as _ums_r
                 _source_media_id = await asyncio.to_thread(
-                    _ums_r.register, _retained_upload, user_id=_user_id,
+                    url_media_store.register, _retained_upload, user_id=_user_id,
                     kind="video")
                 if _source_media_id is not None:
                     # register() moved the file; on a refusal (None) it may
@@ -3185,10 +3168,9 @@ async def transcribe(
                 # Additive keys — OpenAI-compat callers ignore them.
                 response.update(media_video._video_response_keys(_video_task, _video_result))
                 if _source_media_id is not None:
-                    from faster_whisper_backend.media import media_store as _ums
                     response["source_media_id"] = _source_media_id
                     response["source_media_expires_at"] = (
-                        _ums.expires_at_unix(_source_media_id))
+                        url_media_store.expires_at_unix(_source_media_id))
                 _response_payload = response
                 return response
 
@@ -3214,10 +3196,9 @@ async def transcribe(
                 response["profile_applied"] = ident.request_profile_applied
             response.update(media_video._video_response_keys(_video_task, _video_result))
             if _source_media_id is not None:
-                from faster_whisper_backend.media import media_store as _ums
                 response["source_media_id"] = _source_media_id
                 response["source_media_expires_at"] = (
-                    _ums.expires_at_unix(_source_media_id))
+                    url_media_store.expires_at_unix(_source_media_id))
             _response_payload = response
             return response
 

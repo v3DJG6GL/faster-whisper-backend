@@ -273,7 +273,7 @@ def test_translate_expect_is_ignored_when_translation_is_disabled(
     declaration on a TRANSLATION_ENABLED=0 server must park nothing: the
     receipt is logged inline and no `captured` frame invites a claim."""
     from faster_whisper_backend.captures import store as captures_store
-    from faster_whisper_backend.core import receipt_hold
+    from faster_whisper_backend.transcription import receipt_hold
 
     monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
     monkeypatch.setattr(app_module.cfg, "TRANSLATION_ENABLED", False, raising=False)
@@ -296,7 +296,7 @@ def test_translate_expect_parks_when_translation_is_enabled(
         client, app_module, monkeypatch):
     """The other direction, so the gate above is not just disabling the hold."""
     from faster_whisper_backend.captures import store as captures_store
-    from faster_whisper_backend.core import receipt_hold
+    from faster_whisper_backend.transcription import receipt_hold
 
     monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
     monkeypatch.setattr(app_module.cfg, "TRANSLATION_ENABLED", True, raising=False)

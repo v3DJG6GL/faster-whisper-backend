@@ -5,7 +5,7 @@ file so seeds are what the plan sees unless a test records something.
 """
 import pytest
 
-from faster_whisper_backend.core import run_plan
+from faster_whisper_backend.transcription import run_plan
 from faster_whisper_backend.runtime import stage_rates
 
 

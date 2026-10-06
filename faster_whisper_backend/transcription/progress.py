@@ -5,7 +5,7 @@ _progress_set from every stage, retired by _progress_close), the cooperative
 cancel flag (_BATCH_CANCELLED, _check_cancelled / _ClientCancelled), the
 progress_id → job / preload-plan / run-plan bindings that _progress_set
 mirrors every tick into, the job-ledger writes for runs posted with an id
-(_jobs_start / _jobs_finish, core/jobs_store.py), and the progress route's
+(_jobs_start / _jobs_finish, transcription/jobs_store.py), and the progress route's
 wire shape (_progress_entry_for, _progress_payload).
 
 Callers go through the module attribute (``tx_progress._progress_set(...)``)
@@ -22,8 +22,8 @@ from fastapi import HTTPException
 from fastapi.encoders import jsonable_encoder as _jsonable_encoder
 
 from faster_whisper_backend.core import jobs
-from faster_whisper_backend.core import jobs_store as _jobs_store
-from faster_whisper_backend.core import run_plan as _run_plan
+from faster_whisper_backend.transcription import jobs_store as _jobs_store
+from faster_whisper_backend.transcription import run_plan as _run_plan
 from faster_whisper_backend.runtime import preload
 from faster_whisper_backend.settings import config as cfg
 
@@ -121,7 +121,7 @@ def _bind_job_pid(pid: "str | None", request_id: str) -> None:
 # four stage entry points would drift the first time a stage moved.
 _PLAN_BY_PID: "dict[str, str]" = {}
 
-# progress_id → the run's server-owned plan (core/run_plan.py): expected and
+# progress_id → the run's server-owned plan (transcription/run_plan.py): expected and
 # actual seconds per stage, per-language translation units, and the overall
 # fraction + ETA the progress route publishes. Same shape and lifetime as
 # _JOB_BY_PID (popped in the handlers' outer finally); _progress_set feeds
@@ -145,7 +145,7 @@ def _plan_fields(pid: str) -> dict:
     }
 
 
-# ── Server jobs (durable job resource, core/jobs_store.py) ──────────────────
+# ── Server jobs (durable job resource, transcription/jobs_store.py) ──────────────────
 # Every batch run posted WITH a progress_id gets a row: `running` right after
 # the progress seed, then its terminal state + the verbatim response payload
 # from the handler's outer finally, so a client that lost its connection can
@@ -405,7 +405,7 @@ def _progress_payload(pid: str, entry: dict) -> dict:
         # keep_video runs: the secondary video download's own state (see
         # _video_state) — null unless a video was requested.
         "video": entry.get("video"),
-        # The server-owned plan (core/run_plan.py): per-stage expected /
+        # The server-owned plan (transcription/run_plan.py): per-stage expected /
         # actual seconds, per-language units, and the overall fraction +
         # ETA the client renders verbatim.
         **_plan_fields(pid),

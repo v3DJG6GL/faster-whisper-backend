@@ -81,7 +81,7 @@ _RESET_HOOKS: tuple[tuple[str, Any], ...] = (
     ("faster_whisper_backend.core.jobs", "_reset_for_tests"),
     # held dictation receipts — a leftover would be swept into a later test's
     # log output, and would count against the pending cap.
-    ("faster_whisper_backend.core.receipt_hold", "_reset_for_tests"),
+    ("faster_whisper_backend.transcription.receipt_hold", "_reset_for_tests"),
     # preload plan registry + warm leases.
     ("faster_whisper_backend.runtime.preload", "_reset_for_tests"),
     # The warm predicate is cleared separately from preload's hook: one left
@@ -537,7 +537,7 @@ def app_module(tmp_path, monkeypatch, fake_model):
     from faster_whisper_backend.stats import recent_transcriptions_store as _rts
     _rts._insert_counter = 0
     # Same for the jobs store's lazy-prune counter (every 20th insert).
-    from faster_whisper_backend.core import jobs_store as _jbs
+    from faster_whisper_backend.transcription import jobs_store as _jbs
     _jbs._insert_counter = 0
 
     yield main
@@ -550,7 +550,7 @@ def app_module(tmp_path, monkeypatch, fake_model):
     from faster_whisper_backend.stats import usage_store; from faster_whisper_backend.captures import store as captures_store; from faster_whisper_backend.captures import samples_store as capture_samples_store
     from faster_whisper_backend.auth import sessions_store; from faster_whisper_backend.client_settings import store as client_settings_store
     from faster_whisper_backend.stats import system_metrics_store
-    from faster_whisper_backend.core import jobs_store
+    from faster_whisper_backend.transcription import jobs_store
     for _mod in (api_keys_store, sessions_store, reports_store,
                  recent_transcriptions_store, usage_store, captures_store,
                  client_settings_store, system_metrics_store, jobs_store):

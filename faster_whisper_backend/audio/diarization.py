@@ -1,7 +1,7 @@
 """Speaker diarization via pyannote.audio (optional install).
 
 The pyannote pipeline is a second model kind next to the WhisperModel cache in
-main.py, with the same lifecycle discipline scaled down to a singleton: lazy
+transcription/models.py, with the same lifecycle discipline scaled down to a singleton: lazy
 import (the dependency set is the optional ``requirements-diarize.txt``), load
 on first use under an asyncio.Lock with an NVML VRAM delta, registration in
 ``model_registry`` (as ``pyannote:<model>``) so /stats shows it, an idle-eviction
@@ -397,7 +397,7 @@ _HOOK_NAMED_SPANS = (
     ("embedding", (0.04, 0.97)),
 )
 _HOOK_ORDER_SPANS = ((0.00, 0.04), (0.04, 0.97), (0.97, 1.00))
-# pyannote step name → the plan's unit (core.run_plan.DIARIZE_STEPS).
+# pyannote step name → the plan's unit (transcription.run_plan.DIARIZE_STEPS).
 _UNIT_OF = (("segmentation", "segmentation"), ("embedding", "embeddings"))
 
 

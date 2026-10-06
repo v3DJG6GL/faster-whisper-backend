@@ -1,10 +1,10 @@
 """GET/DELETE /v1/jobs* — the durable job resource for batch runs posted
-with a progress_id (core/jobs_store.py)."""
+with a progress_id (transcription/jobs_store.py)."""
 
 import time
 import pytest
 
-from faster_whisper_backend.core import jobs_store as js
+from faster_whisper_backend.transcription import jobs_store as js
 from faster_whisper_backend.transcription import progress as tx_progress
 from tests.conftest import bearer
 from faster_whisper_backend.media import video as media_video

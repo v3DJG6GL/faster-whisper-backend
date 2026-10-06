@@ -12,7 +12,7 @@ import logging
 import re
 import time
 
-from faster_whisper_backend.core import receipt_hold
+from faster_whisper_backend.transcription import receipt_hold
 from faster_whisper_backend.core import store_common
 from faster_whisper_backend.runtime import model_registry
 from faster_whisper_backend.settings import config as cfg
