@@ -59,11 +59,3 @@ def test_root_host_gate(app_module, monkeypatch):
     with TestClient(app_module.app, client=("203.0.113.9", 1234)) as c:
         assert c.get("/").status_code == 403
 
-
-# ---------------------------------------------------------------------------
-# render_page memoization (web_common)
-# ---------------------------------------------------------------------------
-# The substitution chain rebuilds a ~270 KB shell per request and these pages
-# render before any credential is examined, so it is memoized. The contract
-# worth pinning is the CACHE KEY: nothing per-user may be substituted, and the
-# three hot-mutable cfg reads must invalidate.

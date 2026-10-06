@@ -123,7 +123,3 @@ def test_reports_resubmission_without_provenance_keeps_it(reports_store_db):
     assert got["language"] == "de"
     assert got["stages"] == [{"name": "translating"}]
 
-
-# ---------------------------------------------------------------------------
-# captures
-# ---------------------------------------------------------------------------
