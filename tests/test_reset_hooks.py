@@ -19,10 +19,11 @@ import threading
 
 import pytest
 
+from faster_whisper_backend.core.loop_lock import LoopLock
 from tests.conftest import _RESET_HOOKS
 
 _CONTAINERS = (dict, set, list, collections.deque)   # OrderedDict is a dict
-_LOCKS = (asyncio.Lock, asyncio.Semaphore,
+_LOCKS = (asyncio.Lock, asyncio.Semaphore, LoopLock,
           type(threading.Lock()), type(threading.RLock()))
 
 # module -> {name: why the hook leaves it alone}. Everything else stateful must
@@ -44,6 +45,12 @@ _NOT_RESET = {
     },
     "faster_whisper_backend.transcription.progress": {},
     "faster_whisper_backend.translation.gating": {},
+    "faster_whisper_backend.pipeline.apply": {
+        "EVICTORS": "constant bucket → drop-callable table",
+        "_RULES_LOCK": "a LoopLock keeps one asyncio.Lock per running loop and "
+                       "prunes closed loops, so a dead TestClient loop's lock "
+                       "is never waited on — nothing to rebind",
+    },
 }
 
 # Lazily-built singletons: None until the getter first runs, None again after
@@ -193,3 +200,31 @@ def test_translation_engine_left_audio():
     hooks = dict(_RESET_HOOKS)
     assert "faster_whisper_backend.audio.translation" not in hooks
     assert hooks["faster_whisper_backend.translation.engine"] == "_reset_for_tests"
+
+
+# P12: the config hot-apply helpers and the shared PIPELINE_RULES lock moved
+# from admin/routes.py and quick_config/routes.py into pipeline/apply.py. A
+# stale twin left in a router would be what that router calls, while the tests
+# patch pipeline.apply — and a second lock would silently split the writers.
+_P12_MOVED = {
+    "faster_whisper_backend.admin.routes": (
+        "_apply_hot_changes", "_canon_rules", "_resolved_value", "_EVICTORS",
+        "_pipeline_rules_lock", "_rebuild_caches", "_PIPELINE_RULE_ADAPTER",
+        "_sort_dicts",
+    ),
+    "faster_whisper_backend.quick_config.routes": (
+        "_PATCH_LOCK", "_patch_lock", "_apply_hot_changes", "_canon_rules",
+    ),
+}
+
+
+@pytest.mark.parametrize("modname", sorted(_P12_MOVED))
+def test_routers_no_longer_define_apply_names(modname):
+    mod = importlib.import_module(modname)
+    stale = sorted(n for n in _P12_MOVED[modname] if hasattr(mod, n))
+    assert not stale, f"{modname} still defines moved names: {stale}"
+    from faster_whisper_backend.pipeline import apply as pl_apply
+    for name in ("apply_hot_changes", "canon_rules", "resolved_value",
+                 "EVICTORS", "rules_lock", "rebuild_caches_off_loop",
+                 "_PIPELINE_RULE_ADAPTER", "_sort_dicts", "_RULES_LOCK"):
+        assert hasattr(pl_apply, name), name

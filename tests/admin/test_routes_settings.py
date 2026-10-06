@@ -2,6 +2,7 @@
 
 import pytest
 
+from faster_whisper_backend.pipeline import apply as pl_apply
 from faster_whisper_backend.pipeline import engine as pl_engine
 from faster_whisper_backend.transcription import progress as tx_progress
 
@@ -409,7 +410,7 @@ def test_test_pipeline_nested_repetition_screened_not_run(client):
 
 def test_test_pipeline_map_rule_non_dict_map_is_step_error(client):
     """A callback:map rule whose `map` is a list/string (editor rules skip
-    _PIPELINE_RULE_ADAPTER) must degrade into a per-step error card, not an
+    pl_apply._PIPELINE_RULE_ADAPTER) must degrade into a per-step error card, not an
     unhandled 500 from m.items()."""
     r = client.post(
         "/settings/test-pipeline",
@@ -621,7 +622,6 @@ def test_save_dispatches_extras_eviction(client, monkeypatch):
     """Editing a field in an EXTRAS_EVICTION bucket awaits that bucket's
     evictor; untouched buckets stay quiet; an evictor failure never breaks
     the save (error-swallowing semantics)."""
-    from faster_whisper_backend.admin import routes as admin_routes
 
     calls = []
 
@@ -632,16 +632,16 @@ def test_save_dispatches_extras_eviction(client, monkeypatch):
                 raise RuntimeError("boom")
         return _f
 
-    monkeypatch.setitem(admin_routes._EVICTORS, "diarization",
+    monkeypatch.setitem(pl_apply.EVICTORS, "diarization",
                         _spy("diarization"))
-    monkeypatch.setitem(admin_routes._EVICTORS, "bgm", _spy("bgm"))
+    monkeypatch.setitem(pl_apply.EVICTORS, "bgm", _spy("bgm"))
     r = client.post("/settings/state", json={"DIARIZATION_DEVICE": "cpu"})
     assert r.status_code == 200
     assert calls == ["diarization"]
 
     # A raising evictor is swallowed — the save still succeeds.
     calls.clear()
-    monkeypatch.setitem(admin_routes._EVICTORS, "bgm",
+    monkeypatch.setitem(pl_apply.EVICTORS, "bgm",
                         _spy("bgm", fail=True))
     r = client.post("/settings/state",
                     json={"BGM_SEPARATION_DEVICE": "cpu"})

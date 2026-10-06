@@ -313,7 +313,7 @@ def pipeline_rule_tags(rules: Any) -> list[str]:
     to populate autocomplete in the tag-picker widget so admins don't
     have to remember the exact spelling.
 
-    Accepts both dicts (post _canon_rules) and Pydantic models."""
+    Accepts both dicts (post pipeline.apply.canon_rules) and Pydantic models."""
     seen: set[str] = set()
     for r in (rules or []):
         if hasattr(r, "model_dump"):

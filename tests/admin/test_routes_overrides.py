@@ -4,6 +4,7 @@ via the conftest TestClient; no faster-whisper needed."""
 
 import json
 
+from faster_whisper_backend.pipeline import apply as pl_apply
 from tests.conftest import bearer
 
 PERMS = "/settings/api-keys/api/users"
@@ -52,7 +53,6 @@ def test_state_includes_inherited_defaults(client, make_user_key, app_module):
     """The /state payload ships the live global value for every overridable field
     so the editor can render `inherits <value>` (and seed `+ override` from it).
     The source must match the /settings per-model page byte-for-byte."""
-    from faster_whisper_backend.admin import routes as admin_routes
     _, _, h = _admin(make_user_key)
     j = client.get(f"{OV}/state", headers=h).json()
 
@@ -61,7 +61,7 @@ def test_state_includes_inherited_defaults(client, make_user_key, app_module):
     assert set(defaults) == set(j["field_meta"])
     # Values come from the same serializer the per-model page uses.
     for name in ("BEAM_SIZE", "DEFAULT_LANGUAGE", "VAD_FILTER"):
-        assert defaults[name] == admin_routes._resolved_value(name)
+        assert defaults[name] == pl_apply.resolved_value(name)
     # Every scalar field shown in the editor grid has a default, so no real row
     # can fall back to the ∅ "missing" glyph.
     grouped = {f for g in j["groups"] for sg in g["subgroups"] for f in sg["fields"]}

@@ -25,53 +25,33 @@ import asyncio
 import contextlib
 import json
 import logging
-import os
 import re
 import time
-from typing import TYPE_CHECKING, Annotated, Any, Literal, get_args, get_origin
+from typing import Annotated, Any, Literal, get_args, get_origin
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.responses import HTMLResponse, JSONResponse
-from pydantic import BaseModel, Field, TypeAdapter, ValidationError
+from pydantic import BaseModel, Field, ValidationError
 
-from faster_whisper_backend.audio import bgm_separation
 from faster_whisper_backend import build_info
 from faster_whisper_backend.settings import config as cfg
 from faster_whisper_backend.settings import config_store
 from faster_whisper_backend.settings import schema as settings_schema
-from faster_whisper_backend.settings import version as settings_version
 from faster_whisper_backend.settings import descriptions as field_descriptions
-from faster_whisper_backend.audio import diarization
 from faster_whisper_backend.runtime import system_stats
 from faster_whisper_backend.translation import engine as translation
-from faster_whisper_backend.core import log_setup
 from faster_whisper_backend.core.languages import WHISPER_LANGUAGE_NAMES
 from faster_whisper_backend.core import web_common
 from faster_whisper_backend.pipeline import dictation_map
+from faster_whisper_backend.pipeline import apply as pl_apply
 from faster_whisper_backend.pipeline import engine as pl_engine
 from faster_whisper_backend.pipeline import regex_guard
-from faster_whisper_backend.transcription import models as tx_models
 from faster_whisper_backend.transcription import progress as tx_progress
 from faster_whisper_backend.translation import gating as tr_gating
 from faster_whisper_backend.auth.dependencies import require_admin
 from faster_whisper_backend.core import templates
 
-if TYPE_CHECKING:
-    from faster_whisper_backend.core.loop_lock import LoopLock
-
 logger = logging.getLogger("whisper-api")
-
-# Async dropper per settings_schema.EXTRAS_EVICTION bucket: when a save touches
-# any field in a bucket, post_state awaits the matching dropper so the cached
-# extra's VRAM frees now instead of at the idle timeout. (Correctness doesn't
-# depend on this — both modules re-key on their load params per request.)
-# Both modules are lazy-import-safe: their heavy optional deps load on first
-# pipeline use, not at module import.
-_EVICTORS: dict[str, Any] = {
-    "diarization": diarization.drop_pipeline,
-    "bgm": bgm_separation.drop_separator,
-    "translation": translation.drop_models,
-}
 
 # ---------------------------------------------------------------------------
 # Per-model pane constants injected into the /settings page at render time
@@ -130,11 +110,6 @@ _MO_FIELD_META_JSON: str = json.dumps(_mo_field_meta())
 _WHISPER_LANGS_JSON: str = json.dumps(
     [{"code": c, "name": n} for c, n in WHISPER_LANGUAGE_NAMES.items()])
 
-# Discriminated-union adapter for PIPELINE_RULES canonicalization. Built once
-# at import time — TypeAdapter construction walks every rule subclass and is
-# the dominant cost of _canon_rules, called twice per /settings/state request.
-_PIPELINE_RULE_ADAPTER: TypeAdapter = TypeAdapter(settings_schema.PipelineRule)
-
 # Fields the WebUI is allowed to surface — drives section grouping in the HTML
 # and the /settings/state endpoint's provenance map. Generated in settings/schema.py
 # from the per-field registry metadata (group/subgroup/order on each
@@ -171,56 +146,6 @@ require_admin_webui_host = web_common.require_admin_webui_host
 router = APIRouter(prefix="/settings")
 
 
-def _resolved_value(field: str) -> Any:
-    """Read the current effective value of a config field by attribute name."""
-    val = getattr(cfg, field, None)
-    # Convert un-JSON-able types so the WebUI gets clean data.
-    if isinstance(val, (set, frozenset)):
-        return sorted(val)
-    if isinstance(val, tuple):
-        return [list(p) if isinstance(p, tuple) else p for p in val]
-    return val
-
-
-# Pydantic re-validates each rule so model_dump() emits keys in the
-# discriminated-union's declaration order — same on both `value` and
-# `default_value` so JSON.stringify on each yields identical strings
-# when the rule contents match. Without this, _BASELINE keeps source
-# order while the resolved value (after a local.json overlay) carries
-# Pydantic's parent-first MRO order, and the WebUI's dirty / origin-badge
-# comparisons would report a spurious diff on first paint.
-def _canon_rules(rules: Any) -> Any:
-    if not isinstance(rules, list):
-        return rules
-    out: list[Any] = []
-    for r in rules:
-        try:
-            dumped = _PIPELINE_RULE_ADAPTER.validate_python(r).model_dump(exclude_none=True)
-            out.append(_sort_dicts(dumped))
-        except Exception:
-            out.append(r)  # malformed — pass through; save-time validator catches it
-    return out
-
-
-# `model_dump()` preserves insertion order on nested dict fields (e.g. the
-# `map` on a callback:map rule). The resolved value (after a local.json
-# overlay) and the baseline `default_value` (from cfg._BASELINE) can carry
-# different insertion orders even when contents are equal — which makes
-# JSON.stringify(value) !== JSON.stringify(default_value) so the WebUI's
-# dirty / origin-badge checks falsely report a diff, AND clicking reset
-# visibly re-sorts the rows. Recursively sorting nested dict keys (applied
-# identically to value AND default_value) makes the equality check reliable.
-# Forced alphabetical is the right canonical order for `cb:map` rules: the
-# longest-first word-bounded regex is rebuilt server-side from these keys,
-# so display order has no functional meaning.
-def _sort_dicts(obj: Any) -> Any:
-    if isinstance(obj, dict):
-        return {k: _sort_dicts(obj[k]) for k in sorted(obj)}
-    if isinstance(obj, list):
-        return [_sort_dicts(x) for x in obj]
-    return obj
-
-
 def _provenance(field: str, env_pinned: dict[str, str], saved: dict[str, Any]) -> str:
     """Where the current effective value came from: 'env', 'local.json', or 'default'."""
     if field in env_pinned:
@@ -234,7 +159,7 @@ def _baseline_value(name: str) -> Any:
     """The in-repo default captured in cfg._BASELINE before local.json + env
     overrides apply. Used by the WebUI's "↺ Reset" button and by post_state's
     prune-on-default logic. Convert non-JSON-serializable types (set, frozenset,
-    tuple of tuples) the same way _resolved_value does so the round-trip is clean.
+    tuple of tuples) the same way pl_apply.resolved_value does so the round-trip is clean.
     """
     baseline = getattr(cfg, "_BASELINE", {}) or {}
     v = baseline.get(name)
@@ -276,7 +201,7 @@ def _values_equal(a: Any, b: Any) -> bool:
 # prune-on-default. PIPELINE_RULES: a local copy equal to the factory rules
 # intentionally SHADOWS config.json (pins against future factory edits) and is
 # cleared via the pipeline page's dedicated "clear local override" action — not
-# the scalar "↺ Reset" button. (Its wire form is also _canon_rules-normalized,
+# the scalar "↺ Reset" button. (Its wire form is also pl_apply.canon_rules-normalized,
 # so a submitted-value vs raw-baseline compare here would be unreliable anyway.)
 _PRUNE_EXEMPT = frozenset({"PIPELINE_RULES"})
 
@@ -463,7 +388,7 @@ async def get_state(response: Response) -> dict[str, Any]:
         elif name in field_descs:
             desc = field_descs[name]
         fields[name] = {
-            "value": _resolved_value(name),
+            "value": pl_apply.resolved_value(name),
             "default_value": _baseline_value(name),
             "description": desc,
             "provenance": _provenance(name, env_pinned, saved),
@@ -474,10 +399,10 @@ async def get_state(response: Response) -> dict[str, Any]:
 
     # PIPELINE_RULES: canonicalize key order on both sides of the wire so
     # the WebUI's deep-equal compare (JSON.stringify) is reliable on first
-    # paint. See _canon_rules() for the why.
+    # paint. See pl_apply.canon_rules() for the why.
     if "PIPELINE_RULES" in fields:
-        fields["PIPELINE_RULES"]["value"] = _canon_rules(fields["PIPELINE_RULES"]["value"])
-        fields["PIPELINE_RULES"]["default_value"] = _canon_rules(fields["PIPELINE_RULES"]["default_value"])
+        fields["PIPELINE_RULES"]["value"] = pl_apply.canon_rules(fields["PIPELINE_RULES"]["value"])
+        fields["PIPELINE_RULES"]["default_value"] = pl_apply.canon_rules(fields["PIPELINE_RULES"]["default_value"])
 
     # Surface the nested group structure to the client. Each group has a list
     # of subgroups: {title, subgroups: [{title: str | None, fields: [...]}]}.
@@ -502,21 +427,6 @@ async def get_state(response: Response) -> dict[str, Any]:
     }
 
 
-def _pipeline_rules_lock() -> "LoopLock":
-    """The loop-keyed lock that serializes every PIPELINE_RULES
-    read-modify-write — SHARED with /quick-config, which defined it first:
-    quick_config_routes.apply_rules_patch snapshots cfg.PIPELINE_RULES from
-    memory, holds it across the offloaded save, and writes the WHOLE key
-    back, so an admin save landing inside that window would be persisted,
-    applied, answered 200 — and then silently reverted by the stale
-    quick-config document. Both routers queueing on one lock closes the
-    cross-endpoint half of that lost update (the intra-endpoint half is
-    quick_config_routes._PATCH_LOCK's original job). Lazy import:
-    quick_config_routes imports this module at startup."""
-    from faster_whisper_backend.quick_config.routes import _patch_lock
-    return _patch_lock()
-
-
 @router.post("/state", dependencies=[Depends(require_admin_webui_host), Depends(require_admin)])
 async def post_state(payload: dict[str, Any], request: Request) -> JSONResponse:
     """Validate and persist overrides. Returns the diff (which fields were
@@ -533,7 +443,7 @@ async def post_state(payload: dict[str, Any], request: Request) -> JSONResponse:
     # save + hot-apply so a concurrent quick-config patch snapshots the
     # post-save list instead of silently reverting this edit. Unrelated
     # scalar saves stay off the shared lock.
-    _lock = (_pipeline_rules_lock() if "PIPELINE_RULES" in payload
+    _lock = (pl_apply.rules_lock() if "PIPELINE_RULES" in payload
              else contextlib.nullcontext())
     _prev_model_overrides = (
         getattr(cfg, "MODEL_OVERRIDES", None) or {}
@@ -555,7 +465,7 @@ async def post_state(payload: dict[str, Any], request: Request) -> JSONResponse:
             raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR,
                                 f"could not write config.local.json: {e}")
 
-        applied = await _apply_hot_changes(written, _prev_model_overrides)
+        applied = await pl_apply.apply_hot_changes(written, _prev_model_overrides)
 
     client_host = request.client.host if request.client else "?"
     logger.info(
@@ -571,172 +481,6 @@ async def post_state(payload: dict[str, Any], request: Request) -> JSONResponse:
     })
 
 
-async def _rebuild_caches(reason: str) -> None:
-    """Recompile the pipeline engine's derived caches, off the event loop.
-
-    Off the loop because rebuild_caches recompiles every rule; a
-    callback:map builds a \\b(alt|alt|...)\\b alternation and
-    re.compile()s it — measured at 68 ms for 500 random 13-char keys, 116 ms
-    at 1000, 250 ms at 2000, and a *changed* map (exactly what every caller
-    here produces) always misses re._cache.
-
-    rebuild_caches mutates module globals, so this is only safe under a
-    single-writer assumption. That assumption already had to hold:
-    save_overrides — the far heavier writer one frame up the same call
-    chain — has been offloaded to a worker thread for a while, so the write
-    side of this path was already running off the loop. Moving the rebuild
-    alongside it does not widen the window; both are awaited in sequence, so
-    no two rebuilds from a single request's chain can overlap, and
-    concurrent requests were already able to interleave at the
-    save_overrides await."""
-    try:
-        await asyncio.to_thread(pl_engine.rebuild_caches)
-        logger.info("[config] rebuilt pipeline caches after %s", reason)
-    except Exception as e:
-        logger.error("[config] cache rebuild failed after %s: %s", reason, e)
-
-
-async def _apply_hot_changes(
-    written: dict[str, Any],
-    prev_model_overrides: "dict[str, Any] | None" = None,
-) -> dict[str, Any]:
-    """Apply hot edits from a config save to the running cfg module, rebuild
-    caches, and evict load-time-affected models.
-
-    Shared by /settings/state (admin) and /quick-config/state (end-user). For
-    /quick-config only PIPELINE_RULES can change, so most branches here
-    simply skip — but the helper handles all cases uniformly so the two
-    paths stay in lockstep.
-
-    Returns a dict suitable to splat into the JSON response envelope:
-      hot_applied, cold_pending, env_pinned_ignored, evicted.
-    """
-    # Apply hot edits to the running cfg module so the next request sees them.
-    # We re-load from disk so the in-memory values get the same coercions
-    # (set/frozenset/tuple) load_overrides applies.
-    # Off the event loop: this helper is NOT admin-only in practice — POST
-    # /quick-config/state carries only require_user_webui_host +
-    # require_page("quick_config") and awaits apply_rules_patch, which awaits
-    # us. load_overrides is a blocking disk read + full Pydantic pass.
-    coerced = await asyncio.to_thread(config_store.load_overrides)
-    hot_changed: list[str] = []
-    cold_changed: list[str] = []
-    needs_cache_rebuild = False
-    env_pinned = config_store.env_pinned_fields()
-
-    for name in written:
-        if name in env_pinned:
-            # Save persists, but the running cfg won't change until the env
-            # var is unset. Don't include in `hot_changed` — nothing changed
-            # in memory.
-            continue
-        if name in coerced:
-            new_val = coerced[name]
-        else:
-            # The override was removed (reset to default): revert the running
-            # cfg to the in-repo baseline. getattr(cfg, name) would still hold
-            # the stale override value (set when it was first saved) until we
-            # overwrite it here, so it can't be the fallback. _BASELINE holds
-            # the native-typed default (matching load_overrides' coercions).
-            baseline = getattr(cfg, "_BASELINE", {}) or {}
-            new_val = baseline.get(name, getattr(cfg, name, None))
-        setattr(cfg, name, new_val)
-        if name in settings_schema.CACHE_REBUILD_FIELDS:
-            needs_cache_rebuild = True
-        if name in settings_schema.RESTART_REQUIRED_FIELDS:
-            cold_changed.append(name)
-        else:
-            hot_changed.append(name)
-
-    if needs_cache_rebuild:
-        await _rebuild_caches("admin update")
-
-    # Eviction-on-edit: when a load-time field changed (globally or per-model),
-    # drop the affected loaded model(s) from the cache so the next request
-    # reloads them with the new settings. In-flight transcribes finish on the
-    # old WhisperModel instance via Python ref-counting (drain-then-evict).
-    evicted: list[str] = []
-    try:
-        load_time_changed_globally = bool(
-            set(written.keys()) & settings_schema.LOAD_TIME_FIELDS
-        )
-        if load_time_changed_globally:
-            # Affects every loaded model that doesn't have a per-model
-            # override winning over the changed global field. Conservative
-            # fallback: evict ALL models. They reload lazily so this is cheap.
-            ev = await tx_models.drain_then_evict(None)
-            evicted.extend(ev)
-        if "MODEL_OVERRIDES" in written:
-            # Per-model override changed for one or more model ids — evict
-            # only those whose LOAD-TIME subset (added, changed or removed
-            # key) differs between the pre-save snapshot and the new bundle.
-            # A removed id whose bundle held only decode-time keys needs no
-            # reload, matching the global-field rule.
-            new_overrides = coerced.get("MODEL_OVERRIDES") or {}
-            old_overrides = prev_model_overrides or {}
-            lt = settings_schema.LOAD_TIME_FIELDS
-            for model_id in set(old_overrides) | set(new_overrides):
-                o = old_overrides.get(model_id)
-                n = new_overrides.get(model_id)
-                o = o if isinstance(o, dict) else {}
-                n = n if isinstance(n, dict) else {}
-                keys = lt & (set(o) | set(n))
-                if keys and any(o.get(k) != n.get(k) for k in keys):
-                    ev = await tx_models.drain_then_evict(model_id)
-                    evicted.extend(ev)
-    except Exception as e:
-        # Never let eviction failure break the save response. The user's
-        # change still persisted; worst case they restart manually.
-        logger.error("[config] eviction-on-edit failed: %s", e)
-
-    # Drop the cached extras (pyannote pipeline / BGM separator) when their
-    # load parameters changed, so the VRAM frees now instead of at the idle
-    # timeout. Buckets and their trigger fields come from the generated
-    # settings_schema.EXTRAS_EVICTION (per-field `evict=` registry metadata); a
-    # failed drop never breaks the save response.
-    for _extra, _extra_fields in settings_schema.EXTRAS_EVICTION.items():
-        if not set(written.keys()) & _extra_fields:
-            continue
-        try:
-            await _EVICTORS[_extra]()
-        except Exception as e:
-            logger.error("[config] %s eviction-on-edit failed: %s", _extra, e)
-
-    # Re-sync os.environ["HF_TOKEN"] whenever cfg.HF_TOKEN changed. The
-    # token is set process-wide at startup (main.py) so non-WhisperModel HF
-    # calls (Silero VAD, tokenizer fetches) inherit it; live edits via the
-    # admin UI need to re-set the env var or those callers stay on the old
-    # value until next service restart.
-    if "HF_TOKEN" in written:
-        new_token = getattr(cfg, "HF_TOKEN", None) or ""
-        if new_token:
-            os.environ["HF_TOKEN"] = new_token
-            logger.info("[config] HF_TOKEN env updated from admin edit")
-        else:
-            os.environ.pop("HF_TOKEN", None)
-            logger.info("[config] HF_TOKEN env cleared (config field unset)")
-
-    # The console handler's level is read once at import; push the new one.
-    # From cfg, not `written`, so an env pin or a reset to baseline wins.
-    if "CONSOLE_LOG_LEVEL" in written:
-        log_setup.apply_console_log_level(getattr(cfg, "CONSOLE_LOG_LEVEL", "warning"))
-
-    # save_overrides already bumped the config version when the FILE was
-    # written, but the running cfg only got the new values in the setattr loop
-    # above — two awaits later. A streaming session whose _refresh_ident ran
-    # in that window stamped the new version while resolving from the OLD cfg
-    # and would never re-resolve. Bump again now that cfg is current; consumers
-    # only compare for inequality, so the cost is one redundant re-resolve.
-    settings_version.bump_config_version()
-
-    return {
-        "hot_applied": hot_changed,
-        "cold_pending": cold_changed,
-        "env_pinned_ignored": sorted(n for n in written if n in env_pinned),
-        "evicted": evicted,
-    }
-
-
 @router.get("/factory-rules",
             dependencies=[Depends(require_admin_webui_host), Depends(require_admin)])
 async def get_factory_rules() -> dict[str, Any]:
@@ -750,7 +494,7 @@ async def get_factory_rules() -> dict[str, Any]:
         rules = config_store.load_factory_rules()
     except RuntimeError as e:
         raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, str(e))
-    return {"PIPELINE_RULES": _canon_rules(rules)}
+    return {"PIPELINE_RULES": pl_apply.canon_rules(rules)}
 
 
 @router.post("/factory-rules",
@@ -783,7 +527,7 @@ async def post_factory_rules(payload: dict[str, Any], request: Request) -> JSONR
         )
     # Under the shared pipeline lock: this write races /quick-config's
     # read-modify-write patches the same way post_state's does.
-    async with _pipeline_rules_lock():
+    async with pl_apply.rules_lock():
         try:
             saved = await asyncio.to_thread(config_store.save_factory_rules, rules)
         except ValidationError as e:
@@ -809,7 +553,7 @@ async def post_factory_rules(payload: dict[str, Any], request: Request) -> JSONR
         shadowed = isinstance(local_rules, list)
         cfg.PIPELINE_RULES = local_rules if shadowed else [dict(r) for r in saved]
 
-        await _rebuild_caches("factory-rules save")
+        await pl_apply.rebuild_caches_off_loop("factory-rules save")
 
     client_host = request.client.host if request.client else "?"
     logger.info("[config] factory-rules update from=%s rules=%d shadowed_by_local=%s",
@@ -818,7 +562,7 @@ async def post_factory_rules(payload: dict[str, Any], request: Request) -> JSONR
     return JSONResponse({
         "saved": len(saved),
         "shadowed_by_local": shadowed,
-        "rules": _canon_rules(saved),
+        "rules": pl_apply.canon_rules(saved),
     })
 
 
@@ -836,12 +580,12 @@ async def clear_local_pipeline_override(request: Request) -> JSONResponse:
     so the clear re-reads config.json into cfg directly, instead of depending
     on cfg._BASELINE["PIPELINE_RULES"] being in sync with the file
     post_factory_rules just wrote. The None sentinel DOES revert to the
-    baseline these days (_apply_hot_changes' removal branch reads
+    baseline these days (pl_apply.apply_hot_changes' removal branch reads
     cfg._BASELINE), so this route is a convenience + freshness guarantee,
     not a workaround.
     """
     # Shared pipeline lock: same whole-key write race as post_state.
-    async with _pipeline_rules_lock():
+    async with pl_apply.rules_lock():
         try:
             await asyncio.to_thread(
                 config_store.save_overrides, {"PIPELINE_RULES": None})
@@ -852,7 +596,7 @@ async def clear_local_pipeline_override(request: Request) -> JSONResponse:
                                 f"could not clear local override: {e}")
 
         cfg.PIPELINE_RULES = factory
-        await _rebuild_caches("clearing local override")
+        await pl_apply.rebuild_caches_off_loop("clearing local override")
 
     client_host = request.client.host if request.client else "?"
     logger.info("[config] local PIPELINE_RULES override cleared from=%s — "
@@ -1029,7 +773,7 @@ async def test_pipeline(payload: dict[str, Any]) -> JSONResponse:
         try:
             if rtype == "callback:map":
                 m = rule.get("map", {}) or {}
-                # Editor rules skip _PIPELINE_RULE_ADAPTER: a list/str map
+                # Editor rules skip pl_apply._PIPELINE_RULE_ADAPTER: a list/str map
                 # would survive to m.items() below and 500 the whole dry run.
                 if not isinstance(m, dict):
                     return {**common, "after": text,
@@ -1059,7 +803,7 @@ async def test_pipeline(payload: dict[str, Any]) -> JSONResponse:
                     return {**common, "after": text, "skipped": True,
                             "error": f"unknown rule type: {rtype}"}
         # TypeError/ValueError as well as re.error: the rule dicts arrive from
-        # the editor without going through _PIPELINE_RULE_ADAPTER, so a non-string
+        # the editor without going through pl_apply._PIPELINE_RULE_ADAPTER, so a non-string
         # `pattern` (a half-typed row, or a hand-rolled request body) reaches
         # re.compile as e.g. an int and raises TypeError — which re.error does not
         # cover, turning a dry run into an unhandled 500 instead of a per-step

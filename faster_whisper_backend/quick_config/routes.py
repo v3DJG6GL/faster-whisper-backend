@@ -52,11 +52,7 @@ from faster_whisper_backend.core import store_common
 from faster_whisper_backend.quick_config import state as quick_config_state
 from faster_whisper_backend.stats import recent_transcriptions_store
 from faster_whisper_backend.core import web_common
-from faster_whisper_backend.core.loop_lock import LoopLock
-from faster_whisper_backend.admin.routes import (
-    _apply_hot_changes,
-    _canon_rules,
-)
+from faster_whisper_backend.pipeline import apply as pl_apply
 from faster_whisper_backend.core.web_common import require_user_webui_host
 from faster_whisper_backend.auth import dependencies as auth
 from faster_whisper_backend.auth.dependencies import get_current_user, require_page
@@ -87,25 +83,6 @@ router = APIRouter(prefix="/quick-config")
 _GUARDED_SAVE_EXECUTOR = ThreadPoolExecutor(
     max_workers=2, thread_name_prefix="regex-guard",
 )
-
-# Serializes apply_rules_patch: it snapshots cfg.PIPELINE_RULES, awaits the
-# offloaded save (up to the guard timeout), and writes the WHOLE key back —
-# so two overlapping patches would both snapshot the pre-update list and the
-# second save would silently revert the first caller's edit. This closes the
-# single-worker window only; with SERVER_WORKERS > 1 the cross-process case
-# still relies on atomic_json.save_lock + the per-slug fingerprints.
-# A LoopLock (one asyncio.Lock per event loop): an asyncio.Lock binds to the
-# first loop that awaits it, and this module (unlike main) is not reloaded
-# per test, so a plain module-level Lock would raise "bound to a different
-# event loop" on the second TestClient. In production one worker = one loop
-# = one lock.
-_PATCH_LOCK = LoopLock()
-
-
-def _patch_lock() -> LoopLock:
-    # An accessor because admin.routes._pipeline_rules_lock imports and
-    # calls it to share this lock.
-    return _PATCH_LOCK
 
 # Ingress cap for a callback:map patch, read off the schema so the two can
 # never drift. The same bound is enforced by Pydantic inside save_overrides,
@@ -201,11 +178,11 @@ def build_visible_rules(user: dict[str, Any]) -> tuple[list[dict[str, Any]], str
     role. The visibility policy (Permissions.can_see_rule: rule must be
     `exposed`, then admin OR untagged rule OR rule.tags ∩ caller.tags) lives in
     exactly one place. The terminal sentinel is always excluded. Each returned
-    rule carries a `_fp` (computed AFTER _canon_rules, so client + server hash
+    rule carries a `_fp` (computed AFTER pl_apply.canon_rules, so client + server hash
     the same canonical bytes) for optimistic-concurrency on the patch path."""
     perms = user["permissions"]
     canonical = [
-        dict(r) for r in _canon_rules(list(cfg.PIPELINE_RULES))
+        dict(r) for r in pl_apply.canon_rules(list(cfg.PIPELINE_RULES))
         if isinstance(r, dict)
         and r.get("type") != "terminal"
         and perms.can_see_rule(r)
@@ -352,7 +329,7 @@ async def apply_rules_patch(
     for 400 (malformed patch / unknown slug / disallowed field), 403 (rule not
     visible to this user / terminal rule / rule locked by an admin) or 500
     (config write failure)."""
-    async with _patch_lock():
+    async with pl_apply.rules_lock():
         return await _apply_rules_patch_locked(
             user, rules_patch, fingerprints, client_host=client_host,
         )
@@ -365,7 +342,7 @@ async def _apply_rules_patch_locked(
     *,
     client_host: str = "?",
 ) -> tuple[int, dict[str, Any]]:
-    """Body of apply_rules_patch — call only under the per-scope `_patch_lock()`."""
+    """Body of apply_rules_patch — call only under the shared `pl_apply.rules_lock()`."""
     fingerprints = fingerprints or {}
     if not rules_patch:
         return 200, {
@@ -386,8 +363,8 @@ async def _apply_rules_patch_locked(
             current_rules.append(dict(r))
     by_slug = {r.get("name"): i for i, r in enumerate(current_rules)}
     # Canonicalize for fingerprint comparison — must hash the same shape /state
-    # served. _canon_rules drops None fields and sorts dict keys.
-    canonical_now = {r["name"]: r for r in _canon_rules(current_rules)
+    # served. pl_apply.canon_rules drops None fields and sorts dict keys.
+    canonical_now = {r["name"]: r for r in pl_apply.canon_rules(current_rules)
                      if isinstance(r, dict) and r.get("name")}
 
     # Bound every map BEFORE walking any of them: the stamping loop and the
@@ -583,7 +560,7 @@ async def _apply_rules_patch_locked(
             "could not save configuration",
         )
 
-    applied = await _apply_hot_changes(written)
+    applied = await pl_apply.apply_hot_changes(written)
 
     logger.info(
         "[pipeline-rules] patch from=%s user=%s admin=%s saved=%s conflicts=%s",

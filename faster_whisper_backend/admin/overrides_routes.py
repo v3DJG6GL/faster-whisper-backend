@@ -30,6 +30,7 @@ from faster_whisper_backend.settings import config_store
 from faster_whisper_backend.settings import schema as settings_schema
 from faster_whisper_backend.settings import effective_config
 from faster_whisper_backend.core import web_common
+from faster_whisper_backend.pipeline import apply as pl_apply
 from faster_whisper_backend.auth.dependencies import require_admin
 from faster_whisper_backend.core import templates
 
@@ -54,11 +55,10 @@ def _build_field_meta() -> dict[str, dict[str, Any]]:
 def _build_defaults() -> dict[str, Any]:
     """Live effective global value (getattr(cfg, name), after config.local.json +
     env) for every overridable field — what a profile inherits when it doesn't set
-    the field. Reuses the per-model page's serializer (admin_routes._resolved_value),
+    the field. Reuses the per-model page's serializer (pl_apply.resolved_value),
     so the overrides page's `inherits <value>` hint matches /settings byte-for-byte.
     Rulelist fields resolve to None and are never read by the scalar field rows."""
-    from faster_whisper_backend.admin import routes as admin_routes
-    return {name: admin_routes._resolved_value(name) for name in _build_field_meta()}
+    return {name: pl_apply.resolved_value(name) for name in _build_field_meta()}
 
 
 def _build_groups() -> list[dict[str, Any]]:
@@ -66,10 +66,9 @@ def _build_groups() -> list[dict[str, Any]]:
     filtered to the per-identity overridable scalars, so section names + order
     match the rest of the admin UI (Decode / Advanced / VAD / Live streaming /
     Output …). Load-time + server sections drop out entirely."""
-    from faster_whisper_backend.admin import routes as admin_routes
     target = settings_schema.LOCKABLE_FIELDS
     out: list[dict[str, Any]] = []
-    for section, subs in admin_routes._FIELD_GROUPS:
+    for section, subs in settings_schema.FIELD_GROUPS:
         subgroups = []
         for sub_title, names in subs:
             fields = [n for n in names if n in target]
@@ -242,8 +241,7 @@ async def post_state(payload: dict[str, Any], request: Request) -> JSONResponse:
         raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR,
                             f"could not write config.local.json: {e}")
 
-    from faster_whisper_backend.admin import routes as admin_routes
-    applied = await admin_routes._apply_hot_changes(written)
+    applied = await pl_apply.apply_hot_changes(written)
     client_host = request.client.host if request.client else "?"
     logger.info("[overrides] profiles update from=%s saved=%s",
                 client_host, sorted(written.keys()))
@@ -313,8 +311,7 @@ async def rename_profile(payload: _RenameProfileIn, request: Request) -> JSONRes
     #    scan with per-row UPDATEs under the store lock.
     affected = await asyncio.to_thread(api_keys_store.rename_profile_refs, old, new)
 
-    from faster_whisper_backend.admin import routes as admin_routes
-    applied = await admin_routes._apply_hot_changes(written)
+    applied = await pl_apply.apply_hot_changes(written)
     client_host = request.client.host if request.client else "?"
     logger.info("[overrides] profile renamed %r->%r from=%s bindings=%d",
                 old, new, client_host, affected)

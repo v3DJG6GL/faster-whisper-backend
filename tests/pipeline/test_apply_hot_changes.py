@@ -1,4 +1,4 @@
-"""admin_routes._apply_hot_changes must evict a model on a MODEL_OVERRIDES
+"""pl_apply.apply_hot_changes must evict a model on a MODEL_OVERRIDES
 save only when that model's LOAD-TIME subset (added, changed or removed
 key) differs between the pre-save snapshot and the new bundle.
 
@@ -11,7 +11,7 @@ import asyncio
 
 from faster_whisper_backend.settings import config as cfg
 from faster_whisper_backend.settings import config_store
-from faster_whisper_backend.admin import routes as admin_routes
+from faster_whisper_backend.pipeline import apply as pl_apply
 from faster_whisper_backend.transcription import models as tx_models
 
 
@@ -27,7 +27,7 @@ def _run(monkeypatch, old, new):
     monkeypatch.setattr(config_store, "load_overrides",
                         lambda: {"MODEL_OVERRIDES": new})
     monkeypatch.setattr(tx_models, "drain_then_evict", spy)
-    asyncio.run(admin_routes._apply_hot_changes({"MODEL_OVERRIDES": new}, old))
+    asyncio.run(pl_apply.apply_hot_changes({"MODEL_OVERRIDES": new}, old))
     return calls
 
 

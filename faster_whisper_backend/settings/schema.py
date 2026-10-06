@@ -43,7 +43,7 @@ from pydantic import (
 #   per_request — call-time / streaming fields shared with ModelOverride and
 #                 OverrideProfile (the lockable decode/streaming scalars)
 _SCOPES = ("server", "per_model", "per_request")
-# Derived-extras buckets a field may name via `evict=`. admin_routes._EVICTORS
+# Derived-extras buckets a field may name via `evict=`. pipeline.apply.EVICTORS
 # must carry a dropper for each — an unknown name would otherwise ship as a
 # bucket whose eviction only ever logs a KeyError on edit.
 _EVICT_BUCKETS = ("diarization", "bgm", "translation")
@@ -92,7 +92,7 @@ def _F(
                      CACHE_REBUILD_FIELDS).
       evict          Derived-extras bucket dropped when this field is edited
                      — one of _EVICT_BUCKETS (→ EXTRAS_EVICTION, dispatched
-                     via admin_routes._EVICTORS).
+                     via pipeline.apply.EVICTORS).
       coerce         Post-load JSON coercion callable, e.g. `set`
                      (→ _POST_LOAD_COERCERS).
       client_key     Lowercase per-request decode_override key the field
@@ -2153,8 +2153,8 @@ FIELD_GROUPS: list[tuple[str, list[tuple[str | None, list[str]]]]] = (
 # Derived-extras eviction: editing any of the fields in a bucket drops the
 # matching cached extra (diarization pipeline / BGM separator) so its VRAM
 # frees now instead of at the idle timeout. Generated from the per-field
-# `evict=` metadata; admin_routes.post_state dispatches each bucket name
-# through its _EVICTORS table.
+# `evict=` metadata; pipeline.apply.apply_hot_changes dispatches each bucket
+# name through its EVICTORS table.
 EXTRAS_EVICTION: dict[str, frozenset[str]] = {
     bucket: frozenset(
         name for name, reg in _REGISTRY.items() if reg["evict"] == bucket

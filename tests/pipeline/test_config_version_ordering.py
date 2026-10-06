@@ -1,18 +1,18 @@
-"""admin_routes._apply_hot_changes must move config_version() AFTER the running
+"""pl_apply.apply_hot_changes must move config_version() AFTER the running
 cfg module holds the new values.
 
 save_overrides bumps the counter when the FILE is written; the setattr loop
 that updates the live cfg runs two awaits later. A streaming session whose
 _refresh_ident ran in that window stamped the new version while resolving
 from the OLD cfg — and, with no later bump, kept pre-edit config for the rest
-of its life. The trailing bump in _apply_hot_changes closes that gap."""
+of its life. The trailing bump in apply_hot_changes closes that gap."""
 
 import asyncio
 
 from faster_whisper_backend.settings import config as cfg
 from faster_whisper_backend.settings import config_store
 from faster_whisper_backend.settings import version as settings_version
-from faster_whisper_backend.admin import routes as admin_routes
+from faster_whisper_backend.pipeline import apply as pl_apply
 
 
 def test_apply_hot_changes_bumps_version_after_cfg_is_current(monkeypatch):
@@ -30,7 +30,7 @@ def test_apply_hot_changes_bumps_version_after_cfg_is_current(monkeypatch):
         return {"BEAM_SIZE": 3}
     monkeypatch.setattr(config_store, "load_overrides", _load_overrides)
 
-    asyncio.run(admin_routes._apply_hot_changes({"BEAM_SIZE": 3}))
+    asyncio.run(pl_apply.apply_hot_changes({"BEAM_SIZE": 3}))
 
     assert latched["beam"] == 10                       # consumer saw OLD cfg…
     assert cfg.BEAM_SIZE == 3                          # …cfg is current now…

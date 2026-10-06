@@ -83,7 +83,7 @@ for _msg in getattr(cfg, "_ENV_WARNINGS", ()):
 # still win at the per-WhisperModel-call kwarg level, so a model that
 # needs a different token (rare) still works.
 #
-# Live edits: admin_routes.post_state re-syncs the env var whenever
+# Live edits: pipeline.apply.apply_hot_changes re-syncs the env var whenever
 # cfg.HF_TOKEN changes via the admin UI, so a save takes effect without
 # a service restart. Clearing the config field unsets the env var.
 if cfg.HF_TOKEN:

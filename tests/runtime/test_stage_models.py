@@ -10,6 +10,7 @@ import time
 
 from faster_whisper_backend.audio import bgm_separation
 from faster_whisper_backend.audio import diarization
+from faster_whisper_backend.pipeline import apply as pl_apply
 from faster_whisper_backend.translation import engine as translation
 from faster_whisper_backend.translation import gating as tr_gating
 from faster_whisper_backend.transcription import progress as tx_progress
@@ -265,13 +266,11 @@ def test_translation_device_edit_dispatches_eviction(client, monkeypatch):
     """Editing a field in the 'translation' EXTRAS_EVICTION bucket awaits
     translation's evictor via the generic post_state loop (the e5167ba
     dispatch — same template as the diarization/bgm buckets)."""
-    from faster_whisper_backend.admin import routes as admin_routes
-
     calls = []
 
     async def _spy():
         calls.append("translation")
-    monkeypatch.setitem(admin_routes._EVICTORS, "translation", _spy)
+    monkeypatch.setitem(pl_apply.EVICTORS, "translation", _spy)
 
     r = client.post("/settings/state", json={"TRANSLATION_DEVICE": "cpu"})
     assert r.status_code == 200, r.text

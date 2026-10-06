@@ -1109,7 +1109,7 @@ async def drain_then_evict(model_id: "str | None" = None) -> list[str]:
     old WhisperModel instance until they finish. Only NEW requests for the
     evicted id pay the reload cost. Returns the list of evicted ids.
 
-    Called from admin_routes.post_state when a load-time field (MODEL_DEVICE,
+    Called from pipeline.apply.apply_hot_changes when a load-time field (MODEL_DEVICE,
     MODEL_COMPUTE_TYPE, NUM_WORKERS, DEVICE_INDEX, …) changes either globally
     or in a per-model override. Either case can require reload to take
     effect; this helper makes that reload lazy and non-disruptive.
