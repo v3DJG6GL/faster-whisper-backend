@@ -238,6 +238,39 @@ def test_large_unmeasurable_growth_stays_rejected(pattern, repl):
         g.validate([("amp", pattern, repl)])
 
 
+def test_growth_through_a_branch_the_fixture_does_not_match_is_rejected():
+    """`^Hallo|n` matches the fixture once (a tiny measured ratio), so the
+    analytic bound used to be skipped — yet every "n" of a real transcript
+    then became 512 characters, and three chained entries turned "Guten
+    Morgen" into 268 M characters."""
+    with pytest.raises(ValueError):
+        g.validate([("e", "^Hallo|n", "x" * 512)])
+
+
+def test_reference_growth_under_the_absolute_floor_is_rejected():
+    """64 references to an unbounded capture total 64 "characters" — not past
+    the literal floor — but copy the capture 64x per match and compound
+    across entries. References are held to the ratio alone."""
+    with pytest.raises(ValueError):
+        g.validate([("e", "(n+)", "\\1" * 64)])
+    g.validate([
+        ("deg", "°", "Grad Celsius"),
+        ("it", r"\bIT\b", "Informationstechnologie"),
+        ("decimal", r"(\d+),(\d+)", r"\1.\2"),
+    ])
+
+
+def test_branches_overlapping_through_a_class_are_rejected():
+    """No branch text is a prefix of another, but `[bc]x` matches `cx`, so a
+    run of "cx" splits both ways and the match time doubles per unit."""
+    for pat in (r"(cx|[bc]x)+#", r"([bc]x|cx)+#", r"(\wx|cx)+#"):
+        assert g._nested_repetition(pat), pat
+    with pytest.raises(ValueError, match="nested repetition"):
+        g.validate([("p", r"(cx|[bc]x)+#", "")])
+    for pat in (r"(Herr|Frau)+ ", r"(?:\.|,)+", r"(a|b)+c", r"(\d|x)+"):
+        assert not g._nested_repetition(pat), pat
+
+
 def test_negated_shorthand_class_gets_a_real_witness():
     """`[^\\w]` used to get '1' — a character it can never match — so the
     synthetic probe silently no-op'd on any negated shorthand class."""

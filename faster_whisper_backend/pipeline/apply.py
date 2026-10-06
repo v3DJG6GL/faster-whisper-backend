@@ -141,12 +141,13 @@ async def rebuild_caches_off_loop(reason: str) -> None:
     at 1000, 250 ms at 2000, and a *changed* map (exactly what every caller
     here produces) always misses re._cache.
 
-    rebuild_caches mutates module globals. Not every caller holds
-    rules_lock() (an admin save takes it only when PIPELINE_RULES is in the
-    payload), so two requests' rebuild threads can overlap; rebuild_caches
-    serialises itself on engine._REBUILD_LOCK, and since each caller's cfg
-    setattr lands before its own rebuild starts, the last rebuild to run
-    compiles the latest cfg."""
+    rebuild_caches mutates module globals. Today every caller that can
+    rebuild holds rules_lock() (only PIPELINE_RULES triggers a rebuild, and
+    every route that writes it takes the lock), but rebuild_caches also
+    serialises itself on engine._REBUILD_LOCK as a defensive guard: a future
+    caller that skips rules_lock() still cannot overlap two rebuilds. Since
+    each caller's cfg setattr lands before its own rebuild starts, the last
+    rebuild to run compiles the latest cfg."""
     try:
         await asyncio.to_thread(pl_engine.rebuild_caches)
         logger.info("[config] rebuilt pipeline caches after %s", reason)

@@ -93,7 +93,7 @@ def test_dictate_page_shows_the_decode_as_transcribing(app_module):
     with TestClient(app_module.app, client=("127.0.0.1", 12345)) as client:
         body = client.get("/dictate").text
     block = body.split('m.type === "utterance"', 1)[1].split("else if (m.type", 1)[0]
-    guard = block.index("if (!running) return;")
+    guard = block.index('if (!running || statusEl.className === "error") return;')
     decoding = block.index('m.state === "decoding") setStatus("transcribing…", "live")')
     clear = block.index('if (m.state === "dropped") renderPartial("", "");')
     assert clear < guard < decoding
@@ -184,7 +184,7 @@ def test_dictate_page_keeps_the_socket_open_until_closing(app_module):
     stop_body = body.split("function stop() {", 1)[1].split("\n  }\n", 1)[0]
     assert 'ws.send(JSON.stringify({ type: "stop" }))' in stop_body
     assert 'setStatus("finishing…")' in stop_body
-    assert "stopTimer = setTimeout(finishStop" in stop_body
+    assert "armStopTimer(STOP_WAIT_MS)" in stop_body
     # finishStop() runs synchronously only in the two fallbacks: the send
     # failed, or there is no open socket to wait on.
     assert stop_body.count("finishStop()") == 2
@@ -193,6 +193,34 @@ def test_dictate_page_keeps_the_socket_open_until_closing(app_module):
     # A server-initiated close (idle timeout) also releases the microphone.
     closing = body.split('m.type === "closing"', 1)[1].split("}", 1)[0]
     assert "releaseMic()" in closing
+
+
+def test_dictate_page_stop_flow_guards(app_module):
+    """Pins the client half of the stop flow, which has no JS test harness:
+    a Stop during the mic prompt / worklet load cancels the pending start
+    (generation guard), Stop flushes the partly filled PCM frame first, the
+    fallback timer is re-armed per frame (long window for the forced final
+    decode) and says when it fired, and a server error frame stays on
+    screen through the closing drain's final."""
+    with TestClient(app_module.app, client=("127.0.0.1", 12345)) as client:
+        body = client.get("/dictate").text
+    assert "const gen = ++startGen;" in body
+    for fn, use in (("async function start(gen) {", "new WebSocket("),
+                    ("async function startBatch(gen) {", "new MediaRecorder(")):
+        fbody = body.split(fn, 1)[1].split("\n  }\n", 1)[0]
+        after_mic = fbody.split("getUserMedia(", 1)[1]
+        assert after_mic.index("if (cancelled(gen))") < after_mic.index(use), fn
+    start_body = body.split("async function start(gen) {", 1)[1].split("\n  }\n", 1)[0]
+    after_worklet = start_body.split("addModule(blobUrl);", 1)[1]
+    assert after_worklet.index("cancelled(gen)") < after_worklet.index("createMediaStreamSource")
+    stop_body = body.split("function stop() {", 1)[1].split("\n  }\n", 1)[0]
+    assert stop_body.index("pcmBuf.buffer.slice(0, pcmLen * 2)") < stop_body.index('type: "stop"')
+    on_msg = body.split("function onMessage(ev) {", 1)[1].split("\n  }\n", 1)[0]
+    assert "if (stopTimer) armStopTimer(STOP_WAIT_MS);" in on_msg
+    assert 'if (stopTimer && m.state === "decoding") armStopTimer(STOP_DECODE_WAIT_MS);' in on_msg
+    assert "finished without the server's last answer" in body
+    assert 'if (running && statusEl.className !== "error") setStatus("listening", "live");' in on_msg
+    assert 'if (!running || statusEl.className === "error") return;' in on_msg
 
 
 @pytest.mark.parametrize("exc", [OSError("gone"), ValueError("CR line endings")])
@@ -826,6 +854,21 @@ def test_stream_final_best_of_yields_to_a_client_override(app_module, fake_model
     with TestClient(app_module.app, client=("127.0.0.1", 12345)) as client:
         _dictate_one_utterance(client, {"decode_overrides": {"best_of": 4}})
     assert [kw["best_of"] for kw in calls if _is_final(kw)] == [4]
+
+
+@pytest.mark.parametrize("value", [None, "abc"])
+def test_stream_final_best_of_pins_when_the_client_value_does_not_apply(
+        app_module, fake_model, monkeypatch, value):
+    """A null / unparseable best_of is dropped by the assembler (the batch
+    BEST_OF stays in kwargs), so the key's mere presence must not skip the
+    STREAMING_FINAL_BEST_OF pin."""
+    monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
+    monkeypatch.setattr(app_module.cfg, "BEST_OF", 5, raising=False)
+    monkeypatch.setattr(app_module.cfg, "STREAMING_FINAL_BEST_OF", 1, raising=False)
+    calls = _final_and_partial_kwargs(fake_model)
+    with TestClient(app_module.app, client=("127.0.0.1", 12345)) as client:
+        _dictate_one_utterance(client, {"decode_overrides": {"best_of": value}})
+    assert [kw["best_of"] for kw in calls if _is_final(kw)] == [1]
 
 
 # ---------------------------------------------------------------------------

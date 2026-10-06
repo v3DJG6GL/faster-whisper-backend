@@ -105,6 +105,44 @@ def test_ffmpeg_transport_dead_reader_warns_once(caplog):
     assert sum("ffmpeg exited" in r.getMessage() for r in caplog.records) == 1
 
 
+def test_ffmpeg_transport_cancelled_aclose_still_kills_the_process():
+    """A cancel while aclose() waits (server shutdown) used to skip kill(), and
+    _closed was already True, so the routes backstop aclose() returned at once
+    and ffmpeg was never killed. The cancel itself must still propagate."""
+    class _Stdin:
+        def is_closing(self):
+            return False
+
+        def close(self):
+            pass
+
+    class _Proc:
+        returncode = None
+        stdin = _Stdin()
+        killed = False
+
+        async def wait(self):
+            await asyncio.Event().wait()
+
+        def kill(self):
+            self.killed = True
+
+    async def sink(b):
+        pass
+
+    async def run():
+        t = FfmpegTransport(sink)
+        t._proc = _Proc()
+        task = asyncio.create_task(t.aclose())
+        await asyncio.sleep(0.05)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        return t._proc.killed
+
+    assert asyncio.run(run())
+
+
 def test_stream_route_accepts_webm_via_ffmpeg(app_module, monkeypatch):
     # Force the energy gate — the synthetic sine tone is not real speech, so the
     # Silero VAD would reject it; this test only checks the ffmpeg decode path.

@@ -120,20 +120,28 @@ class FfmpegTransport:
                 self._proc.stdin.close()
         except Exception:  # noqa: BLE001
             pass
-        if self._reader is not None:
-            try:
-                await asyncio.wait_for(self._reader, timeout=5.0)
-            except asyncio.TimeoutError:
-                # wait_for (3.12+) has already cancelled AND awaited the reader
-                # (_drain_stdout swallows the CancelledError) — nothing to join.
-                pass
         try:
-            await asyncio.wait_for(self._proc.wait(), timeout=5.0)
-        except asyncio.TimeoutError:
+            if self._reader is not None:
+                try:
+                    await asyncio.wait_for(self._reader, timeout=5.0)
+                except asyncio.TimeoutError:
+                    # wait_for (3.12+) has already cancelled AND awaited the
+                    # reader (_drain_stdout swallows the CancelledError) —
+                    # nothing to join.
+                    pass
             try:
-                self._proc.kill()
-            except Exception:  # noqa: BLE001
+                await asyncio.wait_for(self._proc.wait(), timeout=5.0)
+            except asyncio.TimeoutError:
                 pass
+        finally:
+            # Also on a cancel of this task (server shutdown): the
+            # CancelledError still propagates, but _closed is already True,
+            # so no later aclose() would come back to kill the process.
+            if self._proc.returncode is None:
+                try:
+                    self._proc.kill()
+                except Exception:  # noqa: BLE001
+                    pass
 
 
 def make_transport(audio_format: str, sink: Sink, *, sample_rate: int = 16000):

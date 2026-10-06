@@ -72,14 +72,14 @@ _GUARD_TIMEOUT_MAX = 10.0
 # into gigabytes at match time. Anything above 1x compounds; 10x is generous.
 _MAX_GROWTH = 10
 
-# Absolute floor for the ANALYTIC growth check (the one used when the pattern
-# never matches the fixture). A bounded literal expansion of a short token —
+# Absolute floor for the ANALYTIC growth check (run for every pattern, next to
+# the measured one). A bounded literal expansion of a short token —
 # ("°", "Grad Celsius"), (r"\bIT\b", "Informationstechnologie") — is a normal
 # dictation rule and cannot compound: it contributes a fixed handful of
 # characters per occurrence. Only replacements past this many characters (or
-# past _MAX_GROWTH x the minimum match, whichever is larger) are refused;
-# reference-driven growth (\1 repeated) still scales with _refs * _min_match
-# and trips the ratio regardless.
+# past _MAX_GROWTH x the minimum match, whichever is larger) are refused. The
+# floor does NOT cover group references: each one copies an unbounded capture,
+# so more than _MAX_GROWTH of them is refused whatever the total length.
 _MIN_ABS_GROWTH = 64
 
 # Extra probe inputs, run after FIXTURE. The German fixture is full of
@@ -420,6 +420,13 @@ def _nested_repetition(pat: str) -> bool:
                     if any(b != a and b.startswith(a)
                            for a in stripped for b in stripped):
                         return True
+                    # Overlap through a class or shorthand is the same trap
+                    # with no shared text: (cx|[bc]x)+# splits "cxcx…" both
+                    # ways. Refuse when one branch matches the start of
+                    # another branch's witness.
+                    if any(_branches_overlap(a, b)
+                           for a in stripped for b in stripped):
+                        return True
             # A lookaround is matched once and never backtracked into, so a
             # repeat inside it cannot split the enclosing group's input
             # ambiguously: (x(?=a+)y)+ is linear. Same for the BODY of an
@@ -442,6 +449,25 @@ def _nested_repetition(pat: str) -> bool:
             continue
         i += 1
     return False
+
+
+def _branches_overlap(a: str, b: str) -> bool:
+    """True if branch ``b`` matches a prefix of a string branch ``a`` matches.
+
+    Best effort over ``_witness``: an empty witness, or a branch that does not
+    compile on its own (a group reference, an inline flag), never counts as an
+    overlap. The witness is at most 64 characters, so the match is cheap.
+    """
+    import re
+    if a == b:
+        return False
+    w = _witness(a)
+    if not w:
+        return False
+    try:
+        return re.match(b, w) is not None
+    except Exception:  # noqa: BLE001 - a fragment need not compile alone
+        return False
 
 
 def _class_char(body: str, negated: bool) -> "str | None":
@@ -854,36 +880,41 @@ def _probe(checks: list):
         # letters they happen to lack (n, d, m, ...) are a free pass. A rule
         # like ("n", "n"*512) scores a growth ratio of 1.0 here and then
         # amplifies a real transcript 512x per match on every transcription.
-        # For that case only, bound the replacement analytically instead:
-        # compare the characters it always contributes against the shortest
-        # string the pattern can possibly match. Patterns the fixture DOES
-        # exercise keep the measured check and are unaffected.
-        if not rx.search(FIXTURE):
+        # It measures almost nothing when the pattern matches the fixture only
+        # a few times, either: `^Hallo|n` -> "x"*512 matches once via `^Hallo`
+        # and then expands every "n" of a real transcript. So bound EVERY
+        # replacement analytically as well: compare the characters it always
+        # contributes against the shortest string the pattern can match.
+        try:
             try:
-                try:
-                    import re._parser as _reparser
-                except ImportError:  # pragma: no cover - Python < 3.11
-                    import sre_parse as _reparser
-                _min_match = _reparser.parse(item[0]).getwidth()[0]
-            except Exception:  # noqa: BLE001 - width analysis is best effort
-                _min_match = 0
-            # A group reference is NOT free: it contributes whatever the group
-            # captured, so ("(n+)", "\1"*256) amplifies exactly as hard as
-            # ("n", "n"*256) — but deleting the references outright measures it
-            # as an empty replacement and waves it through. Charge each one the
-            # shortest string the pattern can match, which is the least it can
-            # ever expand to, and count it alongside the literal characters.
-            _refs = len(re.findall(r"\\(?:\d+|g<[^>]*>)", item[1]))
-            _literal = re.sub(r"\\(?:\d+|g<[^>]*>)", "", item[1])
-            _grown = len(_literal) + _refs * max(_min_match, 1)
-            if _grown > max(_MAX_GROWTH * max(_min_match, 1), _MIN_ABS_GROWTH):
-                return i, (
-                    f"replacement is {_grown} characters for a pattern "
-                    f"that can match as few as {_min_match} "
-                    f"(limit {_MAX_GROWTH}x). The test fixture never matches "
-                    "this pattern, so the growth it would cause on a real "
-                    "transcript cannot be measured. Simplify the replacement."
-                )
+                import re._parser as _reparser
+            except ImportError:  # pragma: no cover - Python < 3.11
+                import sre_parse as _reparser
+            _min_match = _reparser.parse(item[0]).getwidth()[0]
+        except Exception:  # noqa: BLE001 - width analysis is best effort
+            _min_match = 0
+        _mm = max(_min_match, 1)
+        # A group reference is NOT free: it contributes whatever the group
+        # captured, so ("(n+)", "\1"*256) amplifies exactly as hard as
+        # ("n", "n"*256) — but deleting the references outright measures it
+        # as an empty replacement and waves it through. Charge each one the
+        # shortest string the pattern can match, which is the least it can
+        # ever expand to, and count it alongside the literal characters.
+        _refs = len(re.findall(r"\\(?:\d+|g<[^>]*>)", item[1]))
+        _literal = re.sub(r"\\(?:\d+|g<[^>]*>)", "", item[1])
+        _grown = len(_literal) + _refs * _mm
+        # The _MIN_ABS_GROWTH floor is for bounded literal text only. A
+        # reference copies an UNBOUNDED capture, so it is held to the ratio
+        # alone: ("(n+)", "\1"*64) is under the floor and still 64x per match.
+        if (_grown > max(_MAX_GROWTH * _mm, _MIN_ABS_GROWTH)
+                or _refs > _MAX_GROWTH):
+            return i, (
+                f"replacement is {_grown} characters ({_refs} group "
+                f"references) for a pattern that can match as few as "
+                f"{_min_match} (limit {_MAX_GROWTH}x), so every match on a "
+                "real transcript would grow by that much. Simplify the "
+                "replacement."
+            )
         # Timing probe only: a pattern that is fast on German prose but slow on
         # repetitive input hangs here and the parent's timeout kills us. The
         # growth check stays on FIXTURE alone, so these can't invent a new

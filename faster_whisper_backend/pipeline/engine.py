@@ -145,12 +145,14 @@ def _make_lowercase_wordlist_replacer(wordlist: frozenset):
     return replace
 
 
-# Serialises rebuild_caches: it runs in asyncio.to_thread (apply.py), and not
-# every hot-apply caller holds rules_lock(). Without it two rebuild threads
-# could finish out of order — a stale compile overwriting the newer one — and
-# the unsynchronised `_RULES_GEN += 1` could store the same gen twice. Every
-# cfg setattr happens before its own rebuild thread starts, so the thread that
-# compiles last also reads the latest cfg.
+# Serialises rebuild_caches: it runs in asyncio.to_thread (apply.py). Every
+# hot-apply caller that rebuilds holds rules_lock() today (only PIPELINE_RULES
+# triggers a rebuild), so this is defensive: it also covers the import-time and
+# test rebuilds and any future caller that skips rules_lock(). Without it two
+# rebuild threads could finish out of order — a stale compile overwriting the
+# newer one — and the unsynchronised `_RULES_GEN += 1` could store the same gen
+# twice. Every cfg setattr happens before its own rebuild thread starts, so the
+# thread that compiles last also reads the latest cfg.
 _REBUILD_LOCK = threading.Lock()
 
 

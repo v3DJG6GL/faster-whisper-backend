@@ -206,7 +206,7 @@ def test_gate_skipped_utterance_carries_no_previous_decode_diagnostics(
     from faster_whisper_backend.stats import recent_transcriptions_store
 
     monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
-    with caplog.at_level(logging.INFO, logger="whisper-api"):
+    with caplog.at_level(logging.INFO, logger="faster_whisper_backend.streaming.routes"):
         with client.websocket_connect(_STREAM_URL) as ws:
             assert _config(ws)["type"] == "ready"
             _gate_second_utterance(monkeypatch, ws)
@@ -373,6 +373,15 @@ def test_condition_on_previous_text_override_is_reported_ignored(client, app_mod
         ready = _config(ws, decode_overrides={"condition_on_previous_text": True})
         assert ready["type"] == "ready"
         assert "condition_on_previous_text" in ready.get("overrides_ignored", [])
+
+
+def test_null_condition_on_previous_text_is_not_reported_ignored(client, app_module):
+    """null is the client's "inherit": the assembler skips it, so it overrode
+    nothing and must not be listed as an ignored override."""
+    with client.websocket_connect(_STREAM_URL) as ws:
+        ready = _config(ws, decode_overrides={"condition_on_previous_text": None})
+        assert ready["type"] == "ready"
+        assert "condition_on_previous_text" not in ready.get("overrides_ignored", [])
 
 
 def test_multilingual_with_a_set_language_is_reported_ignored(client, app_module,

@@ -138,6 +138,16 @@
 
   let ws = null, audioCtx = null, workletNode = null, mediaStream = null, running = false;
   let stopTimer = null;   // fallback if the server never answers "stop" with "closing"
+  // After Stop the server drains its backlog and runs a forced final decode
+  // before "closing"; every frame it sends re-arms the wait, and the decode
+  // itself (announced by utterance "decoding") gets the long window.
+  const STOP_WAIT_MS = 10000, STOP_DECODE_WAIT_MS = 60000;
+  // Bumped by every Start. A start() / startBatch() still awaiting the mic or
+  // the worklet was cancelled when Stop ran (running is false) or a newer Start
+  // began (the generation moved on); it then drops what it acquired and leaves
+  // the page alone.
+  let startGen = 0;
+  const cancelled = (gen) => gen !== startGen || !running;
   let resampleCarry = 0.0, resamplePos = 0.0, pcmBuf = new Int16Array(FRAME_SAMPLES), pcmLen = 0;
   let docPrefix = "";     // finished documents (before a hard break), see "boundary"
   // Batch mode: record the whole clip with MediaRecorder, POST it in one shot.
@@ -221,6 +231,7 @@
 
   function onMessage(ev) {
     let m; try { m = JSON.parse(ev.data); } catch { return; }
+    if (stopTimer) armStopTimer(STOP_WAIT_MS);
     if (m.type === "ready") { setStatus("listening", "live"); }
     else if (m.type === "partial") { renderPartial(m.committed, m.pending); }
     else if (m.type === "final") {
@@ -236,7 +247,9 @@
       // A final is the terminal frame of the utterance that showed
       // "transcribing…" below. Only while running: after Stop the status is
       // "finishing…" and the drain's finals must not put "listening" back.
-      if (running) setStatus("listening", "live");
+      // Nor over an error: every server error frame is terminal, and the
+      // closing drain (idle timeout) still sends a final after it.
+      if (running && statusEl.className !== "error") setStatus("listening", "live");
     }
     else if (m.type === "utterance") {
       // Lifecycle of the utterance the server is holding. "decoding" = it heard
@@ -248,7 +261,10 @@
       // after Stop too, so it runs before the guard.
       // Unknown states are ignored on purpose (the server may grow more).
       if (m.state === "dropped") renderPartial("", "");
-      if (!running) return;
+      // After Stop the forced final decode may take far longer than a frame
+      // gap (large-v3 on CPU): give the fallback the long window.
+      if (stopTimer && m.state === "decoding") armStopTimer(STOP_DECODE_WAIT_MS);
+      if (!running || statusEl.className === "error") return;
       if (m.state === "decoding") setStatus("transcribing…", "live");
       else if (m.state === "dropped") setStatus("listening", "live");
     }
@@ -296,10 +312,14 @@
     return "";
   }
 
-  async function startBatch() {
+  async function startBatch(gen) {
     finalEl.textContent = ""; tailEl.textContent = ""; renderPartial("", "");
     recChunks = [];
-    recStream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true } });
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true } });
+    // Stop pressed while the permission prompt was open: stopBatch() already
+    // reset the page, so release this mic instead of recording into nothing.
+    if (cancelled(gen)) { stream.getTracks().forEach((t) => t.stop()); return; }
+    recStream = stream;
     const mime = pickMime();
     recorder = mime ? new MediaRecorder(recStream, { mimeType: mime }) : new MediaRecorder(recStream);
     recorder.ondataavailable = (e) => { if (e.data && e.data.size) recChunks.push(e.data); };
@@ -367,30 +387,42 @@
     }
   }
 
-  async function start() {
+  // Tear down what ONE start() acquired, by reference: once that start is
+  // cancelled the globals may already belong to a newer session.
+  function dropStart(sock, stream, ctx) {
+    try { if (sock) { sock.onopen = sock.onmessage = sock.onclose = sock.onerror = null; sock.close(); } } catch {}
+    try { if (stream) stream.getTracks().forEach((t) => t.stop()); } catch {}
+    try { if (ctx && ctx.state !== "closed") ctx.close(); } catch {}
+  }
+
+  async function start(gen) {
     finalEl.textContent = ""; tailEl.textContent = ""; renderPartial("", ""); docPrefix = "";
     setStatus("requesting mic…");
 
     // Acquire mic BEFORE opening the WebSocket so a denied permission
     // never wastes a server-side streaming session.
-    mediaStream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true } });
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true } });
+    // Stop pressed while the permission prompt was open: stop() already reset
+    // the page, so do not open a socket (a server slot) nobody will close.
+    if (cancelled(gen)) { dropStart(null, stream, null); return; }
+    mediaStream = stream;
 
     const base = wsBase();
-    ws = new WebSocket(base + "/v1/audio/transcriptions/stream");
-    ws.binaryType = "arraybuffer";
+    const sock = ws = new WebSocket(base + "/v1/audio/transcriptions/stream");
+    sock.binaryType = "arraybuffer";
     setStatus("connecting…");
 
-    ws.onopen = () => {
-      ws.send(JSON.stringify({
+    sock.onopen = () => {
+      sock.send(JSON.stringify({
         type: "config", model: $("model").value.trim() || "whisper-1",
         language: $("lang").value.trim() || null,
         response_format: $("format").value || "json",
         audio: { format: "pcm_s16le", sample_rate: TARGET_SR },
       }));
     };
-    ws.onmessage = onMessage;
-    ws.onerror = () => setStatus("socket error", "error");
-    ws.onclose = (ev) => {
+    sock.onmessage = onMessage;
+    sock.onerror = () => setStatus("socket error", "error");
+    sock.onclose = (ev) => {
       // Captured BEFORE stop()/finishStop(): both end in setStatus("idle"), which
       // would wipe an {"type":"error"} frame's text that preceded this close.
       const hadError = statusEl.className === "error";
@@ -405,20 +437,24 @@
       else setStatus("closed");
     };
 
+    let ctx = null;
     try {
-      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      ctx = audioCtx = new (window.AudioContext || window.webkitAudioContext)();
       const blobUrl = URL.createObjectURL(new Blob([workletSrc], { type: "application/javascript" }));
-      await audioCtx.audioWorklet.addModule(blobUrl);
-      const src = audioCtx.createMediaStreamSource(mediaStream);
-      workletNode = new AudioWorkletNode(audioCtx, "cap");
-      const sr = audioCtx.sampleRate;
-      workletNode.port.onmessage = (e) => { if (running) pushSamples(e.data, sr); };
-      src.connect(workletNode);
-      const sink = audioCtx.createGain(); sink.gain.value = 0; workletNode.connect(sink); sink.connect(audioCtx.destination);
+      await ctx.audioWorklet.addModule(blobUrl);
+      // A refusal close (4401/4403/4429/4503) can land during that await:
+      // onclose -> stop() already released everything and put its message
+      // up, so build no graph and leave the status alone.
+      if (cancelled(gen)) { dropStart(sock, stream, ctx); return; }
+      const src = ctx.createMediaStreamSource(stream);
+      const node = workletNode = new AudioWorkletNode(ctx, "cap");
+      const sr = ctx.sampleRate;
+      node.port.onmessage = (e) => { if (!cancelled(gen)) pushSamples(e.data, sr); };
+      src.connect(node);
+      const sink = ctx.createGain(); sink.gain.value = 0; node.connect(sink); sink.connect(ctx.destination);
     } catch (err) {
-      try { if (ws) { ws.onmessage = ws.onclose = ws.onerror = null; ws.close(); } } catch {}
-      try { if (mediaStream) mediaStream.getTracks().forEach((t) => t.stop()); } catch {}
-      try { if (audioCtx) audioCtx.close(); } catch {}
+      dropStart(sock, stream, ctx);
+      if (cancelled(gen)) return;
       ws = null; audioCtx = null; workletNode = null; mediaStream = null;
       throw err;
     }
@@ -439,17 +475,35 @@
     audioCtx = null; workletNode = null; mediaStream = null;
   }
 
+  // The server never answered: the end of the dictation may be missing, so
+  // say so instead of a plain "idle".
+  function stopFallback() {
+    finishStop();
+    setStatus("finished without the server's last answer — the end may be missing", "error");
+  }
+  function armStopTimer(ms) {
+    if (stopTimer) clearTimeout(stopTimer);
+    stopTimer = setTimeout(stopFallback, ms);
+  }
+
   function stop() {
     releaseMic();
     // The server emits the held final + the last document AFTER "stop" and
     // closes the socket itself after {"type":"closing"} — so keep onmessage
     // attached and the socket open until then; the timer is only a fallback
-    // if it never answers.
+    // if it never answers (onMessage re-arms it on every frame).
     if (ws && ws.readyState === 1) {
+      // Ship the partly filled frame too (up to ~256 ms, usually the end of
+      // the last word): only full frames go out while recording, and the
+      // server takes a binary frame of any length.
+      if (pcmLen > 0) {
+        try { ws.send(pcmBuf.buffer.slice(0, pcmLen * 2)); } catch {}
+        pcmLen = 0;
+      }
       try { ws.send(JSON.stringify({ type: "stop" })); } catch { finishStop(); return; }
       toggleBtn.disabled = true;
       setStatus("finishing…");
-      stopTimer = setTimeout(finishStop, 10000);
+      armStopTimer(STOP_WAIT_MS);
     } else {
       finishStop();
     }
@@ -458,13 +512,17 @@
   toggleBtn.addEventListener("click", async () => {
     const batch = mode() === "batch";
     if (running) { batch ? stopBatch() : stop(); return; }
+    const gen = ++startGen;
     try {
       running = true;
       $("mode").disabled = true;
       toggleBtn.textContent = batch ? "Stop & transcribe" : "Stop";
       toggleBtn.classList.add("danger");
-      await (batch ? startBatch() : start());
+      await (batch ? startBatch(gen) : start(gen));
     } catch (err) {
+      // Stop (or a newer Start) already owns the page: a denied prompt that
+      // was cancelled anyway must not overwrite its status.
+      if (cancelled(gen)) return;
       running = false;
       setStatus((batch ? "mic/record failed: " : "mic/socket failed: ") + err.message, "error");
       resetToggleButton();

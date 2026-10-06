@@ -132,11 +132,14 @@ def test_close_commits_unterminated_tail():
     assert finals[-1].get("last") is True
 
 
-def test_close_falls_back_on_a_failed_final_decode_and_still_commits():
+def test_close_falls_back_on_a_failed_final_decode_and_still_commits(caplog):
     """A decode error in the in-flight utterance's final decode on close() is
     absorbed by _finalize_inner's decode_failed fallback (the partial
     transcript), so close() never sees it: the closing document still commits
-    the confirmed text. close()'s own tolerance is pinned by the next test."""
+    the confirmed text. close()'s own tolerance is pinned by the next test.
+    The frames alone are identical either way, so the logs tell them apart."""
+    import logging
+
     async def _df(audio, prompt):
         raise RuntimeError("CUDA out of memory")
 
@@ -148,12 +151,15 @@ def test_close_falls_back_on_a_failed_final_decode_and_still_commits():
         await s._emit_update()
         await s.feed_pcm(const_pcm(8000, 1000))
         assert s._in_utterance
-        await s.close()
+        with caplog.at_level(logging.WARNING, logger="faster_whisper_backend.streaming.session"):
+            await s.close()
 
     asyncio.run(run())
     assert msgs[-1]["type"] == "final"
     assert msgs[-1]["committed"] == "erster satz." and msgs[-1]["tail"] == ""
     assert msgs[-1].get("last") is True
+    assert "final decode failed (RuntimeError)" in caplog.text
+    assert "finalize failed on close" not in caplog.text
 
 
 def test_close_survives_failing_on_final_and_still_commits(caplog):

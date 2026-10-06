@@ -403,9 +403,14 @@ def _build_transcribe_kwargs(model_name: str, *, final: bool,
         # looping sibling made a 17-token answer cost 13.9 s (2026-09-19).
         # With one candidate the rung costs what its own answer costs. Batch
         # keeps BEST_OF; a client decode_overrides value still wins (unless the
-        # identity locks that key — the assembler dropped it then).
+        # identity locks that key — the assembler dropped it then). Presence is
+        # not application: a null / unparseable value is dropped by the
+        # assembler, which leaves the batch BEST_OF in kwargs, so pin then too.
         _locked = ident.locked_client_keys if ident is not None else frozenset()
-        if "best_of" not in (overrides or {}) or "best_of" in _locked:
+        _client_best_of = tx_models._clamp_int(
+            overrides.get("best_of") if isinstance(overrides, dict) else None,
+            *tx_models._DECODE_INT_BOUNDS["best_of"])
+        if _client_best_of is None or "best_of" in _locked:
             kwargs["best_of"] = int(
                 cfg_for(model_name, "STREAMING_FINAL_BEST_OF", ident))
         return kwargs
@@ -446,8 +451,10 @@ def _trim_trailing_nonspeech(audio: "np.ndarray", pad_ms: int,
     (the same VAD the decode-side vad_filter uses) finds the last speech and
     keeps only ``pad_ms`` beyond it — the pad absorbs VAD-vs-word-timestamp
     jitter so a genuine trailing word is never clipped. Only the tail is cut,
-    so segment/word timestamps stay on the buffer timeline (captures included;
-    the capture row still stores the full untrimmed utterance audio).
+    so the decode's segment/word timestamps stay on the buffer timeline (the
+    capture row still stores the full untrimmed utterance audio, and after a
+    mid-utterance trim on_final re-bases the capture's segments by trimmed_sec
+    onto the utterance timeline — captures are NOT on the buffer timeline).
 
     Returns ``audio`` unchanged when trimming is disabled (pad_ms <= 0), Silero
     is unavailable, no speech is found (the pre-decode gates own that case), or
@@ -481,7 +488,9 @@ def _note_pinned_condition(req_overrides: dict, overrides_ignored: list) -> None
     so a client override for it is applied by the assembler and then
     overwritten. Say so in `overrides_ignored` instead of dropping it silently.
     Called at every site that rebuilds the list (handshake + ident refresh)."""
-    if ("condition_on_previous_text" in req_overrides
+    # A null value is the client's "inherit" (the assembler skips it), so it
+    # overrode nothing and is not reported.
+    if (req_overrides.get("condition_on_previous_text") is not None
             and "condition_on_previous_text" not in overrides_ignored):
         overrides_ignored.append("condition_on_previous_text")
 

@@ -1,8 +1,8 @@
-"""engine.rebuild_caches runs in asyncio.to_thread and not every hot-apply
-caller holds rules_lock() (a SUPPRESS_CHARS-only admin save does not), so two
-rebuild threads can overlap. Without engine._REBUILD_LOCK a slow stale compile
-finished last and rebound _COMPILED_RULES to the OLD rules after the newer
-save had already answered 200."""
+"""engine.rebuild_caches runs in asyncio.to_thread. Every route that rebuilds
+holds rules_lock() today, but engine._REBUILD_LOCK is the defensive guard for
+a caller that does not (and for the import-time / test rebuilds): if two
+rebuild threads overlap without it, a slow stale compile finishes last and
+rebinds _COMPILED_RULES to the OLD rules after the newer save has answered."""
 
 import threading
 
