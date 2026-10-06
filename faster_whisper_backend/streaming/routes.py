@@ -2,7 +2,7 @@
 
 `ws[s]://HOST/v1/audio/transcriptions/stream` — a second entry point alongside the
 batch `POST /v1/audio/transcriptions`. It reuses the same model cache
-(`_get_or_load_model`), per-model config (`cfg_for`), and post-processing pipeline
+(`transcription.models._get_or_load_model`), per-model config (`cfg_for`), and post-processing pipeline
 (`pipeline.engine._postprocess_text`) — none of which are modified — and drives
 them through :class:`streaming_session.StreamSession` (LocalAgreement-2
 stabilized partials, append-only post-processed finals).
@@ -45,8 +45,9 @@ Protocol (see streaming_session for the emission contract):
     {"type":"boundary",utterance,separator}  long-silence hard break: fresh document
     {"type":"closing"}  the server is done; the socket closes next
 
-main.py is imported lazily inside the handler to avoid the
-main → streaming_routes → main import cycle.
+main.py is imported lazily inside the handler (for the origin gate and the
+progress-id pattern only) to avoid the main → streaming_routes → main import
+cycle.
 """
 
 import asyncio
@@ -78,6 +79,9 @@ from faster_whisper_backend.core import segment_guards
 from faster_whisper_backend.core import store_common
 from faster_whisper_backend.core import web_common
 from faster_whisper_backend.pipeline import engine as pl_engine
+from faster_whisper_backend.transcription import guards as tx_guards
+from faster_whisper_backend.transcription import models as tx_models
+from faster_whisper_backend.transcription import receipt as tx_receipt
 from faster_whisper_backend.streaming.session import CloseAbort, StreamConfig, StreamSession
 from faster_whisper_backend.streaming.transport import ENCODED_FORMATS, RAW_FORMATS, make_transport
 from faster_whisper_backend.streaming.vad import SAMPLE_RATE, make_endpointer
@@ -156,8 +160,8 @@ _WS_TOO_MANY = 4429
 _WS_BAD_ORIGIN = 4403
 _WS_IDLE_TIMEOUT = 4408  # client sent no audio for STREAMING_IDLE_TIMEOUT_S
 
-# The client decode_override keys the server actually honors (main._apply_decode_
-# overrides consumes the decode ones, _client_stream_values the live-dictation
+# The client decode_override keys the server actually honors (tx_models._apply_
+# decode_overrides consumes the decode ones, _client_stream_values the live-dictation
 # ones; every other key is discarded). Bound once at import from the public
 # settings_schema.CONFIG_TO_CLIENT_KEY registry so
 # the handshake can narrow the client's dict — and without retaining an
@@ -245,7 +249,7 @@ def authenticate_ws(ws: WebSocket) -> "dict | None":
     return auth._resolve_user(ws, _ws_credentials(ws))
 
 
-def _client_stream_values(main, overrides: dict, ident) -> "tuple[dict, list[str]]":
+def _client_stream_values(overrides: dict, ident) -> "tuple[dict, list[str]]":
     """The live-dictation knobs this connection's decode_overrides set
     (settings_schema.STREAM_ONLY_CLIENT_KEYS), as {STREAMING_* field: value} for
     _stream_config / make_endpointer, plus a note per adjustment made.
@@ -270,9 +274,9 @@ def _client_stream_values(main, overrides: dict, ident) -> "tuple[dict, list[str
             continue
         raw, b = overrides[key], bounds[key]
         if b["kind"] == "int":
-            v = main._clamp_int(raw, b["min"], b["max"])
+            v = tx_models._clamp_int(raw, b["min"], b["max"])
         elif b["kind"] == "float":
-            v = main._clamp_float(raw, b["min"], b["max"])
+            v = tx_models._clamp_float(raw, b["min"], b["max"])
         else:
             v = raw[:b["maxlen"]] if isinstance(raw, str) else None
         if v is not None:
@@ -327,14 +331,14 @@ def _stream_config(cfg_for, ident=None, client: "dict | None" = None) -> StreamC
     )
 
 
-def _build_transcribe_kwargs(main, model_name: str, *, final: bool,
+def _build_transcribe_kwargs(model_name: str, *, final: bool,
                              prompt: str, want_words: bool,
                              language: "str | None" = None, model_obj=None,
                              overrides=None, ident=None) -> dict:
     """Assemble model.transcribe kwargs for a streaming decode.
 
     Both partial and final decodes pull the SAME per-model config as the batch
-    route (via ``main.assemble_transcribe_kwargs``) — hotwords, suppress_tokens/
+    route (via ``tx_models.assemble_transcribe_kwargs``) — hotwords, suppress_tokens/
     chars, prepend/append_punctuations, penalties, thresholds — so streaming
     output matches batch. The FINAL decode (the full committed utterance) is the
     batch decode's exact analogue and uses the assembler verbatim. The PARTIAL
@@ -362,7 +366,7 @@ def _build_transcribe_kwargs(main, model_name: str, *, final: bool,
     # NOT "fall back to DEFAULT_PROMPT": DEFAULT_PROMPT is applied once, at the
     # base_prompt seed (see StreamSession construction / _refresh_ident).
     _prompt = prompt
-    kwargs = main.assemble_transcribe_kwargs(
+    kwargs = tx_models.assemble_transcribe_kwargs(
         model_name, model_obj,
         language=lang, temperature=0.0,
         vad_filter=_vad_filter, vad_parameters=vad_parameters,
@@ -636,7 +640,7 @@ async def transcribe_stream(ws: WebSocket) -> None:
         prompt_provided = isinstance(_req_prompt, str)
         # Bounded to the same 2048 the admin-set DEFAULT_PROMPT it replaces
         # carries (config_store: Field(max_length=2048)) and the sibling
-        # `hotwords` client override gets from main._DECODE_STR_CAPS. Without a
+        # `hotwords` client override gets from tx_models._DECODE_STR_CAPS. Without a
         # cap the handshake frame — up to the websocket library's 16 MiB default
         # message size — is re-tokenised on every partial for the life of the
         # connection. Clamp rather than reject: an over-long prompt is a client
@@ -650,7 +654,7 @@ async def transcribe_stream(ws: WebSocket) -> None:
         if not isinstance(req_overrides, dict):
             req_overrides = {}
         # Narrow to the keys the assembler actually honors. Every other key is
-        # already discarded by main._apply_decode_overrides, so no accepted
+        # already discarded by tx_models._apply_decode_overrides, so no accepted
         # request changes behaviour — but without this the whole dict (up to the
         # 1 MiB ws_max_size frame) is captured by the decode closures and
         # retained for the life of the connection, and is re-walked on every
@@ -706,7 +710,7 @@ async def transcribe_stream(ws: WebSocket) -> None:
             if audio_fmt in RAW_FORMATS
             else f"{audio_fmt} → {SAMPLE_RATE} Hz mono (ffmpeg decode, WebSocket)")
 
-        final_model = main._resolve_model_name(model_req)
+        final_model = tx_models._resolve_model_name(model_req)
         # Unknown at job_start (it comes from the handshake): fill the running
         # row's model now so /stats reads it like the finished rows.
         jobs.job_update(session_id, model=final_model)
@@ -718,7 +722,7 @@ async def transcribe_stream(ws: WebSocket) -> None:
             # stream drain used to discard a finished dictation seconds before
             # its transcript arrived. Signal liveness every few seconds; the
             # frame is additive, clients that don't know it ignore it.
-            task = asyncio.ensure_future(main._get_or_load_model(name, lease=True))
+            task = asyncio.ensure_future(tx_models._get_or_load_model(name, lease=True))
             try:
                 while not task.done():
                     done, _ = await asyncio.wait({task}, timeout=3.0)
@@ -746,7 +750,7 @@ async def transcribe_stream(ws: WebSocket) -> None:
                 else:
                     task.add_done_callback(
                         lambda t: (not t.cancelled() and t.exception() is None
-                                   and main._release_model_lease(name)))
+                                   and tx_models._release_model_lease(name)))
                 raise
             # Only a load that RETURNED took a lease; record it for the
             # session teardown. A raising load leaves the refcount untouched.
@@ -805,11 +809,11 @@ async def transcribe_stream(ws: WebSocket) -> None:
             if req_language and req_language != _locked_lang:
                 overrides_ignored.append("language")
             req_language = _locked_lang
-        main._note_auto_detect_only(
+        tx_models._note_auto_detect_only(
             req_overrides, req_language if req_language is not None
             else effective_config.cfg_for(final_model, "DEFAULT_LANGUAGE", ident),
             overrides_ignored)
-        main._note_word_ts_only(req_overrides, gate_final_words, overrides_ignored)
+        tx_models._note_word_ts_only(req_overrides, gate_final_words, overrides_ignored)
         if "DEFAULT_PROMPT" in ident.locked:
             _locked_prompt = effective_config.cfg_for(final_model, "DEFAULT_PROMPT", ident) or ""
             if prompt_provided and req_prompt != _locked_prompt:
@@ -846,7 +850,7 @@ async def transcribe_stream(ws: WebSocket) -> None:
                     return segs, info, decode_trace.finish(tr, segs, info)
 
             # Shared GPU limiter (same object the batch route uses).
-            async with main.get_inference_semaphore():
+            async with tx_models.get_inference_semaphore():
                 return await loop.run_in_executor(None, work)
 
         # The language the document is FORMATTED in (language-tagged rules run
@@ -871,7 +875,7 @@ async def transcribe_stream(ws: WebSocket) -> None:
             if _auth_revoked:
                 raise _CredentialRevoked("credential revoked mid-session")
             kwargs = _build_transcribe_kwargs(
-                main, partial_model_name, final=False, prompt=prompt,
+                partial_model_name, final=False, prompt=prompt,
                 want_words=gate_partial_words, language=req_language,
                 model_obj=partial_model_obj, overrides=req_overrides, ident=ident)
             segs, _info, _ = await _transcribe(partial_model_obj, audio, kwargs)
@@ -890,8 +894,8 @@ async def transcribe_stream(ws: WebSocket) -> None:
             # The prompt-echo head cut runs on the first segment, before its
             # tail cuts — the preview's prompt is the same rolling context the
             # final decodes with, so it echoes the same way.
-            _limits = main.tail_guard_limits(partial_model_name, ident)
-            _head_min = main.head_echo_min_words(partial_model_name, ident)
+            _limits = tx_guards.tail_guard_limits(partial_model_name, ident)
+            _head_min = tx_guards.head_echo_min_words(partial_model_name, ident)
             _head_prompt = segment_guards.prompt_tail_text(kwargs)
             _kept_segs = []
             for _si, seg in enumerate(segs):
@@ -965,7 +969,7 @@ async def transcribe_stream(ws: WebSocket) -> None:
                 session_id[:8])
             _trimmed_s = audio.shape[0] / SAMPLE_RATE
             kwargs = _build_transcribe_kwargs(
-                main, final_model, final=True, prompt=prompt,
+                final_model, final=True, prompt=prompt,
                 want_words=gate_final_words, language=req_language,
                 model_obj=final_model_obj, overrides=req_overrides, ident=ident)
             skip_residual = bool(effective_config.cfg_for(
@@ -979,13 +983,13 @@ async def transcribe_stream(ws: WebSocket) -> None:
             # Tail cuts inside a segment — AFTER the whole-segment verdicts, on
             # the survivors (a segment made up from start to end is still
             # dropped whole). See core/segment_guards.py.
-            tail_limits = main.tail_guard_limits(final_model, ident)
+            tail_limits = tx_guards.tail_guard_limits(final_model, ident)
             tail_cuts: list[dict] = []
             # Head cut (SEGMENT_HEAD_ECHO_MIN_WORDS): the decode repeating the
             # last words of its prompt — the previous utterances — before the
             # new speech, which would type the end of the last sentence twice.
             # First surviving segment only, before its tail cuts.
-            head_min = main.head_echo_min_words(final_model, ident)
+            head_min = tx_guards.head_echo_min_words(final_model, ident)
             head_prompt = segment_guards.prompt_tail_text(kwargs)
             head_pending = bool(head_min and head_prompt)
             head_cut: "dict | None" = None
@@ -994,7 +998,7 @@ async def transcribe_stream(ws: WebSocket) -> None:
             kept: list[str] = []
             for i, seg in enumerate(segs):
                 dropped_conf = _is_failed_segment(seg)
-                dropped_rate = main.segment_exceeds_word_rate(seg, max_wps)
+                dropped_rate = tx_guards.segment_exceeds_word_rate(seg, max_wps)
                 dropped = dropped_conf or dropped_rate
                 cut = None
                 hcut = None
@@ -1031,7 +1035,7 @@ async def transcribe_stream(ws: WebSocket) -> None:
                 if hcut:
                     # "emptied" once per segment: here only when the head cut
                     # alone left nothing (the tail cuts then never ran).
-                    main.record_tail_cut(hcut, emptied=emptied and cut is None)
+                    tx_guards.record_tail_cut(hcut, emptied=emptied and cut is None)
                     logger.info("[stream %s] cut prompt echo from the start of the final "
                                 "(%d words %.2f-%.2fs): %r", session_id[:8],
                                 hcut["n"], hcut["from"], hcut["to"], hcut["text"])
@@ -1039,7 +1043,7 @@ async def transcribe_stream(ws: WebSocket) -> None:
                         continue
                 if cut:
                     tail_cuts.append(cut)
-                    main.record_tail_cut(cut, emptied=emptied)
+                    tx_guards.record_tail_cut(cut, emptied=emptied)
                     logger.info("[stream %s] cut made-up tail of final segment "
                                 "(%s, %d words%s): %r", session_id[:8],
                                 "+".join(cut["rules"]), cut["n"],
@@ -1091,16 +1095,16 @@ async def transcribe_stream(ws: WebSocket) -> None:
                 # in the log block's guards section (they are not transcribe
                 # kwargs, so the Decode params section can't show them).
                 "segment_max_words_per_sec": max_wps,
-                **main.tail_guard_rows(tail_limits),
-                **main.tail_cut_rows(tail_cuts),
-                **main.head_echo_rows(head_min, head_cut),
+                **tx_guards.tail_guard_rows(tail_limits),
+                **tx_guards.tail_cut_rows(tail_cuts),
+                **tx_guards.head_echo_rows(head_min, head_cut),
                 "skip_residual_windows": skip_residual,
                 "token_cap_per_second": token_cap,
                 "tail_trim_pad_ms": tail_pad_ms,
                 # What the trim actually removed from THIS buffer (the block's
                 # `duration` row is the post-trim length; the utterance label
                 # is the pre-trim one — this row is the bridge between them).
-                "tail_trim_cut": main.PlainText(
+                "tail_trim_cut": tx_receipt.PlainText(
                     f"{_untrimmed_s - _trimmed_s:.2f}s  "
                     f"({_untrimmed_s:.2f}s → {_trimmed_s:.2f}s)"),
                 "final_drop_min_avg_logprob": float(effective_config.cfg_for(
@@ -1118,7 +1122,7 @@ async def transcribe_stream(ws: WebSocket) -> None:
         # strings (the client replaces each region), so re-applying the prefix on
         # every final is correct — it never accumulates. The client's
         # output_prefix / output_suffix win unless locked.
-        out_prefix, out_suffix = main._output_wrappers(final_model, ident, req_overrides)
+        out_prefix, out_suffix = tx_models._output_wrappers(final_model, ident, req_overrides)
 
         async def emit(message):
             if message.get("type") == "final":
@@ -1318,7 +1322,7 @@ async def transcribe_stream(ws: WebSocket) -> None:
                     except Exception:  # noqa: BLE001 — best effort
                         pass
                 else:
-                    logger.info(main._format_request_block(**_block_kwargs))
+                    logger.info(tx_receipt._format_request_block(**_block_kwargs))
             except Exception as _le:  # noqa: BLE001
                 logger.warning("[stream %s] log block failed: %s", session_id[:8], _le)
 
@@ -1355,7 +1359,7 @@ async def transcribe_stream(ws: WebSocket) -> None:
 
         # The client's own live-dictation knobs (decode_overrides), fixed for
         # the connection like the rest of the session shape.
-        client_knobs, knob_notes = _client_stream_values(main, req_overrides, ident)
+        client_knobs, knob_notes = _client_stream_values(req_overrides, ident)
         if client_knobs:
             logger.info("[stream %s] client knobs %s%s", session_id[:8],
                         ", ".join(f"{k.removeprefix('STREAMING_').lower()}={v!r}"
@@ -1448,7 +1452,7 @@ async def transcribe_stream(ws: WebSocket) -> None:
                 # on the permissions it captured at the handshake.
                 user = fresh
                 ident = effective_config.build_ident(user, final_model, request_profile=req_override_profile)
-                out_prefix, out_suffix = main._output_wrappers(
+                out_prefix, out_suffix = tx_models._output_wrappers(
                     final_model, ident, req_overrides)
                 overrides_ignored = sorted(k for k in req_overrides
                                            if k in ident.locked_client_keys)
@@ -1459,11 +1463,11 @@ async def transcribe_stream(ws: WebSocket) -> None:
                     if _client_language and _client_language != _ll:
                         overrides_ignored.append("language")
                     req_language = _ll
-                main._note_auto_detect_only(
+                tx_models._note_auto_detect_only(
                     req_overrides, req_language if req_language is not None
                     else effective_config.cfg_for(final_model, "DEFAULT_LANGUAGE", ident),
                     overrides_ignored)
-                main._note_word_ts_only(req_overrides, gate_final_words,
+                tx_models._note_word_ts_only(req_overrides, gate_final_words,
                                         overrides_ignored)
                 req_prompt = _client_prompt
                 _provided = _client_prompt_provided
@@ -1837,7 +1841,7 @@ async def transcribe_stream(ws: WebSocket) -> None:
         # Same reason as the slots above: released before any await, so a
         # cancellation in the teardown cannot pin a model in VRAM forever.
         while _model_leases_held:
-            main._release_model_lease(_model_leases_held.pop())
+            tx_models._release_model_lease(_model_leases_held.pop())
         jobs.job_end(session_id)
         # Idempotent backstop so every exit path (normal, disconnect, error)
         # converges here and the ffmpeg subprocess + stdout-reader task are

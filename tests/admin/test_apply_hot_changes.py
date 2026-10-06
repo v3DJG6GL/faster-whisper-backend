@@ -11,8 +11,8 @@ import asyncio
 
 from faster_whisper_backend.settings import config as cfg
 from faster_whisper_backend.settings import config_store
-from faster_whisper_backend import main
 from faster_whisper_backend.admin import routes as admin_routes
+from faster_whisper_backend.transcription import models as tx_models
 
 
 def _run(monkeypatch, old, new):
@@ -26,7 +26,7 @@ def _run(monkeypatch, old, new):
     monkeypatch.setattr(config_store, "env_pinned_fields", lambda: frozenset())
     monkeypatch.setattr(config_store, "load_overrides",
                         lambda: {"MODEL_OVERRIDES": new})
-    monkeypatch.setattr(main, "drain_then_evict", spy)
+    monkeypatch.setattr(tx_models, "drain_then_evict", spy)
     asyncio.run(admin_routes._apply_hot_changes({"MODEL_OVERRIDES": new}, old))
     return calls
 

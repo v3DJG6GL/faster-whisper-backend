@@ -15,6 +15,7 @@ from faster_whisper_backend.runtime import preload
 from faster_whisper_backend.runtime import system_stats
 
 from tests.conftest import bearer
+from faster_whisper_backend.transcription import models as tx_models
 
 
 def _fits(monkeypatch, verdict=(True, None)):
@@ -239,9 +240,8 @@ def test_a_job_binding_rewinds_the_cursor_a_client_post_does_not(monkeypatch):
 def test_whisper_full_cache_with_only_a_warm_peer_is_family_busy(monkeypatch):
     _enable(monkeypatch, MAX_LOADED_MODELS=1)
     _fits(monkeypatch, (True, None))
-    from faster_whisper_backend import main
-    monkeypatch.setattr(main, "_loaded_models", {"peer": object()})
-    monkeypatch.setattr(main, "_model_leases", {})
+    monkeypatch.setattr(tx_models, "_loaded_models", {"peer": object()})
+    monkeypatch.setattr(tx_models, "_model_leases", {})
     system_stats.set_warm_predicate(lambda k: k == "peer")
     assert preload._admit("whisper", "large-v3") == ("deferred", "family_busy")
 
@@ -261,9 +261,8 @@ def test_worker_evicts_the_cold_whisper_peer_it_chose_even_when_it_fits(
         monkeypatch):
     _enable(monkeypatch, MAX_LOADED_MODELS=1)
     _fits(monkeypatch, (True, None))
-    from faster_whisper_backend import main
-    monkeypatch.setattr(main, "_loaded_models", {"peer": object()})
-    monkeypatch.setattr(main, "_model_leases", {})
+    monkeypatch.setattr(tx_models, "_loaded_models", {"peer": object()})
+    monkeypatch.setattr(tx_models, "_model_leases", {})
     evicted = []
     loaded = []
 
@@ -286,9 +285,8 @@ def test_worker_keeps_the_cold_peer_when_an_unmeasured_model_has_a_free_slot(
         monkeypatch):
     _enable(monkeypatch, MAX_LOADED_MODELS=2)
     _fits(monkeypatch, (None, "size_unknown"))
-    from faster_whisper_backend import main
-    monkeypatch.setattr(main, "_loaded_models", {"peer": object()})
-    monkeypatch.setattr(main, "_model_leases", {})
+    monkeypatch.setattr(tx_models, "_loaded_models", {"peer": object()})
+    monkeypatch.setattr(tx_models, "_model_leases", {})
     evicted = []
     loaded = []
 
@@ -377,11 +375,10 @@ def test_resident_entry_is_warm_through_its_plan_only(monkeypatch):
 
 def test_whisper_1_alias_resolves_to_the_default_model(monkeypatch):
     _enable(monkeypatch, DEFAULT_MODEL="large-v3")
-    from faster_whisper_backend import main
     assert preload.normalize_id("whisper", "whisper-1") == "large-v3"
     assert preload.stats_key("whisper", "whisper-1") == "large-v3"
     assert preload.stats_key("whisper", "small") == "small"
-    monkeypatch.setitem(main._loaded_models, "large-v3", object())
+    monkeypatch.setitem(tx_models._loaded_models, "large-v3", object())
     assert preload.is_resident("whisper", "whisper-1") is True
     assert preload.is_resident("whisper", "large-v3") is True
     # The two spellings are one plan entry as far as the ids are concerned.

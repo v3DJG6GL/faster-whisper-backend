@@ -67,9 +67,6 @@ def _reset_main(main) -> None:
     main._text_translate_rate.clear()
     main._JOB_BY_PID.clear()
     main._PLAN_BY_PID.clear()
-    # Whisper job leases: a leaked lease would make a later eviction test
-    # see a refusal instead of the drop it asserts.
-    main._model_leases.clear()
 
 
 # (module, hook): the hook is the name of a zero-argument function in that
@@ -121,6 +118,11 @@ _RESET_HOOKS: tuple[tuple[str, Any], ...] = (
     # pipeline engine: the streaming hold-back spec cache (the compiled rules
     # are rebuilt from the reloaded config by app_module).
     ("faster_whisper_backend.pipeline.engine", "_reset_for_tests"),
+    # whisper model cache + job leases (a leaked lease would make a later
+    # eviction test see a refusal instead of the drop it asserts), the
+    # suppress-chars cache, and the load / convert locks and lazily-built
+    # semaphores — rebound so none stays tied to a dead TestClient loop.
+    ("faster_whisper_backend.transcription.models", "_reset_for_tests"),
     # main's registries / limiter / leases (these names leave main in later
     # refactor phases; each new owner module registers its own hook).
     ("faster_whisper_backend.main", _reset_main),
@@ -442,8 +444,9 @@ def fake_model():
 @pytest.fixture
 def app_module(tmp_path, monkeypatch, fake_model):
     """Import `main`, neutralise the model preload, and point every store at
-    a temp DB. Yields the main module with a `_get_or_load_model` that returns
-    the fake model. Importing main has only benign side effects (logging)."""
+    a temp DB. Yields the main module, with transcription.models'
+    `_get_or_load_model` returning the fake model. Importing main has only
+    benign side effects (logging)."""
     # Point all stores at temp files BEFORE importing main / running lifespan.
     monkeypatch.setenv("WHISPER_API_KEYS_DB", str(tmp_path / "api_keys.sqlite3"))
     monkeypatch.setenv("WHISPER_SESSIONS_DB", str(tmp_path / "sessions.sqlite3"))
@@ -506,9 +509,13 @@ def app_module(tmp_path, monkeypatch, fake_model):
     from faster_whisper_backend import main
     importlib.reload(main)
 
+    # Every caller (main, streaming, preload, the url routes) goes through the
+    # module attribute, so this one patch reaches them all.
+    from faster_whisper_backend.transcription import models as tx_models
+
     async def _fake_loader(name: str, *, lease: bool = False):
         return fake_model
-    monkeypatch.setattr(main, "_get_or_load_model", _fake_loader)
+    monkeypatch.setattr(tx_models, "_get_or_load_model", _fake_loader)
     # The lifespan's hard-restart TMPDIR sweep would prune the REAL system
     # tempdir (urldl-/sepsrc-/vocals- leftovers) on every TestClient startup
     # — neuter it here; test_routes_url exercises the real function against

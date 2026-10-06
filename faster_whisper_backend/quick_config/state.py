@@ -17,7 +17,7 @@ can pick the phrase as a cb:map key in one step.
 
 The trace + tokens carry literal dictation snippets, which can be
 sensitive personal data — DO NOT log buffer contents. The on-disk log
-file already holds the same trace via main._format_request_block; the
+file already holds the same trace via transcription.receipt._format_request_block; the
 new SQLite store is the canonical structured durable record.
 """
 from __future__ import annotations

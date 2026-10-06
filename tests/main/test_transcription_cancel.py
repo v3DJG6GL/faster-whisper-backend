@@ -4,6 +4,7 @@ request with 499 instead of soft-failing onward."""
 
 from faster_whisper_backend.audio import bgm_separation
 from faster_whisper_backend.audio import diarization
+from faster_whisper_backend.transcription import models as tx_models
 
 _FILE = {"file": ("a.wav", b"RIFFxxxxWAVE", "audio/wav")}
 _PID = "cafe" * 8  # 32 hex chars — passes _PROGRESS_ID_RE
@@ -407,7 +408,7 @@ def test_task_cancellation_records_status_cancelled(client, app_module,
 
     async def _cancelled_loader(name, *, lease=False):
         raise asyncio.CancelledError()
-    monkeypatch.setattr(app_module, "_get_or_load_model", _cancelled_loader)
+    monkeypatch.setattr(tx_models, "_get_or_load_model", _cancelled_loader)
     recorded = []
     _orig = app_module.metrics.record_transcription
 

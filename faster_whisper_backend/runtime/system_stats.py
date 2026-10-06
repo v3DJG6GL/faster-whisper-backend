@@ -106,7 +106,7 @@ def gpu_name() -> str | None:
 def register_loaded_model(name: str, vram_bytes: int | None,
                           device: str, compute_type: str,
                           load_secs: float | None = None) -> None:
-    """Called from main._get_or_load_model after a successful load. The VRAM
+    """Called from transcription.models._get_or_load_model after a successful load. The VRAM
     delta sample comes from the caller — see main.py for the before/after
     dance under _model_load_lock.
 
@@ -136,7 +136,7 @@ def register_loaded_model(name: str, vram_bytes: int | None,
     # Persist the measurement so a fresh process can size this model BEFORE
     # loading it. All four families (whisper, pyannote, UVR, GGUF) come through
     # here, so this one hook covers the lot; `device` is the ACTUAL placement
-    # (whisper's cuda->cpu fallback in main._get_or_load_model passes the real
+    # (whisper's cuda->cpu fallback in transcription.models._get_or_load_model passes the real
     # one), so the ledger inherits that correctness for free. Imported lazily:
     # model_sizes imports this module. Never fatal to a load.
     # `if vram_bytes:` used to guard this, which quietly excluded every CPU
@@ -186,7 +186,7 @@ def touch_loaded_model(name: str) -> None:
 
 
 def unregister_loaded_model(name: str) -> None:
-    """Called from main._get_or_load_model when LRU eviction happens."""
+    """Called from transcription.models._get_or_load_model when LRU eviction happens."""
     with _loaded_models_lock:
         _loaded_models.pop(name, None)
 

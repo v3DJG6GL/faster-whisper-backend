@@ -5,6 +5,8 @@ fake model ignores the uploaded bytes, so a tiny dummy WAV payload is fine.
 """
 
 from tests.conftest import FakeModel
+from faster_whisper_backend.transcription import models as tx_models
+from faster_whisper_backend.transcription import receipt as tx_receipt
 
 _FILE = {"file": ("a.wav", b"RIFFxxxxWAVE", "audio/wav")}
 
@@ -102,7 +104,7 @@ def test_model_transcribe_raises_returns_500(client, app_module, monkeypatch):
     async def _loader(name, *, lease=False):
         return BoomModel()
 
-    monkeypatch.setattr(app_module, "_get_or_load_model", _loader)
+    monkeypatch.setattr(tx_models, "_get_or_load_model", _loader)
     r = _post(client, response_format="json")
     assert r.status_code == 500
 
@@ -211,10 +213,10 @@ def test_safe_tmp_suffix_keeps_ordinary_extensions(app_module):
 
 def test_model_id_regex_rejects_a_trailing_newline(app_module):
     # `$` also matched just BEFORE a final newline; \Z does not.
-    assert app_module._MODEL_ID_RE.match("some-repo")
-    assert app_module._MODEL_ID_RE.match("org/some-repo")
-    assert not app_module._MODEL_ID_RE.match("some-repo\n")
-    assert not app_module._MODEL_ID_RE.match("org/some-repo\n")
+    assert tx_models._MODEL_ID_RE.match("some-repo")
+    assert tx_models._MODEL_ID_RE.match("org/some-repo")
+    assert not tx_models._MODEL_ID_RE.match("some-repo\n")
+    assert not tx_models._MODEL_ID_RE.match("org/some-repo\n")
 
 
 # --- task (translate) --------------------------------------------------------
@@ -391,7 +393,7 @@ def test_transcribing_row_bills_a_cold_whisper_load(client, app_module,
     async def _loader(name, *, lease=False):
         seen["loaded_wall"] = _time.time()
         return FakeModel()
-    monkeypatch.setattr(app_module, "_get_or_load_model", _loader)
+    monkeypatch.setattr(tx_models, "_get_or_load_model", _loader)
 
     def _load_secs_since(name, since_ts):
         # Behaves like the real registry: the load is visible only to a
@@ -400,12 +402,12 @@ def test_transcribing_row_bills_a_cold_whisper_load(client, app_module,
     monkeypatch.setattr(app_module.system_stats, "load_secs_since",
                         _load_secs_since)
 
-    real_block = app_module._format_request_block
+    real_block = tx_receipt._format_request_block
 
     def _capture(**kw):
         seen["stages"] = kw.get("stages")
         return real_block(**kw)
-    monkeypatch.setattr(app_module, "_format_request_block", _capture)
+    monkeypatch.setattr(tx_receipt, "_format_request_block", _capture)
 
     assert _post(client).status_code == 200
     row = next(s for s in seen["stages"] if s["name"] == "transcribing")
@@ -460,7 +462,7 @@ def test_cuda_oom_is_classified_on_the_ledger(client, app_module, monkeypatch):
     async def _loader(name, *, lease=False):
         return OomModel()
 
-    monkeypatch.setattr(app_module, "_get_or_load_model", _loader)
+    monkeypatch.setattr(tx_models, "_get_or_load_model", _loader)
     r = _post(client, response_format="json")
     assert r.status_code == 500
     row = _ledger_row()
@@ -487,7 +489,7 @@ def test_unknown_failure_is_other_and_success_has_no_class(client, app_module,
     async def _loader(name, *, lease=False):
         return BoomModel()
 
-    monkeypatch.setattr(app_module, "_get_or_load_model", _loader)
+    monkeypatch.setattr(tx_models, "_get_or_load_model", _loader)
     assert _post(client, response_format="json").status_code == 500
     row = _ledger_row()
     assert (row["error_class"], row["error_stage"]) == ("other", "transcribing")
@@ -501,7 +503,7 @@ def test_curated_4xx_is_rejected_not_a_server_failure(client, app_module, monkey
     async def _loader(name, *, lease=False):
         raise HTTPException(status_code=400, detail="model not allowed")
 
-    monkeypatch.setattr(app_module, "_get_or_load_model", _loader)
+    monkeypatch.setattr(tx_models, "_get_or_load_model", _loader)
     assert _post(client, response_format="json").status_code == 400
     row = _ledger_row()
     assert row["status"] == "error" and row["error_class"] == "rejected"

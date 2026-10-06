@@ -16,6 +16,7 @@ import pytest
 
 from faster_whisper_backend.core import decode_trace as dt
 from tests.conftest import FakeInfo
+from faster_whisper_backend.transcription import receipt as tx_receipt
 
 
 # ---------------------------------------------------------------------------
@@ -265,13 +266,13 @@ def test_receipt_renders_the_section_and_stays_unchanged_without_it(app_module):
             "cr": 0.64, "temp": 0.0, "text": "Erzinkontinenz", "dropped": False}]
     base = dict(file_label="stream utt#3", model_name="m", info=FakeInfo(duration=2.2),
                 kwargs={"beam_size": 10}, seg_diag=seg, raw="", final="")
-    plain = app_module._format_request_block(**base)
+    plain = tx_receipt._format_request_block(**base)
     assert "Decode trace" not in plain
-    assert app_module._format_request_block(**base, decode_trace=None) == plain
-    assert app_module._format_request_block(**base, decode_trace={"windows": []}) == plain
+    assert tx_receipt._format_request_block(**base, decode_trace=None) == plain
+    assert tx_receipt._format_request_block(**base, decode_trace={"windows": []}) == plain
 
     t = _run(dt.install(_incident_model()))
-    block = app_module._format_request_block(**base, decode_trace=t)
+    block = tx_receipt._format_request_block(**base, decode_trace=t)
     assert "Decode trace  (2 windows · 7 generate calls · 2645 tokens" in block
     assert "kept · 1 segment" in block
     assert "retry · cr " in block and "> 2.4" in block
@@ -290,7 +291,7 @@ def test_long_decode_is_summarised(app_module):
                for i in range(20)]
     t = {"windows": windows, "n_windows": 20, "n_rungs": 20, "tokens": 1800,
          "generate_s": 25.0, "extra_encodes": 1}
-    lines = app_module._format_decode_trace_section(t)
+    lines = tx_receipt._format_decode_trace_section(t)
     text = "\n".join(lines)
     assert "20 windows · 20 generate calls · 1800 tokens · 25.0s in generate · +1 lang-detect encode" in text
     assert "slowest 5 of 20 windows shown" in text
@@ -300,8 +301,8 @@ def test_long_decode_is_summarised(app_module):
 
 
 def test_plain_text_guard_value_renders_without_quotes(app_module):
-    row = app_module._param_row("    ", "tail_trim_cut",
-                                app_module.PlainText("1.52s  (3.74s → 2.22s)"))
+    row = tx_receipt._param_row("    ", "tail_trim_cut",
+                                tx_receipt.PlainText("1.52s  (3.74s → 2.22s)"))
     assert row.endswith("1.52s  (3.74s → 2.22s)")
     assert "'" not in row
 
@@ -450,7 +451,7 @@ def test_receipt_shows_the_refused_window_and_the_guard_row(app_module):
     base = dict(file_label="stream utt#3", model_name="m", info=FakeInfo(duration=2.2),
                 kwargs={"beam_size": 10}, seg_diag=seg, raw="", final="",
                 decode_trace=t)
-    block = app_module._format_request_block(
+    block = tx_receipt._format_request_block(
         **base, guards={"skip_residual_windows": True})
     assert "Decode trace  (2 windows · 1 generate call · 5 tokens" in block
     assert "· 1 residual skipped)" in block
@@ -459,7 +460,7 @@ def test_receipt_shows_the_refused_window_and_the_guard_row(app_module):
     assert "1.73s" in row and "0.47s" in row
     guard = next(l for l in block.splitlines() if "skip_residual_windows" in l)
     assert guard.rstrip().endswith("true"), "default on: no non-default marker"
-    off = app_module._format_request_block(
+    off = tx_receipt._format_request_block(
         **base, guards={"skip_residual_windows": False})
     assert next(l for l in off.splitlines()
                 if "skip_residual_windows" in l).rstrip().endswith("false *")
@@ -559,7 +560,7 @@ def test_cap_failure_never_breaks_the_decode(monkeypatch):
 def test_receipt_shows_the_cap_and_the_guard_row(app_module):
     m = dt.install(_looping_model())
     _, t = _run_stop(m, token_cap_per_s=10)
-    lines = app_module._format_decode_trace_section(t)
+    lines = tx_receipt._format_decode_trace_section(t)
     text = "\n".join(lines)
     assert "[cap 101]" in text and "hit cap" in text
 

@@ -50,6 +50,7 @@ from faster_whisper_backend.core import web_common
 from faster_whisper_backend.pipeline import dictation_map
 from faster_whisper_backend.pipeline import engine as pl_engine
 from faster_whisper_backend.pipeline import regex_guard
+from faster_whisper_backend.transcription import models as tx_models
 from faster_whisper_backend.auth.dependencies import require_admin
 
 if TYPE_CHECKING:
@@ -653,7 +654,6 @@ async def _apply_hot_changes(
     # old WhisperModel instance via Python ref-counting (drain-then-evict).
     evicted: list[str] = []
     try:
-        from faster_whisper_backend import main as _main
         load_time_changed_globally = bool(
             set(written.keys()) & settings_schema.LOAD_TIME_FIELDS
         )
@@ -661,7 +661,7 @@ async def _apply_hot_changes(
             # Affects every loaded model that doesn't have a per-model
             # override winning over the changed global field. Conservative
             # fallback: evict ALL models. They reload lazily so this is cheap.
-            ev = await _main.drain_then_evict(None)
+            ev = await tx_models.drain_then_evict(None)
             evicted.extend(ev)
         if "MODEL_OVERRIDES" in written:
             # Per-model override changed for one or more model ids — evict
@@ -679,7 +679,7 @@ async def _apply_hot_changes(
                 n = n if isinstance(n, dict) else {}
                 keys = lt & (set(o) | set(n))
                 if keys and any(o.get(k) != n.get(k) for k in keys):
-                    ev = await _main.drain_then_evict(model_id)
+                    ev = await tx_models.drain_then_evict(model_id)
                     evicted.extend(ev)
     except Exception as e:
         # Never let eviction failure break the save response. The user's

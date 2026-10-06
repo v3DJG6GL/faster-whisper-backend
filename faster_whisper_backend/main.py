@@ -14,13 +14,11 @@ import ctypes
 import functools
 import importlib
 import logging
-import math
 import re
 import shutil
 import tempfile
 import time
 import uuid
-from collections import OrderedDict
 from contextlib import asynccontextmanager, contextmanager
 
 # BOOT_ID (the per-process restart marker surfaced via /v1/models) lives in
@@ -185,1512 +183,22 @@ from fastapi.encoders import jsonable_encoder as _jsonable_encoder
 # on missing/invalid bearer.
 from faster_whisper_backend.auth.dependencies import Permissions, get_current_user as _get_current_user_dep
 
-# faster_whisper pulls the heavy native stack (ctranslate2/onnxruntime/av). It is
-# imported lazily at first model load (see _get_or_load_model) so this module
-# stays importable for tests/tooling/template rendering on a box without the CUDA
-# stack installed. TYPE_CHECKING keeps the WhisperModel annotation resolvable for
-# type checkers without importing it at runtime.
-from typing import TYPE_CHECKING
-if TYPE_CHECKING:
-    from faster_whisper import WhisperModel
-
 # Text post-processing rules engine (cfg.PIPELINE_RULES). Imported here, after
 # log_setup.install(), because its import compiles the rules and logs any bad
 # regex — see pipeline/engine.py.
 from faster_whisper_backend.pipeline import engine as pl_engine
 
 
-# =============================================================================
-# Per-request log block
-# =============================================================================
-# Always emitted (regardless of cfg.TRACE_ENABLED) — surfaces the decode
-# params actually applied + per-segment metadata so empty-output failures
-# can be diagnosed from the log alone. The per-pipeline transformation
-# trace is folded in only when TRACE_ENABLED.
-#
-# ANSI color is intentionally dropped: the service runs under WinSW (no TTY)
-# and the SSE log viewer reads raw bytes — escape codes hurt both consumers.
-_LOG_WIDTH = 78
-_NAME_COL = 32        # value column starts at this character
-_SEG_TEXT_MAX = 80    # truncate per-segment text in the table (full text in FINAL)
-
-# "don't render this row" sentinel for the stage params sections. Distinct
-# from None, which is a real value there and prints as `(none)` — an unset
-# num_speakers genuinely means "auto" and is worth showing.
-_OMIT = object()
+# The per-request receipt, the post-decode guard helpers and the whisper model
+# cache / decode-kwargs assembly — see transcription/. Called through the module
+# attribute (tx_models._get_or_load_model(...)) so a test patch reaches main too.
+from faster_whisper_backend.transcription import guards as tx_guards
+from faster_whisper_backend.transcription import models as tx_models
+from faster_whisper_backend.transcription import receipt as tx_receipt
 
 # Single implementation lives in store_common so the stores can sanitise their
 # own audit lines without importing main (which imports them).
 _log_safe = store_common.log_safe
-
-
-# Maps decode-kwarg name → cfg-default key in cfg._BASELINE. Used by the
-# `*` non-default marker. Only scalar fields are listed; lists/dicts skipped.
-# `temperature` and `suppress_tokens` are intentionally absent — their cfg
-# baselines are strings ("0.0,0.2,…", "-1") while the kwargs are tuples/lists,
-# so equality comparison is meaningless without parsing both sides.
-_KWARG_TO_CFG = {
-    # Task
-    "task": "TASK",
-    # Search / sampling
-    "beam_size": "BEAM_SIZE",
-    "best_of": "BEST_OF",
-    "patience": "PATIENCE",
-    "length_penalty": "LENGTH_PENALTY",
-    "repetition_penalty": "REPETITION_PENALTY",
-    "no_repeat_ngram_size": "NO_REPEAT_NGRAM_SIZE",
-    "prompt_reset_on_temperature": "PROMPT_RESET_ON_TEMPERATURE",
-    # VAD
-    "vad_filter": "VAD_FILTER",
-    "min_silence_duration_ms": "VAD_MIN_SILENCE_MS",
-    "speech_pad_ms": "VAD_SPEECH_PAD_MS",
-    "threshold": "VAD_THRESHOLD",
-    # Output shape
-    "word_timestamps": "WORD_TIMESTAMPS_ENABLED",
-    # Prompt context
-    "condition_on_previous_text": "CONDITION_ON_PREVIOUS_TEXT",
-    "initial_prompt": "DEFAULT_PROMPT",
-    "hotwords": "DEFAULT_HOTWORDS",
-    # Safety / thresholds
-    "no_speech_threshold": "NO_SPEECH_THRESHOLD",
-    "log_prob_threshold": "LOG_PROB_THRESHOLD",
-    "compression_ratio_threshold": "COMPRESSION_RATIO_THRESHOLD",
-    "hallucination_silence_threshold": "HALLUCINATION_SILENCE_THRESHOLD",
-    # Language detection
-    "multilingual": "MULTILINGUAL",
-    "language_detection_threshold": "LANGUAGE_DETECTION_THRESHOLD",
-    "language_detection_segments": "LANGUAGE_DETECTION_SEGMENTS",
-    # Token suppression / punctuation
-    "suppress_blank": "SUPPRESS_BLANK",
-    "prepend_punctuations": "PREPEND_PUNCTUATIONS",
-    "append_punctuations": "APPEND_PUNCTUATIONS",
-    # Post-decode guards (pseudo-kwargs: rendered in the log block's guards
-    # section, never passed to model.transcribe)
-    "segment_max_words_per_sec": "SEGMENT_MAX_WORDS_PER_S",
-    "segment_max_word_burst_per_sec": "SEGMENT_MAX_WORD_BURST_PER_S",
-    "segment_zero_length_tail_min_words": "SEGMENT_ZERO_LENGTH_TAIL_MIN_WORDS",
-    "segment_repeat_collapse_min_repeats": "SEGMENT_REPEAT_COLLAPSE_MIN_REPEATS",
-    "segment_head_echo_min_words": "SEGMENT_HEAD_ECHO_MIN_WORDS",
-    "skip_residual_windows": "DECODE_SKIP_RESIDUAL_WINDOWS",
-    "token_cap_per_second": "DECODE_TOKEN_CAP_PER_SECOND",
-    "tail_trim_pad_ms": "STREAMING_TAIL_TRIM_PAD_MS",
-    "final_drop_min_avg_logprob": "STREAMING_FINAL_DROP_MIN_AVG_LOGPROB",
-    "final_drop_temperature": "STREAMING_FINAL_DROP_TEMPERATURE",
-    # Post-decode STAGE params (pseudo-kwargs too: rendered in the block's
-    # Separation / Diarization / Translation sections). Listing them here is
-    # the whole wiring the `*` marker needs — _is_non_default is a whitelist
-    # keyed by this dict, so without an entry a stage param can never be
-    # marked non-default no matter how far it strays from the config.
-    "num_speakers": "DIARIZATION_NUM_SPEAKERS",
-    "min_speakers": "DIARIZATION_MIN_SPEAKERS",
-    "max_speakers": "DIARIZATION_MAX_SPEAKERS",
-    "embedding_batch_size": "DIARIZATION_EMBEDDING_BATCH_SIZE",
-    "diarization_model": "DIARIZATION_MODEL",
-    "separation_model": "BGM_SEPARATION_UVR_MODEL",
-    "translation_model": "TRANSLATION_DEFAULT_MODEL",
-    "mode": "TRANSLATION_MODE",
-    "context_segments": "TRANSLATION_CONTEXT_SEGMENTS",
-    "batch_segments": "TRANSLATION_BATCH_SEGMENTS",
-}
-
-
-# Canonical pipeline order for the Pipeline table. Stage names are the ones
-# _stage_timings already uses, so the table is a straight render of that list
-# rather than a second source of truth that can drift from it.
-_STAGE_ORDER = ("downloading", "separating", "vad", "transcribing",
-                "diarizing", "translating")
-
-
-class PlainText:
-    """Receipt value rendered verbatim (no repr quotes) — for composed rows
-    such as `1.52s  (3.74s → 2.22s)` that are display text, not a config value."""
-
-    __slots__ = ("text",)
-
-    def __init__(self, text: str):
-        self.text = str(text)
-
-    def __str__(self) -> str:
-        return self.text
-
-    def __repr__(self) -> str:
-        return f"PlainText({self.text!r})"
-
-
-def _pretty_value(v) -> str:
-    """Compact display form for a config value: `true`/`false`, `(none)` for
-    None, `(empty)` for "", trimmed-zero floats, repr'd strings."""
-    if v is None:
-        return "(none)"
-    if v is True:
-        return "true"
-    if v is False:
-        return "false"
-    if isinstance(v, float):
-        # Preserve at least one decimal so 0.0 / -1.0 / 0.5 still read as
-        # floats (not as ints). Strip extra trailing zeros only.
-        s = f"{v:.2f}"
-        if "." in s and s.endswith("0"):
-            s = s.rstrip("0")
-            if s.endswith("."):
-                s += "0"
-        return s
-    if isinstance(v, list):
-        return "[" + ", ".join(_pretty_value(x) for x in v) + "]"
-    if isinstance(v, str):
-        if not v:
-            return "(empty)"
-        if len(v) > 60:
-            return repr(v[:57] + "...")
-        return repr(v)
-    return str(v)
-
-
-def _is_non_default(key: str, value) -> bool:
-    """`*` marker test. True iff a known cfg-default exists and the current
-    scalar value differs from it. Skips non-scalars to avoid surprises."""
-    cfg_key = _KWARG_TO_CFG.get(key)
-    if not cfg_key:
-        return False
-    baseline_dict = getattr(cfg, "_BASELINE", None)
-    if baseline_dict is None:
-        return False
-    baseline = baseline_dict.get(cfg_key)
-    scalar = (bool, int, float, str, type(None))
-    if not isinstance(value, scalar) or not isinstance(baseline, scalar):
-        return False
-    if value is None and baseline == "":
-        return False
-    if value == "" and baseline is None:
-        return False
-    return value != baseline
-
-
-def _param_row(indent: str, key: str, value) -> str:
-    """`indent + key + spaces + value [*]` row. Value column lands at _NAME_COL
-    regardless of indent depth so top-level and nested rows align."""
-    star = " *" if _is_non_default(key, value) else ""
-    pretty = _pretty_value(value)
-    pad = max(1, _NAME_COL - len(indent) - len(key))
-    return f"{indent}{key}{' ' * pad}{pretty}{star}"
-
-
-def _section_rule(label: str) -> str:
-    """`  ─── label ──────…` inner rule, padded to _LOG_WIDTH."""
-    head = f"  ─── {label} "
-    fill = max(0, _LOG_WIDTH - len(head))
-    return head + ("─" * fill)
-
-
-def _short_id(v):
-    """A user / key id shortened for the receipt (8 chars; "(…)" markers kept)."""
-    v = v or ""
-    return v if v.startswith("(") else (v[:8] if v else "—")
-
-
-def _format_translate_block(
-    *,
-    request_id: str | None,
-    model_name: str | None,
-    device: str | None,
-    targets: list,
-    source: str | None,
-    mode: str | None,
-    result: str,
-    secs: float,
-    load_secs: float,
-    client_job: str | None = None,
-    user_id: str | None = None,
-    key_id: str | None = None,
-    username: str | None = None,
-    key_label: str | None = None,
-) -> str:
-    """Standalone receipt for a /v1/text/translations request that claimed
-    no held dictation receipt — a stop-timing session's one-shot, a plain
-    API caller, or a live client from before the handshake. The held case
-    merges into the utterance's block instead (see receipt_hold); this is
-    the fallback that keeps such a request from leaving only progress
-    lines behind, with no model / targets / identity to tie it to a user."""
-    title_rule = "═" * _LOG_WIDTH
-    status = "✓ ok"
-    if request_id:
-        status = f"req={request_id[:8]}  {status}"
-    title = "  /v1/text/translations"
-    pad = max(1, _LOG_WIDTH - len(title) - len(status))
-    lines: list[str] = ["", title_rule, f"{title}{' ' * pad}{status}", title_rule]
-    model_line = f"  model  {model_name or '?'}"
-    if device:
-        model_line += f"   device={device}"
-    lines.append(model_line)
-    if client_job:
-        # Same `job=` the session's utterance receipts carry on their file
-        # line — grep for it and the whole session lines up.
-        lines.append(f"  for    dictation job={client_job[:8]}")
-    lines.append(_section_rule("Translation"))
-    rows = [
-        ("targets", ", ".join(targets) if targets else "—"),
-        ("source_lang", (source or "").strip() or "auto"),
-        ("mode", mode or "—"),
-        ("result", result),
-        ("wall", f"{secs:.1f}s" + (f"  (load {load_secs:.1f}s)" if load_secs > 0 else "")),
-    ]
-    for name, val in rows:
-        lines.append(f"    {name:<{_NAME_COL - 4}}{val}")
-
-    if user_id or key_id:
-        lines.append(_section_rule("Identity"))
-        _safe_name = _log_safe(username) if username else None
-        who = f"{_safe_name} ({_short_id(user_id)})" if _safe_name else _short_id(user_id)
-        lines.append(f"    {'user':<{_NAME_COL - 4}}{who}")
-        if key_id:
-            _safe_label = _log_safe(key_label) if key_label else None
-            which = (f"{_safe_label} ({_short_id(key_id)})"
-                     if _safe_label else _short_id(key_id))
-            lines.append(f"    {'key':<{_NAME_COL - 4}}{which}")
-    lines.append(title_rule)
-    return "\n".join(lines)
-
-
-def _format_decode_params(kwargs: dict) -> list[str]:
-    """Render decode params as aligned rows, with VAD parameters indented
-    under vad_filter to show the relationship visually. Fields are only
-    printed when present in `kwargs` — most non-default knobs (patience,
-    repetition_penalty, etc.) are conditionally added at request build
-    time, so absence here means "at faster-whisper / config default".
-    Order is grouped by intent (search → sampling → VAD → output → context
-    → thresholds → language detection → suppression)."""
-    out: list[str] = []
-    order = (
-        # Task (transcribe vs translate-to-English) — the most consequential
-        # knob, so it leads
-        "task",
-        # Search / sampling
-        "beam_size", "best_of", "patience", "length_penalty",
-        "repetition_penalty", "no_repeat_ngram_size",
-        "temperature", "prompt_reset_on_temperature",
-        # VAD
-        "vad_filter",
-        # Output shape
-        "word_timestamps",
-        # Prompt context
-        "condition_on_previous_text", "initial_prompt", "hotwords",
-        # Safety / thresholds
-        "no_speech_threshold", "log_prob_threshold",
-        "compression_ratio_threshold", "hallucination_silence_threshold",
-        # Language detection
-        "multilingual", "language_detection_threshold",
-        "language_detection_segments",
-        # Token suppression / punctuation
-        "suppress_blank", "suppress_tokens",
-        "prepend_punctuations", "append_punctuations",
-    )
-    for k in order:
-        if k not in kwargs:
-            continue
-        out.append(_param_row("    ", k, kwargs[k]))
-        if k == "vad_filter" and kwargs[k] and kwargs.get("vad_parameters"):
-            for vk, vv in kwargs["vad_parameters"].items():
-                out.append(_param_row("      ", vk, vv))
-    return out
-
-
-def _short_speaker(label: str) -> str:
-    """`SPEAKER_00` → `S0`. Keeps the segments table's new speaker column to
-    the 5 characters the row budget can spare; anything unrecognised is just
-    truncated."""
-    m = re.search(r"(\d+)\s*$", label or "")
-    return f"S{int(m.group(1))}" if m else (label or "")[:4]
-
-
-# Windows shown in full when a decode has at most this many; a long file is
-# summarised (totals + its slowest windows) so the receipt stays readable.
-_TRACE_FULL_MAX_WINDOWS = 12
-_TRACE_SLOWEST_SHOWN = 5
-
-
-def _fmt_num(v, fmt="{:.2f}") -> str:
-    return "-" if v is None else fmt.format(float(v))
-
-
-def _format_decode_trace_section(trace: "dict | None") -> list[str]:
-    """`Decode trace` section: one row per temperature rung, grouped by window.
-
-    Header carries the totals that answer "where did the time go" at a glance:
-    windows encoded, generate() calls, tokens generated, seconds inside
-    generate(). Per rung: temperature, search (beamN / bestN), tokens, the
-    window-level stats faster-whisper judged the rung by, wall time, and the
-    outcome — `retry · <rule>` for a rung that failed the ladder, and for the
-    last rung what became of the window (kept / skipped / no text)."""
-    if not trace or not trace.get("windows"):
-        return []
-    n_w = trace.get("n_windows", len(trace["windows"]))
-    head = (f"Decode trace  ({n_w} window{'s' if n_w != 1 else ''} · "
-            f"{trace.get('n_rungs', 0)} generate call"
-            f"{'s' if trace.get('n_rungs', 0) != 1 else ''} · "
-            f"{trace.get('tokens', 0)} tokens · "
-            f"{_fmt_secs(trace.get('generate_s'))} in generate")
-    if trace.get("total_s") is not None:
-        # Wall time of the whole decode: what is not "in generate" is
-        # encoding, VAD and the segment bookkeeping between windows.
-        head += f" · {_fmt_secs(trace['total_s'])} total"
-    if trace.get("extra_encodes"):
-        head += f" · +{trace['extra_encodes']} lang-detect encode"
-    if trace.get("skipped_windows"):
-        head += f" · {trace['skipped_windows']} residual skipped"
-    head += ")"
-    out = [_section_rule(head)]
-    windows = list(trace["windows"])
-    omitted = 0
-    if len(windows) > _TRACE_FULL_MAX_WINDOWS:
-        ranked = sorted(windows, key=lambda w: -(w.get("secs") or 0.0))
-        keep = {id(w) for w in ranked[:_TRACE_SLOWEST_SHOWN]}
-        shown = [w for w in windows if id(w) in keep]
-        omitted = len(windows) - len(shown)
-        windows = shown
-        out.append(f"    slowest {len(shown)} of {n_w} windows shown")
-    out.append(f"    {'w#':>3}  {'at':>7}  {'span':>6}  {'enc':>5}   "
-               f"{'r#':>2}  {'T':>3}  {'search':<7}{'tokens':>6}  "
-               f"{'alp':>6}  {'cr':>5}  {'nsp':>4}  {'secs':>6}  outcome")
-    for w in windows:
-        at = "-" if w.get("start_s") is None else f"{w['start_s']:.2f}s"
-        span = "-" if w.get("len_s") is None else f"{w['len_s']:.2f}s"
-        prefix = (f"    {w.get('n', '?'):>3}  {at:>7}  {span:>6}  "
-                  f"{_fmt_secs(w.get('encode_s')):>5}   ")
-        blank = " " * len(prefix)
-        rungs = w.get("rungs") or []
-        if not rungs:
-            # A residual window the stop rule refused (no encode, no
-            # generate) still gets its row: that is how a reader sees the
-            # rule fire — and, should a last word ever go missing, whether
-            # this rule was involved.
-            out.append(prefix + (w.get("outcome") or "(no generate call)"))
-            continue
-        for j, r in enumerate(rungs):
-            bs, nh = r.get("beam_size"), r.get("num_hypotheses")
-            search = f"beam{bs}" if bs and bs > 1 else (f"best{nh}" if nh else "greedy")
-            row = (f"{j + 1:>2}  {r.get('temperature', 0.0):>3.1f}  {search:<7}"
-                   f"{r.get('tokens', 0):>6}  {_fmt_num(r.get('alp')):>6}  "
-                   f"{_fmt_num(r.get('cr')):>5}  {_fmt_num(r.get('nsp')):>4}  "
-                   f"{_fmt_secs(r.get('secs')):>6}  {r.get('outcome', '')}")
-            if j == 0 and w.get("token_cap") is not None:
-                # DECODE_TOKEN_CAP_PER_SECOND lowered this window's per-rung
-                # token limit (a rung that ran into it says "hit cap").
-                row += f"  [cap {w['token_cap']}]"
-            out.append((prefix if j == 0 else blank) + row)
-    if omitted:
-        out.append(f"    … {omitted} more window{'s' if omitted != 1 else ''} omitted")
-    return out
-
-
-def _format_segments_section(seg_diag: list[dict], info, kwargs: dict,
-                             speakers: "list | None" = None) -> list[str]:
-    """Either a fixed-width segments table OR an empty-output diagnostic
-    banner whose hint depends on `info.duration_after_vad` and `kwargs`.
-
-    `speakers` (per-segment labels, when diarization ran) adds a `spk`
-    column. It costs 5 of the text budget, so it is only ever added for runs
-    that actually diarized — a decode-only receipt keeps the shape it has
-    always had, and no existing log looks different."""
-    n = len(seg_diag)
-    if n == 0:
-        out = [_section_rule("Segments  (n=0)  [!] no output produced")]
-        duration = float(getattr(info, "duration", 0.0) or 0.0)
-        dav = getattr(info, "duration_after_vad", None)
-        ip = kwargs.get("initial_prompt")
-        if duration > 0 and dav is not None and float(dav) < 0.3 * duration:
-            out.append(f"    likely cause: VAD ate audio  "
-                       f"(duration_after_vad={float(dav):.2f}s vs {duration:.2f}s)")
-            out.append("    next step:    set VAD_FILTER=false or "
-                       "VAD_MIN_SILENCE_MS=250 in /settings")
-        elif ip:
-            out.append("    likely cause: initial_prompt may be poisoning decode")
-            out.append("                  (tnfru/primeline finetunes); "
-                       "clear DEFAULT_PROMPT in /settings")
-        else:
-            out.append("    likely cause: thresholds suppressed all segments")
-            out.append("                  try disabling NO_SPEECH / LOG_PROB / "
-                       "COMPRESSION_RATIO thresholds in /settings")
-        return out
-
-    dropped_n = sum(1 for s in seg_diag if s.get("dropped"))
-    label = f"Segments  (n={n})"
-    if dropped_n:
-        label += f"  [✗ = {dropped_n} dropped by post-decode guard]"
-    cut_n = sum(1 for s in seg_diag if s.get("cut") and not s.get("dropped"))
-    if cut_n:
-        label += f"  [✂ = {cut_n} made-up tail cut]"
-    head_n = sum(1 for s in seg_diag if s.get("head_cut") and not s.get("dropped"))
-    if head_n:
-        label += f"  [✂ = {head_n} prompt echo cut from the start]"
-    out = [_section_rule(label)]
-    has_spk = bool(speakers) and any(speakers)
-    spk_head = f"{'spk':>5}  " if has_spk else ""
-    out.append(
-        f"    {'#':>3}  {'start':>7}  {'end':>7}  {spk_head}"
-        f"{'alp':>6}  {'nsp':>5}  {'cr':>5}  {'T':>4}    text"
-    )
-    # The FILE keeps up to LOG_SEGMENT_ROWS_MAX rows (0 = unlimited). The
-    # /logs viewer folds them for display — but it can only ever reveal rows
-    # that were written, which is exactly why the old inert "(+610 more)"
-    # tail could never expand into anything.
-    cap = int(getattr(cfg, "LOG_SEGMENT_ROWS_MAX", 0) or 0)
-    rows = n if cap <= 0 else min(n, cap)
-    text_max = _SEG_TEXT_MAX - 5 if has_spk else _SEG_TEXT_MAX
-    for i in range(rows):
-        s = seg_diag[i]
-        text = s["text"]
-        if len(text) > text_max:
-            text = text[:text_max - 3] + "..."
-        mark = "✗" if s.get("dropped") else (
-            "✂" if s.get("cut") or s.get("head_cut") else " ")
-        spk = ""
-        if has_spk:
-            raw_spk = speakers[i] if i < len(speakers) else ""
-            spk = f"{_short_speaker(raw_spk or ''):>5}  "
-        out.append(
-            f"    {s['id']:>3d}  "
-            f"{s['start']:>6.2f}s  {s['end']:>6.2f}s  {spk}"
-            f"{s['alp']:>+6.2f}  {s['nsp']:>5.2f}  {s['cr']:>5.2f}  "
-            f"{s['temp']:>4.1f}  {mark} {text}"
-        )
-    if n > rows:
-        out.append(f"    … (+{n - rows} more, not logged — "
-                   f"raise LOG_SEGMENT_ROWS_MAX)")
-    return out
-
-
-def _align_speakers_to_diag(seg_diag: list, speakers: "list | None") -> "list | None":
-    """Speaker labels re-indexed to `seg_diag` rows for the receipt table.
-
-    `seg_diag` keeps EVERY decoded segment (dropped ones included, flagged
-    `dropped`), while assign_speakers labels only the kept `segments_list`.
-    Indexing the former with the latter shifts every label after a dropped
-    row by one; here each kept row consumes the next label and a dropped row
-    gets "". None when there is nothing to label (keeps the column off)."""
-    if not speakers:
-        return None
-    it = iter(speakers)
-    return [("" if s.get("dropped") else next(it, "")) for s in seg_diag]
-
-
-def _stage_extras(stats_key: "str | None", t0_perf: float) -> dict:
-    """`device` + `load_secs` for one Pipeline-table row.
-
-    Keyed by the NAMESPACED stats key (`pyannote:` / `uvr:` / `gguf:`
-    prefixes), not the bare model name — _model_compute_device looks up by
-    bare name and would silently miss every non-whisper family.
-
-    The stage's wall-clock start is reconstructed from its perf_counter
-    origin so `load_secs_since` can tell "this stage paid for the load" from
-    "it was already resident", without threading a second clock through
-    four call sites."""
-    out: dict = {}
-    if not stats_key:
-        return out
-    started_wall = time.time() - (time.perf_counter() - t0_perf)
-    out["load_secs"] = system_stats.load_secs_since(stats_key, started_wall)
-    for entry in system_stats.loaded_models_snapshot():
-        if entry.get("name") == stats_key:
-            out["device"] = entry.get("device")
-            break
-    return out
-
-
-def _log_held_receipts(entries: "list[dict]") -> None:
-    """Render and log receipts released without their translation.
-
-    A held receipt that vanished would be strictly worse than the split one
-    it replaces, so every release path funnels through here — including the
-    sweeper's and the shutdown flush's."""
-    for kwargs in entries:
-        try:
-            logger.info(_format_request_block(**kwargs))
-        except Exception as e:  # noqa: BLE001 — a receipt is never fatal
-            logger.warning("[receipt] release render failed: %s", e)
-
-
-def _release_held_receipt(key: "str | None", note: str) -> None:
-    """Release one held receipt on a translate failure/cancel path."""
-    if not key:
-        return
-    entry = receipt_hold.release(key, note)
-    if entry is not None:
-        _log_held_receipts([entry])
-
-
-async def _receipt_sweeper() -> None:
-    """Release receipts whose translation went quiet.
-
-    The hold is an IDLE timer restamped by the translate job's progress
-    heartbeat, so this only fires for a translation that crashed, wedged, or
-    was never sent at all — never for one that is merely slow."""
-    while True:
-        try:
-            await asyncio.sleep(5.0)
-            released = receipt_hold.sweep()
-            if released:
-                _log_held_receipts(released)
-        except asyncio.CancelledError:
-            raise
-        except Exception as e:  # noqa: BLE001 — a sweeper must not die
-            logger.warning("[receipt] sweeper error: %s", e)
-
-
-def _stage_ran(stages: "list | None", name: str) -> bool:
-    """Did this stage produce a SUCCESSFUL timing entry? Soft-failed stages
-    (detail="failed", carries an error key) are excluded — the request FLAGS
-    say what was asked for, which is a different question when a stage
-    soft-fails or is disabled server-side."""
-    return any(s.get("name") == name and "error" not in s
-               for s in (stages or []))
-
-
-def _stage_field(stages: "list | None", name: str, key: str):
-    """One field off a stage's timing entry, or the _OMIT sentinel."""
-    for s in (stages or []):
-        if s.get("name") == name:
-            v = s.get(key)
-            return v if v is not None else _OMIT
-    return _OMIT
-
-
-def _fmt_secs(v) -> str:
-    """`12.3s` / `-` for a missing timing, right-alignable."""
-    if v is None:
-        return "-"
-    return f"{float(v):.1f}s"
-
-
-def _format_pipeline_section(stages: "list[dict] | None") -> list[str]:
-    """`─── Pipeline ───`: one row per stage that actually ran.
-
-    Answers the question an operator opens the log with — where did the six
-    minutes go — which no amount of per-stage params answers. The `load`
-    column is the point: a cold model load becomes a named cost instead of
-    an unexplained gap between two timestamps, and `load 0.0s` on a stage
-    is the receipt's own proof that preloading worked.
-
-    Reuses the fixed-width column idiom _format_segments_section
-    established; there is no generic table helper and two of them would
-    drift."""
-    rows = [s for s in (stages or []) if s and s.get("name")]
-    if not rows:
-        return []
-    rows.sort(key=lambda s: (_STAGE_ORDER.index(s["name"])
-                             if s["name"] in _STAGE_ORDER else len(_STAGE_ORDER)))
-    total = sum(float(s.get("secs") or 0.0) for s in rows)
-    mins, secs = divmod(int(total), 60)
-    wall = f"{mins}:{secs:02d}" if mins else f"{total:.1f}s"
-    n = len(rows)
-    out = [_section_rule(
-        f"Pipeline  ({n} stage{'s' if n != 1 else ''} · {wall} wall)")]
-    out.append(f"    {'#':>2}  {'stage':<12} {'model':<32} {'dev':<6} "
-               f"{'load':>7} {'run':>8}")
-    for i, s in enumerate(rows, 1):
-        model = str(s.get("model") or "")
-        if len(model) > 32:
-            model = model[:29] + "..."
-        load = s.get("load_secs")
-        run = float(s.get("secs") or 0.0) - float(load or 0.0)
-        out.append(
-            f"    {i:>2}  {s['name'][:12]:<12} {model:<32} "
-            f"{str(s.get('device') or '')[:6]:<6} "
-            f"{_fmt_secs(load):>7} {_fmt_secs(max(0.0, run)):>8}"
-        )
-        detail = s.get("detail")
-        if detail:
-            out.append(f"        {detail}")
-    return out
-
-
-def _format_stage_section(label: str, rows: "list[tuple]") -> list[str]:
-    """A `─── <Stage> ───` params block. `rows` are (key, value) pairs; a
-    value of the sentinel `_OMIT` drops the row so callers can build a flat
-    list without branching around every optional knob."""
-    body = [_param_row("    ", k, v) for k, v in rows if v is not _OMIT]
-    if not body:
-        return []
-    return [_section_rule(f"{label}  (* = non-default)"), *body]
-
-
-def _format_notes_section(warnings: "list | None",
-                          skipped: "list | None") -> list[str]:
-    """`─── Notes ───`: soft failures and stages that didn't run.
-
-    These already exist as log lines, but they fire minutes before the
-    receipt and scroll away — and the receipt is the only place an operator
-    looks. `( )` marks a skip and `[!]` a warning; deliberately NOT `✗`,
-    which the segments table already owns for guard-dropped rows."""
-    out: list[str] = []
-    for s in (skipped or []):
-        out.append(f"    ( ) {_log_safe(str(s))}")
-    for w in (warnings or []):
-        out.append(f"    [!] {_log_safe(str(w))}")
-    if not out:
-        return []
-    return [_section_rule("Notes"), *out]
-
-
-def _model_compute_device(name: str) -> "tuple[str | None, str | None]":
-    """Look up the actual device + compute_type a model was loaded with —
-    these may differ from cfg.MODEL_* if the fallback path was taken."""
-    for entry in system_stats.loaded_models_snapshot():
-        if entry.get("name") == name:
-            return entry.get("compute_type"), entry.get("device")
-    return None, None
-
-
-def _format_request_block(
-    *,
-    file_label: str,
-    model_name: str,
-    info,
-    kwargs: dict,
-    seg_diag: list[dict],
-    raw: str,
-    final: str,
-    steps: "list | None" = None,
-    request_id: str | None = None,
-    captured_id: str | None = None,
-    endpoint: str = "/v1/audio/transcriptions",
-    audio_source: str | None = None,
-    ident=None,
-    overrides_ignored: "list | None" = None,
-    user_id: str | None = None,
-    key_id: str | None = None,
-    username: str | None = None,
-    key_label: str | None = None,
-    guards: "dict | None" = None,
-    stages: "list | None" = None,
-    separation: "dict | None" = None,
-    diarization: "dict | None" = None,
-    translation: "dict | None" = None,
-    speakers: "list | None" = None,
-    warnings: "list | None" = None,
-    skipped: "list | None" = None,
-    decode_trace: "dict | None" = None,
-) -> str:
-    """Full per-request log block. `steps` is the per-pipeline trace; passed
-    in only when cfg.TRACE_ENABLED so the block stays a single message.
-
-    `request_id` (uuid4 hex) is the cross-reference key between this
-    durable log block and a report submitted via /quick-config. When
-    present, the title line carries `req=<id[:8]>` so an admin reading
-    a /reports row can grep the log for the matching block.
-
-    `captured_id` is the capture row id when the capture pipeline fired
-    for this request — admins can grep for `captured=<id[:8]>` to find
-    the audio+timestamps row on /captures.
-
-    `endpoint` is the route that produced the block — `/v1/audio/transcriptions`
-    for the batch (file-upload) route, `…/stream` for live dictation — so the two
-    sources are distinguishable in the log. `audio_source` (when given) describes
-    the input transport/codec + rate, shown as an `input` line in the Audio
-    section (the model itself always decodes at 16 kHz mono).
-
-    `stages` / `separation` / `diarization` / `translation` / `speakers` /
-    `warnings` / `skipped` describe the post-decode pipeline. All optional:
-    this renderer was written when the pipeline was decode and nothing else,
-    and callers that still are (live dictation, the test modules) pass none
-    of them and get exactly the block they got before. A stage section is
-    emitted only when that stage actually ran, so a decode-only receipt is
-    unchanged and a four-stage one finally says what it did."""
-    title_rule = "═" * _LOG_WIDTH
-    rule = "─" * _LOG_WIDTH
-
-    status = "[!] empty output" if len(seg_diag) == 0 else "✓ ok"
-    if request_id:
-        status = f"req={request_id[:8]}  {status}"
-    if captured_id:
-        status = f"captured={captured_id[:8]}  {status}"
-    title = "  " + endpoint
-    pad = max(1, _LOG_WIDTH - len(title) - len(status))
-    title_line = f"{title}{' ' * pad}{status}"
-
-    lines: list[str] = ["", title_rule, title_line, title_rule]
-
-    lines.append(f"  file   {file_label}")
-    model_line = f"  model  {model_name}"
-    compute, device = _model_compute_device(model_name)
-    extras = []
-    if compute:
-        extras.append(f"compute={compute}")
-    if device:
-        extras.append(f"device={device}")
-    if extras:
-        model_line += "   " + "  ".join(extras)
-    lines.append(model_line)
-    lines.extend(_format_pipeline_section(stages))
-
-    lines.append(_section_rule("Audio"))
-    if audio_source:
-        lines.append(f"    {'input':<{_NAME_COL - 4}}{audio_source}")
-    lang = getattr(info, "language", "?")
-    lang_prob = getattr(info, "language_probability", None)
-    lang_str = f"{lang}  (prob={lang_prob:.2f})" if lang_prob is not None else str(lang)
-    duration = float(getattr(info, "duration", 0.0) or 0.0)
-    lines.append(f"    {'language':<{_NAME_COL - 4}}{lang_str}")
-    lines.append(f"    {'duration':<{_NAME_COL - 4}}{duration:.2f}s")
-    dav = getattr(info, "duration_after_vad", None)
-    if dav is not None:
-        retained = (float(dav) / duration * 100) if duration > 0 else 0.0
-        lines.append(
-            f"    {'duration_after_vad':<{_NAME_COL - 4}}"
-            f"{float(dav):.2f}s   ({retained:.0f} % retained)"
-        )
-
-    # Post-decode stage params, in pipeline order. Every one of these was in
-    # scope at the call site all along; the block simply never asked for them.
-    if separation:
-        lines.extend(_format_stage_section("Separation", [
-            ("separation_model", separation.get("model")),
-            ("device", separation.get("device", _OMIT)),
-            ("resample", separation.get("resample", _OMIT)),
-            ("stem", separation.get("stem", _OMIT)),
-        ]))
-    if diarization:
-        lines.extend(_format_stage_section("Diarization", [
-            ("diarization_model", diarization.get("model")),
-            ("device", diarization.get("device", _OMIT)),
-            ("num_speakers", diarization.get("num_speakers")),
-            ("min_speakers", diarization.get("min_speakers")),
-            ("max_speakers", diarization.get("max_speakers")),
-            ("embedding_batch_size", diarization.get("embedding_batch_size", _OMIT)),
-            ("result", diarization.get("result", _OMIT)),
-        ]))
-    if translation:
-        lines.extend(_format_stage_section("Translation", [
-            ("translation_model", translation.get("model")),
-            ("device", translation.get("device", _OMIT)),
-            ("targets", translation.get("targets")),
-            ("source_lang", translation.get("source", _OMIT)),
-            ("mode", translation.get("mode")),
-            ("context_segments", translation.get("context_segments", _OMIT)),
-            ("glossary", translation.get("glossary", _OMIT)),
-            ("result", translation.get("result", _OMIT)),
-        ]))
-
-    lines.append(_section_rule("Decode params  (* = non-default)"))
-    lines.extend(_format_decode_params(kwargs))
-
-    # Post-decode guards — applied AFTER model.transcribe (word-rate drop,
-    # tail trim, streaming final-drop thresholds), so they are not kwargs and
-    # would otherwise be invisible in the block. Rows marked ✗ in the segments
-    # table were removed by one of these.
-    if guards:
-        lines.append(_section_rule("Post-decode guards  (* = non-default)"))
-        for gk, gv in guards.items():
-            lines.append(_param_row("    ", gk, gv))
-
-    # What faster-whisper did INSIDE model.transcribe — windows, rungs,
-    # tokens. The segments table cannot show this: a tail window that ran the
-    # whole temperature ladder and was then skipped leaves no segment at all.
-    lines.extend(_format_decode_trace_section(decode_trace))
-
-    lines.extend(_format_segments_section(seg_diag, info, kwargs, speakers))
-
-    lines.extend(_format_notes_section(warnings, skipped))
-
-    # Identity section — always shown when the caller is known, so the resolved
-    # user/key (and any applied per-identity overrides, or their ABSENCE) is
-    # visible at a glance. This was previously suppressed for no-config
-    # requests, which made per-identity mismatches invisible in the log.
-    _ident_detail = ident is not None and (getattr(ident, "layers", None)
-                                           or getattr(ident, "locked", None)
-                                           or overrides_ignored)
-    if user_id or key_id or _ident_detail:
-        lines.append(_section_rule("Identity"))
-        _safe_name = _log_safe(username) if username else None
-        who = f"{_safe_name} ({_short_id(user_id)})" if _safe_name else _short_id(user_id)
-        lines.append(f"    {'user':<{_NAME_COL - 4}}{who}")
-        if key_id:
-            _safe_label = _log_safe(key_label) if key_label else None
-            which = (f"{_safe_label} ({_short_id(key_id)})"
-                     if _safe_label else _short_id(key_id))
-            lines.append(f"    {'key':<{_NAME_COL - 4}}{which}")
-        if ident is not None and ident.profiles_applied:
-            lines.append(f"    {'profiles':<{_NAME_COL - 4}}{' → '.join(ident.profiles_applied)}")
-        if ident is not None and ident.layers:
-            lines.append(f"    {'layers':<{_NAME_COL - 4}}{', '.join(ident.layers)}")
-        elif user_id or key_id:
-            # No identity layer resolved — call it out explicitly so a missing
-            # binding (the classic "my override didn't apply") is obvious.
-            lines.append(f"    {'overrides':<{_NAME_COL - 4}}(none — inherits per-model / global)")
-        if ident is not None and ident.locked:
-            lines.append(f"    {'locked':<{_NAME_COL - 4}}{', '.join(sorted(ident.locked))}")
-        if overrides_ignored:
-            lines.append(f"    {'overrides_ignored':<{_NAME_COL - 4}}{', '.join(overrides_ignored)}")
-
-    lines.append(rule)
-    lines.append(f"  RAW WHISPER  {raw!r}")
-    lines.append(rule)
-    if steps:
-        # Count only steps that actually rewrote the text (before != after) as
-        # "changed"; the rest (EXCLUDED for this model, globally disabled, no-op)
-        # are "unchanged". This matches the /quick-config and /reports viewers,
-        # which render the same trace and split it the same way — the header used
-        # to print len(steps) and label them all "changed", overcounting skips.
-        changed = sum(1 for _, before, after in steps if before != after)
-        unchanged = len(steps) - changed
-        plural = "s" if changed != 1 else ""
-        header = f"  PIPELINE  ({changed} step{plural} changed text"
-        if unchanged:
-            header += f", {unchanged} unchanged"
-        lines.append(header + ")")
-        for name, before, after in steps:
-            lines.append(f"    ▸ {name}")
-            lines.append(f"        {before!r}")
-            lines.append(f"     →  {after!r}")
-        lines.append(rule)
-    lines.append(f"  FINAL        {final!r}")
-    lines.append(title_rule)
-
-    return "\n".join(lines)
-
-
-# =============================================================================
-# Per-request model selection with LRU cache
-# =============================================================================
-# Clients can ask for any faster-whisper-compatible model via the OpenAI
-# `model` form param. We resolve the OpenAI default `whisper-1` (and empty)
-# to WHISPER_DEFAULT_MODEL, lazy-load on first use, and keep up to
-# WHISPER_MAX_LOADED_MODELS hot in VRAM (LRU eviction).
-#
-# Examples a client can pass:
-#   "whisper-1"                                        OpenAI default -> our default
-#   "large-v2"                                         faster-whisper short name
-#   "large-v3" / "large-v3-turbo" / "distil-large-v3"
-#   "Systran/faster-whisper-large-v3"                  full HF repo id
-#   "primeline/whisper-large-v3-turbo-german"          German-finetuned
-#
-# Set WHISPER_ALLOWED_MODELS to restrict which model names are accepted (a
-# comma-separated allowlist; empty = any well-formed model id goes, useful on
-# a private LAN).
-# Source: cfg.DEFAULT_MODEL / cfg.ALLOWED_MODELS / cfg.MAX_LOADED_MODELS.
-
-# Insertion order = LRU order (oldest at front). move_to_end on hit.
-_loaded_models: "OrderedDict[str, WhisperModel]" = OrderedDict()
-_model_load_lock = asyncio.Lock()
-# name → count of requests currently decoding on the cached model. A leased
-# model is never freed (see _drop_loaded_model): closing CTranslate2's native
-# translator under a running decode is a use-after-free that takes the whole
-# process down, and the caller's local Python reference alone does not stop
-# the LRU/idle paths from dropping the entry.
-#
-# Deliberately NOT guarded by _model_load_lock: every mutation happens on the
-# event loop with no await between the check and the write, and every eviction
-# path (_drop_loaded_model's callers: the LRU loop, _idle_evictor,
-# drain_then_evict, shutdown) is a synchronous block on that same loop. Loop
-# semantics therefore make check-then-mutate atomic — the same reasoning that
-# already lets the cache-hit fast path in _get_or_load_model run lock-free.
-_model_leases: "dict[str, int]" = {}
-
-
-# =============================================================================
-# SUPPRESS_CHARS resolution cache
-# =============================================================================
-# Resolve the user's SUPPRESS_CHARS string to vocabulary token IDs via the
-# loaded model's hf_tokenizer. The encoding depends on the model's BPE
-# table, so the cache key is (model_id, chars_str). Invalidated on model
-# unload (LRU/idle/evict-on-edit) and naturally rekeyed when SUPPRESS_CHARS
-# changes. An LRU capped at _SUPPRESS_CHARS_CACHE_MAX entries: a client's
-# suppress_chars decode key makes the strings caller-chosen.
-_suppress_chars_cache: "OrderedDict[tuple[str, str], tuple[int, ...]]" = OrderedDict()
-_SUPPRESS_CHARS_CACHE_MAX = 256
-
-
-def _resolve_suppress_chars(model_id: str,
-                            model: "WhisperModel",
-                            chars: "str | None",
-                            from_client: bool = False) -> "tuple[int, ...]":
-    """Return the sorted tuple of vocab IDs to suppress for the given chars.
-    Each char is encoded both bare and with a leading space — Whisper's BPE
-    often tokenizes a punct char differently in those positions (mirrors
-    faster-whisper's own non_speech_tokens approach). Multi-piece results
-    are skipped with a warning (suppressing only the first piece would
-    block every word that starts with that piece). ``from_client``: the
-    chars came from a request, so their resolution logs at DEBUG only."""
-    if not chars:
-        return ()
-    key = (model_id, chars)
-    cached = _suppress_chars_cache.get(key)
-    if cached is not None:
-        try:
-            _suppress_chars_cache.move_to_end(key)
-        except KeyError:   # dropped by a concurrent unload; still a valid answer
-            pass
-        return cached
-    tok = getattr(model, "hf_tokenizer", None)
-    ids: set[int] = set()
-    if tok is not None:
-        for ch in chars:
-            if ch.isspace():
-                continue
-            for variant in (ch, " " + ch):
-                try:
-                    enc = tok.encode(variant, add_special_tokens=False)
-                except Exception:
-                    continue
-                raw_ids = getattr(enc, "ids", None)
-                if raw_ids is None and isinstance(enc, list):
-                    raw_ids = enc
-                if raw_ids is None:
-                    continue
-                if len(raw_ids) == 1:
-                    ids.add(int(raw_ids[0]))
-                else:
-                    logger.warning(
-                        "SUPPRESS_CHARS %r tokenises to %d pieces; skipping",
-                        variant, len(raw_ids),
-                    )
-    out = tuple(sorted(ids))
-    _suppress_chars_cache[key] = out
-    while len(_suppress_chars_cache) > _SUPPRESS_CHARS_CACHE_MAX:
-        _suppress_chars_cache.popitem(last=False)
-    if out:
-        (logger.debug if from_client else logger.info)(
-            "SUPPRESS_CHARS resolved for %s (%r): %r", model_id, chars, out)
-    return out
-
-
-# Per-request decode-param overrides (the client's "decode overrides"). Optional;
-# absent leaves behavior identical to before (config-only). Every value is clamped
-# to the SAME bounds the admin config enforces (settings/schema.py), so an untrusted
-# client cannot request unbounded compute on the shared server. Applied AFTER config
-# resolution, so the order is: request > per-model override > global default.
-# Only model.transcribe kwargs belong in these tables: every key in them is
-# forwarded as one (live-dictation keys are applied by the streaming route).
-def _client_bounds(key: str) -> "tuple":
-    """(min, max) of a client decode key, read from its config field's own
-    bounds (settings_schema.client_key_bounds) rather than copied by hand."""
-    b = settings_schema.client_key_bounds()[key]
-    return b["min"], b["max"]
-
-
-_DECODE_INT_BOUNDS = {
-    "beam_size": (1, 20),
-    "best_of": (1, 20),
-    "no_repeat_ngram_size": (0, 10),
-    "language_detection_segments": _client_bounds("language_detection_segments"),
-}
-_DECODE_FLOAT_BOUNDS = {
-    "no_speech_threshold": (0.0, 1.0),
-    "log_prob_threshold": (-10.0, 0.0),
-    "compression_ratio_threshold": (0.0, 10.0),
-    "patience": (0.5, 5.0),
-    "length_penalty": (0.1, 5.0),
-    "repetition_penalty": (0.5, 5.0),
-    "hallucination_silence_threshold": _client_bounds("hallucination_silence_threshold"),
-    "language_detection_threshold": _client_bounds("language_detection_threshold"),
-}
-_DECODE_STR_CAPS = {
-    "hotwords": 2048,
-    "prepend_punctuations": 64,
-    "append_punctuations": 64,
-}
-# suppress_tokens is a list, so it gets a length cap plus a per-id range instead
-# of a scalar clamp. 256 ids is far more than any real suppression set; the range
-# is "any token id the tokenizer could hold", with -1 kept as faster-whisper's
-# "also suppress the non-speech set" sentinel.
-_SUPPRESS_TOKENS_MAX = 256
-_SUPPRESS_TOKEN_ID_MAX = 2 ** 31
-# A client temperature is a number or a retry ladder (list / comma string,
-# like TEMPERATURE): every rung clamped to this range, at most this many rungs.
-_TEMPERATURE_BOUNDS = (0.0, 1.0)
-_TEMPERATURE_RUNGS_MAX = 16
-
-
-def _clamp_int(v, lo, hi):
-    try:
-        return max(lo, min(hi, int(v)))
-    except (TypeError, ValueError, OverflowError):
-        # OverflowError: int(float('inf')) from a JSON number like 1e999.
-        return None
-
-
-def _clamp_float(v, lo, hi):
-    try:
-        r = float(v)
-    except (TypeError, ValueError, OverflowError):
-        return None
-    if not math.isfinite(r):
-        # JSON permits NaN/Infinity literals; reject them so a non-finite value
-        # is ignored (override dropped) like the int path, not silently clamped
-        # to a bound (NaN/+inf → hi, -inf → lo).
-        return None
-    return max(lo, min(hi, r))
-
-
-def _apply_decode_overrides(kwargs, resolved_model, overrides, ident=None):
-    """Merge clamped per-request decode overrides into transcribe_kwargs (request
-    wins). Unknown keys and unparseable values are ignored. Keys LOCKED by an
-    identity layer (``ident.locked_client_keys``) are dropped before clamping —
-    the admin-set value stands and the client override is ignored."""
-    if not isinstance(overrides, dict) or not overrides:
-        return kwargs
-    # Lock gate: an identity layer can forbid the client from overriding a field.
-    locked_client_keys = ident.locked_client_keys if ident is not None else frozenset()
-    if locked_client_keys:
-        overrides = {k: v for k, v in overrides.items() if k not in locked_client_keys}
-        if not overrides:
-            return kwargs
-    for key, (lo, hi) in _DECODE_INT_BOUNDS.items():
-        if key in overrides:
-            cv = _clamp_int(overrides[key], lo, hi)
-            if cv is not None:
-                kwargs[key] = cv
-    for key, (lo, hi) in _DECODE_FLOAT_BOUNDS.items():
-        if key in overrides:
-            cv = _clamp_float(overrides[key], lo, hi)
-            if cv is not None:
-                kwargs[key] = cv
-    if "temperature" in overrides:
-        tv = _client_temperature(overrides["temperature"])
-        if tv is not None:
-            kwargs["temperature"] = tv
-    # A JSON null on a bool override means "inherit", not False.
-    for key in ("condition_on_previous_text", "multilingual"):
-        if overrides.get(key) is not None:
-            kwargs[key] = bool(overrides[key])
-    for key, cap in _DECODE_STR_CAPS.items():
-        if key in overrides and isinstance(overrides[key], str):
-            kwargs[key] = overrides[key][:cap]
-    # A blank hotwords override means CLEAR the admin DEFAULT_HOTWORDS — remove
-    # the kwarg entirely. Forwarding a whitespace-only string is NOT a clear:
-    # any truthy hotwords value makes faster-whisper emit <|startofprev|> (the
-    # fake previous-transcript slot), which alone biases the decoder to treat a
-    # recording that starts mid-speech as a window continuation and drop its
-    # opening words.
-    if isinstance(kwargs.get("hotwords"), str) and not kwargs["hotwords"].strip():
-        kwargs.pop("hotwords")
-    if "suppress_tokens" in overrides:
-        st = overrides["suppress_tokens"]
-        ids = None
-        try:
-            if isinstance(st, list):
-                ids = [int(x) for x in st]
-            elif isinstance(st, str):
-                ids = [int(t.strip()) for t in st.split(",") if t.strip()]
-        except (TypeError, ValueError, OverflowError):
-            # OverflowError: int(float('inf')) from a JSON Infinity / 1e999
-            # literal — drop the malformed override like the clamp paths,
-            # never let it 500 the request.
-            ids = None
-        if ids is not None:
-            ids = [i for i in ids[:_SUPPRESS_TOKENS_MAX]
-                   if -1 <= i < _SUPPRESS_TOKEN_ID_MAX]
-            if ids:
-                kwargs["suppress_tokens"] = ids
-            elif not (st.strip() if isinstance(st, str) else st):
-                # An EXPLICITLY empty list / blank string is the client's
-                # "cleared — overrides inherited" state (distinct from the
-                # key being absent), and faster-whisper's own spelling of
-                # "suppress nothing" is None. A non-empty value that merely
-                # filtered away (out-of-range ids) is NOT a clear: leave the
-                # config value in place rather than forward an override the
-                # caller didn't really make.
-                kwargs["suppress_tokens"] = None
-    # VAD: toggle + sub-params (sub-params rebuilt from config defaults when on).
-    if overrides.get("vad_filter") is not None:
-        vf = bool(overrides["vad_filter"])
-        kwargs["vad_filter"] = vf
-        if not vf:
-            kwargs["vad_parameters"] = None
-    if kwargs.get("vad_filter"):
-        vp = dict(kwargs.get("vad_parameters") or dict(
-            min_silence_duration_ms=effective_config.cfg_for(resolved_model, "VAD_MIN_SILENCE_MS", ident),
-            speech_pad_ms=effective_config.cfg_for(resolved_model, "VAD_SPEECH_PAD_MS", ident),
-            threshold=effective_config.cfg_for(resolved_model, "VAD_THRESHOLD", ident),
-        ))
-        if "vad_min_silence_duration_ms" in overrides:
-            cv = _clamp_int(overrides["vad_min_silence_duration_ms"], 0, 10000)
-            if cv is not None:
-                vp["min_silence_duration_ms"] = cv
-        if "vad_speech_pad_ms" in overrides:
-            cv = _clamp_int(overrides["vad_speech_pad_ms"], 0, 2000)
-            if cv is not None:
-                vp["speech_pad_ms"] = cv
-        if "vad_threshold" in overrides:
-            cv = _clamp_float(overrides["vad_threshold"], 0.0, 1.0)
-            if cv is not None:
-                vp["threshold"] = cv
-        kwargs["vad_parameters"] = vp
-    return kwargs
-
-
-def _temperature_ladder(s: "str | None") -> "tuple[float, ...]":
-    """Parse a comma-separated TEMPERATURE ladder; () for blank, token-less
-    (",") or unparseable text — i.e. for every value that yields no ladder."""
-    def _finite(tok: str) -> float:
-        v = float(tok)
-        if not math.isfinite(v):
-            raise ValueError(f"non-finite temperature: {tok!r}")
-        return v
-
-    try:
-        return tuple(_finite(t.strip()) for t in (s or "").split(",") if t.strip())
-    except ValueError:
-        return ()
-
-
-def _client_temperature(v) -> "float | tuple[float, ...] | None":
-    """A client `temperature` decode key: a number, or a retry ladder as a
-    list or a comma string (TEMPERATURE's own format, parsed by
-    _temperature_ladder). Rungs are clamped to _TEMPERATURE_BOUNDS and capped
-    at _TEMPERATURE_RUNGS_MAX; one rung is a float (as before), several a
-    tuple (faster-whisper's ladder). None for anything unparseable or empty —
-    the override is then dropped, like the other clamp paths."""
-    if isinstance(v, str):
-        raw = _temperature_ladder(v)
-    elif isinstance(v, (list, tuple)):
-        raw = tuple(v)
-    else:
-        raw = (v,)
-    rungs = [_clamp_float(r, *_TEMPERATURE_BOUNDS)
-             for r in raw[:_TEMPERATURE_RUNGS_MAX]]
-    if not rungs or None in rungs:
-        return None
-    return rungs[0] if len(rungs) == 1 else tuple(rungs)
-
-
-def assemble_transcribe_kwargs(resolved_model, model, *, language, temperature,
-                               vad_filter, vad_parameters, want_word_ts,
-                               initial_prompt, overrides=None, ident=None,
-                               task="transcribe"):
-    """Assemble the full ``model.transcribe`` kwargs from per-model config.
-
-    Single source of truth shared by the batch endpoint and the streaming FINAL
-    decode, so the two produce identical results for the same audio (there must
-    be no difference between streaming and batch). The per-request values
-    (``language``, ``temperature``, ``vad_filter``, ``vad_parameters``,
-    ``want_word_ts``, ``initial_prompt``) are passed in already resolved; every
-    other knob is read here via ``cf`` which layers per-identity (``ident``) >
-    per-model > global. ``ident=None`` is byte-identical to the pre-feature path.
-    """
-    def cf(field):
-        return effective_config.cfg_for(resolved_model, field, ident)
-
-    transcribe_kwargs = dict(
-        language=language if language else None,
-        beam_size=cf("BEAM_SIZE"),
-        best_of=cf("BEST_OF"),
-        temperature=temperature,
-        vad_filter=vad_filter,
-        vad_parameters=vad_parameters,
-        word_timestamps=want_word_ts,
-        condition_on_previous_text=cf("CONDITION_ON_PREVIOUS_TEXT"),
-        initial_prompt=initial_prompt,
-        no_speech_threshold=cf("NO_SPEECH_THRESHOLD"),
-        log_prob_threshold=cf("LOG_PROB_THRESHOLD"),
-        compression_ratio_threshold=cf("COMPRESSION_RATIO_THRESHOLD"),
-    )
-    # Whisper task — only forwarded off-default, so the kwargs dict (and the
-    # streaming FINAL decode, which never passes `task`) stay byte-identical
-    # to the pre-feature path for plain transcription.
-    if task and task != "transcribe":
-        transcribe_kwargs["task"] = task
-    # Optional advanced kwargs — only forwarded when set, so the
-    # transcribe_kwargs dict stays clean for the common path.
-    _hotwords = cf("DEFAULT_HOTWORDS")
-    if _hotwords and _hotwords.strip():
-        transcribe_kwargs["hotwords"] = _hotwords
-    _temp_str = cf("TEMPERATURE")
-    if _temp_str:
-        # Per-model/identity override of the temperature ladder. Comma-
-        # separated floats; falls back to the per-request `temperature`
-        # (default 0.0) when unset.
-        ladder = _temperature_ladder(_temp_str)
-        if ladder:
-            transcribe_kwargs["temperature"] = ladder
-    _patience = cf("PATIENCE")
-    if _patience and _patience != 1.0:
-        transcribe_kwargs["patience"] = _patience
-    _length_penalty = cf("LENGTH_PENALTY")
-    if _length_penalty and _length_penalty != 1.0:
-        transcribe_kwargs["length_penalty"] = _length_penalty
-    _repetition_penalty = cf("REPETITION_PENALTY")
-    if _repetition_penalty and _repetition_penalty != 1.0:
-        transcribe_kwargs["repetition_penalty"] = _repetition_penalty
-    _no_repeat_ngram = cf("NO_REPEAT_NGRAM_SIZE")
-    if _no_repeat_ngram:
-        transcribe_kwargs["no_repeat_ngram_size"] = _no_repeat_ngram
-    _prompt_reset_t = cf("PROMPT_RESET_ON_TEMPERATURE")
-    if _prompt_reset_t is not None and _prompt_reset_t != 0.5:
-        transcribe_kwargs["prompt_reset_on_temperature"] = _prompt_reset_t
-    if cf("MULTILINGUAL"):
-        transcribe_kwargs["multilingual"] = True
-    _lang_thresh = cf("LANGUAGE_DETECTION_THRESHOLD")
-    if _lang_thresh is not None and _lang_thresh != 0.5:
-        transcribe_kwargs["language_detection_threshold"] = _lang_thresh
-    _lang_segs = cf("LANGUAGE_DETECTION_SEGMENTS")
-    if _lang_segs and _lang_segs != 1:
-        transcribe_kwargs["language_detection_segments"] = _lang_segs
-    _hallu_silence = cf("HALLUCINATION_SILENCE_THRESHOLD")
-    if _hallu_silence:
-        # 0 is "off" here, but an active threshold to faster-whisper (it only
-        # treats None as off) — so only a positive value is forwarded.
-        transcribe_kwargs["hallucination_silence_threshold"] = _hallu_silence
-    _suppress_blank = cf("SUPPRESS_BLANK")
-    if _suppress_blank is False:
-        transcribe_kwargs["suppress_blank"] = False
-    _suppress_tokens_str = cf("SUPPRESS_TOKENS")
-    # An explicitly blank SUPPRESS_TOKENS (profile / per-model / global) is
-    # "suppress nothing" — faster-whisper's spelling is None, which the
-    # SUPPRESS_CHARS merge below reads as "cleared".
-    if _suppress_tokens_str is not None:
-        if _suppress_tokens_str.strip():
-            try:
-                transcribe_kwargs["suppress_tokens"] = [
-                    int(t.strip()) for t in _suppress_tokens_str.split(",") if t.strip()
-                ]
-            except ValueError:
-                pass
-        else:
-            transcribe_kwargs["suppress_tokens"] = None
-    # "" is an explicit "no punctuation splitting" (a cleared profile /
-    # per-model field), so it is forwarded like the per-request override
-    # path does; only an ABSENT value leaves faster-whisper's default.
-    _prepend_p = cf("PREPEND_PUNCTUATIONS")
-    if _prepend_p is not None:
-        transcribe_kwargs["prepend_punctuations"] = _prepend_p
-    _append_p = cf("APPEND_PUNCTUATIONS")
-    if _append_p is not None:
-        transcribe_kwargs["append_punctuations"] = _append_p
-    # Per-request overrides win (clamped), EXCEPT fields locked by an identity
-    # layer (skipped). No-op when None/empty.
-    _apply_decode_overrides(transcribe_kwargs, resolved_model, overrides, ident=ident)
-    # A client hallucination_silence_threshold of 0 is "off" too (see above).
-    if not transcribe_kwargs.get("hallucination_silence_threshold"):
-        transcribe_kwargs.pop("hallucination_silence_threshold", None)
-    # SUPPRESS_CHARS — chars resolved to vocab IDs via the loaded model's
-    # tokenizer, then merged into the EFFECTIVE suppress_tokens list, i.e.
-    # after a client suppress_tokens override (which used to replace the
-    # merged ids). Genuinely additive: key absent = faster-whisper's default
-    # (-1, the non-speech set) plus the chars; a cleared list (None, from the
-    # config or the client) = the chars only; a list = the list plus the chars.
-    # A client suppress_chars (unless locked) replaces the configured string;
-    # "" is an explicit "no chars".
-    _suppress_chars = cf("SUPPRESS_CHARS")
-    _client_chars = (overrides or {}).get("suppress_chars")
-    _chars_from_client = (
-        isinstance(_client_chars, str)
-        and "suppress_chars" not in (ident.locked_client_keys
-                                     if ident is not None else frozenset()))
-    if _chars_from_client:
-        _suppress_chars = _client_chars[
-            :settings_schema.client_key_bounds()["suppress_chars"]["maxlen"]]
-    if _suppress_chars:
-        extra_ids = _resolve_suppress_chars(resolved_model, model, _suppress_chars,
-                                            _chars_from_client)
-        if extra_ids:
-            if "suppress_tokens" not in transcribe_kwargs:
-                merged_ids = sorted({-1, *extra_ids})
-            elif transcribe_kwargs["suppress_tokens"] is None:
-                merged_ids = sorted(set(extra_ids))
-            else:
-                merged_ids = sorted(set(transcribe_kwargs["suppress_tokens"])
-                                    | set(extra_ids))
-            transcribe_kwargs["suppress_tokens"] = merged_ids
-    # multilingual re-detects the language on every 30 s window and IGNORES a
-    # given language — a chosen language must win, so it applies to
-    # auto-detect only.
-    if transcribe_kwargs.get("language"):
-        transcribe_kwargs.pop("multilingual", None)
-    return transcribe_kwargs
-
-
-# Client keys that only act while the language is auto-detected.
-_AUTO_DETECT_ONLY_KEYS = ("multilingual", "language_detection_threshold",
-                          "language_detection_segments")
-
-
-def _note_auto_detect_only(overrides: dict, language: "str | None",
-                           ignored: list) -> None:
-    """multilingual and the language-detection knobs apply to auto-detect
-    only (assemble_transcribe_kwargs drops multilingual when a language is
-    set; faster-whisper skips detection): a client override for one of them
-    then lands in `overrides_ignored`, like a locked key, instead of
-    vanishing."""
-    if not language:
-        return
-    for key in _AUTO_DETECT_ONLY_KEYS:
-        if overrides.get(key) is not None and key not in ignored:
-            ignored.append(key)
-
-
-def _note_word_ts_only(overrides: dict, word_timestamps: bool,
-                       ignored: list) -> None:
-    """faster-whisper reads hallucination_silence_threshold only from a decode
-    with word timestamps: without them a client value (0 = off aside) lands in
-    `overrides_ignored` instead of vanishing."""
-    if (not word_timestamps and overrides.get("hallucination_silence_threshold")
-            and "hallucination_silence_threshold" not in ignored):
-        ignored.append("hallucination_silence_threshold")
-
-
-def _output_wrappers(resolved_model, ident, overrides: "dict | None") -> "tuple[str, str]":
-    """(OUTPUT_PREFIX, OUTPUT_SUFFIX) for this request: the client's
-    output_prefix / output_suffix decode keys win unless locked, else the
-    resolved config. Gated on ident.locked_client_keys, which carries the
-    decode-override master gate too (_resolve_request_knob's ident.locked
-    would miss it). "" is an explicit "none"; capped at the field length.
-    Shared by the batch route and the streaming wrappers (handshake and
-    _refresh_ident)."""
-    locked = ident.locked_client_keys if ident is not None else frozenset()
-    bounds = settings_schema.client_key_bounds()
-    out = []
-    for field, key in (("OUTPUT_PREFIX", "output_prefix"),
-                       ("OUTPUT_SUFFIX", "output_suffix")):
-        v = (overrides or {}).get(key)
-        if isinstance(v, str) and key not in locked:
-            out.append(v[:bounds[key]["maxlen"]])
-        else:
-            out.append(effective_config.cfg_for(resolved_model, field, ident) or "")
-    return out[0], out[1]
-
-
-# Below this many words a segment's rate is statistically meaningless (a single
-# short interjection in a tight VAD chunk can legitimately look "fast").
-_WORD_RATE_MIN_WORDS = 3
-
-
-def tail_guard_limits(model_name, ident) -> dict:
-    """The three tail-cut settings (core/segment_guards.py) resolved for this
-    model + identity, as apply_tail_guards kwargs. Shared by the batch route and
-    both streaming decodes."""
-    return {
-        "burst": float(effective_config.cfg_for(model_name, "SEGMENT_MAX_WORD_BURST_PER_S", ident) or 0),
-        "zero_tail": int(effective_config.cfg_for(model_name, "SEGMENT_ZERO_LENGTH_TAIL_MIN_WORDS", ident) or 0),
-        "repeats": int(effective_config.cfg_for(model_name, "SEGMENT_REPEAT_COLLAPSE_MIN_REPEATS", ident) or 0),
-    }
-
-
-def tail_guard_rows(limits: dict) -> dict:
-    """The receipt's "Post-decode guards" rows for the three tail-cut settings."""
-    return {
-        "segment_max_word_burst_per_sec": limits["burst"],
-        "segment_zero_length_tail_min_words": limits["zero_tail"],
-        "segment_repeat_collapse_min_repeats": limits["repeats"],
-    }
-
-
-# Tail cuts listed one per row; a long file that trips the guards on many
-# segments gets the rest as a count, like the capped segments table.
-_TAIL_CUT_ROWS_MAX = 10
-
-
-def tail_cut_rows(cuts: list) -> dict:
-    """One receipt row per tail cut that fired (`tail_cut`, `tail_cut_2`, …),
-    the first `_TAIL_CUT_ROWS_MAX` of them; `tail_cut_more` counts the rest."""
-    rows = {("tail_cut" if n == 0 else f"tail_cut_{n + 1}"):
-            PlainText(segment_guards.describe_cut(c))
-            for n, c in enumerate(cuts[:_TAIL_CUT_ROWS_MAX])}
-    if len(cuts) > _TAIL_CUT_ROWS_MAX:
-        rows["tail_cut_more"] = PlainText(
-            f"{len(cuts) - _TAIL_CUT_ROWS_MAX} more not listed")
-    return rows
-
-
-def head_echo_min_words(model_name, ident) -> int:
-    """SEGMENT_HEAD_ECHO_MIN_WORDS resolved for this model + identity (the head
-    twin of tail_guard_limits; kept apart because it is not an
-    apply_tail_guards kwarg). 1 is treated as off, like the guard does."""
-    n = int(effective_config.cfg_for(model_name, "SEGMENT_HEAD_ECHO_MIN_WORDS", ident) or 0)
-    return n if n >= 2 else 0
-
-
-def head_echo_rows(min_words: int, cut: "dict | None") -> dict:
-    """The receipt's "Post-decode guards" rows for the head-echo rule: the
-    setting, plus a `head_cut` row when it fired. Only the first surviving
-    segment is checked, so there is at most one cut per decode."""
-    rows: dict = {"segment_head_echo_min_words": min_words}
-    if cut:
-        rows["head_cut"] = PlainText(segment_guards.describe_head_cut(cut))
-    return rows
-
-
-def record_tail_cut(cut: dict, *, emptied: bool) -> None:
-    """Count one tail (or head-echo) cut on /stats: every rule that fired, plus
-    "emptied" when nothing was left of the segment."""
-    for rule in cut.get("rules") or []:
-        metrics.record_guard_hit(rule)
-    if emptied:
-        metrics.record_guard_hit("emptied")
-
-
-def segment_exceeds_word_rate(seg, max_wps: float) -> bool:
-    """Post-decode anti-hallucination guard (SEGMENT_MAX_WORDS_PER_S), shared
-    by the batch route and the streaming FINAL decode.
-
-    When trailing non-speech audio survives the VAD into a decode, Whisper
-    re-decodes the sub-second leftover after the last aligned word as its own
-    zero-padded window and confidently replays its text context — segments of
-    20+ words crammed into half a second. Those pass every confidence gate
-    (high avg_logprob, temperature 0.0, no_speech_prob possibly below the
-    threshold); the impossible word density is their one reliable signature.
-    Real speech peaks around ~6 words/s, so the default limit of 10 has wide
-    margin on both sides."""
-    if not max_wps or max_wps <= 0:
-        return False
-    words = getattr(seg, "words", None)
-    n = len(words) if words else len((getattr(seg, "text", "") or "").split())
-    if n < _WORD_RATE_MIN_WORDS:
-        return False
-    duration = float(getattr(seg, "end", 0.0) or 0.0) - float(getattr(seg, "start", 0.0) or 0.0)
-    if duration <= 0:
-        return True
-    return (n / duration) > float(max_wps)
-
-
-def _drop_suppress_chars_cache(model_id: str) -> None:
-    """Drop all cache entries for a given model. Called from unload paths."""
-    for k in list(_suppress_chars_cache):
-        if k[0] == model_id:
-            _suppress_chars_cache.pop(k, None)
-
-
-def _drop_loaded_model(name: str, *, force: bool = False) -> bool:
-    """Single unload entry point: pop the cached WhisperModel, drop its
-    suppress-chars entries, and unregister from the system_stats registry.
-    Caller is responsible for holding _model_load_lock when the unload is
-    racy with loads (LRU eviction and idle eviction paths).
-
-    Declines (False) while a request holds a lease on the model, unless
-    ``force``. ``force`` is for the drain-then-evict / shutdown paths, whose
-    documented contract (see drain_then_evict) is that in-flight requests keep
-    running on the local reference they already captured."""
-    if not force and _model_leases.get(name, 0) > 0:
-        logger.info("Model %s is in use — eviction deferred", name)
-        return False
-    _loaded_models.pop(name, None)
-    _drop_suppress_chars_cache(name)
-    system_stats.unregister_loaded_model(name)
-    return True
-
-
-def _release_model_lease(name: str) -> None:
-    """Release a lease taken by ``_get_or_load_model(..., lease=True)`` and
-    restart the model's idle clock — a long transcription must not be evicted
-    the instant it ends because the LOAD timestamp aged past the idle timeout.
-
-    Synchronous and lock-free (see the _model_leases comment). Tolerates a name
-    that is no longer cached: drain_then_evict/shutdown force-drop entries out
-    from under their lease holders by design."""
-    n = _model_leases.get(name, 0) - 1
-    if n <= 0:
-        _model_leases.pop(name, None)
-    else:
-        _model_leases[name] = n
-    # No-op for a name the registry no longer knows (force-dropped mid-job).
-    system_stats.touch_loaded_model(name)
-
-
-def _resolve_model_name(requested: str) -> str:
-    """Map OpenAI-compatible 'whisper-1' (or empty) to our configured default;
-    pass anything else through as a faster-whisper / HF model identifier."""
-    if not requested or requested == "whisper-1":
-        return cfg.DEFAULT_MODEL
-    return requested
 
 
 def _clamp_context_segments(v: "int | None") -> "int | None":
@@ -1700,614 +208,7 @@ def _clamp_context_segments(v: "int | None") -> "int | None":
     if v is None:
         return None
     b = settings_schema.field_bounds()["TRANSLATION_CONTEXT_SEGMENTS"]
-    return _clamp_int(v, b["min"], b["max"])
-
-
-# =============================================================================
-# Auto HF→CT2 conversion (opt-in via AUTO_CONVERT_HF_MODELS)
-# =============================================================================
-# Cache structure: <root>/<sanitised_id>/<quantization>/{model.bin, ...}
-# - root: cfg.CONVERTED_MODELS_DIR or ~/.cache/whisper-ct2
-# - sanitised_id: model id with "/" replaced by "__"
-# - quantization: e.g. "float16" — encoded in the path so changing the cfg
-#                 doesn't collide with the previously-saved version.
-#
-# Locking strategy:
-# - Per-model asyncio.Lock (held during conversion, NOT held during the
-#   subsequent WhisperModel load — so cached-model fast paths for OTHER
-#   models stay snappy).
-# - filelock.FileLock for cross-process safety (uvicorn --workers > 1).
-# - Atomic publish: write to <output_dir>.tmp, then os.rename to final.
-#   Crash mid-conversion leaves no false-positive "model.bin exists" state.
-
-_CT2_QUANTIZATIONS = {
-    "float32", "float16", "bfloat16", "int16",
-    "int8", "int8_float32", "int8_float16", "int8_bfloat16",
-}
-
-# Per-model asyncio locks for conversion. Lazy-populated.
-_convert_locks: "dict[str, asyncio.Lock]" = {}
-_convert_locks_meta = asyncio.Lock()
-
-
-def _converted_root() -> str:
-    """Resolve the output root for converted models. Honours
-    cfg.CONVERTED_MODELS_DIR when set, else ~/.cache/whisper-ct2."""
-    return getattr(cfg, "CONVERTED_MODELS_DIR", None) or os.path.join(
-        os.path.expanduser("~"), ".cache", "whisper-ct2"
-    )
-
-
-def _converted_dir_for(model_id: str, quantization: str) -> str:
-    """Compute the deterministic output directory for `model_id` at the given
-    quantisation. Sanitisation: HF repo IDs only contain `[A-Za-z0-9_.-]` plus
-    one `/`, so a single replace is enough. ":" is folded too: a local
-    HF-format dir like `C:\\models\\x` would otherwise keep its drive
-    letter and make os.path.join() discard the converted root on Windows."""
-    sanitised = model_id
-    for ch in ("/", os.sep, ":"):
-        sanitised = sanitised.replace(ch, "__")
-    return os.path.join(_converted_root(), sanitised, quantization)
-
-
-def _model_needs_conversion(model_id: str) -> bool:
-    """Return True if `model_id` is an HF transformers Whisper checkpoint
-    (has model.safetensors / pytorch_model.bin but no model.bin in the repo).
-    False for already-CT2 repos and for local paths.
-
-    Implementation: probe the HF Hub file list. Network call (~1 s) but only
-    runs when AUTO_CONVERT_HF_MODELS is on AND the converted-output cache
-    misses, so it's at worst once per model per process lifetime."""
-    # Local path that exists → never convert.
-    if os.path.isdir(model_id):
-        return not os.path.isfile(os.path.join(model_id, "model.bin"))
-    # Heuristic: HF repo id always contains a single "/".
-    if "/" not in model_id or model_id.count("/") != 1:
-        return False
-    try:
-        from huggingface_hub import list_repo_files
-        files = set(list_repo_files(model_id))
-    except Exception as e:
-        logger.warning("auto-convert: could not probe %s file list (%s); "
-                       "assuming no conversion needed", model_id, e)
-        return False
-    if "model.bin" in files:
-        return False  # already CT2
-    if "model.safetensors" in files or "pytorch_model.bin" in files:
-        return True
-    # Unknown layout — let WhisperModel try and fail naturally.
-    return False
-
-
-def _convert_blocking(model_id: str, output_dir: str, quantization: str) -> None:
-    """Synchronous CT2 conversion. Runs in a thread executor so the event
-    loop stays responsive. Lazy-imports torch / transformers / ctranslate2
-    converter machinery; missing extras → RuntimeError with pip command.
-
-    Atomic publish: writes to `<output_dir>.tmp` then renames to `output_dir`
-    so a crash mid-write leaves no false-positive (next start re-detects the
-    missing model.bin and retries cleanly)."""
-    try:
-        from ctranslate2.converters import TransformersConverter
-        import transformers  # noqa: F401  ensure dep present
-        import torch  # noqa: F401
-    except ImportError as e:
-        raise RuntimeError(
-            f"AUTO_CONVERT_HF_MODELS=true but the conversion extras are not "
-            f"installed (missing {e.name!r}). Run: "
-            f"pip install -r requirements-convert.txt"
-        ) from e
-
-    tmp_dir = output_dir + ".tmp"
-    # Clean any stale tmp from a prior crashed run.
-    if os.path.isdir(tmp_dir):
-        shutil.rmtree(tmp_dir)
-
-    logger.info("auto-convert: %s → %s (quantisation=%s)",
-                model_id, output_dir, quantization)
-    t0 = time.perf_counter()
-    converter = TransformersConverter(
-        model_name_or_path=model_id,
-        # tokenizer.json + preprocessor_config.json are required by faster-
-        # whisper at runtime (transcribe.py:700, :732). vocabulary.json is
-        # generated by CT2 itself; copying the HF vocab.json is harmless but
-        # not necessary.
-        copy_files=["tokenizer.json", "preprocessor_config.json"],
-        # Loading the source as fp16 keeps RAM ~halved during conversion;
-        # HF Whisper checkpoints typically ship as fp16 anyway, no precision
-        # loss. low_cpu_mem_usage avoids HF's duplicate-on-CPU intermediate.
-        load_as_float16=(quantization in ("float16", "int8_float16")),
-        low_cpu_mem_usage=True,
-    )
-    converter.convert(tmp_dir, quantization=quantization, force=True)
-    # Atomic publish. os.replace can't swap onto a non-empty dir on any OS (and
-    # os.rename also fails onto an existing dir on Windows), so clear any stale
-    # publish first, then replace.
-    if os.path.isdir(output_dir):
-        shutil.rmtree(output_dir)
-    os.replace(tmp_dir, output_dir)
-    logger.info("auto-convert: %s completed in %.1fs",
-                model_id, time.perf_counter() - t0)
-
-
-async def _ensure_ct2_model(name: str) -> str:
-    """If `name` is an HF transformers Whisper repo and AUTO_CONVERT_HF_MODELS
-    is on, ensure a CT2 conversion exists locally and return its path.
-    Otherwise return `name` unchanged.
-
-    Locking: per-name asyncio.Lock + filelock.FileLock (cross-process).
-    Conversion runs in a thread executor (blocking torch / numpy work)."""
-    if not getattr(cfg, "AUTO_CONVERT_HF_MODELS", False):
-        return name
-    quantization = getattr(cfg, "CONVERT_QUANTIZATION", None) or "float16"
-    if quantization not in _CT2_QUANTIZATIONS:
-        logger.warning("auto-convert: invalid CONVERT_QUANTIZATION %r; "
-                       "falling back to float16", quantization)
-        quantization = "float16"
-    output_dir = _converted_dir_for(name, quantization)
-    # Fast path: already converted (idempotent across restarts).
-    if os.path.isfile(os.path.join(output_dir, "model.bin")):
-        return output_dir
-    # Skip the file-list probe + conversion for already-CT2 repos and
-    # local paths. OFF the loop: the probe makes a synchronous
-    # huggingface_hub.list_repo_files() HTTPS call (its own docstring says
-    # "~1 s"), and this is an async def. Pure predicate, evaluated before the
-    # per-model lock below, so nothing can reorder against it.
-    if not await asyncio.to_thread(_model_needs_conversion, name):
-        return name
-
-    # Per-model asyncio lock (lazy create). Ensures only one conversion of
-    # a given model proceeds within this worker, without serialising loads
-    # of OTHER models behind a global lock.
-    async with _convert_locks_meta:
-        lk = _convert_locks.setdefault(name, asyncio.Lock())
-    async with lk:
-        # Re-check inside the lock — another coroutine may have just finished.
-        if os.path.isfile(os.path.join(output_dir, "model.bin")):
-            return output_dir
-        # Cross-process file-lock so multi-worker uvicorn doesn't double-convert.
-        # Both the lock acquisition (polling, up to 600 s) and the conversion
-        # itself are blocking, so the whole section runs off the event loop.
-        from filelock import FileLock, Timeout as FileLockTimeout
-        os.makedirs(os.path.dirname(output_dir), exist_ok=True)
-        lock_path = output_dir + ".lock"
-
-        def _locked_convert() -> None:
-            with FileLock(lock_path, timeout=600):
-                if os.path.isfile(os.path.join(output_dir, "model.bin")):
-                    return
-                _convert_blocking(name, output_dir, quantization)
-
-        try:
-            await asyncio.get_running_loop().run_in_executor(
-                None, _locked_convert,
-            )
-        except FileLockTimeout:
-            logger.warning(
-                "[convert] auto-convert of %r timed out waiting for a peer "
-                "worker (>10 min); lock file: %s", name, lock_path,
-            )
-            raise HTTPException(
-                status_code=503,
-                detail=f"Auto-convert of {name!r} timed out waiting for "
-                       f"a peer worker (>10 min).",
-            )
-    return output_dir
-
-
-# Shared GPU inference limiter — caps concurrent model.transcribe() calls across
-# BOTH the streaming WebSocket and the batch /transcribe route so they don't
-# oversubscribe the GPU under the ~10-concurrent target. Built lazily on first
-# use (binds to the running loop); width = cfg.INFERENCE_CONCURRENCY (restart-
-# required). streaming/routes.py acquires the same object via this getter.
-_inference_semaphore: "asyncio.Semaphore | None" = None
-
-
-def get_inference_semaphore() -> "asyncio.Semaphore":
-    global _inference_semaphore
-    if _inference_semaphore is None:
-        n = max(1, int(getattr(cfg, "INFERENCE_CONCURRENCY", 2)))
-        # A timed semaphore: same `async with` contract, plus queue depth /
-        # oldest wait for /stats and the per-request wait_s on the ledger.
-        _inference_semaphore = metrics.GpuGate(n)
-        metrics.gpu_gate = _inference_semaphore
-    return _inference_semaphore
-
-
-def _failed_stage(name: str, t0: float, model: "str | None",
-                  exc: BaseException) -> dict:
-    """A receipt row for a stage that soft-failed (the job went on without
-    it): its wall time, and an `error` class the usage ledger counts —
-    without it a failed stage left no row anywhere."""
-    return {
-        "name": name,
-        "secs": round(time.perf_counter() - t0, 2),
-        "model": model or None,
-        "detail": "failed",
-        "error": metrics.classify_error(exc, status="error", stage=name)[0],
-    }
-
-
-# Separate limiter for transcribe-from-URL downloads: network-bound work that
-# must NOT occupy a GPU slot (a slow site would starve inference otherwise).
-# Same lazy-build/restart-required contract as the inference semaphore.
-_url_download_semaphore: "asyncio.Semaphore | None" = None
-
-
-def _get_url_download_semaphore() -> "asyncio.Semaphore":
-    global _url_download_semaphore
-    if _url_download_semaphore is None:
-        n = max(1, int(getattr(cfg, "URL_DOWNLOAD_CONCURRENCY", 2)))
-        _url_download_semaphore = asyncio.Semaphore(n)
-    return _url_download_semaphore
-
-
-# faster-whisper short name OR HuggingFace repo id (org/name) — the same shape
-# settings_schema._MODEL_ID_PATTERN validates configured model ids against. Used
-# below to bound what an EMPTY ALLOWED_MODELS accepts from a request.
-# \Z, not $: `$` also matches just BEFORE a trailing newline, so "some-repo\n"
-# passed the gate. \Z anchors at the true end of the string and is a pure
-# tightening here (no legitimate model id ends in a newline); fixing it in the
-# pattern also covers every other caller of this regex, which stripping inside
-# _resolve_model_name would not.
-_MODEL_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.\-]*(/[A-Za-z0-9_.\-]+)?\Z")
-
-
-def _check_model_allowed(name: str) -> None:
-    """400 when an ALLOWED_MODELS allowlist is set and ``name`` is not on it."""
-    if cfg.ALLOWED_MODELS and name not in cfg.ALLOWED_MODELS:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Model '{name}' is not in the allowed list. "
-                   f"Allowed: {sorted(cfg.ALLOWED_MODELS)}",
-        )
-
-
-def _check_model_shape(name: str) -> None:
-    """400 for a malformed model id when no allowlist is set.
-
-    No allowlist configured: the name arrives verbatim from the request, and
-    in the loader it reaches os.path.isdir() / the HF hub / the CT2 converter.
-    Accept DEFAULT_MODEL (which may legitimately be a local directory) and
-    otherwise only well-formed model ids — no filesystem paths, no "..", no URLs."""
-    if (
-        not cfg.ALLOWED_MODELS
-        and name != cfg.DEFAULT_MODEL
-        and (".." in name or not _MODEL_ID_RE.match(name))
-    ):
-        raise HTTPException(
-            status_code=400,
-            detail=f"Model '{name}' is not a valid model id. Use a "
-                   f"faster-whisper name or a HuggingFace repo id, or add it "
-                   f"to ALLOWED_MODELS.",
-        )
-
-
-def _check_model_name(name: str) -> None:
-    """Both model gates the loader applies, without loading anything — for
-    endpoints that only read a model's config (GET /v1/request-default-settings)."""
-    _check_model_allowed(name)
-    _check_model_shape(name)
-
-
-async def _get_or_load_model(name: str, *, lease: bool = False) -> "WhisperModel":
-    """Return the cached WhisperModel for ``name``, loading it on a miss.
-
-    ``lease=True`` marks the model as in-use until the caller passes the same
-    name to :func:`_release_model_lease` (a `finally:` — see the transcribe
-    handler). A leased model survives LRU and idle eviction. The startup
-    preload deliberately does NOT lease: it wants plain LRU/idle semantics."""
-    # Lazy import (see the TYPE_CHECKING note up top): only when a model is
-    # actually loaded do we need the native faster_whisper stack.
-    from faster_whisper import WhisperModel  # noqa: F401  (used in executor lambdas below)
-
-    # The allowlist is read live per request and is in neither
-    # settings_schema.RESTART_REQUIRED_FIELDS nor LOAD_TIME_FIELDS, so narrowing it
-    # is reported to the admin as hot-applied and evicts nothing. Gate BEFORE the
-    # cache fast path, or a model that is still resident keeps being served to
-    # clients after the admin withdrew it (MODEL_IDLE_TIMEOUT_S defaults to 0,
-    # so the entry only leaves on LRU pressure or restart).
-    _check_model_allowed(name)
-
-    cached = _loaded_models.get(name)
-    if cached is not None:
-        # Tolerate the race against _drop_loaded_model from _idle_evictor
-        # or drain_then_evict, both of which hold _model_load_lock; this
-        # cache-hit fast path runs lock-free so move_to_end can KeyError
-        # if the entry was popped between .get() and here.
-        try:
-            _loaded_models.move_to_end(name)
-        except KeyError:
-            pass
-        system_stats.touch_loaded_model(name)
-        if lease:
-            _model_leases[name] = _model_leases.get(name, 0) + 1
-        return cached
-
-    _check_model_shape(name)
-
-    # Auto-convert HF transformers Whisper repos to CT2 format if enabled.
-    # Runs OUTSIDE _model_load_lock so loads of OTHER cached models stay
-    # snappy during the (rare, slow) conversion step. Returns `name`
-    # unchanged if conversion is off, repo is already CT2, or it's a
-    # local path with model.bin.
-    load_path = await _ensure_ct2_model(name)
-
-    loop = asyncio.get_running_loop()
-    # Per-model override > global default. Each loaded model can pin its
-    # own device/compute_type/etc. independently.
-    primary_device = effective_config.cfg_for(name, "MODEL_DEVICE")
-    primary_compute = effective_config.cfg_for(name, "MODEL_COMPUTE_TYPE")
-    fallback_device = effective_config.cfg_for(name, "MODEL_DEVICE_FALLBACK")
-    fallback_compute = effective_config.cfg_for(name, "MODEL_COMPUTE_TYPE_FALLBACK")
-    # Load-time hardware kwargs (also per-model overrideable).
-    load_kwargs = {
-        "device": primary_device,
-        "compute_type": primary_compute,
-        "device_index": effective_config.cfg_for(name, "DEVICE_INDEX"),
-        "cpu_threads": effective_config.cfg_for(name, "CPU_THREADS"),
-        "num_workers": effective_config.cfg_for(name, "NUM_WORKERS"),
-    }
-    # Optional load-time fields — only forwarded if non-default to keep
-    # WhisperModel(...) clean for the common path.
-    _download_root = effective_config.cfg_for(name, "DOWNLOAD_ROOT")
-    if _download_root:
-        load_kwargs["download_root"] = _download_root
-    if effective_config.cfg_for(name, "LOCAL_FILES_ONLY"):
-        load_kwargs["local_files_only"] = True
-    _auth_token = effective_config.cfg_for(name, "HF_TOKEN")
-    if _auth_token:
-        load_kwargs["use_auth_token"] = _auth_token
-    # PM-only field (no global counterpart): read directly from override.
-    _overrides = getattr(cfg, "MODEL_OVERRIDES", None) or {}
-    _m_over = _overrides.get(name) if isinstance(_overrides, dict) else None
-    _revision = _m_over.get("REVISION") if isinstance(_m_over, dict) else None
-    if _revision:
-        load_kwargs["revision"] = _revision
-
-    # Pre-download the repo under a progress capture when the weights
-    # will come from the Hub — faster-whisper hardcodes a disabled tqdm,
-    # so the constructor's own multi-GB fetch is otherwise invisible in
-    # the log / jobs registry. Same snapshot args as faster_whisper's
-    # download_model (allow_patterns, cache_dir=download_root, revision,
-    # token), so the constructor then finds a warm cache. Best-effort:
-    # ANY failure falls through to the constructor's stock download.
-    #
-    # Runs OUTSIDE _model_load_lock, like _ensure_ct2_model above and for the
-    # same reason: held across the fetch, one cold multi-GB download stalled
-    # EVERY other whisper load on the server for its whole duration. The
-    # re-check under the lock below is what keeps a concurrent loader that
-    # won the race honoured.
-    if not load_kwargs.get("local_files_only") and not os.path.isdir(load_path):
-        try:
-            from faster_whisper_backend.runtime import download_progress
-            from huggingface_hub import snapshot_download
-            _dl_repo = load_path
-            if "/" not in _dl_repo:
-                from faster_whisper.utils import _MODELS as _FW_MODELS
-                _dl_repo = _FW_MODELS.get(_dl_repo) or ""
-            if _dl_repo:
-                _dl_label = f"whisper:{name}"
-                _dl_job = jobs.job_start("download", model=_dl_label)
-
-                def _dl_hook(done, total, _job=_dl_job):
-                    jobs.job_update(
-                        _job,
-                        progress=(done / total) if total else None,
-                        total_bytes=total or None)
-
-                _snap_kwargs = {
-                    "repo_id": _dl_repo,
-                    "allow_patterns": [
-                        "config.json", "preprocessor_config.json",
-                        "model.bin", "tokenizer.json", "vocabulary.*",
-                    ],
-                }
-                if _download_root:
-                    _snap_kwargs["cache_dir"] = _download_root
-                if _revision:
-                    _snap_kwargs["revision"] = _revision
-                if _auth_token:
-                    _snap_kwargs["token"] = _auth_token
-                try:
-                    with download_progress.capture(
-                            _dl_label, cb=_dl_hook) as _cap:
-                        _snap_kwargs.update(_cap.tqdm_kwargs)
-                        await loop.run_in_executor(
-                            None,
-                            lambda: snapshot_download(**_snap_kwargs))
-                finally:
-                    jobs.job_end(_dl_job)
-        except Exception as _dl_err:  # noqa: BLE001 — best-effort
-            logger.warning(
-                "Pre-download of %s failed (%s); the model constructor "
-                "will download instead", name, _dl_err)
-
-    # load_secs = constructor time only: the best-effort Hub pre-download
-    # above is excluded the same way the CT2 conversion and the lock wait are.
-    load_t0 = time.perf_counter()
-    _lock_wait_t0 = time.perf_counter()
-    async with _model_load_lock:
-        # Time spent queueing behind the lock is another model's load cost,
-        # not this one's — keep it out of load_secs.
-        _lock_wait = time.perf_counter() - _lock_wait_t0
-        # Re-check under the lock — another request may have loaded it.
-        cached = _loaded_models.get(name)
-        if cached is not None:
-            _loaded_models.move_to_end(name)
-            system_stats.touch_loaded_model(name)
-            if lease:
-                _model_leases[name] = _model_leases.get(name, 0) + 1
-            return cached
-
-        # Evict the least-recently-used UNLEASED model(s) until we have room.
-        while len(_loaded_models) >= cfg.MAX_LOADED_MODELS:
-            evicted_name = next(
-                (n for n in _loaded_models if not _model_leases.get(n, 0)), None)
-            if evicted_name is None:
-                # Every cached model is mid-request — overflow the cap rather
-                # than free a model under a running decode. The excess is
-                # reclaimed by the next load that finds an unleased entry, or
-                # by the idle evictor when MODEL_IDLE_TIMEOUT_S > 0 (it is 0
-                # by default, so do not rely on it).
-                logger.warning(
-                    "All %d cached models are in use — temporarily exceeding "
-                    "MAX_LOADED_MODELS", len(_loaded_models))
-                break
-            logger.info("Evicting model from VRAM (LRU, max=%d): %s",
-                        cfg.MAX_LOADED_MODELS, evicted_name)
-            _drop_loaded_model(evicted_name)
-
-        logger.info("Loading model: %s", name)
-        # NVML delta sampling: compare GPU memory before/after construction
-        # to estimate this model's VRAM footprint. Done under
-        # _model_load_lock so concurrent loads can't pollute the delta.
-        # Subsequent loads of the same size may under-report due to
-        # CTranslate2's caching allocator (cached freed memory gets reused).
-        vram_before = system_stats.gpu_mem_used_bytes()
-        loaded_device = primary_device
-        loaded_compute = primary_compute
-        try:
-            # `load_path` is `name` for already-CT2 / local repos; for
-            # auto-converted HF repos it's the local converted directory.
-            new_model = await loop.run_in_executor(
-                None,
-                lambda: WhisperModel(load_path, **load_kwargs),
-            )
-            _decode_trace.install(new_model)
-            logger.info("Model loaded on %s: %s", primary_device, name)
-        except Exception as e:
-            logger.error("%s load failed for %s, falling back to %s: %s",
-                         primary_device, name, fallback_device, e)
-            fallback_kwargs = {
-                **load_kwargs,
-                "device": fallback_device,
-                "compute_type": fallback_compute,
-            }
-            new_model = await loop.run_in_executor(
-                None,
-                lambda: WhisperModel(load_path, **fallback_kwargs),
-            )
-            _decode_trace.install(new_model)
-            loaded_device = fallback_device
-            loaded_compute = fallback_compute
-            logger.info("Model loaded on %s: %s", fallback_device, name)
-
-        load_secs = time.perf_counter() - load_t0 - _lock_wait
-        metrics.record_model_load(name, load_secs)
-        vram_after = system_stats.gpu_mem_used_bytes()
-        vram_delta = (vram_after - vram_before
-                      if vram_before is not None and vram_after is not None
-                      else None)
-        # Negative deltas can happen if another process freed VRAM during load
-        # (or the CT2 allocator did). Clamp to 0 rather than store nonsense.
-        if vram_delta is not None and vram_delta < 0:
-            vram_delta = 0
-        # Off the loop: register_loaded_model persists the measurement
-        # (model_sizes.record -> atomic_json.save_lock + fsync), which can
-        # block for the lock timeout when a peer worker holds the file.
-        await asyncio.to_thread(
-            system_stats.register_loaded_model,
-            name,
-            vram_bytes=vram_delta,
-            device=loaded_device,
-            compute_type=loaded_compute,
-            load_secs=load_secs,
-        )
-
-        _loaded_models[name] = new_model
-        if lease:
-            _model_leases[name] = _model_leases.get(name, 0) + 1
-        return new_model
-
-
-async def drain_then_evict(model_id: "str | None" = None) -> list[str]:
-    """Drain-then-evict pattern. Drops the cached entry for `model_id` (or all
-    entries when None) so the next request for that id reloads the model with
-    current cfg / per-model settings.
-
-    "Drain" comes for free from Python reference counting: in-flight transcribe
-    requests already hold their own `model` reference (captured via `_get_or_
-    load_model` before the executor call), so they continue running on the
-    old WhisperModel instance until they finish. Only NEW requests for the
-    evicted id pay the reload cost. Returns the list of evicted ids.
-
-    Called from admin_routes.post_state when a load-time field (MODEL_DEVICE,
-    MODEL_COMPUTE_TYPE, NUM_WORKERS, DEVICE_INDEX, …) changes either globally
-    or in a per-model override. Either case can require reload to take
-    effect; this helper makes that reload lazy and non-disruptive.
-    """
-    evicted: list[str] = []
-    async with _model_load_lock:
-        if model_id is None:
-            names = list(_loaded_models.keys())
-        else:
-            names = [model_id] if model_id in _loaded_models else []
-        for name in names:
-            logger.info("[evict-on-edit] dropping %s from cache; "
-                        "reload on next request", name)
-            # force: the drain contract above IS the lease's guarantee — an
-            # in-flight request keeps its own reference and finishes on it.
-            _drop_loaded_model(name, force=True)
-            evicted.append(name)
-    return evicted
-
-
-async def _idle_evictor() -> None:
-    """Periodically unload models that haven't been touched for
-    cfg.MODEL_IDLE_TIMEOUT_S seconds. Wakes every 30 s; cheap when
-    timeout is 0 (early return) or no models are loaded. Acquires the
-    same _model_load_lock used by _get_or_load_model so concurrent loads
-    can't race with eviction.
-
-    VRAM reclamation: pop the WhisperModel reference from _loaded_models
-    so its CT2 destructor can run, then gc.collect() to break any
-    remaining cycles. If torch is importable and CUDA is active, also
-    call torch.cuda.empty_cache() to release pool-cached blocks.
-    """
-    import gc
-    while True:
-        try:
-            await asyncio.sleep(30)
-            timeout = getattr(cfg, "MODEL_IDLE_TIMEOUT_S", 0) or 0
-            if timeout <= 0 or not _loaded_models:
-                continue
-            now = time.monotonic()
-            stale: list[str] = []
-            for name, info in list(system_stats._loaded_models.items()):
-                if name not in _loaded_models:
-                    continue
-                if system_stats.is_warm(name):
-                    continue
-                last = info.get("last_used_monotonic", now)
-                if now - last >= timeout:
-                    stale.append(name)
-            if not stale:
-                continue
-            async with _model_load_lock:
-                now = time.monotonic()
-                for name in stale:
-                    if name not in _loaded_models:
-                        continue
-                    if system_stats.is_warm(name):
-                        continue
-                    info = system_stats._loaded_models.get(name)
-                    if info and now - info.get("last_used_monotonic", now) < timeout:
-                        continue
-                    if _drop_loaded_model(name):
-                        logger.info("[idle-evict] unloaded %s after %ds idle",
-                                    name, timeout)
-            gc.collect()
-            try:
-                import torch
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
-            except Exception:
-                pass
-        except asyncio.CancelledError:
-            return
-        except Exception:
-            logger.exception("[idle-evict] evictor loop error")
+    return tx_models._clamp_int(v, b["min"], b["max"])
 
 
 async def _reports_retention_loop() -> None:
@@ -2783,11 +684,11 @@ async def lifespan(app: FastAPI):
             continue
         try:
             logger.info("Preloading model: %s", name)
-            await _get_or_load_model(name)
+            await tx_models._get_or_load_model(name)
         except Exception as e:
             logger.error("Failed to preload model '%s': %s", name, e)
 
-    evictor_task = asyncio.create_task(_idle_evictor())
+    evictor_task = asyncio.create_task(tx_models._idle_evictor())
     # The diarization pipeline gets its own idle unloader (module-local
     # singleton, DIARIZATION_IDLE_TIMEOUT_S read live). Import is cheap and
     # dependency-free — pyannote itself loads lazily on first use.
@@ -2806,7 +707,7 @@ async def lifespan(app: FastAPI):
     # cadence shape as the four evictors above.
     await preload.start()
     preload_sweeper_task = asyncio.create_task(preload.sweeper_loop())
-    receipt_sweeper_task = asyncio.create_task(_receipt_sweeper())
+    receipt_sweeper_task = asyncio.create_task(tx_receipt._receipt_sweeper())
 
     # Best-effort preloads for the optional stages (translation GGUFs,
     # diarization pipeline, BGM separator).
@@ -2969,7 +870,7 @@ async def lifespan(app: FastAPI):
     await _cancel(receipt_sweeper_task)
     # Anything still waiting on a translation that will now never come. A
     # restart must not eat a receipt that was merely being patient.
-    _log_held_receipts(receipt_hold.flush_all())
+    tx_receipt._log_held_receipts(receipt_hold.flush_all())
     await preload.stop()
     await _cancel(url_media_janitor_task)
     await _cancel(reports_sweep_task)
@@ -2987,9 +888,9 @@ async def lifespan(app: FastAPI):
 
     # force: the process is going away, so leases buy nothing — same contract
     # as drain_then_evict, where an in-flight request finishes on its own ref.
-    for _name in list(_loaded_models):
-        _drop_loaded_model(_name, force=True)
-    _model_leases.clear()
+    for _name in list(tx_models._loaded_models):
+        tx_models._drop_loaded_model(_name, force=True)
+    tx_models._model_leases.clear()
     # Best-effort NVML shutdown so the service exit doesn't leak driver
     # handles. Safe to call when NVML didn't init.
     system_stats.shutdown()
@@ -3115,7 +1016,8 @@ from faster_whisper_backend.core import jobs_store as _jobs_store
 
 # Model preloading. Imported here rather than lazily because three call sites
 # below (the two `loaded` flag endpoints and _progress_set) reach it on hot
-# paths. preload itself imports main only lazily, so the cycle never closes.
+# paths. preload never imports main (it reaches the whisper cache through
+# transcription.models), so no cycle.
 from faster_whisper_backend.runtime import preload
 from faster_whisper_backend.core import run_plan as _run_plan
 
@@ -3983,7 +1885,7 @@ async def transcribe(
     preload_plan: str | None = Form(None),
     user: dict = Depends(_get_current_user_dep),
 ):
-    resolved_model = _resolve_model_name(model_name)
+    resolved_model = tx_models._resolve_model_name(model_name)
     _pid = _claim_progress_id(progress_id)
     # Whisper's only two tasks; anything else is a caller error, not something
     # to silently coerce (unlike the clamped numeric knobs below, a wrong task
@@ -4012,8 +1914,8 @@ async def transcribe(
     # rung by rung to _TEMPERATURE_BOUNDS. Clamp rather than 422 so a caller that is merely
     # sloppy keeps working; NaN fails every comparison, hence the self-test.
     if prompt is not None:
-        prompt = prompt[:_DECODE_STR_CAPS.get("prompt", 2048)]
-    _t_lo, _t_hi = _TEMPERATURE_BOUNDS
+        prompt = prompt[:tx_models._DECODE_STR_CAPS.get("prompt", 2048)]
+    _t_lo, _t_hi = tx_models._TEMPERATURE_BOUNDS
     temperature = (
         min(_t_hi, max(_t_lo, temperature)) if temperature == temperature else _t_lo
     )
@@ -4186,9 +2088,9 @@ async def transcribe(
         # is taken long after this, so `load_secs_since` from there could
         # never see a cold load — the receipt reported `load 0.0s` always.
         _model_t0 = time.perf_counter()
-        model = await _get_or_load_model(resolved_model, lease=True)
+        model = await tx_models._get_or_load_model(resolved_model, lease=True)
         _leased_model = resolved_model
-        _plan_compute, _plan_device = _model_compute_device(resolved_model)
+        _plan_compute, _plan_device = tx_receipt._model_compute_device(resolved_model)
         _rplan.set_stage_model("transcribing", model=resolved_model,
                                device=_plan_device, compute=_plan_compute)
 
@@ -4224,7 +2126,7 @@ async def transcribe(
         # Form value with the raw one, so the cap was dead code and the field
         # reached the tokenizer at whatever size the multipart parser allowed.
         if prompt is not None:
-            prompt = prompt[:_DECODE_STR_CAPS.get("prompt", 2048)]
+            prompt = prompt[:tx_models._DECODE_STR_CAPS.get("prompt", 2048)]
 
         include_words = "word" in timestamp_granularities or (
             response_format == "verbose_json" and not timestamp_granularities
@@ -4769,22 +2671,22 @@ async def transcribe(
                 _locked_ladder = effective_config.cfg_for(resolved_model, "TEMPERATURE", ident)
                 # Same parse as the assembler: a blank, token-less (",") or
                 # unparseable ladder all leave the Form field in force.
-                if not _temperature_ladder(_locked_ladder):
+                if not tx_models._temperature_ladder(_locked_ladder):
                     if temperature != _t_lo and "temperature" not in ignored:
                         ignored.append("temperature")
                     _temperature = _t_lo
             # Single source of truth — the streaming FINAL decode builds its kwargs
             # from this exact assembler too, so streaming and batch never diverge.
-            transcribe_kwargs = assemble_transcribe_kwargs(
+            transcribe_kwargs = tx_models.assemble_transcribe_kwargs(
                 resolved_model, model,
                 language=_decode_language, temperature=_temperature,
                 vad_filter=_vad_filter, vad_parameters=vad_parameters,
                 want_word_ts=want_word_ts, initial_prompt=initial_prompt_arg,
                 overrides=_overrides, ident=ident, task=_task,
             )
-            _note_auto_detect_only(_overrides, transcribe_kwargs.get("language"),
+            tx_models._note_auto_detect_only(_overrides, transcribe_kwargs.get("language"),
                                    ignored)
-            _note_word_ts_only(_overrides, want_word_ts, ignored)
+            tx_models._note_word_ts_only(_overrides, want_word_ts, ignored)
 
             # Pre-decode music-separation stage (soft-fail): replaces the
             # uploaded tmp file with a vocals-only WAV, so the decode AND the
@@ -4860,7 +2762,7 @@ async def transcribe(
                                 _sep_src = tmp_path
                         try:
                             _check_cancelled(_pid)
-                            async with get_inference_semaphore():
+                            async with tx_models.get_inference_semaphore():
                                 _check_cancelled(_pid)
                                 # "preparing" stays up through model load and
                                 # the separator's own audio load/normalize
@@ -4897,7 +2799,7 @@ async def transcribe(
                             "model": _separation_model or None,
                             "detail": ("incl. transcode"
                                        if _sep_wav is not None else None),
-                            **_stage_extras(
+                            **tx_receipt._stage_extras(
                                 preload.stats_key("separation",
                                                   _separation_model or ""),
                                 _sep_t0),
@@ -4910,7 +2812,7 @@ async def transcribe(
                     except _bgm.BgmSeparationError as _se:
                         # str(_se) is client-safe by the module's contract.
                         _warnings.append(str(_se))
-                        _stage_timings.append(_failed_stage(
+                        _stage_timings.append(tx_receipt._failed_stage(
                             "separating", _sep_t0, _separation_model, _se))
                         _rplan.stage_failed("separating")
                     except Exception as _se:  # noqa: BLE001 — soft-fail
@@ -4919,7 +2821,7 @@ async def transcribe(
                         _warnings.append(
                             "music separation failed; transcribing the "
                             "original audio")
-                        _stage_timings.append(_failed_stage(
+                        _stage_timings.append(tx_receipt._failed_stage(
                             "separating", _sep_t0, _separation_model, _se))
                         _rplan.stage_failed("separating")
 
@@ -4971,7 +2873,7 @@ async def transcribe(
                 # (the executor thread's dict writes are GIL-atomic).
                 def _collect(_gen, _info):
                     _dur = float(getattr(_info, "duration", 0.0) or 0.0)
-                    _compute, _dev = _model_compute_device(resolved_model)
+                    _compute, _dev = tx_receipt._model_compute_device(resolved_model)
                     # VAD receipt: transcribe() ran Silero eagerly before
                     # returning, so duration_after_vad is already known here.
                     # Only meaningful when the filter actually ran.
@@ -5066,7 +2968,7 @@ async def transcribe(
                           position=None, last_text=None, step=None,
                           model=None, device=None, compute=None)
             _check_cancelled(_pid)
-            async with get_inference_semaphore():
+            async with tx_models.get_inference_semaphore():
                 _check_cancelled(_pid)
                 _dec_t0 = time.perf_counter()
                 # The executor decodes (av) then transcribes; an av error is
@@ -5106,7 +3008,7 @@ async def transcribe(
                 # whisper load shows up as this row's `load`; it is folded into
                 # `secs` too so `run = secs - load` and the wall total both hold.
                 _rplan.stage_done("transcribing")
-                _tr_extras = _stage_extras(resolved_model, _model_t0)
+                _tr_extras = tx_receipt._stage_extras(resolved_model, _model_t0)
                 _stage_timings.append({
                     "name": "transcribing",
                     "secs": round(
@@ -5136,13 +3038,13 @@ async def transcribe(
             # AFTER the whole-segment verdict, on the survivors: a segment made
             # up from start to end is still dropped whole rather than trimmed to
             # two garbage words.
-            _tail_limits = tail_guard_limits(resolved_model, ident)
+            _tail_limits = tx_guards.tail_guard_limits(resolved_model, ident)
             _tail_cuts: list[dict] = []
             # Head cut (SEGMENT_HEAD_ECHO_MIN_WORDS): an echo of the prompt's
             # last words at the start of the decode. Only the first surviving
             # segment can carry it — the prompt precedes the first window — and
             # it runs before the tail cuts, on the same survivor.
-            _head_min = head_echo_min_words(resolved_model, ident)
+            _head_min = tx_guards.head_echo_min_words(resolved_model, ident)
             _head_prompt = segment_guards.prompt_tail_text(transcribe_kwargs)
             _head_pending = bool(_head_min and _head_prompt)
             _head_cut: "dict | None" = None
@@ -5158,7 +3060,7 @@ async def transcribe(
                 seg_temp = getattr(segment, "temperature", _temperature)
                 seg_cr = getattr(segment, "compression_ratio", 1.0)
 
-                dropped = segment_exceeds_word_rate(segment, _max_wps)
+                dropped = tx_guards.segment_exceeds_word_rate(segment, _max_wps)
                 _cut = None
                 _hcut = None
                 if not dropped and _head_pending:
@@ -5199,7 +3101,7 @@ async def transcribe(
                 if _hcut:
                     # "emptied" is counted once per segment: here only when the
                     # head cut alone left nothing (the tail cut then never ran).
-                    record_tail_cut(_hcut, emptied=_emptied and _cut is None)
+                    tx_guards.record_tail_cut(_hcut, emptied=_emptied and _cut is None)
                     logger.info(
                         "[transcribe] cut prompt echo from the start of the first "
                         "segment (%d words %.2f-%.2fs): %r",
@@ -5208,7 +3110,7 @@ async def transcribe(
                         continue
                 if _cut:
                     _tail_cuts.append(_cut)
-                    record_tail_cut(_cut, emptied=_emptied)
+                    tx_guards.record_tail_cut(_cut, emptied=_emptied)
                     logger.info(
                         "[transcribe] cut made-up tail (%s, %d words%s): %r",
                         "+".join(_cut["rules"]), _cut["n"],
@@ -5293,7 +3195,7 @@ async def transcribe(
                             model=(_diarization_model or None),
                             device=_diar._resolve_device())
                         _check_cancelled(_pid)
-                        async with get_inference_semaphore():
+                        async with tx_models.get_inference_semaphore():
                             _check_cancelled(_pid)
                             _turns = await _diar.diarize(
                                 tmp_path,
@@ -5323,7 +3225,7 @@ async def transcribe(
                             "model": _diarization_model or None,
                             "detail": f"{len(speakers_list)} speakers",
                             "speakers": len(speakers_list),
-                            **_stage_extras(
+                            **tx_receipt._stage_extras(
                                 preload.stats_key("diarization",
                                                   _diarization_model or ""),
                                 _diar_t0),
@@ -5336,7 +3238,7 @@ async def transcribe(
                     except _diar.DiarizationError as _de:
                         # str(_de) is client-safe by the module's contract.
                         _warnings.append(str(_de))
-                        _stage_timings.append(_failed_stage(
+                        _stage_timings.append(tx_receipt._failed_stage(
                             "diarizing", _diar_t0, _diarization_model, _de))
                         _rplan.stage_failed("diarizing")
                     except Exception as _de:  # noqa: BLE001 — soft-fail
@@ -5345,7 +3247,7 @@ async def transcribe(
                         _warnings.append(
                             "diarization failed; the transcript has no "
                             "speaker labels")
-                        _stage_timings.append(_failed_stage(
+                        _stage_timings.append(tx_receipt._failed_stage(
                             "diarizing", _diar_t0, _diarization_model, _de))
                         _rplan.stage_failed("diarizing")
             elif _diarize:
@@ -5440,7 +3342,7 @@ async def transcribe(
                             # translation is serialized by the module's own
                             # _infer_mutex instead.
                             if _tr._resolve_device() == "cuda":
-                                async with get_inference_semaphore():
+                                async with tx_models.get_inference_semaphore():
                                     _check_cancelled(_pid)
                                     _per_seg, _tr_warn, _tr_meta = \
                                         await _run_translation()
@@ -5493,7 +3395,7 @@ async def transcribe(
                                 # source text in at least one target.
                                 "kept_original": sum(
                                     1 for _k in _tr_kept.values() if _k),
-                                **_stage_extras(
+                                **tx_receipt._stage_extras(
                                     preload.stats_key(
                                         "translation",
                                         _tr_meta.get("model") or ""),
@@ -5506,7 +3408,7 @@ async def transcribe(
                         except _tr.TranslationError as _te:
                             # str(_te) is client-safe by the module's contract.
                             _warnings.append(str(_te))
-                            _stage_timings.append(_failed_stage(
+                            _stage_timings.append(tx_receipt._failed_stage(
                                 "translating", _tr_t0, _tr_model, _te))
                             _rplan.stage_failed("translating")
                         except Exception as _te:  # noqa: BLE001 — soft-fail
@@ -5515,7 +3417,7 @@ async def transcribe(
                             _warnings.append(
                                 "translation failed; the transcript is "
                                 "untranslated")
-                            _stage_timings.append(_failed_stage(
+                            _stage_timings.append(tx_receipt._failed_stage(
                                 "translating", _tr_t0, _tr_model, _te))
                             _rplan.stage_failed("translating")
             elif _translate_to:
@@ -5573,7 +3475,7 @@ async def transcribe(
             # the in-pipeline terminal trim) and BEFORE a defensive
             # post-wrapper trim. Per-model overrides win; the client's
             # output_prefix / output_suffix win over both unless locked.
-            _output_prefix, _output_suffix = _output_wrappers(
+            _output_prefix, _output_suffix = tx_models._output_wrappers(
                 resolved_model, ident, _overrides)
             if _output_prefix or _output_suffix:
                 _wrap_before = full_text_str
@@ -5716,7 +3618,7 @@ async def transcribe(
                 _file_label = (f"{_log_safe(file.filename)}  ({audio_bytes/1024:.1f} KB, "
                                f"{_log_safe(response_format)})")
                 _audio_src_label = f"{_src_fmt} → 16 kHz mono (file upload"
-            logger.info(_format_request_block(
+            logger.info(tx_receipt._format_request_block(
                 file_label=_file_label,
                 model_name=resolved_model,
                 info=info,
@@ -5738,9 +3640,9 @@ async def transcribe(
                 username=user.get("username"),
                 key_label=user.get("key_label"),
                 guards={"segment_max_words_per_sec": _max_wps,
-                        **tail_guard_rows(_tail_limits),
-                        **tail_cut_rows(_tail_cuts),
-                        **head_echo_rows(_head_min, _head_cut),
+                        **tx_guards.tail_guard_rows(_tail_limits),
+                        **tx_guards.tail_cut_rows(_tail_cuts),
+                        **tx_guards.head_echo_rows(_head_min, _head_cut),
                         "skip_residual_windows": _skip_residual,
                         "token_cap_per_second": _token_cap},
                 decode_trace=_decode_timing.get("trace"),
@@ -5751,36 +3653,36 @@ async def transcribe(
                 stages=_stage_timings or None,
                 separation=({
                     "model": _separation_model or None,
-                    "device": _stage_field(_stage_timings, "separating", "device"),
+                    "device": tx_receipt._stage_field(_stage_timings, "separating", "device"),
                     "resample": "44100 Hz stereo",
                     "stem": "vocals",
-                } if _stage_ran(_stage_timings, "separating") else None),
+                } if tx_receipt._stage_ran(_stage_timings, "separating") else None),
                 diarization=({
                     "model": _diarization_model or None,
-                    "device": _stage_field(_stage_timings, "diarizing", "device"),
+                    "device": tx_receipt._stage_field(_stage_timings, "diarizing", "device"),
                     "num_speakers": _spk.get("num_speakers"),
                     "min_speakers": _spk.get("min_speakers"),
                     "max_speakers": _spk.get("max_speakers"),
                     "embedding_batch_size": getattr(
-                        cfg, "DIARIZATION_EMBEDDING_BATCH_SIZE", _OMIT),
+                        cfg, "DIARIZATION_EMBEDDING_BATCH_SIZE", tx_receipt._OMIT),
                     "result": (f"{len(speakers_list)} speakers across "
                                f"{len(segments_list)} segments"),
-                } if _stage_ran(_stage_timings, "diarizing") else None),
+                } if tx_receipt._stage_ran(_stage_timings, "diarizing") else None),
                 translation=({
                     "model": _translation_meta.get("model"),
-                    "device": _stage_field(_stage_timings, "translating", "device"),
+                    "device": tx_receipt._stage_field(_stage_timings, "translating", "device"),
                     "targets": list(_translation_meta.get("targets") or []),
-                    "source": _translation_meta.get("source") or _OMIT,
+                    "source": _translation_meta.get("source") or tx_receipt._OMIT,
                     "mode": _translation_meta.get("mode"),
                     "context_segments": _translation_context,
                     "glossary": (f"{len(_translation_glossary)} chars"
-                                 if _translation_glossary else _OMIT),
+                                 if _translation_glossary else tx_receipt._OMIT),
                     "result": f"{len(segments_list)} segs",
                 } if _translation_meta else None),
                 # Per-SEGMENT labels (assign_speakers stamped them on the
                 # dicts), not the distinct `speakers_list` — the align helper
                 # consumes one label per kept seg_diag row.
-                speakers=_align_speakers_to_diag(
+                speakers=tx_receipt._align_speakers_to_diag(
                     seg_diag,
                     [str(s.get("speaker") or "") for s in segments_list]
                     if speakers_list else None),
@@ -5886,7 +3788,7 @@ async def transcribe(
                     }
                 # Separation left no trace in the response at all, so a client
                 # could not tell a vocals-only transcript from a raw one.
-                if _stage_ran(_stage_timings, "separating"):
+                if tx_receipt._stage_ran(_stage_timings, "separating"):
                     response["separation"] = {
                         "model": _separation_model or None,
                         "stem": "vocals",
@@ -6031,7 +3933,7 @@ async def transcribe(
         if _video_task is not None and _status != "ok" and not _video_task.done():
             _video_task.cancel()
         if _leased_model is not None:
-            _release_model_lease(_leased_model)
+            tx_models._release_model_lease(_leased_model)
         metrics.in_flight_transcriptions -= 1
         if _pid:
             _JOB_BY_PID.pop(_pid, None)
@@ -6383,7 +4285,7 @@ async def translate_text(request: Request,
         # sweeper logs it ~90 s later as "no result within 90s", out of
         # order and with the wrong reason. Mirrors the acquire-refusal
         # release below.
-        _release_held_receipt(_held_key, "request rejected")
+        tx_receipt._release_held_receipt(_held_key, "request rejected")
         raise
 
     # ── Canonical job logging ────────────────────────────────────────────
@@ -6415,7 +4317,7 @@ async def translate_text(request: Request,
         # release there never sees this refusal — without this the parked
         # dictation receipt would sit until the sweeper logged it as
         # "no result within 90s" instead of the rejection it actually was.
-        _release_held_receipt(_held_key, "request rejected — too many in flight")
+        tx_receipt._release_held_receipt(_held_key, "request rejected — too many in flight")
         raise
     # Set only AFTER a successful acquire — the acquire itself sits
     # outside the try, so a refused request never releases a slot it does
@@ -6568,7 +4470,7 @@ async def translate_text(request: Request,
             # held only when translation actually runs on cuda — a llama.cpp
             # CPU run must not occupy a GPU slot for its duration.
             if _tr._resolve_device() == "cuda":
-                async with get_inference_semaphore():
+                async with tx_models.get_inference_semaphore():
                     _check_cancelled(_pid)
                     per_seg, warnings, meta = await _run_translation()
             else:
@@ -6579,7 +4481,7 @@ async def translate_text(request: Request,
     except _ClientCancelled:
         logger.info("[translate] req=%s ✗ cancelled after %.1fs",
                     request_id[:8], time.perf_counter() - _t0)
-        _release_held_receipt(
+        tx_receipt._release_held_receipt(
             _held_key,
             f"cancelled by client after {time.perf_counter() - _t0:.1f}s")
         _record_run("cancelled")
@@ -6589,19 +4491,19 @@ async def translate_text(request: Request,
         logger.info("[translate] req=%s ✗ failed after %.1fs (%s)",
                     request_id[:8], time.perf_counter() - _t0,
                     _log_safe(str(e)))
-        _release_held_receipt(
+        tx_receipt._release_held_receipt(
             _held_key,
             f"failed after {time.perf_counter() - _t0:.1f}s — {_log_safe(str(e))}")
         _record_run("error", e)
         raise HTTPException(status_code=400, detail=str(e))
     except HTTPException:
-        _release_held_receipt(_held_key, "request rejected")
+        tx_receipt._release_held_receipt(_held_key, "request rejected")
         raise
     except Exception as e:  # noqa: BLE001 — never forward raw errors
         logger.error("[translate] req=%s ✗ failed after %.1fs: %s",
                      request_id[:8], time.perf_counter() - _t0,
                      _log_safe(str(e)))
-        _release_held_receipt(
+        tx_receipt._release_held_receipt(
             _held_key,
             f"failed after {time.perf_counter() - _t0:.1f}s")
         _record_run("error", e)
@@ -6630,7 +4532,7 @@ async def translate_text(request: Request,
         # The success path claims the receipt AFTER this finally runs, which is
         # what the flag guards.
         if _held_key and not _receipt_claimed_below:
-            _release_held_receipt(
+            tx_receipt._release_held_receipt(
                 _held_key,
                 f"connection closed after {time.perf_counter() - _t0:.1f}s")
         jobs.job_end(request_id)
@@ -6675,7 +4577,7 @@ async def translate_text(request: Request,
         _tr_stage = {"name": "translating", "secs": round(_elapsed, 3),
                      "model": _used_model or None,
                      "load_secs": round(_load_s, 3),
-                     "device": _model_compute_device(_tr_key)[1],
+                     "device": tx_receipt._model_compute_device(_tr_key)[1],
                      "detail": f"{len(seg_in)} segs → {','.join(targets)}",
                      "targets": list(targets)}
         _held = receipt_hold.claim(_held_key)
@@ -6694,9 +4596,9 @@ async def translate_text(request: Request,
         if _held is not None:
             _held["translation"] = {
                 "model": _used_model or None,
-                "device": _model_compute_device(_tr_key)[1] or _OMIT,
+                "device": tx_receipt._model_compute_device(_tr_key)[1] or tx_receipt._OMIT,
                 "targets": list(targets),
-                "source": (source or "").strip() or _OMIT,
+                "source": (source or "").strip() or tx_receipt._OMIT,
                 "mode": mode,
                 "result": (f"{len(seg_in)} segs · {total_chars} chars in / "
                            f"{_chars_out} out · {len(warnings)} guard fallbacks"),
@@ -6706,7 +4608,7 @@ async def translate_text(request: Request,
             # cold-load cost lands where a reader looks for it.
             _held["stages"] = list(_held.get("stages") or []) + [_tr_stage]
             try:
-                logger.info(_format_request_block(**_held))
+                logger.info(tx_receipt._format_request_block(**_held))
             except Exception as _me:  # noqa: BLE001 — never fail on a receipt
                 logger.warning("[translate] held receipt render failed: %s", _me)
         else:
@@ -6719,9 +4621,9 @@ async def translate_text(request: Request,
         _used_model = meta.get("model") or _tr_model
         _tr_key = preload.stats_key("translation", _used_model or "")
         try:
-            logger.info(_format_translate_block(
+            logger.info(tx_receipt._format_translate_block(
                 request_id=request_id, model_name=_used_model,
-                device=_model_compute_device(_tr_key)[1],
+                device=tx_receipt._model_compute_device(_tr_key)[1],
                 targets=list(targets), source=source, mode=mode,
                 result=(f"{len(seg_in)} segs · {total_chars} chars in / "
                         f"{_chars_out} out · {len(warnings)} guard fallbacks"),
@@ -7163,7 +5065,7 @@ async def _download_video_for_run(pid: "str | None", url: str, rung: dict, *,
     try:
         _pub(state="queued")
         with _url_staging_job() as job:
-            async with _get_url_download_semaphore():
+            async with tx_models._get_url_download_semaphore():
                 if _cancel_requested(pid):
                     raise _udl.UrlCancelled()
                 _pub(state="downloading")
@@ -7545,7 +5447,7 @@ async def _guarded_audio_download(pid: "str | None", url: str, dest_dir: str,
     under the URL download semaphore, reporting under `pid` and honouring
     its cancel. Raises UrlDownloadError / UrlCancelled / _ClientCancelled."""
     from faster_whisper_backend.url import download as _udl
-    async with _get_url_download_semaphore():
+    async with tx_models._get_url_download_semaphore():
         _check_cancelled(pid)
         _progress_set(pid, stage="downloading", progress=None)
         return await _udl.download(
@@ -7592,7 +5494,7 @@ async def _segmented_pieces(pid: "str | None", url: str, source: dict,
     t0 = time.perf_counter()
     try:
         with _url_staging_job() as job:
-            async with _get_url_download_semaphore():
+            async with tx_models._get_url_download_semaphore():
                 _check_cancelled(pid)
                 _progress_set(pid, stage="downloading", progress=None)
                 files, got = await _seg.fetch_pieces(
@@ -7705,7 +5607,7 @@ async def url_language(request: Request,
     from faster_whisper_backend.url import language_check as _lc
     from faster_whisper_backend.url import media_store as _ums
     _model = body.get("model")
-    model_name = _resolve_model_name(_model.strip() if isinstance(_model, str) else "")
+    model_name = tx_models._resolve_model_name(_model.strip() if isinstance(_model, str) else "")
     _user_id = user.get("user_id")
 
     def _detect(model, audio) -> "tuple[str | None, float]":
@@ -7741,11 +5643,11 @@ async def url_language(request: Request,
                 raise _udl.UrlDownloadError(
                     "the link's audio could not be decoded") from None
         _progress_set(pid, stage="waiting", progress=None)
-        model = await _get_or_load_model(model_name, lease=True)
+        model = await tx_models._get_or_load_model(model_name, lease=True)
         try:
             _check_cancelled(pid)
             _w0 = time.perf_counter()
-            async with get_inference_semaphore():
+            async with tx_models.get_inference_semaphore():
                 wait_s = time.perf_counter() - _w0
                 heard = []
                 for i, piece in enumerate(audio):
@@ -7754,7 +5656,7 @@ async def url_language(request: Request,
                                   progress=i / len(audio), model=model_name)
                     heard.append(await asyncio.to_thread(_detect, model, piece))
         finally:
-            _release_model_lease(model_name)
+            tx_models._release_model_lease(model_name)
         result = _lc.vote(heard)
         pieces = [{"at": at, "language": lang, "probability": round(p, 3)}
                   for at, (lang, p) in zip(starts, heard)]
@@ -8090,7 +5992,7 @@ async def list_models():
     # records the fallback device after a failed primary load.
     loaded_devices = {m["name"]: m["device"]
                       for m in system_stats.loaded_models_snapshot()}
-    names: list[str] = list(_loaded_models.keys())
+    names: list[str] = list(tx_models._loaded_models.keys())
     if cfg.DEFAULT_MODEL not in names:
         names.append(cfg.DEFAULT_MODEL)
     if cfg.ALLOWED_MODELS:
@@ -8450,8 +6352,8 @@ async def get_decode_defaults(model: str = "", override_profile: str = "",
     model = (model or "").strip()
     if len(model) > _DECODE_DEFAULTS_MODEL_MAX:
         raise HTTPException(status_code=400, detail="Model id is too long.")
-    model_name = _resolve_model_name(model)
-    _check_model_name(model_name)
+    model_name = tx_models._resolve_model_name(model)
+    tx_models._check_model_name(model_name)
     request_profile = (override_profile or "").strip() or None
     ident = effective_config.build_ident(user, model_name, request_profile=request_profile,
                         with_provenance=True)

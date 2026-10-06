@@ -10,6 +10,7 @@ import pytest
 from faster_whisper_backend.url import download as url_download
 from faster_whisper_backend.url import media_store as url_media_store
 from faster_whisper_backend.url.download import UrlMediaInfo
+from faster_whisper_backend.transcription import receipt as tx_receipt
 
 _URL = "https://www.youtube.com/watch?v=abc123xyz"
 
@@ -80,12 +81,11 @@ def test_failed_stage_row_carries_its_error_class(url_enabled):
     with the failure class the usage ledger counts; without it a failed
     stage left no row anywhere."""
     import time
-    app_module = url_enabled
-    row = app_module._failed_stage(
+    row = tx_receipt._failed_stage(
         "diarizing", time.perf_counter() - 1.0, "pyannote/x",
         RuntimeError("CUDA failed with error out of memory"))
     assert row["name"] == "diarizing" and row["model"] == "pyannote/x"
     assert row["error"] == "cuda_oom" and row["detail"] == "failed"
     assert 0.9 <= row["secs"] <= 5.0
-    assert app_module._failed_stage("translating", time.perf_counter(), None,
+    assert tx_receipt._failed_stage("translating", time.perf_counter(), None,
                                     TimeoutError())["error"] == "timeout"

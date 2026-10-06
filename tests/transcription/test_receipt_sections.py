@@ -14,6 +14,8 @@ site. These tests pin the two halves of the fix:
 import re
 
 from tests.conftest import FakeInfo
+from faster_whisper_backend.transcription import guards as tx_guards
+from faster_whisper_backend.transcription import receipt as tx_receipt
 
 _SEG = [
     {"id": 0, "start": 0.31, "end": 13.29, "alp": -0.28, "nsp": 0.02,
@@ -38,7 +40,7 @@ def _block(app_module, **kw):
     base = dict(file_label="x.wav", model_name="m", info=FakeInfo(duration=15.8),
                 kwargs={"beam_size": 10}, seg_diag=_SEG, raw="", final="")
     base.update(kw)
-    return app_module._format_request_block(**base)
+    return tx_receipt._format_request_block(**base)
 
 
 # ---------------------------------------------------------------------------
@@ -232,7 +234,7 @@ def test_stage_params_can_be_marked_non_default(app_module):
     config and still print unmarked."""
     baseline = getattr(app_module.cfg, "_BASELINE", {})
     assert "DIARIZATION_MIN_SPEAKERS" in baseline
-    assert app_module._KWARG_TO_CFG["min_speakers"] == "DIARIZATION_MIN_SPEAKERS"
+    assert tx_receipt._KWARG_TO_CFG["min_speakers"] == "DIARIZATION_MIN_SPEAKERS"
 
     block = _block(app_module, diarization={
         "model": "pyannote/speaker-diarization-3.1",
@@ -252,7 +254,7 @@ def test_speaker_labels_stay_on_the_kept_rows_after_a_drop(app_module):
          "cr": 2.5, "temp": 1.0, "text": "gibberish gibberish", "dropped": True},
         dict(_SEG[1], id=2),
     ]
-    aligned = app_module._align_speakers_to_diag(diag, ["SPEAKER_00", "SPEAKER_01"])
+    aligned = tx_receipt._align_speakers_to_diag(diag, ["SPEAKER_00", "SPEAKER_01"])
     assert aligned == ["SPEAKER_00", "", "SPEAKER_01"]
     block = _block(app_module, seg_diag=diag, speakers=aligned)
     rows = {int(l.split()[0]): l for l in block.splitlines()
@@ -261,14 +263,14 @@ def test_speaker_labels_stay_on_the_kept_rows_after_a_drop(app_module):
     assert "S0" not in rows[1] and "S1" not in rows[1]   # the dropped row
     assert "S1" in rows[2]
     # Nothing to label keeps the column off entirely.
-    assert app_module._align_speakers_to_diag(diag, []) is None
+    assert tx_receipt._align_speakers_to_diag(diag, []) is None
 
     # The helper consumes one label PER KEPT SEGMENT, so the caller must feed
     # it the per-segment labels, never the distinct list: 3 kept rows over 2
     # speakers still label every row (feeding the 2 distinct labels would
     # leave the third row blank).
     diag3 = diag + [dict(_SEG[1], id=3, start=19.10, end=22.00)]
-    aligned3 = app_module._align_speakers_to_diag(
+    aligned3 = tx_receipt._align_speakers_to_diag(
         diag3, ["SPEAKER_00", "SPEAKER_01", "SPEAKER_00"])
     assert aligned3 == ["SPEAKER_00", "", "SPEAKER_01", "SPEAKER_00"]
 
@@ -297,20 +299,20 @@ def test_task_renders_in_decode_params_with_the_non_default_marker(app_module):
     decode block was byte-identical to a plain transcription's."""
     baseline = getattr(app_module.cfg, "_BASELINE", {})
     assert baseline.get("TASK") == "transcribe"
-    rows = app_module._format_decode_params({"task": "translate", "beam_size": 5})
+    rows = tx_receipt._format_decode_params({"task": "translate", "beam_size": 5})
     assert rows[0].split()[0] == "task"
     assert "translate" in rows[0]
     assert rows[0].rstrip().endswith("*")
     assert not any(r.split()[0] == "task"
-                   for r in app_module._format_decode_params({"beam_size": 5}))
+                   for r in tx_receipt._format_decode_params({"beam_size": 5}))
 
 
 def test_tail_cut_rows_are_capped_with_a_count(app_module):
     cut = {"rules": ["zero_length"], "n": 2, "from": 1.5, "text": " zu Ende"}
-    few = app_module.tail_cut_rows([cut] * 3)
+    few = tx_guards.tail_cut_rows([cut] * 3)
     assert list(few) == ["tail_cut", "tail_cut_2", "tail_cut_3"]
-    many = app_module.tail_cut_rows([cut] * (app_module._TAIL_CUT_ROWS_MAX + 7))
-    assert len(many) == app_module._TAIL_CUT_ROWS_MAX + 1
+    many = tx_guards.tail_cut_rows([cut] * (tx_guards._TAIL_CUT_ROWS_MAX + 7))
+    assert len(many) == tx_guards._TAIL_CUT_ROWS_MAX + 1
     assert str(many["tail_cut_more"]) == "7 more not listed"
 
 
@@ -320,13 +322,14 @@ def test_decode_trace_header_carries_the_total_wall_time(app_module):
                     "secs": 1.0, "outcome": "kept · 1 segment"}]}
     t = {"windows": [w], "n_windows": 1, "n_rungs": 1, "tokens": 5,
          "generate_s": 1.0, "total_s": 2.5}
-    head = app_module._format_decode_trace_section(t)[0]
+    head = tx_receipt._format_decode_trace_section(t)[0]
     assert "1.0s in generate · 2.5s total" in head
     t.pop("total_s")
-    assert "total" not in app_module._format_decode_trace_section(t)[0]
+    assert "total" not in tx_receipt._format_decode_trace_section(t)[0]
 
 
 def test_one_fmt_secs_helper(app_module):
-    assert app_module._fmt_secs(None) == "-" and app_module._fmt_secs(1.26) == "1.3s"
+    assert tx_receipt._fmt_secs(None) == "-" and tx_receipt._fmt_secs(1.26) == "1.3s"
     import inspect
-    assert inspect.getsource(app_module).count("def _fmt_secs(") == 1
+    assert inspect.getsource(tx_receipt).count("def _fmt_secs(") == 1
+    assert "def _fmt_secs(" not in inspect.getsource(app_module)

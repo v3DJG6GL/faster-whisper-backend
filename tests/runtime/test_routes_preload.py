@@ -15,6 +15,7 @@ from faster_whisper_backend.runtime import preload
 from faster_whisper_backend.audio import translation
 
 from tests.conftest import bearer
+from faster_whisper_backend.transcription import models as tx_models
 
 _URL = "/v1/models/preload"
 
@@ -156,7 +157,7 @@ def test_feature_off_registers_no_plan_and_no_warm_lease(client, app_module,
 
 def test_path_shaped_whisper_id_is_deferred_with_an_empty_allowlist(
         client, app_module, monkeypatch):
-    """Parity with main._get_or_load_model: an empty ALLOWED_MODELS admits
+    """Parity with transcription.models._get_or_load_model: an empty ALLOWED_MODELS admits
     well-formed ids, not filesystem paths — the loader would reject this
     anyway, so it must not cost a queue slot and a warm key first."""
     cfg = _enable(app_module, monkeypatch)
@@ -231,14 +232,14 @@ def test_v1_models_loaded_flag_agrees(client, app_module, monkeypatch):
     _enable(app_module, monkeypatch)
     monkeypatch.setattr(app_module.cfg, "DEFAULT_MODEL", "small",
                         raising=False)
-    app_module._loaded_models["small"] = object()
+    tx_models._loaded_models["small"] = object()
     try:
         data = client.get("/v1/models").json()["data"]
         by_id = {d["id"]: d["loaded"] for d in data}
         assert by_id["small"] is True
         assert by_id["small"] == preload.is_resident("whisper", "small")
     finally:
-        app_module._loaded_models.pop("small", None)
+        tx_models._loaded_models.pop("small", None)
 
 
 def test_v1_me_loaded_flags_agree_for_all_four_families(client, app_module,

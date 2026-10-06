@@ -8,6 +8,7 @@ import time
 from faster_whisper_backend.settings import effective_config
 from tests._streaming_helpers import const_pcm, ws_drain
 from tests.conftest import bearer
+from faster_whisper_backend.transcription import models as tx_models
 
 OV = "/settings/overrides"
 PERMS = "/settings/api-keys/api/users"
@@ -248,7 +249,7 @@ def test_model_load_failure_delivers_generic_error_and_closes(
     async def _boom(name, *, lease=False):
         raise RuntimeError("/srv/models/secret-path missing")
 
-    monkeypatch.setattr(app_module, "_get_or_load_model", _boom)
+    monkeypatch.setattr(tx_models, "_get_or_load_model", _boom)
 
     with client.websocket_connect(
             "/v1/audio/transcriptions/stream", headers=bearer(raw_alice)) as ws:
@@ -277,7 +278,7 @@ def test_model_load_failure_with_peer_gone_is_not_logged_as_server_error(
     async def _boom(name, *, lease=False):
         raise RuntimeError("/srv/models/secret-path missing")
 
-    monkeypatch.setattr(app_module, "_get_or_load_model", _boom)
+    monkeypatch.setattr(tx_models, "_get_or_load_model", _boom)
 
     from starlette.websockets import WebSocket as _WS
     _real_send = _WS.send
@@ -326,7 +327,7 @@ def test_handshake_drops_unknown_decode_override_keys(
     """Unknown `decode_overrides` keys are discarded at the handshake instead of
     being retained (and re-walked per partial) for the life of the connection.
 
-    They were already ignored by main._apply_decode_overrides, so this pins the
+    They were already ignored by transcription.models._apply_decode_overrides, so this pins the
     behaviour-preservation half too: the honoured key still reaches the final
     decode, and the junk key never appears in the transcribe kwargs.
     """

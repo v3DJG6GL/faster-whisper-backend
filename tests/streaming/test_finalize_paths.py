@@ -23,6 +23,7 @@ from tests._streaming_helpers import const_pcm as _pcm, ws_drain as _drain
 from tests.conftest import bearer
 from faster_whisper_backend.streaming.session import StreamConfig, StreamSession
 from faster_whisper_backend.streaming.vad import FRAME_MS, SAMPLE_RATE as SR, EnergyEndpointer
+from faster_whisper_backend.transcription import models as tx_models
 
 _STREAM_URL = "/v1/audio/transcriptions/stream"
 
@@ -391,7 +392,7 @@ def test_multilingual_override_reaches_the_final_decode(app_module, fake_model):
     # is one, and the final decode (auto-detect) carries it.
     assert "multilingual" in sr._CLIENT_OVERRIDE_KEYS
     kw = sr._build_transcribe_kwargs(
-        app_module, "some-model", final=True, prompt="", want_words=False,
+        "some-model", final=True, prompt="", want_words=False,
         language="", model_obj=fake_model, overrides={"multilingual": True})
     assert kw["multilingual"] is True
 
@@ -403,7 +404,7 @@ def test_running_dictate_job_names_its_model(client, app_module):
         assert _config(ws)["type"] == "ready"
         rows = [r for r in jobs.jobs_snapshot() if r["kind"] == "dictate"]
         assert rows, "no running dictate job"
-        assert rows[0]["model"] == app_module._resolve_model_name("whisper-1")
+        assert rows[0]["model"] == tx_models._resolve_model_name("whisper-1")
 
 
 def test_queue_item_cap_sheds_tiny_frames_and_flushes(app_module, monkeypatch, caplog):

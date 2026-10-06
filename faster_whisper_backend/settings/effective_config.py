@@ -51,7 +51,7 @@ _FETCH_FAILED = object()
 SCALAR_OVERRIDE_FIELDS: frozenset[str] = settings_schema.LOCKABLE_FIELDS
 
 # Map an UPPER_CASE config field → the lowercase client decode_override key it
-# governs. Mirrors the allow-list enforced by main._apply_decode_overrides, so
+# governs. Mirrors the allow-list enforced by transcription.models._apply_decode_overrides, so
 # a lock on the config field blocks the matching client key. Fields absent here
 # are not client-overridable, so a lock on them is a no-op for the client gate.
 # Generated from the per-field `client_key` registry metadata in settings/schema.py;

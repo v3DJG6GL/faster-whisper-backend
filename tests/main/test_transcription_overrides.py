@@ -5,6 +5,8 @@ feedback. Driven through the real app; no faster-whisper needed."""
 import json
 
 from tests.conftest import bearer
+from faster_whisper_backend.transcription import models as tx_models
+from faster_whisper_backend.transcription import receipt as tx_receipt
 
 _FILE = {"file": ("a.wav", b"RIFFxxxxWAVE", "audio/wav")}
 OV = "/settings/overrides"
@@ -102,13 +104,12 @@ def test_decode_overrides_drop_non_finite_floats():
     (ignored) rather than clamped to the field's bound, matching the integer path.
     Shared by the batch route and the streaming FINAL decode via
     _apply_decode_overrides."""
-    from faster_whisper_backend import main
     # a valid float still applies
-    assert main._apply_decode_overrides({}, "whisper-1", {"temperature": 0.7})["temperature"] == 0.7
+    assert tx_models._apply_decode_overrides({}, "whisper-1", {"temperature": 0.7})["temperature"] == 0.7
     # NaN / +inf / -inf each dropped, never clamped to the field's max/min
     for literal in ("NaN", "Infinity", "-Infinity"):
         ov = json.loads('{"temperature": %s, "no_speech_threshold": %s}' % (literal, literal))
-        kw = main._apply_decode_overrides({}, "whisper-1", ov)
+        kw = tx_models._apply_decode_overrides({}, "whisper-1", ov)
         assert "temperature" not in kw and "no_speech_threshold" not in kw, (literal, kw)
 
 
@@ -117,10 +118,9 @@ def test_client_temperature_can_be_a_retry_ladder():
     TEMPERATURE format): rungs clamped to [0, 1], at most 16, one rung stays a
     float, several become faster-whisper's tuple; unparseable or empty input
     is dropped (the configured value stands)."""
-    from faster_whisper_backend import main
 
     def t(v):
-        return main._apply_decode_overrides({"temperature": 0.3}, "whisper-1",
+        return tx_models._apply_decode_overrides({"temperature": 0.3}, "whisper-1",
                                             {"temperature": v})["temperature"]
     assert t(0.7) == 0.7
     assert t("0.4") == 0.4
@@ -138,29 +138,27 @@ def test_decode_overrides_drop_overflowing_suppress_tokens():
     raises OverflowError. Sibling of the non-finite-float and integer-clamp
     drops; covers the batch route and the streaming FINAL decode via the shared
     _apply_decode_overrides."""
-    from faster_whisper_backend import main
     # a valid list still applies (float members truncate through int())
-    assert main._apply_decode_overrides({}, "whisper-1",
+    assert tx_models._apply_decode_overrides({}, "whisper-1",
         {"suppress_tokens": [1, 2]})["suppress_tokens"] == [1, 2]
-    assert main._apply_decode_overrides({}, "whisper-1",
+    assert tx_models._apply_decode_overrides({}, "whisper-1",
         {"suppress_tokens": [1.9, 2.0]})["suppress_tokens"] == [1, 2]
     # overflowing / non-finite / non-integral members are dropped, never raised
     for st in ([json.loads("1e999")], [float("inf")], [float("-inf")],
                [float("nan")], [None], [{}], "1,nan"):
-        kw = main._apply_decode_overrides({}, "whisper-1", {"suppress_tokens": st})
+        kw = tx_models._apply_decode_overrides({}, "whisper-1", {"suppress_tokens": st})
         assert "suppress_tokens" not in kw, (st, kw)
 
 
 def test_request_block_identity_section():
     from types import SimpleNamespace
-    from faster_whisper_backend import main
     ident = SimpleNamespace(layers=["user.profile:clinic-de"], locked={"BEAM_SIZE"},
                             profiles_applied=["clinic-de"])
     info = SimpleNamespace(language="de", language_probability=0.99,
                            duration=1.0, duration_after_vad=1.0)
     seg = [{"id": 0, "start": 0.0, "end": 1.0, "alp": -0.1, "nsp": 0.01,
             "cr": 1.2, "temp": 0.0, "text": "hi"}]
-    block = main._format_request_block(
+    block = tx_receipt._format_request_block(
         file_label="x", model_name="whisper-1", info=info,
         kwargs={"beam_size": 8}, seg_diag=seg, raw="hi", final="hi",
         ident=ident, overrides_ignored=["beam_size"])
@@ -169,7 +167,7 @@ def test_request_block_identity_section():
     assert "overrides_ignored" in block and "beam_size" in block
     # no identity + nothing ignored → no Identity section (logs stay terse)
     empty = SimpleNamespace(layers=[], locked=set(), profiles_applied=[])
-    block2 = main._format_request_block(
+    block2 = tx_receipt._format_request_block(
         file_label="x", model_name="whisper-1", info=info, kwargs={},
         seg_diag=seg, raw="hi", final="hi", ident=empty)
     assert "Identity" not in block2
@@ -183,7 +181,6 @@ def test_request_block_pipeline_header_counts_only_changed_steps():
     row "changed", overcounting skips (the user-reported /logs vs /quick-config
     discrepancy)."""
     from types import SimpleNamespace
-    from faster_whisper_backend import main
     info = SimpleNamespace(language="en", language_probability=1.0,
                            duration=1.0, duration_after_vad=1.0)
     seg = [{"id": 0, "start": 0.0, "end": 1.0, "alp": -0.1, "nsp": 0.01,
@@ -191,14 +188,14 @@ def test_request_block_pipeline_header_counts_only_changed_steps():
     # 7 no-op (EXCLUDED) rows + 1 that actually trimmed → 1 changed, 7 unchanged.
     steps = [(f"#{i} excluded [EXCLUDED for m]", " hi", " hi") for i in range(7)]
     steps.append(("#18 Trim edges", " hi", "hi"))
-    block = main._format_request_block(
+    block = tx_receipt._format_request_block(
         file_label="x", model_name="m", info=info, kwargs={},
         seg_diag=seg, raw=" hi", final="hi", steps=steps)
     assert "PIPELINE  (1 step changed text, 7 unchanged)" in block
     assert "8 step" not in block                            # no more total-as-changed
 
     # All-changed → no "unchanged" tail, plural "steps".
-    block2 = main._format_request_block(
+    block2 = tx_receipt._format_request_block(
         file_label="x", model_name="m", info=info, kwargs={},
         seg_diag=seg, raw="a", final="c",
         steps=[("#1 x", "a", "b"), ("#2 y", "b", "c")])
@@ -206,7 +203,7 @@ def test_request_block_pipeline_header_counts_only_changed_steps():
     assert "unchanged" not in block2
 
     # Nothing changed (every rule excluded) → "0 steps changed text, N unchanged".
-    block3 = main._format_request_block(
+    block3 = tx_receipt._format_request_block(
         file_label="x", model_name="m", info=info, kwargs={},
         seg_diag=seg, raw="hi", final="hi",
         steps=[("#1 x", "hi", "hi"), ("#2 y", "hi", "hi")])
@@ -218,13 +215,12 @@ def test_request_block_identity_always_shows_user_even_without_layers():
     Identity block naming them + an explicit 'inherits' note — so a missing
     binding (the classic 'my override didn't apply') is visible in the log."""
     from types import SimpleNamespace
-    from faster_whisper_backend import main
     empty = SimpleNamespace(layers=[], locked=set(), profiles_applied=[])
     info = SimpleNamespace(language="de", language_probability=0.99,
                            duration=1.0, duration_after_vad=1.0)
     seg = [{"id": 0, "start": 0.0, "end": 1.0, "alp": -0.1, "nsp": 0.01,
             "cr": 1.2, "temp": 0.0, "text": "hi"}]
-    block = main._format_request_block(
+    block = tx_receipt._format_request_block(
         file_label="x", model_name="whisper-1", info=info, kwargs={},
         seg_diag=seg, raw="hi", final="hi", ident=empty,
         user_id="abcd1234ef", key_id="ffee0011bb", username="Admin")

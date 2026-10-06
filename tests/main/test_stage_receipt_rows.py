@@ -15,6 +15,8 @@ from faster_whisper_backend.audio import bgm_separation
 from faster_whisper_backend.audio import diarization
 from faster_whisper_backend.audio import translation
 from tests.conftest import FakeModel
+from faster_whisper_backend.transcription import models as tx_models
+from faster_whisper_backend.transcription import receipt as tx_receipt
 
 _FILE = {"file": ("a.wav", b"RIFFxxxxWAVE", "audio/wav")}
 
@@ -36,13 +38,13 @@ def _wav_bytes(seconds=1.0, sr=16000):
 
 
 def _capture_receipt(app_module, monkeypatch, seen):
-    real_block = app_module._format_request_block
+    real_block = tx_receipt._format_request_block
 
     def _capture(**kw):
         seen.update(kw)
         seen["rendered"] = real_block(**kw)
         return seen["rendered"]
-    monkeypatch.setattr(app_module, "_format_request_block", _capture)
+    monkeypatch.setattr(tx_receipt, "_format_request_block", _capture)
 
 
 _STUB_CREATED: list[str] = []
@@ -214,7 +216,7 @@ def test_translation_skipped_warning_without_speech_segments(
 
     async def _loader(name, *, lease=False):
         return FakeModel(segments=[])
-    monkeypatch.setattr(app_module, "_get_or_load_model", _loader)
+    monkeypatch.setattr(tx_models, "_get_or_load_model", _loader)
     r = _post(client, translate_to="en")
     assert r.status_code == 200, r.text
     assert "translation skipped: no speech segments" in r.json()["warnings"]

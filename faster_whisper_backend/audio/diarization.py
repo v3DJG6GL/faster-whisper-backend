@@ -63,11 +63,11 @@ _STATS_PREFIX = "pyannote:"
 # Mutated without _lock on the cache-hit fast path only: that path has no await
 # between the key check and the increment, and every drop runs synchronously on
 # the same event loop, so check-then-mutate is atomic by loop semantics (the
-# same argument main._model_leases documents).
+# same argument transcription.models._model_leases documents).
 _leases: "dict[str, int]" = {}
 _orphans: "dict[str, int]" = {}
 
-# The idle loop mirrors main._idle_evictor's cadence.
+# The idle loop mirrors transcription.models._idle_evictor's cadence.
 _EVICTOR_WAKE_S = 30
 
 # _resolve_device runs per request (route progress row, _get_pipeline's
@@ -251,7 +251,7 @@ def _drop_locked(*, force: bool = False) -> bool:
     collected, because the job inside the executor is still calling into it on
     its own reference. The last ``_release_pipeline`` finishes the teardown.
     That is the "drain comes for free from refcounting" contract
-    main.drain_then_evict documents, made explicit for a singleton."""
+    transcription.models.drain_then_evict documents, made explicit for a singleton."""
     global _pipeline, _pipeline_key
     if _pipeline is None:
         return True
@@ -316,7 +316,7 @@ async def _release_pipeline(model_id: str, pipe=None) -> None:
     pinning the pipeline against idle eviction forever. _release_locked and
     _free_locked are synchronous, so on the one event loop they still run
     atomically w.r.t. every drop (same shape as translation._release_model
-    and main._release_model_lease)."""
+    and transcription.models._release_model_lease)."""
     _release_locked(model_id, pipe)
 
 
@@ -629,7 +629,7 @@ async def drop_pipeline(*, force: bool = True) -> bool:
 async def idle_evictor_loop() -> None:
     """Unload the pipeline after DIARIZATION_IDLE_TIMEOUT_S idle seconds.
     Reads the timeout live (an admin edit applies without restart), like
-    main._idle_evictor for whisper models. Started/cancelled by lifespan."""
+    transcription.models._idle_evictor for whisper models. Started/cancelled by lifespan."""
     while True:
         await asyncio.sleep(_EVICTOR_WAKE_S)
         try:

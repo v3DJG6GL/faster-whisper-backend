@@ -15,6 +15,7 @@ from starlette.websockets import WebSocketDisconnect
 
 from tests._streaming_helpers import const_pcm, ws_drain
 from tests.conftest import bearer
+from faster_whisper_backend.transcription import models as tx_models
 
 _pcm = const_pcm
 
@@ -569,15 +570,15 @@ def test_cancel_during_a_completed_load_still_releases_the_lease(
     import asyncio
     from faster_whisper_backend.streaming import routes as streaming_routes
 
-    _real = app_module._get_or_load_model
+    _real = tx_models._get_or_load_model
 
     async def _loader(name, *, lease=False):
         model = await _real(name, lease=False)
         if lease:
-            app_module._model_leases[name] = \
-                app_module._model_leases.get(name, 0) + 1
+            tx_models._model_leases[name] = \
+                tx_models._model_leases.get(name, 0) + 1
         return model
-    monkeypatch.setattr(app_module, "_get_or_load_model", _loader)
+    monkeypatch.setattr(tx_models, "_get_or_load_model", _loader)
 
     real_wait = asyncio.wait
 
@@ -592,7 +593,7 @@ def test_cancel_during_a_completed_load_still_releases_the_lease(
         with client.websocket_connect(_STREAM_URL) as ws:
             _handshake(ws)
             ws.receive_json()
-    assert app_module._model_leases == {}
+    assert tx_models._model_leases == {}
     assert streaming_routes._active_sessions == set()
 
 

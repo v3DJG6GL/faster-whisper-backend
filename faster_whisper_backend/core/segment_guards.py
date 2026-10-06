@@ -10,7 +10,7 @@ retry only invented a different loop; cr 1.94 / alp -0.82 sat inside every
 threshold; faster-whisper's hallucination_silence_threshold scores only the
 first 8 words and drops whole segments only.
 
-``main.segment_exceeds_word_rate`` cannot see it either: it averages over the
+``transcription.guards.segment_exceeds_word_rate`` cannot see it either: it averages over the
 whole segment, so the real words dilute the tail (4.3 w/s there), and it can
 only drop a whole segment — which would delete what was really said.
 

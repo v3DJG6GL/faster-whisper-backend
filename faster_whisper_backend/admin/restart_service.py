@@ -36,6 +36,8 @@ import subprocess
 import sys
 import threading
 import time
+
+from faster_whisper_backend.transcription import receipt as tx_receipt
 from faster_whisper_backend.paths import REPO_ROOT
 
 
@@ -48,9 +50,8 @@ def _flush_before_exit() -> None:
     that NOTHING is silently lost) and NVML would leak driver handles.
     Best-effort — a restart must never fail because a flush did."""
     try:
-        from faster_whisper_backend import main as _main
         from faster_whisper_backend.core import receipt_hold as _receipt_hold
-        _main._log_held_receipts(_receipt_hold.flush_all())
+        tx_receipt._log_held_receipts(_receipt_hold.flush_all())
     except Exception:  # noqa: BLE001 — flushing must not block the restart
         pass
     try:

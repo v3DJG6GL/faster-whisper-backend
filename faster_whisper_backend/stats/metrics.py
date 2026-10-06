@@ -83,7 +83,7 @@ in_flight_transcriptions: int = 0
 
 
 # --- GPU gate: the inference semaphore, timed ----------------------------------
-# main.get_inference_semaphore() builds one of these. `async with` calls
+# transcription.models.get_inference_semaphore() builds one of these. `async with` calls
 # exactly acquire()/release(), so the seven call sites are untouched; what
 # is added is the queue: how many tasks are waiting, for how long, and how
 # much of each REQUEST's time went to waiting. The per-request sum rides a
@@ -158,7 +158,7 @@ class GpuGate(asyncio.Semaphore):
         }
 
 
-# Set by main.get_inference_semaphore() once the gate exists; None before
+# Set by transcription.models.get_inference_semaphore() once the gate exists; None before
 # the first inference (and on a box that never transcribes).
 gpu_gate: "GpuGate | None" = None
 

@@ -8,6 +8,7 @@ import json
 
 from faster_whisper_backend.settings import effective_config as ec
 from tests.conftest import bearer
+from faster_whisper_backend.transcription import models as tx_models
 
 _FILE = {"file": ("a.wav", b"RIFFxxxxWAVE", "audio/wav")}
 OV = "/settings/overrides"
@@ -17,31 +18,29 @@ PERMS = "/settings/api-keys/api/users"
 # --- per-request decode_overrides -------------------------------------------
 
 def test_explicit_empty_suppress_tokens_means_suppress_nothing():
-    from faster_whisper_backend import main
     for cleared in ([], ""):
-        kw = main._apply_decode_overrides(
+        kw = tx_models._apply_decode_overrides(
             {"suppress_tokens": [-1, 50256]}, "whisper-1",
             {"suppress_tokens": cleared})
         assert kw["suppress_tokens"] is None, cleared
     # a NON-empty value that merely filters away is not a clear: config stays
-    too_big = main._SUPPRESS_TOKEN_ID_MAX + 1
+    too_big = tx_models._SUPPRESS_TOKEN_ID_MAX + 1
     for junk in (str(too_big), [too_big], "abc"):
-        kw = main._apply_decode_overrides(
+        kw = tx_models._apply_decode_overrides(
             {"suppress_tokens": [-1, 50256]}, "whisper-1",
             {"suppress_tokens": junk})
         assert kw["suppress_tokens"] == [-1, 50256], junk
 
 
 def test_null_bool_override_inherits_instead_of_forcing_false():
-    from faster_whisper_backend import main
     base = {"condition_on_previous_text": True, "vad_filter": True,
             "vad_parameters": {"threshold": 0.5}}
-    kw = main._apply_decode_overrides(dict(base), "whisper-1",
+    kw = tx_models._apply_decode_overrides(dict(base), "whisper-1",
                                       {"condition_on_previous_text": None,
                                        "vad_filter": None})
     assert kw["condition_on_previous_text"] is True
     assert kw["vad_filter"] is True and kw["vad_parameters"] == {"threshold": 0.5}
-    kw = main._apply_decode_overrides(dict(base), "whisper-1",
+    kw = tx_models._apply_decode_overrides(dict(base), "whisper-1",
                                       {"condition_on_previous_text": False,
                                        "vad_filter": False})
     assert kw["condition_on_previous_text"] is False
@@ -49,16 +48,15 @@ def test_null_bool_override_inherits_instead_of_forcing_false():
 
 
 def test_multilingual_override_true_null_and_locked():
-    from faster_whisper_backend import main
-    kw = main._apply_decode_overrides({}, "whisper-1", {"multilingual": True})
+    kw = tx_models._apply_decode_overrides({}, "whisper-1", {"multilingual": True})
     assert kw["multilingual"] is True
     # null inherits the configured value
-    kw = main._apply_decode_overrides({"multilingual": True}, "whisper-1",
+    kw = tx_models._apply_decode_overrides({"multilingual": True}, "whisper-1",
                                       {"multilingual": None})
     assert kw["multilingual"] is True
     # a locked key is dropped: the admin value stands
     locked = ec.Resolved(locked_client_keys=frozenset({"multilingual"}))
-    kw = main._apply_decode_overrides({}, "whisper-1", {"multilingual": True},
+    kw = tx_models._apply_decode_overrides({}, "whisper-1", {"multilingual": True},
                                       ident=locked)
     assert "multilingual" not in kw
 
@@ -66,8 +64,7 @@ def test_multilingual_override_true_null_and_locked():
 # --- profile / per-model layer ------------------------------------------------
 
 def _assemble(values, language="", overrides=None):
-    from faster_whisper_backend import main
-    return main.assemble_transcribe_kwargs(
+    return tx_models.assemble_transcribe_kwargs(
         None, None, language=language, temperature=0.0, vad_filter=False,
         vad_parameters=None, want_word_ts=False, initial_prompt=None,
         overrides=overrides, ident=ec.Resolved(values=values))
@@ -89,8 +86,7 @@ def test_profile_blank_punctuation_is_forwarded_not_dropped():
 
 
 def test_profile_blank_suppress_tokens_keeps_chars_without_the_default_set(monkeypatch):
-    from faster_whisper_backend import main
-    monkeypatch.setattr(main, "_resolve_suppress_chars", lambda *a: [7, 8])
+    monkeypatch.setattr(tx_models, "_resolve_suppress_chars", lambda *a: [7, 8])
     # cleared list + configured chars → only the chars, no -1 default set
     kw = _assemble({"SUPPRESS_TOKENS": "", "SUPPRESS_CHARS": "."})
     assert kw["suppress_tokens"] == [7, 8]
@@ -102,8 +98,7 @@ def test_profile_blank_suppress_tokens_keeps_chars_without_the_default_set(monke
 def test_suppress_chars_survive_a_client_suppress_tokens_override(monkeypatch):
     # The chars merge runs AFTER the client override, which used to replace
     # the merged ids wholesale.
-    from faster_whisper_backend import main
-    monkeypatch.setattr(main, "_resolve_suppress_chars", lambda *a: [7, 8])
+    monkeypatch.setattr(tx_models, "_resolve_suppress_chars", lambda *a: [7, 8])
     kw = _assemble({"SUPPRESS_CHARS": "."}, overrides={"suppress_tokens": "5,6"})
     assert kw["suppress_tokens"] == [5, 6, 7, 8]
     # A client clear means "no list": the chars only, no -1 default set.
@@ -191,13 +186,12 @@ def test_stream_handshake_language_is_tri_state(monkeypatch):
 
 
 def test_client_suppress_chars_replace_config_and_empty_means_none(monkeypatch):
-    from faster_whisper_backend import main
     seen = []
 
     def _resolve(model_id, model, chars, from_client=False):
         seen.append((chars, from_client))
         return [7] if chars == "." else [9]
-    monkeypatch.setattr(main, "_resolve_suppress_chars", _resolve)
+    monkeypatch.setattr(tx_models, "_resolve_suppress_chars", _resolve)
     kw = _assemble({"SUPPRESS_CHARS": "."}, overrides={"suppress_chars": "?"})
     assert kw["suppress_tokens"] == [-1, 9] and seen[-1] == ("?", True)
     # "" is an explicit "no chars": nothing resolved, faster-whisper default.
@@ -208,7 +202,7 @@ def test_client_suppress_chars_replace_config_and_empty_means_none(monkeypatch):
     # Locked: the configured chars stand.
     locked = ec.Resolved(values={"SUPPRESS_CHARS": "."},
                          locked_client_keys=frozenset({"suppress_chars"}))
-    kw = main.assemble_transcribe_kwargs(
+    kw = tx_models.assemble_transcribe_kwargs(
         None, None, language="", temperature=0.0, vad_filter=False,
         vad_parameters=None, want_word_ts=False, initial_prompt=None,
         overrides={"suppress_chars": "?"}, ident=locked)
@@ -217,18 +211,17 @@ def test_client_suppress_chars_replace_config_and_empty_means_none(monkeypatch):
 
 def test_suppress_chars_cache_is_a_capped_lru(monkeypatch):
     from types import SimpleNamespace
-    from faster_whisper_backend import main
-    monkeypatch.setattr(main, "_suppress_chars_cache", main.OrderedDict())
-    monkeypatch.setattr(main, "_SUPPRESS_CHARS_CACHE_MAX", 3)
+    monkeypatch.setattr(tx_models, "_suppress_chars_cache", tx_models.OrderedDict())
+    monkeypatch.setattr(tx_models, "_SUPPRESS_CHARS_CACHE_MAX", 3)
     tok = SimpleNamespace(encode=lambda v, add_special_tokens=False: [ord(v[-1])])
     model = SimpleNamespace(hf_tokenizer=tok)
     for ch in "abc":
-        main._resolve_suppress_chars("m", model, ch, True)
-    main._resolve_suppress_chars("m", model, "a", True)   # hit → most recent
-    main._resolve_suppress_chars("m", model, "d", True)   # evicts "b"
-    assert list(main._suppress_chars_cache) == [("m", "c"), ("m", "a"), ("m", "d")]
-    main._drop_suppress_chars_cache("m")
-    assert not main._suppress_chars_cache
+        tx_models._resolve_suppress_chars("m", model, ch, True)
+    tx_models._resolve_suppress_chars("m", model, "a", True)   # hit → most recent
+    tx_models._resolve_suppress_chars("m", model, "d", True)   # evicts "b"
+    assert list(tx_models._suppress_chars_cache) == [("m", "c"), ("m", "a"), ("m", "d")]
+    tx_models._drop_suppress_chars_cache("m")
+    assert not tx_models._suppress_chars_cache
 
 
 def test_hallucination_silence_zero_is_off(monkeypatch):
@@ -246,27 +239,25 @@ def test_hallucination_silence_zero_is_off(monkeypatch):
 
 
 def test_language_detection_keys_clamped_and_auto_detect_only():
-    from faster_whisper_backend import main
     kw = _assemble({}, overrides={"language_detection_segments": 50,
                                   "language_detection_threshold": 0.8})
     assert kw["language_detection_segments"] == 10
     assert kw["language_detection_threshold"] == 0.8
     ignored = []
-    main._note_auto_detect_only({"language_detection_segments": 2,
+    tx_models._note_auto_detect_only({"language_detection_segments": 2,
                                  "language_detection_threshold": 0.8}, "de", ignored)
     assert ignored == ["language_detection_threshold", "language_detection_segments"]
     ignored = []
-    main._note_auto_detect_only({"language_detection_segments": 2}, "", ignored)
+    tx_models._note_auto_detect_only({"language_detection_segments": 2}, "", ignored)
     assert ignored == []
 
 
 def test_hallucination_threshold_needs_word_timestamps():
-    from faster_whisper_backend import main
     ignored = []
-    main._note_word_ts_only({"hallucination_silence_threshold": 2.0}, False, ignored)
+    tx_models._note_word_ts_only({"hallucination_silence_threshold": 2.0}, False, ignored)
     assert ignored == ["hallucination_silence_threshold"]
     for ov, wts in (({"hallucination_silence_threshold": 2.0}, True),
                     ({"hallucination_silence_threshold": 0}, False), ({}, False)):
         ignored = []
-        main._note_word_ts_only(ov, wts, ignored)
+        tx_models._note_word_ts_only(ov, wts, ignored)
         assert ignored == [], (ov, wts)

@@ -6,6 +6,7 @@ import pytest
 
 from tests.conftest import FakeModel
 from tests.conftest import bearer
+from faster_whisper_backend.transcription import models as tx_models
 
 _FILE = {"file": ("a.wav", b"RIFFxxxxWAVE", "audio/wav")}
 OV = "/settings/overrides"
@@ -32,12 +33,12 @@ def _lock_temperature_for_alice(client, make_user_key, ladder):
 
 
 def test_temperature_ladder_helper(app_module):
-    assert app_module._temperature_ladder("0.0, 0.2,0.4") == (0.0, 0.2, 0.4)
-    assert app_module._temperature_ladder("") == ()
-    assert app_module._temperature_ladder(None) == ()
-    assert app_module._temperature_ladder(",") == ()
-    assert app_module._temperature_ladder(" , ") == ()
-    assert app_module._temperature_ladder("abc") == ()
+    assert tx_models._temperature_ladder("0.0, 0.2,0.4") == (0.0, 0.2, 0.4)
+    assert tx_models._temperature_ladder("") == ()
+    assert tx_models._temperature_ladder(None) == ()
+    assert tx_models._temperature_ladder(",") == ()
+    assert tx_models._temperature_ladder(" , ") == ()
+    assert tx_models._temperature_ladder("abc") == ()
 
 
 @pytest.mark.parametrize("ladder", [",", "abc"])
@@ -70,7 +71,7 @@ def test_segment_temperature_falls_back_to_the_decoded_value(
 
     async def _loader(name, *, lease=False):
         return FakeModel(segments=[_BareSegment()])
-    monkeypatch.setattr(app_module, "_get_or_load_model", _loader)
+    monkeypatch.setattr(tx_models, "_get_or_load_model", _loader)
     raw_alice = _lock_temperature_for_alice(client, make_user_key, "")
     r = client.post(
         "/v1/audio/transcriptions", files=_FILE, headers=bearer(raw_alice),

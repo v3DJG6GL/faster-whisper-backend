@@ -14,6 +14,7 @@ import pytest
 from faster_whisper_backend.url import download as url_download
 from faster_whisper_backend.url import media_store as url_media_store
 from faster_whisper_backend.url.download import UrlDownloadError, UrlMediaInfo
+from faster_whisper_backend.transcription import models as tx_models
 
 _FILE = {"file": ("a.wav", b"RIFFxxxxWAVE", "audio/wav")}
 _PID = "beef" * 8
@@ -832,7 +833,7 @@ def lang_check(url_enabled, monkeypatch, fake_model):
     monkeypatch.setattr(transcode, "decode_pieces_16k", lambda path, starts, s: [
         np.zeros(16000, dtype=np.float32) for _ in starts])
     released: list = []
-    monkeypatch.setattr(url_enabled, "_release_model_lease", released.append)
+    monkeypatch.setattr(tx_models, "_release_model_lease", released.append)
     fake_model.released = released
     return fake_model
 
@@ -850,7 +851,7 @@ def test_language_check_votes_and_keeps_the_audio(client, url_enabled, lang_chec
     real = type(lang_check).detect_language
 
     def _detect(self, audio=None, **kw):
-        held.append((url_enabled.get_inference_semaphore().locked(), kw))
+        held.append((tx_models.get_inference_semaphore().locked(), kw))
         return real(self, audio=audio, **kw)
     monkeypatch.setattr(type(lang_check), "detect_language", _detect)
     lang_check.heard = [("de", 0.9), ("de", 0.8), ("en", 0.88)]

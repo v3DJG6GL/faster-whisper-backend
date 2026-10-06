@@ -282,7 +282,7 @@ def _model_path(name: str) -> "str | None":
     # translation/diarization's HF_HOME setdefault), so the repo dir sits
     # directly under the root; without a root the hub cache is used. A
     # transformers checkpoint that main converts to CT2 lives under a
-    # separate root keyed by quantisation (see main._converted_dir_for),
+    # separate root keyed by quantisation (see transcription.models._converted_dir_for),
     # which this name-only lookup cannot address; the source repo is an
     # adequate prior for it.
     try:

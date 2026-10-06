@@ -5,6 +5,7 @@ recent-jobs row through it (download_progress.capture -> metrics.record_download
 were lost with a "persist failed" warning on exactly the boot that matters."""
 
 from fastapi.testclient import TestClient
+from faster_whisper_backend.transcription import models as tx_models
 
 
 def test_recent_store_is_open_when_the_preload_loop_runs(app_module,
@@ -24,7 +25,7 @@ def test_recent_store_is_open_when_the_preload_loop_runs(app_module,
         seen["usage_open"] = usage_store._conn is not None
         recent_transcriptions_store._require_conn()
         return fake_model
-    monkeypatch.setattr(app_module, "_get_or_load_model", _loader)
+    monkeypatch.setattr(tx_models, "_get_or_load_model", _loader)
     # An earlier test may have left the stores bound; unbind so a passing
     # assertion proves THIS lifespan opened them before the preload ran.
     monkeypatch.setattr(recent_transcriptions_store, "_conn", None)

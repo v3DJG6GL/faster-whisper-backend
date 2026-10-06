@@ -101,7 +101,7 @@ _load_overlaps = 0
 _params: "dict[str, tuple]" = {}
 _STATS_PREFIX = "gguf:"
 
-# The idle loop mirrors main._idle_evictor's cadence.
+# The idle loop mirrors transcription.models._idle_evictor's cadence.
 _EVICTOR_WAKE_S = 30
 
 
@@ -796,7 +796,7 @@ def _release_model(ref: str) -> None:
     lock-free — plain dict ops are atomic on the single event loop, and an
     awaiting release could be abandoned by a cancellation delivered while
     suspended on the lock, leaking the lease and pinning the model against
-    eviction forever (same shape as main._release_model_lease)."""
+    eviction forever (same shape as transcription.models._release_model_lease)."""
     n = _active.get(ref, 0) - 1
     if n <= 0:
         _active.pop(ref, None)

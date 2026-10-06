@@ -46,6 +46,7 @@ from pydantic import BaseModel, Field
 
 from faster_whisper_backend.settings import config as cfg
 from faster_whisper_backend.runtime import preload
+from faster_whisper_backend.transcription import models as tx_models
 from faster_whisper_backend.auth.dependencies import get_current_user
 
 # Same logger name the rest of the model machinery uses, so a preload and the
@@ -94,7 +95,7 @@ def _allowed(family: str, model_id: str) -> bool:
     whisper: judged on the RESOLVED id (`whisper-1` → DEFAULT_MODEL, the
     same mapping the transcribe route applies before its gate). An EMPTY
     ALLOWED_MODELS admits the configured default plus any WELL-FORMED id —
-    the same `_MODEL_ID_RE` / no-".." guard `main._get_or_load_model`
+    the same `_MODEL_ID_RE` / no-".." guard `tx_models._get_or_load_model`
     applies, so a path-shaped id is deferred here instead of wasting a queue
     slot on a load the guard rejects anyway. A non-empty one admits exactly
     its members, as that gate does (the default is NOT implied: a load of it
@@ -104,7 +105,6 @@ def _allowed(family: str, model_id: str) -> bool:
     "anything". translation: `main._translation_model_allowed`, the rule the
     batch stage and the job plan share."""
     if family == "whisper":
-        from faster_whisper_backend import main  # lazy: main imports this module
         model_id = preload.normalize_id(family, model_id)
         if not model_id:
             return False
@@ -112,7 +112,7 @@ def _allowed(family: str, model_id: str) -> bool:
         if not allow:
             return model_id == getattr(cfg, "DEFAULT_MODEL", "") or (
                 ".." not in model_id
-                and bool(main._MODEL_ID_RE.match(model_id)))
+                and bool(tx_models._MODEL_ID_RE.match(model_id)))
         return model_id in allow
     if family == "diarization":
         allow = set(getattr(cfg, "DIARIZATION_ALLOWED_MODELS", None) or ())

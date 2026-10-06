@@ -95,3 +95,4 @@ SECURITY-REVIEW_NOTES.md
 # Claude Code per-user settings (project-shared .claude/ content may be committed)
 .claude/settings.json
 .claude/settings.local.json
+.claude/worktrees/

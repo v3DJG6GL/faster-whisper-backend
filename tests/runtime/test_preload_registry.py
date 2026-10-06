@@ -17,6 +17,7 @@ from faster_whisper_backend.runtime import model_sizes
 from faster_whisper_backend.runtime import preload
 from faster_whisper_backend.runtime import system_stats
 from faster_whisper_backend.audio import translation
+from faster_whisper_backend.transcription import models as tx_models
 
 _GB = 1024 * 1024 * 1024
 
@@ -151,9 +152,8 @@ def test_size_unknown_free_whisper_slot_is_not_a_displacement(monkeypatch):
     install never measures anything until the peer happens to go away."""
     _enable(monkeypatch, MAX_LOADED_MODELS=2)
     _fits(monkeypatch, (None, "size_unknown"))
-    from faster_whisper_backend import main
-    monkeypatch.setattr(main, "_loaded_models", {"small": object()})
-    monkeypatch.setattr(main, "_model_leases", {})
+    monkeypatch.setattr(tx_models, "_loaded_models", {"small": object()})
+    monkeypatch.setattr(tx_models, "_model_leases", {})
     system_stats.set_warm_predicate(None)
     assert preload._admit("whisper", "large-v3") in (("loading", None),
                                                      ("queued", None))
@@ -212,8 +212,7 @@ def test_whisper_defers_while_the_model_load_lock_is_held(monkeypatch):
         def locked(self):
             return True
 
-    from faster_whisper_backend import main
-    monkeypatch.setattr(main, "_model_load_lock", _Locked())
+    monkeypatch.setattr(tx_models, "_model_load_lock", _Locked())
     assert preload._admit("whisper", "large-v3") == ("deferred", "family_busy")
 
 

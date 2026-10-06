@@ -448,7 +448,7 @@ def _drop_locked(*, force: bool = False) -> bool:
     cleared (new callers reload) but nothing is unregistered or collected,
     because the job inside the executor is still calling into it on its own
     reference. The last ``_release_separator`` finishes the teardown — the
-    "drain comes for free from refcounting" contract main.drain_then_evict
+    "drain comes for free from refcounting" contract transcription.models.drain_then_evict
     documents, made explicit for a singleton."""
     global _separator, _separator_key
     if _separator is None:
