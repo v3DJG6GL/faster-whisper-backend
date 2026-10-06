@@ -224,27 +224,39 @@ def _skip_class(pat: str, i: int) -> "tuple[int, int, bool]":
 
 
 def _strip_outer_group(branch: str) -> str:
-    """Strip one layer of enclosing parentheses from a branch body.
+    """Strip every layer of parentheses that wraps a whole branch body.
 
-    ``((a))`` → ``(a)``, ``(a)`` → ``a``, ``abc`` → ``abc``.
-    Only strips when the opening ``(`` is balanced by the LAST ``)``
-    (i.e. the parens wrap the entire branch, not just a prefix).
+    ``((a))`` → ``a``, ``(a)`` → ``a``, ``(?:13)`` → ``13``, ``abc`` → ``abc``.
+    Only strips when the opening ``(`` is balanced by the LAST ``)`` (i.e. the
+    parens wrap the entire branch, not just a prefix). A non-capturing, named,
+    atomic or scoped-flag prefix (``?:``, ``?P<name>``, ``?<name>``, ``?>``,
+    ``?i:``) goes with the parens — left in place it made the body uncompilable
+    and its witness wrong, so wrapping an overlapping branch in ``(?:...)``
+    slipped past the overlap check. A lookaround, conditional, comment or
+    backreference group is not the plain body it holds and stays as it is.
     """
-    if len(branch) < 2 or branch[0] != "(":
-        return branch
-    depth, i = 1, 1
-    while i < len(branch) and depth:
-        ch = branch[i]
-        if ch == "\\":
-            i += 2
-            continue
-        if ch == "[":
-            i = _skip_class(branch, i)[1] + 1
-            continue
-        depth += 1 if ch == "(" else (-1 if ch == ")" else 0)
-        i += 1
-    if depth == 0 and i == len(branch):
-        return branch[1:-1]
+    import re
+    while len(branch) >= 2 and branch[0] == "(":
+        depth, i = 1, 1
+        while i < len(branch) and depth:
+            ch = branch[i]
+            if ch == "\\":
+                i += 2
+                continue
+            if ch == "[":
+                i = _skip_class(branch, i)[1] + 1
+                continue
+            depth += 1 if ch == "(" else (-1 if ch == ")" else 0)
+            i += 1
+        if not (depth == 0 and i == len(branch)):
+            break
+        inner = branch[1:-1]
+        if inner.startswith("?"):
+            m = re.match(r"\?(?:>|P?<(?![=!])\w+>|[aiLmsux]*(?:-[imsx]*)?:)", inner)
+            if not m:
+                break
+            inner = inner[m.end():]
+        branch = inner
     return branch
 
 
@@ -344,7 +356,10 @@ def _nested_repetition(pat: str) -> bool:
     # repetition; "start"/"alts": body slice + top-level `|` offsets, for the
     # (a|a)* overlap check; "atomic": (?>...) can't backtrack into itself;
     # "conditional": (?(1)yes|no), whose `|` picks a branch by the condition
-    # and is not an overlapping alternation.
+    # and is not an overlapping alternation; "open": index of its `(`;
+    # "inner": the branch slices of an alternation group that is this
+    # group's WHOLE body — `(?:(a|ab))+` puts the `|` on the un-quantified
+    # child, so the quantified parent must check the child's branches.
     stack = [{"rep": False, "start": 0, "alts": [], "atomic": False}]
     i = 0
     while i < n:
@@ -393,14 +408,23 @@ def _nested_repetition(pat: str) -> bool:
                         continue
                     j = min(cand) + 1
             stack.append({"rep": False, "start": j, "alts": [], "atomic": atomic,
-                          "lookaround": lookaround, "conditional": conditional})
+                          "lookaround": lookaround, "conditional": conditional,
+                          "open": i})
             i = j
             continue
         if c == ")" and len(stack) > 1:
             frame = stack.pop()
-            body = pat[frame["start"]:i]
+            close = i
             i += 1
             repeats, possessive, i, variable = _read_quantifier(pat, i)
+            spans = None
+            if frame.get("conditional"):
+                pass
+            elif frame["alts"]:
+                cuts = [frame["start"]] + [x + 1 for x in frame["alts"]]
+                spans = list(zip(cuts, frame["alts"] + [close]))
+            else:
+                spans = frame.get("inner")
             if variable and not frame["atomic"] and not possessive:
                 if frame["rep"]:
                     return True
@@ -410,10 +434,8 @@ def _nested_repetition(pat: str) -> bool:
                 # (a|ab)+, (x|xx)+y, (n|d|nd)+# all let one run of input be
                 # split many ways, which backtracks exponentially. An empty
                 # branch — (|a)+ — is the degenerate case of the same thing.
-                if frame["alts"] and not frame.get("conditional"):
-                    cuts = [frame["start"]] + [x + 1 for x in frame["alts"]]
-                    ends = frame["alts"] + [frame["start"] + len(body)]
-                    branches = [pat[a:b] for a, b in zip(cuts, ends)]
+                if spans:
+                    branches = [pat[a:b] for a, b in spans]
                     stripped = [_strip_outer_group(b) for b in branches]
                     if len(set(stripped)) < len(stripped):
                         return True
@@ -434,7 +456,17 @@ def _nested_repetition(pat: str) -> bool:
             # quantifier on the group itself ((?>a)+) still repeats.
             if frame["lookaround"]:
                 continue
-            if (frame["rep"] and not frame["atomic"]) or repeats:
+            # An un-quantified alternation group that is its parent's whole
+            # body hands its branches up: `(?:(a|ab))+` repeats them all the
+            # same. Not through an atomic group, which never re-splits.
+            if (spans and i == close + 1 and not frame["atomic"]
+                    and len(stack) > 1 and frame["open"] == stack[-1]["start"]
+                    and i < n and pat[i] == ")"):
+                stack[-1]["inner"] = spans
+            # Only a VARIABLE quantifier on the group marks the parent as
+            # repeating, as for a single atom: a fixed-count `((?:ab){2})+`
+            # matches each repetition exactly one way.
+            if (frame["rep"] and not frame["atomic"]) or variable:
                 stack[-1]["rep"] = True
             continue
         if c == "|":
@@ -456,10 +488,14 @@ def _branches_overlap(a: str, b: str) -> bool:
 
     Best effort over ``_witness``: an empty witness, or a branch that does not
     compile on its own (a group reference, an inline flag), never counts as an
-    overlap. The witness is at most 64 characters, so the match is cheap.
+    overlap. Nor does a ``b`` that still holds a group: this runs IN-PROCESS
+    on a user-supplied fragment, and nested unquantified alternations
+    (``(?:x|xx)(?:x|xx)…``) backtrack exponentially even on a 64-character
+    witness. A group-free branch has no variable quantifier by the time this
+    runs (the frame's "rep" check returned first), so its match is linear.
     """
     import re
-    if a == b:
+    if a == b or "(" in b:
         return False
     w = _witness(a)
     if not w:

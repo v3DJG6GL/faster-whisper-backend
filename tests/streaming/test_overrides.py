@@ -672,6 +672,23 @@ def test_stream_knobs_hard_break_kept_above_outer(client, app_module, monkeypatc
     assert seen["client"] == {} and seen["config"].hard_break_silence_ms == 500
 
 
+def test_profile_trim_keep_at_or_above_trim_is_clamped_below_it(monkeypatch):
+    """AdminConfig only validates the GLOBAL keep < trim pair: a profile
+    keep above the global trim would stop the buffer trim from ever firing."""
+    from faster_whisper_backend.streaming import routes
+    monkeypatch.setattr(effective_config.cfg, "STREAMING_BUFFER_TRIM_S", 15.0)
+    ident = effective_config.Resolved(
+        values={"STREAMING_BUFFER_TRIM_KEEP_S": 20.0})
+    sc = routes._stream_config(effective_config.cfg_for, ident)
+    assert sc.buffer_trim_sec == 15.0
+    assert sc.buffer_trim_keep_sec < sc.buffer_trim_sec
+    # A valid pair passes through untouched.
+    ident = effective_config.Resolved(
+        values={"STREAMING_BUFFER_TRIM_KEEP_S": 8.0})
+    sc = routes._stream_config(effective_config.cfg_for, ident)
+    assert sc.buffer_trim_keep_sec == 8.0
+
+
 def test_stream_knobs_locked_are_ignored(client, make_user_key, monkeypatch):
     _, raw_admin = make_user_key("admin", is_admin=True)
     h = bearer(raw_admin)

@@ -375,4 +375,9 @@ def test_every_announced_utterance_has_exactly_one_terminal_frame():
     _assert_every_announced_utterance_closed_once(msgs)
     ordinals = [n for kind, n in _lifecycle(msgs) if kind == "open"]
     assert ordinals == [0, 1, 2, 3]           # unique and only ever growing
+    # Each step closes the way the script above says it does.
+    terminals = [(kind, n) for kind, n in _lifecycle(msgs) if kind in ("final", "dropped")]
+    assert terminals == [("final", 0), ("dropped", 1), ("final", 2), ("final", 3)]
+    assert [m.get("reason") for m in msgs
+            if m["type"] == "utterance" and m["state"] == "dropped"] == ["error"]
     assert msgs[-1]["type"] == "final" and msgs[-1].get("last") is True

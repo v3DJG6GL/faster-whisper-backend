@@ -207,8 +207,10 @@ def _drive_past_ceiling(cfg, level: int, feed_ms: int, *, skip_partials: bool = 
     with the VAD stuck on so nothing else can finalize the utterance.
 
     Returns (session, msgs, info) where info holds the peak buffer duration seen,
-    the ``forced`` flag of every _finalize entered, and the duration of each
-    buffer that reached the final decode."""
+    the ``forced`` flag of every _finalize entered (``forced_during_feed``:
+    only those entered before close(), whose own forced finalize would make
+    ``forced`` non-empty anyway), and the duration of each buffer that
+    reached the final decode."""
     msgs: list[dict] = []
     decoded: list[float] = []
 
@@ -243,10 +245,13 @@ def _drive_past_ceiling(cfg, level: int, feed_ms: int, *, skip_partials: bool = 
         for _ in range(feed_ms // FRAME_MS):
             await s.feed_pcm(_pcm(level, FRAME_MS))
             peak = max(peak, s.audio.shape[0] / SR)
+        during_feed.extend(seen)
         await s.close()
 
+    during_feed: list[bool] = []
     asyncio.run(run())
-    return s, msgs, {"peak_sec": peak, "forced": seen, "decoded": decoded}
+    return s, msgs, {"peak_sec": peak, "forced": seen,
+                     "forced_during_feed": during_feed, "decoded": decoded}
 
 
 def test_ceiling_bounds_the_buffer_when_the_rms_gate_blocks_the_trim():
@@ -263,8 +268,8 @@ def test_ceiling_bounds_the_buffer_when_the_rms_gate_blocks_the_trim():
     s, msgs, info = _drive_past_ceiling(cfg, level=1, feed_ms=8000)
     # Sanity: we fed far more than the ceiling, and nothing else could have
     # ended the utterance (VAD stuck on, forced_commit_sec 100 s away).
-    assert info["forced"], "no finalize fired — the buffer grew unbounded"
-    assert all(info["forced"]), "ceiling finalize must be flagged forced"
+    assert info["forced_during_feed"], "no finalize fired — the buffer grew unbounded"
+    assert all(info["forced_during_feed"]), "ceiling finalize must be flagged forced"
     assert info["peak_sec"] <= cfg.max_buffer_sec + FRAME_MS / 1000 + 1e-9, (
         f"buffer exceeded the ceiling: {info['peak_sec']:.3f} s")
     assert s.audio.shape[0] / SR <= cfg.max_buffer_sec
@@ -290,6 +295,8 @@ def test_ceiling_force_finalizes_through_the_decoder_when_partials_are_skipped()
     assert info["peak_sec"] <= cfg.max_buffer_sec + FRAME_MS / 1000 + 1e-9, (
         f"buffer exceeded the ceiling: {info['peak_sec']:.3f} s")
     assert len(info["decoded"]) >= 3, "ceiling never force-finalized"
+    # close() decodes the rest too; the ceiling must have fired before it.
+    assert len(info["forced_during_feed"]) >= 2 and all(info["forced_during_feed"])
     # Nothing the user said is dropped: the successive forced finalizes decode
     # the whole fed stream (minus the sub-frame remainder feed_pcm still holds).
     fed_sec = (feed_ms // FRAME_MS) * FRAME_MS / 1000

@@ -321,25 +321,36 @@ def _stream_config(cfg_for, ident=None, client: "dict | None" = None) -> StreamC
     # holds this connection's own values (_client_stream_values), which win.
     client = client or {}
 
-    def g(name, default):
+    # No fallback argument: cfg_for always resolves the schema default, so a
+    # literal here would never be read and would only drift from settings/config.py.
+    def g(name):
         field = "STREAMING_" + name
         return client[field] if field in client else cfg_for(None, field, ident)
+    # The trim pair only works with keep < trim: keep >= trim puts the cut at
+    # or before the buffer start, so the trim never fires and the buffer grows
+    # to MAX_BUFFER_S. AdminConfig's validator only sees the GLOBAL pair; a
+    # profile / identity value can still cross it, so the resolved pair is
+    # clamped here, like the VAD inner/outer pair in _client_stream_values.
+    trim = float(g("BUFFER_TRIM_S"))
+    keep = float(g("BUFFER_TRIM_KEEP_S"))
+    if keep >= trim:
+        keep = trim - 1.0
     return StreamConfig(
         sample_rate=SAMPLE_RATE,
         # Public config keys (the g("…") suffix, after STREAMING_) may differ from
         # the internal StreamConfig field names — this adapter is the seam.
-        min_chunk_ms=int(g("PARTIAL_INTERVAL_MS", 1000)),
-        min_speech_ms=int(g("GATE_MIN_SPEECH_MS", 500)),
-        vad_min_silence_ms=int(g("VAD_INNER_SILENCE_MS", 700)),
-        commit_silence_ms=int(g("VAD_OUTER_SILENCE_MS", 1200)),
-        hard_break_silence_ms=int(g("HARD_BREAK_SILENCE_MS", 5000)),
-        hard_break_separator=str(g("HARD_BREAK_SEPARATOR", "")),
-        forced_commit_sec=float(g("FORCED_COMMIT_S", 25.0)),
-        buffer_trim_sec=float(g("BUFFER_TRIM_S", 15.0)),
-        buffer_trim_keep_sec=float(g("BUFFER_TRIM_KEEP_S", 10.0)),
-        max_buffer_sec=float(g("MAX_BUFFER_S", 600.0)),
-        rms_gate_dbfs=float(g("GATE_RMS_DBFS", -42.0)),
-        prompt_words=int(g("PROMPT_WORDS", 200)),
+        min_chunk_ms=int(g("PARTIAL_INTERVAL_MS")),
+        min_speech_ms=int(g("GATE_MIN_SPEECH_MS")),
+        vad_min_silence_ms=int(g("VAD_INNER_SILENCE_MS")),
+        commit_silence_ms=int(g("VAD_OUTER_SILENCE_MS")),
+        hard_break_silence_ms=int(g("HARD_BREAK_SILENCE_MS")),
+        hard_break_separator=str(g("HARD_BREAK_SEPARATOR")),
+        forced_commit_sec=float(g("FORCED_COMMIT_S")),
+        buffer_trim_sec=trim,
+        buffer_trim_keep_sec=keep,
+        max_buffer_sec=float(g("MAX_BUFFER_S")),
+        rms_gate_dbfs=float(g("GATE_RMS_DBFS")),
+        prompt_words=int(g("PROMPT_WORDS")),
     )
 
 
@@ -520,10 +531,12 @@ def _parse_translate_expect(conf: dict) -> "dict | None":
     clean = [t.strip()[:16] for t in targets if isinstance(t, str) and t.strip()][:8]
     if not clean:
         return None
+    # An explicit null is a client serializing an unset option: absent, too.
+    per_utt = tx.get("per_utterance")
     return {
         "targets": clean,
         "include_original": bool(tx.get("include_original")),
-        "per_utterance": bool(tx.get("per_utterance", True)),
+        "per_utterance": True if per_utt is None else bool(per_utt),
     }
 
 
@@ -989,6 +1002,11 @@ async def transcribe_stream(ws: WebSocket) -> None:
                 # captures row, no quick_config trace, no usage row, no GPU work
                 # attributed to an identity that no longer exists.
                 raise _CredentialRevoked("credential revoked mid-session")
+            # Each final starts from a clean accumulator: a final whose decode
+            # raised after the gate charged its wait never reaches on_final
+            # (the only take), and that wait would otherwise land on the NEXT
+            # recorded utterance's wait_s.
+            metrics.take_wait()
             tail_pad_ms = int(effective_config.cfg_for(final_model, "STREAMING_TAIL_TRIM_PAD_MS", ident))
             # Off the event loop: this is a full Silero sweep over the whole
             # final buffer (up to max_buffer_sec), and decode_final is awaited

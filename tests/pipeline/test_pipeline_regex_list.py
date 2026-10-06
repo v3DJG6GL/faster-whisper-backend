@@ -43,3 +43,26 @@ def test_regex_list_excluded_by_card_slug(app_module):
                       "entries": [{"pattern": "a", "replacement": "b"},
                                   {"pattern": "b", "replacement": "c"}]})
     assert pl_engine._postprocess_text("a", model_name="", extra_excludes={"rl"}) == "a"
+
+
+def test_seam_culprit_stops_at_the_output_bound(app_module, monkeypatch):
+    # Expanding entries compound (~9x each). _postprocess_text stops once the
+    # text passes _POSTPROCESS_MAX_CHARS; the streaming seam diagnosis walks
+    # the same rules and must stop there too, not keep growing two strings
+    # that are already past the bound.
+    grow = {"pattern": "[a-z]", "replacement": "\\g<0>" + "x" * 8}
+    _set(app_module, {"name": "rl", "label": "RL", "type": "regex-list", "enabled": True,
+                      "entries": [grow] * 8})
+    bound = 10_000
+    monkeypatch.setattr(pl_engine, "_POSTPROCESS_MAX_CHARS", bound)
+    inputs: list[int] = []
+    real = pl_engine._apply_rule
+
+    def spy(rule, text):
+        inputs.append(len(text))
+        return real(rule, text)
+
+    monkeypatch.setattr(pl_engine, "_apply_rule", spy)
+    got = pl_engine.seam_culprit("ab", "abc", model_name="")
+    assert got.startswith("#1.") and got.endswith("(output bound hit)")
+    assert max(inputs) <= bound

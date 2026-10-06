@@ -186,3 +186,31 @@ def test_german_documents_never_rewrite_sent_text(app_module, caplog):
 def test_english_documents_never_rewrite_sent_text(app_module, caplog):
     checked, warned = _check(app_module, EN, [("en", lambda k: "en")], caplog)
     assert checked > 50 and warned == 0
+
+
+def test_a_prefix_in_front_of_a_held_tail_is_not_held_for_nothing():
+    """Once a tail is held, the word after the earlier words is known: a bare
+    key prefix it does not continue ("größer" + "neue" is no "größer als")
+    goes out now instead of waiting for the next utterance."""
+    from faster_whisper_backend.pipeline import seam_holdback as sh
+    spec = sh.build_spec([{"größer als": ">", "neue Zeile": "\n", "Klammer auf": "(",
+                           "Klammer zu": ")", "Komma": ","}])
+
+    def held(raw):
+        return raw[sh.held_start(raw, spec):].strip()
+
+    assert held("Der Wert ist größer neue") == "neue"
+    assert held("Text Klammer neue") == "neue"
+    # A joiner key in front of a held tail is still held, and so is a prefix
+    # the held tail continues.
+    assert held("Frau Kollegin, Komma, neue") == "Komma, neue"
+    assert held("Der Wert ist größer") == "größer"
+
+
+def test_a_prefix_completed_into_a_whole_key_by_the_held_tail_stays_held():
+    """`p q` + the held `r` is the whole key `p q r`: formatting `p q` now
+    would rewrite it once `r` is sent, so the re-check keeps it."""
+    from faster_whisper_backend.pipeline import seam_holdback as sh
+    spec = sh.build_spec([{"p q r": "X", "r s": "Y"}])
+    assert "a p q r"[sh.held_start("a p q r", spec):].strip() == "p q r"
+    assert "a p r"[sh.held_start("a p r", spec):].strip() == "r"

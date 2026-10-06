@@ -441,7 +441,10 @@ def seam_culprit(prefix_raw: str, full_raw: str, *, model_name: "str | None" = N
     formatting of its prefix `prefix_raw` — as '#P.S label' — for the
     streaming seam WARNING. Both texts are walked rule by rule with the same
     selection as _postprocess_text; edges are compared the way the terminal
-    trim leaves them. Warning path only: no caching, no output bound."""
+    trim leaves them. Warning path only, so no caching — but the same output
+    bound as _postprocess_text: the walk stops at the rule that pushes either
+    text past _POSTPROCESS_MAX_CHARS (where the pipeline itself stops), so a
+    compounding rule set cannot run on unbounded strings here."""
     exclude, include = _scoping(model_name, ident)
     a, b = prefix_raw, full_raw
 
@@ -453,6 +456,8 @@ def seam_culprit(prefix_raw: str, full_raw: str, *, model_name: "str | None" = N
         if not _rule_runs(rule, exclude, include, language):
             continue
         a, b = _apply_rule(rule, a), _apply_rule(rule, b)
+        if max(len(a), len(b)) > _POSTPROCESS_MAX_CHARS:
+            return f"{_rule_ordinal(rule.card_no, rule.sub_no)} {rule.label} (output bound hit)"
         now = extends(a, b)
         if ok and not now:
             return f"{_rule_ordinal(rule.card_no, rule.sub_no)} {rule.label}"

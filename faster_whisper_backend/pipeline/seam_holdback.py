@@ -72,9 +72,13 @@ def _key_tokens(key: str) -> tuple[str, ...]:
 @dataclass(frozen=True)
 class HoldSpec:
     """Token sequences that must not end the formatted text: every proper
-    prefix of a multi-word key, and every whole key whose value is a joiner."""
+    prefix of a multi-word key, and every whole key whose value is a joiner.
+    ``joiners`` and ``keys`` (every whole key) let held_start tell, once the
+    word after a sequence is known, whether that sequence still needs holding."""
     sequences: frozenset
     longest: int
+    joiners: frozenset = frozenset()
+    keys: frozenset = frozenset()
 
     def __bool__(self) -> bool:
         return bool(self.sequences)
@@ -85,16 +89,27 @@ def build_spec(lookups: Iterable[Mapping[str, str]]) -> HoldSpec:
     (``pipeline.dictation_map.compile_map``'s third value, ß/ss variants
     included)."""
     seqs: set[tuple[str, ...]] = set()
+    joiners: set[tuple[str, ...]] = set()
+    keys: set[tuple[str, ...]] = set()
     for lookup in lookups:
         for key, value in (lookup or {}).items():
             toks = _key_tokens(key)
             if not toks:
                 continue
+            keys.add(toks)
             for n in range(1, len(toks)):
                 seqs.add(toks[:n])
             if str(value).strip() in _JOINER_VALUES:
                 seqs.add(toks)
-    return HoldSpec(frozenset(seqs), max((len(s) for s in seqs), default=0))
+                joiners.add(toks)
+    return HoldSpec(frozenset(seqs), max((len(s) for s in seqs), default=0),
+                    frozenset(joiners), frozenset(keys))
+
+
+def _continues(seq: tuple, spec: HoldSpec) -> bool:
+    """Whether ``seq`` is still on a key's path: a whole key, or a longer
+    prefix of one."""
+    return seq in spec.keys or seq in spec.sequences
 
 
 def held_start(raw: str, spec: HoldSpec | None) -> int:
@@ -104,7 +119,10 @@ def held_start(raw: str, spec: HoldSpec | None) -> int:
 
     Repeated: after a held tail is found, the words before it are checked
     again ("Kollegin, Komma, neuer" holds "neuer", then "Komma"), up to
-    MAX_HELD_TOKENS words in all."""
+    MAX_HELD_TOKENS words in all. On those re-checks the word after the
+    sequence is already known, so a bare key prefix is held only while that
+    word continues it into a key or a longer prefix: "größer neue" holds just
+    "neue" — "größer" can no longer become "größer als"."""
     toks = [(m.start(), m.end(), m.group(0)) for m in _TOKEN_RE.finditer(raw or "")]
     n = len(toks)
     keep = n                       # tokens [0, keep) are formatted now
@@ -114,7 +132,9 @@ def held_start(raw: str, spec: HoldSpec | None) -> int:
         room = min(longest, keep, MAX_HELD_TOKENS - (n - keep))
         for j in range(room, 0, -1):
             seq = tuple(norm(t[2]) for t in toks[keep - j:keep])
-            if seq in spec.sequences:  # type: ignore[union-attr]
+            if seq in spec.sequences and (  # type: ignore[union-attr]
+                    keep == n or seq in spec.joiners  # type: ignore[union-attr]
+                    or _continues(seq + (norm(toks[keep][2]),), spec)):  # type: ignore[arg-type]
                 took = j
                 break
         if not took and _TRAILING_JOINER_RE.search(toks[keep - 1][2]):

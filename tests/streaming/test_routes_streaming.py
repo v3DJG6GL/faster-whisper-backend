@@ -184,7 +184,7 @@ def test_dictate_page_keeps_the_socket_open_until_closing(app_module):
     stop_body = body.split("function stop() {", 1)[1].split("\n  }\n", 1)[0]
     assert 'ws.send(JSON.stringify({ type: "stop" }))' in stop_body
     assert 'setStatus("finishing…")' in stop_body
-    assert "armStopTimer(STOP_WAIT_MS)" in stop_body
+    assert "STOP_WAIT_MS)" in stop_body and "armStopTimer(" in stop_body
     # finishStop() runs synchronously only in the two fallbacks: the send
     # failed, or there is no open socket to wait on.
     assert stop_body.count("finishStop()") == 2
@@ -221,6 +221,27 @@ def test_dictate_page_stop_flow_guards(app_module):
     assert "finished without the server's last answer" in body
     assert 'if (running && statusEl.className !== "error") setStatus("listening", "live");' in on_msg
     assert 'if (!running || statusEl.className === "error") return;' in on_msg
+    # A decode announced BEFORE Stop sends nothing until it finishes, so
+    # stop() itself picks the long window from the remembered state, which a
+    # final or a dropped frame clears.
+    assert ('armStopTimer(uttState === "decoding" ? STOP_DECODE_WAIT_MS : STOP_WAIT_MS);'
+            in stop_body)
+    assert 'uttState = m.state === "dropped" ? null : m.state;' in on_msg
+    final_branch = on_msg.split('m.type === "final"', 1)[1].split("else if (m.type", 1)[0]
+    assert "uttState = null;" in final_branch
+    # Stop during the worklet load: dropStart detaches the socket's handlers,
+    # so the cancelled branches finish the stop that owns this socket (or the
+    # button stays disabled until the fallback blames the server).
+    assert after_worklet.split("createMediaStreamSource", 1)[0].count(
+        "if (ws === sock) finishStop();") == 1
+    catch = start_body.split("} catch (err) {", 1)[1]
+    assert "if (cancelled(gen)) { if (ws === sock) finishStop(); return; }" in catch
+    # Batch mode: a recorder that cannot be built or started must release the
+    # mic it was handed — the click handler's catch only resets the page.
+    batch_body = body.split("async function startBatch(gen) {", 1)[1].split("\n  }\n", 1)[0]
+    rec_catch = batch_body.split("recorder.start();", 1)[1].split("throw err;", 1)[0]
+    assert "stream.getTracks().forEach((t) => t.stop());" in rec_catch
+    assert "recStream = null;" in rec_catch
 
 
 @pytest.mark.parametrize("exc", [OSError("gone"), ValueError("CR line endings")])
@@ -583,6 +604,60 @@ def test_per_user_cap_zero_is_unlimited(client, app_module, monkeypatch):
         assert len(streaming_routes._active_sessions) == 3
         # limit<=0 short-circuits in InFlight.acquire, so no key is ever booked
         assert streaming_routes._stream_sessions._counts == {}
+
+
+def test_session_admitted_with_the_cap_off_releases_no_slot(client, app_module,
+                                                             monkeypatch):
+    """A session admitted while STREAMING_MAX_SESSIONS_PER_USER=0 took no
+    slot. When the cap is raised mid-session and a second session takes the
+    identity's one real slot, the first one's teardown must leave that slot
+    alone — an unconditional release there frees a slot a live session holds."""
+    from faster_whisper_backend.streaming import routes as streaming_routes
+
+    monkeypatch.setattr(app_module.cfg, "STREAMING_MAX_SESSIONS_PER_USER", 0,
+                        raising=False)
+    counts = streaming_routes._stream_sessions._counts
+    b_cm = None
+    try:
+        with client.websocket_connect(_STREAM_URL) as a:
+            assert _handshake(a)["type"] == "ready"
+            assert counts == {}
+            monkeypatch.setattr(app_module.cfg, "STREAMING_MAX_SESSIONS_PER_USER",
+                                1, raising=False)
+            b_cm = client.websocket_connect(_STREAM_URL)
+            b = b_cm.__enter__()
+            assert _handshake(b)["type"] == "ready"
+            assert list(counts.values()) == [1]
+        # The cap-off session is gone; the second one still holds its slot.
+        assert list(counts.values()) == [1]
+    finally:
+        if b_cm is not None:
+            b_cm.__exit__(None, None, None)
+    assert counts == {}
+
+
+def test_global_cap_refusal_with_the_cap_off_releases_no_slot(client, app_module,
+                                                               monkeypatch):
+    """Same guard at the server-wide refusal: a connection refused there while
+    the per-user cap is off took no slot, so it must not give back the one a
+    live session of the same identity holds."""
+    from faster_whisper_backend.streaming import routes as streaming_routes
+
+    monkeypatch.setattr(app_module.cfg, "STREAMING_MAX_SESSIONS", 1, raising=False)
+    monkeypatch.setattr(app_module.cfg, "STREAMING_MAX_SESSIONS_PER_USER", 1,
+                        raising=False)
+    counts = streaming_routes._stream_sessions._counts
+    with client.websocket_connect(_STREAM_URL) as a:
+        assert _handshake(a)["type"] == "ready"
+        assert list(counts.values()) == [1]
+        monkeypatch.setattr(app_module.cfg, "STREAMING_MAX_SESSIONS_PER_USER", 0,
+                            raising=False)
+        with pytest.raises(WebSocketDisconnect) as ei:
+            with client.websocket_connect(_STREAM_URL) as ws2:
+                ws2.receive_json()
+        assert ei.value.code == streaming_routes._WS_TOO_MANY
+        assert list(counts.values()) == [1]
+    assert counts == {}
 
 
 def test_serial_sessions_never_leak_a_slot(client, app_module, monkeypatch):
@@ -1013,3 +1088,20 @@ def test_preview_decode_does_not_charge_the_session_wait():
     unset = body.index("metrics.WAIT_ACC.set(None)")
     assert unset < body.index("await _transcribe(partial_model_obj")
     assert "metrics.WAIT_ACC.reset(_wait_tok)" in body
+
+
+def test_final_decode_starts_from_a_clean_session_wait():
+    """A final whose decode raised after the GPU gate charged its wait never
+    reaches on_final, the only take_wait() site — with no partial text the
+    session emits dropped/error and returns. decode_final zeroes the
+    accumulator before its own decode, so that stranded wait cannot land on
+    the next recorded utterance's wait_s."""
+    import inspect
+
+    from faster_whisper_backend.streaming import routes as s_routes
+    src = inspect.getsource(s_routes)
+    body = src[src.index("async def decode_final("):]
+    body = body[:body.index("\n        async def ", 1)]
+    take = body.index("metrics.take_wait()")
+    assert body.index('raise _CredentialRevoked') < take
+    assert take < body.index("await _transcribe(")

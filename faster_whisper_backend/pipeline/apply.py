@@ -220,9 +220,12 @@ async def apply_hot_changes(
     # reloads them with the new settings. In-flight transcribes finish on the
     # old WhisperModel instance via Python ref-counting (drain-then-evict).
     evicted: list[str] = []
+    # Env-pinned names were skipped above: their running value did not change,
+    # so they are no reason to drop a loaded model or extra.
+    effective = {n for n in written if n not in env_pinned}
     try:
         load_time_changed_globally = bool(
-            set(written.keys()) & settings_schema.LOAD_TIME_FIELDS
+            effective & settings_schema.LOAD_TIME_FIELDS
         )
         if load_time_changed_globally:
             # Affects every loaded model that doesn't have a per-model
@@ -259,7 +262,7 @@ async def apply_hot_changes(
     # settings_schema.EXTRAS_EVICTION (per-field `evict=` registry metadata); a
     # failed drop never breaks the save response.
     for _extra, _extra_fields in settings_schema.EXTRAS_EVICTION.items():
-        if not set(written.keys()) & _extra_fields:
+        if not effective & _extra_fields:
             continue
         try:
             await EVICTORS[_extra]()

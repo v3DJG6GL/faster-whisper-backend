@@ -34,6 +34,9 @@ def test_per_utterance_defaults_to_true_for_older_clients():
     # or shipping this backend first would silently drop the merged receipts.
     got = parse({"translate_expect": {"targets": ["en"]}})
     assert got["per_utterance"] is True
+    # An explicit null is an unset option, not a "false".
+    got = parse({"translate_expect": {"targets": ["en"], "per_utterance": None}})
+    assert got["per_utterance"] is True
 
 
 def test_stop_timing_declares_per_utterance_false():

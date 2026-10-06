@@ -142,6 +142,10 @@
   // before "closing"; every frame it sends re-arms the wait, and the decode
   // itself (announced by utterance "decoding") gets the long window.
   const STOP_WAIT_MS = 10000, STOP_DECODE_WAIT_MS = 60000;
+  // The current utterance's last announced state ("open" / "decoding"), null
+  // once it got its final or was dropped. A decode announced BEFORE Stop sends
+  // nothing until it finishes, so stop() itself must pick the long window.
+  let uttState = null;
   // Bumped by every Start. A start() / startBatch() still awaiting the mic or
   // the worklet was cancelled when Stop ran (running is false) or a newer Start
   // began (the generation moved on); it then drops what it acquired and leaves
@@ -244,6 +248,7 @@
       finalEl.textContent = docPrefix + (m.committed || "");
       tailEl.textContent = m.tail || "";
       renderPartial("", "");
+      uttState = null;
       // A final is the terminal frame of the utterance that showed
       // "transcribing…" below. Only while running: after Stop the status is
       // "finishing…" and the drain's finals must not put "listening" back.
@@ -261,6 +266,7 @@
       // after Stop too, so it runs before the guard.
       // Unknown states are ignored on purpose (the server may grow more).
       if (m.state === "dropped") renderPartial("", "");
+      uttState = m.state === "dropped" ? null : m.state;
       // After Stop the forced final decode may take far longer than a frame
       // gap (large-v3 on CPU): give the fallback the long window.
       if (stopTimer && m.state === "decoding") armStopTimer(STOP_DECODE_WAIT_MS);
@@ -320,11 +326,19 @@
     // reset the page, so release this mic instead of recording into nothing.
     if (cancelled(gen)) { stream.getTracks().forEach((t) => t.stop()); return; }
     recStream = stream;
-    const mime = pickMime();
-    recorder = mime ? new MediaRecorder(recStream, { mimeType: mime }) : new MediaRecorder(recStream);
-    recorder.ondataavailable = (e) => { if (e.data && e.data.size) recChunks.push(e.data); };
-    recorder.onstop = () => { sendBatch(); };
-    recorder.start();
+    try {
+      const mime = pickMime();
+      recorder = mime ? new MediaRecorder(recStream, { mimeType: mime }) : new MediaRecorder(recStream);
+      recorder.ondataavailable = (e) => { if (e.data && e.data.size) recChunks.push(e.data); };
+      recorder.onstop = () => { sendBatch(); };
+      recorder.start();
+    } catch (err) {
+      // No MediaRecorder, or start() refused: the click handler's catch only
+      // resets the page, so release the live mic here or it stays on.
+      stream.getTracks().forEach((t) => t.stop());
+      recStream = null; recorder = null;
+      throw err;
+    }
     setStatus("recording… (press Stop to transcribe)", "live");
   }
 
@@ -397,6 +411,7 @@
 
   async function start(gen) {
     finalEl.textContent = ""; tailEl.textContent = ""; renderPartial("", ""); docPrefix = "";
+    uttState = null;
     setStatus("requesting mic…");
 
     // Acquire mic BEFORE opening the WebSocket so a denied permission
@@ -444,8 +459,11 @@
       await ctx.audioWorklet.addModule(blobUrl);
       // A refusal close (4401/4403/4429/4503) can land during that await:
       // onclose -> stop() already released everything and put its message
-      // up, so build no graph and leave the status alone.
-      if (cancelled(gen)) { dropStart(sock, stream, ctx); return; }
+      // up, so build no graph and leave the status alone. A Stop pressed
+      // during it sent "stop" on the still-open socket and armed the stop
+      // timer; dropStart detaches the handlers that "closing" would have
+      // reached, so finish that stop here (only if this socket is still ws).
+      if (cancelled(gen)) { dropStart(sock, stream, ctx); if (ws === sock) finishStop(); return; }
       const src = ctx.createMediaStreamSource(stream);
       const node = workletNode = new AudioWorkletNode(ctx, "cap");
       const sr = ctx.sampleRate;
@@ -454,7 +472,7 @@
       const sink = ctx.createGain(); sink.gain.value = 0; node.connect(sink); sink.connect(ctx.destination);
     } catch (err) {
       dropStart(sock, stream, ctx);
-      if (cancelled(gen)) return;
+      if (cancelled(gen)) { if (ws === sock) finishStop(); return; }
       ws = null; audioCtx = null; workletNode = null; mediaStream = null;
       throw err;
     }
@@ -463,7 +481,7 @@
   function finishStop() {
     if (stopTimer) { clearTimeout(stopTimer); stopTimer = null; }
     try { if (ws) { ws.onmessage = ws.onclose = ws.onerror = null; ws.close(); } } catch {}
-    ws = null; pcmLen = 0; resamplePos = 0; resampleCarry = 0.0;
+    ws = null; pcmLen = 0; resamplePos = 0; resampleCarry = 0.0; uttState = null;
     resetToggleButton();
     setStatus("idle");
   }
@@ -503,7 +521,7 @@
       try { ws.send(JSON.stringify({ type: "stop" })); } catch { finishStop(); return; }
       toggleBtn.disabled = true;
       setStatus("finishing…");
-      armStopTimer(STOP_WAIT_MS);
+      armStopTimer(uttState === "decoding" ? STOP_DECODE_WAIT_MS : STOP_WAIT_MS);
     } else {
       finishStop();
     }

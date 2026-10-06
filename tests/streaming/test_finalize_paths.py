@@ -178,6 +178,58 @@ def test_decoded_path_flags_decode_and_rebases_words():
     assert len({w["word"] for w in words}) == len(words)
 
 
+@pytest.mark.parametrize("trim", [False, True], ids=["no_trim", "trim"])
+def test_empty_final_decode_takes_text_and_words_from_localagreement(trim):
+    """A final decode that returns nothing (its own VAD trimmed the buffer)
+    without dropping anything falls back to the partial-agreed transcript —
+    for the text AND the words. The words used to stay the decode's own empty
+    list (or, after a trim, only the banked prefix), so captures stored a
+    text/words pair that did not match."""
+    cfg = StreamConfig(
+        min_chunk_ms=96, vad_min_silence_ms=96, commit_silence_ms=192,
+        min_speech_ms=64, forced_commit_sec=100,
+        buffer_trim_sec=2.0 if trim else 100.0, buffer_trim_keep_sec=1.0,
+        rms_gate_dbfs=-60, preroll_keep_ms=100,
+    )
+    finals_meta: list[dict] = []
+    box: list[StreamSession] = []
+
+    async def emit(m):
+        pass
+
+    async def on_final(info):
+        finals_meta.append(info)
+
+    async def decode_partial(audio, prompt):
+        off = box[0]._buffer_offset
+        dur = audio.shape[0] / SR
+        return [(a - off, b - off, t) for a, b, t in _grid_words(off, off + dur)]
+
+    async def decode_final(audio, prompt):
+        return ("", [], False)
+
+    s = StreamSession(
+        config=cfg, endpointer=EnergyEndpointer(),
+        decode_partial=decode_partial, decode_final=decode_final,
+        postprocess=lambda raw: raw, emit=emit, on_final=on_final,
+    )
+    box.append(s)
+
+    async def run():
+        await s.feed_pcm(_pcm(8000, 3500))
+        await s.feed_pcm(_pcm(0, 400))
+
+    asyncio.run(run())
+    info = finals_meta[-1]
+    assert (info["trimmed_sec"] > 0.0) is trim
+    assert info["raw_text"].strip(), "setup failed: the partials agreed nothing"
+    words = info["words"]
+    assert "".join(w["word"] for w in words) == info["raw_text"]
+    starts = [w["start"] for w in words]
+    assert starts == sorted(starts)
+    assert words[-1]["end"] <= info["audio_dur"] + 1e-6
+
+
 # ---- route level ----------------------------------------------------------------
 
 

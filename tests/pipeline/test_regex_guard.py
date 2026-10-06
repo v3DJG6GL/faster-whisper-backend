@@ -371,3 +371,55 @@ def test_class_skipper_agrees_on_the_closing_bracket(pat):
     # The same scan drives _next_atom: the class is one atom ending at `]`.
     _char, body, end = g._next_atom(pat, 0)
     assert body is None and pat[end - 1] == "]" and pat[end] == "("
+
+
+@pytest.mark.parametrize("pat", [
+    r"(?:a|\d|(?:13))+#",
+    r"(?:a|(?:\d)|13)+#",
+    r"(?P<x>a|\d|(?P<y>13))+#",
+])
+def test_group_wrapped_overlapping_branch_is_rejected(pat):
+    """`(?:13)` used to strip to `?:13` — uncompilable, with a `:13` witness —
+    so wrapping an overlapping branch in a non-capturing or named group got
+    past the overlap check, and `re.sub` on a "1313…" run went exponential."""
+    assert g._nested_repetition(pat)
+    with pytest.raises(ValueError, match="nested repetition"):
+        g.validate([("r", pat, "")])
+
+
+@pytest.mark.parametrize("pat", [r"(?:(a|\d|13))+#", r"((a|ab))+c", r"(?:(?:(a|ab)))+c"])
+def test_alternation_wrapped_in_a_whole_body_group_is_rejected(pat):
+    """The `|` of `(?:(a|\\d|13))+#` sits on the un-quantified child group, the
+    quantified parent has none — so neither frame ran the overlap test."""
+    assert g._nested_repetition(pat)
+
+
+def test_benign_group_wrapped_alternations_still_pass():
+    for pat in (r"(?:km|m)\b", r"(?:(km|m))\b", r"(?:(a|b))+c", r"(?:(?>a|ab))+c"):
+        assert not g._nested_repetition(pat), pat
+    g.validate([("km", r"(?:km|m)\b", "x"), ("km2", r"(?:(km|m))\b", "x")])
+
+
+@pytest.mark.parametrize("pat", [r"((?:ab){2})+", r"(?:(?:\.\d{3}){2})+"])
+def test_fixed_count_group_inside_a_repeat_is_not_screened(pat):
+    """A group with a fixed `{n}` matches exactly one way, like `(?:a{2})+`
+    — it used to mark its parent as repeating and earn a false 422."""
+    assert not g._nested_repetition(pat)
+    assert g._nested_repetition(r"((?:ab){2,3})+")
+
+
+def test_overlap_check_never_runs_a_grouped_branch_in_process():
+    """`_branches_overlap` matches one branch against another's witness IN the
+    parent process; nested unquantified alternations in that branch backtrack
+    exponentially (n=28 took 5 s, n=40 hours). Run in a child with a timeout
+    so a regression fails here instead of hanging the suite."""
+    import subprocess
+    import sys
+    from pathlib import Path
+    # Loaded by path, like the guard's own child: stdlib-only, no package import.
+    code = ("import importlib.util as u, sys; "
+            "s = u.spec_from_file_location('rg', sys.argv[1]); g = u.module_from_spec(s); "
+            "s.loader.exec_module(g); "
+            "g._nested_repetition('(?:' + 'x' * 64 + '|' + '(?:x|xx)' * 40 + '!)+')")
+    subprocess.run([sys.executable, "-I", "-c", code, str(Path(g.__file__).resolve())],
+                   check=True, timeout=30)

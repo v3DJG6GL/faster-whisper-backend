@@ -555,6 +555,9 @@ class StreamSession:
         once."""
         audio = self.audio
         decode_failed = False
+        # A decode ran but its words were replaced by LocalAgreement's, which
+        # are already utterance-absolute (see the trim merge below).
+        words_absolute = False
         # Anti-hallucination: never run the final decode on near-silence.
         if self._speech_ms < self.cfg.min_speech_ms or rms_dbfs(audio) < self.cfg.rms_gate_dbfs:
             # The gate judges the LIVE (post-trim) buffer only — text already
@@ -629,7 +632,14 @@ class StreamSession:
                 # i.e. they still hold the hallucination — so keep the empty result.
                 # la.committed spans the WHOLE utterance (pop_committed only prunes the
                 # agreement buffer), so this path already includes any trim-banked words.
-                raw = self.la.committed_text + self.la.text_of(self.la.finish())
+                # The words come from the same source as the text — the decode's
+                # own (empty) list would leave the final with no word timestamps,
+                # or with only the banked prefix after a trim.
+                tail = self.la.finish()
+                raw = self.la.committed_text + self.la.text_of(tail)
+                words = [{"word": w.text, "start": w.start, "end": w.end}
+                         for w in (self.la.committed + tail)]
+                words_absolute = True
             else:
                 # The decode only heard the (possibly trim-shortened) buffer: text whose
                 # audio _maybe_trim cut from it survives in the banked committed words —
@@ -642,12 +652,13 @@ class StreamSession:
         # the remaining buffer, and the banked word dicts (absolute times) + the
         # final decode's words shifted from buffer-relative to utterance time.
         # Captures therefore store the full audio↔text pair, not a fragment.
-        # The gate path's words are already utterance-absolute and already
-        # include the banked prefix (see above), so only a real decode's
-        # buffer-relative words are re-based here.
+        # The LocalAgreement words (gate path, failed or empty decode) are
+        # already utterance-absolute and already include the banked prefix
+        # (see above), so only a real decode's buffer-relative words are
+        # re-based here.
         if self._trimmed_audio:
             full_audio = np.concatenate([*self._trimmed_audio, audio])
-            if decoded:
+            if decoded and not words_absolute:
                 off = self._buffer_offset
                 words = self._trimmed_words + [
                     {**w, "start": w["start"] + off, "end": w["end"] + off}

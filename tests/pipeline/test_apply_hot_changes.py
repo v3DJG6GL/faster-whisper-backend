@@ -59,3 +59,39 @@ def test_env_per_model_values_stay_live_after_a_save(monkeypatch):
     new = {"A": {"BEAM_SIZE": 7}}
     assert _run(monkeypatch, old, new) == []
     assert cfg.MODEL_OVERRIDES == {"A": {"MODEL_DEVICE": "cpu", "BEAM_SIZE": 7}}
+
+
+def test_env_pinned_load_time_save_evicts_nothing(monkeypatch):
+    # An env-pinned field is skipped by the setattr loop — the running value
+    # never changed — so saving it must not drain every loaded model or drop
+    # the extras just to reload them with identical settings.
+    calls: list = []
+    extras: list = []
+
+    async def spy(model_id=None):
+        calls.append(model_id)
+        return [model_id]
+
+    def _evictor(name):
+        async def _drop():
+            extras.append(name)
+        return _drop
+
+    pinned = {"MODEL_DEVICE": "WHISPER_DEVICE", "DIARIZATION_DEVICE": "DIARIZATION_DEVICE"}
+    written = {"MODEL_DEVICE": "cpu", "DIARIZATION_DEVICE": "cpu"}
+    monkeypatch.setattr(config_store, "env_pinned_fields", lambda: pinned)
+    monkeypatch.setattr(config_store, "load_overrides", lambda: dict(written))
+    monkeypatch.setattr(tx_models, "drain_then_evict", spy)
+    for name in pl_apply.EVICTORS:
+        monkeypatch.setitem(pl_apply.EVICTORS, name, _evictor(name))
+    out = asyncio.run(pl_apply.apply_hot_changes(written))
+    assert calls == [] and extras == []
+    assert out["evicted"] == []
+    assert out["env_pinned_ignored"] == ["DIARIZATION_DEVICE", "MODEL_DEVICE"]
+
+    # The same save without the pin still evicts both.
+    monkeypatch.setattr(config_store, "env_pinned_fields", lambda: {})
+    monkeypatch.setattr(cfg, "MODEL_DEVICE", cfg.MODEL_DEVICE)
+    monkeypatch.setattr(cfg, "DIARIZATION_DEVICE", cfg.DIARIZATION_DEVICE)
+    asyncio.run(pl_apply.apply_hot_changes(written))
+    assert calls == [None] and extras == ["diarization"]
