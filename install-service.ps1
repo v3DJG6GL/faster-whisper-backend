@@ -360,10 +360,10 @@ function Test-FfmpegShared($cmd) {
     return [bool]($cmd -and (Get-ChildItem -Path (Split-Path $cmd.Source) -Filter "avutil-*.dll" -ErrorAction SilentlyContinue))
 }
 # Pinned BtbN shared build, ffmpeg 9.0. torchcodec supports ffmpeg majors
-# 4-9, but 9 only since torchcodec 0.16.0 -- requirements-diarize.txt pins
-# that floor to match. (Docker/Linux stay on distro apt ffmpeg -- 7.1 on
-# Debian 13 -- which is inside the supported range; the majors don't need to
-# agree across deployment types.) URL and hash MUST be updated together,
+# 4-9, but 9 only since torchcodec 0.16.0 -- requirements-diarize.txt floors
+# torchcodec at or above that release to match. (Docker/Linux stay on distro
+# apt ffmpeg -- 7.1 on Debian 13 -- which is inside the supported range; the
+# majors don't need to agree across deployment types.) URL and hash MUST be updated together,
 # like the WinSW pin above; Renovate does not manage either (it can't
 # recompute hashes). The extracted copy is stamped with the zip's SHA-256
 # (.pin) so a pin bump auto-reprovisions on the next -Full run.

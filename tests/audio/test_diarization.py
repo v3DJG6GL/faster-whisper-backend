@@ -564,3 +564,86 @@ def test_placement_error_keeps_raw_torch_text_out_of_the_message(monkeypatch):
         diarization._load_blocking_inner("p/m", "cuda", 4)
     assert "SECRET" not in str(ei.value)
     assert "/opt/path" not in str(ei.value)
+
+
+# --- the pipeline is cached before its stats row is registered ---------------
+
+def _blocked_register(monkeypatch):
+    import threading
+    from faster_whisper_backend.runtime import model_registry
+    entered, gate = threading.Event(), threading.Event()
+    real_register = model_registry.register_loaded_model
+
+    def _slow(*a, **kw):
+        entered.set()
+        gate.wait(5)
+        return real_register(*a, **kw)
+    monkeypatch.setattr(model_registry, "register_loaded_model", _slow)
+    return entered, gate
+
+
+def _model_a(monkeypatch, batch=4):
+    cfg = diarization.cfg
+    monkeypatch.setattr(cfg, "DIARIZATION_MODEL", "A", raising=False)
+    monkeypatch.setattr(cfg, "DIARIZATION_DEVICE", "cpu", raising=False)
+    monkeypatch.setattr(cfg, "DIARIZATION_EMBEDDING_BATCH_SIZE", batch, raising=False)
+    monkeypatch.setattr(diarization, "_pipeline", None)
+    monkeypatch.setattr(diarization, "_pipeline_key", None)
+    monkeypatch.setattr(diarization, "_leases", {})
+    monkeypatch.setattr(diarization, "_orphans", {})
+
+
+def test_cancel_during_register_keeps_the_pipeline_its_row_describes(monkeypatch):
+    """The register thread writes "pyannote:<id>" even when the awaiting
+    caller is cancelled; with no cached pipeline that row was a phantom
+    _drop_locked (early return on no pipeline) never unregistered."""
+    import asyncio
+    from faster_whisper_backend.runtime import model_registry
+    _model_a(monkeypatch)
+    pipe = object()
+    monkeypatch.setattr(diarization, "_load_blocking", lambda m, d, b: pipe)
+    entered, gate = _blocked_register(monkeypatch)
+
+    async def _main():
+        task = asyncio.create_task(diarization._get_pipeline(lease=True))
+        while not entered.is_set():
+            await asyncio.sleep(0.01)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        gate.set()
+    asyncio.run(_main())   # joins the register thread on exit
+    assert diarization._pipeline is pipe
+    assert diarization._leases == {}   # the cancelled caller never releases
+    assert "pyannote:A" in model_registry._loaded_models
+    assert diarization._drop_locked() is True
+    assert "pyannote:A" not in model_registry._loaded_models
+
+
+def test_orphan_release_mid_register_keeps_the_new_row(monkeypatch):
+    """A batch edit orphans the leased pipeline and reloads the same id; the
+    orphan's last release landing while the new row is being registered must
+    not unregister the row the live pipeline just wrote."""
+    import asyncio
+    from faster_whisper_backend.runtime import model_registry
+    _model_a(monkeypatch, batch=8)
+    old, new = object(), object()
+    monkeypatch.setattr(diarization, "_pipeline", old)
+    monkeypatch.setattr(diarization, "_pipeline_key", ("A", "cpu", 4))
+    monkeypatch.setattr(diarization, "_leases", {"A": 1})
+    monkeypatch.setattr(diarization, "_load_blocking", lambda m, d, b: new)
+    entered, gate = _blocked_register(monkeypatch)
+
+    async def _main():
+        task = asyncio.create_task(diarization._get_pipeline())
+        while not entered.is_set():
+            await asyncio.sleep(0.01)
+        await diarization._release_pipeline("A", old)   # the orphan drains
+        gate.set()
+        assert await task is new
+    asyncio.run(_main())
+    assert diarization._orphans == {}
+    assert "pyannote:A" in model_registry._loaded_models
+    with monkeypatch.context() as m:
+        m.setattr(diarization, "_pipeline_key", None)
+        diarization._free_locked("A")   # tidy the real registry row

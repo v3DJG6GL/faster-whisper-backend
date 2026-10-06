@@ -111,10 +111,15 @@ def scan_a53(chunks, scan: "A53Scan | None" = None, *, stop_on_content: bool = T
     return scan
 
 
-def embedded_captions_empty(src: str, *, video_index: int = 0, timeout: float = 300.0) -> bool:
+def embedded_captions_empty(src: str, *, video_index: int = 0, timeout: float = 300.0,
+                            cancel: "threading.Event | None" = None) -> bool:
     """True only when the H.264 video carries A/53 captions and none of them
     holds text. Any doubt (no ffmpeg, a read error, the time limit, real
-    caption bytes) answers False: the captions are kept."""
+    caption bytes, `cancel` set) answers False: the captions are kept.
+
+    `cancel` is how an async caller that was cancelled stops the scan: its
+    to_thread await is abandoned, but this thread and its ffmpeg child would
+    otherwise read the whole source for up to `timeout`."""
     argv = [audio_ffmpeg.ffmpeg_exe(), "-hide_banner", "-loglevel", "error", "-nostdin",
             "-protocol_whitelist", "file", "-i", src,
             "-map", f"0:v:{max(0, int(video_index))}", "-c", "copy",
@@ -140,10 +145,21 @@ def embedded_captions_empty(src: str, *, video_index: int = 0, timeout: float = 
     watchdog = threading.Timer(max(0.0, timeout - (time.monotonic() - t0)), _expire)
     watchdog.daemon = True
     watchdog.start()
+    finished = threading.Event()
+    if cancel is not None:
+        def _cancel_watch():
+            # Same unblock as _expire: a read stuck in a stalled ffmpeg only
+            # returns once the child is killed.
+            while not finished.is_set():
+                if cancel.wait(0.1):
+                    _expire()
+                    return
+        threading.Thread(target=_cancel_watch, daemon=True,
+                         name="caption-scan-cancel").start()
 
     def _chunks():
         while True:
-            if time.monotonic() - t0 > timeout:
+            if time.monotonic() - t0 > timeout or (cancel is not None and cancel.is_set()):
                 state["timed_out"] = True
                 return
             data = proc.stdout.read(_CHUNK)
@@ -156,6 +172,7 @@ def embedded_captions_empty(src: str, *, video_index: int = 0, timeout: float = 
         scan_a53(_chunks(), scan)
     finally:
         watchdog.cancel()
+        finished.set()
         if state["eof"]:
             try:
                 rc = proc.wait(timeout=10)

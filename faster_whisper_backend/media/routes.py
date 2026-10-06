@@ -13,7 +13,8 @@ import tempfile
 import time
 import uuid
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import FileResponse
 
 from faster_whisper_backend.auth import rate_limit as _rl
 from faster_whisper_backend.auth.dependencies import get_current_user as _get_current_user_dep
@@ -222,7 +223,6 @@ async def url_media(media_id: str,
     wiped on restart); unknown, expired and foreign-owner ids all
     answer the same 404 — no oracle. FileResponse handles Range, so the
     client player can seek without re-downloading."""
-    from fastapi.responses import FileResponse
     # Either producer hands out these ids: a link run (URL download) or an
     # uploaded / retained video (media packaging, on by default). Gating on
     # the URL feature alone left the packaging ids live but unreadable.
@@ -417,6 +417,18 @@ async def url_media_audio(request: Request,
     return await _url_media_on_demand(user, body, url, "audio download", _fetch)
 
 
+def _has_speech(audio) -> bool:
+    """Whether VAD hears speech in a language-check piece (silence, music
+    and an empty piece past the end do not). faster-whisper 1.2 no longer
+    raises for a piece without speech: detect_language then runs on padded
+    silence and answers ("en", 0.34), so a silent or music-only link would
+    claim English. Same VAD defaults detect_language's vad_filter uses."""
+    if audio is None or len(audio) == 0:
+        return False
+    from faster_whisper.vad import get_speech_timestamps
+    return bool(get_speech_timestamps(audio))
+
+
 @router.post("/v1/audio/url-language")
 async def url_language(request: Request,
                        user: dict = Depends(_get_current_user_dep)):
@@ -453,10 +465,12 @@ async def url_language(request: Request,
     _user_id = user.get("user_id")
 
     def _detect(model, audio) -> "tuple[str | None, float]":
+        if not _has_speech(audio):
+            return None, 0.0
         try:
             lang, prob, _all = model.detect_language(audio=audio, vad_filter=True)
         except ValueError:
-            # No speech left after VAD (music, silence) or an empty piece.
+            # Older faster-whisper: no speech left after VAD, or an empty piece.
             return None, 0.0
         return lang, float(prob)
 
@@ -690,9 +704,27 @@ def _track_index(body: dict, key: str, count: int) -> "int | None":
     return value
 
 
+class _PackageResponse(FileResponse):
+    """FileResponse that removes the package's fwb-pkg- workdir however the
+    response ends. Starlette runs `background` only after a normal body
+    send: its Range branches (400 malformed, 416 unsatisfiable — honoured on
+    POST too) return before it, and a client disconnect mid-stream raises
+    past it, either way leaving a full copy of the video in TMPDIR until the
+    next restart's sweep."""
+
+    def __init__(self, *args, workdir: str, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._workdir = workdir
+
+    async def __call__(self, scope, receive, send):
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            await asyncio.shield(asyncio.to_thread(shutil.rmtree, self._workdir, True))
+
+
 @router.post("/v1/audio/media/{media_id}/package")
 async def package_media(media_id: str, request: Request,
-                        background: BackgroundTasks,
                         user: dict = Depends(_get_current_user_dep)):
     """Mux the client's SRT tracks into a retained video as soft subtitle
     streams and stream the file back. Body: {container: "mkv"|"mp4",
@@ -704,7 +736,6 @@ async def package_media(media_id: str, request: Request,
     `original` is Matroska-only (MP4 has no such flag). MP4 only
     when the streams fit it (422 with code "mp4_incompatible" otherwise, and
     the reason). One packaging run per identity at a time."""
-    from fastapi.responses import FileResponse
     _package_gate()
     if not url_media_store.MEDIA_ID_RE.match(media_id):
         raise HTTPException(status_code=422, detail="malformed media id")
@@ -808,11 +839,10 @@ async def package_media(media_id: str, request: Request,
     finally:
         if _took_slot:
             _media_package_inflight.release(_key)
-    workdir = os.path.dirname(out)
-    background.add_task(shutil.rmtree, workdir, True)
-    return FileResponse(
+    return _PackageResponse(
         path=out,
         media_type=_VIDEO_MIME[container],
         filename=f"{stem}.{container}",
         headers={"Cache-Control": "no-store"},
+        workdir=os.path.dirname(out),
     )

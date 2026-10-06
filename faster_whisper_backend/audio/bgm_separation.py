@@ -263,6 +263,10 @@ _separator_key: "tuple[str, str] | None" = None  # (model_filename, device)
 # an orphan's lock-free release landing mid-load could not tell that a new
 # session's placement / stats row is already being recorded.
 _loading_key: "tuple[str, str] | None" = None
+# Models whose orphan's last release skipped the unregister (and the session
+# device clear) because a same-model load was in flight and would re-register
+# the row. A load that then fails or is cancelled redoes that teardown.
+_deferred_free: "set[str]" = set()
 _last_used_monotonic: float = 0.0
 _STATS_PREFIX = "uvr:"
 # model filename → count of jobs currently running inference on the CACHED
@@ -437,9 +441,11 @@ def _free_locked(model: str) -> None:
     removed it from the cache."""
     # A same-model RELOAD can have happened (or be in flight) while an orphan
     # was still draining; the stats entry then describes the live separator.
-    if not (_separator_key and _separator_key[0] == model) and \
-            not (_loading_key and _loading_key[0] == model):
-        model_registry.unregister_loaded_model(_STATS_PREFIX + model)
+    if not (_separator_key and _separator_key[0] == model):
+        if _loading_key and _loading_key[0] == model:
+            _deferred_free.add(model)
+        else:
+            model_registry.unregister_loaded_model(_STATS_PREFIX + model)
     # No live separator left → no session; actual_device() must stop
     # reporting the dead one. (A draining orphan freed AFTER or DURING a
     # reload must not wipe the new session's placement.)
@@ -600,9 +606,28 @@ async def _get_separator(model_filename: "str | None" = None, *,
             # ORT can silently fall back to CPU at session creation, and the
             # ledger (model_sizes) keys rows by device.
             actual = actual_device() or device
-            await asyncio.to_thread(
-                model_registry.register_loaded_model,
-                _STATS_PREFIX + model, vram, actual, "onnx", load_secs)
+            # Cached BEFORE the register await (transcription/models.py's
+            # shape): a cancellation landing on it cannot stop the registry
+            # write already on the thread, and a row with no cached
+            # separator is one _drop_locked never unregisters.
+            _separator = sep
+            _separator_key = key
+            _last_used_monotonic = time.monotonic()
+            if lease:
+                _leases[model] = _leases.get(model, 0) + 1
+            try:
+                await asyncio.to_thread(
+                    model_registry.register_loaded_model,
+                    _STATS_PREFIX + model, vram, actual, "onnx", load_secs)
+            except BaseException as e:
+                # The caller never receives the separator, so never releases.
+                if lease:
+                    _release_locked(model, sep)
+                if not isinstance(e, asyncio.CancelledError):
+                    # A failed register leaves nothing cached, as before.
+                    _separator = None
+                    _separator_key = None
+                raise
             logger.info("[bgm] separation model %s loaded on %s in %.1fs",
                         model, actual, load_secs)
             try:
@@ -610,14 +635,26 @@ async def _get_separator(model_filename: "str | None" = None, *,
                 metrics.record_model_load(_STATS_PREFIX + model, load_secs)
             except Exception:  # noqa: BLE001 — stats only
                 pass
-            _separator = sep
-            _separator_key = key
-            _last_used_monotonic = time.monotonic()
+        except BaseException:
+            if _separator_key != key:
+                _redo_deferred_frees()
+            raise
         finally:
             _loading_key = None
-        if lease:
-            _leases[model] = _leases.get(model, 0) + 1
+            _deferred_free.clear()
         return sep
+
+
+def _redo_deferred_frees() -> None:
+    """A load failed (or was cancelled) before it cached its separator: the
+    teardown an orphan's last release deferred to it (see _free_locked) will
+    not be redone by a re-register, so do it here. Caller holds _lock."""
+    global _session_device
+    for m in _deferred_free:
+        if not (_separator_key and _separator_key[0] == m) and not _orphans.get(m):
+            model_registry.unregister_loaded_model(_STATS_PREFIX + m)
+    if _deferred_free and _separator is None:
+        _session_device = None
 
 
 async def separate(path: str, *, model_filename: "str | None" = None,
@@ -827,3 +864,4 @@ def _reset_for_tests() -> None:
     _loading_key = None
     _leases.clear()
     _orphans.clear()
+    _deferred_free.clear()

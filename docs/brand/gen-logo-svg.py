@@ -55,7 +55,9 @@ def run_paths(text, font, size, tracking_em, fill, x, baseline_y):
         x += hmtx[gname][0] * scale + track
     return "".join(out), x
 
-# ---- the backend mark, verbatim from docs/brand/icon.svg -------------------
+# ---- the backend mark, ADAPTED from docs/brand/icon.svg (NOT verbatim) ----
+# Deltas to keep when re-syncing: gradient id "fw" (icon.svg: "fw-wave"), and
+# the root <svg> becomes a <g transform=...> wrapper.
 # (faster-whisper-frontend keeps its own copy of this script for its mark.)
 BE_MARK = """<g transform="translate(0 10) scale(0.8667)">
   <defs>

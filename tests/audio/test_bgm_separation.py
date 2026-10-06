@@ -472,3 +472,90 @@ def test_idle_drop_defers_the_free_while_a_same_name_orphan_drains(monkeypatch):
     assert unregistered == []
     assert bgm_separation._orphans == {"m.onnx": 1}
     assert bgm_separation.actual_device() == "cuda"
+
+
+# --- a load cancelled or failed mid-way --------------------------------------
+
+def _foo_model(monkeypatch, device="cpu"):
+    cfg = bgm_separation.cfg
+    monkeypatch.setattr(cfg, "BGM_SEPARATION_UVR_MODEL", "Foo", raising=False)
+    monkeypatch.setattr(cfg, "BGM_SEPARATION_DEVICE", device, raising=False)
+    monkeypatch.setattr(bgm_separation, "_separator", None)
+    monkeypatch.setattr(bgm_separation, "_separator_key", None)
+    monkeypatch.setattr(bgm_separation, "_leases", {})
+    monkeypatch.setattr(bgm_separation, "_orphans", {})
+    monkeypatch.setattr(bgm_separation, "_deferred_free", set())
+
+
+def test_cancel_during_register_keeps_the_separator_its_row_describes(monkeypatch):
+    """The register thread writes the stats row even when the awaiting
+    request is cancelled; the separator must be cached by then, or the row
+    is a phantom _drop_locked (which returns early on no separator) never
+    unregisters."""
+    import asyncio
+    import threading
+    from faster_whisper_backend.runtime import model_registry
+    _foo_model(monkeypatch)
+    sep = object()
+    monkeypatch.setattr(bgm_separation, "_load_blocking", lambda m, d: sep)
+    entered, gate = threading.Event(), threading.Event()
+    real_register = model_registry.register_loaded_model
+
+    def _slow_register(*a, **kw):
+        entered.set()
+        gate.wait(5)
+        return real_register(*a, **kw)
+    monkeypatch.setattr(model_registry, "register_loaded_model", _slow_register)
+
+    async def _main():
+        task = asyncio.create_task(bgm_separation._get_separator("Foo", lease=True))
+        while not entered.is_set():
+            await asyncio.sleep(0.01)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        gate.set()
+    asyncio.run(_main())   # joins the register thread on exit
+    assert bgm_separation._separator is sep
+    assert bgm_separation._leases == {}   # the cancelled caller never releases
+    assert "uvr:Foo.onnx" in model_registry._loaded_models
+    assert bgm_separation._drop_locked() is True
+    assert "uvr:Foo.onnx" not in model_registry._loaded_models
+
+
+def test_failed_reload_redoes_the_free_an_orphan_deferred_to_it(monkeypatch):
+    """A device change orphans the leased separator and reloads the same
+    model; the orphan's last release lands mid-load and skips its unregister
+    (the reload would re-register). When that load then fails, the dead
+    separator's row and session device must go anyway."""
+    import asyncio
+    import threading
+    from faster_whisper_backend.runtime import model_registry
+    _foo_model(monkeypatch, device="cuda")
+    old = object()
+    monkeypatch.setattr(bgm_separation, "_separator", old)
+    monkeypatch.setattr(bgm_separation, "_separator_key", ("Foo.onnx", "cpu"))
+    monkeypatch.setattr(bgm_separation, "_leases", {"Foo.onnx": 1})
+    monkeypatch.setattr(bgm_separation, "_session_device", "cpu")
+    model_registry.register_loaded_model("uvr:Foo.onnx", None, "cpu", "onnx", 1.0)
+    entered, gate = threading.Event(), threading.Event()
+
+    def _load(model, device):
+        entered.set()
+        gate.wait(5)
+        raise bgm_separation.BgmSeparationError("download failed")
+    monkeypatch.setattr(bgm_separation, "_load_blocking", _load)
+
+    async def _main():
+        task = asyncio.create_task(bgm_separation._get_separator("Foo"))
+        while not entered.is_set():
+            await asyncio.sleep(0.01)
+        await bgm_separation._release_separator("Foo.onnx", old)   # orphan drains
+        assert "uvr:Foo.onnx" in model_registry._loaded_models    # deferred
+        gate.set()
+        with pytest.raises(bgm_separation.BgmSeparationError):
+            await task
+    asyncio.run(_main())
+    assert "uvr:Foo.onnx" not in model_registry._loaded_models
+    assert bgm_separation.actual_device() is None
+    assert bgm_separation._deferred_free == set()

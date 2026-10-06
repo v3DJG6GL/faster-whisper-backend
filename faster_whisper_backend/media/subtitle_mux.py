@@ -27,6 +27,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import threading
 import time
 
 from faster_whisper_backend.audio import ffmpeg as audio_ffmpeg
@@ -127,6 +128,15 @@ def unreadable_streams() -> MediaStreams:
                         unreadable=True)
 
 
+def _codec_name(stream) -> str:
+    """The codec's canonical name ("mp3"), not the decoder's: PyAV's
+    codec_context.name is the decoder ffmpeg picked ("mp3float"), which the
+    MP4 allow-list and the cover-art fallback do not know."""
+    cc = stream.codec_context
+    return (getattr(getattr(cc, "codec", None), "canonical_name", None)
+            or cc.name or "")
+
+
 def _is_cover_art(stream) -> bool:
     """ffmpeg's attached-picture disposition (a real MJPEG video — a camera
     .avi/.mov — is NOT cover art); the codec name is only the fallback for a
@@ -137,7 +147,7 @@ def _is_cover_art(stream) -> bool:
             return bool(int(disp) & _AV_DISPOSITION_ATTACHED_PIC)
         except (TypeError, ValueError):
             pass
-    return (stream.codec_context.name or "") in _COVER_ART_CODECS
+    return _codec_name(stream) in _COVER_ART_CODECS
 
 
 def probe_streams(path: str) -> MediaStreams:
@@ -159,8 +169,8 @@ def probe_streams(path: str) -> MediaStreams:
         v = real[0] if real else None
         # Every audio stream is muxed (`-map 0:a?`), so every one counts
         # for the MP4 verdict; the first is the one reported.
-        acs = [(s.codec_context.name or "") for s in c.streams if s.type == "audio"]
-        vc = (v.codec_context.name if v is not None else None)
+        acs = [_codec_name(s) for s in c.streams if s.type == "audio"]
+        vc = (_codec_name(v) or None) if v is not None else None
         ac = (acs[0] or None) if acs else None
         width = int(v.codec_context.width) if v is not None and v.codec_context.width else None
         height = int(v.codec_context.height) if v is not None and v.codec_context.height else None
@@ -294,7 +304,7 @@ async def package(src: str, tracks: "list[SubtitleTrack]", *, container: str,
         tail = (err or b"")[-_STDERR_TAIL_MAX:].decode("utf-8", "replace")
         if proc.returncode != 0:
             logger.warning("[package] ffmpeg exited %s: %s", proc.returncode,
-                           log_safe(tail[-300:]))
+                           log_safe(tail, keep_end=True))
             m = _SRT_HINT_RE.search(tail)
             # The bare marker only points at a subtitle when there IS one and
             # the line does not name the source (input #0, or its file name)
@@ -311,7 +321,9 @@ async def package(src: str, tracks: "list[SubtitleTrack]", *, container: str,
                     time.monotonic() - t0)
         return out
     except BaseException:
-        shutil.rmtree(workdir, ignore_errors=True)
+        # Off the loop: the workdir holds the partly written package (up to
+        # the source's size). Shielded so a second cancel cannot skip it.
+        await asyncio.shield(asyncio.to_thread(shutil.rmtree, workdir, True))
         raise
 
 
@@ -326,12 +338,20 @@ async def _empty_captions_to_strip(src: str, video_codec: "str | None",
     if not await asyncio.to_thread(ffmpeg_has_bsf, "filter_units"):
         return False
     from faster_whisper_backend.media import captions as _cc
+    # A cancelled export only abandons the to_thread await: without this the
+    # scan's ffmpeg kept reading the source after the route had released
+    # its in-flight slot (the packaging ffmpeg below IS killed on cancel).
+    cancel = threading.Event()
     try:
         return await asyncio.to_thread(_cc.embedded_captions_empty, src,
                                        video_index=video_index,
-                                       timeout=min(300.0, max(10.0, timeout / 3)))
+                                       timeout=min(300.0, max(10.0, timeout / 3)),
+                                       cancel=cancel)
+    except asyncio.CancelledError:
+        cancel.set()
+        raise
     except Exception as e:  # noqa: BLE001 — a scan failure must not fail the export
-        logger.warning("[package] caption scan failed: %s", log_safe(str(e)[:200]))
+        logger.warning("[package] caption scan failed: %s", log_safe(str(e)))
         return False
 
 

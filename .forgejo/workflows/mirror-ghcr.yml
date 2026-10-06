@@ -43,10 +43,15 @@
 # and both crons would pay two registry round trips per historical tag,
 # forever. It is NOT content-addressed, though: ci.yml re-pushes
 # sha-<short> with a new digest when a second tag lands on the same commit
-# (a manual minor after the auto patch) or a release is rebuilt by
-# dispatch, and each build bakes its own version string. Both cases also
-# re-push latest*/v*, so whenever one of those is copied, the sha-* tag of
-# the revision it carries gets the full digest compare too.
+# (a manual minor after the auto patch) or a branch is rebuilt by
+# workflow_dispatch, and each build bakes its own version string. So three
+# sets of sha-* tags always get the full digest compare: the revision every
+# latest* tag carries on the SOURCE (copied this run or not — a run that died
+# after re-pointing latest* but before reaching the sha-* tags is reconciled
+# by the next cron), the revision of every v* tag copied this run, and the
+# commit ci.yml passes as the `sha` dispatch input (a branch rebuild re-pushes
+# only sha-<short>: latest is enabled for v* tag refs only, and no v* tag
+# exists for a branch, so nothing else would point at it).
 
 name: mirror-ghcr
 
@@ -58,6 +63,11 @@ on:
     - cron: '30 7 * * *'
     - cron: '30 15 * * *'
   workflow_dispatch:
+    inputs:
+      sha:
+        description: "Commit whose sha-<short> tags the dispatching publish (re)pushed; they take the digest compare even when already on ghcr"
+        required: false
+        type: string
 
 # Serialize a ci.yml dispatch overlapping a cron slot.
 concurrency:
@@ -153,6 +163,8 @@ jobs:
           # sync survives the package ever being flipped private.
           SRC_USER: ${{ secrets.REGISTRY_USER }}
           SRC_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
+          # Empty on cron runs and on a dispatch without the input.
+          DISPATCH_SHA: ${{ inputs.sha }}
         run: |
           set -euo pipefail
 
@@ -191,16 +203,32 @@ jobs:
           dst_tags=$(crane ls "$DST_IMAGE" 2>/dev/null || true)
 
           copied=0 fresh=0 immutable=0
-          # sha-* tags whose source was (possibly) re-pushed this run: the
-          # revision of every latest*/v* tag copied below, per variant. The
-          # sha-* tags go LAST so this set is complete when they come up.
+          # sha-* tags whose source was (possibly) re-pushed: the source
+          # revision of every latest* tag (copied or not, see the header),
+          # the dispatching commit, and the revision of every v* tag copied
+          # below, per variant. The sha-* tags go LAST so this set is
+          # complete when they come up.
           touched=""
+          for lt in latest latest-gpu latest-full latest-gpu-full; do
+            if printf '%s\n' "$tags" | grep -qxF "$lt"; then
+              rev=$(crane config "$SRC_IMAGE:$lt" | sed -n 's/.*"org\.opencontainers\.image\.revision":"\([0-9a-f]*\)".*/\1/p')
+              if [ -n "$rev" ]; then
+                touched="$touched sha-${rev:0:7}${lt#latest}"
+              fi
+            fi
+          done
+          sha=$(printf '%s' "${DISPATCH_SHA:-}" | tr -cd '0-9a-f' | cut -c1-7)
+          if [ "${#sha}" -eq 7 ]; then
+            for v in "" -gpu -full -gpu-full; do
+              touched="$touched sha-${sha}${v}"
+            done
+          fi
           tags=$( { printf '%s\n' "$tags" | grep -v '^sha-' || true; } ; \
                   { printf '%s\n' "$tags" | grep '^sha-' || true; } )
           for tag in $tags; do
             # A sha-<short> already on the destination is normally in sync
-            # (see the header), UNLESS a release copied above carries this
-            # revision: a second tag or a dispatch rebuild re-pushed it.
+            # (see the header), UNLESS it is in `touched`: a second tag or a
+            # dispatch rebuild may have re-pushed it.
             # latest*/v* ARE re-pushed (a new release moves them), so those
             # keep the full two-request digest compare.
             case "$tag" in

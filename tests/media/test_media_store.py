@@ -62,7 +62,13 @@ def test_ttl_expiry(tmp_path, monkeypatch):
     entry_path = ums._REG[mid]["path"]
     monkeypatch.setattr(ums.cfg, "URL_MEDIA_TTL_S", 0, raising=False)
     assert ums.resolve(mid, user_id=None) is None
-    assert not os.path.exists(entry_path)  # expiry deletes the file
+    # Resolving runs on the event loop: expiry drops only the row, and the
+    # janitor's sweep (off the loop) unlinks the now-orphaned file.
+    assert mid not in ums._REG and os.path.exists(entry_path)
+    old = time.time() - 3600
+    os.utime(entry_path, (old, old))
+    ums.sweep()
+    assert not os.path.exists(entry_path)
 
 
 def test_sweep_ttl_and_unknown_id(tmp_path, monkeypatch):

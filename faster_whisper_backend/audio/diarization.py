@@ -371,9 +371,30 @@ async def _get_pipeline(model_id: "str | None" = None, *, lease: bool = False):
         vram = (vram_after - vram_before) if (
             vram_before is not None and vram_after is not None) else None
         load_secs = time.perf_counter() - t0
-        await asyncio.to_thread(
-            model_registry.register_loaded_model,
-            _STATS_PREFIX + model_id, vram, device, "torch", load_secs)
+        # Cached BEFORE the register await (transcription/models.py's shape):
+        # a cancellation landing on it cannot stop the registry write already
+        # on the thread, and a row with no cached pipeline is one
+        # _drop_locked never unregisters. It also keeps a same-id orphan's
+        # last release mid-register from unregistering the row just written
+        # (_free_locked sees _pipeline_key naming the id).
+        _pipeline = pipe
+        _pipeline_key = key
+        _last_used_monotonic = time.monotonic()
+        if lease:
+            _leases[model_id] = _leases.get(model_id, 0) + 1
+        try:
+            await asyncio.to_thread(
+                model_registry.register_loaded_model,
+                _STATS_PREFIX + model_id, vram, device, "torch", load_secs)
+        except BaseException as e:
+            # The caller never receives the pipeline, so never releases.
+            if lease:
+                _release_locked(model_id, pipe)
+            if not isinstance(e, asyncio.CancelledError):
+                # A failed register leaves nothing cached, as before.
+                _pipeline = None
+                _pipeline_key = None
+            raise
         logger.info("[diarize] pipeline %s loaded on %s in %.1fs",
                     model_id, device, load_secs)
         try:
@@ -381,11 +402,6 @@ async def _get_pipeline(model_id: "str | None" = None, *, lease: bool = False):
             metrics.record_model_load(_STATS_PREFIX + model_id, load_secs)
         except Exception:  # noqa: BLE001 — stats only
             pass
-        _pipeline = pipe
-        _pipeline_key = key
-        _last_used_monotonic = time.monotonic()
-        if lease:
-            _leases[model_id] = _leases.get(model_id, 0) + 1
         return pipe
 
 

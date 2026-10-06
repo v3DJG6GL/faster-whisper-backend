@@ -179,8 +179,11 @@ async def _download_video_for_run(pid: "str | None", url: str, rung: dict, *,
             _raw = rung.get("raw_approx_bytes") or _est
             if rung.get("bytes_approx") and _raw and size > 0:
                 from faster_whisper_backend.runtime import stage_rates as _rates
-                _rates.record(_udl.RATIO_STAGE, rung.get("extractor"),
-                              rung.get("protocol"), None, size / float(_raw))
+                # Off the loop: record() takes the ledger's lock and its
+                # cross-worker file lock (up to 15 s) and fsyncs a rewrite.
+                await asyncio.to_thread(
+                    _rates.record, _udl.RATIO_STAGE, rung.get("extractor"),
+                    rung.get("protocol"), None, size / float(_raw))
                 logger.info("[url-dl] video estimate %.1f MB → actual %.1f MB "
                             "(ratio %.2f, %s/%s)", (_est or _raw) / 1e6, size / 1e6,
                             size / float(_raw), rung.get("extractor"),
@@ -215,26 +218,32 @@ async def _download_video_for_run(pid: "str | None", url: str, rung: dict, *,
             _VIDEO_TASKS.pop(pid, None)
             if cancelled and run_finished[0]:
                 tx_progress._progress_close(pid)
+    attached = None
     try:
         if pid and job_row and run_finished[0]:
             # The handler stored `source_video_pending`; a client re-attaching
             # via /v1/jobs/{id}/result needs the outcome. (A cancelled task
             # never gets here: the scrub then simply drops the flag.)
-            await asyncio.to_thread(_jobs_attach_video_sync, pid, dict(state))
+            attached = await asyncio.to_thread(_jobs_attach_video_sync, pid, dict(state))
     finally:
         # Closed only AFTER the attach: /result keeps the pending flag while
         # the progress entry is open, so closing first left a window where
-        # the row carried neither the flag nor the video keys.
-        if pid and run_finished[0]:
+        # the row carried neither the flag nor the video keys. Not at all
+        # when the attach gave up on a row still "running": the handler's
+        # finish is still on its thread, its own attach does the swap and
+        # it closes the entry after that.
+        if pid and run_finished[0] and attached is not False:
             tx_progress._progress_close(pid)
     return dict(state)
 
 
-def _jobs_attach_video_sync(pid: str, state: dict) -> None:
+def _jobs_attach_video_sync(pid: str, state: dict) -> bool:
     """Swap a finished job row's `source_video_pending` for the video keys
     the response would have carried had the fetch ended in time. Only a
     `done` row whose payload still holds the flag is touched; swallows and
-    logs like every ledger helper."""
+    logs like every ledger helper. False only when it gave up because the
+    row was still "running" (the handler's finish has not landed yet); True
+    otherwise, swapped or not."""
     try:
         row = _jobs_store.get(pid)
         for _ in range(10):
@@ -244,8 +253,10 @@ def _jobs_attach_video_sync(pid: str, state: dict) -> None:
                 break
             time.sleep(0.1)
             row = _jobs_store.get(pid)
+        if row and row.get("state") == "running":
+            return False
         if not row or row.get("state") != "done":
-            return
+            return True
 
         def _swap(payload: dict) -> bool:
             if not payload.pop("source_video_pending", None):
@@ -257,6 +268,7 @@ def _jobs_attach_video_sync(pid: str, state: dict) -> None:
         _jobs_store.patch_result(pid, _swap)
     except Exception as e:  # noqa: BLE001 — never fail the fetch on the ledger
         logger.warning("[jobs] could not attach the video to the job: %s", e)
+    return True
 
 
 def _video_response_keys(task: "asyncio.Task | None",

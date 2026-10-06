@@ -197,7 +197,11 @@ def resolve_entry(media_id: str, *, user_id: "str | None") -> "dict | None":
         return None
     ttl = float(getattr(cfg, "URL_MEDIA_TTL_S", 3600))
     if time.monotonic() - entry["created"] > ttl:
-        _drop(media_id)
+        # Only the row: this runs on the event loop (async handlers call it
+        # directly), and unlinking a multi-GB retained file there stalls
+        # every request. The file now matches the retained-name shape with
+        # no live row, so sweep()'s orphan scan unlinks it off the loop.
+        _REG.pop(media_id, None)
         return None
     owner = entry.get("user_id")
     if owner is not None and user_id is not None and owner != user_id:

@@ -567,7 +567,10 @@ jobs:
           DISPATCH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         # ref=main: picks which revision of mirror-ghcr.yml runs, nothing
         # else — the sync derives its tag list from the registry at
-        # runtime, so tag-push runs dispatch main's copy too. A retried
+        # runtime, so tag-push runs dispatch main's copy too. `sha` names
+        # the commit this run published, so its sha-* tags get the digest
+        # compare even when ghcr already has them (a branch rebuild
+        # re-pushes only those; see mirror-ghcr.yml's header). A retried
         # POST can at worst double-dispatch; the sync is an idempotent
         # digest-compare and its concurrency group serializes the pair.
         run: |
@@ -575,7 +578,7 @@ jobs:
             -X POST \
             -H "Authorization: token ${DISPATCH_TOKEN}" \
             -H "Content-Type: application/json" \
-            --data '{"ref":"main"}' \
+            --data "{\"ref\":\"main\",\"inputs\":{\"sha\":\"${GITHUB_SHA}\"}}" \
             "${GITHUB_SERVER_URL}/api/v1/repos/${GITHUB_REPOSITORY}/actions/workflows/mirror-ghcr.yml/dispatches"
 
       # Continuous versioning: every commit that reached main and tested

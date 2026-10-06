@@ -54,3 +54,7 @@ pydantic>=2.13.5
 # ships breaking changes every few weeks, so this dep has its OWN Renovate
 # rule (ungrouped, no release-age gate) — a stale yt-dlp is a dead feature.
 yt-dlp>=2026.8.19
+# AES-128 HLS: without it yt-dlp hands an encrypted manifest to ffmpeg, which
+# fetches the key and segments itself; the SSRF guard refuses that hand-off, so
+# such streams would fail. With it yt-dlp decrypts natively, through the guard.
+pycryptodomex>=3.24.0

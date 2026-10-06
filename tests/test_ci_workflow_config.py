@@ -113,6 +113,12 @@ def test_mirror_skips_already_mirrored_sha_tags():
     assert '*" $tag "*) ;;' in body
     # latest*/v* are re-pushable and keep the full compare.
     assert 'src_digest=$(crane digest "$SRC_IMAGE:$tag")' in body
+    # The pushed commit rides along with ci.yml's dispatch, so its sha tags
+    # take the compare even when no latest* copy touched that revision.
+    assert "DISPATCH_SHA: ${{ inputs.sha }}" in mirror
+    assert "for lt in latest latest-gpu latest-full latest-gpu-full; do" in mirror
+    ci = _read(".forgejo", "workflows", "ci.yml")
+    assert '\\"inputs\\":{\\"sha\\":\\"${GITHUB_SHA}\\"}' in ci
 
 
 def test_crane_renovate_marker_is_adjacent_to_its_version_key():

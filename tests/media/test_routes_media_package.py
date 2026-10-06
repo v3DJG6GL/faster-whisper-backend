@@ -247,6 +247,21 @@ def test_package_mkv_happy_path_streams_the_file_and_cleans_up(client, package_e
     assert after <= before
 
 
+@pytest.mark.parametrize("rng,status", [("bytes=999999999999-", 416), ("bytes=x-y", 400)])
+def test_package_range_refusal_still_removes_the_workdir(client, package_enabled,
+                                                        rng, status):
+    """Starlette's FileResponse answers a bad Range (honoured on POST too)
+    without running `background`: the workdir — a full copy of the video —
+    must go anyway."""
+    mid = _upload(client).json()["media_id"]
+    before = {n for n in os.listdir(tempfile.gettempdir()) if n.startswith("fwb-pkg-")}
+    r = client.post(f"/v1/audio/media/{mid}/package", headers={"Range": rng},
+                    json={"container": "mkv", "subtitles": _tracks()})
+    assert r.status_code == status, r.text
+    after = {n for n in os.listdir(tempfile.gettempdir()) if n.startswith("fwb-pkg-")}
+    assert after <= before
+
+
 def test_package_mp4_when_the_streams_fit_else_422_with_code(client, package_enabled,
                                                             monkeypatch):
     mid = _upload(client).json()["media_id"]
@@ -345,7 +360,9 @@ def test_upload_whose_spool_vanished_is_a_deliberate_500(
     {"container": "webm"},
     {"container": "mkv", "subtitles": [{"lang": "EN", "srt": "1\n0 --> 1\nx"}] },
     {"container": "mkv", "subtitles": [{"lang": "en", "srt": "no cues here"}]},
-    {"container": "mkv", "subtitles": [{"lang": "en", "srt": "x"}] * 13},
+    # Valid SRT, so only the MAX_TRACKS cap (12) can refuse it.
+    {"container": "mkv",
+     "subtitles": [{"lang": "en", "srt": "1\n00:00:00,000 --> 00:00:01,000\nx\n"}] * 13},
     {"container": "mkv", "subtitles": [{"lang": "en", "srt": "1\n0 --> 1\nx"}],
      "default_track": 5},
     {"container": "mkv", "subtitles": "nope"},

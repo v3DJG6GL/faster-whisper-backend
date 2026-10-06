@@ -17,6 +17,7 @@ from faster_whisper_backend.media.download import UrlDownloadError, UrlMediaInfo
 from faster_whisper_backend.transcription import models as tx_models
 from faster_whisper_backend.transcription import progress as tx_progress
 from faster_whisper_backend.media import video as media_video
+from faster_whisper_backend.media.routes import _has_speech as _REAL_HAS_SPEECH
 
 _FILE = {"file": ("a.wav", b"RIFFxxxxWAVE", "audio/wav")}
 _PID = "beef" * 8
@@ -526,6 +527,37 @@ def test_keep_video_attach_runs_while_the_progress_entry_is_open(
         "source_video_media_id")
 
 
+def test_keep_video_attach_that_gave_up_leaves_the_progress_entry_open(
+        client, video_enabled, monkeypatch):
+    """When the attach gives up on a row still "running" (the handler's
+    finish is still on its thread), the video task must not close the
+    entry: /result would then scrub `source_video_pending` before the
+    handler's own attach swapped in the video keys."""
+    import time as _time
+
+    calls: list = []
+
+    def _gave_up(pid, state):
+        calls.append(pid)
+        return False
+    monkeypatch.setattr(media_video, "_jobs_attach_video_sync", _gave_up)
+    release = video_enabled._video_gate["make"]()
+    video_enabled._video_gate["release"] = release
+    r = _post_url(client, keep_video="true", progress_id=_PID)
+    assert r.status_code == 200 and r.json().get("source_video_pending") is True
+    release.set()
+    for _ in range(300):
+        if calls:
+            break
+        _time.sleep(0.01)
+    _time.sleep(0.1)
+    try:
+        assert calls == [_PID]
+        assert _PID in tx_progress._BATCH_PROGRESS
+    finally:
+        tx_progress._progress_close(_PID)
+
+
 def test_keep_video_without_progress_id_is_rejected(client, video_enabled):
     # The fetch outlives the response and reports through the progress entry
     # alone: without an id its media id would be unreachable by anyone.
@@ -801,11 +833,14 @@ def test_probe_crash_is_a_generic_500(client, subs_enabled, monkeypatch, caplog,
 @pytest.fixture
 def lang_check(url_enabled, monkeypatch, fake_model):
     """The check with its decode stubbed (the url_enabled download writes no
-    real audio) and every lease release recorded."""
+    real audio) and every lease release recorded. The stub pieces are
+    silence, so the VAD gate is told they hold speech: `heard` decides."""
     import numpy as np
     from faster_whisper_backend.audio import transcode
+    from faster_whisper_backend.media import routes as media_routes
     monkeypatch.setattr(transcode, "decode_pieces_16k", lambda path, starts, s: [
         np.zeros(16000, dtype=np.float32) for _ in starts])
+    monkeypatch.setattr(media_routes, "_has_speech", lambda audio: True)
     released: list = []
     monkeypatch.setattr(tx_models, "_release_model_lease", released.append)
     fake_model.released = released
@@ -882,9 +917,26 @@ def test_language_check_cancel_between_pieces(client, url_enabled, lang_check,
 
 
 def test_language_check_no_speech_is_unknown(client, url_enabled, lang_check, monkeypatch):
-    lang_check.heard = [(None, 0.0)]
+    from faster_whisper_backend.media import routes as media_routes
+    monkeypatch.setattr(media_routes, "_has_speech", lambda audio: False)
+    lang_check.heard = [("en", 0.341)]   # faster-whisper 1.2 on padded silence
     body = client.post("/v1/audio/url-language", json={"url": _URL}).json()
     assert body["verdict"] == "unknown" and body["language"] is None
+
+
+def test_language_check_silent_pieces_never_reach_the_model(
+        client, url_enabled, lang_check, monkeypatch):
+    """faster-whisper 1.2 answers ("en", 0.34) for a piece VAD finds no
+    speech in instead of raising: a silent link must still read as no
+    language, not English — through the REAL VAD gate."""
+    pytest.importorskip("faster_whisper")
+    from faster_whisper_backend.media import routes as media_routes
+    monkeypatch.setattr(media_routes, "_has_speech", _REAL_HAS_SPEECH)
+    lang_check.heard = [("en", 0.341)]
+    body = client.post("/v1/audio/url-language", json={"url": _URL}).json()
+    assert [p["language"] for p in body["pieces"]] == [None, None, None]
+    assert body["verdict"] == "unknown" and body["language"] is None
+    assert lang_check.detect_calls == 0
 
 
 # The chunked path: a link whose audio is a segmented stream (media/segmented.py).
@@ -1050,14 +1102,13 @@ def test_prefetched_audio_is_reused(client, url_enabled, downloads, tmp_path, fa
     assert client.get(f"/v1/audio/url-media/{mid}").content == b"prefetched" * 4
 
 
-def test_prefetched_reuse_owns_its_copy_and_restarts_the_ttl(
+def test_prefetched_reuse_owns_its_copy(
         client, url_enabled, downloads, tmp_path, monkeypatch):
     """The retained file can go (TTL sweep, another user's eviction) the
     moment the run holds its copy; the run measures and transcribes its own
-    copy, and the id it hands out gets a fresh TTL, not the check's — unless
-    the retained file is already gone, in which case no id is handed out."""
+    copy, and hands out no id once the retained file is gone. (The fresh
+    TTL of a handed-out id: test_prefetched_reuse_restarts_the_ttl.)"""
     mid = _prefetched(tmp_path)
-    url_media_store._REG[mid]["created"] -= 3000          # an old check
     real = url_media_store.make_pipeline_copy
 
     def _copy_then_sweep(path):

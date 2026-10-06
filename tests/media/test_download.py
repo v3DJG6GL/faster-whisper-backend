@@ -144,6 +144,101 @@ def test_direct_media_probe_gates_generic(monkeypatch):
         _run(udl.check_url_policy("https://x/page.html"))
 
 
+def _probe_with_extractor(monkeypatch, matched, ran):
+    """probe() with the offline match saying `matched` and a stand-in
+    yt-dlp whose extraction ended in the extractor `ran`."""
+    captured: dict = {}
+
+    class _FakeYDL:
+        def __init__(self, opts):
+            captured.update(opts)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def extract_info(self, url, download=False):
+            return {"title": "t", "extractor_key": ran}
+
+        def sanitize_info(self, info):
+            return info
+
+    fake = type(sys)("yt_dlp")
+    fake.YoutubeDL = _FakeYDL
+    monkeypatch.setitem(sys.modules, "yt_dlp", fake)
+    monkeypatch.setattr(udl, "guard_self_check", lambda **kw: None)
+    monkeypatch.setattr(udl, "match_extractor", lambda u: matched)
+    monkeypatch.setattr(udl, "_direct_media_probe_sync", lambda u, timeout: True)
+    return captured
+
+
+def test_probe_refuses_a_direct_media_link_handed_to_a_site_extractor(monkeypatch):
+    """A Generic URL admitted only as direct media (the probe's distinctive
+    request saw audio/*) must not come back from a site extractor GenericIE
+    delegated to — that is the site policy bypassed, not a media file."""
+    monkeypatch.setattr(udl.cfg, "URL_ALLOW_GENERIC", False, raising=False)
+    monkeypatch.setattr(udl.cfg, "URL_ALLOW_DIRECT_MEDIA", True, raising=False)
+    monkeypatch.setattr(udl.cfg, "URL_ALLOWED_EXTRACTORS", [], raising=False)
+    captured = _probe_with_extractor(monkeypatch, "Generic", "Youtube")
+    with pytest.raises(udl.UrlPolicyError):
+        _run(udl.probe("https://x/a.mp3", timeout=5.0))
+    # ...and the extraction itself was pinned to GenericIE.
+    assert captured["allowed_extractors"] == ["generic"]
+
+
+def test_probe_refuses_a_delegation_off_the_allowlist(monkeypatch):
+    monkeypatch.setattr(udl.cfg, "URL_ALLOWED_EXTRACTORS", ["Youtube"], raising=False)
+    _probe_with_extractor(monkeypatch, "Youtube", "Vimeo")
+    # The stand-in yt_dlp has no extractor registry to map the allowlist on.
+    monkeypatch.setattr(udl, "pinned_extractors", lambda key: ["youtube"])
+    with pytest.raises(udl.UrlPolicyError, match="allowed list"):
+        _run(udl.probe("https://x/watch", timeout=5.0))
+
+
+def test_probe_admits_the_extractor_it_matched(monkeypatch):
+    monkeypatch.setattr(udl.cfg, "URL_ALLOW_GENERIC", False, raising=False)
+    monkeypatch.setattr(udl.cfg, "URL_ALLOWED_EXTRACTORS", [], raising=False)
+    _probe_with_extractor(monkeypatch, "Generic", "Generic")
+    assert _run(udl.probe("https://x/a.mp3", timeout=5.0)).extractor_key == "Generic"
+
+
+def test_pinned_extractors_follow_the_site_policy(monkeypatch):
+    monkeypatch.setattr(udl.cfg, "URL_ALLOW_GENERIC", False, raising=False)
+    monkeypatch.setattr(udl.cfg, "URL_ALLOWED_EXTRACTORS", [], raising=False)
+    assert udl.pinned_extractors("Generic") == ["generic"]
+    assert udl.pinned_extractors("Youtube") is None
+    monkeypatch.setattr(udl.cfg, "URL_ALLOWED_EXTRACTORS", ["youtube"], raising=False)
+    assert udl.pinned_extractors("Youtube") == ["youtube"]
+    monkeypatch.setattr(udl.cfg, "URL_ALLOW_GENERIC", True, raising=False)
+    assert sorted(udl.pinned_extractors("Generic")) == ["generic", "youtube"]
+
+
+def test_download_argv_pins_the_extractors_and_ignores_config():
+    for argv in (
+            udl.build_download_argv("https://e.com/a", dest_dir="/tmp/x",
+                                    max_bytes=1, extractors=["generic"]),
+            udl.build_video_download_argv("https://e.com/a", dest_dir="/tmp/x",
+                                          max_bytes=1, extractors=["generic"])):
+        i = argv.index("--use-extractors")
+        assert argv[i + 1] == "generic"
+        assert i < argv.index("--")
+        assert "--ignore-config" in argv
+    assert "--use-extractors" not in udl.build_download_argv(
+        "https://e.com/a", dest_dir="/tmp/x", max_bytes=1)
+
+
+def test_probe_duration_drops_non_finite_values():
+    """A NaN duration from a broken site payload passes the max-duration
+    check (nan > limit is False) and must not reach the language check."""
+    assert udl._finite_duration(None) is None
+    assert udl._finite_duration(float("nan")) is None
+    assert udl._finite_duration("inf") is None
+    assert udl._finite_duration(0) is None
+    assert udl._finite_duration("61.5") == 61.5
+
+
 @pytest.mark.parametrize("host", ["127.0.0.1", "localhost", "10.1.2.3",
                                   "192.168.1.1", "169.254.169.254",
                                   "100.64.0.1", "::1"])
@@ -238,7 +333,7 @@ def _fake_argv(script: str) -> "list[str]":
 def _patch_argv(monkeypatch, script: str):
     monkeypatch.setattr(
         udl, "build_download_argv",
-        lambda url, *, dest_dir, max_bytes: _fake_argv(
+        lambda url, *, dest_dir, max_bytes, extractors=None: _fake_argv(
             script.replace("__DEST__", dest_dir)))
 
 
@@ -274,6 +369,23 @@ sys.exit(1)
     with pytest.raises(udl.UrlDownloadError, match="private"):
         _run(udl.download("https://example.com/v", dest_dir=str(tmp_path),
                           max_bytes=10_000, timeout=30))
+
+
+def test_download_failure_logs_the_end_of_a_long_stderr(tmp_path, monkeypatch, caplog):
+    """The fatal "ERROR: ..." line is the LAST thing yt-dlp writes: a long
+    stderr must be logged by its end, not its head."""
+    _patch_argv(monkeypatch, """
+import sys
+sys.stderr.write("WARNING: " + "w" * 400 + "\\n")
+sys.stderr.write("ERROR: fwb-tail-marker\\n")
+sys.exit(1)
+""")
+    with caplog.at_level("WARNING", logger="whisper-api"):
+        with pytest.raises(udl.UrlDownloadError):
+            _run(udl.download("https://example.com/v", dest_dir=str(tmp_path),
+                              max_bytes=10_000, timeout=30))
+    rec = [r.getMessage() for r in caplog.records if "yt-dlp exited" in r.getMessage()]
+    assert rec and "ERROR: fwb-tail-marker" in rec[0]
 
 
 def test_download_partial_only_is_size_limit(tmp_path, monkeypatch):
@@ -870,7 +982,10 @@ def test_direct_media_probe_cuts_a_dribbled_header(monkeypatch):
 
 
 def test_thumbnail_cuts_a_dribbled_header(monkeypatch):
-    """Same window in fetch_thumbnail_data_uri's header phase."""
+    """Same window in fetch_thumbnail_data_uri's header phase. Driven on the
+    sync layer: capped_get's outer wait_for gives up at timeout + 2 s and
+    soft-fails to None, which would pass this bound with the cut gone while
+    the pool thread stays wedged for the whole ~7 s dribble."""
     import time as _t
     from faster_whisper_backend.core import net_policy as np
     monkeypatch.setattr(udl, "_host_is_forbidden", lambda h: False)
@@ -880,16 +995,30 @@ def test_thumbnail_cuts_a_dribbled_header(monkeypatch):
         0.1)
     try:
         port = srv.getsockname()[1]
-
-        async def go():
-            t0 = _t.monotonic()
-            out = await udl.fetch_thumbnail_data_uri(
-                f"http://127.0.0.1:{port}/t.jpg", timeout=0.5)
-            assert out is None
-            assert _t.monotonic() - t0 < 4.0   # see the probe test above
-        _run(go())
+        t0 = _t.monotonic()
+        with pytest.raises(Exception):
+            udl._capped_get(f"http://127.0.0.1:{port}/t.jpg", max_bytes=512_000,
+                            timeout=0.5, accept=lambda c: c.startswith("image/"))
+        assert _t.monotonic() - t0 < 4.0   # see the probe test above
     finally:
         srv.close()
+
+
+def test_cutoff_shuts_a_socket_added_after_it_fired():
+    """A socket whose connect() returns after the timer fired (a dribbled TLS
+    handshake, a redirect hop dialled past the cutoff) must be shut at once,
+    not parked in the list cut() already emptied."""
+    import socket as _s
+    a, b = _s.socketpair()
+    try:
+        a.settimeout(2.0)
+        cutoff = udl._WallClockCutoff(10.0)
+        cutoff.cut()
+        cutoff.add(a)
+        assert a.recv(1) == b""
+    finally:
+        a.close()
+        b.close()
 
 
 # ---------------------------------------------------------------------------
@@ -1159,7 +1288,7 @@ def _patch_video_argv(monkeypatch, script: str):
     monkeypatch.setattr(
         udl, "build_video_download_argv",
         lambda url, *, dest_dir, max_bytes, max_height=None, container="mkv",
-        format_ids=None: _fake_argv(script.replace("__DEST__", dest_dir)))
+        format_ids=None, extractors=None: _fake_argv(script.replace("__DEST__", dest_dir)))
 
 
 _TWO_STREAMS_SCRIPT = """

@@ -1,6 +1,6 @@
 """SSRF guard for every fetch yt-dlp makes, in-process and in the subprocess.
 
-WHY: url_download's own probes refuse private / loopback / link-local /
+WHY: faster_whisper_backend/media/download.py's own probes refuse private / loopback / link-local /
 metadata addresses on every hop, but the two fetches that actually move bytes
 — probe()'s `extract_info` and download()'s `python -m yt_dlp` — used yt-dlp's
 own opener, which follows redirects and re-resolves DNS with no policy at all.
@@ -16,9 +16,15 @@ WHAT this module installs (import side effect, idempotent — see install()):
     nothing can fall through to an unguarded opener when ours declines a
     request (a `data:`/`ftp:`/`file:` URL, or an extractor asking for TLS
     impersonation). Websocket handlers are left alone — they speak ws(s),
-    which this download path never uses for media bytes.
+    which this download path never uses for media bytes; and
+  * a refusal in every downloader that hands the fetch to another program
+    (ExternalFD — ffmpeg, aria2c, curl, wget… — and RtmpFD's rtmpdump). Those
+    open URLs themselves, outside the RequestHandler registry: HlsFD alone
+    delegates an AES-128 manifest to ffmpeg when pycryptodomex is missing, and
+    ffmpeg then fetches the key URI and every segment with no address policy.
+    Merging is unaffected (FFmpegMergerPP is a postprocessor on local files).
 
-The handler enforces, with url_download's policy (net_policy — ONE
+The handler enforces, with download.py's policy (net_policy — ONE
 definition, see below):
 
   (a) hop 0 AND every redirect hop are validated: scheme must be http(s) and
@@ -31,7 +37,7 @@ definition, see below):
       redirect destination.
 
 Every error message carries the marker `fwb-ssrf-guard`, which
-url_download.classify_error maps to the client-safe "the site could not be
+download.classify_error (faster_whisper_backend/media/download.py) maps to the client-safe "the site could not be
 reached from the server". The offending host/address appears only in the
 message that the server logs at WARNING (yt-dlp stderr tail / probe failure),
 never in what a client is handed.
@@ -61,8 +67,9 @@ from yt_dlp.networking.common import (
 )
 from yt_dlp.networking.exceptions import RequestError
 
-# The string url_download.classify_error keys on. Changing it means changing
-# the taxonomy entry there too.
+# The string faster_whisper_backend/media/download.py classify_error keys on
+# (as download.GUARD_MARKER). Changing it means changing the taxonomy entry
+# there too.
 MARKER = "fwb-ssrf-guard"
 
 GUARD_RH_KEY = "FwbSsrfGuard"
@@ -299,6 +306,37 @@ class GuardedUrllibRH(_urllib.UrllibRH):
         return super()._send(request)
 
 
+# ── downloaders that fetch outside the handler registry ─────────────────────
+# Sentinel on the replacement function, not on this module's own object: the
+# file loads twice under two module names (see install()), and the second
+# load must recognise the first one's patch.
+_FD_SENTINEL = "_fwb_ssrf_refused"
+
+
+def _refuse_external_fd(self, filename, info_dict):
+    from yt_dlp.utils import DownloadError
+    raise DownloadError(
+        f"{MARKER}: refusing {type(self).__name__}: an external downloader "
+        "fetches outside the address policy")
+
+
+setattr(_refuse_external_fd, _FD_SENTINEL, True)
+
+
+def _refusing_fd_classes():
+    from yt_dlp.downloader import external, rtmp
+    # FFmpegFD inherits ExternalFD.real_download; it is listed so that a
+    # yt-dlp release giving it its own real_download fails is_installed().
+    return (external.ExternalFD, external.FFmpegFD, rtmp.RtmpFD)
+
+
+def _refuse_external_downloaders() -> None:
+    from yt_dlp.downloader import external, rtmp
+    for cls in (external.ExternalFD, rtmp.RtmpFD):
+        if not getattr(cls.real_download, _FD_SENTINEL, False):
+            cls.real_download = _refuse_external_fd
+
+
 def install() -> None:
     """Register the guard and retire the handlers it supersedes.
 
@@ -314,6 +352,7 @@ def install() -> None:
         register_preference(GuardedUrllibRH)(_prefer_guard)
     for key in _SUPERSEDED_RH_KEYS:
         _REQUEST_HANDLERS.pop(key, None)
+    _refuse_external_downloaders()
 
 
 def _prefer_guard(rh, request):
@@ -322,10 +361,13 @@ def _prefer_guard(rh, request):
 
 
 def is_installed() -> bool:
-    """True when the guard is the only http(s)-capable handler registered."""
+    """True when the guard is the only http(s)-capable handler registered
+    and no downloader can hand a fetch to an external program."""
     rh = _REQUEST_HANDLERS.get(GUARD_RH_KEY)
     return (rh is not None and getattr(rh, "RH_NAME", None) == RH_NAME
-            and not any(k in _REQUEST_HANDLERS for k in _SUPERSEDED_RH_KEYS))
+            and not any(k in _REQUEST_HANDLERS for k in _SUPERSEDED_RH_KEYS)
+            and all(getattr(cls.real_download, _FD_SENTINEL, False)
+                    for cls in _refusing_fd_classes()))
 
 
 install()

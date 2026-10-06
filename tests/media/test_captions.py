@@ -113,6 +113,40 @@ def test_scan_time_limit_holds_while_a_read_is_blocked(tmp_path, monkeypatch):
     assert time.monotonic() - t0 < 3
 
 
+def test_cancelled_export_kills_the_scan_child(tmp_path, monkeypatch):
+    """A cancelled export only abandons the scan's to_thread await; the
+    ffmpeg child must still die at once, not read on for the scan's whole
+    time limit after the route released its in-flight slot."""
+    _fake_ffmpeg(tmp_path, monkeypatch, "printf abc\nexec sleep 30")
+    monkeypatch.setattr(pk, "ffmpeg_has_bsf", lambda name: True)
+    procs = []
+    real_popen = cc.subprocess.Popen
+
+    def _popen(*a, **k):
+        procs.append(real_popen(*a, **k))
+        return procs[-1]
+    monkeypatch.setattr(cc.subprocess, "Popen", _popen)
+
+    cancelled_at = []
+
+    async def go():
+        task = asyncio.create_task(pk._empty_captions_to_strip("/m/x.mkv", "h264", 0, 900))
+        while not procs:
+            await asyncio.sleep(0.02)
+        await asyncio.sleep(0.2)
+        cancelled_at.append(time.monotonic())
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    # asyncio.run joins the default executor on exit, i.e. the scan thread:
+    # without the cancel hook that alone took the child's full 30 s sleep.
+    asyncio.run(go())
+    while procs[0].poll() is None and time.monotonic() - cancelled_at[0] < 2:
+        time.sleep(0.02)
+    assert procs[0].poll() is not None
+    assert time.monotonic() - cancelled_at[0] < 1.5
+
+
 def test_clean_scan_without_captions_logs_no_empty_blocks(
         tmp_path, monkeypatch, caplog):
     _fake_ffmpeg(tmp_path, monkeypatch, "printf abc")

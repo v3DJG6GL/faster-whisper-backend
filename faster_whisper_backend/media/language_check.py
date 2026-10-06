@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import bisect
 import itertools
+import math
 from collections import Counter
 
 PIECE_SECONDS = 20.0
@@ -22,7 +23,7 @@ CONFIDENT = 0.7
 def piece_starts(duration: "float | None") -> "list[float]":
     """Where the pieces start: at 20/50/80 % of the media (each kept inside
     it), or one piece at 0 when the media is short or its length unknown."""
-    if not duration or duration < _ONE_PIECE_BELOW_S:
+    if not duration or not math.isfinite(duration) or duration < _ONE_PIECE_BELOW_S:
         return [0.0]
     last = duration - PIECE_SECONDS
     return [round(min(duration * f, last), 1) for f in _PIECE_AT]
@@ -38,8 +39,8 @@ def select_segments(durations: "list[float]", starts: "list[float]",
     n = len(durations)
     out = []
     for start in starts:
+        # At most n: edges has n + 1 entries.
         first = max(0, bisect.bisect_right(edges, max(0.0, start - margin)) - 1)
-        first = min(first, n)
         end = max(first, min(n, bisect.bisect_left(edges, start + seconds + margin)))
         skip = max(0.0, start - edges[first]) if first < n else 0.0
         out.append((first, end, round(skip, 3)))

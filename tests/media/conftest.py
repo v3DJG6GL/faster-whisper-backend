@@ -46,7 +46,7 @@ def fake_capped_get(monkeypatch):
             a, b = map(int, rng.removeprefix("bytes=").split("-"))
             body = body[a:b + 1]
         if len(body) > max_bytes:
-            raise udl.UrlDownloadError("the file is over the server's size limit")
+            raise udl.UrlTooLargeError("the file is over the server's size limit")
         return fake.ctype, body
     monkeypatch.setattr(udl, "_capped_get", _get)
     return fake

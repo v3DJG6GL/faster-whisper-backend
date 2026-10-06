@@ -355,6 +355,26 @@ def test_probe_mp4_verdict_covers_every_audio_stream(tmp_path):
     assert streams.video_index == 0 and streams.cover_art_only is False
 
 
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="needs a system ffmpeg")
+def test_probe_names_mp3_by_codec_not_decoder(tmp_path):
+    """PyAV decodes MP3 with "mp3float": the probe must report the codec
+    ("mp3", on the MP4 allow-list), or every H.264+MP3 source greys out MP4."""
+    pytest.importorskip("av")
+    src = str(tmp_path / "t.mp4")
+    try:
+        subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+                        "-f", "lavfi", "-i", "testsrc=size=64x64:rate=10:duration=1",
+                        "-f", "lavfi", "-i", "sine=frequency=440:duration=1",
+                        "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                        "-c:a", "libmp3lame", "-shortest", src],
+                       check=True, timeout=60)
+    except subprocess.CalledProcessError:
+        pytest.skip("this ffmpeg has no libx264/libmp3lame")
+    streams = pk.probe_streams(src)
+    assert streams.video_codec == "h264" and streams.audio_codec == "mp3"
+    assert streams.mp4_ok is True and streams.mp4_reason is None
+
+
 def test_package_forwards_a_non_zero_video_index(monkeypatch):
     seen = {}
 

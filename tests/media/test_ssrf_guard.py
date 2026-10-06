@@ -193,6 +193,55 @@ def test_guard_prefers_over_every_builtin():
     assert chosen.RH_KEY == "FwbSsrfGuard"
 
 
+def test_guard_refuses_ffmpeg_delegation_of_an_aes128_manifest(monkeypatch, tmp_path):
+    """Without pycryptodomex, HlsFD hands an AES-128 manifest to FFmpegFD,
+    and ffmpeg fetches the key URI and the segments itself — outside the
+    RequestHandler registry, so a public manifest pointing them at
+    169.254.169.254 or a LAN host was a blind SSRF. The guard must refuse the
+    hand-off (with the marker) before any external program is spawned."""
+    udl.guard_self_check(force=True)
+    import yt_dlp
+    from yt_dlp.downloader import external, hls
+
+    manifest = (
+        "#EXTM3U\n#EXT-X-TARGETDURATION:4\n"
+        '#EXT-X-KEY:METHOD=AES-128,URI="http://127.0.0.1/k"\n'
+        "#EXTINF:4,\nhttp://127.0.0.1/seg0.ts\n#EXT-X-ENDLIST\n")
+
+    class _Resp:
+        url = "https://public.example/a.m3u8"
+
+        def read(self):
+            return manifest.encode()
+
+    spawned = []
+    monkeypatch.setattr(hls.Cryptodome, "AES", None)
+    monkeypatch.setattr(external.FFmpegFD, "available",
+                        classmethod(lambda cls, path=None: True))
+    monkeypatch.setattr(external.FFmpegFD, "_call_downloader",
+                        lambda self, *a: spawned.append(a) or 0)
+    with yt_dlp.YoutubeDL({"quiet": True}) as ydl:
+        monkeypatch.setattr(ydl, "urlopen", lambda req: _Resp())
+        fd = hls.HlsFD(ydl, ydl.params)
+        with pytest.raises(yt_dlp.utils.DownloadError, match=udl.GUARD_MARKER):
+            fd.real_download(str(tmp_path / "media.mp4"), {
+                "url": "https://public.example/a.m3u8", "id": "x",
+                "ext": "mp4", "http_headers": {}})
+    assert spawned == []
+
+
+def test_guard_is_not_installed_without_the_downloader_refusal(monkeypatch):
+    udl.guard_self_check(force=True)
+    guard = sys.modules["fwb_ssrf_guard_inproc"]
+    from yt_dlp.downloader import external, rtmp
+    assert guard.is_installed()
+    for cls in (external.ExternalFD, rtmp.RtmpFD):
+        with monkeypatch.context() as m:
+            m.setattr(cls, "real_download", lambda self, f, i: True)
+            assert not guard.is_installed()
+    assert guard.is_installed()
+
+
 def test_https_through_a_connect_proxy_verifies_the_target_not_the_proxy():
     """With an http(s)_proxy in the environment every HTTPS fetch tunnels via
     CONNECT; SNI / certificate verification must then name the URL's host
@@ -240,6 +289,17 @@ def test_launcher_starts_yt_dlp_with_the_guard_flags():
     assert proc.returncode == 0, proc.stderr
     assert udl.GUARD_MARKER not in proc.stderr  # no fail-closed, no traceback
     assert "Error while importing module" not in proc.stderr
+
+
+def test_pinned_download_flags_parse_on_the_pinned_yt_dlp():
+    """--ignore-config and --use-extractors (with a regex-escaped IE name)
+    must be accepted by the pinned yt-dlp, or every link download fails."""
+    for build in (udl.build_download_argv, udl.build_video_download_argv):
+        argv = build("https://example.com/a", dest_dir=".", max_bytes=1,
+                     extractors=["generic", "youtube:tab"])
+        proc = subprocess.run(argv[:-2] + ["--version"], capture_output=True,
+                              text=True, timeout=60)
+        assert proc.returncode == 0, proc.stderr
 
 
 # ---------------------------------------------------------------------------

@@ -9,6 +9,7 @@ from faster_whisper_backend.media import language_check as lc
     (None, [0.0]), (0, [0.0]), (30.0, [0.0]), (44.9, [0.0]),
     (45.0, [9.0, 22.5, 25.0]),          # 80 % would run past the end
     (600.0, [120.0, 300.0, 480.0]),
+    (float("nan"), [0.0]), (float("inf"), [0.0]),
 ])
 def test_piece_starts(duration, starts):
     assert lc.piece_starts(duration) == starts

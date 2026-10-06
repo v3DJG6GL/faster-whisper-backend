@@ -163,8 +163,8 @@ async def fetch_tracks(info, ids: "list[str]") -> "tuple[list[dict], list[dict]]
             try:
                 _ctype, body = await _udl.capped_get(
                     src["url"], max_bytes=cap, deadline=deadline)
-            except _udl.UrlDownloadError as e:
-                if cap < TRACK_MAX_BYTES and "size limit" in str(e):
+            except _udl.UrlTooLargeError as e:
+                if cap < TRACK_MAX_BYTES:
                     # The cap that tripped was what is left of the request's
                     # budget, not the per-track limit: the track itself may
                     # be small — don't blame it.

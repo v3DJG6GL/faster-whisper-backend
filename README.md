@@ -28,7 +28,9 @@ Self-hosted [faster-whisper](https://github.com/SYSTRAN/faster-whisper) transcri
   `INFERENCE_CONCURRENCY` limiter governs streaming **and** batch so they don't oversubscribe the GPU.
   **Per-utterance translation handshake:** a client that declares `translate_expect`
   (with `per_utterance: true`) in the WebSocket handshake gets a follow-up frame
-  `{"type": "captured", "id": …, "utterance": …}` after each `final`; the server holds that
+  `{"type": "captured", "id": …, "utterance": …}` after each `final` whose capture was stored
+  (only when `TRANSLATION_ENABLED` is on and the capture pipeline kept the utterance — no frame
+  means no receipt to claim, so translate that one without `captured_id`); the server holds that
   utterance's log receipt open and the client must echo the id back as `captured_id` on its
   `POST /v1/text/translations` so both halves log as one block. An id never claimed is released
   by the `LOG_RECEIPT_HOLD_S` idle sweep (default 90 s) with a "never sent" note.
@@ -309,10 +311,10 @@ one, else the key itself (machine clients often have no user), else the peer
 address. The host rung means several callers behind one NAT share a bucket —
 the conservative direction. In **open mode** (no admin key exists yet) every
 caller passing the `ADMIN_WEBUI_ALLOWED_HOSTS` gate (loopback by default)
-resolves to the same synthetic admin, so per-user budgets behave
-**server-wide** among those callers (everyone else still gets 401); that is a
-property of open mode, not a bug, and it goes away the moment you create an
-admin key.
+resolves to the same synthetic admin, which is not a real identity, so
+budgets fall to the client-host rung: each allowlisted host gets its own bucket
+(with the loopback-only default, that is one host). Everyone else still gets
+401.
 
 **Concurrency vs rate.** `TRANSLATE_MAX_INFLIGHT_PER_USER` is a concurrency
 cap, not a per-minute ceiling, because a single translation can run for

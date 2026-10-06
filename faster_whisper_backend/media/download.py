@@ -34,6 +34,7 @@ import concurrent.futures
 import dataclasses
 import importlib.util
 import logging
+import math
 import os
 import re
 import socket
@@ -76,6 +77,12 @@ class UrlPolicyError(UrlDownloadError):
 class UrlTimeoutError(UrlDownloadError):
     """A probe or download ran past its timeout."""
     error_class = "timeout"
+
+
+class UrlTooLargeError(UrlDownloadError):
+    """A capped GET's body ran past its max_bytes. Typed so a caller that
+    passed a cap smaller than its own limit (subtitles' remaining budget)
+    can tell which cap tripped without matching on the wording."""
 
 
 class UrlCancelled(Exception):
@@ -640,18 +647,29 @@ class _WallClockCutoff:
         self._timer.daemon = True
 
     def add(self, sock) -> None:
+        # A socket whose connect() returns after the timer fired (a slow TLS
+        # handshake, a redirect hop dialled past the cutoff) would otherwise
+        # land in the list cut() already emptied and never be shut down.
         with self._lock:
-            self._socks.append(sock)
+            late = self.fired
+            if not late:
+                self._socks.append(sock)
+        if late:
+            self._shut(sock)
 
     def cut(self) -> None:
         with self._lock:
             self.fired = True
             socks, self._socks = self._socks, []
         for sock in socks:
-            try:
-                sock.shutdown(socket.SHUT_RDWR)
-            except OSError:
-                pass
+            self._shut(sock)
+
+    @staticmethod
+    def _shut(sock) -> None:
+        try:
+            sock.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
 
     def __enter__(self):
         self._timer.start()
@@ -814,12 +832,58 @@ async def check_url_policy(url: str) -> str:
                 "audio/video file")
         raise UrlPolicyError(
             "this site isn't allowed by the server's URL policy")
-    allowed = [a.strip().lower()
-               for a in (getattr(cfg, "URL_ALLOWED_EXTRACTORS", []) or [])
-               if a and a.strip()]
+    allowed = _allowed_extractor_keys()
     if allowed and key.lower() not in allowed:
         raise UrlPolicyError("this site isn't on the server's allowed list")
     return key
+
+
+def _allowed_extractor_keys() -> "list[str]":
+    return [a.strip().lower()
+            for a in (getattr(cfg, "URL_ALLOWED_EXTRACTORS", []) or [])
+            if a and a.strip()]
+
+
+def pinned_extractors(key: str) -> "list[str] | None":
+    """yt-dlp's `allowed_extractors` (regexes over IE names) for a URL the
+    offline match called `key`, so extraction can only hand off — GenericIE
+    following an embed, a url_transparent delegation — to an extractor the
+    site policy admits. None: no pin (every default extractor).
+
+    Generic without URL_ALLOW_GENERIC was admitted as a direct media file,
+    which GenericIE serves itself: nothing else may run. Under an allowlist,
+    the allowlisted extractors (plus GenericIE when that is how the URL got
+    in). Blocking IO-free but walks every extractor class: call it off the
+    loop."""
+    if key == "Generic" and not getattr(cfg, "URL_ALLOW_GENERIC", False):
+        return ["generic"]
+    allowed = _allowed_extractor_keys()
+    if not allowed:
+        return None
+    import yt_dlp.extractor  # lazy: optional dependency
+
+    want = set(allowed) | ({"generic"} if key == "Generic" else set())
+    names = [re.escape(ie.IE_NAME.lower())
+             for ie in yt_dlp.extractor.gen_extractor_classes()
+             if ie.ie_key().lower() in want]
+    return names or None
+
+
+def _policy_check_extractor(key: str, info: dict) -> None:
+    """The extractor that actually produced `info` must pass the policy the
+    offline match was held to: a Generic URL admitted as direct media must
+    not have been handed to a site extractor, and under an allowlist a
+    delegation must land on an allowlisted extractor."""
+    xk = str(info.get("extractor_key") or key)
+    if xk == key:
+        return
+    if key == "Generic" and not getattr(cfg, "URL_ALLOW_GENERIC", False):
+        raise UrlPolicyError(
+            "this link leads to a site the server's URL policy doesn't allow")
+    allowed = _allowed_extractor_keys()
+    if allowed and xk.lower() not in allowed:
+        raise UrlPolicyError(
+            "this link leads to a site that isn't on the server's allowed list")
 
 
 def _policy_check_info(info: dict) -> None:
@@ -862,6 +926,7 @@ async def probe(url: str, *, timeout: float) -> UrlMediaInfo:
     def _extract() -> dict:
         import yt_dlp  # lazy: optional dependency
 
+        pin = pinned_extractors(key)
         opts = {
             "quiet": True,
             "no_warnings": True,
@@ -879,6 +944,8 @@ async def probe(url: str, *, timeout: float) -> UrlMediaInfo:
             "extract_flat": "in_playlist",
             "socket_timeout": float(getattr(cfg, "URL_SOCKET_TIMEOUT_S", 15)),
         }
+        if pin:
+            opts["allowed_extractors"] = pin
         with yt_dlp.YoutubeDL(opts) as ydl:
             return ydl.sanitize_info(ydl.extract_info(url, download=False))
 
@@ -894,6 +961,7 @@ async def probe(url: str, *, timeout: float) -> UrlMediaInfo:
     if not isinstance(info, dict):
         raise UrlDownloadError("the site returned no usable media info")
     _policy_check_info(info)
+    _policy_check_extractor(key, info)
     ladder: "list[dict]" = []
     if getattr(cfg, "URL_VIDEO_ENABLED", False):
         from faster_whisper_backend.runtime import stage_rates as _rates
@@ -919,8 +987,7 @@ async def probe(url: str, *, timeout: float) -> UrlMediaInfo:
         url=url,
         extractor_key=str(info.get("extractor_key") or key),
         title=info.get("title"),
-        duration=(float(info["duration"]) if info.get("duration") is not None
-                  else None),
+        duration=_finite_duration(info.get("duration")),
         uploader=info.get("uploader") or info.get("channel"),
         filesize_approx=(int(info.get("filesize_approx")
                              or info.get("filesize"))
@@ -936,6 +1003,16 @@ async def probe(url: str, *, timeout: float) -> UrlMediaInfo:
         subtitle_sources=sources,
         segmented=_seg.source_of(info),
     )
+
+
+def _finite_duration(value) -> "float | None":
+    """A usable media length or None: a broken site payload can carry NaN
+    (float_or_none("NaN")), which would seek the language-check pieces to
+    nan and land "at": nan in a JSON answer."""
+    if value is None:
+        return None
+    d = float(value)
+    return d if math.isfinite(d) and d > 0 else None
 
 
 def host_for_log(url: "str | None") -> str:
@@ -987,7 +1064,7 @@ def _capped_get(url: str, *, max_bytes: int, timeout: float,
                 break
             buf.extend(chunk)
             if len(buf) > max_bytes:
-                raise UrlDownloadError("the file is over the server's size limit")
+                raise UrlTooLargeError("the file is over the server's size limit")
             if time.monotonic() - t0 > timeout:
                 raise UrlTimeoutError("the site took too long to answer")
         if cutoff.fired:
@@ -1128,9 +1205,11 @@ def _parse_progress_fields(line: str) -> "tuple[int, int | None, str | None] | N
     return downloaded, total, fid
 
 
-def build_download_argv(url: str, *, dest_dir: str, max_bytes: int) -> "list[str]":
+def build_download_argv(url: str, *, dest_dir: str, max_bytes: int,
+                        extractors: "list[str] | None" = None) -> "list[str]":
     """The exact yt-dlp CLI invocation (separate function so tests can pin
-    it). The URL is the only client-supplied element and follows '--'."""
+    it). The URL is the only client-supplied element and follows '--'.
+    `extractors` is pinned_extractors()' answer for the URL."""
     return [
         # NOT `-m yt_dlp`: the launcher installs the SSRF guard first and
         # exits non-zero if it cannot (yt-dlp's plugin loader would only
@@ -1142,6 +1221,10 @@ def build_download_argv(url: str, *, dest_dir: str, max_bytes: int) -> "list[str
         # it. An operator's stray ~/.config/yt-dlp/plugins therefore cannot
         # pre-empt the guard.
         "--no-plugin-dirs", "--plugin-dirs", GUARD_DIR,
+        # No yt-dlp config file (system, user, portable) may add options —
+        # a `--downloader` there would hand fetches to an external program.
+        "--ignore-config",
+        *_use_extractors(extractors),
         "-f", DOWNLOAD_FORMAT,
         "--no-playlist",
         "--playlist-items", "1",  # belt+braces: never more than one item
@@ -1160,6 +1243,17 @@ def build_download_argv(url: str, *, dest_dir: str, max_bytes: int) -> "list[str
          "%(progress.total_bytes)s %(progress.total_bytes_estimate)s"),
         "--", url,
     ]
+
+
+def _use_extractors(extractors: "list[str] | None") -> "list[str]":
+    return ["--use-extractors", ",".join(extractors)] if extractors else []
+
+
+async def _pinned_extractors_for(url: str) -> "list[str] | None":
+    """pinned_extractors() for `url`, matched offline again (the subprocess
+    re-extracts from the URL), on the probe pool."""
+    return await asyncio.get_running_loop().run_in_executor(
+        _PROBE_POOL, lambda: pinned_extractors(match_extractor(url)))
 
 
 def video_format_selector(max_height: "int | None" = None,
@@ -1187,6 +1281,7 @@ def build_video_download_argv(url: str, *, dest_dir: str, max_bytes: int,
                               max_height: "int | None" = None,
                               container: str = "mkv",
                               format_ids: "tuple[str | None, str | None] | None" = None,
+                              extractors: "list[str] | None" = None,
                               ) -> "list[str]":
     """The yt-dlp invocation for the VIDEO of a link: the rung's exact
     formats (best video + best audio as the fallback) merged by ffmpeg into
@@ -1200,6 +1295,8 @@ def build_video_download_argv(url: str, *, dest_dir: str, max_bytes: int,
     return [
         sys.executable, GUARD_LAUNCHER,
         "--no-plugin-dirs", "--plugin-dirs", GUARD_DIR,
+        "--ignore-config",
+        *_use_extractors(extractors),
         "-f", fmt,
         "--merge-output-format", container,
         "--no-playlist",
@@ -1241,7 +1338,8 @@ async def download(
     guard_self_check()  # fail closed: never spawn an unguarded downloader
     max_bytes = int(max_bytes or _effective_max_bytes())
     timeout = float(timeout or getattr(cfg, "URL_DOWNLOAD_TIMEOUT_S", 900))
-    argv = build_download_argv(url, dest_dir=dest_dir, max_bytes=max_bytes)
+    argv = build_download_argv(url, dest_dir=dest_dir, max_bytes=max_bytes,
+                               extractors=await _pinned_extractors_for(url))
 
     def _emit(downloaded: int, total: "int | None") -> None:
         if progress_cb is None:
@@ -1286,7 +1384,8 @@ async def download_video(
         container = "mkv"
     argv = build_video_download_argv(
         url, dest_dir=dest_dir, max_bytes=max_bytes, max_height=max_height,
-        container=container, format_ids=format_ids)
+        container=container, format_ids=format_ids,
+        extractors=await _pinned_extractors_for(url))
     logger.info("[url-dl] video download starting (host %s): -f %s, expected %s",
                 host_for_log(url),
                 video_format_selector(max_height, format_ids).split("/")[0],
@@ -1507,7 +1606,7 @@ async def _run_yt_dlp(
         tail = stderr_tail.decode("utf-8", "replace")
         logger.warning("[url-dl] yt-dlp exited %s for host %s: %s",
                        proc.returncode, host_for_log(url),
-                       log_safe(tail[-300:]))
+                       log_safe(tail, keep_end=True))
         raise UrlDownloadError(classify_error(tail))
 
     result = find_result(dest_dir)
