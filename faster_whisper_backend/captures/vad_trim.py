@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import logging
 import os
+import tempfile
 import time
 import wave
 
@@ -70,7 +71,8 @@ def trim_wav(
       - VAD finds no speech (silent clip) → trimmed=False, no write.
       - Source/dest IO error → propagated.
 
-    Atomic write: writes to dst_path + ".tmp" and os.replace.
+    Atomic write: writes to a mkstemp "<dst>.*.tmp" beside dst_path and
+    os.replace.
     """
     def _no_trim(orig_ms: int) -> dict:
         return {
@@ -139,12 +141,15 @@ def trim_wav(
     out_bytes = pcm[start_sample * audio_merge.BYTES_PER_SAMPLE:
                     end_sample * audio_merge.BYTES_PER_SAMPLE]
 
-    tmp_path = dst_path + ".tmp"
-    os.makedirs(os.path.dirname(dst_path) or ".", exist_ok=True)
+    dst_dir = os.path.dirname(dst_path) or "."
+    os.makedirs(dst_dir, exist_ok=True)
+    # Same as audio_merge.merge_wavs: a fresh 0600 mkstemp tmp (O_EXCL, random
+    # name) so the PCM is never world-readable while wave.open writes it and
+    # a pre-existing "<dst>.tmp" inode is never reused.
+    fd, tmp_path = tempfile.mkstemp(
+        dir=dst_dir, prefix=os.path.basename(dst_path) + ".", suffix=".tmp")
+    os.close(fd)
     try:
-        # Same as audio_merge.merge_wavs: create the tmp 0600 first so the
-        # PCM is never world-readable while wave.open writes it.
-        os.close(os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600))
         with wave.open(tmp_path, "wb") as w:
             w.setnchannels(1)
             w.setsampwidth(audio_merge._REQ_SAMPWIDTH_BYTES)

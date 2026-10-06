@@ -71,6 +71,11 @@ _CACHE_MAX = 512
 # asyncio.to_thread), neither of which takes this lock. Eviction below
 # therefore snapshots keys instead of iterating the live dict.
 _SWEEP_LOCK = threading.Lock()
+# Bumped by every invalidate(). A sweep snapshots it before reading rows and
+# skips its cache write when it moved: an invalidation that lands while the
+# sweep runs (it does not take _SWEEP_LOCK) would otherwise be overwritten by
+# proposals built from the pre-write rows, served as fresh for a whole TTL.
+_GEN = 0
 
 # Per-capture trimmed-duration cache. Capture audio is immutable once written,
 # so a capture id maps to a stable trimmed duration; the file mtime + the two
@@ -360,13 +365,13 @@ def propose_merges(
     """Serialize sweeps, then delegate.
 
     The cache is only written AFTER a sweep completes, so concurrent requests
-    all miss and all run the full sweep. That was harmless while the route
-    called this inline on the single-threaded event loop, but it now runs via
-    asyncio.to_thread — and on a cold trim cache each sweep costs up to the
-    hardcoded 500-row proposer window (_propose_merges_locked) of VAD
-    passes in the SAME default executor the
-    Whisper decode uses, so N cheap GETs starved transcription of threads.
-    One global lock: the waiters find the fresh cache entry and return at once.
+    all miss and all run the full sweep — and on a cold trim cache each sweep
+    costs up to the hardcoded 500-row proposer window (_propose_merges_locked)
+    of VAD passes. The route already runs this on its own single-worker pool
+    (captures/routes.py _proposer_pool), off the default executor the Whisper
+    decode uses; this lock keeps any other caller (a test, a future route)
+    serialised the same way. The waiters find the fresh cache entry and
+    return at once.
     """
     with _SWEEP_LOCK:
         return _propose_merges_locked(
@@ -450,6 +455,7 @@ def _propose_merges_locked(
     # Pull a bounded window of recent captures. 500 keeps work bounded for
     # the rare admin "all users" view; per-user views typically have far
     # fewer ungrouped rows.
+    gen0 = _GEN
     rows = captures_store.list_captures(
         status=None,
         limit=500,
@@ -482,20 +488,24 @@ def _propose_merges_locked(
     if cur:
         sessions.append(cur)
 
-    # Per session × user × language → candidates. user_id partition matters
-    # because create_sample_api enforces same-user (captures/routes.py create_sample_api);
-    # without it, the admin "all users" view could emit proposals that the
-    # merge endpoint rejects.
+    # Per session × user × language × task → candidates. user_id partition
+    # matters because create_sample_api enforces same-user (captures/routes.py
+    # create_sample_api); without it, the admin "all users" view could emit
+    # proposals that the merge endpoint rejects. task matters because a
+    # translate capture carries the SOURCE language but English text, so
+    # packing it with a transcribe clip would join English into a
+    # source-language transcript (the merge endpoint rejects that too).
     all_candidates: list[tuple[float, list[dict[str, Any]], str, str]] = []
     for sess in sessions:
-        by_keys: dict[tuple[str, str], list[dict[str, Any]]] = {}
+        by_keys: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
         for r in sess:
             lang = _bcp47_primary(r.get("language"))
             uid = r.get("user_id") or ""
             if not lang or not uid:
                 continue
-            by_keys.setdefault((uid, lang), []).append(r)
-        for (uid, lang), bucket in by_keys.items():
+            task = r.get("task") or "transcribe"
+            by_keys.setdefault((uid, lang, task), []).append(r)
+        for (uid, lang, _task), bucket in by_keys.items():
             for score, members in _generate_candidates_for_bucket(
                 bucket, gap_s, dup_threshold, target_s, hard_cap_s, edge_s,
                 min_sample_s,
@@ -520,7 +530,10 @@ def _propose_merges_locked(
     # changes size raises RuntimeError.
     for k in list(_CACHE)[:max(0, len(_CACHE) - _CACHE_MAX + 1)]:
         _CACHE.pop(k, None)
-    _CACHE[cache_key] = (time.time(), proposals)
+    # A write invalidated mid-sweep: these proposals predate it, so return
+    # them to this caller but do not cache them as fresh.
+    if _GEN == gen0:
+        _CACHE[cache_key] = (time.time(), proposals)
     logger.info(
         "[proposer] user=%s n_eligible=%d sessions=%d candidates=%d proposals=%d",
         # cache_key embeds the caller-supplied ?user_id= for an admin, which is
@@ -536,6 +549,8 @@ def invalidate(user_id: str | None) -> None:
     write may affect). Called from captures_store + capture_samples_store
     write paths. ``user_id=None`` clears the entire cache (used by
     ``clear_all``). Safe to call with no current cache entry."""
+    global _GEN
+    _GEN += 1
     if user_id is None:
         _CACHE.clear()
         return

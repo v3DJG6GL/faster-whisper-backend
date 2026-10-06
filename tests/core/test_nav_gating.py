@@ -74,6 +74,21 @@ def test_popovers_fall_back_when_the_positioner_is_missing():
         assert "pop.removeAttribute('popover')" in placer
 
 
+
+def test_activity_popover_holds_its_markup_while_a_pointer_is_down():
+    """A 1 Hz re-render between mousedown and mouseup detached the pressed
+    cancel button and dropped the click; logout must close the popover
+    through closePop so the placement controller hides too."""
+    js = web_common.ACTIVITY_CLUSTER_JS
+    render = js[js.index("function renderPop()"):]
+    render = render[:render.index("pop.innerHTML = h;")]
+    assert "if (pop._held) return;" in render
+    assert "pop.addEventListener('pointerdown'" in js
+    sync = js[js.index("function syncAllowed()"):]
+    sync = sync[:sync.index("var header =")]
+    assert "closePop();" in sync and "pop.hidden = true" not in sync
+
+
 # ---- hub strip: pills are two wrappers below .hub-sev -----------------------
 
 def test_hub_carries_the_pill_gap_into_the_wrappers():

@@ -331,13 +331,14 @@ def test_bulk_guard_never_loads_the_full_capture_row(client, make_user_key,
 
     def _boom(cid):
         raise AssertionError("bulk guard must not call get_capture")
-    monkeypatch.setattr(captures_store, "get_capture", _boom)
-
-    body = client.patch("/captures/api/bulk", headers=bearer(raw_root),
-                        json={"ids": ids, "status": "reviewed"}).json()
+    # Scoped: a bare monkeypatch.undo() would also revert every fixture patch
+    # (the *_DB paths, config overrides, the model loader) mid-test.
+    with monkeypatch.context() as m:
+        m.setattr(captures_store, "get_capture", _boom)
+        body = client.patch("/captures/api/bulk", headers=bearer(raw_root),
+                            json={"ids": ids, "status": "reviewed"}).json()
     assert [u["id"] for u in body["updated"]] == ids
     assert body["skipped"] == []
-    monkeypatch.undo()
     assert captures_store.get_capture(ids[-1])["status"] == "reviewed"
 
 

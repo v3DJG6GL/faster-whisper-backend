@@ -25,7 +25,7 @@
   function gb(mb){ return ((mb || 0) / 1024).toFixed(1); }
   // Job-kind → accent class (mockup palette: transcribe cyan, translate
   // magenta, dictate green, download yellow, preload muted). Keep in step
-  // with jobs.KINDS and the /stats kindchip CSS + #rj-kind filter.
+  // with jobs.KINDS and the /stats kindchip CSS (stats/templates/stats.html).
   function kindCls(k){
     return {transcribe:'tr', stream:'tr', translate:'tl',
             dictate:'dc', download:'dl', preload:'pl'}[k] || '';
@@ -145,8 +145,22 @@
       h += '</div>';
     }
     h += '<div class="hact-foot"><a href="/stats">Open stats →</a></div>';
+    // Not while a pointer is down inside the pop: swapping innerHTML between
+    // mousedown and mouseup detaches the pressed .hact-cancel, the click then
+    // lands on the pop itself and the cancel is silently dropped. _lastH
+    // stays put, so the release re-render below applies the latest frame.
+    if (pop._held) return;
     if (h !== pop._lastH) { pop.innerHTML = h; pop._lastH = h; }
   }
+  pop.addEventListener('pointerdown', function(){ pop._held = true; });
+  function releaseHold(){
+    if (!pop._held) return;
+    pop._held = false;
+    // After the click this pointerup belongs to has been dispatched.
+    setTimeout(function(){ if (!pop.hidden) renderPop(); }, 0);
+  }
+  document.addEventListener('pointerup', releaseHold);
+  document.addEventListener('pointercancel', releaseHold);
 
   // Shared placement ladder (POPOVER_JS): end-aligned under the button,
   // flipped to start-align before it may leave the header canvas, clamped
@@ -198,6 +212,9 @@
       .then(function(r){ if (!r.ok) { if (c) c.disabled = false; delete cancelling[pid]; } },
             function(){ if (c) c.disabled = false; delete cancelling[pid]; });
   };
+  // The /stats jobs table keeps a cancel it sent disabled across its 1 Hz
+  // re-renders by asking the same in-flight set.
+  window._fwIsCancelling = function(pid){ return !!cancelling[pid]; };
   pop.addEventListener('click', function(e){
     var c = e.target.closest('.hact-cancel');
     if (!c) return;
@@ -260,7 +277,10 @@
     if (ok) { btn.hidden = false; openStream(); }
     else {
       btn.hidden = true; closeStream();
-      pop.hidden = true; btn.setAttribute('aria-expanded', 'false');
+      // closePop, not a bare hidden flip: the placement controller must
+      // hide() too, or the native popover stays open in the top layer and
+      // its scroll / resize listeners keep re-placing it.
+      closePop();
     }
   }
   var header = document.querySelector('header');

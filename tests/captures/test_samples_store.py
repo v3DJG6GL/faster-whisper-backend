@@ -263,6 +263,79 @@ def test_dissolve_missing_group_is_noop(groups_store_db):
     groups_store_db.dissolve_sample("does-not-exist")
 
 
+def test_dissolve_rolls_back_the_member_release_when_the_delete_fails(
+        captures_store_db, groups_store_db):
+    """The shared connection is autocommit, so the member release and the row
+    DELETE need an explicit transaction: a failing DELETE must not leave the
+    members released under a surviving, memberless sample row."""
+    cs = captures_store_db
+    gs = groups_store_db
+    sid = "gdissolverollbk1"
+    _insert_group(gs, sid)
+    _insert_capture(cs, "capdissolverb001", sample_id=sid, sample_order=0)
+    conn = gs._require_conn()
+    conn.execute(
+        "CREATE TRIGGER t_fail BEFORE DELETE ON capture_samples"
+        " BEGIN SELECT RAISE(ABORT, 'x'); END")
+    try:
+        with pytest.raises(Exception):
+            gs.dissolve_sample(sid)
+    finally:
+        conn.execute("DROP TRIGGER t_fail")
+    assert not conn.in_transaction
+    assert gs.get_sample(sid) is not None
+    assert cs.get_capture("capdissolverb001")["sample_id"] == sid
+
+
+def test_dissolve_waits_for_an_in_flight_rebuild(captures_store_db,
+                                                 groups_store_db):
+    """dissolve_sample takes the per-sid rebuild lock, so it cannot delete the
+    row (and unlink the WAV) under a regenerate that is mid-build."""
+    import threading
+
+    from faster_whisper_backend.captures import samples as capture_samples
+
+    gs = groups_store_db
+    sid = "gdissolvewait001"
+    _insert_group(gs, sid)
+    done = threading.Event()
+    with capture_samples._rebuild_lock(sid):
+        t = threading.Thread(target=lambda: (gs.dissolve_sample(sid), done.set()))
+        t.start()
+        assert not done.wait(0.3)
+        assert gs.get_sample(sid) is not None
+    t.join(5)
+    assert done.is_set()
+    assert gs.get_sample(sid) is None
+
+
+# ---------------------------------------------------------------------------
+# expire_samples_older_than
+# ---------------------------------------------------------------------------
+
+def test_expire_samples_one_failing_dissolve_does_not_stop_the_pass(
+        groups_store_db, monkeypatch):
+    gs = groups_store_db
+    first, second = "gexpirefail00001", "gexpirefail00002"
+    # created_ts orders the SELECT on insertion; both sit below the cutoff.
+    _insert_group(gs, first, created_ts=1.0)
+    _insert_group(gs, second, created_ts=2.0)
+    real = gs.dissolve_sample
+    order = [r["id"] for r in gs._require_conn().execute(
+        "SELECT id FROM capture_samples WHERE created_ts < ?", (100.0,))]
+    bad = order[0]
+    good = order[1]
+
+    def flaky(sid):
+        if sid == bad:
+            raise RuntimeError("locked")
+        return real(sid)
+    monkeypatch.setattr(gs, "dissolve_sample", flaky)
+    assert gs.expire_samples_older_than(100.0) == [good]
+    assert gs.get_sample(good) is None
+    assert gs.get_sample(bad) is not None
+
+
 # ---------------------------------------------------------------------------
 # clear_all_samples
 # ---------------------------------------------------------------------------

@@ -53,11 +53,13 @@ def save_lock(path: str):
     PATCH /v1/pipeline-rules).
 
     The lock file is `<path>.lock`; it never collides with
-    atomic_write_json()'s `.config*.tmp` tempfiles and nothing in this module
-    scans the directory. Raises OSError on timeout so the callers' existing
+    atomic_write_json()'s `<tmp_prefix>*.tmp` tempfiles (`.config*`,
+    `.model_sizes*`, `.stage_rates*`) and nothing in this module scans the
+    directory. Raises OSError on timeout so the callers' existing
     `except OSError` handling covers it. A missing `filelock` (a transitive of
-    faster-whisper via huggingface_hub, and already used directly in main.py)
-    degrades to the in-process lock only, rather than failing the save."""
+    faster-whisper via huggingface_hub, and already used directly in
+    transcription/models.py) degrades to the in-process lock only, rather than
+    failing the save."""
     key = os.path.abspath(path)
     with _SAVE_LOCKS_GUARD:
         lk = _SAVE_LOCKS.setdefault(key, threading.Lock())

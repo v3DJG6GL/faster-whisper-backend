@@ -11,9 +11,9 @@ against a temp captures DB, with the engine's `_postprocess_text` and
 `build_ident` replaced by fakes — the start() tests alone left the whole
 row loop uncovered.
 
-The conftest autouse fixture resets _worker/_state between tests, but it
-seeds _state with a different key set than the module's real schema, so each
-test first restores the canonical idle state (the shape start() expects).
+The conftest autouse fixture resets _worker/_state between tests through
+captures_reapply._reset_for_tests, which restores the canonical idle state
+(the shape start() expects); _IDLE below pins that shape.
 """
 
 import logging
@@ -36,15 +36,6 @@ _IDLE = {
     "groups_updated": 0,
     "error": None,
 }
-
-
-@pytest.fixture(autouse=True)
-def _canonical_idle():
-    """conftest reset uses a foreign key set; restore the real idle schema."""
-    captures_reapply._state.clear()
-    captures_reapply._state.update(_IDLE)
-    captures_reapply._worker = None
-    yield
 
 
 class _FakeThread:

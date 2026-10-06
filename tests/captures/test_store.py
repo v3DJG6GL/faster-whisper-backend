@@ -141,6 +141,13 @@ def test_truncate_translations_key_overhead_over_cap(captures_store_db):
     assert isinstance(kept, dict) and 0 < len(kept) < 600
     # Front languages survive (insertion order), tail dropped.
     assert list(kept) == [f"lang{i}" for i in range(len(kept))]
+    # Dropping languages comes FIRST, so the survivors keep their text
+    # instead of all being trimmed to "".
+    assert all(v == "x" * 10 for v in kept.values()), kept
+    # The first-inserted (exportable) track keeps its text too.
+    big = {"en": "e" * 30_000, **{f"l{i}": "" for i in range(5000)}}
+    kept = json.loads(cs._truncate_translations(big, 50_000))
+    assert len(kept["en"]) > 0
     # A single language whose key alone cannot fit yields an empty map.
     assert json.loads(cs._truncate_translations({"k" * 50: "v"}, 20)) == {}
 

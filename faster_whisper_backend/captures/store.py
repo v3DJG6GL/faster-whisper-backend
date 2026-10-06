@@ -471,8 +471,10 @@ def _truncate_translations(translations: "dict[str, str] | None",
 
     Invariant: the return value is None or a JSON object <= cap_bytes.
     When the key overhead alone (thousands of languages) exceeds the cap,
-    trimming text bottoms out at n=0 still over cap, so languages are then
-    dropped from the end of insertion order until the blob fits."""
+    languages are first dropped from the end of insertion order, keeping the
+    longest prefix that fits with its FULL text (at least one language), and
+    only then is the text trimmed — so the surviving tracks are real text
+    instead of a map of empty strings."""
     if not translations:
         return None
     try:
@@ -487,6 +489,21 @@ def _truncate_translations(translations: "dict[str, str] | None",
         return json.dumps({k: v[:n] for k, v in texts.items()},
                           ensure_ascii=False)
 
+    if len(_dump(0)) > cap_bytes:
+        # Binary search on the kept prefix: one dump per probe, not one per
+        # dropped language (thousands of keys make that quadratic).
+        keys = list(texts)
+        lo_k, hi_k = 1, len(keys)
+        while lo_k < hi_k:
+            mid = (lo_k + hi_k + 1) // 2
+            if len(json.dumps({k: texts[k] for k in keys[:mid]},
+                              ensure_ascii=False)) <= cap_bytes:
+                lo_k = mid
+            else:
+                hi_k = mid - 1
+        texts = {k: texts[k] for k in keys[:lo_k]}
+        if len(_dump(0)) > cap_bytes:
+            return json.dumps({})
     lo, hi = 0, max(len(v) for v in texts.values())
     while lo < hi:
         mid = (lo + hi + 1) // 2
@@ -494,13 +511,7 @@ def _truncate_translations(translations: "dict[str, str] | None",
             lo = mid
         else:
             hi = mid - 1
-    out = _dump(lo)
-    while len(out) > cap_bytes and len(texts) > 1:
-        texts.pop(next(reversed(texts)))
-        out = _dump(lo)
-    if len(out) > cap_bytes:
-        return json.dumps({})
-    return out
+    return _dump(lo)
 
 
 def _evict_to_cap(conn: sqlite3.Connection) -> None:

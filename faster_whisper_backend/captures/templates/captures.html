@@ -1069,6 +1069,9 @@
   // CAPTURES_SAMPLE_MAX_DURATION_S so the selection/proposal meters show the
   // real cap instead of a stale literal.
   var SAMPLE_CAP_S = {{SAMPLE_CAP_S}};
+  // Most members one merge may hold: the server's member_ids max_length and
+  // the proposer's _MAX_MEMBERS.
+  var MERGE_MAX_MEMBERS = 30;
 
   // Sign-in is handled by the shared full-screen login gate (web_common):
   // on a 401 we call window._showLoginGate(), which prompts for a key and
@@ -1270,6 +1273,10 @@
   // Cursor for the next page of groups, or null when they are all loaded.
   var _samplesNext = null;
   var _samplesLoading = false;
+  // Bumped by every load(): a speaker-picker tick fires one per click, and
+  // an older filter's list / samples / load-more page that resolves last
+  // must not overwrite the newer filter's rows, counts and cursor.
+  var _loadSeq = 0;
   var _counts = {};
   var _openRows = {};   // cid -> { audio, blobUrl, wordEls, words, finalText, dirty, corrections, ... }
   var _openSamples = {}; // sid -> { audio } — for blob-URL cleanup on render() / beforeunload
@@ -1364,24 +1371,30 @@
     }
   }
   // Inverse of _bulkStatus: one request per previous status (≤ 4). A row
-  // deleted or evicted meanwhile comes back as skipped/not_found.
+  // deleted or evicted meanwhile comes back as skipped/not_found; one whose
+  // sample was locked meanwhile, or whose audio vanished, as locked /
+  // audio_missing — so the toast names each reason, like _bulkStatus.
   async function _undoBulk(updated) {
     var groups = {};
     updated.forEach(function(u) { (groups[u.prev_status] = groups[u.prev_status] || []).push(u.id); });
-    var restored = 0, gone = 0;
+    var restored = 0, why = {};
     try {
       for (var st in groups) {
         if (!Object.prototype.hasOwnProperty.call(groups, st)) continue;
         if (['new', 'reviewed', 'ready', 'dismissed'].indexOf(st) === -1) continue;
         var j = await api('PATCH', '/captures/api/bulk', { ids: groups[st], status: st });
         restored += (j.updated || []).length;
-        gone += (j.skipped || []).length;
+        (j.skipped || []).forEach(function(s) { why[s.reason] = (why[s.reason] || 0) + 1; });
         var set = {}; (j.updated || []).forEach(function(u) { set[u.id] = true; });
         _allCaptures.forEach(function(r) { if (set[r.id]) r.status = st; });
       }
       render();
       reloadCounts();
-      toast('Undid ' + restored + (gone ? ' · ' + gone + ' no longer exist' : ''));
+      var label = { not_found: 'no longer exist', locked: 'locked', audio_missing: 'audio missing' };
+      var note = Object.keys(why).map(function(k) {
+        return why[k] + ' ' + (label[k] || k.replace('_', ' '));
+      }).join(', ');
+      toast('Undid ' + restored + (note ? ' · ' + note : ''));
     } catch (e) {
       if (e.message !== 'unauthorized') toast('Undo failed: ' + e.message, true);
     }
@@ -1426,7 +1439,7 @@
     document.getElementById('ab-count').textContent = String(n);
     bar.classList.toggle('show', n >= 1);
     _syncSelectAll();
-    if (n === 0) return;
+    if (n === 0) { _cancelTrimEstimate(); return; }
     var rows = _selectedRows();
     var totalSec = rows.reduce(function(s, r) {
       return s + (r.audio_s || 0);
@@ -1447,11 +1460,23 @@
     var warn = document.getElementById('ab-warn');
     var mixedUsers = userIds.size > 1;
     var hasInSample = rows.some(function(r) { return r.sample_id; });
+    // Same partition as the server's _validate_merge_payload: one sample is
+    // one language and one task label (a translate capture's text is English
+    // over source-language audio).
+    var langs = new Set(rows.map(function(r) {
+      return String(r.language || '').trim().toLowerCase().replace('_', '-').split('-')[0];
+    }).filter(Boolean));
+    var tasks = new Set(rows.map(function(r) { return r.task || 'transcribe'; }));
+    var mixedLangTask = langs.size > 1 || tasks.size > 1;
     if (mixedUsers) {
       warn.textContent = '⚠ multiple speakers — merging not allowed';
       warn.style.color = 'var(--red)';
     } else if (hasInSample) {
       warn.textContent = '⚠ selection includes captures already in a sample';
+      warn.style.color = 'var(--red)';
+    } else if (mixedLangTask) {
+      warn.textContent = '⚠ ' + (langs.size > 1 ? 'multiple languages' : 'transcribe + translate mixed')
+        + ' — merging not allowed';
       warn.style.color = 'var(--red)';
     } else {
       warn.textContent = '';
@@ -1459,13 +1484,19 @@
 
     // A bulk-sized selection (select all) is never a merge candidate: skip
     // the trimmed-duration estimate (500 ids per keystroke) and keep Merge off.
-    var baseOk = n >= 1 && n <= 20 && !mixedUsers && !hasInSample;
+    var baseOk = n >= 1 && n <= MERGE_MAX_MEMBERS && !mixedUsers && !hasInSample && !mixedLangTask;
     var mergeBtn = document.getElementById('ab-merge');
     mergeBtn.disabled = !baseOk;
-    if (n > 20 && !mixedUsers && !hasInSample) warn.textContent = 'merge needs 20 or fewer';
+    if (n > MERGE_MAX_MEMBERS && !mixedUsers && !hasInSample && !mixedLangTask) {
+      warn.textContent = 'merge needs ' + MERGE_MAX_MEMBERS + ' or fewer';
+    }
     if (baseOk) {
       _fetchTrimEstimate(rows.map(function(r) { return r.id; }), gap_ms,
                          meter, mergeBtn);
+    } else {
+      // A pending timer / in-flight POST for the earlier, valid selection
+      // would otherwise land with a current token and re-enable Merge.
+      _cancelTrimEstimate();
     }
   }
 
@@ -1475,6 +1506,10 @@
   // out-of-order responses when the selection changes mid-flight.
   var _meterEstimateTimer = null;
   var _meterEstimateToken = 0;
+  function _cancelTrimEstimate() {
+    if (_meterEstimateTimer) { clearTimeout(_meterEstimateTimer); _meterEstimateTimer = null; }
+    _meterEstimateToken++;
+  }
   function _fetchTrimEstimate(ids, gap_ms, meter, mergeBtn) {
     if (_meterEstimateTimer) clearTimeout(_meterEstimateTimer);
     var token = ++_meterEstimateToken;
@@ -1807,7 +1842,8 @@
       // languages exist rather than implying they are all usable.
       (r.translations && Object.keys(r.translations).length
         ? '<span class="pill pill-mt" title="translations on this capture'
-          + ' (only EN is eligible as translate-task training data)">→ '
+          + ' (only EN, on non-English transcribe captures, is eligible as'
+          + ' translate-task training data)">→ '
           + escapeHtml(Object.keys(r.translations).join(' ').toUpperCase())
           + '</span>'
         : '') +
@@ -2120,7 +2156,12 @@
           break;
         }
       }
-      var eligible = enKey && trs[enKey] && String(trs[enKey]).trim();
+      // Mirror the exporter's guards (captures/routes.py _build_export_stream):
+      // an English-source capture's en track is a copy of its transcript, and
+      // a translate-task row is already its own task=translate line.
+      var srcIsEn = String(r.language || '').split('-')[0].toLowerCase() === 'en';
+      var isTr = (r.task || 'transcribe') === 'translate';
+      var eligible = enKey && !srcIsEn && !isTr && trs[enKey] && String(trs[enKey]).trim();
       trSec.innerHTML = '<h3>Translations</h3>'
         + '<div class="help">'
         + (r.translation_model
@@ -2129,8 +2170,12 @@
         + (eligible
             ? 'The English track is exported as <code>task=translate</code> '
               + 'training data once this capture is marked <em>ready</em>.'
-            : 'No English track, so nothing here is exportable — Whisper’s '
-              + 'translate task targets English only.')
+            : enKey && (srcIsEn || isTr)
+              ? (srcIsEn ? 'English source audio' : 'A translate-task capture')
+                + ', so its English track is not exported as '
+                + '<code>task=translate</code> training data.'
+              : 'No English track, so nothing here is exportable — Whisper’s '
+                + 'translate task targets English only.')
         + '</div>';
       trLangs.sort();
       for (var ti = 0; ti < trLangs.length; ti++) {
@@ -2138,9 +2183,9 @@
         var trRow = document.createElement('div');
         trRow.className = 'cc-tr-row';
         var tag = document.createElement('span');
-        tag.className = 'cc-tr-lang' + (lg === enKey ? ' cc-tr-eligible' : '');
+        tag.className = 'cc-tr-lang' + (eligible && lg === enKey ? ' cc-tr-eligible' : '');
         tag.textContent = lg.toUpperCase();
-        if (lg !== enKey) tag.title = 'review only — not training data';
+        if (!(eligible && lg === enKey)) tag.title = 'review only — not training data';
         var val = document.createElement('div');
         val.className = 'cc-ground cc-tr-text';
         val.setAttribute('role', 'textbox');
@@ -2387,7 +2432,6 @@
     }
     if (existing >= 0) {
       removeChip(state, existing);
-      applyCorrectionsToGround(state);
       return;
     }
     state.corrections.push({
@@ -2445,6 +2489,9 @@
     state.corrections.splice(i, 1);
     renderChips(state);
     markDirty(state);
+    // Every removal changes the preview text; refreshing it here means no
+    // caller can leave the ground stale.
+    applyCorrectionsToGround(state);
   }
 
   function renderChips(state) {
@@ -2503,7 +2550,6 @@
           // removes correction").
           if (!(inp.value || '').trim()) {
             removeChip(state, i);
-            applyCorrectionsToGround(state);
           } else {
             applyCorrectionsToGround(state);
             inp.blur();
@@ -2530,7 +2576,6 @@
       rm.textContent = '×';
       rm.addEventListener('click', function() {
         removeChip(state, i);
-        applyCorrectionsToGround(state);
       });
       chip.appendChild(rm);
 
@@ -2939,8 +2984,10 @@
   // Load
   // -------------------------------------------------------------------
   async function load() {
+    var seq = ++_loadSeq;
     try {
       var j = await api('GET', _listUrl(500));
+      if (seq !== _loadSeq) return;  // superseded by a newer filter
       _allCaptures = j.captures || [];
       _counts = j.counts || {};
       _totalCount = j.total_count || _allCaptures.length;
@@ -2950,9 +2997,13 @@
       // Pull groups in parallel-shape; failure is non-fatal (admin sees no groups).
       try {
         var jg = await api('GET', '/captures/api/samples?limit=200' + _speakerQs());
+        if (seq !== _loadSeq) return;
         _allSamples = jg.samples || [];
         _samplesNext = jg.next || null;
-      } catch (_) { _allSamples = []; _samplesNext = null; }
+      } catch (_) {
+        if (seq !== _loadSeq) return;
+        _allSamples = []; _samplesNext = null;
+      }
       updateCaptureBadge(!!j.enabled);
       rebuildModelFilter();
       if (_pendingModel) {
@@ -2968,6 +3019,7 @@
       _syncUrl();
       reloadStats();
     } catch (e) {
+      if (seq !== _loadSeq) return;
       if (e.message === 'unauthorized' || e.message === 'not-admin') return;
       toast('Failed to load captures: ' + e.message, true);
     }
@@ -2978,6 +3030,7 @@
     // member, so they arrive a page at a time instead of all at once.
     if (!_samplesNext || _samplesLoading) return;
     _samplesLoading = true;
+    var seq = _loadSeq;
     // Flip the footer button in place: a full render() here would revoke
     // every open group card's audio and wipe the list mid-playback.
     var b = document.getElementById('btn-load-more-samples');
@@ -2987,6 +3040,9 @@
         + '&before_ts=' + encodeURIComponent(_samplesNext.before_ts)
         + '&before_id=' + encodeURIComponent(_samplesNext.before_id);
       var jg = await api('GET', q);
+      // A filter change meanwhile: this page (and its cursor) belongs to the
+      // old filter's list.
+      if (seq !== _loadSeq) return;
       var seen = {};
       _allSamples.forEach(function(g) { seen[g.id] = 1; });
       (jg.samples || []).forEach(function(g) {
@@ -2994,7 +3050,7 @@
       });
       _samplesNext = jg.next || null;
     } catch (e) {
-      toast('Failed to load more groups: ' + e.message, true);
+      if (seq === _loadSeq) toast('Failed to load more groups: ' + e.message, true);
     } finally {
       _samplesLoading = false;
       render();
@@ -3072,7 +3128,7 @@
 
   function _openMergeModal() {
     var rows = _selectedRows();
-    if (rows.length < 1) return;
+    if (rows.length < 1 || document.getElementById('ab-merge').disabled) return;
     var modal = document.getElementById('merge-modal');
     _renderMergePreview(rows);
     // Join style + inter-member silence are global settings now; the local
@@ -3366,7 +3422,6 @@
     for (var i = 0; i < state.corrections.length; i++) {
       if (chipCovers(state.corrections[i], state.cursorIdx)) {
         removeChip(state, i);
-        applyCorrectionsToGround(state);
         return;
       }
     }

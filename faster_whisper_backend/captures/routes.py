@@ -886,7 +886,9 @@ async def delete_capture_api(
     )
     _audit_cross_user_read(user, row, "capture-delete", cid)
     _assert_member_sample_not_locked(row, user)
-    if not captures_store.delete_capture(cid):
+    # Off the loop: deleting a member auto-dissolves its sample, which waits
+    # on that sample's rebuild lock (see samples_store.dissolve_sample).
+    if not await asyncio.to_thread(captures_store.delete_capture, cid):
         raise HTTPException(status.HTTP_404_NOT_FOUND, "capture not found")
     return JSONResponse({"ok": True})
 
@@ -935,57 +937,66 @@ async def reprocess_capture_api(
     the per-row trigger gives immediate feedback in the UI. `scope=own`
     users can reprocess only their own captures.
     """
-    row = captures_store.get_capture(cid)
-    if row is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "capture not found")
-    user["permissions"].assert_can_read_row(
-        row, "captures", user.get("user_id") or "",
-        detail="capture not found",
-    )
-    _audit_cross_user_read(user, row, "capture-reprocess", cid)
-    _assert_member_sample_not_locked(row, user)
-    raw = row.get("raw") or ""
-    captures_excludes = getattr(cfg, "CAPTURES_PIPELINE_RULES_EXCLUDE", None)
-    # Resolve the CAPTURE OWNER's effective pipeline (not the caller's — an admin
-    # may reprocess another user's row; the result must reflect that user's
-    # rules). Pipeline-only: no key / no per-request layer on reprocess.
-    ident = effective_config.build_ident({"user_id": row.get("user_id")}, row.get("model"))
-    try:
-        new_final = pl_engine._postprocess_text(raw, model_name=row.get("model"), ident=ident, language=row.get("language"))
-    except Exception as e:
-        logger.error("[captures] reprocess pipeline failed on `final`: %s", e)
-        raise HTTPException(
-            status.HTTP_500_INTERNAL_SERVER_ERROR,
-            "pipeline reprocessing failed",
+    # Off the loop, like get_capture_api's _detail(): one or two full
+    # pipeline passes over raw text of up to 50k chars (owner regex rules
+    # included) plus the SQLite read and write would otherwise stall every
+    # other request and WebSocket for the length of the run. The HTTPExceptions
+    # raised inside propagate out of to_thread unchanged.
+    def _run() -> tuple[dict[str, Any], list[str]]:
+        row = captures_store.get_capture(cid)
+        if row is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "capture not found")
+        user["permissions"].assert_can_read_row(
+            row, "captures", user.get("user_id") or "",
+            detail="capture not found",
         )
-    # When no captures-specific excludes are configured, the training-text
-    # pass would produce byte-identical output to `final` — skip the
-    # second full pipeline pass and reuse.
-    if captures_excludes:
+        _audit_cross_user_read(user, row, "capture-reprocess", cid)
+        _assert_member_sample_not_locked(row, user)
+        raw = row.get("raw") or ""
+        captures_excludes = getattr(cfg, "CAPTURES_PIPELINE_RULES_EXCLUDE", None)
+        # Resolve the CAPTURE OWNER's effective pipeline (not the caller's — an admin
+        # may reprocess another user's row; the result must reflect that user's
+        # rules). Pipeline-only: no key / no per-request layer on reprocess.
+        ident = effective_config.build_ident({"user_id": row.get("user_id")}, row.get("model"))
         try:
-            new_training = pl_engine._postprocess_text(
-                raw,
-                model_name=row.get("model"),
-                extra_excludes=captures_excludes,
-                ident=ident,
-                language=row.get("language"),
-            )
+            new_final = pl_engine._postprocess_text(raw, model_name=row.get("model"), ident=ident, language=row.get("language"))
         except Exception as e:
-            logger.error(
-                "[captures] reprocess pipeline failed on `text_for_training`: %s", e)
+            logger.error("[captures] reprocess pipeline failed on `final`: %s", e)
             raise HTTPException(
                 status.HTTP_500_INTERNAL_SERVER_ERROR,
                 "pipeline reprocessing failed",
             )
-    else:
-        new_training = new_final
-    patch: dict[str, Any] = {}
-    if new_final != (row.get("final") or ""):
-        patch["final"] = new_final
-    if new_training != (row.get("text_for_training") or ""):
-        patch["text_for_training"] = new_training
-    updated = captures_store.update_capture(cid, patch) if patch else row
-    return JSONResponse({"capture": updated or row, "changed": list(patch.keys())})
+        # When no captures-specific excludes are configured, the training-text
+        # pass would produce byte-identical output to `final` — skip the
+        # second full pipeline pass and reuse.
+        if captures_excludes:
+            try:
+                new_training = pl_engine._postprocess_text(
+                    raw,
+                    model_name=row.get("model"),
+                    extra_excludes=captures_excludes,
+                    ident=ident,
+                    language=row.get("language"),
+                )
+            except Exception as e:
+                logger.error(
+                    "[captures] reprocess pipeline failed on `text_for_training`: %s", e)
+                raise HTTPException(
+                    status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    "pipeline reprocessing failed",
+                )
+        else:
+            new_training = new_final
+        patch: dict[str, Any] = {}
+        if new_final != (row.get("final") or ""):
+            patch["final"] = new_final
+        if new_training != (row.get("text_for_training") or ""):
+            patch["text_for_training"] = new_training
+        updated = captures_store.update_capture(cid, patch) if patch else row
+        return updated or row, list(patch.keys())
+
+    capture, changed = await asyncio.to_thread(_run)
+    return JSONResponse({"capture": capture, "changed": changed})
 
 
 @router.post(
@@ -1190,6 +1201,8 @@ def _validate_merge_payload(
     captures: list[dict[str, Any]] = []
     member_paths: list[str] = []
     user_ids: set[str] = set()
+    tasks: set[str] = set()
+    languages: set[str] = set()
     for mid in member_ids:
         cap = captures_store.get_capture(mid)
         if cap is None:
@@ -1219,11 +1232,27 @@ def _validate_merge_payload(
             )
         member_paths.append(abs_p)
         user_ids.add(cap.get("user_id") or "")
+        tasks.add(cap.get("task") or "transcribe")
+        _lang = captures_merge_proposer._bcp47_primary(cap.get("language"))
+        if _lang:
+            languages.add(_lang)
         captures.append(cap)
     if len(user_ids) != 1:
         raise HTTPException(
             status.HTTP_400_BAD_REQUEST,
             "members must all belong to the same user",
+        )
+    # Same partition the proposer buckets by. A translate capture carries the
+    # SOURCE language but English text, and the sample takes one language and
+    # one task label for the whole WAV, so a mixed group would export
+    # wrong-language training data (see _group_task).
+    if len(tasks) != 1:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST, "members must all share one task",
+        )
+    if len(languages) > 1:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST, "members must all share one language",
         )
     owner_user_id = next(iter(user_ids))
     # Re-assert at the resolved owner (defense-in-depth; the per-member guard in
@@ -2192,67 +2221,74 @@ async def patch_sample_api(
         if not _unlock_only:
             raise HTTPException(status.HTTP_409_CONFLICT, "sample is locked")
 
-    patch: dict[str, Any] = {}
-    # Lazily-fetched hydrated members; up to three branches below need
-    # this list and used to issue independent get_members calls each.
-    _members_cache: list[dict[str, Any]] | None = None
-    def _members() -> list[dict[str, Any]]:
-        nonlocal _members_cache
-        if _members_cache is None:
-            _members_cache = capture_samples_store.get_members(sid)
-            _hydrate_members(_members_cache)
-        return _members_cache
+    # Off the loop. With corrections set this hydrates every member (one full
+    # get_capture each, json.loads of the words/segments blobs — the pattern
+    # list_samples_api measured at ~2.5 ms/member), fans the chips out with up
+    # to 30 update_capture writes and rebuilds the transcript.
+    def _apply() -> dict[str, Any] | None:
+        patch: dict[str, Any] = {}
+        # Lazily-fetched hydrated members; up to three branches below need
+        # this list and used to issue independent get_members calls each.
+        _members_cache: list[dict[str, Any]] | None = None
+        def _members() -> list[dict[str, Any]]:
+            nonlocal _members_cache
+            if _members_cache is None:
+                _members_cache = capture_samples_store.get_members(sid)
+                _hydrate_members(_members_cache)
+            return _members_cache
 
-    # Join strategy + inter-member silence are GLOBAL settings now; they're no
-    # longer patchable per-sample. Changing them and rebuilding audio for
-    # existing samples is done via the bulk VAD reprocess action / regenerate.
-    if payload.is_locked is not None:
-        patch["is_locked"] = 1 if payload.is_locked else 0
-    if payload.status is not None:
-        patch["status"] = payload.status
-    if payload.admin_notes is not None:
-        patch["admin_notes"] = payload.admin_notes
-    if payload.corrections is not None:
-        # Fan group-level chip edits DOWN to the owning members. Group
-        # corrections are derived from members on every read (see
-        # `_enrich_sample`); writing to a group-level chip column would
-        # be discarded by the next GET.
-        #
-        # When the client also sends `baseline_corrections` (a snapshot
-        # of what it loaded), apply a three-way merge against the
-        # current member-projected chips BEFORE the split — that way a
-        # concurrent cross-tab admin save (or a member edited from its
-        # singleton /captures card) isn't clobbered by the user's payload,
-        # and the user's deltas (additions, removals, edits) apply on top.
-        members_now = _members()
-        edited = [c.model_dump() for c in payload.corrections]
-        if payload.baseline_corrections is not None:
-            baseline = [c.model_dump() for c in payload.baseline_corrections]
-            current = _project_member_corrections(members_now)
-            edited = text_corrections.three_way_merge_corrections(
-                baseline, edited, current,
-            )
-        by_member = _split_corrections_to_members(edited, members_now)
-        # Skip members whose chip set didn't change — a 30-member group
-        # with one edited chip otherwise fires 30 UPDATEs where 29 are
-        # idempotent rewrites of the same JSON column.
-        current_by_id = {m["id"]: (m.get("corrections") or []) for m in members_now}
-        for member_id, chips in by_member.items():
-            if json.dumps(current_by_id.get(member_id) or [], sort_keys=True) == \
-                    json.dumps(chips, sort_keys=True):
-                continue
-            captures_store.update_capture(member_id, {"corrections": chips})
+        # Join strategy + inter-member silence are GLOBAL settings now; they're no
+        # longer patchable per-sample. Changing them and rebuilding audio for
+        # existing samples is done via the bulk VAD reprocess action / regenerate.
+        if payload.is_locked is not None:
+            patch["is_locked"] = 1 if payload.is_locked else 0
+        if payload.status is not None:
+            patch["status"] = payload.status
+        if payload.admin_notes is not None:
+            patch["admin_notes"] = payload.admin_notes
+        if payload.corrections is not None:
+            # Fan group-level chip edits DOWN to the owning members. Group
+            # corrections are derived from members on every read (see
+            # `_enrich_sample`); writing to a group-level chip column would
+            # be discarded by the next GET.
+            #
+            # When the client also sends `baseline_corrections` (a snapshot
+            # of what it loaded), apply a three-way merge against the
+            # current member-projected chips BEFORE the split — that way a
+            # concurrent cross-tab admin save (or a member edited from its
+            # singleton /captures card) isn't clobbered by the user's payload,
+            # and the user's deltas (additions, removals, edits) apply on top.
+            members_now = _members()
+            edited = [c.model_dump() for c in payload.corrections]
+            if payload.baseline_corrections is not None:
+                baseline = [c.model_dump() for c in payload.baseline_corrections]
+                current = _project_member_corrections(members_now)
+                edited = text_corrections.three_way_merge_corrections(
+                    baseline, edited, current,
+                )
+            by_member = _split_corrections_to_members(edited, members_now)
+            # Skip members whose chip set didn't change — a 30-member group
+            # with one edited chip otherwise fires 30 UPDATEs where 29 are
+            # idempotent rewrites of the same JSON column.
+            current_by_id = {m["id"]: (m.get("corrections") or []) for m in members_now}
+            for member_id, chips in by_member.items():
+                if json.dumps(current_by_id.get(member_id) or [], sort_keys=True) == \
+                        json.dumps(chips, sort_keys=True):
+                    continue
+                captures_store.update_capture(member_id, {"corrections": chips})
 
-    # Re-derive `transcript` from current members + chips ONLY when the
-    # corrections changed. The common status/admin_notes/is_locked auto-save
-    # click would otherwise trigger a get_members + transcript rebuild + DB
-    # write on every click. Join strategy uses the sample's stored value
-    # (the global only re-applies on regenerate / bulk reprocess).
-    if payload.corrections is not None:
-        join_for_derive = g["transcript_join_strategy"] or "space"
-        patch["transcript"] = capture_samples._build_default_transcript(_members(), join_for_derive)
+        # Re-derive `transcript` from current members + chips ONLY when the
+        # corrections changed. The common status/admin_notes/is_locked auto-save
+        # click would otherwise trigger a get_members + transcript rebuild + DB
+        # write on every click. Join strategy uses the sample's stored value
+        # (the global only re-applies on regenerate / bulk reprocess).
+        if payload.corrections is not None:
+            join_for_derive = g["transcript_join_strategy"] or "space"
+            patch["transcript"] = capture_samples._build_default_transcript(_members(), join_for_derive)
 
-    updated = capture_samples_store.update_sample(sid, patch)
+        return capture_samples_store.update_sample(sid, patch)
+
+    updated = await asyncio.to_thread(_apply)
     # Off the loop — see get_sample_api: the enrich pass is a quadratic LCS
     # per member.
     return JSONResponse(
@@ -2286,6 +2322,11 @@ async def regenerate_sample_api(
 
     def _regenerate() -> dict[str, Any]:
         with capture_samples._rebuild_lock(sid):
+            # Re-read under the lock dissolve_sample also takes: a sample
+            # dissolved while this request waited must not get its merged WAV
+            # rebuilt onto disk with no row (nor a 500 from _enrich_sample).
+            if capture_samples_store.get_sample(sid) is None:
+                raise HTTPException(status.HTTP_404_NOT_FOUND, "sample not found")
             duration_ms, hashes, member_trims = capture_samples._build_merged_wav(
                 sid=sid,
                 member_ids=[m["id"] for m in members],
@@ -2323,8 +2364,9 @@ async def dissolve_sample_api(
     _audit_cross_user_read(user, g, "sample-delete", sid)
     if g["is_locked"] and not user.get("is_admin"):
         raise HTTPException(status.HTTP_409_CONFLICT, "sample is locked")
-    capture_samples_store.dissolve_sample(sid)
-    capture_samples._release_rebuild_lock(sid)
+    # Off the loop: dissolve waits on the per-sid rebuild lock, which an
+    # in-flight regenerate / VAD rebuild holds for seconds.
+    await asyncio.to_thread(capture_samples_store.dissolve_sample, sid)
     return JSONResponse({"ok": True})
 
 def _ensure_sample_wav(g: dict[str, Any]) -> str:
@@ -2371,6 +2413,10 @@ def _ensure_sample_wav(g: dict[str, Any]) -> str:
     with capture_samples._rebuild_lock(g["id"]):
         if os.path.exists(abs_p):
             return abs_p
+        # Dissolved while we waited (dissolve_sample holds this lock): do not
+        # resurrect its merged WAV as an orphan.
+        if capture_samples_store.get_sample(g["id"]) is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "sample not found")
         logger.warning(
             "[samples] sid=%s auto-rebuilding missing WAV from %d members",
             g["id"][:8], len(member_ids),

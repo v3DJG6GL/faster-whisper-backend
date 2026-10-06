@@ -59,3 +59,30 @@ def test_reprocess_ownerless_capture_ok(client, make_user_key, monkeypatch, tmp_
     cid = _make_capture(tmp_path, user_id=None)
     r = client.post(f"/captures/api/{cid}/reprocess", headers=bearer(raw_admin))
     assert r.status_code == 200, r.text
+
+
+def test_reprocess_runs_the_pipeline_off_the_event_loop(client, make_user_key,
+                                                        monkeypatch, tmp_path):
+    """The pipeline pass over raw (up to 50k chars, owner regex rules) must not
+    run on the loop: inside asyncio.to_thread there is no running loop."""
+    import asyncio
+
+    from faster_whisper_backend.pipeline import engine as pl_engine
+
+    _fake_transcode(monkeypatch)
+    _, raw_admin = make_user_key("admin", is_admin=True)
+    cid = _make_capture(tmp_path, user_id=None)
+    on_loop = []
+    orig = pl_engine._postprocess_text
+
+    def spy(*a, **k):
+        try:
+            asyncio.get_running_loop()
+            on_loop.append(True)
+        except RuntimeError:
+            on_loop.append(False)
+        return orig(*a, **k)
+    monkeypatch.setattr(pl_engine, "_postprocess_text", spy)
+    r = client.post(f"/captures/api/{cid}/reprocess", headers=bearer(raw_admin))
+    assert r.status_code == 200, r.text
+    assert on_loop and not any(on_loop)

@@ -181,9 +181,9 @@ def list_samples(
 ) -> list[dict[str, Any]]:
     """Newest-first page of samples.
 
-    `limit` bounds the read (None = every row, kept for the retention and
-    export paths that genuinely want the whole table). The route passes a
-    limit and pages with the (before_ts, before_id) cursor.
+    `limit` bounds the read (None = every row, kept for the export and the
+    bulk VAD reprocess paths that genuinely want the whole table). The route
+    passes a limit and pages with the (before_ts, before_id) cursor.
 
     The cursor is a PAIR, not just the timestamp: samples merged in the same
     call share a created_ts to the microsecond, so a plain `created_ts < ?`
@@ -194,16 +194,11 @@ def list_samples(
     str → one owner, list → any of them (the speaker picker); a list with
     no usable id matches nothing.
     """
-    clauses: list[str] = []
-    params: list[Any] = []
-    if isinstance(user_id, str):
-        clauses.append("user_id = ?")
-        params.append(user_id)
-    elif user_id is not None:
-        owners = [u for u in user_id if isinstance(u, str) and u]
-        clauses.append(
-            f"user_id IN ({','.join('?' * len(owners))})" if owners else "1 = 0")
-        params.extend(owners)
+    # Lazily, like abs_path_for: one owner filter for both stores, so the
+    # empty-list "matches nothing" rule cannot drift between them.
+    from faster_whisper_backend.captures import store as captures_store
+    uclause, params = captures_store._user_clause(user_id)
+    clauses: list[str] = [uclause] if uclause else []
     if status is not None and status in _VALID_STATUS:
         clauses.append("status = ?")
         params.append(status)
@@ -302,26 +297,50 @@ def update_sample(
 
 def dissolve_sample(sid: str) -> None:
     """Delete the row, unlink the merged WAV, NULL out members'
-    (sample_id, sample_order)."""
-    g = get_sample(sid)
-    if g is None:
-        return
+    (sample_id, sample_order).
+
+    Holds the per-sid rebuild lock (captures/samples.py _rebuild_lock) for the
+    whole dissolve, so it waits out an in-flight regenerate / self-heal / VAD
+    rebuild instead of deleting the row under it — that rebuild would
+    otherwise os.replace a merged WAV back onto disk with no row. Every rebuild
+    path re-reads the row under the same lock and stops when it is gone. Like
+    every other holder of that lock, never call this from the event loop.
+
+    The member release and the row DELETE are one explicit transaction: the
+    shared connection is autocommit (store_common.open_wal_db), so `with conn:`
+    opened none, and a failing DELETE left the members released under a
+    surviving, memberless row. Both store locks are held for the BEGIN..COMMIT
+    span in the same samples-then-captures order as
+    captures/routes.py _insert_sample_with_sid."""
+    from faster_whisper_backend.captures import samples as capture_samples
+    from faster_whisper_backend.captures import store as captures_store
     conn = _require_conn()
-    with _lock:
-        with conn:
-            conn.execute(
-                "UPDATE captures SET sample_id = NULL, sample_order = NULL"
-                " WHERE sample_id = ?",
-                (sid,),
-            )
-            conn.execute("DELETE FROM capture_samples WHERE id = ?", (sid,))
-    try:
-        abs_p = abs_path_for(g["merged_wav_relpath"])
-        if os.path.exists(abs_p):
-            os.unlink(abs_p)
-    except (OSError, ValueError) as e:
-        logger.warning("[groups] failed to unlink %s: %s",
-                       g["merged_wav_relpath"], e)
+    with capture_samples._rebuild_lock(sid):
+        g = get_sample(sid)
+        if g is None:
+            return
+        with _lock, captures_store._lock:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                conn.execute(
+                    "UPDATE captures SET sample_id = NULL, sample_order = NULL"
+                    " WHERE sample_id = ?",
+                    (sid,),
+                )
+                conn.execute("DELETE FROM capture_samples WHERE id = ?", (sid,))
+                conn.execute("COMMIT")
+            except BaseException:
+                conn.execute("ROLLBACK")
+                raise
+        try:
+            abs_p = abs_path_for(g["merged_wav_relpath"])
+            if os.path.exists(abs_p):
+                os.unlink(abs_p)
+        except (OSError, ValueError) as e:
+            logger.warning("[groups] failed to unlink %s: %s",
+                           g["merged_wav_relpath"], e)
+    # The sample is gone for good (its id never returns): drop its lock entry.
+    capture_samples._release_rebuild_lock(sid)
     try:
         from faster_whisper_backend.captures import merge_proposer as captures_merge_proposer
         captures_merge_proposer.invalidate(g.get("user_id"))
@@ -340,7 +359,8 @@ def expire_samples_older_than(cutoff_ts: float) -> list[str]:
     up as ordinary rows and applies the same age rule to them.
 
     Deliberately NOT called with captures_store's lock held — dissolve_sample
-    takes this module's lock, and the two are separate objects.
+    takes this module's lock and then captures_store's, and the two are
+    separate objects.
     """
     conn = _require_conn()
     with _lock:

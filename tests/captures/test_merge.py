@@ -176,7 +176,7 @@ def test_merge_clean_two_file_shape(tmp_path):
 
     # Atomic write produced a valid WAV at exactly dst (no leftover .tmp).
     assert os.path.exists(out)
-    assert not os.path.exists(out + ".tmp")
+    assert not [f for f in os.listdir(tmp_path) if f.endswith(".tmp")]
     assert res["bytes"] == os.path.getsize(out)
     with wave.open(out, "rb") as w:
         assert (w.getnchannels(), w.getsampwidth(), w.getframerate()) == (
@@ -248,6 +248,25 @@ def test_trim_wav_output_is_owner_only(tmp_path, monkeypatch):
         assert os.stat(dst).st_mode & 0o777 == 0o600
     finally:
         os.umask(old)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX file modes only")
+def test_merge_never_reuses_a_precreated_tmp_inode(tmp_path):
+    """A file already sitting at "<dst>.tmp" (a crashed write's leftover, or
+    one a local user pre-created next to a mkstemp preview in /tmp) keeps its
+    owner and mode through open('wb'). merge_wavs must write into a fresh
+    0600 inode instead, so that inode never becomes dst."""
+    p1 = _write_wav(str(tmp_path / "a.wav"), _pcm(100)[0])
+    out = str(tmp_path / "merged.wav")
+    stale = out + ".tmp"
+    os.close(os.open(stale, os.O_CREAT | os.O_WRONLY, 0o644))
+    os.chmod(stale, 0o644)
+    stale_ino = os.stat(stale).st_ino
+    audio_merge.merge_wavs([p1], out, gap_ms=0, trim=False)
+    st = os.stat(out)
+    assert st.st_mode & 0o777 == 0o600
+    assert st.st_ino != stale_ino
+    assert os.path.getsize(out) > 44
 
 
 def test_merge_creates_missing_parent_dir(tmp_path):

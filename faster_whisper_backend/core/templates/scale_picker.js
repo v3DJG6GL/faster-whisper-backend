@@ -3,15 +3,18 @@
   var KEY='whisper-ui-fs-base';
   var sel=document.getElementById('scale-picker');
   if(!sel)return;
-  var saved=localStorage.getItem(KEY);
-  if(saved){sel.value=saved;}
+  // Storage can be blocked (getItem throws) and a hand-edited value can match
+  // no option (selectedIndex -1): either used to stop this IIFE before the
+  // cycle button and the width toggle were wired.
+  var saved=null;try{saved=localStorage.getItem(KEY);}catch(e){}
+  if(saved&&[].some.call(sel.options,function(o){return o.value===saved;})){sel.value=saved;}
   sel.addEventListener('change',function(){
     document.documentElement.style.setProperty('--fs-base',sel.value+'px');
-    localStorage.setItem(KEY,sel.value);
+    try{localStorage.setItem(KEY,sel.value);}catch(e){}
     sync();
   });
   var cyc=document.getElementById('scale-cycle');
-  function sync(){if(cyc)cyc.title='UI scale '+sel.options[sel.selectedIndex].text+' — click for next';}
+  function sync(){var o=sel.options[sel.selectedIndex];if(cyc&&o)cyc.title='UI scale '+o.text+' — click for next';}
   if(cyc){cyc.addEventListener('click',function(){
     sel.selectedIndex=(sel.selectedIndex+1)%sel.options.length;
     sel.dispatchEvent(new Event('change'));});}

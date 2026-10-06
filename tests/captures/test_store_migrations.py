@@ -164,3 +164,56 @@ def test_captures_list_projection_carries_the_new_columns(
     assert listed["translation_model"] == "HY-MT"
     assert listed["translation_source"] == "cascade-mt"
     assert listed["task"] == "transcribe"
+
+
+# ---------------------------------------------------------------------------
+# capture_samples
+# ---------------------------------------------------------------------------
+
+def test_capture_samples_migration_renames_the_json_columns(tmp_path):
+    """A pre-cddbf13 install carries member_hashes_json / member_trims_json.
+    Every read and write uses the bare names, so a rename that silently
+    skipped would 500 every sample read on an existing install."""
+    from faster_whisper_backend.captures import samples_store as capture_samples_store
+    from faster_whisper_backend.core import store_common
+
+    conn = store_common.open_wal_db(str(tmp_path / "old.db"))
+    conn.executescript("""
+        CREATE TABLE capture_samples (
+          id TEXT PRIMARY KEY, user_id TEXT NOT NULL, created_ts REAL NOT NULL,
+          merged_wav_relpath TEXT NOT NULL, merged_duration_ms INTEGER NOT NULL,
+          transcript TEXT NOT NULL,
+          transcript_join_strategy TEXT NOT NULL DEFAULT 'space',
+          member_hashes_json TEXT NOT NULL,
+          inter_segment_silence_ms INTEGER NOT NULL DEFAULT 300,
+          is_stale INTEGER NOT NULL DEFAULT 0,
+          is_locked INTEGER NOT NULL DEFAULT 0,
+          status TEXT NOT NULL DEFAULT 'new',
+          admin_notes TEXT NOT NULL DEFAULT '', language TEXT,
+          merged_lead_trim_ms INTEGER NOT NULL DEFAULT 0,
+          merged_trail_trim_ms INTEGER NOT NULL DEFAULT 0,
+          member_trims_json TEXT NOT NULL DEFAULT '{}');
+    """)
+    conn.execute(
+        "INSERT INTO capture_samples (id, user_id, created_ts,"
+        " merged_wav_relpath, merged_duration_ms, transcript,"
+        " member_hashes_json, member_trims_json) VALUES (?,?,?,?,?,?,?,?)",
+        ("sold", "u1", 1.0, "groups/so/ld/sold.wav", 5000, "t",
+         '{"a":"h"}', '{"a":{"lead_ms":5}}'))
+    audio = str(tmp_path / "audio")
+    try:
+        capture_samples_store.init_db(conn, audio)
+        cols = _cols(conn, "capture_samples")
+        assert {"member_hashes", "member_trims"} <= cols
+        assert not ({"member_hashes_json", "member_trims_json"} & cols)
+        got = capture_samples_store.get_sample("sold")
+        assert got["member_hashes"] == {"a": "h"}
+        assert got["member_trims"] == {"a": {"lead_ms": 5}}
+        # A second startup is a no-op.
+        capture_samples_store.init_db(conn, audio)
+        assert _cols(conn, "capture_samples") == cols
+        assert capture_samples_store.get_sample("sold")["member_hashes"] == {"a": "h"}
+    finally:
+        capture_samples_store._conn = None
+        capture_samples_store._groups_audio_dir = None
+        conn.close()

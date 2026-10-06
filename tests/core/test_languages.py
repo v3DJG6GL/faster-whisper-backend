@@ -80,3 +80,29 @@ def test_same_language():
     assert not s("zh-Hant", "zh") and not s("zh", "zh-Hans")
     assert s("zh-Hant", "zh-hant-TW") and not s("zh-Hant", "zh-Hans")
     assert not s("en", "de") and not s("", "en") and not s("en", None)
+    # Withdrawn / standard / 639-3 spellings name the same language.
+    assert s("iw", "he") and s("jv", "jw") and s("deu", "de") and s("in", "id")
+    assert not s("iw", "en")
+
+
+def test_language_codes_normalises_case_and_dedupes():
+    codes = languages.language_codes
+    assert codes("DE,EN,fr-CA,fr-ca") == ["de", "en", "fr-CA"]
+    assert codes("zh-hant, pt_br ,,x,toolong-") == ["zh-Hant", "pt-BR"]
+    assert codes("es-419,es-419") == ["es-419"]
+    assert codes(None) == [] and codes("") == []
+
+
+def test_language_codes_limit_bounds_a_huge_csv():
+    """A 1 MiB translate_to form field must not cost an O(n^2) walk."""
+    import time
+
+    csv = ",".join(f"aa-{i:04d}" for i in range(10_000)) * 5
+    t0 = time.perf_counter()
+    got = languages.language_codes(csv, limit=11)
+    assert time.perf_counter() - t0 < 0.05
+    assert len(got) == 11
+    # Unbounded, the dedup is still linear (a set, not a list scan).
+    t0 = time.perf_counter()
+    assert len(languages.language_codes(csv)) == 10_000
+    assert time.perf_counter() - t0 < 2.0

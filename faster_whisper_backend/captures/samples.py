@@ -134,8 +134,7 @@ def _build_merged_wav(
             member_paths, dst_abs, gap_ms=silence_ms,
             trim=bool(getattr(cfg, "CAPTURES_VAD_TRIM_ENABLED_FOR_SAMPLES", False)),
             edge_pad_ms=_global_edge_ms(),
-            max_internal_gap_ms=int(
-                getattr(cfg, "CAPTURES_VAD_MARGIN_SAMPLE_INTERNAL_MS", 300)),
+            max_internal_gap_ms=_global_silence_ms(),
         )
     except audio_merge.WavFormatError as e:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e))
@@ -188,8 +187,8 @@ def _align_key(s: str) -> str:
     word-strip.
 
     The visual diff signal (rule changed the word) is still surfaced via
-    `item["raw_word"]` when display != raw (see _align_words_to_final
-    L1351-1357) — the user sees the dotted-underline + tooltip without
+    `item["raw_word"]` when display != raw (see the raw_word branch in
+    _align_words_to_final) — the user sees the dotted-underline + tooltip without
     the misleading strike-through."""
     s = (s or "").strip()
     s = _ALIGN_PUNCT_RE.sub("", s)

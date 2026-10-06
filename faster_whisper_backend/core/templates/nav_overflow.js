@@ -12,7 +12,6 @@
   var items=Array.prototype.slice.call(nav.children).filter(function(c){
     return c.classList.contains('navlink')||c.classList.contains('nav-gsep');});
   var STEPS=['c1a','c1','c2','c7','c5','c6','c3','c4','c8','c9','c10','c11'],SINGLE_ROW_MAX=2;
-  var busy=false;
   function navFits(){return nav.scrollWidth<=nav.clientWidth+1;}
   /* .title may shrink and clip its own wordmark — that is not a fit */
   function brandFits(){return !title||title.scrollWidth<=title.clientWidth+1;}
@@ -52,8 +51,10 @@
     btn.querySelector('.cnt').textContent=n?String(n):'';
     if(!n)more.hidden=true;
   }
+  /* synchronous, and both observers defer it through requestAnimationFrame,
+     so it can never re-enter itself: no re-entrancy flag (a throw would
+     have left one stuck, turning every later relayout into a no-op) */
   function layout(){
-    if(busy)return;busy=true;
     var wasOpen=!list.hidden;
     hdr.classList.remove('nav-row2');reset();restore();more.hidden=true;
     var drawer=toggle&&getComputedStyle(toggle).display!=='none';
@@ -66,7 +67,6 @@
     }
     /* a relayout (resize, poller tick, gate change) must not slam an open menu shut */
     setOpen(wasOpen&&!more.hidden);
-    busy=false;
   }
   var ro=new ResizeObserver(function(){requestAnimationFrame(layout);});
   ro.observe(inner);ro.observe(nav);if(title)ro.observe(title);if(status)ro.observe(status);

@@ -54,6 +54,22 @@ def test_width_preference_control_and_bootstrap():
     assert "body:not(.col-data) header .width-toggle { display: none; }" in web_common.NAV_CSS
 
 
+def test_scale_picker_survives_blocked_storage_and_a_stale_value():
+    """Blocked storage (getItem throws) or a persisted value matching no
+    option (selectedIndex -1) used to stop the IIFE before the cycle button
+    and the width toggle were wired."""
+    js = web_common.SCALE_PICKER_JS
+    # every storage call sits inside its own try{ ... }
+    assert js.count("try{") >= js.count("localStorage.") > 0
+    assert "var saved=null;try{saved=localStorage.getItem(KEY);}catch(e){}" in js
+    assert "[].some.call(sel.options" in js
+    sync = js[js.index("function sync()"):]
+    sync = sync[:sync.index("}")]
+    assert "var o=sel.options[sel.selectedIndex];if(cyc&&o)" in sync
+    head = web_common.SCALE_BOOTSTRAP_HEAD
+    assert "(function(){try{" in head and "}catch(e){}})();" in head
+
+
 def test_header_utility_cluster_self_aligns():
     css = web_common.NAV_CSS
     # drawer mode takes #navrow out of flow, so nothing else in the row grows

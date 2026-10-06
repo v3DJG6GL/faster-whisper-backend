@@ -39,7 +39,7 @@ def test_trim_wav_removes_leading_trailing(fake_vad, wav_factory, tmp_path):
     # kept = 100 + 1000 + 100 = 1200 ms.
     assert res["new_duration_ms"] == 1200
     assert os.path.exists(dst)
-    assert not os.path.exists(dst + ".tmp")
+    assert not [f for f in os.listdir(tmp_path) if f.endswith(".tmp")]
     ch, sw, rate, nframes = _read_wav_params(dst)
     assert (ch, sw, rate) == (1, 2, RATE)
     assert nframes == int(1200 * RATE / 1000)

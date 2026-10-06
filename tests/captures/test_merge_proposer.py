@@ -279,15 +279,15 @@ def test_eligible_accepts_raw_only_text():
 # ---------------------------------------------------------------------------
 
 def _insert_eligible(cs, cid, *, ts, dur=10.0, text="some words here",
-                     language="de", user_id="u1", status="new"):
+                     language="de", user_id="u1", status="new", task=None):
     rel = os.path.join(cid[0:2], cid[2:4], f"{cid}.wav")
     cs._require_conn().execute(
         "INSERT INTO captures (id, created_ts, request_id, model, language,"
         " audio_s, audio_relpath, audio_format, raw_text, final_text,"
-        " text_for_training, words, segments, status, user_id)"
-        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        " text_for_training, words, segments, status, user_id, task)"
+        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (cid, ts, None, "m", language, dur, rel, "wav", "raw", "final",
-         text, "[]", "[]", status, user_id),
+         text, "[]", "[]", status, user_id, task),
     )
 
 
@@ -373,6 +373,45 @@ def test_propose_partitions_by_user_and_language(captures_store_db, monkeypatch,
         assert p["user_id"] in ("u1", "u2")
         prefix = "capu1de" if p["user_id"] == "u1" else "capu2en"
         assert all(i.startswith(prefix) for i in ids)
+
+
+def test_propose_never_mixes_transcribe_and_translate(captures_store_db,
+                                                      monkeypatch, trim_disabled):
+    """A translate capture carries the SOURCE language but English text, so
+    packing it with a same-language transcribe clip would export English
+    inside a German transcript."""
+    cs = captures_store_db
+    _insert_eligible(cs, "captrde00000001", ts=1000.0, dur=5.0, text="hallo welt")
+    _insert_eligible(cs, "captrde00000002", ts=1001.0, dur=5.0,
+                     text="hello world", task="translate")
+    proposals, _ = P.propose_merges(
+        user_id_filter=None, is_admin=True, caller_user_id="admin")
+    for p in proposals:
+        assert len(p["member_ids"]) == 1
+
+
+def test_propose_does_not_cache_a_sweep_invalidated_mid_flight(
+        captures_store_db, monkeypatch, trim_disabled):
+    """invalidate() runs from store write threads without _SWEEP_LOCK; a
+    write landing while a sweep reads must not be overwritten by that sweep's
+    pre-write proposals, served as fresh for a whole TTL."""
+    cs = captures_store_db
+    _insert_eligible(cs, "capgen000000001", ts=1000.0, text="alpha")
+    _insert_eligible(cs, "capgen000000002", ts=1001.0, text="bravo")
+    real = cs.list_captures
+
+    def racing(**kw):
+        rows = real(**kw)
+        P.invalidate("u1")
+        return rows
+    monkeypatch.setattr(cs, "list_captures", racing)
+    first, c1 = P.propose_merges(
+        user_id_filter=None, is_admin=True, caller_user_id="admin")
+    assert c1 is False and first
+    monkeypatch.setattr(cs, "list_captures", real)
+    _, c2 = P.propose_merges(
+        user_id_filter=None, is_admin=True, caller_user_id="admin")
+    assert c2 is False
 
 
 def test_propose_greedy_non_overlap_claim(captures_store_db, monkeypatch, trim_disabled):

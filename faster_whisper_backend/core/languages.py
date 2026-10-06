@@ -152,6 +152,10 @@ def same_language(a: "str | None", b: "str | None") -> bool:
         return False
     a_base, _, a_sub = a.strip().lower().replace("_", "-").partition("-")
     b_base, _, b_sub = b.strip().lower().replace("_", "-").partition("-")
+    # Through the same spelling tables canonical_code uses: Whisper says
+    # "he"/"jw", a client may send the withdrawn "iw" or the standard "jv".
+    a_base = _LEGACY_639_1.get(a_base, _ISO639_3_TO_1.get(a_base, a_base))
+    b_base = _LEGACY_639_1.get(b_base, _ISO639_3_TO_1.get(b_base, b_base))
     if a_base != b_base:
         return False
 
@@ -166,12 +170,33 @@ def same_language(a: "str | None", b: "str | None") -> bool:
 TRANSLATE_CODE_RE = re.compile(r"\A[a-z]{2,3}(-[A-Za-z0-9]{2,8})?\Z")
 
 
-def language_codes(csv: "str | None") -> "list[str]":
+def _normalise_code(code: str) -> str:
+    """One csv entry in the table's spelling: "_" → "-", a lowercase base,
+    a script subtag title-cased ("zh-hant" → "zh-Hant"), a 2-letter region
+    upper-cased ("fr-ca" → "fr-CA"); any other subtag stays as given."""
+    base, sep, sub = code.strip().replace("_", "-").partition("-")
+    base = base.lower()
+    if not sep:
+        return base
+    if len(sub) == 4 and sub.isalpha():
+        sub = sub.title()
+    elif len(sub) == 2 and sub.isalpha():
+        sub = sub.upper()
+    return f"{base}-{sub}"
+
+
+def language_codes(csv: "str | None", limit: "int | None" = None) -> "list[str]":
     """A csv of codes ("en,fr-CA") → deduped ordered list of the well-formed
-    ones; malformed entries drop silently."""
+    ones, normalised so "DE" is "de" and "fr-ca" the same target as "fr-CA";
+    malformed entries drop silently. `limit` stops the walk once that many
+    codes are collected — a per-request csv can carry a 1 MiB form field."""
     out: "list[str]" = []
+    seen: "set[str]" = set()
     for code in (csv or "").split(","):
-        code = code.strip()
-        if code and code not in out and TRANSLATE_CODE_RE.match(code):
+        if limit is not None and len(out) >= limit:
+            break
+        code = _normalise_code(code)
+        if code and code.lower() not in seen and TRANSLATE_CODE_RE.match(code):
+            seen.add(code.lower())
             out.append(code)
     return out

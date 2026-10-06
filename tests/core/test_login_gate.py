@@ -26,7 +26,9 @@ def test_page_ships_shared_login_gate(client, path):
     # The shared gate markup + API ride the OPEN_MODE_BANNER_JS chrome.
     assert 'id="login-gate"' in html, f"{path} missing the shared login gate"
     assert "_showLoginGate" in html, f"{path} missing the gate API"
-    assert "lg-mark" in html, f"{path} missing the waveform brand mark"
+    # The markup, not the bare class: NAV_CSS's `#login-gate .lg-mark {`
+    # selector ships on every page and would satisfy a class-only check.
+    assert '<svg class="lg-mark"' in html, f"{path} missing the waveform brand mark"
 
 
 @pytest.mark.parametrize("path", _PAGES)

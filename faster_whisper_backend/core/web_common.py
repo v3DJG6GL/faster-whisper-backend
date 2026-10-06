@@ -112,15 +112,6 @@ def sse_response(generator):
 
 # --- Nav row + severity pills ------------------------------------------------
 
-# Inline CSS so each page can drop the nav into its existing <header> without
-# duplicating styles. Color tokens reuse the page-level CSS vars.
-#
-# `header .spacer { flex: 0 0 0.25rem }` — single canonical spacer rule: a
-# fixed gap, NOT a grower. Pages place `<span class="spacer"></span>` between
-# the nav block and the action cluster; `header .navrow` absorbs the slack in
-# the single row and `header .hdr-right { margin-left: auto }` keeps the
-# cluster right-aligned when the nav leaves the flow (drawer mode). The spacer
-# is hidden entirely in nav-row2.
 # Pipeline-stage and job-kind hues — ONE definition for every backend page (/stats
 # cards and rings, /logs receipts, /quick-config traces) and the same values
 # the desktop app's app.css declares (--c-download, --c-separate, --c-ok for
@@ -151,6 +142,15 @@ _STAGE_TOKENS = "\n".join(
     [f"  --stage-{k}: {v};" for k, v in STAGE_COLORS.items()]
     + [f"  --kind-{k}: {v};" for k, v in KIND_COLORS.items()])
 
+# Inline CSS so each page can drop the nav into its existing <header> without
+# duplicating styles. Color tokens reuse the page-level CSS vars.
+#
+# `header .spacer { flex: 0 0 0.25rem }` — single canonical spacer rule: a
+# fixed gap, NOT a grower. Pages place `<span class="spacer"></span>` between
+# the nav block and the action cluster; `header .navrow` absorbs the slack in
+# the single row and `header .hdr-right { margin-left: auto }` keeps the
+# cluster right-aligned when the nav leaves the flow (drawer mode). The spacer
+# is hidden entirely in nav-row2.
 NAV_CSS = templates.load(__file__, "nav.css").replace("{{STAGE_TOKENS}}", _STAGE_TOKENS)
 
 
@@ -172,10 +172,10 @@ SCALE_BOOTSTRAP_HEAD = (
     '<link rel="icon" type="image/png" sizes="16x16" href="/static/favicon-16.png">'
     '<link rel="icon" href="/static/favicon.ico" sizes="any">'
     '<link rel="apple-touch-icon" href="/static/apple-touch-icon.png">'
-    "<script>(function(){var v=localStorage.getItem('whisper-ui-fs-base');"
+    "<script>(function(){try{var v=localStorage.getItem('whisper-ui-fs-base');"
     "if(v)document.documentElement.style.setProperty('--fs-base',v+'px');"
     "if(localStorage.getItem('whisper-ui-width')==='fluid')"
-    "document.documentElement.classList.add('pref-fluid');})();</script>"
+    "document.documentElement.classList.add('pref-fluid');}catch(e){}})();</script>"
 )
 
 
@@ -267,20 +267,12 @@ NAV_DRAWER_JS = templates.load(__file__, "nav_drawer.js")
 NAV_OVERFLOW_JS = templates.load(__file__, "nav_overflow.js")
 
 
-# Severity pill poller — placed at the end of <body> on every page that shows
-# the nav. Polls /sev every 5 s and writes the counts into the three pills.
-# Server-side severity_counts() is the authoritative source (WARNING+ records
-# since process start, ring-bounded). The poller is the sole pill updater:
-# /stats SSE explicitly defers to it, and the /logs per-line bumps were
-# dropped — so every page just trusts the 5 s tick.
-#
-# Skips the work if no pills exist on the page (e.g. tests, future pages).
+POPOVER_JS = templates.load(__file__, "popover.js")
+
 # Open-mode warning banner — JS-injected at the top of <body> on every
 # WebUI page. Fetches /auth/whoami; if open_mode=true, prepends a red
 # banner reminding the operator to bootstrap an admin key. Auth rides the
 # HttpOnly session cookie, sent automatically (no manual header).
-POPOVER_JS = templates.load(__file__, "popover.js")
-
 OPEN_MODE_BANNER_JS = templates.load(__file__, "open_mode_banner.js")
 
 
@@ -380,6 +372,14 @@ PICK_LIST_JS = templates.load(__file__, "pick_list.js")
 LANG_PICKER_JS = templates.load(__file__, "lang_picker.js")
 
 
+# Severity pill poller — placed at the end of <body> on every page that shows
+# the nav. Polls /sev every 5 s and writes the counts into the three pills.
+# Server-side severity_counts() is the authoritative source (WARNING+ records
+# since process start, ring-bounded). The poller is the sole pill updater:
+# /stats SSE explicitly defers to it, and the /logs per-line bumps were
+# dropped — so every page just trusts the 5 s tick.
+#
+# Skips the work if no pills exist on the page (e.g. tests, future pages).
 SEV_POLLER_JS = templates.load(__file__, "sev_poller.js")
 
 
@@ -664,9 +664,17 @@ def render_page(template: str, current: str) -> str:
       - {{SCALE_PICKER}}         → scale dropdown (header)
       - {{SCALE_PICKER_JS}}      → wire-up script (end of body); also carries
                                    POPOVER_JS (window._anchorPopover, the
-                                   shared dropdown placement ladder)
-      - {{SEV_POLLER_JS}}        → 5-s pill re-sync + open-mode admin-
-                                   key warning banner (end of body)
+                                   shared dropdown placement ladder),
+                                   NAV_DRAWER_JS and NAV_OVERFLOW_JS
+      - {{SEV_POLLER_JS}}        → 5-s pill re-sync + the global no-access
+                                   landing helpers + open-mode admin-key
+                                   warning banner + ACTIVITY_CLUSTER_JS
+                                   (end of body)
+      - {{RELOAD}} / {{LOGOUT}}  → header reload / logout buttons
+      - {{LOG_VIEWER_INITIAL_LINES}} / {{LOG_VIEWER_DOM_MAX}} /
+        {{LOG_SEGMENT_ROWS_SHOWN}} / {{LOG_STAGE_COLORS}}
+                                 → /logs viewer knobs from cfg (DOM_MAX 0
+                                   resolves to initial × 4)
       - {{SCALE_BOOTSTRAP_HEAD}} → tiny pre-paint script (top of <head>)
       - {{RULE_EDITOR_JS}}       → shared per-rule body editors
       - {{TIME_HELPERS_JS}}      → absTime / relTime / fmtWhen / timeTick
@@ -679,6 +687,8 @@ def render_page(template: str, current: str) -> str:
       - {{TAG_PICKER_JS}}        → window._renderTagPicker(opts) widget
                                    shared by /settings rule editor +
                                    /settings/api-keys permissions matrix
+      - {{LANG_PICKER_JS}}       → window._renderLanguagePicker(opts) pill
+                                   picker for language-code lists
       - {{PICK_LIST_JS}}         → window._renderPickList(opts) searchable
                                    checklist shared by /stats (users, keys)
                                    and /captures (speakers)
@@ -709,9 +719,11 @@ def render_page(template: str, current: str) -> str:
 
 
 # Maps the `current=` argument passed by each page route into the
-# permission-key used by api_keys_store.PAGES. Pages absent from this
-# map (api-keys, settings) are admin-only — they don't participate in
-# per-page scope gating; the central JS short-circuits for them.
+# permission-key used by api_keys_store.PAGES. The admin-only pages
+# (settings, api-keys, ...) map to the __admin_only__ sentinel below. Pages
+# absent from this map (dictate, home) get no page-key meta tag at all, so
+# they don't participate in per-page scope gating; the central JS
+# short-circuits for them.
 _PAGE_KEY_BY_CURRENT: dict[str, str] = {
     "logs":         "logs",
     "stats":        "stats",

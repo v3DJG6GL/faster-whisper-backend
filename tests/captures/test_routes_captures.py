@@ -1004,3 +1004,129 @@ def test_capture_card_offers_both_audio_downloads(client):
     assert "compact-player-btn compact-player-dl" in html
     assert "audioUrl + '?original=1'" in html
     assert "a.compact-player-dl {" in html
+
+
+def test_page_merge_gate_cancels_a_stale_trim_estimate(client):
+    """A pending merge-estimate timer / in-flight POST from an earlier valid
+    selection must not re-enable Merge once the selection turns invalid (too
+    many rows, mixed speakers, in-sample) or empty: both paths cancel it."""
+    html = client.get("/captures").text
+    bar = html[html.index("function _updateActionBar()"):]
+    bar = bar[:bar.index("function _cancelTrimEstimate()")]
+    assert "if (n === 0) { _cancelTrimEstimate(); return; }" in bar
+    assert bar.count("_cancelTrimEstimate();") == 2
+    assert "n <= MERGE_MAX_MEMBERS" in bar and "var MERGE_MAX_MEMBERS = 30;" in html
+    cancel = html[html.index("function _cancelTrimEstimate()"):]
+    cancel = cancel[:cancel.index("function _fetchTrimEstimate(")]
+    assert "_meterEstimateToken++;" in cancel and "clearTimeout(_meterEstimateTimer)" in cancel
+
+
+def test_page_translation_eligibility_mirrors_the_exporter(client):
+    """The exporter skips the en track of an English-source capture and of a
+    translate-task row; the card must not tag either as training data."""
+    html = client.get("/captures").text
+    assert ("var eligible = enKey && !srcIsEn && !isTr && trs[enKey]"
+            " && String(trs[enKey]).trim();") in html
+    assert "var srcIsEn = String(r.language || '')" in html
+    assert "var isTr = (r.task || 'transcribe') === 'translate';" in html
+    assert "(eligible && lg === enKey ? ' cc-tr-eligible' : '')" in html
+
+
+def test_page_merge_gate_mirrors_the_language_and_task_partition(client):
+    html = client.get("/captures").text
+    bar = html[html.index("function _updateActionBar()"):]
+    bar = bar[:bar.index("function _cancelTrimEstimate()")]
+    assert "var mixedLangTask = langs.size > 1 || tasks.size > 1;" in bar
+    assert "&& !mixedLangTask;" in bar
+
+
+def test_page_load_drops_a_superseded_filter_response(client):
+    """Out-of-order /list responses for two quick speaker-picker ticks must
+    not leave the older filter's rows on screen."""
+    html = client.get("/captures").text
+    load = html[html.index("async function load()"):]
+    load = load[:load.index("async function loadMoreSamples()")]
+    assert "var seq = ++_loadSeq;" in load
+    assert load.count("if (seq !== _loadSeq) return;") >= 3
+    more = html[html.index("async function loadMoreSamples()"):]
+    more = more[:more.index("async function reloadCounts()")]
+    assert "var seq = _loadSeq;" in more and "if (seq !== _loadSeq) return;" in more
+
+
+def _mixed_pair(task_b=None, lang_b="de"):
+    """Two same-user captures with real WAVs on disk, differing in the second
+    member's task / language."""
+    import wave
+    from faster_whisper_backend.captures import store as captures_store
+
+    conn = captures_store._require_conn()
+    ids = ["mixpair0000a", "mixpair0000b"]
+    for cid in ids:
+        _insert_member(conn, cid, None, user_id="alice")
+        p = captures_store.abs_audio_path(
+            os.path.join(cid[0:2], cid[2:4], f"{cid}.wav"))
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        with wave.open(p, "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(16000)
+            w.writeframes(b"\x00\x00" * 1600)
+    conn.execute("UPDATE captures SET task = ?, language = ? WHERE id = ?",
+                 (task_b, lang_b, ids[1]))
+    return ids
+
+
+@pytest.mark.parametrize("task_b,lang_b,detail", [
+    ("translate", "de", "members must all share one task"),
+    (None, "en", "members must all share one language"),
+])
+def test_merge_rejects_mixed_task_or_language(client, make_user_key,
+                                              task_b, lang_b, detail):
+    """Same partition as the proposer: a sample has ONE language and ONE task
+    label, so a de+en (or transcribe+translate) merge would export
+    wrong-language training data."""
+    _uid, raw = make_user_key("root", is_admin=True)
+    ids = _mixed_pair(task_b, lang_b)
+    for path in ("/captures/api/samples/merge-estimate", "/captures/api/samples"):
+        r = client.post(path, json={"member_ids": ids}, headers=bearer(raw))
+        assert r.status_code == 400, (path, r.text)
+        assert r.json()["detail"] == detail
+
+
+def test_merge_accepts_region_variants_of_one_language(client, make_user_key):
+    _uid, raw = make_user_key("root", is_admin=True)
+    ids = _mixed_pair(None, "de-CH")
+    r = client.post("/captures/api/samples/merge-estimate",
+                    json={"member_ids": ids}, headers=bearer(raw))
+    assert r.status_code == 200, r.text
+
+
+def test_regenerate_of_a_sample_dissolved_mid_wait_is_404(client, make_user_key,
+                                                          monkeypatch):
+    """dissolve_sample holds the rebuild lock, so a regenerate that waited on
+    it must re-read the row and 404 instead of rebuilding an orphan WAV and
+    500ing in _enrich_sample."""
+    from faster_whisper_backend.captures import samples as capture_samples
+    from faster_whisper_backend.captures import samples_store as gs
+
+    _uid, raw = make_user_key("root", is_admin=True)
+    sid = "regendis0000001"
+    from faster_whisper_backend.captures import store as captures_store
+    _insert_sample(captures_store._require_conn(), gs, sid, locked=False)
+    real_lock = capture_samples._rebuild_lock
+
+    import contextlib
+
+    @contextlib.contextmanager
+    def _dissolve_then_lock(s):
+        # Simulates the dissolve that won the lock while regenerate waited.
+        gs._require_conn().execute("DELETE FROM capture_samples WHERE id = ?", (s,))
+        with real_lock(s):
+            yield
+    monkeypatch.setattr(capture_samples, "_rebuild_lock", _dissolve_then_lock)
+    built = []
+    monkeypatch.setattr(capture_samples, "_build_merged_wav",
+                        lambda **kw: built.append(kw) or (0, {}, {}))
+    r = client.post(f"/captures/api/samples/{sid}/regenerate", headers=bearer(raw))
+    assert r.status_code == 404, r.text
+    assert built == []

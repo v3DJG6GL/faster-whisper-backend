@@ -10,7 +10,7 @@
     var multi = opts.multi !== false;
     var word = opts.wordPlural || 'items';
     var picked = Array.isArray(opts.picked) ? opts.picked.slice() : [];
-    var rows = [], labels = {};
+    var rows = [], labels = {}, fetchGen = 0;
     var el = opts.mount || document.createElement('span');
     el.classList.add('picker');
     el.innerHTML = '';
@@ -92,15 +92,21 @@
       var c = placer(); if (c) c.show();
       q.value = '';
       list.innerHTML = '<div class="pick-note">loading…</div>';
+      // Per-open generation: after a close + reopen, the first open's late
+      // resolve (stale rows) or reject ("not available") must not overwrite
+      // what the newer open drew.
+      var gen = ++fetchGen;
+      function current() { return _open === inst && gen === fetchGen; }
       Promise.resolve().then(function() { return opts.fetchRows ? opts.fetchRows() : rows; })
         .then(function(rs) {
-          if (_open !== inst) return;
+          if (!current()) return;
           rows = Array.isArray(rs) ? rs : [];
           rows.forEach(function(r) { labels[r.id] = r.label; });
           draw(''); label();
           try { q.focus(); } catch (_) {}
         })
         .catch(function() {
+          if (!current()) return;
           list.innerHTML = '<div class="pick-note">' + esc(opts.errorNote || 'not available') + '</div>';
         });
     }

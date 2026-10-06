@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import logging
 import os
+import tempfile
 import time
 import wave
 from hashlib import sha256
@@ -229,24 +230,28 @@ def merge_wavs(
 
     # Atomic write: tmp + fsync + os.replace, with the same 3-retry
     # Windows-AV-lock loop captures_store uses.
-    tmp_path = dst_path + ".tmp"
     # `or "."` so a bare-filename dst_path (no dirname) doesn't pass "" to
     # os.makedirs, which raises FileNotFoundError on some platforms.
-    os.makedirs(os.path.dirname(dst_path) or ".", exist_ok=True)
+    dst_dir = os.path.dirname(dst_path) or "."
+    os.makedirs(dst_dir, exist_ok=True)
+    # Create the tmp owner-only and fresh. `wave.open` uses a plain builtin
+    # open(), so left to itself the process umask (typically 022 -> 0644)
+    # would decide the mode and the whole merged PCM — PHI — would sit
+    # world-readable in e.g. the shared system temp dir for the duration of
+    # the write. mkstemp is O_EXCL + 0600 under a random name, so a file
+    # someone pre-created at a predictable "<dst>.tmp" (which would keep its
+    # owner and mode through open('wb')) is never reused. The ".tmp" suffix
+    # keeps reconcile's stale-tmp sweep matching a crashed write's leftover.
+    fd, tmp_path = tempfile.mkstemp(
+        dir=dst_dir, prefix=os.path.basename(dst_path) + ".", suffix=".tmp")
+    os.close(fd)
     try:
-        # Pre-create the tmp owner-only. `wave.open` uses a plain builtin
-        # open(), so left to itself the process umask (typically 022 ->
-        # 0644) would decide the mode and the whole merged PCM — PHI — would
-        # sit world-readable in e.g. the shared system temp dir for the
-        # duration of the write. open('wb') on an existing path truncates
-        # but never changes its mode, so wave.open writes into a 0600 inode.
-        os.close(os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600))
         with wave.open(tmp_path, "wb") as w:
             w.setnchannels(_REQ_CHANNELS)
             w.setsampwidth(_REQ_SAMPWIDTH_BYTES)
             w.setframerate(_REQ_RATE)
             w.writeframes(out_pcm)
-        # Belt-and-braces (the tmp is already born 0600 above; this also
+        # Belt-and-braces (mkstemp already made the tmp 0600; this also
         # covers Windows / foreign-umask oddities): os.replace below carries
         # THAT inode's mode onto dst_path, which would silently widen a 0600
         # destination such as tempfile.mkstemp's preview file in the
