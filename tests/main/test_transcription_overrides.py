@@ -129,6 +129,7 @@ def test_client_temperature_can_be_a_retry_ladder():
     assert t([0, 0.5, 1]) == (0.0, 0.5, 1.0)
     assert t("0,2,-1") == (0.0, 1.0, 0.0)                 # clamped rung by rung
     assert t([0.1] * 40) == tuple([0.1] * 16)              # at most 16 rungs
+    assert t(",".join(["0.1"] * 40)) == tuple([0.1] * 16)  # ...of a string too
     for junk in ("", ",", "0,abc", [], [0, "x"], [0, None], "nan", {}, None):
         assert t(junk) == 0.3, junk
 

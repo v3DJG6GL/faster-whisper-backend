@@ -347,10 +347,13 @@ def _client_temperature(v) -> "float | tuple[float, ...] | None":
     at _TEMPERATURE_RUNGS_MAX; one rung is a float (as before), several a
     tuple (faster-whisper's ladder). None for anything unparseable or empty —
     the override is then dropped, like the other clamp paths."""
+    # Only the first _TEMPERATURE_RUNGS_MAX tokens are ever parsed: a
+    # streaming session re-reads its overrides on every partial, on the loop.
     if isinstance(v, str):
-        raw = _temperature_ladder(v)
+        raw = _temperature_ladder(
+            ",".join(v.split(",", _TEMPERATURE_RUNGS_MAX)[:_TEMPERATURE_RUNGS_MAX]))
     elif isinstance(v, (list, tuple)):
-        raw = tuple(v)
+        raw = tuple(v[:_TEMPERATURE_RUNGS_MAX])
     else:
         raw = (v,)
     rungs = [_clamp_float(r, *_TEMPERATURE_BOUNDS)
@@ -522,6 +525,10 @@ def _note_auto_detect_only(overrides: dict, language: "str | None",
         return
     for key in _AUTO_DETECT_ONLY_KEYS:
         if overrides.get(key) is not None and key not in ignored:
+            # multilingual=false is honoured as sent: a set language never
+            # decodes multilingual either.
+            if key == "multilingual" and not overrides[key]:
+                continue
             ignored.append(key)
 
 

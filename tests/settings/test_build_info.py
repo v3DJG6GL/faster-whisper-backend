@@ -11,9 +11,10 @@ from faster_whisper_backend import build_info
 @pytest.fixture(autouse=True)
 def _keep_process_identity():
     """importlib.reload re-mints BOOT_ID / STARTED_AT / STARTED_UTC, but
-    main.py imports BOOT_ID by value at import time and serves it on
-    /v1/models — a reload here would leave the two diverged for the rest of
-    the session. Reinstate the originals after each test's reloads."""
+    transcription/catalog_routes imports BOOT_ID by value at import time and
+    serves it on /v1/models (main.py logs it at startup) — a reload here
+    would leave them diverged for the rest of the session. Reinstate the
+    originals after each test's reloads."""
     saved = (build_info.BOOT_ID, build_info.STARTED_AT, build_info.STARTED_UTC)
     yield
     build_info.BOOT_ID, build_info.STARTED_AT, build_info.STARTED_UTC = saved
@@ -99,7 +100,9 @@ def test_reload_does_not_leak_a_new_boot_id(monkeypatch):
 
 
 def test_process_identity_survives_the_reload_tests():
-    # Runs after the reload tests above (file order): the identity main.py
-    # bound by value must still be the one build_info serves.
+    # Runs after the reload tests above (file order): the identity the
+    # /v1/models route and main.py bound by value must still be build_info's.
     from faster_whisper_backend import main
+    from faster_whisper_backend.transcription import catalog_routes
+    assert catalog_routes.BOOT_ID == build_info.BOOT_ID
     assert main.BOOT_ID == build_info.BOOT_ID

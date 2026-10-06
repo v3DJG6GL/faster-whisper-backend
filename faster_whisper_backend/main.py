@@ -185,7 +185,8 @@ from faster_whisper_backend.auth import api_keys_store
 # Request-origin gates: the host allowlist tiers (the /docs shells) and the
 # same-origin guard _csrf_mw runs on every unsafe method — see auth/hosts.py.
 from faster_whisper_backend.auth import hosts as auth_hosts
-# The startup TMPDIR sweep for what a hard restart orphaned (stdlib-only).
+# The startup TMPDIR sweep for what a hard restart orphaned (imports only
+# transcription.receipt and paths; no import-time side effects).
 from faster_whisper_backend.admin import restart_service
 
 # Text post-processing rules engine (cfg.PIPELINE_RULES). Imported here, after
@@ -714,8 +715,8 @@ app = FastAPI(
 # '*' allows any origin, in which case credentials must be disabled per the CORS
 # spec. The WebSocket streaming path is not subject to CORS.
 _cors_origins = list(getattr(cfg, "CORS_ALLOW_ORIGINS", []) or [])
-# Decided outside the `if` because the origin guard below reads it too (an
-# empty allowlist is never "allow all").
+# The origin guard (auth/hosts.py) gets the raw lists via configure_origins
+# below and treats '*' as a literal, never allow-all.
 _cors_allow_all = "*" in _cors_origins
 if _cors_origins:
     from fastapi.middleware.cors import CORSMiddleware

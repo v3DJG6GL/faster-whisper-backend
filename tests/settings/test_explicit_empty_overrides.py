@@ -250,6 +250,12 @@ def test_language_detection_keys_clamped_and_auto_detect_only():
     ignored = []
     tx_models._note_auto_detect_only({"language_detection_segments": 2}, "", ignored)
     assert ignored == []
+    # multilingual=false with a language is honoured as sent, not "ignored".
+    ignored = []
+    tx_models._note_auto_detect_only({"multilingual": False}, "de", ignored)
+    assert ignored == []
+    tx_models._note_auto_detect_only({"multilingual": True}, "de", ignored)
+    assert ignored == ["multilingual"]
 
 
 def test_hallucination_threshold_needs_word_timestamps():
