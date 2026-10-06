@@ -216,6 +216,15 @@ class RunPlan:
                 self._extractor = extractor
             if n and n > 0:
                 self._download_bytes = float(n)
+                # A link whose probe gave no duration would leave every
+                # audio-driven stage without an estimate: the download alone
+                # fills the bar to the cap and the hold parks it there for the
+                # whole decode. Seed the same bytes prior a file upload gets;
+                # probe and decoder outrank it, a later byte count refines it.
+                if _DURATION_RANK.get(self._audio_src, -1) <= \
+                        _DURATION_RANK["bytes-prior"]:
+                    self._audio_s = float(n) / BYTES_PER_AUDIO_SECOND
+                    self._audio_src = "bytes-prior"
             self._recompute()
 
     def set_segments(self, n: int | None) -> None:

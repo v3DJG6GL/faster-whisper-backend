@@ -221,18 +221,31 @@ def test_inflight_slot_is_released_on_cancellation(client, app_module,
                                                    monkeypatch):
     """CancelledError is a BaseException, so every `except Exception` arm in
     the handler is skipped on a client disconnect — only the `finally` runs.
-    That is why the release lives there and not in an except arm."""
+    That is why the release lives there and not in an except arm. The run is
+    still recorded (as cancelled), like the batch handler's aborted runs."""
     import asyncio
 
     _enable(app_module, monkeypatch)
+    seen = {}
+    recorded = []
 
     async def _cancelled(*args, **kwargs):
+        # Proves the slot was really taken: a stub never reached would leave
+        # `_counts == {}` true trivially.
+        seen["n"] = tr_routes._translate_inflight.count(_open_key())
         raise asyncio.CancelledError()
     monkeypatch.setattr(translation, "translate_segments", _cancelled)
+    monkeypatch.setattr(tr_routes.metrics, "record_transcription",
+                        lambda **kw: recorded.append(kw))
 
+    # TestClient surfaces the cancellation as RuntimeError, not as
+    # asyncio.CancelledError — do not narrow this.
     with pytest.raises(BaseException):
         client.post(URL, json=_body())
+    assert seen == {"n": 1}
     assert tr_routes._translate_inflight._counts == {}
+    assert [(kw["status"], kw["kind"]) for kw in recorded] == \
+        [("cancelled", "translate")]
 
 
 def test_inflight_zero_is_unlimited(client, app_module, monkeypatch):

@@ -141,6 +141,30 @@ def test_a_download_that_teaches_nothing_leaves_the_rate_alone(ledger, clock):
     assert stage_rates.lookup("downloading", "Youtube", None)["src"] == "seed"
 
 
+def test_download_bytes_seed_a_duration_prior_when_the_probe_had_none(
+        ledger, clock):
+    """A link whose probe reports no duration (direct media, generic
+    extractor) gives the transcribe stage no estimate. Without a prior the
+    finished download alone filled the bar to the cap and the monotonic hold
+    parked it at 99% for the whole decode."""
+    p = _plan(clock, kind="url", stages=["downloading", "transcribing"])
+    p.set_audio_seconds(None, src="probe")
+    p.set_download_bytes(3000 * run_plan.BYTES_PER_AUDIO_SECOND)
+    p.tick(stage="downloading", progress=0.0)
+    clock.advance(10)
+    p.stage_done("downloading")
+    p.set_audio_seconds(3000.0, src="decoder")
+    p.tick(stage="transcribing", progress=0.1)
+    assert p.snapshot()["overall"] < 0.5
+
+
+def test_download_bytes_never_override_a_probed_duration(ledger, clock):
+    p = _plan(clock, kind="url", stages=["downloading", "transcribing"])
+    p.set_audio_seconds(600.0, src="probe")
+    p.set_download_bytes(3000 * run_plan.BYTES_PER_AUDIO_SECOND)
+    assert p._audio_s == 600.0 and p._audio_src == "probe"
+
+
 # --- progression --------------------------------------------------------------
 
 def test_took_replaces_est_and_overall_is_monotone(ledger, clock):

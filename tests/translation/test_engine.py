@@ -272,6 +272,26 @@ def test_guard_reasons():
         "output copies input"
     assert g("今日は学校に行きました。", "今日は学校に行きました。",
              target="en") == "output copies input"
+    # ...but a CJK target legitimately shares Han text with a CJK source.
+    assert g("大家好", "大家好", target="zh-Hant") is None
+    assert g("日本", "日本", target="zh") is None
+    assert g("他在北京工作。", "他在北京工作。", target="zh-Hant") is None
+    # Digits compare by value: the target script's native digits keep the
+    # number; a changed native number still fails.
+    assert g("Wir haben 16 Leute eingeladen.", "ما ۱۶ نفر را دعوت کردیم.",
+             target="fa") is None
+    assert g("Wir haben 16 Leute eingeladen.", "私たちは１６人を招待しました。",
+             target="ja") is None
+    assert g("Wir haben 16 Leute eingeladen.", "ما ۱۷ نفر را دعوت کردیم.",
+             target="fa") == "digit mismatch"
+    # An ISO 639-3 target folds like same_language does: "jpn" is Japanese.
+    latin = ("Tomorrow morning we are going to drive to the mountains with "
+             "the whole family.")
+    assert g(latin, "明日の朝、家族全員で山へドライブします。",
+             target="jpn") is None
+    # The copy check ignores whitespace the batch prompt collapsed.
+    assert g("Guten Tag\nwie geht es", "Guten Tag wie geht es") == \
+        "output copies input"
 
 
 def test_guard_repetition_scan_is_fast_on_large_clean_output():
@@ -518,6 +538,22 @@ def test_faithful_mismatch_halves_batch_down_to_success(base_cfg, monkeypatch):
     # First attempt with 4 items failed → halved to 2 → two good batches.
     assert len(calls) == 3
     assert "4. Sieben acht." in calls[0]
+
+
+def test_faithful_copy_guard_sees_through_collapsed_whitespace(base_cfg,
+                                                               monkeypatch):
+    """The numbered batch prompt folds a segment's newlines and runs of
+    spaces; its verbatim echo must still read as a copy of the source."""
+    _install_fake(monkeypatch, lambda t: " ".join(t.split())
+                  if t.startswith("Guten") else _xlate(t))
+    res, warns, meta = _run(translation.translate_segments(
+        _segs("Guten Tag\nwie geht es", "Noch was hier."), ["en"],
+        source_lang="de", mode="faithful"))
+    assert meta["kept"] == {0: ["en"]}
+    assert res[0]["en"] == "Guten Tag\nwie geht es"
+    assert res[1]["en"] == "nOCH WAS HIER."
+    assert any("segment 1" in w and "output copies input" in w
+               for w in warns)
 
 
 _GUARD_SRC = "Nimm 5 Tabletten und ruf mich morgen frueh wieder an"
@@ -778,7 +814,8 @@ def test_progress_callback_raising_typeerror_fires_once(base_cfg, monkeypatch):
         progress_cb=cb))
     assert warns == []
     assert res[0]["en"]
-    assert len(calls) == 1
+    # One call per tick (the start tick and the group tick), no ghost repeat.
+    assert calls == [(0.0, "en 0/1"), (1.0, "en 1/1")]
 
 
 def test_unknown_source_is_not_asserted_as_english(base_cfg, monkeypatch):
@@ -1220,7 +1257,7 @@ def lru_env(monkeypatch):
         return made[ref]
     monkeypatch.setattr(translation, "_load_blocking", fake_load)
     monkeypatch.setattr(translation.system_stats, "gpu_mem_used_bytes",
-                        lambda: None)
+                        lambda *a: None)
     stats = {"registered": [], "unregistered": [], "touched": []}
     monkeypatch.setattr(translation.model_registry, "register_loaded_model",
                         lambda name, vram, device, kind, load_secs=None:
@@ -1298,6 +1335,39 @@ def test_cancel_during_register_keeps_the_model_cached_and_frees_the_lease(
     assert translation._models.get("o/a") is made["o/a"]
     assert stats["registered"] == [("gguf:o/a", "cpu", "gguf")]
     assert translation._active.get("o/a", 0) == 0
+
+
+def test_unleased_load_dropped_during_register_leaves_no_phantom(
+        lru_env, monkeypatch):
+    """An unleased load is evictable the moment it is cached. Dropped while
+    its register is still on the thread, _drop_locked's unregister is a
+    no-op; the late register must then be undone, not left as a "gguf:"
+    entry with no cached model behind it."""
+    made, stats = lru_env
+    entered, go = threading.Event(), threading.Event()
+
+    def _slow_register(name, vram, device, kind, load_secs=None):
+        entered.set()
+        go.wait(5)
+        stats["registered"].append((name, device, kind))
+    monkeypatch.setattr(translation.model_registry, "register_loaded_model",
+                        _slow_register)
+
+    async def run():
+        task = asyncio.create_task(translation.load_unleased("o/a"))
+        while not entered.is_set():
+            await asyncio.sleep(0.01)
+        assert await translation.evict("o/a") is True
+        go.set()
+        await task
+    try:
+        asyncio.run(run())
+    finally:
+        go.set()
+    assert "o/a" not in translation._models
+    assert stats["registered"] == [("gguf:o/a", "cpu", "gguf")]
+    # Once from _drop_locked (before the register landed), once undoing it.
+    assert stats["unregistered"] == ["gguf:o/a", "gguf:o/a"]
 
 
 def test_drop_models_clears_everything(lru_env):
@@ -1502,7 +1572,7 @@ def test_overlapping_loads_publish_no_vram_delta(lru_env, monkeypatch):
     made, stats = lru_env
     reads = iter([1000, 1000, 5000, 5000])
     monkeypatch.setattr(translation.system_stats, "gpu_mem_used_bytes",
-                        lambda: next(reads))
+                        lambda *a: next(reads))
     seen = {}
     monkeypatch.setattr(translation.model_registry, "register_loaded_model",
                         lambda name, vram, device, kind, load_secs=None:
@@ -1517,7 +1587,7 @@ def test_solo_load_still_publishes_vram_delta(lru_env, monkeypatch):
     made, stats = lru_env
     reads = iter([1000, 5000])
     monkeypatch.setattr(translation.system_stats, "gpu_mem_used_bytes",
-                        lambda: next(reads))
+                        lambda *a: next(reads))
     seen = {}
     monkeypatch.setattr(translation.model_registry, "register_loaded_model",
                         lambda name, vram, device, kind, load_secs=None:
@@ -1836,6 +1906,39 @@ class TestComplete:
         raw = self._Llm(raw_out={"choices": [{}]})
         assert translation._complete(raw, "seedx", "p", 8) == ""
 
+    def test_truncated_reply_is_discarded(self):
+        """A reply cut off at max_tokens must not pass as a translation."""
+        chat = self._Llm(chat_out={"choices": [
+            {"message": {"content": "Bonjour tout"},
+             "finish_reason": "length"}]})
+        assert translation._complete(chat, "hunyuan", [], 8) == ""
+        raw = self._Llm(raw_out={"choices": [
+            {"text": "Salut", "finish_reason": "length"}]})
+        assert translation._complete(raw, "seedx", "p", 8) == ""
+        done = self._Llm(raw_out={"choices": [
+            {"text": "Salut", "finish_reason": "stop"}]})
+        assert translation._complete(done, "seedx", "p", 8) == "Salut"
+
+    def test_truncated_reply_keeps_the_original(self, monkeypatch):
+        """End to end through translate_segments with the real _complete:
+        a truncated fluent reply is kept original, never redistributed."""
+        monkeypatch.setattr(cfg, "TRANSLATION_DEFAULT_MODEL", "org/model",
+                            raising=False)
+        monkeypatch.setattr(cfg, "TRANSLATION_PROMPT_FAMILY", "auto",
+                            raising=False)
+        monkeypatch.setattr(cfg, "TRANSLATION_CONTEXT_SEGMENTS", 0,
+                            raising=False)
+        llm = self._Llm(chat_out={"choices": [
+            {"message": {"content": "Nous avons répété la mesure"},
+             "finish_reason": "length"}]})
+        _stub_get_model(monkeypatch, llm)
+        src = "Wir haben die Messung gestern wiederholt und dokumentiert."
+        res, warns, meta = _run(translation.translate_segments(
+            [{"text": src}], ["fr"], source_lang="de", mode="fluent"))
+        assert res[0]["fr"] == src
+        assert meta["kept"] == {0: ["fr"]}
+        assert any("kept original" in w for w in warns)
+
 
 # ── code-review run 8 regressions ───────────────────────────────────────────
 
@@ -2024,10 +2127,55 @@ def test_translation_logs_buckets_per_target(base_cfg, monkeypatch, caplog):
     assert "[translate] en 100%" not in "\n".join(lines)
 
 
+@pytest.mark.parametrize("batch", [2, 1])
+def test_run_plan_unit_clock_covers_the_whole_target(base_cfg, monkeypatch,
+                                                     tmp_path, batch):
+    """The run plan clocks a translation unit from the first tick naming its
+    target. Without a start tick that was the END of the first batch: a
+    one-batch target closed with took_s 0 (and taught the rate ledger
+    nothing), a two-batch one lost its first batch."""
+    from faster_whisper_backend.runtime import stage_rates
+    from faster_whisper_backend.transcription import run_plan
+    monkeypatch.setattr(stage_rates, "PATH", str(tmp_path / "rates.json"))
+    stage_rates._reset_for_tests()
+    monkeypatch.setattr(cfg, "TRANSLATION_BATCH_SEGMENTS", batch,
+                        raising=False)
+    clock = {"t": 1000.0}
+    inner = {"fake": None}
+    _install_fake(monkeypatch, _xlate)
+    inner["fake"] = translation._complete
+
+    def slow(llm, family, prompt_or_msgs, max_tokens):
+        clock["t"] += 5.0            # every model call takes 5 s
+        return inner["fake"](llm, family, prompt_or_msgs, max_tokens)
+    monkeypatch.setattr(translation, "_complete", slow)
+
+    plan = run_plan.RunPlan(kind="text", now=lambda: clock["t"])
+    plan.set_stages(["translating"])
+    plan.set_segments(2)
+    plan.set_translation(["en"], model="m", device="cpu", mode="faithful",
+                         source_lang="de")
+
+    def cb(f, s, t=None, target=None, target_progress=None):
+        plan.tick(stage="translating", progress=f, target=target,
+                  target_progress=target_progress)
+    try:
+        _run(translation.translate_segments(
+            _segs("Eins zwei.", "Drei vier."), ["en"], source_lang="de",
+            mode="faithful", progress_cb=cb))
+        unit = plan.snapshot()["plan"][0]["units"][0]
+        assert unit["state"] == "done"
+        assert unit["took_s"] == pytest.approx(10.0 if batch == 1 else 5.0)
+    finally:
+        stage_rates._reset_for_tests()
+
+
 def test_progress_carries_target_and_target_progress(base_cfg, monkeypatch):
     """Every tick names the language being translated and how far along
     THAT language is; the per-target fraction resets at each boundary and a
-    same-language target reports 1.0 in one tick."""
+    same-language target reports 1.0 in one tick. A translated target opens
+    with a 0.0 start tick (the run plan clocks the unit from it)."""
+    monkeypatch.setattr(cfg, "TRANSLATION_BATCH_SEGMENTS", 1, raising=False)
     _install_fake(monkeypatch, _xlate)
     ticks = []
     _run(translation.translate_segments(
@@ -2039,8 +2187,7 @@ def test_progress_carries_target_and_target_progress(base_cfg, monkeypatch):
     for tgt, tp in ticks:
         by_target.setdefault(tgt, []).append(tp)
     assert by_target["de"] == [1.0]
-    for tgt in ("en", "fr"):
-        seq = by_target[tgt]
-        assert seq == sorted(seq) and seq[-1] == 1.0 and seq[0] <= 1.0
+    assert by_target["en"] == by_target["fr"] == \
+        pytest.approx([0.0, 1 / 3, 2 / 3, 1.0])
     # Order of appearance follows the target list.
     assert [t for t, _ in ticks][0] == "de" and [t for t, _ in ticks][-1] == "fr"

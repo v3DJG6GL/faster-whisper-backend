@@ -108,7 +108,9 @@ _KWARG_TO_CFG = {
     "embedding_batch_size": "DIARIZATION_EMBEDDING_BATCH_SIZE",
     "diarization_model": "DIARIZATION_MODEL",
     "separation_model": "BGM_SEPARATION_UVR_MODEL",
-    "translation_model": "TRANSLATION_DEFAULT_MODEL",
+    # No translation_model entry: TRANSLATION_DEFAULT_MODEL ships as "" and a
+    # translation cannot run without a model, so the row would be starred on
+    # every receipt and the marker would carry no information.
     "mode": "TRANSLATION_MODE",
     "context_segments": "TRANSLATION_CONTEXT_SEGMENTS",
     "batch_segments": "TRANSLATION_BATCH_SEGMENTS",
@@ -837,13 +839,23 @@ def _format_request_block(
             lines.append(f"    {'key':<{_NAME_COL - 4}}{which}")
         if ident is not None and ident.profiles_applied:
             lines.append(f"    {'profiles':<{_NAME_COL - 4}}{' → '.join(ident.profiles_applied)}")
+        # A failed binding fetch locks every field because the identity's
+        # locks are unknown: name the store fault instead of claiming "no
+        # binding" and listing ~75 field names.
+        _fault = ident is not None and getattr(ident, "binding_fault", False)
         if ident is not None and ident.layers:
             lines.append(f"    {'layers':<{_NAME_COL - 4}}{', '.join(ident.layers)}")
+        elif _fault:
+            lines.append(f"    {'overrides':<{_NAME_COL - 4}}"
+                         "(binding unreadable — see the [effective-config] warning)")
         elif user_id or key_id:
             # No identity layer resolved — call it out explicitly so a missing
             # binding (the classic "my override didn't apply") is obvious.
             lines.append(f"    {'overrides':<{_NAME_COL - 4}}(none — inherits per-model / global)")
-        if ident is not None and ident.locked:
+        if _fault:
+            lines.append(f"    {'locked':<{_NAME_COL - 4}}"
+                         "(binding unreadable — all fields locked)")
+        elif ident is not None and ident.locked:
             lines.append(f"    {'locked':<{_NAME_COL - 4}}{', '.join(sorted(ident.locked))}")
         if overrides_ignored:
             lines.append(f"    {'overrides_ignored':<{_NAME_COL - 4}}{', '.join(overrides_ignored)}")

@@ -137,6 +137,28 @@ def test_hardware_change_during_a_queued_load_reaches_the_constructor(
         model_registry._loaded_models.clear()
 
 
+def test_vram_delta_is_sampled_on_the_load_device_index(monkeypatch):
+    """With DEVICE_INDEX=1 on a two-GPU host the delta must come from GPU 1:
+    sampling GPU 0 would record ~0 (or another process's usage) as the
+    model's measured footprint."""
+    _stub_load(monkeypatch)
+    monkeypatch.setattr(tx_models, "_model_load_lock", asyncio.Lock())
+    monkeypatch.setattr(tx_models.cfg, "DEVICE_INDEX", 1, raising=False)
+    # GPU 0 stays flat; GPU 1 grows by 3000 across the load.
+    reads = {0: iter([500, 500]), 1: iter([1000, 4000])}
+    monkeypatch.setattr(tx_models.system_stats, "gpu_mem_used_bytes",
+                        lambda index=0: next(reads[index]))
+    seen = {}
+    monkeypatch.setattr(model_registry, "register_loaded_model",
+                        lambda name, **kw: seen.__setitem__(name, kw))
+    try:
+        asyncio.run(tx_models._get_or_load_model("x"))
+        assert seen["x"]["vram_bytes"] == 3000
+    finally:
+        tx_models._loaded_models.clear()
+        model_registry._loaded_models.clear()
+
+
 def _run_one_evictor_tick(monkeypatch):
     calls = {"n": 0}
 
@@ -169,7 +191,9 @@ def test_evictor_does_not_claim_an_unload_it_was_refused(monkeypatch, caplog):
         assert "a" in tx_models._loaded_models
         msgs = [r.getMessage() for r in caplog.records]
         assert not any("[idle-evict] unload" in m for m in msgs)
-        assert any("eviction deferred" in m for m in msgs)
+        # The pre-scan skips a leased model outright: a long decode must not
+        # log a deferred eviction (and take the load lock) on every tick.
+        assert not any("eviction deferred" in m for m in msgs)
         # Nothing was unloaded, so nothing to reclaim: no full gc on the loop.
         assert collected == []
     finally:

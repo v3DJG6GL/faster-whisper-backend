@@ -42,6 +42,7 @@ import os
 import re
 import threading
 import time
+import unicodedata
 from collections import Counter, OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -789,6 +790,13 @@ async def _get_model(ref: str, *, lease: bool = False, download_cb=None):
             if lease:
                 _release_model(ref)   # the caller never receives the model
             raise
+        if _models.get(ref) is not llm:
+            # An unleased load (preload / load_unleased) was trimmed or
+            # evicted while its register ran on the thread: _drop_locked's
+            # unregister was a no-op then, so this entry would be a phantom
+            # nothing ever removes. The held per-ref lock rules out a newer
+            # instance of the same ref having registered meanwhile.
+            model_registry.unregister_loaded_model(_STATS_PREFIX + ref)
         logger.info("[translate] model %s loaded on %s in %.1fs",
                     ref, device, load_secs)
         try:
@@ -920,16 +928,30 @@ def _complete(llm, family: str, prompt_or_msgs, max_tokens: int) -> str:
     create_chat_completion, raw families via a plain llm() call — holding
     ``_infer_mutex`` (llama.cpp is not thread-safe). Runs in the executor.
     Tests stub THIS function to exercise everything above it without
-    llama_cpp installed."""
+    llama_cpp installed.
+
+    A reply cut off at ``max_tokens`` (finish_reason "length") comes back
+    as "": the guards then see an empty output and the retry /
+    keep-original path runs, instead of a shortened translation passing
+    every guard and being spread over the group's cues."""
     fam = _FAMILIES[family]
     kwargs = dict(fam.sampling)
     with _infer_mutex:
         if fam.chat:
             out = llm.create_chat_completion(
                 messages=prompt_or_msgs, max_tokens=max_tokens, **kwargs)
-            return (out["choices"][0]["message"].get("content") or "").strip()
-        out = llm(prompt_or_msgs, max_tokens=max_tokens, **kwargs)
-        return (out["choices"][0].get("text") or "").strip()
+            choice = out["choices"][0]
+            text = (choice["message"].get("content") or "").strip()
+        else:
+            out = llm(prompt_or_msgs, max_tokens=max_tokens, **kwargs)
+            choice = out["choices"][0]
+            text = (choice.get("text") or "").strip()
+    if choice.get("finish_reason") == "length":
+        logger.warning("[translate] output truncated at max_tokens=%d "
+                       "(%s, %d chars) — discarded", max_tokens, family,
+                       len(text))
+        return ""
+    return text
 
 
 # =============================================================================
@@ -1080,11 +1102,26 @@ _CJK_TARGETS = {"zh", "ja", "ko", "yue"}
 _CJK_CHAR_RE = re.compile(r"[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]")
 
 
+def _target_is_cjk(target: "str | None") -> bool:
+    """Whether ``target`` names a CJK language, folded the way same_language
+    folds: an API client may send the ISO 639-3 spelling ("jpn", "cmn")."""
+    if not target:
+        return False
+    return ((canonical_code(target) or target).strip().lower().split("-")[0]
+            in _CJK_TARGETS)
+
+
+def _digits(text: str) -> "Counter[int]":
+    """Digit VALUES in ``text``: a model writing the target script's native
+    digits ("۱۶", "１６") keeps the number, not the characters."""
+    return Counter(unicodedata.decimal(c) for c in re.findall(r"\d", text))
+
+
 def _ratio_bounds(src: str, target: "str | None") -> "tuple[float, float]":
     """Char-count ratio bounds, script-aware: CJK text carries ~2-4x the
     information per character of Latin text, so the default [0.4, 3.0] band
     would reject nearly every valid Latin→CJK translation (and vice versa)."""
-    tgt_cjk = bool(target) and target.strip().lower().split("-")[0] in _CJK_TARGETS
+    tgt_cjk = _target_is_cjk(target)
     cjk_chars = len(_CJK_CHAR_RE.findall(src))
     src_cjk = len(src) > 0 and cjk_chars / len(src) > 0.3
     if tgt_cjk and not src_cjk:
@@ -1102,10 +1139,11 @@ def _guard_reason(src: str, out: str, *,
     (a source digit vanished while the output still carries digits — a
     changed number; number-word normalization in EITHER direction is legal,
     spoken-transcript MT constantly writes "sechzehn" as "16" and an exact
-    multiset check rejected correct translations en masse); verbatim input
-    copy of two words or more (each CJK character counts as one: an
-    unspaced clause is a single \\w+ run) when the target differs from the
-    source; repetition loop."""
+    multiset check rejected correct translations en masse; digits compare
+    by value, so native-script digits are the same number); verbatim input
+    copy of two words or more (for a non-CJK target each CJK character
+    counts as one: an unspaced clause is a single \\w+ run) when the target
+    differs from the source; repetition loop."""
     s = (src or "").strip()
     o = (out or "").strip()
     if not o:
@@ -1115,13 +1153,19 @@ def _guard_reason(src: str, out: str, *,
         ratio = len(o) / len(s)
         if not (lo <= ratio <= hi):
             return f"length ratio {ratio:.2f} outside [{lo}, {hi}]"
-    out_digits = Counter(re.findall(r"\d", o))
-    if out_digits and (Counter(re.findall(r"\d", s)) - out_digits):
+    out_digits = _digits(o)
+    if out_digits and (_digits(s) - out_digits):
         return "digit mismatch"
     # A one-word line ("OK.", "Netflix.", "Hm.") often translates to
     # itself; only a copied phrase is evidence of an untranslated output.
-    if o == s and (len(re.findall(r"\w+", s)) >= 2
-                   or len(_CJK_CHAR_RE.findall(s)) >= 2):
+    # Whitespace is compared collapsed: a numbered batch prompt carries each
+    # segment with its newlines and runs of spaces folded. The CJK-character
+    # floor applies only to a non-CJK target: zh→zh-Hant ("大家好") and
+    # ja→zh ("日本") legitimately share text.
+    if (" ".join(o.split()) == " ".join(s.split())
+            and (len(re.findall(r"\w+", s)) >= 2
+                 or (not _target_is_cjk(target)
+                     and len(_CJK_CHAR_RE.findall(s)) >= 2))):
         return "output copies input"
     if _REPETITION_RE.search(o[:_REPETITION_SCAN_CHARS]):
         return "repetition loop"
@@ -1155,6 +1199,9 @@ async def _run_completion(llm, family: str, text: str, source_code: str,
     only) renders THAT template instead of cfg.TRANSLATION_PROMPT_TEMPLATE —
     the admin template-test path, never persisted."""
     fam = _FAMILIES[family]
+    # An ISO 639-3 target ("jpn") reaches here unfolded; the prompt names the
+    # language from the table's spelling ("ja" → "Japanese", not "Jpn").
+    target_code = canonical_code(target_code) or target_code
     if template_override is not None and family == "custom":
         prompt = [{"role": "user", "content": _render_custom_template(
             template_override, text, language_name(source_code),
@@ -1281,7 +1328,7 @@ async def translate_segments(
     # the run panel can show one bar per language on top of the global
     # fraction. Plain ints; the loop is single-threaded.
     unit_state = {"target": None, "done": 0, "bucket": 0, "t0": 0.0,
-                  "instant": False}
+                  "instant": False, "started": False, "steps": 1}
 
     def _progress(step: str, last_text: "str | None" = None) -> None:
         tp = (unit_state["done"] / len(segments)) if segments else 1.0
@@ -1326,8 +1373,17 @@ async def translate_segments(
         return llm
 
     async def _translate_one(text: str, target: str, context: str) -> str:
+        m = await _model()
+        if not unit_state["started"]:
+            # Start tick: the run plan clocks a target's unit from the first
+            # tick naming it. Without this one that is the END of the first
+            # batch (a one-batch target closed with took_s 0 and taught the
+            # rate ledger nothing). Sent after the model load, so a cold
+            # load never counts as translation time.
+            unit_state["started"] = True
+            _progress(f"{target} 0/{unit_state['steps']}", last_ok)
         return await _run_completion(
-            await _model(), family, text, source_code, target, context,
+            m, family, text, source_code, target, context,
             glossary, template_override=template_override)
 
     # Greedy (temperature-0) families are deterministic: re-sending an
@@ -1392,6 +1448,7 @@ async def translate_segments(
         unit_state["target"] = target
         unit_state["done"] = 0
         unit_state["bucket"] = 0
+        unit_state["started"] = False
         unit_state["t0"] = time.perf_counter()
         unit_state["instant"] = same_language(target, source_lang)
         if unit_state["instant"]:
@@ -1407,6 +1464,7 @@ async def translate_segments(
         if mode == "faithful":
             k = max(1, int(getattr(cfg, "TRANSLATION_BATCH_SEGMENTS", 8) or 1))
             n_batches = max(1, -(-len(segments) // k))
+            unit_state["steps"] = n_batches
             i = 0
             batch_no = 0
             while i < len(segments):
@@ -1473,6 +1531,7 @@ async def translate_segments(
         else:
             # FLUENT: sentence-group merge → translate → redistribute.
             groups = _merge_sentences(segments)
+            unit_state["steps"] = len(groups)
             for g_no, group in enumerate(groups, start=1):
                 _check_cancel()
                 src_texts = [(segments[j].get("text") or "") for j in group]

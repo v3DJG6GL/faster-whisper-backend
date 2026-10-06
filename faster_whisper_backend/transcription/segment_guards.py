@@ -128,7 +128,8 @@ def _burst_cut(words, limit: float) -> int | None:
     (normal length AND normal gap) after it is a real one-frame word, not the
     pile's start — one such word is the absorber the leftover audio went to
     (``zu → nehmen(0) → und → pile``). Only when no close word looks made up
-    does the first close word start the cut."""
+    does the first close word start the cut — never such a real one-frame
+    word."""
     if not limit or limit <= 0 or len(words) < 2:
         return None
     t_last = _start(words[-1])
@@ -153,8 +154,12 @@ def _burst_cut(words, limit: float) -> int | None:
     first_close = None
     for i in range(lo, n - 1):
         if _close(i):
-            if _short(i) and spoken_after[i] <= 1:
-                return i
+            if _short(i):
+                if spoken_after[i] <= 1:
+                    return i
+                # A real one-frame word (spoken words follow it): it never
+                # starts the cut, not even as the fallback below.
+                continue
             if first_close is None:
                 first_close = i
     return first_close

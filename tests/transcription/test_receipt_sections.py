@@ -228,6 +228,18 @@ def test_unclaimed_translation_placeholder_claims_no_mode(app_module):
     assert "targets" in section
 
 
+def test_translation_model_row_is_never_starred(app_module):
+    """TRANSLATION_DEFAULT_MODEL ships as "" and a translation cannot run
+    without a model, so a `*` against that baseline would mark every
+    translation receipt and never show a real override."""
+    block = _block(app_module, translation={
+        "targets": ["en"], "include_original": False,
+        "model": "org/HY-GGUF:Q4", "mode": "fluent"})
+    row = next(l for l in block.splitlines() if "translation_model" in l)
+    assert "org/HY-GGUF:Q4" in row
+    assert " *" not in row
+
+
 def test_task_renders_in_decode_params_with_the_non_default_marker(app_module):
     """`task` is the one kwarg that changes the output language, yet it was
     missing from both the order tuple and _KWARG_TO_CFG, so a translate run's
@@ -402,3 +414,28 @@ def test_translate_block_neutralises_a_forged_source_line(app_module):
     assert not any(l.startswith("2026-10-06") for l in block.splitlines())
     row = next(l for l in block.splitlines() if "source_lang" in l)
     assert "de?2026-10-06" in row
+
+
+# ---------------------------------------------------------------------------
+# Identity section
+# ---------------------------------------------------------------------------
+
+def test_identity_names_an_unreadable_binding_instead_of_every_field(app_module):
+    """A failed binding fetch locks every scalar field because the locks are
+    unknown: the receipt names the store fault, not a ~75-name locked list
+    or a misleading "no binding"."""
+    from faster_whisper_backend.settings import effective_config as ec
+    ident = ec.Resolved(locked=set(ec.SCALAR_OVERRIDE_FIELDS),
+                        binding_fault=True)
+    block = _block(app_module, ident=ident, user_id="u1")
+    rows = [l for l in block.splitlines() if l.lstrip().startswith(
+        ("locked", "overrides"))]
+    assert any("binding unreadable — all fields locked" in r for r in rows)
+    assert any("overrides" in r and "binding unreadable" in r for r in rows)
+    assert not any("inherits per-model / global" in r for r in rows)
+    assert all("BEAM_SIZE" not in r for r in rows)
+    # A real binding's locks are still listed by name.
+    ident = ec.Resolved(locked={"BEAM_SIZE"})
+    block = _block(app_module, ident=ident, user_id="u1")
+    assert any(l.lstrip().startswith("locked") and l.rstrip().endswith("BEAM_SIZE")
+               for l in block.splitlines())

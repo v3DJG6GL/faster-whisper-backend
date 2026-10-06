@@ -333,6 +333,9 @@ async def translate_text(request: Request,
     # finished by _record_run on every non-ok exit and by the success tail.
     _job_row = False
     _job_finished = False
+    # Set by the CancelledError arm: a disconnect (or shutdown) unwinds past
+    # every `except` arm that records the run, so the `finally` does it.
+    _aborted = False
     _hold_beat: "asyncio.Task | None" = None
     try:
         # Central running-jobs registry entry. Progress feeds in directly from
@@ -380,6 +383,37 @@ async def translate_text(request: Request,
             tx_progress._progress_set(_pid, stage="downloading", progress=frac,
                           total_bytes=total or None)
 
+        def _record_metrics(status: str, exc: "BaseException | None" = None,
+                            *, folded_into: "str | None" = None) -> None:
+            """The synchronous half of _record_run: the recent-jobs row and
+            the usage rollup. Also called from the `finally` for a
+            disconnect, where no await is safe."""
+            secs = round(time.perf_counter() - _t0, 3)
+            _ec, _es = metrics.classify_error(exc, status=status,
+                                              stage="translating")
+            metrics.record_transcription(
+                error_class=_ec,
+                error_stage=_es,
+                model=(_tr_model or ""),
+                audio_dur=0.0,
+                proc_dur=secs,
+                status=status,
+                words=0,
+                request_id=request_id,
+                user_id=(_uid or None),
+                key_id=user.get("key_id"),
+                username=user.get("username"),
+                key_label=user.get("key_label"),
+                kind="translate",
+                stages=[{"name": "translate", "secs": secs,
+                         "model": (_tr_model or None),
+                         "detail": f"{len(seg_in)} segs → {','.join(targets)}",
+                         "targets": list(targets)}],
+                job_id=_pid or request_id,
+                wait_s=metrics.take_wait(),
+                recent_row=folded_into is None,
+            )
+
         async def _record_run(status: str, exc: "BaseException | None" = None,
                               *, folded_into: "str | None" = None) -> None:
             """Persist this run as a recent-jobs row (kind='translate') on every
@@ -390,7 +424,6 @@ async def translate_text(request: Request,
             was appended to as a stage; then only the usage rollup is written
             here — a second recent-jobs row would show the one job twice."""
             nonlocal _job_finished
-            secs = round(time.perf_counter() - _t0, 3)
             _job_kw = None
             if _job_row and status != "ok":
                 # The success tail stamps `done` with the payload itself.
@@ -414,30 +447,7 @@ async def translate_text(request: Request,
                         _rplan.finish_run(status)   # no IO: nothing is learned
                     except Exception:  # noqa: BLE001 — never fail on a ledger write
                         pass
-                _ec, _es = metrics.classify_error(exc, status=status,
-                                                  stage="translating")
-                metrics.record_transcription(
-                    error_class=_ec,
-                    error_stage=_es,
-                    model=(_tr_model or ""),
-                    audio_dur=0.0,
-                    proc_dur=secs,
-                    status=status,
-                    words=0,
-                    request_id=request_id,
-                    user_id=(_uid or None),
-                    key_id=user.get("key_id"),
-                    username=user.get("username"),
-                    key_label=user.get("key_label"),
-                    kind="translate",
-                    stages=[{"name": "translate", "secs": secs,
-                             "model": (_tr_model or None),
-                             "detail": f"{len(seg_in)} segs → {','.join(targets)}",
-                             "targets": list(targets)}],
-                    job_id=_pid or request_id,
-                    wait_s=metrics.take_wait(),
-                    recent_row=folded_into is None,
-                )
+                _record_metrics(status, exc, folded_into=folded_into)
             finally:
                 if _job_kw is not None:
                     await tx_progress._jobs_finish(_pid, **_job_kw)
@@ -536,6 +546,12 @@ async def translate_text(request: Request,
                                            error="request aborted",
                                            model=(_tr_model or None))
         raise
+    except asyncio.CancelledError:
+        # A BaseException: none of the arms here see it. Flag it for the
+        # `finally`, which records the run as cancelled (same as the batch
+        # handler's CancelledError arm in main.py).
+        _aborted = True
+        raise
     except Exception as e:  # noqa: BLE001 — never forward raw errors
         logger.error("[translate] req=%s ✗ failed after %.1fs: %s",
                      request_id[:8], time.perf_counter() - _t0,
@@ -582,9 +598,22 @@ async def translate_text(request: Request,
         # above write off the loop; no await is safe in here). The success
         # path claims below, so it is excluded here.
         if _job_row and not _job_finished and not _receipt_claimed_below:
-            tx_progress._jobs_finish_sync(_pid, status="error", error="request aborted",
-                              model=(_tr_model or None))
+            tx_progress._jobs_finish_sync(
+                _pid, status=("cancelled" if _aborted else "error"),
+                error="request aborted", model=(_tr_model or None))
             _job_finished = True
+        if _aborted and not _receipt_claimed_below:
+            # The arms' _record_run, minus its awaits: without this an
+            # aborted run is missing from /stats and the usage rollup.
+            try:
+                _rplan.finish_run("cancelled")
+            except Exception:  # noqa: BLE001 — never fail on a ledger write
+                pass
+            try:
+                _record_metrics("cancelled")
+            except Exception:  # noqa: BLE001 — stats only
+                logger.exception("[translate] req=%s could not record the "
+                                 "aborted run", request_id[:8])
 
     _elapsed = time.perf_counter() - _t0
     # Cold model: everything up to the first progress callback is load (the

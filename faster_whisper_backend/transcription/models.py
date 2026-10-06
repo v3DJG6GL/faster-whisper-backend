@@ -187,10 +187,12 @@ _DECODE_STR_CAPS = {
 }
 # suppress_tokens is a list, so it gets a length cap plus a per-id range instead
 # of a scalar clamp. 256 ids is far more than any real suppression set; the range
-# is "any token id the tokenizer could hold", with -1 kept as faster-whisper's
-# "also suppress the non-speech set" sentinel.
+# is the Whisper vocabulary (the schema's bound, shared with the settings
+# validator), with -1 kept as faster-whisper's "also suppress the non-speech set"
+# sentinel. Not a looser int32 bound: an id far past the vocabulary segfaults
+# CTranslate2 and takes the whole server down.
 _SUPPRESS_TOKENS_MAX = 256
-_SUPPRESS_TOKEN_ID_MAX = 2 ** 31
+_SUPPRESS_TOKEN_ID_MAX = settings_schema.SUPPRESS_TOKEN_ID_MAX
 # A client temperature is a number or a retry ladder (list / comma string,
 # like TEMPERATURE): every rung clamped to this range, at most this many rungs.
 _TEMPERATURE_BOUNDS = (0.0, 1.0)
@@ -450,11 +452,17 @@ def assemble_transcribe_kwargs(resolved_model, model, *, language, temperature,
     if _suppress_tokens_str is not None:
         if _suppress_tokens_str.strip():
             try:
-                transcribe_kwargs["suppress_tokens"] = [
+                ids = [
                     int(t.strip()) for t in _suppress_tokens_str.split(",") if t.strip()
                 ]
             except ValueError:
-                pass
+                ids = []
+            # A value stored before the vocabulary bound existed (env, a
+            # legacy file) can still hold an id CTranslate2 crashes on: drop
+            # it here too. Nothing left in range means "not set", not a clear.
+            ids = [i for i in ids if -1 <= i < _SUPPRESS_TOKEN_ID_MAX]
+            if ids:
+                transcribe_kwargs["suppress_tokens"] = ids
         else:
             transcribe_kwargs["suppress_tokens"] = None
     # "" is an explicit "no punctuation splitting" (a cleared profile /
@@ -1067,7 +1075,12 @@ async def _get_or_load_model(name: str, *, lease: bool = False) -> "WhisperModel
         # _model_load_lock so concurrent loads can't pollute the delta.
         # Subsequent loads of the same size may under-report due to
         # CTranslate2's caching allocator (cached freed memory gets reused).
-        vram_before = system_stats.gpu_mem_used_bytes()
+        # Sampled on the card the model loads onto (its DEVICE_INDEX), not
+        # always GPU 0: on a two-GPU host the delta would otherwise be read
+        # on the wrong card.
+        _vram_index = (load_kwargs["device_index"]
+                       if isinstance(load_kwargs["device_index"], int) else 0)
+        vram_before = system_stats.gpu_mem_used_bytes(_vram_index)
         loaded_device = primary_device
         loaded_compute = primary_compute
         try:
@@ -1098,7 +1111,7 @@ async def _get_or_load_model(name: str, *, lease: bool = False) -> "WhisperModel
 
         load_secs = time.perf_counter() - load_t0
         metrics.record_model_load(name, load_secs)
-        vram_after = system_stats.gpu_mem_used_bytes()
+        vram_after = system_stats.gpu_mem_used_bytes(_vram_index)
         vram_delta = (vram_after - vram_before
                       if vram_before is not None and vram_after is not None
                       else None)
@@ -1268,6 +1281,11 @@ async def _idle_evictor() -> None:
                 if name not in _loaded_models:
                     continue
                 if model_registry.is_warm(name):
+                    continue
+                # A leased model mid-decode reads as stale every tick; skip it
+                # here so the tick neither takes the load lock nor logs a
+                # deferred eviction for it (the lease release resets its clock).
+                if _model_leases.get(name, 0) > 0:
                     continue
                 last = info.get("last_used_monotonic", now)
                 if now - last >= timeout:
