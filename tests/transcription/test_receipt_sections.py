@@ -212,6 +212,22 @@ def test_stage_params_can_be_marked_non_default(app_module):
     assert row.rstrip().endswith("*")
 
 
+def test_unclaimed_translation_placeholder_claims_no_mode(app_module):
+    """A held receipt released without its translation still carries the
+    streaming placeholder's model/mode None: the translation never ran, so
+    no `mode (none) *` row may read as a caller override."""
+    block = _block(app_module, translation={
+        "targets": ["en"], "include_original": False,
+        "model": None, "mode": None})
+    assert "─── Translation" in block
+    lines = block.splitlines()
+    start = next(i for i, l in enumerate(lines) if "─── Translation" in l)
+    end = next(i for i in range(start + 1, len(lines)) if "───" in lines[i])
+    section = "\n".join(lines[start + 1:end])
+    assert "mode" not in section and "translation_model" not in section
+    assert "targets" in section
+
+
 def test_task_renders_in_decode_params_with_the_non_default_marker(app_module):
     """`task` is the one kwarg that changes the output language, yet it was
     missing from both the order tuple and _KWARG_TO_CFG, so a translate run's

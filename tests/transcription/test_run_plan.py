@@ -23,7 +23,7 @@ class Clock:
 @pytest.fixture
 def ledger(tmp_path, monkeypatch):
     monkeypatch.setattr(stage_rates, "PATH",
-                        str(tmp_path / "stage_rates.json"), raising=False)
+                        str(tmp_path / "stage_rates.json"))
     stage_rates._reset_for_tests()
     yield
     stage_rates._reset_for_tests()
@@ -476,6 +476,27 @@ def test_warmup_phases_do_not_fill_by_the_clock(ledger, clock):
     p.tick(stage="transcribing")
     clock.advance(10)
     assert p.snapshot()["overall"] > base
+
+
+def test_eta_projection_leaves_the_warm_up_out(ledger, clock):
+    """Once the decoder reports, the ETA projects from decode time only: a
+    40 s VAD pass spread over the first 10 % decoded would read as a decode
+    ten times slower than it is."""
+    p = _plan(clock)
+    p.set_audio_seconds(3600.0, src="decoder")
+    p.tick(stage="waiting")
+    clock.advance(5)
+    p.tick(stage="analyzing")
+    clock.advance(40)
+    hold = p.snapshot()["eta_s"]
+    assert hold == pytest.approx(600.0, abs=0.5)        # the warm-up hold
+    p.tick(stage="transcribing", progress=0.0)
+    clock.advance(5)
+    p.tick(stage="transcribing", progress=0.05)
+    assert p.snapshot()["eta_s"] <= hold                # no jump up
+    clock.advance(5)
+    p.tick(stage="transcribing", progress=0.10)
+    assert p.snapshot()["eta_s"] == pytest.approx(90.0, abs=0.5)
 
 
 def test_skipped_and_failed_stages(ledger, clock):

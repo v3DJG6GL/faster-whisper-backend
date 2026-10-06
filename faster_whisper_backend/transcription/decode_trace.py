@@ -232,6 +232,16 @@ class DecodeTrace:
             w["secs"] = rung.get("secs")
 
 
+def residual_stop_active(kwargs: "dict | None", skip: bool) -> bool:
+    """The residual-window stop as actually applied: an active
+    hallucination_silence_threshold (with word timestamps) turns it off,
+    its re-seek starts a window after a short one. The receipt logs THIS,
+    not the requested value."""
+    kw = kwargs or {}
+    return bool(skip) and not (kw.get("hallucination_silence_threshold")
+                               and kw.get("word_timestamps"))
+
+
 @contextlib.contextmanager
 def capture(kwargs: "dict | None" = None, *, skip_residual: bool = False,
             token_cap_per_s: float = 0.0):
@@ -246,8 +256,7 @@ def capture(kwargs: "dict | None" = None, *, skip_residual: bool = False,
     hallucination_silence_threshold turns ``skip_residual`` off (its re-seek
     starts a window after a short one; module docstring)."""
     kw = kwargs or {}
-    if kw.get("hallucination_silence_threshold") and kw.get("word_timestamps"):
-        skip_residual = False
+    skip_residual = residual_stop_active(kw, skip_residual)
     tr = DecodeTrace(
         no_speech_threshold=kw.get("no_speech_threshold"),
         log_prob_threshold=kw.get("log_prob_threshold"),

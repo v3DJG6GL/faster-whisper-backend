@@ -59,6 +59,50 @@ def test_lock_wait_is_not_billed_as_load_time(monkeypatch):
         model_registry._loaded_models.clear()
 
 
+def test_cancel_during_register_keeps_the_model_cached_and_frees_the_lease(
+        monkeypatch):
+    """The registry write runs on a thread a cancellation cannot stop: the
+    model must already be cached by then (no phantom registry entry), and
+    the lease the cancelled caller will never release is given back."""
+    import threading
+    _stub_load(monkeypatch)
+    monkeypatch.setattr(tx_models, "_model_load_lock", asyncio.Lock())
+    entered, go = threading.Event(), threading.Event()
+    real_register = model_registry.register_loaded_model
+
+    def _slow_register(*a, **kw):
+        entered.set()
+        go.wait(5)
+        real_register(*a, **kw)
+    monkeypatch.setattr(model_registry, "register_loaded_model",
+                        _slow_register)
+
+    async def run():
+        task = asyncio.create_task(
+            tx_models._get_or_load_model("x", lease=True))
+        while not entered.is_set():
+            await asyncio.sleep(0.01)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        go.set()
+        while "x" not in model_registry._loaded_models:
+            await asyncio.sleep(0.01)
+
+    try:
+        asyncio.run(run())
+        assert "x" in tx_models._loaded_models
+        assert "x" in model_registry._loaded_models
+        assert tx_models._model_leases.get("x", 0) == 0
+    finally:
+        go.set()
+        tx_models._model_leases.pop("x", None)
+        tx_models._loaded_models.clear()
+        model_registry._loaded_models.clear()
+
+
 def test_hardware_change_during_a_queued_load_reaches_the_constructor(
         monkeypatch):
     """A MODEL_DEVICE change saved while a cold load is still downloading or
@@ -114,8 +158,11 @@ def _register_stale(name):
 
 
 def test_evictor_does_not_claim_an_unload_it_was_refused(monkeypatch, caplog):
+    import gc
     _register_stale("a")
     tx_models._model_leases["a"] = 1
+    collected = []
+    monkeypatch.setattr(gc, "collect", lambda *a: collected.append(1))
     try:
         with caplog.at_level(logging.INFO, logger="whisper-api"):
             _run_one_evictor_tick(monkeypatch)
@@ -123,6 +170,8 @@ def test_evictor_does_not_claim_an_unload_it_was_refused(monkeypatch, caplog):
         msgs = [r.getMessage() for r in caplog.records]
         assert not any("[idle-evict] unload" in m for m in msgs)
         assert any("eviction deferred" in m for m in msgs)
+        # Nothing was unloaded, so nothing to reclaim: no full gc on the loop.
+        assert collected == []
     finally:
         tx_models._model_leases.pop("a", None)
         tx_models._loaded_models.clear()
@@ -130,12 +179,16 @@ def test_evictor_does_not_claim_an_unload_it_was_refused(monkeypatch, caplog):
 
 
 def test_evictor_logs_the_unload_it_performed(monkeypatch, caplog):
+    import gc
     _register_stale("b")
     tx_models._model_leases.pop("b", None)
+    collected = []
+    monkeypatch.setattr(gc, "collect", lambda *a: collected.append(1))
     try:
         with caplog.at_level(logging.INFO, logger="whisper-api"):
             _run_one_evictor_tick(monkeypatch)
         assert "b" not in tx_models._loaded_models
+        assert collected == [1]
         assert any("[idle-evict] unloaded b after 1s idle" == r.getMessage()
                    for r in caplog.records)
     finally:

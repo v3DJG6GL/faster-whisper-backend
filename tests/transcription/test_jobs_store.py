@@ -268,6 +268,71 @@ def test_delete_and_clear(db):
     assert db.clear_all() == 1 and db.count() == 0
 
 
+def test_delete_finished_only_spares_a_running_row(db):
+    a = _start(db, job_id="a" * 32)
+    assert db.delete(a, finished_only=True) is False
+    assert db.get(a)["state"] == "running"
+    db.finish(job_id=a, state="failed", error="x", ttl_s=_TTL)
+    assert db.delete(a, finished_only=True) is True
+
+
+def test_patch_result_patches_outside_the_lock_and_retries_a_lost_race(db):
+    a = _start(db, job_id="a" * 32)
+    db.finish(job_id=a, state="done", result={"text": "hi", "n": 0},
+              ttl_s=_TTL)
+    calls = []
+
+    def _patch(payload):
+        # The JSON work runs without the writer lock held …
+        assert not db._lock._is_owned()
+        calls.append(dict(payload))
+        if len(calls) == 1:
+            # … so a writer can land in between: this patch must not clobber
+            # it, and is re-applied on the fresh payload.
+            db.finish(job_id=a, state="done", result={"text": "hi", "n": 1},
+                      ttl_s=_TTL)
+        payload["video"] = True
+        return True
+    assert db.patch_result(a, _patch) is True
+    assert [c["n"] for c in calls] == [0, 1]
+    assert db.get_result(a) == {"text": "hi", "n": 1, "video": True}
+
+
+def test_jobs_start_async_keeps_the_loop_free_while_the_lock_is_held(db):
+    import asyncio
+    import threading
+    from faster_whisper_backend.transcription import progress as tx_progress
+    held, release = threading.Event(), threading.Event()
+
+    def _holder():
+        with db._lock:
+            held.set()
+            release.wait(5)
+    threading.Thread(target=_holder, daemon=True).start()
+    assert held.wait(5)
+
+    async def _main():
+        gaps, last = [], time.monotonic()
+
+        async def _ticker():
+            nonlocal last
+            while True:
+                await asyncio.sleep(0.01)
+                now = time.monotonic()
+                gaps.append(now - last)
+                last = now
+        tick = asyncio.create_task(_ticker())
+        asyncio.get_running_loop().call_later(0.3, release.set)
+        ok = await tx_progress._jobs_start_async(
+            "a" * 32, request_id="req", kind="transcribe", user_id="u1",
+            key_id=None, model="m", source_kind="file", source_name="a")
+        tick.cancel()
+        return ok, gaps
+    ok, gaps = asyncio.run(_main())
+    assert ok is True and db.get("a" * 32)["state"] == "running"
+    assert len(gaps) >= 10 and max(gaps) < 0.2
+
+
 def test_sweep_retention_reads_live_config(db, monkeypatch):
     """A lowered row / byte cap applies on the next sweep tick."""
     from faster_whisper_backend.settings import config as cfg

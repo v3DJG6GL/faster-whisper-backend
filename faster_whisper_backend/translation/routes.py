@@ -204,7 +204,8 @@ async def translate_text(request: Request,
             if not _TRANSLATE_CODE_RE.match(code):
                 raise HTTPException(
                     status_code=422,
-                    detail=f"targets contains an invalid language code: {t!r}")
+                    detail=f"targets contains an invalid language code: "
+                           f"{str(t)[:40]!r}")
             if code.lower() not in _seen:
                 _seen.add(code.lower())
                 targets.append(code)
@@ -296,9 +297,12 @@ async def translate_text(request: Request,
     _t0 = time.perf_counter()
     # Heartbeat + load-time bookkeeping shared with the progress wrapper.
     # first_cb approximates "model ready" — good enough to split load from
-    # infer on the completion line when the model was cold.
-    _hb = {"last_log": _t0, "last_pct": 0, "first_cb": None}
-    _was_loaded = _tr.is_resident(_tr_model)
+    # infer on the completion line when the model was cold. t_ready /
+    # was_loaded are stamped once the GPU slot is held (_mark_ready): the
+    # queue before it is wait (metrics.take_wait reports it), not load, and
+    # the model can be evicted while the request queues.
+    _hb = {"last_log": _t0, "last_pct": 0, "first_cb": None,
+           "t_ready": _t0, "was_loaded": True}
     # Take the in-flight slot HERE rather than next to the rate check at
     # the top: a dozen `raise HTTPException` validation exits sit between
     # the two, and each one would have to remember to release a slot it
@@ -306,7 +310,7 @@ async def translate_text(request: Request,
     # one path out.
     metrics.seed_wait()
     try:
-        _translate_inflight.acquire(_inflight_key)
+        _took_slot = _translate_inflight.acquire(_inflight_key)
     except HTTPException:
         # Outside the try below, so the generic `except HTTPException`
         # release there never sees this refusal — without this the parked
@@ -316,8 +320,10 @@ async def translate_text(request: Request,
         raise
     # Set only AFTER a successful acquire — the acquire itself sits
     # outside the try, so a refused request never releases a slot it does
-    # not hold.
-    _inflight_held: "str | None" = _inflight_key
+    # not hold. acquire() returns False when the cap is off: nothing was
+    # counted, and a release after the cap was raised would free someone
+    # else's slot.
+    _inflight_held: "str | None" = _inflight_key if _took_slot else None
     # Set once the translation itself has returned. From that point the
     # success path below OWNS the held receipt and will claim it — and the
     # claim happens after the finally, so the finally has to know not to
@@ -374,8 +380,8 @@ async def translate_text(request: Request,
             tx_progress._progress_set(_pid, stage="downloading", progress=frac,
                           total_bytes=total or None)
 
-        def _record_run(status: str, exc: "BaseException | None" = None,
-                        *, folded_into: "str | None" = None) -> None:
+        async def _record_run(status: str, exc: "BaseException | None" = None,
+                              *, folded_into: "str | None" = None) -> None:
             """Persist this run as a recent-jobs row (kind='translate') on every
             terminal path. No audio duration; segment count lives in the stage
             detail (words=0 — a segment count is not a word count).
@@ -385,48 +391,56 @@ async def translate_text(request: Request,
             here — a second recent-jobs row would show the one job twice."""
             nonlocal _job_finished
             secs = round(time.perf_counter() - _t0, 3)
+            _job_kw = None
             if _job_row and status != "ok":
                 # The success tail stamps `done` with the payload itself.
-                tx_progress._jobs_finish_sync(
-                    _pid, status=status,
+                # Written off the loop in the `finally` below (jobs_store's
+                # lock can be held by a worker thread); flagged now so the
+                # handler's catch-all never writes a second terminal state.
+                _job_kw = dict(
+                    status=status,
                     error=(str(exc) if isinstance(exc, _tr.TranslationError)
                            else tx_progress._job_error_text(status, exc,
                                                 "translation failed")),
                     plan=_rplan.snapshot()["plan"], model=(_tr_model or None))
                 _job_finished = True
-            if status == "ok":
-                # The clean run's ledger write is blocking file IO: the
-                # success tail awaits it off the loop as its last step.
-                _rplan.stage_done("translating")
-            else:
-                try:
-                    _rplan.finish_run(status)   # no IO: nothing is learned
-                except Exception:  # noqa: BLE001 — never fail on a ledger write
-                    pass
-            _ec, _es = metrics.classify_error(exc, status=status,
-                                              stage="translating")
-            metrics.record_transcription(
-                error_class=_ec,
-                error_stage=_es,
-                model=(_tr_model or ""),
-                audio_dur=0.0,
-                proc_dur=secs,
-                status=status,
-                words=0,
-                request_id=request_id,
-                user_id=(_uid or None),
-                key_id=user.get("key_id"),
-                username=user.get("username"),
-                key_label=user.get("key_label"),
-                kind="translate",
-                stages=[{"name": "translate", "secs": secs,
-                         "model": (_tr_model or None),
-                         "detail": f"{len(seg_in)} segs → {','.join(targets)}",
-                         "targets": list(targets)}],
-                job_id=_pid or request_id,
-                wait_s=metrics.take_wait(),
-                recent_row=folded_into is None,
-            )
+            try:
+                if status == "ok":
+                    # The clean run's ledger write is blocking file IO: the
+                    # success tail awaits it off the loop as its last step.
+                    _rplan.stage_done("translating")
+                else:
+                    try:
+                        _rplan.finish_run(status)   # no IO: nothing is learned
+                    except Exception:  # noqa: BLE001 — never fail on a ledger write
+                        pass
+                _ec, _es = metrics.classify_error(exc, status=status,
+                                                  stage="translating")
+                metrics.record_transcription(
+                    error_class=_ec,
+                    error_stage=_es,
+                    model=(_tr_model or ""),
+                    audio_dur=0.0,
+                    proc_dur=secs,
+                    status=status,
+                    words=0,
+                    request_id=request_id,
+                    user_id=(_uid or None),
+                    key_id=user.get("key_id"),
+                    username=user.get("username"),
+                    key_label=user.get("key_label"),
+                    kind="translate",
+                    stages=[{"name": "translate", "secs": secs,
+                             "model": (_tr_model or None),
+                             "detail": f"{len(seg_in)} segs → {','.join(targets)}",
+                             "targets": list(targets)}],
+                    job_id=_pid or request_id,
+                    wait_s=metrics.take_wait(),
+                    recent_row=folded_into is None,
+                )
+            finally:
+                if _job_kw is not None:
+                    await tx_progress._jobs_finish(_pid, **_job_kw)
 
         # `owner` binds the entry to this caller, exactly like the batch
         # seed — the progress/cancel endpoints treat a mismatch as unknown.
@@ -442,7 +456,7 @@ async def translate_text(request: Request,
                       model=(_tr_model or None),
                       device=_tr._resolve_device(), compute="gguf",
                       owner=(user.get("user_id") or user.get("key_id")))
-        _job_row = tx_progress._jobs_start(
+        _job_row = await tx_progress._jobs_start_async(
             _pid, request_id=request_id, kind="translate",
             user_id=(user.get("user_id") or None), key_id=user.get("key_id"),
             model=(_tr_model or None), source_kind="text",
@@ -467,6 +481,10 @@ async def translate_text(request: Request,
             # CPU run must not occupy a GPU slot for its duration.
             _on_gpu = _tr._resolve_device() == "cuda"
             _queued = {"waiting": _on_gpu}
+
+            def _mark_ready():
+                _hb["t_ready"] = time.perf_counter()
+                _hb["was_loaded"] = _tr.is_resident(_tr_model)
             if _held_key:
                 # The held receipt is an IDLE timer only progress restamps:
                 # queued behind long batch runs, or loading a model from a
@@ -484,8 +502,10 @@ async def translate_text(request: Request,
                 async with tx_models.get_inference_semaphore():
                     _queued["waiting"] = False
                     tx_progress._check_cancelled(_pid)
+                    _mark_ready()
                     per_seg, warnings, meta = await _run_translation()
             else:
+                _mark_ready()
                 per_seg, warnings, meta = await _run_translation()
             _receipt_claimed_below = True
         except _tr.TranslationCancelled:
@@ -496,7 +516,7 @@ async def translate_text(request: Request,
         tx_receipt._release_held_receipt(
             _held_key,
             f"cancelled by client after {time.perf_counter() - _t0:.1f}s")
-        _record_run("cancelled")
+        await _record_run("cancelled")
         raise HTTPException(status_code=499, detail="cancelled by the client")
     except _tr.TranslationError as e:
         # str(e) is client-safe by the module's contract.
@@ -506,10 +526,15 @@ async def translate_text(request: Request,
         tx_receipt._release_held_receipt(
             _held_key,
             f"failed after {time.perf_counter() - _t0:.1f}s — {_log_safe(str(e))}")
-        _record_run("error", e)
+        await _record_run("error", e)
         raise HTTPException(status_code=400, detail=str(e))
     except HTTPException:
         tx_receipt._release_held_receipt(_held_key, "request rejected")
+        if _job_row and not _job_finished:
+            _job_finished = True
+            await tx_progress._jobs_finish(_pid, status="error",
+                                           error="request aborted",
+                                           model=(_tr_model or None))
         raise
     except Exception as e:  # noqa: BLE001 — never forward raw errors
         logger.error("[translate] req=%s ✗ failed after %.1fs: %s",
@@ -518,7 +543,7 @@ async def translate_text(request: Request,
         tx_receipt._release_held_receipt(
             _held_key,
             f"failed after {time.perf_counter() - _t0:.1f}s")
-        _record_run("error", e)
+        await _record_run("error", e)
         raise HTTPException(status_code=500, detail="translation failed")
     finally:
         # Release FIRST — before any await and before job_end. A client
@@ -553,9 +578,9 @@ async def translate_text(request: Request,
         if _pid:
             tx_progress._progress_close(_pid)
             tx_progress._RUN_PLAN_BY_PID.pop(_pid, None)
-        # Catch-all for the paths that never reached _record_run: the
-        # HTTPException arm and a disconnect unwinding past every arm. The
-        # success path claims below, so it is excluded here.
+        # Catch-all for a disconnect unwinding past every arm (the arms
+        # above write off the loop; no await is safe in here). The success
+        # path claims below, so it is excluded here.
         if _job_row and not _job_finished and not _receipt_claimed_below:
             tx_progress._jobs_finish_sync(_pid, status="error", error="request aborted",
                               model=(_tr_model or None))
@@ -564,8 +589,9 @@ async def translate_text(request: Request,
     _elapsed = time.perf_counter() - _t0
     # Cold model: everything up to the first progress callback is load (the
     # cache layer logs the exact load line too); warm model: all infer.
-    _load_s = (max(0.0, _hb["first_cb"] - _t0)
-               if (not _was_loaded and _hb["first_cb"] is not None) else 0.0)
+    _load_s = (max(0.0, _hb["first_cb"] - _hb["t_ready"])
+               if (not _hb["was_loaded"] and _hb["first_cb"] is not None)
+               else 0.0)
     _chars_out = sum(len(t) for d in per_seg for t in d.values())
     logger.info(
         "[translate] req=%s ✓ done in %.1fs (load %.1fs · infer %.1fs) · "
@@ -604,7 +630,7 @@ async def translate_text(request: Request,
                     _folded_into = str(_held["request_id"])
             except Exception as _fe:  # noqa: BLE001 — a stats miss never fails the request
                 logger.warning("[translate] could not fold into utterance row: %s", _fe)
-    _record_run("ok", folded_into=_folded_into)
+    await _record_run("ok", folded_into=_folded_into)
 
     if _held_key:
         if _held is not None:

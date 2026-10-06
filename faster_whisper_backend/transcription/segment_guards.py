@@ -123,8 +123,12 @@ def _burst_cut(words, limit: float) -> int | None:
     the first word of the pile: the first word in that window whose gap to the
     next word is below 1/limit s AND which is itself zero-length or squeezed
     below 0.07 s. Real words inside the look-back second stay — those with
-    normal gaps, and fast short ones too (a spoken word has a length). Only
-    when no close word looks made up does the first close word start the cut."""
+    normal gaps, and fast short ones too (a spoken word has a length). The
+    cut is tail-anchored: a squeezed word with two or more spoken words
+    (normal length AND normal gap) after it is a real one-frame word, not the
+    pile's start — one such word is the absorber the leftover audio went to
+    (``zu → nehmen(0) → und → pile``). Only when no close word looks made up
+    does the first close word start the cut."""
     if not limit or limit <= 0 or len(words) < 2:
         return None
     t_last = _start(words[-1])
@@ -133,10 +137,23 @@ def _burst_cut(words, limit: float) -> int | None:
     if len(words) - lo <= limit:
         return None
     gap = 1.0 / float(limit)
+    n = len(words)
+
+    def _close(i: int) -> bool:
+        return _start(words[i + 1]) - _start(words[i]) < gap
+
+    def _short(i: int) -> bool:
+        return (_end(words[i]) - _start(words[i])) < _BURST_REAL_MIN_S
+
+    # spoken_after[i]: spoken words (not close, not short) after word i.
+    spoken_after = [0] * n
+    for i in range(n - 3, lo - 1, -1):
+        j = i + 1
+        spoken_after[i] = spoken_after[j] + (not _close(j) and not _short(j))
     first_close = None
-    for i in range(lo, len(words) - 1):
-        if _start(words[i + 1]) - _start(words[i]) < gap:
-            if (_end(words[i]) - _start(words[i])) < _BURST_REAL_MIN_S:
+    for i in range(lo, n - 1):
+        if _close(i):
+            if _short(i) and spoken_after[i] <= 1:
                 return i
             if first_close is None:
                 first_close = i
@@ -187,10 +204,13 @@ def _repeat_cut(keys: list[str], min_repeats: int) -> int | None:
     the first copy, cut the rest. A repeat in the middle of a segment (a song
     refrain) is left alone: a missing-end-of-text loop always runs to the end.
     The smallest period wins, so "Neue Zeile" ×6 is period 2, not a 4-word
-    phrase ×3, and is never touched."""
+    phrase ×3, and is never touched — but only over a run at least as long:
+    a doubled last word inside a looped 4-word phrase ("das ist gut gut" ×3)
+    is a short run, not the loop's primitive period."""
     n = len(keys)
     if not min_repeats or min_repeats < 2 or n < _REPEAT_MIN_PHRASE_WORDS * min_repeats:
         return None
+    short_run = 0                   # longest qualifying short-phrase run
     for p in range(1, min(_REPEAT_MAX_PERIOD, n // min_repeats) + 1):
         i = n - p - 1
         while i >= 0 and keys[i] == keys[i + p]:
@@ -198,8 +218,9 @@ def _repeat_cut(keys: list[str], min_repeats: int) -> int | None:
         run = n - 1 - i             # words covered by the periodic run
         if run >= min_repeats * p:
             if p < _REPEAT_MIN_PHRASE_WORDS:
-                return None         # primitive period is a short phrase
-            return n - run + p
+                short_run = max(short_run, run)
+            elif run > short_run:
+                return n - run + p
     return None
 
 

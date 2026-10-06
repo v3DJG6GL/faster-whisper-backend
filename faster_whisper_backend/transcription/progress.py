@@ -186,6 +186,27 @@ def _jobs_start(pid: "str | None", *, request_id: str, kind: str,
         return False
 
 
+async def _jobs_start_async(pid: "str | None", **kw) -> bool:
+    """Off-loop `_jobs_start`: the insert takes jobs_store's lock, which a
+    worker thread can hold for a while (a big finish, patch_result, the
+    hourly prune) — on the loop that would stall every request and stream.
+    A cancellation landing on the await cannot stop the insert already on
+    the thread, and the caller never learns it has a row to finish, so the
+    row is closed here once the insert lands."""
+    if not pid or not _jobs_enabled():
+        return False
+    fut = asyncio.ensure_future(asyncio.to_thread(_jobs_start, pid, **kw))
+    try:
+        return await asyncio.shield(fut)
+    except asyncio.CancelledError:
+        def _close(f: "asyncio.Future") -> None:
+            if not f.cancelled() and f.exception() is None and f.result():
+                f.get_loop().run_in_executor(None, lambda: _jobs_finish_sync(
+                    pid, status="error", error="request aborted"))
+        fut.add_done_callback(_close)
+        raise
+
+
 def _job_error_text(status: str, exc: "BaseException | None",
                     fallback: str = "transcription failed") -> "str | None":
     """Client-safe error for a job row: a curated 4xx detail verbatim, any

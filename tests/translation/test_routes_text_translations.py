@@ -5,8 +5,6 @@ test_diarization pattern)."""
 
 import logging
 import re
-import threading
-import time
 
 import pytest
 
@@ -168,9 +166,9 @@ def test_per_minute_backstop_429s_and_releases_the_held_receipt(
 
 def _open_key():
     """The identity a request from the open-mode `client` fixture resolves to
-    — the synthetic admin's user_id."""
-    from faster_whisper_backend.auth import api_keys_store
-    return api_keys_store.OPEN_MODE_USER["user_id"]
+    — its loopback client host (conftest `client` binds 127.0.0.1); the
+    "(open-mode)" sentinel is not charged, see rate_limit.identity_key."""
+    return "127.0.0.1"
 
 
 def test_inflight_cap_rejects_when_the_identity_is_full(client, app_module,
@@ -326,11 +324,13 @@ def test_targets_cap_fires_before_the_whole_list_is_walked(client, app_module,
     monkeypatch.setattr(app_module.cfg, "TRANSLATION_MAX_TARGETS", 2)
     calls = []
     _stub_translate(monkeypatch, calls=calls)
-    many = [f"ab-{i:04d}" for i in range(10_000)]
-    t0 = time.monotonic()
-    r = client.post(URL, json=_body(targets=many))
-    assert r.status_code == 422 and "capped at" in r.json()["detail"]
-    assert time.monotonic() - t0 < 2.0
+    # The invalid entry sits AFTER the code that trips the cap: only an
+    # in-loop cap answers "capped at" — a cap checked after the walk would
+    # reach the int first and answer "invalid language code".
+    r = client.post(URL, json=_body(targets=["en", "fr", "de", 5]))
+    assert r.status_code == 422
+    assert "capped at" in r.json()["detail"]
+    assert "invalid" not in r.json()["detail"]
     r = client.post(URL, json=_body(targets=["en", "fr", "en", "fr"]))
     assert r.status_code == 200, r.text
     assert calls[-1]["targets"] == ["en", "fr"]
@@ -396,12 +396,46 @@ def test_ok_run_stamps_its_job_row_off_the_event_loop(client, app_module,
             on_loop = True
         except RuntimeError:
             on_loop = False
-        seen.append((kw.get("state"), on_loop, threading.current_thread().name))
+        seen.append((kw.get("state"), on_loop))
         return _orig(**kw)
     monkeypatch.setattr(jobs_store, "finish", _spy)
     r = client.post(URL, json=_body(progress_id=_PID))
     assert r.status_code == 200, r.text
-    assert [(st, on_loop) for st, on_loop, _ in seen] == [("done", False)]
+    assert seen == [("done", False)]
+
+
+def test_cold_load_excludes_the_gpu_queue_wait(client, app_module,
+                                               monkeypatch, caplog):
+    """load = slot held → first progress callback. The GpuGate queue before
+    it is wait (metrics.take_wait reports it), never load."""
+    import asyncio
+    import contextlib
+
+    from faster_whisper_backend.transcription import models as tx_models
+    _enable(app_module, monkeypatch)
+    monkeypatch.setattr(translation, "_resolve_device", lambda: "cuda")
+    monkeypatch.setattr(translation, "is_resident", lambda ref: False)
+
+    @contextlib.asynccontextmanager
+    async def _busy_gate():
+        await asyncio.sleep(0.6)            # queued behind batch runs
+        yield
+    monkeypatch.setattr(tx_models, "get_inference_semaphore", _busy_gate)
+
+    async def _cold(segments, targets, *, progress_cb=None, **kwargs):
+        await asyncio.sleep(0.1)            # the model load
+        progress_cb(1.0)
+        per_seg = [{t: f"{seg['text']}-{t}" for t in targets}
+                   for seg in segments]
+        return per_seg, [], {"model": "org/d:Q4", "source": "", "mode": "fluent"}
+    monkeypatch.setattr(translation, "translate_segments", _cold)
+    with caplog.at_level(logging.INFO, logger="whisper-api"):
+        r = client.post(URL, json=_body())
+    assert r.status_code == 200, r.text
+    done = [m for m in (rec.getMessage() for rec in caplog.records)
+            if "✓ done in" in m]
+    load = float(re.search(r"\(load ([\d.]+)s", done[0]).group(1))
+    assert 0.05 <= load < 0.5, done[0]
 
 
 def test_held_receipt_survives_a_queued_translation(client, app_module,
@@ -613,10 +647,13 @@ def test_inflight_refusal_releases_the_held_receipt(client, app_module,
     """The in-flight acquire sits OUTSIDE the handler's try, so its 429 never
     reached the `except HTTPException` release. The parked dictation receipt
     must still be released — not left for the sweeper to log 90 s later."""
+    from faster_whisper_backend.transcription import receipt as tx_receipt
     from faster_whisper_backend.transcription import receipt_hold
 
     _enable(app_module, monkeypatch)
     _stub_translate(monkeypatch)
+    logged = []
+    monkeypatch.setattr(tx_receipt, "_log_held_receipts", logged.extend)
     gauge = tr_routes._translate_inflight
     for _ in range(int(app_module.cfg.TRANSLATE_MAX_INFLIGHT_PER_USER)):
         gauge.acquire(_open_key())
@@ -627,6 +664,8 @@ def test_inflight_refusal_releases_the_held_receipt(client, app_module,
         r = client.post(URL, json=_body(captured_id="cap1"))
         assert r.status_code == 429
         assert receipt_hold.pending() == 0
+        assert len(logged) == 1               # handed back, not dropped
+        assert any("too many in flight" in n for n in logged[0]["skipped"])
     finally:
         gauge.clear()
         receipt_hold._reset_for_tests()

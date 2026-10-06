@@ -314,30 +314,39 @@ def finish(
 
 
 def patch_result(job_id: str, patch: Callable[[dict], bool]) -> bool:
-    """Read-modify-write a `done` row's dict payload under the writer lock.
-    `patch` mutates the payload in place and returns whether it changed
-    anything. `finished_ts` / `expires_ts` stay as finish() stamped them: a
-    late addition (the kept video) is not a new finish. False when the row
-    is gone, not `done`, holds no dict payload, or `patch` declined."""
+    """Read-modify-write a `done` row's dict payload. `patch` mutates the
+    payload in place and returns whether it changed anything.
+    `finished_ts` / `expires_ts` stay as finish() stamped them: a late
+    addition (the kept video) is not a new finish. False when the row is
+    gone, not `done`, holds no dict payload, or `patch` declined.
+
+    The decode / patch / encode of a payload that can be megabytes runs
+    OUTSIDE `_lock` (an event-loop job start waits on it); the UPDATE then
+    lands only if the stored blob is still the one patched, and a lost race
+    re-reads and patches again."""
     conn = _require_conn()
-    with _lock:
+    for _ in range(3):
         row = conn.execute(
             "SELECT state, result_json FROM jobs WHERE job_id = ?",
             (job_id,)).fetchone()
         if row is None or row["state"] != "done" or not row["result_json"]:
             return False
+        old_blob = row["result_json"]
         try:
-            payload = json.loads(row["result_json"])
+            payload = json.loads(old_blob)
         except ValueError:
             return False
         if not isinstance(payload, dict) or not patch(payload):
             return False
         blob = json.dumps(payload, ensure_ascii=False)
-        cur = conn.execute(
-            "UPDATE jobs SET result_json = ?, result_bytes = ? "
-            "WHERE job_id = ? AND state = 'done'",
-            (blob, len(blob.encode("utf-8")), job_id))
-        return bool(cur.rowcount)
+        with _lock:
+            cur = conn.execute(
+                "UPDATE jobs SET result_json = ?, result_bytes = ? "
+                "WHERE job_id = ? AND state = 'done' AND result_json = ?",
+                (blob, len(blob.encode("utf-8")), job_id, old_blob))
+        if cur.rowcount:
+            return True
+    return False
 
 
 def get(job_id: str, *, side_blobs: bool = False) -> dict[str, Any] | None:
@@ -421,10 +430,16 @@ def list_jobs(
     return [_row_to_dict(r) for r in rows]
 
 
-def delete(job_id: str) -> bool:
+def delete(job_id: str, *, finished_only: bool = False) -> bool:
+    """Drop the row and its result. `finished_only` leaves a `running` row
+    alone (the DELETE route: a same-id re-post may have flipped the row it
+    read as finished back to running)."""
     conn = _require_conn()
     with _lock:
-        cur = conn.execute("DELETE FROM jobs WHERE job_id = ?", (job_id,))
+        cur = conn.execute(
+            "DELETE FROM jobs WHERE job_id = ?"
+            + (" AND state != 'running'" if finished_only else ""),
+            (job_id,))
         return bool(cur.rowcount)
 
 

@@ -191,7 +191,11 @@ def test_validation_reject_releases_the_parked_receipt(client, app_module,
                                                        monkeypatch):
     """Every validation exit of the translate endpoint (422/413/429/400) must
     hand a parked dictation receipt back NOW — not leave it for the idle
-    sweeper to log ~90 s later with a 'no result within' note."""
+    sweeper to log ~90 s later with a 'no result within' note. "Back"
+    means LOGGED with the reason — popped and dropped would be lost."""
+    from faster_whisper_backend.transcription import receipt as tx_receipt
+    logged = []
+    monkeypatch.setattr(tx_receipt, "_log_held_receipts", logged.extend)
     monkeypatch.setattr(app_module.cfg, "TRANSLATION_ENABLED", True,
                         raising=False)
     receipt_hold.park("capX", _kwargs(), hold_s=90)
@@ -201,6 +205,8 @@ def test_validation_reject_releases_the_parked_receipt(client, app_module,
         "captured_id": "capX"})
     assert r.status_code == 422
     assert receipt_hold.pending() == 0      # released, not still parked
+    assert [e["file_label"] for e in logged] == ["utt#1"]
+    assert any("request rejected" in n for n in logged[0]["skipped"])
 
     # A rejected model (400) releases too.
     monkeypatch.setattr(app_module.cfg, "TRANSLATION_ALLOWED_MODELS",
@@ -213,3 +219,5 @@ def test_validation_reject_releases_the_parked_receipt(client, app_module,
         "translation_model": "org/evil-GGUF:Q8", "captured_id": "capY"})
     assert r.status_code == 400
     assert receipt_hold.pending() == 0
+    assert [e["file_label"] for e in logged] == ["utt#1", "utt#2"]
+    assert any("request rejected" in n for n in logged[1]["skipped"])

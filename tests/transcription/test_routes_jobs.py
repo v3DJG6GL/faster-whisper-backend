@@ -186,6 +186,26 @@ def test_delete_finished_removes_the_row(client):
     assert client.delete(f"/v1/jobs/{_PID}").status_code == 404
 
 
+def test_delete_spares_a_row_reposted_between_read_and_delete(client,
+                                                              monkeypatch):
+    # The route reads the row, then deletes off the loop: a same-id re-post
+    # landing in between flips it back to `running`, and that fresh row
+    # must survive the delete the stale read asked for.
+    assert _post(client, progress_id=_PID).status_code == 200
+    real_get = js.get
+
+    def _get_then_repost(job_id, **kw):
+        row = real_get(job_id, **kw)
+        js.start(job_id=job_id, request_id="req2", kind="transcribe",
+                 user_id=row["user_id"], key_id=row["key_id"], model="m",
+                 source_kind="file", source_name="a", ttl_s=3600,
+                 max_rows=100, max_bytes=0)
+        return row
+    monkeypatch.setattr(js, "get", _get_then_repost)
+    assert client.delete(f"/v1/jobs/{_PID}").json() == {"deleted": False}
+    assert real_get(_PID)["state"] == "running"
+
+
 # --- gates, ownership, listing ----------------------------------------------
 
 def test_malformed_id_is_422_and_unknown_is_404(client):

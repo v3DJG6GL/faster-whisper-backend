@@ -344,6 +344,15 @@ def test_residual_stop_is_off_unless_asked():
     assert "skipped" not in t["windows"][1]
 
 
+def test_residual_stop_active_reports_the_stop_as_applied():
+    hst = {"hallucination_silence_threshold": 2.0, "word_timestamps": True}
+    assert dt.residual_stop_active({}, False) is False
+    assert dt.residual_stop_active(None, True) is True
+    assert dt.residual_stop_active(hst, True) is False
+    assert dt.residual_stop_active(
+        {"hallucination_silence_threshold": 2.0}, True) is True
+
+
 def test_language_detection_pad_does_not_arm_the_stop():
     """transcribe() pads + encodes the first window for language detection
     BEFORE the loop decodes it. That pad must not count as a decoded window,

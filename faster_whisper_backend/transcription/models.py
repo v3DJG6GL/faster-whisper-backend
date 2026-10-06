@@ -1012,14 +1012,12 @@ async def _get_or_load_model(name: str, *, lease: bool = False) -> "WhisperModel
                 "Pre-download of %s failed (%s); the model constructor "
                 "will download instead", name, _dl_err)
 
-    # load_secs = constructor time only: the best-effort Hub pre-download
-    # above is excluded the same way the CT2 conversion and the lock wait are.
-    load_t0 = time.perf_counter()
-    _lock_wait_t0 = time.perf_counter()
     async with _model_load_lock:
-        # Time spent queueing behind the lock is another model's load cost,
-        # not this one's — keep it out of load_secs.
-        _lock_wait = time.perf_counter() - _lock_wait_t0
+        # load_secs = constructor time only: the best-effort Hub pre-download
+        # above is excluded the same way the CT2 conversion is, and so is the
+        # queue behind this lock (another model's load cost, not this one's)
+        # — hence the stamp only once the lock is held.
+        load_t0 = time.perf_counter()
         # Re-check under the lock — another request may have loaded it.
         cached = _loaded_models.get(name)
         if cached is not None:
@@ -1098,7 +1096,7 @@ async def _get_or_load_model(name: str, *, lease: bool = False) -> "WhisperModel
             loaded_compute = fallback_compute
             logger.info("Model loaded on %s: %s", fallback_device, name)
 
-        load_secs = time.perf_counter() - load_t0 - _lock_wait
+        load_secs = time.perf_counter() - load_t0
         metrics.record_model_load(name, load_secs)
         vram_after = system_stats.gpu_mem_used_bytes()
         vram_delta = (vram_after - vram_before
@@ -1108,21 +1106,33 @@ async def _get_or_load_model(name: str, *, lease: bool = False) -> "WhisperModel
         # (or the CT2 allocator did). Clamp to 0 rather than store nonsense.
         if vram_delta is not None and vram_delta < 0:
             vram_delta = 0
-        # Off the loop: register_loaded_model persists the measurement
-        # (model_sizes.record -> atomic_json.save_lock + fsync), which can
-        # block for the lock timeout when a peer worker holds the file.
-        await asyncio.to_thread(
-            model_registry.register_loaded_model,
-            name,
-            vram_bytes=vram_delta,
-            device=loaded_device,
-            compute_type=loaded_compute,
-            load_secs=load_secs,
-        )
-
+        # Cached BEFORE the register await: a cancellation landing on it
+        # (a client disconnect, preload cancelling load_unleased) cannot
+        # stop the registry write already on the thread, and a registry
+        # entry with no cached model is a phantom nothing ever unregisters.
         _loaded_models[name] = new_model
         if lease:
             _model_leases[name] = _model_leases.get(name, 0) + 1
+        # Off the loop: register_loaded_model persists the measurement
+        # (model_sizes.record -> atomic_json.save_lock + fsync), which can
+        # block for the lock timeout when a peer worker holds the file.
+        try:
+            await asyncio.to_thread(
+                model_registry.register_loaded_model,
+                name,
+                vram_bytes=vram_delta,
+                device=loaded_device,
+                compute_type=loaded_compute,
+                load_secs=load_secs,
+            )
+        except BaseException as e:
+            # The caller never receives the model, so never releases.
+            if lease:
+                _release_model_lease(name)
+            if not isinstance(e, asyncio.CancelledError):
+                # A failed register leaves nothing cached, as before.
+                _loaded_models.pop(name, None)
+            raise
         return new_model
 
 
@@ -1264,6 +1274,7 @@ async def _idle_evictor() -> None:
                     stale.append(name)
             if not stale:
                 continue
+            unloaded = False
             async with _model_load_lock:
                 now = time.monotonic()
                 for name in stale:
@@ -1275,8 +1286,14 @@ async def _idle_evictor() -> None:
                     if info and now - info.get("last_used_monotonic", now) < timeout:
                         continue
                     if _drop_loaded_model(name):
+                        unloaded = True
                         logger.info("[idle-evict] unloaded %s after %ds idle",
                                     name, timeout)
+            if not unloaded:
+                # Every drop was refused (a leased model mid-decode keeps
+                # reading as stale every tick): nothing to reclaim, and a
+                # full gc on the loop every 30 s would be pure stall.
+                continue
             gc.collect()
             try:
                 import torch

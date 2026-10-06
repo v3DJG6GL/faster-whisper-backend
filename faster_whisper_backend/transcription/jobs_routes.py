@@ -107,13 +107,15 @@ def _jobs_gate(user: dict, request: Request) -> None:
     _jobs_rate.hit(_rl.identity_key(user, request))
 
 
-def _job_for_caller(job_id: str, user: dict, request: Request) -> dict:
+async def _job_for_caller(job_id: str, user: dict, request: Request) -> dict:
     """The row for `job_id` if this caller may see it, else 404 (unknown,
-    expired and foreign all read the same); 422 on a malformed id."""
+    expired and foreign all read the same); 422 on a malformed id. The read
+    runs off the loop: the shared connection can be busy with a worker
+    thread's write (a finish, the hourly prune)."""
     _jobs_gate(user, request)
     if not tx_progress._PROGRESS_ID_RE.match(job_id):
         raise HTTPException(status_code=422, detail="malformed job id")
-    row = _jobs_store.get(job_id)
+    row = await asyncio.to_thread(_jobs_store.get, job_id)
     if (row is None or float(row.get("expires_ts") or 0) < time.time()
             or (not user.get("is_admin") and not _jobs_store.is_owner(
                 row, user_id=user.get("user_id"), key_id=user.get("key_id")))):
@@ -165,7 +167,8 @@ async def jobs_list(request: Request,
     _jobs_gate(user, request)
     if state is not None and state not in _JOB_STATES:
         raise HTTPException(status_code=422, detail="unknown job state")
-    rows = _jobs_store.list_jobs(
+    rows = await asyncio.to_thread(
+        _jobs_store.list_jobs,
         user_id=user.get("user_id"), key_id=user.get("key_id"),
         all_users=bool(all_users and user.get("is_admin")),
         state=state, limit=max(1, min(int(limit), 200)))
@@ -180,7 +183,7 @@ async def job_get(job_id: str, request: Request,
     live progress under `progress` (the progress route's shape) — one poll
     serves a re-attached client. `progress` is null once the run closed, or
     when it runs in a sibling worker process."""
-    row = _job_for_caller(job_id, user, request)
+    row = await _job_for_caller(job_id, user, request)
     out = _job_wire(row)
     entry = tx_progress._progress_entry_for(job_id, user)
     out["progress"] = (tx_progress._progress_payload(job_id, entry)
@@ -194,7 +197,7 @@ async def job_result(job_id: str, request: Request,
     """The run's response payload, byte-for-byte what the POST returned
     (the `text` format comes back as the JSON string it was). 409 while the
     run is still going; 404 when there is none (failed / cancelled)."""
-    row = _job_for_caller(job_id, user, request)
+    row = await _job_for_caller(job_id, user, request)
     if row.get("state") == "running":
         raise HTTPException(status_code=409, detail="job still running")
     if row.get("state") != "done" or not row.get("result_available"):
@@ -215,7 +218,7 @@ async def job_delete(job_id: str, request: Request,
     """Running → cooperative cancel (same flag as the cancel route; the row
     turns `cancelled` when the handler unwinds). Finished → delete the row
     and its stored result."""
-    row = _job_for_caller(job_id, user, request)
+    row = await _job_for_caller(job_id, user, request)
     if row.get("state") == "running":
         if tx_progress._progress_entry_for(job_id, user) is None:
             # Hosted by a sibling worker, or the entry was cap-evicted.
@@ -223,4 +226,8 @@ async def job_delete(job_id: str, request: Request,
         tx_progress._BATCH_CANCELLED.add(job_id)
         logger.info("[jobs] cancel requested for an in-flight run")
         return {"cancelled": True}
-    return {"deleted": bool(_jobs_store.delete(job_id))}
+    # finished_only: off the loop, a same-id re-post can flip the row back
+    # to `running` between the read above and this delete — its fresh row
+    # must survive.
+    return {"deleted": bool(await asyncio.to_thread(
+        _jobs_store.delete, job_id, finished_only=True))}

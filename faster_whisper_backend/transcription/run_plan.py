@@ -119,6 +119,11 @@ class Stage:
     took_s: float | None = None
     wait_s: float = 0.0            # semaphore queue time, not stage work
     wait_started: float | None = None
+    # Warm-up sub-phases (analyzing, preparing, loading, …): no fraction is
+    # reported meanwhile, so the ETA projection leaves them out too. Rate
+    # learning still counts them — they are part of what the stage costs.
+    warm_s: float = 0.0
+    warm_started: float | None = None
     frac: float | None = None      # last stage-local fraction from a tick
     phase: str | None = None       # active sub-phase label
     units: list[Unit] | None = None
@@ -317,6 +322,8 @@ class RunPlan:
                     # really run in: dropped, not billed against that one.
                     active.wait_s = 0.0
                     active.wait_started = None
+                    active.warm_s = 0.0
+                    active.warm_started = None
                     active.state = "pending"
                     active.started = None
                     active.frac = None
@@ -339,6 +346,12 @@ class RunPlan:
             elif st.wait_started is not None:
                 st.wait_s += now - st.wait_started
                 st.wait_started = None
+            if phase is not None and phase != "waiting":
+                if st.warm_started is None:
+                    st.warm_started = now
+            elif st.warm_started is not None:
+                st.warm_s += now - st.warm_started
+                st.warm_started = None
             st.phase = phase
             if progress is not None:
                 st.frac = max(0.0, min(1.0, float(progress)))
@@ -689,10 +702,14 @@ class RunPlan:
 
     @staticmethod
     def _work_elapsed(st: Stage, now: float) -> float:
-        """The stage's wall time minus its queue time — a wait still in
-        progress included (wait_s only grows when a wait ENDS)."""
+        """The stage's wall time minus its queue and warm-up time — one
+        still in progress included (wait_s / warm_s only grow when it ENDS).
+        The projection spreads this over the fraction decoded, so a 40 s
+        VAD pass must not count as decode time."""
         waiting = (now - st.wait_started) if st.wait_started is not None else 0.0
-        return max(0.0, st.elapsed(now) - st.wait_s - waiting)
+        warming = (now - st.warm_started) if st.warm_started is not None else 0.0
+        return max(0.0, st.elapsed(now) - st.wait_s - waiting
+                   - st.warm_s - warming)
 
     def _eta_locked(self, now: float) -> float | None:
         eta = 0.0

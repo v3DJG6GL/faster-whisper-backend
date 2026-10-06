@@ -149,6 +149,18 @@ def test_fast_real_words_before_the_pile_survive_the_burst_rule():
     assert rules == ["burst", "zero_tail"]
 
 
+def test_burst_keeps_spoken_words_after_an_early_squeezed_word():
+    # A real one-frame word close to its successor inside the last second,
+    # then TWO spoken words (normal length, normal gap) before the pile: the
+    # cut is tail-anchored, so it lands on the pile, not on " a".
+    words = [_w(f" w{i}", 0.3 * i, 0.3 * i + 0.3) for i in range(5)] + [
+        _w(" a", 4.40, 4.44), _w(" real", 4.50, 4.75),
+        _w(" real2", 4.75, 4.95)] + [_w(f" x{i}", 4.95, 4.95) for i in range(8)]
+    idx, rules = sg.find_tail_cut(words, "", burst=8)
+    assert rules == ["burst"]
+    assert words[idx].word == " x0"
+
+
 def test_burst_falls_back_to_the_first_close_word_when_none_looks_made_up():
     words = [_w(" a", 0.0, 1.0)] + [_w(f" x{i}", 1.0 + 0.1 * i, 1.1 + 0.1 * i)
                                      for i in range(10)]
@@ -206,8 +218,19 @@ def test_phrase_loop_with_incomplete_last_copy_keeps_first_copy():
 
 
 def test_two_copies_are_below_three_repeats():
-    toks = ["a", "b", "c", "d"] * 2
+    # The 4-word prefix makes the input long enough that period 4 is really
+    # searched: only the repeat count rejects two copies.
+    toks = ["x", "y", "z", "w"] + ["a", "b", "c", "d"] * 2
     assert sg.find_tail_cut(_spaced(toks), "", repeats=3) is None
+    toks = ["x", "y", "z", "w"] + ["a", "b", "c", "d"] * 3
+    assert sg.find_tail_cut(_spaced(toks), "", repeats=3) == (8, ["repeat"])
+
+
+def test_loop_ending_in_a_doubled_word_is_still_cut():
+    # The doubled "gut" is a short run INSIDE the looped phrase, not the
+    # loop's primitive period: the longer 4-word run wins.
+    toks = ["das", "ist", "gut", "gut"] * 3
+    assert sg.find_tail_cut(_spaced(toks), "", repeats=2) == (4, ["repeat"])
 
 
 def test_refrain_in_the_middle_is_left_alone():

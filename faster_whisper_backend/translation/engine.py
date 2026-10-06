@@ -769,16 +769,10 @@ async def _get_model(ref: str, *, lease: bool = False, download_cb=None):
             vram_before is not None and vram_after is not None
             and _load_overlaps == overlaps_before) else None
         load_secs = time.perf_counter() - t0
-        await asyncio.to_thread(
-            model_registry.register_loaded_model,
-            _STATS_PREFIX + ref, vram, device, "gguf", load_secs)
-        logger.info("[translate] model %s loaded on %s in %.1fs",
-                    ref, device, load_secs)
-        try:
-            from faster_whisper_backend.stats import metrics
-            metrics.record_model_load(_STATS_PREFIX + ref, load_secs)
-        except Exception:  # noqa: BLE001 — stats only
-            pass
+        # Cached BEFORE the register await: a cancellation landing on it
+        # cannot stop the registry write already on the thread, and a
+        # registry entry with no cached model is a phantom that only
+        # _drop_locked would ever unregister.
         async with _lock:
             # Re-trim: another ref's load may have inserted meanwhile.
             _trim_locked(_load_cap())
@@ -787,6 +781,21 @@ async def _get_model(ref: str, *, lease: bool = False, download_cb=None):
             _last_used[ref] = time.monotonic()
             if lease:
                 _active[ref] = _active.get(ref, 0) + 1
+        try:
+            await asyncio.to_thread(
+                model_registry.register_loaded_model,
+                _STATS_PREFIX + ref, vram, device, "gguf", load_secs)
+        except BaseException:
+            if lease:
+                _release_model(ref)   # the caller never receives the model
+            raise
+        logger.info("[translate] model %s loaded on %s in %.1fs",
+                    ref, device, load_secs)
+        try:
+            from faster_whisper_backend.stats import metrics
+            metrics.record_model_load(_STATS_PREFIX + ref, load_secs)
+        except Exception:  # noqa: BLE001 — stats only
+            pass
         return llm
 
 
@@ -1094,8 +1103,9 @@ def _guard_reason(src: str, out: str, *,
     changed number; number-word normalization in EITHER direction is legal,
     spoken-transcript MT constantly writes "sechzehn" as "16" and an exact
     multiset check rejected correct translations en masse); verbatim input
-    copy of two words or more (when the target differs from the source);
-    repetition loop."""
+    copy of two words or more (each CJK character counts as one: an
+    unspaced clause is a single \\w+ run) when the target differs from the
+    source; repetition loop."""
     s = (src or "").strip()
     o = (out or "").strip()
     if not o:
@@ -1110,7 +1120,8 @@ def _guard_reason(src: str, out: str, *,
         return "digit mismatch"
     # A one-word line ("OK.", "Netflix.", "Hm.") often translates to
     # itself; only a copied phrase is evidence of an untranslated output.
-    if o == s and len(re.findall(r"\w+", s)) >= 2:
+    if o == s and (len(re.findall(r"\w+", s)) >= 2
+                   or len(_CJK_CHAR_RE.findall(s)) >= 2):
         return "output copies input"
     if _REPETITION_RE.search(o[:_REPETITION_SCAN_CHARS]):
         return "repetition loop"
@@ -1521,10 +1532,14 @@ async def translate_segments(
 
 def _reset_for_tests() -> None:
     """Test-only: empty the loaded-model LRU (tests only ever put stubs in
-    it), the job leases — a leaked lease makes every later eviction test
-    see a refusal — and the model-card language lists a predownload test
+    it) with its load params and per-ref load locks — a stale params tuple
+    turns a later test's stub into a hit or a reload by test order — the
+    job leases — a leaked lease makes every later eviction test see a
+    refusal — and the model-card language lists a predownload test
     records."""
     _models.clear()
     _last_used.clear()
+    _params.clear()
+    _loading.clear()
     _active.clear()
     _card_languages.clear()

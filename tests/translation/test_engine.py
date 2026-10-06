@@ -267,6 +267,11 @@ def test_guard_reasons():
     # an untranslated copy.
     assert g("OK.", "OK.") is None
     assert g("Netflix.", "Netflix.") is None
+    # An unspaced CJK clause is ONE \w+ run: its characters count as words.
+    assert g("我们今天去吃饭吧。", "我们今天去吃饭吧。", target="en") == \
+        "output copies input"
+    assert g("今日は学校に行きました。", "今日は学校に行きました。",
+             target="en") == "output copies input"
 
 
 def test_guard_repetition_scan_is_fast_on_large_clean_output():
@@ -737,15 +742,22 @@ def test_progress_and_cancel(base_cfg, monkeypatch):
             cancel_check=lambda: True))
 
 
+# ~250 chars with no repeated run (the repetition guard would refuse it).
+_LONG_LINE = " ".join(f"Wort{chr(97 + i % 26)}{chr(97 + i // 26)}"
+                      for i in range(36))
+
+
 def test_progress_carries_last_text_tail(base_cfg, monkeypatch):
     """Three-arg callbacks get the last completed translation's tail."""
     _install_fake(monkeypatch, _xlate)
     tails = []
     _run(translation.translate_segments(
-        _segs("Eins.", "Zwei."), ["en"], source_lang="de", mode="fluent",
+        _segs("Eins.", "Zwei.", _LONG_LINE), ["en"], source_lang="de",
+        mode="fluent",
         progress_cb=lambda f, s=None, last_text=None, **kw: tails.append(last_text)))
     assert any(t for t in tails)                       # a tail arrived
     assert all(t is None or len(t) <= 160 for t in tails)
+    assert any(t and len(t) == 160 for t in tails)     # the long one is capped
     # The tail is the (pseudo-)translated text — swapcased, not the source.
     assert any(t and "WEI" in t for t in tails)
 
@@ -1253,6 +1265,39 @@ def test_lru_eviction_bookkeeping(lru_env):
         ["gguf:o/a", "gguf:o/b", "gguf:o/c"]
     assert all(kind == "gguf" for _, _, kind in stats["registered"])
     assert set(translation._last_used) == {"o/a", "o/c"}
+
+
+def test_cancel_during_register_keeps_the_model_cached_and_frees_the_lease(
+        lru_env, monkeypatch):
+    """The registry write runs on a thread a cancellation cannot stop: the
+    model must already be in _models by then (no phantom "gguf:" entry only
+    _drop_locked would unregister), and the lease the cancelled caller will
+    never release is given back."""
+    made, stats = lru_env
+    entered, go = threading.Event(), threading.Event()
+
+    def _slow_register(name, vram, device, kind, load_secs=None):
+        entered.set()
+        go.wait(5)
+        stats["registered"].append((name, device, kind))
+    monkeypatch.setattr(translation.model_registry, "register_loaded_model",
+                        _slow_register)
+
+    async def run():
+        task = asyncio.create_task(translation._get_model("o/a", lease=True))
+        while not entered.is_set():
+            await asyncio.sleep(0.01)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        go.set()
+    try:
+        asyncio.run(run())
+    finally:
+        go.set()
+    assert translation._models.get("o/a") is made["o/a"]
+    assert stats["registered"] == [("gguf:o/a", "cpu", "gguf")]
+    assert translation._active.get("o/a", 0) == 0
 
 
 def test_drop_models_clears_everything(lru_env):

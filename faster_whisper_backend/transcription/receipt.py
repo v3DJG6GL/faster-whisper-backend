@@ -780,12 +780,18 @@ def _format_request_block(
             ("result", diarization.get("result", _OMIT)),
         ]))
     if translation:
+        # A held receipt released unclaimed still carries the streaming
+        # placeholder's model/mode None: the translation never ran, so the
+        # rows are left out — not printed as a caller override to "(none)".
+        def _ran(key):
+            v = translation.get(key)
+            return _OMIT if v is None else v
         lines.extend(_format_stage_section("Translation", [
-            ("translation_model", translation.get("model")),
+            ("translation_model", _ran("model")),
             ("device", translation.get("device", _OMIT)),
             ("targets", translation.get("targets")),
             ("source_lang", translation.get("source", _OMIT)),
-            ("mode", translation.get("mode")),
+            ("mode", _ran("mode")),
             ("context_segments", translation.get("context_segments", _OMIT)),
             ("glossary", translation.get("glossary", _OMIT)),
             ("result", translation.get("result", _OMIT)),
