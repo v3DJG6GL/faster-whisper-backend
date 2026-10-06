@@ -5,7 +5,7 @@ The store only ever ran `executescript(_SCHEMA)`, which is a no-op against an
 existing table — so it had no migration hook and could not grow a column
 without silently doing nothing. The hook runs against live databases on every
 startup, so what matters is that it is idempotent and leaves existing rows
-intact. The report store's twin lives in tests/admin/test_reports_store_migrations.py."""
+intact. The report store's twin lives in tests/reports/test_reports_store_migrations.py."""
 
 import contextlib
 import sqlite3

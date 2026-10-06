@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import re
 
-from faster_whisper_backend.admin import home_routes
+from faster_whisper_backend.core import home_routes
 from faster_whisper_backend.core import web_common
 
 

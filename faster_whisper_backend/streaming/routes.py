@@ -1330,8 +1330,8 @@ async def transcribe_stream(ws: WebSocket) -> None:
             # source='stream' tags the row so /quick-config can chip it as live
             # dictation vs a file-upload (batch) transcription.
             try:
-                from faster_whisper_backend.quick_config import state as quick_config_state
-                quick_config_state.record_trace(
+                from faster_whisper_backend.quick_config import recent_feed as qc_recent_feed
+                qc_recent_feed.record_trace(
                     request_id=rid, model=final_model, raw=raw_text,
                     steps=steps if steps is not None else [], final=final_text,
                     language=(getattr(fw_info, "language", None) or req_language or None),

@@ -7,7 +7,7 @@ Used by the /captures training-data path:
 
 The trim is non-destructive at the API surface: callers pass a `dst_path`
 distinct from the source when they want to preserve the original. Format
-constraints match audio/merge.py — 16 kHz mono signed-16-bit PCM RIFF/WAVE
+constraints match captures/merge.py — 16 kHz mono signed-16-bit PCM RIFF/WAVE
 — so a Whisper fine-tune loader sees identical audio shape for trimmed
 and untrimmed samples.
 
@@ -24,7 +24,7 @@ import os
 import time
 import wave
 
-from faster_whisper_backend.audio import merge as audio_merge
+from faster_whisper_backend.captures import merge as audio_merge
 from faster_whisper_backend.core import store_common
 
 logger = logging.getLogger("whisper-api")

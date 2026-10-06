@@ -19,8 +19,9 @@ import wave
 
 import pytest
 
-from faster_whisper_backend.audio import merge as audio_merge
-from faster_whisper_backend.audio import vad_trim as audio_vad_trim
+from faster_whisper_backend.captures import merge as audio_merge
+from faster_whisper_backend.captures import samples as capture_samples
+from faster_whisper_backend.captures import vad_trim as audio_vad_trim
 from tests.conftest import _pcm_from_spec as _pcm
 
 RATE = 16000
@@ -185,7 +186,7 @@ def test_remap_time_ms():
 def test_build_merged_words_per_member(monkeypatch):
     cr = _routes()
     monkeypatch.setattr(
-        cr, "_align_words_to_final",
+        capture_samples, "_align_words_to_final",
         lambda words, final, model_name=None, ident=None, language=None: [dict(w) for w in words],
     )
     members = [
@@ -216,7 +217,7 @@ def test_build_merged_words_uniform_offset(monkeypatch):
     # so word times are offset_ms + remapped-local (NOT cum+i*silence).
     cr = _routes()
     monkeypatch.setattr(
-        cr, "_align_words_to_final",
+        capture_samples, "_align_words_to_final",
         lambda words, final, model_name=None, ident=None, language=None: [dict(w) for w in words],
     )
     members = [
@@ -254,7 +255,7 @@ def test_align_member_words_attaches_training_tokens(monkeypatch):
              "start": w.get("start"), "end": w.get("end")}
             for i, w in enumerate(words)
         ]
-    monkeypatch.setattr(cr, "_align_words_to_final", fake_align)
+    monkeypatch.setattr(capture_samples, "_align_words_to_final", fake_align)
 
     # final applies de-dictation-map ("Komma"→"Komma"); training excludes it.
     m = {
@@ -278,7 +279,7 @@ def test_align_member_words_attaches_training_tokens(monkeypatch):
 def test_build_merged_words_legacy(monkeypatch):
     cr = _routes()
     monkeypatch.setattr(
-        cr, "_align_words_to_final",
+        capture_samples, "_align_words_to_final",
         lambda words, final, model_name=None, ident=None, language=None: [dict(w) for w in words],
     )
     members = [

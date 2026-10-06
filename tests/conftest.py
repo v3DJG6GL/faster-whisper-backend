@@ -73,6 +73,8 @@ _RESET_HOOKS: tuple[tuple[str, Any], ...] = (
     ("faster_whisper_backend.captures.merge_proposer", "_reset_for_tests"),
     # reapply worker state — reset to the module's canonical idle shape.
     ("faster_whisper_backend.captures.reapply", "_reset_for_tests"),
+    # per-sample rebuild locks + in-flight pins (sample building).
+    ("faster_whisper_backend.captures.samples", "_reset_for_tests"),
     # api-key debounce cache (the index/lockdown are rebuilt by init_db)
     ("faster_whisper_backend.auth.api_keys_store", "_reset_last_used_cache_for_tests"),
     # central running-jobs registry
@@ -217,7 +219,7 @@ def usage_store_db(tmp_path):
 
 @pytest.fixture
 def reports_store_db(tmp_path):
-    from faster_whisper_backend.admin import reports_store
+    from faster_whisper_backend.reports import store as reports_store
     reports_store.init_db(str(tmp_path / "reports.sqlite3"))
     yield reports_store
     try:
@@ -534,7 +536,7 @@ def app_module(tmp_path, monkeypatch, fake_model):
     # GC'd-without-close() sqlite3.Connection doesn't emit ResourceWarning noise
     # (one per store × every route test). capture_samples_store shares the
     # captures connection, so just drop its reference.
-    from faster_whisper_backend.auth import api_keys_store; from faster_whisper_backend.admin import reports_store; from faster_whisper_backend.stats import recent_transcriptions_store
+    from faster_whisper_backend.auth import api_keys_store; from faster_whisper_backend.reports import store as reports_store; from faster_whisper_backend.stats import recent_transcriptions_store
     from faster_whisper_backend.stats import usage_store; from faster_whisper_backend.captures import store as captures_store; from faster_whisper_backend.captures import samples_store as capture_samples_store
     from faster_whisper_backend.auth import sessions_store; from faster_whisper_backend.client_settings import store as client_settings_store
     from faster_whisper_backend.stats import system_metrics_store

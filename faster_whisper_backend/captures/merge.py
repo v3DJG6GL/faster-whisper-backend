@@ -145,7 +145,7 @@ def merge_wavs(
     trimmer = None
     if trim:
         try:
-            from faster_whisper_backend.audio import vad_trim as audio_vad_trim
+            from faster_whisper_backend.captures import vad_trim as audio_vad_trim
             trimmer = audio_vad_trim.trim_pcm_for_merge
         except Exception as _e:  # pragma: no cover - import guard
             logger.warning("[merge] per-member trim unavailable: %s", _e)

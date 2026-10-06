@@ -1,4 +1,4 @@
-"""Regression tests for captures_routes._align_words_to_final.
+"""Regression tests for captures/samples.py _align_words_to_final.
 
 The merge / proposal FINAL RESULT is rebuilt word-by-word from this alignment
 (via _renderGroundSpans), so the alignment must assign EVERY post-processed
@@ -16,6 +16,7 @@ the cases are hermetic (no real pipeline / config needed).
 """
 
 from faster_whisper_backend.captures import routes as cr
+from faster_whisper_backend.captures import samples as capture_samples
 from faster_whisper_backend.pipeline import engine as pl_engine
 
 
@@ -47,7 +48,7 @@ def test_one_to_many_expansion_keeps_all_tokens(monkeypatch):
     _install_word_map(monkeypatch, {"Nurtax": "nur tags"})
     words = _words("Nurtax", "137", "Schrägstrich", "94")
     final = "nur tags 137 Schrägstrich 94"
-    out = cr._align_words_to_final(words, final)
+    out = capture_samples._align_words_to_final(words, final)
 
     assert len(out) == len(words)              # one entry per raw word
     assert _join(out) == final                 # no token dropped
@@ -66,7 +67,7 @@ def test_one_to_three_expansion(monkeypatch):
                                     "Eisen Bindestrich infusion"})
     words = _words("Eisenbindestrichinfusion", "heute")
     final = "Eisen Bindestrich infusion heute"
-    out = cr._align_words_to_final(words, final)
+    out = capture_samples._align_words_to_final(words, final)
 
     assert len(out) == 2
     assert _join(out) == final
@@ -80,7 +81,7 @@ def test_expansion_at_end(monkeypatch):
     _install_word_map(monkeypatch, {"Nurtax": "nur tags"})
     words = _words("Hallo", "Nurtax")
     final = "Hallo nur tags"
-    out = cr._align_words_to_final(words, final)
+    out = capture_samples._align_words_to_final(words, final)
     assert len(out) == 2
     assert _join(out) == final
     assert out[1]["word"] == "nur tags"
@@ -97,7 +98,7 @@ def test_many_to_one_contraction(monkeypatch):
     _install_word_map(monkeypatch, {})  # identity; neither matches "Bindestrich"
     words = _words("Bind", "strich")
     final = "Bindestrich"
-    out = cr._align_words_to_final(words, final)
+    out = capture_samples._align_words_to_final(words, final)
 
     assert len(out) == 2
     assert _join(out) == final
@@ -111,7 +112,7 @@ def test_symbol_substitution_keeps_token(monkeypatch):
     _install_word_map(monkeypatch, {"Schrägstrich": "/"})
     words = _words("137", "Schrägstrich", "94")
     final = "137 / 94"
-    out = cr._align_words_to_final(words, final)
+    out = capture_samples._align_words_to_final(words, final)
 
     assert len(out) == 3
     assert _join(out) == final
@@ -127,7 +128,7 @@ def test_deletion_marks_removed(monkeypatch):
     _install_word_map(monkeypatch, {"äh": ""})
     words = _words("äh", "hallo", "welt")
     final = "hallo welt"
-    out = cr._align_words_to_final(words, final)
+    out = capture_samples._align_words_to_final(words, final)
 
     assert len(out) == 3
     assert _join(out) == final
@@ -144,7 +145,7 @@ def test_plain_substitution(monkeypatch):
     _install_word_map(monkeypatch, {"weiss": "weiß"})
     words = _words("das", "weiss", "ich")
     final = "das weiß ich"
-    out = cr._align_words_to_final(words, final)
+    out = capture_samples._align_words_to_final(words, final)
 
     assert len(out) == 3
     assert _join(out) == final
@@ -157,7 +158,7 @@ def test_identity_no_flags(monkeypatch):
     _install_word_map(monkeypatch, {})
     words = _words("eins", "zwei", "drei")
     final = "eins zwei drei"
-    out = cr._align_words_to_final(words, final)
+    out = capture_samples._align_words_to_final(words, final)
 
     assert _join(out) == final
     for w in out:
@@ -173,14 +174,14 @@ def test_output_length_always_matches_raw_count(monkeypatch):
     _install_word_map(monkeypatch, {"Nurtax": "nur tags", "äh": ""})
     words = _words("äh", "Nurtax", "137")
     final = "nur tags 137"
-    out = cr._align_words_to_final(words, final)
+    out = capture_samples._align_words_to_final(words, final)
     assert len(out) == len(words)   # chip word-indices depend on this
     assert _join(out) == final
 
 
 def test_empty_words_returns_empty(monkeypatch):
     _install_word_map(monkeypatch, {})
-    assert cr._align_words_to_final([], "anything") == []
+    assert capture_samples._align_words_to_final([], "anything") == []
 
 
 # ---------------------------------------------------------------------------
@@ -238,14 +239,14 @@ def test_apply_chips_consistency_with_training_tokens():
     # text. A chip built from the TRAINING token applies; one built from the
     # runtime-only "134/92" token is silently dropped (it isn't in the text).
     training = "Tag und Nacht 134 Schrägstrich 92"
-    assert cr._apply_chips_to_text(
+    assert capture_samples._apply_chips_to_text(
         training, [{"wrong": "134", "correct": "134/92", "idx": 3}],
     ) == "Tag und Nacht 134/92 Schrägstrich 92"
-    assert cr._apply_chips_to_text(
+    assert capture_samples._apply_chips_to_text(
         training, [{"wrong": "134/92", "correct": "X", "idx": 3}],
     ) == training
     # A range correction over the whole "134 Schrägstrich 92" span applies.
-    assert cr._apply_chips_to_text(
+    assert capture_samples._apply_chips_to_text(
         training,
         [{"wrong": "134 Schrägstrich 92", "correct": "134/92",
           "idx": 3, "idx_end": 5}],

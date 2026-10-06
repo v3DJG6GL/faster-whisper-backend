@@ -163,7 +163,7 @@ def secure_file(path: str) -> None:
     and compiled pipeline rules — settings/config_store.py), the model-sizes cache
     (runtime/model_sizes.py), downloaded URL media files (media/media_store.py) and
     the merged / VAD-trimmed dictation WAVs written through the tmp+os.replace
-    swap (audio_merge.merge_wavs, audio_vad_trim.trim_wav) — os.replace
+    swap (captures/merge.py merge_wavs, captures/vad_trim.py trim_wav) — os.replace
     carries the tmp inode's mode onto the destination, so the tmp is pinned
     owner-only before the swap (merge_wavs additionally creates its tmp 0600
     up front; this call is belt-and-braces there).

@@ -36,7 +36,7 @@ def _own_db(module):
 # ---------------------------------------------------------------------------
 
 def test_reports_migration_adds_columns_and_is_idempotent(tmp_path):
-    from faster_whisper_backend.admin import reports_store
+    from faster_whisper_backend.reports import store as reports_store
     db = str(tmp_path / "reports.db")
 
     with _own_db(reports_store):
@@ -53,7 +53,7 @@ def test_reports_migration_adds_columns_and_is_idempotent(tmp_path):
 
 def test_reports_migration_upgrades_a_pre_existing_table(tmp_path):
     """The real case: a database created before the columns existed."""
-    from faster_whisper_backend.admin import reports_store
+    from faster_whisper_backend.reports import store as reports_store
     db = str(tmp_path / "old.db")
     old = sqlite3.connect(db)
     old.executescript("""

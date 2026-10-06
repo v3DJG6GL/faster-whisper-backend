@@ -110,8 +110,8 @@ def trimmed_duration_s(row: dict[str, Any]) -> float:
     max_gap = int(getattr(cfg, "CAPTURES_VAD_MARGIN_SAMPLE_INTERNAL_MS", 300))
     try:
         import os
-        from faster_whisper_backend.audio import merge as audio_merge
-        from faster_whisper_backend.audio import vad_trim as audio_vad_trim
+        from faster_whisper_backend.captures import merge as audio_merge
+        from faster_whisper_backend.captures import vad_trim as audio_vad_trim
         abs_p = captures_store.abs_audio_path(relpath)
         mtime = os.path.getmtime(abs_p)
         hit = _TRIM_DUR_CACHE.get(cid)

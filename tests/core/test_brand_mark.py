@@ -6,7 +6,7 @@ otherwise drift unnoticed."""
 import os
 import re
 
-from faster_whisper_backend.admin import home_routes
+from faster_whisper_backend.core import home_routes
 from faster_whisper_backend.core import web_common
 from faster_whisper_backend.paths import REPO_ROOT
 

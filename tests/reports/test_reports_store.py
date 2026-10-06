@@ -273,7 +273,7 @@ def test_sweep_retention_deletes_old(reports_store_db, monkeypatch):
 # ---------------------------------------------------------------------------
 
 def test_truncate_steps_front_trim(reports_store_db, monkeypatch):
-    from faster_whisper_backend.admin import reports_store as rs
+    from faster_whisper_backend.reports import store as rs
     monkeypatch.setattr(rs, "_CAP_STEPS_JSON", 80)
     steps = [(f"l{i}", "x" * 20, "y" * 20) for i in range(10)] + [("bad",), 5]
     out = rs._truncate_steps(steps)

@@ -1,4 +1,4 @@
-"""Tests for quick_config_state tokenization + SSE broadcast.
+"""Tests for quick_config/recent_feed.py tokenization + SSE broadcast.
 
 _tokenize / _extract_bigrams are pure. The subscribe/_broadcast tests use
 asyncio.Queue objects (instantiable without a running loop) and reset the
@@ -9,7 +9,7 @@ import asyncio
 
 import pytest
 
-from faster_whisper_backend.quick_config import state as q
+from faster_whisper_backend.quick_config import recent_feed as q
 
 
 # ---------------------------------------------------------------------------

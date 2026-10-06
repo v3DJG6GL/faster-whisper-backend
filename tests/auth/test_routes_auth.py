@@ -76,7 +76,7 @@ def test_host_gate_allows_loopback(client):
 def test_cross_user_report_read_is_404(client, make_user_key):
     # Two non-admin users with reports scope=own; one cannot read the other's
     # report by id -> 404 (anti-IDOR), not 403.
-    from faster_whisper_backend.admin import reports_store
+    from faster_whisper_backend.reports import store as reports_store
 
     make_user_key("root", is_admin=True)
     uid_a, _raw_a = make_user_key("alice", pages={"reports": "own"})
@@ -368,7 +368,7 @@ def test_quick_config_stream_rescopes_and_ends(client, make_user_key,
     import asyncio
     from faster_whisper_backend.auth import api_keys_store
     from faster_whisper_backend.quick_config import routes as qc
-    from faster_whisper_backend.quick_config import state as qc_state
+    from faster_whisper_backend.quick_config import recent_feed as qc_recent_feed
 
     make_user_key("root", is_admin=True)
     uid, raw = make_user_key("alice", pages={"quick_config": "all"})
@@ -380,7 +380,7 @@ def test_quick_config_stream_rescopes_and_ends(client, make_user_key,
 
         async def push(user_id):
             await asyncio.sleep(0.05)
-            qc_state._broadcast({"event": "trace",
+            qc_recent_feed._broadcast({"event": "trace",
                                  "data": {"user_id": user_id, "final": "x"}})
 
         # scope=all: another user's trace is delivered.

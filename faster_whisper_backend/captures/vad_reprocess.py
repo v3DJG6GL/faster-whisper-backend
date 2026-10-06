@@ -6,7 +6,7 @@ Use after changing the global VAD/silence settings so existing samples adopt
 them — the per-sample "Regenerate" button does one sample; this does all.
 
 Scope:
-  - Re-runs _build_merged_wav (per-member VAD trim + uniform-silence layout)
+  - Re-runs samples._build_merged_wav (per-member VAD trim + uniform-silence layout)
     for each sample, rebuilding the merged WAV + member_trims + duration, and
     stamping the sample's inter_segment_silence_ms with the new global value.
   - SKIPS locked samples (admin-frozen exported training data) — mirrors the
@@ -26,6 +26,8 @@ import logging
 import threading
 import time
 from typing import Any
+
+from faster_whisper_backend.captures import samples as capture_samples
 
 logger = logging.getLogger("whisper-api")
 
@@ -75,10 +77,6 @@ def start() -> dict[str, Any]:
 def _run() -> None:
     try:
         from faster_whisper_backend.captures import samples_store as capture_samples_store
-        from faster_whisper_backend.captures.routes import (
-            _build_merged_wav, _merged_wav_patch, _global_silence_ms,
-            _rebuild_lock,
-        )
 
         samples = capture_samples_store.list_samples(user_id=None)
         with _state_lock:
@@ -98,7 +96,7 @@ def _run() -> None:
                     with _state_lock:
                         _state["skipped"] += 1
                     continue
-                silence_ms = _global_silence_ms()
+                silence_ms = capture_samples._global_silence_ms()
                 # Hold the per-sid lock across the lock re-check, the rebuild,
                 # and the DB write (success OR stale), as regenerate_sample_api
                 # does. This keeps a concurrent regenerate from rewriting the
@@ -106,19 +104,19 @@ def _run() -> None:
                 # locked AFTER the job-start snapshot is never rebuilt (it may
                 # already be exported/frozen), and stops the stale flag from
                 # clobbering a regenerate that just cleared it.
-                with _rebuild_lock(sid):
+                with capture_samples._rebuild_lock(sid):
                     fresh = capture_samples_store.get_sample(sid)
                     if fresh is None or fresh.get("is_locked"):
                         with _state_lock:
                             _state["skipped"] += 1
                         continue
                     try:
-                        duration_ms, hashes, member_trims = _build_merged_wav(
+                        duration_ms, hashes, member_trims = capture_samples._build_merged_wav(
                             sid=sid,
                             member_ids=[m["id"] for m in members],
                             silence_ms=silence_ms,
                         )
-                        patch = _merged_wav_patch(duration_ms, hashes, member_trims)
+                        patch = capture_samples._merged_wav_patch(duration_ms, hashes, member_trims)
                         patch["inter_segment_silence_ms"] = silence_ms
                         capture_samples_store.update_sample(sid, patch)
                     except Exception as e:

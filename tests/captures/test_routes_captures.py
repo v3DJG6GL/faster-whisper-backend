@@ -623,7 +623,7 @@ def test_preview_merge_audio_is_not_cacheable(client, make_user_key,
     cacheable by any shared cache in front of the app — the two sibling audio
     routes both send Cache-Control: no-store."""
     import wave
-    from faster_whisper_backend.audio import merge as audio_merge
+    from faster_whisper_backend.captures import merge as audio_merge
     from faster_whisper_backend.captures import routes as captures_routes
 
     _uid, raw = make_user_key("root", is_admin=True)
@@ -750,47 +750,47 @@ def test_rebuild_lock_survives_prune_while_in_flight():
     _get_rebuild_lock skips sids pinned in _rebuild_inflight, so a second
     caller for the same sid gets the SAME object instead of minting a new one
     (which would let two rebuilds run concurrently)."""
-    from faster_whisper_backend.captures import routes as cr
+    from faster_whisper_backend.captures import samples as capture_samples
 
-    saved_locks = dict(cr._rebuild_locks)
-    saved_inflight = dict(cr._rebuild_inflight)
-    cr._rebuild_locks.clear()
-    cr._rebuild_inflight.clear()
+    saved_locks = dict(capture_samples._rebuild_locks)
+    saved_inflight = dict(capture_samples._rebuild_inflight)
+    capture_samples._rebuild_locks.clear()
+    capture_samples._rebuild_inflight.clear()
     try:
         sid = "sid-in-flight"
         # Mirror _rebuild_lock's handout window: sid pinned, lock not yet
         # acquired (so v.locked() alone would not protect it).
-        with cr._rebuild_locks_guard:
-            cr._rebuild_inflight[sid] = 1
-        first = cr._get_rebuild_lock(sid)
+        with capture_samples._rebuild_locks_guard:
+            capture_samples._rebuild_inflight[sid] = 1
+        first = capture_samples._get_rebuild_lock(sid)
         assert not first.locked()
         # Trigger the opportunistic prune with a flood of other sids.
-        for i in range(cr._REBUILD_LOCKS_MAX + 1):
-            cr._get_rebuild_lock(f"sid-filler-{i}")
-        assert cr._get_rebuild_lock(sid) is first
+        for i in range(capture_samples._REBUILD_LOCKS_MAX + 1):
+            capture_samples._get_rebuild_lock(f"sid-filler-{i}")
+        assert capture_samples._get_rebuild_lock(sid) is first
         # And _release_rebuild_lock must not drop a pinned sid either.
-        cr._release_rebuild_lock(sid)
-        assert cr._rebuild_locks.get(sid) is first
+        capture_samples._release_rebuild_lock(sid)
+        assert capture_samples._rebuild_locks.get(sid) is first
     finally:
-        cr._rebuild_locks.clear()
-        cr._rebuild_locks.update(saved_locks)
-        cr._rebuild_inflight.clear()
-        cr._rebuild_inflight.update(saved_inflight)
+        capture_samples._rebuild_locks.clear()
+        capture_samples._rebuild_locks.update(saved_locks)
+        capture_samples._rebuild_inflight.clear()
+        capture_samples._rebuild_inflight.update(saved_inflight)
 
 
 def test_rebuild_lock_contextmanager_pins_and_unpins():
     """_rebuild_lock registers the sid in _rebuild_inflight for the whole
     handout-to-release span and cleans up after itself."""
-    from faster_whisper_backend.captures import routes as cr
+    from faster_whisper_backend.captures import samples as capture_samples
 
     sid = "sid-ctx-pin"
-    with cr._rebuild_lock(sid):
-        assert cr._rebuild_inflight.get(sid) == 1
-        assert cr._rebuild_locks[sid].locked()
-    assert sid not in cr._rebuild_inflight
-    assert not cr._rebuild_locks[sid].locked()
-    cr._release_rebuild_lock(sid)
-    assert sid not in cr._rebuild_locks
+    with capture_samples._rebuild_lock(sid):
+        assert capture_samples._rebuild_inflight.get(sid) == 1
+        assert capture_samples._rebuild_locks[sid].locked()
+    assert sid not in capture_samples._rebuild_inflight
+    assert not capture_samples._rebuild_locks[sid].locked()
+    capture_samples._release_rebuild_lock(sid)
+    assert sid not in capture_samples._rebuild_locks
 
 
 def _grouped_capture(captures_store, monkeypatch, tmp_path, sid):
@@ -815,7 +815,7 @@ def test_reprocess_vad_worker_uses_pinned_rebuild_lock(
     acquire and mint a SECOND Lock for a concurrent regenerate."""
     import inspect
 
-    from faster_whisper_backend.captures import routes as cr
+    from faster_whisper_backend.captures import samples as capture_samples
     from faster_whisper_backend.captures import vad_reprocess as vr
 
     assert "_get_rebuild_lock" not in inspect.getsource(vr)
@@ -823,14 +823,14 @@ def test_reprocess_vad_worker_uses_pinned_rebuild_lock(
     sid = "a" * 32
     _grouped_capture(captures_store_db, monkeypatch, tmp_path, sid)
     entered = []
-    real = cr._rebuild_lock
+    real = capture_samples._rebuild_lock
 
     def _counting(s):
         entered.append(s)
         return real(s)
 
-    monkeypatch.setattr(cr, "_rebuild_lock", _counting)
-    monkeypatch.setattr(cr, "_build_merged_wav",
+    monkeypatch.setattr(capture_samples, "_rebuild_lock", _counting)
+    monkeypatch.setattr(capture_samples, "_build_merged_wav",
                         lambda **kw: (1000, {}, {}))
     vr._run()
     assert vr.status()["status"] == "done"

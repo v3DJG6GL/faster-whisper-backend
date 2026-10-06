@@ -45,6 +45,9 @@ _NOT_RESET = {
     },
     "faster_whisper_backend.transcription.progress": {},
     "faster_whisper_backend.translation.gating": {},
+    "faster_whisper_backend.captures.samples": {
+        "_JOIN_STR": "constant join-strategy → separator map",
+    },
     "faster_whisper_backend.pipeline.apply": {
         "EVICTORS": "constant bucket → drop-callable table",
         "_RULES_LOCK": "a LoopLock keeps one asyncio.Lock per running loop and "
@@ -228,3 +231,18 @@ def test_routers_no_longer_define_apply_names(modname):
                  "EVICTORS", "rules_lock", "rebuild_caches_off_loop",
                  "_PIPELINE_RULE_ADAPTER", "_sort_dicts", "_RULES_LOCK"):
         assert hasattr(pl_apply, name), name
+
+
+# P15: the sample-building helpers and the per-sample rebuild lock moved from
+# captures/routes.py into captures/samples.py. The routes and both workers call
+# through capture_samples.X, so a stale twin left in routes would be what a
+# test patches while every caller runs the samples copy.
+def test_captures_routes_no_longer_defines_sample_helpers():
+    from faster_whisper_backend.captures import routes as captures_routes
+    from faster_whisper_backend.captures import samples as capture_samples
+    moved = set(_top_level_names(capture_samples)) - _SHARED
+    stale = sorted(n for n in moved if hasattr(captures_routes, n))
+    assert not stale, f"captures/routes.py still defines moved names: {stale}"
+    for name in ("_build_merged_wav", "_rebuild_lock", "_rebuild_locks",
+                 "_align_words_to_final", "_build_default_transcript"):
+        assert name in moved, name

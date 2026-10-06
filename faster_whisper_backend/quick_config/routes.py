@@ -49,7 +49,7 @@ from faster_whisper_backend.settings import config_store
 from faster_whisper_backend.settings import schema as settings_schema
 from faster_whisper_backend.settings import version as settings_version
 from faster_whisper_backend.core import store_common
-from faster_whisper_backend.quick_config import state as quick_config_state
+from faster_whisper_backend.quick_config import recent_feed as qc_recent_feed
 from faster_whisper_backend.stats import recent_transcriptions_store
 from faster_whisper_backend.core import web_common
 from faster_whisper_backend.pipeline import apply as pl_apply
@@ -794,7 +794,7 @@ async def get_state(
     # an empty chip map.
     reported_chips: dict[str, dict[str, Any]] = {}
     try:
-        from faster_whisper_backend.admin import reports_store
+        from faster_whisper_backend.reports import store as reports_store
         uid = user.get("user_id") or ""
         if uid:
             # Off the loop like every sibling read in this file (_recent_page,
@@ -1096,7 +1096,7 @@ async def stream_recent(
 
     Scope-aware: `scope=own` filters replay AND live items to the
     caller's user_id; `scope=all` lets everything through. Live items
-    flow through quick_config_state.subscribe()'s shared queue — every
+    flow through qc_recent_feed.subscribe()'s shared queue — every
     subscriber gets every event — so filtering happens here per
     subscriber rather than at the publisher (no extra queue infra)."""
     perms = user["permissions"]
@@ -1114,7 +1114,7 @@ async def stream_recent(
 
     async def gen():
         nonlocal caller_uid, sees_all, seen
-        q = quick_config_state.subscribe()
+        q = qc_recent_feed.subscribe()
         try:
             # Replay the freshest page from the durable store (oldest-
             # first so the client receives them in chronological order,
@@ -1154,7 +1154,7 @@ async def stream_recent(
                 except asyncio.TimeoutError:
                     yield ": keepalive\n\n"
         finally:
-            quick_config_state.unsubscribe(q)
+            qc_recent_feed.unsubscribe(q)
 
     return web_common.sse_response(gen())
 

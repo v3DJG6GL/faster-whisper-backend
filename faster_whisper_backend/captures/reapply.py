@@ -10,7 +10,7 @@ Scope:
     rule-independent) stay untouched.
   - For each affected member that belongs to an unlocked group,
     rebuild the group's snapshot `transcript` from the current member
-    text via the existing _build_default_transcript helper. Locked
+    text via samples._build_default_transcript. Locked
     groups are skipped — they're exported training samples.
   - No audio re-merge. Pipeline rules only affect text; merged WAV
     bytes are unchanged.
@@ -28,6 +28,7 @@ import threading
 import time
 from typing import Any
 
+from faster_whisper_backend.captures import samples as capture_samples
 from faster_whisper_backend.pipeline import engine as pl_engine
 from faster_whisper_backend.settings import effective_config
 
@@ -167,13 +168,12 @@ def _run() -> None:
                 _state["processed"] += 1
 
         if affected_sample_ids:
-            from faster_whisper_backend.captures.routes import _build_default_transcript
             for sid in affected_sample_ids:
                 g = capture_samples_store.get_sample(sid)
                 if g is None or g.get("is_locked"):
                     continue
                 members = capture_samples_store.get_members(sid)
-                new_t = _build_default_transcript(
+                new_t = capture_samples._build_default_transcript(
                     members, g.get("transcript_join_strategy") or "space",
                 )
                 if new_t != (g.get("transcript") or ""):

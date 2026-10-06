@@ -299,7 +299,7 @@ def record_transcription(model: str, audio_dur: float, proc_dur: float,
     """Called from the transcribe handler's outer finally on every
     /transcribe request (both success and error paths). UPSERTs the
     timing half of the recent-transcriptions row keyed by request_id;
-    record_trace() in quick_config_state has already inserted the rich
+    record_trace() in quick_config/recent_feed.py has already inserted the rich
     half on the success path, so this call only patches timing fields
     in. On the error path it inserts a minimal row so /stats still
     counts the request.

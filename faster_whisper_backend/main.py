@@ -216,7 +216,7 @@ async def _reports_retention_loop() -> None:
     cfg.REPORTS_RETENTION_DAYS each tick so admin /settings edits take
     effect on the next cycle without a service restart. Cancellation
     on shutdown is the normal exit path."""
-    from faster_whisper_backend.admin import reports_store
+    from faster_whisper_backend.reports import store as reports_store
     while True:
         try:
             await asyncio.sleep(3600)
@@ -777,7 +777,7 @@ async def lifespan(app: FastAPI):
     # the reports surface is broken, but the /reports page will error.
     reports_sweep_task = None
     try:
-        from faster_whisper_backend.admin import reports_store
+        from faster_whisper_backend.reports import store as reports_store
         reports_store.init_db(cfg.REPORTS_DB)
         reports_store.sweep_retention()
         logger.info("Reports store initialized at %s", cfg.REPORTS_DB)
@@ -3335,8 +3335,8 @@ async def transcribe(
             # outer finally adds the timing half via UPSERT on the same
             # request_id.
             try:
-                from faster_whisper_backend.quick_config import state as quick_config_state
-                quick_config_state.record_trace(
+                from faster_whisper_backend.quick_config import recent_feed as qc_recent_feed
+                qc_recent_feed.record_trace(
                     request_id=request_id,
                     model=resolved_model,
                     raw=raw_full_text,
@@ -7231,8 +7231,8 @@ if _include_router("stats", "faster_whisper_backend.stats.routes"):
 # The WebUI's front door: signed-out visitors get the shared login gate,
 # signed-in ones a launcher filtered to the pages their key can reach (plus
 # the admin section for admins). Same host tier as the other user page
-# shells; nothing sensitive is rendered server-side. See home_routes.py.
-if _include_router("home", "faster_whisper_backend.admin.home_routes"):
+# shells; nothing sensitive is rendered server-side. See core/home_routes.py.
+if _include_router("home", "faster_whisper_backend.core.home_routes"):
     logger.info(
         "Landing hub at / (allowlist=%s; loopback always permitted)",
         cfg.USER_WEBUI_ALLOWED_HOSTS,
@@ -7319,7 +7319,7 @@ if cfg.ADMIN_UI_ENABLED:
         )
     # /settings/api-keys — admin UI for per-user key management. Same
     # auth shape (admin host + admin key) as /settings.
-    _include_router("api-keys", "faster_whisper_backend.auth.api_keys_routes")
+    _include_router("api-keys", "faster_whisper_backend.admin.api_keys_routes")
     # /settings/overrides — admin UI for layered per-identity config
     # profiles + the effective-config Explorer. Same auth shape as /settings.
     _include_router("overrides", "faster_whisper_backend.admin.overrides_routes")
@@ -7330,7 +7330,7 @@ if cfg.ADMIN_UI_ENABLED:
     # /reports: admin-only triage page for user-submitted transcription
     # error reports. The submission endpoint /quick-config/reports/api/submit
     # lives on the same router and accepts any active API key.
-    if _include_router("reports", "faster_whisper_backend.admin.reports_routes"):
+    if _include_router("reports", "faster_whisper_backend.reports.routes"):
         logger.info(
             "Reports UI enabled at /reports (admin key required for triage; "
             "user submissions %s)",
