@@ -274,6 +274,13 @@ def _drop_locked(*, force: bool = False) -> bool:
                     "running — freed when the last one finishes",
                     model_id, leased)
         return True
+    if _orphans.get(model_id, 0):
+        # A same-id orphan (force-dropped, then reloaded and idled) is still
+        # diarizing: freeing now would unregister its stats row under it.
+        # Its last release frees it (same guard as bgm_separation).
+        logger.info("[diarize] pipeline %s dropped from cache; an orphan "
+                    "job still holds it", model_id)
+        return True
     _free_locked(model_id)
     return True
 

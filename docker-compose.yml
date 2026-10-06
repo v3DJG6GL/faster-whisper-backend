@@ -111,17 +111,23 @@ services:
     #   table inet whisper {
     #     chain egress {
     #       type filter hook forward priority filter; policy accept;
+    #       meta nfproto != ipv4 return                # the subnet is v4-only
     #       ip  saddr != 172.31.9.0/24 return          # only this service
     #       ct  state established,related return       # replies to inbound
     #       ip  daddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16,
     #                   127.0.0.0/8, 169.254.0.0/16 } drop
-    #       ip6 daddr { ::1/128, fc00::/7, fe80::/10 } drop
     #     }
     #   }
     #
-    # The `ip saddr != … return` line scopes the chain to this service's
-    # subnet. The `ct state` line lets through the replies to connections
-    # that came IN (a LAN client or reverse proxy on the published port —
+    # The `meta nfproto` and `ip saddr != … return` lines scope the chain to
+    # this service's subnet: an `ip` match never matches IPv6, so without
+    # the first one every forwarded IPv6 packet on the host (other
+    # containers, VMs) would fall through to the drops. An IPv6-enabled
+    # service network needs its own `ip6 saddr != <v6 subnet> return` and
+    # then `ip6 daddr { ::1/128, fc00::/7, fe80::/10 } drop` in place of
+    # the nfproto line. The `ct state` line lets through the replies to
+    # connections that came IN (a LAN client or reverse proxy on the
+    # published port —
     # without it those replies match the RFC1918 drop and LAN access dies),
     # so only connections the container opens are filtered. Host-local
     # clients and Docker's embedded DNS never cross FORWARD at all. The

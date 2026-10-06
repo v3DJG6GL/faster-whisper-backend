@@ -5,9 +5,11 @@ video that carries empty or real captions."""
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import re
 import subprocess
+import time
 
 import pytest
 
@@ -89,6 +91,35 @@ def test_only_h264_is_scanned(monkeypatch):
     assert asyncio.run(pk._empty_captions_to_strip("/m/x.mkv", "hevc", 0, 60)) is False
     assert asyncio.run(pk._empty_captions_to_strip("/m/x.mkv", None, 0, 60)) is False
     assert calls == []
+
+
+def _fake_ffmpeg(tmp_path, monkeypatch, body: str) -> None:
+    if os.name == "nt":
+        pytest.skip("POSIX shell script stands in for ffmpeg")
+    exe = tmp_path / "ffmpeg"
+    exe.write_text("#!/bin/sh\n" + body + "\n")
+    exe.chmod(0o755)
+    monkeypatch.setattr(cc.audio_ffmpeg, "ffmpeg_exe", lambda: str(exe))
+
+
+def test_scan_time_limit_holds_while_a_read_is_blocked(tmp_path, monkeypatch):
+    """ffmpeg writes a few bytes and stalls: the 1 MiB read blocks, so only
+    the watchdog can enforce the limit (it used to wait out the child)."""
+    # exec: the stalled child IS the process the watchdog kills, so the
+    # pipe's write end closes with it.
+    _fake_ffmpeg(tmp_path, monkeypatch, "printf abc\nexec sleep 30")
+    t0 = time.monotonic()
+    assert cc.embedded_captions_empty("/m/x.mkv", timeout=0.5) is False
+    assert time.monotonic() - t0 < 3
+
+
+def test_clean_scan_without_captions_logs_no_empty_blocks(
+        tmp_path, monkeypatch, caplog):
+    _fake_ffmpeg(tmp_path, monkeypatch, "printf abc")
+    with caplog.at_level(logging.INFO, logger="whisper-api"):
+        assert cc.embedded_captions_empty("/m/x.mkv", timeout=10) is False
+    assert not any("empty caption block" in r.getMessage()
+                   for r in caplog.records)
 
 
 # ── the whole path on a generated video ────────────────────────────────────

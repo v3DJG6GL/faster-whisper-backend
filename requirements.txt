@@ -49,7 +49,8 @@ pydantic>=2.13.5
 
 # Transcribe-from-URL (URL_DOWNLOAD_ENABLED): the server-side downloader for
 # pasted media links. Pure Python; the ffmpeg it may call for merges comes
-# from PATH or the imageio-ffmpeg wheel above (--ffmpeg-location). YouTube
+# from PATH or the imageio-ffmpeg wheel (requirements-heavy.txt;
+# --ffmpeg-location). YouTube
 # ships breaking changes every few weeks, so this dep has its OWN Renovate
 # rule (ungrouped, no release-age gate) — a stale yt-dlp is a dead feature.
 yt-dlp>=2026.8.19

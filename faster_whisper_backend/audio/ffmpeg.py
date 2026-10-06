@@ -32,7 +32,7 @@ def is_multi_input_format(name: "str | None") -> bool:
 def ffmpeg_exe() -> str:
     """Resolve the ffmpeg executable. Prefers a system ffmpeg on PATH (usually
     newer/faster), else the bundled imageio-ffmpeg binary (cross-platform, pulled
-    by requirements.txt), else the bare name ``"ffmpeg"`` as a last resort (which
+    by requirements-heavy.txt), else the bare name ``"ffmpeg"`` as a last resort (which
     will surface a clear FileNotFoundError if truly absent)."""
     exe = shutil.which("ffmpeg")
     if exe:

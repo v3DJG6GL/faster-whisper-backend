@@ -159,9 +159,18 @@ async def fetch_tracks(info, ids: "list[str]") -> "tuple[list[dict], list[dict]]
                 # the size limit" would blame a track that may be tiny.
                 raise _udl.UrlDownloadError(
                     "this request's subtitle size budget is used up")
-            _ctype, body = await _udl.capped_get(
-                src["url"], max_bytes=min(TRACK_MAX_BYTES, budget),
-                deadline=deadline)
+            cap = min(TRACK_MAX_BYTES, budget)
+            try:
+                _ctype, body = await _udl.capped_get(
+                    src["url"], max_bytes=cap, deadline=deadline)
+            except _udl.UrlDownloadError as e:
+                if cap < TRACK_MAX_BYTES and "size limit" in str(e):
+                    # The cap that tripped was what is left of the request's
+                    # budget, not the per-track limit: the track itself may
+                    # be small — don't blame it.
+                    raise _udl.UrlDownloadError(
+                        "this request's subtitle size budget is used up") from e
+                raise
             budget -= len(body)
             tracks.append({"id": tid, "lang": track["lang"], "kind": track["kind"],
                            "ext": track["ext"], "text": sniff(body, track["ext"])})

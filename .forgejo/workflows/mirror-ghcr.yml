@@ -39,9 +39,14 @@
 # the digests of latest/v* builds, so each one costs only a manifest copy.
 # That set only ever grows (one sha-<short> per release, x4 variants, and
 # nothing prunes them), so a sha-* tag already present on the destination
-# is skipped without a digest compare: it is content-addressed, presence
-# IS identity. Otherwise every dispatch and both crons would pay two
-# registry round trips per historical tag, forever.
+# is normally skipped without a digest compare — otherwise every dispatch
+# and both crons would pay two registry round trips per historical tag,
+# forever. It is NOT content-addressed, though: ci.yml re-pushes
+# sha-<short> with a new digest when a second tag lands on the same commit
+# (a manual minor after the auto patch) or a release is rebuilt by
+# dispatch, and each build bakes its own version string. Both cases also
+# re-push latest*/v*, so whenever one of those is copied, the sha-* tag of
+# the revision it carries gets the full digest compare too.
 
 name: mirror-ghcr
 
@@ -186,18 +191,30 @@ jobs:
           dst_tags=$(crane ls "$DST_IMAGE" 2>/dev/null || true)
 
           copied=0 fresh=0 immutable=0
+          # sha-* tags whose source was (possibly) re-pushed this run: the
+          # revision of every latest*/v* tag copied below, per variant. The
+          # sha-* tags go LAST so this set is complete when they come up.
+          touched=""
+          tags=$( { printf '%s\n' "$tags" | grep -v '^sha-' || true; } ; \
+                  { printf '%s\n' "$tags" | grep '^sha-' || true; } )
           for tag in $tags; do
-            # sha-<short> is content-addressed and can never be re-pushed to
-            # point elsewhere, so presence on the destination already proves
-            # it is in sync. latest*/v* ARE re-pushed (a new release moves
-            # them), so those keep the full two-request digest compare.
+            # A sha-<short> already on the destination is normally in sync
+            # (see the header), UNLESS a release copied above carries this
+            # revision: a second tag or a dispatch rebuild re-pushed it.
+            # latest*/v* ARE re-pushed (a new release moves them), so those
+            # keep the full two-request digest compare.
             case "$tag" in
               sha-*)
-                if printf '%s\n' "$dst_tags" | grep -qxF "$tag"; then
-                  fresh=$((fresh + 1))
-                  immutable=$((immutable + 1))
-                  continue
-                fi
+                case " $touched " in
+                  *" $tag "*) ;;
+                  *)
+                    if printf '%s\n' "$dst_tags" | grep -qxF "$tag"; then
+                      fresh=$((fresh + 1))
+                      immutable=$((immutable + 1))
+                      continue
+                    fi
+                    ;;
+                esac
                 ;;
             esac
             src_digest=$(crane digest "$SRC_IMAGE:$tag")
@@ -209,5 +226,15 @@ jobs:
             echo "[$tag] ${dst_digest:-<absent>} -> $src_digest"
             crane cp "$SRC_IMAGE:$tag" "$DST_IMAGE:$tag"
             copied=$((copied + 1))
+            case "$tag" in
+              sha-*) ;;
+              *)
+                rev=$(crane config "$SRC_IMAGE:$tag" | sed -n 's/.*"org\.opencontainers\.image\.revision":"\([0-9a-f]*\)".*/\1/p')
+                variant=$(printf '%s' "$tag" | grep -oE '(-gpu)?(-full)?$' || true)
+                if [ -n "$rev" ]; then
+                  touched="$touched sha-${rev:0:7}${variant}"
+                fi
+                ;;
+            esac
           done
-          echo "::notice::mirror-ghcr: $copied tag(s) copied, $fresh already in sync ($immutable immutable sha-* tag(s) skipped without a digest compare)"
+          echo "::notice::mirror-ghcr: $copied tag(s) copied, $fresh already in sync ($immutable historical sha-* tag(s) skipped without a digest compare)"

@@ -21,6 +21,7 @@ fails a check on its own. The parsers (`parse_hls`, `dash_media`,
 """
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 import math
 import os
@@ -288,11 +289,17 @@ async def fetch_pieces(source: dict, starts: "list[float]", seconds: float,
     ext = os.path.splitext(urllib.parse.urlsplit(media.segments[0][0][0]).path)[1]
     ext = "mp4" if media.init else (ext.lstrip(".").lower() or "ts")
     ext = ext if ext in _PIECE_EXTS else "ts"
-    pieces = []
-    for n, (first, end, skip) in enumerate(runs):
-        path = os.path.join(dest_dir, f"piece{n}.{ext}")
-        with open(path, "wb") as f:
-            for part in head + [p for p, _d in media.segments[first:end]]:
-                f.write(got[part])
-        pieces.append((path, skip))
+
+    def _write_pieces() -> "list[tuple[str, float]]":
+        # Up to TOTAL_MAX_BYTES (plus the init segment per piece, and any
+        # overlap written twice): off the event loop, like the decode after.
+        pieces = []
+        for n, (first, end, skip) in enumerate(runs):
+            path = os.path.join(dest_dir, f"piece{n}.{ext}")
+            with open(path, "wb") as f:
+                for part in head + [p for p, _d in media.segments[first:end]]:
+                    f.write(got[part])
+            pieces.append((path, skip))
+        return pieces
+    pieces = await asyncio.to_thread(_write_pieces)
     return pieces, {"segments": len(got) - len(head), "bytes": spent}

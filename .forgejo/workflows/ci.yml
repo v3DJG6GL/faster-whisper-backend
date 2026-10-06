@@ -67,8 +67,13 @@ on:
   workflow_dispatch:
 
 # Cancel superseded PR runs; push runs are kept (they publish images).
+# Every v* tag run shares ONE group: each pushes :latest<suffix> per
+# variant, so two overlapping tag runs (a manual minor on the auto patch's
+# commit, a slow uncached gpu-full build) would race for latest and could
+# leave it on the older release. Forgejo serializes a group (it never
+# dedupes), so the second release simply builds after the first.
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ${{ startsWith(github.ref, 'refs/tags/v') && 'ci-release' || format('ci-{0}', github.ref) }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:

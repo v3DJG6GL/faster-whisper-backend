@@ -1464,7 +1464,8 @@ async def _run_yt_dlp(
             # the wall-clock timeout) before the post-hoc size check below.
             if parsed is not None and parsed[0] > max_bytes:
                 await _kill()
-                _discard_partials(dest_dir)
+                # Off the loop: the refused partial can be gigabytes.
+                await asyncio.to_thread(_discard_partials, dest_dir)
                 raise UrlPolicyError("this media exceeds the server's size limit")
             if parsed:
                 last_parsed = parsed

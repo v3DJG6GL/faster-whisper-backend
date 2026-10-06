@@ -153,7 +153,20 @@ jobs:
           # first, so the normal case costs one GET and changes nothing).
           # Manual minor/major on an already patch-tagged commit falls through
           # and adds a second tag on that commit (the continuous flow tags every
-          # green main commit, so HEAD is always already tagged).
+          # green main commit, so HEAD is always already tagged). But when
+          # $latest already sits at the requested boundary (minor: x.y.0,
+          # major: x.0.0) on this commit, it was a manual run of that same
+          # bump — a re-run after a failed release POST, or a second dispatch
+          # serialized behind the first: repair it, never mint another one.
+          # (Auto patches never land on .0: v1.2.9 bumps to v1.2.10.)
+          IFS=. read -r MA MI PA <<< "${latest#v}"
+          same_boundary=""
+          if [ "$BUMP" = minor ] && [ "$PA" = 0 ]; then same_boundary=1; fi
+          if [ "$BUMP" = major ] && [ "$MI" = 0 ] && [ "$PA" = 0 ]; then same_boundary=1; fi
+          if [ "$latest_commit" = "$target" ] && [ -n "$same_boundary" ]; then
+            echo "::notice::$latest already is this $BUMP bump on $target — a re-run, not a new release"
+            BUMP=patch   # → the idempotence branch below (repairs, never mints)
+          fi
           if [ "$latest_commit" = "$target" ] && { [ -n "$TARGET_SHA" ] || [ "$BUMP" = patch ]; }; then
             echo "::notice::$target is already tagged $latest — no new tag; checking its release"
             prev=$(git tag -l 'v*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -2 | head -1 || true)
@@ -172,7 +185,6 @@ jobs:
             exit 0
           fi
 
-          IFS=. read -r MA MI PA <<< "${latest#v}"
           case "$BUMP" in
             major) new="$((MA+1)).0.0" ;;
             minor) new="$MA.$((MI+1)).0" ;;

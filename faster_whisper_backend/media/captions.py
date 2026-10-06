@@ -18,6 +18,7 @@ from __future__ import annotations
 import dataclasses
 import logging
 import subprocess
+import threading
 import time
 
 from faster_whisper_backend.audio import ffmpeg as audio_ffmpeg
@@ -127,6 +128,19 @@ def embedded_captions_empty(src: str, *, video_index: int = 0, timeout: float = 
     scan = A53Scan()
     state = {"eof": False, "timed_out": False}
 
+    def _expire():
+        # A read blocks until 1 MiB or EOF, so the between-reads check below
+        # never fires while ffmpeg stalls without writing (a hung mount, a
+        # long resync): killing it unblocks the read with EOF.
+        state["timed_out"] = True
+        try:
+            proc.kill()
+        except OSError:
+            pass
+    watchdog = threading.Timer(max(0.0, timeout - (time.monotonic() - t0)), _expire)
+    watchdog.daemon = True
+    watchdog.start()
+
     def _chunks():
         while True:
             if time.monotonic() - t0 > timeout:
@@ -141,6 +155,7 @@ def embedded_captions_empty(src: str, *, video_index: int = 0, timeout: float = 
     try:
         scan_a53(_chunks(), scan)
     finally:
+        watchdog.cancel()
         if state["eof"]:
             try:
                 rc = proc.wait(timeout=10)
@@ -157,6 +172,7 @@ def embedded_captions_empty(src: str, *, video_index: int = 0, timeout: float = 
         logger.info("[captions] scan inconclusive (rc=%s, timed out=%s) for %s",
                     rc, state["timed_out"], log_safe(src[-80:]))
         return False
-    logger.info("[captions] %d empty caption block(s) in %.1fs",
-                scan.blocks, time.monotonic() - t0)
+    if scan.present:
+        logger.info("[captions] %d empty caption block(s) in %.1fs",
+                    scan.blocks, time.monotonic() - t0)
     return scan.empty

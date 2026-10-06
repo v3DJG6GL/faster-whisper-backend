@@ -594,9 +594,10 @@ $xml = @"
   </log>
 
   <env name="WHISPER_LOG_FILE" value="%BASE%\logs\whisper.log"/>
-  <!-- To enable the admin WebUI via env (alternative: set ADMIN_UI_ENABLED in config.json),
+  <!-- The admin WebUI is ON by default (ADMIN_UI_ENABLED in config.json).
+       To pin it via env instead (overrides config.json; "0" turns it off),
        uncomment the line below, then re-run this install script.
-  <env name="WHISPER_ADMIN_UI" value="1"/>
+  <env name="WHISPER_ADMIN_UI" value="0"/>
   -->
   <!-- The admin WebUI is NOT token-authenticated. Access is gated by
        WHISPER_ADMIN_WEBUI_ALLOWED_HOSTS (loopback by default) plus an admin
@@ -604,7 +605,7 @@ $xml = @"
        hands admin rights to every caller on that allowlist, so create one:
          WHISPER_BOOTSTRAP_ADMIN_KEY=<high-entropy value>
        Earlier revisions of this file suggested a WHISPER_ADMIN_TOKEN env var.
-       Nothing has ever read it -- setting it protected nothing. -->
+       Nothing has ever read it; setting it protected nothing. -->
 </service>
 "@
 Set-Content -Path $WinSWXml -Value $xml -Encoding UTF8
@@ -666,7 +667,7 @@ Write-Host "Done. Service is running." -ForegroundColor Green
 Write-Host "  API:        http://localhost:8000/v1/audio/transcriptions"
 Write-Host "  Live logs:  http://localhost:8000/logs"
 Write-Host "  Stats:      http://localhost:8000/stats"
-Write-Host "  Admin UI:   http://localhost:8000/settings  (only when ADMIN_UI_ENABLED=true in config.json, or WHISPER_ADMIN_UI=1)"
+Write-Host "  Admin UI:   http://localhost:8000/settings  (on unless ADMIN_UI_ENABLED=false in config.json, or WHISPER_ADMIN_UI=0)"
 Write-Host "  App log:    $LogsDir\whisper.log"
 Write-Host "  Stdout/err: $LogsDir\$ServiceName.out.log  /  $LogsDir\$ServiceName.err.log"
 Write-Host ""

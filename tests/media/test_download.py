@@ -1186,9 +1186,9 @@ def test_download_video_counts_cumulatively_across_two_streams(tmp_path, monkeyp
     fracs = [f for f, _t, _d in seen]
     assert fracs == sorted(fracs), fracs
     assert seen[-1] == (1.0, 1300, 1300)
-    # The second stream's restart at 100 must not read as 100 of 1300.
-    assert all(d >= 1000 for _f, _t, d in seen if 1000 < d < 1300), seen
-    assert any(d == 1100 for _f, _t, d in seen)
+    # The second stream's restart at 100 must not read as 100 of 1300
+    # (deterministic: _patch_video_argv turns the emit throttle off).
+    assert [d for _f, _t, d in seen] == [500, 1000, 1100, 1300], seen
 
 
 _TWO_LEGS_BY_ID_SCRIPT = """

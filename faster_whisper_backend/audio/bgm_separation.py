@@ -258,6 +258,11 @@ _separate_mutex = threading.Lock()
 _lock = LoopLock()   # see core.loop_lock: survives a test suite's loop-per-lifespan
 _separator = None
 _separator_key: "tuple[str, str] | None" = None  # (model_filename, device)
+# The key _get_separator is loading right now (None otherwise). Both
+# _separator and _separator_key are None for the whole load, so without this
+# an orphan's lock-free release landing mid-load could not tell that a new
+# session's placement / stats row is already being recorded.
+_loading_key: "tuple[str, str] | None" = None
 _last_used_monotonic: float = 0.0
 _STATS_PREFIX = "uvr:"
 # model filename → count of jobs currently running inference on the CACHED
@@ -430,15 +435,16 @@ def _load_blocking(model_filename: str, device: str):
 def _free_locked(model: str) -> None:
     """Give the separator's memory back. Caller holds _lock and has already
     removed it from the cache."""
-    # A same-model RELOAD can have happened while an orphan was still
-    # draining; the stats entry then describes the live separator.
-    if not (_separator_key and _separator_key[0] == model):
+    # A same-model RELOAD can have happened (or be in flight) while an orphan
+    # was still draining; the stats entry then describes the live separator.
+    if not (_separator_key and _separator_key[0] == model) and \
+            not (_loading_key and _loading_key[0] == model):
         model_registry.unregister_loaded_model(_STATS_PREFIX + model)
     # No live separator left → no session; actual_device() must stop
-    # reporting the dead one. (A draining orphan freed AFTER a reload must
-    # not wipe the live session's placement.)
+    # reporting the dead one. (A draining orphan freed AFTER or DURING a
+    # reload must not wipe the new session's placement.)
     global _session_device
-    if _separator is None:
+    if _separator is None and _loading_key is None:
         _session_device = None
     import gc
     gc.collect()
@@ -541,7 +547,7 @@ async def _get_separator(model_filename: "str | None" = None, *,
     """Return the cached separator, (re)loading when config (or a per-request
     ``model_filename`` override) changed it — the (model, device) key below
     re-keys the singleton per call."""
-    global _separator, _separator_key, _last_used_monotonic
+    global _separator, _separator_key, _last_used_monotonic, _loading_key
     model = _model_filename(model_filename)
     device = _resolve_device()
     key = (model, device)
@@ -566,42 +572,49 @@ async def _get_separator(model_filename: "str | None" = None, *,
         # force: a request for a DIFFERENT model must never be blocked by a
         # running job — orphaning lets both coexist until the old one drains.
         _drop_locked(force=True)
-        vram_before = system_stats.gpu_mem_used_bytes()
-        loop = asyncio.get_running_loop()
-        t0 = time.perf_counter()
-        # Coarse download-or-load job entry (indeterminate progress):
-        # audio-separator downloads through its own requests+tqdm stack, so
-        # the hub shim can't see the bytes — the entry still tells /stats
-        # and the header cluster that a model fetch/load is in flight.
-        from faster_whisper_backend.core import jobs
-        _dl_job = jobs.job_start("download", model=_STATS_PREFIX + model,
-                                 detail="download-or-load")
+        # Marks the load in flight for _free_locked (an orphan released
+        # mid-load must not wipe this load's placement or stats row).
+        _loading_key = key
         try:
-            sep = await loop.run_in_executor(
-                None, _load_blocking, model, device)
+            vram_before = system_stats.gpu_mem_used_bytes()
+            loop = asyncio.get_running_loop()
+            t0 = time.perf_counter()
+            # Coarse download-or-load job entry (indeterminate progress):
+            # audio-separator downloads through its own requests+tqdm stack,
+            # so the hub shim can't see the bytes — the entry still tells
+            # /stats and the header cluster that a model fetch/load is in
+            # flight.
+            from faster_whisper_backend.core import jobs
+            _dl_job = jobs.job_start("download", model=_STATS_PREFIX + model,
+                                     detail="download-or-load")
+            try:
+                sep = await loop.run_in_executor(
+                    None, _load_blocking, model, device)
+            finally:
+                jobs.job_end(_dl_job)
+            vram_after = system_stats.gpu_mem_used_bytes()
+            vram = (vram_after - vram_before) if (
+                vram_before is not None and vram_after is not None) else None
+            load_secs = time.perf_counter() - t0
+            # register_loaded_model's contract wants the ACTUAL placement —
+            # ORT can silently fall back to CPU at session creation, and the
+            # ledger (model_sizes) keys rows by device.
+            actual = actual_device() or device
+            await asyncio.to_thread(
+                model_registry.register_loaded_model,
+                _STATS_PREFIX + model, vram, actual, "onnx", load_secs)
+            logger.info("[bgm] separation model %s loaded on %s in %.1fs",
+                        model, actual, load_secs)
+            try:
+                from faster_whisper_backend.stats import metrics
+                metrics.record_model_load(_STATS_PREFIX + model, load_secs)
+            except Exception:  # noqa: BLE001 — stats only
+                pass
+            _separator = sep
+            _separator_key = key
+            _last_used_monotonic = time.monotonic()
         finally:
-            jobs.job_end(_dl_job)
-        vram_after = system_stats.gpu_mem_used_bytes()
-        vram = (vram_after - vram_before) if (
-            vram_before is not None and vram_after is not None) else None
-        load_secs = time.perf_counter() - t0
-        # register_loaded_model's contract wants the ACTUAL placement — ORT
-        # can silently fall back to CPU at session creation, and the ledger
-        # (model_sizes) keys rows by device.
-        actual = actual_device() or device
-        await asyncio.to_thread(
-            model_registry.register_loaded_model,
-            _STATS_PREFIX + model, vram, actual, "onnx", load_secs)
-        logger.info("[bgm] separation model %s loaded on %s in %.1fs",
-                    model, actual, load_secs)
-        try:
-            from faster_whisper_backend.stats import metrics
-            metrics.record_model_load(_STATS_PREFIX + model, load_secs)
-        except Exception:  # noqa: BLE001 — stats only
-            pass
-        _separator = sep
-        _separator_key = key
-        _last_used_monotonic = time.monotonic()
+            _loading_key = None
         if lease:
             _leases[model] = _leases.get(model, 0) + 1
         return sep
@@ -808,8 +821,9 @@ def _reset_for_tests() -> None:
     """Test-only: drop the separator singleton and its job leases; a leaked
     separator/lease would change what a later eviction or cache-hit test
     observes."""
-    global _separator, _separator_key
+    global _separator, _separator_key, _loading_key
     _separator = None
     _separator_key = None
+    _loading_key = None
     _leases.clear()
     _orphans.clear()

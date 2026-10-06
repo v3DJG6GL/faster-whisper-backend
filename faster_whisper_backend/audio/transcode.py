@@ -13,7 +13,8 @@ and layout are per-caller:
 
 decode_pieces_16k / decode_span_16k read short 16 kHz float pieces straight
 into memory for a link's language check; all open the source through
-_open_audio.
+_open_audio. refuse_multi_input applies the same demuxer refusal to a path
+headed for a decoder that does not (faster-whisper, pyannote).
 """
 from __future__ import annotations
 
@@ -56,11 +57,34 @@ def _open_audio(src_path: str):
     return container, stream
 
 
+def refuse_multi_input(path: str) -> None:
+    """ValueError("unsupported container") when `path` opens as a demuxer
+    that pulls in OTHER inputs (see audio_ffmpeg.MULTI_INPUT_DEMUXERS).
+
+    For paths handed to a decoder that does not go through _open_audio
+    (faster-whisper's decode_audio, pyannote): run it on the raw upload
+    first. No audio stream is required, and an av error is NOT refused —
+    the same libavformat open in the real decoder raises it anyway, with
+    that caller's own error handling."""
+    av = _av()
+    try:
+        container = av.open(path, options={"protocol_whitelist": "file"})
+    except av.FFmpegError:
+        return
+    try:
+        if audio_ffmpeg.is_multi_input_format(
+                getattr(container.format, "name", None)):
+            raise ValueError("unsupported container")
+    finally:
+        container.close()
+
+
 def _read_16k(container, stream, want: int, *, skip: int = 0,
               after: "float | None" = None):
     """Decode `stream` from where the container stands into 16 kHz mono
-    float32: drop frames that end before `after` (seconds, stream time) and
-    then the first `skip` samples, return the next `want` (fewer at EOF)."""
+    float32: drop frames that end before `after` (seconds, STREAM time —
+    media time plus the stream's start_time) and then the first `skip`
+    samples, return the next `want` (fewer at EOF)."""
     import numpy as np
 
     # Fresh per call: a resampler keeps samples buffered across a seek.
@@ -93,9 +117,15 @@ def decode_pieces_16k(src_path: str, starts: "list[float]",
     pieces = []
     container, stream = _open_audio(src_path)
     try:
+        # `starts` are media time; seek and frame.time are STREAM time, which
+        # an MPEG-TS/HLS download (or a remux keeping the offset) starts at
+        # start_time, not 0.
+        st0 = (float(stream.start_time * stream.time_base)
+               if stream.start_time is not None else 0.0)
         for start in starts:
-            container.seek(int(start / stream.time_base), stream=stream)
-            pieces.append(_read_16k(container, stream, want, after=start))
+            t = start + st0
+            container.seek(int(t / stream.time_base), stream=stream)
+            pieces.append(_read_16k(container, stream, want, after=t))
     finally:
         container.close()
     return pieces

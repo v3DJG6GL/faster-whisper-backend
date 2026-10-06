@@ -305,7 +305,7 @@ async def _download_link_audio(pid: "str | None", url: str,
     the SSRF guard) under the URL download semaphore; returns the media id,
     registered with `source_url` so a run of the same link can reuse it.
     Raises UrlDownloadError / UrlCancelled / _ClientCancelled."""
-    with media_video._url_staging_job() as job:
+    async with media_video._url_staging_job() as job:
         path = await media_video._guarded_audio_download(pid, url, job)
         size = os.path.getsize(path)
         mid = await asyncio.to_thread(url_media_store.register, path, user_id=user_id,
@@ -328,7 +328,7 @@ async def _segmented_pieces(pid: "str | None", url: str, source: dict,
     import urllib.error
     t0 = time.perf_counter()
     try:
-        with media_video._url_staging_job() as job:
+        async with media_video._url_staging_job() as job:
             async with tx_models._get_url_download_semaphore():
                 tx_progress._check_cancelled(pid)
                 tx_progress._progress_set(pid, stage="downloading", progress=None)

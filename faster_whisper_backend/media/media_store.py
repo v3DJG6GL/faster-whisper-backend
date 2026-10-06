@@ -337,8 +337,8 @@ def _evict_over_cap(protect: "str | set[str] | tuple[str, ...] | None" = None,
             _drop(newest)
         else:
             keep.add(newest)
-    # Snapshot: register() runs on worker threads and the janitor on the
-    # loop thread, so a concurrent insert must not trip "dict changed size
+    # Snapshot: register() and the janitor's sweep() both run on worker
+    # threads, so a concurrent insert must not trip "dict changed size
     # during iteration" here.
     items = list(_REG.items())
     total = sum(e["size"] for _m, e in items)
@@ -373,6 +373,9 @@ async def janitor_loop(interval_s: float = 60.0) -> None:
     while True:
         await asyncio.sleep(interval_s)
         try:
-            sweep()
+            # Off the loop: unlinking multi-GB retained files and rmtree'ing
+            # dead fragment dirs can take seconds. sweep() works on a
+            # snapshot of _REG, as register() on worker threads already does.
+            await asyncio.to_thread(sweep)
         except Exception as e:  # noqa: BLE001 — the janitor must never die
             logger.error("[url-dl] retention sweep failed: %s", e)

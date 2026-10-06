@@ -454,15 +454,20 @@ table inet whisper {
   chain egress {
     type filter hook forward priority filter; policy accept;
     # Only traffic leaving the backend's subnet (adjust to your compose net).
+    # The subnet is IPv4-only, and an `ip` match never matches IPv6: without
+    # the nfproto line every forwarded IPv6 packet on the host would fall
+    # through to the drops below.
+    meta nfproto != ipv4 return
     ip  saddr != 172.31.9.0/24 return
     # Replies to connections that came in on the published port (a LAN
     # client, a reverse proxy) — without this they match the drop below.
     ct  state established,related return
     ip  daddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 127.0.0.0/8, 169.254.0.0/16 } drop
-    ip6 daddr { ::1/128, fc00::/7, fe80::/10 } drop
   }
 }
 ```
+
+If you enable IPv6 on the service network, replace the `meta nfproto` line with an `ip6 saddr != <service v6 prefix> return` beside the IPv4 one and add `ip6 daddr { ::1/128, fc00::/7, fe80::/10 } drop`.
 
 Only connections the container opens are filtered; host-local clients and Docker's embedded DNS never cross the `forward` hook. Adjust `172.31.9.0/24` (the subnet the compose files' commented `networks:` blocks pin) to the compose network's subnet, and drop the `172.16.0.0/12` line only if that subnet overlaps it (it does for Docker's defaults — give the service its own network with an explicit subnet outside the ranges you deny). The commented block in `docker-compose.yml` shows the same idea. On a bare-metal install, the equivalent is an `output` chain matched on the service user (`meta skuid whisper`).
 

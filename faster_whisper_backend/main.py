@@ -1680,6 +1680,17 @@ async def transcribe(
                     _retained_upload = await asyncio.to_thread(
                         url_media_store.make_pipeline_copy, tmp_path)
 
+            # The decoders below never go through transcode._open_audio's
+            # guard: faster-whisper's decode_audio (the lead-pad pre-decode
+            # and model.transcribe) opens the path with no protocol whitelist
+            # or format check, so an ffconcat / HLS / SDP playlist upload (an
+            # extensionless one included) would read a sibling local file.
+            # One refusal here, before any stage, covers every later consumer.
+            try:
+                await asyncio.to_thread(_transcode.refuse_multi_input, tmp_path)
+            except ValueError as _ce:
+                raise HTTPException(status_code=400, detail=str(_ce))
+
             # word_timestamps: AND of the (per-model-overrideable) global
             # config knob and the per-request ask. Disabled (False) bypasses
             # the DTW alignment path entirely — required for primeline-style
@@ -2134,16 +2145,30 @@ async def transcribe(
                                     os.path.getsize(_sep_wav) / 1e6)
                                 _sep_src = _sep_wav
                             except Exception as _te:  # noqa: BLE001
+                                _refused = isinstance(_te, ValueError)
                                 logger.warning(
-                                    "[bgm] input transcode failed (%s); "
-                                    "separator will decode the original",
-                                    _log_safe(str(_te)))
+                                    "[bgm] input transcode failed (%s); %s",
+                                    _log_safe(str(_te)),
+                                    "skipping separation" if _refused else
+                                    "separator will decode the original")
                                 if _sep_wav is not None:
                                     try:
                                         os.unlink(_sep_wav)
                                     except OSError:
                                         pass
                                     _sep_wav = None
+                                if _refused:
+                                    # _open_audio REFUSED the input (a
+                                    # playlist container, no audio stream).
+                                    # Never hand that to the separator: its
+                                    # own decoders (libsndfile, audioread's
+                                    # ffmpeg) have no protocol whitelist and
+                                    # no playlist refusal. The soft-fail arm
+                                    # below warns and transcribes as is.
+                                    tx_progress._progress_set(_pid, step=None)
+                                    raise _bgm_separation.BgmSeparationError(
+                                        "music separation skipped: the file "
+                                        "could not be prepared") from _te
                                 _sep_src = tmp_path
                         try:
                             tx_progress._check_cancelled(_pid)

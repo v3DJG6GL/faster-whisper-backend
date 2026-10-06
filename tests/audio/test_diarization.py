@@ -433,6 +433,29 @@ def test_cancel_during_diarize_still_drops_the_lease(monkeypatch):
     asyncio.run(_main())
 
 
+def test_idle_drop_waits_for_a_same_id_orphan(monkeypatch):
+    """A force-drop orphaned pipeline A, A reloaded under the same id and
+    then idled: dropping the reload must leave the stats row and teardown
+    to the orphan's last release (job 1 is still running on A)."""
+    from faster_whisper_backend.runtime import model_registry
+    monkeypatch.setattr(diarization, "_pipeline", object())
+    monkeypatch.setattr(diarization, "_pipeline_key", ("A", "cpu", 4))
+    monkeypatch.setattr(diarization, "_leases", {})
+    monkeypatch.setattr(diarization, "_orphans", {"A": 1})
+    unregistered: "list[str]" = []
+    monkeypatch.setattr(model_registry, "unregister_loaded_model",
+                        unregistered.append)
+
+    assert diarization._drop_locked(force=False) is True
+    assert diarization._pipeline is None
+    assert unregistered == []
+    assert diarization._orphans == {"A": 1}
+
+    diarization._release_locked("A", pipe=object())
+    assert unregistered == ["pyannote:A"]
+    assert diarization._orphans == {}
+
+
 # --- the tail restamp is owned by the release --------------------------------
 
 def test_diarize_does_not_touch_a_model_it_never_leased(monkeypatch):

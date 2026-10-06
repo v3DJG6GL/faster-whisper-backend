@@ -183,3 +183,20 @@ def test_fetch_caps_each_track_and_the_request(served):
     assert asked == [subs.TRACK_MAX_BYTES] * 4
     assert "budget" in failed[0]["error"]
     assert sum(len(t["text"]) for t in tracks) <= subs.TOTAL_MAX_BYTES
+
+
+def test_fetch_blames_the_budget_not_a_small_track_over_the_rest(served):
+    """Four near-cap tracks leave less than one track's worth: a normal
+    track over that remainder trips the budget, not its own size limit."""
+    info_with, asked = served
+    big = b"WEBVTT\n" + b"x" * (subs.TRACK_MAX_BYTES - 200_000)
+    small = b"WEBVTT\n" + b"x" * (subs.TOTAL_MAX_BYTES - 4 * len(big) + 10)
+    assert len(small) < subs.TRACK_MAX_BYTES
+    langs = ("aa", "ab", "ac", "ad")
+    info = info_with({**{lang: ("vtt", big) for lang in langs},
+                      "ae": ("vtt", small)})
+    tracks, failed = _fetch(info, [f"m-{lang}" for lang in langs + ("ae",)])
+    assert len(tracks) == 4 and [f["id"] for f in failed] == ["m-ae"]
+    assert asked[-1] < subs.TRACK_MAX_BYTES
+    assert "budget" in failed[0]["error"]
+    assert "size limit" not in failed[0]["error"]

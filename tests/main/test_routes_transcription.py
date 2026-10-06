@@ -656,3 +656,63 @@ def test_huge_translate_to_field_is_walked_and_echoed_bounded(client, app_module
     dropped = [w for w in r.json().get("warnings", []) if "were dropped" in w]
     assert len(dropped) == 1
     assert len(dropped[0]) < 1024
+
+
+# --- playlist containers never reach an unguarded decoder ---------------------
+
+def _write_wav(path):
+    import wave
+    with wave.open(str(path), "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(16000)
+        w.writeframes(b"\x00\x00" * 16000)
+
+
+def test_ffconcat_upload_is_refused_before_any_decoder(client, app_module,
+                                                       fake_model, tmp_path,
+                                                       monkeypatch):
+    # faster-whisper's decode_audio (the lead-pad pre-decode and
+    # model.transcribe) opens the spool with no protocol whitelist or format
+    # check: an extensionless ffconcat naming a sibling decoded that sibling.
+    import tempfile
+
+    import faster_whisper.audio
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+    _write_wav(tmp_path / "secret.wav")
+    decoded = []
+    monkeypatch.setattr(faster_whisper.audio, "decode_audio",
+                        lambda *a, **k: decoded.append(a))
+    r = client.post("/v1/audio/transcriptions", data={"model": "whisper-1"},
+                    files={"file": ("upload", b"ffconcat version 1.0\n"
+                                    b"file 'secret.wav'\n",
+                                    "application/octet-stream")})
+    assert r.status_code == 400, r.text
+    assert fake_model.last_audio is None
+    assert decoded == []
+
+
+def test_a_refused_bgm_transcode_never_hands_the_original_to_the_separator(
+        client, app_module, monkeypatch):
+    from faster_whisper_backend.audio import bgm_separation
+    from faster_whisper_backend.audio import transcode as audio_transcode
+    monkeypatch.setattr(app_module.cfg, "BGM_SEPARATION_ENABLED", True,
+                        raising=False)
+    calls = []
+
+    async def _separate(path, **kw):
+        calls.append(path)
+        raise AssertionError("separator reached")
+    monkeypatch.setattr(bgm_separation, "separate", _separate)
+
+    def _refuse(src, dst, *, rate=44100, layout="stereo"):
+        raise ValueError("unsupported container")
+    monkeypatch.setattr(audio_transcode, "transcode_to_wav", _refuse)
+    r = client.post("/v1/audio/transcriptions",
+                    files={"file": ("a.mp3", b"ID3xxxx", "audio/mpeg")},
+                    data={"model": "whisper-1", "separate_bgm": "true",
+                          "response_format": "verbose_json"})
+    assert r.status_code == 200, r.text
+    assert calls == []
+    assert any("music separation skipped" in w
+               for w in r.json().get("warnings") or [])

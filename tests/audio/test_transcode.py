@@ -4,6 +4,7 @@ Real PyAV is installed, so the happy path is a true round-trip. Error paths:
 PyAV missing -> RuntimeError; no audio stream -> ValueError (with dst cleanup).
 """
 
+import fractions
 import os
 import sys
 import wave
@@ -159,9 +160,10 @@ def test_transcode_rejects_ffconcat_playlist_referencing_a_file(tmp_path):
 # decode_pieces_16k (the link language check)
 # ---------------------------------------------------------------------------
 
-def _two_tone(path, *, rate=44100):
+def _two_tone(path, *, rate=44100, pts_offset_s=0):
     """60 s stereo: 440 Hz for the first 30 s, 880 Hz after — a piece's
-    dominant frequency tells where it was cut from."""
+    dominant frequency tells where it was cut from. `pts_offset_s` starts
+    the stream's timestamps there (a non-WAV stream with start_time != 0)."""
     t = np.arange(rate * 60) / rate
     tone = np.where(t < 30, np.sin(2 * np.pi * 440 * t), np.sin(2 * np.pi * 880 * t))
     pcm = np.repeat((tone * 8000).astype(np.int16), 2)
@@ -181,6 +183,9 @@ def _two_tone(path, *, rate=44100):
             fr = av.AudioFrame.from_ndarray(
                 frames[i:i + step].reshape(1, -1), format="s16", layout="stereo")
             fr.sample_rate = rate
+            if pts_offset_s:
+                fr.pts = pts_offset_s * rate + i
+                fr.time_base = fractions.Fraction(1, rate)
             for pkt in st.encode(fr):
                 out.mux(pkt)
         for pkt in st.encode(None):
@@ -200,6 +205,17 @@ def test_decode_pieces_seeks_to_each_start(tmp_path, name):
     assert [p.dtype for p in pieces[:3]] == [np.float32] * 3
     assert [len(p) for p in pieces] == [4 * RATE] * 3 + [0]   # past the end
     assert [round(_peak_hz(p)) for p in pieces[:3]] == [440, 880, 440]
+
+
+@pytest.mark.parametrize("name", ["off.ts", "off.m4a"])
+def test_decode_pieces_measures_starts_from_the_stream_start(tmp_path, name):
+    """`starts` are media seconds; a stream whose pts begin at ~10 s (an
+    MPEG-TS download, a remux keeping the offset) must not be cut 10 s
+    early — the 35 s piece used to come from media 25 s (440 Hz)."""
+    src = _two_tone(str(tmp_path / name), pts_offset_s=10)
+    pieces = audio_transcode.decode_pieces_16k(src, [5.0, 35.0, 55.0], 4.0)
+    assert [len(p) for p in pieces] == [4 * RATE] * 3
+    assert [round(_peak_hz(p)) for p in pieces] == [440, 880, 880]
 
 
 def test_decode_pieces_refuses_non_file_protocols(tmp_path, monkeypatch):
@@ -227,3 +243,27 @@ def test_decode_pieces_refuses_an_ffconcat_sibling(tmp_path):
     playlist.write_text("ffconcat version 1.0\nfile 'two.wav'\n")
     with pytest.raises(ValueError, match="unsupported container"):
         audio_transcode.decode_pieces_16k(str(playlist), [0.0], 1.0)
+
+
+# ---------------------------------------------------------------------------
+# refuse_multi_input (the raw-upload check before a non-PyAV decoder)
+# ---------------------------------------------------------------------------
+
+def test_refuse_multi_input_refuses_an_ffconcat_sibling(tmp_path):
+    _write_src_wav(str(tmp_path / "real.wav"), rate=RATE, nchannels=1)
+    playlist = tmp_path / "whisperup-x.wav"
+    playlist.write_text("ffconcat version 1.0\nfile 'real.wav'\n")
+    with pytest.raises(ValueError, match="unsupported container"):
+        audio_transcode.refuse_multi_input(str(playlist))
+
+
+def test_refuse_multi_input_passes_a_clip_and_leaves_av_errors_to_the_decoder(
+        tmp_path):
+    clip = _write_src_wav(str(tmp_path / "in.wav"), rate=RATE, nchannels=1)
+    assert audio_transcode.refuse_multi_input(clip) is None
+    # No audio stream is required either.
+    assert audio_transcode.refuse_multi_input(
+        _write_video_only(str(tmp_path / "v.mp4"))) is None
+    junk = tmp_path / "junk.bin"
+    junk.write_bytes(b"not media at all\x00\x01")
+    assert audio_transcode.refuse_multi_input(str(junk)) is None

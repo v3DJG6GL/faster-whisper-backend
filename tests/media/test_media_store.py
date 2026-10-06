@@ -324,3 +324,25 @@ def test_oversized_protected_id_is_never_dropped_by_a_later_register(tmp_path, m
     assert ums.register(_make_src(tmp_path, "big.mkv", size=500), user_id=None,
                         kind="video", protect={audio}) is None
     assert ums.resolve(audio, user_id=None) is not None
+
+
+def test_janitor_sweeps_off_the_event_loop(monkeypatch):
+    """sweep() unlinks multi-GB retained files and rmtree's dead fragment
+    dirs: it must not run on the loop thread."""
+    import asyncio
+    import threading
+
+    seen: list = []
+
+    def _sweep():
+        seen.append(threading.get_ident())
+        raise asyncio.CancelledError   # one tick is enough
+    monkeypatch.setattr(ums, "sweep", _sweep)
+
+    async def _main():
+        loop_ident = threading.get_ident()
+        with pytest.raises(asyncio.CancelledError):
+            await ums.janitor_loop(interval_s=0)
+        return loop_ident
+    loop_ident = asyncio.run(_main())
+    assert len(seen) == 1 and seen[0] != loop_ident

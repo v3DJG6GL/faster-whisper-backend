@@ -294,6 +294,71 @@ def test_bgm_other_model_mid_job_keeps_both(bgm_cfg, monkeypatch):
     assert "uvr:Bar.onnx" in model_registry._loaded_models
 
 
+def test_bgm_orphan_release_mid_load_keeps_the_new_session_device(
+        bgm_cfg, monkeypatch):
+    """Both _separator and _separator_key are None while the next model
+    loads. An orphan finishing inside that window must not wipe the
+    placement the new session just recorded: ORT's silent CPU fallback
+    would then be registered (and reported) as the requested cuda."""
+    _stub_seps(monkeypatch, [])
+    old = asyncio.run(bgm_separation._get_separator("Foo", lease=True))
+    monkeypatch.setattr(bgm_cfg, "BGM_SEPARATION_DEVICE", "cuda",
+                        raising=False)
+    loop_box = {}
+
+    def _load(model, device):
+        bgm_separation._session_device = "cpu"   # the silent fallback
+        # The orphan's lock-free release lands before the load resumes.
+        loop_box["loop"].call_soon_threadsafe(
+            bgm_separation._release_locked, "Foo.onnx", old)
+        return _Sep("")
+    monkeypatch.setattr(bgm_separation, "_load_blocking", _load)
+
+    async def _go():
+        loop_box["loop"] = asyncio.get_running_loop()
+        return await bgm_separation._get_separator("Bar")
+    asyncio.run(_go())
+
+    assert bgm_separation._orphans == {}
+    assert "uvr:Foo.onnx" not in model_registry._loaded_models
+    assert model_registry._loaded_models["uvr:Bar.onnx"]["device"] == "cpu"
+    assert bgm_separation.actual_device() == "cpu"
+    assert bgm_separation._loading_key is None
+
+
+def test_bgm_same_model_orphan_release_mid_load_keeps_the_stats_row(
+        bgm_cfg, monkeypatch):
+    """A same-model reload (device change) registers its stats row before
+    the coroutine publishes the new separator; an orphan of that model
+    released in between must not unregister the row just written."""
+    _stub_seps(monkeypatch, [])
+    old = asyncio.run(bgm_separation._get_separator("Foo", lease=True))
+    monkeypatch.setattr(bgm_cfg, "BGM_SEPARATION_DEVICE", "cuda",
+                        raising=False)
+    loop_box = {}
+    real_register = model_registry.register_loaded_model
+
+    def _register(*a, **kw):
+        real_register(*a, **kw)
+        loop_box["loop"].call_soon_threadsafe(
+            bgm_separation._release_locked, "Foo.onnx", old)
+    monkeypatch.setattr(model_registry, "register_loaded_model", _register)
+    unregistered: "list[str]" = []
+    monkeypatch.setattr(model_registry, "unregister_loaded_model",
+                        unregistered.append)
+
+    async def _go():
+        loop_box["loop"] = asyncio.get_running_loop()
+        return await bgm_separation._get_separator("Foo")
+    live = asyncio.run(_go())
+
+    assert live is not old
+    assert bgm_separation._separator is live
+    assert bgm_separation._orphans == {}
+    assert unregistered == []
+    assert "uvr:Foo.onnx" in model_registry._loaded_models
+
+
 def test_bgm_balances_the_lease_on_success(bgm_cfg, monkeypatch, tmp_path):
     out = tmp_path / "vocals.wav"
     out.write_bytes(b"RIFF")

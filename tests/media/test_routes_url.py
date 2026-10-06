@@ -497,6 +497,35 @@ def test_keep_video_finishing_late_lands_in_the_stored_job_result(
     assert "source_video_pending" not in body
 
 
+def test_keep_video_attach_runs_while_the_progress_entry_is_open(
+        client, video_enabled, monkeypatch):
+    """/result keeps `source_video_pending` only while the progress entry is
+    open; closing it before the attach left a poll in between with neither
+    the flag nor the video keys, and the client stopped waiting."""
+    import time as _time
+
+    open_at_attach: list = []
+    real_attach = media_video._jobs_attach_video_sync
+
+    def _attach(pid, state):
+        open_at_attach.append(pid in tx_progress._BATCH_PROGRESS)
+        real_attach(pid, state)
+    monkeypatch.setattr(media_video, "_jobs_attach_video_sync", _attach)
+    release = video_enabled._video_gate["make"]()
+    video_enabled._video_gate["release"] = release
+    r = _post_url(client, keep_video="true", progress_id=_PID)
+    assert r.status_code == 200 and r.json().get("source_video_pending") is True
+    release.set()
+    for _ in range(300):
+        if _PID not in tx_progress._BATCH_PROGRESS and open_at_attach:
+            break
+        _time.sleep(0.01)
+    assert open_at_attach == [True]
+    assert _PID not in tx_progress._BATCH_PROGRESS   # closed after it
+    assert client.get(f"/v1/jobs/{_PID}/result").json().get(
+        "source_video_media_id")
+
+
 def test_keep_video_without_progress_id_is_rejected(client, video_enabled):
     # The fetch outlives the response and reports through the progress entry
     # alone: without an id its media id would be unreachable by anyone.

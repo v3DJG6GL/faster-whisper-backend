@@ -11,7 +11,7 @@ import logging
 import os
 import shutil
 import time
-from contextlib import contextmanager
+from contextlib import asynccontextmanager
 
 from faster_whisper_backend.auth import rate_limit as _rl
 from faster_whisper_backend.transcription import jobs_store as _jobs_store
@@ -143,9 +143,10 @@ async def _download_video_for_run(pid: "str | None", url: str, rung: dict, *,
                      "total_bytes": state["total_bytes"]}
         tx_progress._progress_set(pid, video=dict(state), **extra)
 
+    cancelled = False
     try:
         _pub(state="queued")
-        with _url_staging_job() as job:
+        async with _url_staging_job() as job:
             async with tx_models._get_url_download_semaphore():
                 if tx_progress._cancel_requested(pid):
                     raise _udl.UrlCancelled()
@@ -197,6 +198,7 @@ async def _download_video_for_run(pid: "str | None", url: str, rung: dict, *,
     except _udl.UrlCancelled:
         _pub(state="cancelled")
     except asyncio.CancelledError:
+        cancelled = True
         _pub(state="cancelled")
         raise
     except _udl.UrlDownloadError as e:
@@ -211,13 +213,20 @@ async def _download_video_for_run(pid: "str | None", url: str, rung: dict, *,
     finally:
         if pid:
             _VIDEO_TASKS.pop(pid, None)
-            if run_finished[0]:
+            if cancelled and run_finished[0]:
                 tx_progress._progress_close(pid)
-    if pid and job_row and run_finished[0]:
-        # The handler stored `source_video_pending`; a client re-attaching
-        # via /v1/jobs/{id}/result needs the outcome. (A cancelled task
-        # never gets here: the scrub then simply drops the flag.)
-        await asyncio.to_thread(_jobs_attach_video_sync, pid, dict(state))
+    try:
+        if pid and job_row and run_finished[0]:
+            # The handler stored `source_video_pending`; a client re-attaching
+            # via /v1/jobs/{id}/result needs the outcome. (A cancelled task
+            # never gets here: the scrub then simply drops the flag.)
+            await asyncio.to_thread(_jobs_attach_video_sync, pid, dict(state))
+    finally:
+        # Closed only AFTER the attach: /result keeps the pending flag while
+        # the progress entry is open, so closing first left a window where
+        # the row carried neither the flag nor the video keys.
+        if pid and run_finished[0]:
+            tx_progress._progress_close(pid)
     return dict(state)
 
 
@@ -289,15 +298,18 @@ def _url_host_for_log(url: str) -> str:
     return _udl.host_for_log(url)
 
 
-@contextmanager
-def _url_staging_job():
+@asynccontextmanager
+async def _url_staging_job():
     """A private job dir in the media store's staging area for one link
-    fetch, removed on every exit path (sweep() catches a crashed process)."""
+    fetch, removed on every exit path (sweep() catches a crashed process).
+    The removal runs off the loop — a cancelled or failed video fetch
+    leaves a multi-GB partial or thousands of fragments behind — and is
+    shielded, so a cancel landing on it cannot skip it."""
     job = url_media_store.new_staging_job()
     try:
         yield job
     finally:
-        shutil.rmtree(job, ignore_errors=True)
+        await asyncio.shield(asyncio.to_thread(shutil.rmtree, job, True))
 
 
 async def _guarded_audio_download(pid: "str | None", url: str, dest_dir: str,
