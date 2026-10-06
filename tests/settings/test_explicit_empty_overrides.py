@@ -95,6 +95,17 @@ def test_profile_blank_suppress_tokens_keeps_chars_without_the_default_set(monke
     assert -1 in kw["suppress_tokens"] and {7, 8} <= set(kw["suppress_tokens"])
 
 
+def test_stored_out_of_range_suppress_token_is_dropped_not_forwarded():
+    # A legacy stored id past the vocabulary segfaults CTranslate2: the
+    # config path filters it like the per-request clamp does.
+    kw = _assemble({"SUPPRESS_TOKENS": "-1,100000000"})
+    assert kw["suppress_tokens"] == [-1]
+    too_big = str(tx_models._SUPPRESS_TOKEN_ID_MAX)
+    kw = _assemble({"SUPPRESS_TOKENS": too_big})
+    # nothing left in range: "not set", never an explicit clear (None)
+    assert "suppress_tokens" not in kw
+
+
 def test_suppress_chars_survive_a_client_suppress_tokens_override(monkeypatch):
     # The chars merge runs AFTER the client override, which used to replace
     # the merged ids wholesale.

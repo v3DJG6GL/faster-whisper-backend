@@ -180,6 +180,36 @@ def test_bad_regex_rejected():
             os.unlink(path)
 
 
+def test_factory_save_refuses_dropping_a_slug_stored_overrides_name(tmp_path):
+    """With no local PIPELINE_RULES copy the factory slugs are canonical: a
+    stored per-model / profile / captures exclude naming a removed rule would
+    make every later save of that key 422 (and drop the per-model entry at
+    boot), so the factory save refuses it and leaves config.json alone."""
+    import pytest
+    path = str(tmp_path / "config.json")
+    local = tmp_path / "config.local.json"
+    cs.save_factory_rules([_regex_rule("keep"), _regex_rule("gone"), _terminal()],
+                          path=path, overrides_path=str(local))
+    before = open(path, encoding="utf-8").read()
+    for stored in (
+            {"MODEL_OVERRIDES": {"large-v3": {"BEAM_SIZE": 3,
+                                              "PIPELINE_RULES_EXCLUDE": ["gone"]}}},
+            {"OVERRIDE_PROFILES": {"fast": {"BEAM_SIZE": 1,
+                                            "PIPELINE_RULES_EXCLUDE": ["gone"]}}},
+            {"CAPTURES_PIPELINE_RULES_EXCLUDE": ["gone"]}):
+        local.write_text(json.dumps(stored), encoding="utf-8")
+        with pytest.raises(ValidationError, match="gone"):
+            cs.save_factory_rules([_regex_rule("keep"), _terminal()],
+                                  path=path, overrides_path=str(local))
+        assert open(path, encoding="utf-8").read() == before
+    # A local PIPELINE_RULES copy owns the slugs: the factory save goes through.
+    local.write_text(json.dumps({
+        "PIPELINE_RULES": [_regex_rule("gone"), _terminal()],
+        "CAPTURES_PIPELINE_RULES_EXCLUDE": ["gone"]}), encoding="utf-8")
+    cs.save_factory_rules([_regex_rule("keep"), _terminal()],
+                          path=path, overrides_path=str(local))
+
+
 def test_terminal_must_be_last():
     """The terminal rule must be the final entry."""
     path = _tmp_path()

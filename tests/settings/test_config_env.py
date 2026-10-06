@@ -863,12 +863,18 @@ def test_per_model_env_override_invalid_without_stored_entry_is_dropped(monkeypa
 def _point_overrides_at(monkeypatch, path):
     """Repoint config_store.load_overrides at `path` the way tests/conftest.py
     does: the module constant AND the def-time-bound default argument."""
+    import inspect
     from faster_whisper_backend.settings import config_store
     monkeypatch.setattr(config_store, "OVERRIDES_PATH", str(path), raising=False)
-    _defaults = list(config_store.load_overrides.__defaults__ or ())
-    _defaults[-1] = str(path)
-    monkeypatch.setattr(config_store.load_overrides, "__defaults__",
-                        tuple(_defaults), raising=False)
+    # By name, not __defaults__[-1]: a later trailing default would otherwise
+    # be the one rewritten and `path` left pointing at the real file.
+    _fn = config_store.load_overrides
+    _with_default = [p.name for p in inspect.signature(_fn).parameters.values()
+                     if p.default is not inspect.Parameter.empty
+                     and p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)]
+    _defaults = list(_fn.__defaults__ or ())
+    _defaults[_with_default.index("path")] = str(path)
+    monkeypatch.setattr(_fn, "__defaults__", tuple(_defaults), raising=False)
 
 
 def test_env_cross_field_inconsistent_with_local_override_is_reverted(tmp_path, monkeypatch):
@@ -1174,6 +1180,26 @@ def test_env_wildcard_origin_drops_only_that_entry(monkeypatch):
         importlib.reload(config)
 
 
+def test_env_wildcard_only_origins_are_rejected_not_pinned(monkeypatch):
+    """A var whose every entry is a wildcard controls nothing once stripped:
+    it must not badge the field as env-pinned, or the /settings apply path
+    skips the admin's own edit. A mixed list still pins (the valid entry)."""
+    from faster_whisper_backend.settings import config_store
+    try:
+        _reload_with_env(monkeypatch, WHISPER_TRUSTED_ORIGINS="https://*.lan")
+        assert config.TRUSTED_ORIGINS == config._ENV_PRE.get("TRUSTED_ORIGINS", [])
+        assert "TRUSTED_ORIGINS" in config._ENV_REJECTED
+        assert "TRUSTED_ORIGINS" not in config_store.env_pinned_fields()
+        _reload_with_env(monkeypatch,
+                         WHISPER_TRUSTED_ORIGINS="https://a.lan,https://*.lan")
+        assert config.TRUSTED_ORIGINS == ["https://a.lan"]
+        assert "TRUSTED_ORIGINS" not in config._ENV_REJECTED
+        assert "TRUSTED_ORIGINS" in config_store.env_pinned_fields()
+    finally:
+        monkeypatch.undo()
+        importlib.reload(config)
+
+
 def test_ignored_per_model_env_value_leaves_no_phantom_entry(monkeypatch):
     try:
         _reload_with_env(monkeypatch, WHISPER_MODEL_OVERRIDE__TINY__VAD_FILTER="maybe")
@@ -1193,6 +1219,48 @@ def test_stored_model_override_survives_an_env_only_allowlist(monkeypatch):
     try:
         _reload_with_env(monkeypatch, WHISPER_ALLOWED_MODELS="large-v3")
         assert config.MODEL_OVERRIDES.get("medium") == {"BEAM_SIZE": 3}
+        assert not any("was dropped" in m for m in config._ENV_WARNINGS), \
+            config._ENV_WARNINGS
+    finally:
+        monkeypatch.undo()
+        importlib.reload(config)
+
+
+
+def test_stored_model_override_survives_an_env_field_outside_env_allowlist(
+        monkeypatch):
+    """Same as above, but the model also has a WHISPER_MODEL_OVERRIDE__ var:
+    the env field is ignored (the env allowlist refuses it), the stored
+    fields stay instead of the whole entry being dropped."""
+    from faster_whisper_backend.settings import config_store
+    monkeypatch.setattr(config_store, "load_overrides",
+                        lambda path=None: {"MODEL_OVERRIDES": {"tiny": {"BEAM_SIZE": 2}}})
+    try:
+        _reload_with_env(monkeypatch, WHISPER_ALLOWED_MODELS="large-v3",
+                         WHISPER_MODEL_OVERRIDE__tiny__BEST_OF="3")
+        assert config.MODEL_OVERRIDES.get("tiny") == {"BEAM_SIZE": 2}
+        assert any("WHISPER_MODEL_OVERRIDE__" in m and "BEST_OF" in m
+                   and "ignored" in m for m in config._ENV_WARNINGS), \
+            config._ENV_WARNINGS
+        assert not any("was dropped" in m for m in config._ENV_WARNINGS), \
+            config._ENV_WARNINGS
+    finally:
+        monkeypatch.undo()
+        importlib.reload(config)
+
+
+def test_stored_model_override_with_unknown_slug_keeps_its_other_fields(
+        monkeypatch):
+    """A factory rules save that removed a rule a stored per-model exclude
+    still names must not drop the whole entry (BEAM_SIZE, device, …) at boot;
+    the stored entry passed load_overrides, like the allowlist case above."""
+    from faster_whisper_backend.settings import config_store
+    monkeypatch.setattr(config_store, "load_overrides", lambda path=None: {
+        "MODEL_OVERRIDES": {"large-v3": {
+            "BEAM_SIZE": 3, "PIPELINE_RULES_EXCLUDE": ["no-such-rule"]}}})
+    try:
+        _reload_with_env(monkeypatch)
+        assert config.MODEL_OVERRIDES.get("large-v3", {}).get("BEAM_SIZE") == 3
         assert not any("was dropped" in m for m in config._ENV_WARNINGS), \
             config._ENV_WARNINGS
     finally:

@@ -312,6 +312,12 @@ def test_override_profile_detail_404_when_not_allowed(client, make_user_key):
     assert client.get("/v1/override-profiles/internal", headers=ah).status_code == 404
     assert client.get("/v1/override-profiles/slow", headers=ah).status_code == 404  # unknown
     assert client.get("/v1/override-profiles/fast", headers=ah).status_code == 200
+    # No allowlist binding at all: "internal" is refused by requestable=False
+    # alone, not by an allowlist that happens to leave it out.
+    _, raw_bob = make_user_key("bob")
+    bh = bearer(raw_bob)
+    assert client.get("/v1/override-profiles/internal", headers=bh).status_code == 404
+    assert client.get("/v1/override-profiles/fast", headers=bh).status_code == 200
 
 
 # --- admin binding round-trip (new keys survive validate/parse) -----------

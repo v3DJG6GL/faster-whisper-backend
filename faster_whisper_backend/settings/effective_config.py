@@ -99,6 +99,10 @@ class Resolved:
     allow_request_decode_overrides: bool = True
     # Ordered identity layer ids that contributed (most → least specific).
     layers: list[str] = field(default_factory=list)
+    # True when a binding fetch failed: `locked` then holds every field because
+    # the identity's locks are unknown, not because a binding set them. Lets
+    # the receipt name the store fault instead of listing ~75 locked fields.
+    binding_fault: bool = False
     # Per-field provenance (verbose path only) — drives the /resolve waterfall.
     provenance: dict[str, list[dict[str, Any]]] | None = None
     rule_provenance: dict[str, dict[str, Any]] | None = None
@@ -556,6 +560,7 @@ def resolve(model_id: str | None, *, user_id: str | None = None,
         # Unknown locks must read as "all locked": the Form-field sites in
         # main.py gate on `locked` (config-field names), not locked_client_keys.
         resolved.locked = set(SCALAR_OVERRIDE_FIELDS)
+        resolved.binding_fault = True
     if not do_allowed:
         all_client_keys = frozenset(_CONFIG_TO_CLIENT_KEY.values())
         resolved.locked_client_keys = all_client_keys

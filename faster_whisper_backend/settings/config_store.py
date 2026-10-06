@@ -89,17 +89,21 @@ def _migrate_tightened_bundle_values(raw: dict[str, Any]) -> list[str]:
     already off at runtime, so it becomes 0 (off); an unparseable CSV is
     dropped (inherit), with its lock. DEFAULT_LANGUAGE (top level too) gained
     a Whisper-code membership check: an unknown code failed every decode
-    that relied on it, so it is dropped (inherit). Per-identity bindings
+    that relied on it, so it is dropped (inherit). SUPPRESS_TOKENS (top
+    level too) gained a token-id range: an id far past the vocab crashed
+    every decode, so it is dropped the same way. Per-identity bindings
     (api_keys_store._parse_binding) and the env JSON bundles (config.py) run
     the same per-bundle rules via migrate_tightened_bundle."""
     notes: list[str] = []
-    _lang = raw.get("DEFAULT_LANGUAGE")
-    if isinstance(_lang, str):
-        try:
-            settings_schema._language_code(_lang)
-        except ValueError as e:
-            del raw["DEFAULT_LANGUAGE"]
-            notes.append(f"dropped DEFAULT_LANGUAGE {_lang!r}: {e}")
+    for key, check in (("DEFAULT_LANGUAGE", settings_schema._language_code),
+                       ("SUPPRESS_TOKENS", settings_schema._suppress_tokens_csv)):
+        val = raw.get(key)
+        if isinstance(val, str):
+            try:
+                check(val)
+            except ValueError as e:
+                del raw[key]
+                notes.append(f"dropped {key} {val!r}: {e}")
     for group_key in ("OVERRIDE_PROFILES", "MODEL_OVERRIDES"):
         group = raw.get(group_key)
         if not isinstance(group, dict):
@@ -221,7 +225,8 @@ def load_factory_rules(path: str = FACTORY_PATH) -> list[dict[str, Any]]:
     return validated.model_dump(exclude_none=True, mode="json")["PIPELINE_RULES"]
 
 
-def save_factory_rules(rules: list[Any], path: str = FACTORY_PATH) -> list[dict[str, Any]]:
+def save_factory_rules(rules: list[Any], path: str = FACTORY_PATH, *,
+                       overrides_path: str | None = None) -> list[dict[str, Any]]:
     """Validate `rules` and atomically write them to config.json.
 
     The WebUI's "Defaults" mode always sends the FULL rule list (not a dirty
@@ -234,6 +239,12 @@ def save_factory_rules(rules: list[Any], path: str = FACTORY_PATH) -> list[dict[
     seeded/custom distinction consistent and prevents a promoted local rule
     from landing in config.json marked `seeded:false`.
 
+    When these rules are the ones in force (no local or env PIPELINE_RULES
+    copy), a rule still named by a stored MODEL_OVERRIDES / OVERRIDE_PROFILES
+    / CAPTURES_PIPELINE_RULES_EXCLUDE (in `overrides_path`, default
+    OVERRIDES_PATH) cannot be removed or renamed: the dangling slug would make
+    every later save of that key 422, as save_overrides refuses it too.
+
     Returns the validated, coerced rule list. Raises ValidationError on bad
     input — the route handler converts that to a 422 response.
     """
@@ -242,6 +253,15 @@ def save_factory_rules(rules: list[Any], path: str = FACTORY_PATH) -> list[dict[
     validated = settings_schema.AdminConfig.model_validate(
         {"PIPELINE_RULES": rules}, context={"guard_regex": True})
     out_rules = validated.model_dump(exclude_none=True, mode="json")["PIPELINE_RULES"]
+    if "PIPELINE_RULES" not in env_pinned_fields():
+        stored = load_overrides(overrides_path or OVERRIDES_PATH)
+        refs = {k: stored[k] for k in ("MODEL_OVERRIDES", "OVERRIDE_PROFILES",
+                                       "CAPTURES_PIPELINE_RULES_EXCLUDE")
+                if k in stored}
+        if refs and "PIPELINE_RULES" not in stored:
+            settings_schema.AdminConfig.model_validate(
+                refs, context={"canonical_slugs": frozenset(
+                    r["name"] for r in out_rules)})
     # config.json now holds ALL factory defaults, not just PIPELINE_RULES, so
     # read-modify-write to preserve the sibling scalar keys. A blind whole-file
     # replace (as before) would wipe every other default on a rules promote.
@@ -408,6 +428,15 @@ def save_overrides(
                                        "CAPTURES_PIPELINE_RULES_EXCLUDE")):
             context["canonical_slugs"] = _save_canonical_slugs()
         validated = settings_schema.AdminConfig.model_validate(merged, context=context)
+        if env_effective:
+            # load_overrides validates the file ON ITS OWN (no env context),
+            # at the next boot and in the hot-apply right after this save, and
+            # drops EVERY override on a failure. A file that is consistent only
+            # thanks to an env pin would be written and then thrown away, so
+            # it must also pass the bare check. The regex guard already ran.
+            settings_schema.AdminConfig.model_validate(merged, context={
+                k: v for k, v in context.items()
+                if k not in ("env_effective", "guard_regex", "guard_slugs")})
         to_write = validated.model_dump(exclude_none=True, mode="json")
 
         atomic_json.atomic_write_json(to_write, path, sort_keys=True, tmp_prefix=".config.local.")
@@ -432,8 +461,8 @@ def save_overrides(
 def _env_effective_values() -> dict[str, Any]:
     """{field: live value} for every field a WHISPER_* var currently pins —
     the save-time validation context schema._effective prefers over the
-    submitted / baseline value. Save-time only: at config import the env pass
-    validates the full effective config itself."""
+    submitted / baseline value. Save-time only: load_overrides validates the
+    file without it, so save_overrides also runs that bare check."""
     from faster_whisper_backend.settings import config as _cfg  # deferred — config imports this module at import
     return {f: getattr(_cfg, f) for f in env_pinned_fields() if hasattr(_cfg, f)}
 

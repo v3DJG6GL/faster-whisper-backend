@@ -907,8 +907,10 @@ TRUSTED_ORIGINS: "list[str]" = _D("TRUSTED_ORIGINS")
 # the cookie is set but never sent back and login silently fails.
 SESSION_COOKIE_SECURE = _D("SESSION_COOKIE_SECURE")
 
-# Sliding session lifetime in seconds. Each authenticated request refreshes
-# the expiry (debounced). Idle longer than this → re-login. Default 30 days.
+# Browser-session lifetime in seconds, counted from login: the cookie is set
+# once with this max_age and never re-issued, so the user re-logs in this long
+# after sign-in whatever the activity (the server-side row slides, see
+# sessions_store.lookup_session). Default 30 days.
 SESSION_TTL_S = _D("SESSION_TTL_S")
 
 # Cookie names. Session cookie is HttpOnly (JS cannot read it); the CSRF
@@ -1601,7 +1603,7 @@ for _secret in ("WHISPER_" + _f for _f in _SECRET_FIELDS):
 
 
 # --- Non-AdminConfig constants (no WebUI row → not in ENV_VAR_MAPPING) -------
-# The eight *_DB paths are AdminConfig fields (restart-required) and reach
+# The *_DB paths are AdminConfig fields (restart-required) and reach
 # their env vars through the generic loop below, like every other field.
 ADMIN_UI_ENABLED = _env_bool("WHISPER_ADMIN_UI", ADMIN_UI_ENABLED)
 BOOTSTRAP_ADMIN_KEY = _env_str("WHISPER_BOOTSTRAP_ADMIN_KEY", BOOTSTRAP_ADMIN_KEY)
@@ -1789,6 +1791,10 @@ try:
                 f"{_ENV_VAR_MAPPING[_field]}: dropped wildcard entries {_dropped} "
                 f"— they never matched an Origin header and are no longer accepted")
             globals()[_field] = _kept if _kept else _ENV_PRE.get(_field, _cur)
+            if not _kept:
+                # Nothing left: the var controls nothing, so it must not
+                # badge the field as env-pinned (folded into _ENV_REJECTED).
+                _ENV_UNPARSED.add(_ENV_VAR_MAPPING[_field])
 
     # --- JSON-encoded structured fields (escape hatch) ----------------------
     for _field in _ENV_JSON_FIELDS:
@@ -2246,6 +2252,13 @@ try:
                 or ("WHISPER_ALLOWED_MODELS" in os.environ
                     and "ALLOWED_MODELS" not in _ENV_REJECTED))
             else {})
+        # Same reasoning for rule slugs: a stored entry passed load_overrides
+        # without a slug set, and dropping it here over one slug a factory
+        # rules save removed would take its BEAM_SIZE, device, … with it (and
+        # the next per-model save would erase it). Only env-supplied entries
+        # are checked against the rules in force.
+        _stored_slug_ctx: "dict[str, object]" = (
+            _env_slug_ctx() if _env_json_models else {})
         for _mid, _entry in MODEL_OVERRIDES.items():
             _entry_ctx = (
                 _allowed_ctx if ("ALLOWED_MODELS" in _LOCAL_KEYS
@@ -2259,7 +2272,8 @@ try:
                 # ModelOverride can never stay live as a raw string.
                 _clean_overrides[_mid] = _AdminConfig.model_validate(
                     {**_entry_ctx, "MODEL_OVERRIDES": {_mid: _entry}},
-                    context=_env_slug_ctx()
+                    context=(_env_slug_ctx() if _mid in _ENV_OVERRIDE_FIELDS
+                             else _stored_slug_ctx)
                 ).model_dump(exclude_none=True)["MODEL_OVERRIDES"][_mid]
                 _env_vals = {_ef: _clean_overrides[_mid][_ef]
                              for _ef in (_ENV_OVERRIDE_FIELDS.get(_mid) or ())
@@ -2277,10 +2291,18 @@ try:
                         for _ef in _env_fields:
                             if _ef in _pre_entry:
                                 _reverted[_ef] = _pre_entry[_ef]
+                    # The env fields are gone, so the rest is the stored
+                    # entry: an env-ONLY allowlist and the slug set do not
+                    # apply to it (see the comments above _env_json_models
+                    # and _stored_slug_ctx).
+                    _revert_ctx = (
+                        _allowed_ctx if ("ALLOWED_MODELS" in _LOCAL_KEYS
+                                         or _env_json_models)
+                        else {})
                     try:
                         _reverted = _AdminConfig.model_validate(
-                            {**_entry_ctx, "MODEL_OVERRIDES": {_mid: _reverted}},
-                            context=_env_slug_ctx()
+                            {**_revert_ctx, "MODEL_OVERRIDES": {_mid: _reverted}},
+                            context=_stored_slug_ctx
                         ).model_dump(exclude_none=True)["MODEL_OVERRIDES"][_mid]
                     except Exception:  # noqa: BLE001
                         _reverted = None

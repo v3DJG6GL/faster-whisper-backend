@@ -733,9 +733,9 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
         "tokens, expiry). Safe to delete: everyone signs in again. Read at "
         "startup.",
     "SESSION_TTL_S":
-        "Sliding browser-session lifetime in seconds; refreshed on each "
-        "authenticated request. Idle longer than this requires re-login. "
-        "Default 2592000 (30 days).",
+        "Browser-session lifetime in seconds, counted from sign-in: the "
+        "session cookie expires this long after login whatever the activity, "
+        "and the user signs in again. Default 2592000 (30 days).",
     "SESSION_COOKIE_NAME":
         "Name of the HttpOnly session cookie. Letters, digits, '_' and '-' "
         "only. Must differ from SESSION_CSRF_COOKIE_NAME.",

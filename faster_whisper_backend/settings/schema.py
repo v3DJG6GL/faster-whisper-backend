@@ -541,10 +541,18 @@ def _temperature_csv(v: str | None) -> str | None:
     return v
 
 
+# One past the largest Whisper token id (large-v3's vocab is 51866). An id far
+# beyond the vocab (1e8 and up) segfaults the process inside CTranslate2 on
+# every transcription, so config values and per-request ids
+# (transcription.models) are both held below it.
+SUPPRESS_TOKEN_ID_MAX = 51866
+
+
 def _suppress_tokens_csv(v: str | None) -> str | None:
     """suppress_tokens is stored as a comma-separated string of ints.
     '-1' is the library sentinel for default suppression set; '' = no
-    suppression."""
+    suppression. Every other id must be a real token id (see
+    SUPPRESS_TOKEN_ID_MAX)."""
     if v is None or not v.strip():
         return v
     for token in v.split(","):
@@ -552,10 +560,15 @@ def _suppress_tokens_csv(v: str | None) -> str | None:
         if not token:
             continue
         try:
-            int(token)
+            i = int(token)
         except ValueError:
             raise ValueError(
                 f"suppress_tokens must be comma-separated ints; got '{token}'"
+            )
+        if not -1 <= i < SUPPRESS_TOKEN_ID_MAX:
+            raise ValueError(
+                f"suppress_tokens ids must be -1 or in [0, "
+                f"{SUPPRESS_TOKEN_ID_MAX}); got {i}"
             )
     return v
 

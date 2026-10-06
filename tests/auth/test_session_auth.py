@@ -632,6 +632,9 @@ def test_failed_reinit_fails_session_lookup_closed(tmp_path):
         w.init_db(bad)
     assert w.lookup_session(raw) is None
     assert w.lookup_session(raw) is None
+    # Logout in that state is a no-op, not a 500 (the cookies still clear).
+    w.revoke_session(raw)
+    w.revoke_session("x" * 64)
 
 
 def test_sibling_logout_bumps_config_version(tmp_path, monkeypatch):
@@ -657,11 +660,16 @@ def test_sibling_logout_bumps_config_version(tmp_path, monkeypatch):
     assert settings_version.config_version() == v0  # nothing moved
     b.revoke_session("junk")                        # no row → no generation
     assert settings_version.config_version() == v0
+    # A fresh HIT on A arms its 1 s refresh throttle right before the logout.
+    assert a.lookup_session(raw) is not None
     b.revoke_session(raw)                           # sibling worker logs out
     # B's own in-process bump lands on this same module in a test; the probe
     # must add one more on top of it — that one is what worker A would see.
     v1 = settings_version._CONFIG_VERSION
     assert settings_version.config_version() == v1 + 1
+    # The re-auth that bump triggers must already miss on A: a throttled HIT
+    # on the stale index would let the stream through and spend the bump.
+    assert a.lookup_session(raw) is None
 
 
 def test_login_throttle_holds_under_concurrent_attempts(monkeypatch):

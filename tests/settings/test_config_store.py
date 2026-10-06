@@ -816,6 +816,31 @@ def test_override_models_apply_the_global_value_rules():
         model.model_validate({"TEMPERATURE": "0,0.2", "SEGMENT_HEAD_ECHO_MIN_WORDS": 2})
 
 
+def test_suppress_tokens_ids_must_be_real_token_ids():
+    """An id far past the vocab segfaults CTranslate2 on every decode; the
+    global, per-model and profile validators all refuse it."""
+    for model in (settings_schema.AdminConfig, settings_schema.ModelOverride,
+                  settings_schema.OverrideProfile):
+        for bad in ("100000000", "-1,100000000", "-2",
+                    str(settings_schema.SUPPRESS_TOKEN_ID_MAX)):
+            with pytest.raises(ValidationError):
+                model.model_validate({"SUPPRESS_TOKENS": bad})
+        model.model_validate({"SUPPRESS_TOKENS": "-1,50257"})
+        model.model_validate({"SUPPRESS_TOKENS": ""})
+
+
+def test_stored_out_of_range_suppress_tokens_is_dropped_not_fatal(tmp_path):
+    p = tmp_path / "config.local.json"
+    p.write_text(json.dumps({
+        "SERVER_PORT": 9000, "SUPPRESS_TOKENS": "100000000",
+        "OVERRIDE_PROFILES": {"p": {"SUPPRESS_TOKENS": "-1,100000000",
+                                    "BEAM_SIZE": 2}}}), encoding="utf-8")
+    out = cs.load_overrides(str(p))
+    assert out["SERVER_PORT"] == 9000
+    assert "SUPPRESS_TOKENS" not in out
+    assert out["OVERRIDE_PROFILES"]["p"] == {"BEAM_SIZE": 2}
+
+
 def test_load_overrides_unknown_key_ignored_whole_file(tmp_path):
     p = tmp_path / "u.json"
     p.write_text(json.dumps({"BEAM_SIZE": 5, "BOGUS": 1}), encoding="utf-8")
@@ -956,6 +981,30 @@ def test_save_overrides_checks_cross_field_pairs_against_env_pins(tmp_path,
     cs.save_overrides({"STREAMING_BUFFER_TRIM_S": 13}, p)   # consistent: saved
     # The import-time path (no context) still checks the bare baseline.
     settings_schema.AdminConfig.model_validate({"STREAMING_BUFFER_TRIM_S": 11})
+
+
+def test_save_overrides_refuses_a_file_only_an_env_pin_makes_valid(tmp_path,
+                                                                   monkeypatch):
+    """load_overrides validates the file without the env context and drops
+    EVERY override when it fails (at boot and in the hot-apply right after a
+    save). A save consistent only thanks to an env-pinned sibling must 422
+    instead of being written and then thrown away with the rest of the file."""
+    from faster_whisper_backend.settings import config as _cfg
+    monkeypatch.setattr(cs, "env_pinned_fields", lambda: {
+        "MEDIA_MAX_BYTES": "WHISPER_MEDIA_MAX_BYTES",
+        "STREAMING_BUFFER_TRIM_KEEP_S": "WHISPER_STREAMING_BUFFER_TRIM_KEEP_S"})
+    monkeypatch.setattr(_cfg, "MEDIA_MAX_BYTES", 2_000_000_000)
+    monkeypatch.setattr(_cfg, "STREAMING_BUFFER_TRIM_KEEP_S", 5.0)
+    p = str(tmp_path / "config.local.json")
+    with pytest.raises(ValidationError):
+        cs.save_overrides({"MAX_REQUEST_BYTES": 3_000_000_000}, p)
+    with pytest.raises(ValidationError):
+        cs.save_overrides({"STREAMING_BUFFER_TRIM_S": 8}, p)
+    assert not os.path.exists(p)
+    # What a save does accept round-trips through the bare load.
+    cs.save_overrides({"DEFAULT_PROMPT": "hello", "STREAMING_BUFFER_TRIM_S": 13}, p)
+    assert cs.load_overrides(p) == {"DEFAULT_PROMPT": "hello",
+                                    "STREAMING_BUFFER_TRIM_S": 13.0}
 
 
 def test_save_overrides_invalid_raises(tmp_path):

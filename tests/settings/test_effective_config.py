@@ -515,9 +515,11 @@ def test_binding_fetch_failure_locks_every_field(monkeypatch):
     for f in ("DEFAULT_LANGUAGE", "TASK", "TEMPERATURE", "SEPARATE_BGM"):
         assert f in r.locked
     assert r.locked_client_keys == frozenset(ec._CONFIG_TO_CLIENT_KEY.values())
+    assert r.binding_fault is True       # the receipt names the fault
     # The healthy path with no bindings at all still yields no locks.
     _bindings(monkeypatch)
-    assert ec.resolve("m", key_id="k", user_id="u").locked == set()
+    healthy = ec.resolve("m", key_id="k", user_id="u")
+    assert healthy.locked == set() and healthy.binding_fault is False
 
 
 def test_binding_fault_warning_is_throttled(monkeypatch):

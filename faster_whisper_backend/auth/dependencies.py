@@ -382,9 +382,9 @@ async def open_mode_warning_loop() -> None:
             else:
                 logger.warning(
                     "[auth] no admin key configured — running in OPEN mode."
-                    " Every caller on ADMIN_WEBUI_ALLOWED_HOSTS (%s) is"
-                    " treated as admin. Generate an admin key in"
-                    " /settings/api-keys now.",
+                    " Every loopback caller and every caller on"
+                    " ADMIN_WEBUI_ALLOWED_HOSTS (%s) is treated as admin."
+                    " Generate an admin key in /settings/api-keys now.",
                     ", ".join(map(str, cfg.ADMIN_WEBUI_ALLOWED_HOSTS or [])) or "none",
                 )
                 logged_locked_down = False

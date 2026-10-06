@@ -82,6 +82,9 @@ _SLIDE_CACHE: dict[str, float] = {}
 # HITS only; a miss forces the check so a sibling's fresh login is never bounced.
 _REFRESH_MIN_INTERVAL_S = 1.0
 _LAST_REFRESH_TS: float = 0.0
+# Last 'revocations' counter revocation_generation() returned. When it moves,
+# the index is refreshed past the throttle above (see that function).
+_LAST_REV_GEN: int = -1
 
 _TOKEN_BYTES = 32   # secrets.token_urlsafe(32) → 43-char base64url, 256-bit
 
@@ -379,8 +382,12 @@ def revoke_session(raw_token: str) -> None:
     'revocations' counter so a SIBLING worker's config_version() does too.
     Both only when a row was actually revoked: /auth/logout is
     unauthenticated, so a junk cookie must not move the global version (every
-    live stream re-resolves auth on each move)."""
-    if not raw_token:
+    live stream re-resolves auth on each move).
+
+    No-op while the store is not ready (init_db failed, which main treats as
+    non-fatal), like lookup_session: logout then still clears the cookies
+    instead of failing with a 500."""
+    if not raw_token or not _DB_READY:
         return
     th = hash_token(raw_token)
     now = time.time()
@@ -423,7 +430,13 @@ def revocation_generation() -> int:
     bumps the config version only in the worker that served it, and the
     sessions table lives in its own DB file, so api_keys_store.data_version()
     never moves for it. Not `PRAGMA data_version`: every sibling slide UPDATE
-    moves that, and every live stream would re-resolve auth on each one."""
+    moves that, and every live stream would re-resolve auth on each one.
+
+    When the counter moved, the index is refreshed with force=True before
+    returning: the caller bumps the config version, a live stream then
+    re-authenticates through lookup_session, and a throttled HIT on the
+    stale index would let the revoked cookie through and spend the bump."""
+    global _LAST_REV_GEN
     if not _DB_READY:
         return -1
     try:
@@ -432,7 +445,11 @@ def revocation_generation() -> int:
                 "SELECT v FROM meta WHERE k = 'revocations'").fetchone()
     except (sqlite3.Error, RuntimeError):
         return -1
-    return int(row[0]) if row else 0
+    gen = int(row[0]) if row else 0
+    if gen != _LAST_REV_GEN:
+        _LAST_REV_GEN = gen
+        _refresh_if_sibling_committed(force=True)
+    return gen
 
 
 def purge_expired() -> None:

@@ -175,6 +175,23 @@ def test_stored_old_factory_entry_is_upgraded_once():
     assert renames.upgrade_rule_entries(raw) == []
 
 
+def test_stored_old_hyphen_entry_is_upgraded_once():
+    """A stored copy from before c4fefe2 still merged "3.-10" into "310"."""
+    rules = copy.deepcopy(_factory_rules())
+    (old_pat, old_rep), (new_pat, new_rep) = \
+        renames.UPGRADED_RULE_ENTRIES["delete-punct-before-hyphen"]
+    e = next(e for r in rules for e in (r.get("entries") or [])
+             if e.get("label") == "delete-punct-before-hyphen")
+    e["pattern"], e["replacement"] = old_pat, old_rep
+    raw = {"PIPELINE_RULES": rules}
+    assert renames.upgrade_rule_entries(raw) == ["final-cleanup/delete-punct-before-hyphen"]
+    assert raw["PIPELINE_RULES"] == _factory_rules()
+    assert renames.upgrade_rule_entries(raw) == []
+    assert re.sub(old_pat, old_rep, "vom 3.-10 Oktober") == "vom 310 Oktober"
+    assert re.sub(new_pat, new_rep, "vom 3.-10 Oktober") == "vom 3.-10 Oktober"
+    assert re.sub(new_pat, new_rep, "a,-b") == "ab"
+
+
 def test_edited_factory_entry_is_left_alone():
     rules = copy.deepcopy(_factory_rules())
     old_pat, _old_rep = renames.UPGRADED_RULE_ENTRIES["tighten-quote-spacing"][0]

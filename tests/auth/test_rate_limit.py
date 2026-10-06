@@ -212,17 +212,14 @@ def test_inflight_two_keys_are_independent(gauge):
     assert gauge.count("bob") == 1
 
 
-def test_inflight_release_after_cap_raised_from_zero_frees_nothing(gauge,
-                                                                    monkeypatch):
-    """A holder admitted while the cap was off took no slot; once the cap is
-    hot-raised it must not free a slot someone else holds on its way out."""
+def test_inflight_acquire_with_cap_off_takes_no_slot(gauge, monkeypatch):
+    """A holder admitted while the cap was off gets False (no slot taken, so
+    its caller skips release) and is not counted: once the cap is hot-raised
+    the next caller still gets the only slot, and the one after is refused."""
     monkeypatch.setattr(cfg, "TRANSLATE_MAX_INFLIGHT_PER_USER", 0)
-    took_a = gauge.acquire("alice")
-    assert took_a is False
+    assert gauge.acquire("alice") is False
     monkeypatch.setattr(cfg, "TRANSLATE_MAX_INFLIGHT_PER_USER", 1)
     assert gauge.acquire("alice") is True  # B holds the only slot
-    if took_a:
-        gauge.release("alice")  # A finishes: the caller contract skips this
     with pytest.raises(rate_limit.RateLimited):
         gauge.acquire("alice")  # C must still be refused
 
