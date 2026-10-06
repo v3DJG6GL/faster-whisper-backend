@@ -69,6 +69,9 @@ RATE = 16000
 _RESET_HOOKS: tuple[tuple[str, Any], ...] = (
     # metrics ring buffers / counters + the published GpuGate
     ("faster_whisper_backend.stats.metrics", "_reset_for_tests"),
+    # stats sampler: busy ring, tick cadence, unflushed samples (every
+    # TestClient lifespan starts its loop).
+    ("faster_whisper_backend.stats.sampler", "_reset_for_tests"),
     # proposer caches
     ("faster_whisper_backend.captures.merge_proposer", "_reset_for_tests"),
     # reapply worker state — reset to the module's canonical idle shape.
@@ -446,12 +449,12 @@ def fake_model():
     return FakeModel()
 
 
-@pytest.fixture
-def app_module(tmp_path, monkeypatch, fake_model):
-    """Import `main`, neutralise the model preload, and point every store at
-    a temp DB. Yields the main module, with transcription.models'
-    `_get_or_load_model` returning the fake model. Importing main has only
-    benign side effects (logging)."""
+def isolate_app_env(tmp_path, monkeypatch) -> None:
+    """Point every store, ledger and lifespan side effect of `main` at
+    tmp_path and reload config from the environment. app_module and
+    tests/main/test_cors.py (which sets its own env first) both call it, so
+    the two cannot drift; reload `main` afterwards, and call
+    close_app_stores() once the app's lifespan has run."""
     # Point all stores at temp files BEFORE importing main / running lifespan.
     monkeypatch.setenv("WHISPER_API_KEYS_DB", str(tmp_path / "api_keys.sqlite3"))
     monkeypatch.setenv("WHISPER_SESSIONS_DB", str(tmp_path / "sessions.sqlite3"))
@@ -489,9 +492,10 @@ def app_module(tmp_path, monkeypatch, fake_model):
             _defaults[-1] = _tmp_overrides
             monkeypatch.setattr(_fn, "__defaults__", tuple(_defaults), raising=False)
 
-    # model_sizes has the same default-ARG trap: _read/_write bind path=PATH at
-    # def time, so a route test that loads a model would otherwise write the
-    # measured-size ledger into the REAL /data (or <repo>\data).
+    # model_sizes has the same default-ARG trap: _read/_write/_write_locked
+    # bind path=PATH at def time, so a direct caller would otherwise write the
+    # measured-size ledger into the REAL /data (or <repo>\data). record()
+    # resolves PATH at call time, so the PATH patch covers it.
     from faster_whisper_backend.runtime import model_sizes
     _tmp_sizes = str(tmp_path / "model_sizes.json")
     monkeypatch.setattr(model_sizes, "PATH", _tmp_sizes, raising=False)
@@ -499,7 +503,7 @@ def app_module(tmp_path, monkeypatch, fake_model):
     from faster_whisper_backend.runtime import stage_rates
     monkeypatch.setattr(stage_rates, "PATH",
                         str(tmp_path / "stage_rates.json"), raising=False)
-    for _fn in (model_sizes._read, model_sizes._write):
+    for _fn in (model_sizes._read, model_sizes._write, model_sizes._write_locked):
         _defaults = list(_fn.__defaults__ or ())
         if _defaults:
             _defaults[-1] = _tmp_sizes
@@ -511,16 +515,6 @@ def app_module(tmp_path, monkeypatch, fake_model):
     from faster_whisper_backend.pipeline import engine as pl_engine
     pl_engine.rebuild_caches()
 
-    from faster_whisper_backend import main
-    importlib.reload(main)
-
-    # Every caller (main, streaming, preload, the url routes) goes through the
-    # module attribute, so this one patch reaches them all.
-    from faster_whisper_backend.transcription import models as tx_models
-
-    async def _fake_loader(name: str, *, lease: bool = False):
-        return fake_model
-    monkeypatch.setattr(tx_models, "_get_or_load_model", _fake_loader)
     # The lifespan's hard-restart TMPDIR sweep would prune the REAL system
     # tempdir (urldl-/sepsrc-/vocals- leftovers) on every TestClient startup
     # — neuter it here; test_routes_url exercises the real function against
@@ -540,9 +534,10 @@ def app_module(tmp_path, monkeypatch, fake_model):
     from faster_whisper_backend.transcription import jobs_store as _jbs
     _jbs._insert_counter = 0
 
-    yield main
 
-    # The lifespan opens eight store connections on a temp DB; close them so a
+def close_app_stores() -> None:
+    """Teardown half of isolate_app_env()."""
+    # The lifespan opens nine store connections on a temp DB; close them so a
     # GC'd-without-close() sqlite3.Connection doesn't emit ResourceWarning noise
     # (one per store × every route test). capture_samples_store shares the
     # captures connection, so just drop its reference.
@@ -569,6 +564,50 @@ def app_module(tmp_path, monkeypatch, fake_model):
     api_keys_store._reset_for_tests()
     client_settings_store._DB_READY = False
     sessions_store._reset_for_tests()
+
+
+@pytest.fixture
+def model_sizes_ledger(tmp_path, monkeypatch):
+    """Repoint the measured-size ledger at tmp_path/model_sizes.json: PATH
+    *and* the path default ARG of _read/_write/_write_locked (bound at def
+    time — the same trap app_module documents for config_store). Yields the
+    path. For tests that reach model_sizes.record() without app_module — a
+    model_registry registration with a positive VRAM delta is a measurement."""
+    from faster_whisper_backend.runtime import model_sizes
+    p = str(tmp_path / "model_sizes.json")
+    monkeypatch.setattr(model_sizes, "PATH", p, raising=False)
+    for fn in (model_sizes._read, model_sizes._write,
+               model_sizes._write_locked):
+        defaults = list(fn.__defaults__ or ())
+        defaults[-1] = p
+        monkeypatch.setattr(fn, "__defaults__", tuple(defaults), raising=False)
+    model_sizes._reset_for_tests()
+    yield p
+    model_sizes._reset_for_tests()
+
+
+@pytest.fixture
+def app_module(tmp_path, monkeypatch, fake_model):
+    """Import `main`, neutralise the model preload, and point every store at
+    a temp DB. Yields the main module, with transcription.models'
+    `_get_or_load_model` returning the fake model. Importing main has only
+    benign side effects (logging)."""
+    isolate_app_env(tmp_path, monkeypatch)
+
+    from faster_whisper_backend import main
+    importlib.reload(main)
+
+    # Every caller (main, streaming, preload, the url routes) goes through the
+    # module attribute, so this one patch reaches them all.
+    from faster_whisper_backend.transcription import models as tx_models
+
+    async def _fake_loader(name: str, *, lease: bool = False):
+        return fake_model
+    monkeypatch.setattr(tx_models, "_get_or_load_model", _fake_loader)
+
+    yield main
+
+    close_app_stores()
 
 
 @pytest.fixture

@@ -132,6 +132,9 @@ def record(name: str, device: str, compute_type: str, vram_bytes: int, *,
         return
     k = _key(name, device, compute_type)
     src = "measured" if measured else "disk"
+    # PATH resolved once, at call time, and handed to the lock, the read and
+    # the write alike: a def-time default would let them name different files.
+    path = PATH
     with _lock:
         # The read-modify-write below rewrites the WHOLE ledger, so with
         # SERVER_WORKERS > 1 two workers measuring different models would
@@ -141,21 +144,21 @@ def record(name: str, device: str, compute_type: str, vram_bytes: int, *,
         # never break a load.
         with contextlib.ExitStack() as stack:
             try:
-                stack.enter_context(atomic_json.save_lock(PATH))
-                write = _write_locked
+                stack.enter_context(atomic_json.save_lock(path))
             except OSError:
-                write = _write_locked
-            _record_locked(k, vram_bytes, measured, src, write)
+                pass
+            _record_locked(k, vram_bytes, measured, src, path)
 
 
 def _record_locked(k: str, vram_bytes: int, measured: bool, src: str,
-                   write) -> None:
-    """The merge half of record(); ``write`` is _write_locked when the
-    caller already holds atomic_json.save_lock(PATH), else _write."""
+                   path: str) -> None:
+    """The merge half of record(). Writes through _write_locked, never
+    _write: the caller may already hold atomic_json.save_lock(path), which is
+    not reentrant."""
     global _cache_mtime
     # Drop the mtime cache so the merge sees a peer's just-written rows.
     _cache_mtime = None
-    models = dict(_read())
+    models = dict(_read(path))
     old = models.get(k)
     if old is not None:
         prev = int(old.get("bytes") or 0)
@@ -182,7 +185,7 @@ def _record_locked(k: str, vram_bytes: int, measured: bool, src: str,
     else:
         models[k] = {"bytes": int(vram_bytes), "ts": time.time(), "n": 1,
                      "src": src}
-    write(models)
+    _write_locked(models, path)
 
 
 def lookup(name: str, device: str, compute_type: str) -> dict | None:
@@ -284,7 +287,7 @@ def _model_path(name: str) -> "str | None":
     # Whisper: main resolves a bare id ('large-v3') through faster_whisper's
     # _MODELS table and passes DOWNLOAD_ROOT itself as snapshot_download's
     # cache_dir (no `/hf` sub-dir — that convention belongs to
-    # translation/diarization's HF_HOME setdefault), so the repo dir sits
+    # runtime.hf_cache.hub_cache_dir()), so the repo dir sits
     # directly under the root; without a root the hub cache is used. A
     # transformers checkpoint that main converts to CT2 lives under a
     # separate root keyed by quantisation (see transcription.models._converted_dir_for),

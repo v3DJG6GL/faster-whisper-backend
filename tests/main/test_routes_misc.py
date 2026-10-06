@@ -114,9 +114,20 @@ def test_security_headers_on_every_response(client):
 
 def test_data_responses_default_to_no_store(client):
     assert client.get("/").headers["Cache-Control"] == "no-store"
-    # ...including the early returns from the inner middlewares.
-    older = client.get("/logs/older?skip=0&limit=5")
-    assert older.headers["Cache-Control"] == "no-store"
+    # ...including the early returns from the inner middlewares: the header
+    # layer is registered last (outermost) so it wraps _max_body_mw's 413...
+    r = client.put("/v1/synced-client-settings", content=b"x" * (8 * 1024 * 1024),
+                   headers={"Content-Type": "application/json"})
+    assert r.status_code == 413
+    assert r.json() == {"detail": "request body too large"}
+    # ...and _csrf_mw's cross-origin 403.
+    r403 = client.post("/auth/logout", headers={"Origin": "http://evil.example"})
+    assert r403.status_code == 403
+    assert r403.json() == {"detail": "Origin not allowed for this host"}
+    for early in (r, r403):
+        assert early.headers["Cache-Control"] == "no-store"
+        assert early.headers["X-Frame-Options"] == "DENY"
+        assert "frame-ancestors 'none'" in early.headers["Content-Security-Policy"]
 
 
 def test_static_assets_stay_cacheable(client):
@@ -140,11 +151,23 @@ def test_logs_older_past_the_page_cap_terminates_paging(client, app_module,
     monkeypatch.setattr(app_module.cfg, "LOG_VIEWER_INITIAL_LINES", 10,
                         raising=False)
     cap = 10 * logs_routes._LOG_OLDER_MAX_PAGES
-    r = client.get(f"/logs/older?skip={cap + 10}")
-    assert r.status_code == 200
-    assert r.json() == {"lines": [], "next_skip": None}
-    r = client.get(f"/logs/older?skip={cap}")
-    assert r.json() == {"lines": [], "next_skip": None}
+    # The real test log holds a handful of lines, which would end paging on
+    # its own: a chain that always has more makes the cap the only stop.
+    calls: list = []
+
+    def _endless_chain(path, *, skip, want):
+        calls.append(skip)
+        return ["x"] * want, skip + want
+    monkeypatch.setattr(logs_routes, "_read_chain_window", _endless_chain)
+    for skip in (cap + 10, cap):
+        r = client.get(f"/logs/older?skip={skip}")
+        assert r.status_code == 200
+        assert r.json() == {"lines": [], "next_skip": None}
+    assert calls == []          # the cap path does no disk I/O
+    # One page below the cap is served, but its next_skip lands on the cap.
+    r = client.get(f"/logs/older?skip={cap - 10}")
+    assert r.json() == {"lines": ["x"] * 10, "next_skip": None}
+    assert calls == [cap - 10]
 
 
 def test_logs_page_onerror_closes_eventsource(client):

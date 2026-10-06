@@ -15,19 +15,9 @@ GB = 1024 ** 3
 
 
 @pytest.fixture
-def ledger(tmp_path, monkeypatch):
-    """Repoint PATH *and* the path default ARG of _read/_write (bound at def
-    time — the same trap conftest documents for config_store)."""
-    p = str(tmp_path / "model_sizes.json")
-    monkeypatch.setattr(model_sizes, "PATH", p, raising=False)
-    for fn in (model_sizes._read, model_sizes._write,
-               model_sizes._write_locked):
-        defaults = list(fn.__defaults__ or ())
-        defaults[-1] = p
-        monkeypatch.setattr(fn, "__defaults__", tuple(defaults), raising=False)
-    model_sizes._reset_for_tests()
-    yield p
-    model_sizes._reset_for_tests()
+def ledger(model_sizes_ledger):
+    """The conftest model_sizes_ledger (PATH + the def-time path defaults)."""
+    return model_sizes_ledger
 
 
 def test_record_estimate_roundtrip_survives_a_restart(ledger):
@@ -333,3 +323,23 @@ def test_lookup_reports_source(ledger, monkeypatch):
         "bytes": 2 * GB, "src": "disk", "n": 0, "ts": None}
     assert model_sizes.lookup("never", "cuda", "float16") is None
     assert model_sizes.estimate("on-disk", "cuda", "float16") == 2 * GB
+
+
+def test_app_module_keeps_record_off_the_default_ledger(app_module, tmp_path,
+                                                        monkeypatch):
+    # record() is reached through a model_registry registration (a positive
+    # VRAM delta is a measurement); its lock, read and write must all land
+    # on app_module's tmp ledger, never on the import-time default path.
+    from faster_whisper_backend.core import atomic_json
+    from faster_whisper_backend.runtime import model_registry
+    written = []
+    real = atomic_json.atomic_write_json
+
+    def _spy(doc, path, **kw):
+        written.append(path)
+        return real(doc, path, **kw)
+    monkeypatch.setattr(atomic_json, "atomic_write_json", _spy)
+    model_registry.register_loaded_model("iso", 1024, "cpu", "int8")
+    assert written == [str(tmp_path / "model_sizes.json")]
+    doc = json.loads((tmp_path / "model_sizes.json").read_text(encoding="utf-8"))
+    assert "iso|cpu|int8" in doc["models"]

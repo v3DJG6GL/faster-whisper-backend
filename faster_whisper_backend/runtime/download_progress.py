@@ -33,16 +33,16 @@ translation serializes only per ref (`_loading[ref]`) and runs the load
 outside its `_lock`, and main's whisper pre-download deliberately runs
 *outside* `_model_load_lock` — so two different refs downloading at once,
 two cold whisper loads, or a request plus a preload worker can overlap.
-When they do, the later scope replaces
-the earlier one: bars constructed afterwards report under the later label
-and the inner exit restores `ReportingTqdm` rather than the original tqdm
-until the outer exit — byte counts may blend, and progress is a
-convenience, never a correctness surface.
+When they do, the newest live scope is the active one: bars constructed
+afterwards report under its label, and byte counts may blend — progress is
+a convenience, never a correctness surface. Scopes may exit in ANY order:
+the live set is a list, so an exit hands the active slot to the newest
+scope still open (never to one that already exited).
 
-The `capture` context also monkeypatches the hub-internal default tqdm for
-its duration as a fallback for call paths that don't accept ``tqdm_class``:
-every ``(module, attr)`` pair in ``_PATCH_TARGETS`` is rebound to
-``ReportingTqdm`` and restored to its previous value in the finally.
+The `capture` context also monkeypatches the hub-internal default tqdm as a
+fallback for call paths that don't accept ``tqdm_class``: the FIRST live
+scope rebinds every ``(module, attr)`` pair in ``_PATCH_TARGETS`` to
+``ReportingTqdm`` and the LAST one out restores the saved originals.
 """
 
 from __future__ import annotations
@@ -163,6 +163,12 @@ if _hub_tqdm_mod is not None:
             unit = str(kwargs.get("unit") or "")
             name = str(kwargs.get("name") or "")
             self._dp_key = next(_bar_seq)
+            # snapshot_download updates ONE reconstruct bar from up to 8
+            # hf_thread_map workers: the read-modify-write on _dp_n and the
+            # bump() that publishes it must not interleave (a lost increment,
+            # or an older smaller value bumped after a newer one). bump()
+            # only takes cap.lock, so the lock order is the same everywhere.
+            self._dp_lock = threading.Lock()
             super().__init__(*args, **kwargs)
             cap = _active_capture()
             # snapshot_download builds TWO byte-unit aggregate bars from
@@ -180,12 +186,13 @@ if _hub_tqdm_mod is not None:
             out = super().update(n)
             cap = getattr(self, "_dp_cap", None)
             if cap is not None and n:
-                self._dp_n += int(n)
-                # A retried/resumed download can update(-resume_size).
-                self._dp_n = max(0, self._dp_n)
-                total = int(getattr(self, "total", None)
-                            or self._dp_total or 0)
-                cap.bump(self._dp_key, self._dp_n, total)
+                with self._dp_lock:
+                    self._dp_n += int(n)
+                    # A retried/resumed download can update(-resume_size).
+                    self._dp_n = max(0, self._dp_n)
+                    total = int(getattr(self, "total", None)
+                                or self._dp_total or 0)
+                    cap.bump(self._dp_key, self._dp_n, total)
             return out
 
 else:  # pragma: no cover — hub always importable in this deployment
@@ -209,9 +216,15 @@ _TQDM_CLASS_KWARGS: dict[str, Any] = (
 )
 
 # Module-global active capture (see the module docstring for why not
-# thread-local) + the hub attributes the capture temporarily rebinds.
+# thread-local) + the hub attributes the capture temporarily rebinds. All
+# three are guarded by _capture_lock.
 _capture_lock = threading.Lock()
 _current: "_Capture | None" = None
+# Live scopes, oldest first; _current is always the newest (or None).
+_live: "list[_Capture]" = []
+# (module, attr, original) as they were before the first live scope patched
+# them; the last scope out restores these, whatever order the scopes exit in.
+_saved_attrs: "list[tuple[Any, str, Any]]" = []
 _PATCH_TARGETS = (
     ("huggingface_hub.utils.tqdm", "tqdm"),
     # Defensive no-op on hub >= 1.29 (file_download imports tqdm only for
@@ -237,20 +250,19 @@ def capture(label: str, cb: "Callable[[int, int], None] | None" = None,
     failed download never fires `cb` with a completion-shaped pair."""
     global _current
     cap = _Capture(label, cb)
-    patched: list[tuple[Any, str, Any]] = []
     failed = False
     with _capture_lock:
-        prev_current = _current
+        if not _live and _hub_tqdm_mod is not None:
+            for mod_name, attr in _PATCH_TARGETS:
+                try:
+                    mod = importlib.import_module(mod_name)
+                    if getattr(mod, attr, None) is not None:
+                        _saved_attrs.append((mod, attr, getattr(mod, attr)))
+                        setattr(mod, attr, ReportingTqdm)
+                except Exception:  # noqa: BLE001 — fallback patch is best-effort
+                    pass
+        _live.append(cap)
         _current = cap
-    if _hub_tqdm_mod is not None:
-        for mod_name, attr in _PATCH_TARGETS:
-            try:
-                mod = importlib.import_module(mod_name)
-                if getattr(mod, attr, None) is not None:
-                    patched.append((mod, attr, getattr(mod, attr)))
-                    setattr(mod, attr, ReportingTqdm)
-            except Exception:  # noqa: BLE001 — fallback patch is best-effort
-                pass
     try:
         yield cap
     except BaseException:
@@ -259,14 +271,16 @@ def capture(label: str, cb: "Callable[[int, int], None] | None" = None,
         failed = True
         raise
     finally:
-        for mod, attr, prev in patched:
-            try:
-                setattr(mod, attr, prev)
-            except Exception:  # noqa: BLE001
-                pass
         with _capture_lock:
-            if _current is cap:
-                _current = prev_current
+            _live.remove(cap)
+            _current = _live[-1] if _live else None
+            if not _live:
+                for mod, attr, prev in _saved_attrs:
+                    try:
+                        setattr(mod, attr, prev)
+                    except Exception:  # noqa: BLE001
+                        pass
+                _saved_attrs.clear()
         done_b, total_b = cap.totals()
         secs = max(1e-6, time.monotonic() - cap.t0)
         if done_b > 0:

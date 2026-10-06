@@ -536,7 +536,7 @@ async def lifespan(app: FastAPI):
     url_media_janitor_task = asyncio.create_task(
         url_media_store.janitor_loop())
     # Subtitle packaging: probe ffmpeg's muxers/encoders ONCE, off the loop,
-    # so /v1/me never pays for the two subprocesses on a request.
+    # so /v1/me never pays for the three subprocesses on a request.
     try:
         _pk_caps = await asyncio.to_thread(_subtitle_mux.ffmpeg_capabilities)
         if _pk_caps.available:
@@ -660,6 +660,12 @@ async def lifespan(app: FastAPI):
         except (asyncio.CancelledError, Exception):
             pass
 
+    # Before EVERY model drop below: stop() cancels the worker, so a queued
+    # stage-ahead item cannot reload a model after its cache was emptied
+    # (nothing would drop it again), and clears the warm predicate, so the
+    # shutdown teardown cannot be second-guessed by a lease nobody can renew.
+    await _cancel(preload_sweeper_task)
+    await preload.stop()
     await _cancel(evictor_task)
     await _cancel(diarization_evictor_task)
     await _diarization.drop_pipeline()
@@ -667,14 +673,10 @@ async def lifespan(app: FastAPI):
     await _bgm_separation.drop_separator()
     await _cancel(translation_evictor_task)
     await _tr.drop_models()
-    # Before the model drops below: stop() clears the warm predicate, so the
-    # shutdown teardown cannot be second-guessed by a lease nobody can renew.
-    await _cancel(preload_sweeper_task)
     await _cancel(receipt_sweeper_task)
     # Anything still waiting on a translation that will now never come. A
     # restart must not eat a receipt that was merely being patient.
     tx_receipt._log_held_receipts(receipt_hold.flush_all())
-    await preload.stop()
     await _cancel(url_media_janitor_task)
     await _cancel(reports_sweep_task)
     await _cancel(captures_sweep_task)
@@ -958,9 +960,11 @@ async def _max_body_mw(request: Request, call_next):
     # keys + values; next largest is the 512 KB client_settings cap).
     # getattr default, so no config-schema change is required. The media type
     # is parsed, not prefix-matched: FastAPI treats `application/*+json`
-    # (merge-patch+json, ld+json, ...) AND a request with NO Content-Type at
-    # all as JSON and calls request.json() on it, so both must share the
-    # ceiling or they bypass it. multipart media uploads always declare their
+    # (merge-patch+json, ld+json, ...) as JSON and calls request.json() on
+    # it. A request with NO Content-Type at all is buffered whole (FastAPI
+    # only JSON-parses it if strict_content_type is ever turned off), and the
+    # routes that call request.json() themselves parse it whatever the
+    # header says. Both must share the ceiling or they bypass it. multipart media uploads always declare their
     # own media type and keep the full MAX_REQUEST_BYTES — sized for a
     # MEDIA_MAX_BYTES video, i.e. gigabytes. Every OTHER non-JSON body keeps
     # the old 256 MiB backstop: nothing but an upload has business being
@@ -1583,7 +1587,9 @@ async def transcribe(
                     raise HTTPException(status_code=400, detail=str(_ue))
                 audio_bytes = os.path.getsize(_dl_path)
                 _rplan.set_download_bytes(audio_bytes)
-                _rplan.stage_done("downloading")
+                # A reused prefetch "downloads" in the time of a resolve plus
+                # a local copy: no rate sample for the extractor.
+                _rplan.stage_done("downloading", learn=not _reused_copy)
                 # Pipeline copy FIRST (hardlink where possible), THEN move
                 # the original into the retention store — afterwards each
                 # side owns its file outright: tmp_path follows the normal
@@ -1595,9 +1601,17 @@ async def transcribe(
                 # I/O that must not pin the event loop.
                 if _reused_copy:
                     # Already retained under the check's id: hand that out,
-                    # with a TTL that starts now, not at the check.
-                    tmp_path, _source_media_id = _reused_copy, prefetched_media_id
+                    # with a TTL that starts now, not at the check — but only
+                    # while the entry and its file still exist. A sweep or
+                    # eviction after the copy would otherwise advertise an id
+                    # whose GET 404s (resolve_entry drops a missing file).
+                    tmp_path = _reused_copy
                     url_media_store.touch(prefetched_media_id)
+                    _source_media_id = (
+                        prefetched_media_id
+                        if url_media_store.resolve_entry(
+                            prefetched_media_id, user_id=_user_id) is not None
+                        else None)
                 else:
                     tmp_path = await asyncio.to_thread(
                         url_media_store.make_pipeline_copy, _dl_path)
@@ -1759,6 +1773,12 @@ async def transcribe(
                 resolved_model, ident, ignored,
                 "TASK", "task", task, default="transcribe")
             _task_now = _task
+            # task=translate makes Whisper emit ENGLISH text while
+            # info.language stays the SPOKEN language. Everything that
+            # handles the decoded text (verbatim-target check, T2T source,
+            # language-scoped pipeline rules) keys on the text's language.
+            _text_lang_pre = ("en" if _task == "translate"
+                              else (_decode_language or None))
             # Diarization request knobs: same absent-inherits / locked-wins
             # shape as task above. The capacity gate (DIARIZATION_ENABLED)
             # is checked at the stage itself and soft-fails into `warnings`.
@@ -1873,9 +1893,12 @@ async def transcribe(
             # csv → deduped ordered list of well-formed codes. Malformed
             # entries drop silently (the sloppy-caller stance of the clamped
             # knobs); the MAX_TARGETS clamp warns, naming what it dropped.
-            _translate_to = language_codes(_tt_raw)
             _translation_max_targets = int(effective_config.cfg_for(
                 resolved_model, "TRANSLATION_MAX_TARGETS", ident) or 1)
+            # Bounded walk: a multipart field can carry ~1 MiB of codes. 64 is
+            # far above the schema maximum (10), so the "dropped:" warning
+            # still names every code a real client sends, but never a megabyte.
+            _translate_to = language_codes(_tt_raw, limit=64)
             if len(_translate_to) > _translation_max_targets:
                 _warnings.append(
                     "translation targets over TRANSLATION_MAX_TARGETS "
@@ -1945,7 +1968,7 @@ async def transcribe(
                     mode=_translation_mode,
                     # A pinned decode language already tells which targets
                     # are verbatim copies; auto-detect learns it post-decode.
-                    source_lang=(_decode_language or None))
+                    source_lang=_text_lang_pre)
 
             # Stage-ahead: the stage plan is fully resolved here (every
             # enable/allowlist/soft-skip verdict above has landed), so this is
@@ -2536,7 +2559,11 @@ async def transcribe(
             # The translation estimate scales with the segment count, and
             # the detected language decides which targets are verbatim.
             _rplan.set_segments(len(segments_list))
-            _rplan.mark_instant(getattr(info, "language", None) or None)
+            # Language of the TEXT, not the audio: task=translate decodes
+            # to English whatever was spoken (see _text_lang_pre).
+            _text_lang = ("en" if _task == "translate"
+                          else (getattr(info, "language", None) or None))
+            _rplan.mark_instant(_text_lang)
             speakers_list: "list[str]" = []
             if _diarize and segments_list:
                 if not getattr(cfg, "DIARIZATION_ENABLED", False):
@@ -2661,7 +2688,7 @@ async def transcribe(
                                       "speaker": seg.get("speaker")}
                                      for seg in segments_list],
                                     _translate_to,
-                                    source_lang=info.language,
+                                    source_lang=_text_lang,
                                     model_ref=_tr_model,
                                     mode=_translation_mode,
                                     glossary=_translation_glossary,
@@ -2785,7 +2812,9 @@ async def transcribe(
 
             raw_full_text = "".join(raw_full_text_parts)
             trace: "list | None" = [] if cfg.TRACE_ENABLED else None
-            _detected_lang = getattr(info, "language", None)
+            # Pipeline rules scope by the OUTPUT text's language: a German
+            # translate run must not get de-* rules applied to English.
+            _detected_lang = _text_lang
             full_text_str = pl_engine._postprocess_text(raw_full_text, model_name=resolved_model, trace=trace, ident=ident, language=_detected_lang)
             # Captures-form text — same pipeline minus the captures-specific
             # exclude set (default-skips `de-dictation-map` + `capitalize-after-
@@ -3332,6 +3361,14 @@ async def transcribe(
                 stages=(_stage_timings or None),
                 plan=_rplan.snapshot()["plan"],
                 model=resolved_model, task=_task_now)
+            # The video may have landed while the finish above was on its
+            # thread — its own attach then saw "running" and gave up. The
+            # swap is idempotent (it pops the flag), so both sides may try.
+            if (_video_task is not None and _video_task.done()
+                    and not _video_task.cancelled()
+                    and _video_task.exception() is None):
+                await asyncio.to_thread(media_video._jobs_attach_video_sync,
+                                        _pid, dict(_video_task.result()))
         # Teach the rates ledger from the stages that ran clean. Off the
         # loop: one locked, fsync'd rewrite of the ledger file.
         try:

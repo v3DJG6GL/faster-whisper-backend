@@ -63,14 +63,19 @@ def test_oversize_json_with_plus_json_subtype_is_413(client):
     r = client.put("/v1/synced-client-settings", content=_big_json(8 * 1024 * 1024),
                    headers={"Content-Type": "application/merge-patch+json"})
     assert r.status_code == 413
+    # The middleware's own 413: the route answers 413 for an 8 MiB blob too.
+    assert r.json() == {"detail": "request body too large"}
 
 
 def test_oversize_body_with_no_content_type_is_413(client):
-    # No Content-Type at all: FastAPI still buffers and json.loads-expands the
-    # body, so an absent header must count as JSON for the cap.
+    # No Content-Type at all: FastAPI still buffers the body whole (and
+    # JSON-parses it if strict_content_type is ever turned off; routes that
+    # call request.json() themselves parse it anyway), so an absent header
+    # must count as JSON for the cap.
     r = client.put("/v1/synced-client-settings", content=_big_json(8 * 1024 * 1024))
     assert "content-type" not in r.request.headers
     assert r.status_code == 413
+    assert r.json() == {"detail": "request body too large"}
 
 
 def test_small_body_with_no_content_type_is_not_413(client):
@@ -125,10 +130,11 @@ def test_multipart_upload_is_not_subject_to_the_json_cap(client, app_module,
     assert r.json() == {"text": "hallo welt"}
 
 
-def test_non_json_content_type_keeps_the_service_wide_ceiling(client):
-    # text/plain is neither JSON nor an upload: it keeps MAX_REQUEST_BYTES, so a
-    # body that would trip the JSON cap is not rejected by the middleware (the
-    # route rejects it on its own terms instead).
+def test_non_json_content_type_is_not_held_to_the_json_cap(client):
+    # text/plain is neither JSON nor an upload: it gets the non-upload
+    # backstop (min(MAX_REQUEST_BYTES, 256 MiB), pinned below), not the JSON
+    # cap, so a body that would trip the JSON cap is not rejected by the
+    # middleware (the route rejects it on its own terms instead).
     r = client.put("/v1/synced-client-settings", content=b"x" * (8 * 1024 * 1024),
                    headers={"Content-Type": "text/plain"})
     assert r.status_code != 413

@@ -13,8 +13,10 @@ from faster_whisper_backend.runtime import model_registry
 
 
 @pytest.fixture(autouse=True)
-def _reset_registry():
-    """Reset the module-global loaded-model registry."""
+def _reset_registry(model_sizes_ledger):
+    """Reset the module-global loaded-model registry. A registration with a
+    positive VRAM delta records into the measured-size ledger, so that is
+    repointed at tmp_path too."""
     with model_registry._loaded_models_lock:
         model_registry._loaded_models.clear()
     yield

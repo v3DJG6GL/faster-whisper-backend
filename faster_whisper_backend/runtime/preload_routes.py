@@ -16,7 +16,9 @@ Security model:
   - The endpoint cannot load anything a transcribe request could not: the
     per-family allowlists are applied exactly as the batch handler applies
     them, including the "an empty allowlist means the configured model only,
-    never anything" rule for diarization/separation.
+    never anything" rule for diarization/separation, and the caller's
+    identity/per-model EFFECTIVE stage models, which that handler admits as
+    admin policy.
 
 There is NO 4xx path beyond pydantic's 422 for a structurally invalid body.
 A disallowed model, a disabled stage and a disabled feature all answer 202
@@ -45,6 +47,7 @@ from fastapi import APIRouter, Depends, status
 from pydantic import BaseModel, Field
 
 from faster_whisper_backend.settings import config as cfg
+from faster_whisper_backend.settings import effective_config
 from faster_whisper_backend.runtime import preload
 from faster_whisper_backend.transcription import models as tx_models
 from faster_whisper_backend.translation import gating as tr_gating
@@ -75,8 +78,9 @@ class PreloadRequest(BaseModel):
     # 6, not 4: a client may legitimately name two whisper models (the one it
     # will use plus the one its next queued job will).
     models: list[PreloadModel] = Field(min_length=1, max_length=6)
-    # Hex so a client id can never collide with a server-derived one in a way
-    # that would let a caller adopt another caller's plan by guessing shape.
+    # Hex is a shape bound only: a derived id is 32 hex chars too, so a client
+    # CAN name one. What stops adopting another caller's plan is the owner
+    # check in preload._register_plan (a foreign plan_id is re-derived).
     # ^…$ rather than the \A…\Z tx_progress._PROGRESS_ID_RE uses: pydantic v2 compiles
     # patterns with the Rust regex engine, which rejects \A/\Z outright (a
     # SchemaError at import, not a failed match). In that engine ^/$ are
@@ -90,7 +94,8 @@ class PreloadRequest(BaseModel):
     trigger: "str | None" = Field(default=None, max_length=32)
 
 
-def _allowed(family: str, model_id: str) -> bool:
+def _allowed(family: str, model_id: str,
+             effective: "dict[str, str] | None" = None) -> bool:
     """The batch handler's allowlist rules.
 
     whisper: judged on the RESOLVED id (`whisper-1` → DEFAULT_MODEL, the
@@ -101,10 +106,13 @@ def _allowed(family: str, model_id: str) -> bool:
     slot on a load the guard rejects anyway. A non-empty one admits exactly
     its members, as that gate does (the default is NOT implied: a load of it
     would 400 there).
-    diarization/separation: the allowlist plus the configured model, and an
-    empty allowlist therefore means "the configured model only", never
-    "anything". translation: `tr_gating._translation_model_allowed`, the rule the
-    batch stage and the job plan share."""
+    diarization/separation: the allowlist plus the configured model (global
+    AND the caller's effective value), and an empty allowlist therefore means
+    "the configured model only", never "anything". translation:
+    `tr_gating._translation_model_allowed`, the rule the batch stage and the
+    job plan share, with the effective TRANSLATION_MODEL as `inherited`.
+    `effective` holds those identity/per-model values ({} = global only)."""
+    effective = effective or {}
     if family == "whisper":
         model_id = preload.normalize_id(family, model_id)
         if not model_id:
@@ -118,14 +126,36 @@ def _allowed(family: str, model_id: str) -> bool:
     if family == "diarization":
         allow = set(getattr(cfg, "DIARIZATION_ALLOWED_MODELS", None) or ())
         allow.add(getattr(cfg, "DIARIZATION_MODEL", "") or "")
+        allow.add(effective.get("DIARIZATION_MODEL") or "")
         return model_id in allow
     if family == "separation":
         allow = set(getattr(cfg, "BGM_SEPARATION_ALLOWED_MODELS", None) or ())
         allow.add(getattr(cfg, "BGM_SEPARATION_UVR_MODEL", "") or "")
+        allow.add(effective.get("BGM_SEPARATION_UVR_MODEL") or "")
         return model_id in allow
     # requested=model_id makes it the CLIENT-value rule: a bare call would
     # let any ref through as admin policy.
-    return tr_gating._translation_model_allowed(model_id, requested=model_id)
+    return tr_gating._translation_model_allowed(
+        model_id, requested=model_id,
+        inherited=effective.get("TRANSLATION_MODEL") or None)
+
+
+def _effective_stage_models(user: dict, body: "PreloadRequest") -> "dict[str, str]":
+    """The caller's identity/per-model effective stage models, resolved
+    against the whisper model the plan names (else DEFAULT_MODEL) — the ident
+    the batch handler builds for the same job. {} on any failure, which
+    degrades to the global-only rule."""
+    resolved_model = next(
+        (preload.normalize_id("whisper", m.id) for m in body.models
+         if m.family == "whisper"), "") or getattr(cfg, "DEFAULT_MODEL", "")
+    try:
+        ident = effective_config.build_ident(user, resolved_model)
+        return {k: (effective_config.cfg_for(resolved_model, k, ident)
+                    or "").strip()
+                for k in ("DIARIZATION_MODEL", "BGM_SEPARATION_UVR_MODEL",
+                          "TRANSLATION_MODEL")}
+    except Exception:  # noqa: BLE001 — never worse than the global rule
+        return {}
 
 
 @router.post("/models/preload", status_code=status.HTTP_202_ACCEPTED)
@@ -134,11 +164,12 @@ async def preload_models(body: PreloadRequest,
     """Register a preload plan. Always 202."""
     entries: "list[tuple[str, str]]" = []
     denied: "dict[tuple[str, str], str]" = {}
+    effective = _effective_stage_models(user, body)
     for m in body.models:
         pair = (m.family, m.id.strip())
         if pair in entries:
             continue
-        if not _allowed(m.family, pair[1]):
+        if not _allowed(m.family, pair[1], effective):
             denied[pair] = "not_allowed"
         entries.append(pair)
 
@@ -150,6 +181,11 @@ async def preload_models(body: PreloadRequest,
     # newlines and other non-printables so a client cannot forge log rows.
     trigger = "".join(ch for ch in (body.trigger or "")
                       if ch.isprintable()) or None
+    # "job" is reserved for the server's own job binding (register_plan
+    # rewinds the cursor for it and the receipt says from=job): a client
+    # sending it must not pass for that.
+    if trigger == "job":
+        trigger = "client:job"
     logger.debug("[preload] POST %d model(s) from=%s user=%s",
                  len(entries), trigger or "-",
                  (user.get("user_id") or "-")[:8])

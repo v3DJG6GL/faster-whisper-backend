@@ -193,3 +193,47 @@ def test_finished_download_is_recorded_as_ok(monkeypatch):
     assert len(seen) == 1
     assert seen[0]["status"] == "ok"
     assert seen[0]["bytes_done"] == 100
+
+
+def test_non_lifo_scope_exits_restore_the_original_state():
+    # A whisper snapshot (A) and a GGUF download (B) overlap and A finishes
+    # first: no dead scope may stay active, and the original hub tqdm must
+    # come back once the last scope is out.
+    ut = importlib.import_module("huggingface_hub.utils.tqdm")
+    before = ut.tqdm
+    a = dp.capture("A", record=False)
+    b = dp.capture("B", record=False)
+    cap_a = a.__enter__()
+    cap_b = b.__enter__()
+    assert dp._active_capture() is cap_b
+    a.__exit__(None, None, None)
+    assert dp._active_capture() is cap_b       # A's exit leaves B active
+    assert ut.tqdm is dp.ReportingTqdm         # ...and still patched for B
+    b.__exit__(None, None, None)
+    assert dp._active_capture() is None
+    assert ut.tqdm is before
+    assert cap_a is not cap_b
+
+
+def test_one_bar_updated_from_many_threads_loses_no_bytes():
+    # snapshot_download feeds one reconstruct bar from 8 worker threads.
+    import sys
+    import threading
+    n = 2000
+    old = sys.getswitchinterval()
+    sys.setswitchinterval(1e-6)                # make interleaving likely
+    try:
+        with dp.capture("x", record=False) as cap:
+            bar = _mk_bar(total=8 * n)
+
+            def _work():
+                for _ in range(n):
+                    bar.update(1)
+            threads = [threading.Thread(target=_work) for _ in range(8)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+            assert cap.totals()[0] == 8 * n
+    finally:
+        sys.setswitchinterval(old)

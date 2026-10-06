@@ -211,8 +211,10 @@ def test_ignore_files_anchor_every_root_only_dir():
         assert f"{d}/" not in git and f"**/{d}/" not in git
     assert "*.lock" not in git
     docker = [ln.strip() for ln in _read(".dockerignore").splitlines()]
-    for d in ("logs", "tmp", "ffmpeg", "captures"):
+    for d in ("logs", "tmp", "ffmpeg", "captures", "secrets"):
         assert f"**/{d}/" not in docker, f".dockerignore: **/{d}/ matches package dirs"
+    # ...while the root-only exclusion itself stays.
+    assert "secrets/" in docker
 
 
 # --- Dockerfiles -------------------------------------------------------------

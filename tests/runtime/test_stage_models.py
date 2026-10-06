@@ -402,6 +402,7 @@ def test_allowlist_admits_the_identity_effective_separation_model_when_echoed(
               "separate_bgm": "true"})
     assert r.status_code == 200, r.text
     assert len(calls) == 1
+    assert calls[0]["model_filename"] == "UVR-Pinned"
     # Echoing that exact effective value must yield the same call.
     r = client.post(
         "/v1/audio/transcriptions", files=_FILE, headers=bearer(raw_alice),

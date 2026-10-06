@@ -8,7 +8,7 @@ buffer tail, high avg_logprob, T=0.0, nsp possibly below NO_SPEECH_THRESHOLD.
 Covers:
   * transcription.guards.segment_exceeds_word_rate (SEGMENT_MAX_WORDS_PER_S) — unit
   * batch POST /v1/audio/transcriptions drops word-rate-anomalous segments
-  * streaming_routes._trim_trailing_nonspeech (STREAMING_TAIL_TRIM_PAD_MS)
+  * streaming.routes._trim_trailing_nonspeech (STREAMING_TAIL_TRIM_PAD_MS)
   * streaming FINAL decode's condition_on_previous_text override
     (STREAMING_FINAL_CONDITION_ON_PREVIOUS_TEXT), batch left untouched
 """

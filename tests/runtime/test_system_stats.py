@@ -18,8 +18,10 @@ from faster_whisper_backend.runtime import system_stats
 
 
 @pytest.fixture(autouse=True)
-def _reset_registry():
-    """Reset model_registry's module-global loaded-model registry."""
+def _reset_registry(model_sizes_ledger):
+    """Reset model_registry's module-global loaded-model registry. A
+    registration with a positive VRAM delta records into the measured-size
+    ledger, so that is repointed at tmp_path too."""
     with model_registry._loaded_models_lock:
         model_registry._loaded_models.clear()
     yield
@@ -65,11 +67,13 @@ def test_snapshot_process_fields():
         assert key in proc
 
 
-def test_snapshot_models_reflects_registry():
+def test_snapshot_models_reflects_registry(model_sizes_ledger):
     model_registry.register_loaded_model("base", 1024 * 1024, "cpu", "int8")
     models = system_stats.system_snapshot()["models"]
     assert len(models) == 1
     assert models[0]["name"] == "base"
+    # The measurement went to the repointed ledger, not the session default.
+    assert "base|cpu|int8" in open(model_sizes_ledger, encoding="utf-8").read()
 
 
 # ---------------------------------------------------------------------------
@@ -104,8 +108,9 @@ def test_shutdown_safe_and_idempotent():
 
 def test_disk_free_reads_the_download_root_drive(monkeypatch, tmp_path):
     """/stats labels it "disk free (model cache)": with HF_HOME unset the
-    cache is <DOWNLOAD_ROOT>/hf, not the OS drive's ~/.cache/huggingface —
-    and a not-yet-created hf/ dir still resolves to its parent's drive."""
+    cache is <DOWNLOAD_ROOT>/hf/hub, not the OS drive's ~/.cache/huggingface —
+    and a not-yet-created hf/hub (or hf/) dir still resolves to the nearest
+    existing ancestor's drive."""
     from faster_whisper_backend.settings import config as cfg
     monkeypatch.delenv("HF_HOME", raising=False)
     monkeypatch.setattr(cfg, "DOWNLOAD_ROOT", str(tmp_path), raising=False)
@@ -117,12 +122,14 @@ def test_disk_free_reads_the_download_root_drive(monkeypatch, tmp_path):
         return real(path)
     monkeypatch.setattr(system_stats.psutil, "disk_usage", _spy)
     host = system_stats._build_host()
-    assert seen == [str(tmp_path)]           # hf/ absent -> its parent
+    assert seen == [str(tmp_path)]           # hf/hub, hf/ absent -> tmp_path
     assert host["disk_free_gb"] is not None
     (tmp_path / "hf").mkdir()
     system_stats._build_host()
-    assert seen[-1] == str(tmp_path / "hf")
-    monkeypatch.setenv("HF_HOME", str(tmp_path / "hf"))
-    monkeypatch.setattr(cfg, "DOWNLOAD_ROOT", "", raising=False)
+    assert seen[-1] == str(tmp_path / "hf")  # hf/hub absent -> hf
+    # A set HF_HOME wins over DOWNLOAD_ROOT (which stays set): a distinct
+    # dir, or both precedences would land on the same path.
+    (tmp_path / "other").mkdir()
+    monkeypatch.setenv("HF_HOME", str(tmp_path / "other"))
     system_stats._build_host()
-    assert seen[-1] == str(tmp_path / "hf")  # HF_HOME wins
+    assert seen[-1] == str(tmp_path / "other")

@@ -25,10 +25,11 @@ def _lock_temperature_for_alice(client, make_user_key, ladder):
     _setup_profile(client, admin_h, "t0", TEMPERATURE=ladder,
                    locks=["TEMPERATURE"])
     uid, raw_alice = make_user_key("alice", is_admin=False)
-    client.patch(f"{PERMS}/{uid}/permissions", headers=admin_h,
-                 json={"pages": {}, "config": {"overrides": {},
-                                               "profiles": ["t0"],
-                                               "locks": []}})
+    r = client.patch(f"{PERMS}/{uid}/permissions", headers=admin_h,
+                     json={"pages": {}, "config": {"overrides": {},
+                                                   "profiles": ["t0"],
+                                                   "locks": []}})
+    assert r.status_code == 200, r.text
     return raw_alice
 
 

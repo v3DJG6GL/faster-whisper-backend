@@ -311,12 +311,22 @@ def _family_busy(family: str, model_id: str) -> bool:
                     or _idle_peer(family, model_id) is None):
                 return True
             return False
+        # The singletons have one slot: loading a different model drops the
+        # resident one (_get_pipeline / _get_separator force-drop it, warm or
+        # not). Same refusal shape as whisper's full cache: a held peer that
+        # is warm (another plan's), or any held peer with eviction off.
         if family == "diarization":
             from faster_whisper_backend.audio import diarization
-            return diarization.busy(mid)
+            return diarization.busy(mid) or (
+                diarization.holds_other(mid) and (
+                    not bool(getattr(cfg, "MODEL_PRELOAD_EVICT_IDLE_MODELS", True))
+                    or _idle_peer(family, model_id) is None))
         if family == "separation":
             from faster_whisper_backend.audio import bgm_separation
-            return bgm_separation.busy(mid)
+            return bgm_separation.busy(mid) or (
+                bgm_separation.holds_other(mid) and (
+                    not bool(getattr(cfg, "MODEL_PRELOAD_EVICT_IDLE_MODELS", True))
+                    or _idle_peer(family, model_id) is None))
         if family == "translation":
             from faster_whisper_backend.translation import engine as translation
             # Same refusal as whisper's running load (see
@@ -441,9 +451,9 @@ def _admit(family: str, model_id: str) -> "tuple[str, str | None]":
         # eviction, even if a cold peer exists — so an unknown model can never
         # displace a known one. If it OOMs, the loader's own error path
         # handles it and the job falls back to loading in-band, which is the
-        # pre-preload behaviour.
-        if (not _needs_room(family, model_id)
-                or _idle_peer(family, model_id) is None):
+        # pre-preload behaviour. (A needed room with no droppable peer was
+        # already refused as family_busy above.)
+        if not _needs_room(family, model_id):
             return (_pending_state(), None)
         return ("deferred", "size_unknown")
     return ("deferred", reason or "size_unknown")

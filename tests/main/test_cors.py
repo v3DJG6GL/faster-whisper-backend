@@ -13,6 +13,8 @@ import importlib
 import pytest
 from starlette.testclient import TestClient
 
+from tests.conftest import close_app_stores, isolate_app_env
+
 
 # ---- origin validation ----------------------------------------------------
 
@@ -70,34 +72,13 @@ def test_no_cors_headers_by_default(app_module):
 
 def _reload_main(tmp_path, monkeypatch, cors_env, trusted_env=""):
     """Re-import config+main with a temp store layout and a CORS allowlist set,
-    mirroring the conftest app_module fixture (which can't parameterize env)."""
-    for var, fn in (
-        ("WHISPER_API_KEYS_DB", "api_keys.sqlite3"),
-        ("WHISPER_SESSIONS_DB", "sessions.sqlite3"),
-        ("WHISPER_REPORTS_DB", "reports.sqlite3"),
-        ("WHISPER_RECENT_TRANSCRIPTIONS_DB", "recent.sqlite3"),
-        ("WHISPER_STATS_SYSTEM_METRICS_DB", "system_metrics.sqlite3"),
-        ("WHISPER_USAGE_DB", "usage.sqlite3"),
-        ("WHISPER_CAPTURES_DB", "captures.sqlite3"),
-        ("WHISPER_CAPTURES_DIR", "captures_audio"),
-        ("WHISPER_LOG_FILE", "whisper.log"),
-    ):
-        monkeypatch.setenv(var, str(tmp_path / fn))
+    through the same isolate_app_env the conftest app_module fixture uses
+    (which can't parameterize env). Each caller's finally runs
+    close_app_stores() after its lifespan."""
     monkeypatch.setenv("WHISPER_CORS_ALLOW_ORIGINS", cors_env)
     monkeypatch.setenv("WHISPER_TRUSTED_ORIGINS", trusted_env)
-
+    isolate_app_env(tmp_path, monkeypatch)
     from faster_whisper_backend.settings import config as cfg
-    importlib.reload(cfg)
-    monkeypatch.setattr(cfg, "PRELOAD_MODELS", [], raising=False)
-    monkeypatch.setattr(cfg, "DEFAULT_MODEL", "", raising=False)
-    from faster_whisper_backend.settings import config_store
-    monkeypatch.setattr(config_store, "OVERRIDES_PATH", str(tmp_path / "config.local.json"),
-                        raising=False)
-    for _fn in (config_store.load_overrides, config_store.save_overrides):
-        d = list(_fn.__defaults__ or ())
-        if d:
-            d[-1] = str(tmp_path / "config.local.json")
-            monkeypatch.setattr(_fn, "__defaults__", tuple(d), raising=False)
     from faster_whisper_backend import main
     importlib.reload(main)
     return main, cfg
@@ -121,6 +102,7 @@ def test_cors_preflight_allows_configured_origin(tmp_path, monkeypatch):
         assert r.headers.get("access-control-allow-origin") == origin
         assert "POST" in (r.headers.get("access-control-allow-methods") or "")
     finally:
+        close_app_stores()
         monkeypatch.delenv("WHISPER_CORS_ALLOW_ORIGINS", raising=False)
         importlib.reload(importlib.import_module("faster_whisper_backend.settings.config"))
         importlib.reload(main)
@@ -142,6 +124,7 @@ def test_trusted_origin_passes_guard_without_enabling_cors(tmp_path, monkeypatch
             assert _preflight(client, origin).headers.get(
                 "access-control-allow-origin") is None
     finally:
+        close_app_stores()
         monkeypatch.delenv("WHISPER_TRUSTED_ORIGINS", raising=False)
         importlib.reload(importlib.import_module("faster_whisper_backend.settings.config"))
         importlib.reload(main)
@@ -158,6 +141,7 @@ def test_cross_site_origin_still_rejected_with_trusted_origins_set(tmp_path, mon
         assert r.status_code == 403
         assert r.json()["detail"] == "Origin not allowed for this host"
     finally:
+        close_app_stores()
         monkeypatch.delenv("WHISPER_TRUSTED_ORIGINS", raising=False)
         importlib.reload(importlib.import_module("faster_whisper_backend.settings.config"))
         importlib.reload(main)
@@ -173,6 +157,7 @@ def test_cors_star_allows_any_origin(tmp_path, monkeypatch):
             r = _preflight(client, "http://anything.example:1234")
         assert r.headers.get("access-control-allow-origin") == "*"
     finally:
+        close_app_stores()
         monkeypatch.delenv("WHISPER_CORS_ALLOW_ORIGINS", raising=False)
         importlib.reload(importlib.import_module("faster_whisper_backend.settings.config"))
         importlib.reload(main)

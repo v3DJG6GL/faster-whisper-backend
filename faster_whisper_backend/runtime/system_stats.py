@@ -122,9 +122,9 @@ def _build_gpu() -> dict[str, Any] | None:
 def _build_host() -> dict[str, Any]:
     vmem = psutil.virtual_memory()
     # Disk free on the drive containing the model cache — the dir
-    # model_sizes looks in (runtime.hf_cache.hub_lookup_dir: HF_HOME, else
-    # DOWNLOAD_ROOT/hf where every whisper / GGUF / UVR download lands on bare
-    # metal, else the hub's own default). Walk up to the nearest existing
+    # model_sizes looks in (runtime.hf_cache.hub_lookup_dir: HF_HOME/hub, else
+    # DOWNLOAD_ROOT/hf/hub where every whisper / GGUF / UVR download lands on
+    # bare metal, else the hub's own default). Walk up to the nearest existing
     # ancestor so a not-yet-created cache dir still reads its drive.
     try:
         from faster_whisper_backend.runtime import hf_cache

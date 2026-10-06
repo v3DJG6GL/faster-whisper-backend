@@ -32,10 +32,13 @@ def _enable(app_module, monkeypatch, **over):
     defaults.update(over)
     for k, v in defaults.items():
         monkeypatch.setattr(cfg, k, v, raising=False)
-    # Nothing measured → every admitted entry defers with size_unknown, which
-    # keeps these tests off the loaders unless they opt in.
+    # No room and no evictable peer → every admitted entry defers, which
+    # keeps these tests off the REAL loaders (pyannote / UVR / a hub whisper
+    # fetch) unless they opt in. size_unknown would not: with nothing to
+    # evict, admission tries the load. Same stubs as test_stage_models.
     monkeypatch.setattr(model_sizes, "fits",
-                        lambda *a, **k: (None, "size_unknown"))
+                        lambda *a, **k: (False, "insufficient_vram"))
+    monkeypatch.setattr(preload, "_idle_peer", lambda *a, **k: None)
     return cfg
 
 
@@ -44,6 +47,40 @@ def _body(**over):
                      "id": "pyannote/speaker-diarization-community-1"}]}
     b.update(over)
     return b
+
+
+def test_enable_never_reaches_a_loader(client, app_module, monkeypatch):
+    _enable(app_module, monkeypatch)
+    loads = []
+
+    async def _rec(family, model_id):
+        loads.append((family, model_id))
+    monkeypatch.setattr(preload, "_load", _rec)
+    for body in (_body(),
+                 {"models": [{"family": "separation", "id": "UVR-Only"}]},
+                 {"models": [{"family": "whisper", "id": "Systran/x-y"}]}):
+        assert client.post(_URL, json=body).status_code == 202
+    for _ in range(10):
+        client.get("/v1/models")
+    assert loads == []
+
+
+def test_a_client_trigger_cannot_pass_for_the_job_binding(
+        client, app_module, monkeypatch):
+    # "job" is the server's own job binding (it rewinds the plan cursor);
+    # non-printables are stripped so a client cannot forge log rows.
+    _enable(app_module, monkeypatch)
+    seen = []
+    real = preload.register_plan
+
+    def _spy(*a, **kw):
+        seen.append(kw.get("trigger"))
+        return real(*a, **kw)
+    monkeypatch.setattr(preload, "register_plan", _spy)
+    client.post(_URL, json=_body(trigger="job"))
+    client.post(_URL, json=_body(trigger="dict\nation"))
+    client.post(_URL, json=_body(trigger="\n"))
+    assert seen == ["client:job", "dictation", None]
 
 
 # --- auth --------------------------------------------------------------------
@@ -123,6 +160,30 @@ def test_empty_stage_allowlist_means_the_configured_model_only(
     # ...and an empty allowlist admits nothing ELSE, rather than everything.
     row = _one(client, {"models": [{"family": "separation",
                                     "id": "UVR-Something-Else"}]})
+    assert row["reason"] == "not_allowed"
+
+
+def test_identity_effective_stage_model_is_not_reported_not_allowed(
+        client, app_module, monkeypatch):
+    # The batch handler admits the caller's EFFECTIVE stage model (identity
+    # profile / MODEL_OVERRIDES) as admin policy; the preload route must too,
+    # or the up-front warm silently does nothing for exactly those users.
+    from faster_whisper_backend.settings import effective_config
+    cfg = _enable(app_module, monkeypatch)
+    monkeypatch.setattr(cfg, "DIARIZATION_ALLOWED_MODELS", [], raising=False)
+    monkeypatch.setattr(cfg, "DIARIZATION_MODEL", "p/global", raising=False)
+    real = effective_config.cfg_for
+
+    def _cfg_for(model, key, ident=None):
+        if key == "DIARIZATION_MODEL" and ident is not None:
+            return "p/profiled"
+        return real(model, key, ident)
+    monkeypatch.setattr(effective_config, "cfg_for", _cfg_for)
+    row = _one(client, {"models": [{"family": "diarization",
+                                    "id": "p/profiled"}]})
+    assert row.get("reason") != "not_allowed"
+    # Anything else stays refused by the empty allowlist.
+    row = _one(client, {"models": [{"family": "diarization", "id": "p/other"}]})
     assert row["reason"] == "not_allowed"
 
 

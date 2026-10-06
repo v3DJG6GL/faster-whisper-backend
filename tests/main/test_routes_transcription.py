@@ -4,7 +4,7 @@ Drives the real handler with the FakeModel injected via the harness. The
 fake model ignores the uploaded bytes, so a tiny dummy WAV payload is fine.
 """
 
-from tests.conftest import FakeModel
+from tests.conftest import FakeModel, FakeSegment, bearer
 from faster_whisper_backend.runtime import model_registry
 from faster_whisper_backend.transcription import models as tx_models
 from faster_whisper_backend.transcription import receipt as tx_receipt
@@ -417,10 +417,14 @@ def test_transcribing_row_bills_a_cold_whisper_load(client, app_module,
 
 
 def test_record_transcription_carries_the_key_label(client, app_module,
-                                                    monkeypatch):
+                                                    monkeypatch, make_user_key):
     # The recent-jobs row snapshots the key's display label straight from
     # the auth record (labels are mutable; read-time resolution rewrites
     # history), so the handler passes it beside key_id.
+    from faster_whisper_backend.auth import api_keys_store
+    make_user_key("root", is_admin=True)            # lock the server down
+    uid = api_keys_store.create_user("alice", is_admin=False)
+    raw, _ = api_keys_store.create_key(uid, label="alice-laptop")
     recorded = []
     _orig = app_module.metrics.record_transcription
 
@@ -428,8 +432,11 @@ def test_record_transcription_carries_the_key_label(client, app_module,
         recorded.append(kw)
         return _orig(**kw)
     monkeypatch.setattr(app_module.metrics, "record_transcription", _spy)
-    assert _post(client, response_format="json").status_code == 200
-    assert recorded and "key_label" in recorded[-1]
+    r = client.post("/v1/audio/transcriptions", files=_FILE,
+                    data={"model": "whisper-1", "response_format": "json"},
+                    headers=bearer(raw))
+    assert r.status_code == 200, r.text
+    assert recorded and recorded[-1]["key_label"] == "alice-laptop"
 
 
 def test_upload_spool_carries_the_reclaim_prefix(client, app_module,
@@ -589,3 +596,63 @@ def test_plan_reports_skipped_separation(client, app_module):
     assert states["transcribing"] in ("active", "done")
     receipt = {s["stage"]: s["state"] for s in r.json()["plan"]}
     assert receipt == {"separating": "skipped", "transcribing": "done"}
+
+
+def test_translate_task_cascades_from_english_text(client, app_module,
+                                                   fake_model, monkeypatch):
+    # task=translate decodes to ENGLISH while info.language stays the spoken
+    # one: the T2T stage must be told "en", or translate_to=de on German
+    # audio short-circuits as same-language and copies the English text.
+    monkeypatch.setattr(app_module.cfg, "TRANSLATION_ENABLED", True,
+                        raising=False)
+    seen: dict = {}
+
+    async def _fake(segments, targets, **kwargs):
+        seen["source_lang"] = kwargs.get("source_lang")
+        per_seg = [{t: f"XLATED-{t}" for t in targets} for _ in segments]
+        return per_seg, [], {"model": "org/d:Q4",
+                             "source": kwargs.get("source_lang"),
+                             "mode": "fluent"}
+    monkeypatch.setattr(app_module._tr, "translate_segments", _fake)
+    assert fake_model._info.language == "de"
+    r = _post(client, response_format="json", task="translate",
+              translate_to="de")
+    assert r.status_code == 200, r.text
+    assert seen["source_lang"] == "en"
+    body = r.json()
+    assert body["translations"] == {"de": "XLATED-de"}
+    assert body["translation"]["source"] == "en"
+
+
+def test_translate_task_scopes_the_pipeline_by_the_output_language(
+        client, fake_model):
+    # German audio, English output: the de-* pipeline rules (sentence-start
+    # lowercasing of German wordlist hits like "Was") must not run on it.
+    fake_model._segments = [
+        FakeSegment("It is over. Was it good? In fact, yes.", 0.0, 1.0)]
+    r = _post(client, response_format="json", task="translate")
+    assert r.status_code == 200, r.text
+    assert "Was it good" in r.json()["text"]
+    # Same text, transcribe task: the de rules do apply (the guard above is
+    # only meaningful while they would).
+    r = _post(client, response_format="json")
+    assert "Was it good" not in r.json()["text"]
+
+
+def test_huge_translate_to_field_is_walked_and_echoed_bounded(client, app_module,
+                                                              monkeypatch):
+    # A multipart field can carry ~1 MiB of codes: the walk stops early and
+    # the over-MAX_TARGETS warning never echoes the whole field back.
+    monkeypatch.setattr(app_module.cfg, "TRANSLATION_ENABLED", True,
+                        raising=False)
+
+    async def _fake(segments, targets, **kwargs):
+        return ([{t: "x" for t in targets} for _ in segments], [],
+                {"model": "org/d:Q4", "source": "de", "mode": "fluent"})
+    monkeypatch.setattr(app_module._tr, "translate_segments", _fake)
+    codes = ",".join(f"aa-{i:05d}" for i in range(50_000))
+    r = _post(client, response_format="verbose_json", translate_to=codes)
+    assert r.status_code == 200, r.text
+    dropped = [w for w in r.json().get("warnings", []) if "were dropped" in w]
+    assert len(dropped) == 1
+    assert len(dropped[0]) < 1024

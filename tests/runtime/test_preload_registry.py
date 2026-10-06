@@ -119,10 +119,10 @@ def test_rung3_idle_peer_evictable_admits_despite_no_room(monkeypatch):
     monkeypatch.setattr(diarization, "_pipeline_key", ("p/other", "cpu", 4))
     assert preload._admit("diarization", "p/x") == ("loading", None)
 
-    # Same state with eviction switched off → refused, nothing disturbed.
+    # Same state with eviction switched off → refused, nothing disturbed
+    # (family_busy, as for whisper's full cache: the one slot is held).
     _enable(monkeypatch, MODEL_PRELOAD_EVICT_IDLE_MODELS=False)
-    assert preload._admit("diarization", "p/x") == ("deferred",
-                                                    "insufficient_vram")
+    assert preload._admit("diarization", "p/x") == ("deferred", "family_busy")
 
 
 def test_size_unknown_tries_when_nothing_must_be_evicted(monkeypatch):
@@ -222,8 +222,35 @@ def test_a_warm_peer_is_not_an_evictable_peer(monkeypatch):
     monkeypatch.setattr(diarization, "_pipeline_key", ("p/other", "cpu", 4))
     model_registry.set_warm_predicate(lambda k: k == "pyannote:p/other")
     assert preload._idle_peer("diarization", "p/x") is None
-    assert preload._admit("diarization", "p/x") == ("deferred",
-                                                    "insufficient_vram")
+    assert preload._admit("diarization", "p/x") == ("deferred", "family_busy")
+
+
+def test_a_warm_singleton_peer_is_never_displaced(monkeypatch):
+    # The singleton loaders force-drop whatever is resident, warm or not, so
+    # admission itself must refuse while another plan holds the peer warm —
+    # whether or not the new model's size is known.
+    _enable(monkeypatch)
+    monkeypatch.setattr(diarization, "_pipeline_key", ("p/other", "cpu", 4))
+    monkeypatch.setattr(bgm_separation, "_separator_key", ("o.onnx", "cpu"))
+    model_registry.set_warm_predicate(
+        lambda k: k in ("pyannote:p/other", preload.stats_key("separation",
+                                                               "o.onnx")))
+    for verdict in ((True, None), (None, "size_unknown")):
+        _fits(monkeypatch, verdict)
+        assert preload._admit("diarization", "p/x") == ("deferred",
+                                                        "family_busy")
+        assert preload._admit("separation", "x") == ("deferred",
+                                                     "family_busy")
+
+
+def test_eviction_off_never_displaces_a_cold_singleton_peer(monkeypatch):
+    _enable(monkeypatch, MODEL_PRELOAD_EVICT_IDLE_MODELS=False)
+    _fits(monkeypatch, (True, None))
+    monkeypatch.setattr(diarization, "_pipeline_key", ("p/other", "cpu", 4))
+    monkeypatch.setattr(bgm_separation, "_separator_key", ("o.onnx", "cpu"))
+    model_registry.set_warm_predicate(None)
+    assert preload._admit("diarization", "p/x") == ("deferred", "family_busy")
+    assert preload._admit("separation", "x") == ("deferred", "family_busy")
 
 
 # --- warm-lease cascade ------------------------------------------------------
