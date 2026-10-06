@@ -41,12 +41,21 @@ def test_temperature_ladder_helper(app_module):
     assert tx_models._temperature_ladder("abc") == ()
 
 
-@pytest.mark.parametrize("ladder", [",", "abc"])
+def test_profile_refuses_an_unparseable_temperature(client, make_user_key):
+    # A profile gets AdminConfig's TEMPERATURE rule (it used to accept
+    # "abc", a ladderless value the lock case below then had to absorb).
+    _, raw_admin = make_user_key("admin", is_admin=True)
+    r = client.post(f"{OV}/state", headers=bearer(raw_admin),
+                    json={"OVERRIDE_PROFILES": {"t0": {"TEMPERATURE": "abc"}}})
+    assert r.status_code == 422 and "comma-separated floats" in r.text
+
+
+@pytest.mark.parametrize("ladder", [","])
 def test_locked_ladderless_temperature_ignores_client_form_field(
         client, make_user_key, fake_model, ladder):
-    # "," (every token blank) and "abc" (unparseable) are non-blank strings
-    # that produce NO ladder in the assembler, so the Form field used to
-    # survive the lock exactly like the blank case did.
+    # "," (every token blank) is a non-blank string that produces NO ladder
+    # in the assembler, so the Form field used to survive the lock exactly
+    # like the blank case did.
     raw_alice = _lock_temperature_for_alice(client, make_user_key, ladder)
     r = client.post(
         "/v1/audio/transcriptions", files=_FILE, headers=bearer(raw_alice),
