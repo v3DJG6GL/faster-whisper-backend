@@ -278,6 +278,7 @@ def _server_info(caps: dict, ident) -> dict:
                 "sample_fraction": float(
                     getattr(cfg, "CAPTURES_RECORDING_SAMPLE_RATE", 1.0)),
                 "max": int(getattr(cfg, "CAPTURES_MAX", 0) or 0),
+                "max_mb": int(getattr(cfg, "CAPTURES_MAX_MB", 0) or 0),
             },
             "server_log": {
                 "max_bytes": int(getattr(cfg, "LOG_MAX_BYTES", 0) or 0),

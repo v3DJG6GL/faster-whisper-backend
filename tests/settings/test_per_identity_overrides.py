@@ -398,6 +398,7 @@ def test_me_stage_model_lists_seed_the_configured_model(client, app_module,
 def test_me_server_info_limits_and_keeps(client, app_module, monkeypatch):
     monkeypatch.setattr(app_module.cfg, "CAPTURES_RECORDING_ENABLED", False)
     monkeypatch.setattr(app_module.cfg, "CAPTURES_MAX", 1234)
+    monkeypatch.setattr(app_module.cfg, "CAPTURES_MAX_MB", 4321)
     monkeypatch.setattr(app_module.cfg, "USAGE_RETENTION_DAYS", 0)
     info = client.get("/v1/me").json()["server_info"]
     assert set(info) == {"limits", "keeps"}
@@ -405,8 +406,9 @@ def test_me_server_info_limits_and_keeps(client, app_module, monkeypatch):
     keeps = info["keeps"]
     assert keeps["captures"]["enabled"] is False
     assert keeps["captures"]["max"] == 1234
+    assert keeps["captures"]["max_mb"] == 4321
     assert set(keeps["captures"]) == {"enabled", "retention_days",
-                                      "sample_fraction", "max"}
+                                      "sample_fraction", "max", "max_mb"}
     assert keeps["server_log"] == {
         "max_bytes": app_module.cfg.LOG_MAX_BYTES,
         "backup_count": app_module.cfg.LOG_BACKUP_COUNT}
