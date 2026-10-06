@@ -212,6 +212,21 @@ def test_disk_size_uvr_falls_back_to_tempdir_without_download_root(
     assert model_sizes.disk_size("uvr:Foo") == 2048
 
 
+def test_uvr_path_matches_the_separator_model_dir(tmp_path, monkeypatch):
+    """model_sizes mirrors bgm_separation.model_file_dir() instead of
+    importing it; this keeps the two from drifting apart."""
+    import os
+
+    from faster_whisper_backend.audio import bgm_separation
+    from faster_whisper_backend.settings import config as cfg
+    monkeypatch.setattr(model_sizes.tempfile, "gettempdir",
+                        lambda: str(tmp_path))
+    for root in (str(tmp_path / "dl"), ""):
+        monkeypatch.setattr(cfg, "DOWNLOAD_ROOT", root, raising=False)
+        assert os.path.dirname(model_sizes._model_path("uvr:Foo")) \
+            == bgm_separation.model_file_dir()
+
+
 def test_measurement_replaces_a_larger_disk_prior(ledger):
     """The disk walk over-counts (every revision, fp32 blobs); the first REAL
     measurement must win even when it is smaller, or the prior is unbeatable

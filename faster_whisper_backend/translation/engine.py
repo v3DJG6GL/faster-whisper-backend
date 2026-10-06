@@ -43,6 +43,7 @@ import re
 import threading
 import time
 from collections import Counter, OrderedDict
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from faster_whisper_backend.settings import config as cfg
@@ -812,6 +813,66 @@ async def drop_models() -> None:
     async with _lock:
         for ref in list(_models):
             _drop_locked(ref)
+
+
+# =============================================================================
+# Residency API (runtime.preload's view of this cache)
+# =============================================================================
+# The same questions transcription.models answers for the whisper cache. Each
+# reads the module globals at call time, so a test that rebinds _models /
+# _active / _loads_in_flight still steers it.
+
+def is_resident(ref: str) -> bool:
+    """Is ``ref`` loaded right now?"""
+    return ref in _models
+
+
+def load_in_progress() -> bool:
+    """True while any cold load is inside _load_blocking. A cold load runs
+    OUTSIDE _lock (only the per-ref _loading lock is held) and is not yet in
+    _models, so a cap check alone would admit a second multi-GB load beside
+    it: both VRAM measurements void, and with cap 1 the later insert trims
+    the other."""
+    return _loads_in_flight > 0
+
+
+def cache_full() -> bool:
+    """Is the cache at TRANSLATION_MAX_LOADED_MODELS? A load past that point
+    goes through _trim_locked, which drops the first UNLEASED ref without
+    consulting the warm predicate."""
+    return len(_models) >= _load_cap()
+
+
+def idle_peer(exclude: str,
+              is_warm: "Callable[[str], bool]") -> "str | None":
+    """The first cached ref, in LRU order, other than ``exclude`` that no job
+    holds a lease on and for which ``is_warm(ref)`` is false — a model that
+    could be dropped to make room — or None."""
+    for ref in _models:
+        if ref == exclude or _active.get(ref, 0):
+            continue
+        if not is_warm(ref):
+            return ref
+    return None
+
+
+def placement() -> "tuple[str, str]":
+    """(device, compute_type) a load registers under in the loaded-model
+    registry and the size ledger."""
+    return (_resolve_device(), "gguf")
+
+
+async def load_unleased(ref: str) -> None:
+    """Load ``ref`` WITHOUT a lease: the model stays evictable by _trim_locked
+    and the idle evictor the moment a real job needs the memory."""
+    await _get_model(ref)
+
+
+async def evict(ref: str) -> bool:
+    """Drop one cached model under _lock. Declines (False) while a job holds
+    a lease on it or a decode is still draining (see _drop_locked)."""
+    async with _lock:
+        return _drop_locked(ref)
 
 
 async def idle_evictor_loop() -> None:

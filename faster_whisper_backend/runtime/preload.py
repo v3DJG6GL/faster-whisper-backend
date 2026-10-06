@@ -45,7 +45,6 @@ import time
 from dataclasses import dataclass, field
 
 from faster_whisper_backend.settings import config as cfg
-from faster_whisper_backend.settings import effective_config
 from faster_whisper_backend.core import jobs
 from faster_whisper_backend.runtime import model_sizes
 from faster_whisper_backend.runtime import system_stats
@@ -135,7 +134,7 @@ def normalize_id(family: str, model_id: str) -> str:
 
     Two families differ from what a client types. whisper: the transcribe
     route maps the OpenAI alias ``whisper-1`` onto cfg.DEFAULT_MODEL before it
-    touches ``tx_models._loaded_models``, so the same resolver runs here — a plan
+    touches the whisper cache, so the same resolver runs here — a plan
     naming ``whisper-1`` must warm, and report resident, the model the client
     will actually be served. separation: audio-separator keys its singleton by
     on-disk FILENAME while the allowlist holds friendly names. Both mappings
@@ -151,7 +150,7 @@ def normalize_id(family: str, model_id: str) -> str:
         try:
             # `or ""`: with DEFAULT_MODEL unset the alias resolves to "" and
             # _admit's emptiness guard must still fire.
-            return (tx_models._resolve_model_name(model_id) or "").strip()
+            return (tx_models.resolve_model_name(model_id) or "").strip()
         except Exception:  # noqa: BLE001 — a key must never fail to form
             return model_id
     if family == "separation":
@@ -177,24 +176,23 @@ def is_resident(family: str, model_id: str) -> bool:
 
     The single answer for all four families. /v1/me and /v1/models open-coded
     four different versions of this question; they call here now, so a `loaded`
-    flag cannot drift from what the preloader believes."""
+    flag cannot drift from what the preloader believes. Each family's own
+    ``is_resident`` owns what "loaded" means for its cache."""
     mid = normalize_id(family, model_id)
     if not mid:
         return False
     try:
         if family == "whisper":
-            return mid in tx_models._loaded_models
+            return tx_models.is_resident(mid)
         if family == "translation":
             from faster_whisper_backend.translation import engine as translation
-            return mid in translation._models
+            return translation.is_resident(mid)
         if family == "diarization":
             from faster_whisper_backend.audio import diarization
-            key = diarization._pipeline_key
-            return bool(key) and key[0] == mid
+            return diarization.is_resident(mid)
         if family == "separation":
             from faster_whisper_backend.audio import bgm_separation
-            key = bgm_separation._separator_key
-            return bool(key) and key[0] == mid
+            return bgm_separation.is_resident(mid)
     except Exception:  # noqa: BLE001 — a residency probe must never raise
         return False
     return False
@@ -265,28 +263,19 @@ def _stage_enabled(family: str) -> bool:
 def _placement(family: str, model_id: str = "") -> "tuple[str, str]":
     """(device, compute_type) exactly as the family's loader registers it —
     the size ledger is keyed on that tuple, so a mismatch here silently turns
-    every fit check into `size_unknown`. The whisper pair comes from the same
-    per-model `cfg_for` ladder `tx_models._get_or_load_model` resolves it through
-    (MODEL_OVERRIDES > global), not from the global fields alone."""
+    every fit check into `size_unknown`. Each family's ``placement`` owns the
+    pair (whisper's resolves the per-model ``cfg_for`` ladder and never
+    raises — _admit has no try)."""
     if family == "whisper":
-        try:
-            mid = normalize_id(family, model_id) or None
-            return ((effective_config.cfg_for(mid, "MODEL_DEVICE") or "cpu"),
-                    (effective_config.cfg_for(mid, "MODEL_COMPUTE_TYPE") or ""))
-        except Exception:  # noqa: BLE001 — _admit has no try; never raise
-            return ((getattr(cfg, "MODEL_DEVICE", "cpu") or "cpu"),
-                    (getattr(cfg, "MODEL_COMPUTE_TYPE", "") or ""))
+        return tx_models.placement(normalize_id(family, model_id) or None)
     if family == "diarization":
         from faster_whisper_backend.audio import diarization
-        return (diarization._resolve_device(), "torch")
+        return diarization.placement()
     if family == "separation":
         from faster_whisper_backend.audio import bgm_separation
-        # The ledger row is written under the device the session actually
-        # landed on (a cuda request may have fallen back to cpu).
-        return (bgm_separation.actual_device()
-                or bgm_separation._resolve_device(), "onnx")
+        return bgm_separation.placement()
     from faster_whisper_backend.translation import engine as translation
-    return (translation._resolve_device(), "gguf")
+    return translation.placement()
 
 
 def _reserve_bytes(device: str) -> int:
@@ -301,22 +290,22 @@ def _family_busy(family: str, model_id: str) -> bool:
     """Would admitting this model collide with a RUNNING job?
 
     The singletons are the sharp case: loading a different pipeline while the
-    resident one is job-leased goes down `_drop_locked(force=True)`'s ORPHAN
-    path, which keeps both in memory until the job drains. That is the correct
-    behaviour for a real request and exactly the wrong one for a speculative
-    warm-up, so the ladder refuses instead."""
+    resident one is job-leased (or an orphan still drains) would keep two in
+    memory — correct for a real request, exactly wrong for a speculative
+    warm-up, so the ladder refuses instead. The singletons' ``busy`` owns that
+    rule; whisper and translation refuse while a load of their own runs."""
     mid = normalize_id(family, model_id)
     try:
         if family == "whisper":
-            # Held across a whisper load. A preload must never be the reason a
-            # job waits on it, so a busy lock is a refusal, not a queue.
-            if tx_models._model_load_lock.locked():
+            # A preload must never be the reason a job waits on the whisper
+            # load lock, so a running load is a refusal, not a queue.
+            if tx_models.load_in_progress():
                 return True
             # A full cache is a refusal too unless a COLD peer can be dropped:
-            # _get_or_load_model's MAX_LOADED_MODELS loop evicts the LRU
-            # unleased model and never consults the warm predicate, so a
-            # preload that reached it could be the thing that drops another
-            # plan's warm model.
+            # the loader's MAX_LOADED_MODELS loop evicts the LRU unleased
+            # model and never consults the warm predicate, so a preload that
+            # reached it could be the thing that drops another plan's warm
+            # model.
             if _cache_full(family) and (
                     not bool(getattr(cfg, "MODEL_PRELOAD_EVICT_IDLE_MODELS", True))
                     or _idle_peer(family, model_id) is None):
@@ -324,35 +313,19 @@ def _family_busy(family: str, model_id: str) -> bool:
             return False
         if family == "diarization":
             from faster_whisper_backend.audio import diarization
-            # A draining orphan is keyed by ITS id and _drop_locked(force)
-            # nulls the singleton key, so it is invisible to the key check
-            # below — loading beside it is exactly the two-in-memory outcome
-            # the docstring refuses.
-            if diarization._orphans:
-                return True
-            key = diarization._pipeline_key
-            if not key or key[0] == mid:
-                return False
-            return bool(diarization._leases.get(key[0], 0))
+            return diarization.busy(mid)
         if family == "separation":
             from faster_whisper_backend.audio import bgm_separation
-            if bgm_separation._orphans:
-                return True
-            key = bgm_separation._separator_key
-            if not key or key[0] == mid:
-                return False
-            return bool(bgm_separation._leases.get(key[0], 0))
+            return bgm_separation.busy(mid)
         if family == "translation":
             from faster_whisper_backend.translation import engine as translation
-            # A cold load runs OUTSIDE translation._lock and is not yet in
-            # _models, so the cap check alone would admit a second multi-GB
-            # load beside it (both VRAM measurements void, and with cap 1
-            # the later insert trims the other). Same refusal as whisper's
-            # busy _model_load_lock.
-            if translation._loads_in_flight > 0:
+            # Same refusal as whisper's running load (see
+            # translation.load_in_progress for why the cap check alone is
+            # not enough).
+            if translation.load_in_progress():
                 return True
-            # Same shape as whisper: translation._trim_locked drops the first
-            # unleased ref without consulting the warm predicate.
+            # Same shape as whisper: the translation cache's trim drops the
+            # first unleased ref without consulting the warm predicate.
             if _cache_full(family) and (
                     not bool(getattr(cfg, "MODEL_PRELOAD_EVICT_IDLE_MODELS", True))
                     or _idle_peer(family, model_id) is None):
@@ -366,12 +339,10 @@ def _family_busy(family: str, model_id: str) -> bool:
 def _cache_full(family: str) -> bool:
     """Is the family's multi-slot cache at its cap? False for singletons."""
     if family == "whisper":
-        cap = max(1, int(getattr(cfg, "MAX_LOADED_MODELS", 1) or 1))
-        return len(tx_models._loaded_models) >= cap
+        return tx_models.cache_full()
     if family == "translation":
         from faster_whisper_backend.translation import engine as translation
-        cap = max(1, int(getattr(cfg, "TRANSLATION_MAX_LOADED_MODELS", 1) or 1))
-        return len(translation._models) >= cap
+        return translation.cache_full()
     return False
 
 
@@ -385,49 +356,35 @@ def _needs_room(family: str, model_id: str) -> bool:
             return _cache_full(family)
         if family == "diarization":
             from faster_whisper_backend.audio import diarization
-            key = diarization._pipeline_key
-        else:
-            from faster_whisper_backend.audio import bgm_separation
-            key = bgm_separation._separator_key
-        return bool(key) and key[0] != mid
+            return diarization.holds_other(mid)
+        from faster_whisper_backend.audio import bgm_separation
+        return bgm_separation.holds_other(mid)
     except Exception:  # noqa: BLE001 — unknown state: assume room is needed
         return True
 
 
 def _idle_peer(family: str, model_id: str) -> "str | None":
     """An idle, UNLEASED, UNWARMED peer of the same family we could drop to
-    make room, or None. Returns the peer's own id (not its stats key)."""
+    make room, or None. Returns the peer's own id (not its stats key).
+
+    Leases (and, for the singletons, a draining orphan) are the owning
+    module's knowledge; warmth is this module's, handed in as a predicate."""
     mid = normalize_id(family, model_id)
+
+    def _warm(peer_id: str) -> bool:
+        return system_stats.is_warm(stats_key(family, peer_id))
+
     try:
         if family == "whisper":
-            for name in tx_models._loaded_models:
-                if name == mid or tx_models._model_leases.get(name, 0):
-                    continue
-                if not system_stats.is_warm(stats_key(family, name)):
-                    return name
-            return None
+            return tx_models.idle_peer(mid, _warm)
         if family == "translation":
             from faster_whisper_backend.translation import engine as translation
-            for ref in translation._models:
-                if ref == mid or translation._active.get(ref, 0):
-                    continue
-                if not system_stats.is_warm(stats_key(family, ref)):
-                    return ref
-            return None
+            return translation.idle_peer(mid, _warm)
         if family == "diarization":
             from faster_whisper_backend.audio import diarization
-            key = diarization._pipeline_key
-        else:
-            from faster_whisper_backend.audio import bgm_separation
-            key = bgm_separation._separator_key
-        if not key or key[0] == mid:
-            return None
-        peer = key[0]
-        if _family_busy(family, model_id):
-            return None
-        if system_stats.is_warm(stats_key(family, peer)):
-            return None
-        return peer
+            return diarization.idle_peer(mid, _warm)
+        from faster_whisper_backend.audio import bgm_separation
+        return bgm_separation.idle_peer(mid, _warm)
     except Exception:  # noqa: BLE001 — no peer is the conservative answer
         return None
 
@@ -846,7 +803,7 @@ def _enqueue_threadsafe(item: "tuple[str, str, str]") -> None:
 
 async def _worker_loop() -> None:
     """Single consumer. One task, not a pool: serialised loads keep the NVML
-    delta clean (the same reason ``tx_models._model_load_lock`` exists), bound
+    delta clean (the same reason the whisper cache's load lock exists), bound
     preload concurrency to exactly one, and give the lifespan one cancellation
     point."""
     global _busy
@@ -922,16 +879,16 @@ async def _load(family: str, model_id: str) -> None:
     model must stay evictable the moment a real request needs the memory."""
     mid = normalize_id(family, model_id)
     if family == "whisper":
-        await tx_models._get_or_load_model(mid)
+        await tx_models.load_unleased(mid)
     elif family == "diarization":
         from faster_whisper_backend.audio import diarization
-        await diarization._get_pipeline(mid)
+        await diarization.load_unleased(mid)
     elif family == "separation":
         from faster_whisper_backend.audio import bgm_separation
-        await bgm_separation._get_separator(mid)
+        await bgm_separation.load_unleased(mid)
     elif family == "translation":
         from faster_whisper_backend.translation import engine as translation
-        await translation._get_model(mid)
+        await translation.load_unleased(mid)
 
 
 async def _evict(family: str, peer_id: str) -> None:
@@ -940,12 +897,10 @@ async def _evict(family: str, peer_id: str) -> None:
     logger.info("[preload] evicting idle %s to make room",
                 stats_key(family, peer_id))
     if family == "whisper":
-        async with tx_models._model_load_lock:
-            tx_models._drop_loaded_model(peer_id)
+        await tx_models.evict(peer_id)
     elif family == "translation":
         from faster_whisper_backend.translation import engine as translation
-        async with translation._lock:
-            translation._drop_locked(peer_id)
+        await translation.evict(peer_id)
     elif family == "diarization":
         from faster_whisper_backend.audio import diarization
         await diarization.drop_pipeline(force=False)

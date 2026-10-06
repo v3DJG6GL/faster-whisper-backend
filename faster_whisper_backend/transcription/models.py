@@ -1,7 +1,8 @@
 """The whisper model cache and everything a decode needs from it: the LRU of
 loaded WhisperModels with per-request leases (_get_or_load_model,
-_release_model_lease, _drop_loaded_model, drain_then_evict, _idle_evictor),
-the model-id gates, the opt-in HF→CT2 conversion, the shared GPU inference
+_release_model_lease, _drop_loaded_model, drain_then_evict, _idle_evictor)
+and the residency API runtime.preload reads it through (is_resident,
+idle_peer, load_unleased, evict, ...), the model-id gates, the opt-in HF→CT2 conversion, the shared GPU inference
 gate and URL-download limiter, the SUPPRESS_CHARS token cache, and the
 transcribe-kwargs assembly with the clamped client decode overrides
 (assemble_transcribe_kwargs, _apply_decode_overrides).
@@ -19,6 +20,7 @@ import re
 import shutil
 import time
 from collections import OrderedDict
+from collections.abc import Callable
 
 from fastapi import HTTPException
 
@@ -1096,6 +1098,81 @@ async def _get_or_load_model(name: str, *, lease: bool = False) -> "WhisperModel
         if lease:
             _model_leases[name] = _model_leases.get(name, 0) + 1
         return new_model
+
+
+# =============================================================================
+# Residency API (runtime.preload's view of this cache)
+# =============================================================================
+# The preloader asks the same handful of questions of all four model caches.
+# These answer them for the whisper cache so the invariants behind each answer
+# live next to the state they describe instead of being hand-copied into
+# preload. Every function reads the module globals at call time, so a test
+# that rebinds _loaded_models / _model_leases / _model_load_lock still steers
+# them.
+
+def resolve_model_name(requested: str) -> str:
+    """The id this cache keys a request for ``requested`` by (``whisper-1``
+    or empty → cfg.DEFAULT_MODEL). Public face of _resolve_model_name."""
+    return _resolve_model_name(requested)
+
+
+def is_resident(name: str) -> bool:
+    """Is ``name`` (an already-resolved id) loaded right now?"""
+    return name in _loaded_models
+
+
+def load_in_progress() -> bool:
+    """True while a whisper load holds _model_load_lock. The lock is held
+    across the load itself, so a speculative warm-up that waited on it would
+    be the reason a real job's load queues behind it."""
+    return _model_load_lock.locked()
+
+
+def cache_full() -> bool:
+    """Is the cache at MAX_LOADED_MODELS? A load past that point goes through
+    _get_or_load_model's cap loop, which evicts the LRU UNLEASED model without
+    consulting the warm predicate."""
+    cap = max(1, int(getattr(cfg, "MAX_LOADED_MODELS", 1) or 1))
+    return len(_loaded_models) >= cap
+
+
+def idle_peer(exclude: str,
+              is_warm: "Callable[[str], bool]") -> "str | None":
+    """The first loaded model, in LRU order, other than ``exclude`` that no
+    request holds a lease on and for which ``is_warm(name)`` is false — a
+    model that could be dropped to make room — or None."""
+    for name in _loaded_models:
+        if name == exclude or _model_leases.get(name, 0):
+            continue
+        if not is_warm(name):
+            return name
+    return None
+
+
+def placement(name: "str | None") -> "tuple[str, str]":
+    """(device, compute_type) a load of ``name`` registers under: the same
+    per-model ``cfg_for`` ladder (MODEL_OVERRIDES > global) _get_or_load_model
+    resolves it through, not the global fields alone. Never raises — falls
+    back to the global fields."""
+    try:
+        return ((effective_config.cfg_for(name, "MODEL_DEVICE") or "cpu"),
+                (effective_config.cfg_for(name, "MODEL_COMPUTE_TYPE") or ""))
+    except Exception:  # noqa: BLE001 — a placement probe must never raise
+        return ((getattr(cfg, "MODEL_DEVICE", "cpu") or "cpu"),
+                (getattr(cfg, "MODEL_COMPUTE_TYPE", "") or ""))
+
+
+async def load_unleased(name: str) -> None:
+    """Load ``name`` WITHOUT a lease: the model stays evictable by the LRU and
+    idle paths the moment a real request needs the memory."""
+    await _get_or_load_model(name)
+
+
+async def evict(name: str) -> bool:
+    """Drop one cached model under _model_load_lock (racy with loads
+    otherwise). Declines (False) while a request holds a lease on it."""
+    async with _model_load_lock:
+        return _drop_loaded_model(name)
 
 
 async def drain_then_evict(model_id: "str | None" = None) -> list[str]:

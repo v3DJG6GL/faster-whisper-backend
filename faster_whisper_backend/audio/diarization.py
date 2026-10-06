@@ -20,6 +20,7 @@ import logging
 import os
 import threading
 import time
+from collections.abc import Callable
 
 from faster_whisper_backend.settings import config as cfg
 from faster_whisper_backend.runtime import hf_cache
@@ -625,6 +626,72 @@ async def drop_pipeline(*, force: bool = True) -> bool:
     The idle evictor passes force=False — there a refusal costs nothing."""
     async with _lock:
         return _drop_locked(force=force)
+
+
+# =============================================================================
+# Residency API (runtime.preload's view of the singleton)
+# =============================================================================
+# ``model_id`` below is a resolved DIARIZATION_MODEL id (the lease key). Each
+# function reads the module globals at call time, so a test that rebinds
+# _pipeline_key / _leases / _orphans still steers it.
+
+def is_resident(model_id: str) -> bool:
+    """Is the cached pipeline ``model_id``'s (on any device/batch)?"""
+    key = _pipeline_key
+    return bool(key) and key[0] == model_id
+
+
+def holds_other(model_id: str) -> bool:
+    """Is a DIFFERENT pipeline cached, so that loading ``model_id`` would
+    first have to drop it?"""
+    key = _pipeline_key
+    return bool(key) and key[0] != model_id
+
+
+def busy(model_id: str) -> bool:
+    """Would loading ``model_id`` now collide with a running job?
+
+    Loading a different pipeline while the resident one is job-leased goes
+    down _drop_locked(force=True)'s ORPHAN path, which keeps both in memory
+    until the job drains — right for a real request, wrong for a speculative
+    warm-up. A draining orphan counts too: it is keyed by ITS id and
+    _drop_locked(force) nulled the singleton key, so it is invisible to the
+    key check, and loading beside it is the same two-in-memory outcome."""
+    if _orphans:
+        return True
+    key = _pipeline_key
+    if not key or key[0] == model_id:
+        return False
+    return bool(_leases.get(key[0], 0))
+
+
+def idle_peer(exclude: str,
+              is_warm: "Callable[[str], bool]") -> "str | None":
+    """The cached pipeline's id when it is not ``exclude``, could be dropped
+    without touching a job (see ``busy``) and ``is_warm(id)`` is false;
+    else None."""
+    key = _pipeline_key
+    if not key or key[0] == exclude:
+        return None
+    peer = key[0]
+    if busy(exclude):
+        return None
+    if is_warm(peer):
+        return None
+    return peer
+
+
+def placement() -> "tuple[str, str]":
+    """(device, compute_type) a load registers under in the loaded-model
+    registry and the size ledger."""
+    return (_resolve_device(), "torch")
+
+
+async def load_unleased(model_id: str) -> None:
+    """Load ``model_id`` WITHOUT a lease: the pipeline stays evictable the
+    moment a real job needs the memory. Evict a held peer first (see
+    ``drop_pipeline(force=False)``), or this load orphans it."""
+    await _get_pipeline(model_id)
 
 
 async def idle_evictor_loop() -> None:

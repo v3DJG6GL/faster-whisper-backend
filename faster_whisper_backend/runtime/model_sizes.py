@@ -264,8 +264,12 @@ def _model_path(name: str) -> "str | None":
         model = name[4:]
         if "." not in model:
             model += ".onnx"
-        # Same fallback bgm_separation._load_blocking uses for model_file_dir,
-        # so a default install (no DOWNLOAD_ROOT) is still sizeable.
+        # The directory bgm_separation.model_file_dir() loads from, tempdir
+        # fallback included, so a default install (no DOWNLOAD_ROOT) is still
+        # sizeable. Mirrored rather than called: this module is reached from
+        # the loaded-model registry on every load and stays import-light, and
+        # a runtime → audio import would deepen the audio/runtime pair (audio
+        # imports runtime). tests/runtime/test_model_sizes.py pins the match.
         return os.path.join(root or tempfile.gettempdir(), "audio-separator",
                             model)
     # Where translation / diarization downloads land (hf_cache owns the

@@ -21,6 +21,7 @@ import tempfile
 import threading
 import time
 import uuid
+from collections.abc import Callable
 
 from faster_whisper_backend.settings import config as cfg
 from faster_whisper_backend.runtime import system_stats
@@ -290,6 +291,14 @@ def _resolve_device() -> str:
     return "cuda" if want == "cuda" else "cpu"
 
 
+def model_file_dir() -> str:
+    """Where audio-separator keeps (and downloads) the model files:
+    <DOWNLOAD_ROOT>/audio-separator, else <tempdir>/audio-separator.
+    runtime.model_sizes sizes a never-loaded model from the same place."""
+    models_dir = getattr(cfg, "DOWNLOAD_ROOT", None) or tempfile.gettempdir()
+    return os.path.join(models_dir, "audio-separator")
+
+
 def _load_blocking(model_filename: str, device: str):
     try:
         from audio_separator.separator import Separator
@@ -319,11 +328,11 @@ def _load_blocking(model_filename: str, device: str):
         torch.set_num_threads(_cpu_threads())
     except Exception:  # noqa: BLE001 — tuning only
         pass
-    models_dir = getattr(cfg, "DOWNLOAD_ROOT", None) or tempfile.gettempdir()
+    file_dir = model_file_dir()
     try:
         sep = Separator(
             log_level=logging.WARNING,
-            model_file_dir=os.path.join(models_dir, "audio-separator"),
+            model_file_dir=file_dir,
             output_dir=tempfile.gettempdir(),
             output_format="WAV",
             output_single_stem="Vocals",
@@ -699,6 +708,74 @@ async def drop_separator(*, force: bool = True) -> bool:
     The idle evictor passes force=False — there a refusal costs nothing."""
     async with _lock:
         return _drop_locked(force=force)
+
+
+# =============================================================================
+# Residency API (runtime.preload's view of the singleton)
+# =============================================================================
+# ``model`` below is an on-disk model FILENAME (``UVR-Foo.onnx``), the key the
+# singleton and its leases use. Each function reads the module globals at call
+# time, so a test that rebinds _separator_key / _leases / _orphans still
+# steers it.
+
+def is_resident(model: str) -> bool:
+    """Is the cached separator ``model``'s (on any device)?"""
+    key = _separator_key
+    return bool(key) and key[0] == model
+
+
+def holds_other(model: str) -> bool:
+    """Is a DIFFERENT separator cached, so that loading ``model`` would first
+    have to drop it?"""
+    key = _separator_key
+    return bool(key) and key[0] != model
+
+
+def busy(model: str) -> bool:
+    """Would loading ``model`` now collide with a running job?
+
+    Loading a different separator while the resident one is job-leased goes
+    down _drop_locked(force=True)'s ORPHAN path, which keeps both in memory
+    until the job drains — right for a real request, wrong for a speculative
+    warm-up. A draining orphan counts too: it is keyed by ITS filename and
+    _drop_locked(force) nulled the singleton key, so it is invisible to the
+    key check, and loading beside it is the same two-in-memory outcome."""
+    if _orphans:
+        return True
+    key = _separator_key
+    if not key or key[0] == model:
+        return False
+    return bool(_leases.get(key[0], 0))
+
+
+def idle_peer(exclude: str,
+              is_warm: "Callable[[str], bool]") -> "str | None":
+    """The cached separator's filename when it is not ``exclude``, could be
+    dropped without touching a job (see ``busy``) and ``is_warm(filename)``
+    is false; else None."""
+    key = _separator_key
+    if not key or key[0] == exclude:
+        return None
+    peer = key[0]
+    if busy(exclude):
+        return None
+    if is_warm(peer):
+        return None
+    return peer
+
+
+def placement() -> "tuple[str, str]":
+    """(device, compute_type) a load registers under in the loaded-model
+    registry and the size ledger: the device the ONNX session ACTUALLY landed
+    on (a cuda request may have fallen back to cpu), else the requested one."""
+    return (actual_device() or _resolve_device(), "onnx")
+
+
+async def load_unleased(model: str) -> None:
+    """Load ``model`` WITHOUT a lease: the separator stays evictable the
+    moment a real job needs the memory. Evict a held peer first (see
+    ``drop_separator(force=False)``), or this load orphans it."""
+    await _get_separator(model)
 
 
 async def idle_evictor_loop() -> None:
