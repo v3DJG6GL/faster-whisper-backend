@@ -16,7 +16,7 @@ from faster_whisper_backend.audio import diarization
 from faster_whisper_backend.runtime import model_sizes
 from faster_whisper_backend.runtime import preload
 from faster_whisper_backend.runtime import system_stats
-from faster_whisper_backend.audio import translation
+from faster_whisper_backend.translation import engine as translation
 from faster_whisper_backend.transcription import models as tx_models
 
 _GB = 1024 * 1024 * 1024

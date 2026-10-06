@@ -8,7 +8,7 @@ from faster_whisper_backend.core import jobs
 import re
 from faster_whisper_backend.stats import metrics
 import pytest
-from faster_whisper_backend.audio import translation
+from faster_whisper_backend.translation import engine as translation
 from faster_whisper_backend.paths import REPO_ROOT
 
 

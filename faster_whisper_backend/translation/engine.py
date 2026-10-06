@@ -1,8 +1,9 @@
 """Text-to-text translation via llama.cpp GGUF models (optional install).
 
-A third model kind next to the WhisperModel cache (main.py) and the pyannote
-singleton (diarization.py), with the same lifecycle discipline scaled to a tiny
-LRU dict of loaded models: lazy import (the dependency set is the optional
+A third model kind next to the WhisperModel cache (transcription/models.py)
+and the pyannote singleton (audio/diarization.py), with the same lifecycle
+discipline scaled to a tiny LRU dict of loaded models: lazy import (the
+dependency set is the optional
 ``requirements-translate.txt``), load on first use under an asyncio.Lock with
 an NVML VRAM delta, registration in ``system_stats`` (as ``gguf:<ref>``) so
 /stats shows each loaded model, an idle-eviction loop driven live by

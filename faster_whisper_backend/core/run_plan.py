@@ -68,7 +68,7 @@ _MIN_SAMPLE_S = 0.5
 
 def same_lang(a: str | None, b: str | None) -> bool:
     """Base-subtag compare ("pt-BR" == "pt"); False when either is empty.
-    Mirrors audio/translation._same_lang without importing that module
+    Mirrors translation/engine._same_lang without importing that module
     (it drags the llama.cpp family tables in)."""
     if not a or not b:
         return False

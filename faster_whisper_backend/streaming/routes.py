@@ -45,9 +45,8 @@ Protocol (see streaming_session for the emission contract):
     {"type":"boundary",utterance,separator}  long-silence hard break: fresh document
     {"type":"closing"}  the server is done; the socket closes next
 
-main.py is imported lazily inside the handler (for the origin gate and the
-progress-id pattern only) to avoid the main → streaming_routes → main import
-cycle.
+main.py is imported lazily inside the handler (for cfg and the origin gate
+only) to avoid the main → streaming_routes → main import cycle.
 """
 
 import asyncio
@@ -81,6 +80,7 @@ from faster_whisper_backend.core import web_common
 from faster_whisper_backend.pipeline import engine as pl_engine
 from faster_whisper_backend.transcription import guards as tx_guards
 from faster_whisper_backend.transcription import models as tx_models
+from faster_whisper_backend.transcription import progress as tx_progress
 from faster_whisper_backend.transcription import receipt as tx_receipt
 from faster_whisper_backend.streaming.session import CloseAbort, StreamConfig, StreamSession
 from faster_whisper_backend.streaming.transport import ENCODED_FORMATS, RAW_FORMATS, make_transport
@@ -677,7 +677,7 @@ async def transcribe_stream(ws: WebSocket) -> None:
         # stub session and the utterances are swept as unreported.
         _req_job = conf.get("client_job")
         usage_job_id = (_req_job if isinstance(_req_job, str)
-                        and main._PROGRESS_ID_RE.match(_req_job) else session_id)
+                        and tx_progress._PROGRESS_ID_RE.match(_req_job) else session_id)
         # The client DECLARES that it will translate this session's utterances
         # on a separate request. Without a declaration the per-utterance
         # receipt is logged immediately, exactly as before — which is what

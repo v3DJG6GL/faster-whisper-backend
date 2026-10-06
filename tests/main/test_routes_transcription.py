@@ -7,6 +7,7 @@ fake model ignores the uploaded bytes, so a tiny dummy WAV payload is fine.
 from tests.conftest import FakeModel
 from faster_whisper_backend.transcription import models as tx_models
 from faster_whisper_backend.transcription import receipt as tx_receipt
+from faster_whisper_backend.transcription import progress as tx_progress
 
 _FILE = {"file": ("a.wav", b"RIFFxxxxWAVE", "audio/wav")}
 
@@ -282,7 +283,7 @@ def test_progress_endpoint_malformed_id_422(client):
 
 def test_progress_live_entry_and_cleanup(client, app_module):
     pid = "b" * 32
-    app_module._progress_set(pid, stage="transcribing", progress=0.5, duration=60.0)
+    tx_progress._progress_set(pid, stage="transcribing", progress=0.5, duration=60.0)
     r = client.get(f"/v1/audio/transcriptions/progress/{pid}")
     assert r.status_code == 200
     body = r.json()
@@ -292,7 +293,7 @@ def test_progress_live_entry_and_cleanup(client, app_module):
     # A request that carries a progress_id pops its entry when done. (The
     # seeded entry is released first: an id still in flight is treated as
     # absent by the handler, so it would neither adopt nor pop it.)
-    app_module._BATCH_PROGRESS.pop(pid, None)
+    tx_progress._BATCH_PROGRESS.pop(pid, None)
     r = _post(client, response_format="verbose_json", progress_id=pid)
     assert r.status_code == 200
     assert client.get(f"/v1/audio/transcriptions/progress/{pid}").json() == {
@@ -308,7 +309,7 @@ def test_progress_updates_during_decode(client, app_module, fake_model):
 
     def spy(path, **kwargs):
         segs, info = orig(path, **kwargs)
-        entry = app_module._BATCH_PROGRESS.get(pid)
+        entry = tx_progress._BATCH_PROGRESS.get(pid)
         seen.update(entry or {})
         return segs, info
 
@@ -319,7 +320,7 @@ def test_progress_updates_during_decode(client, app_module, fake_model):
     # to the "analyzing" stage (audio decode + VAD window).
     assert seen.get("stage") == "analyzing"
     # ...and the entry is gone once the response is built.
-    assert pid not in app_module._BATCH_PROGRESS
+    assert pid not in tx_progress._BATCH_PROGRESS
 
 
 def test_verbose_json_reports_duration_after_vad(client):
@@ -345,19 +346,19 @@ def test_progress_reports_skipped_separation(client, app_module):
     # carries the warning text.
     pid = "d" * 32
     seen = {}
-    orig = app_module._progress_set
+    orig = tx_progress._progress_set
 
     def spy(p, **fields):
         orig(p, **fields)
         if p == pid:
-            seen.update(app_module._BATCH_PROGRESS.get(pid) or {})
+            seen.update(tx_progress._BATCH_PROGRESS.get(pid) or {})
 
-    app_module._progress_set = spy
+    tx_progress._progress_set = spy
     try:
         r = _post(client, response_format="verbose_json",
                   separate_bgm="true", progress_id=pid)
     finally:
-        app_module._progress_set = orig
+        tx_progress._progress_set = orig
     assert r.status_code == 200
     assert seen.get("skipped") == ["separating"]
     assert any("music separation requested" in w
@@ -367,14 +368,14 @@ def test_progress_reports_skipped_separation(client, app_module):
 def test_progress_malformed_id_is_ignored_on_post(client, app_module):
     r = _post(client, response_format="verbose_json", progress_id="Nope!")
     assert r.status_code == 200
-    assert "Nope!" not in app_module._BATCH_PROGRESS
+    assert "Nope!" not in tx_progress._BATCH_PROGRESS
 
 
 def test_progress_registry_is_bounded(app_module):
-    for i in range(app_module._BATCH_PROGRESS_MAX + 20):
-        app_module._progress_set(f"{i:032x}", stage="waiting")
-    assert len(app_module._BATCH_PROGRESS) == app_module._BATCH_PROGRESS_MAX
-    app_module._BATCH_PROGRESS.clear()
+    for i in range(tx_progress._BATCH_PROGRESS_MAX + 20):
+        tx_progress._progress_set(f"{i:032x}", stage="waiting")
+    assert len(tx_progress._BATCH_PROGRESS) == tx_progress._BATCH_PROGRESS_MAX
+    tx_progress._BATCH_PROGRESS.clear()
 
 
 def test_transcribing_row_bills_a_cold_whisper_load(client, app_module,
@@ -522,13 +523,13 @@ def test_progress_carries_plan_overall_and_eta(client, app_module):
     plan.set_audio_seconds(600.0, src="decoder")
     plan.set_translation(["fr"], model="m", device="cuda", mode="fluent")
     plan.set_segments(160)
-    app_module._RUN_PLAN_BY_PID[pid] = plan
+    tx_progress._RUN_PLAN_BY_PID[pid] = plan
     try:
-        app_module._progress_set(pid, stage="transcribing", progress=0.5)
+        tx_progress._progress_set(pid, stage="transcribing", progress=0.5)
         body = client.get(f"/v1/audio/transcriptions/progress/{pid}").json()
     finally:
-        app_module._RUN_PLAN_BY_PID.pop(pid, None)
-        app_module._BATCH_PROGRESS.pop(pid, None)
+        tx_progress._RUN_PLAN_BY_PID.pop(pid, None)
+        tx_progress._BATCH_PROGRESS.pop(pid, None)
     assert [s["stage"] for s in body["plan"]] == ["transcribing", "translating"]
     assert body["plan"][0]["state"] == "active"
     assert body["plan"][1]["units"][0]["target"] == "fr"
@@ -536,11 +537,11 @@ def test_progress_carries_plan_overall_and_eta(client, app_module):
     assert body["eta_s"] > 0
     # No plan: the keys are present and null.
     pid2 = "f" * 32
-    app_module._progress_set(pid2, stage="translating", progress=0.1)
+    tx_progress._progress_set(pid2, stage="translating", progress=0.1)
     try:
         body = client.get(f"/v1/audio/transcriptions/progress/{pid2}").json()
     finally:
-        app_module._BATCH_PROGRESS.pop(pid2, None)
+        tx_progress._BATCH_PROGRESS.pop(pid2, None)
     assert body["plan"] is None and body["overall"] is None
     assert body["eta_s"] is None
 
@@ -557,7 +558,7 @@ def test_verbose_json_carries_plan_receipt_and_entry_is_gone(client,
     assert plan[0]["state"] == "done"
     assert plan[0]["took_s"] >= 0.0
     # (The test config's DEFAULT_MODEL is empty, so no model key rides.)
-    assert pid not in app_module._RUN_PLAN_BY_PID
+    assert pid not in tx_progress._RUN_PLAN_BY_PID
     # The plain json shape stays the OpenAI-compatible object.
     r = _post(client, response_format="json")
     assert "plan" not in r.json()
@@ -568,19 +569,19 @@ def test_plan_reports_skipped_separation(client, app_module):
     dropped: the client's rail still gets a row to explain."""
     seen = {}
     pid = "b2" * 16
-    orig = app_module._progress_set
+    orig = tx_progress._progress_set
 
     def spy(p, **fields):
         orig(p, **fields)
-        if p == pid and p in app_module._RUN_PLAN_BY_PID:
-            seen["snap"] = app_module._RUN_PLAN_BY_PID[p].snapshot()
+        if p == pid and p in tx_progress._RUN_PLAN_BY_PID:
+            seen["snap"] = tx_progress._RUN_PLAN_BY_PID[p].snapshot()
 
-    app_module._progress_set = spy
+    tx_progress._progress_set = spy
     try:
         r = _post(client, response_format="verbose_json",
                   separate_bgm="true", progress_id=pid)
     finally:
-        app_module._progress_set = orig
+        tx_progress._progress_set = orig
     assert r.status_code == 200
     states = {s["stage"]: s["state"] for s in seen["snap"]["plan"]}
     assert states["separating"] == "skipped"

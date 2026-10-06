@@ -73,7 +73,7 @@ def test_me_translation_flag_present_details_gated(client, app_module, monkeypat
 
 def test_me_translation_models_default_first_with_loaded_flags(
         client, app_module, monkeypatch):
-    from faster_whisper_backend.audio import translation
+    from faster_whisper_backend.translation import engine as translation
     monkeypatch.setattr(app_module.cfg, "TRANSLATION_ENABLED", True)
     monkeypatch.setattr(app_module.cfg, "TRANSLATION_DEFAULT_MODEL", "org/default-GGUF:Q4")
     monkeypatch.setattr(app_module.cfg, "TRANSLATION_ALLOWED_MODELS", {
@@ -114,7 +114,7 @@ def test_me_translation_models_empty_default_still_answers(
 
 def test_me_translation_models_carry_their_languages(
         client, app_module, monkeypatch):
-    from faster_whisper_backend.audio import translation
+    from faster_whisper_backend.translation import engine as translation
     monkeypatch.setattr(app_module.cfg, "TRANSLATION_ENABLED", True)
     monkeypatch.setattr(app_module.cfg, "TRANSLATION_DEFAULT_MODEL",
                         "tencent/HY-MT1.5-7B-GGUF:Q4_K_M")

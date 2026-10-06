@@ -45,7 +45,8 @@ from faster_whisper_backend.core import store_common
 # deliberate and cheap — like diarization/bgm_separation the module is
 # import-safe without its optional deps (llama_cpp loads lazily inside the
 # model-load path), and the stage + lifespan both need it.
-from faster_whisper_backend.audio import translation as _tr
+from faster_whisper_backend.translation import engine as _tr
+from faster_whisper_backend.translation import gating as tr_gating
 # Shared per-identity limiters. Imports only stdlib + fastapi + config, so it
 # is safe this early and cannot close an import cycle back through main.
 from faster_whisper_backend.auth import rate_limit as _rl
@@ -175,7 +176,6 @@ if sys.platform == "win32":
 
 
 from fastapi import BackgroundTasks, FastAPI, File, UploadFile, Form, HTTPException, Request, Response, Depends, Query
-from fastapi.encoders import jsonable_encoder as _jsonable_encoder
 
 # Auth dep used by /v1/audio/transcriptions and /auth/whoami. In open mode
 # (no admin key in DB) it returns the synthetic admin — but only to callers on
@@ -487,7 +487,7 @@ async def _preload_extras() -> None:
             # Same allowlist semantics as the request path (the shared
             # helper); requested=ref because a preload entry is an explicit
             # ask for exactly that ref, never an inherited fallback.
-            if not _translation_model_allowed(ref, requested=ref):
+            if not tr_gating._translation_model_allowed(ref, requested=ref):
                 logger.error(
                     "Cannot preload translation model '%s' - it is not in "
                     "TRANSLATION_ALLOWED_MODELS.", ref)
@@ -1014,9 +1014,9 @@ from faster_whisper_backend.stats import metrics
 from faster_whisper_backend.core import jobs
 from faster_whisper_backend.core import jobs_store as _jobs_store
 
-# Model preloading. Imported here rather than lazily because three call sites
-# below (the two `loaded` flag endpoints and _progress_set) reach it on hot
-# paths. preload never imports main (it reaches the whisper cache through
+# Model preloading. Imported here rather than lazily because call sites below
+# (the two `loaded` flag endpoints) and tx_progress._progress_set reach it on
+# hot paths. preload never imports main (it reaches the whisper cache through
 # transcription.models), so no cycle.
 from faster_whisper_backend.runtime import preload
 from faster_whisper_backend.core import run_plan as _run_plan
@@ -1024,6 +1024,11 @@ from faster_whisper_backend.core import run_plan as _run_plan
 # Dictation receipts held open until their translation arrives on a separate
 # request. Imports nothing from the app, so no cycle.
 from faster_whisper_backend.core import receipt_hold
+
+# Batch progress / cancel / plan registries and the job-ledger writes for runs
+# posted with a progress_id — see transcription/progress.py. Called through the
+# module attribute (tx_progress._progress_set(...)) so a test patch reaches main.
+from faster_whisper_backend.transcription import progress as tx_progress
 
 
 _CSRF_SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS", "TRACE"})
@@ -1453,373 +1458,6 @@ def _safe_tmp_suffix(filename: "str | None") -> str:
     return ext if _TMP_SUFFIX_RE.match(ext) else ""
 
 
-# ── Batch progress registry ──────────────────────────────────────────────────
-# Optional per-request progress for the file-upload path: a client that sends a
-# `progress_id` form field can poll GET /v1/audio/transcriptions/progress/<id>
-# while its POST is in flight. Entries live only for the request (popped in the
-# handler's finally); the cap + stale sweep below bound a client that invents
-# ids and never posts. Plain dict + GIL: every writer does a single dict-entry
-# update, and the poller only reads; the entry-creation sweep/eviction in
-# _progress_set iterates over a snapshot (list(...)) so a concurrent pop on
-# the loop thread can't blow up an executor-thread iteration.
-_BATCH_PROGRESS: "dict[str, dict]" = {}
-# progress_id → owner, remembered from the handler's seed so an entry that an
-# executor-thread stage re-creates after a cap eviction keeps its owner stamp
-# instead of coming back owner-less and readable/cancellable by any caller.
-# Popped in the handlers' finally (alongside _BATCH_PROGRESS) and in the
-# stale sweep.  Deliberately NOT popped in the cap eviction — that is
-# exactly the moment an executor thread can re-create the entry and needs
-# the stamp.
-_PROGRESS_OWNER: "dict[str, str]" = {}
-_BATCH_PROGRESS_MAX = 200
-_BATCH_PROGRESS_STALE_S = 2 * 3600
-# progress_id → monotonic time its run CLOSED (the handler's finally popped
-# the entry). A stage thread that outlives the handler (a decode the client
-# cancelled, a diarization step mid-flight on disconnect) keeps calling
-# _progress_set; without this it would re-create the entry — owner-less,
-# since _PROGRESS_OWNER was popped too — and leave it readable by any
-# authenticated caller until the stale sweep. A closed id is a no-op in
-# _progress_set until a fresh owner-stamped seed re-opens it. Bounded by the
-# TTL sweep in _progress_close (every run end).
-_PROGRESS_CLOSED: "dict[str, float]" = {}
-_PROGRESS_CLOSED_TTL_S = 600
-
-
-def _progress_close(pid: "str | None") -> None:
-    """Retire `pid`'s live progress entry: pop the three registries and
-    tombstone the id so a straggling stage-thread tick cannot resurrect it.
-    Every handler finally that used to pop the trio calls this instead."""
-    if not pid:
-        return
-    _BATCH_PROGRESS.pop(pid, None)
-    _PROGRESS_OWNER.pop(pid, None)
-    _BATCH_CANCELLED.discard(pid)
-    now = time.monotonic()
-    _PROGRESS_CLOSED[pid] = now
-    if len(_PROGRESS_CLOSED) > 64:
-        for k in [k for k, t in list(_PROGRESS_CLOSED.items())
-                  if now - t > _PROGRESS_CLOSED_TTL_S]:
-            _PROGRESS_CLOSED.pop(k, None)
-_PROGRESS_ID_RE = re.compile(r"\A[0-9a-f]{8,64}\Z")
-
-# Mirrors settings_schema._TRANSLATION_MODEL_REF_PATTERN — org/repo[:quant].
-_TRANSLATION_REF_RE = re.compile(
-    r"\A[A-Za-z0-9][A-Za-z0-9_.\-]*/[A-Za-z0-9_.\-]+(:[A-Za-z0-9_.\-]+)?\Z")
-
-
-def _translation_default_model() -> str:
-    """The configured server-wide default translation model ref ("" unset)."""
-    return (getattr(cfg, "TRANSLATION_DEFAULT_MODEL", "") or "").strip()
-
-
-def _translation_model_allowed(ref: str,
-                               requested: "str | None" = None,
-                               inherited: "str | None" = None) -> bool:
-    """The one admission rule the startup preload, the batch stage, the
-    stage-ahead plan and /v1/text/translations all share: a non-empty
-    TRANSLATION_ALLOWED_MODELS admits its members plus the configured
-    default, while an EMPTY allowlist admits any well-formed ref (an opt-in
-    allowlist — deliberately laxer than the diarization/separation gates,
-    which admit allowlist ∪ {default} only). Like those gates, the allowlist
-    constrains only the CLIENT-requested value: pass `requested` (the raw
-    client ref, or None when the client sent none) and a config/identity-
-    inherited `ref` is admin policy and always passes. `inherited` is the
-    config/identity-effective TRANSLATION_MODEL: a client that merely ECHOES
-    it (or is locked to it) has not chosen anything, so it passes exactly
-    like a request that sent no model — the diarization/separation gates
-    admit the effective value the same way."""
-    allowed = getattr(cfg, "TRANSLATION_ALLOWED_MODELS", set()) or set()
-    if inherited and ref == inherited:
-        return True
-    # "Any well-formed ref" — the client value reaches hf_hub_download /
-    # Llama.from_pretrained as a repo id, so shape-check it the way the
-    # whisper path does; an inherited ref is admin policy (config_store
-    # already validates it at save time).
-    if (requested is not None and ref == requested
-            and (len(ref) > 160 or ".." in ref
-                 or not _TRANSLATION_REF_RE.match(ref))):
-        return False
-    if not allowed or ref in allowed or ref == _translation_default_model():
-        return True
-    return requested is None or ref != requested
-
-
-# progress_id → job id: handlers that registered a job in jobs.py bind their
-# progress_id here so every _progress_set call (all stages already flow
-# through it) mirrors stage/progress into the central registry for free.
-# last_text is deliberately NOT mirrored — job rows never carry transcript
-# text (see jobs.jobs_snapshot's scrubbing contract).
-_JOB_BY_PID: "dict[str, str]" = {}
-_JOB_MIRROR_FIELDS = ("stage", "progress", "step", "model", "total_bytes")
-
-
-def _claim_progress_id(progress_id) -> "str | None":
-    """A request's opt-in progress id (see _BATCH_PROGRESS), or None. A
-    malformed id is treated as absent — progress is a convenience, never a
-    422. So is an id that is already in flight: the registries keyed on it
-    are bare overwrites, and a colliding id would share one entry and one
-    cancel flag with (and let this caller cancel) another request."""
-    if not (isinstance(progress_id, str) and _PROGRESS_ID_RE.match(progress_id)):
-        return None
-    if progress_id in _BATCH_PROGRESS:
-        logger.info("[progress] id already in flight — progress/cancel "
-                    "disabled for this request")
-        return None
-    return progress_id
-
-
-def _bind_job_pid(pid: "str | None", request_id: str) -> None:
-    """Bind a claimed progress id to its jobs.py row (the mirror above); the
-    handler's outer finally pops it."""
-    if pid:
-        _JOB_BY_PID[pid] = request_id
-        jobs.job_update(request_id, progress_id=pid)
-
-# progress_id → preload plan id, the same shape and lifetime as _JOB_BY_PID
-# above and popped in the same finally. Bound once, right after the batch
-# handler has fully resolved the stage plan.
-#
-# ONE hook, here, rather than four per-stage ones: every stage transition in
-# the pipeline already flows through _progress_set, and it already carries a
-# side effect of exactly this shape (the job mirror). Four hooks placed at the
-# four stage entry points would drift the first time a stage moved.
-_PLAN_BY_PID: "dict[str, str]" = {}
-
-# progress_id → the run's server-owned plan (core/run_plan.py): expected and
-# actual seconds per stage, per-language translation units, and the overall
-# fraction + ETA the progress route publishes. Same shape and lifetime as
-# _JOB_BY_PID (popped in the handlers' outer finally); _progress_set feeds
-# every tick into it from whichever thread reported.
-_RUN_PLAN_BY_PID: "dict[str, _run_plan.RunPlan]" = {}
-
-
-def _plan_fields(pid: str) -> dict:
-    """`plan` / `overall` / `eta_s` for the progress route — all None when
-    the id has no plan (the admin prompt lab seeds entries without one)."""
-    rp = _RUN_PLAN_BY_PID.get(pid)
-    if rp is None:
-        return {"plan": None, "overall": None, "eta_s": None}
-    snap = rp.snapshot()
-    return {
-        "plan": snap["plan"],
-        "overall": (round(snap["overall"], 4)
-                    if snap["overall"] is not None else None),
-        "eta_s": (round(snap["eta_s"], 1)
-                  if snap["eta_s"] is not None else None),
-    }
-
-
-# ── Server jobs (durable job resource, core/jobs_store.py) ──────────────────
-# Every batch run posted WITH a progress_id gets a row: `running` right after
-# the progress seed, then its terminal state + the verbatim response payload
-# from the handler's outer finally, so a client that lost its connection can
-# list / re-attach to / fetch the run via GET /v1/jobs*. A ledger write never
-# fails a run: every helper here swallows and logs.
-
-def _jobs_enabled() -> bool:
-    return bool(getattr(cfg, "JOBS_ENABLED", True))
-
-
-def _jobs_ttl_s() -> float:
-    return float(getattr(cfg, "JOBS_TTL_S", 259_200))
-
-
-def _jobs_start(pid: "str | None", *, request_id: str, kind: str,
-                user_id: "str | None", key_id: "str | None",
-                model: "str | None", source_kind: str,
-                source_name: "str | None", task: "str | None" = None,
-                response_format: "str | None" = None) -> bool:
-    """Insert the `running` row for `pid`. False when no row was written
-    (no id, feature off, the store is unavailable, or the id already names
-    another caller's row — the store refuses to replace that one)."""
-    if not pid or not _jobs_enabled():
-        return False
-    try:
-        # prune_every=0: retention is `_jobs_retention_loop`'s job (hourly,
-        # off the loop); the store's lazy prune would run on the event loop.
-        return bool(_jobs_store.start(
-            job_id=pid, request_id=request_id, kind=kind,
-            user_id=user_id, key_id=key_id, model=model,
-            source_kind=source_kind, source_name=source_name, task=task,
-            response_format=response_format, ttl_s=_jobs_ttl_s(),
-            max_rows=int(getattr(cfg, "JOBS_MAX_ROWS", 2000)),
-            max_bytes=int(getattr(cfg, "JOBS_MAX_BYTES", 2_000_000_000)),
-            prune_every=0))
-    except Exception as e:  # noqa: BLE001 — never fail a run on the ledger
-        logger.warning("[jobs] could not record job start: %s", e)
-        return False
-
-
-def _job_error_text(status: str, exc: "BaseException | None",
-                    fallback: str = "transcription failed") -> "str | None":
-    """Client-safe error for a job row: a curated 4xx detail verbatim, any
-    other failure as the generic text the response carried. None when the
-    run was cancelled (not an error)."""
-    if status == "cancelled":
-        return None
-    if (isinstance(exc, HTTPException) and isinstance(exc.detail, str)
-            and exc.status_code < 500):
-        return exc.detail
-    return fallback
-
-
-def _jobs_finish_sync(pid: str, *, status: str, payload=None,
-                      error: "str | None" = None, stages=None, plan=None,
-                      model: "str | None" = None,
-                      task: "str | None" = None) -> None:
-    """Stamp the terminal state. `payload` is the response object exactly as
-    the handler returned it (dict, or the `text` format's str); it is stored
-    only for status "ok". Blocking SQLite — call off the loop for big runs."""
-    state = {"ok": "done", "cancelled": "cancelled"}.get(status, "failed")
-    try:
-        result = None
-        if state == "done" and payload is not None:
-            result = _jsonable_encoder(payload)
-        if not _jobs_store.finish(job_id=pid, state=state, error=error,
-                                  result=result, stages=stages, plan=plan,
-                                  model=model, task=task, ttl_s=_jobs_ttl_s()):
-            # Evicted meanwhile (row cap / byte cap / TTL): a re-attaching
-            # client gets 404, and this line is what explains it.
-            logger.info("[jobs] row %s gone before finish — result not stored",
-                        pid[:8])
-    except Exception as e:  # noqa: BLE001
-        logger.warning("[jobs] could not record job end: %s", e)
-
-
-async def _jobs_finish(pid: str, **kw) -> None:
-    """Off-loop `_jobs_finish_sync` (a verbose_json payload can be MBs).
-    shield: a handler being unwound must not abort a write already on the
-    thread — the row would stay `running` forever."""
-    try:
-        await asyncio.shield(asyncio.to_thread(_jobs_finish_sync, pid, **kw))
-    except Exception as e:  # noqa: BLE001
-        logger.warning("[jobs] could not record job end: %s", e)
-
-
-def _provisional_stages(*, is_url: bool, separate: "bool | None",
-                        diarize: "bool | None",
-                        translate_to: "str | None") -> "list[str]":
-    """The stage list a request implies BEFORE its knobs are resolved
-    against the caller's identity — the plan needs a denominator from the
-    first poll on; set_stages() replaces it once the verdicts are in."""
-    sep = separate if separate is not None else bool(
-        getattr(cfg, "SEPARATE_BGM", False))
-    diar = diarize if diarize is not None else bool(
-        getattr(cfg, "DIARIZE", False))
-    tt = (translate_to.strip() if translate_to is not None
-          else (getattr(cfg, "TRANSLATE_TO", "") or ""))
-    return [*(["downloading"] if is_url else []),
-            *(["separating"] if sep else []),
-            "transcribing",
-            *(["diarizing"] if diar else []),
-            *(["translating"] if tt else [])]
-
-
-def _progress_set(pid: "str | None", **fields) -> None:
-    """Merge `fields` into the progress entry for `pid` (no-op without one)."""
-    if not pid:
-        return
-    if fields.get("owner") is not None:
-        # A fresh handler seed re-opens an id its previous run closed.
-        _PROGRESS_CLOSED.pop(pid, None)
-    elif pid in _PROGRESS_CLOSED:
-        # A stage thread of a run that already closed: nothing to update,
-        # and re-creating the entry would leave it owner-less.
-        return
-    _job_id = _JOB_BY_PID.get(pid)
-    if _job_id:
-        _mirror = {k: fields[k] for k in _JOB_MIRROR_FIELDS
-                   if fields.get(k) is not None}
-        _new_stage = fields.get("stage")
-        _prev = _BATCH_PROGRESS.get(pid, {}).get("stage")
-        if _new_stage and _prev and _new_stage != _prev:
-            # A stage TRANSITION resets the derived columns the new stage did
-            # not (yet) report — without this the job row keeps the previous
-            # stage's last progress/step/model/total_bytes (a stale ~100%
-            # bar, the decode model shown for the whole of diarizing/
-            # translating, the download's byte total for the rest of the
-            # request), because both this mirror and jobs.job_update skip
-            # plain Nones. The first seed is NOT a transition: there is no
-            # previous stage's stale state to clear, only job_start's model
-            # to preserve.
-            for k in ("progress", "step", "model", "total_bytes"):
-                _mirror.setdefault(k, jobs.CLEAR)
-        jobs.job_update(_job_id, **_mirror)
-    _stage = fields.get("stage") or _BATCH_PROGRESS.get(pid, {}).get("stage")
-    if _stage and pid in _PLAN_BY_PID:
-        # Advances the plan's cursor and warms the next stage's model. Sync,
-        # never awaits, and swallows everything internally — this runs on
-        # executor threads (the decode, the demix, the pyannote hook) and
-        # progress must never break a request.
-        # Every tick, not only transitions: on_stage_start restamps the TTL
-        # before its monotone-cursor check, so a stage longer than
-        # MODEL_PRELOAD_WARM_TTL_S keeps the plan alive without enqueueing
-        # anything.
-        preload.on_stage_start(_PLAN_BY_PID[pid], _stage)
-    if fields.get("owner") is not None:
-        _PROGRESS_OWNER[pid] = fields["owner"]
-    entry = _BATCH_PROGRESS.get(pid)
-    if entry is None:
-        # Snapshot (list(...)) before iterating: this branch runs on executor
-        # threads too, and the handler's finally pops entries on the loop
-        # thread — iterating the live dict would raise "dictionary changed
-        # size during iteration" out of a healthy stage callback.
-        now = time.monotonic()
-        for k in [k for k, v in list(_BATCH_PROGRESS.items())
-                  if now - v.get("updated", 0) > _BATCH_PROGRESS_STALE_S]:
-            _BATCH_PROGRESS.pop(k, None)
-            _PROGRESS_OWNER.pop(k, None)
-        if len(_BATCH_PROGRESS) >= _BATCH_PROGRESS_MAX:
-            _snap = list(_BATCH_PROGRESS.items())
-            if _snap:
-                oldest = min(_snap, key=lambda kv: kv[1].get("updated", 0))[0]
-                _BATCH_PROGRESS.pop(oldest, None)
-        entry = _BATCH_PROGRESS[pid] = (
-            {"owner": _PROGRESS_OWNER[pid]} if pid in _PROGRESS_OWNER else {})
-    entry.update(fields)
-    entry["updated"] = time.monotonic()
-    _rp = _RUN_PLAN_BY_PID.get(pid)
-    if _rp is not None:
-        # Same stance as the preload hook above: runs on executor threads,
-        # and progress must never break a request.
-        try:
-            _rp.tick(stage=entry.get("stage"),
-                     progress=fields.get("progress"),
-                     target=fields.get("target"),
-                     target_progress=fields.get("target_progress"),
-                     total_bytes=fields.get("total_bytes"),
-                     # Sticky like `stage`: a write that omits `step` (the
-                     # keep_video task's `video=` ticks) means "unchanged",
-                     # not "no step" — every step ends with an explicit None.
-                     step=entry.get("step"))
-        except Exception:  # noqa: BLE001
-            pass
-
-
-# Cooperative cancellation for in-flight batch requests: POST
-# /v1/audio/transcriptions/cancel/<id> flags the id here, and the handler's
-# stage callbacks (which already fire every demix chunk / decoded segment /
-# pyannote step) poll the flag and abort. Closing the HTTP connection alone
-# does NOT stop the work — the stages run in executor threads that outlive a
-# cancelled handler task. Only ids with a live _BATCH_PROGRESS entry can be
-# flagged, and the handler's finally discards, so the set stays bounded by
-# the number of in-flight requests.
-_BATCH_CANCELLED: "set[str]" = set()
-
-
-class _ClientCancelled(Exception):
-    """The client cancelled this request via the cancel endpoint."""
-
-
-def _cancel_requested(pid: "str | None") -> bool:
-    return bool(pid) and pid in _BATCH_CANCELLED
-
-
-def _check_cancelled(pid: "str | None") -> None:
-    if _cancel_requested(pid):
-        raise _ClientCancelled()
-
-
 def _form_bool(value: "str | None") -> "bool | None":
     """Tri-state multipart boolean: multipart values arrive as strings, and
     FastAPI's bool coercion can't keep "absent" (inherit the config default)
@@ -1886,7 +1524,7 @@ async def transcribe(
     user: dict = Depends(_get_current_user_dep),
 ):
     resolved_model = tx_models._resolve_model_name(model_name)
-    _pid = _claim_progress_id(progress_id)
+    _pid = tx_progress._claim_progress_id(progress_id)
     # Whisper's only two tasks; anything else is a caller error, not something
     # to silently coerce (unlike the clamped numeric knobs below, a wrong task
     # would return output in the wrong language with no other signal).
@@ -2014,7 +1652,7 @@ async def transcribe(
     jobs.job_start("transcribe", id=request_id, model=resolved_model,
                    user=user.get("username") or _user_id, key=_key_id,
                    user_id=_user_id)
-    _bind_job_pid(_pid, request_id)
+    tx_progress._bind_job_pid(_pid, request_id)
     try:
         # Seed the registry entry EARLY so the cancel endpoint (which only
         # accepts ids it can see in-flight) has a target well before the
@@ -2055,18 +1693,18 @@ async def transcribe(
             raise HTTPException(
                 status_code=422,
                 detail="retain_media requires a json response format")
-        _rplan.set_stages(_provisional_stages(
+        _rplan.set_stages(tx_progress._provisional_stages(
             is_url=source_url is not None,
             separate=_form_bool(separate_bgm), diarize=_form_bool(diarize),
             translate_to=translate_to))
         if _pid:
-            _RUN_PLAN_BY_PID[_pid] = _rplan
-        _progress_set(_pid,
+            tx_progress._RUN_PLAN_BY_PID[_pid] = _rplan
+        tx_progress._progress_set(_pid,
                       stage=("resolving" if source_url is not None
                              else "waiting"),
                       progress=None,
                       owner=(_user_id or _key_id))
-        _job_row = _jobs_start(
+        _job_row = tx_progress._jobs_start(
             _pid, request_id=request_id, kind="transcribe",
             user_id=_user_id, key_id=_key_id, model=resolved_model,
             source_kind=("url" if source_url is not None else "file"),
@@ -2149,7 +1787,7 @@ async def transcribe(
                 _dl_t0 = time.perf_counter()
                 _cur_stage = "downloading"
                 try:
-                    _check_cancelled(_pid)
+                    tx_progress._check_cancelled(_pid)
                     # probe() validates the URL; info.url is the normalised one.
                     _uinfo = await _udl.probe(
                         source_url,
@@ -2167,7 +1805,7 @@ async def transcribe(
                         or (int(_uinfo.duration * _uinfo.abr * 125)
                             if _uinfo.duration and _uinfo.abr else None),
                         extractor=(_uinfo.extractor_key or None))
-                    _progress_set(_pid, stage="downloading", progress=None,
+                    tx_progress._progress_set(_pid, stage="downloading", progress=None,
                                   total_bytes=None,
                                   step=(_uinfo.extractor_key or None))
                     # The audio a language check of this link already
@@ -2205,7 +1843,7 @@ async def transcribe(
                 except _udl.UrlCancelled:
                     logger.info("[url-dl] download cancelled by client "
                                 "(host %s)", _url_host_for_log(source_url))
-                    raise _ClientCancelled() from None
+                    raise tx_progress._ClientCancelled() from None
                 except _udl.UrlDownloadError as _ue:
                     # str() is client-safe by the module's contract.
                     logger.info("[url-dl] rejected (host %s): %s",
@@ -2247,14 +1885,14 @@ async def transcribe(
                     if _rung is None:
                         _video_result = _video_state(
                             state="failed", error="this link has no video track")
-                        _progress_set(_pid, video=dict(_video_result))
+                        tx_progress._progress_set(_pid, video=dict(_video_result))
                     elif _rung.get("over_cap"):
                         _video_result = _video_state(
                             state="failed",
                             error="the video exceeds the server's size limit",
                             height=_rung.get("height"),
                             container=_rung.get("container"))
-                        _progress_set(_pid, video=dict(_video_result))
+                        tx_progress._progress_set(_pid, video=dict(_video_result))
                     else:
                         # Network-bound and off the GPU path: it runs beside
                         # the pipeline, never delays the transcript, and is
@@ -2442,7 +2080,7 @@ async def transcribe(
                 would silently stop the client's rail from showing it."""
                 _skipped.append(stage)
                 _rplan.skip(stage)
-                _progress_set(_pid, skipped=list(_skipped))
+                tx_progress._progress_set(_pid, skipped=list(_skipped))
 
             _sep_req = _form_bool(separate_bgm)
             if "SEPARATE_BGM" in ident.locked:
@@ -2576,7 +2214,7 @@ async def transcribe(
                 _rplan.set_translation(
                     list(_translate_to),
                     model=((_translation_model or "").strip()
-                           or _translation_default_model() or None),
+                           or tr_gating._translation_default_model() or None),
                     device=_tr._resolve_device(),
                     mode=_translation_mode,
                     # A pinned decode language already tells which targets
@@ -2603,23 +2241,23 @@ async def transcribe(
                 _preload_entries.append(("diarization", _diarization_model))
             if _translate_to:
                 _tr_ref = ((_translation_model or "").strip()
-                           or _translation_default_model())
+                           or tr_gating._translation_default_model())
                 # Same allowlist verdict the stage itself renders later: a
                 # ref the stage will refuse must not be pre-warmed (the plan
                 # would download/load an arbitrary GGUF the request cannot
                 # use). The stage's soft-fail warning still fires there.
-                if _tr_ref and _translation_model_allowed(
+                if _tr_ref and tr_gating._translation_model_allowed(
                         _tr_ref, requested=_tm_req,
                         inherited=_tm_inherited):
                     _preload_entries.append(("translation", _tr_ref))
             if _pid and _preload_entries:
                 _plan_hint = (preload_plan or "").strip() or None
-                if _plan_hint is not None and not _PROGRESS_ID_RE.match(_plan_hint):
+                if _plan_hint is not None and not tx_progress._PROGRESS_ID_RE.match(_plan_hint):
                     _plan_hint = None   # malformed → derive one, never a 422
                 _plan = preload.register_plan(
                     _user_id, _preload_entries, plan_id=_plan_hint,
                     trigger="job")
-                _PLAN_BY_PID[_pid] = _plan["plan_id"]
+                tx_progress._PLAN_BY_PID[_pid] = _plan["plan_id"]
 
             # Now that the stage plan is resolved, tell the running-jobs
             # registry what this job is going to DO. job_start fires before
@@ -2706,7 +2344,7 @@ async def transcribe(
                     try:
                         _sep_t0 = time.perf_counter()
                         _cur_stage = "separating"
-                        _progress_set(
+                        tx_progress._progress_set(
                             _pid, stage="separating", progress=None,
                             position=None, last_text=None,
                             model=(_separation_model or None),
@@ -2716,7 +2354,7 @@ async def transcribe(
                             # device only before the first load.
                             device=(_bgm.actual_device()
                                     or _bgm._resolve_device()))
-                        _check_cancelled(_pid)
+                        tx_progress._check_cancelled(_pid)
                         # libsndfile can't open AAC/MP4-family containers
                         # (m4a/mp4/webm…): the separator would fall back to a
                         # slow audioread/ffmpeg-subprocess decode — a silent
@@ -2737,7 +2375,7 @@ async def transcribe(
                                     prefix="sepsrc-", suffix=".wav")
                                 os.close(_tfd)
                                 _tc0 = time.perf_counter()
-                                _progress_set(_pid, step="preparing")
+                                tx_progress._progress_set(_pid, step="preparing")
                                 await asyncio.to_thread(
                                     _atc.transcode_to_wav, tmp_path,
                                     _sep_wav, rate=44100, layout="stereo")
@@ -2761,23 +2399,23 @@ async def transcribe(
                                     _sep_wav = None
                                 _sep_src = tmp_path
                         try:
-                            _check_cancelled(_pid)
+                            tx_progress._check_cancelled(_pid)
                             async with tx_models.get_inference_semaphore():
-                                _check_cancelled(_pid)
+                                tx_progress._check_cancelled(_pid)
                                 # "preparing" stays up through model load and
                                 # the separator's own audio load/normalize
                                 # (~40 s on long inputs); the first demix
                                 # chunk clears it via the progress callback.
-                                _progress_set(_pid, step="preparing")
+                                tx_progress._progress_set(_pid, step="preparing")
                                 _vocals_path = await _bgm.separate(
                                     _sep_src,
                                     model_filename=(_separation_model or None),
-                                    progress_cb=lambda f: _progress_set(
+                                    progress_cb=lambda f: tx_progress._progress_set(
                                         _pid, progress=f, step=None),
-                                    cancel_check=lambda: _cancel_requested(
+                                    cancel_check=lambda: tx_progress._cancel_requested(
                                         _pid))
                         finally:
-                            _progress_set(_pid, step=None)
+                            tx_progress._progress_set(_pid, step=None)
                             # The intermediate WAV is ours alone — unlink it
                             # even on cancel/failure (it's ~10× the source;
                             # leaking one per request adds up fast).
@@ -2805,10 +2443,10 @@ async def transcribe(
                                 _sep_t0),
                         })
                         _rplan.stage_done("separating")
-                    except _ClientCancelled:
+                    except tx_progress._ClientCancelled:
                         raise
                     except _bgm.BgmCancelled:
-                        raise _ClientCancelled() from None
+                        raise tx_progress._ClientCancelled() from None
                     except _bgm.BgmSeparationError as _se:
                         # str(_se) is client-safe by the module's contract.
                         _warnings.append(str(_se))
@@ -2882,7 +2520,7 @@ async def transcribe(
                         max(0.0, min(1.0, float(_dav) / _dur))
                         if _kw.get("vad_filter") and _dur > 0 and _dav is not None
                         else None)
-                    _progress_set(_pid, stage="transcribing", progress=0.0,
+                    tx_progress._progress_set(_pid, stage="transcribing", progress=0.0,
                                   duration=_dur or None, position=None,
                                   last_text=None, model=resolved_model,
                                   device=_dev, compute=_compute,
@@ -2896,12 +2534,12 @@ async def transcribe(
                             # Cooperative cancel between decoded segments —
                             # this executor thread is the only thing that can
                             # stop a cancelled request's decode.
-                            if _cancel_requested(_pid):
-                                raise _ClientCancelled()
+                            if tx_progress._cancel_requested(_pid):
+                                raise tx_progress._ClientCancelled()
                             _out.append(_s)
                             if _dur > 0:
                                 _frac = min(1.0, float(_s.end) / _dur)
-                                _progress_set(
+                                tx_progress._progress_set(
                                     _pid,
                                     progress=_frac,
                                     position=float(_s.end),
@@ -2923,7 +2561,7 @@ async def transcribe(
                 # until _collect's first entry (lead-pad decode, transcribe()'s
                 # eager audio decode + Silero VAD pass) used to be misreported
                 # as "waiting". Own stage so the client can label it honestly.
-                _progress_set(_pid, stage="analyzing", progress=None,
+                tx_progress._progress_set(_pid, stage="analyzing", progress=None,
                               position=None, last_text=None, step=None,
                               model=None, device=None, compute=None)
                 # One origin for both branches, taken BEFORE the lead-pad
@@ -2964,12 +2602,12 @@ async def transcribe(
                     _t["trace"] = _decode_trace.finish(_tr, _out, _info)
                     return _out, _info, False
             loop = asyncio.get_running_loop()
-            _progress_set(_pid, stage="waiting", progress=None,
+            tx_progress._progress_set(_pid, stage="waiting", progress=None,
                           position=None, last_text=None, step=None,
                           model=None, device=None, compute=None)
-            _check_cancelled(_pid)
+            tx_progress._check_cancelled(_pid)
             async with tx_models.get_inference_semaphore():
-                _check_cancelled(_pid)
+                tx_progress._check_cancelled(_pid)
                 _dec_t0 = time.perf_counter()
                 # The executor decodes (av) then transcribes; an av error is
                 # told apart by its module, not by this marker.
@@ -3189,25 +2827,25 @@ async def transcribe(
                     try:
                         _diar_t0 = time.perf_counter()
                         _cur_stage = "diarizing"
-                        _progress_set(
+                        tx_progress._progress_set(
                             _pid, stage="diarizing", progress=None,
                             position=None, last_text=None, step=None,
                             model=(_diarization_model or None),
                             device=_diar._resolve_device())
-                        _check_cancelled(_pid)
+                        tx_progress._check_cancelled(_pid)
                         async with tx_models.get_inference_semaphore():
-                            _check_cancelled(_pid)
+                            tx_progress._check_cancelled(_pid)
                             _turns = await _diar.diarize(
                                 tmp_path,
                                 num_speakers=_spk.get("num_speakers"),
                                 min_speakers=_spk.get("min_speakers"),
                                 max_speakers=_spk.get("max_speakers"),
                                 model_id=(_diarization_model or None),
-                                progress_cb=lambda f, step=None, **kw: _progress_set(
+                                progress_cb=lambda f, step=None, **kw: tx_progress._progress_set(
                                     _pid, progress=f, step=step,
                                     target=kw.get("target"),
                                     target_progress=kw.get("target_progress")),
-                                cancel_check=lambda: _cancel_requested(_pid),
+                                cancel_check=lambda: tx_progress._cancel_requested(_pid),
                             )
                         # Pure-Python O(segments × turns) — off the loop so a
                         # long file doesn't stall every other request.
@@ -3231,10 +2869,10 @@ async def transcribe(
                                 _diar_t0),
                         })
                         _rplan.stage_done("diarizing")
-                    except _ClientCancelled:
+                    except tx_progress._ClientCancelled:
                         raise
                     except _diar.DiarizeCancelled:
-                        raise _ClientCancelled() from None
+                        raise tx_progress._ClientCancelled() from None
                     except _diar.DiarizationError as _de:
                         # str(_de) is client-safe by the module's contract.
                         _warnings.append(str(_de))
@@ -3274,8 +2912,8 @@ async def transcribe(
                     # per-identity TRANSLATION_MODEL is policy and passes,
                     # exactly like the diarization/separation gates above.
                     _tr_model = ((_translation_model or "").strip()
-                                 or _translation_default_model())
-                    if not _translation_model_allowed(
+                                 or tr_gating._translation_default_model())
+                    if not tr_gating._translation_model_allowed(
                             _tr_model, requested=_tm_req,
                             inherited=_tm_inherited):
                         # Soft-fail like the enabled gate — never a 4xx after
@@ -3288,8 +2926,8 @@ async def transcribe(
                         try:
                             _tr_t0 = time.perf_counter()
                             _cur_stage = "translating"
-                            _check_cancelled(_pid)
-                            _progress_set(
+                            tx_progress._check_cancelled(_pid)
+                            tx_progress._progress_set(
                                 _pid, stage="translating", progress=0.0,
                                 position=None, last_text=None, step=None,
                                 model=(_tr_model or None),
@@ -3317,7 +2955,7 @@ async def transcribe(
                                     progress_cb=lambda f, step=None,
                                         last_text=None, target=None,
                                         target_progress=None:
-                                        _progress_set(
+                                        tx_progress._progress_set(
                                             _pid, stage="translating",
                                             model=(_tr_model or None),
                                             compute="gguf",
@@ -3327,9 +2965,9 @@ async def transcribe(
                                             **({"last_text": last_text}
                                                if last_text else {})),
                                     cancel_check=lambda:
-                                        _cancel_requested(_pid),
+                                        tx_progress._cancel_requested(_pid),
                                     download_cb=lambda done, total:
-                                        _progress_set(
+                                        tx_progress._progress_set(
                                             _pid, stage="downloading",
                                             progress=((done / total)
                                                       if total else None),
@@ -3343,7 +2981,7 @@ async def transcribe(
                             # _infer_mutex instead.
                             if _tr._resolve_device() == "cuda":
                                 async with tx_models.get_inference_semaphore():
-                                    _check_cancelled(_pid)
+                                    tx_progress._check_cancelled(_pid)
                                     _per_seg, _tr_warn, _tr_meta = \
                                         await _run_translation()
                             else:
@@ -3401,10 +3039,10 @@ async def transcribe(
                                         _tr_meta.get("model") or ""),
                                     _tr_t0),
                             })
-                        except _ClientCancelled:
+                        except tx_progress._ClientCancelled:
                             raise
                         except _tr.TranslationCancelled:
-                            raise _ClientCancelled() from None
+                            raise tx_progress._ClientCancelled() from None
                         except _tr.TranslationError as _te:
                             # str(_te) is client-safe by the module's contract.
                             _warnings.append(str(_te))
@@ -3854,7 +3492,7 @@ async def transcribe(
             _response_payload = response
             return response
 
-        except _ClientCancelled:
+        except tx_progress._ClientCancelled:
             # The client asked (via the cancel endpoint) to abort. Not an
             # error — the stages stopped cooperatively; the response status
             # is moot (the caller usually dropped the connection already).
@@ -3892,7 +3530,7 @@ async def transcribe(
                     # the entry when it ends.
                     _run_finished[0] = True
                 else:
-                    _progress_close(_pid)
+                    tx_progress._progress_close(_pid)
             if tmp_path:
                 try:
                     os.unlink(tmp_path)
@@ -3936,12 +3574,12 @@ async def transcribe(
             tx_models._release_model_lease(_leased_model)
         metrics.in_flight_transcriptions -= 1
         if _pid:
-            _JOB_BY_PID.pop(_pid, None)
+            tx_progress._JOB_BY_PID.pop(_pid, None)
             # The plan itself is NOT cancelled here: its warm leases are what
             # keep the models this job just used alive for the next one, and
             # the TTL retires them on its own.
-            _PLAN_BY_PID.pop(_pid, None)
-            _RUN_PLAN_BY_PID.pop(_pid, None)
+            tx_progress._PLAN_BY_PID.pop(_pid, None)
+            tx_progress._RUN_PLAN_BY_PID.pop(_pid, None)
         jobs.job_end(request_id)
         if _status != "ok" and _error_class is None:
             _error_class, _error_stage = metrics.classify_error(
@@ -3972,10 +3610,10 @@ async def transcribe(
         # must never be skipped may sit behind it. The job row first — its
         # write is shielded and outlives the cancel.
         if _job_row:
-            await _jobs_finish(
+            await tx_progress._jobs_finish(
                 _pid, status=_status,
                 payload=(_response_payload if _status == "ok" else None),
-                error=_job_error_text(_status, _exc),
+                error=tx_progress._job_error_text(_status, _exc),
                 stages=(_stage_timings or None),
                 plan=_rplan.snapshot()["plan"],
                 model=resolved_model, task=_task_now)
@@ -4162,7 +3800,7 @@ async def translate_text(request: Request,
     # one-shot claims no receipt, so this is the only handle that ties its
     # standalone receipt to the utterances it translated. Malformed → absent.
     _cj = body.get("client_job")
-    _client_job = (_cj if isinstance(_cj, str) and _PROGRESS_ID_RE.match(_cj)
+    _client_job = (_cj if isinstance(_cj, str) and tx_progress._PROGRESS_ID_RE.match(_cj)
                    else None)
 
     try:
@@ -4261,13 +3899,13 @@ async def translate_text(request: Request,
                                 detail="translation_model must be a string")
         _tm_req = (model_ref or "").strip() or None
         _tr_model = (_knob("TRANSLATION_MODEL", "translation_model",
-                           _tm_req) or "").strip() or _translation_default_model()
+                           _tm_req) or "").strip() or tr_gating._translation_default_model()
         # Shared allowlist gate; like the batch stage, it constrains only the
         # CLIENT-requested value — an admin-pinned per-identity/per-model
         # TRANSLATION_MODEL is policy and passes.
         _tm_inherited = (effective_config.cfg_for(None, "TRANSLATION_MODEL", ident)
                          or "").strip() or None
-        if not _translation_model_allowed(_tr_model, requested=_tm_req,
+        if not tr_gating._translation_model_allowed(_tr_model, requested=_tm_req,
                                           inherited=_tm_inherited):
             raise HTTPException(
                 status_code=400,
@@ -4277,7 +3915,7 @@ async def translate_text(request: Request,
         # Optional progress/cancel plumbing: a valid id joins _BATCH_PROGRESS so
         # the existing GET progress and POST cancel endpoints work unchanged
         # (cancel only accepts ids it can see in flight).
-        _pid = _claim_progress_id(body.get("progress_id"))
+        _pid = tx_progress._claim_progress_id(body.get("progress_id"))
         _rplan = _run_plan.RunPlan(kind="text")
     except BaseException:
         # Any rejection above (422/413/429/400) — or a client disconnect
@@ -4369,13 +4007,13 @@ async def translate_text(request: Request,
                       "target": target, "target_progress": target_progress}
             if last_text:
                 fields["last_text"] = last_text
-            _progress_set(_pid, **fields)
+            tx_progress._progress_set(_pid, **fields)
 
         def _on_download(done, total):
             frac = (done / total) if total else None
             jobs.job_update(request_id, stage="downloading", progress=frac,
                             total_bytes=total or None)
-            _progress_set(_pid, stage="downloading", progress=frac,
+            tx_progress._progress_set(_pid, stage="downloading", progress=frac,
                           total_bytes=total or None)
 
         def _record_run(status: str, exc: "BaseException | None" = None,
@@ -4391,10 +4029,10 @@ async def translate_text(request: Request,
             secs = round(time.perf_counter() - _t0, 3)
             if _job_row and status != "ok":
                 # The success tail stamps `done` with the payload itself.
-                _jobs_finish_sync(
+                tx_progress._jobs_finish_sync(
                     _pid, status=status,
                     error=(str(exc) if isinstance(exc, _tr.TranslationError)
-                           else _job_error_text(status, exc,
+                           else tx_progress._job_error_text(status, exc,
                                                 "translation failed")),
                     plan=_rplan.snapshot()["plan"], model=(_tr_model or None))
                 _job_finished = True
@@ -4441,18 +4079,18 @@ async def translate_text(request: Request,
                                device=_tr._resolve_device(), mode=mode,
                                source_lang=(source or None))
         if _pid:
-            _RUN_PLAN_BY_PID[_pid] = _rplan
-        _progress_set(_pid, stage="translating", progress=0.0,
+            tx_progress._RUN_PLAN_BY_PID[_pid] = _rplan
+        tx_progress._progress_set(_pid, stage="translating", progress=0.0,
                       model=(_tr_model or None),
                       device=_tr._resolve_device(), compute="gguf",
                       owner=(user.get("user_id") or user.get("key_id")))
-        _job_row = _jobs_start(
+        _job_row = tx_progress._jobs_start(
             _pid, request_id=request_id, kind="translate",
             user_id=(user.get("user_id") or None), key_id=user.get("key_id"),
             model=(_tr_model or None), source_kind="text",
             source_name=f"{len(seg_in)} segments → {','.join(targets)}")
         try:
-            _check_cancelled(_pid)
+            tx_progress._check_cancelled(_pid)
 
             async def _run_translation():
                 return await _tr.translate_segments(
@@ -4463,7 +4101,7 @@ async def translate_text(request: Request,
                     glossary=glossary,
                     context_segments=context_segments,
                     progress_cb=_on_progress,
-                    cancel_check=lambda: _cancel_requested(_pid),
+                    cancel_check=lambda: tx_progress._cancel_requested(_pid),
                     download_cb=_on_download,
                 )
             # Same policy as the batch stage: the GPU inference semaphore is
@@ -4471,14 +4109,14 @@ async def translate_text(request: Request,
             # CPU run must not occupy a GPU slot for its duration.
             if _tr._resolve_device() == "cuda":
                 async with tx_models.get_inference_semaphore():
-                    _check_cancelled(_pid)
+                    tx_progress._check_cancelled(_pid)
                     per_seg, warnings, meta = await _run_translation()
             else:
                 per_seg, warnings, meta = await _run_translation()
             _receipt_claimed_below = True
         except _tr.TranslationCancelled:
-            raise _ClientCancelled() from None
-    except _ClientCancelled:
+            raise tx_progress._ClientCancelled() from None
+    except tx_progress._ClientCancelled:
         logger.info("[translate] req=%s ✗ cancelled after %.1fs",
                     request_id[:8], time.perf_counter() - _t0)
         tx_receipt._release_held_receipt(
@@ -4537,13 +4175,13 @@ async def translate_text(request: Request,
                 f"connection closed after {time.perf_counter() - _t0:.1f}s")
         jobs.job_end(request_id)
         if _pid:
-            _progress_close(_pid)
-            _RUN_PLAN_BY_PID.pop(_pid, None)
+            tx_progress._progress_close(_pid)
+            tx_progress._RUN_PLAN_BY_PID.pop(_pid, None)
         # Catch-all for the paths that never reached _record_run: the
         # HTTPException arm and a disconnect unwinding past every arm. The
         # success path claims below, so it is excluded here.
         if _job_row and not _job_finished and not _receipt_claimed_below:
-            _jobs_finish_sync(_pid, status="error", error="request aborted",
+            tx_progress._jobs_finish_sync(_pid, status="error", error="request aborted",
                               model=(_tr_model or None))
             _job_finished = True
 
@@ -4656,7 +4294,7 @@ async def translate_text(request: Request,
     }
     if _job_row:
         # Text results are small (segments in, translations out) — inline.
-        _jobs_finish_sync(_pid, status="ok", payload=_result,
+        tx_progress._jobs_finish_sync(_pid, status="ok", payload=_result,
                           plan=_result["plan"], model=(meta.get("model") or _tr_model or None))
     # Teach the rates ledger — off the loop (a locked, fsync'd file rewrite)
     # and LAST, so a cancellation landing on this await skips nothing.
@@ -4665,62 +4303,6 @@ async def translate_text(request: Request,
     except Exception:  # noqa: BLE001 — never fail on a ledger write
         pass
     return _result
-
-
-def _progress_entry_for(progress_id: str, user: dict) -> "dict | None":
-    """The _BATCH_PROGRESS entry for `progress_id` IF this caller may see it.
-    An entry stamped with an `owner` that is not this caller reads exactly
-    like a miss (no existence oracle) unless the caller is an admin (the
-    /stats activity popover cancels other users' jobs); an owner-less entry
-    (tests / legacy seeds) stays accessible to any authenticated caller."""
-    entry = _BATCH_PROGRESS.get(progress_id)
-    if entry is None:
-        return None
-    _owner = entry.get("owner")
-    if (_owner and not user.get("is_admin")
-            and _owner not in (user.get("user_id"), user.get("key_id"))):
-        return None
-    return entry
-
-
-def _progress_payload(pid: str, entry: dict) -> dict:
-    """The progress route's wire shape for a live entry — also embedded
-    under `progress` by GET /v1/jobs/{id} while the run is in flight."""
-    return {
-        "stage": entry.get("stage"),
-        "progress": entry.get("progress"),
-        "duration": entry.get("duration"),
-        # Rich run-panel fields (all optional, stage-scoped): seconds of
-        # audio decoded, the diarization pipeline's current step, the last
-        # decoded segment's text, and the active stage's model/device.
-        "position": entry.get("position"),
-        "step": entry.get("step"),
-        "last_text": entry.get("last_text"),
-        "model": entry.get("model"),
-        "device": entry.get("device"),
-        "compute": entry.get("compute"),
-        # Fraction of the audio the VAD kept (0..1), set once decoding starts;
-        # null when the filter was off. Persists for the rest of the run.
-        "vad_retained": entry.get("vad_retained"),
-        # URL flow, downloading stage: bytes expected (progress is the
-        # downloaded fraction when this is known; null on fragmented streams).
-        "total_bytes": entry.get("total_bytes"),
-        # Requested stages this server declined to run (feature disabled) —
-        # "separating" / "diarizing" / "translating". Set the moment the skip
-        # is known, so the client's rail can say "skipped" instead of guessing.
-        "skipped": entry.get("skipped"),
-        # Translation ticks: the language being translated and how far
-        # along it is (0..1 within that language).
-        "target": entry.get("target"),
-        "target_progress": entry.get("target_progress"),
-        # keep_video runs: the secondary video download's own state (see
-        # _video_state) — null unless a video was requested.
-        "video": entry.get("video"),
-        # The server-owned plan (core/run_plan.py): per-stage expected /
-        # actual seconds, per-language units, and the overall fraction +
-        # ETA the client renders verbatim.
-        **_plan_fields(pid),
-    }
 
 
 @app.get("/v1/audio/transcriptions/progress/{progress_id}")
@@ -4736,12 +4318,12 @@ async def transcription_progress(progress_id: str,
     "translating"). An unknown/finished id answers stage "unknown" — the
     POST's own response is the completion signal, so the poller just
     stops."""
-    if not _PROGRESS_ID_RE.match(progress_id):
+    if not tx_progress._PROGRESS_ID_RE.match(progress_id):
         raise HTTPException(status_code=422, detail="malformed progress_id")
-    entry = _progress_entry_for(progress_id, user)
+    entry = tx_progress._progress_entry_for(progress_id, user)
     if entry is None:
         return {"stage": "unknown"}
-    return _progress_payload(progress_id, entry)
+    return tx_progress._progress_payload(progress_id, entry)
 
 
 @app.post("/v1/audio/transcriptions/cancel/{progress_id}")
@@ -4755,11 +4337,11 @@ async def transcription_cancel(progress_id: str,
     between demix chunks / decoded segments / pyannote steps, so the abort
     lands within a chunk, not instantly. Only ids currently in flight are
     accepted; an unknown/finished id answers cancelled=false."""
-    if not _PROGRESS_ID_RE.match(progress_id):
+    if not tx_progress._PROGRESS_ID_RE.match(progress_id):
         raise HTTPException(status_code=422, detail="malformed progress_id")
-    if _progress_entry_for(progress_id, user) is None:
+    if tx_progress._progress_entry_for(progress_id, user) is None:
         return {"cancelled": False}
-    _BATCH_CANCELLED.add(progress_id)
+    tx_progress._BATCH_CANCELLED.add(progress_id)
     logger.info("[batch] cancel requested for an in-flight transcription")
     return {"cancelled": True}
 
@@ -4803,7 +4385,7 @@ def _job_wire(row: dict) -> dict:
 
 
 def _jobs_gate(user: dict, request: Request) -> None:
-    if not _jobs_enabled():
+    if not tx_progress._jobs_enabled():
         raise HTTPException(status_code=403,
                             detail="server jobs are not enabled on this server")
     _jobs_rate.hit(_rl.identity_key(user, request))
@@ -4813,7 +4395,7 @@ def _job_for_caller(job_id: str, user: dict, request: Request) -> dict:
     """The row for `job_id` if this caller may see it, else 404 (unknown,
     expired and foreign all read the same); 422 on a malformed id."""
     _jobs_gate(user, request)
-    if not _PROGRESS_ID_RE.match(job_id):
+    if not tx_progress._PROGRESS_ID_RE.match(job_id):
         raise HTTPException(status_code=422, detail="malformed job id")
     row = _jobs_store.get(job_id)
     if (row is None or float(row.get("expires_ts") or 0) < time.time()
@@ -4876,8 +4458,8 @@ async def job_get(job_id: str, request: Request,
     when it runs in a sibling worker process."""
     row = _job_for_caller(job_id, user, request)
     out = _job_wire(row)
-    entry = _progress_entry_for(job_id, user)
-    out["progress"] = (_progress_payload(job_id, entry)
+    entry = tx_progress._progress_entry_for(job_id, user)
+    out["progress"] = (tx_progress._progress_payload(job_id, entry)
                        if entry is not None else None)
     return _JSONResponse(out, headers={"Cache-Control": "no-store"})
 
@@ -4909,10 +4491,10 @@ async def job_delete(job_id: str, request: Request,
     and its stored result."""
     row = _job_for_caller(job_id, user, request)
     if row.get("state") == "running":
-        if _progress_entry_for(job_id, user) is None:
+        if tx_progress._progress_entry_for(job_id, user) is None:
             # Hosted by a sibling worker, or the entry was cap-evicted.
             return {"cancelled": False}
-        _BATCH_CANCELLED.add(job_id)
+        tx_progress._BATCH_CANCELLED.add(job_id)
         logger.info("[jobs] cancel requested for an in-flight run")
         return {"cancelled": True}
     return {"deleted": bool(_jobs_store.delete(job_id))}
@@ -5060,13 +4642,13 @@ async def _download_video_for_run(pid: "str | None", url: str, rung: dict, *,
         if mirror_stage and state["state"] in ("queued", "downloading"):
             extra = {"stage": "downloading", "progress": state["progress"],
                      "total_bytes": state["total_bytes"]}
-        _progress_set(pid, video=dict(state), **extra)
+        tx_progress._progress_set(pid, video=dict(state), **extra)
 
     try:
         _pub(state="queued")
         with _url_staging_job() as job:
             async with tx_models._get_url_download_semaphore():
-                if _cancel_requested(pid):
+                if tx_progress._cancel_requested(pid):
                     raise _udl.UrlCancelled()
                 _pub(state="downloading")
                 path = await _udl.download_video(
@@ -5080,7 +4662,7 @@ async def _download_video_for_run(pid: "str | None", url: str, rung: dict, *,
                     progress_cb=lambda f, tot, done: _pub(
                         state="downloading", progress=f, total_bytes=tot,
                         downloaded_bytes=done),
-                    cancel_check=lambda: _cancel_requested(pid))
+                    cancel_check=lambda: tx_progress._cancel_requested(pid))
             # Report the container that LANDED: an un-merged single download
             # keeps the site's own extension (a webm behind an "mkv" rung), and
             # the client names its export after this field.
@@ -5131,7 +4713,7 @@ async def _download_video_for_run(pid: "str | None", url: str, rung: dict, *,
         if pid:
             _VIDEO_TASKS.pop(pid, None)
             if run_finished[0]:
-                _progress_close(pid)
+                tx_progress._progress_close(pid)
     if pid and job_row and run_finished[0]:
         # The handler stored `source_video_pending`; a client re-attaching
         # via /v1/jobs/{id}/result needs the outcome. (A cancelled task
@@ -5394,22 +4976,22 @@ async def _url_media_on_demand(user: dict, body: dict, url: str, what: str,
     then `await fetch(pid, validated_url, info)` for the route's own work
     and answer. Client-safe errors only: policy/download 400, cancel 499."""
     from faster_whisper_backend.url import download as _udl
-    _pid = _claim_progress_id(body.get("progress_id"))
+    _pid = tx_progress._claim_progress_id(body.get("progress_id"))
     _user_id = user.get("user_id")
     _uhost = _url_host_for_log(url)
     request_id = uuid.uuid4().hex
     jobs.job_start("download", id=request_id,
                    user=user.get("username") or _user_id, key=user.get("key_id"),
                    user_id=_user_id, detail=f"{what} · {_uhost}")
-    _bind_job_pid(_pid, request_id)
+    tx_progress._bind_job_pid(_pid, request_id)
     logger.info("[url-dl] %s requested on demand (host %s)", what, _uhost)
     try:
-        _progress_set(_pid, stage="resolving", progress=None,
+        tx_progress._progress_set(_pid, stage="resolving", progress=None,
                       owner=(_user_id or user.get("key_id")))
-        _check_cancelled(_pid)
+        tx_progress._check_cancelled(_pid)
         info = await _probe_link(url, what)
         return await fetch(_pid, info.url, info)
-    except (_ClientCancelled, _udl.UrlCancelled):
+    except (tx_progress._ClientCancelled, _udl.UrlCancelled):
         raise HTTPException(status_code=499, detail="cancelled by the client")
     except _udl.UrlDownloadError as e:
         # str() is client-safe by the module's contract.
@@ -5424,8 +5006,8 @@ async def _url_media_on_demand(user: dict, body: dict, url: str, what: str,
         raise HTTPException(status_code=500, detail=f"{what} failed")
     finally:
         if _pid:
-            _progress_close(_pid)
-            _JOB_BY_PID.pop(_pid, None)
+            tx_progress._progress_close(_pid)
+            tx_progress._JOB_BY_PID.pop(_pid, None)
         jobs.job_end(request_id)
 
 
@@ -5448,14 +5030,14 @@ async def _guarded_audio_download(pid: "str | None", url: str, dest_dir: str,
     its cancel. Raises UrlDownloadError / UrlCancelled / _ClientCancelled."""
     from faster_whisper_backend.url import download as _udl
     async with tx_models._get_url_download_semaphore():
-        _check_cancelled(pid)
-        _progress_set(pid, stage="downloading", progress=None)
+        tx_progress._check_cancelled(pid)
+        tx_progress._progress_set(pid, stage="downloading", progress=None)
         return await _udl.download(
             url, dest_dir=dest_dir, max_bytes=max_bytes,
             timeout=float(getattr(cfg, "URL_DOWNLOAD_TIMEOUT_S", 900)),
-            progress_cb=lambda f, tot: _progress_set(
+            progress_cb=lambda f, tot: tx_progress._progress_set(
                 pid, stage="downloading", progress=f, total_bytes=tot),
-            cancel_check=lambda: _cancel_requested(pid))
+            cancel_check=lambda: tx_progress._cancel_requested(pid))
 
 
 async def _download_link_audio(pid: "str | None", url: str,
@@ -5495,19 +5077,19 @@ async def _segmented_pieces(pid: "str | None", url: str, source: dict,
     try:
         with _url_staging_job() as job:
             async with tx_models._get_url_download_semaphore():
-                _check_cancelled(pid)
-                _progress_set(pid, stage="downloading", progress=None)
+                tx_progress._check_cancelled(pid)
+                tx_progress._progress_set(pid, stage="downloading", progress=None)
                 files, got = await _seg.fetch_pieces(
                     source, starts, seconds, job,
-                    cancel_check=lambda: _cancel_requested(pid),
-                    progress_cb=lambda f: _progress_set(
+                    cancel_check=lambda: tx_progress._cancel_requested(pid),
+                    progress_cb=lambda f: tx_progress._progress_set(
                         pid, stage="downloading", progress=f))
             audio = await asyncio.to_thread(lambda: [
                 _transcode.decode_span_16k(path, skip, seconds)
                 for path, skip in files])
         if not all(len(a) for a in audio):
             raise _seg.Unsupported("a piece decoded empty")
-    except (_ClientCancelled, _udl.UrlCancelled):
+    except (tx_progress._ClientCancelled, _udl.UrlCancelled):
         raise
     except Exception as e:  # noqa: BLE001 — any failure: the full download
         why = (str(e) if isinstance(e, (_seg.Unsupported, _udl.UrlDownloadError))
@@ -5545,7 +5127,7 @@ async def url_media_video(request: Request,
         if rung.get("over_cap"):
             raise HTTPException(status_code=400,
                                 detail="the video exceeds the server's size limit")
-        _progress_set(pid, stage="downloading", progress=None,
+        tx_progress._progress_set(pid, stage="downloading", progress=None,
                       total_bytes=rung.get("approx_bytes"),
                       step=(info.extractor_key or None))
         state = await _download_video_for_run(
@@ -5642,17 +5224,17 @@ async def url_language(request: Request,
                             _log_safe(type(e).__name__))
                 raise _udl.UrlDownloadError(
                     "the link's audio could not be decoded") from None
-        _progress_set(pid, stage="waiting", progress=None)
+        tx_progress._progress_set(pid, stage="waiting", progress=None)
         model = await tx_models._get_or_load_model(model_name, lease=True)
         try:
-            _check_cancelled(pid)
+            tx_progress._check_cancelled(pid)
             _w0 = time.perf_counter()
             async with tx_models.get_inference_semaphore():
                 wait_s = time.perf_counter() - _w0
                 heard = []
                 for i, piece in enumerate(audio):
-                    _check_cancelled(pid)
-                    _progress_set(pid, stage="transcribing", step="language",
+                    tx_progress._check_cancelled(pid)
+                    tx_progress._progress_set(pid, stage="transcribing", step="language",
                                   progress=i / len(audio), model=model_name)
                     heard.append(await asyncio.to_thread(_detect, model, piece))
         finally:
@@ -6116,9 +5698,9 @@ async def whoami_capabilities(user: dict = Depends(_get_current_user_dep)):
         and getattr(cfg, "URL_SUBTITLES_ENABLED", False))
     # Additive: the durable job resource (GET/DELETE /v1/jobs*). The flag is
     # always present; the detail block rides only when on.
-    caps["jobs_enabled"] = _jobs_enabled()
+    caps["jobs_enabled"] = tx_progress._jobs_enabled()
     if caps["jobs_enabled"]:
-        caps["jobs"] = {"ttl_s": int(_jobs_ttl_s())}
+        caps["jobs"] = {"ttl_s": int(tx_progress._jobs_ttl_s())}
     # Additive: subtitle packaging (POST /v1/audio/media{,/{id}/package}).
     # The flag is always present; the detail block rides only when the
     # feature is on — its `reason` says why ffmpeg cannot (a stripped build).
@@ -6162,7 +5744,7 @@ async def whoami_capabilities(user: dict = Depends(_get_current_user_dep)):
     caps["translation_enabled"] = bool(
         getattr(cfg, "TRANSLATION_ENABLED", False))
     if caps["translation_enabled"]:
-        _t_default = _translation_default_model()
+        _t_default = tr_gating._translation_default_model()
         # "languages": the codes the model supports (TRANSLATION_LANGUAGES
         # override, else its family table ∪ model card), null = unknown.
         caps["translation_models"] = [

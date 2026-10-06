@@ -6,7 +6,7 @@ pyannote pipeline during those minutes costs nothing, while loading it after
 the decode adds its full wall-clock to the job. Two callers drive the same
 mechanism: a client that POSTs its intended pipeline up front
 (``preload_routes``) and the server itself, which registers the resolved stage
-plan of every batch job and advances it from ``main._progress_set``.
+plan of every batch job and advances it from ``tx_progress._progress_set``.
 
 Precedence: JOB LEASE > WARM LEASE > nothing. A warm lease makes a model
 ineligible for the idle evictors and for preload-driven eviction, and that is
@@ -185,7 +185,7 @@ def is_resident(family: str, model_id: str) -> bool:
         if family == "whisper":
             return mid in tx_models._loaded_models
         if family == "translation":
-            from faster_whisper_backend.audio import translation
+            from faster_whisper_backend.translation import engine as translation
             return mid in translation._models
         if family == "diarization":
             from faster_whisper_backend.audio import diarization
@@ -285,7 +285,7 @@ def _placement(family: str, model_id: str = "") -> "tuple[str, str]":
         # landed on (a cuda request may have fallen back to cpu).
         return (bgm_separation.actual_device()
                 or bgm_separation._resolve_device(), "onnx")
-    from faster_whisper_backend.audio import translation
+    from faster_whisper_backend.translation import engine as translation
     return (translation._resolve_device(), "gguf")
 
 
@@ -343,7 +343,7 @@ def _family_busy(family: str, model_id: str) -> bool:
                 return False
             return bool(bgm_separation._leases.get(key[0], 0))
         if family == "translation":
-            from faster_whisper_backend.audio import translation
+            from faster_whisper_backend.translation import engine as translation
             # A cold load runs OUTSIDE translation._lock and is not yet in
             # _models, so the cap check alone would admit a second multi-GB
             # load beside it (both VRAM measurements void, and with cap 1
@@ -369,7 +369,7 @@ def _cache_full(family: str) -> bool:
         cap = max(1, int(getattr(cfg, "MAX_LOADED_MODELS", 1) or 1))
         return len(tx_models._loaded_models) >= cap
     if family == "translation":
-        from faster_whisper_backend.audio import translation
+        from faster_whisper_backend.translation import engine as translation
         cap = max(1, int(getattr(cfg, "TRANSLATION_MAX_LOADED_MODELS", 1) or 1))
         return len(translation._models) >= cap
     return False
@@ -407,7 +407,7 @@ def _idle_peer(family: str, model_id: str) -> "str | None":
                     return name
             return None
         if family == "translation":
-            from faster_whisper_backend.audio import translation
+            from faster_whisper_backend.translation import engine as translation
             for ref in translation._models:
                 if ref == mid or translation._active.get(ref, 0):
                     continue
@@ -775,7 +775,7 @@ def on_stage_start(plan_id: str, stage: str) -> None:
     """A stage of the owning job just started: advance the cursor and warm the
     next model.
 
-    MUST NOT await — the only caller is ``main._progress_set``, which runs on
+    MUST NOT await — the only caller is ``tx_progress._progress_set``, which runs on
     executor threads. Everything after the lock is a ``call_soon_threadsafe``
     hand-off to the loop, and the whole body is wrapped: progress reporting
     must never break a request, the stance every progress callback in this tree
@@ -790,7 +790,7 @@ def on_stage_start(plan_id: str, stage: str) -> None:
             if plan is None or plan.dead or not plan.stage_ahead:
                 return
             # Restamp on every progress tick of the owning job
-            # (main._progress_set replays the current stage on stage-less
+            # (tx_progress._progress_set replays the current stage on stage-less
             # ticks), advancing or not: a long job keeps its plan alive for
             # free, which is the whole reason the TTL can be as short as
             # three minutes.
@@ -930,7 +930,7 @@ async def _load(family: str, model_id: str) -> None:
         from faster_whisper_backend.audio import bgm_separation
         await bgm_separation._get_separator(mid)
     elif family == "translation":
-        from faster_whisper_backend.audio import translation
+        from faster_whisper_backend.translation import engine as translation
         await translation._get_model(mid)
 
 
@@ -943,7 +943,7 @@ async def _evict(family: str, peer_id: str) -> None:
         async with tx_models._model_load_lock:
             tx_models._drop_loaded_model(peer_id)
     elif family == "translation":
-        from faster_whisper_backend.audio import translation
+        from faster_whisper_backend.translation import engine as translation
         async with translation._lock:
             translation._drop_locked(peer_id)
     elif family == "diarization":

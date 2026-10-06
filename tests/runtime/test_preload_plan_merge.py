@@ -312,7 +312,7 @@ def test_translation_full_cache_with_only_a_warm_peer_is_family_busy(
     so the same refusal applies."""
     _enable(monkeypatch, TRANSLATION_MAX_LOADED_MODELS=1)
     _fits(monkeypatch, (True, None))
-    from faster_whisper_backend.audio import translation
+    from faster_whisper_backend.translation import engine as translation
     monkeypatch.setattr(translation, "_models", {"o/peer:Q4": object()})
     monkeypatch.setattr(translation, "_active", {})
     system_stats.set_warm_predicate(lambda k: k == "gguf:o/peer:Q4")
@@ -334,7 +334,7 @@ def test_worker_evicts_the_cold_translation_peer_it_chose_even_when_it_fits(
         monkeypatch):
     _enable(monkeypatch, TRANSLATION_MAX_LOADED_MODELS=1)
     _fits(monkeypatch, (True, None))
-    from faster_whisper_backend.audio import translation
+    from faster_whisper_backend.translation import engine as translation
     monkeypatch.setattr(translation, "_models", {"o/peer:Q4": object()})
     monkeypatch.setattr(translation, "_active", {})
     system_stats.set_warm_predicate(None)

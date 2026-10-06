@@ -10,7 +10,9 @@ import time
 
 from faster_whisper_backend.audio import bgm_separation
 from faster_whisper_backend.audio import diarization
-from faster_whisper_backend.audio import translation
+from faster_whisper_backend.translation import engine as translation
+from faster_whisper_backend.translation import gating as tr_gating
+from faster_whisper_backend.transcription import progress as tx_progress
 
 _FILE = {"file": ("a.wav", b"RIFFxxxxWAVE", "audio/wav")}
 
@@ -105,18 +107,18 @@ def test_diarization_model_allowlist_miss_skips_stage(client, app_module,
     _stub_diarize(monkeypatch, calls)
     pid = "abcd" * 8
     seen = {}
-    orig = app_module._progress_set
+    orig = tx_progress._progress_set
 
     def spy(p, **fields):
         orig(p, **fields)
         if p == pid:
-            seen.update(app_module._BATCH_PROGRESS.get(pid) or {})
-    app_module._progress_set = spy
+            seen.update(tx_progress._BATCH_PROGRESS.get(pid) or {})
+    tx_progress._progress_set = spy
     try:
         r = _post(client, diarize="true", progress_id=pid,
                   diarization_model="pyannote/speaker-diarization-3.1")
     finally:
-        app_module._progress_set = orig
+        tx_progress._progress_set = orig
     assert r.status_code == 200, r.text
     body = r.json()
     assert calls == []
@@ -246,7 +248,7 @@ def test_translation_model_allowed_shape_checks_client_ref(app_module,
     monkeypatch.setattr(cfg, "TRANSLATION_ALLOWED_MODELS", set(),
                         raising=False)
     monkeypatch.setattr(cfg, "TRANSLATION_DEFAULT_MODEL", "", raising=False)
-    allowed = app_module._translation_model_allowed
+    allowed = tr_gating._translation_model_allowed
     assert allowed("../../etc/passwd", requested="../../etc/passwd") is False
     assert allowed("a" * 200, requested="a" * 200) is False
     assert allowed("no-slash", requested="no-slash") is False
@@ -453,7 +455,7 @@ def _plan_with_stub_queue(app_module, monkeypatch, entries, pid="ab" * 8):
 
     plan = preload.register_plan("u", entries, plan_id=pid)
     enqueued.clear()          # registration's own admissions are not the test
-    app_module._PLAN_BY_PID[pid] = plan["plan_id"]
+    tx_progress._PLAN_BY_PID[pid] = plan["plan_id"]
     return preload, enqueued
 
 
@@ -465,14 +467,14 @@ def test_stage_ahead_cursor_is_monotone(app_module, monkeypatch):
         app_module, monkeypatch,
         [("separation", "UVR-A"), ("diarization", "p/x")], pid=pid)
 
-    app_module._progress_set(pid, stage="separating")
+    tx_progress._progress_set(pid, stage="separating")
     assert [e[1:] for e in enqueued] == [("diarization", "p/x")]
 
     enqueued.clear()
-    app_module._progress_set(pid, stage="diarizing")
+    tx_progress._progress_set(pid, stage="diarizing")
     assert enqueued == []       # nothing left past the cursor
 
-    app_module._progress_set(pid, stage="separating")
+    tx_progress._progress_set(pid, stage="separating")
     assert enqueued == []       # replayed stage: the cursor never walks back
     assert preload._plans[pid].cursor == preload.STAGE_INDEX["diarizing"]
 
@@ -486,12 +488,12 @@ def test_waiting_and_analyzing_map_to_the_transcribing_index(app_module,
         app_module, monkeypatch,
         [("diarization", "p/x"), ("translation", "o/r:Q4")], pid=pid)
 
-    app_module._progress_set(pid, stage="waiting")
+    tx_progress._progress_set(pid, stage="waiting")
     assert preload._plans[pid].cursor == preload.STAGE_INDEX["transcribing"]
     assert [e[1:] for e in enqueued] == [("diarization", "p/x")]
 
     enqueued.clear()
-    app_module._progress_set(pid, stage="analyzing")
+    tx_progress._progress_set(pid, stage="analyzing")
     # Same index — not an advance, so no second enqueue.
     assert preload._plans[pid].cursor == preload.STAGE_INDEX["transcribing"]
     assert enqueued == []
@@ -505,12 +507,12 @@ def test_stageless_progress_tick_restamps_the_plan_ttl(app_module, monkeypatch):
     preload, enqueued = _plan_with_stub_queue(
         app_module, monkeypatch,
         [("diarization", "p/x"), ("translation", "o/r:Q4")], pid=pid)
-    app_module._progress_set(pid, stage="transcribing")
+    tx_progress._progress_set(pid, stage="transcribing")
     enqueued.clear()
     plan = preload._plans[pid]
     plan.expires_mono = 0.0
 
-    app_module._progress_set(pid, progress=0.5, position=1.0, last_text="x")
+    tx_progress._progress_set(pid, progress=0.5, position=1.0, last_text="x")
 
     assert plan.expires_mono > time.monotonic()
     assert plan.cursor == preload.STAGE_INDEX["transcribing"]
@@ -525,5 +527,5 @@ def test_stage_ahead_is_a_no_op_without_a_bound_plan(app_module, monkeypatch):
     calls = []
     monkeypatch.setattr(preload, "on_stage_start",
                         lambda *a: calls.append(a))
-    app_module._progress_set("ef" * 8, stage="transcribing")
+    tx_progress._progress_set("ef" * 8, stage="transcribing")
     assert calls == []

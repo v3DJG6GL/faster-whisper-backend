@@ -15,6 +15,7 @@ from faster_whisper_backend.url import download as url_download
 from faster_whisper_backend.url import media_store as url_media_store
 from faster_whisper_backend.url.download import UrlDownloadError, UrlMediaInfo
 from faster_whisper_backend.transcription import models as tx_models
+from faster_whisper_backend.transcription import progress as tx_progress
 
 _FILE = {"file": ("a.wav", b"RIFFxxxxWAVE", "audio/wav")}
 _PID = "beef" * 8
@@ -172,7 +173,7 @@ def test_progress_sees_downloading_stage(client, url_enabled):
     async def _spying_download(url, **kw):
         # capture the live progress entry the moment the stub reports bytes
         result = await orig_download(url, **kw)
-        seen.update(url_enabled._BATCH_PROGRESS.get(_PID) or {})
+        seen.update(tx_progress._BATCH_PROGRESS.get(_PID) or {})
         return result
 
     url_download.download = _spying_download
@@ -216,13 +217,13 @@ def test_download_error_is_400_not_500(client, url_enabled, monkeypatch):
 
 
 def test_precancelled_url_request_is_499(client, url_enabled):
-    url_enabled._BATCH_CANCELLED.add(_PID)
+    tx_progress._BATCH_CANCELLED.add(_PID)
     try:
         r = _post_url(client, progress_id=_PID)
         assert r.status_code == 499, r.text
-        assert _PID not in url_enabled._BATCH_CANCELLED
+        assert _PID not in tx_progress._BATCH_CANCELLED
     finally:
-        url_enabled._BATCH_CANCELLED.discard(_PID)
+        tx_progress._BATCH_CANCELLED.discard(_PID)
 
 
 def test_malformed_url_is_400(client, url_enabled):
@@ -519,7 +520,7 @@ def test_keep_video_pending_then_progress_reports_done(client, video_enabled):
     r = _post_url(client, keep_video="true", progress_id=_PID)
     assert r.status_code == 200, r.text
     assert r.json().get("source_video_pending") is True
-    entry = video_enabled._BATCH_PROGRESS.get(_PID)
+    entry = tx_progress._BATCH_PROGRESS.get(_PID)
     assert entry is not None, "the handler must leave the entry to the video task"
     assert entry["video"]["state"] == "downloading"
     assert entry["video"]["progress"] == 0.4
@@ -618,7 +619,7 @@ def test_on_demand_video_route(client, video_enabled):
     assert len(body["media_id"]) == 32
     assert body["height"] == 720 and body["container"] == "mp4"
     assert body["expires_at"] > 0 and body["bytes"] == len(b"video-bytes" * 8)
-    assert _PID not in video_enabled._BATCH_PROGRESS
+    assert _PID not in tx_progress._BATCH_PROGRESS
     assert client.get(f"/v1/audio/url-media/{body['media_id']}").status_code == 200
     # Validation and gates.
     assert client.post("/v1/audio/url-media/video", json={}).status_code == 422
@@ -668,23 +669,23 @@ def test_on_demand_audio_route(client, url_enabled):
     assert body["bytes"] == len(b"m4a-bytes" * 8) and body["expires_at"] > 0
     entry = url_media_store.resolve_entry(body["media_id"], user_id=None)
     assert entry["kind"] == "audio" and entry["source_url"] == _URL
-    assert _PID not in url_enabled._BATCH_PROGRESS
+    assert _PID not in tx_progress._BATCH_PROGRESS
     assert client.post("/v1/audio/url-media/audio", json={}).status_code == 422
 
 
 def test_on_demand_in_flight_progress_id_is_treated_as_absent(client, url_enabled,
                                                                caplog):
     caplog.set_level("INFO", logger="whisper-api")
-    url_enabled._BATCH_PROGRESS[_PID] = {"stage": "transcribing", "owner": "other",
+    tx_progress._BATCH_PROGRESS[_PID] = {"stage": "transcribing", "owner": "other",
                                          "updated": 0}
     try:
         r = client.post("/v1/audio/url-media/audio",
                         json={"url": _URL, "progress_id": _PID})
         assert r.status_code == 200, r.text
         assert "id already in flight" in caplog.text
-        assert url_enabled._BATCH_PROGRESS[_PID]["owner"] == "other"
+        assert tx_progress._BATCH_PROGRESS[_PID]["owner"] == "other"
     finally:
-        url_enabled._BATCH_PROGRESS.pop(_PID, None)
+        tx_progress._BATCH_PROGRESS.pop(_PID, None)
 
 
 def test_on_demand_audio_errors(client, url_enabled, monkeypatch):
@@ -867,7 +868,7 @@ def test_language_check_votes_and_keeps_the_audio(client, url_enabled, lang_chec
     entry = url_media_store.resolve_entry(body["media_id"], user_id=None)
     assert entry["kind"] == "audio" and entry["source_url"] == _URL
     assert body["media_expires_at"] > 0
-    assert _PID not in url_enabled._BATCH_PROGRESS
+    assert _PID not in tx_progress._BATCH_PROGRESS
 
 
 def test_language_check_cancel_between_pieces(client, url_enabled, lang_check,
@@ -875,7 +876,7 @@ def test_language_check_cancel_between_pieces(client, url_enabled, lang_check,
     real = type(lang_check).detect_language
 
     def _detect(self, audio=None, **kw):
-        url_enabled._BATCH_CANCELLED.add(_PID)       # the cancel route's flag
+        tx_progress._BATCH_CANCELLED.add(_PID)       # the cancel route's flag
         return real(self, audio=audio, **kw)
     monkeypatch.setattr(type(lang_check), "detect_language", _detect)
     r = client.post("/v1/audio/url-language", json={"url": _URL, "progress_id": _PID})
@@ -964,7 +965,7 @@ def test_language_check_falls_back_to_the_full_download(client, hls_link, caplog
 
 def test_language_check_cancel_during_the_segments_is_499(client, hls_link,
                                                           url_enabled):
-    hls_link.on_get = lambda: url_enabled._BATCH_CANCELLED.add(_PID)
+    hls_link.on_get = lambda: tx_progress._BATCH_CANCELLED.add(_PID)
     r = client.post("/v1/audio/url-language", json={"url": _URL, "progress_id": _PID})
     assert r.status_code == 499
     assert [u for u, _h in hls_link.calls] == [_HLS]

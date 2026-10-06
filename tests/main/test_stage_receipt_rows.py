@@ -13,7 +13,7 @@ import pytest
 
 from faster_whisper_backend.audio import bgm_separation
 from faster_whisper_backend.audio import diarization
-from faster_whisper_backend.audio import translation
+from faster_whisper_backend.translation import engine as translation
 from tests.conftest import FakeModel
 from faster_whisper_backend.transcription import models as tx_models
 from faster_whisper_backend.transcription import receipt as tx_receipt

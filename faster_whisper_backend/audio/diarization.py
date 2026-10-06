@@ -498,9 +498,10 @@ async def diarize(path: str, *, num_speakers: "int | None" = None,
     :class:`DiarizeCancelled` out of this coroutine.
 
     The job lease is taken HERE, not in the caller — deliberately asymmetric
-    with translation.py, whose lease spans many completions and therefore has
-    to live in its handler. Diarization has exactly one entry point that both
-    loads and runs, so no handler code has to know about leases at all.
+    with translation/engine.py, whose lease spans many completions and
+    therefore has to live in its handler. Diarization has exactly one entry
+    point that both loads and runs, so no handler code has to know about
+    leases at all.
     """
     # Resolve ONCE, before the load: _resolve_model_id reads cfg at call time,
     # and an admin edit during the (unlocked, executor-long) load window would

@@ -7,7 +7,9 @@ import logging
 
 import pytest
 
-from faster_whisper_backend.audio import translation
+from faster_whisper_backend.translation import engine as translation
+from faster_whisper_backend.translation import gating as tr_gating
+from faster_whisper_backend.transcription import progress as tx_progress
 from tests._translation_helpers import (
     enable_translation as _enable,
     stub_translate as _stub_translate,
@@ -346,8 +348,8 @@ def test_progress_visible_and_cancel_honored(client, app_module, monkeypatch):
 
     async def _slow(segments, targets, *, progress_cb=None, cancel_check=None,
                     **kwargs):
-        seen["entry"] = dict(app_module._BATCH_PROGRESS.get(_PID) or {})
-        app_module._BATCH_CANCELLED.add(_PID)
+        seen["entry"] = dict(tx_progress._BATCH_PROGRESS.get(_PID) or {})
+        tx_progress._BATCH_CANCELLED.add(_PID)
         if cancel_check():
             raise translation.TranslationCancelled()
         raise AssertionError("cancel_check ignored the flagged id")
@@ -358,8 +360,8 @@ def test_progress_visible_and_cancel_honored(client, app_module, monkeypatch):
     assert seen["entry"].get("stage") == "translating"
     assert seen["entry"].get("progress") == 0.0
     # The finally cleaned both registries.
-    assert _PID not in app_module._BATCH_PROGRESS
-    assert _PID not in app_module._BATCH_CANCELLED
+    assert _PID not in tx_progress._BATCH_PROGRESS
+    assert _PID not in tx_progress._BATCH_CANCELLED
 
 
 def test_progress_wrapper_forwards_last_text_and_logs_receipts(
@@ -371,7 +373,7 @@ def test_progress_wrapper_forwards_last_text_and_logs_receipts(
 
     async def _fake(segments, targets, *, progress_cb=None, **kwargs):
         progress_cb(0.5, "en 1/2", "Hello there")
-        seen["entry"] = dict(app_module._BATCH_PROGRESS.get(_PID) or {})
+        seen["entry"] = dict(tx_progress._BATCH_PROGRESS.get(_PID) or {})
         per_seg = [{t: f"{seg['text']}-{t}" for t in targets}
                    for seg in segments]
         return per_seg, [], {"model": "org/d:Q4", "source": "", "mode": "fluent"}
@@ -399,12 +401,12 @@ def test_download_progress_is_published(client, app_module, monkeypatch):
     async def _fake(segments, targets, *, progress_cb=None, download_cb=None,
                     **kwargs):
         download_cb(0, 0)
-        seen["unknown_total"] = dict(app_module._BATCH_PROGRESS.get(_PID)
+        seen["unknown_total"] = dict(tx_progress._BATCH_PROGRESS.get(_PID)
                                      or {})
         download_cb(512, 2048)
-        seen["download"] = dict(app_module._BATCH_PROGRESS.get(_PID) or {})
+        seen["download"] = dict(tx_progress._BATCH_PROGRESS.get(_PID) or {})
         progress_cb(0.0, "en 1/1", None)
-        seen["after"] = dict(app_module._BATCH_PROGRESS.get(_PID) or {})
+        seen["after"] = dict(tx_progress._BATCH_PROGRESS.get(_PID) or {})
         per_seg = [{t: f"{seg['text']}-{t}" for t in targets}
                    for seg in segments]
         return per_seg, [], {"model": "org/d:Q4", "source": "", "mode": "fluent"}
@@ -422,13 +424,13 @@ def test_download_progress_is_published(client, app_module, monkeypatch):
 
 def test_progress_endpoint_serves_last_text(client, app_module):
     """The GET progress endpoint already whitelists last_text — verify."""
-    app_module._progress_set(_PID, stage="translating", last_text="the tail")
+    tx_progress._progress_set(_PID, stage="translating", last_text="the tail")
     try:
         r = client.get(f"/v1/audio/transcriptions/progress/{_PID}")
         assert r.status_code == 200
         assert r.json()["last_text"] == "the tail"
     finally:
-        app_module._BATCH_PROGRESS.pop(_PID, None)
+        tx_progress._BATCH_PROGRESS.pop(_PID, None)
 
 
 def test_failure_logs_terminal_line(client, app_module, monkeypatch, caplog):
@@ -610,11 +612,11 @@ def test_empty_translation_allowlist_admits_any_well_formed_ref(app_module,
     # allowlist is permissive — unlike the diarization/separation gates.
     monkeypatch.setattr(app_module.cfg, "TRANSLATION_ALLOWED_MODELS", set(),
                         raising=False)
-    assert app_module._translation_model_allowed(
+    assert tr_gating._translation_model_allowed(
         "someone/other:Q4", requested="someone/other:Q4") is True
     monkeypatch.setattr(app_module.cfg, "TRANSLATION_ALLOWED_MODELS",
                         {"org/a:Q4"}, raising=False)
-    assert app_module._translation_model_allowed(
+    assert tr_gating._translation_model_allowed(
         "someone/other:Q4", requested="someone/other:Q4") is False
 
 
@@ -630,8 +632,8 @@ def test_text_run_has_a_one_stage_plan_with_units(client, app_module,
         # What the progress route would answer right now (no nested HTTP
         # call from inside the server: read the same sources it reads).
         seen["progress"] = {
-            **dict(app_module._BATCH_PROGRESS.get(_PID) or {}),
-            **app_module._plan_fields(_PID)}
+            **dict(tx_progress._BATCH_PROGRESS.get(_PID) or {}),
+            **tx_progress._plan_fields(_PID)}
         per_seg = [{t: f"{seg['text']}-{t}" for t in targets}
                    for seg in segments]
         return per_seg, [], {"model": "org/d:Q4", "source": "", "mode": "fluent"}
@@ -650,7 +652,7 @@ def test_text_run_has_a_one_stage_plan_with_units(client, app_module,
     receipt = r.json()["plan"]
     assert receipt[0]["state"] == "done"
     assert receipt[0]["units"][0]["state"] == "done"
-    assert _PID not in app_module._RUN_PLAN_BY_PID
+    assert _PID not in tx_progress._RUN_PLAN_BY_PID
 
 
 def test_unheld_request_logs_a_standalone_receipt(client, app_module,
@@ -659,7 +661,7 @@ def test_unheld_request_logs_a_standalone_receipt(client, app_module,
     plain API caller) still gets ONE receipt block with the model, targets
     and identity — not just the progress lines."""
     _enable(app_module, monkeypatch)
-    from faster_whisper_backend.audio import translation
+    from faster_whisper_backend.translation import engine as translation
 
     async def _fake(segments, targets, *, progress_cb=None, download_cb=None,
                     **kwargs):

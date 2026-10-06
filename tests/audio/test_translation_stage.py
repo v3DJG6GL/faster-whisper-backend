@@ -5,7 +5,8 @@ monkeypatched at the exact boundary the handler uses (the test_diarization
 
 import json
 
-from faster_whisper_backend.audio import translation
+from faster_whisper_backend.translation import engine as translation
+from faster_whisper_backend.transcription import progress as tx_progress
 from tests.conftest import bearer
 
 _FILE = {"file": ("a.wav", b"RIFFxxxxWAVE", "audio/wav")}
@@ -38,12 +39,12 @@ def _stub_translate(monkeypatch, calls=None):
 
 
 def _progress_spy(app_module, seen, pid):
-    orig = app_module._progress_set
+    orig = tx_progress._progress_set
 
     def spy(p, **fields):
         orig(p, **fields)
         if p == pid:
-            seen.update(app_module._BATCH_PROGRESS.get(pid) or {})
+            seen.update(tx_progress._BATCH_PROGRESS.get(pid) or {})
 
     return orig, spy
 
@@ -123,11 +124,11 @@ def test_translation_disabled_soft_fails_with_progress_skip(
     _stub_translate(monkeypatch, calls=calls)
     seen = {}
     orig, spy = _progress_spy(app_module, seen, _PID)
-    app_module._progress_set = spy
+    tx_progress._progress_set = spy
     try:
         r = _post(client, translate_to="en", progress_id=_PID)
     finally:
-        app_module._progress_set = orig
+        tx_progress._progress_set = orig
     assert r.status_code == 200, r.text
     body = r.json()
     assert calls == []
@@ -325,8 +326,8 @@ def test_translation_progress_forwards_target_fields_into_plan_units(
     async def _fake(segments, targets, *, progress_cb=None, **kwargs):
         progress_cb(0.5, "en 1/1", "Hallo", target="en", target_progress=1.0)
         progress_cb(0.6, "fr 1/2", "Salut", target="fr", target_progress=0.5)
-        seen["entry"] = dict(app_module._BATCH_PROGRESS.get(_PID) or {})
-        seen["snap"] = app_module._RUN_PLAN_BY_PID[_PID].snapshot()
+        seen["entry"] = dict(tx_progress._BATCH_PROGRESS.get(_PID) or {})
+        seen["snap"] = tx_progress._RUN_PLAN_BY_PID[_PID].snapshot()
         per_seg = [{t: f"XLATED-{t}" for t in targets} for _ in segments]
         return per_seg, [], {"model": "org/m:Q4", "source": "de",
                              "mode": "fluent"}

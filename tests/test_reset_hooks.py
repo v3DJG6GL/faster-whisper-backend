@@ -42,6 +42,8 @@ _NOT_RESET = {
         "_DECODE_FLOAT_BOUNDS": "constant clamp table",
         "_DECODE_STR_CAPS": "constant clamp table",
     },
+    "faster_whisper_backend.transcription.progress": {},
+    "faster_whisper_backend.translation.gating": {},
 }
 
 # Lazily-built singletons: None until the getter first runs, None again after
@@ -143,7 +145,7 @@ def test_every_container_lock_and_cache_is_reset(modname, monkeypatch):
         assert getattr(mod, name) is None, f"{modname}.{name}: not reset to None"
 
 
-# Names that moved out of main.py in the P7–P10 refactor phases. The modules
+# Names that moved out of main.py in the P7–P11 refactor phases. The modules
 # that now own them are scanned, so a name added there later is covered too.
 _P7_MOVED = ("cfg_for", "build_ident", "_NO_DEFAULT", "_resolve_request_knob")
 _OWNERS = (
@@ -151,6 +153,8 @@ _OWNERS = (
     "faster_whisper_backend.transcription.receipt",
     "faster_whisper_backend.transcription.guards",
     "faster_whisper_backend.transcription.models",
+    "faster_whisper_backend.transcription.progress",
+    "faster_whisper_backend.translation.gating",
 )
 # Bound in both places on purpose: main keeps its own logger and _log_safe
 # alias (store_common.log_safe) for the code that stayed.
@@ -171,5 +175,21 @@ def test_main_no_longer_defines_moved_names():
     for name in ("_postprocess_text", "rebuild_caches", "_get_or_load_model",
                  "_loaded_models", "_model_leases", "_format_request_block",
                  "PlainText", "assemble_transcribe_kwargs", "tail_guard_limits",
-                 "get_inference_semaphore", "drain_then_evict"):
+                 "get_inference_semaphore", "drain_then_evict",
+                 "_BATCH_PROGRESS", "_progress_set", "_progress_close",
+                 "_PROGRESS_ID_RE", "_BATCH_CANCELLED", "_check_cancelled",
+                 "_jobs_finish", "_translation_model_allowed",
+                 "_translation_default_model"):
         assert name in moved, name
+
+
+def test_translation_engine_left_audio():
+    """The llama.cpp engine moved from audio/translation.py to
+    translation/engine.py; no stale twin may stay importable (a patch on it
+    would silently miss every caller)."""
+    import importlib.util
+    assert importlib.util.find_spec("faster_whisper_backend.audio.translation") is None
+    assert importlib.util.find_spec("faster_whisper_backend.translation.engine") is not None
+    hooks = dict(_RESET_HOOKS)
+    assert "faster_whisper_backend.audio.translation" not in hooks
+    assert hooks["faster_whisper_backend.translation.engine"] == "_reset_for_tests"

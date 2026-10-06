@@ -142,7 +142,7 @@ def test_empty_language_form_field_is_explicit_auto_detect(client, make_user_key
 
 def test_empty_translate_to_and_glossary_form_fields_override_the_profile(
         client, app_module, make_user_key, monkeypatch):
-    from faster_whisper_backend.audio import translation
+    from faster_whisper_backend.translation import engine as translation
     monkeypatch.setattr(app_module.cfg, "TRANSLATION_ENABLED", True, raising=False)
     calls = []
 

@@ -61,14 +61,6 @@ RATE = 16000
 # Cross-cutting singleton reset
 # ---------------------------------------------------------------------------
 
-def _reset_main(main) -> None:
-    # /v1/text/translations rate limiter (module-global fixed-window counter):
-    # clear so a rate-limit test can't 429 a later translate test.
-    main._text_translate_rate.clear()
-    main._JOB_BY_PID.clear()
-    main._PLAN_BY_PID.clear()
-
-
 # (module, hook): the hook is the name of a zero-argument function in that
 # module, or a callable taking the module. A hook runs only when its module is
 # already in sys.modules — an unimported module holds no state, and forcing
@@ -100,14 +92,15 @@ _RESET_HOOKS: tuple[tuple[str, Any], ...] = (
     ("faster_whisper_backend.auth.sessions_store", "_reset_for_tests"),
     # shared per-identity limiters (rate_limit._ALL): one hook clears every
     # FixedWindow/InFlight bucket, so a limit tripped in one case cannot 429
-    # or refuse a slot in the next. This covers reports' submit limiter too:
-    # reports_routes._rate is a rate_limit.FixedWindow, which registers
-    # itself in rate_limit._ALL on construction.
+    # or refuse a slot in the next. This covers reports' submit limiter and
+    # main's /v1/text/translations limiter too: both are rate_limit
+    # FixedWindows, which register themselves in rate_limit._ALL on
+    # construction.
     ("faster_whisper_backend.auth.rate_limit", "reset_all"),
     # streaming session-id registry
     ("faster_whisper_backend.streaming.routes", "_reset_for_tests"),
     # translation model LRU + leases
-    ("faster_whisper_backend.audio.translation", "_reset_for_tests"),
+    ("faster_whisper_backend.translation.engine", "_reset_for_tests"),
     # Stage-model singletons (pyannote / UVR) + their job leases.
     ("faster_whisper_backend.audio.diarization", "_reset_for_tests"),
     ("faster_whisper_backend.audio.bgm_separation", "_reset_for_tests"),
@@ -123,9 +116,10 @@ _RESET_HOOKS: tuple[tuple[str, Any], ...] = (
     # suppress-chars cache, and the load / convert locks and lazily-built
     # semaphores — rebound so none stays tied to a dead TestClient loop.
     ("faster_whisper_backend.transcription.models", "_reset_for_tests"),
-    # main's registries / limiter / leases (these names leave main in later
-    # refactor phases; each new owner module registers its own hook).
-    ("faster_whisper_backend.main", _reset_main),
+    # batch progress / cancel registries and the progress_id → job / preload-
+    # plan / run-plan bindings (a leftover entry would answer a later test's
+    # progress poll or keep its id "in flight").
+    ("faster_whisper_backend.transcription.progress", "_reset_for_tests"),
 )
 
 

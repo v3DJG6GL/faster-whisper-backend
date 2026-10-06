@@ -365,7 +365,7 @@ def get_result(job_id: str) -> Any:
 
 def _owner_clause(user_id: str | None, key_id: str | None,
                   all_users: bool) -> tuple[str, list[Any]]:
-    """Ownership predicate modelled on main._progress_entry_for: a row belongs
+    """Ownership predicate modelled on tx_progress._progress_entry_for: a row belongs
     to the caller when its user_id matches, or — for a key without a user —
     when its key_id matches. A row with neither (open mode, no keys yet)
     belongs to callers with neither — deliberately STRICTER than the live

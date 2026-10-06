@@ -3,6 +3,7 @@
 import pytest
 
 from faster_whisper_backend.pipeline import engine as pl_engine
+from faster_whisper_backend.transcription import progress as tx_progress
 
 
 def test_settings_page_loopback(client):
@@ -710,7 +711,7 @@ _GUARD_WARNING = "segment 1: guard rejected the model output; kept the source te
 
 def test_translation_test_endpoint_threads_template_override(
         client, app_module, monkeypatch):
-    from faster_whisper_backend.audio import translation
+    from faster_whisper_backend.translation import engine as translation
 
     app_module.cfg.TRANSLATION_ENABLED = True
     seen = {}
@@ -751,7 +752,7 @@ def test_translation_test_family_auto_drops_template_for_builtin_family(
     textarea value. translate_segments treats any non-None template as the
     custom family, so a hunyuan model would have been tested — and its chip
     reported — as "custom". The effective family must decide."""
-    from faster_whisper_backend.audio import translation
+    from faster_whisper_backend.translation import engine as translation
 
     app_module.cfg.TRANSLATION_ENABLED = True
     app_module.cfg.TRANSLATION_ALLOWED_MODELS = set()
@@ -815,7 +816,7 @@ def test_translation_test_422_bad_shape(client, app_module):
 
 def test_translation_test_translation_error_is_400(
         client, app_module, monkeypatch):
-    from faster_whisper_backend.audio import translation
+    from faster_whisper_backend.translation import engine as translation
 
     app_module.cfg.TRANSLATION_ENABLED = True
     pid = "deadbeef"
@@ -823,7 +824,7 @@ def test_translation_test_translation_error_is_400(
 
     async def boom(*a, **k):
         # The entry must exist while the run is in flight...
-        seen["registered"] = pid in app_module._BATCH_PROGRESS
+        seen["registered"] = pid in tx_progress._BATCH_PROGRESS
         raise translation.TranslationError(
             "translation dependencies are not installed on this server — "
             "pip install -r requirements-translate.txt")
@@ -836,14 +837,14 @@ def test_translation_test_translation_error_is_400(
     assert seen["registered"] is True
     # ...and the failure path must not strand it, or the lab's poller reads
     # a permanent "starting" stage for a run that already died.
-    assert pid not in app_module._BATCH_PROGRESS
-    assert pid not in app_module._BATCH_CANCELLED
+    assert pid not in tx_progress._BATCH_PROGRESS
+    assert pid not in tx_progress._BATCH_CANCELLED
 
 
 def test_translation_test_preview_renders_without_model(
         client, app_module, monkeypatch):
     """preview=True returns the rendered prompt and NEVER calls the model."""
-    from faster_whisper_backend.audio import translation
+    from faster_whisper_backend.translation import engine as translation
 
     app_module.cfg.TRANSLATION_ENABLED = True
 
@@ -881,18 +882,18 @@ def test_translation_test_progress_id_seeds_registry(
     'starting' before the run, 'downloading'/'translating' as the hooks
     fire) and the endpoint's finally pops it. Malformed ids are ignored,
     not 422."""
-    from faster_whisper_backend.audio import translation
+    from faster_whisper_backend.translation import engine as translation
 
     app_module.cfg.TRANSLATION_ENABLED = True
     pid = "beef" * 8
     seen = {}
 
     async def fake_translate(segments, targets, **kwargs):
-        seen["at_start"] = dict(app_module._BATCH_PROGRESS.get(pid) or {})
+        seen["at_start"] = dict(tx_progress._BATCH_PROGRESS.get(pid) or {})
         kwargs["download_cb"](512, 1024)
-        seen["downloading"] = dict(app_module._BATCH_PROGRESS.get(pid) or {})
+        seen["downloading"] = dict(tx_progress._BATCH_PROGRESS.get(pid) or {})
         kwargs["progress_cb"](1.0, "en 1/1", None)
-        seen["translating"] = dict(app_module._BATCH_PROGRESS.get(pid) or {})
+        seen["translating"] = dict(tx_progress._BATCH_PROGRESS.get(pid) or {})
         return ([{"en": "hi"}], [], {"model": "org/m", "source": "de",
                                      "mode": "faithful"})
 
@@ -906,7 +907,7 @@ def test_translation_test_progress_id_seeds_registry(
     assert seen["downloading"].get("total_bytes") == 1024
     assert seen["translating"].get("stage") == "translating"
     assert seen["translating"].get("progress") == 1.0
-    assert pid not in app_module._BATCH_PROGRESS       # popped by finally
+    assert pid not in tx_progress._BATCH_PROGRESS       # popped by finally
 
     # Malformed id: ignored (no registry entry), request still succeeds.
     r = client.post("/settings/translation-test", json={
@@ -919,7 +920,7 @@ def test_translation_test_progress_entry_is_owner_stamped(
     """The lab's seed joins _BATCH_PROGRESS with an owner, like the batch and
     stage-ahead seeds in main — an owner-less entry would be readable (and
     cancellable) by ANY authenticated caller holding the id."""
-    from faster_whisper_backend.audio import translation
+    from faster_whisper_backend.translation import engine as translation
     from tests.conftest import bearer
 
     app_module.cfg.TRANSLATION_ENABLED = True
@@ -928,7 +929,7 @@ def test_translation_test_progress_entry_is_owner_stamped(
     seen = {}
 
     async def fake_translate(segments, targets, **kwargs):
-        seen["owner"] = (app_module._BATCH_PROGRESS.get(pid) or {}).get("owner")
+        seen["owner"] = (tx_progress._BATCH_PROGRESS.get(pid) or {}).get("owner")
         return ([{"en": "hi"}], [],
                 {"model": "org/m", "source": "de", "mode": "faithful"})
 
@@ -966,7 +967,7 @@ def test_translation_test_unknown_family_400(client, app_module):
 
 def test_translation_test_threads_model_family_glossary(
         client, app_module, monkeypatch):
-    from faster_whisper_backend.audio import translation
+    from faster_whisper_backend.translation import engine as translation
 
     app_module.cfg.TRANSLATION_ENABLED = True
     app_module.cfg.TRANSLATION_ALLOWED_MODELS = set()

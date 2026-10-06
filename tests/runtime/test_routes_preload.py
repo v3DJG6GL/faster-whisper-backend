@@ -12,7 +12,7 @@ from faster_whisper_backend.audio import bgm_separation
 from faster_whisper_backend.audio import diarization
 from faster_whisper_backend.runtime import model_sizes
 from faster_whisper_backend.runtime import preload
-from faster_whisper_backend.audio import translation
+from faster_whisper_backend.translation import engine as translation
 
 from tests.conftest import bearer
 from faster_whisper_backend.transcription import models as tx_models

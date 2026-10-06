@@ -219,7 +219,7 @@ class FixedWindow:
         caller we are mid-decision about would silently reset their budget."""
         if len(self._state) <= _MAX_KEYS:
             return
-        # Same shape as main._progress_set's sweep: drop everything whose
+        # Same shape as tx_progress._progress_set's sweep: drop everything whose
         # window has already rolled, then fall back to oldest-first.
         for k in [k for k, (_n, start) in self._state.items()
                   if k != live_key and now - start > self.window_s]:

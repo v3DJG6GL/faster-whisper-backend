@@ -47,6 +47,7 @@ from pydantic import BaseModel, Field
 from faster_whisper_backend.settings import config as cfg
 from faster_whisper_backend.runtime import preload
 from faster_whisper_backend.transcription import models as tx_models
+from faster_whisper_backend.translation import gating as tr_gating
 from faster_whisper_backend.auth.dependencies import get_current_user
 
 # Same logger name the rest of the model machinery uses, so a preload and the
@@ -76,7 +77,7 @@ class PreloadRequest(BaseModel):
     models: list[PreloadModel] = Field(min_length=1, max_length=6)
     # Hex so a client id can never collide with a server-derived one in a way
     # that would let a caller adopt another caller's plan by guessing shape.
-    # ^…$ rather than the \A…\Z main._PROGRESS_ID_RE uses: pydantic v2 compiles
+    # ^…$ rather than the \A…\Z tx_progress._PROGRESS_ID_RE uses: pydantic v2 compiles
     # patterns with the Rust regex engine, which rejects \A/\Z outright (a
     # SchemaError at import, not a failed match). In that engine ^/$ are
     # end-of-TEXT anchors without a multiline flag, so the two are equivalent.
@@ -102,7 +103,7 @@ def _allowed(family: str, model_id: str) -> bool:
     would 400 there).
     diarization/separation: the allowlist plus the configured model, and an
     empty allowlist therefore means "the configured model only", never
-    "anything". translation: `main._translation_model_allowed`, the rule the
+    "anything". translation: `tr_gating._translation_model_allowed`, the rule the
     batch stage and the job plan share."""
     if family == "whisper":
         model_id = preload.normalize_id(family, model_id)
@@ -122,10 +123,9 @@ def _allowed(family: str, model_id: str) -> bool:
         allow = set(getattr(cfg, "BGM_SEPARATION_ALLOWED_MODELS", None) or ())
         allow.add(getattr(cfg, "BGM_SEPARATION_UVR_MODEL", "") or "")
         return model_id in allow
-    from faster_whisper_backend import main  # lazy: main imports this module
     # requested=model_id makes it the CLIENT-value rule: a bare call would
     # let any ref through as admin policy.
-    return main._translation_model_allowed(model_id, requested=model_id)
+    return tr_gating._translation_model_allowed(model_id, requested=model_id)
 
 
 @router.post("/models/preload", status_code=status.HTTP_202_ACCEPTED)

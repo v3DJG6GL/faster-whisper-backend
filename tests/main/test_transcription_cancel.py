@@ -5,6 +5,7 @@ request with 499 instead of soft-failing onward."""
 from faster_whisper_backend.audio import bgm_separation
 from faster_whisper_backend.audio import diarization
 from faster_whisper_backend.transcription import models as tx_models
+from faster_whisper_backend.transcription import progress as tx_progress
 
 _FILE = {"file": ("a.wav", b"RIFFxxxxWAVE", "audio/wav")}
 _PID = "cafe" * 8  # 32 hex chars — passes _PROGRESS_ID_RE
@@ -26,19 +27,19 @@ def test_cancel_unknown_id_is_a_noop(client, app_module):
     r = client.post(f"/v1/audio/transcriptions/cancel/{_PID}")
     assert r.status_code == 200
     assert r.json() == {"cancelled": False}
-    assert _PID not in app_module._BATCH_CANCELLED
+    assert _PID not in tx_progress._BATCH_CANCELLED
 
 
 def test_cancel_flags_an_in_flight_id(client, app_module):
-    app_module._BATCH_PROGRESS[_PID] = {"stage": "transcribing", "updated": 0}
+    tx_progress._BATCH_PROGRESS[_PID] = {"stage": "transcribing", "updated": 0}
     try:
         r = client.post(f"/v1/audio/transcriptions/cancel/{_PID}")
         assert r.status_code == 200
         assert r.json() == {"cancelled": True}
-        assert _PID in app_module._BATCH_CANCELLED
+        assert _PID in tx_progress._BATCH_CANCELLED
     finally:
-        app_module._BATCH_PROGRESS.pop(_PID, None)
-        app_module._BATCH_CANCELLED.discard(_PID)
+        tx_progress._BATCH_PROGRESS.pop(_PID, None)
+        tx_progress._BATCH_CANCELLED.discard(_PID)
 
 
 # --- the handler's cooperative abort -----------------------------------------
@@ -47,15 +48,15 @@ def test_pre_flagged_request_aborts_with_499(client, app_module):
     # The decode-loop check fires on the first segment: a request whose id is
     # already flagged never returns a transcript. (In real use the flag lands
     # mid-flight; pre-flagging just makes the race deterministic.)
-    app_module._BATCH_CANCELLED.add(_PID)
+    tx_progress._BATCH_CANCELLED.add(_PID)
     try:
         r = _post(client, progress_id=_PID)
         assert r.status_code == 499, r.text
         # The finally cleaned both registries.
-        assert _PID not in app_module._BATCH_CANCELLED
-        assert _PID not in app_module._BATCH_PROGRESS
+        assert _PID not in tx_progress._BATCH_CANCELLED
+        assert _PID not in tx_progress._BATCH_PROGRESS
     finally:
-        app_module._BATCH_CANCELLED.discard(_PID)
+        tx_progress._BATCH_CANCELLED.discard(_PID)
 
 
 def test_bgm_cancel_is_not_a_soft_fail(client, app_module, monkeypatch):
@@ -98,12 +99,12 @@ def test_cancelled_run_records_status_cancelled(client, app_module,
         recorded.append(kw)
         return _orig(**kw)
     monkeypatch.setattr(app_module.metrics, "record_transcription", _spy)
-    app_module._BATCH_CANCELLED.add(_PID)
+    tx_progress._BATCH_CANCELLED.add(_PID)
     try:
         r = _post(client, progress_id=_PID)
         assert r.status_code == 499, r.text
     finally:
-        app_module._BATCH_CANCELLED.discard(_PID)
+        tx_progress._BATCH_CANCELLED.discard(_PID)
     assert recorded and recorded[-1]["status"] == "cancelled"
 
 
@@ -114,13 +115,13 @@ def test_validation_reject_leaves_no_progress_entry(client, app_module):
     # a cancellable id — the seed happens inside the try whose finally pops.
     r = _post(client, task="nope", progress_id=_PID)
     assert r.status_code == 422
-    assert _PID not in app_module._BATCH_PROGRESS
+    assert _PID not in tx_progress._BATCH_PROGRESS
     assert client.get(
         f"/v1/audio/transcriptions/progress/{_PID}").json() == {
             "stage": "unknown"}
     r = client.post(f"/v1/audio/transcriptions/cancel/{_PID}")
     assert r.json() == {"cancelled": False}
-    assert _PID not in app_module._BATCH_CANCELLED
+    assert _PID not in tx_progress._BATCH_CANCELLED
 
 
 # --- owner binding -----------------------------------------------------------
@@ -131,7 +132,7 @@ def test_progress_and_cancel_are_owner_bound(client, app_module,
     uid_alice, raw_alice = make_user_key("alice")
     _, raw_bob = make_user_key("bob")
     _, raw_admin = make_user_key("root", is_admin=True)
-    app_module._BATCH_PROGRESS[_PID] = {
+    tx_progress._BATCH_PROGRESS[_PID] = {
         "stage": "transcribing", "owner": uid_alice, "updated": 0}
     try:
         # Another user's id reads exactly like a miss — no existence oracle.
@@ -141,7 +142,7 @@ def test_progress_and_cancel_are_owner_bound(client, app_module,
         r = client.post(f"/v1/audio/transcriptions/cancel/{_PID}",
                         headers=bearer(raw_bob))
         assert r.json() == {"cancelled": False}
-        assert _PID not in app_module._BATCH_CANCELLED
+        assert _PID not in tx_progress._BATCH_CANCELLED
         # The owner sees and cancels their own run.
         r = client.get(f"/v1/audio/transcriptions/progress/{_PID}",
                        headers=bearer(raw_alice))
@@ -151,8 +152,8 @@ def test_progress_and_cancel_are_owner_bound(client, app_module,
                         headers=bearer(raw_admin))
         assert r.json() == {"cancelled": True}
     finally:
-        app_module._BATCH_PROGRESS.pop(_PID, None)
-        app_module._BATCH_CANCELLED.discard(_PID)
+        tx_progress._BATCH_PROGRESS.pop(_PID, None)
+        tx_progress._BATCH_CANCELLED.discard(_PID)
 
 
 # --- job mirror stage transitions --------------------------------------------
@@ -161,28 +162,28 @@ def test_stage_transition_clears_mirrored_progress(app_module):
     from faster_whisper_backend.core import jobs
     pid = "feedf00d" * 4
     jobs.job_start("transcribe", id="job-mirror-test", model="m")
-    app_module._JOB_BY_PID[pid] = "job-mirror-test"
+    tx_progress._JOB_BY_PID[pid] = "job-mirror-test"
     try:
-        app_module._progress_set(pid, stage="transcribing", progress=0.97,
+        tx_progress._progress_set(pid, stage="transcribing", progress=0.97,
                                  step="dec", model="large-v3")
         row = jobs.jobs_snapshot()[0]
         assert row["progress"] == 0.97 and row["step"] == "dec"
         # A stage transition resets the derived columns the new stage did not
         # report — no more stale ~100% bar during diarizing/translating.
-        app_module._progress_set(pid, stage="diarizing", progress=None,
+        tx_progress._progress_set(pid, stage="diarizing", progress=None,
                                  step=None, model=None)
         row = jobs.jobs_snapshot()[0]
         assert row["stage"] == "diarizing"
         assert row["progress"] is None and row["step"] is None
         assert row["model"] is None
         # Same-stage ticks must NOT clear what they don't carry.
-        app_module._progress_set(pid, stage="diarizing", step="embedding")
-        app_module._progress_set(pid, stage="diarizing", progress=0.5)
+        tx_progress._progress_set(pid, stage="diarizing", step="embedding")
+        tx_progress._progress_set(pid, stage="diarizing", progress=0.5)
         row = jobs.jobs_snapshot()[0]
         assert row["step"] == "embedding" and row["progress"] == 0.5
     finally:
-        app_module._JOB_BY_PID.pop(pid, None)
-        app_module._BATCH_PROGRESS.pop(pid, None)
+        tx_progress._JOB_BY_PID.pop(pid, None)
+        tx_progress._BATCH_PROGRESS.pop(pid, None)
         jobs.job_end("job-mirror-test")
 
 
@@ -195,13 +196,13 @@ def test_stage_transition_clears_mirrored_progress(app_module):
 
 def _flag_on(app_module, monkeypatch, pid, pred):
     """Flag `pid` cancelled the moment a _progress_set call matches `pred`."""
-    orig = app_module._progress_set
+    orig = tx_progress._progress_set
 
     def spy(p, **fields):
         orig(p, **fields)
         if p == pid and pred(fields):
-            app_module._BATCH_CANCELLED.add(pid)
-    monkeypatch.setattr(app_module, "_progress_set", spy)
+            tx_progress._BATCH_CANCELLED.add(pid)
+    monkeypatch.setattr(tx_progress, "_progress_set", spy)
 
 
 def test_cancel_inside_separation_stage_is_not_a_soft_fail(
@@ -218,7 +219,7 @@ def test_cancel_inside_separation_stage_is_not_a_soft_fail(
         assert r.status_code == 499, r.text
     finally:
         app_module.cfg.BGM_SEPARATION_ENABLED = False
-        app_module._BATCH_CANCELLED.discard(_PID)
+        tx_progress._BATCH_CANCELLED.discard(_PID)
     assert "[bgm] unexpected failure" not in caplog.text
 
 
@@ -237,12 +238,12 @@ def test_cancel_inside_diarization_stage_is_not_a_soft_fail(
         assert "diarization failed" not in r.text
     finally:
         app_module.cfg.DIARIZATION_ENABLED = False
-        app_module._BATCH_CANCELLED.discard(_PID)
+        tx_progress._BATCH_CANCELLED.discard(_PID)
 
 
 def test_cancel_inside_translation_stage_is_not_a_soft_fail(
         client, app_module, monkeypatch):
-    from faster_whisper_backend.audio import translation
+    from faster_whisper_backend.translation import engine as translation
     monkeypatch.setattr(app_module.cfg, "TRANSLATION_ENABLED", True,
                         raising=False)
     # The decode loop's own check runs BEFORE each segment's progress tick,
@@ -259,7 +260,7 @@ def test_cancel_inside_translation_stage_is_not_a_soft_fail(
         assert r.status_code == 499, r.text
         assert "translation failed" not in r.text
     finally:
-        app_module._BATCH_CANCELLED.discard(_PID)
+        tx_progress._BATCH_CANCELLED.discard(_PID)
 
 
 # --- colliding progress ids ---------------------------------------------------
@@ -269,23 +270,23 @@ def test_in_flight_progress_id_is_treated_as_absent(client, app_module, caplog):
     # this one gets no progress rail instead of sharing (and popping) the
     # other's entry and cancel flag.
     caplog.set_level("INFO", logger="whisper-api")
-    app_module._BATCH_PROGRESS[_PID] = {
+    tx_progress._BATCH_PROGRESS[_PID] = {
         "stage": "transcribing", "owner": "other", "updated": 0}
     try:
         r = _post(client, progress_id=_PID)
         assert r.status_code == 200, r.text
         assert "id already in flight" in caplog.text
-        entry = app_module._BATCH_PROGRESS.get(_PID)
+        entry = tx_progress._BATCH_PROGRESS.get(_PID)
         assert entry is not None
         assert entry["owner"] == "other" and entry["stage"] == "transcribing"
     finally:
-        app_module._BATCH_PROGRESS.pop(_PID, None)
-        app_module._PROGRESS_OWNER.pop(_PID, None)
+        tx_progress._BATCH_PROGRESS.pop(_PID, None)
+        tx_progress._PROGRESS_OWNER.pop(_PID, None)
 
 
 def test_text_translations_in_flight_progress_id_is_treated_as_absent(
         client, app_module, monkeypatch):
-    from faster_whisper_backend.audio import translation
+    from faster_whisper_backend.translation import engine as translation
     monkeypatch.setattr(app_module.cfg, "TRANSLATION_ENABLED", True,
                         raising=False)
     monkeypatch.setattr(app_module.cfg, "TRANSLATION_DEFAULT_MODEL",
@@ -296,19 +297,19 @@ def test_text_translations_in_flight_progress_id_is_treated_as_absent(
                 {"model": "org/default-GGUF:Q4", "source": "de",
                  "mode": "fluent"})
     monkeypatch.setattr(translation, "translate_segments", _fake)
-    app_module._BATCH_PROGRESS[_PID] = {
+    tx_progress._BATCH_PROGRESS[_PID] = {
         "stage": "transcribing", "owner": "other", "updated": 0}
     try:
         r = client.post("/v1/text/translations", json={
             "segments": [{"text": "hallo"}], "targets": ["en"],
             "progress_id": _PID})
         assert r.status_code == 200, r.text
-        entry = app_module._BATCH_PROGRESS.get(_PID)
+        entry = tx_progress._BATCH_PROGRESS.get(_PID)
         assert entry is not None
         assert entry["owner"] == "other" and entry["stage"] == "transcribing"
     finally:
-        app_module._BATCH_PROGRESS.pop(_PID, None)
-        app_module._PROGRESS_OWNER.pop(_PID, None)
+        tx_progress._BATCH_PROGRESS.pop(_PID, None)
+        tx_progress._PROGRESS_OWNER.pop(_PID, None)
 
 
 # --- owner survives a re-created entry ---------------------------------------
@@ -320,33 +321,33 @@ def test_recreated_progress_entry_keeps_its_owner(client, app_module,
     _, raw_bob = make_user_key("bob")
     make_user_key("root", is_admin=True)  # locks the app down: bob is bob
     try:
-        app_module._progress_set(_PID, stage="waiting", owner=uid_alice)
+        tx_progress._progress_set(_PID, stage="waiting", owner=uid_alice)
         # An executor-thread stage tick after the handler's finally popped
         # the entry (or after the cap eviction took it) re-creates it —
         # with the owner stamp, not as an open, owner-less entry.
-        app_module._BATCH_PROGRESS.pop(_PID)
-        app_module._progress_set(_PID, progress=0.5, last_text="x")
-        assert app_module._BATCH_PROGRESS[_PID]["owner"] == uid_alice
+        tx_progress._BATCH_PROGRESS.pop(_PID)
+        tx_progress._progress_set(_PID, progress=0.5, last_text="x")
+        assert tx_progress._BATCH_PROGRESS[_PID]["owner"] == uid_alice
         r = client.get(f"/v1/audio/transcriptions/progress/{_PID}",
                        headers=bearer(raw_bob))
         assert r.json() == {"stage": "unknown"}
     finally:
-        app_module._BATCH_PROGRESS.pop(_PID, None)
-        app_module._PROGRESS_OWNER.pop(_PID, None)
+        tx_progress._BATCH_PROGRESS.pop(_PID, None)
+        tx_progress._PROGRESS_OWNER.pop(_PID, None)
 
 
 def test_owner_map_is_pruned_with_the_stale_sweep(app_module):
-    app_module._progress_set(_PID, stage="waiting", owner="u1")
+    tx_progress._progress_set(_PID, stage="waiting", owner="u1")
     try:
-        app_module._BATCH_PROGRESS[_PID]["updated"] = -1e9
+        tx_progress._BATCH_PROGRESS[_PID]["updated"] = -1e9
         # Any entry creation runs the stale sweep; it must prune both maps.
-        app_module._progress_set("d00d" * 8, stage="waiting")
-        assert _PID not in app_module._BATCH_PROGRESS
-        assert _PID not in app_module._PROGRESS_OWNER
+        tx_progress._progress_set("d00d" * 8, stage="waiting")
+        assert _PID not in tx_progress._BATCH_PROGRESS
+        assert _PID not in tx_progress._PROGRESS_OWNER
     finally:
-        app_module._BATCH_PROGRESS.pop(_PID, None)
-        app_module._BATCH_PROGRESS.pop("d00d" * 8, None)
-        app_module._PROGRESS_OWNER.pop(_PID, None)
+        tx_progress._BATCH_PROGRESS.pop(_PID, None)
+        tx_progress._BATCH_PROGRESS.pop("d00d" * 8, None)
+        tx_progress._PROGRESS_OWNER.pop(_PID, None)
 
 
 # --- the first seed is not a stage transition --------------------------------
@@ -355,24 +356,24 @@ def test_first_seed_keeps_job_start_model(app_module):
     from faster_whisper_backend.core import jobs
     pid = "f00dfeed" * 4
     jobs.job_start("transcribe", id="job-seed-test", model="large-v3")
-    app_module._JOB_BY_PID[pid] = "job-seed-test"
+    tx_progress._JOB_BY_PID[pid] = "job-seed-test"
     try:
         # No previous stage → nothing stale to clear; job_start's model must
         # survive the whole pre-decode phase (waiting/downloading/...).
-        app_module._progress_set(pid, stage="waiting", progress=None)
+        tx_progress._progress_set(pid, stage="waiting", progress=None)
         row = jobs.jobs_snapshot()[0]
         assert row["stage"] == "waiting" and row["model"] == "large-v3"
         # A real transition still clears the previous stage's columns.
-        app_module._progress_set(pid, stage="transcribing", progress=0.9,
+        tx_progress._progress_set(pid, stage="transcribing", progress=0.9,
                                  step="dec")
-        app_module._progress_set(pid, stage="diarizing")
+        tx_progress._progress_set(pid, stage="diarizing")
         row = jobs.jobs_snapshot()[0]
         assert row["stage"] == "diarizing"
         assert row["progress"] is None and row["step"] is None
         assert row["model"] is None
     finally:
-        app_module._JOB_BY_PID.pop(pid, None)
-        app_module._BATCH_PROGRESS.pop(pid, None)
+        tx_progress._JOB_BY_PID.pop(pid, None)
+        tx_progress._BATCH_PROGRESS.pop(pid, None)
         jobs.job_end("job-seed-test")
 
 
@@ -380,19 +381,19 @@ def test_stage_transition_clears_mirrored_total_bytes(app_module):
     from faster_whisper_backend.core import jobs
     pid = "ba5eba11" * 4
     jobs.job_start("transcribe", id="job-bytes-test", model="m")
-    app_module._JOB_BY_PID[pid] = "job-bytes-test"
+    tx_progress._JOB_BY_PID[pid] = "job-bytes-test"
     try:
-        app_module._progress_set(pid, stage="downloading", progress=0.5,
+        tx_progress._progress_set(pid, stage="downloading", progress=0.5,
                                  total_bytes=4096)
         assert jobs.jobs_snapshot()[0]["total_bytes"] == 4096
         # The download's byte total is a per-stage column too — it must not
         # stick to the row through transcribing/diarizing/translating.
-        app_module._progress_set(pid, stage="transcribing", progress=None,
+        tx_progress._progress_set(pid, stage="transcribing", progress=None,
                                  total_bytes=None)
         assert jobs.jobs_snapshot()[0]["total_bytes"] is None
     finally:
-        app_module._JOB_BY_PID.pop(pid, None)
-        app_module._BATCH_PROGRESS.pop(pid, None)
+        tx_progress._JOB_BY_PID.pop(pid, None)
+        tx_progress._BATCH_PROGRESS.pop(pid, None)
         jobs.job_end("job-bytes-test")
 
 
@@ -424,12 +425,12 @@ def test_task_cancellation_records_status_cancelled(client, app_module,
 
 def test_cancelled_request_is_classified_cancelled(client, app_module):
     from faster_whisper_backend.stats import recent_transcriptions_store
-    app_module._BATCH_CANCELLED.add(_PID)
+    tx_progress._BATCH_CANCELLED.add(_PID)
     try:
         r = _post(client, progress_id=_PID)
         assert r.status_code == 499, r.text
     finally:
-        app_module._BATCH_CANCELLED.discard(_PID)
+        tx_progress._BATCH_CANCELLED.discard(_PID)
     row = recent_transcriptions_store.list_recent(limit=1)[0]
     assert row["status"] == "cancelled"
     assert row["error_class"] == "cancelled"
@@ -446,7 +447,7 @@ def test_cancel_landing_on_the_job_write_still_records_the_run(client, app_modul
 
     async def _cancelled_finish(pid, **kw):
         raise asyncio.CancelledError()
-    monkeypatch.setattr(app_module, "_jobs_finish", _cancelled_finish)
+    monkeypatch.setattr(tx_progress, "_jobs_finish", _cancelled_finish)
     recorded = []
     _orig = app_module.metrics.record_transcription
 
@@ -473,23 +474,23 @@ def test_a_field_only_progress_write_keeps_the_step(app_module):
     plan = run_plan.RunPlan(kind="url", now=clock)
     plan.set_stages(["separating", "transcribing"])
     plan.set_audio_seconds(600.0, src="decoder")
-    app_module._RUN_PLAN_BY_PID[_PID] = plan
+    tx_progress._RUN_PLAN_BY_PID[_PID] = plan
     try:
-        app_module._progress_set(_PID, stage="separating", step=None)
-        app_module._progress_set(_PID, step="preparing")
+        tx_progress._progress_set(_PID, stage="separating", step=None)
+        tx_progress._progress_set(_PID, step="preparing")
         held = plan.snapshot()["overall"]
         clock.t += 20
-        app_module._progress_set(_PID, video={"state": "downloading"})
+        tx_progress._progress_set(_PID, video={"state": "downloading"})
         clock.t += 20
         snap = plan.snapshot()
         sep = next(s for s in snap["plan"] if s["stage"] == "separating")
         assert sep["phase"] == "preparing"
         assert snap["overall"] == held
         # The explicit end of the step still clears it.
-        app_module._progress_set(_PID, progress=0.5, step=None)
+        tx_progress._progress_set(_PID, progress=0.5, step=None)
         sep = next(s for s in plan.snapshot()["plan"] if s["stage"] == "separating")
         assert sep.get("phase") is None
     finally:
-        app_module._RUN_PLAN_BY_PID.pop(_PID, None)
-        app_module._progress_close(_PID)
-        app_module._PROGRESS_CLOSED.pop(_PID, None)
+        tx_progress._RUN_PLAN_BY_PID.pop(_PID, None)
+        tx_progress._progress_close(_PID)
+        tx_progress._PROGRESS_CLOSED.pop(_PID, None)

@@ -2,7 +2,7 @@
 that drive /v1/text/translations (stubbed translator, enable switch, request
 body). Import as ``from tests._translation_helpers import ...``."""
 
-from faster_whisper_backend.audio import translation
+from faster_whisper_backend.translation import engine as translation
 
 
 def stub_translate(monkeypatch, calls=None):

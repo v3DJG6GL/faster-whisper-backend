@@ -10,7 +10,7 @@ picture its subtitles belong to.
 
 Deliberately tiny and in-process:
   - The registry is a plain dict (GIL-atomic single-key updates, same stance
-    as main._BATCH_PROGRESS). Ids die with the process, so startup_reset()
+    as tx_progress._BATCH_PROGRESS). Ids die with the process, so startup_reset()
     wipes the directory — every file on disk without a registry entry is an
     orphan by definition. Multi-worker deployments are already documented as
     unsupported (SERVER_WORKERS: "keep at 1").

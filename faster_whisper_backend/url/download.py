@@ -4,7 +4,7 @@ Contract (mirrors bgm_separation.py):
   - str(UrlDownloadError) is CLIENT-SAFE — our own wording, never raw yt-dlp
     stderr (which can carry filesystem paths and full URLs with tokens).
   - UrlCancelled means the caller's cancel_check tripped; the request must
-    abort (HTTP 499 via main's _ClientCancelled), not soft-fail.
+    abort (HTTP 499 via transcription/progress's _ClientCancelled), not soft-fail.
 
 Design notes:
   - Policy runs BEFORE any network I/O: the extractor that matches a URL is

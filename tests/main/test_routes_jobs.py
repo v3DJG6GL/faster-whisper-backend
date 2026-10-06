@@ -5,6 +5,7 @@ import time
 import pytest
 
 from faster_whisper_backend.core import jobs_store as js
+from faster_whisper_backend.transcription import progress as tx_progress
 from tests.conftest import bearer
 
 _FILE = {"file": ("a.wav", b"RIFFxxxxWAVE", "audio/wav")}
@@ -77,11 +78,11 @@ def test_validation_4xx_after_the_seed_stores_the_curated_detail(
 
 
 def test_cancelled_run_lands_as_cancelled(client, app_module):
-    app_module._BATCH_CANCELLED.add(_PID)
+    tx_progress._BATCH_CANCELLED.add(_PID)
     try:
         assert _post(client, progress_id=_PID).status_code == 499
     finally:
-        app_module._BATCH_CANCELLED.discard(_PID)
+        tx_progress._BATCH_CANCELLED.discard(_PID)
     row = client.get(f"/v1/jobs/{_PID}").json()
     assert row["state"] == "cancelled" and row["error"] is None
     assert client.get(f"/v1/jobs/{_PID}/result").status_code == 404
@@ -106,7 +107,7 @@ def test_text_translation_run_gets_a_translate_row(client, app_module,
 
 def test_text_translation_failure_records_failed(client, app_module,
                                                   monkeypatch):
-    from faster_whisper_backend.audio import translation
+    from faster_whisper_backend.translation import engine as translation
     from tests._translation_helpers import (
         enable_translation as _enable, text_translation_body as _body)
     _enable(app_module, monkeypatch)
@@ -130,7 +131,7 @@ def _seed_running(app_module, pid=_PID, owner=None):
     entry = {"stage": "transcribing", "progress": 0.4, "updated": 0}
     if owner:
         entry["owner"] = owner
-    app_module._BATCH_PROGRESS[pid] = entry
+    tx_progress._BATCH_PROGRESS[pid] = entry
 
 
 def test_running_row_merges_live_progress_and_result_is_409(client, app_module):
@@ -145,7 +146,7 @@ def test_running_row_merges_live_progress_and_result_is_409(client, app_module):
         assert r.status_code == 409
         assert r.json()["detail"] == "job still running"
     finally:
-        app_module._BATCH_PROGRESS.pop(_PID, None)
+        tx_progress._BATCH_PROGRESS.pop(_PID, None)
 
 
 def test_delete_running_flags_cancel_then_the_post_lands_cancelled(client,
@@ -158,14 +159,14 @@ def test_delete_running_flags_cancel_then_the_post_lands_cancelled(client,
     try:
         r = client.delete(f"/v1/jobs/{_PID}")
         assert r.json() == {"cancelled": True}
-        assert _PID in app_module._BATCH_CANCELLED
+        assert _PID in tx_progress._BATCH_CANCELLED
         # The cooperative flag is what the handler polls: with it set, the
         # (re)posted run aborts and the row lands `cancelled`.
-        app_module._BATCH_PROGRESS.pop(_PID, None)
+        tx_progress._BATCH_PROGRESS.pop(_PID, None)
         assert _post(client, progress_id=_PID).status_code == 499
     finally:
-        app_module._BATCH_PROGRESS.pop(_PID, None)
-        app_module._BATCH_CANCELLED.discard(_PID)
+        tx_progress._BATCH_PROGRESS.pop(_PID, None)
+        tx_progress._BATCH_CANCELLED.discard(_PID)
     assert client.get(f"/v1/jobs/{_PID}").json()["state"] == "cancelled"
 
 
@@ -174,7 +175,7 @@ def test_delete_running_without_a_live_entry_answers_false(client, app_module):
              key_id=None, model="m", source_kind="file", source_name="a",
              ttl_s=3600, max_rows=100, max_bytes=0)
     assert client.delete(f"/v1/jobs/{_PID}").json() == {"cancelled": False}
-    assert _PID not in app_module._BATCH_CANCELLED
+    assert _PID not in tx_progress._BATCH_CANCELLED
 
 
 def test_delete_finished_removes_the_row(client):
@@ -307,23 +308,23 @@ def test_lifespan_marks_interrupted_runs_failed(client, app_module):
 
 
 def test_closed_progress_id_is_not_resurrected_by_a_late_tick(app_module):
-    app_module._BATCH_PROGRESS[_PID] = {"stage": "transcribing", "updated": 0,
+    tx_progress._BATCH_PROGRESS[_PID] = {"stage": "transcribing", "updated": 0,
                                         "owner": "alice"}
-    app_module._PROGRESS_OWNER[_PID] = "alice"
+    tx_progress._PROGRESS_OWNER[_PID] = "alice"
     try:
-        app_module._progress_close(_PID)
-        assert _PID not in app_module._BATCH_PROGRESS
+        tx_progress._progress_close(_PID)
+        assert _PID not in tx_progress._BATCH_PROGRESS
         # A straggling stage-thread tick after the handler's finally.
-        app_module._progress_set(_PID, stage="diarizing", progress=0.5)
-        assert _PID not in app_module._BATCH_PROGRESS
+        tx_progress._progress_set(_PID, stage="diarizing", progress=0.5)
+        assert _PID not in tx_progress._BATCH_PROGRESS
         # A fresh owner-stamped seed re-opens the id.
-        app_module._progress_set(_PID, stage="waiting", owner="bob")
-        assert app_module._BATCH_PROGRESS[_PID]["owner"] == "bob"
-        assert _PID not in app_module._PROGRESS_CLOSED
+        tx_progress._progress_set(_PID, stage="waiting", owner="bob")
+        assert tx_progress._BATCH_PROGRESS[_PID]["owner"] == "bob"
+        assert _PID not in tx_progress._PROGRESS_CLOSED
     finally:
-        app_module._BATCH_PROGRESS.pop(_PID, None)
-        app_module._PROGRESS_OWNER.pop(_PID, None)
-        app_module._PROGRESS_CLOSED.pop(_PID, None)
+        tx_progress._BATCH_PROGRESS.pop(_PID, None)
+        tx_progress._PROGRESS_OWNER.pop(_PID, None)
+        tx_progress._PROGRESS_CLOSED.pop(_PID, None)
 
 
 def test_jobs_sweep_runs_off_the_loop_thread(app_module, monkeypatch):
@@ -365,13 +366,13 @@ def test_jobs_finish_never_raises_on_an_unencodable_payload(client, app_module):
     assert _post(client, progress_id=_PID).status_code == 200
     # The sync helper is called bare on translate_text's success tail: an
     # encoder error must be swallowed like every other ledger failure.
-    app_module._jobs_finish_sync(_PID, status="ok", payload={"x": object()})
+    tx_progress._jobs_finish_sync(_PID, status="ok", payload={"x": object()})
 
 
 def test_jobs_finish_logs_a_row_that_vanished(client, app_module, caplog):
     import logging
     with caplog.at_level(logging.INFO):
-        app_module._jobs_finish_sync("ab" * 16, status="ok", payload={"text": "x"})
+        tx_progress._jobs_finish_sync("ab" * 16, status="ok", payload={"text": "x"})
     assert any("gone before finish" in r.getMessage() for r in caplog.records)
 
 

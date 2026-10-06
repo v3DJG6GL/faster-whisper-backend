@@ -7,6 +7,7 @@ import json
 from tests.conftest import bearer
 from faster_whisper_backend.transcription import models as tx_models
 from faster_whisper_backend.transcription import receipt as tx_receipt
+from faster_whisper_backend.translation import gating as tr_gating
 
 _FILE = {"file": ("a.wav", b"RIFFxxxxWAVE", "audio/wav")}
 OV = "/settings/overrides"
@@ -375,7 +376,7 @@ def test_echoing_a_pinned_translation_model_passes_the_allowlist_gate(
     gate exactly like a request that sent no model. It used to be refused
     (400 on /v1/text/translations) while sending a DIFFERENT value passed
     with the locked model — the inverse of the intended policy."""
-    from faster_whisper_backend.audio import translation
+    from faster_whisper_backend.translation import engine as translation
     calls = []
 
     async def _fake(segments, targets, *, model_ref=None, **kw):
@@ -406,7 +407,7 @@ def test_echoing_a_pinned_translation_model_passes_the_allowlist_gate(
     assert calls == ["org/pinned-GGUF:Q4"]
     # Unit-level: the helper admits the inherited value, still refuses a
     # genuinely different client choice.
-    allowed = app_module._translation_model_allowed
+    allowed = tr_gating._translation_model_allowed
     assert allowed("org/pinned-GGUF:Q4", requested="org/pinned-GGUF:Q4",
                    inherited="org/pinned-GGUF:Q4") is True
     assert allowed("org/evil-GGUF:Q8", requested="org/evil-GGUF:Q8",

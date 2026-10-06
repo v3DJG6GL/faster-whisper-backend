@@ -43,7 +43,7 @@ from faster_whisper_backend.settings import version as settings_version
 from faster_whisper_backend.settings import descriptions as field_descriptions
 from faster_whisper_backend.audio import diarization
 from faster_whisper_backend.runtime import system_stats
-from faster_whisper_backend.audio import translation
+from faster_whisper_backend.translation import engine as translation
 from faster_whisper_backend.core import log_setup
 from faster_whisper_backend.core.languages import WHISPER_LANGUAGE_NAMES
 from faster_whisper_backend.core import web_common
@@ -51,6 +51,8 @@ from faster_whisper_backend.pipeline import dictation_map
 from faster_whisper_backend.pipeline import engine as pl_engine
 from faster_whisper_backend.pipeline import regex_guard
 from faster_whisper_backend.transcription import models as tx_models
+from faster_whisper_backend.transcription import progress as tx_progress
+from faster_whisper_backend.translation import gating as tr_gating
 from faster_whisper_backend.auth.dependencies import require_admin
 
 if TYPE_CHECKING:
@@ -1173,14 +1175,13 @@ async def translation_test(
     if fam is not None and fam not in translation._FAMILIES:
         return JSONResponse(status_code=status.HTTP_400_BAD_REQUEST,
                             content={"error": f"unknown prompt family '{fam}'"})
-    # Same admission rule as the request path — main._translation_model_allowed
+    # Same admission rule as the request path — tr_gating._translation_model_allowed
     # is the one home for the allowlist semantics (an empty allowlist admits
     # any well-formed ref; a non-empty one admits members + the configured
-    # default). Lazy main import — main imports this module at startup.
-    from faster_whisper_backend import main as _main
+    # default).
     ref = (body.model or "").strip()
     default = (getattr(cfg, "TRANSLATION_DEFAULT_MODEL", "") or "").strip()
-    if ref and not _main._translation_model_allowed(ref, requested=ref):
+    if ref and not tr_gating._translation_model_allowed(ref, requested=ref):
         return JSONResponse(
             status_code=status.HTTP_400_BAD_REQUEST,
             content={"error": "model is not in TRANSLATION_ALLOWED_MODELS"})
@@ -1203,13 +1204,13 @@ async def translation_test(
     # test downloads (multi-GB) + loads + translates.
     _pid = (body.progress_id
             if (body.progress_id
-                and _main._PROGRESS_ID_RE.match(body.progress_id))
+                and tx_progress._PROGRESS_ID_RE.match(body.progress_id))
             else None)
     # Owner-stamped like the batch/stage-ahead seeds in main: an owner-less
     # entry is readable/cancellable by ANY authenticated caller holding the id.
-    _main._progress_set(_pid, stage="starting", progress=None,
-                        model=(ref or default or None), compute="gguf",
-                        owner=(user.get("user_id") or user.get("key_id")))
+    tx_progress._progress_set(_pid, stage="starting", progress=None,
+                              model=(ref or default or None), compute="gguf",
+                              owner=(user.get("user_id") or user.get("key_id")))
     t0 = time.perf_counter()
     try:
         results, warnings, meta = await translation.translate_segments(
@@ -1221,11 +1222,11 @@ async def translation_test(
             # test keeps `f` at 0.0 until the end, so forward it (as main does).
             progress_cb=lambda f, step=None, last_text=None, target=None,
                 target_progress=None, **_kw:
-                _main._progress_set(_pid, stage="translating",
-                                    progress=f, step=step, target=target,
-                                    target_progress=target_progress),
+                tx_progress._progress_set(_pid, stage="translating",
+                                          progress=f, step=step, target=target,
+                                          target_progress=target_progress),
             download_cb=lambda done, total:
-                _main._progress_set(
+                tx_progress._progress_set(
                     _pid, stage="downloading",
                     progress=(done / total) if total else None,
                     total_bytes=total or None))
@@ -1237,7 +1238,7 @@ async def translation_test(
         # The helper also leaves the _PROGRESS_CLOSED tombstone, so a straggling
         # download_cb tick from the load thread cannot re-create the entry
         # owner-less.
-        _main._progress_close(_pid)
+        tx_progress._progress_close(_pid)
     ms = int((time.perf_counter() - t0) * 1000)
     # A guard-failed test FALLS BACK to the untranslated source text — the
     # warnings are the only signal, so they MUST reach the admin (otherwise a

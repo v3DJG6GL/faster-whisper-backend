@@ -1,4 +1,4 @@
-"""Unit tests for translation.py (llama.cpp T2T module).
+"""Unit tests for translation/engine.py (llama.cpp T2T module).
 
 Everything runs WITHOUT llama_cpp installed: the module lazy-imports it only
 inside _load_blocking, and these tests stub either the module-level
@@ -17,7 +17,7 @@ import time
 import pytest
 
 from faster_whisper_backend.settings import config as cfg
-from faster_whisper_backend.audio import translation
+from faster_whisper_backend.translation import engine as translation
 from faster_whisper_backend.runtime import hf_cache
 from faster_whisper_backend.core import languages
 
