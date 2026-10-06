@@ -739,7 +739,7 @@ TRANSLATION_GLOSSARY: str = _D("TRANSLATION_GLOSSARY")
 # `source_url` field (and whether /v1/audio/url-preview answers at all).
 URL_DOWNLOAD_ENABLED: bool = _D("URL_DOWNLOAD_ENABLED")
 
-# Site policy (all three combine; see url/download.py _policy_check):
+# Site policy (all three combine; see media/download.py _policy_check):
 #   URL_ALLOWED_EXTRACTORS  non-empty → only these yt-dlp extractor keys
 #                           (case-insensitive, e.g. "Youtube") are accepted;
 #                           empty → every dedicated extractor is accepted.
@@ -801,7 +801,7 @@ RETAINED_MEDIA_MAX_BYTES: int = _D("RETAINED_MEDIA_MAX_BYTES")
 
 
 # =============================================================================
-# Media export — subtitle packaging (url/package.py)
+# Media export — subtitle packaging (media/subtitle_mux.py)
 # =============================================================================
 # The client exports a video WITH its subtitle tracks: it sends the SRT texts
 # it generated and the server muxes them into the retained video (a link's,

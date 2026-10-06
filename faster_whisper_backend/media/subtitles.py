@@ -30,7 +30,7 @@ import urllib.error
 import urllib.parse
 
 from faster_whisper_backend.core.languages import canonical_code
-from faster_whisper_backend.url import download as _udl
+from faster_whisper_backend.media import download as _udl
 
 MAX_TRACKS = 24
 _FORMATS = ("vtt", "srt")  # preference order

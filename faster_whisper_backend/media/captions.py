@@ -8,7 +8,7 @@ reads the video bitstream (stream copy, no decode — seconds for a feature
 film) and reports whether such captions exist AND are all padding, so the
 packager can drop them while real captions survive.
 
-Same stance as url/package.py: the source is a media-store path, ffmpeg runs
+Same stance as media/subtitle_mux.py: the source is a media-store path, ffmpeg runs
 with `-protocol_whitelist file`, nothing client-supplied becomes an option.
 """
 
@@ -19,6 +19,7 @@ import logging
 import subprocess
 import time
 
+from faster_whisper_backend.audio import ffmpeg as audio_ffmpeg
 from faster_whisper_backend.core.store_common import log_safe
 
 logger = logging.getLogger("whisper-api")
@@ -112,9 +113,7 @@ def embedded_captions_empty(src: str, *, video_index: int = 0, timeout: float = 
     """True only when the H.264 video carries A/53 captions and none of them
     holds text. Any doubt (no ffmpeg, a read error, the time limit, real
     caption bytes) answers False: the captions are kept."""
-    from faster_whisper_backend.streaming.transport import ffmpeg_exe
-
-    argv = [ffmpeg_exe(), "-hide_banner", "-loglevel", "error", "-nostdin",
+    argv = [audio_ffmpeg.ffmpeg_exe(), "-hide_banner", "-loglevel", "error", "-nostdin",
             "-protocol_whitelist", "file", "-i", src,
             "-map", f"0:v:{max(0, int(video_index))}", "-c", "copy",
             "-bsf:v", "h264_mp4toannexb", "-f", "h264", "-"]

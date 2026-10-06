@@ -283,7 +283,7 @@ def test_result_drops_dangling_media_ids(client):
 
 
 def test_result_refreshes_a_live_media_expiry(client, tmp_path):
-    from faster_whisper_backend.url import media_store as ums
+    from faster_whisper_backend.media import media_store as ums
     src = tmp_path / "x.m4a"; src.write_bytes(b"x" * 10)
     mid = ums.register(str(src), user_id=None)
     assert mid

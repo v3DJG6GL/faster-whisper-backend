@@ -7,9 +7,9 @@ import os
 
 import pytest
 
-from faster_whisper_backend.url import download as url_download
-from faster_whisper_backend.url import media_store as url_media_store
-from faster_whisper_backend.url.download import UrlMediaInfo
+from faster_whisper_backend.media import download as url_download
+from faster_whisper_backend.media import media_store as url_media_store
+from faster_whisper_backend.media.download import UrlMediaInfo
 from faster_whisper_backend.transcription import receipt as tx_receipt
 
 _URL = "https://www.youtube.com/watch?v=abc123xyz"

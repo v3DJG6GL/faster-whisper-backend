@@ -1,4 +1,4 @@
-"""url/segmented.py — the language check's chunked path: the pure HLS / DASH
+"""media/segmented.py — the language check's chunked path: the pure HLS / DASH
 parsers, the source picker, and fetch_pieces against a fake guarded GET
 serving real (PyAV-encoded) TS and fMP4 segments."""
 
@@ -11,8 +11,8 @@ import numpy as np
 import pytest
 
 from faster_whisper_backend.audio import transcode
-from faster_whisper_backend.url import download as udl
-from faster_whisper_backend.url import segmented as seg
+from faster_whisper_backend.media import download as udl
+from faster_whisper_backend.media import segmented as seg
 
 _BASE = "https://cdn.test/v/audio/index.m3u8"
 

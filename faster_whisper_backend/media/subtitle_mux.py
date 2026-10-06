@@ -2,7 +2,7 @@
 soft subtitle streams (MKV: SubRip tracks; MP4: 3GPP timed text), so an
 exported video carries the languages its transcript was translated into.
 
-Contract (same stance as url/download.py):
+Contract (same stance as media/download.py):
   - str(PackageError) is CLIENT-SAFE; ffmpeg's stderr never reaches a
     caller — it is logged (bounded, log_safe) and classified.
   - No client-supplied string ever becomes an ffmpeg input path or an option:
@@ -26,6 +26,7 @@ import subprocess
 import tempfile
 import time
 
+from faster_whisper_backend.audio import ffmpeg as audio_ffmpeg
 from faster_whisper_backend.core import proc as core_proc
 from faster_whisper_backend.core.languages import iso639_2t, language_label
 from faster_whisper_backend.core.store_common import log_safe
@@ -191,13 +192,11 @@ def build_package_argv(src: str, srt_paths: "list[str]", tracks: "list[SubtitleT
     tags every audio stream with the spoken language (the source file usually
     carries the uploader's default, "en" for a German video).
     `strip_empty_captions` drops the H.264 SEI units, which takes broadcast
-    captions that never carry text (url/captions.py) out of the picture —
+    captions that never carry text (media/captions.py) out of the picture —
     players otherwise list them as empty "Closed captions 1–4" tracks."""
-    from faster_whisper_backend.streaming.transport import ffmpeg_exe
-
     if container not in CONTAINERS:
         container = "mkv"
-    argv = [ffmpeg_exe(), "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
+    argv = [audio_ffmpeg.ffmpeg_exe(), "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
             "-protocol_whitelist", "file", "-i", src]
     for p in srt_paths:
         argv += ["-protocol_whitelist", "file", "-f", "srt", "-i", p]
@@ -312,7 +311,7 @@ async def _empty_captions_to_strip(src: str, video_codec: "str | None",
     keeps the captions."""
     if (video_codec or "").lower() != "h264" or not ffmpeg_has_bsf("filter_units"):
         return False
-    from faster_whisper_backend.url import captions as _cc
+    from faster_whisper_backend.media import captions as _cc
     try:
         return await asyncio.to_thread(_cc.embedded_captions_empty, src,
                                        video_index=video_index,
@@ -325,9 +324,8 @@ async def _empty_captions_to_strip(src: str, video_codec: "str | None",
 @functools.lru_cache(maxsize=8)
 def ffmpeg_has_bsf(name: str) -> bool:
     """Whether the server's ffmpeg has the bitstream filter `name`."""
-    from faster_whisper_backend.streaming.transport import ffmpeg_exe
     try:
-        out = subprocess.run([ffmpeg_exe(), "-hide_banner", "-bsfs"], capture_output=True,
+        out = subprocess.run([audio_ffmpeg.ffmpeg_exe(), "-hide_banner", "-bsfs"], capture_output=True,
                              text=True, check=False, timeout=15).stdout
     except (OSError, subprocess.SubprocessError):
         return False
@@ -345,9 +343,7 @@ def ffmpeg_capabilities() -> FfmpegCaps:
     """Whether the server's ffmpeg can package at all, and into which
     containers. Cached: the binary cannot change without a restart. Two
     subprocesses on first call — the lifespan warms it off the loop."""
-    from faster_whisper_backend.streaming.transport import ffmpeg_exe
-
-    exe = ffmpeg_exe()
+    exe = audio_ffmpeg.ffmpeg_exe()
     try:
         mux = subprocess.run([exe, "-hide_banner", "-muxers"], capture_output=True,
                              text=True, timeout=15).stdout

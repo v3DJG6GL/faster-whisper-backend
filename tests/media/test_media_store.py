@@ -1,4 +1,4 @@
-"""Unit tests for url/media_store.py (retention of URL-downloaded audio)."""
+"""Unit tests for media/media_store.py (retention of URL-downloaded audio)."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ import time
 
 import pytest
 
-from faster_whisper_backend.url import media_store as ums
+from faster_whisper_backend.media import media_store as ums
 
 
 @pytest.fixture(autouse=True)

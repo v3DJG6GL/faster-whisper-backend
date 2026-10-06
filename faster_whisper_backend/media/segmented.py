@@ -28,8 +28,8 @@ import re
 import time
 import urllib.parse
 
-from faster_whisper_backend.url import download as _udl
-from faster_whisper_backend.url.language_check import select_segments
+from faster_whisper_backend.media import download as _udl
+from faster_whisper_backend.media.language_check import select_segments
 
 # Caps for one check. 2 s DASH fragments (RTVE) need 12 to cover a 20 s
 # piece plus margin; shorter segments than that fall back rather than fan

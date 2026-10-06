@@ -11,9 +11,9 @@ import os
 
 import pytest
 
-from faster_whisper_backend.url import download as url_download
-from faster_whisper_backend.url import media_store as url_media_store
-from faster_whisper_backend.url.download import UrlDownloadError, UrlMediaInfo
+from faster_whisper_backend.media import download as url_download
+from faster_whisper_backend.media import media_store as url_media_store
+from faster_whisper_backend.media.download import UrlDownloadError, UrlMediaInfo
 from faster_whisper_backend.transcription import models as tx_models
 from faster_whisper_backend.transcription import progress as tx_progress
 
@@ -890,7 +890,7 @@ def test_language_check_no_speech_is_unknown(client, url_enabled, lang_check, mo
     assert body["verdict"] == "unknown" and body["language"] is None
 
 
-# The chunked path: a link whose audio is a segmented stream (url/segmented.py).
+# The chunked path: a link whose audio is a segmented stream (media/segmented.py).
 _HLS = "https://cdn.test/v/index.m3u8"
 
 
@@ -899,7 +899,7 @@ def hls_link(url_enabled, lang_check, fake_capped_get, monkeypatch):
     """A 60 s link whose audio is HLS — 15 × 4 s real TS segments behind a
     fake guarded GET (requests recorded) — and every full download recorded.
     Each detect_language call records its piece's sample count."""
-    from tests.url.test_segmented import hls_playlist, ts_segments
+    from tests.media.test_segmented import hls_playlist, ts_segments
     names = [f"s{i}.ts" for i in range(15)]
     link = fake_capped_get
     link.table.update({f"https://cdn.test/v/{n}": b

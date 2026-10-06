@@ -1,8 +1,8 @@
-"""url/language_check.py — piece placement and the vote (pure)."""
+"""media/language_check.py — piece placement and the vote (pure)."""
 
 import pytest
 
-from faster_whisper_backend.url import language_check as lc
+from faster_whisper_backend.media import language_check as lc
 
 
 @pytest.mark.parametrize("duration,starts", [

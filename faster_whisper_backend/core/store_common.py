@@ -161,7 +161,7 @@ def secure_file(path: str) -> None:
     are not SQLite: the rotating server log (every request block carries RAW
     WHISPER / FINAL text — main.py), config.local.json (admin host allowlist
     and compiled pipeline rules — settings/config_store.py), the model-sizes cache
-    (runtime/model_sizes.py), downloaded URL media files (url/media_store.py) and
+    (runtime/model_sizes.py), downloaded URL media files (media/media_store.py) and
     the merged / VAD-trimmed dictation WAVs written through the tmp+os.replace
     swap (audio_merge.merge_wavs, audio_vad_trim.trim_wav) — os.replace
     carries the tmp inode's mode onto the destination, so the tmp is pinned

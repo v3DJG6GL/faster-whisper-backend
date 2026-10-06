@@ -13,8 +13,8 @@ import time
 
 import pytest
 
-from faster_whisper_backend.url import media_store as ums
-from faster_whisper_backend.url import package as pk
+from faster_whisper_backend.media import media_store as ums
+from faster_whisper_backend.media import subtitle_mux as pk
 
 _ID = "a" * 32
 

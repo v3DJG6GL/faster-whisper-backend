@@ -43,6 +43,7 @@ import time
 import urllib.parse
 import urllib.request
 
+from faster_whisper_backend.audio import ffmpeg as audio_ffmpeg
 from faster_whisper_backend.settings import config as cfg
 from faster_whisper_backend.core import net_policy
 from faster_whisper_backend.core import proc as core_proc
@@ -101,7 +102,7 @@ class UrlMediaInfo:
     # download's format selector is what actually decides.
     video_ladder: "list[dict]" = dataclasses.field(default_factory=list)
     # The spoken language the site names, and its own subtitle tracks
-    # (url/subtitles.py): the public list for the preview, and the
+    # (media/subtitles.py): the public list for the preview, and the
     # server-only {id: {url, ext}} the url-subtitles route fetches from —
     # signed URLs that must never reach a client or a log line.
     language: "str | None" = None
@@ -110,7 +111,7 @@ class UrlMediaInfo:
         default_factory=dict, repr=False)
     # Server-only, signed URLs like subtitle_sources: the selected audio
     # format when it is a segmented stream (HLS/DASH), which the language
-    # check samples without the whole file (url/segmented.py); None for a
+    # check samples without the whole file (media/segmented.py); None for a
     # progressive file.
     segmented: "dict | None" = dataclasses.field(default=None, repr=False)
 
@@ -896,8 +897,8 @@ async def probe(url: str, *, timeout: float) -> UrlMediaInfo:
                 "label": "audio only" + (f" · {_ext}" if _ext else "")
                          + (f" · {int(_abr)} kbps" if _abr else ""),
             })
-    from faster_whisper_backend.url import segmented as _seg
-    from faster_whisper_backend.url import subtitles as _subs
+    from faster_whisper_backend.media import segmented as _seg
+    from faster_whisper_backend.media import subtitles as _subs
     tracks, sources = _subs.list_tracks(info)
     return UrlMediaInfo(
         url=url,
@@ -1109,8 +1110,6 @@ def _parse_progress_fields(line: str) -> "tuple[int, int | None, str | None] | N
 def build_download_argv(url: str, *, dest_dir: str, max_bytes: int) -> "list[str]":
     """The exact yt-dlp CLI invocation (separate function so tests can pin
     it). The URL is the only client-supplied element and follows '--'."""
-    from faster_whisper_backend.streaming.transport import ffmpeg_exe
-
     return [
         # NOT `-m yt_dlp`: the launcher installs the SSRF guard first and
         # exits non-zero if it cannot (yt-dlp's plugin loader would only
@@ -1130,7 +1129,7 @@ def build_download_argv(url: str, *, dest_dir: str, max_bytes: int) -> "list[str
         "--socket-timeout", str(int(getattr(cfg, "URL_SOCKET_TIMEOUT_S", 15))),
         "--retries", "3",
         "--no-mtime",
-        "--ffmpeg-location", ffmpeg_exe(),
+        "--ffmpeg-location", audio_ffmpeg.ffmpeg_exe(),
         "-P", dest_dir,
         # NEVER %(title)s — titles are attacker-controlled and path-adjacent.
         "-o", "media.%(ext)s",
@@ -1174,8 +1173,6 @@ def build_video_download_argv(url: str, *, dest_dir: str, max_bytes: int,
     build_download_argv; `max_height` is clamped to an int and the ids are
     regex-checked here so no client value ever reaches the selector as
     text."""
-    from faster_whisper_backend.streaming.transport import ffmpeg_exe
-
     if container not in VIDEO_CONTAINERS:
         container = "mkv"
     fmt = video_format_selector(max_height, format_ids)
@@ -1191,7 +1188,7 @@ def build_video_download_argv(url: str, *, dest_dir: str, max_bytes: int,
         "--socket-timeout", str(int(getattr(cfg, "URL_SOCKET_TIMEOUT_S", 15))),
         "--retries", "3",
         "--no-mtime",
-        "--ffmpeg-location", ffmpeg_exe(),
+        "--ffmpeg-location", audio_ffmpeg.ffmpeg_exe(),
         "-P", dest_dir,
         "-o", "media.%(ext)s",   # NEVER %(title)s — see build_download_argv
         "--newline", "--no-colors",

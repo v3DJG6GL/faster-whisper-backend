@@ -1,4 +1,4 @@
-"""url/package.py — subtitle packaging: the MP4 rule,
+"""media/subtitle_mux.py — subtitle packaging: the MP4 rule,
 the ffmpeg argv, the runner against a fake ffmpeg, and the capability probe."""
 
 from __future__ import annotations
@@ -12,7 +12,7 @@ import tempfile
 
 import pytest
 
-from faster_whisper_backend.url import package as pk
+from faster_whisper_backend.media import subtitle_mux as pk
 
 
 def _run(coro):

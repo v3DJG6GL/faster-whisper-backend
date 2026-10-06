@@ -37,7 +37,7 @@ from unittest import mock
 import pytest
 
 from faster_whisper_backend.core import net_policy
-from faster_whisper_backend.url import download as udl
+from faster_whisper_backend.media import download as udl
 
 SECRET = b"INTERNAL-SECRET-" * 64
 PUBLIC_BODY = b"\xff\xfb\x90\x44" + b"\x00" * 4092  # plausible MPEG audio head

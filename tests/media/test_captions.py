@@ -1,4 +1,4 @@
-"""url/captions.py — empty broadcast captions (A/53 in H.264 SEI): the
+"""media/captions.py — empty broadcast captions (A/53 in H.264 SEI): the
 bitstream scanner on synthetic bytes, and the whole path on a generated
 video that carries empty or real captions."""
 
@@ -11,8 +11,8 @@ import subprocess
 
 import pytest
 
-from faster_whisper_backend.url import captions as cc
-from faster_whisper_backend.url import package as pk
+from faster_whisper_backend.media import captions as cc
+from faster_whisper_backend.media import subtitle_mux as pk
 
 PAD = (0xFC, 0x80, 0x80)          # CEA-608 field 1, valid, padding
 HI = (0xFC, 0xC8, 0xE9)           # CEA-608 "Hi" with odd parity
@@ -94,7 +94,7 @@ def test_only_h264_is_scanned(monkeypatch):
 # ── the whole path on a generated video ────────────────────────────────────
 
 def _ffmpeg():
-    from faster_whisper_backend.streaming.transport import ffmpeg_exe
+    from faster_whisper_backend.audio.ffmpeg import ffmpeg_exe
     exe = ffmpeg_exe()
     try:
         enc = subprocess.run([exe, "-hide_banner", "-encoders"], capture_output=True,
@@ -125,7 +125,7 @@ def _video_with(tmp_path, sei: bytes) -> str:
 
 
 def _ga94_count(path: str) -> int:
-    from faster_whisper_backend.streaming.transport import ffmpeg_exe
+    from faster_whisper_backend.audio.ffmpeg import ffmpeg_exe
     out = subprocess.run([ffmpeg_exe(), "-v", "error", "-i", path, "-map", "0:v:0", "-c", "copy",
                           "-bsf:v", "h264_mp4toannexb", "-f", "h264", "-"],
                          capture_output=True, check=False, timeout=60).stdout

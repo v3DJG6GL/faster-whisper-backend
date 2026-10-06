@@ -1,7 +1,7 @@
 """Which language does a link speak? The pure half of POST /v1/audio/url-language.
 
 The route gets a few short pieces spread over the audio — only the segments
-under them when the link is a segmented stream (url/segmented.py), else the
+under them when the link is a segmented stream (media/segmented.py), else the
 whole file through the guarded download (never a ranged ffmpeg fetch, which
 would bypass the SSRF guard) — and lets Whisper's language detection listen
 to each; these functions pick the pieces (and the segments under them) and

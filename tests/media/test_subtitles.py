@@ -1,8 +1,8 @@
-"""url/subtitles.py — track listing from realistic yt-dlp info dicts."""
+"""media/subtitles.py — track listing from realistic yt-dlp info dicts."""
 
 from __future__ import annotations
 
-from faster_whisper_backend.url import subtitles as subs
+from faster_whisper_backend.media import subtitles as subs
 
 
 def _yt_formats(lang, name):
@@ -121,7 +121,7 @@ import asyncio  # noqa: E402
 
 import pytest  # noqa: E402
 
-from faster_whisper_backend.url import download as udl  # noqa: E402
+from faster_whisper_backend.media import download as udl  # noqa: E402
 
 _VTT = b"\xef\xbb\xbfWEBVTT\n\n00:00.000 --> 00:01.000\nHallo\n"
 

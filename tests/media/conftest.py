@@ -16,7 +16,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from faster_whisper_backend.url import download as udl
+from faster_whisper_backend.media import download as udl
 
 
 @pytest.fixture(autouse=True)

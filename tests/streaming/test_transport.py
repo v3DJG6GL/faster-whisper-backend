@@ -13,10 +13,10 @@ import pytest
 from starlette.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
+from faster_whisper_backend.audio.ffmpeg import ffmpeg_exe
 from faster_whisper_backend.streaming.transport import (
     FfmpegTransport,
     RawPcmTransport,
-    ffmpeg_exe,
     make_transport,
 )
 
