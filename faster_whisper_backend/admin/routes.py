@@ -39,6 +39,7 @@ from faster_whisper_backend.settings import config_store
 from faster_whisper_backend.settings import schema as settings_schema
 from faster_whisper_backend.settings import descriptions as field_descriptions
 from faster_whisper_backend.runtime import system_stats
+from faster_whisper_backend.runtime import model_registry
 from faster_whisper_backend.translation import engine as translation
 from faster_whisper_backend.core.languages import WHISPER_LANGUAGE_NAMES
 from faster_whisper_backend.core import web_common
@@ -255,7 +256,7 @@ def _server_ident_fields() -> dict[str, str]:
     # decode (whisper) model's observed device may drive the device word — a
     # cuda pyannote pipeline on a MODEL_DEVICE=cpu box must not flip the card
     # (and a cpu gguf translator loaded first must not hide a cuda decode).
-    loaded = system_stats.loaded_models_snapshot()
+    loaded = model_registry.loaded_models_snapshot()
     _dec = next(
         (e for e in loaded
          if not str(e.get("name") or "").startswith(_NON_DECODE_PREFIXES)),

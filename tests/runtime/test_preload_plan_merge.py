@@ -12,7 +12,7 @@ import asyncio
 from faster_whisper_backend.audio import diarization
 from faster_whisper_backend.runtime import model_sizes
 from faster_whisper_backend.runtime import preload
-from faster_whisper_backend.runtime import system_stats
+from faster_whisper_backend.runtime import model_registry
 
 from tests.conftest import bearer
 from faster_whisper_backend.transcription import models as tx_models
@@ -177,10 +177,10 @@ def test_queue_cap_counts_the_in_flight_batch(monkeypatch):
 def test_reset_for_tests_clears_the_warm_predicate():
     async def _run():
         await preload.start()
-        assert system_stats._warm_predicate is preload.is_warm
+        assert model_registry._warm_predicate is preload.is_warm
         preload._reset_for_tests()
-        assert system_stats._warm_predicate is None
-        assert system_stats.is_warm("anything") is False
+        assert model_registry._warm_predicate is None
+        assert model_registry.is_warm("anything") is False
     asyncio.run(_run())
 
 
@@ -242,11 +242,11 @@ def test_whisper_full_cache_with_only_a_warm_peer_is_family_busy(monkeypatch):
     _fits(monkeypatch, (True, None))
     monkeypatch.setattr(tx_models, "_loaded_models", {"peer": object()})
     monkeypatch.setattr(tx_models, "_model_leases", {})
-    system_stats.set_warm_predicate(lambda k: k == "peer")
+    model_registry.set_warm_predicate(lambda k: k == "peer")
     assert preload._admit("whisper", "large-v3") == ("deferred", "family_busy")
 
     # The same cache with a COLD peer: admitted (the worker drops the peer).
-    system_stats.set_warm_predicate(None)
+    model_registry.set_warm_predicate(None)
     assert preload._admit("whisper", "large-v3") in (("loading", None),
                                                      ("queued", None))
 
@@ -315,11 +315,11 @@ def test_translation_full_cache_with_only_a_warm_peer_is_family_busy(
     from faster_whisper_backend.translation import engine as translation
     monkeypatch.setattr(translation, "_models", {"o/peer:Q4": object()})
     monkeypatch.setattr(translation, "_active", {})
-    system_stats.set_warm_predicate(lambda k: k == "gguf:o/peer:Q4")
+    model_registry.set_warm_predicate(lambda k: k == "gguf:o/peer:Q4")
     assert preload._admit("translation", "o/new:Q4") == ("deferred",
                                                          "family_busy")
 
-    system_stats.set_warm_predicate(None)
+    model_registry.set_warm_predicate(None)
     assert preload._admit("translation", "o/new:Q4") in (("loading", None),
                                                          ("queued", None))
 
@@ -327,7 +327,7 @@ def test_translation_full_cache_with_only_a_warm_peer_is_family_busy(
             MODEL_PRELOAD_EVICT_IDLE_MODELS=False)
     assert preload._admit("translation", "o/new:Q4") == ("deferred",
                                                          "family_busy")
-    system_stats.set_warm_predicate(None)
+    model_registry.set_warm_predicate(None)
 
 
 def test_worker_evicts_the_cold_translation_peer_it_chose_even_when_it_fits(
@@ -337,7 +337,7 @@ def test_worker_evicts_the_cold_translation_peer_it_chose_even_when_it_fits(
     from faster_whisper_backend.translation import engine as translation
     monkeypatch.setattr(translation, "_models", {"o/peer:Q4": object()})
     monkeypatch.setattr(translation, "_active", {})
-    system_stats.set_warm_predicate(None)
+    model_registry.set_warm_predicate(None)
     evicted = []
     loaded = []
 

@@ -14,7 +14,7 @@ import time
 
 from faster_whisper_backend.core import receipt_hold
 from faster_whisper_backend.core import store_common
-from faster_whisper_backend.runtime import system_stats
+from faster_whisper_backend.runtime import model_registry
 from faster_whisper_backend.settings import config as cfg
 from faster_whisper_backend.stats import metrics
 
@@ -509,8 +509,8 @@ def _stage_extras(stats_key: "str | None", t0_perf: float) -> dict:
     if not stats_key:
         return out
     started_wall = time.time() - (time.perf_counter() - t0_perf)
-    out["load_secs"] = system_stats.load_secs_since(stats_key, started_wall)
-    for entry in system_stats.loaded_models_snapshot():
+    out["load_secs"] = model_registry.load_secs_since(stats_key, started_wall)
+    for entry in model_registry.loaded_models_snapshot():
         if entry.get("name") == stats_key:
             out["device"] = entry.get("device")
             break
@@ -655,7 +655,7 @@ def _format_notes_section(warnings: "list | None",
 def _model_compute_device(name: str) -> "tuple[str | None, str | None]":
     """Look up the actual device + compute_type a model was loaded with —
     these may differ from cfg.MODEL_* if the fallback path was taken."""
-    for entry in system_stats.loaded_models_snapshot():
+    for entry in model_registry.loaded_models_snapshot():
         if entry.get("name") == name:
             return entry.get("compute_type"), entry.get("device")
     return None, None

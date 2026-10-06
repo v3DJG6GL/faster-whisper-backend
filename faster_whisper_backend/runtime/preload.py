@@ -47,7 +47,7 @@ from dataclasses import dataclass, field
 from faster_whisper_backend.settings import config as cfg
 from faster_whisper_backend.core import jobs
 from faster_whisper_backend.runtime import model_sizes
-from faster_whisper_backend.runtime import system_stats
+from faster_whisper_backend.runtime import model_registry
 from faster_whisper_backend.transcription import models as tx_models
 
 logger = logging.getLogger("whisper-server")
@@ -159,7 +159,7 @@ def normalize_id(family: str, model_id: str) -> str:
 
 
 def stats_key(family: str, model_id: str) -> str:
-    """The system_stats registry key — the shared namespace the warm leases,
+    """The model_registry key — the shared namespace the warm leases,
     the size ledger and the idle evictors all speak."""
     mid = normalize_id(family, model_id)
     if family == "diarization":
@@ -230,7 +230,7 @@ def _recompute_warm_locked() -> None:
 def is_warm(key: str) -> bool:
     """True while some live plan still expects to use this stats key.
 
-    Registered as ``system_stats.set_warm_predicate`` so the four idle evictors
+    Registered as ``model_registry.set_warm_predicate`` so the four idle evictors
     can consult it without importing this module (which would close a cycle in
     all four). Never raises.
 
@@ -372,7 +372,7 @@ def _idle_peer(family: str, model_id: str) -> "str | None":
     mid = normalize_id(family, model_id)
 
     def _warm(peer_id: str) -> bool:
-        return system_stats.is_warm(stats_key(family, peer_id))
+        return model_registry.is_warm(stats_key(family, peer_id))
 
     try:
         if family == "whisper":
@@ -412,7 +412,7 @@ def _admit(family: str, model_id: str) -> "tuple[str, str | None]":
         # if the job that needs it is still minutes away. The warm lease is
         # the plan's own, via _recompute_warm_locked — nothing writes _warm
         # outside that function (it is derived state, rebuilt wholesale).
-        system_stats.touch_loaded_model(stats_key(family, model_id))
+        model_registry.touch_loaded_model(stats_key(family, model_id))
         return ("resident", None)
 
     if _family_busy(family, model_id):
@@ -926,7 +926,7 @@ async def start() -> None:
     _loop = loop
     if _worker is None or _worker.done():
         _worker = asyncio.create_task(_worker_loop())
-    system_stats.set_warm_predicate(is_warm)
+    model_registry.set_warm_predicate(is_warm)
     logger.info(
         "[preload] worker started (enabled=%s, ttl=%ds, reserve=%d/%d MB, "
         "evict_idle=%s)",
@@ -940,7 +940,7 @@ async def stop() -> None:
     """Cancel the worker and unregister the warm predicate, so a stopped
     preloader cannot keep models pinned against the idle evictors."""
     global _worker
-    system_stats.set_warm_predicate(None)
+    model_registry.set_warm_predicate(None)
     task, _worker = _worker, None
     if task is not None:
         task.cancel()
@@ -993,7 +993,7 @@ def _reset_for_tests() -> None:
     global _queue, _loop, _worker, _busy
     # Mirrors stop(): a predicate left installed would keep a later test's
     # model pinned by a plan this one owned. Outside _lock, like stop().
-    system_stats.set_warm_predicate(None)
+    model_registry.set_warm_predicate(None)
     with _lock:
         _plans.clear()
         _warm.clear()

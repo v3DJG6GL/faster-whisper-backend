@@ -11,7 +11,7 @@ import sys
 import time
 import types
 
-from faster_whisper_backend.runtime import system_stats
+from faster_whisper_backend.runtime import model_registry
 from tests.conftest import FakeModel
 from faster_whisper_backend.transcription import models as tx_models
 
@@ -28,7 +28,7 @@ def _stub_load(monkeypatch):
     monkeypatch.setattr(tx_models.cfg, "LOCAL_FILES_ONLY", True, raising=False)
     monkeypatch.setattr(tx_models.cfg, "MAX_LOADED_MODELS", 4, raising=False)
     tx_models._loaded_models.clear()
-    system_stats._loaded_models.clear()
+    model_registry._loaded_models.clear()
 
 
 def test_lock_wait_is_not_billed_as_load_time(monkeypatch):
@@ -53,10 +53,10 @@ def test_lock_wait_is_not_billed_as_load_time(monkeypatch):
         asyncio.run(run())
         assert "x" in recorded
         assert recorded["x"] < 0.1
-        assert system_stats._loaded_models["x"]["load_secs"] < 0.1
+        assert model_registry._loaded_models["x"]["load_secs"] < 0.1
     finally:
         tx_models._loaded_models.clear()
-        system_stats._loaded_models.clear()
+        model_registry._loaded_models.clear()
 
 
 def _run_one_evictor_tick(monkeypatch):
@@ -74,8 +74,8 @@ def _run_one_evictor_tick(monkeypatch):
 
 def _register_stale(name):
     tx_models._loaded_models[name] = FakeModel()
-    system_stats.register_loaded_model(name, 0, "cpu", "int8")
-    system_stats._loaded_models[name]["last_used_monotonic"] = (
+    model_registry.register_loaded_model(name, 0, "cpu", "int8")
+    model_registry._loaded_models[name]["last_used_monotonic"] = (
         time.monotonic() - 3600)
 
 
@@ -92,7 +92,7 @@ def test_evictor_does_not_claim_an_unload_it_was_refused(monkeypatch, caplog):
     finally:
         tx_models._model_leases.pop("a", None)
         tx_models._loaded_models.clear()
-        system_stats._loaded_models.clear()
+        model_registry._loaded_models.clear()
 
 
 def test_evictor_logs_the_unload_it_performed(monkeypatch, caplog):
@@ -106,4 +106,4 @@ def test_evictor_logs_the_unload_it_performed(monkeypatch, caplog):
                    for r in caplog.records)
     finally:
         tx_models._loaded_models.clear()
-        system_stats._loaded_models.clear()
+        model_registry._loaded_models.clear()

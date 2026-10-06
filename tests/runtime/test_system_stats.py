@@ -1,30 +1,30 @@
-"""Tests for system_stats: snapshot shape, the loaded-model registry
-round-trip, and idempotent shutdown.
+"""Tests for system_stats: snapshot shape (including the registry's models
+row), and idempotent shutdown. The registry itself: test_model_registry.py.
 
 system_stats has import-time side effects (psutil priming, an NVML init
 attempt that degrades gracefully). On this CI box NVML is absent, so the
 snapshot's gpu is None and gpu_error is a non-empty string; assertions accept
 either the absent-fallback (the real CI condition) or a present GPU.
 
-The module keeps a process-global registry (_loaded_models); a local autouse
-fixture clears it between tests so cases don't observe each other's writes.
+The snapshot's models row reads model_registry's process-global registry; a
+local autouse fixture clears it between tests so cases don't observe each
+other's writes.
 """
-
-import time
 
 import pytest
 
+from faster_whisper_backend.runtime import model_registry
 from faster_whisper_backend.runtime import system_stats
 
 
 @pytest.fixture(autouse=True)
 def _reset_registry():
-    """Reset system_stats' module-global loaded-model registry."""
-    with system_stats._loaded_models_lock:
-        system_stats._loaded_models.clear()
+    """Reset model_registry's module-global loaded-model registry."""
+    with model_registry._loaded_models_lock:
+        model_registry._loaded_models.clear()
     yield
-    with system_stats._loaded_models_lock:
-        system_stats._loaded_models.clear()
+    with model_registry._loaded_models_lock:
+        model_registry._loaded_models.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -66,84 +66,10 @@ def test_snapshot_process_fields():
 
 
 def test_snapshot_models_reflects_registry():
-    system_stats.register_loaded_model("base", 1024 * 1024, "cpu", "int8")
+    model_registry.register_loaded_model("base", 1024 * 1024, "cpu", "int8")
     models = system_stats.system_snapshot()["models"]
     assert len(models) == 1
     assert models[0]["name"] == "base"
-
-
-# ---------------------------------------------------------------------------
-# Loaded-model registry round-trip
-# ---------------------------------------------------------------------------
-
-def test_register_and_snapshot():
-    system_stats.register_loaded_model("m1", 512 * 1024 * 1024, "cuda", "float16")
-    snap = system_stats.loaded_models_snapshot()
-    assert len(snap) == 1
-    e = snap[0]
-    assert e["name"] == "m1"
-    assert e["device"] == "cuda"
-    assert e["compute_type"] == "float16"
-    assert e["vram_mb"] == 512.0
-    assert e["age_sec"] >= 0
-    assert e["idle_sec"] >= 0
-
-
-def test_snapshot_tells_the_model_role_apart_by_prefix():
-    """The stats page's loaded-models table shows what each model is for:
-    the registration prefix of each family decides, and the label drops it."""
-    system_stats.register_loaded_model("large-v3", None, "cuda", "float16")
-    system_stats.register_loaded_model("pyannote:speaker-diarization-3.1", None, "cuda", "float32")
-    system_stats.register_loaded_model("uvr:UVR-MDX-NET-Inst_HQ_3", None, "cuda", "float32")
-    system_stats.register_loaded_model("gguf:org/gemma", None, "cpu", "q4")
-    roles = {e["name"]: (e["role"], e["label"]) for e in system_stats.loaded_models_snapshot()}
-    assert roles == {
-        "large-v3": ("transcribing", "large-v3"),
-        "pyannote:speaker-diarization-3.1": ("diarizing", "speaker-diarization-3.1"),
-        "uvr:UVR-MDX-NET-Inst_HQ_3": ("separating", "UVR-MDX-NET-Inst_HQ_3"),
-        "gguf:org/gemma": ("translating", "org/gemma"),
-    }
-
-
-def test_register_none_vram():
-    system_stats.register_loaded_model("m2", None, "cpu", "int8")
-    e = system_stats.loaded_models_snapshot()[0]
-    assert e["vram_mb"] is None
-
-
-def test_touch_updates_last_used():
-    system_stats.register_loaded_model("m3", None, "cpu", "int8")
-    with system_stats._loaded_models_lock:
-        # Backdate last_used so the touch is observable.
-        system_stats._loaded_models["m3"]["last_used"] = time.time() - 100
-    before = system_stats.loaded_models_snapshot()[0]["idle_sec"]
-    assert before >= 99
-    system_stats.touch_loaded_model("m3")
-    after = system_stats.loaded_models_snapshot()[0]["idle_sec"]
-    assert after < before
-
-
-def test_touch_unknown_model_noop():
-    # Touching a name that was never registered must not raise or create it.
-    system_stats.touch_loaded_model("nope")
-    assert system_stats.loaded_models_snapshot() == []
-
-
-def test_unregister():
-    system_stats.register_loaded_model("m4", None, "cpu", "int8")
-    assert len(system_stats.loaded_models_snapshot()) == 1
-    system_stats.unregister_loaded_model("m4")
-    assert system_stats.loaded_models_snapshot() == []
-    # Unregistering an absent model is a no-op.
-    system_stats.unregister_loaded_model("m4")
-    assert system_stats.loaded_models_snapshot() == []
-
-
-def test_snapshot_ordered_by_insertion():
-    system_stats.register_loaded_model("a", None, "cpu", "int8")
-    system_stats.register_loaded_model("b", None, "cpu", "int8")
-    names = [m["name"] for m in system_stats.loaded_models_snapshot()]
-    assert names == ["a", "b"]
 
 
 # ---------------------------------------------------------------------------
@@ -173,21 +99,8 @@ def test_shutdown_safe_and_idempotent():
 
 
 # ---------------------------------------------------------------------------
-# register_loaded_model / _build_host regressions
+# _build_host regressions
 # ---------------------------------------------------------------------------
-
-def test_negative_vram_delta_is_not_displayed(monkeypatch):
-    """A concurrent free elsewhere on the GPU makes after < before; that is
-    not a measurement and must not surface as a negative vram_mb."""
-    from faster_whisper_backend.runtime import model_sizes
-    monkeypatch.setattr(model_sizes, "disk_size", lambda name: None)
-    system_stats.register_loaded_model("neg", -512 * 1024 * 1024, "cuda",
-                                       "int8")
-    snap = system_stats.loaded_models_snapshot()
-    assert snap[0]["name"] == "neg" and snap[0]["vram_mb"] is None
-    system_stats.register_loaded_model("zero", 0, "cpu", "int8")
-    assert system_stats.loaded_models_snapshot()[1]["vram_mb"] == 0
-
 
 def test_disk_free_reads_the_download_root_drive(monkeypatch, tmp_path):
     """/stats labels it "disk free (model cache)": with HF_HOME unset the

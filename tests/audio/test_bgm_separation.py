@@ -242,7 +242,7 @@ def test_register_records_the_actual_session_device(monkeypatch):
     """ORT can silently fall back to CPU at session creation — the stats/
     ledger row must carry the session's real placement, not the request."""
     import asyncio
-    from faster_whisper_backend.runtime import system_stats
+    from faster_whisper_backend.runtime import model_registry
 
     cfg = bgm_separation.cfg
     monkeypatch.setattr(cfg, "BGM_SEPARATION_UVR_MODEL", "Foo", raising=False)
@@ -256,7 +256,7 @@ def test_register_records_the_actual_session_device(monkeypatch):
     monkeypatch.setattr(bgm_separation, "_load_blocking", _load)
 
     asyncio.run(bgm_separation._get_separator("Foo"))
-    assert system_stats._loaded_models["uvr:Foo.onnx"]["device"] == "cpu"
+    assert model_registry._loaded_models["uvr:Foo.onnx"]["device"] == "cpu"
 
 
 # --- progress weighting ------------------------------------------------------
@@ -328,7 +328,7 @@ def test_separate_does_not_touch_a_model_it_never_leased(monkeypatch):
     run ended — a concurrent load of another model mid-run then got its idle
     clock / stats 'last used' refreshed by a job that never touched it."""
     import asyncio
-    from faster_whisper_backend.runtime import system_stats
+    from faster_whisper_backend.runtime import model_registry
     cfg = bgm_separation.cfg
     monkeypatch.setattr(cfg, "BGM_SEPARATION_UVR_MODEL", "Foo", raising=False)
     monkeypatch.setattr(cfg, "BGM_SEPARATION_DEVICE", "cpu", raising=False)
@@ -349,7 +349,7 @@ def test_separate_does_not_touch_a_model_it_never_leased(monkeypatch):
     monkeypatch.setattr(bgm_separation, "_load_blocking",
                         lambda model, device: _Sep())
     touched = []
-    monkeypatch.setattr(system_stats, "touch_loaded_model",
+    monkeypatch.setattr(model_registry, "touch_loaded_model",
                         lambda name: touched.append(name))
     try:
         assert asyncio.run(bgm_separation.separate("in.wav")) == made[0]
@@ -431,14 +431,14 @@ def test_idle_drop_defers_the_free_while_a_same_name_orphan_drains(monkeypatch):
     """Force-drop orphans S1, a later job loads S2 under the same key and
     releases it, the idle evictor drops S2 — that must not unregister the
     stats row / wipe the session device while the S1 job still runs."""
-    from faster_whisper_backend.runtime import system_stats
+    from faster_whisper_backend.runtime import model_registry
     monkeypatch.setattr(bgm_separation, "_separator", object())
     monkeypatch.setattr(bgm_separation, "_separator_key", ("m.onnx", "cpu"))
     monkeypatch.setattr(bgm_separation, "_leases", {})
     monkeypatch.setattr(bgm_separation, "_orphans", {"m.onnx": 1})
     monkeypatch.setattr(bgm_separation, "_session_device", "cuda")
     unregistered = []
-    monkeypatch.setattr(system_stats, "unregister_loaded_model",
+    monkeypatch.setattr(model_registry, "unregister_loaded_model",
                         lambda name: unregistered.append(name))
 
     assert bgm_separation._drop_locked(force=False) is True

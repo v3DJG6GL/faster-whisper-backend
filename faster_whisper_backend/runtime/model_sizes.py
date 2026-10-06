@@ -1,6 +1,6 @@
 """Persisted ledger of MEASURED model sizes, plus a free-memory fit check.
 
-Why a file at all: system_stats.register_loaded_model() already measures every
+Why a file at all: model_registry.register_loaded_model() already measures every
 model's footprint as an NVML delta at load time, but that number lives in a
 process-local dict and dies with the worker. To decide whether a model can be
 preloaded we need its size BEFORE loading it — i.e. carried across restarts.
@@ -9,8 +9,8 @@ Why the fit check reads the DRIVER's free VRAM rather than summing our own
 registry: other processes on the machine (a second worker, a game, a desktop
 compositor) consume the same card, and our bookkeeping cannot see them.
 
-Import-light on purpose: it is reached from system_stats, which main imports
-very early. The writer (core/atomic_json) is stdlib-only.
+Import-light on purpose: it is reached from model_registry (via system_stats,
+which main imports very early). The writer (core/atomic_json) is stdlib-only.
 """
 
 from __future__ import annotations
@@ -38,7 +38,7 @@ _REPO_DIR = REPO_ROOT  # the checkout, not this package — see paths.py
 # /data/model_sizes.json (Windows: <repo>\data — bare metal by definition, and
 # "/data" would be drive-relative there; keep in sync with config._DATA_DIR).
 # Computed here rather than imported from config: config imports config_store,
-# and system_stats reaches this module, so importing config would close a cycle.
+# and model_registry reaches this module, so importing config would close a cycle.
 PATH = os.environ.get("WHISPER_MODEL_SIZES_PATH") or os.path.normpath(
     os.path.join(
         (os.environ.get("WHISPER_DATA_DIR") or "").strip()
@@ -60,7 +60,7 @@ _cache_mtime: float | None = None
 
 
 def _key(name: str, device: str, compute_type: str) -> str:
-    # The system_stats names are already family-namespaced (bare id = whisper,
+    # The model_registry names are already family-namespaced (bare id = whisper,
     # `pyannote:`, `uvr:`, `gguf:`). Placement is appended because the same
     # weights at cuda/float16 and cpu/int8 differ by several gigabytes.
     return f"{name}|{device or ''}|{compute_type or ''}"
@@ -122,7 +122,7 @@ def record(name: str, device: str, compute_type: str, vram_bytes: int, *,
     within _REWRITE_THRESHOLD, so a long-running worker writes the file a
     handful of times rather than once per load.
 
-    ``measured=False`` marks an on-disk PRIOR (system_stats falls back to it
+    ``measured=False`` marks an on-disk PRIOR (model_registry falls back to it
     when the NVML delta is unusable). A prior never overrides a measurement,
     and the first measurement REPLACES a prior outright: the disk walk sums
     every revision and fp32 blob in a hub dir, so letting it into the
@@ -168,7 +168,7 @@ def _record_locked(k: str, vram_bytes: int, measured: bool, src: str,
                 return
             # max(), not last-write: CTranslate2's caching allocator makes
             # RE-loads under-report (the freed blocks it kept get reused,
-            # see system_stats.py's module docstring). Under-estimating is
+            # see model_registry.py's module docstring). Under-estimating is
             # the dangerous direction — it is exactly what turns a "fits"
             # verdict into an OOM — so the ledger keeps the high-water mark.
             size = max(prev, int(vram_bytes))

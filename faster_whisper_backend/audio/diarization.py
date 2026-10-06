@@ -4,7 +4,7 @@ The pyannote pipeline is a second model kind next to the WhisperModel cache in
 main.py, with the same lifecycle discipline scaled down to a singleton: lazy
 import (the dependency set is the optional ``requirements-diarize.txt``), load
 on first use under an asyncio.Lock with an NVML VRAM delta, registration in
-``system_stats`` (as ``pyannote:<model>``) so /stats shows it, an idle-eviction
+``model_registry`` (as ``pyannote:<model>``) so /stats shows it, an idle-eviction
 loop driven live by ``DIARIZATION_IDLE_TIMEOUT_S``, and drop-on-edit when the
 admin changes the model/device fields.
 
@@ -24,6 +24,7 @@ from collections.abc import Callable
 
 from faster_whisper_backend.settings import config as cfg
 from faster_whisper_backend.runtime import hf_cache
+from faster_whisper_backend.runtime import model_registry
 from faster_whisper_backend.runtime import system_stats
 from faster_whisper_backend.core.loop_lock import LoopLock
 
@@ -230,7 +231,7 @@ def _free_locked(model_id: str) -> None:
     # A same-id RELOAD can have happened while an orphan was still draining;
     # the stats entry then describes the live pipeline, not the dying one.
     if not (_pipeline_key and _pipeline_key[0] == model_id):
-        system_stats.unregister_loaded_model(_STATS_PREFIX + model_id)
+        model_registry.unregister_loaded_model(_STATS_PREFIX + model_id)
     import gc
     gc.collect()
     try:
@@ -303,7 +304,7 @@ def _release_locked(model_id: str, pipe=None) -> None:
         # Restart the idle clock: a long job must not be evicted the instant
         # it ends because the LOAD timestamp aged past the timeout.
         _last_used_monotonic = time.monotonic()
-        system_stats.touch_loaded_model(_STATS_PREFIX + model_id)
+        model_registry.touch_loaded_model(_STATS_PREFIX + model_id)
 
 
 async def _release_pipeline(model_id: str, pipe=None) -> None:
@@ -338,14 +339,14 @@ async def _get_pipeline(model_id: "str | None" = None, *, lease: bool = False):
     pipe = _pipeline
     if pipe is not None and _pipeline_key == key:
         _last_used_monotonic = time.monotonic()
-        system_stats.touch_loaded_model(_STATS_PREFIX + model_id)
+        model_registry.touch_loaded_model(_STATS_PREFIX + model_id)
         if lease:
             _leases[model_id] = _leases.get(model_id, 0) + 1
         return pipe
     async with _lock:
         if _pipeline is not None and _pipeline_key == key:
             _last_used_monotonic = time.monotonic()
-            system_stats.touch_loaded_model(_STATS_PREFIX + model_id)
+            model_registry.touch_loaded_model(_STATS_PREFIX + model_id)
             if lease:
                 _leases[model_id] = _leases.get(model_id, 0) + 1
             return _pipeline
@@ -362,7 +363,7 @@ async def _get_pipeline(model_id: "str | None" = None, *, lease: bool = False):
             vram_before is not None and vram_after is not None) else None
         load_secs = time.perf_counter() - t0
         await asyncio.to_thread(
-            system_stats.register_loaded_model,
+            model_registry.register_loaded_model,
             _STATS_PREFIX + model_id, vram, device, "torch", load_secs)
         logger.info("[diarize] pipeline %s loaded on %s in %.1fs",
                     model_id, device, load_secs)
@@ -706,9 +707,9 @@ async def idle_evictor_loop() -> None:
                 continue
             # A warm lease (a live preload plan still expects this pipeline)
             # suspends the idle clock — never a job lease, which _drop_locked
-            # already honours. Inverted through system_stats so preload can
+            # already honours. Inverted through model_registry so preload can
             # reach us without either module importing the other.
-            if _pipeline_key and system_stats.is_warm(
+            if _pipeline_key and model_registry.is_warm(
                     _STATS_PREFIX + _pipeline_key[0]):
                 continue
             if time.monotonic() - _last_used_monotonic >= timeout:

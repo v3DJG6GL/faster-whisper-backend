@@ -82,10 +82,11 @@ def test_identity_card_reports_configured_device_not_nvml(app_module, monkeypatc
     in the card / copy-report: the device word follows what the server decodes
     on, not NVML merely finding a device."""
     from faster_whisper_backend.admin import routes as admin_routes
+    from faster_whisper_backend.runtime import model_registry
     from faster_whisper_backend.runtime import system_stats
     monkeypatch.setattr(system_stats, "gpu_name",
                         lambda: "NVIDIA GeForce RTX 3080")
-    monkeypatch.setattr(system_stats, "loaded_models_snapshot", lambda: [])
+    monkeypatch.setattr(model_registry, "loaded_models_snapshot", lambda: [])
     monkeypatch.setattr(cfg, "MODEL_DEVICE", "cpu", raising=False)
     ident = admin_routes._server_ident_fields()
     assert "gpu —" not in ident["runs_as"]
@@ -94,7 +95,7 @@ def test_identity_card_reports_configured_device_not_nvml(app_module, monkeypatc
     assert "gpu —" not in ident["report"]
 
     # and a loaded cuda model wins over the config fallback
-    monkeypatch.setattr(system_stats, "loaded_models_snapshot",
+    monkeypatch.setattr(model_registry, "loaded_models_snapshot",
                         lambda: [{"name": "large-v3", "device": "cuda"}])
     ident = admin_routes._server_ident_fields()
     assert "gpu — NVIDIA GeForce RTX 3080" in ident["runs_as"]

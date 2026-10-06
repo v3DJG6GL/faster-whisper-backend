@@ -3,7 +3,7 @@ install: ``requirements-bgm.txt``).
 
 Second optional model kind next to diarization.py, same lifecycle shape:
 lazy import, singleton Separator cached under an asyncio.Lock with an NVML
-delta registered in ``system_stats`` (as ``uvr:<model>``), an idle unloader
+delta registered in ``model_registry`` (as ``uvr:<model>``), an idle unloader
 driven live by ``BGM_SEPARATION_IDLE_TIMEOUT_S``, drop-on-edit, and the same
 soft-fail contract: every problem surfaces as ``BgmSeparationError`` whose
 message is CLIENT-SAFE; raw third-party text stays in the server log.
@@ -24,6 +24,7 @@ import uuid
 from collections.abc import Callable
 
 from faster_whisper_backend.settings import config as cfg
+from faster_whisper_backend.runtime import model_registry
 from faster_whisper_backend.runtime import system_stats
 from faster_whisper_backend.core.loop_lock import LoopLock
 
@@ -430,7 +431,7 @@ def _free_locked(model: str) -> None:
     # A same-model RELOAD can have happened while an orphan was still
     # draining; the stats entry then describes the live separator.
     if not (_separator_key and _separator_key[0] == model):
-        system_stats.unregister_loaded_model(_STATS_PREFIX + model)
+        model_registry.unregister_loaded_model(_STATS_PREFIX + model)
     # No live separator left → no session; actual_device() must stop
     # reporting the dead one. (A draining orphan freed AFTER a reload must
     # not wipe the live session's placement.)
@@ -515,7 +516,7 @@ def _release_locked(model: str, sep=None) -> None:
         # Restart the idle clock: a long separation must not be evicted the
         # instant it ends because the LOAD timestamp aged past the timeout.
         _last_used_monotonic = time.monotonic()
-        system_stats.touch_loaded_model(_STATS_PREFIX + model)
+        model_registry.touch_loaded_model(_STATS_PREFIX + model)
 
 
 async def _release_separator(model: str, sep=None) -> None:
@@ -549,14 +550,14 @@ async def _get_separator(model_filename: "str | None" = None, *,
     sep = _separator
     if sep is not None and _separator_key == key:
         _last_used_monotonic = time.monotonic()
-        system_stats.touch_loaded_model(_STATS_PREFIX + model)
+        model_registry.touch_loaded_model(_STATS_PREFIX + model)
         if lease:
             _leases[model] = _leases.get(model, 0) + 1
         return sep
     async with _lock:
         if _separator is not None and _separator_key == key:
             _last_used_monotonic = time.monotonic()
-            system_stats.touch_loaded_model(_STATS_PREFIX + model)
+            model_registry.touch_loaded_model(_STATS_PREFIX + model)
             if lease:
                 _leases[model] = _leases.get(model, 0) + 1
             return _separator
@@ -587,7 +588,7 @@ async def _get_separator(model_filename: "str | None" = None, *,
         # (model_sizes) keys rows by device.
         actual = actual_device() or device
         await asyncio.to_thread(
-            system_stats.register_loaded_model,
+            model_registry.register_loaded_model,
             _STATS_PREFIX + model, vram, actual, "onnx", load_secs)
         logger.info("[bgm] separation model %s loaded on %s in %.1fs",
                     model, actual, load_secs)
@@ -788,9 +789,9 @@ async def idle_evictor_loop() -> None:
                 continue
             # A warm lease (a live preload plan still expects this separator)
             # suspends the idle clock — never a job lease, which _drop_locked
-            # already honours. Inverted through system_stats so preload can
+            # already honours. Inverted through model_registry so preload can
             # reach us without either module importing the other.
-            if _separator_key and system_stats.is_warm(
+            if _separator_key and model_registry.is_warm(
                     _STATS_PREFIX + _separator_key[0]):
                 continue
             if time.monotonic() - _last_used_monotonic >= timeout:

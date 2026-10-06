@@ -15,7 +15,7 @@ from faster_whisper_backend.audio import bgm_separation
 from faster_whisper_backend.audio import diarization
 from faster_whisper_backend.runtime import model_sizes
 from faster_whisper_backend.runtime import preload
-from faster_whisper_backend.runtime import system_stats
+from faster_whisper_backend.runtime import model_registry
 from faster_whisper_backend.translation import engine as translation
 from faster_whisper_backend.transcription import models as tx_models
 
@@ -93,7 +93,7 @@ def test_rung1_resident_touches_and_warms(monkeypatch):
     _enable(monkeypatch)
     monkeypatch.setattr(diarization, "_pipeline_key", ("p/x", "cpu", 4))
     touched = []
-    monkeypatch.setattr(system_stats, "touch_loaded_model", touched.append)
+    monkeypatch.setattr(model_registry, "touch_loaded_model", touched.append)
 
     state, reason = preload._admit("diarization", "p/x")
     assert (state, reason) == ("resident", None)
@@ -154,7 +154,7 @@ def test_size_unknown_free_whisper_slot_is_not_a_displacement(monkeypatch):
     _fits(monkeypatch, (None, "size_unknown"))
     monkeypatch.setattr(tx_models, "_loaded_models", {"small": object()})
     monkeypatch.setattr(tx_models, "_model_leases", {})
-    system_stats.set_warm_predicate(None)
+    model_registry.set_warm_predicate(None)
     assert preload._admit("whisper", "large-v3") in (("loading", None),
                                                      ("queued", None))
     # Cache full: the cold peer WOULD be displaced, so the bound holds.
@@ -167,7 +167,7 @@ def test_size_unknown_free_translation_slot_is_not_a_displacement(monkeypatch):
     _fits(monkeypatch, (None, "size_unknown"))
     monkeypatch.setattr(translation, "_models", {"o/a:Q4": object()})
     monkeypatch.setattr(translation, "_active", {})
-    system_stats.set_warm_predicate(None)
+    model_registry.set_warm_predicate(None)
     assert preload._admit("translation", "o/b:Q4") in (("loading", None),
                                                        ("queued", None))
     _enable(monkeypatch, TRANSLATION_MAX_LOADED_MODELS=1)
@@ -220,7 +220,7 @@ def test_a_warm_peer_is_not_an_evictable_peer(monkeypatch):
     _enable(monkeypatch)
     _fits(monkeypatch, (False, "insufficient_vram"))
     monkeypatch.setattr(diarization, "_pipeline_key", ("p/other", "cpu", 4))
-    system_stats.set_warm_predicate(lambda k: k == "pyannote:p/other")
+    model_registry.set_warm_predicate(lambda k: k == "pyannote:p/other")
     assert preload._idle_peer("diarization", "p/x") is None
     assert preload._admit("diarization", "p/x") == ("deferred",
                                                     "insufficient_vram")
@@ -265,14 +265,14 @@ def test_ttl_sweep_drops_a_plans_keys_together_overlap_survives(monkeypatch):
 
 def test_is_warm_never_raises_unset_or_throwing():
     # Unset predicate → False, no exception (a unit test importing only
-    # system_stats must not blow up an evictor).
-    system_stats.set_warm_predicate(None)
-    assert system_stats.is_warm("anything") is False
+    # model_registry must not blow up an evictor).
+    model_registry.set_warm_predicate(None)
+    assert model_registry.is_warm("anything") is False
 
     def _boom(_k):
         raise RuntimeError("nope")
-    system_stats.set_warm_predicate(_boom)
-    assert system_stats.is_warm("anything") is False
+    model_registry.set_warm_predicate(_boom)
+    assert model_registry.is_warm("anything") is False
 
 
 # --- registration ------------------------------------------------------------

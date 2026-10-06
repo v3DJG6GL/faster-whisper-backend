@@ -39,6 +39,7 @@ from faster_whisper_backend.settings import version as settings_version
 # non-blocking counters. Imported here (early) so the priming happens before
 # any request handler runs.
 from faster_whisper_backend.runtime import system_stats
+from faster_whisper_backend.runtime import model_registry
 # log_safe (below); module-level cost is nil (os).
 from faster_whisper_backend.core import store_common
 # Text-to-text translation stage (llama.cpp GGUF). Module-level import is
@@ -5573,7 +5574,7 @@ async def list_models():
     # The device each loaded model actually sits on — register_loaded_model
     # records the fallback device after a failed primary load.
     loaded_devices = {m["name"]: m["device"]
-                      for m in system_stats.loaded_models_snapshot()}
+                      for m in model_registry.loaded_models_snapshot()}
     names: list[str] = list(tx_models._loaded_models.keys())
     if cfg.DEFAULT_MODEL not in names:
         names.append(cfg.DEFAULT_MODEL)

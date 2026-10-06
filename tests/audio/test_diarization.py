@@ -434,7 +434,7 @@ def test_diarize_does_not_touch_a_model_it_never_leased(monkeypatch):
     run ended — after a mid-job re-key to another model, that model's idle
     clock / stats 'last used' moved for a job that never touched it."""
     import asyncio
-    from faster_whisper_backend.runtime import system_stats
+    from faster_whisper_backend.runtime import model_registry
     cfg = diarization.cfg
     monkeypatch.setattr(cfg, "DIARIZATION_MODEL", "m1", raising=False)
     monkeypatch.setattr(cfg, "DIARIZATION_DEVICE", "cpu", raising=False)
@@ -456,7 +456,7 @@ def test_diarize_does_not_touch_a_model_it_never_leased(monkeypatch):
     monkeypatch.setattr(diarization, "_load_blocking",
                         lambda model_id, device, batch: _Pipe())
     touched = []
-    monkeypatch.setattr(system_stats, "touch_loaded_model",
+    monkeypatch.setattr(model_registry, "touch_loaded_model",
                         lambda name: touched.append(name))
     assert asyncio.run(diarization.diarize("a.wav")) == []
     assert "pyannote:m2" not in touched

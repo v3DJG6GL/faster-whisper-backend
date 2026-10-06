@@ -85,11 +85,12 @@ _RESET_HOOKS: tuple[tuple[str, Any], ...] = (
     # preload plan registry + warm leases.
     ("faster_whisper_backend.runtime.preload", "_reset_for_tests"),
     # The warm predicate is cleared separately from preload's hook: one left
-    # installed in system_stats would keep a later eviction test's model
+    # installed in model_registry would keep a later eviction test's model
     # pinned by a plan this test owned, and the failure would look like a
     # broken evictor. Also the loaded-model registry behind /stats (stage
-    # tests register stubs in it).
-    ("faster_whisper_backend.runtime.system_stats", "_reset_for_tests"),
+    # tests register stubs in it). system_stats itself holds no resettable
+    # state (NVML handle, psutil process).
+    ("faster_whisper_backend.runtime.model_registry", "_reset_for_tests"),
     # session-store caches (the index is rebuilt by init_db)
     ("faster_whisper_backend.auth.sessions_store", "_reset_for_tests"),
     # shared per-identity limiters (rate_limit._ALL): one hook clears every

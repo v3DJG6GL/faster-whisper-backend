@@ -709,7 +709,7 @@ def test_snapshot_models_carry_size_meta(client, monkeypatch):
     rebuilds the payload every second and disk_size walks a directory."""
     from faster_whisper_backend.runtime import model_sizes
     from faster_whisper_backend.stats import routes as stats_routes
-    from faster_whisper_backend.runtime import system_stats
+    from faster_whisper_backend.runtime import model_registry
     calls = {"lookup": 0, "disk": 0}
 
     def _lookup(name, device, compute_type):
@@ -722,7 +722,7 @@ def test_snapshot_models_carry_size_meta(client, monkeypatch):
     monkeypatch.setattr(model_sizes, "lookup", _lookup)
     monkeypatch.setattr(model_sizes, "disk_size", _disk)
     stats_routes._size_meta_cache.clear()
-    system_stats.register_loaded_model("large-v3", 2_000_000_000, "cuda", "float16")
+    model_registry.register_loaded_model("large-v3", 2_000_000_000, "cuda", "float16")
     try:
         snap = client.get("/stats/snapshot").json()
         row = next(m for m in snap["models"] if m["name"] == "large-v3")
@@ -732,7 +732,7 @@ def test_snapshot_models_carry_size_meta(client, monkeypatch):
         assert calls == {"lookup": 1, "disk": 1}
         assert "size_src" not in client.get("/stats/snapshot?lite=1").json()["models"][0]
     finally:
-        system_stats.unregister_loaded_model("large-v3")
+        model_registry.unregister_loaded_model("large-v3")
         stats_routes._size_meta_cache.clear()
 
 

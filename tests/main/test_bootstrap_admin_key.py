@@ -7,7 +7,7 @@ import logging
 
 import pytest
 
-from faster_whisper_backend.runtime import system_stats
+from faster_whisper_backend.runtime import model_registry
 
 _KEY = "bootstrap-key-with-enough-entropy-1234"
 
@@ -117,4 +117,4 @@ def test_fatal_api_keys_init_leaves_no_tasks_behind(app_module, monkeypatch):
     with pytest.raises(RuntimeError, match="API keys store unavailable"):
         asyncio.run(run())
     assert leaked["tasks"] == set()
-    assert system_stats._warm_predicate is None
+    assert model_registry._warm_predicate is None

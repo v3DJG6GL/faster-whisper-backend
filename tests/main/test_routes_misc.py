@@ -34,7 +34,7 @@ def test_v1_models_shape(client):
 
 
 def test_v1_models_name_each_device(client, app_module, monkeypatch):
-    from faster_whisper_backend.runtime import system_stats
+    from faster_whisper_backend.runtime import model_registry
     monkeypatch.setattr(app_module.cfg, "DEFAULT_MODEL", "tiny")
     monkeypatch.setattr(app_module.cfg, "ALLOWED_MODELS", {"tiny", "small"})
     monkeypatch.setattr(app_module.cfg, "MODEL_DEVICE", "cuda")
@@ -45,9 +45,9 @@ def test_v1_models_name_each_device(client, app_module, monkeypatch):
     assert devices == {"tiny": "cuda", "small": "cpu"}
     # Loaded: where it actually sits — a CUDA load that fell back to CPU
     # registers the fallback device.
-    monkeypatch.setattr(system_stats, "_loaded_models", {})
-    system_stats.register_loaded_model("tiny", None, device="cpu",
-                                       compute_type="int8")
+    monkeypatch.setattr(model_registry, "_loaded_models", {})
+    model_registry.register_loaded_model("tiny", None, device="cpu",
+                                         compute_type="int8")
     devices = {e["id"]: e["device"] for e in client.get("/v1/models").json()["data"]}
     assert devices["tiny"] == "cpu"
 

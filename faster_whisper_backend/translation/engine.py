@@ -5,7 +5,7 @@ and the pyannote singleton (audio/diarization.py), with the same lifecycle
 discipline scaled to a tiny LRU dict of loaded models: lazy import (the
 dependency set is the optional
 ``requirements-translate.txt``), load on first use under an asyncio.Lock with
-an NVML VRAM delta, registration in ``system_stats`` (as ``gguf:<ref>``) so
+an NVML VRAM delta, registration in ``model_registry`` (as ``gguf:<ref>``) so
 /stats shows each loaded model, an idle-eviction loop driven live by
 ``TRANSLATION_IDLE_TIMEOUT_S``, and admin-triggered eviction via
 :func:`drop_models`.
@@ -48,6 +48,7 @@ from dataclasses import dataclass, field
 
 from faster_whisper_backend.settings import config as cfg
 from faster_whisper_backend.runtime import hf_cache
+from faster_whisper_backend.runtime import model_registry
 from faster_whisper_backend.runtime import system_stats
 from faster_whisper_backend.core.languages import (
     canonical_code, language_codes, language_name, lookup)
@@ -663,7 +664,7 @@ def _drop_locked(ref: str) -> bool:
             pass
     finally:
         _infer_mutex.release()
-    system_stats.unregister_loaded_model(_STATS_PREFIX + ref)
+    model_registry.unregister_loaded_model(_STATS_PREFIX + ref)
     import gc
     gc.collect()
     try:
@@ -714,7 +715,7 @@ async def _get_model(ref: str, *, lease: bool = False, download_cb=None):
     def _hit(llm):
         _models.move_to_end(ref)
         _last_used[ref] = time.monotonic()
-        system_stats.touch_loaded_model(_STATS_PREFIX + ref)
+        model_registry.touch_loaded_model(_STATS_PREFIX + ref)
         if lease:
             _active[ref] = _active.get(ref, 0) + 1
         return llm
@@ -771,7 +772,7 @@ async def _get_model(ref: str, *, lease: bool = False, download_cb=None):
             and _load_overlaps == overlaps_before) else None
         load_secs = time.perf_counter() - t0
         await asyncio.to_thread(
-            system_stats.register_loaded_model,
+            model_registry.register_loaded_model,
             _STATS_PREFIX + ref, vram, device, "gguf", load_secs)
         logger.info("[translate] model %s loaded on %s in %.1fs",
                     ref, device, load_secs)
@@ -891,9 +892,9 @@ async def idle_evictor_loop() -> None:
                     # A warm lease (a live preload plan still expects this
                     # model) suspends the idle clock — never a job lease,
                     # which _drop_locked already honours. Inverted through
-                    # system_stats so preload can reach us without either
+                    # model_registry so preload can reach us without either
                     # module importing the other.
-                    if system_stats.is_warm(_STATS_PREFIX + ref):
+                    if model_registry.is_warm(_STATS_PREFIX + ref):
                         continue
                     if ref in _models and now - last >= timeout:
                         _drop_locked(ref)

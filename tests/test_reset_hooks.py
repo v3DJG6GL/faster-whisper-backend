@@ -48,6 +48,10 @@ _NOT_RESET = {
     "faster_whisper_backend.captures.samples": {
         "_JOIN_STR": "constant join-strategy → separator map",
     },
+    "faster_whisper_backend.runtime.model_registry": {},
+    # Stateless since P16: the registry moved to model_registry. Listed so a
+    # container added back here is caught without a hook.
+    "faster_whisper_backend.runtime.system_stats": {},
     "faster_whisper_backend.pipeline.apply": {
         "EVICTORS": "constant bucket → drop-callable table",
         "_RULES_LOCK": "a LoopLock keeps one asyncio.Lock per running loop and "
@@ -246,3 +250,38 @@ def test_captures_routes_no_longer_defines_sample_helpers():
     for name in ("_build_merged_wav", "_rebuild_lock", "_rebuild_locks",
                  "_align_words_to_final", "_build_default_transcript"):
         assert name in moved, name
+
+
+# P16: the loaded-model registry and the warm-lease predicate moved from
+# runtime/system_stats.py to runtime/model_registry.py. system_stats must not
+# keep (or re-export) them: a caller of the twin would read a second, empty
+# registry while the tests patch model_registry.
+_P16_MOVED = (
+    "_loaded_models", "_loaded_models_lock", "register_loaded_model",
+    "load_secs_since", "touch_loaded_model", "unregister_loaded_model",
+    "_warm_predicate", "set_warm_predicate", "is_warm",
+    "MODEL_ROLE_PREFIXES", "model_role", "loaded_models_snapshot",
+    "_reset_for_tests",
+)
+
+
+def test_system_stats_no_longer_holds_the_model_registry():
+    from faster_whisper_backend.runtime import model_registry, system_stats
+    stale = sorted(n for n in _P16_MOVED if hasattr(system_stats, n))
+    assert not stale, f"system_stats still defines moved names: {stale}"
+    for name in _P16_MOVED:
+        assert hasattr(model_registry, name), name
+    hooks = dict(_RESET_HOOKS)
+    assert "faster_whisper_backend.runtime.system_stats" not in hooks
+    assert hooks["faster_whisper_backend.runtime.model_registry"] == "_reset_for_tests"
+
+
+def test_model_registry_hook_clears_the_warm_predicate():
+    """Not a container, so the generic scan above cannot see it: a predicate
+    left installed would pin a later test's model against the evictors."""
+    from faster_whisper_backend.runtime import model_registry
+    model_registry.set_warm_predicate(lambda _name: True)
+    assert model_registry.is_warm("x")
+    _hook("faster_whisper_backend.runtime.model_registry")()
+    assert model_registry._warm_predicate is None
+    assert not model_registry.is_warm("x")

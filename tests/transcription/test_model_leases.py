@@ -14,7 +14,7 @@ import types
 import pytest
 from fastapi import HTTPException
 
-from faster_whisper_backend.runtime import system_stats
+from faster_whisper_backend.runtime import model_registry
 from tests.conftest import FakeModel
 from faster_whisper_backend.transcription import models as tx_models
 
@@ -25,16 +25,16 @@ _FILE = {"file": ("a.wav", b"RIFFxxxxWAVE", "audio/wav")}
 def _clean_cache():
     """These cases seed the model cache directly; leave it as we found it."""
     tx_models._loaded_models.clear()
-    system_stats._loaded_models.clear()
+    model_registry._loaded_models.clear()
     yield
     tx_models._loaded_models.clear()
-    system_stats._loaded_models.clear()
+    model_registry._loaded_models.clear()
 
 
 def _register(name):
     """Put a fake model in the cache the way a successful load would."""
     tx_models._loaded_models[name] = FakeModel()
-    system_stats.register_loaded_model(name, 0, "cpu", "int8")
+    model_registry.register_loaded_model(name, 0, "cpu", "int8")
 
 
 def _stub_load(monkeypatch):
@@ -58,7 +58,7 @@ def test_drop_refuses_while_leased():
     tx_models._model_leases["a"] = 1
     assert tx_models._drop_loaded_model("a") is False
     assert "a" in tx_models._loaded_models
-    assert system_stats._loaded_models.get("a") is not None
+    assert model_registry._loaded_models.get("a") is not None
 
 
 def test_drop_force_evicts_a_leased_model():
@@ -66,7 +66,7 @@ def test_drop_force_evicts_a_leased_model():
     tx_models._model_leases["a"] = 1
     assert tx_models._drop_loaded_model("a", force=True) is True
     assert "a" not in tx_models._loaded_models
-    assert "a" not in system_stats._loaded_models
+    assert "a" not in model_registry._loaded_models
 
 
 def test_drop_unleased_still_drops():
@@ -144,14 +144,14 @@ def test_rejected_names_take_no_lease(monkeypatch):
 def test_release_restamps_last_used():
     _register("a")
     tx_models._model_leases["a"] = 1
-    info = system_stats._loaded_models["a"]
+    info = model_registry._loaded_models["a"]
     info["last_used_monotonic"] = time.monotonic() - 500
     stale = info["last_used_monotonic"]
 
     tx_models._release_model_lease("a")
 
     assert tx_models._model_leases == {}
-    assert system_stats._loaded_models["a"]["last_used_monotonic"] > stale
+    assert model_registry._loaded_models["a"]["last_used_monotonic"] > stale
 
 
 def test_release_decrements_before_zero():
@@ -175,7 +175,7 @@ def test_release_tolerates_a_dropped_model():
 def test_idle_evictor_defers_then_evicts(monkeypatch):
     _register("a")
     tx_models._model_leases["a"] = 1
-    system_stats._loaded_models["a"]["last_used_monotonic"] = \
+    model_registry._loaded_models["a"]["last_used_monotonic"] = \
         time.monotonic() - 500
     monkeypatch.setattr(tx_models.cfg, "MODEL_IDLE_TIMEOUT_S", 1, raising=False)
 
@@ -188,7 +188,7 @@ def test_idle_evictor_defers_then_evicts(monkeypatch):
             # After the first (refused) sweep.
             seen.append("a" in tx_models._loaded_models)
             tx_models._release_model_lease("a")
-            system_stats._loaded_models["a"]["last_used_monotonic"] = \
+            model_registry._loaded_models["a"]["last_used_monotonic"] = \
                 time.monotonic() - 500
         if ticks["n"] > 2:
             raise asyncio.CancelledError()
@@ -269,7 +269,7 @@ def test_register_loaded_model_runs_off_the_loop(monkeypatch):
 
     def fake_register(name, **kw):
         seen[name] = threading.current_thread()
-    monkeypatch.setattr(system_stats, "register_loaded_model", fake_register)
+    monkeypatch.setattr(model_registry, "register_loaded_model", fake_register)
 
     asyncio.run(tx_models._get_or_load_model("a"))
 

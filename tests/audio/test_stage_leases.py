@@ -13,7 +13,7 @@ import pytest
 
 from faster_whisper_backend.audio import bgm_separation
 from faster_whisper_backend.audio import diarization
-from faster_whisper_backend.runtime import system_stats
+from faster_whisper_backend.runtime import model_registry
 
 
 class _RaisingLock:
@@ -81,7 +81,7 @@ def test_diarize_drop_refuses_while_leased(diar_cfg, monkeypatch):
 
     assert asyncio.run(diarization.drop_pipeline(force=False)) is False
     assert diarization._pipeline is not None
-    assert "pyannote:m1" in system_stats._loaded_models
+    assert "pyannote:m1" in model_registry._loaded_models
 
 
 def test_diarize_force_orphans_and_the_last_release_frees(diar_cfg, monkeypatch):
@@ -93,11 +93,11 @@ def test_diarize_force_orphans_and_the_last_release_frees(diar_cfg, monkeypatch)
     # executor is holding its own reference.
     assert diarization._pipeline is None
     assert diarization._orphans == {"m1": 1}
-    assert "pyannote:m1" in system_stats._loaded_models
+    assert "pyannote:m1" in model_registry._loaded_models
 
     asyncio.run(diarization._release_pipeline("m1", pipe))
     assert diarization._orphans == {}
-    assert "pyannote:m1" not in system_stats._loaded_models
+    assert "pyannote:m1" not in model_registry._loaded_models
 
 
 def test_diarize_other_model_mid_job_keeps_both(diar_cfg, monkeypatch):
@@ -109,12 +109,12 @@ def test_diarize_other_model_mid_job_keeps_both(diar_cfg, monkeypatch):
 
     assert made == ["m1", "m2"]
     assert diarization._pipeline_key[0] == "m2"
-    assert "pyannote:m1" in system_stats._loaded_models
-    assert "pyannote:m2" in system_stats._loaded_models
+    assert "pyannote:m1" in model_registry._loaded_models
+    assert "pyannote:m2" in model_registry._loaded_models
 
     asyncio.run(diarization._release_pipeline("m1", pipe))
-    assert "pyannote:m1" not in system_stats._loaded_models
-    assert "pyannote:m2" in system_stats._loaded_models
+    assert "pyannote:m1" not in model_registry._loaded_models
+    assert "pyannote:m2" in model_registry._loaded_models
 
 
 def test_diarize_balances_the_lease_on_success(diar_cfg, monkeypatch, tmp_path):
@@ -260,7 +260,7 @@ def test_bgm_drop_refuses_while_leased(bgm_cfg, monkeypatch):
 
     assert asyncio.run(bgm_separation.drop_separator(force=False)) is False
     assert bgm_separation._separator is not None
-    assert "uvr:Foo.onnx" in system_stats._loaded_models
+    assert "uvr:Foo.onnx" in model_registry._loaded_models
 
 
 def test_bgm_force_orphans_and_the_last_release_frees(bgm_cfg, monkeypatch):
@@ -270,11 +270,11 @@ def test_bgm_force_orphans_and_the_last_release_frees(bgm_cfg, monkeypatch):
     assert asyncio.run(bgm_separation.drop_separator()) is True
     assert bgm_separation._separator is None
     assert bgm_separation._orphans == {"Foo.onnx": 1}
-    assert "uvr:Foo.onnx" in system_stats._loaded_models
+    assert "uvr:Foo.onnx" in model_registry._loaded_models
 
     asyncio.run(bgm_separation._release_separator("Foo.onnx", sep))
     assert bgm_separation._orphans == {}
-    assert "uvr:Foo.onnx" not in system_stats._loaded_models
+    assert "uvr:Foo.onnx" not in model_registry._loaded_models
 
 
 def test_bgm_other_model_mid_job_keeps_both(bgm_cfg, monkeypatch):
@@ -286,12 +286,12 @@ def test_bgm_other_model_mid_job_keeps_both(bgm_cfg, monkeypatch):
 
     assert made == ["Foo.onnx", "Bar.onnx"]
     assert bgm_separation._separator_key[0] == "Bar.onnx"
-    assert "uvr:Foo.onnx" in system_stats._loaded_models
-    assert "uvr:Bar.onnx" in system_stats._loaded_models
+    assert "uvr:Foo.onnx" in model_registry._loaded_models
+    assert "uvr:Bar.onnx" in model_registry._loaded_models
 
     asyncio.run(bgm_separation._release_separator("Foo.onnx", sep))
-    assert "uvr:Foo.onnx" not in system_stats._loaded_models
-    assert "uvr:Bar.onnx" in system_stats._loaded_models
+    assert "uvr:Foo.onnx" not in model_registry._loaded_models
+    assert "uvr:Bar.onnx" in model_registry._loaded_models
 
 
 def test_bgm_balances_the_lease_on_success(bgm_cfg, monkeypatch, tmp_path):
@@ -358,14 +358,14 @@ def test_diarize_live_release_is_not_charged_to_a_same_id_orphan(
     # Freeing the orphan must not unregister the LIVE pipeline's stats entry
     # (same id, same "pyannote:m1" key) out from under /stats and the evictor.
     unregistered: "list[str]" = []
-    monkeypatch.setattr(system_stats, "unregister_loaded_model",
+    monkeypatch.setattr(model_registry, "unregister_loaded_model",
                         unregistered.append)
-    assert "pyannote:m1" in system_stats._loaded_models
+    assert "pyannote:m1" in model_registry._loaded_models
     asyncio.run(diarization._release_pipeline("m1", old))
     assert diarization._orphans == {}
     assert diarization._pipeline is live
     assert unregistered == []
-    assert "pyannote:m1" in system_stats._loaded_models
+    assert "pyannote:m1" in model_registry._loaded_models
 
 
 def test_bgm_live_release_is_not_charged_to_a_same_model_orphan(
@@ -392,13 +392,13 @@ def test_bgm_live_release_is_not_charged_to_a_same_model_orphan(
     # (same "uvr:Foo.onnx" key) nor wipe the live session's placement —
     # actual_device() keeps reporting where the live model runs.
     unregistered: "list[str]" = []
-    monkeypatch.setattr(system_stats, "unregister_loaded_model",
+    monkeypatch.setattr(model_registry, "unregister_loaded_model",
                         unregistered.append)
     monkeypatch.setattr(bgm_separation, "_session_device", "cuda")
-    assert "uvr:Foo.onnx" in system_stats._loaded_models
+    assert "uvr:Foo.onnx" in model_registry._loaded_models
     asyncio.run(bgm_separation._release_separator("Foo.onnx", old))
     assert bgm_separation._orphans == {}
     assert bgm_separation._separator is live
     assert unregistered == []
-    assert "uvr:Foo.onnx" in system_stats._loaded_models
+    assert "uvr:Foo.onnx" in model_registry._loaded_models
     assert bgm_separation.actual_device() == "cuda"

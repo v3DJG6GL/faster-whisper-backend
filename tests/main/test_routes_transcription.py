@@ -5,6 +5,7 @@ fake model ignores the uploaded bytes, so a tiny dummy WAV payload is fine.
 """
 
 from tests.conftest import FakeModel
+from faster_whisper_backend.runtime import model_registry
 from faster_whisper_backend.transcription import models as tx_models
 from faster_whisper_backend.transcription import receipt as tx_receipt
 from faster_whisper_backend.transcription import progress as tx_progress
@@ -400,8 +401,7 @@ def test_transcribing_row_bills_a_cold_whisper_load(client, app_module,
         # Behaves like the real registry: the load is visible only to a
         # stage whose origin precedes the moment the model was (re)loaded.
         return 3.0 if since_ts <= seen["loaded_wall"] else 0.0
-    monkeypatch.setattr(app_module.system_stats, "load_secs_since",
-                        _load_secs_since)
+    monkeypatch.setattr(model_registry, "load_secs_since", _load_secs_since)
 
     real_block = tx_receipt._format_request_block
 

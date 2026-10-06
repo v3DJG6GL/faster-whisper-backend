@@ -1167,12 +1167,12 @@ def lru_env(monkeypatch):
     monkeypatch.setattr(translation.system_stats, "gpu_mem_used_bytes",
                         lambda: None)
     stats = {"registered": [], "unregistered": [], "touched": []}
-    monkeypatch.setattr(translation.system_stats, "register_loaded_model",
+    monkeypatch.setattr(translation.model_registry, "register_loaded_model",
                         lambda name, vram, device, kind, load_secs=None:
                         stats["registered"].append((name, device, kind)))
-    monkeypatch.setattr(translation.system_stats, "unregister_loaded_model",
+    monkeypatch.setattr(translation.model_registry, "unregister_loaded_model",
                         lambda name: stats["unregistered"].append(name))
-    monkeypatch.setattr(translation.system_stats, "touch_loaded_model",
+    monkeypatch.setattr(translation.model_registry, "touch_loaded_model",
                         lambda name: stats["touched"].append(name))
     monkeypatch.setattr(cfg, "TRANSLATION_MAX_LOADED_MODELS", 2,
                         raising=False)
@@ -1269,7 +1269,7 @@ def test_idle_evictor_honours_warm_lease_then_evicts(lru_env, monkeypatch):
     made, stats = lru_env
     monkeypatch.setattr(cfg, "TRANSLATION_IDLE_TIMEOUT_S", 1, raising=False)
     warm = {"gguf:o/a"}
-    monkeypatch.setattr(translation.system_stats, "is_warm",
+    monkeypatch.setattr(translation.model_registry, "is_warm",
                         lambda name: name in warm)
 
     async def run():
@@ -1290,7 +1290,7 @@ def test_idle_evictor_honours_warm_lease_then_evicts(lru_env, monkeypatch):
 def test_idle_evictor_zero_timeout_never_evicts(lru_env, monkeypatch):
     made, stats = lru_env
     monkeypatch.setattr(cfg, "TRANSLATION_IDLE_TIMEOUT_S", 0, raising=False)
-    monkeypatch.setattr(translation.system_stats, "is_warm",
+    monkeypatch.setattr(translation.model_registry, "is_warm",
                         lambda name: False)
 
     async def run():
@@ -1415,7 +1415,7 @@ def test_overlapping_loads_publish_no_vram_delta(lru_env, monkeypatch):
     monkeypatch.setattr(translation.system_stats, "gpu_mem_used_bytes",
                         lambda: next(reads))
     seen = {}
-    monkeypatch.setattr(translation.system_stats, "register_loaded_model",
+    monkeypatch.setattr(translation.model_registry, "register_loaded_model",
                         lambda name, vram, device, kind, load_secs=None:
                         seen.__setitem__(name, vram))
     _two_overlapping_loads(monkeypatch, made)
@@ -1430,7 +1430,7 @@ def test_solo_load_still_publishes_vram_delta(lru_env, monkeypatch):
     monkeypatch.setattr(translation.system_stats, "gpu_mem_used_bytes",
                         lambda: next(reads))
     seen = {}
-    monkeypatch.setattr(translation.system_stats, "register_loaded_model",
+    monkeypatch.setattr(translation.model_registry, "register_loaded_model",
                         lambda name, vram, device, kind, load_secs=None:
                         seen.__setitem__(name, vram))
     asyncio.run(translation._get_model("o/a"))

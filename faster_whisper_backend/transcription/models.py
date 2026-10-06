@@ -26,6 +26,7 @@ from fastapi import HTTPException
 
 from faster_whisper_backend.core import decode_trace as _decode_trace
 from faster_whisper_backend.core import jobs
+from faster_whisper_backend.runtime import model_registry
 from faster_whisper_backend.runtime import system_stats
 from faster_whisper_backend.settings import config as cfg
 from faster_whisper_backend.settings import effective_config
@@ -554,7 +555,7 @@ def _drop_suppress_chars_cache(model_id: str) -> None:
 
 def _drop_loaded_model(name: str, *, force: bool = False) -> bool:
     """Single unload entry point: pop the cached WhisperModel, drop its
-    suppress-chars entries, and unregister from the system_stats registry.
+    suppress-chars entries, and unregister from the loaded-model registry.
     Caller is responsible for holding _model_load_lock when the unload is
     racy with loads (LRU eviction and idle eviction paths).
 
@@ -567,7 +568,7 @@ def _drop_loaded_model(name: str, *, force: bool = False) -> bool:
         return False
     _loaded_models.pop(name, None)
     _drop_suppress_chars_cache(name)
-    system_stats.unregister_loaded_model(name)
+    model_registry.unregister_loaded_model(name)
     return True
 
 
@@ -585,7 +586,7 @@ def _release_model_lease(name: str) -> None:
     else:
         _model_leases[name] = n
     # No-op for a name the registry no longer knows (force-dropped mid-job).
-    system_stats.touch_loaded_model(name)
+    model_registry.touch_loaded_model(name)
 
 
 def _resolve_model_name(requested: str) -> str:
@@ -898,7 +899,7 @@ async def _get_or_load_model(name: str, *, lease: bool = False) -> "WhisperModel
             _loaded_models.move_to_end(name)
         except KeyError:
             pass
-        system_stats.touch_loaded_model(name)
+        model_registry.touch_loaded_model(name)
         if lease:
             _model_leases[name] = _model_leases.get(name, 0) + 1
         return cached
@@ -1014,7 +1015,7 @@ async def _get_or_load_model(name: str, *, lease: bool = False) -> "WhisperModel
         cached = _loaded_models.get(name)
         if cached is not None:
             _loaded_models.move_to_end(name)
-            system_stats.touch_loaded_model(name)
+            model_registry.touch_loaded_model(name)
             if lease:
                 _model_leases[name] = _model_leases.get(name, 0) + 1
             return cached
@@ -1086,7 +1087,7 @@ async def _get_or_load_model(name: str, *, lease: bool = False) -> "WhisperModel
         # (model_sizes.record -> atomic_json.save_lock + fsync), which can
         # block for the lock timeout when a peer worker holds the file.
         await asyncio.to_thread(
-            system_stats.register_loaded_model,
+            model_registry.register_loaded_model,
             name,
             vram_bytes=vram_delta,
             device=loaded_device,
@@ -1228,10 +1229,10 @@ async def _idle_evictor() -> None:
                 continue
             now = time.monotonic()
             stale: list[str] = []
-            for name, info in list(system_stats._loaded_models.items()):
+            for name, info in list(model_registry._loaded_models.items()):
                 if name not in _loaded_models:
                     continue
-                if system_stats.is_warm(name):
+                if model_registry.is_warm(name):
                     continue
                 last = info.get("last_used_monotonic", now)
                 if now - last >= timeout:
@@ -1243,9 +1244,9 @@ async def _idle_evictor() -> None:
                 for name in stale:
                     if name not in _loaded_models:
                         continue
-                    if system_stats.is_warm(name):
+                    if model_registry.is_warm(name):
                         continue
-                    info = system_stats._loaded_models.get(name)
+                    info = model_registry._loaded_models.get(name)
                     if info and now - info.get("last_used_monotonic", now) < timeout:
                         continue
                     if _drop_loaded_model(name):
