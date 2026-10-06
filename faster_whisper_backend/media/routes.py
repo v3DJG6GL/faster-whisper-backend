@@ -789,7 +789,7 @@ async def package_media(media_id: str, request: Request,
     if free < int(entry.get("size") or 0) + 64 * 1024 * 1024:
         raise HTTPException(status_code=507,
                             detail="not enough temporary disk space on the server")
-    _media_package_inflight.acquire(_key)
+    _took_slot = _media_package_inflight.acquire(_key)
     try:
         out = await _pk.package(
             entry["path"], tracks, container=container,
@@ -806,7 +806,8 @@ async def package_media(media_id: str, request: Request,
     except _pk.PackageError as e:
         raise HTTPException(status_code=500, detail=str(e))
     finally:
-        _media_package_inflight.release(_key)
+        if _took_slot:
+            _media_package_inflight.release(_key)
     workdir = os.path.dirname(out)
     background.add_task(shutil.rmtree, workdir, True)
     return FileResponse(

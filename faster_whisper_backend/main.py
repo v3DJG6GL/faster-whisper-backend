@@ -1439,7 +1439,7 @@ async def transcribe(
                              else "waiting"),
                       progress=None,
                       owner=(_user_id or _key_id))
-        _job_row = tx_progress._jobs_start(
+        _job_row = await tx_progress._jobs_start_async(
             _pid, request_id=request_id, kind="transcribe",
             user_id=_user_id, key_id=_key_id, model=resolved_model,
             source_kind=("url" if source_url is not None else "file"),
@@ -3058,7 +3058,8 @@ async def transcribe(
                         **tx_guards.tail_guard_rows(_tail_limits),
                         **tx_guards.tail_cut_rows(_tail_cuts),
                         **tx_guards.head_echo_rows(_head_min, _head_cut),
-                        "skip_residual_windows": _skip_residual,
+                        "skip_residual_windows": _decode_trace.residual_stop_active(
+                            transcribe_kwargs, _skip_residual),
                         "token_cap_per_second": _token_cap},
                 decode_trace=_decode_timing.get("trace"),
                 # Post-decode pipeline. Reconstructed from the locals in

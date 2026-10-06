@@ -998,3 +998,18 @@ def test_stream_holds_a_split_dictation_phrase_until_the_close(app_module, fake_
     assert finals[0]["committed"] + finals[0]["tail"] == "Befund unauffällig."
     assert finals[-1].get("last") is True
     assert finals[-1]["committed"] == "Befund unauffällig. Neue"
+
+
+def test_preview_decode_does_not_charge_the_session_wait():
+    """A live preview's GPU-gate wait must not land on the dictation row's
+    wait_s: decode_partial unsets the session accumulator around its decode
+    (the contract itself is in tests/stats/test_metrics.py)."""
+    import inspect
+
+    from faster_whisper_backend.streaming import routes as s_routes
+    src = inspect.getsource(s_routes)
+    body = src[src.index("async def decode_partial("):]
+    body = body[:body.index("\n        async def ", 1)]
+    unset = body.index("metrics.WAIT_ACC.set(None)")
+    assert unset < body.index("await _transcribe(partial_model_obj")
+    assert "metrics.WAIT_ACC.reset(_wait_tok)" in body

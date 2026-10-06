@@ -634,3 +634,16 @@ def test_residual_stop_yields_to_the_hallucination_silence_skip():
     assert len(m.model.calls) == 7, "the window after the short one is decoded"
     assert t["skipped_windows"] == 0
 
+
+
+def test_receipts_log_the_effective_residual_stop():
+    """Both receipt guard rows report the stop as applied (an active
+    hallucination_silence_threshold turns it off), not the requested flag."""
+    import inspect
+
+    from faster_whisper_backend import main
+    from faster_whisper_backend.streaming import routes as s_routes
+    for mod in (main, s_routes):
+        src = inspect.getsource(mod)
+        row = src[src.index('"skip_residual_windows":'):][:160]
+        assert "residual_stop_active(" in row, mod.__name__

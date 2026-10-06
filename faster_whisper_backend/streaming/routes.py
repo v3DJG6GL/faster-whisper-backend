@@ -555,7 +555,7 @@ async def transcribe_stream(ws: WebSocket) -> None:
     # the global cap below still has headroom for everybody else.
     _stream_key = rate_limit.identity_key(user, ws)
     try:
-        _stream_sessions.acquire(_stream_key)
+        _took_slot = _stream_sessions.acquire(_stream_key)
     except rate_limit.RateLimited as rl:
         logger.info(
             "[stream] refused: per-user cap "
@@ -567,7 +567,8 @@ async def transcribe_stream(ws: WebSocket) -> None:
     if len(_active_sessions) >= max_sessions:
         # Release the slot just taken — this connection never becomes a
         # session, and the finally below is not reached from here.
-        _stream_sessions.release(_stream_key)
+        if _took_slot:
+            _stream_sessions.release(_stream_key)
         logger.info(
             "[stream] refused: server-wide cap "
             "(STREAMING_MAX_SESSIONS=%d) reached", max_sessions)
@@ -587,10 +588,11 @@ async def transcribe_stream(ws: WebSocket) -> None:
         await ws.accept(subprotocol=_ws_bearer_subprotocol(ws) or None)
     except BaseException:
         _active_sessions.discard(session_id)
-        _stream_sessions.release(_stream_key)
+        if _took_slot:
+            _stream_sessions.release(_stream_key)
         raise
     # Set only now: from here every exit runs the finally that releases it.
-    _stream_held: "str | None" = _stream_key
+    _stream_held: "str | None" = _stream_key if _took_slot else None
     metrics.in_flight_transcriptions += 1
     # Per-utterance GPU-gate wait: the session's tasks share this context's
     # accumulator; each recorded utterance takes (and zeroes) it.
@@ -906,7 +908,13 @@ async def transcribe_stream(ws: WebSocket) -> None:
                 partial_model_name, final=False, prompt=prompt,
                 want_words=gate_partial_words, language=req_language,
                 model_obj=partial_model_obj, overrides=req_overrides, ident=ident)
-            segs, _info, _ = await _transcribe(partial_model_obj, audio, kwargs)
+            # A preview's GPU-gate wait is not the utterance's: only the
+            # final's own acquire may land on the dictation row's wait_s.
+            _wait_tok = metrics.WAIT_ACC.set(None)
+            try:
+                segs, _info, _ = await _transcribe(partial_model_obj, audio, kwargs)
+            finally:
+                metrics.WAIT_ACC.reset(_wait_tok)
             if not req_language:
                 _partial_lang[0] = getattr(_info, "language", None) or _partial_lang[0]
             # Live previews get the same tail cuts as the final (core/
@@ -1126,7 +1134,8 @@ async def transcribe_stream(ws: WebSocket) -> None:
                 **tx_guards.tail_guard_rows(tail_limits),
                 **tx_guards.tail_cut_rows(tail_cuts),
                 **tx_guards.head_echo_rows(head_min, head_cut),
-                "skip_residual_windows": skip_residual,
+                "skip_residual_windows": decode_trace.residual_stop_active(
+                    kwargs, skip_residual),
                 "token_cap_per_second": token_cap,
                 "tail_trim_pad_ms": tail_pad_ms,
                 # What the trim actually removed from THIS buffer (the block's

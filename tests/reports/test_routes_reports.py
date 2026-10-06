@@ -31,7 +31,8 @@ def test_submit_unknown_field_422(client):
 
 def test_submit_rate_limit_429(client, app_module):
     # REPORTS_SUBMIT_RATE_PER_10MIN per identity (in open mode every request
-    # is the one synthetic admin). The submit past the limit trips it.
+    # is charged to the client host, the one loopback host here). The submit
+    # past the limit trips it.
     limit = int(app_module.cfg.REPORTS_SUBMIT_RATE_PER_10MIN)
     last = None
     for i in range(limit + 1):
