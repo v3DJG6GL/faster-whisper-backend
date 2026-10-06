@@ -2,6 +2,8 @@
 
 import pytest
 
+from faster_whisper_backend.pipeline import engine as pl_engine
+
 
 def test_settings_page_loopback(client):
     r = client.get("/settings")
@@ -331,7 +333,7 @@ def test_test_pipeline_dry_run(client):
 
 def test_test_pipeline_regex_list_skips_bad_entry(client):
     # A regex-list with one uncompilable entry must NOT blank the whole card:
-    # the engine (main.rebuild_caches) skips the bad entry per-entry and still
+    # the engine (pl_engine.rebuild_caches) skips the bad entry per-entry and still
     # applies the valid ones. The dry-run mirrors that and reports the bad
     # pattern as an advisory rather than discarding every entry's effect.
     r = client.post(
@@ -357,15 +359,15 @@ def test_test_pipeline_regex_list_skips_bad_entry(client):
 
 def test_test_pipeline_map_preview_matches_the_engine(client, app_module):
     """The dry run compiles a callback:map with the engine's own compile
-    (core/dictation_map.py): the ß/ss variants and the dictated-punctuation
+    (pipeline/dictation_map.py): the ß/ss variants and the dictated-punctuation
     prefix show in the preview exactly as a transcription gets them."""
     rule = next(r for r in app_module.cfg.PIPELINE_RULES if r.get("type") == "callback:map")
-    engine = next(cr for cr in app_module._COMPILED_RULES if cr.name == rule["name"])
+    engine = next(cr for cr in pl_engine._COMPILED_RULES if cr.name == rule["name"])
     sample = " Der Wert ist grösser als 5, HB 12... Komma 5"
     r = client.post("/settings/test-pipeline", json={"sample": sample, "rules": [rule]})
     assert r.status_code == 200, r.text
     after = r.json()["steps"][0]["after"]
-    assert after == app_module._apply_rule(engine, sample)
+    assert after == pl_engine._apply_rule(engine, sample)
     assert after == " Der Wert ist > 5, HB 12, 5"
 
 
@@ -399,7 +401,7 @@ def test_test_pipeline_nested_repetition_screened_not_run(client):
     assert not steps[1]["slow"]
     # Screened steps carry `not_run` so the panel renders a warning, not an
     # engine-parity claim: an already-saved rule of this shape still runs in
-    # the live pipeline (main.rebuild_caches does no structural screen).
+    # the live pipeline (pl_engine.rebuild_caches does no structural screen).
     assert steps[0].get("not_run") is True
     assert steps[1].get("not_run") is True
 

@@ -85,7 +85,7 @@ def _build_rules() -> list[dict[str, Any]]:
     position in cfg.PIPELINE_RULES (the /settings/pipeline card ordinal) so the
     row can show `#N`, matching the pipeline page + the /logs trace.
     `languages` lets the row flag language-scoped rules: a force-on here still
-    won't fire on a non-matching language (see main._postprocess_text).
+    won't fire on a non-matching language (see pipeline.engine._postprocess_text).
     `tags` are the quick-config visibility tags, shown read-only so the admin
     can tell the two scopes apart (who sees it vs. when it runs)."""
     out = []

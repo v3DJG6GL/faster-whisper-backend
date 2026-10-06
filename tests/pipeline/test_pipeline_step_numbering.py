@@ -2,9 +2,11 @@
 match the /settings/pipeline card position — `#P` for a single-compile rule and
 `#P.S` for a regex-list entry (S = the entry's row within the card). Regression
 guard for the flat-index bug where each expanded regex-list entry was counted as
-its own top-level step. Exercises the real `main` pipeline via the app_module
-fixture (which reloads main per test, so cfg/_COMPILED_RULES/_TERMINAL_CARD_NO
-mutations are isolated)."""
+its own top-level step. Exercises the real pipeline engine via the app_module
+fixture (which reloads config and recompiles the rules per test, so
+cfg/_COMPILED_RULES/_TERMINAL_CARD_NO mutations are isolated)."""
+
+from faster_whisper_backend.pipeline import engine as pl_engine
 
 
 def _term():
@@ -18,21 +20,21 @@ def _regex_list(name, label, entries, enabled=True):
 
 def _set(app_module, rules):
     app_module.cfg.PIPELINE_RULES = rules
-    app_module.rebuild_caches()
+    pl_engine.rebuild_caches()
 
 
 def _labels(app_module, text, **kw):
     """Run the pipeline with tracing and return the per-step label strings."""
     trace: list = []
-    app_module._postprocess_text(text, model_name="", trace=trace, **kw)
+    pl_engine._postprocess_text(text, model_name="", trace=trace, **kw)
     return [s[0] for s in trace]
 
 
 def test_rule_ordinal_helper(app_module):
-    assert app_module._rule_ordinal(4) == "#4"
-    assert app_module._rule_ordinal(4, None) == "#4"
-    assert app_module._rule_ordinal(1, 3) == "#1.3"
-    assert app_module._rule_ordinal(17) == "#17"
+    assert pl_engine._rule_ordinal(4) == "#4"
+    assert pl_engine._rule_ordinal(4, None) == "#4"
+    assert pl_engine._rule_ordinal(1, 3) == "#1.3"
+    assert pl_engine._rule_ordinal(17) == "#17"
 
 
 def test_regex_list_entries_numbered_card_dot_sub(app_module):

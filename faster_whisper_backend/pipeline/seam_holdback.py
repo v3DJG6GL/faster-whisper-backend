@@ -82,7 +82,7 @@ class HoldSpec:
 
 def build_spec(lookups: Iterable[Mapping[str, str]]) -> HoldSpec:
     """Build the spec from the lookups of the active ``callback:map`` rules
-    (``core.dictation_map.compile_map``'s third value, ß/ss variants
+    (``pipeline.dictation_map.compile_map``'s third value, ß/ss variants
     included)."""
     seqs: set[tuple[str, ...]] = set()
     for lookup in lookups:

@@ -28,6 +28,7 @@ import threading
 import time
 from typing import Any
 
+from faster_whisper_backend.pipeline import engine as pl_engine
 from faster_whisper_backend.settings import effective_config
 
 logger = logging.getLogger("whisper-api")
@@ -76,7 +77,6 @@ def start() -> dict[str, Any]:
 
 def _run() -> None:
     try:
-        from faster_whisper_backend import main
         from faster_whisper_backend.captures import store as captures_store
         from faster_whisper_backend.captures import samples_store as capture_samples_store
         from faster_whisper_backend.settings import config as cfg
@@ -118,7 +118,7 @@ def _run() -> None:
             patch: dict[str, str] = {}
             ident = _ident_for(r["user_id"], r["model"])
             try:
-                new_final = main._postprocess_text(
+                new_final = pl_engine._postprocess_text(
                     raw_text, model_name=r["model"], ident=ident,
                     language=r["language"],
                 )
@@ -138,7 +138,7 @@ def _run() -> None:
             # the pipeline output is identical — skip the second run.
             if captures_excludes:
                 try:
-                    new_training = main._postprocess_text(
+                    new_training = pl_engine._postprocess_text(
                         raw_text, model_name=r["model"],
                         extra_excludes=captures_excludes, ident=ident,
                         language=r["language"],

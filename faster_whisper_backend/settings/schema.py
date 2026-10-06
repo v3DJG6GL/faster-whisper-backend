@@ -88,8 +88,8 @@ def _F(
                      REQUIRED_FIELDS).
       load_time      Read at WhisperModel(...) construction — edit triggers
                      drain-then-evict (→ LOAD_TIME_FIELDS).
-      cache_rebuild  Edit requires main.rebuild_caches() (→ CACHE_REBUILD_
-                     FIELDS).
+      cache_rebuild  Edit requires pipeline.engine.rebuild_caches() (→
+                     CACHE_REBUILD_FIELDS).
       evict          Derived-extras bucket dropped when this field is edited
                      — one of _EVICT_BUCKETS (→ EXTRAS_EVICTION, dispatched
                      via admin_routes._EVICTORS).
@@ -1705,7 +1705,7 @@ class AdminConfig(BaseModel):
             to_guard = (checks if guard_slugs is None
                         else [c for c in checks if c[3] in guard_slugs])
             if to_guard:
-                from faster_whisper_backend.core import regex_guard
+                from faster_whisper_backend.pipeline import regex_guard
                 regex_guard.validate([c[:3] for c in to_guard])
         return v
 
@@ -2010,7 +2010,7 @@ LOAD_TIME_FIELDS: frozenset[str] = frozenset(
 )
 
 # Hot settings whose derived caches need rebuild after edit. The admin route
-# calls main.rebuild_caches() when any of these change.
+# calls pipeline.engine.rebuild_caches() when any of these change.
 CACHE_REBUILD_FIELDS: frozenset[str] = frozenset(
     name for name, reg in _REGISTRY.items() if reg["cache_rebuild"]
 )

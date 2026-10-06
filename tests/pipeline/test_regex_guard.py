@@ -20,7 +20,7 @@ accepted before.
 
 import pytest
 
-from faster_whisper_backend.core import regex_guard as g
+from faster_whisper_backend.pipeline import regex_guard as g
 
 
 # The exact reproduction: entry 0 manufactures the run, entry 1 detonates on it.

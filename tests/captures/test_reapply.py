@@ -1,14 +1,15 @@
 """Tests for captures_reapply.start()/status() worker management.
 
-_run() lazy-imports the heavy `main` module and walks the whole captures DB,
-so we never run the real worker: threading.Thread is monkeypatched to a stub
+_run() runs the whole rules pipeline over the entire captures DB, so we
+never run the real worker: threading.Thread is monkeypatched to a stub
 that records the target but never executes it. We assert start() is
 idempotent (a second call while "running" returns state without spawning a
 2nd worker) and that status() returns a dict copy of the live state.
 
 The _run() tests at the bottom DO execute the worker body, synchronously and
-against a temp captures DB, with `main` replaced by a two-function fake — the
-start() tests alone left the whole row loop uncovered.
+against a temp captures DB, with the engine's `_postprocess_text` and
+`build_ident` replaced by fakes — the start() tests alone left the whole
+row loop uncovered.
 
 The conftest autouse fixture resets _worker/_state between tests, but it
 seeds _state with a different key set than the module's real schema, so each
@@ -16,12 +17,12 @@ test first restores the canonical idle state (the shape start() expects).
 """
 
 import logging
-import sys
 import types
 
 import pytest
 
 from faster_whisper_backend.captures import reapply as captures_reapply
+from faster_whisper_backend.pipeline import engine as pl_engine
 from faster_whisper_backend.settings import effective_config
 
 # The module's canonical idle state (start() reads _state["status"]).
@@ -145,15 +146,11 @@ def test_status_reflects_running_after_start(fake_thread):
 # ---------------------------------------------------------------------------
 
 @pytest.fixture
-def fake_main(monkeypatch):
-    """Stand-in for the heavy `main` module. `from faster_whisper_backend
-    import main` resolves the package attribute first and sys.modules second,
-    so both are patched. The owner-identity resolve (effective_config.
+def fake_pipeline(monkeypatch):
+    """Stand-in for the rules engine: `pl_engine._postprocess_text` records its
+    kwargs and tags its output. The owner-identity resolve (effective_config.
     build_ident) is stubbed too, so no key store is needed."""
-    import faster_whisper_backend as pkg
-
-    fake = types.ModuleType("faster_whisper_backend.main")
-    fake.calls = []
+    fake = types.SimpleNamespace(calls=[])
 
     def build_ident(who, model_id):
         return {"who": who, "model": model_id}
@@ -163,10 +160,8 @@ def fake_main(monkeypatch):
         suffix = " [training]" if kw.get("extra_excludes") else " [final]"
         return text.upper() + suffix
 
-    fake._postprocess_text = _postprocess_text
+    monkeypatch.setattr(pl_engine, "_postprocess_text", _postprocess_text)
     monkeypatch.setattr(effective_config, "build_ident", build_ident)
-    monkeypatch.setitem(sys.modules, "faster_whisper_backend.main", fake)
-    monkeypatch.setattr(pkg, "main", fake, raising=False)
     return fake
 
 
@@ -179,7 +174,7 @@ def _insert(conn, cid, *, language, raw="hello", final="hello"):
 
 
 def test_run_passes_the_row_language_and_updates_the_capture(
-        captures_store_db, fake_main, monkeypatch, caplog):
+        captures_store_db, fake_pipeline, monkeypatch, caplog):
     """The rows are sqlite3.Row, which has no .get(): `r.get("language")`
     raised inside the per-row try, so EVERY capture was logged as skipped
     and the job still finished "done" with captures_updated == 0."""
@@ -200,14 +195,14 @@ def test_run_passes_the_row_language_and_updates_the_capture(
     assert st["total"] == 2 and st["processed"] == 2
     assert st["captures_updated"] == 2
     assert "skipped" not in caplog.text
-    assert sorted(str(c["language"]) for c in fake_main.calls) == ["None", "de"]
+    assert sorted(str(c["language"]) for c in fake_pipeline.calls) == ["None", "de"]
     row = cs.get_capture("reapply00001")
     assert row["final"] == "HELLO [final]"
     assert row["text_for_training"] == "HELLO [final]"
 
 
 def test_run_training_pass_gets_the_language_too(
-        captures_store_db, fake_main, monkeypatch, caplog):
+        captures_store_db, fake_pipeline, monkeypatch, caplog):
     """Second call site: the captures-excludes training-form pass."""
     from faster_whisper_backend.settings import config as cfg
 
@@ -222,7 +217,7 @@ def test_run_training_pass_gets_the_language_too(
     assert "skipped" not in caplog.text
     assert captures_reapply.status()["captures_updated"] == 1
     assert [(c["language"], bool(c.get("extra_excludes")))
-            for c in fake_main.calls] == [("fr", False), ("fr", True)]
+            for c in fake_pipeline.calls] == [("fr", False), ("fr", True)]
     row = cs.get_capture("reapply00003")
     assert row["final"] == "HELLO [final]"
     assert row["text_for_training"] == "HELLO [training]"

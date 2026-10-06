@@ -11,6 +11,7 @@ import os
 import pytest
 from starlette.testclient import TestClient
 
+from faster_whisper_backend.pipeline import engine as pl_engine
 from tests.conftest import bearer
 
 
@@ -427,7 +428,7 @@ def test_locked_member_view_does_not_rewrite_text(
     def _pp(raw_text, **kw):
         return "REWRITTEN"
 
-    monkeypatch.setattr(app_module, "_postprocess_text", _pp)
+    monkeypatch.setattr(pl_engine, "_postprocess_text", _pp)
 
     h = bearer(raw)
     # Locked member: the GET succeeds but the stored text stays frozen.

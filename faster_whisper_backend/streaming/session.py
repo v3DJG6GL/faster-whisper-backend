@@ -42,7 +42,7 @@ sent text fixed anyway:
 
   * **hold-back** — the trailing raw words such a rule could still join with the
     next utterance (``holdback``, built from the active dictation maps; see
-    core/seam_holdback.py) are neither formatted nor sent yet. The raw text is
+    pipeline/seam_holdback.py) are neither formatted nor sent yet. The raw text is
     held, never formatted text: the pipeline is not idempotent, so formatted
     output is never run through it again.
   * **re-anchor** — if a new document still does not extend what was sent

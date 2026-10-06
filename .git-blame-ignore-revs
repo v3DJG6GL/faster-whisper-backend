@@ -9,3 +9,5 @@ b5318937703a1665ac9873852acdda467bacc4eb
 3ca8bdd1a04566fc7e9cb22613bdf5ea53ee599a
 # config modules -> settings/ (rename only; imports rewritten in the next commit).
 c4a8aa22d028727a8a1f37e5da3093661aaa5788
+# core/{dictation_map,seam_holdback,regex_guard} -> pipeline/ (rename only).
+fc47ca7d73db748ae4ade5622178c350b582fe87

@@ -13,10 +13,11 @@ The first two used to be claimed for ``committed`` only, and the session
 re-formatted the whole document per utterance: text already typed from an
 earlier final could be rewritten by a later one (quotes typed twice, a stray
 'neue' left before a newline). The session now holds back the raw words a
-rule could still join with the next utterance (main.holdback_start) and
+rule could still join with the next utterance (pl_engine.holdback_start) and
 never re-formats sent text.
 
-Uses main._postprocess_text / main.holdback_start via the app_module fixture.
+Uses pl_engine._postprocess_text / pl_engine.holdback_start under the
+app_module fixture.
 """
 
 import asyncio
@@ -25,6 +26,7 @@ import pytest
 
 from faster_whisper_backend.streaming.session import StreamConfig, StreamSession
 from faster_whisper_backend.streaming.vad import EnergyEndpointer
+from faster_whisper_backend.pipeline import engine as pl_engine
 
 
 def _run_stream(main, utterances, language):
@@ -34,7 +36,7 @@ def _run_stream(main, utterances, language):
     finals = []
 
     def pp(raw):
-        return main._postprocess_text(raw, model_name="", language=language)
+        return pl_engine._postprocess_text(raw, model_name="", language=language)
 
     async def emit(m):
         if m["type"] == "final":
@@ -49,9 +51,9 @@ def _run_stream(main, utterances, language):
     s = StreamSession(
         config=StreamConfig(), endpointer=EnergyEndpointer(),
         decode_partial=_noop_dp, decode_final=_noop_df, postprocess=pp, emit=emit,
-        holdback=lambda raw: main.holdback_start(raw, model_name="", language=language),
+        holdback=lambda raw: pl_engine.holdback_start(raw, model_name="", language=language),
         format_key=lambda: language,
-        diagnose=lambda a, b: main.seam_culprit(a, b, model_name="", language=language),
+        diagnose=lambda a, b: pl_engine.seam_culprit(a, b, model_name="", language=language),
     )
 
     async def run():
@@ -93,7 +95,7 @@ def test_streaming_finals_extend_and_reconstruct_batch_output(app_module, langua
     main = app_module
 
     for utterances in _cases():
-        full = main._postprocess_text("".join(utterances), model_name="", language=language)
+        full = pl_engine._postprocess_text("".join(utterances), model_name="", language=language)
         finals = _run_stream(main, utterances, language)
         docs = [m["committed"] + m["tail"] for m in finals]
         committeds = [m["committed"] for m in finals]

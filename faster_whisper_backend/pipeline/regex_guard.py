@@ -40,7 +40,9 @@ Two roles, one file:
   * child   ->  this file run as a script, ``[sys.executable, _SELF]`` (reads a
                 JSON list of ``[pattern, replacement]`` pairs on stdin, writes a
                 JSON verdict on stdout). Keep it stdlib-only: the child runs
-                outside the package with this file's directory on sys.path.
+                outside the package with this file's directory
+                (faster_whisper_backend/pipeline/) as sys.path[0], so no
+                sibling module there may shadow a stdlib name.
 """
 from __future__ import annotations
 
@@ -124,7 +126,7 @@ _SCALE_MIN_REJECT = 5e-3
 
 # Chained-probe cap (see _probe). Entry N is probed against the fixture as
 # entries 0..N-1 have already REWRITTEN it, because that is exactly what
-# main.rebuild_caches feeds it at match time — an earlier entry can manufacture
+# engine.rebuild_caches feeds it at match time — an earlier entry can manufacture
 # the input shape that makes a later one explode, and the static fixtures never
 # contain it. The running string is truncated to this many characters after
 # each substitution so the chaining itself can never become the blowup.
@@ -600,7 +602,7 @@ def _chain_advance(rx, pattern: str, replacement: str, chained: str) -> str:
 
     This is what makes the chained probe carry a MANUFACTURED input downstream:
     entry N is handed the text entries 0..N-1 produced, exactly as
-    ``main.rebuild_caches`` applies them (list order, no longest-first sort).
+    ``engine.rebuild_caches`` applies them (list order, no longest-first sort).
     Truncated to ``_CHAIN_CAP`` so the chaining itself can never become the
     expensive thing. Never raises: chaining is extra signal, and its only
     verdict is the parent's timeout — it must not invent a rejection reason.
@@ -737,7 +739,7 @@ def _probe(checks: list):
     import sys
     import time
     # The fixture as it looks after entries 0..i-1 have been applied, in LIST
-    # ORDER (main.rebuild_caches applies them in list order, unsorted). Entry 0
+    # ORDER (engine.rebuild_caches applies them in list order, unsorted). Entry 0
     # sees the plain fixture; every later entry is additionally probed against
     # whatever its predecessors manufactured.
     chained = FIXTURE

@@ -11,12 +11,12 @@ These tests pin the invariant `" ".join(non-removed word) == final` across the
 word-count-changing shapes: 1->1, 1->many, many->1, 1->0.
 
 The alignment computes each raw word's post-processed form via
-main._postprocess_text(); we monkeypatch it to a deterministic per-word map so
+pl_engine._postprocess_text(); we monkeypatch it to a deterministic per-word map so
 the cases are hermetic (no real pipeline / config needed).
 """
 
-from faster_whisper_backend import main
 from faster_whisper_backend.captures import routes as cr
+from faster_whisper_backend.pipeline import engine as pl_engine
 
 
 def _words(*pairs):
@@ -33,10 +33,10 @@ def _join(out):
 
 
 def _install_word_map(monkeypatch, mapping):
-    """Fake main._postprocess_text: per-word lookup, identity by default."""
+    """Fake pl_engine._postprocess_text: per-word lookup, identity by default."""
     def fake(text, model_name=None, ident=None, language=None, **kw):
         return mapping.get(text.strip(), text)
-    monkeypatch.setattr(main, "_postprocess_text", fake)
+    monkeypatch.setattr(pl_engine, "_postprocess_text", fake)
 
 
 # ---------------------------------------------------------------------------

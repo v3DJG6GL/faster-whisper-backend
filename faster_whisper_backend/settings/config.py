@@ -243,8 +243,8 @@ DEFAULT_PROMPT: "str | None" = _D("DEFAULT_PROMPT")
 # single-word components (longest-first wins); the terminal rule is always
 # last. See README ("Pipeline rules") for the full rationale.
 #
-# Each rule's regex pattern is precompiled in main.rebuild_caches() at module
-# load and again when the WebUI saves changes (CACHE_REBUILD_FIELDS).
+# Each rule's regex pattern is precompiled in pipeline.engine.rebuild_caches()
+# at module load and again when the WebUI saves changes (CACHE_REBUILD_FIELDS).
 
 
 PIPELINE_RULES: list[dict] = _D("PIPELINE_RULES")

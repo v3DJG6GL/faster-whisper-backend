@@ -26,6 +26,7 @@ import pytest
 
 from faster_whisper_backend.streaming.session import StreamConfig, StreamSession
 from faster_whisper_backend.streaming.vad import EnergyEndpointer
+from faster_whisper_backend.pipeline import engine as pl_engine
 
 DE = [
     [" Sehr geehrte Frau Kollegin, Komma, neuer Absatz.",
@@ -103,11 +104,11 @@ def _run(main, utts, language_of):
     s = StreamSession(
         config=StreamConfig(), endpointer=EnergyEndpointer(),
         decode_partial=_dp, decode_final=_df,
-        postprocess=lambda raw: main._postprocess_text(raw, model_name="", language=lang()),
+        postprocess=lambda raw: pl_engine._postprocess_text(raw, model_name="", language=lang()),
         emit=emit,
-        holdback=lambda raw: main.holdback_start(raw, model_name="", language=lang()),
+        holdback=lambda raw: pl_engine.holdback_start(raw, model_name="", language=lang()),
         format_key=lang,
-        diagnose=lambda a, b: main.seam_culprit(a, b, model_name="", language=lang()),
+        diagnose=lambda a, b: pl_engine.seam_culprit(a, b, model_name="", language=lang()),
     )
 
     async def go():
@@ -166,7 +167,7 @@ def _check(main, corpus, modes, caplog):
                     assert any(_self_correction(a, b) for a, b in seams), (
                         mode, utts, [r.getMessage() for r in seam_warnings])
                 else:
-                    full = main._postprocess_text("".join(utts), model_name="",
+                    full = pl_engine._postprocess_text("".join(utts), model_name="",
                                                   language=language_of(len(utts)))
                     assert committeds[-1] == full, (mode, utts, committeds[-1], full)
     return checked, warned

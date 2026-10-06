@@ -54,6 +54,7 @@ from faster_whisper_backend.auth import rate_limit
 from faster_whisper_backend.core import store_common
 from faster_whisper_backend.core import text_corrections
 from faster_whisper_backend.core import web_common
+from faster_whisper_backend.pipeline import engine as pl_engine
 from faster_whisper_backend.core.web_common import require_user_webui_host
 from faster_whisper_backend.auth.dependencies import get_current_user, require_admin, require_page
 
@@ -941,7 +942,6 @@ async def reprocess_capture_api(
     )
     _audit_cross_user_read(user, row, "capture-reprocess", cid)
     _assert_member_sample_not_locked(row, user)
-    from faster_whisper_backend import main
     raw = row.get("raw") or ""
     captures_excludes = getattr(cfg, "CAPTURES_PIPELINE_RULES_EXCLUDE", None)
     # Resolve the CAPTURE OWNER's effective pipeline (not the caller's — an admin
@@ -949,7 +949,7 @@ async def reprocess_capture_api(
     # rules). Pipeline-only: no key / no per-request layer on reprocess.
     ident = effective_config.build_ident({"user_id": row.get("user_id")}, row.get("model"))
     try:
-        new_final = main._postprocess_text(raw, model_name=row.get("model"), ident=ident, language=row.get("language"))
+        new_final = pl_engine._postprocess_text(raw, model_name=row.get("model"), ident=ident, language=row.get("language"))
     except Exception as e:
         logger.error("[captures] reprocess pipeline failed on `final`: %s", e)
         raise HTTPException(
@@ -961,7 +961,7 @@ async def reprocess_capture_api(
     # second full pipeline pass and reuse.
     if captures_excludes:
         try:
-            new_training = main._postprocess_text(
+            new_training = pl_engine._postprocess_text(
                 raw,
                 model_name=row.get("model"),
                 extra_excludes=captures_excludes,
@@ -2044,14 +2044,13 @@ def _refresh_final_if_stale(
         return
     stored_final = row.get("final") or ""
     try:
-        from faster_whisper_backend import main
         # Resolve the capture OWNER's effective pipeline (mirrors the explicit
         # /reprocess endpoint). Without ident the self-heal would recompute with
         # GLOBAL rules and write the result back, silently reverting any
         # per-identity reprocess and producing wrong text for owners with
         # per-identity pipeline rules.
         ident = effective_config.build_ident({"user_id": row.get("user_id")}, row.get("model"))
-        fresh_final = main._postprocess_text(raw, model_name=row.get("model"), ident=ident, language=row.get("language"))
+        fresh_final = pl_engine._postprocess_text(raw, model_name=row.get("model"), ident=ident, language=row.get("language"))
     except Exception:
         return
     patch: dict[str, Any] = {}
@@ -2066,7 +2065,7 @@ def _refresh_final_if_stale(
     captures_excludes = getattr(cfg, "CAPTURES_PIPELINE_RULES_EXCLUDE", None)
     if captures_excludes:
         try:
-            fresh_training = main._postprocess_text(
+            fresh_training = pl_engine._postprocess_text(
                 raw,
                 model_name=row.get("model"),
                 extra_excludes=captures_excludes,
@@ -2152,11 +2151,6 @@ def _align_words_to_final(
     src = list(words or [])
     if not src:
         return []
-    try:
-        from faster_whisper_backend import main  # for _postprocess_text
-    except Exception:
-        return [_clone_word(w) for w in src]
-
     # Memo: many captures repeat the same raw token (filler words, punctuation
     # carriers). Without the cache, _postprocess_text runs O(N) times per
     # caller and dominates karaoke-band assembly when /captures expands a
@@ -2168,7 +2162,7 @@ def _align_words_to_final(
         post_w = post_cache.get(raw_w)
         if post_w is None:
             try:
-                post_w = main._postprocess_text(raw_w, model_name=model_name, ident=ident, language=language)
+                post_w = pl_engine._postprocess_text(raw_w, model_name=model_name, ident=ident, language=language)
             except Exception:
                 post_w = raw_w
             post_cache[raw_w] = post_w

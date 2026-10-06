@@ -253,8 +253,9 @@ def test_neuenzeile_fires_at_end_of_utterance():
     Regression: config.json once shipped "Neuenzeile " with a trailing
     space; compiled word-bounded, the escaped space + closing \\b demanded
     a following word character, so the key never fired at end of utterance.
-    Compiles the real factory map with core.dictation_map.compile_map — the
-    one compile main.rebuild_caches and the /settings/pipeline dry run use
+    Compiles the real factory map with pipeline.dictation_map.compile_map —
+    the one compile pipeline.engine.rebuild_caches and the /settings/pipeline
+    dry run use
     (a pure module, so this file stays pydantic-only).
     """
     sub = _factory_map_sub()
@@ -270,7 +271,7 @@ def _factory_map():
 
 
 def _factory_map_sub(m=None):
-    from faster_whisper_backend.core.dictation_map import compile_map
+    from faster_whisper_backend.pipeline.dictation_map import compile_map
     cre, replacer, _lookup = compile_map(m if m is not None else _factory_map())
     return lambda text: cre.sub(replacer, text)
 

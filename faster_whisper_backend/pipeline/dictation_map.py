@@ -1,7 +1,7 @@
 """Compile a ``callback:map`` rule (spoken dictation word → symbol).
 
 One implementation for every place that runs a map: the engine
-(``main.rebuild_caches``), the /settings/pipeline test panel's dry run
+(``engine.rebuild_caches``), the /settings/pipeline test panel's dry run
 (``admin/routes.py``) and the factory-rule tests — so the preview can never
 disagree with what a transcription actually gets.
 

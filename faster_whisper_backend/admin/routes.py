@@ -44,10 +44,12 @@ from faster_whisper_backend.settings import descriptions as field_descriptions
 from faster_whisper_backend.audio import diarization
 from faster_whisper_backend.runtime import system_stats
 from faster_whisper_backend.audio import translation
-from faster_whisper_backend.core import dictation_map
 from faster_whisper_backend.core import log_setup
 from faster_whisper_backend.core.languages import WHISPER_LANGUAGE_NAMES
 from faster_whisper_backend.core import web_common
+from faster_whisper_backend.pipeline import dictation_map
+from faster_whisper_backend.pipeline import engine as pl_engine
+from faster_whisper_backend.pipeline import regex_guard
 from faster_whisper_backend.auth.dependencies import require_admin
 
 if TYPE_CHECKING:
@@ -566,7 +568,7 @@ async def post_state(payload: dict[str, Any], request: Request) -> JSONResponse:
 
 
 async def _rebuild_caches(reason: str) -> None:
-    """Recompile main's derived pipeline caches, off the event loop.
+    """Recompile the pipeline engine's derived caches, off the event loop.
 
     Off the loop because rebuild_caches recompiles every rule; a
     callback:map builds a \\b(alt|alt|...)\\b alternation and
@@ -584,8 +586,7 @@ async def _rebuild_caches(reason: str) -> None:
     concurrent requests were already able to interleave at the
     save_overrides await."""
     try:
-        from faster_whisper_backend import main as _main
-        await asyncio.to_thread(_main.rebuild_caches)
+        await asyncio.to_thread(pl_engine.rebuild_caches)
         logger.info("[config] rebuilt pipeline caches after %s", reason)
     except Exception as e:
         logger.error("[config] cache rebuild failed after %s: %s", reason, e)
@@ -912,18 +913,16 @@ async def test_pipeline(payload: dict[str, Any]) -> JSONResponse:
     (not run). Rules with empty patterns also `skipped: true`. Compile errors
     → `error: "<msg>"` and the pipeline continues with the un-modified text.
     The terminal trim is appended at the end; if no terminal row is present,
-    the trim is still applied (matching main.py behaviour).
+    the trim is still applied (matching the engine's behaviour).
     """
     import threading
-
-    from faster_whisper_backend.core import regex_guard
 
     # Advisory shown instead of starting a thread on an exponential shape: a
     # timed-out guard thread here is ABANDONED, not killed (CPython cannot
     # interrupt re.sub), so each one would pin a core for the life of the
     # process. A NEW save of the same shape is refused (config_store ->
     # regex_guard.validate) — but a rule saved BEFORE the guard tightened
-    # still compiles and runs in the engine (main.rebuild_caches does no
+    # still compiles and runs in the engine (pl_engine.rebuild_caches does no
     # structural screen), so the message must not claim engine parity, and
     # `not_run` marks the step so the panel renders it as a warning, not as
     # "the engine skips this too".
@@ -955,9 +954,8 @@ async def test_pipeline(payload: dict[str, Any]) -> JSONResponse:
 
     def _run_rule(text: str, rule: dict) -> dict[str, Any]:
         """Apply one rule to `text`. Returns the step dict for the response."""
-        # Dry-run contract is parity with main.py's engine — use its replacer
+        # Dry-run contract is parity with the pipeline engine — use its replacer
         # factories rather than a second copy that could drift.
-        from faster_whisper_backend import main as _main
         rtype = rule.get("type", "?")
         label = rule.get("label", rule.get("name", "?"))
         common = {"label": label, "type": rtype, "before": text, "matches": 0,
@@ -972,7 +970,7 @@ async def test_pipeline(payload: dict[str, Any]) -> JSONResponse:
 
         # regex-list: apply each entry in order to a running buffer (entry N's
         # output feeds N+1), all inside ONE 2 s guard. Same mt.expand backref
-        # idiom as the single-pattern path → parity with main.py / the streaming
+        # idiom as the single-pattern path → parity with the engine / the streaming
         # equivalence guard. Reports one card-level step (summed matches).
         if rtype == "regex-list":
             entries = rule.get("entries", []) or []
@@ -996,7 +994,7 @@ async def test_pipeline(payload: dict[str, Any]) -> JSONResponse:
                         try:
                             ecre = re.compile(ep)
                         except re.error as e:
-                            # Engine parity (main.rebuild_caches): a bad entry is
+                            # Engine parity (pl_engine.rebuild_caches): a bad entry is
                             # SKIPPED, not the whole card — the valid entries still
                             # apply. Surface the first bad pattern as an advisory.
                             if bad is None:
@@ -1035,7 +1033,7 @@ async def test_pipeline(payload: dict[str, Any]) -> JSONResponse:
                             "error": "map must be an object"}
                 if not m:
                     return {**common, "after": text, "skipped": True}
-                # The engine's own compile (main.rebuild_caches uses it too):
+                # The engine's own compile (pl_engine.rebuild_caches uses it too):
                 # ß/ss variants and the dictated-punctuation prefix included,
                 # so the dry run shows what a transcription really gets.
                 cre, replacer, _lookup = dictation_map.compile_map(m)
@@ -1048,12 +1046,12 @@ async def test_pipeline(payload: dict[str, Any]) -> JSONResponse:
                             "not_run": True}
                 cre = re.compile(pattern)
                 if rtype == "callback:lowercase-wordlist":
-                    replacer = _main._make_lowercase_wordlist_replacer(
+                    replacer = pl_engine._make_lowercase_wordlist_replacer(
                         frozenset(w.lower() for w in (rule.get("wordlist") or [])))
                 elif rtype == "callback:dedup":
-                    replacer = _main._dedup_callback
+                    replacer = pl_engine._dedup_callback
                 elif rtype == "callback:upper":
-                    replacer = _main._upper_callback
+                    replacer = pl_engine._upper_callback
                 else:
                     return {**common, "after": text, "skipped": True,
                             "error": f"unknown rule type: {rtype}"}

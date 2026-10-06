@@ -163,8 +163,8 @@ def test_sync_dialog_leftovers_are_gone(client):
 
 
 def test_language_badge_mentions_the_unknown_language_case(client):
-    """main._postprocess_text skips a language-scoped rule only when a
-    language IS known; with none detected the rule runs."""
+    """pipeline.engine._postprocess_text skips a language-scoped rule only
+    when a language IS known; with none detected the rule runs."""
     html = _html(client)
     assert "Only runs when the detected language is" not in html
     assert "(or when the language is unknown)" in html

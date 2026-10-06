@@ -118,6 +118,9 @@ _RESET_HOOKS: tuple[tuple[str, Any], ...] = (
     # that repoints PATH doesn't inherit the previous test's file contents.
     ("faster_whisper_backend.runtime.model_sizes", "_reset_for_tests"),
     ("faster_whisper_backend.runtime.stage_rates", "_reset_for_tests"),
+    # pipeline engine: the streaming hold-back spec cache (the compiled rules
+    # are rebuilt from the reloaded config by app_module).
+    ("faster_whisper_backend.pipeline.engine", "_reset_for_tests"),
     # main's registries / limiter / leases (these names leave main in later
     # refactor phases; each new owner module registers its own hook).
     ("faster_whisper_backend.main", _reset_main),
@@ -493,6 +496,12 @@ def app_module(tmp_path, monkeypatch, fake_model):
         if _defaults:
             _defaults[-1] = _tmp_sizes
             monkeypatch.setattr(_fn, "__defaults__", tuple(_defaults), raising=False)
+
+    # The rules engine compiles cfg.PIPELINE_RULES at its own import, not at
+    # main's: recompile from the freshly reloaded config (a test that edited
+    # PIPELINE_RULES and called rebuild_caches must not leak its rule set).
+    from faster_whisper_backend.pipeline import engine as pl_engine
+    pl_engine.rebuild_caches()
 
     from faster_whisper_backend import main
     importlib.reload(main)

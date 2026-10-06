@@ -3,9 +3,9 @@
 `ws[s]://HOST/v1/audio/transcriptions/stream` — a second entry point alongside the
 batch `POST /v1/audio/transcriptions`. It reuses the same model cache
 (`_get_or_load_model`), per-model config (`cfg_for`), and post-processing pipeline
-(`_postprocess_text`) — none of which are modified — and drives them through
-:class:`streaming_session.StreamSession` (LocalAgreement-2 stabilized partials,
-append-only post-processed finals).
+(`pipeline.engine._postprocess_text`) — none of which are modified — and drives
+them through :class:`streaming_session.StreamSession` (LocalAgreement-2
+stabilized partials, append-only post-processed finals).
 
 Handshake credentials, tried in order: `Authorization: Bearer <key>` (native
 clients), a `bearer.<key>` entry in Sec-WebSocket-Protocol (browser clients —
@@ -77,6 +77,7 @@ from faster_whisper_backend.core import receipt_hold
 from faster_whisper_backend.core import segment_guards
 from faster_whisper_backend.core import store_common
 from faster_whisper_backend.core import web_common
+from faster_whisper_backend.pipeline import engine as pl_engine
 from faster_whisper_backend.streaming.session import CloseAbort, StreamConfig, StreamSession
 from faster_whisper_backend.streaming.transport import ENCODED_FORMATS, RAW_FORMATS, make_transport
 from faster_whisper_backend.streaming.vad import SAMPLE_RATE, make_endpointer
@@ -1110,7 +1111,7 @@ async def transcribe_stream(ws: WebSocket) -> None:
             return raw, words_out, dropped_all
 
         def postprocess(raw_text):
-            return main._postprocess_text(raw_text, model_name=final_model, ident=ident, language=_fmt_lang())
+            return pl_engine._postprocess_text(raw_text, model_name=final_model, ident=ident, language=_fmt_lang())
 
         # Output wrappers: the prefix sits at the very start of the document, the
         # suffix only on the final flush. committed/tail are full authoritative
@@ -1165,7 +1166,7 @@ async def transcribe_stream(ws: WebSocket) -> None:
                     logger.warning("[stream %s] capture skipped: low disk (%.0f MB free)",
                                    session_id[:8], free / (1024 * 1024))
                     return None
-                training_text = main._postprocess_text(
+                training_text = pl_engine._postprocess_text(
                     raw_text, model_name=final_model, trace=None,
                     extra_excludes=getattr(cfg, "CAPTURES_PIPELINE_RULES_EXCLUDE", None),
                     ident=ident, language=_fmt_lang())
@@ -1224,7 +1225,7 @@ async def transcribe_stream(ws: WebSocket) -> None:
             kwargs = dec.get("kwargs", {})
 
             steps: "list | None" = [] if getattr(cfg, "TRACE_ENABLED", False) else None
-            final_text = main._postprocess_text(raw_text, model_name=final_model, trace=steps, ident=ident, language=_fmt_lang())
+            final_text = pl_engine._postprocess_text(raw_text, model_name=final_model, trace=steps, ident=ident, language=_fmt_lang())
             if info.get("decode_failed"):
                 # The session already logged the failure (type only). Say here
                 # what the text IS, so the row below isn't read as a decode.
@@ -1380,10 +1381,10 @@ async def transcribe_stream(ws: WebSocket) -> None:
             # Seam hooks (streaming/session.py). Lambdas, not bound values: they
             # read `ident` (re-resolved by _refresh_ident) and the language at
             # call time.
-            holdback=lambda raw: main.holdback_start(
+            holdback=lambda raw: pl_engine.holdback_start(
                 raw, model_name=final_model, ident=ident, language=_fmt_lang()),
             format_key=_fmt_lang,
-            diagnose=lambda sent_raw, raw: main.seam_culprit(
+            diagnose=lambda sent_raw, raw: pl_engine.seam_culprit(
                 sent_raw, raw, model_name=final_model, ident=ident, language=_fmt_lang()),
         )
 

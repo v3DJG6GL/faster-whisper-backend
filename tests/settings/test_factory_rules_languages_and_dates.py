@@ -15,6 +15,7 @@ import pytest
 
 from faster_whisper_backend.settings import config_renames as renames
 from faster_whisper_backend import paths
+from faster_whisper_backend.pipeline import engine as pl_engine
 
 
 def _factory_rules():
@@ -52,8 +53,8 @@ def test_punct_before_hyphen_still_removed_after_a_word():
 
 def test_date_range_survives_the_whole_factory_pipeline(app_module):
     app_module.cfg.PIPELINE_RULES = copy.deepcopy(_factory_rules())
-    app_module.rebuild_caches()
-    out = app_module._postprocess_text(
+    pl_engine.rebuild_caches()
+    out = pl_engine._postprocess_text(
         " Die Patientin ist vom 3.-10 Oktober abwesend Punkt",
         model_name="", language="de")
     assert out == "Die Patientin ist vom 3.-10 Oktober abwesend."
@@ -75,8 +76,8 @@ def test_spanish_opening_marks(app_module):
     app_module.cfg.PIPELINE_RULES = [
         copy.deepcopy(_by_name()["es-punctuation"]),
         {"name": "trim-edges", "label": "Trim", "type": "terminal"}]
-    app_module.rebuild_caches()
-    run = lambda t, lang: app_module._postprocess_text(t, model_name="", language=lang)
+    pl_engine.rebuild_caches()
+    run = lambda t, lang: pl_engine._postprocess_text(t, model_name="", language=lang)
     assert run("Qué hora es? No lo sé. Qué bien!", "es") == "¿Qué hora es? No lo sé. ¡Qué bien!"
     assert run("¿Ya está? ¡Sí!", "es") == "¿Ya está? ¡Sí!", "existing marks are not doubled"
     assert run("Wie spät ist es?", "de") == "Wie spät ist es?", "German is untouched"
@@ -88,8 +89,8 @@ def test_spanish_opening_marks_on_consecutive_sentences(app_module):
     app_module.cfg.PIPELINE_RULES = [
         copy.deepcopy(_by_name()["es-punctuation"]),
         {"name": "trim-edges", "label": "Trim", "type": "terminal"}]
-    app_module.rebuild_caches()
-    run = lambda t: app_module._postprocess_text(t, model_name="", language="es")
+    pl_engine.rebuild_caches()
+    run = lambda t: pl_engine._postprocess_text(t, model_name="", language="es")
     assert run("Qué? Cómo?") == "¿Qué? ¿Cómo?"
     assert run("Hola! Adiós!") == "¡Hola! ¡Adiós!"
     assert run("Qué hora es? Y luego? Vale.") == "¿Qué hora es? ¿Y luego? Vale."
@@ -100,15 +101,15 @@ def test_spanish_opening_marks_on_consecutive_sentences(app_module):
 
 
 def test_spanish_patterns_pass_the_regex_guard():
-    from faster_whisper_backend.core import regex_guard
+    from faster_whisper_backend.pipeline import regex_guard
     entries = _by_name()["es-punctuation"]["entries"]
     regex_guard.validate([[e["label"], e["pattern"], e["replacement"]] for e in entries])
 
 
 def test_german_map_does_not_touch_spanish(app_module):
     app_module.cfg.PIPELINE_RULES = copy.deepcopy(_factory_rules())
-    app_module.rebuild_caches()
-    assert "Punkt" in app_module._postprocess_text("El Punkt rojo", model_name="", language="es")
+    pl_engine.rebuild_caches()
+    assert "Punkt" in pl_engine._postprocess_text("El Punkt rojo", model_name="", language="es")
 
 
 def test_rule_rename_migrates_every_stored_reference():

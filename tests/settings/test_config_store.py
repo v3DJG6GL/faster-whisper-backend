@@ -445,7 +445,7 @@ def test_pipeline_bad_backref_reported():
 def test_pipeline_catastrophic_regex_rejected_on_save(monkeypatch):
     # A catastrophic-backtracking pattern is rejected on save WITHOUT hanging:
     # the out-of-process guard is killed on timeout (shortened here).
-    from faster_whisper_backend.core import regex_guard
+    from faster_whisper_backend.pipeline import regex_guard
     monkeypatch.setattr(regex_guard, "_GUARD_TIMEOUT", 0.5)
     with pytest.raises(ValidationError) as ei:
         _ok_on_save(PIPELINE_RULES=[
@@ -483,7 +483,7 @@ def test_pipeline_prefix_ambiguous_alternation_rejected():
     # prefix-ambiguous forms — one run of input that splits many ways — walked
     # through and then backtracked exponentially on real transcripts.
     # (The _nested_repetition unit assertions for the full family live in
-    # test_regex_guard.py with the rest of the helper's coverage.)
+    # tests/pipeline/test_regex_guard.py with the rest of the helper's coverage.)
     with pytest.raises(ValidationError) as ei:
         _ok_on_save(PIPELINE_RULES=[
             _regex("boom", pattern="(n|d|nd)+#", replacement="X"), _terminal()])
@@ -512,7 +512,7 @@ def test_pipeline_regex_guard_skipped_without_save_context(monkeypatch):
     # so a normal config load never spawns the helper and never hangs on a
     # stored pattern. A pattern that only the BACKTRACKING probe would flag
     # (compiles fine; pathological only against real input) validates cleanly.
-    from faster_whisper_backend.core import regex_guard
+    from faster_whisper_backend.pipeline import regex_guard
     calls = {"n": 0}
 
     def _spy(*a, **k):
@@ -591,7 +591,7 @@ def test_pipeline_bad_backref_rejected_on_load_without_subprocess(monkeypatch):
     # against one group has to fail-safe at LOAD, not load cleanly and then
     # raise re.error on every request at match time. And detecting it must
     # not need the subprocess helper.
-    from faster_whisper_backend.core import regex_guard
+    from faster_whisper_backend.pipeline import regex_guard
 
     def _boom(*a, **k):
         raise AssertionError("subprocess guard must not run on load")
@@ -772,8 +772,8 @@ def test_load_overrides_coerces_allowed_models_to_set(tmp_path):
 
 def test_load_overrides_coerces_captures_excludes_to_set(tmp_path):
     # config.json default + ENV paths already yield a set (config._SET_FIELDS);
-    # the config.local.json override path must match, or main._postprocess_text
-    # does `set | list` and raises TypeError on every captures consumer.
+    # the config.local.json override path must match, or the pipeline engine's
+    # _postprocess_text does `set | list` and raises TypeError on every captures consumer.
     p = tmp_path / "a.json"
     p.write_text(
         json.dumps({"CAPTURES_PIPELINE_RULES_EXCLUDE": ["r1", "r2"]}),
