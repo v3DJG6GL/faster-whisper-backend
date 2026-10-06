@@ -28,5 +28,7 @@ def load(module_file: str, name: str) -> str:
     path = os.path.join(os.path.dirname(os.path.abspath(module_file)), "templates", name)
     with open(path, encoding="utf-8", newline="") as f:
         text = f.read()
-    assert "\r" not in text, f"{path} has CR line endings; templates must be LF-only"
+    # A raise, not an assert: `python -O` must not load a CRLF file silently.
+    if "\r" in text:
+        raise ValueError(f"{path} has CR line endings; templates must be LF-only")
     return text

@@ -4,7 +4,7 @@ Every ``<package>/templates/*`` file must be read by some
 ``templates.load(__file__, "<name>")`` call in a module of that directory, and
 every such call must name an existing file: an orphaned template is dead
 weight that silently drifts, a missing one fails the import in production.
-Each file must also be LF-only (the loader asserts it at import — a CRLF
+Each file must also be LF-only (the loader refuses it at import — a CRLF
 checkout would change the served bytes and every render_page cache key).
 """
 
@@ -73,5 +73,5 @@ def test_load_reads_next_to_module_and_rejects_cr(tmp_path):
     (tmp_path / "templates" / "ok.html").write_bytes("a\nb \n".encode("utf-8"))
     assert templates.load(str(mod), "ok.html") == "a\nb \n"
     (tmp_path / "templates" / "crlf.html").write_bytes(b"a\r\nb\r\n")
-    with pytest.raises(AssertionError):
+    with pytest.raises(ValueError, match="CR line endings"):
         templates.load(str(mod), "crlf.html")

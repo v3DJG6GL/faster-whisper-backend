@@ -150,6 +150,20 @@ def test_dictate_page_keeps_the_socket_open_until_closing(app_module):
     assert "finishing" in body
 
 
+@pytest.mark.parametrize("exc", [OSError("gone"), ValueError("CR line endings")])
+def test_dictate_page_unreadable_template_is_a_named_500(app_module, monkeypatch, exc):
+    """The template is read per request: a missing file, or one an editor
+    saved with CRLF, answers the page's own 500, not a bare traceback."""
+    from faster_whisper_backend.core import templates
+
+    def _boom(*a, **kw):
+        raise exc
+    monkeypatch.setattr(templates, "load", _boom)
+    with TestClient(app_module.app, client=("127.0.0.1", 12345)) as client:
+        r = client.get("/dictate")
+    assert r.status_code == 500 and "dictate unavailable" in r.text
+
+
 def test_dictate_page_uses_the_shared_shell(app_module):
     """It renders through render_page like every other WebUI page: no
     unsubstituted placeholders, and the shared chrome is present."""

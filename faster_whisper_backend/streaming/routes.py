@@ -1907,7 +1907,7 @@ async def dictate_page() -> HTMLResponse:
     """
     try:
         template = templates.load(__file__, "dictate.html")
-    except OSError as exc:
+    except (OSError, ValueError) as exc:   # ValueError: CRLF / not UTF-8
         logger.error("[dictate] cannot read page template: %s", exc)
         return HTMLResponse("<h1>dictate unavailable</h1>", status_code=500)
     return HTMLResponse(
