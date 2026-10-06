@@ -465,4 +465,6 @@ rebuild_caches()
 def _reset_for_tests() -> None:
     """Drop the hold-back spec cache. The compiled rules themselves are rebuilt
     by the app_module fixture (rebuild_caches after reloading config)."""
+    global _REBUILD_LOCK
     _holdback_spec.cache_clear()
+    _REBUILD_LOCK = threading.Lock()

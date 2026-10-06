@@ -199,6 +199,10 @@ async def apply_hot_changes(
             # the native-typed default (matching load_overrides' coercions).
             baseline = getattr(cfg, "_BASELINE", {}) or {}
             new_val = baseline.get(name, getattr(cfg, name, None))
+        if name == "MODEL_OVERRIDES":
+            # save_overrides keeps WHISPER_MODEL_OVERRIDE__ env values out of
+            # the file; lay them back on the running cfg.
+            new_val = config_store.with_env_model_overrides(new_val)
         setattr(cfg, name, new_val)
         if name in settings_schema.CACHE_REBUILD_FIELDS:
             needs_cache_rebuild = True
@@ -231,7 +235,7 @@ async def apply_hot_changes(
             # key) differs between the pre-save snapshot and the new bundle.
             # A removed id whose bundle held only decode-time keys needs no
             # reload, matching the global-field rule.
-            new_overrides = coerced.get("MODEL_OVERRIDES") or {}
+            new_overrides = getattr(cfg, "MODEL_OVERRIDES", None) or {}
             old_overrides = prev_model_overrides or {}
             lt = settings_schema.LOAD_TIME_FIELDS
             for model_id in set(old_overrides) | set(new_overrides):

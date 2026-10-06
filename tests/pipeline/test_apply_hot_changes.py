@@ -47,3 +47,15 @@ def test_removed_id_evicts_only_when_it_held_load_time_key(monkeypatch):
     old = {"C": {"BEAM_SIZE": 5}, "D": {"REVISION": "abc"}}
     new = {}
     assert _run(monkeypatch, old, new) == ["D"]
+
+
+def test_env_per_model_values_stay_live_after_a_save(monkeypatch):
+    # save_overrides keeps WHISPER_MODEL_OVERRIDE__ values out of the file, so
+    # the reload must lay them back on — and an env load-time value the file
+    # never held is no reason to evict.
+    monkeypatch.setattr(cfg, "_ENV_OVERRIDE_VALUES",
+                        {"A": {"MODEL_DEVICE": "cpu"}}, raising=False)
+    old = {"A": {"MODEL_DEVICE": "cpu", "BEAM_SIZE": 5}}
+    new = {"A": {"BEAM_SIZE": 7}}
+    assert _run(monkeypatch, old, new) == []
+    assert cfg.MODEL_OVERRIDES == {"A": {"MODEL_DEVICE": "cpu", "BEAM_SIZE": 7}}

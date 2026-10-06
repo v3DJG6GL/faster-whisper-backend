@@ -429,7 +429,7 @@ def test_queue_item_cap_sheds_tiny_frames_and_flushes(app_module, monkeypatch, c
         await orig_flush(self)
 
     monkeypatch.setattr(streaming_session.StreamSession, "flush_utterance", slow_flush)
-    with caplog.at_level(logging.WARNING, logger="whisper-api"):
+    with caplog.at_level(logging.WARNING, logger="faster_whisper_backend.streaming.routes"):
         with TestClient(app_module.app, client=("127.0.0.1", 12345)) as client:
             with client.websocket_connect(_STREAM_URL) as ws:
                 assert _config(ws)["type"] == "ready"
