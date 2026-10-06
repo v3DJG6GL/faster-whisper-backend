@@ -344,6 +344,60 @@ def test_propose_admin_specific_user_cache_key(captures_store_db, monkeypatch, t
     assert P._ALL_USERS not in P._CACHE
 
 
+def test_propose_admin_unknown_user_returns_nothing_uncached(
+        captures_store_db, monkeypatch, trim_disabled):
+    """With the key store up, an unknown ?user_id= is rejected before it can
+    mint a cache key; a known one sweeps and caches. (The test above runs
+    with the store uninitialised, so it only reaches the fallback.)"""
+    from faster_whisper_backend.auth import api_keys_store
+    cs = captures_store_db
+    _insert_eligible(cs, "cap0000000000k1", ts=1000.0, user_id="u1",
+                     text="alpha text one")
+    _insert_eligible(cs, "cap0000000000k2", ts=1001.0, user_id="u1",
+                     text="beta text two")
+    monkeypatch.setattr(api_keys_store, "get_user",
+                        lambda uid: {"id": uid} if uid == "u1" else None)
+
+    proposals, was_cached = P.propose_merges(
+        user_id_filter="ghost", is_admin=True, caller_user_id="admin")
+    assert proposals == [] and was_cached is False
+    assert P._user_cache_key("ghost") not in P._CACHE
+
+    proposals, was_cached = P.propose_merges(
+        user_id_filter="u1", is_admin=True, caller_user_id="admin")
+    assert was_cached is False and len(proposals) == 1
+    assert P._user_cache_key("u1") in P._CACHE
+
+
+def test_propose_cache_is_capped_at_cache_max(
+        captures_store_db, monkeypatch, trim_disabled):
+    """_CACHE_MAX evicts the oldest entry before a new one is stored."""
+    monkeypatch.setattr(P, "_CACHE_MAX", 2)
+    for uid in ("a", "b", "c"):
+        P.propose_merges(user_id_filter=None, is_admin=False,
+                         caller_user_id=uid)
+    assert list(P._CACHE) == [P._user_cache_key("b"), P._user_cache_key("c")]
+
+
+def test_trim_duration_cache_is_capped(monkeypatch, tmp_path):
+    """_TRIM_DUR_CACHE_MAX evicts the oldest per-capture entry."""
+    from faster_whisper_backend.captures import merge as audio_merge
+    from faster_whisper_backend.captures import vad_trim as audio_vad_trim
+    monkeypatch.setattr(P.cfg, "CAPTURES_VAD_TRIM_ENABLED_FOR_SAMPLES", True,
+                        raising=False)
+    monkeypatch.setattr(P, "_TRIM_DUR_CACHE_MAX", 2)
+    monkeypatch.setattr(P.captures_store, "abs_audio_path",
+                        lambda rel: str(tmp_path / rel))
+    monkeypatch.setattr(audio_merge, "read_pcm", lambda p: (b"", 0))
+    monkeypatch.setattr(audio_vad_trim, "trim_pcm_for_merge",
+                        lambda *a, **k: {"new_duration_ms": 1000})
+    for cid in ("t1", "t2", "t3"):
+        (tmp_path / f"{cid}.wav").write_bytes(b"x")
+        assert P.trimmed_duration_s(
+            {"id": cid, "audio_relpath": f"{cid}.wav", "audio_s": 5.0}) == 1.0
+    assert list(P._TRIM_DUR_CACHE) == ["t2", "t3"]
+
+
 def test_propose_non_admin_ignores_filter(captures_store_db, monkeypatch, trim_disabled):
     cs = captures_store_db
     _insert_eligible(cs, "cap0000000000f1", ts=1000.0, user_id="alice")

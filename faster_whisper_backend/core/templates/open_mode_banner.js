@@ -123,14 +123,30 @@
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ key: key }),
       })
-        .then(function(r) { if (!r.ok) throw 0; })
+        .then(function(r) {
+          if (r.ok) return;
+          // Only a 401 is a verdict on the key. A 429 (the host's failed
+          // sign-in window is exhausted) refuses even a CORRECT key, and a
+          // 5xx is the server failing to open a session: show the server's
+          // own reason (RateLimited carries `detail` for exactly this).
+          if (r.status === 401) throw 'That key was rejected.';
+          if (r.status >= 500) {
+            throw 'The server could not create a session (HTTP ' + r.status +
+                  ') — check the server log.';
+          }
+          return r.json().catch(function() { return null; }).then(function(j) {
+            var msg = j && (j.detail || (j.error && j.error.message));
+            throw (typeof msg === 'string' && msg)
+              ? msg : 'Sign-in failed (HTTP ' + r.status + ').';
+          });
+        })
         .then(function() {
           try { window.dispatchEvent(new Event('whisper:auth-changed')); } catch(_) {}
           location.reload();
         })
-        .catch(function() {
+        .catch(function(e) {
           btn.disabled = false; btn.textContent = 'Authenticate';
-          _lgError(card, err, 'That key was rejected.');
+          _lgError(card, err, typeof e === 'string' ? e : 'Could not reach the server.');
           input.focus(); input.select();
         });
     });

@@ -62,7 +62,12 @@ html { font-size: var(--fs-base); color-scheme: dark; }
 body.col-read  { --col: var(--col-read); }
 body.col-form  { --col: var(--col-form); }
 body.col-fluid { --col: var(--col-fluid); }
-html.pref-fluid { --col-data: var(--col-fluid); }
+/* Data pages only: the preference class sits on <html> for every page, and
+   a lifted --col-data would widen the header rail (floored at it) on form /
+   read pages too, where the toggle that undoes it is hidden. --col is set as
+   well: :root's --col was computed from the 100rem --col-data and inherits
+   as a value. */
+html.pref-fluid body.col-data { --col-data: var(--col-fluid); --col: var(--col-fluid); }
 /* Boundary marker for transcription values: dim brackets around the EXACT
    text, with internal whitespace preserved (pre-wrap) so a leading/trailing
    space shows as a literal gap inside the brackets and the begin/end of the
@@ -510,8 +515,8 @@ header.nav-row2 .width-toggle,
 header.nav-row2 .hdr-right .icon-btn { order: 11; }
 /* Width preference: only meaningful once the window is wider than the fixed
    data canvas, so the button exists only there — and only on data-canvas
-   pages: the preference lifts --col-data alone, so elsewhere it would move
-   the header rail away from the column it lines up with. */
+   pages, the only ones the preference lifts (html.pref-fluid body.col-data
+   above): elsewhere it would do nothing. */
 header .width-toggle[aria-pressed="true"] { color: var(--cyan); border-color: var(--cyan); }
 @container hdr (max-width: 100rem) {
   header .width-toggle { display: none; }
@@ -630,7 +635,7 @@ header .page-link.allowed { display: inline-flex; }
    /settings/api-keys permissions matrix. Renders as a single
    border-bounded row of pills + an inline text input.
    Validation: TAG_RE = lowercase a-z0-9- only, 1-32 chars, no
-   leading/trailing hyphen. Bad input gets a red border via .invalid.
+   leading hyphen. Bad input gets a red border via .invalid.
    The autocomplete dropdown is position:absolute relative to the
    picker, so each .tag-picker is position:relative. */
 .tag-picker { position: relative; display: inline-block;
@@ -704,6 +709,7 @@ header .page-link.allowed { display: inline-flex; }
   z-index: 20; margin-top: 0.25rem; padding: 0;
   background: var(--panel); border: 1px solid var(--border);
   border-radius: 6px; max-height: 18rem; width: 22rem;
+  max-width: calc(100vw - 1rem);   /* _anchorPopover's 8px viewport pad, both sides */
   overflow-y: auto; font-size: var(--fs-sm);
   box-shadow: 0 6px 20px rgba(0, 0, 0, 0.4); }
 .lang-picker-search { position: sticky; top: 0;

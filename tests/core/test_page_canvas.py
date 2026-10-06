@@ -31,7 +31,11 @@ def test_nav_css_declares_canvas_tokens_and_uses_them():
     for tok in ("--col-read:", "--col-form:", "--col-data:", "--col-fluid:", "--gutter:"):
         assert tok in css, tok
     assert "body.col-form  { --col: var(--col-form); }" in css
-    assert "html.pref-fluid { --col-data: var(--col-fluid); }" in css
+    # The fluid preference lifts data pages only: an unscoped rule widened
+    # the header rail on form / read pages, where its toggle is hidden.
+    assert ("html.pref-fluid body.col-data { --col-data: var(--col-fluid);"
+            " --col: var(--col-fluid); }") in css
+    assert "html.pref-fluid {" not in css
     # header floored at the data canvas; toolbar exactly on the page column
     assert "max-width: max(var(--col), var(--col-data))" in css
     assert re.search(r"header \.subbar \{[^}]*max-width: var\(--col\)", css)

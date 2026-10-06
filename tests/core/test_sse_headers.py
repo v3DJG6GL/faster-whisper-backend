@@ -11,6 +11,7 @@ each route is wired through it.
 """
 
 import pathlib
+import re
 
 import pytest
 from faster_whisper_backend.paths import REPO_ROOT
@@ -53,15 +54,20 @@ def test_sse_routes_use_helper_not_bare_streamingresponse(fname):
     )
 
 
+_EVENT_STREAM_LITERAL = re.compile(r"""['"]text/event-stream['"]""")
+
+
 def test_no_module_builds_a_bare_event_stream_response():
     """Repo-wide half of the invariant: a NEW SSE route in a module nobody
     listed in _ROUTE_FILES must still go through web_common.sse_response.
     The whole package (tests/ holds the literal itself, so it is excluded).
-    web_common.py is the one legitimate site."""
+    web_common.py is the one legitimate site. Any quoted spelling counts —
+    single quotes, a module constant, a positional media type — not just the
+    double-quoted keyword."""
     offenders = [
         p.name for p in sorted((_REPO / "faster_whisper_backend").rglob("*.py"))
         if p.name != "web_common.py"
-        and 'media_type="text/event-stream"' in p.read_text(encoding="utf-8")
+        and _EVENT_STREAM_LITERAL.search(p.read_text(encoding="utf-8"))
     ]
     assert not offenders, (
         f"{offenders} construct a bare event-stream response; route SSE "

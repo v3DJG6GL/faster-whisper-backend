@@ -131,9 +131,9 @@ def test_truncate_translations_key_overhead_over_cap(captures_store_db):
     honours the cap instead of landing an oversized row."""
     cs = captures_store_db
     # 600 keys x ~13 bytes of `"langN": ""` alone exceed a 5 KB cap, so
-    # the text trim bottoms out at n=0 and the drop loop must run — same
-    # branch as a 6000-language map against 50 KB, at a fraction of the
-    # O(n^2) re-serialisation cost.
+    # even the n=0 dump is over cap and the language-dropping branch (the
+    # binary search on the kept key prefix) must run — same branch as a
+    # 6000-language map against 50 KB, with a smaller fixture.
     out = cs._truncate_translations(
         {f"lang{i}": "x" * 10 for i in range(600)}, 5_000)
     assert out is not None and len(out) <= 5_000
@@ -524,6 +524,26 @@ def test_clear_all_wipes_rows_and_files(captures_store_db, groups_store_db, monk
     assert remaining == []
 
 
+def test_clear_all_survives_a_reader_mid_statement(captures_store_db, groups_store_db,
+                                                   monkeypatch, tmp_path):
+    """SQLite refuses VACUUM while a reader's statement is open on the shared
+    connection; the raise came after the DELETE but before the audio rmtree,
+    leaving the files of rows that no longer exist."""
+    cs = captures_store_db
+    _make(cs, monkeypatch, tmp_path)
+    _make(cs, monkeypatch, tmp_path)
+    cur = cs._require_conn().execute("SELECT id FROM captures")
+    cur.fetchone()                      # statement still open
+    try:
+        assert cs.clear_all(reporter_host="127.0.0.1") == 2
+    finally:
+        cur.close()
+    assert cs.count() == 0
+    remaining = [d for d in os.listdir(cs._require_audio_dir())
+                 if os.path.isdir(os.path.join(cs._require_audio_dir(), d)) and d != "groups"]
+    assert remaining == []
+
+
 # ---------------------------------------------------------------------------
 # _evict_to_cap
 # ---------------------------------------------------------------------------
@@ -572,9 +592,14 @@ def test_evict_excludes_group_members(captures_store_db, groups_store_db, monkey
     # counted nor dropped, because eviction could never reduce them anyway.
     # Two ungrouped rows against a cap of 1 leaves exactly one to drop.
     monkeypatch.setattr(config, "CAPTURES_MAX", 1, raising=False)
-    _make(cs, monkeypatch, tmp_path)  # 2 ungrouped now > cap 1
+    fresh = _make(cs, monkeypatch, tmp_path)  # 2 ungrouped now > cap 1
     assert cs.get_capture(member) is not None  # group member never evicted
     assert cs.get_capture(other) is None       # the only evictable old row went
+    # Counting the grouped row too would make excess 2 and drop this one.
+    assert cs.get_capture(fresh) is not None
+    n_ungrouped = conn.execute(
+        "SELECT COUNT(*) FROM captures WHERE sample_id IS NULL").fetchone()[0]
+    assert n_ungrouped == 1
 
 
 def test_evict_disabled_when_caps_below_one(captures_store_db, monkeypatch, tmp_path):

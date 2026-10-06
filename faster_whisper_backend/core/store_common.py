@@ -39,12 +39,17 @@ LOG_FIELD_MAX = 120
 _LOG_UNSAFE_RE = re.compile("[\r\n\x00-\x1f\x7f-\x9f  ‪-‮⁦-⁩]")
 
 
-def log_safe(s) -> str:
+def log_safe(s, *, keep_end: bool = False) -> str:
     """Collapse control characters in a caller-supplied label and cap its
     length. A bare CR/LF would otherwise split one record into what the /logs
     viewer renders as extra, attacker-written lines — indistinguishable from
-    genuine records, including their severity styling."""
-    return _LOG_UNSAFE_RE.sub("?", s or "")[:LOG_FIELD_MAX]
+    genuine records, including their severity styling.
+
+    `keep_end=True` keeps the LAST LOG_FIELD_MAX characters instead of the
+    first: for a child's stderr tail, where the fatal line (yt-dlp's
+    "ERROR: ...", ffmpeg's last line) comes at the end."""
+    safe = _LOG_UNSAFE_RE.sub("?", s or "")
+    return safe[-LOG_FIELD_MAX:] if keep_end else safe[:LOG_FIELD_MAX]
 
 # How long a statement waits for another connection's write lock before
 # raising "database is locked". Within one process each store's _lock already

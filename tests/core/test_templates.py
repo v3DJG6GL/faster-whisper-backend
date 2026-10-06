@@ -62,9 +62,11 @@ def test_template_files_are_lf_only_utf8_and_packaged():
         assert b"\r" not in raw, f"{p} has CR line endings"
         raw.decode("utf-8")  # strict: a stray non-UTF-8 byte fails here
         # Names .dockerignore would drop from the image (it excludes
-        # *.local.* / *-preview.html anywhere and *.log).
-        assert ".local." not in p.name and not p.name.endswith(
-            ("-preview.html", ".log")), f"{p.name} matches a .dockerignore pattern"
+        # **/*.local.*, **/*.log and **/*.log.* anywhere; *-preview.html is
+        # root-only there, but kept out of template names all the same).
+        assert ".local." not in p.name and ".log." not in p.name \
+            and not p.name.endswith(("-preview.html", ".log")), (
+                f"{p.name} matches a .dockerignore pattern")
 
 
 def test_load_reads_next_to_module_and_rejects_cr(tmp_path):

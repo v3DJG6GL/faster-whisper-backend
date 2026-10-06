@@ -248,3 +248,36 @@ def test_run_scopes_a_translate_capture_by_its_english_text(
     assert row["final"] == raw and row["text_for_training"] == raw
     assert cs.get_capture("reapplytx001")["final"] == raw.lower()
     assert sorted(langs) == ["de", "de", "en", "en"]
+
+
+def test_run_skips_a_row_whose_owner_identity_fails_to_resolve(
+        captures_store_db, fake_pipeline, monkeypatch, caplog):
+    """The owner-identity resolve sat outside the per-row try, so one row
+    whose build_ident raised ended the whole run with status "error" and the
+    remaining rows were never processed."""
+    from faster_whisper_backend.settings import config as cfg
+
+    cs = captures_store_db
+    monkeypatch.setattr(cfg, "CAPTURES_PIPELINE_RULES_EXCLUDE", None,
+                        raising=False)
+    conn = cs._require_conn()
+    _insert(conn, "reapplyid001", language="de")
+    _insert(conn, "reapplyid002", language="de")
+    conn.execute("UPDATE captures SET user_id = 'bob' WHERE id = 'reapplyid001'")
+
+    def build_ident(who, model_id):
+        if who.get("user_id") == "bob":
+            raise RuntimeError("resolve failed")
+        return {"who": who, "model": model_id}
+
+    monkeypatch.setattr(effective_config, "build_ident", build_ident)
+
+    with caplog.at_level(logging.WARNING, logger="whisper-api"):
+        captures_reapply._run()
+
+    st = captures_reapply.status()
+    assert st["status"] == "done" and st["error"] is None
+    assert st["processed"] == 2 and st["captures_updated"] == 1
+    assert "reapplyi skipped" in caplog.text
+    assert cs.get_capture("reapplyid001")["final"] == "hello"
+    assert cs.get_capture("reapplyid002")["final"] == "HELLO [final]"

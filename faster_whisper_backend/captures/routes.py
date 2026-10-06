@@ -861,6 +861,11 @@ async def patch_capture_api(
         )
         _audit_cross_user_read(user, row, "capture-patch", cid)
         _assert_member_sample_not_locked(row, user)
+        if payload.status is not None and row.get("status") == "audio_missing":
+            # Same rule as bulk_status_api: a system status — the file is
+            # gone; nothing to review, and a ready row would leave eviction
+            # tier 2 for the protected last tier.
+            raise HTTPException(status.HTTP_409_CONFLICT, "audio missing")
         patch: dict[str, Any] = {}
         if payload.status is not None:
             patch["status"] = payload.status
@@ -1727,7 +1732,10 @@ def _insert_sample_with_sid(
                         status.HTTP_409_CONFLICT,
                         "capture already belongs to a sample")
         except BaseException:
-            conn.execute("ROLLBACK")
+            # Guarded like samples_store.dissolve_sample: keep the real error
+            # when SQLite already rolled back by itself.
+            if conn.in_transaction:
+                conn.execute("ROLLBACK")
             raise
         conn.execute("COMMIT")
     captures_merge_proposer.invalidate(user_id)
@@ -2712,6 +2720,12 @@ def _build_export_stream(only_status: str | None, include_audio: bool):
             rel = row.get("audio_trimmed_relpath") or row.get("audio_relpath")
             if not rel:
                 continue
+            # The manifest duration must describe the file actually packed:
+            # the trimmed companion is shorter by the cut lead + trail.
+            dur = float(row.get("audio_s") or 0.0)
+            if row.get("audio_trimmed_relpath"):
+                dur = max(0.0, dur - (int(row.get("audio_trim_lead_ms") or 0)
+                                      + int(row.get("audio_trim_trail_ms") or 0)) / 1000.0)
             try:
                 abs_p = captures_store.abs_audio_path(rel)
             except ValueError:
@@ -2723,7 +2737,7 @@ def _build_export_stream(only_status: str | None, include_audio: bool):
             manifest_lines.write(json.dumps(_build_manifest_row(
                 audio_filepath=audio_name,
                 text=text,
-                duration=float(row.get("audio_s") or 0.0),
+                duration=dur,
                 language=row.get("language") or "",
                 source="singleton",
                 user_id=row.get("user_id") or "",
@@ -2761,7 +2775,7 @@ def _build_export_stream(only_status: str | None, include_audio: bool):
                 manifest_lines.write(json.dumps(_build_manifest_row(
                     audio_filepath=audio_name,
                     text=_en,
-                    duration=float(row.get("audio_s") or 0.0),
+                    duration=dur,
                     language=row.get("language") or "",
                     source="singleton",
                     user_id=row.get("user_id") or "",

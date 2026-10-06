@@ -113,7 +113,7 @@
       if (!t) return false;
       if (!TAG_RE.test(t)) {
         input.classList.add('invalid');
-        input.title = 'Invalid tag — lowercase a-z0-9- only, max 32 chars, no leading/trailing hyphen';
+        input.title = 'Invalid tag — lowercase a-z0-9- only, max 32 chars, no leading hyphen';
         return false;
       }
       input.classList.remove('invalid');

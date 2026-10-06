@@ -15,26 +15,6 @@ from faster_whisper_backend.pipeline import engine as pl_engine
 from tests.conftest import bearer
 
 
-@pytest.fixture(autouse=True)
-def _reset_vad_reprocess_state():
-    """captures_vad_reprocess is the one worker conftest never resets; pin
-    it to the module's idle shape so a finished run cannot leak into the
-    next test's status read."""
-    from faster_whisper_backend.captures import vad_reprocess as vr
-
-    def _reset():
-        vr._worker = None
-        vr._state = {
-            "status": "idle", "started_ts": None, "finished_ts": None,
-            "total": 0, "processed": 0, "rebuilt": 0, "skipped": 0,
-            "stale": 0, "error": None,
-        }
-
-    _reset()
-    yield
-    _reset()
-
-
 def test_captures_page(client):
     r = client.get("/captures")
     assert r.status_code == 200
@@ -491,10 +471,11 @@ def test_samples_are_paged_and_the_cursor_walks_every_row(client, make_user_key)
     make_user_key("root", is_admin=True)
     uid, raw = make_user_key("alice", pages={"captures": "own"})
     conn = captures_store._require_conn()
-    # Deliberately give two of them an IDENTICAL created_ts: samples merged in
-    # one call share a timestamp, and a timestamp-only cursor drops whichever
-    # ties land on a page boundary.
-    stamps = [5.0, 4.0, 3.0, 3.0, 2.0]
+    # Deliberately give two of them an IDENTICAL created_ts that straddles the
+    # first page boundary (page 1 = [5.0, the higher-id 3.0]): samples merged
+    # in one call share a timestamp, and a timestamp-only cursor drops the
+    # other 3.0 row.
+    stamps = [5.0, 3.0, 3.0, 2.0, 1.0]
     for i, ts in enumerate(stamps):
         _insert_sample_at(conn, gs, f"page{i}sid00000", ts=ts, user_id=uid)
 
@@ -745,6 +726,31 @@ def test_export_skips_translate_row_for_translate_task_capture(
     assert rows[0]["text"] == "quelle"
 
 
+def test_export_duration_describes_the_trimmed_companion(
+        captures_store_db, groups_store_db, monkeypatch, tmp_path):
+    """A legacy VAD-trimmed capture packs the trimmed file, so both manifest
+    lines must report its length (audio_s minus lead + trail), not the
+    untrimmed audio_s."""
+    import shutil
+
+    captures_store = captures_store_db
+    cid = _ready_capture(captures_store, monkeypatch, tmp_path,
+                         language="de", translations={"en": "hi there"})
+    row = captures_store.get_capture(cid)
+    trimmed_rel = row["audio_relpath"] + ".trim.wav"
+    shutil.copyfile(captures_store.abs_audio_path(row["audio_relpath"]),
+                    captures_store.abs_audio_path(trimmed_rel))
+    with captures_store._lock:
+        with captures_store._require_conn() as conn:
+            conn.execute(
+                "UPDATE captures SET audio_s = 12.4, audio_trimmed_relpath = ?,"
+                " audio_trim_lead_ms = 2000, audio_trim_trail_ms = 1300"
+                " WHERE id = ?", (trimmed_rel, cid))
+    rows = _export_manifest()
+    assert [r["task"] for r in rows] == ["transcribe", "translate"]
+    assert [r["duration"] for r in rows] == [pytest.approx(9.1)] * 2
+
+
 def test_rebuild_lock_survives_prune_while_in_flight():
     """A Lock handed out but not yet acquired must not be pruned: the prune in
     _get_rebuild_lock skips sids pinned in _rebuild_inflight, so a second
@@ -836,6 +842,71 @@ def test_reprocess_vad_worker_uses_pinned_rebuild_lock(
     assert vr.status()["status"] == "done"
     assert vr.status()["rebuilt"] == 1
     assert entered == [sid]
+
+
+def test_reprocess_vad_failure_fallback_spares_a_sample_locked_since_snapshot(
+        captures_store_db, groups_store_db, monkeypatch, tmp_path):
+    """A failure outside the build try falls back to is_stale=1, but with the
+    same fresh-row re-check as the main path: a sample locked after the
+    job-start snapshot is left alone (counted skipped, not stale)."""
+    from faster_whisper_backend.captures import samples_store as gs
+    from faster_whisper_backend.captures import vad_reprocess as vr
+
+    sid = "d" * 32
+    _grouped_capture(captures_store_db, monkeypatch, tmp_path, sid)
+    conn = captures_store_db._require_conn()
+
+    def _members_then_fail(s):
+        conn.execute("UPDATE capture_samples SET is_locked = 1 WHERE id = ?",
+                     (s,))
+        raise RuntimeError("database is locked")
+
+    monkeypatch.setattr(gs, "get_members", _members_then_fail)
+    vr._run()
+    st = vr.status()
+    assert st["status"] == "done" and st["stale"] == 0 and st["skipped"] == 1
+    assert gs.get_sample(sid)["is_stale"] == 0
+
+
+def test_reprocess_vad_failure_fallback_writes_under_the_rebuild_lock(
+        captures_store_db, groups_store_db, monkeypatch, tmp_path):
+    """The fallback stale write must hold the per-sid rebuild lock, or it can
+    land after a concurrent regenerate cleared the flag."""
+    import contextlib
+
+    from faster_whisper_backend.captures import samples as capture_samples
+    from faster_whisper_backend.captures import samples_store as gs
+    from faster_whisper_backend.captures import vad_reprocess as vr
+
+    sid = "e" * 32
+    _grouped_capture(captures_store_db, monkeypatch, tmp_path, sid)
+    held = []
+    writes = []
+
+    @contextlib.contextmanager
+    def _recording_lock(s):
+        held.append(s)
+        try:
+            yield
+        finally:
+            held.remove(s)
+
+    real_update = gs.update_sample
+
+    def _update(s, patch):
+        writes.append((s, dict(patch), list(held)))
+        return real_update(s, patch)
+
+    def _fail(s):
+        raise RuntimeError("database is locked")
+
+    monkeypatch.setattr(capture_samples, "_rebuild_lock", _recording_lock)
+    monkeypatch.setattr(gs, "update_sample", _update)
+    monkeypatch.setattr(gs, "get_members", _fail)
+    vr._run()
+    assert vr.status()["stale"] == 1
+    assert writes == [(sid, {"is_stale": 1}, [sid])]
+    assert gs.get_sample(sid)["is_stale"] == 1
 
 
 def test_create_sample_rejects_member_already_grouped(

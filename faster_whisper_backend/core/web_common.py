@@ -339,7 +339,7 @@ NOT_ADMIN_LANDING_GLOBAL_JS = "<script>" + NOT_ADMIN_LANDING_JS + "</script>"
 # subscribes to `opts.onChange(newTags)`.
 #
 # Tag format matches the server-side `settings_schema.TAG_RE`: lowercase
-# letters/digits/hyphens, 1-32 chars, no leading/trailing hyphen.
+# letters/digits/hyphens, 1-32 chars, no leading hyphen.
 # Validation happens BOTH client-side (visual red border on bad input)
 # AND server-side (set_user_permissions / Pydantic validator) so a
 # JS-side bypass can't smuggle malformed tags into the DB.

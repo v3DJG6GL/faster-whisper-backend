@@ -962,8 +962,13 @@ def update_capture(cid: str, patch: dict[str, Any]) -> dict[str, Any] | None:
         if new_status == "new":
             sets.append("reviewed_ts = NULL")
         else:
-            sets.append("reviewed_ts = ?")
-            params.append(time.time())
+            # An unchanged status keeps its reviewed_ts (as bulk_update_status
+            # does): the card's Save always resends the current status, and a
+            # re-stamp would count a months-old ready row as "ready this
+            # week" in stats(). SQLite evaluates every SET expression against
+            # the pre-update row, so `status` here is still the old value.
+            sets.append("reviewed_ts = CASE WHEN status = ? THEN reviewed_ts ELSE ? END")
+            params.extend([new_status, time.time()])
     if "corrected_text" in patch:
         text = str(patch["corrected_text"] or "")[:_CAP_CORRECTED]
         sets.append("corrected_text = ?")
@@ -1027,7 +1032,8 @@ def update_capture(cid: str, patch: dict[str, Any]) -> dict[str, Any] | None:
 
 def bulk_update_status(ids: list[str], new_status: str) -> list[dict[str, Any]]:
     """Set `status` on many rows in one locked pass. Same reviewed_ts rule
-    as update_capture (NULL when going back to `new`, now otherwise).
+    as update_capture (NULL when going back to `new`, now otherwise; a row
+    already at the target keeps its stamp).
     Returns, for every id that existed, {id, prev_status} so the caller
     can offer an undo; unknown ids are silently absent.
     Invalidates the merge-proposer cache once per affected owner."""
@@ -1041,7 +1047,7 @@ def bulk_update_status(ids: list[str], new_status: str) -> list[dict[str, Any]]:
     now = time.time()
     with _lock:
         prev = conn.execute(
-            f"SELECT id, status, reviewed_ts, user_id FROM captures"
+            f"SELECT id, status, user_id FROM captures"
             f" WHERE id IN ({placeholders})", ids,
         ).fetchall()
         if not prev:
@@ -1151,7 +1157,14 @@ def clear_all(reporter_host: str = "") -> int:
         row = conn.execute("SELECT COUNT(*) FROM captures").fetchone()
         n = int(row[0]) if row else 0
         conn.execute("DELETE FROM captures")
-        conn.execute("VACUUM")
+        # Best-effort: readers on this shared connection (list_captures in
+        # to_thread) do not take _lock, and SQLite refuses VACUUM while any of
+        # their statements is open. The rows are already gone; the rmtree and
+        # proposer invalidation below must still run.
+        try:
+            conn.execute("VACUUM")
+        except sqlite3.OperationalError as e:
+            logger.info("[captures] vacuum skipped: %s", e)
     if os.path.isdir(audio_dir):
         for sub in os.listdir(audio_dir):
             sub_path = os.path.join(audio_dir, sub)

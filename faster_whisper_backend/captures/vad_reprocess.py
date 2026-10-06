@@ -137,12 +137,23 @@ def _run() -> None:
                 # Keep the counter and the flag in agreement: "stale" is
                 # reported as "flagged, excluded from export", so a failure
                 # outside the build try must still set is_stale (best effort).
+                # Under the rebuild lock with the same fresh-row re-check as
+                # the main path, so the flag never clobbers a regenerate that
+                # just cleared it nor touches a sample locked since the
+                # snapshot. The inner `with` has exited, so re-acquiring is
+                # safe.
+                untouched = False
                 try:
-                    capture_samples_store.update_sample(sid, {"is_stale": 1})
+                    with capture_samples._rebuild_lock(sid):
+                        fresh = capture_samples_store.get_sample(sid)
+                        if fresh is None or fresh.get("is_locked"):
+                            untouched = True
+                        else:
+                            capture_samples_store.update_sample(sid, {"is_stale": 1})
                 except Exception:  # noqa: BLE001 — the DB may be what failed
                     pass
                 with _state_lock:
-                    _state["stale"] += 1
+                    _state["skipped" if untouched else "stale"] += 1
             finally:
                 with _state_lock:
                     _state["processed"] += 1

@@ -236,6 +236,56 @@ def test_bulk_status_keeps_reviewed_ts_of_rows_already_at_the_target(
     assert st["ready"]["n"] == 2 and st["ready"]["week_n"] == 1
 
 
+def test_single_patch_keeps_reviewed_ts_when_status_is_unchanged(
+        client, make_user_key):
+    """The card's Save used to resend the current status with every chip or
+    note edit; update_capture re-stamped reviewed_ts, so a note on a
+    months-old ready capture moved it into "ready this week"."""
+    from faster_whisper_backend.captures import store as captures_store
+
+    _root, raw_root = make_user_key("root", is_admin=True)
+    uid_a, _ = make_user_key("alice", pages={"captures": "own"})
+    conn = captures_store._require_conn()
+    old_ts = time.time() - 8 * 86400
+    _row(conn, "a3a3a3a3a3a3", user_id=uid_a, status="ready",
+         reviewed_ts=old_ts)
+
+    r = client.patch("/captures/api/a3a3a3a3a3a3", headers=bearer(raw_root),
+                     json={"status": "ready", "admin_notes": "checked"})
+    assert r.status_code == 200
+    row = captures_store.get_capture("a3a3a3a3a3a3")
+    assert row["admin_notes"] == "checked" and row["reviewed_ts"] == old_ts
+    st = client.get("/captures/api/stats", headers=bearer(raw_root)).json()
+    assert st["ready"]["week_n"] == 0
+    # A real transition still stamps.
+    client.patch("/captures/api/a3a3a3a3a3a3", headers=bearer(raw_root),
+                 json={"status": "reviewed"})
+    assert captures_store.get_capture("a3a3a3a3a3a3")["reviewed_ts"] > old_ts
+
+
+def test_single_patch_on_audio_missing_row_saves_edits_but_not_status(
+        client, make_user_key):
+    """audio_missing is system-set: chips/notes still save, but a status
+    PATCH is refused like the bulk route's audio_missing skip."""
+    from faster_whisper_backend.captures import store as captures_store
+
+    _root, raw_root = make_user_key("root", is_admin=True)
+    uid, _ = make_user_key("alice", pages={"captures": "own"})
+    conn = captures_store._require_conn()
+    _row(conn, "gone00000002", user_id=uid, status="audio_missing")
+
+    r = client.patch("/captures/api/gone00000002", headers=bearer(raw_root),
+                     json={"corrections": [], "admin_notes": "file lost"})
+    assert r.status_code == 200
+    row = captures_store.get_capture("gone00000002")
+    assert row["status"] == "audio_missing" and row["admin_notes"] == "file lost"
+
+    r = client.patch("/captures/api/gone00000002", headers=bearer(raw_root),
+                     json={"status": "ready"})
+    assert r.status_code == 409
+    assert captures_store.get_capture("gone00000002")["status"] == "audio_missing"
+
+
 def test_bulk_status_skips_locked_member_for_nonadmin_only(client, make_user_key):
     from faster_whisper_backend.captures import samples_store as gs
     from faster_whisper_backend.captures import store as captures_store

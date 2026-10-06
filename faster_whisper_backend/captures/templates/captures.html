@@ -2710,8 +2710,10 @@
           }
           return out;
         });
+      // No `status`: the status buttons auto-save their own narrow PATCH,
+      // and resending it here would 422 on a system status (audio_missing
+      // is not an editable value) and re-assert a stale one.
       var body = {
-        status: state.newStatus,
         corrections: corrections,
         // Snapshot the server returned with the original GET. Lets the
         // server three-way-merge our edits against any concurrent

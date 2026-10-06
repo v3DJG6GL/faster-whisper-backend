@@ -59,24 +59,33 @@ def lookup(table: "dict[str, str]", code: "str | None") -> "str | None":
 
 def language_name(code: "str | None") -> str:
     """English name for a language code: the full code first ("zh-Hant"),
-    then its base ("pt-BR" → "Portuguese"); unknown codes are title-cased
-    ("rm" → "Rm")."""
+    then its base ("pt-BR" → "Portuguese"), then the base through the same
+    spelling tables as canonical_code ("iw" → "Hebrew", "deu" → "German");
+    unknown codes are title-cased ("rm" → "Rm")."""
     if not code:
         return ""
-    return lookup(_NAMES, code) or code.strip().lower().split("-")[0].title()
+    hit = lookup(_NAMES, code)
+    if hit:
+        return hit
+    base = code.strip().lower().replace("_", "-").split("-")[0]
+    folded = _LEGACY_639_1.get(base, _ISO639_3_TO_1.get(base, base))
+    return _NAMES.get(folded) or base.title()
 
 
 def language_label(code: "str | None") -> str:
     """A track title for a language code: the name the table gives the full
     code ("zh-Hant" → "Traditional Chinese"), else the base name with the
-    subtag kept ("pt-BR" → "Portuguese (BR)"); "Unknown" for no code."""
+    subtag kept ("pt-BR" → "Portuguese (BR)"; a script subtag title-cased
+    as _normalise_code spells it, "sr-Latn" → "Serbian (Latn)"); "Unknown"
+    for no code."""
     raw = (code or "").strip()
     if not raw:
         return "Unknown"
     base, _, sub = raw.partition("-")
     if not sub or raw.lower() in _NAMES:
         return language_name(raw)
-    return f"{language_name(base)} ({sub.upper()})"
+    sub = sub.title() if len(sub) == 4 and sub.isalpha() else sub.upper()
+    return f"{language_name(base)} ({sub})"
 
 
 # ISO 639-3 → the table's 639-1 code, for the codes the table names: model
@@ -173,11 +182,16 @@ TRANSLATE_CODE_RE = re.compile(r"\A[a-z]{2,3}(-[A-Za-z0-9]{2,8})?\Z")
 
 
 def _normalise_code(code: str) -> str:
-    """One csv entry in the table's spelling: "_" → "-", a lowercase base,
-    a script subtag title-cased ("zh-hant" → "zh-Hant"), a 2-letter region
-    upper-cased ("fr-ca" → "fr-CA"); any other subtag stays as given."""
+    """One csv entry in the table's spelling: "_" → "-", a lowercase base
+    folded through the same spelling tables as canonical_code ("iw" → "he",
+    "deu" → "de", "jv" → "jw": one language is one target), a script subtag
+    title-cased ("zh-hant" → "zh-Hant"), a 2-letter region upper-cased
+    ("fr-ca" → "fr-CA"); any other subtag stays as given. Unlike
+    canonical_code it keeps every subtag, so "fr-CA" and "sr-Latn" stay
+    their own targets."""
     base, sep, sub = code.strip().replace("_", "-").partition("-")
     base = base.lower()
+    base = _LEGACY_639_1.get(base, _ISO639_3_TO_1.get(base, base))
     if not sep:
         return base
     if len(sub) == 4 and sub.isalpha():
@@ -189,8 +203,8 @@ def _normalise_code(code: str) -> str:
 
 def language_codes(csv: "str | None", limit: "int | None" = None) -> "list[str]":
     """A csv of codes ("en,fr-CA") → deduped ordered list of the well-formed
-    ones, normalised so "DE" is "de" and "fr-ca" the same target as "fr-CA";
-    malformed entries drop silently. `limit` stops the walk once that many
+    ones, normalised so "DE" is "de", "fr-ca" the same target as "fr-CA" and
+    "iw" / "deu" the same as "he" / "de"; malformed entries drop silently. `limit` stops the walk once that many
     codes are collected — a per-request csv can carry a 1 MiB form field."""
     out: "list[str]" = []
     seen: "set[str]" = set()

@@ -41,3 +41,14 @@ def test_plain_values_and_none_are_unchanged():
 
 def test_length_is_capped():
     assert len(store_common.log_safe("x" * 5000)) == store_common.LOG_FIELD_MAX
+
+
+def test_keep_end_keeps_the_last_chars():
+    # A child's stderr ends with its fatal line; the default head cap would
+    # log the middle of a 300-char tail and drop it.
+    tail = "x" * 300 + "\nERROR: Unsupported URL"
+    out = store_common.log_safe(tail, keep_end=True)
+    assert len(out) == store_common.LOG_FIELD_MAX
+    assert out.endswith("?ERROR: Unsupported URL")
+    assert store_common.log_safe(tail) == "x" * store_common.LOG_FIELD_MAX
+    assert store_common.log_safe(None, keep_end=True) == ""

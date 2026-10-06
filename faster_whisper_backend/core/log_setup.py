@@ -103,12 +103,26 @@ def install() -> None:
     _console_handler.setFormatter(logging.Formatter("%(levelname)s:%(name)s:%(message)s"))
     _root.addHandler(_console_handler)
 
+    _file_handler = None
     if _log_dir_ok:
-        _secure_log_dir(os.path.dirname(cfg.LOG_FILE), _log_dir_new)
-        _file_handler = _SecureRotatingFileHandler(
-            cfg.LOG_FILE, maxBytes=cfg.LOG_MAX_BYTES, backupCount=cfg.LOG_BACKUP_COUNT,
-            encoding="utf-8",
-        )
+        # The directory existing is not enough: a root-owned /data volume or a
+        # read-only mount makes the open itself raise, and that must degrade
+        # to stderr-only too, not kill the import.
+        try:
+            _secure_log_dir(os.path.dirname(cfg.LOG_FILE), _log_dir_new)
+            _file_handler = _SecureRotatingFileHandler(
+                cfg.LOG_FILE, maxBytes=cfg.LOG_MAX_BYTES, backupCount=cfg.LOG_BACKUP_COUNT,
+                encoding="utf-8",
+            )
+        except OSError as _log_exc:
+            _log_dir_ok = False
+            print(
+                f"WARNING: cannot open log file {cfg.LOG_FILE!r} ({_log_exc}) "
+                "— file logging disabled, logging to stderr only. Set WHISPER_LOG_FILE "
+                "or WHISPER_DATA_DIR to a writable location.",
+                file=sys.stderr,
+            )
+    if _file_handler is not None:
         _file_handler.setFormatter(_StripAnsiFormatter(
             "%(asctime)s %(levelname)s %(name)s %(message)s",
             datefmt="%Y-%m-%dT%H:%M:%SZ",   # UTC (converter=gmtime); viewer localizes

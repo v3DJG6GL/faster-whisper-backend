@@ -24,6 +24,10 @@ def test_language_name_lookup_order():
     assert languages.language_name("pt-BR") == "Portuguese"
     assert languages.language_name("nb") == "Norwegian Bokmål"
     assert languages.language_name("rm") == "Rm"               # title-case fallback
+    # Withdrawn / standard / 639-3 spellings fold like canonical_code.
+    assert languages.language_name("iw") == "Hebrew"
+    assert languages.language_name("jv") == "Javanese"
+    assert languages.language_name("deu") == "German"
     assert languages.language_name(None) == ""
     assert languages.language_name("") == ""
 
@@ -35,6 +39,10 @@ def test_language_label_keeps_the_subtag_in_the_title():
     # A code the table names in full keeps that name.
     assert label("zh-Hant") == "Traditional Chinese"
     assert label("") == "Unknown" and label(None) == "Unknown"
+    # A folded base keeps its subtag; a script subtag is title-cased.
+    assert label("in-ID") == "Indonesian (ID)" and label("iw-IL") == "Hebrew (IL)"
+    assert label("sr-Latn") == "Serbian (Latn)"
+    assert label("zh-Hans") == "Chinese (Hans)"
 
 
 def test_lookup_full_code_then_base():
@@ -94,6 +102,17 @@ def test_language_codes_normalises_case_and_dedupes():
     assert codes("zh-hant, pt_br ,,x,toolong-") == ["zh-Hant", "pt-BR"]
     assert codes("es-419,es-419") == ["es-419"]
     assert codes(None) == [] and codes("") == []
+
+
+def test_language_codes_fold_spellings_of_one_language():
+    """Withdrawn 639-1 and ISO 639-3 spellings are one target, emitted in the
+    table's spelling; script and region subtags still make their own."""
+    codes = languages.language_codes
+    assert codes("he,iw,de,deu,jv,jw") == ["he", "de", "jw"]
+    assert codes("eng,iw-IL") == ["en", "he-IL"]
+    assert codes("zh,zh-Hant") == ["zh", "zh-Hant"]
+    assert codes("fr,fr-CA") == ["fr", "fr-CA"]
+    assert codes("rm,gsw") == ["rm", "gsw"]
 
 
 def test_language_codes_limit_bounds_a_huge_csv():

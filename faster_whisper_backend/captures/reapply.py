@@ -117,11 +117,13 @@ def _run() -> None:
             cid = r["id"]
             raw_text = r["raw"] or ""
             patch: dict[str, str] = {}
-            ident = _ident_for(r["user_id"], r["model"])
             # Scope by the TEXT language ("en" for task=translate), as the
             # live run did — see captures_store.text_language.
             text_lang = captures_store.text_language(r)
             try:
+                # Inside the per-row try: a resolve failure skips this row
+                # instead of aborting the run before the group rebuild.
+                ident = _ident_for(r["user_id"], r["model"])
                 new_final = pl_engine._postprocess_text(
                     raw_text, model_name=r["model"], ident=ident,
                     language=text_lang,

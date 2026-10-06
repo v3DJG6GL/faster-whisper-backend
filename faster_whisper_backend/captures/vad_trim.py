@@ -155,10 +155,10 @@ def trim_wav(
             w.setsampwidth(audio_merge._REQ_SAMPWIDTH_BYTES)
             w.setframerate(_REQ_RATE)
             w.writeframes(out_bytes)
-        # Same reason as audio_merge.merge_wavs: `wave.open` writes with the
-        # process umask (0644 typically), and os.replace hands that mode to
-        # dst_path — which would widen an 0600 temp file. Trimmed dictation
-        # audio is PHI; keep it owner-only across the swap.
+        # Belt-and-braces, as in audio_merge.merge_wavs (mkstemp already made
+        # the tmp 0600; this also covers Windows / foreign-umask oddities):
+        # os.replace carries the tmp inode's mode onto dst_path. Trimmed
+        # dictation audio is PHI; keep it owner-only across the swap.
         store_common.secure_file(tmp_path)
         try:
             with open(tmp_path, "rb") as fp:

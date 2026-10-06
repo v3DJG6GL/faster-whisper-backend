@@ -330,7 +330,11 @@ def dissolve_sample(sid: str) -> None:
                 conn.execute("DELETE FROM capture_samples WHERE id = ?", (sid,))
                 conn.execute("COMMIT")
             except BaseException:
-                conn.execute("ROLLBACK")
+                # SQLite may already have rolled back on its own (SQLITE_FULL,
+                # SQLITE_IOERR, ...); a bare ROLLBACK would then raise and
+                # replace the real error.
+                if conn.in_transaction:
+                    conn.execute("ROLLBACK")
                 raise
         try:
             abs_p = abs_path_for(g["merged_wav_relpath"])
