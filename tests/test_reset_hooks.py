@@ -51,7 +51,10 @@ _NOT_RESET = {
     "faster_whisper_backend.runtime.model_registry": {},
     # Stateless since P16: the registry moved to model_registry. Listed so a
     # container added back here is caught without a hook.
-    "faster_whisper_backend.runtime.system_stats": {},
+    "faster_whisper_backend.runtime.system_stats": {
+        "_handles": "NVML handle per device index — process-constant once "
+                    "bound (cleared by shutdown())",
+    },
     # P14: the route groups and helpers carved out of main.py.
     "faster_whisper_backend.media.video": {},
     "faster_whisper_backend.media.routes": {

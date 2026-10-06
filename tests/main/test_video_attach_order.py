@@ -40,3 +40,47 @@ def test_handler_side_attach_runs_while_the_progress_entry_is_open(
     assert r.json().get("source_video_media_id")
     assert open_at_attach == [True]
     assert _PID not in tx_progress._BATCH_PROGRESS   # closed after it
+
+
+def test_handler_closes_the_entry_when_the_video_attach_gave_up(
+        client, video_enabled, fake_model, monkeypatch):  # noqa: F811
+    """The run finishes first, then the video lands while the handler's job
+    finish is still on its thread: the task's attach sees the row "running",
+    gives up and leaves the close to the handler, which attaches after its
+    finish and must then close the entry itself (not leave it to the sweep)."""
+    import asyncio
+
+    release = video_enabled._video_gate["make"]()
+    video_enabled._video_gate["release"] = release
+    attach_calls: list = []
+    real_attach = media_video._jobs_attach_video_sync
+
+    def _attach(pid, state):
+        attach_calls.append(pid)
+        if len(attach_calls) == 1:
+            return False        # the task's side: row still "running"
+        return real_attach(pid, state)
+    monkeypatch.setattr(media_video, "_jobs_attach_video_sync", _attach)
+
+    real_finish = tx_progress._jobs_finish
+
+    async def _slow_finish(pid, **kw):
+        # The video lands (and its attach gives up) while the finish is
+        # still pending.
+        release.set()
+        for _ in range(500):
+            if attach_calls:
+                break
+            await asyncio.sleep(0.01)
+        await asyncio.sleep(0.05)   # let the video task return
+        await real_finish(pid, **kw)
+    monkeypatch.setattr(tx_progress, "_jobs_finish", _slow_finish)
+
+    r = _post_url(client, keep_video="true", progress_id=_PID)
+    assert r.status_code == 200, r.text
+    assert r.json().get("source_video_pending") is True
+    assert len(attach_calls) == 2
+    assert _PID not in tx_progress._BATCH_PROGRESS
+    res = client.get(f"/v1/jobs/{_PID}/result")
+    assert res.status_code == 200, res.text
+    assert res.json().get("source_video_media_id")

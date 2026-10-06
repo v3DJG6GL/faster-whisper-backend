@@ -37,8 +37,9 @@ def test_smaller_resample_never_lowers_the_stored_size(ledger):
     model_sizes.record("large-v3", "cuda", "float16", 1 * GB)
     assert model_sizes.estimate("large-v3", "cuda", "float16") == 4 * GB
 
+    # Below the high-water mark is no news: the file is not rewritten.
     doc = json.loads(open(ledger, encoding="utf-8").read())
-    assert doc["models"]["large-v3|cuda|float16"]["n"] == 2
+    assert doc["models"]["large-v3|cuda|float16"]["n"] == 1
 
 
 def test_placement_is_part_of_the_key(ledger):
@@ -75,7 +76,7 @@ def test_fits_cuda_verdicts_and_the_reserve_boundary(ledger, monkeypatch):
 
     def free(n):
         monkeypatch.setattr(model_sizes.system_stats, "gpu_mem_free_bytes",
-                            lambda: n, raising=False)
+                            lambda *a: n, raising=False)
 
     free(8 * GB)
     assert model_sizes.fits("large-v3", "cuda", "float16",
@@ -91,14 +92,14 @@ def test_fits_cuda_verdicts_and_the_reserve_boundary(ledger, monkeypatch):
 
 def test_fits_reports_unknowns_apart(ledger, monkeypatch):
     monkeypatch.setattr(model_sizes.system_stats, "gpu_mem_free_bytes",
-                        lambda: 8 * GB, raising=False)
+                        lambda *a: 8 * GB, raising=False)
     # Never measured: "cannot say", NOT a refusal.
     assert model_sizes.fits("never-loaded", "cuda", "float16",
                             reserve_bytes=0) == (None, "size_unknown")
 
     # NVML absent: we refuse rather than guess on the GPU...
     monkeypatch.setattr(model_sizes.system_stats, "gpu_mem_free_bytes",
-                        lambda: None, raising=False)
+                        lambda *a: None, raising=False)
     model_sizes.record("large-v3", "cuda", "float16", 3 * GB)
     assert model_sizes.fits("large-v3", "cuda", "float16",
                             reserve_bytes=0) == (False, "vram_unknown")
@@ -106,7 +107,7 @@ def test_fits_reports_unknowns_apart(ledger, monkeypatch):
 
 def test_fits_cpu_uses_psutil_even_without_nvml(ledger, monkeypatch):
     monkeypatch.setattr(model_sizes.system_stats, "gpu_mem_free_bytes",
-                        lambda: None, raising=False)
+                        lambda *a: None, raising=False)
     model_sizes.record("large-v3", "cpu", "int8", 2 * GB)
 
     class _VM:
@@ -226,6 +227,11 @@ def test_disk_size_sizes_only_the_requested_gguf_quant(ledger, tmp_path,
     assert model_sizes.disk_size("gguf:tencent/HY-MT1.5-7B-GGUF:q8_0") == 2000
     # No single match: unknown, not a guess.
     assert model_sizes.disk_size("gguf:tencent/HY-MT1.5-7B-GGUF:Q5_K_M") is None
+    # A quant-less ref resolves with "*.gguf" (translation.engine): two
+    # quants are no single match, never the sum of the repo dir.
+    assert model_sizes.disk_size("gguf:tencent/HY-MT1.5-7B-GGUF") is None
+    (snap / "HY-MT1.5-7B-Q8_0.gguf").unlink()
+    assert model_sizes.disk_size("gguf:tencent/HY-MT1.5-7B-GGUF") == 1000
 
 
 def test_disk_size_is_none_when_nothing_is_there(ledger, tmp_path, monkeypatch):
@@ -235,11 +241,15 @@ def test_disk_size_is_none_when_nothing_is_there(ledger, tmp_path, monkeypatch):
 
 def test_estimate_falls_back_to_disk_then_prefers_a_measurement(
         ledger, tmp_path, monkeypatch):
+    from faster_whisper_backend.settings import config as cfg
     hf = tmp_path / "hf"
     d = hf / "hub" / "models--openai--whisper-tiny"
     d.mkdir(parents=True)
     (d / "model.bin").write_bytes(b"x" * 8192)
     monkeypatch.setenv("HF_HOME", str(hf))
+    # The whisper branch checks <DOWNLOAD_ROOT> first; the real default
+    # ("/models") may hold a real whisper-tiny on a deployment box.
+    monkeypatch.setattr(cfg, "DOWNLOAD_ROOT", "", raising=False)
 
     # Never measured → the prior stands in, and fits() can now decide.
     assert model_sizes.estimate("openai/whisper-tiny", "cuda", "float16") == 8192
@@ -313,9 +323,9 @@ def test_disk_size_defaults_to_the_hub_cache_without_any_root(
     monkeypatch.setattr(cfg, "DOWNLOAD_ROOT", "", raising=False)
     hub = tmp_path / ".cache" / "huggingface" / "hub"
     monkeypatch.setattr(constants, "HF_HUB_CACHE", str(hub))
-    d = hub / "models--org--repo"
+    d = hub / "models--org--repo" / "snapshots" / "rev"
     d.mkdir(parents=True)
-    (d / "x.bin").write_bytes(b"x" * 1234)
+    (d / "x.gguf").write_bytes(b"x" * 1234)
 
     assert model_sizes.disk_size("gguf:org/repo") == 1234
 
@@ -398,9 +408,54 @@ def test_proxy_prefers_a_same_device_measurement_over_a_disk_row(ledger):
     got = model_sizes.lookup("large-v3", "cuda", "float16")
     assert (got["bytes"], got["src"]) == (2 * GB, "proxy")
     # Same device family beats another device; a disk row comes last.
-    model_sizes.record("large-v3", "cpu", "float32", 5 * GB)
-    assert model_sizes.lookup("large-v3", "cuda", "float16")["bytes"] == 2 * GB
+    model_sizes.record("large-v3", "cuda", "float32", 5 * GB)
+    assert model_sizes.lookup("large-v3", "cuda", "float16")["bytes"] == 5 * GB
     assert model_sizes.lookup("large-v3", "cpu", "int16")["bytes"] == 5 * GB
+    # A stray cpu "measured" row (an NVML delta an older build recorded)
+    # ranks like a disk row, never above a cuda measurement.
+    model_sizes.record("large-v3", "cpu", "float32", 9 * GB)
+    got = model_sizes.lookup("large-v3", "cpu", "int16")
+    assert (got["bytes"], got["src"]) == (5 * GB, "proxy")
+
+
+def test_a_newer_disk_prior_replaces_an_older_one(ledger):
+    """A disk walk is deterministic: an inflated pre-fix prior (symlink
+    double count, every GGUF quant) must give way to the corrected walk,
+    not survive as a high-water mark."""
+    model_sizes.record("x", "cpu", "int8", 2000, measured=False)
+    model_sizes.record("x", "cpu", "int8", 1000, measured=False)
+    got = model_sizes.lookup("x", "cpu", "int8")
+    assert (got["bytes"], got["src"]) == (1000, "disk")
+
+
+def test_a_disk_prior_replaces_a_stray_cpu_measurement(ledger):
+    """NVML cannot measure a cpu load; a cpu row an older build wrote as
+    "measured" (somebody else's VRAM delta) must not outrank the disk
+    prior forever, since a cpu load never produces a measurement again."""
+    model_sizes.record("y", "cpu", "int8", 300)
+    model_sizes.record("y", "cpu", "int8", 5000, measured=False)
+    got = model_sizes.lookup("y", "cpu", "int8")
+    assert (got["bytes"], got["src"]) == (5000, "disk")
+
+
+def test_tilde_roots_resolve_under_the_home_dir(ledger, tmp_path,
+                                                 monkeypatch):
+    """The hub expands "~" in HF_HOME and in an explicit cache_dir; a .env
+    value is not expanded by python-dotenv, so the lookup must do it."""
+    from faster_whisper_backend.runtime import hf_cache
+    from faster_whisper_backend.settings import config as cfg
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    monkeypatch.setenv("HF_HOME", "~/hf")
+    monkeypatch.setattr(cfg, "DOWNLOAD_ROOT", "~/dl", raising=False)
+    assert hf_cache.hub_cache_dir().startswith(str(tmp_path))
+    assert hf_cache.hub_lookup_dir().startswith(str(tmp_path))
+    assert model_sizes._model_path("gguf:o/r:Q4").startswith(str(tmp_path))
+    monkeypatch.delenv("HF_HOME")
+    assert hf_cache.hub_cache_dir() == os.path.join(str(tmp_path), "dl",
+                                                    "hf", "hub")
+    assert model_sizes._model_path("openai/whisper-tiny").startswith(
+        str(tmp_path))
 
 
 def test_app_module_keeps_record_off_the_default_ledger(app_module, tmp_path,

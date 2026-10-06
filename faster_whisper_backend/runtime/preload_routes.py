@@ -94,8 +94,16 @@ class PreloadRequest(BaseModel):
     trigger: "str | None" = Field(default=None, max_length=32)
 
 
+# The cfg field that picks each non-whisper family's model: the key into the
+# effective values and into the caller's ident.locked.
+_FAMILY_CFG_KEY = {"diarization": "DIARIZATION_MODEL",
+                   "separation": "BGM_SEPARATION_UVR_MODEL",
+                   "translation": "TRANSLATION_MODEL"}
+
+
 def _allowed(family: str, model_id: str,
-             effective: "dict[str, str] | None" = None) -> bool:
+             effective: "dict[str, str] | None" = None,
+             locked: "frozenset[str] | set[str]" = frozenset()) -> bool:
     """The batch handler's allowlist rules.
 
     whisper: judged on the RESOLVED id (`whisper-1` → DEFAULT_MODEL, the
@@ -111,8 +119,15 @@ def _allowed(family: str, model_id: str,
     "the configured model only", never "anything". translation:
     `tr_gating._translation_model_allowed`, the rule the batch stage and the
     job plan share, with the effective TRANSLATION_MODEL as `inherited`.
-    `effective` holds those identity/per-model values ({} = global only)."""
+    `effective` holds those identity/per-model values ({} = global only).
+    A family whose model field is in `locked` (the caller's ident.locked)
+    admits its effective value only: the batch handler resolves a locked
+    knob to the server value and merely reports a different request
+    ignored, so the preload must not load one either."""
     effective = effective or {}
+    _cfg_key = _FAMILY_CFG_KEY.get(family)
+    if _cfg_key is not None and _cfg_key in locked:
+        return bool(model_id) and model_id == effective.get(_cfg_key)
     if family == "whisper":
         model_id = preload.normalize_id(family, model_id)
         if not model_id:
@@ -142,22 +157,25 @@ def _allowed(family: str, model_id: str,
         inherited=effective.get("TRANSLATION_MODEL") or None)
 
 
-def _effective_stage_models(user: dict, body: "PreloadRequest") -> "dict[str, str]":
+def _effective_stage_models(
+        user: dict, body: "PreloadRequest",
+) -> "tuple[dict[str, str], frozenset[str]]":
     """The caller's identity/per-model effective stage models, resolved
     against the whisper model the plan names (else DEFAULT_MODEL) — the ident
-    the batch handler builds for the same job. {} on any failure, which
-    degrades to the global-only rule."""
+    the batch handler builds for the same job — plus which of those fields
+    the ident locks. ({}, empty) on any failure, which degrades to the
+    global-only rule."""
     resolved_model = next(
         (preload.normalize_id("whisper", m.id) for m in body.models
          if m.family == "whisper"), "") or getattr(cfg, "DEFAULT_MODEL", "")
     try:
         ident = effective_config.build_ident(user, resolved_model)
-        return {k: (effective_config.cfg_for(resolved_model, k, ident)
-                    or "").strip()
-                for k in ("DIARIZATION_MODEL", "BGM_SEPARATION_UVR_MODEL",
-                          "TRANSLATION_MODEL")}
+        keys = _FAMILY_CFG_KEY.values()
+        return ({k: (effective_config.cfg_for(resolved_model, k, ident)
+                     or "").strip() for k in keys},
+                frozenset(k for k in keys if k in ident.locked))
     except Exception:  # noqa: BLE001 — never worse than the global rule
-        return {}
+        return {}, frozenset()
 
 
 @router.post("/models/preload", status_code=status.HTTP_202_ACCEPTED)
@@ -166,7 +184,7 @@ async def preload_models(body: PreloadRequest,
     """Register a preload plan. Always 202."""
     entries: "list[tuple[str, str]]" = []
     denied: "dict[tuple[str, str], str]" = {}
-    effective = _effective_stage_models(user, body)
+    effective, locked = _effective_stage_models(user, body)
     for m in body.models:
         pair = (m.family, m.id.strip())
         if pair in entries:
@@ -175,7 +193,7 @@ async def preload_models(body: PreloadRequest,
         # non-printable one names no real model either; both would only
         # ever be deferred, and would hold the plan's /stats row open.
         if (not pair[1] or not pair[1].isprintable()
-                or not _allowed(m.family, pair[1], effective)):
+                or not _allowed(m.family, pair[1], effective, locked)):
             denied[pair] = "not_allowed"
         entries.append(pair)
 

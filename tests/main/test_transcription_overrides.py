@@ -421,10 +421,12 @@ def test_multilingual_with_a_set_language_is_reported_ignored(
     data = {"model": "whisper-1", "response_format": "verbose_json",
             "decode_overrides": json.dumps({"multilingual": True})}
     r = client.post("/v1/audio/transcriptions", files=_FILE, data=data)
+    assert r.status_code == 200, r.text
     assert fake_model.last_kwargs["multilingual"] is True
     assert "overrides_ignored" not in r.json()
     r = client.post("/v1/audio/transcriptions", files=_FILE,
                     data={**data, "language": "de"})
+    assert r.status_code == 200, r.text
     assert "multilingual" not in fake_model.last_kwargs
     assert r.json()["overrides_ignored"] == ["multilingual"]
 

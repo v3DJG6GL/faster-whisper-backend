@@ -206,6 +206,31 @@ def test_identity_effective_stage_model_is_not_reported_not_allowed(
     assert row["reason"] == "not_allowed"
 
 
+def test_a_locked_stage_model_admits_only_the_effective_value(
+        client, app_module, monkeypatch):
+    # A locked knob resolves to the server value in the batch handler (a
+    # different request is only reported ignored), so a preload of another
+    # allowlisted model would load something this caller's job never uses —
+    # and in a singleton family drop the one it does.
+    from faster_whisper_backend.settings import effective_config
+    cfg = _enable(app_module, monkeypatch)
+    monkeypatch.setattr(cfg, "DIARIZATION_ALLOWED_MODELS", ["p/A", "p/B"],
+                        raising=False)
+    monkeypatch.setattr(cfg, "DIARIZATION_MODEL", "p/A", raising=False)
+    # Unlocked, the allowlist admits both.
+    row = _one(client, {"models": [{"family": "diarization", "id": "p/B"}]})
+    assert row.get("reason") != "not_allowed"
+    monkeypatch.setattr(
+        effective_config, "build_ident",
+        lambda *a, **k: effective_config.Resolved(
+            values={"DIARIZATION_MODEL": "p/A"},
+            locked={"DIARIZATION_MODEL"}))
+    row = _one(client, {"models": [{"family": "diarization", "id": "p/B"}]})
+    assert row["state"] == "deferred" and row["reason"] == "not_allowed"
+    row = _one(client, {"models": [{"family": "diarization", "id": "p/A"}]})
+    assert row.get("reason") != "not_allowed"
+
+
 def test_disabled_stage_is_202_deferred_stage_disabled(client, app_module,
                                                        monkeypatch):
     _enable(app_module, monkeypatch, DIARIZATION_ENABLED=False)
@@ -343,7 +368,7 @@ def test_v1_me_loaded_flags_agree_for_all_four_families(client, app_module,
     monkeypatch.setattr(diarization, "_pipeline_key", ("p/x", "cpu", 4))
     monkeypatch.setattr(bgm_separation, "_separator_key",
                         ("UVR-Foo.onnx", "cpu"))
-    translation._models["o/r:Q4"] = object()
+    monkeypatch.setitem(translation._models, "o/r:Q4", object())
 
     caps = client.get("/v1/me").json()
     for key, family in (("diarization_models", "diarization"),
@@ -356,6 +381,8 @@ def test_v1_me_loaded_flags_agree_for_all_four_families(client, app_module,
     # The friendly name resolves through the shared .onnx mapping.
     assert {r["id"]: r["loaded"] for r in caps["separation_models"]} == {
         "UVR-Foo": True, "UVR-Bar": False}
+    assert {r["id"]: r["loaded"] for r in caps["translation_models"]} == {
+        "o/r:Q4": True}
 
 
 # --- /stats surfaces the diagnostics ----------------------------------------

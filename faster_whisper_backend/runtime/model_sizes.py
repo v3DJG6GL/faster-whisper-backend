@@ -172,6 +172,16 @@ def record(name: str, device: str, compute_type: str, vram_bytes: int, *,
             _record_locked(k, vram_bytes, measured, src, path)
 
 
+def _is_measured(k: str, row: dict) -> bool:
+    """A ledger row counts as a measurement only on a cuda placement. NVML
+    cannot measure a cpu load (model_registry no longer records one), so a
+    non-cuda "measured" row is a stray VRAM delta from an older build: it is
+    treated like a disk prior — a fresh disk prior replaces it, and the
+    any-device fallback ranks it last."""
+    return (row.get("src") != "disk"
+            and k.rsplit("|", 2)[-2].startswith("cuda"))
+
+
 def _record_locked(k: str, vram_bytes: int, measured: bool, src: str,
                    path: str) -> None:
     """The merge half of record(). Writes through _write_locked, never
@@ -184,19 +194,28 @@ def _record_locked(k: str, vram_bytes: int, measured: bool, src: str,
     old = models.get(k)
     if old is not None:
         prev = int(old.get("bytes") or 0)
-        old_measured = old.get("src") != "disk"
+        old_measured = _is_measured(k, old)
         if old_measured and not measured:
             return
         if measured and not old_measured:
             size = int(vram_bytes)
-        else:
+        elif not measured:
+            # Disk vs disk: last write. A disk walk is deterministic, so a
+            # newer prior replaces an older one — a high-water mark here
+            # would keep an inflated pre-fix walk (symlink double count,
+            # every GGUF quant) forever.
             if prev and abs(vram_bytes - prev) <= prev * _REWRITE_THRESHOLD:
                 return
+            size = int(vram_bytes)
+        else:
             # max(), not last-write: CTranslate2's caching allocator makes
             # RE-loads under-report (the freed blocks it kept get reused,
             # see model_registry.py's module docstring). Under-estimating is
             # the dangerous direction — it is exactly what turns a "fits"
-            # verdict into an OOM — so the ledger keeps the high-water mark.
+            # verdict into an OOM — so the ledger keeps the high-water mark,
+            # and a re-measurement at or below it is no news at all.
+            if prev and vram_bytes <= prev * (1 + _REWRITE_THRESHOLD):
+                return
             size = max(prev, int(vram_bytes))
         models[k] = {
             "bytes": size,
@@ -229,7 +248,8 @@ def lookup(name: str, device: str, compute_type: str) -> dict | None:
     # Ranked, not first-match: the ledger is written sorted, so "cpu" would
     # always beat "cuda" and a cpu DISK row would shadow a measurement on the
     # same card. A measurement on the same device family first, then one on
-    # any device, then a disk row; max() within a rank stays conservative.
+    # any device, then a disk row (or a stray non-cuda "measured" row, see
+    # _is_measured); max() within a rank stays conservative.
     prefix = f"{name}|"
     cuda = (device or "").startswith("cuda")
     best = None
@@ -237,19 +257,19 @@ def lookup(name: str, device: str, compute_type: str) -> dict | None:
         if not k.startswith(prefix):
             continue
         peer_cuda = k[len(prefix):].startswith("cuda")
-        if v.get("src") == "disk":
+        if not _is_measured(k, v):
             rank = 2
         else:
             rank = 0 if peer_cuda == cuda else 1
         cand = (-rank, int(v["bytes"]))
         if best is None or cand > best[0]:
-            best = (cand, v)
+            best = (cand, v, k)
     if best is not None:
-        v = best[1]
+        _cand, v, best_k = best
         # A disk-walk peer row is still only a disk walk, not a proxy
         # measurement.
         return {"bytes": int(v["bytes"]),
-                "src": "disk" if v.get("src") == "disk" else "proxy",
+                "src": "proxy" if _is_measured(best_k, v) else "disk",
                 "n": int(v.get("n") or 0), "ts": v.get("ts")}
     # Never measured anywhere. Fall back to what the model WEIGHS ON DISK,
     # which for a GGUF or an ONNX file is a solid lower bound on its resident
@@ -280,9 +300,11 @@ def disk_size(name: str) -> int | None:
         path = _model_path(name)
         if not path:
             return None
-        quant = _gguf_quant(name)
-        if quant:
-            return _gguf_quant_size(path, quant)
+        if name.startswith("gguf:"):
+            # Quant-less too: translation.engine resolves it with "*.gguf"
+            # and wants exactly one match, so the walk over the whole repo
+            # dir (every revision, every quant fetched) is never the size.
+            return _gguf_quant_size(path, _gguf_quant(name))
         if os.path.isfile(path):
             return int(os.path.getsize(path))
         if os.path.isdir(path):
@@ -384,7 +406,10 @@ def _model_path(name: str) -> "str | None":
     except Exception:  # noqa: BLE001 — faster_whisper absent = bare repo id
         repo = name
     leaf = "models--" + repo.replace("/", "--")
-    candidates = [os.path.join(root, leaf)] if root else []
+    # snapshot_download expands "~" in the cache_dir it is handed, so a .env
+    # DOWNLOAD_ROOT=~/models lands under the home dir. (UVR above is not
+    # expanded: bgm_separation.model_file_dir() passes the root verbatim.)
+    candidates = [os.path.join(os.path.expanduser(root), leaf)] if root else []
     candidates.append(os.path.join(hub, leaf))
     for c in candidates:
         if os.path.exists(c):
@@ -400,14 +425,17 @@ def _hf_repo_dir(hub: str, repo: str) -> "str | None":
 
 
 def fits(name: str, device: str, compute_type: str, *,
-         reserve_bytes: int) -> tuple[bool | None, str | None]:
+         reserve_bytes: int,
+         device_index: int = 0) -> tuple[bool | None, str | None]:
     """Would loading this model still leave `reserve_bytes` free?
+    `device_index` is the CUDA ordinal the load would land on (whisper's
+    per-model DEVICE_INDEX): the free VRAM of THAT card is what counts.
 
     Returns (True, None) / (False, reason) / (None, "size_unknown") — None is
     "cannot say", distinct from a definite no, so callers can choose to try
     anyway rather than refusing a model they have simply never seen."""
     if (device or "").startswith("cuda"):
-        free = system_stats.gpu_mem_free_bytes()
+        free = system_stats.gpu_mem_free_bytes(device_index)
         if free is None:
             return (False, "vram_unknown")
         need = estimate(name, device, compute_type)

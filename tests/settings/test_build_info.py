@@ -112,3 +112,20 @@ def test_process_identity_survives_the_reload_tests():
     from faster_whisper_backend.transcription import catalog_routes
     assert catalog_routes.BOOT_ID == build_info.BOOT_ID
     assert main.BOOT_ID == build_info.BOOT_ID
+
+
+def test_git_describe_passes_safe_directory(monkeypatch):
+    """A service account that does not own the checkout (Windows LocalSystem
+    on a user-cloned repo) hits git's dubious-ownership refusal unless
+    safe.directory is passed as protected command-line config."""
+    monkeypatch.delenv("WHISPER_BUILD_VERSION", raising=False)
+    seen = []
+
+    def _run(argv, **kw):
+        seen.append(list(argv))
+        return subprocess.CompletedProcess(argv, 0, stdout="v1.2.3\n", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", _run)
+    assert build_info._resolve() == "v1.2.3"
+    argv = seen[0]
+    assert argv[argv.index("-c") + 1] == "safe.directory=*"

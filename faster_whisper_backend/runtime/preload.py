@@ -278,6 +278,21 @@ def _placement(family: str, model_id: str = "") -> "tuple[str, str]":
     return translation.placement()
 
 
+def _device_index(family: str, model_id: str) -> int:
+    """The CUDA ordinal a load lands on: whisper's per-model DEVICE_INDEX
+    (what the loader passes to WhisperModel); the other families load onto
+    the default device. Never raises — 0 on any doubt."""
+    if family != "whisper":
+        return 0
+    try:
+        from faster_whisper_backend.settings import effective_config
+        idx = effective_config.cfg_for(normalize_id(family, model_id) or None,
+                                       "DEVICE_INDEX")
+        return idx if isinstance(idx, int) and idx >= 0 else 0
+    except Exception:  # noqa: BLE001 — a placement probe must never raise
+        return 0
+
+
 def _reserve_bytes(device: str) -> int:
     if (device or "").startswith("cuda"):
         mb = int(getattr(cfg, "MODEL_PRELOAD_VRAM_RESERVE_MB", 1024) or 0)
@@ -431,7 +446,8 @@ def _admit(family: str, model_id: str) -> "tuple[str, str | None]":
     device, compute = _placement(family, model_id)
     ok, reason = model_sizes.fits(
         stats_key(family, model_id), device, compute,
-        reserve_bytes=_reserve_bytes(device))
+        reserve_bytes=_reserve_bytes(device),
+        device_index=_device_index(family, model_id))
     if ok is True:
         return (_pending_state(), None)
     if (reason in ("insufficient_vram", "insufficient_ram")
@@ -777,8 +793,17 @@ def on_stage_start(plan_id: str, stage: str) -> None:
                 if plan.stages[i] <= plan.cursor:
                     continue
                 key = stats_key(fam, mid)
-                if key in plan.warmed or key in plan.inflight:
+                if key in plan.inflight:
                     continue
+                if key in plan.warmed:
+                    # Warm leases only hold off the idle evictors: a
+                    # concurrent job on another model of a singleton/capped
+                    # family can still drop this one. Re-validated like the
+                    # merge path in _register_plan (is_resident takes no
+                    # preload lock), else the next stage loads in-band.
+                    if is_resident(fam, mid):
+                        continue
+                    plan.warmed.discard(key)
                 q = _queue
                 if q is None or q.qsize() >= _MAX_QUEUE:
                     return
@@ -846,8 +871,14 @@ async def _handle(item: "tuple[str, str, str]") -> None:
     key = stats_key(family, model_id)
     with _lock:
         plan = _plans.get(plan_id)
-        if plan is None or plan.dead or key in plan.warmed:
+        if plan is None or plan.dead:
             return
+        if key in plan.warmed:
+            # Still warm: nothing to do. Dropped since (see on_stage_start):
+            # fall through and load it again.
+            if is_resident(family, model_id):
+                return
+            plan.warmed.discard(key)
     # Second run of the ladder. State moved while the item sat in the queue —
     # the job may have loaded the model itself, a peer may have taken the VRAM,
     # or a lease may have appeared. This verdict is the one that acts.
@@ -867,7 +898,8 @@ async def _handle(item: "tuple[str, str, str]") -> None:
         if bool(getattr(cfg, "MODEL_PRELOAD_EVICT_IDLE_MODELS", True)):
             device, compute = _placement(family, model_id)
             ok, _r = model_sizes.fits(
-                key, device, compute, reserve_bytes=_reserve_bytes(device))
+                key, device, compute, reserve_bytes=_reserve_bytes(device),
+                device_index=_device_index(family, model_id))
             if ok is False or (ok is None and _needs_room(family, model_id)):
                 peer = _idle_peer(family, model_id)
             elif family in ("whisper", "translation") and _cache_full(family):
@@ -938,7 +970,9 @@ async def start() -> None:
     if _queue is None or _loop is not loop:
         _queue = asyncio.Queue()
     _loop = loop
-    if _worker is None or _worker.done():
+    # Same for the worker: a task left pending on a previous loop that closed
+    # without stop() is never done(), yet it can never consume this queue.
+    if _worker is None or _worker.done() or _worker.get_loop() is not loop:
         _worker = asyncio.create_task(_worker_loop())
     model_registry.set_warm_predicate(is_warm)
     logger.info(

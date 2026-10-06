@@ -21,10 +21,44 @@ from faster_whisper_backend.runtime import model_registry
 NVML_OK = False
 NVML_ERR: str | None = None
 _nvml_handle: Any = None
+# NVML index → device handle, bound lazily: a per-model DEVICE_INDEX can name
+# any card, not just the first. Handles are process-constant once bound.
+_handles: dict[int, Any] = {}
+
+
+def _nvml_index(cuda_index: int) -> int:
+    """The NVML index of CUDA ordinal `cuda_index`. NVML enumerates every
+    GPU and ignores CUDA_VISIBLE_DEVICES, so ordinal N is the N-th entry of
+    that list when it is set. A UUID / MIG entry keeps the raw ordinal (the
+    pre-mapping behaviour), as does an unset or empty list. Exact only when
+    CUDA's own order matches NVML's (CUDA_DEVICE_ORDER=PCI_BUS_ID, or
+    identical cards)."""
+    cvd = (os.environ.get("CUDA_VISIBLE_DEVICES") or "").strip()
+    if cvd:
+        parts = [p.strip() for p in cvd.split(",")]
+        if 0 <= cuda_index < len(parts) and parts[cuda_index].isdigit():
+            return int(parts[cuda_index])
+    return cuda_index
+
+
+def _handle(index: int = 0) -> Any:
+    """NVML handle of CUDA ordinal `index` (see _nvml_index). Raises like
+    the NVML call it wraps; callers already guard every NVML read."""
+    nv = _nvml_index(int(index or 0))
+    h = _handles.get(nv)
+    if h is None:
+        h = _handles[nv] = pynvml.nvmlDeviceGetHandleByIndex(nv)
+    return h
+
+
 try:
     import pynvml  # type: ignore[import-not-found]
     pynvml.nvmlInit()
-    _nvml_handle = pynvml.nvmlDeviceGetHandleByIndex(0)
+    try:
+        # The /stats panel describes the card CUDA calls 0.
+        _nvml_handle = _handle(0)
+    except Exception:                   # a CUDA_VISIBLE_DEVICES NVML lacks
+        _nvml_handle = pynvml.nvmlDeviceGetHandleByIndex(0)
     NVML_OK = True
 except Exception as e:                  # ImportError, NVMLError, ...
     NVML_ERR = f"{type(e).__name__}: {e}"
@@ -51,18 +85,20 @@ def _safe(fn: Callable[[], Any], default: Any = None) -> Any:
         return default
 
 
-def gpu_mem_used_bytes() -> int | None:
-    """Return current global VRAM used (in bytes), or None if NVML unavailable."""
+def gpu_mem_used_bytes(index: int = 0) -> int | None:
+    """Return current global VRAM used (in bytes) on CUDA device `index`
+    (a model's DEVICE_INDEX), or None if NVML unavailable."""
     if not NVML_OK:
         return None
     try:
-        return int(pynvml.nvmlDeviceGetMemoryInfo(_nvml_handle).used)
+        return int(pynvml.nvmlDeviceGetMemoryInfo(_handle(index)).used)
     except Exception:
         return None
 
 
-def gpu_mem_free_bytes() -> int | None:
-    """Return currently free VRAM (in bytes), or None if NVML unavailable.
+def gpu_mem_free_bytes(index: int = 0) -> int | None:
+    """Return currently free VRAM (in bytes) on CUDA device `index`, or None
+    if NVML unavailable.
 
     `.free` is the DRIVER's global view, which is exactly why it is the right
     number for a pre-load fit check: it accounts for every other process on the
@@ -71,7 +107,7 @@ def gpu_mem_free_bytes() -> int | None:
     if not NVML_OK:
         return None
     try:
-        return int(pynvml.nvmlDeviceGetMemoryInfo(_nvml_handle).free)
+        return int(pynvml.nvmlDeviceGetMemoryInfo(_handle(index)).free)
     except Exception:
         return None
 
@@ -189,3 +225,4 @@ def shutdown() -> None:
         except Exception:
             pass
         NVML_OK = False
+        _handles.clear()

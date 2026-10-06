@@ -134,7 +134,26 @@ _RESET_HOOKS: tuple[tuple[str, Any], ...] = (
     ("faster_whisper_backend.auth.hosts", "_reset_for_tests"),
     # the cached llama-cpp-python version behind /v1/me.
     ("faster_whisper_backend.transcription.catalog_routes", "_reset_for_tests"),
+    # ffmpeg capability lru_caches — every TestClient lifespan warms them
+    # with the real binary.
+    ("faster_whisper_backend.media.subtitle_mux", "_reset_for_tests"),
+    # the 60 s model-size memo behind /stats: a later test that patches
+    # model_sizes.lookup/disk_size would otherwise get the cached real value.
+    ("faster_whisper_backend.stats.routes",
+     lambda m: m._size_meta_cache.clear()),
+    # the VAD-reprocess worker state, back to the module's idle shape.
+    ("faster_whisper_backend.captures.vad_reprocess",
+     lambda m: _reset_vad_reprocess(m)),
 )
+
+
+def _reset_vad_reprocess(m) -> None:
+    m._worker = None
+    m._state = {
+        "status": "idle", "started_ts": None, "finished_ts": None,
+        "total": 0, "processed": 0, "rebuilt": 0, "skipped": 0,
+        "stale": 0, "error": None,
+    }
 
 
 @pytest.fixture(autouse=True)
@@ -440,7 +459,10 @@ class FakeModel:
         self.detect_calls += 1
         lang, prob = self.heard[min(self.detect_calls, len(self.heard)) - 1]
         if lang is None:
-            raise ValueError("no speech")
+            # faster-whisper 1.2 no longer raises: VAD finding no speech
+            # leaves padded silence, which detects as ("en", ~0.34).
+            # The route's _has_speech gate is what turns that into None.
+            return "en", 0.341, [("en", 0.341)]
         return lang, prob, [(lang, prob)]
 
 
@@ -449,17 +471,33 @@ def fake_model():
     return FakeModel()
 
 
-def _repoint_path_default(monkeypatch, fns, path: str) -> None:
-    """Rewrite the trailing `path=` default ARG of each function to `path`.
+def _repoint_path_default(monkeypatch, fns, path: str,
+                          param: str = "path") -> None:
+    """Rewrite the `param=` default ARG (by NAME) of each function to `path`.
 
     A default is bound at def time, so patching the module-level constant
-    alone leaves a direct caller on the REAL file."""
+    alone leaves a direct caller on the REAL file. Looked up by name, not as
+    the trailing default: a function that gains a later defaulted parameter
+    would otherwise get that one rewritten and keep `path` on the real file.
+    A function without a defaulted `param` raises — a silent no-op here is
+    exactly how a test ends up writing the real config."""
     for fn in fns:
-        defaults = list(fn.__defaults__ or ())
-        if defaults:
-            defaults[-1] = path
-            monkeypatch.setattr(fn, "__defaults__", tuple(defaults),
+        kwdefaults = dict(fn.__kwdefaults__ or {})
+        if param in kwdefaults:
+            kwdefaults[param] = path
+            monkeypatch.setattr(fn, "__kwdefaults__", kwdefaults,
                                 raising=False)
+            continue
+        code = fn.__code__
+        defaults = list(fn.__defaults__ or ())
+        positional = code.co_varnames[:code.co_argcount]
+        defaulted = positional[len(positional) - len(defaults):]
+        if param not in defaulted:
+            raise AssertionError(
+                f"{fn.__qualname__} has no defaulted {param!r} parameter")
+        defaults[defaulted.index(param)] = path
+        monkeypatch.setattr(fn, "__defaults__", tuple(defaults),
+                            raising=False)
 
 
 def isolate_app_env(tmp_path, monkeypatch) -> None:
@@ -484,24 +522,29 @@ def isolate_app_env(tmp_path, monkeypatch) -> None:
     # unconditionally — without this it would wipe the REAL /data/url_media.
     monkeypatch.setenv("WHISPER_URL_MEDIA_DIR", str(tmp_path / "url_media"))
 
-    from faster_whisper_backend.settings import config as cfg
-    # Re-apply env onto the already-imported config singleton.
-    importlib.reload(cfg)
-    monkeypatch.setattr(cfg, "PRELOAD_MODELS", [], raising=False)
-    monkeypatch.setattr(cfg, "DEFAULT_MODEL", "", raising=False)
-
     # config_store.save_overrides / load_overrides persist to the REAL
     # <repo>/config.local.json by default — route tests that POST /settings/state
     # or /quick-config/state would mutate the working tree and leak override
     # state between tests. Repoint both at a per-test temp file. The path is a
     # default ARG (bound at def time), so we rewrite each function's defaults
-    # in addition to the module-level constant.
+    # in addition to the module-level constant. BEFORE the config reload
+    # below: config.py calls load_overrides() with no argument at import, so
+    # reloading first would layer whatever file config_store named at its
+    # first import (an exported WHISPER_DATA_DIR / WHISPER_CONFIG_LOCAL — the
+    # operator's real config.local.json) onto cfg.
+    monkeypatch.delenv("WHISPER_CONFIG_LOCAL", raising=False)
     from faster_whisper_backend.settings import config_store
     _tmp_overrides = str(tmp_path / "config.local.json")
     monkeypatch.setattr(config_store, "OVERRIDES_PATH", _tmp_overrides, raising=False)
     _repoint_path_default(monkeypatch, (config_store.load_overrides,
                                         config_store.save_overrides),
                           _tmp_overrides)
+
+    from faster_whisper_backend.settings import config as cfg
+    # Re-apply env onto the already-imported config singleton.
+    importlib.reload(cfg)
+    monkeypatch.setattr(cfg, "PRELOAD_MODELS", [], raising=False)
+    monkeypatch.setattr(cfg, "DEFAULT_MODEL", "", raising=False)
 
     # model_sizes has the same default-ARG trap: _read/_write/_write_locked
     # bind path=PATH at def time, so a direct caller would otherwise write the

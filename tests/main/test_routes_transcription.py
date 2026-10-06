@@ -324,13 +324,45 @@ def test_progress_updates_during_decode(client, app_module, fake_model):
     assert pid not in tx_progress._BATCH_PROGRESS
 
 
-def test_verbose_json_reports_duration_after_vad(client):
-    # VAD_FILTER defaults on → the response carries the VAD receipt
-    # (FakeInfo reports duration_after_vad == duration).
+def test_progress_entry_is_closed_on_a_413_before_the_decode(
+        client, app_module, monkeypatch):
+    # The entry is seeded before the Content-Length gate; a failure there
+    # never reaches the inner try, so the outer finally must close it.
+    from faster_whisper_backend.settings import config as cfg
+    monkeypatch.setattr(cfg, "MEDIA_MAX_BYTES", 10, raising=False)
+    pid = "e" * 32
+    r = _post(client, response_format="json", progress_id=pid)
+    assert r.status_code == 413
+    assert pid not in tx_progress._BATCH_PROGRESS
+    assert pid not in tx_progress._PROGRESS_OWNER
+    assert client.get(f"/v1/audio/transcriptions/progress/{pid}").json() == {
+        "stage": "unknown"}
+
+
+def test_progress_entry_is_closed_when_the_model_load_fails(
+        client, app_module, monkeypatch):
+    from fastapi import HTTPException
+
+    async def _refuse(*a, **k):
+        raise HTTPException(status_code=400, detail="model not allowed")
+    monkeypatch.setattr(tx_models, "_get_or_load_model", _refuse)
+    pid = "f" * 32
+    r = _post(client, response_format="json", progress_id=pid)
+    assert r.status_code == 400
+    assert pid not in tx_progress._BATCH_PROGRESS
+    assert client.get(f"/v1/audio/transcriptions/progress/{pid}").json() == {
+        "stage": "unknown"}
+
+
+def test_verbose_json_reports_duration_after_vad(client, fake_model):
+    # VAD_FILTER defaults on → the response carries the VAD receipt, and it
+    # is the VAD figure itself, not the audio duration.
+    fake_model._info.duration_after_vad = 0.4
     r = _post(client, response_format="verbose_json")
     assert r.status_code == 200
     body = r.json()
-    assert body["duration_after_vad"] == body["duration"]
+    assert body["duration_after_vad"] == 0.4
+    assert body["duration"] == 1.0
 
 
 def test_verbose_json_omits_vad_receipt_when_filter_off(client):

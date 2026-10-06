@@ -328,7 +328,7 @@ async def _preload_extras() -> None:
     if getattr(cfg, "TRANSLATION_ENABLED", False):
         _preload = list(dict.fromkeys(
             getattr(cfg, "TRANSLATION_PRELOAD_MODELS", []) or []))
-        _cap = max(1, int(getattr(cfg, "TRANSLATION_MAX_LOADED_MODELS", 1) or 1))
+        _cap = _tr._load_cap()
         if len(_preload) > _cap:
             # Mirror the whisper preload's cap warning — loading past the LRU
             # cap would silently close each earlier preload as the next loads.
@@ -1367,6 +1367,11 @@ async def transcribe(
     # The video landed before the run ended: the progress entry is closed
     # only after the outer finally's job finish + video attach (see there).
     _close_after_attach = False
+    # True from the progress seed until the inner try's first statement:
+    # in that window only the outer finally can retire the seeded entry;
+    # from then on the inner finally (or _close_after_attach / the video
+    # task) owns the close.
+    _close_in_outer = False
     # retain_media: an uploaded VIDEO the client wants packaged with its
     # subtitles right after — a hardlinked copy of the spool, registered in
     # the media store once the run succeeds (never for a failed one).
@@ -1392,14 +1397,15 @@ async def transcribe(
         # Seed the registry entry EARLY so the cancel endpoint (which only
         # accepts ids it can see in-flight) has a target well before the
         # first stage-driven _progress_set (model load, semaphore queue can
-        # be seconds away) — but only INSIDE this try, whose finally pops the
-        # entry: seeding before the validation gates above leaked an orphan
-        # "waiting" entry (and a cancellable id) on every early 4xx. URL runs
-        # seed as "resolving": their pipeline starts at the link, and
-        # "waiting" maps onto the transcribe row in the client's rail — which
-        # would paint the download as already done. `owner` binds the entry
-        # to this caller: the progress/cancel endpoints treat a mismatched
-        # caller exactly like an unknown id.
+        # be seconds away) — but only INSIDE this try, whose finally closes
+        # the entry when the inner try was never reached (413, a failed model
+        # load, request.form()): seeding before the validation gates above
+        # leaked an orphan "waiting" entry (and a cancellable id) on every
+        # early 4xx. URL runs seed as "resolving": their pipeline starts at
+        # the link, and "waiting" maps onto the transcribe row in the
+        # client's rail — which would paint the download as already done.
+        # `owner` binds the entry to this caller: the progress/cancel
+        # endpoints treat a mismatched caller exactly like an unknown id.
         _keep_video = _form_bool(keep_video) is True
         _video_max_height = media_video._clamp_video_height(video_max_height)
         _video_format = media_video._clean_video_format(video_format)
@@ -1439,6 +1445,7 @@ async def transcribe(
                              else "waiting"),
                       progress=None,
                       owner=(_user_id or _key_id))
+        _close_in_outer = True
         _job_row = await tx_progress._jobs_start_async(
             _pid, request_id=request_id, kind="transcribe",
             user_id=_user_id, key_id=_key_id, model=resolved_model,
@@ -1506,6 +1513,7 @@ async def transcribe(
         )
 
         try:
+            _close_in_outer = False
             if source_url is not None:
                 # Transcribe-from-URL: policy-gated metadata probe, then a
                 # yt-dlp subprocess download into a private job dir. The
@@ -3322,9 +3330,13 @@ async def transcribe(
                     pass
             # URL flow: the private download dir (partials, fragments) goes
             # on every path — cancel, 4xx, 500 included. The retained copy
-            # (url_media_store) has its own TTL lifecycle.
+            # (url_media_store) has its own TTL lifecycle. Off the loop and
+            # shielded, like media.video._url_staging_job: a cancelled fetch
+            # can leave GBs of partials/fragments, and a cancel landing on
+            # this (last) await still lets the delete finish.
             if _url_job_dir:
-                shutil.rmtree(_url_job_dir, ignore_errors=True)
+                await asyncio.shield(
+                    asyncio.to_thread(shutil.rmtree, _url_job_dir, True))
 
     except asyncio.CancelledError:
         # A dropped connection (and lifespan shutdown) unwinds this handler
@@ -3353,6 +3365,11 @@ async def transcribe(
             tx_models._release_model_lease(_leased_model)
         metrics.in_flight_transcriptions -= 1
         if _pid:
+            if _close_in_outer:
+                # A failure before the inner try (413, model load, form
+                # parse): its finally never ran, so nothing else closes the
+                # seeded "waiting" entry.
+                tx_progress._progress_close(_pid)
             tx_progress._JOB_BY_PID.pop(_pid, None)
             # The plan itself is NOT cancelled here: its warm leases are what
             # keep the models this job just used alive for the next one, and
@@ -3407,8 +3424,13 @@ async def transcribe(
                                             _pid, dict(_video_task.result()))
         finally:
             # In a finally so a cancellation landing on an await above
-            # still closes the entry.
-            if _close_after_attach:
+            # still closes the entry. Also when the video task ended first
+            # in the "run finished first" path: its attach gave up on the
+            # still-running row and left the close to this side (after the
+            # fallback attach above). _progress_close is idempotent.
+            if _close_after_attach or (
+                    _pid and _run_finished[0] and _video_task is not None
+                    and _video_task.done()):
                 tx_progress._progress_close(_pid)
         # Teach the rates ledger from the stages that ran clean. Off the
         # loop: one locked, fsync'd rewrite of the ledger file.
@@ -3691,7 +3713,3 @@ def run() -> None:
                 # limit is the websocket library's 16 MiB default. Real clients
                 # send ~32 KB audio frames and a JSON handshake far under 1 MiB.
                 ws_max_size=1024 * 1024)
-
-
-if __name__ == "__main__":
-    run()

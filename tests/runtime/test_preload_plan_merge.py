@@ -8,6 +8,9 @@ test_preload_registry (registry dicts and loader coroutines, no heavy deps).
 """
 
 import asyncio
+import gc
+
+import pytest
 
 from faster_whisper_backend.audio import diarization
 from faster_whisper_backend.runtime import model_sizes
@@ -106,12 +109,15 @@ def test_an_entry_past_the_cap_is_deferred_not_enqueued(monkeypatch):
                   for i in range(preload._MAX_PLAN_ENTRIES)],
             plan_id="3" * 8)
         await asyncio.sleep(0)
-        depth = preload._queue.qsize()
+        # Drained: the first POST filled the queue to _MAX_QUEUE, and a full
+        # queue alone would defer p/extra — only the entry cap may do it.
+        while not preload._queue.empty():
+            preload._queue.get_nowait()
         r = preload.register_plan("u", [("diarization", "p/extra")],
                                   plan_id="3" * 8)
         await asyncio.sleep(0)
         assert r["models"][0]["state"] == "deferred"
-        assert preload._queue.qsize() == depth
+        assert preload._queue.qsize() == 0
         assert ("diarization", "p/extra") not in preload._plans["3" * 8].entries
     asyncio.run(_run())
 
@@ -148,6 +154,31 @@ def test_second_start_on_a_new_loop_does_not_reuse_the_old_queue():
         assert preload._queue.qsize() == 0
         await preload.stop()
     asyncio.run(_second())
+
+
+# The abandoned task is finalised on a closed loop (that is the scenario):
+# its queue.get() cleanup raises "Event loop is closed" as an unraisable.
+@pytest.mark.filterwarnings("ignore::pytest.PytestUnraisableExceptionWarning")
+def test_start_replaces_a_worker_left_pending_on_a_closed_loop():
+    """A lifespan that ended without its shutdown hook leaves the worker
+    pending (never done()) on a closed loop; the next start() must not keep
+    it, or the fresh queue has no consumer and every plan sits at queued."""
+    async def _first():
+        await preload.start()
+        await asyncio.sleep(0)
+    l1 = asyncio.new_event_loop()
+    try:
+        l1.run_until_complete(_first())
+    finally:
+        l1.close()                       # no stop()
+
+    async def _second():
+        await preload.start()
+        assert preload._worker.get_loop() is asyncio.get_running_loop()
+        assert not preload._worker.done()
+        await preload.stop()
+    asyncio.run(_second())
+    gc.collect()        # finalise the abandoned task here, not in a later test
 
 
 # --- PC5: the queue cap counts the batch being admitted ---------------------
@@ -219,6 +250,29 @@ def test_merge_keeps_warmed_keys_that_are_still_resident(monkeypatch):
     r = preload.register_plan("u", [("diarization", "p/x")], plan_id="5" * 8)
     assert r["models"][0]["state"] == "resident"
     assert "pyannote:p/x" in preload._plans["5" * 8].warmed
+
+
+def test_stage_ahead_rewarms_a_warmed_entry_that_was_dropped(monkeypatch):
+    """Warm leases only hold off the idle evictors; a concurrent job on
+    another diarization model force-drops the singleton. The stage-ahead
+    path must re-check residency, not skip the key off a stale warmed set."""
+    _enable(monkeypatch)
+    _fits(monkeypatch, (None, "size_unknown"))     # nothing enqueues yet
+    preload.register_plan("u", [("whisper", "large-v3"),
+                                ("diarization", "p/x")], plan_id="7" * 8)
+    plan = preload._plans["7" * 8]
+    plan.warmed.add("pyannote:p/x")                # warmed, then dropped
+    monkeypatch.setattr(preload, "is_resident", lambda f, m: False)
+
+    async def _run():
+        await preload.start()
+        preload._worker.cancel()
+        preload.on_stage_start("7" * 8, "transcribing")
+        await asyncio.sleep(0)
+        assert preload._queue.qsize() == 1
+        assert preload._queue.get_nowait() == ("7" * 8, "diarization", "p/x")
+    asyncio.run(_run())
+    assert "pyannote:p/x" not in plan.warmed
 
 
 def test_a_job_binding_rewinds_the_cursor_a_client_post_does_not(monkeypatch):

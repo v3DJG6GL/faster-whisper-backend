@@ -13,14 +13,21 @@ import os
 
 def hub_cache_dir() -> "str | None":
     """The cache_dir to pass to a hub download: a set HF_HOME wins, else
-    <DOWNLOAD_ROOT>/hf/hub, else None (the hub's own default)."""
+    <DOWNLOAD_ROOT>/hf/hub, else None (the hub's own default).
+
+    Expanded the way the hub expands them (python-dotenv and systemd
+    Environment= leave "~" alone): HF_HOME like huggingface_hub.constants
+    (vars, then "~"), DOWNLOAD_ROOT like an explicit cache_dir ("~" only).
+    Unexpanded, the download lands under the home dir while the lookup
+    checks a cwd-relative "~/..." that never exists."""
     hf_home = os.environ.get("HF_HOME")
     if hf_home:
-        return os.path.join(hf_home, "hub")
+        return os.path.join(
+            os.path.expandvars(os.path.expanduser(hf_home)), "hub")
     from faster_whisper_backend.settings import config as cfg
     download_root = (getattr(cfg, "DOWNLOAD_ROOT", None) or "").strip()
     if download_root:
-        return os.path.join(download_root, "hf", "hub")
+        return os.path.join(os.path.expanduser(download_root), "hf", "hub")
     return None
 
 

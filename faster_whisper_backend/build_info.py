@@ -39,8 +39,15 @@ def _resolve() -> str:
     if env:
         return env
     try:
+        # safe.directory on the command line (protected config): a service
+        # account that does not own the checkout (Windows LocalSystem on a
+        # user-cloned repo, a systemd User= other than the cloner) would
+        # otherwise hit git's "dubious ownership" refusal and read "unknown".
+        # "*" rather than REPO_ROOT: a backslash path may not match git's
+        # normalised comparison, and this read-only describe is the only use.
         out = subprocess.run(
-            ["git", "describe", "--tags", "--always", "--dirty"],
+            ["git", "-c", "safe.directory=*",
+             "describe", "--tags", "--always", "--dirty"],
             cwd=REPO_ROOT,
             capture_output=True,
             text=True,

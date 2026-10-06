@@ -89,6 +89,69 @@ def test_gpu_mem_used_bytes():
         assert val is None
 
 
+class _FakeNvml:
+    """Two cards: NVML index 0 is busy, index 1 is empty."""
+    class _Mem:
+        def __init__(self, used, free):
+            self.used, self.free = used, free
+
+    def nvmlDeviceGetHandleByIndex(self, i):
+        if i not in (0, 1):
+            raise RuntimeError("no such device")
+        return f"h{i}"
+
+    def nvmlDeviceGetMemoryInfo(self, h):
+        return {"h0": self._Mem(7000, 1000), "h1": self._Mem(100, 9000)}[h]
+
+
+@pytest.fixture
+def two_gpus(monkeypatch):
+    monkeypatch.setattr(system_stats, "pynvml", _FakeNvml(), raising=False)
+    monkeypatch.setattr(system_stats, "NVML_OK", True)
+    monkeypatch.setattr(system_stats, "_handles", {})
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
+
+
+def test_vram_reads_follow_the_device_index(two_gpus, monkeypatch):
+    """A per-model DEVICE_INDEX=1 loads onto the second card; its VRAM
+    delta and fit check must read that card, not GPU 0."""
+    assert system_stats.gpu_mem_used_bytes() == 7000
+    assert system_stats.gpu_mem_free_bytes() == 1000
+    assert system_stats.gpu_mem_used_bytes(1) == 100
+    assert system_stats.gpu_mem_free_bytes(1) == 9000
+    # NVML ignores CUDA_VISIBLE_DEVICES: CUDA ordinal 0 is NVML card 1 here.
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "1,0")
+    monkeypatch.setattr(system_stats, "_handles", {})
+    assert system_stats.gpu_mem_free_bytes(0) == 9000
+    assert system_stats.gpu_mem_free_bytes(1) == 1000
+    # A UUID entry cannot be mapped: the raw ordinal stands.
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "GPU-abc")
+    assert system_stats._nvml_index(0) == 0
+    # A card NVML does not have degrades to "unknown", never a raise.
+    assert system_stats.gpu_mem_free_bytes(5) is None
+
+
+def test_fit_check_reads_the_target_card(two_gpus, model_sizes_ledger,
+                                         monkeypatch):
+    from faster_whisper_backend.runtime import model_sizes
+    model_sizes.record("m", "cuda", "float16", 4000)
+    assert model_sizes.fits("m", "cuda", "float16", reserve_bytes=0) == (
+        False, "insufficient_vram")
+    assert model_sizes.fits("m", "cuda", "float16", reserve_bytes=0,
+                            device_index=1) == (True, None)
+
+
+def test_preload_sizes_whisper_on_its_device_index(monkeypatch):
+    from faster_whisper_backend.runtime import preload
+    from faster_whisper_backend.settings import config as cfg
+    monkeypatch.setattr(cfg, "DEVICE_INDEX", 0, raising=False)
+    monkeypatch.setattr(cfg, "MODEL_OVERRIDES",
+                        {"tiny": {"DEVICE_INDEX": 1}}, raising=False)
+    assert preload._device_index("whisper", "tiny") == 1
+    assert preload._device_index("whisper", "large-v3") == 0
+    assert preload._device_index("diarization", "p/x") == 0
+
+
 # ---------------------------------------------------------------------------
 # shutdown
 # ---------------------------------------------------------------------------
