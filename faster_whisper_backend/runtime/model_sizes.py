@@ -17,7 +17,9 @@ lazily, and it imports system_stats (which imports model_registry). The writer
 from __future__ import annotations
 
 import contextlib
+import fnmatch
 import json
+import math
 import os
 import tempfile
 import threading
@@ -89,12 +91,32 @@ def _read(path: str = PATH) -> dict[str, dict]:
             raw = doc.get("models")
             if isinstance(raw, dict):
                 for k, v in raw.items():
-                    if isinstance(v, dict) and isinstance(v.get("bytes"), (int, float)):
-                        models[k] = v
+                    b = v.get("bytes") if isinstance(v, dict) else None
+                    # json.load accepts Infinity / NaN, and a bool is an
+                    # int: none of them, nor a non-positive size, is a
+                    # footprint. Normalised here, once, like
+                    # stage_rates._read: lookup() and the merge trust
+                    # `bytes` and `n`, and int(Infinity) or int("many")
+                    # there would 500 /stats.
+                    if (isinstance(b, (int, float)) and not isinstance(b, bool)
+                            and math.isfinite(b) and b > 0):
+                        row = {"bytes": int(b), "n": _count(v.get("n"))}
+                        if "ts" in v:
+                            row["ts"] = v["ts"]
+                        if isinstance(v.get("src"), str):
+                            row["src"] = v["src"]
+                        models[k] = row
     except (OSError, ValueError):
         models = {}
     _cache, _cache_mtime = models, mtime
     return models
+
+
+def _count(n) -> int:
+    if (isinstance(n, (int, float)) and not isinstance(n, bool)
+            and math.isfinite(n) and n > 0):
+        return int(n)
+    return 0
 
 
 def _write(models: dict[str, dict], path: str = PATH) -> None:
@@ -204,14 +226,31 @@ def lookup(name: str, device: str, compute_type: str) -> dict | None:
     # Any-device fallback: a cpu/int8 measurement is a poor proxy for a
     # cuda/float16 load, but a rough number beats no check at all — and the
     # exact record replaces it the first time that placement is measured.
+    # Ranked, not first-match: the ledger is written sorted, so "cpu" would
+    # always beat "cuda" and a cpu DISK row would shadow a measurement on the
+    # same card. A measurement on the same device family first, then one on
+    # any device, then a disk row; max() within a rank stays conservative.
     prefix = f"{name}|"
+    cuda = (device or "").startswith("cuda")
+    best = None
     for k, v in models.items():
-        if k.startswith(prefix):
-            # A disk-walk peer row is still only a disk walk, not a proxy
-            # measurement.
-            return {"bytes": int(v["bytes"]),
-                    "src": "disk" if v.get("src") == "disk" else "proxy",
-                    "n": int(v.get("n") or 0), "ts": v.get("ts")}
+        if not k.startswith(prefix):
+            continue
+        peer_cuda = k[len(prefix):].startswith("cuda")
+        if v.get("src") == "disk":
+            rank = 2
+        else:
+            rank = 0 if peer_cuda == cuda else 1
+        cand = (-rank, int(v["bytes"]))
+        if best is None or cand > best[0]:
+            best = (cand, v)
+    if best is not None:
+        v = best[1]
+        # A disk-walk peer row is still only a disk walk, not a proxy
+        # measurement.
+        return {"bytes": int(v["bytes"]),
+                "src": "disk" if v.get("src") == "disk" else "proxy",
+                "n": int(v.get("n") or 0), "ts": v.get("ts")}
     # Never measured anywhere. Fall back to what the model WEIGHS ON DISK,
     # which for a GGUF or an ONNX file is a solid lower bound on its resident
     # size, and for a CT2 directory is close enough to decide whether a load
@@ -241,20 +280,66 @@ def disk_size(name: str) -> int | None:
         path = _model_path(name)
         if not path:
             return None
+        quant = _gguf_quant(name)
+        if quant:
+            return _gguf_quant_size(path, quant)
         if os.path.isfile(path):
             return int(os.path.getsize(path))
         if os.path.isdir(path):
             total = 0
             for root, _dirs, files in os.walk(path):
                 for fn in files:
+                    p = os.path.join(root, fn)
+                    # A hub cache's snapshots/<rev>/* are symlinks into
+                    # blobs/, and getsize follows them: counting both would
+                    # double every weight. blobs/ holds the real bytes;
+                    # without symlink support the hub writes real files
+                    # and there are no links to skip.
+                    if os.path.islink(p):
+                        continue
                     try:
-                        total += os.path.getsize(os.path.join(root, fn))
+                        total += os.path.getsize(p)
                     except OSError:
                         pass
             return total or None
     except Exception:  # noqa: BLE001 — a prior is never worth an exception
         return None
     return None
+
+
+def _gguf_quant(name: str) -> str:
+    """The `:QUANT` suffix of a `gguf:org/repo:QUANT` key, else ''."""
+    if not name.startswith("gguf:"):
+        return ""
+    return name[5:].partition(":")[2]
+
+
+def _gguf_quant_size(repo_dir: str, quant: str) -> "int | None":
+    """Size of the ONE file in the newest snapshot matching `*{quant}.gguf`
+    (the glob translation.engine resolves the quant with), or None when
+    there is no single match. Summing the repo dir instead would charge an
+    operator who ever fetched a second quant for both files."""
+    snaps = os.path.join(repo_dir, "snapshots")
+    try:
+        revs = [p for p in (os.path.join(snaps, d) for d in os.listdir(snaps))
+                if os.path.isdir(p)]
+    except OSError:
+        return None
+    if not revs:
+        return None
+    newest = max(revs, key=os.path.getmtime)
+    pattern = f"*{quant}.gguf".lower()
+    matches = []
+    for root, _dirs, files in os.walk(newest):
+        for fn in files:
+            p = os.path.join(root, fn)
+            rel = os.path.relpath(p, newest).replace(os.sep, "/")
+            if fnmatch.fnmatchcase(rel.lower(), pattern):
+                matches.append(p)
+    if len(matches) != 1:
+        return None
+    # os.stat follows the snapshot symlink to its blob, once.
+    return int(os.stat(matches[0]).st_size) or None
 
 
 def _model_path(name: str) -> "str | None":

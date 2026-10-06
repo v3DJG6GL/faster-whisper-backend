@@ -111,5 +111,22 @@ def test_negative_vram_delta_is_not_displayed(monkeypatch):
                                          "int8")
     snap = model_registry.loaded_models_snapshot()
     assert snap[0]["name"] == "neg" and snap[0]["vram_mb"] is None
-    model_registry.register_loaded_model("zero", 0, "cpu", "int8")
+    model_registry.register_loaded_model("zero", 0, "cuda", "int8")
     assert model_registry.loaded_models_snapshot()[1]["vram_mb"] == 0
+    # A cpu placement has no VRAM footprint, whatever the NVML delta says.
+    model_registry.register_loaded_model("cpu0", 0, "cpu", "int8")
+    assert model_registry.loaded_models_snapshot()[2]["vram_mb"] is None
+
+
+def test_cpu_load_records_the_disk_prior_not_a_gpu_delta(monkeypatch):
+    """Every family samples NVML around its load whatever the device, so a
+    cpu load's positive delta is somebody else's VRAM (a failed cuda
+    attempt's context, a concurrent decode). It must not become a
+    "measured" row: that would replace the multi-GB disk prior and size the
+    RAM fit check by a few hundred MB."""
+    from faster_whisper_backend.runtime import model_sizes
+    monkeypatch.setattr(model_sizes, "disk_size", lambda name: 3 * 1024 ** 3)
+    model_registry.register_loaded_model("m", 400 * 1024 * 1024, "cpu", "int8")
+    got = model_sizes.lookup("m", "cpu", "int8")
+    assert (got["bytes"], got["src"]) == (3 * 1024 ** 3, "disk")
+    assert model_registry.loaded_models_snapshot()[0]["vram_mb"] is None

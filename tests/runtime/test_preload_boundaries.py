@@ -53,3 +53,18 @@ def test_preload_makes_no_private_access_into_the_stage_modules():
         and node.value.id in aliases
         and node.attr.startswith("_"))
     assert hits == []
+
+
+def test_preload_reaches_no_private_name_by_any_other_spelling():
+    """The alias scan above only sees `alias._name`. A `from <stage module>
+    import _name` and a bare `import <stage module>` used through its
+    dotted path reach the same private state without an alias."""
+    hits = []
+    for node in ast.walk(_tree()):
+        if isinstance(node, ast.ImportFrom) and node.module in _STAGE_MODULES:
+            hits += [f"{node.lineno}: from {node.module} import {a.name}"
+                     for a in node.names if a.name.startswith("_")]
+        elif (isinstance(node, ast.Attribute) and node.attr.startswith("_")
+              and ast.unparse(node.value) in _STAGE_MODULES):
+            hits.append(f"{node.lineno}: {ast.unparse(node)}")
+    assert sorted(hits) == []

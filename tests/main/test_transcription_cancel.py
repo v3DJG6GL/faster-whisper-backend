@@ -147,10 +147,17 @@ def test_progress_and_cancel_are_owner_bound(client, app_module,
         r = client.get(f"/v1/audio/transcriptions/progress/{_PID}",
                        headers=bearer(raw_alice))
         assert r.json()["stage"] == "transcribing"
+        r = client.post(f"/v1/audio/transcriptions/cancel/{_PID}",
+                        headers=bearer(raw_alice))
+        assert r.json() == {"cancelled": True}
+        assert _PID in tx_progress._BATCH_CANCELLED
+        # Cleared, so the admin step below proves the admin path on its own.
+        tx_progress._BATCH_CANCELLED.discard(_PID)
         # An admin may cancel anyone's run (the /stats activity popover).
         r = client.post(f"/v1/audio/transcriptions/cancel/{_PID}",
                         headers=bearer(raw_admin))
         assert r.json() == {"cancelled": True}
+        assert _PID in tx_progress._BATCH_CANCELLED
     finally:
         tx_progress._BATCH_PROGRESS.pop(_PID, None)
         tx_progress._BATCH_CANCELLED.discard(_PID)

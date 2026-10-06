@@ -125,14 +125,16 @@ def _allowed(family: str, model_id: str,
         return model_id in allow
     if family == "diarization":
         allow = set(getattr(cfg, "DIARIZATION_ALLOWED_MODELS", None) or ())
-        allow.add(getattr(cfg, "DIARIZATION_MODEL", "") or "")
-        allow.add(effective.get("DIARIZATION_MODEL") or "")
-        return model_id in allow
+        # Only a SET value joins: an unset one must not make "" allowed.
+        allow.update(v for v in (getattr(cfg, "DIARIZATION_MODEL", ""),
+                                 effective.get("DIARIZATION_MODEL")) if v)
+        return bool(model_id) and model_id in allow
     if family == "separation":
         allow = set(getattr(cfg, "BGM_SEPARATION_ALLOWED_MODELS", None) or ())
-        allow.add(getattr(cfg, "BGM_SEPARATION_UVR_MODEL", "") or "")
-        allow.add(effective.get("BGM_SEPARATION_UVR_MODEL") or "")
-        return model_id in allow
+        allow.update(v for v in (getattr(cfg, "BGM_SEPARATION_UVR_MODEL", ""),
+                                 effective.get("BGM_SEPARATION_UVR_MODEL"))
+                     if v)
+        return bool(model_id) and model_id in allow
     # requested=model_id makes it the CLIENT-value rule: a bare call would
     # let any ref through as admin policy.
     return tr_gating._translation_model_allowed(
@@ -169,7 +171,11 @@ async def preload_models(body: PreloadRequest,
         pair = (m.family, m.id.strip())
         if pair in entries:
             continue
-        if not _allowed(m.family, pair[1], effective):
+        # A blank id (whitespace passes min_length) names no model, and a
+        # non-printable one names no real model either; both would only
+        # ever be deferred, and would hold the plan's /stats row open.
+        if (not pair[1] or not pair[1].isprintable()
+                or not _allowed(m.family, pair[1], effective)):
             denied[pair] = "not_allowed"
         entries.append(pair)
 

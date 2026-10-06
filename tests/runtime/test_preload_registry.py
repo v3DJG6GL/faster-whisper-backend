@@ -564,6 +564,20 @@ def test_plan_receipt_states_a_registration_time_deferral(monkeypatch, caplog):
     assert "stage_disabled" in caplog.text
 
 
+def test_plan_receipt_strips_non_printables_from_a_model_id(monkeypatch,
+                                                            caplog):
+    """The id is client-supplied and a DENIED row is logged too: a newline
+    in it must not forge a plan header row."""
+    _enable(monkeypatch)
+    forged = "x\n[preload] plan deadbeef  user=admin"
+    with caplog.at_level("INFO"):
+        preload.register_plan("u1", [("diarization", forged)],
+                              denied={("diarization", forged): "not_allowed"})
+    lines = [ln for r in caplog.records for ln in r.getMessage().splitlines()]
+    assert sum(ln.startswith("[preload] plan") for ln in lines) == 1
+    assert any("x[preload] plan deadbeef" in ln for ln in lines)
+
+
 def test_plan_receipt_never_breaks_registration(monkeypatch):
     """A receipt is a courtesy; a broken one must not cost a caller its
     plan. The formatter swallows internally, and register_plan's own guard

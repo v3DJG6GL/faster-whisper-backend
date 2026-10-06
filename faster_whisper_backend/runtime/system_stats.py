@@ -67,7 +67,7 @@ def gpu_mem_free_bytes() -> int | None:
     `.free` is the DRIVER's global view, which is exactly why it is the right
     number for a pre-load fit check: it accounts for every other process on the
     machine (a second worker, a game, the desktop compositor), not just the
-    models we registered above."""
+    models runtime.model_registry knows about."""
     if not NVML_OK:
         return None
     try:
@@ -89,9 +89,7 @@ def _build_gpu() -> dict[str, Any] | None:
     if not NVML_OK:
         return None
     h = _nvml_handle
-    name = _safe(lambda: pynvml.nvmlDeviceGetName(h))
-    if isinstance(name, bytes):
-        name = name.decode("utf-8", errors="replace")
+    name = gpu_name()
     mem = _safe(lambda: pynvml.nvmlDeviceGetMemoryInfo(h))
     util = _safe(lambda: pynvml.nvmlDeviceGetUtilizationRates(h))
     cuda_int = _safe(lambda: pynvml.nvmlSystemGetCudaDriverVersion_v2())

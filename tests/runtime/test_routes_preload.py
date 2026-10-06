@@ -163,6 +163,25 @@ def test_empty_stage_allowlist_means_the_configured_model_only(
     assert row["reason"] == "not_allowed"
 
 
+def test_a_blank_stage_model_id_is_never_allowed(client, app_module,
+                                                 monkeypatch):
+    """An unset configured model used to put "" on the allowlist, so a
+    whitespace-only id (it passes min_length, then strips to "") joined the
+    plan, could never be warmed and held its /stats row open until the TTL."""
+    from faster_whisper_backend.runtime import preload_routes
+    cfg = _enable(app_module, monkeypatch)
+    for k in ("DIARIZATION_MODEL", "BGM_SEPARATION_UVR_MODEL"):
+        monkeypatch.setattr(cfg, k, "", raising=False)
+    assert preload_routes._allowed("diarization", "", {}) is False
+    assert preload_routes._allowed("separation", "", {}) is False
+    for fam in ("diarization", "separation"):
+        r = client.post(_URL, json={"models": [{"family": fam, "id": "   "}]})
+        assert r.status_code == 202
+        assert r.json()["models"][0]["reason"] == "not_allowed"
+        plan = preload._plans.get(r.json()["plan_id"])
+        assert plan is None or (plan.entries == [] and plan.job_id is None)
+
+
 def test_identity_effective_stage_model_is_not_reported_not_allowed(
         client, app_module, monkeypatch):
     # The batch handler admits the caller's EFFECTIVE stage model (identity

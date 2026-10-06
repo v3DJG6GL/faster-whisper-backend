@@ -696,7 +696,11 @@ def _log_plan_receipt(pid: str, user_id: "str | None",
         lines = [head]
         for r in results:
             state = r.get("state", "?")
-            row = f"[preload]   {r.get('family', '?'):<11} {r.get('id', '?')}"
+            # The id is client-supplied (a denied one is logged too): strip
+            # newlines and other non-printables so it cannot forge log rows.
+            ident = "".join(ch for ch in str(r.get("id", "?"))
+                            if ch.isprintable())
+            row = f"[preload]   {r.get('family', '?'):<11} {ident}"
             row += f"   {state}"
             if r.get("reason"):
                 row += f" — {r['reason']}"

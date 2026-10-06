@@ -449,6 +449,19 @@ def fake_model():
     return FakeModel()
 
 
+def _repoint_path_default(monkeypatch, fns, path: str) -> None:
+    """Rewrite the trailing `path=` default ARG of each function to `path`.
+
+    A default is bound at def time, so patching the module-level constant
+    alone leaves a direct caller on the REAL file."""
+    for fn in fns:
+        defaults = list(fn.__defaults__ or ())
+        if defaults:
+            defaults[-1] = path
+            monkeypatch.setattr(fn, "__defaults__", tuple(defaults),
+                                raising=False)
+
+
 def isolate_app_env(tmp_path, monkeypatch) -> None:
     """Point every store, ledger and lifespan side effect of `main` at
     tmp_path and reload config from the environment. app_module and
@@ -486,11 +499,9 @@ def isolate_app_env(tmp_path, monkeypatch) -> None:
     from faster_whisper_backend.settings import config_store
     _tmp_overrides = str(tmp_path / "config.local.json")
     monkeypatch.setattr(config_store, "OVERRIDES_PATH", _tmp_overrides, raising=False)
-    for _fn in (config_store.load_overrides, config_store.save_overrides):
-        _defaults = list(_fn.__defaults__ or ())
-        if _defaults:
-            _defaults[-1] = _tmp_overrides
-            monkeypatch.setattr(_fn, "__defaults__", tuple(_defaults), raising=False)
+    _repoint_path_default(monkeypatch, (config_store.load_overrides,
+                                        config_store.save_overrides),
+                          _tmp_overrides)
 
     # model_sizes has the same default-ARG trap: _read/_write/_write_locked
     # bind path=PATH at def time, so a direct caller would otherwise write the
@@ -503,11 +514,8 @@ def isolate_app_env(tmp_path, monkeypatch) -> None:
     from faster_whisper_backend.runtime import stage_rates
     monkeypatch.setattr(stage_rates, "PATH",
                         str(tmp_path / "stage_rates.json"), raising=False)
-    for _fn in (model_sizes._read, model_sizes._write, model_sizes._write_locked):
-        _defaults = list(_fn.__defaults__ or ())
-        if _defaults:
-            _defaults[-1] = _tmp_sizes
-            monkeypatch.setattr(_fn, "__defaults__", tuple(_defaults), raising=False)
+    _repoint_path_default(monkeypatch, (model_sizes._read, model_sizes._write,
+                                        model_sizes._write_locked), _tmp_sizes)
 
     # The rules engine compiles cfg.PIPELINE_RULES at its own import, not at
     # main's: recompile from the freshly reloaded config (a test that edited
@@ -576,11 +584,8 @@ def model_sizes_ledger(tmp_path, monkeypatch):
     from faster_whisper_backend.runtime import model_sizes
     p = str(tmp_path / "model_sizes.json")
     monkeypatch.setattr(model_sizes, "PATH", p, raising=False)
-    for fn in (model_sizes._read, model_sizes._write,
-               model_sizes._write_locked):
-        defaults = list(fn.__defaults__ or ())
-        defaults[-1] = p
-        monkeypatch.setattr(fn, "__defaults__", tuple(defaults), raising=False)
+    _repoint_path_default(monkeypatch, (model_sizes._read, model_sizes._write,
+                                        model_sizes._write_locked), p)
     model_sizes._reset_for_tests()
     yield p
     model_sizes._reset_for_tests()

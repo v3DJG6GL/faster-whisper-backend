@@ -132,6 +132,35 @@ def test_unreadable_file_degrades_to_no_data(ledger, body):
     assert model_sizes.estimate("a", "cuda", "f16") is None
 
 
+@pytest.mark.parametrize("row", [
+    '{"bytes": Infinity}',
+    '{"bytes": NaN}',
+    '{"bytes": -5}',
+    '{"bytes": true}',
+])
+def test_a_nonsense_size_row_is_dropped(ledger, monkeypatch, row):
+    """json.load accepts Infinity / NaN and a bool is an int: lookup()'s
+    int() would raise (and 500 /stats), and a negative size would make
+    fits() always say yes."""
+    monkeypatch.setattr(model_sizes, "disk_size", lambda name: None)
+    with open(ledger, "w", encoding="utf-8") as f:
+        f.write('{"version": 1, "models": {"a|cuda|f16": %s}}' % row)
+    model_sizes._reset_for_tests()
+    assert model_sizes.lookup("a", "cuda", "f16") is None
+    assert model_sizes.lookup("a", "cpu", "int8") is None
+    assert model_sizes.fits("a", "cpu", "int8",
+                            reserve_bytes=0) == (None, "size_unknown")
+
+
+def test_a_nonsense_count_reads_as_zero(ledger):
+    with open(ledger, "w", encoding="utf-8") as f:
+        f.write('{"version": 1, "models": {"a|cuda|f16": '
+                '{"bytes": 10, "n": "many"}}}')
+    model_sizes._reset_for_tests()
+    assert model_sizes.lookup("a", "cuda", "f16")["n"] == 0
+    assert model_sizes.lookup("a", "cpu", "int8")["n"] == 0
+
+
 # ---------------------------------------------------------------------------
 # Disk-size prior
 #
@@ -155,13 +184,48 @@ def test_disk_size_reads_a_uvr_onnx_file(ledger, tmp_path, monkeypatch):
 
 def test_disk_size_sums_a_hf_repo_dir(ledger, tmp_path, monkeypatch):
     hf = tmp_path / "hf"
-    d = hf / "hub" / "models--tencent--HY-MT1.5-7B-GGUF" / "blobs"
+    d = hf / "hub" / "models--pyannote--speaker-diarization-3.1" / "blobs"
     d.mkdir(parents=True)
     (d / "a").write_bytes(b"x" * 1000)
     (d / "b").write_bytes(b"x" * 2000)
     monkeypatch.setenv("HF_HOME", str(hf))
 
-    assert model_sizes.disk_size("gguf:tencent/HY-MT1.5-7B-GGUF:Q4_K_M") == 3000
+    assert model_sizes.disk_size("pyannote:pyannote/speaker-diarization-3.1") == 3000
+
+
+def test_disk_size_counts_snapshot_symlinks_once(ledger, tmp_path, monkeypatch):
+    """A hub cache's snapshots/<rev>/* are symlinks into blobs/; following
+    them as well would double every weight."""
+    hf = tmp_path / "hf"
+    repo = hf / "hub" / "models--org--repo"
+    (repo / "blobs").mkdir(parents=True)
+    (repo / "snapshots" / "rev").mkdir(parents=True)
+    (repo / "blobs" / "a").write_bytes(b"x" * 1000)
+    try:
+        os.symlink(os.path.join("..", "..", "blobs", "a"),
+                   repo / "snapshots" / "rev" / "a")
+    except OSError:
+        pytest.skip("no symlink support")
+    monkeypatch.setenv("HF_HOME", str(hf))
+
+    assert model_sizes.disk_size("pyannote:org/repo") == 1000
+
+
+def test_disk_size_sizes_only_the_requested_gguf_quant(ledger, tmp_path,
+                                                       monkeypatch):
+    """An operator who ever fetched a second quant of the same repo must
+    not be charged for both files when sizing either one."""
+    hf = tmp_path / "hf"
+    snap = hf / "hub" / "models--tencent--HY-MT1.5-7B-GGUF" / "snapshots" / "rev"
+    snap.mkdir(parents=True)
+    (snap / "HY-MT1.5-7B-Q4_K_M.gguf").write_bytes(b"x" * 1000)
+    (snap / "HY-MT1.5-7B-Q8_0.gguf").write_bytes(b"x" * 2000)
+    monkeypatch.setenv("HF_HOME", str(hf))
+
+    assert model_sizes.disk_size("gguf:tencent/HY-MT1.5-7B-GGUF:Q4_K_M") == 1000
+    assert model_sizes.disk_size("gguf:tencent/HY-MT1.5-7B-GGUF:q8_0") == 2000
+    # No single match: unknown, not a guess.
+    assert model_sizes.disk_size("gguf:tencent/HY-MT1.5-7B-GGUF:Q5_K_M") is None
 
 
 def test_disk_size_is_none_when_nothing_is_there(ledger, tmp_path, monkeypatch):
@@ -325,6 +389,20 @@ def test_lookup_reports_source(ledger, monkeypatch):
     assert model_sizes.estimate("on-disk", "cuda", "float16") == 2 * GB
 
 
+def test_proxy_prefers_a_same_device_measurement_over_a_disk_row(ledger):
+    """The ledger is written sorted, so a first-match fallback always picked
+    the cpu row: a cpu DISK prior shadowed a cuda MEASUREMENT of the same
+    model and preload deferred a model that fits."""
+    model_sizes.record("large-v3", "cuda", "int8_float16", 2 * GB)
+    model_sizes.record("large-v3", "cpu", "int8", 6 * GB, measured=False)
+    got = model_sizes.lookup("large-v3", "cuda", "float16")
+    assert (got["bytes"], got["src"]) == (2 * GB, "proxy")
+    # Same device family beats another device; a disk row comes last.
+    model_sizes.record("large-v3", "cpu", "float32", 5 * GB)
+    assert model_sizes.lookup("large-v3", "cuda", "float16")["bytes"] == 2 * GB
+    assert model_sizes.lookup("large-v3", "cpu", "int16")["bytes"] == 5 * GB
+
+
 def test_app_module_keeps_record_off_the_default_ledger(app_module, tmp_path,
                                                         monkeypatch):
     # record() is reached through a model_registry registration (a positive
@@ -339,7 +417,7 @@ def test_app_module_keeps_record_off_the_default_ledger(app_module, tmp_path,
         written.append(path)
         return real(doc, path, **kw)
     monkeypatch.setattr(atomic_json, "atomic_write_json", _spy)
-    model_registry.register_loaded_model("iso", 1024, "cpu", "int8")
+    model_registry.register_loaded_model("iso", 1024, "cuda", "int8")
     assert written == [str(tmp_path / "model_sizes.json")]
     doc = json.loads((tmp_path / "model_sizes.json").read_text(encoding="utf-8"))
-    assert "iso|cpu|int8" in doc["models"]
+    assert "iso|cuda|int8" in doc["models"]

@@ -68,12 +68,12 @@ def test_snapshot_process_fields():
 
 
 def test_snapshot_models_reflects_registry(model_sizes_ledger):
-    model_registry.register_loaded_model("base", 1024 * 1024, "cpu", "int8")
+    model_registry.register_loaded_model("base", 1024 * 1024, "cuda", "int8")
     models = system_stats.system_snapshot()["models"]
     assert len(models) == 1
     assert models[0]["name"] == "base"
     # The measurement went to the repointed ledger, not the session default.
-    assert "base|cpu|int8" in open(model_sizes_ledger, encoding="utf-8").read()
+    assert "base|cuda|int8" in open(model_sizes_ledger, encoding="utf-8").read()
 
 
 # ---------------------------------------------------------------------------

@@ -58,6 +58,13 @@ def register_loaded_model(name: str, vram_bytes: int | None,
     # before/after window) is not a measurement: never store or display it.
     if vram_bytes is not None and vram_bytes < 0:
         vram_bytes = None
+    # NVML cannot measure a CPU placement. Every family samples the GPU around
+    # its load whatever the device, so a cpu load's delta is somebody else's
+    # VRAM: a failed cuda attempt's leftover context before a cpu fallback,
+    # or a concurrent decode. Recorded as "measured", it would replace the
+    # disk prior and size the RAM fit check by a few hundred MB of VRAM.
+    if not (device or "").startswith("cuda"):
+        vram_bytes = None
     with _loaded_models_lock:
         _loaded_models[name] = {
             "name": name,
