@@ -28,6 +28,62 @@ def test_page_ships_sync_ui(client):
     assert "pill sync" in html or ".pill.sync" in html
 
 
+def _load_body(html):
+    body = html[html.index("async function load() {"):]
+    return body[:body.index("\n  }\n")]
+
+
+def test_page_failed_meta_fetch_reads_as_unavailable(client):
+    """A thrown or non-2xx /api/client-settings left the optimistic
+    {unavailable:false} seed: every drawer said "nothing stored", Import
+    stayed enabled and its preview promised "Becomes the first synced
+    settings" while force_put overwrote a real blob."""
+    body = _load_body(client.get("/settings/api-keys").text)
+    assert "window.__csMeta = { by_user: {}, unavailable: false };" not in body
+    assert "else csMeta = { by_user: {}, unavailable: true };" in body
+    assert "catch (_) { csMeta = { by_user: {}, unavailable: true }; }" in body
+
+
+def test_page_failed_usage_and_override_state_are_flagged(client):
+    """Same seed-and-swallow for /api/usage ("no usage yet" everywhere) and
+    /settings/overrides/state (no profiles, every override a text box that
+    saves a string)."""
+    html = client.get("/settings/api-keys").text
+    body = _load_body(html)
+    for flag in ("usage = { by_user: {}, by_key: {}, unavailable: true };",
+                 "ovstate = { profiles: {}, field_meta: {}, rules: [], unavailable: true };"):
+        assert "else " + flag in body
+        assert "catch (_) { " + flag + " }" in body
+    assert "'<div class=\"usage-cell empty\">usage unavailable</div>'" in html
+    assert "usageUnavailable()\n      ? '<span class=\"hint\">Usage unavailable.</span>'" in html
+    # The binding drawer never offers Save over unknown override state.
+    assert "_saveBtn.disabled = _ovUnavailable() || (_sig(b) === _baseline);" in html
+    assert "save.disabled = _ovUnavailable() || (_sig(b) === _baseline);" in html
+
+
+def test_page_overlapping_loads_render_once(client):
+    """Two overlapping load() calls each cleared the list before either
+    appended, so every card showed up twice."""
+    body = _load_body(client.get("/settings/api-keys").text)
+    assert body.startswith("async function load() {\n    var gen = ++_loadGen;")
+    # Checked after the users fetch, _check403, its json, and each of the
+    # three best-effort fetches (meta / usage / override state).
+    assert body.count("if (gen !== _loadGen) return;") == 6
+    # The list is cleared only right before the synchronous rebuild.
+    assert body.index("ct.innerHTML = '';") > body.rindex("await ")
+
+
+def test_page_delete_handles_401_and_detail(client):
+    """Delete showed a bare "HTTP NNN": no login gate on 401, and the route's
+    503/404 detail was dropped (Import and Export handle both)."""
+    html = client.get("/settings/api-keys").text
+    d = html[html.index("api('DELETE', csApiBase(u.id))"):]
+    d = d[:d.index("showToast('Server copy deleted'")]
+    assert "r.status === 401" in d and "window._showLoginGate()" in d
+    assert "JSON.parse(t).detail" in d
+    assert "throw new Error('HTTP ' + r.status);" not in d
+
+
 def test_meta_map_empty(client):
     r = client.get(f"{_API}/client-settings")
     assert r.status_code == 200

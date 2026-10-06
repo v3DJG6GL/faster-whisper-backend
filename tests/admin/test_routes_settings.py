@@ -265,11 +265,16 @@ def _seed_factory(monkeypatch, tmp_path, rules):
     with open(tmp_factory, "w", encoding="utf-8") as f:
         json.dump({"schema_version": 1, "PIPELINE_RULES": rules}, f)
     monkeypatch.setattr(config_store, "FACTORY_PATH", tmp_factory, raising=False)
+    # By NAME, not defaults[-1]: a later trailing default (save_factory_rules'
+    # overrides_path) would take the repoint and leave `path` on the REAL
+    # config.json — which the next factory-rules POST then overwrites.
     for fn in (config_store.load_factory_rules, config_store.save_factory_rules):
+        code = fn.__code__
         defaults = list(fn.__defaults__ or ())
-        if defaults:
-            defaults[-1] = tmp_factory
-            monkeypatch.setattr(fn, "__defaults__", tuple(defaults), raising=False)
+        names = code.co_varnames[:code.co_argcount][-len(defaults):]
+        assert "path" in names, fn
+        defaults[names.index("path")] = tmp_factory
+        monkeypatch.setattr(fn, "__defaults__", tuple(defaults), raising=False)
     return tmp_factory
 
 
@@ -315,6 +320,26 @@ def test_post_factory_rules_reports_shadowed_by_local(client, tmp_path, monkeypa
     assert r2.json()["shadowed_by_local"] is True
 
 
+def test_post_factory_rules_refuses_dropping_a_slug_a_stored_exclude_names(
+        client, tmp_path, monkeypatch):
+    """With no local PIPELINE_RULES copy the factory slugs are canonical: a
+    promote that drops a rule a stored per-model exclude still names is a 422
+    (save_factory_rules' ValidationError), and config.json is left alone."""
+    import json
+    from faster_whisper_backend.settings import config_store
+
+    tmp_factory = _seed_factory(monkeypatch, tmp_path, _rules("alpha", "beta"))
+    with open(config_store.OVERRIDES_PATH, "w", encoding="utf-8") as f:
+        json.dump({"MODEL_OVERRIDES": {"large-v3": {
+            "BEAM_SIZE": 3, "PIPELINE_RULES_EXCLUDE": ["beta"]}}}, f)
+    before = open(tmp_factory, encoding="utf-8").read()
+    r = client.post("/settings/factory-rules",
+                    json={"PIPELINE_RULES": _rules("alpha")})
+    assert r.status_code == 422, r.text
+    assert "beta" in json.dumps(r.json()["errors"])
+    assert open(tmp_factory, encoding="utf-8").read() == before
+
+
 def test_test_pipeline_dry_run(client):
     r = client.post(
         "/settings/test-pipeline",
@@ -331,6 +356,39 @@ def test_test_pipeline_dry_run(client):
     assert "steps" in body and "final" in body
     # The regex-list entry runs, then the implicit terminal trim strips edges.
     assert body["final"] == "hallo world"
+
+
+def test_test_pipeline_stops_at_the_engine_output_bound(client):
+    # Engine parity: pl_engine._postprocess_text stops the rule walk once the
+    # text passes _POSTPROCESS_MAX_CHARS. The dry run used to keep doubling,
+    # reporting a `final` production never produces and echoing every
+    # multi-MB step twice.
+    from faster_whisper_backend.pipeline import engine as pl_engine
+    bound = pl_engine._POSTPROCESS_MAX_CHARS
+    dbl = {"pattern": ".+", "replacement": "\\g<0>\\g<0>"}
+    rules = [{"name": f"r{i}", "type": "regex-list", "enabled": True,
+              "entries": [dbl]} for i in range(12)]
+    r = client.post("/settings/test-pipeline",
+                    json={"sample": "a" * 8192, "rules": rules})
+    assert r.status_code == 200, r.text[:200]
+    body = r.json()
+    assert bound < len(body["final"]) <= 2 * bound
+    steps = body["steps"]
+    hit = next(i for i, s in enumerate(steps) if s.get("capped"))
+    assert not steps[hit]["skipped"]
+    for s in steps[hit + 1:]:
+        assert s["skipped"] and s["capped"]
+        assert s["before"] == s["after"] == ""
+
+    # The same bound inside ONE regex-list: each entry is its own engine row.
+    r = client.post("/settings/test-pipeline", json={
+        "sample": "a" * 8192,
+        "rules": [{"name": "x", "type": "regex-list", "enabled": True,
+                   "entries": [dbl] * 12}]})
+    assert r.status_code == 200
+    step = r.json()["steps"][0]
+    assert step["capped"] is True
+    assert bound < len(step["after"]) <= 2 * bound
 
 
 def test_test_pipeline_regex_list_skips_bad_entry(client):
@@ -1058,3 +1116,65 @@ def test_translation_test_threads_model_family_glossary(
     assert seen["kwargs"]["glossary"] == "Messung = measurement"
     # A stale custom-template textarea must not leak into a built-in family.
     assert seen["kwargs"]["template_override"] is None
+
+
+def _settings_html(client):
+    r = client.get("/settings")
+    assert r.status_code == 200
+    return r.text
+
+
+def test_prompt_lab_family_widgets_follow_a_failed_preview(client):
+    """Textarea / built-in template visibility was set once at build and on
+    a successful preview only: with translation off (every preview 403s) a
+    switch to family=custom kept the textarea hidden, while the save then
+    demanded a non-blank TRANSLATION_PROMPT_TEMPLATE."""
+    html = _settings_html(client)
+    assert "function showFamily(fam) {" in html
+    assert "rawDetails.style.display = (c || !RAW_TPL[fam]) ? 'none' : '';" in html
+    fail = html[html.index("if (r.ok && j.prompt) renderPrompt(j.prompt);"):]
+    fail = fail[:fail.index("readout.textContent = r.status === 403")]
+    assert "showFamily(currentValue('TRANSLATION_PROMPT_FAMILY'));" in fail
+    lst = html[html.index("_registerAdminListener('admin:dirty', 'translationLab'"):]
+    lst = lst[:lst.index("TRANSLATION_ALLOWED_MODELS")]
+    assert "showFamily(currentValue('TRANSLATION_PROMPT_FAMILY'));" in lst
+    rp = html[html.index("function renderPrompt(p) {"):]
+    assert "showFamily(p.family);" in rp[:rp.index("\n  }\n")]
+
+
+def test_prompt_lab_thrown_preview_clears_the_old_prompt(client):
+    html = _settings_html(client)
+    sp = html[html.index("function schedulePreview() {"):]
+    sp = sp[:sp.index("\n  }\n")]
+    c = sp[sp.index("} catch (e) {"):]
+    assert "if (seq !== previewSeq) return;" in c
+    assert "readout.textContent = 'preview unavailable: ' + e;" in c
+
+
+def test_prompt_lab_late_progress_tick_cannot_repaint_the_stage(client):
+    """clearInterval does not stop a tick whose fetch is in flight; it wrote
+    "Translating… 100%" back under the finished result."""
+    html = _settings_html(client)
+    body = html[html.index("let done = false;"):]
+    body = body[:body.index("testBtn.disabled = false;")]
+    assert "if (done || !pr.ok) return;" in body
+    assert "if (done) return;" in body
+    assert body.count("done = true;") == 2
+
+
+def test_help_text_links_drop_a_closing_quote(client):
+    """CORS_ALLOW_ORIGINS / TRUSTED_ORIGINS quote example origins; the
+    closing quote ended up inside the link's href and text."""
+    html = _settings_html(client)
+    assert "while (/[.,;:)'\"\\]]$/.test(url)) url = url.slice(0, -1);" in html
+
+
+def test_header_reload_asks_before_dropping_unsaved_edits(client):
+    """The header reload ran loadState(), which resets `dirty` without
+    asking; the Restart button next to it asks."""
+    html = _settings_html(client)
+    assert "window._pageReload = loadState;" not in html
+    rl = html[html.index("window._pageReload = () => {"):]
+    rl = rl[:rl.index("};")]
+    assert "Object.keys(dirty).length > 0" in rl and "confirm(" in rl
+    assert "return loadState();" in rl

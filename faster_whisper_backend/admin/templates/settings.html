@@ -1096,7 +1096,9 @@ function setHelpText(el, text) {
   let last = 0, m;
   while ((m = re.exec(text)) !== null) {
     let url = m[0];
-    while (/[.,;:)]$/.test(url)) url = url.slice(0, -1);
+    // Trailing prose punctuation and the closing quote of a quoted example
+    // origin ('https://app.example.com') are not part of the URL.
+    while (/[.,;:)'"\]]$/.test(url)) url = url.slice(0, -1);
     if (m.index > last) el.appendChild(document.createTextNode(text.slice(last, m.index)));
     const a = document.createElement('a');
     a.href = url;
@@ -2290,14 +2292,20 @@ function translationTemplateEditor(name, v) {
   rawPre.style.whiteSpace = 'pre-wrap';
   rawDetails.appendChild(rawPre);
   right.appendChild(rawDetails);
-  // Initial visibility from the configured family: renderPrompt() redoes it
-  // on every successful preview, but a failed one (403 translation off,
-  // 400/422, network) would leave the custom textarea showing beside the
-  // built-in template reference.
-  const fam0 = currentValue('TRANSLATION_PROMPT_FAMILY');
-  t.style.display = fam0 === 'custom' ? '' : 'none';
-  rawDetails.style.display = fam0 === 'custom' ? 'none' : '';
-  if (fam0 !== 'custom') rawPre.textContent = RAW_TPL[fam0] || '';
+  // Custom textarea vs built-in template reference for a family. Set at
+  // build, by renderPrompt() on a successful preview, by the failed-preview
+  // branch and on every family change: a failed preview (403 translation off,
+  // 400/422, network) must not leave the previous family's widgets on show —
+  // with family=custom that hid the only place to type the template the save
+  // then demands. A family with no built-in template (auto) hides the
+  // reference instead of opening an empty one.
+  function showFamily(fam) {
+    const c = fam === 'custom';
+    t.style.display = c ? '' : 'none';
+    rawDetails.style.display = (c || !RAW_TPL[fam]) ? 'none' : '';
+    if (!c) rawPre.textContent = RAW_TPL[fam] || '';
+  }
+  showFamily(currentValue('TRANSLATION_PROMPT_FAMILY'));
 
   wrap.appendChild(left);
   wrap.appendChild(right);
@@ -2338,10 +2346,7 @@ function translationTemplateEditor(name, v) {
     const samp = Object.entries(p.sampling || {})
       .map(([k, val]) => k + ' ' + val).join(' · ');
     sampling.textContent = 'sampling: ' + (samp || 'greedy') + ' · n_ctx ' + p.n_ctx;
-    const isCustom = p.family === 'custom';
-    t.style.display = isCustom ? '' : 'none';
-    rawDetails.style.display = isCustom ? 'none' : '';
-    if (!isCustom) rawPre.textContent = RAW_TPL[p.family] || '';
+    showFamily(p.family);
     testBtn.dataset.cold = p.model_loaded ? '' : '1';
   }
 
@@ -2363,13 +2368,21 @@ function translationTemplateEditor(name, v) {
           // sample bounds) must not leave the PREVIOUS inputs' prompt on show.
           famChip.textContent = '';
           sampling.textContent = '';
+          showFamily(currentValue('TRANSLATION_PROMPT_FAMILY'));
           readout.textContent = r.status === 403
             ? 'translation is disabled (TRANSLATION_ENABLED)'
             : 'preview unavailable: ' + (j.error
               || (Array.isArray(j.detail) ? j.detail.map(d => d.msg).join('; ') : j.detail)
               || ('HTTP ' + r.status));
         }
-      } catch (e) { /* preview is best-effort; the test button reports errors */ }
+      } catch (e) {
+        // Best-effort, but a thrown fetch must not leave the previous
+        // inputs' prompt on show either (same as the non-2xx branch).
+        if (seq !== previewSeq) return;
+        famChip.textContent = '';
+        sampling.textContent = '';
+        readout.textContent = 'preview unavailable: ' + e;
+      }
     }, 300);
   }
   [modelSel, srcIn, tgtIn].forEach(el => el.addEventListener('change', schedulePreview));
@@ -2389,12 +2402,17 @@ function translationTemplateEditor(name, v) {
     const pid = Array.from(crypto.getRandomValues(new Uint8Array(16)))
       .map(b => b.toString(16).padStart(2, '0')).join('');
     const fmtGB = b => (b / 1073741824).toFixed(2);
+    // clearInterval stops future ticks, not one whose fetch is in flight:
+    // `done` keeps a late tick from writing a stale stage line back under
+    // the finished result.
+    let done = false;
     const poll = setInterval(async () => {
       try {
         const pr = await fetch('/v1/audio/transcriptions/progress/' + pid,
                                { cache: 'no-store' });
-        if (!pr.ok) return;
+        if (done || !pr.ok) return;
         const p = await pr.json();
+        if (done) return;
         if (p.stage === 'downloading') {
           const pct = p.progress != null ? Math.round(p.progress * 100) : null;
           let txt = 'Downloading model' + (pct != null ? '… ' + pct + '%' : '…');
@@ -2417,6 +2435,7 @@ function translationTemplateEditor(name, v) {
       const bodyObj = labBody(false);
       bodyObj.progress_id = pid;
       const r = await api('POST', '/settings/translation-test', bodyObj);
+      done = true;
       clearInterval(poll);
       const j = await r.json().catch(() => ({}));
       stage.textContent = '';
@@ -2468,6 +2487,7 @@ function translationTemplateEditor(name, v) {
     } catch (e) {
       stage.textContent = 'test failed: ' + e;
     } finally {
+      done = true;
       clearInterval(poll);
     }
     testBtn.disabled = false;
@@ -2477,7 +2497,10 @@ function translationTemplateEditor(name, v) {
   // model-aware — family=auto resolves from the picked model server-side).
   _registerAdminListener('admin:dirty', 'translationLab', (e) => {
     if (!e.detail) return;
-    if (e.detail.name === 'TRANSLATION_PROMPT_FAMILY') schedulePreview();
+    if (e.detail.name === 'TRANSLATION_PROMPT_FAMILY') {
+      showFamily(currentValue('TRANSLATION_PROMPT_FAMILY'));
+      schedulePreview();
+    }
     if (e.detail.name === 'TRANSLATION_ALLOWED_MODELS'
         || e.detail.name === 'TRANSLATION_DEFAULT_MODEL') {
       refreshModels(); schedulePreview();
@@ -2867,14 +2890,21 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
   // canonical config.json, which carries none. Compare without it, so an
   // edit undone by hand clears the dirty entry instead of leaving Save lit
   // (and a Save then pinning this server to a full local copy of the rules).
-  function _sansRevs(v) {
+  // Only where the server copy of the rule carries no rev, though: against a
+  // stored rev, a rev-only change is real (_afterPromoteStamp's restamp) and
+  // dropping it would read the next config.json change as 'diverged'.
+  // `keep`: name → the server copy's config_rev.
+  function _sansRevs(v, keep) {
     return JSON.stringify((v || []).map(r => {
-      const c = Object.assign({}, r); delete c.config_rev; return c;
+      const c = Object.assign({}, r);
+      if (!(keep && keep.get(r && r.name))) delete c.config_rev;
+      return c;
     }));
   }
   function _setRulesDirty() {
     const cur = fieldDef(name).value;
-    setDirty(name, _sansRevs(rules) === _sansRevs(cur)
+    const keep = new Map((cur || []).map(r => [r && r.name, r && r.config_rev]));
+    setDirty(name, _sansRevs(rules, keep) === _sansRevs(cur, keep)
       ? cur : JSON.parse(JSON.stringify(rules)));
   }
   function commitData() {
@@ -4563,11 +4593,14 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
       if (st !== 'edited' && st !== 'diverged' && st !== 'local-only') return;
       // A diverged rule's config.json side is NEWER than the base of the
       // local edit: promoting it throws that update away, so it is an
-      // explicit tick (the single-rule promote warns the same way).
+      // explicit tick (the single-rule promote warns the same way). An
+      // 'edited' rule with no config_rev (saved before revs existed) may be
+      // either case — _ruleStatus cannot tell — so it starts unticked too.
       const diverged = st === 'diverged';
-      if (diverged) nDiverged++;
+      const ambiguous = st === 'edited' && !r.config_rev;
+      if (diverged || ambiguous) nDiverged++;
       groups.push({
-        id: r.name, name: r.label || r.name, pick: true, checked: !diverged,
+        id: r.name, name: r.label || r.name, pick: true, checked: !diverged && !ambiguous,
         meta: st === 'local-only' ? 'only on this server · new in config.json'
             : st === 'diverged' ? 'edited here · config.json changed too' : 'edited here',
         rows: _ruleDiffRows(_factoryRule(r.name), r),
@@ -4576,9 +4609,10 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
     // config.json rules this server does not have: left alone unless ticked.
     // (A saved local list cannot tell "deleted here on purpose" from "new in
     // an update", so removal from config.json is always an explicit choice.)
+    // 'rm:' cannot start a rule slug (^[a-z0-9-]+$ allows a leading '-').
     _missingFactoryRules().forEach(b => {
       groups.push({
-        id: '-' + b.name, name: b.label || b.name, pick: true, checked: false, open: false,
+        id: 'rm:' + b.name, name: b.label || b.name, pick: true, checked: false, open: false,
         meta: 'not on this server · tick to REMOVE it from config.json',
         right: ['After promote', 'removed from config.json'],
         rows: _ruleDiffRows(b, null),
@@ -4594,7 +4628,8 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
       extraEls: [_seededOrderDirty() ? _orderChangeEl() : null],
       warn: [
         nDiverged ? nDiverged + ' rule' + (nDiverged === 1 ? '' : 's')
-          + ' also changed in config.json since last sync and start'
+          + ' also changed in config.json since last sync (or have no sync'
+          + ' record) and start'
           + ' unticked: ticking one replaces those newer config.json changes'
           + ' with this server\'s version.' : '',
         _seededOrderDirty() ? 'The rule order on this server differs from config.json and is written as well.' : '',
@@ -4602,8 +4637,8 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
       confirm: n => '↑ Promote ' + n + ' selected rule' + (n === 1 ? '' : 's'),
       confirmClass: 'solid-up',
       onConfirm: async (ids) => {
-        const promote = new Set(ids.filter(i => i[0] !== '-'));
-        const remove = new Set(ids.filter(i => i[0] === '-').map(i => i.slice(1)));
+        const promote = new Set(ids.filter(i => !i.startsWith('rm:')));
+        const remove = new Set(ids.filter(i => i.startsWith('rm:')).map(i => i.slice(3)));
         // keepAbsent=true: config.json rules missing here stay in config.json;
         // only the explicitly ticked ones are dropped. The immutable terminal
         // is written from COMMITTED content (see _buildFactoryPayload).
@@ -4825,7 +4860,9 @@ function pipelineTestPanel() {
       // entry and still applies the rest, so the step carries a real after/
       // matches alongside `error`. Show the output, not just the warning.
       const advisory = step.error && step.type === 'regex-list';
-      if (step.skipped) badge = testBadge('empty', 'skipped');
+      // `capped`: an earlier rule pushed the text past the engine's output
+      // bound, so the engine skips this one too.
+      if (step.skipped) badge = testBadge('empty', step.capped ? 'skipped · output limit' : 'skipped');
       // A screened regex-list entry is not run, but the step's other entries
       // are: the badge says so instead of "not run" next to real output.
       else if (step.not_run) badge = testBadge('warn', step.type === 'regex-list'
@@ -5391,7 +5428,13 @@ document.addEventListener('DOMContentLoaded', async () => {
   // a 401 from loadState()/api() shows it; it prompts + reloads on success.
   // #logout-btn + #reload-btn are wired globally in OPEN_MODE_BANNER_JS;
   // expose this page's soft refresh (re-fetch config) as the reload hook.
-  window._pageReload = loadState;
+  // loadState() drops `dirty` without asking, so the header ↻ asks first —
+  // the same question the Restart button asks.
+  window._pageReload = () => {
+    if (Object.keys(dirty).length > 0
+        && !confirm('You have unsaved changes that will be lost on reload. Continue?')) return;
+    return loadState();
+  };
   // Collapse/expand-all lives on the toolbar (not the section-nav strip); its
   // label is kept in sync by refreshSectionToggleAllLabel() after each render.
   $('sec-toggle-all').addEventListener('click', () => setAllSections(!_anySectionOpen()));

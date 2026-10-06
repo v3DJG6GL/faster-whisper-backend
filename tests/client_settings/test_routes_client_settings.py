@@ -84,6 +84,37 @@ def test_non_finite_float_rejected_and_nothing_stored(client):
     assert r.json()["version"] == 0 and r.json()["blob"] is None
 
 
+def test_legacy_non_finite_row_serves_null_not_500(client, make_user_key):
+    """A row stored before the write side refused NaN still holds the bare
+    literal. Parsed as float('nan') it 500'd the 409 merge body (JSONResponse
+    renders with allow_nan=False) on every stale retry, and the admin export
+    wrote a file its own import rejects. It is served as null instead."""
+    import json
+
+    from faster_whisper_backend.client_settings import store
+    uid, key = make_user_key("legacy", is_admin=True)
+    assert _put(client, {"x": 1, "y": "keep"}, 0,
+                headers=bearer(key)).status_code == 200
+    store._conn.execute(
+        "UPDATE client_settings SET blob = ? WHERE user_id = ?",
+        ('{"x":NaN,"y":"keep"}', uid))
+
+    r = _put(client, {"x": 2}, 0, headers=bearer(key))   # stale base
+    assert r.status_code == 409
+    assert r.json()["blob"] == {"x": None, "y": "keep"}
+    r = client.get(_URL, headers=bearer(key))
+    assert r.status_code == 200
+    assert r.json()["blob"] == {"x": None, "y": "keep"}
+
+    def _reject(c):
+        raise ValueError(c)
+    r = client.get(
+        f"/settings/api-keys/api/users/{uid}/client-settings/export",
+        headers=bearer(key))
+    assert r.status_code == 200
+    assert json.loads(r.content, parse_constant=_reject) == {"x": None, "y": "keep"}
+
+
 def test_malformed_422(client):
     # Missing base_version.
     r = client.put(_URL, json={"blob": {}})

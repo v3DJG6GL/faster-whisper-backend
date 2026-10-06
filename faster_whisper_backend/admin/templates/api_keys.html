@@ -1335,7 +1335,14 @@
          + '<span class="k">' + caption + '</span></div>';
   }
   // Compact per-key stat block for a key card's meta row.
+  function usageUnavailable() {
+    return !!(window.__usage && window.__usage.unavailable);
+  }
   function usageCellHtml(stat) {
+    // A failed rollup fetch must not read as "never used".
+    if (usageUnavailable()) {
+      return '<div class="usage-cell empty">usage unavailable</div>';
+    }
     if (!stat || !stat.requests) {
       return '<div class="usage-cell empty">no usage yet</div>';
     }
@@ -1354,7 +1361,9 @@
   function userUsageHtml(stat, lastUsedTs) {
     var lastact = '<span class="stat lastact"><span class="k">last active</span>'
       + '<span class="v">' + metaWhen(lastUsedTs) + '</span></span>';
-    var rest = (!stat || !stat.requests)
+    var rest = usageUnavailable()
+      ? '<span class="hint">Usage unavailable.</span>'
+      : (!stat || !stat.requests)
       ? '<span class="hint">No usage recorded yet.</span>'
       : (_stat(fmtCount(stat.requests), 'requests')
          + _stat(fmtCount(stat.words), 'words')
@@ -1492,7 +1501,11 @@
     }
     var _baseline = _sig(b);
     var _saveBtn = null;
-    function _syncSave() { if (_saveBtn) _saveBtn.disabled = (_sig(b) === _baseline); }
+    // A failed /settings/overrides/state fetch leaves no profiles and no field
+    // metadata: every direct override would render as a text box and save a
+    // string, so the drawer says so and never offers Save.
+    function _ovUnavailable() { return !!ovState().unavailable; }
+    function _syncSave() { if (_saveBtn) _saveBtn.disabled = _ovUnavailable() || (_sig(b) === _baseline); }
     // UI intent: a freshly-chosen but still-empty "Restrict to…" allowlist has
     // the same data ([]) as "None". Without this sticky flag the dropdown would
     // snap back to "None" on rerender and the checkbox grid (the only way to add
@@ -1606,6 +1619,11 @@
     }
 
     function draw() {
+      if (_ovUnavailable()) {
+        var ua = document.createElement('div'); ua.className = 'ohint';
+        ua.textContent = 'Override state unavailable — reload the page before editing.';
+        root.appendChild(ua);
+      }
       // --- Profiles card ---
       var pcard = _ovCard('Profiles', 'ordered · earlier wins',
         'Applied in order, before the direct overrides below.');
@@ -1692,7 +1710,7 @@
       var spacer = document.createElement('span'); spacer.className = 'spacer';
       var save = document.createElement('button'); save.className = 'primary'; save.textContent = 'Save overrides';
       _saveBtn = save;
-      save.disabled = (_sig(b) === _baseline);   // nothing changed yet → off
+      save.disabled = _ovUnavailable() || (_sig(b) === _baseline);   // nothing changed yet → off
       save.onclick = function () {
         save.disabled = true;
         opts.save({
@@ -2039,7 +2057,17 @@
         + 're-uploads its own copy.')) return;
       api('DELETE', csApiBase(u.id))
         .then(function (r) {
-          if (!r.ok) throw new Error('HTTP ' + r.status);
+          // Same handling as Import: 401 opens the login gate, otherwise the
+          // route's `detail` (store unavailable, user not found) is shown.
+          if (r.status === 401) {
+            if (window._showLoginGate) window._showLoginGate();
+            throw new Error('signed out');
+          }
+          if (!r.ok) return r.text().then(function (t) {
+            var msg = t || ('HTTP ' + r.status);
+            try { msg = JSON.parse(t).detail || msg; } catch (_e) {}
+            throw new Error(String(msg));
+          });
           showToast('Server copy deleted', 'ok');
           load();
         })
@@ -2109,34 +2137,46 @@
       });
   }
 
+  // Overlapping load() calls (double-click on reload, an action followed by a
+  // quick reload) would each append the full user list; only the newest one
+  // renders.
+  var _loadGen = 0;
   async function load() {
+    var gen = ++_loadGen;
     var r = await api('GET', '/settings/api-keys/api/users');
+    if (gen !== _loadGen) return;
     if (r.status === 401) {
       // Shared login gate prompts + reloads on success (which re-runs load()).
       if (window._showLoginGate) window._showLoginGate();
       return;
     }
     if (await _check403(r)) return;
+    if (gen !== _loadGen) return;
     if (!r.ok) {
       showToast('Load failed: HTTP ' + r.status, 'err');
       return;
     }
     var j = await r.json();
+    if (gen !== _loadGen) return;
     // role-admin is set by OPEN_MODE_BANNER_JS (single source of truth)
     // when whoami.is_admin=true. This page used to add it here
     // unconditionally; redundant now that the central script owns it.
     var banner = document.getElementById('open-banner');
     banner.style.display = j.open_mode ? 'block' : 'none';
     var ct = document.getElementById('users-container');
-    ct.innerHTML = '';
     // Per-account synced-settings metadata for the header chips + drawers.
     // Fetched before the empty-users early-return so an open-mode blob is
-    // still surfaced when no users exist yet. Best-effort, like usage.
-    window.__csMeta = { by_user: {}, unavailable: false };
+    // still surfaced when no users exist yet. Best-effort, like usage — but a
+    // failed fetch is "store unavailable", never "nothing stored": the latter
+    // keeps Import enabled and lets force_put overwrite a real blob unwarned.
+    var csMeta;
     try {
       var cs = await api('GET', '/settings/api-keys/api/client-settings');
-      if (cs.ok) window.__csMeta = await cs.json();
-    } catch (_) {}
+      if (cs.ok) csMeta = await cs.json();
+      else csMeta = { by_user: {}, unavailable: true };
+    } catch (_) { csMeta = { by_user: {}, unavailable: true }; }
+    if (gen !== _loadGen) return;
+    window.__csMeta = csMeta;
     if (!j.users.length) {
       document.getElementById('perm-matrix-card').style.display = 'none';
       ct.innerHTML = '<p class="hint">No users yet. Add one above to create the first admin.</p>';
@@ -2147,17 +2187,28 @@
     // Pull the usage rollup once (lifetime) so per-user strips and per-key
     // cells can join against it client-side. Best-effort — a usage failure
     // must never blank the key-management UI.
-    window.__usage = { by_user: {}, by_key: {} };
+    // A failed fetch is flagged `unavailable` so cards say "usage
+    // unavailable" instead of "no usage yet".
+    var usage;
     try {
       var ur = await api('GET', '/settings/api-keys/api/usage');
-      if (ur.ok) window.__usage = await ur.json();
-    } catch (_) {}
+      if (ur.ok) usage = await ur.json();
+      else usage = { by_user: {}, by_key: {}, unavailable: true };
+    } catch (_) { usage = { by_user: {}, by_key: {}, unavailable: true }; }
+    if (gen !== _loadGen) return;
     // Override profiles + field metadata for the per-identity binding drawers.
-    window.__ovstate = { profiles: {}, field_meta: {}, rules: [] };
+    // Flagged `unavailable` on failure: the drawers then refuse to save.
+    var ovstate;
     try {
       var os = await api('GET', '/settings/overrides/state');
-      if (os.ok) window.__ovstate = await os.json();
-    } catch (_) {}
+      if (os.ok) ovstate = await os.json();
+      else ovstate = { profiles: {}, field_meta: {}, rules: [], unavailable: true };
+    } catch (_) { ovstate = { profiles: {}, field_meta: {}, rules: [], unavailable: true }; }
+    if (gen !== _loadGen) return;
+    window.__usage = usage;
+    window.__ovstate = ovstate;
+    // Cleared only here, right before the synchronous rebuild.
+    ct.innerHTML = '';
     renderMatrix(j);
     var nUsers = j.users.length;
     j.users.forEach(function(u) { ct.appendChild(renderUser(u, nUsers)); });

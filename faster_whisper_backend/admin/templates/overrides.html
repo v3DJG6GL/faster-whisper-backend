@@ -921,6 +921,9 @@ window._renderWaterfall = (function () {
     if (!r.ok) { setStatus('save failed (' + r.status + ')', 'err'); return; }
     snapshot = JSON.stringify(profiles);
     await loadState(true);    // refresh usage + canonical values
+    // loadState replaced `profiles`; every widget still closes over the old
+    // profiles[sel], so without a re-render the next edit lands on an orphan.
+    render();
     setStatus('saved', 'ok'); refreshButtons();
   }
   function discard() {
@@ -961,12 +964,17 @@ window._renderWaterfall = (function () {
     });
     fillKeys();
   }
+  // Sequenced: a slower answer for an earlier pick must not land in the
+  // current pick's key list / waterfall.
+  var _keysSeq = 0, _resolveSeq = 0;
   async function fillKeys() {
+    var seq = ++_keysSeq;
     exKey.innerHTML = '<option value="">(no specific key)</option>';
     var uid = exUser.value; if (!uid) return;
     var r = await fetch('/settings/api-keys/api/users/' + encodeURIComponent(uid) + '/keys');
-    if (!r.ok) return;
+    if (seq !== _keysSeq || !r.ok) return;
     var j = await r.json();
+    if (seq !== _keysSeq) return;
     (j.keys || []).forEach(function (k) {
       var o = document.createElement('option'); o.value = k.id;
       o.textContent = (k.label || '(no label)') + ' · ' + k.key_prefix + '…' + k.key_last4;
@@ -974,6 +982,7 @@ window._renderWaterfall = (function () {
     });
   }
   async function doResolve() {
+    var seq = ++_resolveSeq;
     if (!exUser.value) { exOut.innerHTML = '<p class="hint">Pick a user to resolve.</p>'; return; }
     var sim = exSim.value.trim();
     if (sim) { try { JSON.parse(sim); exSim.classList.remove('err'); }
@@ -982,9 +991,12 @@ window._renderWaterfall = (function () {
     if (exKey.value) qs.set('key_id', exKey.value);
     if (sim) qs.set('sim', sim);
     var r = await fetch('/settings/overrides/resolve?' + qs.toString());
+    if (seq !== _resolveSeq) return;
     if (await guard403(r)) return;
+    if (seq !== _resolveSeq) return;
     if (!r.ok) { exOut.innerHTML = '<p class="status err">resolve failed (' + r.status + ')</p>'; return; }
     var j = await r.json();
+    if (seq !== _resolveSeq) return;
     exOut.innerHTML = '';
     if (j.profiles_applied && j.profiles_applied.length) {
       var pa = document.createElement('p'); pa.className = 'hint';

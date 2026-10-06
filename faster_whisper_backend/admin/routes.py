@@ -759,6 +759,11 @@ async def test_pipeline(payload: dict[str, Any]) -> JSONResponse:
                         erep = (lambda mt, _r=er: mt.expand(_r) if "\\" in _r else _r)
                         total += sum(1 for _ in ecre.finditer(cur))
                         cur = ecre.sub(erep, cur)
+                        # Engine parity: each entry is its own engine row and
+                        # the walk stops once the text passes the output bound.
+                        if len(cur) > pl_engine._POSTPROCESS_MAX_CHARS:
+                            lout["capped"] = True
+                            break
                     lout["after"] = cur
                     lout["matches"] = total
                     if bad is not None:
@@ -776,7 +781,8 @@ async def test_pipeline(payload: dict[str, Any]) -> JSONResponse:
             # so show the valid entries' result + the bad pattern as an advisory.
             return {**common, "after": lout["after"], "matches": lout["matches"],
                     "error": lout.get("err"),
-                    **({"not_run": True} if lout.get("not_run") else {})}
+                    **({"not_run": True} if lout.get("not_run") else {}),
+                    **({"capped": True} if lout.get("capped") else {})}
 
         try:
             if rtype == "callback:map":
@@ -844,8 +850,20 @@ async def test_pipeline(payload: dict[str, Any]) -> JSONResponse:
     # guard thread, so once the budget is burnt the remaining rules are
     # reported `slow` WITHOUT starting more threads.
     deadline = time.monotonic() + 5.0
+    capped = False
     for idx, rule in enumerate(rules):
         if not isinstance(rule, dict):
+            continue
+        # Engine parity: once the text passes pl_engine._POSTPROCESS_MAX_CHARS
+        # the engine skips every remaining rule (the terminal trim still runs).
+        # The skipped steps echo no text — repeating a multi-MB buffer per
+        # step is what the bound exists to stop.
+        if capped and rule.get("type") != "terminal":
+            steps.append({"ordinal": idx + 1,
+                          "label": rule.get("label", rule.get("name", "?")),
+                          "type": rule.get("type", "?"), "before": "",
+                          "after": "", "matches": 0, "skipped": True,
+                          "capped": True, "error": None, "slow": False})
             continue
         # `terminal` is a plain strip in _run_rule (no regex, no guard
         # thread), so it is exempt from the skip: reporting it `slow` and
@@ -864,6 +882,9 @@ async def test_pipeline(payload: dict[str, Any]) -> JSONResponse:
         step["ordinal"] = idx + 1
         steps.append(step)
         text = step["after"]
+        if len(text) > pl_engine._POSTPROCESS_MAX_CHARS:
+            step["capped"] = True
+            capped = True
         if rule.get("type") == "terminal":
             saw_terminal = True
     if not saw_terminal:

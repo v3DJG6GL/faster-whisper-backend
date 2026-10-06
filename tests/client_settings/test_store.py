@@ -108,6 +108,34 @@ def test_corrupt_blob_logs_warning(client_settings_store_db, caplog):
     assert "{not json" not in recs[0].getMessage()    # never the blob itself
 
 
+def test_corrupt_blob_warning_reports_utf8_bytes(client_settings_store_db, caplog):
+    """The corrupt-row WARNING says "bytes": the stored UTF-8 size, like the
+    put lines and list_meta — not a character count."""
+    store = client_settings_store_db
+    store.put("u1", {"n": 1}, 0)
+    raw = '{"s": "äöü"'
+    store._conn.execute(
+        "UPDATE client_settings SET blob = ? WHERE user_id = 'u1'", (raw,))
+    with caplog.at_level(logging.WARNING, logger="whisper-api"):
+        assert store.get("u1")["blob"] == {}
+    msg = next(r.getMessage() for r in caplog.records
+               if "not parseable" in r.getMessage())
+    assert f"({len(raw.encode('utf-8'))} bytes)" in msg
+    assert store.list_meta()[0]["bytes"] == len(raw.encode("utf-8"))
+
+
+def test_non_finite_legacy_row_served_as_null_with_warning(
+        client_settings_store_db, caplog):
+    store = client_settings_store_db
+    store.put("u1", {"n": 1}, 0)
+    store._conn.execute(
+        "UPDATE client_settings SET blob = '{\"n\":Infinity,\"k\":2}'"
+        " WHERE user_id = 'u1'")
+    with caplog.at_level(logging.WARNING, logger="whisper-api"):
+        assert store.get("u1")["blob"] == {"n": None, "k": 2}
+    assert any("non-finite" in r.getMessage() for r in caplog.records)
+
+
 def test_device_truncated(client_settings_store_db):
     store = client_settings_store_db
     ok, state = store.put("u1", {}, 0, device="d" * 1000)

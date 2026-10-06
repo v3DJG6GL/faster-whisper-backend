@@ -394,3 +394,30 @@ def test_rename_profile_old_name_case_insensitive(client, make_user_key):
     assert "clinic-de" not in j["profiles"]
     assert "clinic-deutsch" in j["profiles"]
     assert api_keys_store.get_user_config(uid)["profiles"] == ["clinic-deutsch"]
+
+
+def test_page_save_rerenders_after_reloading_state(client):
+    """save() replaced `profiles` via loadState(true) without render(): every
+    widget still closed over the old profiles[sel], so the next edit landed
+    on an orphan (dropped, or never lighting Save)."""
+    html = client.get(OV).text
+    body = html[html.index("async function save() {"):]
+    body = body[:body.index("\n  }\n")]
+    ok = body[body.index("snapshot = JSON.stringify(profiles);"):]
+    assert ok.index("await loadState(true);") < ok.index("render();") \
+        < ok.index("setStatus('saved', 'ok');")
+
+
+def test_page_explorer_drops_stale_answers(client):
+    """fillKeys / doResolve had no sequencing: a slower answer for an earlier
+    pick mixed keys from two users or overwrote the current waterfall."""
+    html = client.get(OV).text
+    fk = html[html.index("async function fillKeys() {"):]
+    fk = fk[:fk.index("\n  }\n")]
+    assert "var seq = ++_keysSeq;" in fk
+    assert "if (seq !== _keysSeq || !r.ok) return;" in fk
+    assert "if (seq !== _keysSeq) return;" in fk
+    dr = html[html.index("async function doResolve() {"):]
+    dr = dr[:dr.index("\n  }\n")]
+    assert "var seq = ++_resolveSeq;" in dr
+    assert dr.count("if (seq !== _resolveSeq) return;") == dr.count("await ")

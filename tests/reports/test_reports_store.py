@@ -217,6 +217,26 @@ def test_clear_all(reports_store_db):
     assert rs.list_reports() == []
 
 
+def test_clear_all_survives_a_reader_mid_statement(reports_store_db, caplog):
+    """Readers on the shared connection do not take _lock; SQLite refuses
+    VACUUM while one of their statements is open. The DELETE had already
+    committed, so the raise 500'd the route and skipped the audit line."""
+    import logging
+    rs = reports_store_db
+    for i in range(3):
+        _submit(rs, request_id=f"r{i}")
+    cur = rs._conn.execute("SELECT id FROM reports")
+    cur.fetchone()                      # statement still open
+    try:
+        with caplog.at_level(logging.INFO, logger="whisper-api"):
+            assert rs.clear_all(reporter_host="1.2.3.4") == 3
+    finally:
+        cur.close()
+    assert rs.list_reports() == []
+    assert "vacuum skipped" in caplog.text
+    assert "admin from 1.2.3.4 cleared 3 reports" in caplog.text
+
+
 # ---------------------------------------------------------------------------
 # _evict_to_cap (closed before open)
 # ---------------------------------------------------------------------------

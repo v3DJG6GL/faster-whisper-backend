@@ -593,8 +593,15 @@ def clear_all(reporter_host: str = "") -> int:
     # arriving during the wipe) aren't stalled. Connection is autocommit,
     # no transaction needed. Skip when nothing was deleted — VACUUM on an
     # already-empty table is pure I/O for zero space recovery.
+    # Best-effort: readers on this shared connection (list/export in
+    # to_thread) do not take _lock, and SQLite refuses VACUUM while any of
+    # their statements is open. The rows are already gone, so that must not
+    # 500 the route or skip the audit line below.
     if n > 0:
-        conn.execute("VACUUM")
+        try:
+            conn.execute("VACUUM")
+        except sqlite3.OperationalError as e:
+            logger.info("[reports] vacuum skipped: %s", e)
     logger.warning(
         "[reports] admin from %s cleared %d reports",
         reporter_host or "<unknown>", n,

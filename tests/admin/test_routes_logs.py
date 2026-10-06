@@ -41,6 +41,55 @@ def test_logs_page_resets_render_state_when_the_log_is_emptied(client):
     assert "_liveStarted" not in html
 
 
+def test_logs_page_trimmed_fold_control_ends_the_live_block(client):
+    """The live-tail trim unfolded and removed a fold control while its
+    Segments / PIPELINE block was still arriving; _liveDim kept ctl/inSeg/
+    pipe, so decorate() folded every later row of the block behind a control
+    no longer in the DOM."""
+    html = client.get("/logs").text
+    trim = html[html.index("while (log.childElementCount > _LOG_DOM_MAX + _olderInDom)"):]
+    trim = trim[:trim.index("_unfold(first, 1e9);")]
+    assert "if (first === _liveDim.ctl) {" in trim
+    for reset in ("_liveDim.ctl = null;", "_liveDim.inSeg = false;",
+                  "_liveDim.pipe = false;"):
+        assert reset in trim
+
+
+def test_logs_page_load_older_batch_survives_the_live_trim(client):
+    """The next live line trimmed a just-loaded "Load older" batch straight
+    back out (the trim bound ignored it) and rewound the cursor, so the next
+    click fetched the same batch again."""
+    html = client.get("/logs").text
+    assert "while (log.childElementCount > _LOG_DOM_MAX + _olderInDom)" in html
+    older = html[html.index("log.insertBefore(frag, log.firstChild);"):]
+    assert "_olderInDom += lines.length;" in older[:older.index("next_skip")]
+    clear = html[html.index("clearBtn.addEventListener('click'"):]
+    assert "_olderInDom = 0;" in clear[:clear.index("});")]
+    reopen = html[html.index("function openLogStream()"):]
+    assert "_olderInDom = 0;" in reopen[:reopen.index("es = new EventSource")]
+
+
+def test_logs_page_search_counter_follows_load_older_and_clear(client):
+    """Load older and Clear changed the DOM without refreshing the n/m
+    counter; Clear also left matchCurEl on a detached node."""
+    html = client.get("/logs").text
+    older = html[html.index("log.insertBefore(frag, log.firstChild);"):]
+    assert "queueNav();" in older[:older.index("next_skip")]
+    clear = html[html.index("clearBtn.addEventListener('click'"):]
+    clear = clear[:clear.index("});")]
+    assert "matchCurEl = null;" in clear and "updateNav();" in clear
+
+
+def test_logs_page_reconnect_while_paused_shows_paused(client):
+    """onerror sets "reconnecting…" regardless; onopen restored the pill only
+    when not paused, so a paused tab kept "reconnecting…" on a live stream."""
+    html = client.get("/logs").text
+    onopen = html[html.index("es.onopen = () => {"):]
+    onopen = onopen[:onopen.index("\n    };")]
+    assert "statusEl.textContent = paused ? 'paused' : 'live';" in onopen
+    assert "if (!paused) {" not in onopen
+
+
 def test_logs_stream_delivers_a_line_logged_during_the_backlog(
         app_module, monkeypatch, tmp_path):
     """A line logged after the backlog read but before the tail took its
@@ -69,7 +118,10 @@ def test_logs_stream_delivers_a_line_logged_during_the_backlog(
         try:
             assert await gen.__anext__() == "data: first\n\n"
             assert await gen.__anext__() == "data: __LIVE_TAIL__\n\n"
-            assert await gen.__anext__() == "data: during\n\n"
+            # Bounded: on a regression "during" is in neither the backlog
+            # nor the tail and the generator polls forever — fail, not hang.
+            assert await asyncio.wait_for(gen.__anext__(), timeout=5) \
+                == "data: during\n\n"
         finally:
             await gen.aclose()
 

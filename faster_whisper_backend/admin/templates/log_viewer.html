@@ -573,10 +573,13 @@
       + ' ' + _p2(d.getHours()) + ':' + _p2(d.getMinutes()) + ':' + _p2(d.getSeconds());
     return local + line.slice(m[1].length);
   }
-  // DOM cap for live-tail appends only. The "Load older" path bypasses
-  // this so the user can scroll back through arbitrarily many rotated
-  // lines without their click silently dropping the freshest content.
+  // DOM cap for live-tail appends only. Lines a "Load older" click brought in
+  // raise the trim bound by their count (_olderInDom), so the next live line
+  // does not trim the batch the user just asked for straight back out; live
+  // lines still evict the oldest rows one for one past that.
   const _LOG_DOM_MAX = {{LOG_VIEWER_DOM_MAX}};
+  // Lines prepended by "Load older" since the last Clear / (re)connect.
+  let _olderInDom = 0;
   // Persists across append() calls so a skipped step's 3 lines (arriving as 3
   // separate SSE events) dim as one group.
   const _liveDim = { dimLeft: 0 };
@@ -598,11 +601,18 @@
     }
     appendLine(log, line, _liveDim);
     _logsSkip++;
-    while (log.childElementCount > _LOG_DOM_MAX) {
+    while (log.childElementCount > _LOG_DOM_MAX + _olderInDom) {
       // Trimming away a fold control would strand its hidden rows with no
       // way to reveal them, so unfold them on the way out.
       const first = log.firstChild;
       if (first && first.classList && first.classList.contains('fold-ctl')) {
+        // The live block this control folds may still be arriving: drop its
+        // fold state too, or decorate() keeps folding the block's later rows
+        // behind a control that is no longer in the DOM.
+        if (first === _liveDim.ctl) {
+          _liveDim.ctl = null; _liveDim.inSeg = false; _liveDim.pipe = false;
+          _liveDim.segRows = 0; _liveDim.pipeRows = 0;
+        }
         _unfold(first, 1e9);
         if (first.parentNode) first.remove();
       } else {
@@ -654,6 +664,10 @@
   clearBtn.addEventListener('click', () => {
     log.innerHTML = '';
     _resetLiveDim();
+    _olderInDom = 0;
+    // The search counter and current hit pointed into the emptied DOM.
+    matchCurEl = null;
+    updateNav();
     // Resetting the DOM after Clear: the next live append re-fills
     // from the bottom, but the older-chain pointer is unchanged so
     // the user can still walk back if they want.
@@ -692,6 +706,9 @@
         for (const line of lines) appendLine(frag, line, olderDim);
         log.insertBefore(frag, log.firstChild);
         _logsSkip += lines.length;
+        _olderInDom += lines.length;
+        // The batch carries its own .match rows: refresh the n/m counter.
+        if (filterText) queueNav();
         if (j.next_skip == null) loadOlderBtn.style.display = 'none';
       } catch (e) {
         console.warn('load-older error', e);
@@ -716,6 +733,7 @@
     log.innerHTML = '';
     _resetLiveDim();
     _logsSkip = 0;
+    _olderInDom = 0;
     const lo = document.getElementById('loadOlderBtn');
     if (lo) lo.style.display = 'none';
     es = new EventSource('/logs/stream');
@@ -747,10 +765,10 @@
     es.onopen = () => {
       if (_logRecoveryTimer) { clearTimeout(_logRecoveryTimer); _logRecoveryTimer = null; }
       _logReconnectDelay = 3000;
-      if (!paused) {
-        statusEl.textContent = 'live';
-        statusEl.className = 'pill live';
-      }
+      // onerror set "reconnecting…" whatever the pause state; a reconnect
+      // while paused must land on "paused", not stay stuck on that.
+      statusEl.textContent = paused ? 'paused' : 'live';
+      statusEl.className = 'pill ' + (paused ? 'paused' : 'live');
     };
   }
   openLogStream();

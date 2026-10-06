@@ -66,6 +66,18 @@ def test_promote_all_never_removes_a_config_json_rule_silently(client):
     assert "_buildFactoryPayload(promote, true).filter(r => !remove.has(r.name))" in html
 
 
+def test_promote_all_removal_ids_cannot_collide_with_a_slug(client):
+    """Removal groups were '-' + name and split on i[0] === '-', but RuleSlug
+    allows a leading '-': ticking a hand-edited rule "-foo" promoted nothing
+    and silently deleted config.json's "foo"."""
+    html = _html(client)
+    body = html[html.index("function _promoteAll("):]
+    body = body[:body.index("\n  }\n")]
+    assert "id: 'rm:' + b.name," in body
+    assert "ids.filter(i => i.startsWith('rm:')).map(i => i.slice(3))" in body
+    assert "i[0] === '-'" not in body and "i[0] !== '-'" not in body
+
+
 def test_outdated_rules_are_told_apart_from_edited_ones(client):
     html = _html(client)
     assert "return _ruleHash(rule) === rev ? 'behind' : 'diverged';" in html
@@ -81,9 +93,14 @@ def test_promote_all_leaves_diverged_rules_unticked(client):
     html = _html(client)
     body = html[html.index("function _promoteAll("):]
     body = body[:body.index("\n  }\n")]
-    assert "checked: !diverged," in body
+    assert "checked: !diverged && !ambiguous," in body
     assert "checked: true," not in body.split("_missingFactoryRules()")[0]
     assert "start'\n          + ' unticked: ticking one replaces those newer config.json changes'" in body
+    # A rev-less 'edited' rule may be either case (_ruleStatus cannot tell),
+    # so it starts unticked too and counts into the same warning.
+    assert "const ambiguous = st === 'edited' && !r.config_rev;" in body
+    assert "if (diverged || ambiguous) nDiverged++;" in body
+    assert "(or have no sync'\n          + ' record)" in body
 
 
 def _rule(**kw):
@@ -162,7 +179,15 @@ def test_commit_compares_rules_without_config_rev(client):
         assert "_setRulesDirty();" in body, fn
         assert "setDirty(name, JSON.parse(JSON.stringify(rules)));" not in body, fn
     helper = html[html.index("function _setRulesDirty() {"):]
-    assert "_sansRevs(rules) === _sansRevs(cur)" in helper[:helper.index("\n  }\n")]
+    helper = helper[:helper.index("\n  }\n")]
+    assert "_sansRevs(rules, keep) === _sansRevs(cur, keep)" in helper
+    # A rev-only change against a server rule that carries a config_rev (the
+    # _afterPromoteStamp restamp) is real: only revs the server copy lacks
+    # are stripped, so the dirty entry survives a later no-op commit.
+    assert "const keep = new Map((cur || []).map(r => [r && r.name, r && r.config_rev]));" in helper
+    sans = html[html.index("function _sansRevs(v, keep) {"):]
+    sans = sans[:sans.index("\n  }\n")]
+    assert "if (!(keep && keep.get(r && r.name))) delete c.config_rev;" in sans
 
 
 def test_entry_diff_pairs_duplicate_labels_separately(client):

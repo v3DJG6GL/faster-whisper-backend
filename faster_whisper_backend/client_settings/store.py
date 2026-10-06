@@ -127,8 +127,27 @@ def _row_to_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:
     if row is None:
         return None
     d = dict(row)
+    # Rows written before the write side refused non-finite floats can hold a
+    # bare NaN/Infinity. Parsed as-is it reaches a JSONResponse render (the
+    # 409 merge body) and 500s on every retry, and the admin export writes a
+    # file its own import rejects. Serve it as null — what GET already showed
+    # — and keep the rest of the document; say so in the log.
+    nonfinite: list[str] = []
+
+    def _const(name: str) -> None:
+        nonfinite.append(name)
+        return None
+
     try:
-        d["blob"] = json.loads(d["blob"])
+        d["blob"] = json.loads(d["blob"], parse_constant=_const)
+        if nonfinite:
+            logger.warning(
+                "[client-settings] stored blob for user=%s profile=%r v=%s"
+                " holds non-finite number(s) %s — serving them as null; the"
+                " row is NOT overwritten by this read",
+                _uid_tag(str(d.get("user_id", "?"))), d.get("profile", ""),
+                d.get("version"), sorted(set(nonfinite)),
+            )
     except (TypeError, ValueError):
         # A row we wrote can't be unparseable, but never let a corrupt DB
         # take the endpoint down — surface it as an empty object. Say so
@@ -142,7 +161,9 @@ def _row_to_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:
             " NOT overwritten by this read",
             _uid_tag(str(d.get("user_id", "?"))), d.get("profile", ""),
             d.get("version"),
-            len(raw or "") if isinstance(raw, (str, bytes)) else -1,
+            # Stored UTF-8 size, like the put/force_put lines and list_meta.
+            len(raw.encode("utf-8", "replace")) if isinstance(raw, str)
+            else len(raw) if isinstance(raw, bytes) else -1,
         )
         d["blob"] = {}
     return d
