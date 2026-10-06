@@ -294,11 +294,16 @@ def _parse_binding(raw: "str | dict | None") -> dict[str, Any]:
         # same) — then the admin's next re-save stores the current name.
         # Renamed rule slugs in the include/exclude lists likewise, or the
         # re-save fails validate_binding's unknown-slug check.
-        direct = config_renames.migrate_keys(dict(direct))
-        config_renames.migrate_rule_slugs(direct)
-        if isinstance(direct.get("locks"), list):
-            direct["locks"] = [config_renames.RENAMED_KEYS.get(lk, lk)
-                               for lk in direct["locks"]]
+        direct = dict(direct)
+        config_renames.migrate_bundle(direct)
+        # Same for a value the validators started refusing after it was
+        # stored (guard words 1, an unparseable TEMPERATURE / SUPPRESS_TOKENS,
+        # an unknown DEFAULT_LANGUAGE): validate_binding checks the whole
+        # direct blob, so without this ANY later edit of the key or user —
+        # even one that only changes its profiles — 422s on a field the admin
+        # never touched. Notes are dropped: this runs on every decode.
+        from faster_whisper_backend.settings import config_store  # deferred, as the other config_store uses here (pydantic schema)
+        config_store.migrate_tightened_bundle(direct, "direct")
     profiles = v.get("profiles")
     out: dict[str, Any] = {
         "direct": direct if isinstance(direct, dict) else {},
@@ -720,7 +725,9 @@ def touch_key_if_active(key_id: str) -> bool:
     key_id resolves to the EMPTY key binding (get_key_config finds no
     row), whose gates default-allow, so keeping the session alive would
     silently LIFT the key's restrictions instead of ending them."""
-    if not key_id:
+    if not key_id or not _DB_READY:
+        # Fail closed during a failed / in-progress (re-)init, exactly like
+        # lookup_by_raw_key — the cookie path must not outlive the bearer one.
         return False
     conn = _require_conn()
     with _lock:
@@ -746,6 +753,8 @@ def get_user_record(user_id: str) -> dict[str, Any] | None:
     marker since no API key is involved."""
     if not user_id or user_id == "(open-mode)":
         return None
+    if not _DB_READY:
+        return None  # fail closed — see touch_key_if_active
     u = get_user(user_id)
     if u is None or u["revoked_ts"] is not None:
         return None
@@ -1008,26 +1017,36 @@ def rename_profile_refs(old: str, new: str) -> int:
     conn = _require_conn()
     touched = 0
     with _lock:
-        # Per-user bindings live under the permissions JSON's "config" sub-key.
-        for r in conn.execute("SELECT id, permissions FROM users").fetchall():
-            perms = _parse_permissions(r["permissions"])
-            if _rewrite_profile_in_binding(perms.get("config"), old, new):
-                conn.execute("UPDATE users SET permissions = ? WHERE id = ?",
-                             (json.dumps(perms), r["id"]))
-                touched += 1
-        # Per-key bindings are the api_keys.config column (the binding itself).
-        for r in conn.execute("SELECT id, config FROM api_keys").fetchall():
-            raw = r["config"]
-            if not raw:
-                continue
-            try:
-                binding = json.loads(raw)
-            except (json.JSONDecodeError, TypeError):
-                continue
-            if _rewrite_profile_in_binding(binding, old, new):
-                conn.execute("UPDATE api_keys SET config = ? WHERE id = ?",
-                             (json.dumps(binding), r["id"]))
-                touched += 1
+        # A real transaction: the connection is autocommit (open_wal_db), so
+        # without BEGIN a mid-scan error left bindings split between `old` and
+        # `new` — and the overrides route rolls the profile rename back on
+        # that error, so the rows already moved would point at nothing.
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            # Per-user bindings live under the permissions JSON's "config" sub-key.
+            for r in conn.execute("SELECT id, permissions FROM users").fetchall():
+                perms = _parse_permissions(r["permissions"])
+                if _rewrite_profile_in_binding(perms.get("config"), old, new):
+                    conn.execute("UPDATE users SET permissions = ? WHERE id = ?",
+                                 (json.dumps(perms), r["id"]))
+                    touched += 1
+            # Per-key bindings are the api_keys.config column (the binding itself).
+            for r in conn.execute("SELECT id, config FROM api_keys").fetchall():
+                raw = r["config"]
+                if not raw:
+                    continue
+                try:
+                    binding = json.loads(raw)
+                except (json.JSONDecodeError, TypeError):
+                    continue
+                if _rewrite_profile_in_binding(binding, old, new):
+                    conn.execute("UPDATE api_keys SET config = ? WHERE id = ?",
+                                 (json.dumps(binding), r["id"]))
+                    touched += 1
+            conn.execute("COMMIT")
+        except BaseException:
+            conn.execute("ROLLBACK")
+            raise
         if touched:
             _rebuild_index_locked()
     if touched:

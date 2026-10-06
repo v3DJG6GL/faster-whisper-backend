@@ -45,10 +45,41 @@ OVERRIDES_PATH = os.environ.get("WHISPER_CONFIG_LOCAL") or os.path.normpath(
 FACTORY_PATH = os.path.join(_REPO_DIR, "config.json")
 
 
-def _migrate_tightened_bundle_values(raw: dict[str, Any]) -> None:
+def migrate_tightened_bundle(bundle: dict[str, Any], label: str) -> list[str]:
+    """Rewrite one OverrideProfile-shaped bundle's values that the validators
+    started refusing after it was stored (in place) — see
+    _migrate_tightened_bundle_values for the rules. Returns one note per
+    change, prefixed with `label`; the caller decides where they go (stderr at
+    config load, _ENV_WARNINGS for an env bundle, nowhere for a per-identity
+    binding re-parsed on every decode)."""
+    notes: list[str] = []
+    for guard in ("SEGMENT_ZERO_LENGTH_TAIL_MIN_WORDS",
+                  "SEGMENT_HEAD_ECHO_MIN_WORDS"):
+        if bundle.get(guard) == 1 and not isinstance(bundle[guard], bool):
+            bundle[guard] = 0
+            notes.append(f"{label}.{guard}=1 is no longer accepted; stored "
+                         f"as 0 (off, as 1 already behaved)")
+    for key, check in (("TEMPERATURE", settings_schema._temperature_csv),
+                       ("SUPPRESS_TOKENS", settings_schema._suppress_tokens_csv),
+                       ("DEFAULT_LANGUAGE", settings_schema._language_code)):
+        val = bundle.get(key)
+        if not isinstance(val, str):
+            continue
+        try:
+            check(val)
+        except ValueError as e:
+            del bundle[key]
+            locks = bundle.get("locks")
+            if isinstance(locks, list):
+                bundle["locks"] = [lk for lk in locks if lk != key]
+            notes.append(f"dropped {label}.{key} {val!r}: {e}")
+    return notes
+
+
+def _migrate_tightened_bundle_values(raw: dict[str, Any]) -> list[str]:
     """Rewrite stored values that the validators started refusing after they
     were stored, mostly inside OVERRIDE_PROFILES / MODEL_OVERRIDES bundles
-    (in place).
+    (in place). Returns one note per change for the caller's log.
 
     The bundles gained AdminConfig's value rules late: the two segment guards
     refuse 1, TEMPERATURE / SUPPRESS_TOKENS must parse as CSV. The per-profile
@@ -58,44 +89,26 @@ def _migrate_tightened_bundle_values(raw: dict[str, Any]) -> None:
     already off at runtime, so it becomes 0 (off); an unparseable CSV is
     dropped (inherit), with its lock. DEFAULT_LANGUAGE (top level too) gained
     a Whisper-code membership check: an unknown code failed every decode
-    that relied on it, so it is dropped (inherit)."""
+    that relied on it, so it is dropped (inherit). Per-identity bindings
+    (api_keys_store._parse_binding) and the env JSON bundles (config.py) run
+    the same per-bundle rules via migrate_tightened_bundle."""
+    notes: list[str] = []
     _lang = raw.get("DEFAULT_LANGUAGE")
     if isinstance(_lang, str):
         try:
             settings_schema._language_code(_lang)
         except ValueError as e:
             del raw["DEFAULT_LANGUAGE"]
-            print(f"[config_store] dropped DEFAULT_LANGUAGE {_lang!r}: {e}",
-                  file=sys.stderr)
+            notes.append(f"dropped DEFAULT_LANGUAGE {_lang!r}: {e}")
     for group_key in ("OVERRIDE_PROFILES", "MODEL_OVERRIDES"):
         group = raw.get(group_key)
         if not isinstance(group, dict):
             continue
         for name, bundle in group.items():
-            if not isinstance(bundle, dict):
-                continue
-            for guard in ("SEGMENT_ZERO_LENGTH_TAIL_MIN_WORDS",
-                          "SEGMENT_HEAD_ECHO_MIN_WORDS"):
-                if bundle.get(guard) == 1 and not isinstance(bundle[guard], bool):
-                    bundle[guard] = 0
-                    print(f"[config_store] {group_key}[{name!r}].{guard}=1 is "
-                          f"no longer accepted; stored as 0 (off, as 1 already "
-                          f"behaved)", file=sys.stderr)
-            for key, check in (("TEMPERATURE", settings_schema._temperature_csv),
-                               ("SUPPRESS_TOKENS", settings_schema._suppress_tokens_csv),
-                               ("DEFAULT_LANGUAGE", settings_schema._language_code)):
-                val = bundle.get(key)
-                if not isinstance(val, str):
-                    continue
-                try:
-                    check(val)
-                except ValueError as e:
-                    del bundle[key]
-                    locks = bundle.get("locks")
-                    if isinstance(locks, list):
-                        bundle["locks"] = [lk for lk in locks if lk != key]
-                    print(f"[config_store] dropped {group_key}[{name!r}].{key} "
-                          f"{val!r}: {e}", file=sys.stderr)
+            if isinstance(bundle, dict):
+                notes.extend(migrate_tightened_bundle(
+                    bundle, f"{group_key}[{name!r}]"))
+    return notes
 
 
 def _migrate_legacy_keys(raw: dict[str, Any]) -> dict[str, Any]:
@@ -120,23 +133,24 @@ def _migrate_legacy_keys(raw: dict[str, Any]) -> dict[str, Any]:
         print(f"[config_store] upgraded stored factory rule entries {upgraded} "
               f"to the current factory text", file=sys.stderr)
     _renames.migrate_bundle_keys(raw)
-    _migrate_tightened_bundle_values(raw)
+    for note in _migrate_tightened_bundle_values(raw):
+        print(f"[config_store] {note}", file=sys.stderr)
     # Wildcard-host origins ('https://*.example.com') used to pass the origin
     # validators but never matched anything (both the CORS middleware and the
     # trusted-origin guard compare the Origin header by exact string). They
     # are rejected now; strip the already-inert entries from a stored file so
     # the tightened rule cannot wipe every other override at boot. A bare '*'
     # stays legal for CORS only.
+    # The env reader (config.py) strips the same entries from
+    # WHISPER_TRUSTED_ORIGINS / WHISPER_CORS_ALLOW_ORIGINS.
     for key in ("TRUSTED_ORIGINS", "CORS_ALLOW_ORIGINS"):
         entries = raw.get(key)
         if not isinstance(entries, list):
             continue
-        kept = [e for e in entries
-                if not (isinstance(e, str) and "*" in e
-                        and not (key == "CORS_ALLOW_ORIGINS" and e == "*"))]
-        if len(kept) != len(entries):
+        kept, dropped = _renames.strip_wildcard_origins(key, entries)
+        if dropped:
             print(f"[config_store] dropped wildcard {key} entries "
-                  f"{[e for e in entries if e not in kept]} — never matched "
+                  f"{dropped} — never matched "
                   f"an Origin header and are no longer accepted", file=sys.stderr)
             if kept:
                 raw[key] = kept
@@ -155,7 +169,9 @@ def load_overrides(path: str = OVERRIDES_PATH) -> dict[str, Any]:
     try:
         with open(path, "r", encoding="utf-8") as f:
             raw = json.load(f)
-    except (OSError, json.JSONDecodeError) as e:
+    except (OSError, ValueError) as e:
+        # ValueError covers json.JSONDecodeError AND UnicodeDecodeError — a
+        # hand edit saved as cp1252/latin-1 must not stop config from importing.
         print(f"[config_store] cannot read {path}: {e}", file=sys.stderr)
         return {}
     if not isinstance(raw, dict):
@@ -192,7 +208,7 @@ def load_factory_rules(path: str = FACTORY_PATH) -> list[dict[str, Any]]:
     try:
         with open(path, "r", encoding="utf-8") as f:
             raw = json.load(f)
-    except (OSError, json.JSONDecodeError) as e:
+    except (OSError, ValueError) as e:   # ValueError: JSON or UTF-8 decode
         raise RuntimeError(f"cannot read factory rules file {path}: {e}") from e
     if not isinstance(raw, dict) or not isinstance(raw.get("PIPELINE_RULES"), list):
         raise RuntimeError(
@@ -237,7 +253,7 @@ def save_factory_rules(rules: list[Any], path: str = FACTORY_PATH) -> list[dict[
             with open(path, "r", encoding="utf-8") as f:
                 try:
                     raw = json.load(f)
-                except json.JSONDecodeError:
+                except ValueError:   # malformed JSON or not UTF-8
                     raw = None
             if isinstance(raw, dict):
                 merged = raw
@@ -352,7 +368,7 @@ def save_overrides(
             with open(path, "r", encoding="utf-8") as f:
                 try:
                     raw = json.load(f)
-                except json.JSONDecodeError:
+                except ValueError:   # malformed JSON or not UTF-8
                     raw = None
             if isinstance(raw, dict):
                 existing = _migrate_legacy_keys(raw)
@@ -377,6 +393,11 @@ def save_overrides(
         context: dict[str, Any] = {"guard_regex": True} if "PIPELINE_RULES" in payload else {}
         if guard_slugs is not None:
             context["guard_slugs"] = frozenset(guard_slugs)
+        # Cross-field checks must see the env-pinned siblings that will be in
+        # force, as the restart-time env pass does (see schema._effective).
+        env_effective = _env_effective_values()
+        if env_effective:
+            context["env_effective"] = env_effective
         # The local file usually carries no PIPELINE_RULES copy (factory rules
         # live in config.json), so the merged pass would never see the
         # canonical slug list and a typo'd slug would persist silently. Scoped
@@ -406,6 +427,15 @@ def save_overrides(
         if new_v != old_v:
             changed[k] = new_v
     return changed
+
+
+def _env_effective_values() -> dict[str, Any]:
+    """{field: live value} for every field a WHISPER_* var currently pins —
+    the save-time validation context schema._effective prefers over the
+    submitted / baseline value. Save-time only: at config import the env pass
+    validates the full effective config itself."""
+    from faster_whisper_backend.settings import config as _cfg  # deferred — config imports this module at import
+    return {f: getattr(_cfg, f) for f in env_pinned_fields() if hasattr(_cfg, f)}
 
 
 def pipeline_rule_tags(rules: Any) -> list[str]:

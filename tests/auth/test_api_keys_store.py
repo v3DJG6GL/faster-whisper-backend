@@ -186,6 +186,39 @@ def test_rename_profile_refs_cascades_lists_allowlist_and_wildcard(api_keys_db):
     assert ak.rename_profile_refs("ghost", "x") == 0
 
 
+def test_rename_profile_refs_is_all_or_nothing(api_keys_db, monkeypatch):
+    """The overrides route rolls the profile rename back when the cascade
+    raises; on the autocommit connection a mid-scan error used to leave the
+    rows already rewritten pointing at a profile name that no longer exists."""
+    import json
+    ak = api_keys_db
+    conn = ak._require_conn()
+    u = ak.create_user("u", is_admin=False)
+    conn.execute("UPDATE users SET permissions=? WHERE id=?", (json.dumps({
+        "pages": {}, "config": {"direct": {}, "profiles": ["clinic-de"]}}), u))
+    _, k = ak.create_key(u)
+    conn.execute("UPDATE api_keys SET config=? WHERE id=?",
+                 (json.dumps({"direct": {}, "profiles": ["clinic-de"]}), k["id"]))
+    real = ak._rewrite_profile_in_binding
+    calls = []
+
+    def _flaky(binding, old, new):
+        calls.append(1)
+        if len(calls) == 2:
+            raise RuntimeError("disk full")
+        return real(binding, old, new)
+    monkeypatch.setattr(ak, "_rewrite_profile_in_binding", _flaky)
+    with pytest.raises(RuntimeError):
+        ak.rename_profile_refs("clinic-de", "clinic-deutsch")
+    assert len(calls) == 2           # the user row WAS rewritten before the error
+    assert ak.get_user_config(u)["profiles"] == ["clinic-de"]    # ...and rolled back
+    assert ak.get_key_config(k["id"])["profiles"] == ["clinic-de"]
+    assert not conn.in_transaction
+    # The connection is usable again (no transaction left open).
+    monkeypatch.setattr(ak, "_rewrite_profile_in_binding", real)
+    assert ak.rename_profile_refs("clinic-de", "clinic-deutsch") == 2
+
+
 # ---------------------------------------------------------------------------
 # create_key validation
 # ---------------------------------------------------------------------------
@@ -518,7 +551,8 @@ def test_bootstrap_admin_from_env_accepts_a_key_a_sibling_worker_registered(
 def test_failed_reinit_clears_db_ready(api_keys_db, tmp_path):
     """A second init_db that raises partway (corrupt DB, read-only remount)
     must leave _DB_READY False so the stale _KEY_INDEX/_IS_LOCKED_DOWN caches
-    fail closed instead of being trusted. Mirrors sessions_store.init_db."""
+    fail closed instead of being trusted. sessions_store.init_db does the same
+    (test_failed_reinit_fails_session_lookup_closed)."""
     assert api_keys_db._DB_READY is True
     uid = api_keys_db.create_user("admin", is_admin=True)
     raw, _rec = api_keys_db.create_key(uid)
@@ -536,6 +570,41 @@ def test_failed_reinit_clears_db_ready(api_keys_db, tmp_path):
     # its WAL/-shm handles) on every re-init.
     with pytest.raises(sqlite3.ProgrammingError):
         old.execute("SELECT 1")
+
+
+def test_failed_reinit_fails_cookie_path_lookups_closed(api_keys_db, tmp_path,
+                                                       monkeypatch):
+    """The cookie path (get_user_record / touch_key_if_active) must fail
+    closed during a failed re-init exactly like lookup_by_raw_key, instead of
+    reading whatever DB _conn points at (or 500ing once it is None)."""
+    uid = api_keys_db.create_user("admin", is_admin=True)
+    _raw, rec = api_keys_db.create_key(uid)
+    assert api_keys_db.get_user_record(uid) is not None
+    assert api_keys_db.touch_key_if_active(rec["id"]) is True
+
+    def _boom(conn):
+        raise sqlite3.OperationalError("migration failed")
+    monkeypatch.setattr(api_keys_db, "_ensure_columns", _boom)
+    with pytest.raises(sqlite3.OperationalError):
+        # Same file: _conn points at a DB that still holds the user and key.
+        api_keys_db.init_db(str(tmp_path / "api_keys.sqlite3"))
+    assert api_keys_db.get_user_record(uid) is None
+    assert api_keys_db.touch_key_if_active(rec["id"]) is False
+
+
+def test_parse_binding_migrates_tightened_direct_values():
+    """A binding stored before the bundle validators tightened (guard words 1,
+    a non-Whisper DEFAULT_LANGUAGE) must not 422 every later edit of the key
+    or user on a field the admin never touched."""
+    from faster_whisper_backend.auth import api_keys_store
+    from faster_whisper_backend.settings import config_store
+    b = api_keys_store._parse_binding(
+        {"direct": {"DEFAULT_LANGUAGE": "jp", "SEGMENT_HEAD_ECHO_MIN_WORDS": 1,
+                    "locks": ["DEFAULT_LANGUAGE"]}, "profiles": []})
+    assert b["direct"] == {"SEGMENT_HEAD_ECHO_MIN_WORDS": 0, "locks": []}
+    direct = dict(b["direct"])
+    locks = direct.pop("locks")
+    config_store.validate_binding({"overrides": direct, "locks": locks})
 
 
 def test_parse_binding_migrates_renamed_direct_keys_and_locks():

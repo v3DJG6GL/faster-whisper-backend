@@ -928,6 +928,36 @@ def test_save_overrides_corrupt_existing_rewrites(tmp_path):
     assert json.loads(open(p, encoding="utf-8").read())["BEAM_SIZE"] == 7
 
 
+def test_load_overrides_non_utf8_file_is_ignored_not_raised(tmp_path):
+    """load_overrides NEVER raises: config imports it with only `except
+    ImportError` around it, so a hand edit saved as cp1252 (UnicodeDecodeError
+    is a ValueError, not a JSONDecodeError) used to stop the server booting."""
+    p = tmp_path / "config.local.json"
+    p.write_bytes(b'{"DEFAULT_PROMPT": "Gr\xfc\xdfe"}')
+    assert cs.load_overrides(str(p)) == {}
+    # The save path takes its corrupt-file branch instead of a 500.
+    cs.save_overrides({"BEAM_SIZE": 7}, str(p))
+    assert json.loads(p.read_text(encoding="utf-8"))["BEAM_SIZE"] == 7
+
+
+def test_save_overrides_checks_cross_field_pairs_against_env_pins(tmp_path,
+                                                                  monkeypatch):
+    """A save must see the env-pinned sibling that will be in force: with env
+    KEEP_S=12 pinned, TRIM_S=11 passed against the baseline KEEP_S=10, ran
+    inconsistent, and the next restart reverted the env value."""
+    from faster_whisper_backend.settings import config as _cfg
+    monkeypatch.setattr(cs, "env_pinned_fields", lambda: {
+        "STREAMING_BUFFER_TRIM_KEEP_S": "WHISPER_STREAMING_BUFFER_TRIM_KEEP_S"})
+    monkeypatch.setattr(_cfg, "STREAMING_BUFFER_TRIM_KEEP_S", 12.0)
+    p = str(tmp_path / "config.local.json")
+    with pytest.raises(ValidationError):
+        cs.save_overrides({"STREAMING_BUFFER_TRIM_S": 11}, p)
+    assert not os.path.exists(p)
+    cs.save_overrides({"STREAMING_BUFFER_TRIM_S": 13}, p)   # consistent: saved
+    # The import-time path (no context) still checks the bare baseline.
+    settings_schema.AdminConfig.model_validate({"STREAMING_BUFFER_TRIM_S": 11})
+
+
 def test_save_overrides_invalid_raises(tmp_path):
     p = str(tmp_path / "config.local.json")
     with pytest.raises(ValidationError):
@@ -987,13 +1017,12 @@ def test_env_pinned_fields_excludes_rejected_env_values(monkeypatch):
 
 
 def test_format_validation_errors_shape():
-    try:
+    with pytest.raises(ValidationError) as ei:
         settings_schema.AdminConfig.model_validate({"BEAM_SIZE": 999})
-    except ValidationError as e:
-        out = settings_schema.format_validation_errors(e)
-        assert isinstance(out, list) and out
-        assert set(out[0]) == {"loc", "msg"}
-        assert "BEAM_SIZE" in out[0]["loc"]
+    out = settings_schema.format_validation_errors(ei.value)
+    assert isinstance(out, list) and out
+    assert set(out[0]) == {"loc", "msg"}
+    assert "BEAM_SIZE" in out[0]["loc"]
 
 
 # ---------------------------------------------------------------------------

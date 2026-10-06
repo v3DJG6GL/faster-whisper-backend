@@ -110,7 +110,6 @@ async def login(request: Request, response: Response):
     # credential, so there is nothing to throttle, and locking an operator out
     # of an already-unlocked box would be absurd.
     host = request.client.host if request.client else ""
-    _login_failures.guard(host)
     try:
         body = await request.json()
     except Exception:  # noqa: BLE001 — malformed/empty body → treat as no key
@@ -118,6 +117,12 @@ async def login(request: Request, response: Response):
     key = body.get("key") if isinstance(body, dict) else None
     if not isinstance(key, str):  # non-string JSON value → same as no key
         key = ""
+    # guard → lookup → penalize must have NO await between them: guard only
+    # reads the counter, so with the body read in between, N concurrent
+    # attempts all passed guard before any of them penalized, and one window
+    # admitted ~N guesses instead of LOGIN_FAILURE_RATE. All three are sync,
+    # so after the body read they run atomically on the event loop.
+    _login_failures.guard(host)
     rec = _ak.lookup_by_raw_key(key)
     if rec is None:
         # NEVER log the attempted key — it is a credential, right or wrong.

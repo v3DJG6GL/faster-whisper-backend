@@ -124,15 +124,15 @@ def _blob_to_layer(layer_id: str, label: str, profile_name: str | None,
     # never pass through config_store's load-path key migration, so a
     # binding saved before a config_renames rename would otherwise collapse
     # (its override AND its lock silently vanish). Migrate a copy here.
-    blob = _renames.migrate_keys(dict(blob))
+    blob = dict(blob)
+    _renames.migrate_bundle(blob)
     fields = {
         k: v for k, v in blob.items()
         if k in SCALAR_OVERRIDE_FIELDS and v is not None
     }
-    locks = {_renames.RENAMED_KEYS.get(f, f) for f in (blob.get("locks") or [])}
-    locks = {f for f in locks if f in SCALAR_OVERRIDE_FIELDS}
-    exclude = set(_renames.rename_slugs(list(blob.get("PIPELINE_RULES_EXCLUDE") or [])))
-    include = set(_renames.rename_slugs(list(blob.get("PIPELINE_RULES_INCLUDE") or [])))
+    locks = {f for f in (blob.get("locks") or []) if f in SCALAR_OVERRIDE_FIELDS}
+    exclude = set(blob.get("PIPELINE_RULES_EXCLUDE") or [])
+    include = set(blob.get("PIPELINE_RULES_INCLUDE") or [])
     if not (fields or locks or exclude or include):
         return None
     return {

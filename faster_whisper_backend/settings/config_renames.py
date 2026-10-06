@@ -200,28 +200,56 @@ def alias_env(environ: MutableMapping[str, str]) -> list[str]:
     return warnings
 
 
+def migrate_bundle(bundle: dict[str, Any]) -> list[str]:
+    """Bring ONE OverrideProfile-shaped bundle up to the current names (in
+    place): renamed keys (migrate_keys), the same rename on each ``locks``
+    entry, and renamed rule slugs in its slug lists. The one place a bundle
+    migration lives — config.local.json / env bundles (migrate_bundle_keys),
+    per-identity bindings (api_keys_store._parse_binding) and the resolver
+    (effective_config._blob_to_layer) all call it. Returns the old key / lock
+    names that were renamed, for the caller's log line."""
+    renamed = [k for k in RENAMED_KEYS if k in bundle]
+    migrate_keys(bundle)
+    locks = bundle.get("locks")
+    if isinstance(locks, list):
+        renamed.extend(lk for lk in locks
+                       if isinstance(lk, str) and lk in RENAMED_KEYS)
+        bundle["locks"] = [RENAMED_KEYS.get(lk, lk) if isinstance(lk, str) else lk
+                           for lk in locks]
+    for key in _SLUG_LIST_KEYS:
+        if key in bundle:
+            bundle[key] = rename_slugs(bundle[key])
+    return renamed
+
+
 def migrate_bundle_keys(raw: dict[str, Any]) -> list[str]:
-    """Apply migrate_keys, and the same rename to each ``locks`` entry, inside
-    every OVERRIDE_PROFILES / MODEL_OVERRIDES bundle of an overrides dict (in
-    place). The bundles are extra="forbid", so one pre-rename key there fails
-    validation of the whole value. Returns the old names that were renamed,
-    for the caller's log line; empty when nothing matched."""
+    """Apply migrate_bundle to every OVERRIDE_PROFILES / MODEL_OVERRIDES
+    bundle of an overrides dict (in place). The bundles are extra="forbid",
+    so one pre-rename key there fails validation of the whole value. Returns
+    the old names that were renamed, for the caller's log line; empty when
+    nothing matched."""
     renamed: list[str] = []
     for group_key in ("OVERRIDE_PROFILES", "MODEL_OVERRIDES"):
         group = raw.get(group_key)
         if not isinstance(group, dict):
             continue
         for bundle in group.values():
-            if not isinstance(bundle, dict):
-                continue
-            renamed.extend(k for k in RENAMED_KEYS if k in bundle)
-            migrate_keys(bundle)
-            locks = bundle.get("locks")
-            if isinstance(locks, list):
-                renamed.extend(lk for lk in locks
-                               if isinstance(lk, str) and lk in RENAMED_KEYS)
-                bundle["locks"] = [RENAMED_KEYS.get(lk, lk) for lk in locks]
+            if isinstance(bundle, dict):
+                renamed.extend(migrate_bundle(bundle))
     return sorted(set(renamed))
+
+
+def strip_wildcard_origins(key: str, entries: list[Any]) -> tuple[list[Any], list[Any]]:
+    """Split a TRUSTED_ORIGINS / CORS_ALLOW_ORIGINS list into (kept, dropped):
+    wildcard-host entries ('https://*.example.com') used to pass the origin
+    validators but never matched anything (both consumers compare the Origin
+    header by exact string), and are refused now. A bare '*' stays legal for
+    CORS only. Shared by config_store (stored file) and config.py (env var),
+    so the same legacy value keeps its valid siblings on both paths."""
+    def _wild(e: Any) -> bool:
+        return (isinstance(e, str) and "*" in e
+                and not (key == "CORS_ALLOW_ORIGINS" and e == "*"))
+    return [e for e in entries if not _wild(e)], [e for e in entries if _wild(e)]
 
 
 def migrate_keys(raw: dict[str, Any]) -> dict[str, Any]:

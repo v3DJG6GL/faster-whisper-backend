@@ -1641,7 +1641,12 @@ _ENV_SPECIAL_CASES = {
     "CAPTURES_PIPELINE_RULES_EXCLUDE", "CONVERT_QUANTIZATION",
     "TRANSLATION_ALLOWED_MODELS",
 }
-_ENV_JSON_FIELDS = {"PIPELINE_RULES", "MODEL_OVERRIDES", "OVERRIDE_PROFILES"}
+# A tuple, in this order: MODEL_OVERRIDES / OVERRIDE_PROFILES are validated
+# against the PIPELINE_RULES slugs in force at that moment (_env_slug_ctx), so
+# an env rule they reference must be applied first. A set iterated in
+# PYTHONHASHSEED order, and an env profile naming an env rule loaded on some
+# restarts only.
+_ENV_JSON_FIELDS = ("PIPELINE_RULES", "MODEL_OVERRIDES", "OVERRIDE_PROFILES")
 _ENV_READER_OVERRIDES = {
     # empty string CLEARS the value to None (disable the feature)
     "DEFAULT_PROMPT": "str_or_none", "DEFAULT_HOTWORDS": "str_or_none",
@@ -1703,6 +1708,26 @@ def _env_reader_kind(field: str, current) -> str:
     return "str"  # plain string: empty → keep current (safe default)
 
 
+# Defined here, ahead of its first user (the JSON env loop just below).
+def _env_validation_reason(exc: BaseException, skip: "set[tuple]" = frozenset()) -> str:
+    """The human-readable half of a pydantic ValidationError, without the
+    docs URL line that str(exc) ends on. `skip` holds (loc, msg) signatures
+    not to report (errors that predate the env layer)."""
+    errs = getattr(exc, "errors", None)
+    if callable(errs):
+        try:
+            _all = errs()
+            first = next((e for e in _all
+                          if (tuple(e.get("loc") or ()), e.get("msg", "")) not in skip),
+                         _all[0])
+            loc = ".".join(str(p) for p in first.get("loc", ()))
+            msg = first.get("msg", "invalid value")
+            return f"{loc}: {msg}" if loc else msg
+        except Exception:  # noqa: BLE001 - fall through to the string form
+            pass
+    return str(exc).splitlines()[0].strip()
+
+
 try:
     from faster_whisper_backend.settings.schema import AdminConfig as _AdminConfig
     from faster_whisper_backend.settings.schema import ENV_VAR_MAPPING as _ENV_VAR_MAPPING
@@ -1750,6 +1775,21 @@ try:
             _EMPTY_IS_VALUE.add(_field)
         globals()[_field] = _ENV_READER_FUNCS[_kind](_env, _cur)
 
+    # Wildcard-host origins in an env list: drop just those entries, as the
+    # config.local.json migration does (config_store._migrate_legacy_keys) —
+    # left in, the validation pass below rejects the whole var and every
+    # valid sibling origin stops being trusted.
+    for _field in ("TRUSTED_ORIGINS", "CORS_ALLOW_ORIGINS"):
+        _cur = globals().get(_field)
+        if os.environ.get(_ENV_VAR_MAPPING[_field]) is None or not isinstance(_cur, list):
+            continue
+        _kept, _dropped = _renames.strip_wildcard_origins(_field, _cur)
+        if _dropped:
+            _ENV_WARNINGS.append(
+                f"{_ENV_VAR_MAPPING[_field]}: dropped wildcard entries {_dropped} "
+                f"— they never matched an Origin header and are no longer accepted")
+            globals()[_field] = _kept if _kept else _ENV_PRE.get(_field, _cur)
+
     # --- JSON-encoded structured fields (escape hatch) ----------------------
     for _field in _ENV_JSON_FIELDS:
         _raw = os.environ.get(_ENV_VAR_MAPPING[_field])
@@ -1775,14 +1815,28 @@ try:
                 _ENV_WARNINGS.append(
                     f"{_ENV_VAR_MAPPING[_field]}: upgraded factory rule entries "
                     f"{_upgraded} to the current factory text")
+            # ...and so does a bundle value the validators started refusing
+            # after it was written (guard words 1 → 0, a bad TEMPERATURE /
+            # SUPPRESS_TOKENS / DEFAULT_LANGUAGE dropped) — the same
+            # migration a stored config.local.json bundle gets.
+            from faster_whisper_backend.settings import config_store as _cs
+            _ENV_WARNINGS.extend(
+                f"{_ENV_VAR_MAPPING[_field]}: {_note}"
+                for _note in _cs._migrate_tightened_bundle_values(_wrapped))
             _parsed = _wrapped[_field]
             # Validate then dump back to plain dicts/lists so the runtime shape
             # matches config.local.json (load_overrides uses the same dump).
             _validated = _AdminConfig.model_validate({_field: _parsed}, context=_env_slug_ctx())
             globals()[_field] = _validated.model_dump(exclude_none=True)[_field]
-        except Exception as _exc:  # noqa: BLE001 — never fail import over bad env
+        except json.JSONDecodeError as _exc:
             _ENV_WARNINGS.append(
                 f"{_ENV_VAR_MAPPING[_field]} is not valid JSON for {_field}: {_exc}")
+            _ENV_UNPARSED.add(_ENV_VAR_MAPPING[_field])
+        except Exception as _exc:  # noqa: BLE001 — never fail import over bad env
+            # Parsed, but the value fails the schema — say so, not "bad JSON".
+            _ENV_WARNINGS.append(
+                f"{_ENV_VAR_MAPPING[_field]} is not a valid {_field}: "
+                f"{_env_validation_reason(_exc)}")
             _ENV_UNPARSED.add(_ENV_VAR_MAPPING[_field])
 except ImportError:
     # pydantic / schema unavailable — fall back to bare in-file defaults.
@@ -1939,39 +1993,21 @@ for _k, _v in os.environ.items():
             f"works but will be removed in a later release.")
         _field = _new_field
     _model_id = _decode_model_id(_enc_id)
-    _entry = MODEL_OVERRIDES.setdefault(_model_id, {})
     _coerced = _coerce_override_value(_field, _v)
     if _coerced is _UNPARSED:
         _ENV_WARNINGS.append(
             f"{_k}={_v!r} is not a valid boolean; ignoring it for {_model_id}")
         continue
-    _entry[_field] = _coerced
+    # Only now: an ignored value must not leave a phantom empty entry that
+    # the per-model editor would round-trip into config.local.json.
+    MODEL_OVERRIDES.setdefault(_model_id, {})[_field] = _coerced
     _ENV_OVERRIDE_FIELDS.setdefault(_model_id, set()).add(_field)
 
 
 # =============================================================================
 # Validate the env layer (last, after every reader + special case has run)
 # =============================================================================
-
-
-def _env_validation_reason(exc: BaseException, skip: "set[tuple]" = frozenset()) -> str:
-    """The human-readable half of a pydantic ValidationError, without the
-    docs URL line that str(exc) ends on. `skip` holds (loc, msg) signatures
-    not to report (errors that predate the env layer)."""
-    errs = getattr(exc, "errors", None)
-    if callable(errs):
-        try:
-            _all = errs()
-            first = next((e for e in _all
-                          if (tuple(e.get("loc") or ()), e.get("msg", "")) not in skip),
-                         _all[0])
-            loc = ".".join(str(p) for p in first.get("loc", ()))
-            msg = first.get("msg", "invalid value")
-            return f"{loc}: {msg}" if loc else msg
-        except Exception:  # noqa: BLE001 - fall through to the string form
-            pass
-    return str(exc).splitlines()[0].strip()
-
+# (_env_validation_reason is defined above the env readers, its first user.)
 
 # Every value arriving through config.local.json is checked by AdminConfig:
 # _safe_log_path rejects UNC / ".." in LOG_FILE, _validate_hosts requires the
@@ -1995,7 +2031,7 @@ def _env_validation_reason(exc: BaseException, skip: "set[tuple]" = frozenset())
 # so a stale badge would also make the admin's edit never reach the live cfg).
 _ENV_REJECTED: "set[str]" = set()
 try:
-    _ENV_VALIDATE_SKIP = _ENV_JSON_FIELDS | {"MODEL_OVERRIDES"}
+    _ENV_VALIDATE_SKIP = set(_ENV_JSON_FIELDS) | {"MODEL_OVERRIDES"}
     # A value the reader could not parse controls nothing either — the field
     # kept its pre-env value — so it must not badge the field as pinned.
     _ENV_REJECTED.update(
@@ -2195,7 +2231,14 @@ try:
         # [large-v3]) takes the revert/drop branch instead of booting
         # silently — the orphan would make every later per-model save 422
         # (save merges onto the stored allowlist). The factory allowlist alone
-        # is not checked, like a save that carries no ALLOWED_MODELS.
+        # is not checked, like a save that carries no ALLOWED_MODELS. An
+        # env-ONLY allowlist checks env-supplied entries only: a stored entry
+        # passed load_overrides, a save never sees the env allowlist, and
+        # dropping it here would let the next per-model save erase it from
+        # config.local.json for good.
+        _env_json_models = (
+            _ENV_VAR_MAPPING["MODEL_OVERRIDES"] in os.environ
+            and _ENV_VAR_MAPPING["MODEL_OVERRIDES"] not in _ENV_UNPARSED)
         _allowed_ctx = (
             {"ALLOWED_MODELS": sorted(ALLOWED_MODELS)}
             if ALLOWED_MODELS and (
@@ -2204,13 +2247,18 @@ try:
                     and "ALLOWED_MODELS" not in _ENV_REJECTED))
             else {})
         for _mid, _entry in MODEL_OVERRIDES.items():
+            _entry_ctx = (
+                _allowed_ctx if ("ALLOWED_MODELS" in _LOCAL_KEYS
+                                 or _mid in _ENV_OVERRIDE_FIELDS
+                                 or _env_json_models)
+                else {})
             try:
                 # Keep the VALIDATED dump, not the raw entry: pydantic's lax
                 # mode coerces string leftovers ("false", "3") that the
                 # frozenset lookup above missed, so a field newly added to
                 # ModelOverride can never stay live as a raw string.
                 _clean_overrides[_mid] = _AdminConfig.model_validate(
-                    {**_allowed_ctx, "MODEL_OVERRIDES": {_mid: _entry}},
+                    {**_entry_ctx, "MODEL_OVERRIDES": {_mid: _entry}},
                     context=_env_slug_ctx()
                 ).model_dump(exclude_none=True)["MODEL_OVERRIDES"][_mid]
                 _env_vals = {_ef: _clean_overrides[_mid][_ef]
@@ -2231,7 +2279,7 @@ try:
                                 _reverted[_ef] = _pre_entry[_ef]
                     try:
                         _reverted = _AdminConfig.model_validate(
-                            {**_allowed_ctx, "MODEL_OVERRIDES": {_mid: _reverted}},
+                            {**_entry_ctx, "MODEL_OVERRIDES": {_mid: _reverted}},
                             context=_env_slug_ctx()
                         ).model_dump(exclude_none=True)["MODEL_OVERRIDES"][_mid]
                     except Exception:  # noqa: BLE001

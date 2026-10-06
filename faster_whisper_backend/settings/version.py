@@ -41,6 +41,10 @@ _KEYS_DATA_VERSION: int = -1
 # below the utterance cadence that consumes the counter.
 _KEYS_PROBE_MIN_INTERVAL_S = 0.25
 _KEYS_LAST_PROBE: float = 0.0
+# Last sessions_store.revocation_generation() seen — the same probe for a
+# logout served by a sibling worker. Sessions live in their own DB file, so
+# api_keys.db's data_version never moves for one. -1 = not sampled yet.
+_SESSIONS_REV_GEN: int = -1
 
 
 def bump_config_version() -> None:
@@ -53,25 +57,34 @@ def bump_config_version() -> None:
 def _bump_if_sibling_committed() -> None:
     """Bump the counter when another PROCESS committed to api_keys.db since the
     last check — the cross-worker stand-in for the bump_config_version() call
-    every binding writer already makes in its own process. Mirrors
+    every binding writer already makes in its own process. Also bumps when a
+    sibling revoked a session (sessions_store.revocation_generation), which
+    is the cross-worker half of revoke_session's own bump. Mirrors
     api_keys_store._refresh_if_sibling_committed(): `PRAGMA data_version` only
     moves for commits made by a different connection, so a single-worker server
     never bumps here. The first sample is adopted silently — the store opening
     is not a sibling write. Once a sample is adopted the PRAGMA runs at most
     every _KEYS_PROBE_MIN_INTERVAL_S — see the note on that constant."""
-    global _KEYS_DATA_VERSION, _KEYS_LAST_PROBE
+    global _KEYS_DATA_VERSION, _KEYS_LAST_PROBE, _SESSIONS_REV_GEN
     now = time.monotonic()
     if (_KEYS_DATA_VERSION >= 0
             and now - _KEYS_LAST_PROBE < _KEYS_PROBE_MIN_INTERVAL_S):
         return
     _KEYS_LAST_PROBE = now
     from faster_whisper_backend.auth import api_keys_store   # lazy: api_keys_store imports this module
+    from faster_whisper_backend.auth import sessions_store   # lazy: same cycle
+    changed = False
     v = api_keys_store.data_version()
-    if v == _KEYS_DATA_VERSION:
-        return
-    first = _KEYS_DATA_VERSION < 0
-    _KEYS_DATA_VERSION = v
-    if not first:
+    if v != _KEYS_DATA_VERSION:
+        changed = _KEYS_DATA_VERSION >= 0
+        _KEYS_DATA_VERSION = v
+    # A sibling's logout. -1 (store not open / read failed) is never adopted,
+    # so a transient error cannot pass for a revocation on the next read.
+    g = sessions_store.revocation_generation()
+    if g >= 0 and g != _SESSIONS_REV_GEN:
+        changed = changed or _SESSIONS_REV_GEN >= 0
+        _SESSIONS_REV_GEN = g
+    if changed:
         bump_config_version()
 
 

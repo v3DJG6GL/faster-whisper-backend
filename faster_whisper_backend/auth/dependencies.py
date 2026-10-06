@@ -14,9 +14,10 @@ Three-level dependency layering (FastAPI idiomatic):
     `is_admin=False`. Used for system-mutation endpoints (/settings,
     /settings/api-keys, delete/clear/reapply-rules).
   - `require_page(name)`: dependency factory — raises 403 if the user
-    has no access to the named page. Mounted on the per-data routers
-    (/captures, /reports, /quick-config, /logs, /stats) at the
-    APIRouter constructor so every sub-route inherits the check.
+    has no access to the named page. Mounted at the APIRouter constructor
+    of API-only routers so every sub-route inherits the check; a router
+    that also serves a navigable HTML page gates per route instead (see
+    `require_page`'s docstring — a router-level gate 401s the page).
 
 Open-mode logging: a background asyncio task emits a WARNING every 60
 seconds while the server has no admin keys, so the operator sees the
@@ -381,8 +382,10 @@ async def open_mode_warning_loop() -> None:
             else:
                 logger.warning(
                     "[auth] no admin key configured — running in OPEN mode."
-                    " Anyone reachable on this server can use it. Generate"
-                    " an admin key in /settings/api-keys now."
+                    " Every caller on ADMIN_WEBUI_ALLOWED_HOSTS (%s) is"
+                    " treated as admin. Generate an admin key in"
+                    " /settings/api-keys now.",
+                    ", ".join(map(str, cfg.ADMIN_WEBUI_ALLOWED_HOSTS or [])) or "none",
                 )
                 logged_locked_down = False
         except Exception as e:

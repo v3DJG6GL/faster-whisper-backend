@@ -344,9 +344,7 @@ def test_logs_stream_ends_after_revoke(client, make_user_key, app_module,
         gen = logs_routes._stream_log_lines(_sse_request("/logs/stream", raw))
         assert await gen.__anext__() == "data: first\n\n"
         assert await gen.__anext__() == "data: __LIVE_TAIL__\n\n"
-        # One idle tick first: the tail records its file offset only when
-        # resumed past the sentinel, so a line appended before that is
-        # treated as backlog already shown.
+        # One idle tick first, so the line below lands on a later poll.
         assert await gen.__anext__() == ": keepalive\n\n"
         # Still authorised: a new line is delivered on the next tick.
         with open(log, "a", encoding="utf-8") as f:

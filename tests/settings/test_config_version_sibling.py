@@ -7,6 +7,7 @@ import time
 import types
 
 from faster_whisper_backend.auth import api_keys_store
+from faster_whisper_backend.auth import sessions_store
 from faster_whisper_backend.settings import version as settings_version
 
 
@@ -27,6 +28,10 @@ def _install(monkeypatch, versions):
         calls["n"] += 1
         return versions[min(calls["n"] - 1, len(versions) - 1)]
     monkeypatch.setattr(api_keys_store, "data_version", _dv)
+    # The sessions half of the probe is held still here (see
+    # tests/auth/test_session_auth.py for a sibling logout).
+    monkeypatch.setattr(settings_version, "_SESSIONS_REV_GEN", -1)
+    monkeypatch.setattr(sessions_store, "revocation_generation", lambda: 0)
     return calls, clock
 
 
@@ -67,3 +72,17 @@ def test_unready_store_is_never_throttled(monkeypatch):
     settings_version.config_version()
     assert calls["n"] == 3
     assert settings_version._KEYS_DATA_VERSION == 7
+
+
+def test_sibling_session_revocation_bumps_after_window(monkeypatch):
+    """A logout served by a sibling worker moves sessions_store's revocation
+    counter, never api_keys.db's data_version — the probe watches both."""
+    calls, clock = _install(monkeypatch, [5])
+    gens = iter([3, 3, 4])
+    monkeypatch.setattr(sessions_store, "revocation_generation",
+                        lambda: next(gens))
+    v0 = settings_version.config_version()                 # adopts 5 and 3
+    clock["t"] += settings_version._KEYS_PROBE_MIN_INTERVAL_S
+    assert settings_version.config_version() == v0         # 3 again
+    clock["t"] += settings_version._KEYS_PROBE_MIN_INTERVAL_S
+    assert settings_version.config_version() == v0 + 1     # 4: sibling logout

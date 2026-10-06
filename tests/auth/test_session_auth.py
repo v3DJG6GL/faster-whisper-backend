@@ -596,3 +596,116 @@ def test_csrf_non_ascii_token_is_403_not_500(client, make_user_key):
     r = client.post("/auth/logout", headers={b"X-CSRF-Token": b"\xe9"})
     assert r.status_code == 403
     assert r.json()["detail"] == "CSRF token missing or invalid"
+
+
+def test_revoke_unknown_session_does_not_bump(client, make_user_key):
+    """/auth/logout is unauthenticated: a junk cookie (plus a junk bearer and
+    no Origin, which passes the CSRF middleware) must not move the global
+    config version — every live stream re-resolves auth on each move."""
+    from faster_whisper_backend.auth import sessions_store
+    from faster_whisper_backend.settings import config as cfg
+    from faster_whisper_backend.settings import version as settings_version
+    make_user_key("root", is_admin=True)
+    v0 = settings_version._CONFIG_VERSION
+    sessions_store.revoke_session("junk")
+    assert settings_version._CONFIG_VERSION == v0
+    client.cookies.set(cfg.SESSION_COOKIE_NAME, "junk")
+    r = client.post("/auth/logout", headers={"Authorization": "Bearer x"})
+    assert r.status_code == 200
+    assert settings_version._CONFIG_VERSION == v0
+
+
+def test_failed_reinit_fails_session_lookup_closed(tmp_path):
+    """A re-init whose schema step raises must not leave the previous DB's
+    tokens authenticating from the stale in-memory index (mirrors
+    api_keys_store's _KEY_INDEX reset + _DB_READY gate)."""
+    import sqlite3
+    w = _worker("sessions_store_reinit", str(tmp_path / "a.sqlite3"))
+    raw, _csrf = w.create_session("u", 3600.0)
+    assert w.lookup_session(raw) is not None
+    bad = str(tmp_path / "bad.sqlite3")
+    con = sqlite3.connect(bad)
+    con.execute("CREATE VIEW sessions AS SELECT 1")
+    con.commit()
+    con.close()
+    with pytest.raises(sqlite3.OperationalError):
+        w.init_db(bad)
+    assert w.lookup_session(raw) is None
+    assert w.lookup_session(raw) is None
+
+
+def test_sibling_logout_bumps_config_version(tmp_path, monkeypatch):
+    """SERVER_WORKERS>1: a logout served by worker B bumps B's counter only,
+    and sessions live in their own DB file, so api_keys.db's data_version
+    never moves for it. The probe must watch the revocation counter too, or a
+    cookie-authenticated stream on worker A keeps decoding after sign-out."""
+    from faster_whisper_backend.auth import api_keys_store
+    from faster_whisper_backend.auth import sessions_store
+    from faster_whisper_backend.settings import version as settings_version
+    db = str(tmp_path / "sessions.db")
+    a = _worker("sessions_store_gen_a", db)
+    b = _worker("sessions_store_gen_b", db)
+    # Worker A's probe reads its own sessions module; the keys half is held still.
+    monkeypatch.setattr(sessions_store, "revocation_generation",
+                        a.revocation_generation)
+    monkeypatch.setattr(api_keys_store, "data_version", lambda: 5)
+    monkeypatch.setattr(settings_version, "_KEYS_DATA_VERSION", -1)
+    monkeypatch.setattr(settings_version, "_SESSIONS_REV_GEN", -1)
+    monkeypatch.setattr(settings_version, "_KEYS_PROBE_MIN_INTERVAL_S", 0.0)
+    raw, _csrf = a.create_session("victim", 3600.0)
+    v0 = settings_version.config_version()          # adopts both samples
+    assert settings_version.config_version() == v0  # nothing moved
+    b.revoke_session("junk")                        # no row → no generation
+    assert settings_version.config_version() == v0
+    b.revoke_session(raw)                           # sibling worker logs out
+    # B's own in-process bump lands on this same module in a test; the probe
+    # must add one more on top of it — that one is what worker A would see.
+    v1 = settings_version._CONFIG_VERSION
+    assert settings_version.config_version() == v1 + 1
+
+
+def test_login_throttle_holds_under_concurrent_attempts(monkeypatch):
+    """guard() only reads the counter and penalize() runs after the lookup, so
+    an await between them (the body read) let N concurrent attempts all pass
+    guard before any penalized — one window admitted ~N guesses. With the
+    window one short of the limit, exactly one attempt may reach the lookup."""
+    import asyncio
+
+    from fastapi import HTTPException, Response
+
+    from faster_whisper_backend.auth import routes as auth_routes
+    from faster_whisper_backend.settings import config as cfg
+
+    monkeypatch.setattr(cfg, "LOGIN_FAILURE_RATE", 3, raising=False)
+    monkeypatch.setattr(auth_routes._ak, "is_locked_down", lambda: True)
+    lookups = []
+    monkeypatch.setattr(auth_routes._ak, "lookup_by_raw_key",
+                        lambda k: lookups.append(k))
+
+    class _Req:
+        class client:
+            host = "10.9.9.9"
+
+        async def json(self):
+            await asyncio.sleep(0)        # the body receive yields the loop
+            return {"key": "wk_nope"}
+
+    window = auth_routes._login_failures
+    window.clear()
+    try:
+        window.penalize("10.9.9.9")
+        window.penalize("10.9.9.9")       # one short of the limit
+
+        async def _run():
+            return await asyncio.gather(
+                *(auth_routes.login(_Req(), Response()) for _ in range(5)),
+                return_exceptions=True)
+
+        results = asyncio.run(_run())
+    finally:
+        window.clear()
+    codes = sorted(r.status_code for r in results
+                   if isinstance(r, HTTPException))
+    assert len(codes) == 5
+    assert codes == [401, 429, 429, 429, 429]
+    assert len(lookups) == 1

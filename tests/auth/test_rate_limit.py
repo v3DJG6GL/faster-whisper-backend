@@ -212,6 +212,21 @@ def test_inflight_two_keys_are_independent(gauge):
     assert gauge.count("bob") == 1
 
 
+def test_inflight_release_after_cap_raised_from_zero_frees_nothing(gauge,
+                                                                    monkeypatch):
+    """A holder admitted while the cap was off took no slot; once the cap is
+    hot-raised it must not free a slot someone else holds on its way out."""
+    monkeypatch.setattr(cfg, "TRANSLATE_MAX_INFLIGHT_PER_USER", 0)
+    took_a = gauge.acquire("alice")
+    assert took_a is False
+    monkeypatch.setattr(cfg, "TRANSLATE_MAX_INFLIGHT_PER_USER", 1)
+    assert gauge.acquire("alice") is True  # B holds the only slot
+    if took_a:
+        gauge.release("alice")  # A finishes: the caller contract skips this
+    with pytest.raises(rate_limit.RateLimited):
+        gauge.acquire("alice")  # C must still be refused
+
+
 # ---------------------------------------------------------------------------
 # identity_key
 # ---------------------------------------------------------------------------
@@ -244,3 +259,13 @@ def test_identity_key_accepts_a_websocket_shaped_object():
         client = _Client("192.168.1.4")
 
     assert rate_limit.identity_key({}, _WS()) == "192.168.1.4"
+
+
+def test_identity_key_open_mode_sentinel_charges_the_client_host():
+    """The open-mode synthetic admin is one sentinel for every allowlisted
+    caller — charging it would put every LAN client in one bucket."""
+    from faster_whisper_backend.auth import api_keys_store
+    open_user = dict(api_keys_store.OPEN_MODE_USER)
+    assert rate_limit.identity_key(open_user, _Req("10.0.0.5")) == "10.0.0.5"
+    assert rate_limit.identity_key(open_user, _Req("10.0.0.6")) == "10.0.0.6"
+    assert rate_limit.identity_key(open_user, _Req()) == "<unknown>"

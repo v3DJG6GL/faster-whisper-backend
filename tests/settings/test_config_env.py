@@ -1095,3 +1095,106 @@ def test_per_model_env_values_are_recorded_for_the_save_path(monkeypatch):
     finally:
         monkeypatch.undo()
         importlib.reload(config)
+
+
+def test_env_json_fields_apply_pipeline_rules_first(tmp_path):
+    """MODEL_OVERRIDES / OVERRIDE_PROFILES are slug-checked against the
+    PIPELINE_RULES in force at that moment; iterating a str set made an env
+    profile naming an env rule load on some PYTHONHASHSEEDs only."""
+    import subprocess
+    import sys
+    from faster_whisper_backend.paths import REPO_ROOT
+    for seed in ("0", "4", "5"):
+        env = {k: v for k, v in os.environ.items()
+               if not k.startswith("WHISPER_")}
+        env.update(
+            PYTHONHASHSEED=seed,
+            WHISPER_DATA_DIR=str(tmp_path),
+            WHISPER_CONFIG_LOCAL=str(tmp_path / "config.local.json"),
+            WHISPER_PIPELINE_RULES='[{"name": "myrule", "label": "X", "type": "terminal"}]',
+            WHISPER_OVERRIDE_PROFILES='{"p1": {"PIPELINE_RULES_EXCLUDE": ["myrule"]}}',
+        )
+        out = subprocess.run(
+            [sys.executable, "-c",
+             "from faster_whisper_backend.settings import config as c;"
+             "print(sorted(c.OVERRIDE_PROFILES))"],
+            cwd=REPO_ROOT, env=env, capture_output=True, text=True, timeout=120)
+        assert out.returncode == 0, out.stderr
+        assert out.stdout.strip().splitlines()[-1] == "['p1']", (seed, out.stderr)
+
+
+def test_env_bundle_with_a_tightened_value_is_migrated_not_dropped(monkeypatch):
+    """A guard at 1 was accepted before the bundle validators tightened; the
+    env bundle gets the same migration as a stored one instead of losing the
+    WHOLE value (BEAM_SIZE included) behind a "not valid JSON" warning."""
+    try:
+        _reload_with_env(
+            monkeypatch, WHISPER_OVERRIDE_PROFILES=json.dumps(
+                {"p": {"SEGMENT_HEAD_ECHO_MIN_WORDS": 1, "BEAM_SIZE": 3}}))
+        assert config.OVERRIDE_PROFILES["p"] == {
+            "SEGMENT_HEAD_ECHO_MIN_WORDS": 0, "BEAM_SIZE": 3}
+        assert "WHISPER_OVERRIDE_PROFILES" not in config._ENV_UNPARSED
+    finally:
+        monkeypatch.undo()
+        importlib.reload(config)
+
+
+def test_env_bundle_schema_error_is_not_called_bad_json(monkeypatch):
+    try:
+        _reload_with_env(monkeypatch, WHISPER_OVERRIDE_PROFILES=json.dumps(
+            {"p": {"BEAM_SIZE": 999}}))
+        msgs = [m for m in config._ENV_WARNINGS
+                if m.startswith("WHISPER_OVERRIDE_PROFILES")]
+        assert msgs and all("not valid JSON" not in m for m in msgs), msgs
+        assert any("is not a valid OVERRIDE_PROFILES" in m for m in msgs), msgs
+        assert all("errors.pydantic.dev" not in m for m in msgs), msgs
+        _reload_with_env(monkeypatch, WHISPER_OVERRIDE_PROFILES="{not json")
+        assert any("is not valid JSON for OVERRIDE_PROFILES" in m
+                   for m in config._ENV_WARNINGS), config._ENV_WARNINGS
+    finally:
+        monkeypatch.undo()
+        importlib.reload(config)
+
+
+def test_env_wildcard_origin_drops_only_that_entry(monkeypatch):
+    """Same legacy value, same outcome as the stored-file path: the wildcard
+    entry goes, its valid siblings stay trusted."""
+    try:
+        _reload_with_env(
+            monkeypatch,
+            WHISPER_TRUSTED_ORIGINS="https://a.example.com,https://*.example.com",
+            WHISPER_CORS_ALLOW_ORIGINS="*,https://*.example.com")
+        assert config.TRUSTED_ORIGINS == ["https://a.example.com"]
+        assert config.CORS_ALLOW_ORIGINS == ["*"]          # bare '*' is kept
+        assert any("WHISPER_TRUSTED_ORIGINS" in m and "*.example.com" in m
+                   for m in config._ENV_WARNINGS), config._ENV_WARNINGS
+        assert "TRUSTED_ORIGINS" not in config._ENV_REJECTED
+    finally:
+        monkeypatch.undo()
+        importlib.reload(config)
+
+
+def test_ignored_per_model_env_value_leaves_no_phantom_entry(monkeypatch):
+    try:
+        _reload_with_env(monkeypatch, WHISPER_MODEL_OVERRIDE__TINY__VAD_FILTER="maybe")
+        assert "TINY" not in config.MODEL_OVERRIDES
+        assert not any("was dropped" in m for m in config._ENV_WARNINGS)
+    finally:
+        monkeypatch.undo()
+        importlib.reload(config)
+
+
+def test_stored_model_override_survives_an_env_only_allowlist(monkeypatch):
+    """An env allowlist narrowed for a while must not drop (and so let the
+    next per-model save erase) a stored entry the env did not supply."""
+    from faster_whisper_backend.settings import config_store
+    monkeypatch.setattr(config_store, "load_overrides",
+                        lambda path=None: {"MODEL_OVERRIDES": {"medium": {"BEAM_SIZE": 3}}})
+    try:
+        _reload_with_env(monkeypatch, WHISPER_ALLOWED_MODELS="large-v3")
+        assert config.MODEL_OVERRIDES.get("medium") == {"BEAM_SIZE": 3}
+        assert not any("was dropped" in m for m in config._ENV_WARNINGS), \
+            config._ENV_WARNINGS
+    finally:
+        monkeypatch.undo()
+        importlib.reload(config)

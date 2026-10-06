@@ -251,8 +251,11 @@ def test_suppress_chars_cache_is_a_capped_lru(monkeypatch):
     tx_models._resolve_suppress_chars("m", model, "a", True)   # hit → most recent
     tx_models._resolve_suppress_chars("m", model, "d", True)   # evicts "b"
     assert list(tx_models._suppress_chars_cache) == [("m", "c"), ("m", "a"), ("m", "d")]
+    # A second model's entry pins the per-model contract the unload paths
+    # rely on: dropping "m" must not clear (or touch) "n".
+    tx_models._resolve_suppress_chars("n", model, "x", True)   # evicts ("m", "c")
     tx_models._drop_suppress_chars_cache("m")
-    assert not tx_models._suppress_chars_cache
+    assert list(tx_models._suppress_chars_cache) == [("n", "x")]
 
 
 def test_hallucination_silence_zero_is_off(monkeypatch):

@@ -560,17 +560,32 @@ def _suppress_tokens_csv(v: str | None) -> str | None:
     return v
 
 
-def _effective(model: BaseModel, name: str, fallback: Any = None) -> Any:
+def _effective(model: BaseModel, name: str, fallback: Any = None,
+               info: "ValidationInfo | None" = None) -> Any:
     """The EFFECTIVE value of `name` for a cross-field model validator: the
-    submitted value, or — None meaning "revert to default" — the in-repo
-    default. The default comes from config._BASELINE (the pre-override
-    snapshot), NOT the live config attribute: the live value already carries
-    any applied override, so at save time (server running) it reflects the OLD
-    override while at load time (config import) it is the bare default. That
-    asymmetry let a save pass validation, then the next restart's load fail it
-    and silently drop EVERY override on disk. _BASELINE is identical at both
-    times, so the two validations always agree. The live attribute (then
-    `fallback`) is used only if the snapshot is unavailable (partial import)."""
+    env-pinned value when the caller supplied one, else the submitted value,
+    or — None meaning "revert to default" — the in-repo default.
+
+    The env pin comes first because it is what will be in force: a save
+    (config_store.save_overrides) passes context["env_effective"], the live
+    values of the fields a WHISPER_* var pins, and the restart-time env pass
+    validates local + env. Without it a save could pair a submitted value with
+    the baseline for a sibling the env actually pins (TRIM_S=11 checked
+    against the default KEEP_S=10 while env KEEP_S=12 is live), pass, run
+    inconsistent, and have the next restart revert the env value.
+
+    The default comes from config._BASELINE (the pre-override snapshot), NOT
+    the live config attribute: the live value already carries any applied
+    override, so at save time (server running) it reflects the OLD override
+    while at load time (config import) it is the bare default. That asymmetry
+    let a save pass validation, then the next restart's load fail it and
+    silently drop EVERY override on disk. _BASELINE is identical at both
+    times, so with the env pins above the two validations agree. The live
+    attribute (then `fallback`) is used only if the snapshot is unavailable
+    (partial import)."""
+    pinned = ((info.context or {}).get("env_effective") or {}) if info else {}
+    if name in pinned:
+        return pinned[name]
     v = getattr(model, name)
     if v is not None:
         return v
@@ -1468,13 +1483,13 @@ class AdminConfig(BaseModel):
         subgroup="Sample sizing")
 
     @model_validator(mode="after")
-    def _validate_sample_sizing(self) -> "AdminConfig":
+    def _validate_sample_sizing(self, info: ValidationInfo) -> "AdminConfig":
         # Enforce MIN ≤ TARGET ≤ MAX ≤ 30 on the EFFECTIVE values (catches
         # e.g. lowering MAX below the target); see _effective for why the
         # default side is config._BASELINE.
-        mn = float(_effective(self, "CAPTURES_SAMPLE_MIN_DURATION_S"))
-        tg = float(_effective(self, "CAPTURES_PROPOSER_TARGET_S"))
-        mx = float(_effective(self, "CAPTURES_SAMPLE_MAX_DURATION_S"))
+        mn = float(_effective(self, "CAPTURES_SAMPLE_MIN_DURATION_S", info=info))
+        tg = float(_effective(self, "CAPTURES_PROPOSER_TARGET_S", info=info))
+        mx = float(_effective(self, "CAPTURES_SAMPLE_MAX_DURATION_S", info=info))
         if not (mn <= tg <= mx):
             raise ValueError(
                 "require CAPTURES_SAMPLE_MIN_DURATION_S ≤ "
@@ -1484,13 +1499,13 @@ class AdminConfig(BaseModel):
         return self
 
     @model_validator(mode="after")
-    def _validate_body_caps(self) -> "AdminConfig":
+    def _validate_body_caps(self, info: ValidationInfo) -> "AdminConfig":
         # MAX_REQUEST_BYTES is documented (config.py, FIELD_DESCRIPTIONS,
         # main._max_body_mw) as sitting ABOVE MEDIA_MAX_BYTES so an oversized
         # media POST hits the media-specific 413 that names the right setting.
         # Enforce it on the EFFECTIVE values (see _effective).
-        up = int(_effective(self, "MEDIA_MAX_BYTES"))
-        rq = int(_effective(self, "MAX_REQUEST_BYTES"))
+        up = int(_effective(self, "MEDIA_MAX_BYTES", info=info))
+        rq = int(_effective(self, "MAX_REQUEST_BYTES", info=info))
         if rq < up:
             raise ValueError(
                 "require MAX_REQUEST_BYTES >= MEDIA_MAX_BYTES "
@@ -1499,9 +1514,9 @@ class AdminConfig(BaseModel):
         return self
 
     @model_validator(mode="after")
-    def _validate_recording_duration(self) -> "AdminConfig":
-        mn = float(_effective(self, "CAPTURES_RECORDING_MIN_DURATION_S"))
-        mx = float(_effective(self, "CAPTURES_RECORDING_MAX_DURATION_S"))
+    def _validate_recording_duration(self, info: ValidationInfo) -> "AdminConfig":
+        mn = float(_effective(self, "CAPTURES_RECORDING_MIN_DURATION_S", info=info))
+        mx = float(_effective(self, "CAPTURES_RECORDING_MAX_DURATION_S", info=info))
         if mn > mx:
             raise ValueError(
                 "require CAPTURES_RECORDING_MIN_DURATION_S <= "
@@ -1511,9 +1526,9 @@ class AdminConfig(BaseModel):
         return self
 
     @model_validator(mode="after")
-    def _validate_buffer_trim_order(self) -> "AdminConfig":
-        trim = float(_effective(self, "STREAMING_BUFFER_TRIM_S"))
-        keep = float(_effective(self, "STREAMING_BUFFER_TRIM_KEEP_S"))
+    def _validate_buffer_trim_order(self, info: ValidationInfo) -> "AdminConfig":
+        trim = float(_effective(self, "STREAMING_BUFFER_TRIM_S", info=info))
+        keep = float(_effective(self, "STREAMING_BUFFER_TRIM_KEEP_S", info=info))
         if keep >= trim:
             raise ValueError(
                 "require STREAMING_BUFFER_TRIM_KEEP_S < "
@@ -1523,9 +1538,9 @@ class AdminConfig(BaseModel):
         return self
 
     @model_validator(mode="after")
-    def _validate_custom_template(self) -> "AdminConfig":
-        family = _effective(self, "TRANSLATION_PROMPT_FAMILY", "auto")
-        tpl = _effective(self, "TRANSLATION_PROMPT_TEMPLATE", "")
+    def _validate_custom_template(self, info: ValidationInfo) -> "AdminConfig":
+        family = _effective(self, "TRANSLATION_PROMPT_FAMILY", "auto", info=info)
+        tpl = _effective(self, "TRANSLATION_PROMPT_TEMPLATE", "", info=info)
         if family == "custom" and not (tpl or "").strip():
             raise ValueError(
                 "TRANSLATION_PROMPT_FAMILY is 'custom' but "
@@ -1538,9 +1553,9 @@ class AdminConfig(BaseModel):
     # path/samesite; the browser keeps the LAST Set-Cookie per name, so equal
     # names make every cookie login fail (the CSRF token is read as the session).
     @model_validator(mode="after")
-    def _validate_cookie_names_differ(self) -> "AdminConfig":
-        sess = _effective(self, "SESSION_COOKIE_NAME", "whisper_session")
-        csrf = _effective(self, "SESSION_CSRF_COOKIE_NAME", "whisper_csrf")
+    def _validate_cookie_names_differ(self, info: ValidationInfo) -> "AdminConfig":
+        sess = _effective(self, "SESSION_COOKIE_NAME", "whisper_session", info=info)
+        csrf = _effective(self, "SESSION_CSRF_COOKIE_NAME", "whisper_csrf", info=info)
         if sess == csrf:
             raise ValueError(
                 f"SESSION_COOKIE_NAME and SESSION_CSRF_COOKIE_NAME must differ "

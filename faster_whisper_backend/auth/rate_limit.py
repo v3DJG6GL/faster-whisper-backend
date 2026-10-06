@@ -94,19 +94,28 @@ class RateLimited(HTTPException):
         }
 
 
+# api_keys_store.OPEN_MODE_USER's user_id / key_id. Hard-coded rather than
+# imported: this module stays stdlib + fastapi + config (see the docstring).
+_OPEN_MODE_ID = "(open-mode)"
+
+
 def identity_key(user: "dict[str, Any] | None", request: Any) -> str:
     """Who to charge a request to: user id, else API key id, else client host.
 
     The key_id rung matters for machine clients that authenticate with a key
     carrying no user, and the host rung is the last resort for anything with
     neither — several callers behind one NAT then share a bucket, which is the
-    conservative direction. `request` may be a Starlette Request OR a
-    WebSocket; only `.client` is touched, which both carry. Never returns ""
-    (an empty key would merge every anonymous caller with a legitimate one
-    whose id happened to be blank).
+    conservative direction. The open-mode synthetic admin is NOT a real
+    identity (every allowlisted caller resolves to the same "(open-mode)"
+    sentinel), so it falls to the host rung too: five dictation clients on
+    five LAN machines get five buckets, not one. `request` may be a Starlette
+    Request OR a WebSocket; only `.client` is touched, which both carry.
+    Never returns "" (an empty key would merge every anonymous caller with a
+    legitimate one whose id happened to be blank).
     """
     user = user or {}
-    key = user.get("user_id") or user.get("key_id") or ""
+    key = next((v for v in (user.get("user_id"), user.get("key_id"))
+                if v and v != _OPEN_MODE_ID), "")
     if not key:
         client = getattr(request, "client", None)
         key = getattr(client, "host", "") or ""
@@ -259,17 +268,23 @@ class InFlight:
         """Current ceiling, re-read from config on every call (hot field)."""
         return int(getattr(cfg, self.config_field, self.default_max))
 
-    def acquire(self, key: str) -> None:
-        """Take a slot, or raise RateLimited when the key holds them all."""
+    def acquire(self, key: str) -> bool:
+        """Take a slot, or raise RateLimited when the key holds them all.
+
+        Returns True when a slot was actually counted and False when the cap
+        is off (0). Callers release only after a True: a holder admitted
+        while the cap was off took nothing, and releasing on its behalf after
+        the cap was raised would free a slot someone else holds.
+        """
         limit = self.limit()
         if limit <= 0:
-            return
+            return False
         key = key or "<unknown>"
         with self._lock:
             n = self._counts.get(key, 0)
             if n < limit:
                 self._counts[key] = n + 1
-                return
+                return True
         # Lock released; build and raise the rejection outside it.
         raise RateLimited(
             message=self.message.format(limit=limit,
@@ -279,9 +294,9 @@ class InFlight:
         )
 
     def release(self, key: str) -> None:
-        """Give a slot back. Deliberately defensive: a double release (or one
-        after the limit was lowered to 0 mid-flight, where acquire was a
-        no-op) must not drive a key negative and hand out free slots forever."""
+        """Give a slot back — only for an acquire that returned True. Still
+        defensive: a double release must not drive a key negative and hand
+        out free slots forever."""
         key = key or "<unknown>"
         with self._lock:
             n = self._counts.get(key, 0)

@@ -379,9 +379,9 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
         "set. Empty = let the pipeline decide. Clients override per request "
         "via `num_speakers`.",
     "DIARIZATION_MIN_SPEAKERS":
-        "Lower bound on the speaker count. Ignored when NUM_SPEAKERS is set.",
+        "Lower bound on the speaker count. Ignored when DIARIZATION_NUM_SPEAKERS is set.",
     "DIARIZATION_MAX_SPEAKERS":
-        "Upper bound on the speaker count. Ignored when NUM_SPEAKERS is set.",
+        "Upper bound on the speaker count. Ignored when DIARIZATION_NUM_SPEAKERS is set.",
 
     # --- Background-music separation ---
     "BGM_SEPARATION_ENABLED":

@@ -7,9 +7,12 @@ SDKs) never touch this — they keep sending `Authorization: Bearer`.
 
 Storage layout:
 
-  cfg.SESSIONS_DB — SQLite (WAL) with one table:
+  cfg.SESSIONS_DB — SQLite (WAL) with two tables:
     sessions — { token_hash, user_id, csrf_token, created_ts,
                  expires_ts, revoked_ts }
+    meta     — { k, v }: one 'revocations' counter, bumped per logout so a
+               sibling worker's config_version() notices it (see
+               revocation_generation)
 
 Session tokens at rest are SHA-256(raw_token) hex — same rationale as
 api_keys_store: a high-entropy random token (256-bit) makes slow password
@@ -93,6 +96,10 @@ CREATE TABLE IF NOT EXISTS sessions (
   revoked_ts  REAL
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_ts);
+CREATE TABLE IF NOT EXISTS meta (
+  k  TEXT PRIMARY KEY,
+  v  INTEGER NOT NULL
+);
 """
 
 
@@ -103,8 +110,14 @@ CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_ts);
 def init_db(db_path: str) -> None:
     """Open the SQLite DB (WAL) and ensure the schema exists. Idempotent.
     Purges expired rows and builds the in-memory index from active ones."""
-    global _conn, _DB_READY
+    global _conn, _DB_READY, _SESSION_INDEX
     _DB_READY = False
+    # Drop the previous DB's sessions with it (mirrors api_keys_store's
+    # _KEY_INDEX reset): if anything below raises, lookup_session must not
+    # keep honouring tokens from a store that is no longer open.
+    with _lock:
+        _SESSION_INDEX = {}
+        _SLIDE_CACHE.clear()
     # Close the previous handle before rebinding (mirrors api_keys_store), or
     # every re-init leaks a connection plus its WAL/-shm handles.
     if _conn is not None:
@@ -304,7 +317,7 @@ def lookup_session(raw_token: str) -> dict[str, Any] | None:
     Set-Cookie, with max_age=SESSION_TTL_S, so the cookie itself expires
     SESSION_TTL_S after login regardless of activity and the user re-logs in.
     """
-    if not raw_token:
+    if not raw_token or not _DB_READY:
         return None
     _refresh_if_sibling_committed()
     th = hash_token(raw_token)
@@ -362,7 +375,11 @@ def _slide_expiry_debounced(token_hash: str, rec: dict[str, Any]) -> None:
 def revoke_session(raw_token: str) -> None:
     """Soft-revoke a session (used by /auth/logout). No-op if unknown.
     Bumps the config version so a live cookie-authenticated streaming socket
-    re-authenticates and closes (streaming.routes._refresh_ident)."""
+    re-authenticates and closes (streaming.routes._refresh_ident), and the
+    'revocations' counter so a SIBLING worker's config_version() does too.
+    Both only when a row was actually revoked: /auth/logout is
+    unauthenticated, so a junk cookie must not move the global version (every
+    live stream re-resolves auth on each move)."""
     if not raw_token:
         return
     th = hash_token(raw_token)
@@ -375,11 +392,16 @@ def revoke_session(raw_token: str) -> None:
         # sibling worker has committed since the last check.
         if _data_version_locked() != _DATA_VERSION:
             _rebuild_index_locked()
-        conn.execute(
+        cur = conn.execute(
             "UPDATE sessions SET revoked_ts = ?"
             " WHERE token_hash = ? AND revoked_ts IS NULL",
             (now, th),
         )
+        revoked = cur.rowcount > 0
+        if revoked:
+            conn.execute(
+                "INSERT INTO meta (k, v) VALUES ('revocations', 1)"
+                " ON CONFLICT(k) DO UPDATE SET v = v + 1")
         _SLIDE_CACHE.pop(th, None)
         # Drop the one key rather than re-reading every live session, mirroring
         # the incremental insert create_session already does. The full rebuild
@@ -390,7 +412,27 @@ def revoke_session(raw_token: str) -> None:
         # move PRAGMA data_version on this connection, and re-stamping would
         # swallow a sibling's commit that landed since the last check.
         _SESSION_INDEX.pop(th, None)
-    settings_version.bump_config_version()   # signed-out identity's live streaming idents re-auth
+    if revoked:
+        settings_version.bump_config_version()   # signed-out identity's live streaming idents re-auth
+
+
+def revocation_generation() -> int:
+    """Monotonic count of revoked sessions, or -1 before init_db().
+
+    Read by settings_version.config_version()'s cross-worker probe: a logout
+    bumps the config version only in the worker that served it, and the
+    sessions table lives in its own DB file, so api_keys_store.data_version()
+    never moves for it. Not `PRAGMA data_version`: every sibling slide UPDATE
+    moves that, and every live stream would re-resolve auth on each one."""
+    if not _DB_READY:
+        return -1
+    try:
+        with _lock:
+            row = _require_conn().execute(
+                "SELECT v FROM meta WHERE k = 'revocations'").fetchone()
+    except (sqlite3.Error, RuntimeError):
+        return -1
+    return int(row[0]) if row else 0
 
 
 def purge_expired() -> None:
