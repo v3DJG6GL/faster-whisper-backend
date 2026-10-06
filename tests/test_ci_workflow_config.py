@@ -88,17 +88,29 @@ def test_tag_runs_bake_the_pushed_tag_not_git_describe():
     assert "git describe --tags --always" in step
 
 
+def test_all_release_tag_runs_share_one_concurrency_group():
+    # Per-ref groups let two v* tag runs push :latest in parallel, and the
+    # older one finishing last moved :latest backwards.
+    ci = _read(".forgejo", "workflows", "ci.yml")
+    assert "startsWith(github.ref, 'refs/tags/v') && 'ci-release'" in ci
+
+
 # --- .forgejo/workflows/mirror-ghcr.yml -------------------------------------
 
 def test_mirror_skips_already_mirrored_sha_tags():
-    # sha-<short> is content-addressed: presence on the destination is
-    # identity, so the growing history of them must not cost two digest
-    # round trips per tag on every dispatch and cron.
+    # The growing history of sha-<short> tags must not cost two digest
+    # round trips per tag on every dispatch and cron, so one already on the
+    # destination is skipped. Not unconditionally: ci.yml re-pushes
+    # sha-<short> for a second tag on the same commit or a dispatch rebuild,
+    # so a sha tag whose revision a release copy just touched still takes
+    # the digest compare.
     mirror = _read(".forgejo", "workflows", "mirror-ghcr.yml")
     assert 'dst_tags=$(crane ls "$DST_IMAGE" 2>/dev/null || true)' in mirror
     body = mirror[mirror.index("for tag in $tags; do"):]
     assert "sha-*)" in body
     assert 'grep -qxF "$tag"' in body
+    assert 'touched="$touched sha-${rev:0:7}${variant}"' in body
+    assert '*" $tag "*) ;;' in body
     # latest*/v* are re-pushable and keep the full compare.
     assert 'src_digest=$(crane digest "$SRC_IMAGE:$tag")' in body
 
@@ -150,6 +162,25 @@ def test_manual_minor_bump_is_not_swallowed_by_idempotence():
     assert ('[ "$latest_commit" != "$target" ] && git merge-base '
             '--is-ancestor "$target" "$latest_commit"') in rel
     assert 'if [ "$latest_commit" = "$target" ]; then' not in rel
+
+
+def test_manual_same_boundary_rerun_repairs_instead_of_minting():
+    # A re-run of a manual minor/major whose tag already sits on this commit
+    # (a failed release POST, a second dispatch serialized behind the first)
+    # must take the idempotence branch, not mint the next minor/major.
+    # v1.3.0 + minor → repair; v1.2.4 + minor → v1.3.0; v2.0.0 + major →
+    # repair; v1.3.0 + major → v2.0.0.
+    rel = _read(".forgejo", "workflows", "release.yml")
+    assert ('if [ "$BUMP" = minor ] && [ "$PA" = 0 ]; then '
+            'same_boundary=1; fi') in rel
+    assert ('if [ "$BUMP" = major ] && [ "$MI" = 0 ] && [ "$PA" = 0 ]; then '
+            'same_boundary=1; fi') in rel
+    assert ('if [ "$latest_commit" = "$target" ] && [ -n "$same_boundary" ]; '
+            'then') in rel
+    # ...and it reaches the idempotence branch below, which comes after it.
+    gate = rel.index('[ -n "$same_boundary" ]; then')
+    assert rel.index("BUMP=patch", gate) < rel.index(
+        '{ [ -n "$TARGET_SHA" ] || [ "$BUMP" = patch ]; }; then', gate)
 
 
 # --- renovate.json -----------------------------------------------------------

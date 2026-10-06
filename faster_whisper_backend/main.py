@@ -1364,6 +1364,9 @@ async def transcribe(
     _video_task: "asyncio.Task | None" = None
     _video_result: "dict | None" = None
     _run_finished = [False]
+    # The video landed before the run ended: the progress entry is closed
+    # only after the outer finally's job finish + video attach (see there).
+    _close_after_attach = False
     # retain_media: an uploaded VIDEO the client wants packaged with its
     # subtitles right after — a hardlinked copy of the spool, registered in
     # the media store once the run succeeds (never for a failed one).
@@ -3298,6 +3301,12 @@ async def transcribe(
                     # (and may still cancel it); the task's finally pops
                     # the entry when it ends.
                     _run_finished[0] = True
+                elif _video_task is not None and _job_row:
+                    # The video finished first. Closing now would let a
+                    # /v1/jobs/{id}/result between the job finish and the
+                    # video attach below see the run closed and scrub the
+                    # row's source_video_pending flag: close after both.
+                    _close_after_attach = True
                 else:
                     tx_progress._progress_close(_pid)
             if tmp_path:
@@ -3378,22 +3387,28 @@ async def transcribe(
         # second cancel at shutdown) escapes this finally, and nothing that
         # must never be skipped may sit behind it. The job row first — its
         # write is shielded and outlives the cancel.
-        if _job_row:
-            await tx_progress._jobs_finish(
-                _pid, status=_status,
-                payload=(_response_payload if _status == "ok" else None),
-                error=tx_progress._job_error_text(_status, _exc),
-                stages=(_stage_timings or None),
-                plan=_rplan.snapshot()["plan"],
-                model=resolved_model, task=_task_now)
-            # The video may have landed while the finish above was on its
-            # thread — its own attach then saw "running" and gave up. The
-            # swap is idempotent (it pops the flag), so both sides may try.
-            if (_video_task is not None and _video_task.done()
-                    and not _video_task.cancelled()
-                    and _video_task.exception() is None):
-                await asyncio.to_thread(media_video._jobs_attach_video_sync,
-                                        _pid, dict(_video_task.result()))
+        try:
+            if _job_row:
+                await tx_progress._jobs_finish(
+                    _pid, status=_status,
+                    payload=(_response_payload if _status == "ok" else None),
+                    error=tx_progress._job_error_text(_status, _exc),
+                    stages=(_stage_timings or None),
+                    plan=_rplan.snapshot()["plan"],
+                    model=resolved_model, task=_task_now)
+                # The video may have landed while the finish above was on its
+                # thread — its own attach then saw "running" and gave up. The
+                # swap is idempotent (it pops the flag), so both sides may try.
+                if (_video_task is not None and _video_task.done()
+                        and not _video_task.cancelled()
+                        and _video_task.exception() is None):
+                    await asyncio.to_thread(media_video._jobs_attach_video_sync,
+                                            _pid, dict(_video_task.result()))
+        finally:
+            # In a finally so a cancellation landing on an await above
+            # still closes the entry.
+            if _close_after_attach:
+                tx_progress._progress_close(_pid)
         # Teach the rates ledger from the stages that ran clean. Off the
         # loop: one locked, fsync'd rewrite of the ledger file.
         try:

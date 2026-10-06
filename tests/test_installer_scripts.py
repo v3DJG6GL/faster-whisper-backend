@@ -61,6 +61,10 @@ def test_uninstall_never_executes_legacy_nssm():
     assert "sc.exe delete $ServiceName" in ps1
     # $LegacyNssm stays only as a file-cleanup target under -RemoveLocal.
     assert "Remove-Item -Force $LegacyNssm" in ps1
+    # Nor the WinSW wrapper: a hash check before running it elevated is
+    # check-then-use on a repo-local file, and sc.exe delete does the same job.
+    assert "& $WinSWExe" not in ps1
+    assert "Test-WinSWTrusted" not in ps1
 
 
 # --- install-service.ps1 -----------------------------------------------------
@@ -87,6 +91,19 @@ def test_install_never_executes_unverified_wrapper():
     assert "Remove-Item -Force $LegacyNssm" in ps1
 
 
+def test_winsw_xml_here_string_is_well_formed():
+    # WinSW v2 loads WhisperAPI.xml with XmlDocument: a malformed document
+    # (e.g. "--" inside a comment) fails the service install outright.
+    import xml.etree.ElementTree as ET
+    s = _read("install-service.ps1")
+    x = re.search(r'\$xml = @"\n(.*?)\n"@', s, re.S).group(1)
+    x = re.sub(r"\$\([^)]*\)", "X", x)
+    x = re.sub(r"\$[A-Za-z_]\w*", "X", x)
+    ET.fromstring(x)
+    for body in re.findall(r"<!--(.*?)-->", x, re.S):
+        assert "--" not in body          # XML forbids "--" inside a comment
+
+
 # --- .dockerignore -----------------------------------------------------------
 
 def test_dockerignore_excludes_repo_local_ffmpeg_tree():
@@ -96,6 +113,38 @@ def test_dockerignore_excludes_repo_local_ffmpeg_tree():
 
 
 # --- docker-compose ----------------------------------------------------------
+
+def _nft_snippets():
+    """The egress nftables snippet as README.md and both compose files ship
+    it (compose: commented out, up to the next bare `#` line)."""
+    readme = _read("README.md")
+    out = {"README.md": re.search(r"```nft\n(.*?)```", readme, re.S).group(1)}
+    for name in ("docker-compose.yml", "docker-compose.gpu.yml"):
+        lines = _read(name).splitlines()
+        start = next(i for i, ln in enumerate(lines)
+                     if "/etc/nftables.d/whisper-egress.nft" in ln)
+        block = []
+        for ln in lines[start:]:
+            if ln.strip() == "#":
+                break
+            block.append(ln.strip().lstrip("#"))
+        out[name] = "\n".join(block)
+    return out
+
+
+def test_egress_nft_snippets_leave_the_hosts_ipv6_alone():
+    # The subnet is IPv4-only and an `ip` match never matches IPv6: without
+    # the nfproto line every forwarded IPv6 packet on the host fell through
+    # to the drops. The ip6 rules belong in the prose for an IPv6-enabled
+    # service network, never as an active rule in the snippet.
+    snippets = _nft_snippets()
+    for name, text in snippets.items():
+        rules = [ln.split("#", 1)[0].strip() for ln in text.splitlines()]
+        assert "meta nfproto != ipv4 return" in rules, name
+        assert any(r.startswith("ct  state established,related return")
+                   for r in rules), name
+        assert not any(r.startswith("ip6 daddr") for r in rules), name
+
 
 def test_compose_files_carry_the_db_layout_upgrade_note():
     # The default SQLite paths moved from /data to /data/db; pre-existing
