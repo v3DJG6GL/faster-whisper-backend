@@ -143,6 +143,8 @@ _SHORTHAND_CHARS = {
     "w": "a", "W": "#", "d": "1", "D": "a", "s": " ", "S": "a",
     "n": "\n", "t": "\t", "r": "\r", "f": "\f", "v": "\v",
 }
+# Hex escapes and their exact digit counts (``\x2d``, ``\u2013``, ``\U…``).
+_HEX_ESCAPES = {"x": 2, "u": 4, "U": 8}
 
 # Cap on the product of nested minimum counts along any group-nesting path
 # (see _fixed_count_product). Python runs a fixed count over a zero-width body all
@@ -219,9 +221,10 @@ def _fixed_count_product(pat: str) -> int:
     ``(?:(?:a{0}){3000}){3000}`` spins 9 million times (~3 s) even on "".
     Each count contributes at least 1 — ``a{0}`` still costs its enclosing
     loops their full iteration count — and ``*`` / ``+`` / ``?`` count as 1.
-    Escapes, classes and ``(?#...)`` comments are skipped as in the screen.
+    Escapes and classes are skipped as in the screen; ``(?#...)`` comments are
+    removed first (``_strip_comments``), so a count after one still counts.
     """
-    pat = _strip_verbose(pat)
+    pat = _strip_comments(_strip_verbose(pat))
     n = len(pat)
 
     def _count(j: int) -> "tuple[int, int]":
@@ -231,8 +234,10 @@ def _fixed_count_product(pat: str) -> int:
                 lo, comma, hi = pat[j + 1:end].partition(",")
                 if ((_ascii_digits(lo) or (comma and not lo))
                         and (_ascii_digits(hi) or not hi)):
-                    # Ten digits already exceed the engine's MAXREPEAT.
-                    return max(int(lo[:10] or "0"), 1), end + 1
+                    # Ten digits already exceed the engine's MAXREPEAT —
+                    # but only SIGNIFICANT ones: the engine reads
+                    # `{00000000003000}` as 3000, so leading zeros go first.
+                    return max(int(lo.lstrip("0")[:10] or "0"), 1), end + 1
         return 1, j
 
     stack = [1]
@@ -289,9 +294,11 @@ def _skip_class(pat: str, i: int) -> "tuple[int, int, bool]":
     negated = False
     if j < n and pat[j] == "^":
         negated, j = True, j + 1
+    # The body starts BEFORE a leading literal `]`: it is a member, and the
+    # synthetic probe's witness for `[]]` must be `]`, not an empty body.
+    start = j
     if j < n and pat[j] == "]":
         j += 1  # a `]` first in the class is a literal
-    start = j
     while j < n and pat[j] != "]":
         j += 2 if pat[j] == "\\" else 1
     return start, j, negated
@@ -373,10 +380,9 @@ def _strip_verbose(pat: str) -> str:
             continue
         if c == "(":
             if pat.startswith("(?#", i):
-                end = pat.find(")", i)
-                end = n - 1 if end == -1 else end
-                out.append(pat[i:end + 1])
-                i = end + 1
+                end = _comment_end(pat, i)
+                out.append(pat[i:end])
+                i = end
                 continue
             m = scoped.match(pat, i)
             if m:
@@ -396,6 +402,49 @@ def _strip_verbose(pat: str) -> str:
             continue
         out.append(c)
         i += 1
+    return "".join(out)
+
+
+def _comment_end(pat: str, i: int) -> int:
+    """The index just past the ``(?#...)`` comment opening at ``pat[i]``
+    (``len(pat)`` when unterminated). Inside a comment the engine still reads
+    a backslash as escaping the next character, so ``(?#\\))`` ends at the
+    second ``)``."""
+    n = len(pat)
+    j = i + 3
+    while j < n and pat[j] != ")":
+        j += 2 if pat[j] == "\\" else 1
+    return min(j + 1, n)
+
+
+def _strip_comments(pat: str) -> str:
+    """``pat`` with every ``(?#...)`` comment group removed.
+
+    The engine drops a comment, so a quantifier after one binds to the atom
+    BEFORE it: ``a(?#x){3}`` is ``a{3}`` and ``(a+)(?#x)+#`` is ``(a+)+#``. A
+    scanner that skipped the comment and then read the quantifier as plain
+    text missed both the fixed count and the nested repeat. Escapes and
+    character classes are copied verbatim (``(?#`` is literal there).
+    """
+    if "(?#" not in pat:
+        return pat
+    n = len(pat)
+    out: list[str] = []
+    i = 0
+    while i < n:
+        c = pat[i]
+        if c == "\\":
+            out.append(pat[i:i + 2])
+            i += 2
+        elif c == "[":
+            end = _skip_class(pat, i)[1]
+            out.append(pat[i:end + 1])
+            i = end + 1
+        elif pat.startswith("(?#", i):
+            i = _comment_end(pat, i)
+        else:
+            out.append(c)
+            i += 1
     return "".join(out)
 
 
@@ -422,9 +471,10 @@ def _nested_repetition(pat: str) -> bool:
     are LITERAL inside a character class and after a backslash, so both are
     skipped — a scanner that miscounts them rejects perfectly good rules.
     A verbose-mode pattern is scanned with its whitespace and comments
-    removed (``_strip_verbose``).
+    removed (``_strip_verbose``), and every pattern without its ``(?#...)``
+    comments (``_strip_comments``).
     """
-    pat = _strip_verbose(pat)
+    pat = _strip_comments(_strip_verbose(pat))
     n = len(pat)
     # One frame per open group plus a root frame. "rep": this level contains a
     # repetition; "start"/"alts": body slice + top-level `|` offsets, for the
@@ -547,9 +597,12 @@ def _nested_repetition(pat: str) -> bool:
             stack[-1]["alts"].append(i)
             i += 1
             continue
-        repeats, _, j, variable = _read_quantifier(pat, i)
+        repeats, possessive, j, variable = _read_quantifier(pat, i)
         if j > i:
-            if variable:
+            # A possessive atom (`\w++`) never gives characters back, so —
+            # like the body of an atomic group — it cannot re-split the
+            # enclosing group's input: `(?:\w++ ?)+#` is linear.
+            if variable and not possessive:
                 stack[-1]["rep"] = True
             i = j
             continue
@@ -746,12 +799,9 @@ def _class_char(body: str, negated: bool) -> "str | None":
     while i < n:
         c = body[i]
         if c == "\\" and i + 1 < n:
-            esc = body[i + 1]
-            if esc in _SHORTHAND_CHARS:
-                members.append(_SHORTHAND_CHARS[esc])
-            elif esc not in "bBAZ":
-                members.append(esc)
-            i += 2
+            char, i = _escape_char(body, i, in_class=True)
+            if char is not None:
+                members.append(char)
             continue
         # `a-z`: the range start is a member; a trailing `-` is a literal.
         members.append(c)
@@ -780,6 +830,68 @@ def _class_char(body: str, negated: bool) -> "str | None":
     return None
 
 
+def _escape_char(pat: str, i: int, in_class: bool = False) -> "tuple[str | None, int]":
+    """Decode the escape at ``pat[i] == "\\"``.
+
+    Returns ``(char, end)``: a character the escape matches (None for a
+    zero-width assertion, a backreference or anything undecodable) and the
+    index just past the WHOLE escape. A numeric or named escape is ONE
+    character — ``\\x2d`` is ``-``, ``\\u2013`` and ``\\N{EN DASH}`` an en dash.
+    Reading only the letter after the backslash took ``\\x2d`` for ``x`` and
+    its ``2d`` for two more atoms, so the synthetic probe ran on a character
+    the pattern never matches and waved a polynomial ``\\x2d*\\x2d*…#`` through.
+    Digits follow the engine: outside a class ``\\0oo`` and three octal digits
+    are a character and any other digit run a group reference; inside a class
+    every digit escape is octal and ``\\b`` is a backspace.
+    """
+    n = len(pat)
+    if i + 1 >= n:
+        return None, i + 1
+    esc = pat[i + 1]
+    if esc in _SHORTHAND_CHARS:
+        return _SHORTHAND_CHARS[esc], i + 2
+    if esc == "a":
+        return "\a", i + 2
+    if esc in _HEX_ESCAPES:
+        end = i + 2 + _HEX_ESCAPES[esc]
+        digits = pat[i + 2:end]
+        if len(digits) == _HEX_ESCAPES[esc] and all(d in "0123456789abcdefABCDEF" for d in digits):
+            code = int(digits, 16)
+            return (chr(code) if code <= 0x10FFFF else None), end
+        return None, i + 2
+    if esc == "N" and pat.startswith("{", i + 2):
+        close = pat.find("}", i + 3)
+        if close == -1:
+            return None, i + 2
+        import unicodedata
+        try:
+            return unicodedata.lookup(pat[i + 3:close]), close + 1
+        except KeyError:
+            return None, close + 1
+    if esc in "0123456789":
+        octal = "01234567"
+        j = i + 2
+        if in_class or esc == "0":
+            if esc not in octal:
+                return None, j
+            while j < min(i + 4, n) and pat[j] in octal:
+                j += 1
+        elif (j + 1 < n and esc in octal and pat[j] in octal
+                and pat[j + 1] in octal):
+            j += 2
+        else:
+            # A group reference: one or two digits, matching nothing we know.
+            if j < n and pat[j] in "0123456789":
+                j += 1
+            return None, j
+        code = int(pat[i + 1:j], 8)
+        return (chr(code) if code <= 0o377 else None), j
+    if esc in "bBAZ":
+        # Inside a class `\b` is a backspace; elsewhere these are zero-width.
+        return ("\b" if in_class and esc == "b" else None), i + 2
+    return esc, i + 2
+
+
 def _next_atom(pat: str, i: int) -> "tuple[str | None, str | None, int]":
     """Parse the single atom at ``pat[i]``.
 
@@ -792,14 +904,8 @@ def _next_atom(pat: str, i: int) -> "tuple[str | None, str | None, int]":
     n = len(pat)
     c = pat[i]
     if c == "\\":
-        if i + 1 >= n:
-            return None, None, i + 1
-        esc = pat[i + 1]
-        if esc in _SHORTHAND_CHARS:
-            return _SHORTHAND_CHARS[esc], None, i + 2
-        if esc in "bBAZ" or esc.isdigit():
-            return None, None, i + 2  # zero-width assertion or backreference
-        return esc, None, i + 2
+        char, end = _escape_char(pat, i)
+        return char, None, end
     if c == "[":
         start, j, negated = _skip_class(pat, i)
         if j >= n:
@@ -918,7 +1024,7 @@ def _synthetic_fixture(pat: str) -> "str | None":
     run — the shape backtracking blows up on.
     """
     try:
-        char = _first_repeated_char(pat)
+        char = _first_repeated_char(_strip_comments(pat))
     except Exception:  # noqa: BLE001 - best effort, never fail the save
         return None
     if not char:
@@ -980,7 +1086,7 @@ def _chain_advance(rx, pattern: str, replacement: str, chained: str) -> str:
             # An entry that matches nothing in the running fixture substitutes
             # nothing, so its replacement — possibly the very run that
             # detonates a later entry — never enters the chain. Seed it.
-            seed = _witness(pattern)
+            seed = _witness(_strip_comments(pattern))
             if seed:
                 # Trim BEFORE appending so the seed is inside the cap: a chain
                 # already at the cap would otherwise drop it (and the

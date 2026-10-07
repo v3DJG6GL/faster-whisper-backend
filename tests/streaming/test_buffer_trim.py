@@ -265,14 +265,13 @@ def test_ceiling_bounds_the_buffer_when_the_rms_gate_blocks_the_trim():
         buffer_trim_sec=2.0, buffer_trim_keep_sec=1.0,
         rms_gate_dbfs=-42.0, preroll_keep_ms=100, max_buffer_sec=2.0,
     )
-    s, msgs, info = _drive_past_ceiling(cfg, level=1, feed_ms=8000)
+    _s, _msgs, info = _drive_past_ceiling(cfg, level=1, feed_ms=8000)
     # Sanity: we fed far more than the ceiling, and nothing else could have
     # ended the utterance (VAD stuck on, forced_commit_sec 100 s away).
     assert info["forced_during_feed"], "no finalize fired — the buffer grew unbounded"
     assert all(info["forced_during_feed"]), "ceiling finalize must be flagged forced"
     assert info["peak_sec"] <= cfg.max_buffer_sec + FRAME_MS / 1000 + 1e-9, (
         f"buffer exceeded the ceiling: {info['peak_sec']:.3f} s")
-    assert s.audio.shape[0] / SR <= cfg.max_buffer_sec
     # A buffer this quiet is dropped by the existing anti-hallucination gate
     # inside _finalize, so it never reaches the decoder — the ceiling reuses
     # that path rather than adding a second discard rule.

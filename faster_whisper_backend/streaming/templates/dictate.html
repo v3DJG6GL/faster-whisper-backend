@@ -288,13 +288,20 @@
       // final handler keeps re-rendering, or everything before the pause would
       // vanish the moment the user resumes speaking.
       docPrefix = finalEl.textContent + tailEl.textContent;
+      // `||` on purpose: the separator is what a TYPING client inserts between
+      // documents, and its default is "" — on this preview page that would run
+      // the two documents together, so an empty one shows as a line break.
       if (docPrefix) docPrefix += m.separator || "\n";
       finalEl.textContent = docPrefix; tailEl.textContent = "";
     }
     else if (m.type === "loading") {
       // Sent every ~3 s while a cold model load is in progress — without it the
       // page sits on "connecting…" for the whole load and reads as dead.
-      setStatus("loading model " + (m.model || "") + "…");
+      // Same guard as "ready": after Stop the load keeps sending these, and
+      // they must not put "loading model" over "finishing…" or an error.
+      if (running && statusEl.className !== "error") {
+        setStatus("loading model " + (m.model || "") + "…");
+      }
     }
     else if (m.type === "error") { setStatus("error: " + (m.message || m.code), "error"); }
     else if (m.type === "closing") {

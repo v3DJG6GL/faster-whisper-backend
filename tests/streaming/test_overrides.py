@@ -930,6 +930,42 @@ def test_stream_client_output_wrappers_survive_a_refresh(
     assert finals[-1]["last"] and finals[-1]["committed"].endswith(" <<")
 
 
+def test_stream_output_suffix_closes_every_document_at_a_hard_break(
+        client, make_user_key, fake_model, app_module, monkeypatch):
+    # A hard break starts a fresh document that gets the prefix again, so the
+    # document before it must be closed too: the suffix goes in front of the
+    # boundary's separator (typed verbatim), not only on the closing flush.
+    monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
+    monkeypatch.setattr(app_module.cfg, "STREAMING_HARD_BREAK_SILENCE_MS", 2000)
+    monkeypatch.setattr(app_module.cfg, "STREAMING_HARD_BREAK_SEPARATOR", "\n")
+    _, raw_alice = make_user_key("alice")
+    with client.websocket_connect(
+            "/v1/audio/transcriptions/stream", headers=bearer(raw_alice)) as ws:
+        ws.send_json({"type": "config", "model": "whisper-1",
+                      "decode_overrides": {"output_prefix": ">> ",
+                                           "output_suffix": " <<"},
+                      "audio": {"format": "pcm_s16le", "sample_rate": 16000}})
+        assert ws.receive_json()["type"] == "ready"
+        ws.send_bytes(_pcm(8000, 2500))
+        ws.send_bytes(_pcm(0, 3000))        # final, then the hard break
+        ws.send_bytes(_pcm(8000, 2500))
+        ws.send_bytes(_pcm(0, 1500))        # final, no second break
+        ws.send_json({"type": "stop"})
+        msgs = _drain(ws)
+    boundaries = [i for i, m in enumerate(msgs) if m.get("type") == "boundary"]
+    assert len(boundaries) == 1
+    assert msgs[boundaries[0]]["separator"] == " <<\n"
+    finals = [m for m in msgs if m.get("type") == "final"]
+    after = [m for m in msgs[boundaries[0] + 1:] if m.get("type") == "final"]
+    assert after and len(after) < len(finals)
+    # Both documents open with the prefix; only the closing flush ends with
+    # the suffix, the first document's is on the boundary.
+    assert (after[0].get("committed") or after[0].get("tail")).startswith(">> ")
+    assert (finals[0].get("committed") or finals[0].get("tail")).startswith(">> ")
+    assert [f for f in finals if (f.get("committed") or "").endswith(" <<")] == [finals[-1]]
+    assert finals[-1]["last"]
+
+
 def test_stream_client_output_wrappers_master_gate_off(
         client, fake_model, app_module, monkeypatch):
     monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)

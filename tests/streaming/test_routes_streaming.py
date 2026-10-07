@@ -464,6 +464,7 @@ def test_stream_handshake_idle_timeout_frees_slot(app_module, monkeypatch):
     # A client that connects + passes auth but never sends its config handshake
     # must not hold a session slot forever: the server abandons the wait after
     # STREAMING_IDLE_TIMEOUT_S and closes with the idle close code (4408).
+    from faster_whisper_backend.streaming import routes as streaming_routes
     from faster_whisper_backend.streaming.routes import _WS_IDLE_TIMEOUT
     monkeypatch.setattr(app_module.cfg, "STREAMING_IDLE_TIMEOUT_S", 0.3, raising=False)
     with TestClient(app_module.app, client=("127.0.0.1", 12345)) as client:
@@ -471,6 +472,10 @@ def test_stream_handshake_idle_timeout_frees_slot(app_module, monkeypatch):
             with pytest.raises(WebSocketDisconnect) as ei:
                 ws.receive_json()   # send nothing → idle close
     assert ei.value.code == _WS_IDLE_TIMEOUT
+    # The close code alone would pass with a leaked slot: both the per-user
+    # count and the active-session set must be empty again.
+    assert streaming_routes._stream_sessions._counts == {}
+    assert streaming_routes._active_sessions == set()
 
 
 def test_stream_session_idle_timeout_closes_and_notifies(app_module, monkeypatch):

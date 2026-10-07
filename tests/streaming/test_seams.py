@@ -80,7 +80,7 @@ def _self_correction(a_words, b_words):
     return _clean(a_words[-1]) == "punkt" and _clean(b_words[0]) == "strichpunkt"
 
 
-def _run(main, utts, language):
+def _run(utts, language):
     """One session over `utts`, formatted in `language` throughout."""
     finals = []
 
@@ -135,7 +135,7 @@ def _splits(words, rng):
     return out
 
 
-def _check(main, corpus, language, caplog):
+def _check(corpus, language, caplog):
     rng = random.Random(12345)
     checked = warned = 0
     for passage in corpus:
@@ -143,7 +143,7 @@ def _check(main, corpus, language, caplog):
         for utts, seams in _splits(words, rng):
             caplog.clear()
             with caplog.at_level(logging.WARNING, logger="faster_whisper_backend.streaming.session"):
-                finals = _run(main, utts, language)
+                finals = _run(utts, language)
             checked += 1
             docs = [m["committed"] + m["tail"] for m in finals]
             committeds = [m["committed"] for m in finals]
@@ -169,14 +169,15 @@ def test_german_documents_never_rewrite_sent_text(app_module, caplog):
     # before every compose, exactly as the route does. That route ordering
     # (no '¿' on German questions under auto) is pinned by
     # test_routes_streaming.py::test_stream_formats_the_first_final_in_the_detected_language.
-    checked, warned = _check(app_module, DE, "de", caplog)
+    # app_module only sets up the config the pipeline formats with.
+    checked, warned = _check(DE, "de", caplog)
     assert checked > 700
     # Only the Punkt | Strichpunkt splits may hit the safety net.
     assert warned <= 8
 
 
 def test_english_documents_never_rewrite_sent_text(app_module, caplog):
-    checked, warned = _check(app_module, EN, "en", caplog)
+    checked, warned = _check(EN, "en", caplog)
     assert checked > 50 and warned == 0
 
 

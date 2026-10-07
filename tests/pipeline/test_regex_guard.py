@@ -13,9 +13,10 @@ Together they accepted the pair `("(Wetter)", "-"*60)` + `("(-+)…#", "")` in
 0.05 s, after which every transcription pinned a CPU core uninterruptibly:
 the first entry manufactures a 60-dash run and the second one explodes on it.
 
-The counterpart tests here (ordinary rules, the shipped config.json) exist
-because the fix must be purely ADDITIVE — it may not reject anything the guard
-accepted before.
+The counterpart tests here (ordinary rules, the shipped config.json) pin
+what the guard must keep ACCEPTING: every later tightening (the analytic
+growth bound, the reference cap, the shape screens below) refuses a named
+attack shape, never the rules this feature exists to serve.
 """
 
 import pytest
@@ -27,6 +28,14 @@ from faster_whisper_backend.pipeline import regex_guard as g
 _MANUFACTURED = [
     ("e0", r"(Wetter)", "-" * 60),
     ("e1", r"(-+)(-+)(-+)(-+)(-+)(-+)(-+)(-+)#", ""),
+]
+# The same pair with an e1 whose OWN synthetic run misses (it is built from
+# the leading `x*`), so e1 passes alone and the pair can only be refused
+# through the chained fixture. _MANUFACTURED's e1 is refused on its own
+# synthetic run, which proves nothing about the chain.
+_CHAIN_ONLY = [
+    _MANUFACTURED[0],
+    ("e1", r"x*(-+)(-+)(-+)(-+)(-+)(-+)(-+)(-+)#", ""),
 ]
 
 
@@ -60,6 +69,16 @@ def test_manufactured_input_chain_is_rejected():
     pinned by the check itself."""
     with pytest.raises(ValueError) as ei:
         g.validate(_MANUFACTURED, timeout=1.5)
+    assert "e1" in str(ei.value)
+
+
+def test_chain_only_pair_is_rejected_through_the_chain():
+    """The chain-only e1 is harmless alone (no nesting, its synthetic run is
+    x's), so refusing the pair proves entry 0's output reached its probe."""
+    assert not g._nested_repetition(_CHAIN_ONLY[1][1])
+    g.validate([_CHAIN_ONLY[1]], timeout=1.5)
+    with pytest.raises(ValueError) as ei:
+        g.validate(_CHAIN_ONLY, timeout=1.5)
     assert "e1" in str(ei.value)
 
 
@@ -317,7 +336,7 @@ def test_manufactured_pair_is_still_rejected_deep_in_a_large_list():
     """End to end: placing the pair after enough harmless entries to saturate
     the chain must not evade the chained probe."""
     checks = [(f"r{i}", r"\bwort%d\b" % i, "X") for i in range(400)]
-    checks += _MANUFACTURED
+    checks += _CHAIN_ONLY
     with pytest.raises(ValueError) as ei:
         g.validate(checks, timeout=1.5)
     assert "e1" in str(ei.value)
@@ -335,13 +354,41 @@ def test_non_ascii_brace_run_is_a_literal_not_a_crash():
     assert g._read_quantifier("a{2,}", 1) == (True, False, 5, True)
 
 
-def test_budget_grows_with_the_list_and_a_large_rule_set_passes():
+def test_budget_grows_with_the_list_and_a_large_rule_set_passes(monkeypatch, caplog):
     """A flat 2 s budget 422'd a large legitimate rule set as 'catastrophic
     backtracking' (~0.44 ms/entry measured, 40k entries permitted). The
-    budget is now 2 s plus a per-entry allowance, capped."""
-    assert g._GUARD_TIMEOUT + g._PER_CHECK_BUDGET * 3000 > 2.0
-    assert g._GUARD_TIMEOUT_MAX >= g._GUARD_TIMEOUT
-    g.validate([(f"r{i}", r"\bwort%d\b" % i, "X") for i in range(3000)])
+    budget is now 2 s plus a per-entry allowance, capped. The budget the
+    helper is actually run with is captured, and the acceptance must come
+    from a helper that ran — validate fails OPEN (with a warning) on a crash."""
+    import logging
+    import subprocess
+    real_run = subprocess.run
+    seen = []
+
+    def _recording_run(*args, **kwargs):
+        seen.append(kwargs["timeout"])
+        return real_run(*args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", _recording_run)
+    with caplog.at_level(logging.WARNING, logger="whisper-api"):
+        g.validate([(f"r{i}", r"\bwort%d\b" % i, "X") for i in range(3000)])
+    assert seen == [min(g._GUARD_TIMEOUT + g._PER_CHECK_BUDGET * 3000,
+                        g._GUARD_TIMEOUT_MAX)]
+    assert seen[0] > g._GUARD_TIMEOUT
+    assert "regex guard skipped" not in caplog.text
+
+    # Below the cap the budget is the per-entry formula; far past it, the cap.
+    def _ok_run(*args, **kwargs):
+        seen.append(kwargs["timeout"])
+        return subprocess.CompletedProcess(args, 0, stdout='{"ok": true}', stderr="")
+
+    monkeypatch.setattr(subprocess, "run", _ok_run)
+    seen.clear()
+    g.validate([(f"r{i}", "x", "") for i in range(400)])
+    g.validate([(f"r{i}", "x", "") for i in range(20000)])
+    assert seen[0] == g._GUARD_TIMEOUT + g._PER_CHECK_BUDGET * 400
+    assert g._GUARD_TIMEOUT < seen[0] < g._GUARD_TIMEOUT_MAX
+    assert seen[1] == g._GUARD_TIMEOUT_MAX
 
 
 def test_timeout_verdict_names_the_real_probe_inputs(monkeypatch):
@@ -543,3 +590,71 @@ def test_fixed_count_product_counts_only_forced_iterations():
     # Escaped / class / comment braces are not quantifiers.
     assert g._fixed_count_product(r"\{99999\}[{](?#{99999})") == 1
     g.check_fixed_counts("r", r"\d{4}-\d{2}-\d{2}")
+
+
+def test_leading_zeros_do_not_shrink_a_fixed_count():
+    """The engine reads `{00000000003000}` as 3000; truncating the digit
+    string to ten characters BEFORE int() read it as 0 and waved the 9e6
+    loop — 2 s of GIL-holding `re.sub` on "" — through to the template check."""
+    pat = "(?:(?:a{0}){00000000003000}){00000000003000}"
+    assert g._fixed_count_product(pat) == 9_000_000
+    with pytest.raises(ValueError, match="nested fixed counts"):
+        g.check_fixed_counts("r", pat)
+
+
+@pytest.mark.parametrize("pat", [
+    "(?:(?:a{0})(?#x){3000}){3000}",
+    "(?:(?:(?:a{0})(?#){3000})(?#){3000}){3000}",
+])
+def test_quantifier_after_a_comment_still_counts(pat):
+    """The engine drops a `(?#...)` comment, so a count after it binds to the
+    atom before it; the scanner used to skip the comment and read `{3000}`
+    as plain text."""
+    with pytest.raises(ValueError, match="nested fixed counts"):
+        g.check_fixed_counts("r", pat)
+
+
+def test_nested_repeat_behind_a_comment_is_seen():
+    assert g._nested_repetition(r"(a+)(?#x)+#")
+    assert g._nested_repetition(r"(a+)(?#a\)b)+#")  # escaped `)` in a comment
+    assert not g._nested_repetition(r"(a+)(?#x)b+#")
+
+
+def test_numeric_escapes_decode_to_their_character():
+    """`\\x2d` is `-`, not `x` followed by the atoms `2` and `d`."""
+    assert g._next_atom("\\x2d", 0) == ("-", None, 4)
+    assert g._next_atom("\\u2013", 0) == ("\u2013", None, 6)
+    assert g._next_atom("\\N{EN DASH}", 0) == ("\u2013", None, 11)
+    assert g._next_atom("\\101", 0) == ("A", None, 4)
+    assert g._next_atom("\\12", 0) == (None, None, 3)  # group reference
+    assert g._class_char("\\x2d", False) == "-"
+
+
+@pytest.mark.parametrize("pat", [
+    "\\x2d*" * 5 + "#",
+    "\\u2013*" * 5 + "#",
+    "[\\x2d]*" * 5 + "#",
+])
+def test_escaped_spelling_of_a_polynomial_run_is_rejected(pat):
+    """The synthetic probe ran on `d` / `3` (the escape's tail) and matched
+    nothing, so these were accepted while `-*-*-*-*-*#` was refused."""
+    with pytest.raises(ValueError):
+        g.validate([("r", pat, "")], timeout=1.5)
+
+
+def test_leading_bracket_is_part_of_the_class_body():
+    """`[]]` had an empty body, so no witness and no synthetic probe."""
+    assert g._skip_class("[]]", 0)[0] == 1
+    assert g._next_atom("[]]", 0) == ("]", None, 3)
+    with pytest.raises(ValueError):
+        g.validate([("r", "[]]*" * 5 + "#", "")], timeout=1.5)
+
+
+def test_possessive_atom_inside_a_repeated_group_passes():
+    """A possessive atom cannot give characters back, like the body of an
+    atomic group — `(?:\\w++ ?)+#` is linear and is screened like
+    `(?:(?>\\w+) ?)+#`, while the plain `\\w+` form stays refused."""
+    assert not g._nested_repetition(r"(?:\w++ ?)+#")
+    assert not g._nested_repetition(r"(?:(?>\w+) ?)+#")
+    assert g._nested_repetition(r"(?:\w+ ?)+#")
+    g.validate([("r", r"(?:\w++ ?)+#", "")])

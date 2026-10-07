@@ -713,11 +713,17 @@ class StreamSession:
         the ``self._prompt`` reset below."""
         if self._has_held():
             await self._release_held()
-        await self.emit({
-            "type": "boundary",
-            "utterance": self._utterance_index,
-            "separator": self.cfg.hard_break_separator,
-        })
+        # Only a document the client was actually sent has an end to mark. One
+        # whose raw text formatted to nothing (a filler the pipeline strips)
+        # sent no final — a boundary for it made the client insert the
+        # separator a second time after the previous document. The
+        # accumulators below are reset either way.
+        if self._sent:
+            await self.emit({
+                "type": "boundary",
+                "utterance": self._utterance_index,
+                "separator": self.cfg.hard_break_separator,
+            })
         self.raw_confirmed = ""
         self._committed_len = 0
         self._prev_processed = ""

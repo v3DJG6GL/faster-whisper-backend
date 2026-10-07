@@ -1231,16 +1231,27 @@ async def transcribe_stream(ws: WebSocket) -> None:
             return pl_engine._postprocess_text(raw_text, model_name=final_model, ident=ident, language=_fmt_lang())
 
         # Output wrappers: the prefix sits at the very start of the document, the
-        # suffix only on the final flush. committed/tail are full authoritative
-        # strings (the client replaces each region), so re-applying the prefix on
-        # every final is correct — it never accumulates. The client's
-        # output_prefix / output_suffix win unless locked.
+        # suffix at its end. committed/tail are full authoritative strings (the
+        # client replaces each region), so re-applying the prefix on every final
+        # is correct — it never accumulates. A document ends on the closing
+        # flush (``last``) or at a hard break: a ``boundary`` starts a fresh
+        # document that gets the prefix again, so the one before it is closed by
+        # putting the suffix in front of the boundary's separator (clients type
+        # the separator verbatim) — else every document but the last opened a
+        # wrapper that never closed. The client's output_prefix / output_suffix
+        # win unless locked.
         out_prefix, out_suffix = tx_models._output_wrappers(final_model, ident, req_overrides)
+        # Whether a final of the current document has gone out (with the
+        # prefix) and its suffix is still owed.
+        _doc_open = [False]
 
         async def emit(message):
-            if message.get("type") == "final":
+            kind = message.get("type")
+            if kind == "final":
                 if not include_words:
                     message.pop("words", None)   # word timestamps only for verbose_json
+                if message.get("committed") or message.get("tail"):
+                    _doc_open[0] = True
                 if out_prefix:
                     if message.get("committed"):
                         message["committed"] = out_prefix + message["committed"]
@@ -1248,6 +1259,11 @@ async def transcribe_stream(ws: WebSocket) -> None:
                         message["tail"] = out_prefix + message["tail"]
                 if out_suffix and message.get("last"):
                     message["committed"] = (message.get("committed") or "") + out_suffix
+                    _doc_open[0] = False
+            elif kind == "boundary":
+                if out_suffix and _doc_open[0]:
+                    message["separator"] = out_suffix + (message.get("separator") or "")
+                _doc_open[0] = False
             # Peer may have vanished mid-drain (page reload during dictation): the
             # socket is already closed, so swallow the send. Side-effects
             # (metrics/trace/captures) still ran in on_final.

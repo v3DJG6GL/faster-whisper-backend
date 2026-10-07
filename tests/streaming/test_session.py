@@ -502,6 +502,31 @@ def test_held_words_are_released_before_the_boundary():
     assert s._sent == "" and s._sent_raw_end == 0    # new document
 
 
+def test_no_boundary_for_a_document_that_was_never_sent():
+    """After a hard break, an utterance the pipeline formats to nothing (a
+    filler it strips) sends no final, yet its raw text armed the next hard
+    break: a second ``boundary`` made the client insert the separator again
+    after the previous document. The document is still reset."""
+    s, msgs = _make_session(
+        postprocess=lambda raw: raw.replace("äh", "").strip(),
+        decode_final=_queued_final(["Hallo.", "äh"]),
+        cfg=StreamConfig(**_FAST, hard_break_silence_ms=500))
+
+    async def run():
+        await s.feed_pcm(_pcm(8000, 300))
+        await s.feed_pcm(_pcm(0, 700))      # final, then the first hard break
+        await s.feed_pcm(_pcm(8000, 300))
+        await s.feed_pcm(_pcm(0, 700))      # filler only: no final, no boundary
+
+    asyncio.run(run())
+    assert [f["committed"] + f["tail"] for f in _finals(msgs)] == ["Hallo."]
+    # Premise: the filler utterance really was decoded (and dropped as empty).
+    assert [m.get("reason") for m in msgs
+            if m["type"] == "utterance" and m["state"] == "dropped"] == ["empty"]
+    assert len([m for m in msgs if m["type"] == "boundary"]) == 1
+    assert s.raw_confirmed == ""                     # reset all the same
+
+
 def test_close_releases_held_words_in_the_last_final():
     s, msgs = _make_session(
         postprocess=_neue_zeile, decode_final=_queued_final(["bla neue"]),
