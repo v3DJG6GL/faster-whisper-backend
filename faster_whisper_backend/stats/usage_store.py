@@ -198,6 +198,7 @@ CREATE TABLE IF NOT EXISTS usage_job_stages (
   speakers INTEGER,
   retained REAL,
   error    TEXT,
+  kept_original INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (job_id, stage)
 );
 
@@ -275,6 +276,7 @@ _COLUMN_MIGRATIONS: dict[str, tuple[tuple[str, str], ...]] = {
     ),
     "usage_job_stages": (
         ("error", "ADD COLUMN error TEXT"),
+        ("kept_original", "ADD COLUMN kept_original INTEGER NOT NULL DEFAULT 0"),
     ),
     "usage_stage_hourly": (
         ("errors", "ADD COLUMN errors INTEGER NOT NULL DEFAULT 0"),
@@ -593,7 +595,16 @@ def record_usage(
                         # is still uncounted in usage_hourly, and the stub's
                         # open-mode key_id gives way to the real one.
                         new_session = owner is None or not owner["utterances"]
-                        if owner is not None and owner["reported_ts"] is not None:
+                        if (owner is not None and not owner["utterances"]
+                                and owner["reported_ts"] is not None
+                                and k in KINDS and k != "dictation"):
+                            # The stub's id turns out to be a file / url /
+                            # text run (its outcome was posted before the
+                            # run recorded): it never was a dictation, which
+                            # record_outcome's kind check refuses in the
+                            # usual order. The run takes the row over.
+                            _take_over_stub(conn, owner, jid, k, created_ts)
+                        elif owner is not None and owner["reported_ts"] is not None:
                             late_outcome = owner
                         conn.execute(
                             "INSERT INTO usage_jobs"
@@ -636,8 +647,7 @@ def record_usage(
                     (h, kid, uid, k, err, w, a, p, 1 if new_session else 0),
                 )
                 for st in stage_rows:
-                    _record_stage(conn, h, uid, sjid or jid, a, st,
-                                  attached=sjid is not None)
+                    _record_stage(conn, h, uid, sjid or jid, a, st)
                 if late_outcome is not None and (w or a):
                     _roll_late_utterance(conn, late_outcome, w, a)
                 conn.execute("COMMIT")
@@ -650,20 +660,21 @@ def record_usage(
 
 
 def _record_stage(conn: sqlite3.Connection, hour: int, uid: str,
-                  jid: str | None, audio_s: float, st: dict[str, Any],
-                  attached: bool = False) -> None:
+                  jid: str | None, audio_s: float, st: dict[str, Any]) -> None:
     """One stage of one request into the per-job detail row and the hourly
     stage/target rollups. A dictation's stage repeats per utterance, so the
     per-job row accumulates seconds instead of failing on the key, and its
     targets are the union over the requests (a later one never drops an
     earlier language).
 
-    `attached`: the request is a follow-up attached to a dictation session
-    (record_usage's session_job_id). Per-utterance translation sends one
-    per utterance, so only the session's first such stage counts a run, and
-    a target counts only when it is new to the session: the meter's
-    denominator is sessions, and the per-job (with=) path reads one row per
-    session too."""
+    A stage counts a run only on its job's first row of that stage, and a
+    target only when it is new to the job (and still fits the stored
+    union): a dictation's own "transcribing" stage arrives once per
+    utterance, and a follow-up attached to the session (record_usage's
+    session_job_id: per-utterance translation) once per utterance too. The
+    meter's denominator is sessions, and the per-job (with=) path reads one
+    row per session; a batch job writes each stage once, so nothing changes
+    for it."""
     err = st.get("error")
     new_targets = st["targets"]
     count_run = True
@@ -675,22 +686,26 @@ def _record_stage(conn: sqlite3.Connection, hour: int, uid: str,
                   if prev is not None else [])
         fresh = [t for t in dict.fromkeys(st["targets"]) if t not in stored]
         merged = (stored + fresh)[:_JOB_TARGETS_MAX]
-        if attached:
-            count_run = prev is None
-            new_targets = fresh
+        count_run = prev is None
+        # A target past the cap is never stored, so it would read as fresh
+        # again on every later request: count only what the union keeps.
+        new_targets = [t for t in fresh if t in merged]
         conn.execute(
             "INSERT INTO usage_job_stages"
-            " (job_id, stage, secs, model, targets, speakers, retained, error)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+            " (job_id, stage, secs, model, targets, speakers, retained, error,"
+            "  kept_original)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
             " ON CONFLICT(job_id, stage) DO UPDATE SET"
             "  secs     = secs + excluded.secs,"
             "  model    = COALESCE(excluded.model, model),"
             "  targets  = COALESCE(excluded.targets, targets),"
             "  speakers = COALESCE(excluded.speakers, speakers),"
             "  retained = COALESCE(excluded.retained, retained),"
-            "  error    = COALESCE(error, excluded.error)",
+            "  error    = COALESCE(error, excluded.error),"
+            "  kept_original = kept_original + excluded.kept_original",
             (jid, st["stage"], st["secs"], st["model"],
-             ",".join(merged) or None, st["speakers"], st["retained"], err),
+             ",".join(merged) or None, st["speakers"], st["retained"], err,
+             st["kept_original"]),
         )
     conn.execute(
         "INSERT INTO usage_stage_hourly"
@@ -750,6 +765,40 @@ def _roll_outcome(conn: sqlite3.Connection, job: sqlite3.Row,
             "  words    = words + excluded.words",
             (hour, uid, app_id, words),
         )
+
+
+def _take_over_stub(conn: sqlite3.Connection, stub: sqlite3.Row, jid: str,
+                    kind: str, created_ts: float) -> None:
+    """Hand record_outcome's stub to the non-dictation run that owns its id:
+    take back the one session _roll_outcome counted in the dictation / app
+    buckets (the stub carries no words or audio), drop the outcome columns,
+    and stamp the run's kind and time. A bucket left empty is removed."""
+    hour = hour_for_ts(float(stub["created_ts"]))
+    uid = stub["user_id"]
+    key = (hour, uid, stub["activation"], stub["delivery"], stub["translation"])
+    conn.execute(
+        "UPDATE usage_dictation_hourly SET sessions = sessions - 1"
+        " WHERE hour = ? AND user_id = ? AND activation = ? AND delivery = ?"
+        " AND translation = ? AND sessions > 0", key)
+    conn.execute(
+        "DELETE FROM usage_dictation_hourly"
+        " WHERE hour = ? AND user_id = ? AND activation = ? AND delivery = ?"
+        " AND translation = ? AND sessions = 0 AND words = 0 AND audio_s = 0",
+        key)
+    if stub["app_id"]:
+        conn.execute(
+            "UPDATE usage_app_hourly SET sessions = sessions - 1"
+            " WHERE hour = ? AND user_id = ? AND app_id = ? AND sessions > 0",
+            (hour, uid, stub["app_id"]))
+        conn.execute(
+            "DELETE FROM usage_app_hourly WHERE hour = ? AND user_id = ?"
+            " AND app_id = ? AND sessions = 0 AND words = 0",
+            (hour, uid, stub["app_id"]))
+    conn.execute(
+        "UPDATE usage_jobs SET kind = ?, created_ts = ?, activation = NULL,"
+        " delivery = NULL, translation = NULL, app_id = NULL,"
+        " reported_ts = NULL WHERE job_id = ?",
+        (kind, created_ts, jid))
 
 
 def _roll_late_utterance(conn: sqlite3.Connection, job: sqlite3.Row,
@@ -2309,8 +2358,9 @@ def _fill_from_jobs(conn, doc, user_id, tz, today, with_stages,
     of `with_stages`. Sessions are jobs, requests are utterances, an error
     is a job whose last status was not ok. The dictation buckets come from
     the reported outcome columns (an unreported job stays unbucketed, as in
-    the rollup); kept_original for translation is the count of jobs whose
-    reported outcome kept the original."""
+    the rollup); the translating stage's kept_original is the per-job
+    segment count the guard fell back on, the same figure the rollup sums
+    (the reported "kept original" outcome stays under dictation.translation)."""
     today_split = _zero_split()
     window = _zero_split()
     by_day: dict[datetime.date, dict[str, dict[str, Any]]] = {}
@@ -2377,15 +2427,14 @@ def _fill_from_jobs(conn, doc, user_id, tz, today, with_stages,
         {"app_id": a, **v} for a, v in sorted(
             apps.items(), key=lambda kv: (-kv[1]["sessions"], -kv[1]["words"], kv[0]))
     ][:8]
-    doc["stages"] = _stages_from_jobs(conn, window_jobs, window, translation)
+    doc["stages"] = _stages_from_jobs(conn, window_jobs, window)
     _finish(doc, by_day=by_day, words_by_day=words_by_day,
             words_by_slot=words_by_slot, words_all_days=words_all_days,
             today=today, extra_by_slot=extra_by_slot)
 
 
 def _stages_from_jobs(conn: sqlite3.Connection, job_ids: list[str],
-                      window: dict[str, dict[str, Any]],
-                      translation: dict[str, int]) -> list[dict[str, Any]]:
+                      window: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
     """Stage rows over the narrowed jobs. A stage the caller filtered on
     shows runs == of_runs; the others show how often they co-occurred."""
     agg: dict[str, dict[str, Any]] = {}
@@ -2397,19 +2446,21 @@ def _stages_from_jobs(conn: sqlite3.Connection, job_ids: list[str],
         marks = ",".join("?" * len(chunk))
         for r in conn.execute(
             "SELECT s.stage, s.secs, s.targets, s.speakers, s.retained,"
-            " j.audio_s FROM usage_job_stages s JOIN usage_jobs j"
+            " s.kept_original, j.audio_s FROM usage_job_stages s JOIN usage_jobs j"
             " ON j.job_id = s.job_id WHERE s.job_id IN (" + marks + ")", chunk,
         ):
             stage = r["stage"]
             if stage not in STAGE_ELIGIBLE:
                 continue
             a = agg.setdefault(stage, {"runs": 0, "audio_s": 0.0, "secs": 0.0,
-                                       "speakers": 0, "retained_sum": 0.0})
+                                       "speakers": 0, "retained_sum": 0.0,
+                                       "kept_original": 0})
             a["runs"] += 1
             a["audio_s"] += float(r["audio_s"] or 0.0)
             a["secs"] += float(r["secs"] or 0.0)
             a["speakers"] += int(r["speakers"] or 0)
             a["retained_sum"] += float(r["retained"] or 0.0)
+            a["kept_original"] += int(r["kept_original"] or 0)
             for code in (r["targets"] or "").split(","):
                 if code:
                     tg = targets.setdefault(stage, {})
@@ -2431,7 +2482,7 @@ def _stages_from_jobs(conn: sqlite3.Connection, job_ids: list[str],
         elif stage == "vad":
             row["retained_avg"] = round(a["retained_sum"] / runs, 3) if runs else 0.0
         elif stage == "translating":
-            row["kept_original"] = int(translation.get("kept_original", 0))
+            row["kept_original"] = a["kept_original"]
         out.append(row)
     order = {s: i for i, s in enumerate(STAGE_ELIGIBLE)}
     out.sort(key=lambda s: order[s["stage"]])

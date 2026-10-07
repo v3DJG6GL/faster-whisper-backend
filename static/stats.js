@@ -868,8 +868,10 @@ function renderTurnaround() {
       + '<text' + NP + ' class="q" x="' + lx.toFixed(1) + '" y="' + (pt - 4) + '">' + esc(text) + '</text>';
   });
   el.innerHTML = '<svg width="' + W + '" height="' + H + '" viewBox="0 0 ' + W + ' ' + H + '">' + s + '</svg>';
+  // The tooltip reads the tail these bars were drawn from: lastTail may
+  // already hold the next window's while its usage document is in flight.
   wireTips(el, '[data-tip]', (target) => {
-    const i = Number(target.getAttribute('data-i')); const tt = lastTail && lastTail.turnaround; if (!tt) return '';
+    const i = Number(target.getAttribute('data-i')); const tt = t;
     const c = tt.counts[i] || 0;
     const lbl = fmtEdge(tt.edges_s[i]) + (i + 1 < tt.edges_s.length ? '–' + fmtEdge(tt.edges_s[i + 1]) : '+');
     let html = '<div class="tip-date">turnaround ' + esc(lbl) + '</div>';
@@ -886,6 +888,9 @@ function renderTurnaround() {
       raf = requestAnimationFrame(() => {
         raf = 0;
         const svg = el.querySelector('svg');
+        // Same gate as loadTail: a tail whose document has not landed
+        // (or failed) must not redraw beside the old window's cards.
+        if (!(lastDoc && _docSeq === _seq)) return;
         if (svg && (Math.abs(el.clientWidth - svg.width.baseVal.value) > 1 || Math.abs(el.clientHeight - svg.height.baseVal.value) > 1)) renderTurnaround();
       });
     });

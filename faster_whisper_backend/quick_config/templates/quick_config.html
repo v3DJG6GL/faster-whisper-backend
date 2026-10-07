@@ -1959,6 +1959,17 @@ function startStream() {
         // nulls the timer): tearing that healthy stream down would also wipe
         // the "Load older" pages the user paged in.
         if (!_recoveryTimer) return;
+        // An expired sign-in (the server now ends the stream on one) or
+        // revoked access: stop polling and say so, as /stats does, instead
+        // of retrying a dead endpoint under "reconnecting…" forever.
+        if (r.status === 401 || r.status === 403) {
+          clearTimeout(_recoveryTimer);
+          _recoveryTimer = null;
+          if (_es) { try { _es.close(); } catch (_) {} _es = null; }
+          _setRecentLabel(r.status === 401 ? 'signed out' : 'no access');
+          if (r.status === 401 && window._showLoginGate) window._showLoginGate();
+          return;
+        }
         if (r.ok) {
           clearTimeout(_recoveryTimer);
           _recoveryTimer = null;
@@ -2041,7 +2052,16 @@ function _applyFieldDiff(serverValue, diff) {
   if (diff.kind === 'list') {
     const removedKeys = new Set(diff.removed.map(_stringify));
     const out = (serverValue || []).filter(x => !removedKeys.has(_stringify(x)));
-    for (const item of diff.added) out.push(item);
+    // An added item the fresh list already holds (the other writer added it
+    // too, or our own save landed but its state refresh did not) is not
+    // pushed again: the wordlist accepts duplicates and would store it twice.
+    const have = new Set(out.map(_stringify));
+    for (const item of diff.added) {
+      const key = _stringify(item);
+      if (have.has(key)) continue;
+      have.add(key);
+      out.push(item);
+    }
     return out;
   }
   return diff.value;

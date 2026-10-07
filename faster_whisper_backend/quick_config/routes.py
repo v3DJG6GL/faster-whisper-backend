@@ -543,9 +543,11 @@ async def _apply_rules_patch_locked(
                 if k not in old_map or old_map[k] != v:
                     meta[k] = now
             target["map_meta"] = {k: meta[k] for k in new_map if k in meta}
+        was_enabled = bool(target.get("enabled", True))
         target.update(patch)
         saved.append(slug)
-        if any(field != "enabled" for field in patch):
+        if (any(field != "enabled" for field in patch)
+                or (patch.get("enabled") is True and not was_enabled)):
             guard_slugs.append(slug)
 
     # If every patch conflicted, skip the save+rebuild — nothing to write.
@@ -566,10 +568,11 @@ async def _apply_rules_patch_locked(
     # large rule set could burn the shared guard budget on its own. An error
     # may still name an untouched rule (non-guard validation covers the whole
     # merged list) — the client surfaces this gracefully. An enabled-only
-    # patch leaves the rule's body as it was, so it is not in guard_slugs:
-    # the guard (and the map-key collision check) would otherwise refuse
-    # switching OFF exactly such a pre-existing rule until its body was
-    # rewritten.
+    # patch that switches a rule OFF (or changes nothing) leaves the rule's
+    # body as it was, so it is not in guard_slugs: the guard (and the map-key
+    # collision check) would otherwise refuse switching OFF exactly such a
+    # pre-existing rule until its body was rewritten. Switching a rule ON is
+    # guarded: the load path runs no guard, so a refused body would go live.
     # Off the event loop. The guard runs the candidate patterns in a child
     # process and waits up to _GUARD_TIMEOUT for it, so calling save_overrides
     # inline freezes the whole worker — every HTTP request, SSE stream and

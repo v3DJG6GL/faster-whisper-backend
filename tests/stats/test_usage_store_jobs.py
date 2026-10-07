@@ -291,6 +291,92 @@ def test_per_utterance_translations_count_one_run_per_session(usage_store_db):
     assert narrowed["dictation"]["targets"] == doc["dictation"]["targets"]
 
 
+def test_dictation_utterance_stage_counts_one_run_per_session(usage_store_db):
+    """A dictation's own utterances each carry a "transcribing" stage under
+    the session's job id: every utterance bumped the hourly runs, so the
+    console read "3 of 1" (300 %) and the stage leaderboard counted three
+    sessions, while the per-job row is one per session."""
+    us = usage_store_db
+    for _ in range(3):
+        us.record_usage(key_id="k", user_id="u", audio_s=5.0, words=20,
+                        status="ok", kind="dictation", job_id="s" * 32,
+                        stages=[{"name": "transcribing", "secs": 1.0,
+                                 "model": "large-v3"}])
+    doc = us.document("u", days=1, tz=_UTC, tz_name="UTC", all_stages=True)
+    meter = next(s for s in doc["stages"] if s["stage"] == "transcribing")
+    assert (meter["runs"], meter["of_runs"], meter["secs"]) == (1, 1, 3.0)
+    o = us.overview(user_id="u", tz=_UTC, tz_name="UTC", days=1, by="stage")
+    board = {r["id"]: r["totals"] for r in o["leaderboard"]}
+    assert board["transcribing"]["sessions"] == 1
+
+
+def test_attached_targets_past_the_cap_count_once(usage_store_db):
+    """The per-job target union is capped; a target past the cap was never
+    stored, read as new on every later attach and counted again each time."""
+    us = usage_store_db
+    sess = "s" * 32
+    cap = us._JOB_TARGETS_MAX
+    codes = [f"l{i}" for i in range(cap)]
+    us.record_usage(key_id="k", user_id="u", audio_s=5.0, words=20,
+                    status="ok", kind="dictation", job_id=sess)
+    tr = lambda cs: [{"name": "translate", "secs": 1.0, "targets": cs}]
+    us.record_usage(key_id="k", user_id="u", audio_s=0.0, words=0, status="ok",
+                    kind="text", job_id="p" * 32, stages=tr(codes),
+                    session_job_id=sess)
+    for i in range(3):
+        us.record_usage(key_id="k", user_id="u", audio_s=0.0, words=0,
+                        status="ok", kind="text", job_id=f"{i}" * 32,
+                        stages=tr(["xx"]), session_job_id=sess)
+    conn = us._require_conn()
+    assert conn.execute("SELECT COUNT(*) FROM usage_target_hourly"
+                        " WHERE target = 'xx'").fetchone()[0] == 0
+    assert conn.execute("SELECT SUM(runs) FROM usage_target_hourly"
+                        ).fetchone()[0] == cap
+
+
+def test_translating_kept_original_is_the_segment_count_on_both_paths(usage_store_db):
+    """The stage row's kept_original is the guard's segment fallback count.
+    The with= path filled it from the dictation outcome instead (jobs whose
+    user kept the original), so ticking a chip swapped its meaning."""
+    us = usage_store_db
+    jid = "d" * 32
+    us.record_usage(key_id="k", user_id="u", audio_s=5.0, words=20, status="ok",
+                    kind="dictation", job_id=jid,
+                    stages=[{"name": "translating", "secs": 1.0,
+                             "targets": ["de"], "kept_original": 3}])
+    us.record_outcome(user_id="u", job_id=jid, activation="hold",
+                      delivery="typed", translation="translated")
+    for with_stages in ((), ("translating",)):
+        doc = us.document("u", days=1, tz=_UTC, tz_name="UTC",
+                          with_stages=with_stages)
+        meter = next(s for s in doc["stages"] if s["stage"] == "translating")
+        assert meter["kept_original"] == 3, with_stages
+
+
+def test_outcome_before_a_file_run_does_not_make_it_a_dictation(usage_store_db):
+    """record_outcome refuses a non-dictation job, but only when the job
+    already exists: an outcome posted before a file run recorded left a
+    dictation stub the run then adopted, keeping kind='dictation' and
+    folding the file's words and audio into the dictation rollups."""
+    us = usage_store_db
+    jid = "f" * 32
+    assert us.record_outcome(user_id="u", job_id=jid, activation="hold",
+                             delivery="typed", translation="not_asked",
+                             app_id="vim") == "accepted"
+    us.record_usage(key_id="k", user_id="u", audio_s=100.0, words=500,
+                    status="ok", kind="file", job_id=jid)
+    conn = us._require_conn()
+    job = conn.execute("SELECT kind, utterances, reported_ts, activation"
+                       " FROM usage_jobs").fetchone()
+    assert tuple(job) == ("file", 1, None, None)
+    assert conn.execute("SELECT COUNT(*) FROM usage_dictation_hourly").fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*) FROM usage_app_hourly").fetchone()[0] == 0
+    doc = us.document("u", days=1, tz=_UTC, tz_name="UTC")
+    assert doc["total"]["file"]["sessions"] == 1
+    assert doc["dictation"]["sessions"] == 0
+    assert doc["dictation"]["delivery"]["typed"] == 0
+
+
 def test_with_document_dictation_targets_honour_the_kind_filter(usage_store_db):
     """The with= document claims every figure is kind-scoped, but
     dictation.targets hard-coded kind='dictation' and ignored the filter:
@@ -538,7 +624,10 @@ def test_with_stages_narrows_to_jobs_that_ran_all_of_them(usage_store_db):
     # among the two narrowed batch jobs.
     assert (stages["translating"]["runs"], stages["translating"]["of_runs"]) == (3, 3)
     assert stages["translating"]["targets"] == [{"code": "de", "runs": 2}, {"code": "fr", "runs": 1}]
-    assert stages["translating"]["kept_original"] == 1
+    # The reported "kept original" outcome is dictation.translation's; the
+    # stage row counts the guard's fallback segments, none recorded here.
+    assert stages["translating"]["kept_original"] == 0
+    assert doc["dictation"]["translation"]["kept_original"] == 1
     assert (stages["diarizing"]["runs"], stages["diarizing"]["of_runs"]) == (1, 1)
     assert stages["diarizing"]["speakers_avg"] == 2.0
     assert doc["dictation"]["sessions"] == 1
@@ -946,6 +1035,14 @@ def test_stage_error_lands_on_the_stage_row_and_bumps_hourly_errors(usage_store_
 
 
 _PRE_V2_JOBS_SCHEMA = """
+CREATE TABLE usage_hourly (
+  hour INTEGER NOT NULL, key_id TEXT NOT NULL, user_id TEXT NOT NULL,
+  kind TEXT NOT NULL DEFAULT 'unknown', requests INTEGER NOT NULL DEFAULT 0,
+  errors INTEGER NOT NULL DEFAULT 0, words INTEGER NOT NULL DEFAULT 0,
+  audio_s REAL NOT NULL DEFAULT 0, proc_s REAL NOT NULL DEFAULT 0,
+  sessions INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (hour, key_id, kind)
+);
 CREATE TABLE usage_jobs (
   job_id TEXT PRIMARY KEY, user_id TEXT NOT NULL, key_id TEXT NOT NULL,
   kind TEXT NOT NULL, created_ts REAL NOT NULL, status TEXT NOT NULL,
@@ -971,8 +1068,9 @@ CREATE TABLE usage_stage_hourly (
 
 def test_init_adds_v2_ledger_columns_to_a_pre_v2_db(tmp_path):
     """A DB whose ledger tables predate wait_s / error_class / stage errors
-    gains the columns on init_db; old rows read with the defaults; a
-    second init is a no-op; a fresh DB needs no ALTER at all."""
+    (and still spell processing_s proc_s) gains the columns on init_db and
+    keeps the renamed column's data; old rows read with the defaults; a
+    second init changes nothing; a fresh DB has the columns from the start."""
     from faster_whisper_backend.stats import usage_store
     path = str(tmp_path / "prev2.sqlite3")
     raw = sqlite3.connect(path)
@@ -982,6 +1080,9 @@ def test_init_adds_v2_ledger_columns_to_a_pre_v2_db(tmp_path):
                 " VALUES ('old', 'u', 'k', 'file', 1000.0, 'ok', 5, 2, 1, 1)")
     raw.execute("INSERT INTO usage_job_stages (job_id, stage, secs)"
                 " VALUES ('old', 'diarizing', 1.0)")
+    raw.execute("INSERT INTO usage_hourly (hour, key_id, user_id, kind, requests,"
+                " words, audio_s, proc_s, sessions)"
+                " VALUES (0, 'k', 'u', 'file', 1, 2, 5, 1.5, 1)")
     raw.execute("INSERT INTO usage_stage_hourly (hour, user_id, stage, runs)"
                 " VALUES (0, 'u', 'diarizing', 1)")
     raw.commit(); raw.close()
@@ -990,14 +1091,28 @@ def test_init_adds_v2_ledger_columns_to_a_pre_v2_db(tmp_path):
         conn = usage_store._require_conn()
         cols = lambda t: {r["name"] for r in conn.execute(f"PRAGMA table_info({t})")}
         assert {"wait_s", "error_class", "error_stage"} <= cols("usage_jobs")
-        assert "error" in cols("usage_job_stages")
+        assert {"error", "kept_original"} <= cols("usage_job_stages")
         assert "errors" in cols("usage_stage_hourly")
+        for t in ("usage_jobs", "usage_hourly"):
+            assert "processing_s" in cols(t) and "proc_s" not in cols(t), t
+        assert conn.execute("SELECT processing_s FROM usage_jobs"
+                            " WHERE job_id = 'old'").fetchone()[0] == 1.0
+        assert conn.execute("SELECT processing_s FROM usage_hourly"
+                            ).fetchone()[0] == 1.5
         row = conn.execute("SELECT wait_s, error_class FROM usage_jobs").fetchone()
         assert (row["wait_s"], row["error_class"]) == (0.0, None)
         assert conn.execute("SELECT errors FROM usage_stage_hourly").fetchone()["errors"] == 0
         idx = {r["name"] for r in conn.execute("PRAGMA index_list(usage_jobs)")}
         assert "idx_usage_jobs_user_created" in idx
-        usage_store._migrate_columns(conn)          # idempotent
+        conn.close()
+        usage_store._conn = None
+        usage_store.init_db(path)                   # a second init: no change
+        conn = usage_store._require_conn()
+        counts = [conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
+                  for t in ("usage_hourly", "usage_jobs", "usage_job_stages",
+                            "usage_stage_hourly")]
+        assert counts == [1, 1, 1, 1]
+        assert conn.execute("SELECT processing_s FROM usage_jobs").fetchone()[0] == 1.0
         conn.close()
     finally:
         usage_store._conn = None

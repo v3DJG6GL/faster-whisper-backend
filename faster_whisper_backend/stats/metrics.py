@@ -193,14 +193,16 @@ _CHAIN_DEPTH = 5
 
 def _cause_class(exc: BaseException) -> str | None:
     """The first _CHAINED_CLASSES class down `exc`'s cause / context chain
-    (bounded), else None."""
+    (bounded), else None. An inner wrapper raised `from` a cause follows
+    classify_error's rule for the outermost one: its own text is not taken
+    for an OOM (a real one further down is found on the next link)."""
     seen = {id(exc)}
     inner = exc.__cause__ or exc.__context__
     for _ in range(_CHAIN_DEPTH):
         if inner is None or id(inner) in seen:
             return None
         seen.add(id(inner))
-        cls = _own_class(inner, oom_text=True)
+        cls = _own_class(inner, oom_text=inner.__cause__ is None)
         if cls in _CHAINED_CLASSES:
             return cls
         inner = inner.__cause__ or inner.__context__

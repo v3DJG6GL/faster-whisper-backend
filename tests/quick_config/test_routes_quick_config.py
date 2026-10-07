@@ -6,19 +6,24 @@ import re
 import pytest
 
 
-def _expose_first_regex_list_rule(app_module):
-    """Mark the first regex-list rule exposed so /quick-config can see + patch it.
-    Returns its slug. Mutates a deep copy assigned back onto cfg so the test's
-    monkeypatched view is isolated; the per-test config reload restores it."""
+def _expose_first(app_module, rule_type, **extra):
+    """Mark the first `rule_type` rule exposed (plus any `extra` fields) so
+    /quick-config can see + patch it. Returns its slug (None if none).
+    Mutates a deep copy assigned back onto cfg so the test's monkeypatched
+    view is isolated; the per-test config reload restores it."""
     rules = copy.deepcopy(list(app_module.cfg.PIPELINE_RULES))
     slug = None
     for r in rules:
-        if isinstance(r, dict) and r.get("type") == "regex-list":
-            r["exposed"] = True
+        if isinstance(r, dict) and r.get("type") == rule_type:
+            r.update(exposed=True, **extra)
             slug = r["name"]
             break
     app_module.cfg.PIPELINE_RULES = rules
     return slug
+
+
+def _expose_first_regex_list_rule(app_module):
+    return _expose_first(app_module, "regex-list")
 
 
 def test_quick_config_page(client):
@@ -145,7 +150,8 @@ def test_post_patch_switching_off_a_guard_failing_rule_saves(client, app_module)
     """An enabled-only patch leaves the rule's body untouched, so it is not
     in the guard scope: switching OFF a pre-existing rule the current guard
     refuses used to 422 ("catastrophic backtracking") until its entries were
-    rewritten. Changing its entries still runs the guard."""
+    rewritten. Switching it back ON, or changing its entries, still runs the
+    guard (the load path runs none, so the refused body would go live)."""
     slug = _expose_first_regex_list_rule(app_module)
     assert slug is not None
     rules = copy.deepcopy(list(app_module.cfg.PIPELINE_RULES))
@@ -158,6 +164,15 @@ def test_post_patch_switching_off_a_guard_failing_rule_saves(client, app_module)
     )
     assert r.status_code == 200, r.text
     assert slug in r.json()["saved"]
+    stored = next(x for x in app_module.cfg.PIPELINE_RULES
+                  if isinstance(x, dict) and x.get("name") == slug)
+    assert stored.get("enabled") is False
+    r = client.post(
+        "/quick-config/state",
+        json={"rules_patch": {slug: {"enabled": True}}},
+    )
+    assert r.status_code == 422, r.text
+    assert "catastrophic backtracking" in r.text
     stored = next(x for x in app_module.cfg.PIPELINE_RULES
                   if isinstance(x, dict) and x.get("name") == slug)
     assert stored.get("enabled") is False
@@ -277,16 +292,7 @@ def test_reapply_rules_start_captures_disabled(client, app_module):
 
 
 def _expose_first_map_rule(app_module):
-    """Mark a callback:map rule exposed and return its slug (None if none)."""
-    rules = copy.deepcopy(list(app_module.cfg.PIPELINE_RULES))
-    slug = None
-    for r in rules:
-        if isinstance(r, dict) and r.get("type") == "callback:map":
-            r["exposed"] = True
-            slug = r["name"]
-            break
-    app_module.cfg.PIPELINE_RULES = rules
-    return slug
+    return _expose_first(app_module, "callback:map")
 
 
 def test_post_patch_oversized_map_400(client, app_module):
@@ -388,15 +394,7 @@ def test_state_carries_locked_and_role_for_nonadmin(client, app_module,
     rule and the caller's `role`."""
     from tests.conftest import bearer
 
-    rules = copy.deepcopy(list(app_module.cfg.PIPELINE_RULES))
-    slug = None
-    for r in rules:
-        if isinstance(r, dict) and r.get("type") == "regex-list":
-            r["exposed"] = True
-            r["locked"] = True
-            slug = r["name"]
-            break
-    app_module.cfg.PIPELINE_RULES = rules
+    slug = _expose_first(app_module, "regex-list", locked=True)
     assert slug is not None
 
     make_user_key("root", is_admin=True)  # flips lockdown
@@ -677,6 +675,33 @@ def test_quick_config_page_failure_paths_recover(client):
     assert probe.index("await api('GET', '/quick-config/recent?limit=1');") < probe.index(
         "if (!_recoveryTimer) return;") < probe.index("if (r.ok) {")
     assert "if (!_recoveryTimer) return;   // onopen cancelled it meanwhile" in probe
+
+
+def test_quick_config_page_probe_stops_on_401_and_merge_skips_held_words(client):
+    """No JS harness: pin the strings. The stream-recovery probe treated a
+    401 / 403 like any failure and polled a dead endpoint under
+    "reconnecting…" for as long as the tab was open (an expired sign-in now
+    ends the stream); it stops, says so and opens the login gate on 401, as
+    /stats does. A re-applied wordlist diff pushed every added word even
+    when the fresh server list already held it, so the next save stored it
+    twice."""
+    html = client.get("/quick-config").text
+    probe = html[html.index("const probe = async () => {"):
+                 html.index("// --- Field-level diff helpers")]
+    gone = probe[probe.index("if (r.status === 401 || r.status === 403) {"):
+                 probe.index("if (r.ok) {")]
+    assert probe.index("if (!_recoveryTimer) return;") < probe.index(
+        "if (r.status === 401 || r.status === 403) {")
+    assert "_recoveryTimer = null;" in gone and "_es = null;" in gone
+    assert "_setRecentLabel(r.status === 401 ? 'signed out' : 'no access');" in gone
+    assert "if (r.status === 401 && window._showLoginGate) window._showLoginGate();" in gone
+    assert "return;" in gone
+    merge = html[html.index("function _applyFieldDiff(serverValue, diff) {"):
+                 html.index("function _diffKindFor(field) {")]
+    lst = merge[merge.index("if (diff.kind === 'list') {"):]
+    assert "const have = new Set(out.map(_stringify));" in lst
+    assert lst.index("if (have.has(key)) continue;") < lst.index("out.push(item);")
+    assert "for (const item of diff.added) out.push(item);" not in lst
 
 
 def test_redact_collapses_hidden_rule_ordinals():

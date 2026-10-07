@@ -504,7 +504,8 @@ def test_nonadmin_all_scope_unchanged(client):
     assert {"gpu", "host", "latency_ms"} <= set(snap)
     rows = {j["id"]: j for j in snap["jobs"]}
     assert set(rows) == {a, b}
-    assert "user" not in rows[a] and "detail" not in rows[b]
+    for r in (rows[a], rows[b]):
+        assert not ({"user", "key", "detail"} & set(r))
     assert rows[a]["progress_id"] == "pid-a"
     assert "progress_id" not in rows[b]
 
@@ -1678,3 +1679,36 @@ def test_stats_page_stream_recovery_jobs_gap_and_hidden_range_refresh(client):
     assert rng.index("document.visibilityState === 'hidden'") < rng.index("fetch(")
     hidden = html[html.index("document.addEventListener('visibilitychange'"):]
     assert "if (liveMode !== 'live') loadRangeSparks();" in hidden
+
+
+def test_stats_page_status_pill_keeps_the_stream_state(client):
+    """No JS harness: pin the strings. refreshStatusPill painted from ring
+    state alone, so a spark hover or L on a page whose stream was
+    reconnecting, or ended for good by the probe's 401 / 403, turned the
+    pill green "live". setStatus records the non-live state, the stream
+    clears it, and the pill consults it before painting 'pill live'. Two
+    samples sharing a second (the initial snapshot + the first frame)
+    trapped the keyboard scrub on the pair: the newer one replaces it."""
+    html = client.get("/stats").text
+    pill = html[html.index("function refreshStatusPill() {"):]
+    pill = pill[:pill.index("\n}\n")]
+    assert pill.index("if (connState) {") < pill.index("statusEl.className = 'pill live';")
+    status = html[html.index("function setStatus(text, cls) {"):]
+    assert "connState = cls === 'live' ? null : text;" in status[:status.index("\n}\n")]
+    sse = html[html.index("function openStream() {"):html.index("es.onerror")]
+    assert sse.count("connState = null;") == 2   # a message and a (re)open
+    push = html[html.index("function pushHistory(snap) {"):]
+    assert push.index("histX[histX.length - 1] === now") < push.index("histX.push(now);")
+
+
+def test_stats_turnaround_tooltip_and_resize_use_the_drawn_tail():
+    """The tooltip re-read lastTail and the resize redraw re-rendered it,
+    while the bars still showed the old window (lastTail already holds the
+    next one while its usage document is in flight)."""
+    js = pathlib.Path(REPO_ROOT, "static", "stats.js").read_text(encoding="utf-8")
+    ta = js[js.index("function renderTurnaround() {"):]
+    ta = ta[:ta.index("\n}\n")]
+    tips = ta[ta.index("wireTips(el, '[data-tip]'"):ta.index("el._ro = new ResizeObserver")]
+    assert "const tt = t;" in tips and "lastTail" not in tips
+    ro = ta[ta.index("el._ro = new ResizeObserver"):]
+    assert ro.index("if (!(lastDoc && _docSeq === _seq)) return;") < ro.index("renderTurnaround();")

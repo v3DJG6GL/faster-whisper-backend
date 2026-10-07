@@ -358,7 +358,8 @@ def test_record_timing_keeps_wait_and_error_class(tx_store):
                            processing_s=1.5, status="error", words=0)
     row = tx_store.list_recent(limit=1)[0]
     assert row["processing_s"] == 1.5
-    assert (row["wait_s"], row["error_class"]) == (3.25, "cuda_oom")
+    assert (row["wait_s"], row["error_class"], row["error_stage"]) == (
+        3.25, "cuda_oom", "transcribing")
     tx_store.record_timing(request_id="w2", model="m", audio_s=1.0,
                            processing_s=1.0, status="ok", words=3, wait_s=-1)
     assert tx_store.list_recent(limit=1)[0]["wait_s"] == 0.0

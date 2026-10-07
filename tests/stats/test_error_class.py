@@ -109,6 +109,19 @@ def test_classify_error_reads_the_wrapped_cause():
         RuntimeError("no CUDA-capable device is detected"))
     assert metrics.classify_error(load, status="error", stage="diarizing") == (
         "other", "diarizing")
+    # The same placement wrapper one link down a chain: its own text is
+    # still no OOM, and a real OOM below it still is.
+    twice = _raised_from(RuntimeError("diarization stage failed"), load)
+    assert metrics.classify_error(twice, status="error", stage="diarizing") == (
+        "other", "diarizing")
+    twice_oom = _raised_from(
+        RuntimeError("diarization stage failed"),
+        _raised_from(
+            DiarizationError("could not load m on cuda — the device is out of "
+                             "memory or unavailable; see the server log"),
+            RuntimeError("CUDA out of memory. Tried to allocate 2 GiB")))
+    assert metrics.classify_error(twice_oom, status="error", stage="diarizing") == (
+        "cuda_oom", "diarizing")
     # A timeout chains the CancelledError it turned into: still a timeout.
     t = _raised_from(TimeoutError(), asyncio.CancelledError())
     assert metrics.classify_error(t, status="error", stage="downloading") == (

@@ -228,7 +228,6 @@ def _row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
     # `or "[]"` default in the loop above covers `stages` there).
     d["kind"] = d.get("kind") or None
     d["key_label"] = d.get("key_label") or ""
-    d["wait_s"] = d.get("wait_s")
     d["error_class"] = d.get("error_class") or None
     d["error_stage"] = d.get("error_stage") or None
     return d

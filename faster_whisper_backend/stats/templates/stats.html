@@ -996,6 +996,13 @@ function pushHistory(snap) {
   }
   if (up != null) _lastUptime = up;
   const now = Math.floor(snap.ts || (Date.now() / 1000));
+  // The initial snapshot and the first SSE frame usually share a second:
+  // two samples on one timestamp trapped the keyboard scrub on the pair
+  // (nearestIdx finds the first), so the newer one replaces the older.
+  if (histX.length && histX[histX.length - 1] === now) {
+    histX.pop();
+    for (const k in hist) hist[k].pop();
+  }
   histX.push(now);
   hist.gpu_util.push(snap.gpu ? snap.gpu.util_pct ?? null : null);
   hist.gpu_mem_pct.push(snap.gpu && snap.gpu.mem_total_mb
@@ -1163,6 +1170,14 @@ function backToLive() {
 function refreshStatusPill() {
   refreshRingChips();
   if (!statusEl) return;
+  // The stream's own state (reconnecting / signed out / no access / hidden,
+  // see setStatus) outranks the rings': a spark hover or L on a dead
+  // stream must not paint it green "live".
+  if (connState) {
+    statusEl.className = 'pill paused';
+    statusEl.textContent = connState;
+    return;
+  }
   if (frozenTs != null && liveMode !== 'live') {
     statusEl.className = 'pill paused';
     statusEl.innerHTML = 'paused · ' + flagTime(frozenTs) + ' · <u style="cursor:pointer">back to now</u>';
@@ -2250,6 +2265,9 @@ function renderJobs(snap) {
 
 // --- SSE consumer ----------------------------------------------------------
 let es = null;
+// The stream state setStatus last painted when it is not live; null while
+// the stream delivers. refreshStatusPill reads it.
+let connState = null;
 let recoveryTimer = null;
 // Recovery back-off, kept across failures: onerror re-declaring it made
 // every new failure restart at 1.5 s. Only a (re)opened stream resets it.
@@ -2258,6 +2276,7 @@ const statusEl = $('status');
 wireRingControls();
 
 function setStatus(text, cls) {
+  connState = cls === 'live' ? null : text;
   statusEl.textContent = text;
   statusEl.className = 'pill ' + cls;
 }
@@ -2269,6 +2288,7 @@ function openStream() {
   es.onmessage = (e) => {
     try {
       const snap = JSON.parse(e.data);
+      connState = null;
       pushHistory(snap);
       render(snap);
       if (frozenTs == null && liveMode === 'live') setStatus('live', 'live');
@@ -2283,6 +2303,7 @@ function openStream() {
     // history (and a freeze) and reopen a healthy stream.
     if (recoveryTimer) { clearTimeout(recoveryTimer); recoveryTimer = null; }
     recoveryDelay = 1500;
+    connState = null;
   };
   es.onerror = () => {
     setStatus('reconnecting…', 'paused');
