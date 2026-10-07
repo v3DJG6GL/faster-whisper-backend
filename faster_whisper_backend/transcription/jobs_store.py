@@ -66,6 +66,11 @@ _CAP_MODEL = 128
 _CAP_SMALL = 32
 # Server-built JSON side blobs (stage timings, plan snapshot) — defensive.
 _CAP_SIDE_JSON = 64_000
+# A RUNNING row's expiry floor: JOBS_TTL_S counts from the finish (finish()
+# restamps it), so a run longer than a short TTL must not 404, drop out of
+# the list or be pruned mid-run. Only the backstop for a row a dead worker
+# left running (mark_running_as_failed covers the single-worker restart).
+_RUNNING_FLOOR_S = 24 * 3600.0
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS jobs (
@@ -232,7 +237,8 @@ def start(
     demotes duplicates to "no progress" before seeding). The id is
     client-chosen, so a live row that belongs to SOMEONE ELSE is never
     replaced: returns False and writes nothing (the run goes on without a
-    job row). True when the row was written."""
+    job row). True when the row was written. The running row expires
+    after max(ttl_s, _RUNNING_FLOOR_S): the TTL proper starts at finish()."""
     conn = _require_conn()
     now = time.time()
     with _lock:
@@ -257,7 +263,7 @@ def start(
                 job_id, request_id,
                 kind if kind in KINDS else "transcribe",
                 user_id or None, key_id or None,
-                now, now + float(ttl_s),
+                now, now + max(float(ttl_s), _RUNNING_FLOOR_S),
                 _clip(model, _CAP_MODEL),
                 source_kind if source_kind in SOURCE_KINDS else "file",
                 _clip(source_name, _CAP_NAME),
@@ -483,10 +489,11 @@ def total_result_bytes() -> int:
 
 def prune(*, ttl_s: float, max_rows: int, max_bytes: int) -> int:
     """Three passes: expired rows (finished OR running past the `expires_ts`
-    stamped by start()/finish() — a run that outlives its own TTL is not a
-    run any more; `ttl_s` is NOT read here, it is kept for the callers'
-    signature); rows beyond `max_rows` newest, never a running one; then oldest finished
-    rows until the stored result bytes fit `max_bytes`. 0 disables the row
+    stamped by start()/finish() — start() gives a running row at least
+    _RUNNING_FLOOR_S, so only a row a dead worker left running expires
+    mid-"run"; `ttl_s` is NOT read here, it is kept for the callers'
+    signature); rows beyond `max_rows` newest, never a running one; then
+    oldest finished rows until the stored result bytes fit `max_bytes`. 0 disables the row
     and byte caps. Returns the total deleted."""
     conn = _require_conn()
     deleted = 0

@@ -1036,8 +1036,17 @@ def test_claimed_dictation_receipt_folds_into_the_utterance_row(
     from faster_whisper_backend.transcription import receipt_hold
     from faster_whisper_backend.stats import recent_transcriptions_store as rts
 
+    import asyncio
+
     _enable(app_module, monkeypatch)
     _stub_translate(monkeypatch)
+    _fast = translation.translate_segments
+
+    async def _slow(*a, **kw):
+        # A measurable wall time: the fold must ADD it to the utterance row.
+        await asyncio.sleep(0.1)
+        return await _fast(*a, **kw)
+    monkeypatch.setattr(translation, "translate_segments", _slow)
     rts.record_timing(request_id="utt-rid", model="w", audio_s=4.0,
                       processing_s=0.9, status="ok", words=7, kind="dictate",
                       stages=[{"name": "transcribing", "secs": 0.9}])
@@ -1055,7 +1064,10 @@ def test_claimed_dictation_receipt_folds_into_the_utterance_row(
     assert [x["kind"] for x in rows].count("translate") == 0
     utt = next(x for x in rows if x["request_id"] == "utt-rid")
     assert [s["name"] for s in utt["stages"]] == ["transcribing", "translating"]
-    assert utt["processing_s"] >= 0.9   # stub translate takes ~0 s
+    tr_secs = utt["stages"][1]["secs"]
+    assert tr_secs >= 0.1
+    assert utt["processing_s"] >= 0.95
+    assert utt["processing_s"] == pytest.approx(0.9 + tr_secs, abs=0.01)
 
 
 def test_dictation_translation_joins_its_session_usage_job(

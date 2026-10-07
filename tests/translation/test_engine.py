@@ -284,6 +284,16 @@ def test_guard_reasons():
              target="ko") == "output copies input"
     assert g("오늘학교에갔어요", "오늘학교에갔어요", target="ja") == \
         "output copies input"
+    # Punctuation splitting a Han clause into several \w runs does not undo
+    # the Han exemption for a Han-writing target...
+    assert g("大家好，我是小明。", "大家好，我是小明。", target="zh-Hant") is None
+    assert g("日本、東京。", "日本、東京。", target="zh") is None
+    # ...while a kana clause stays an untranslated echo, and so does a Han
+    # clause under a Korean target (Korean output is Hangul).
+    assert g("こんにちは、元気？", "こんにちは、元気？", target="zh") == \
+        "output copies input"
+    assert g("我们今天去学校了", "我们今天去学校了", target="ko") == \
+        "output copies input"
     # Digits compare by value: the target script's native digits keep the
     # number; a changed native number still fails.
     assert g("Wir haben 16 Leute eingeladen.", "ما ۱۶ نفر را دعوت کردیم.",
@@ -300,6 +310,14 @@ def test_guard_reasons():
     # The copy check ignores whitespace the batch prompt collapsed.
     assert g("Guten Tag\nwie geht es", "Guten Tag wie geht es") == \
         "output copies input"
+    # A source that really repeats (a chant, a lyric) translates to a
+    # repeating output: that is no generation loop.
+    assert g("Ja, " * 15 + "ja.", "Yes, " * 15 + "yes.", target="en") is None
+    # With the source language unknown the copy check is off: a target in
+    # the text's own language legitimately returns it unchanged.
+    assert g("Hallo Welt", "Hallo Welt", source_known=False) is None
+    assert g("Ein normaler Satz hier mit Laenge", "abcdefghijkl" * 4,
+             source_known=False) == "repetition loop"
 
 
 def test_guard_repetition_scan_is_fast_on_large_clean_output():
@@ -375,6 +393,21 @@ def test_redistribute_edges():
     # No spaces at all → raw proportional cut.
     joined = "".join(translation._redistribute(["aa", "bb"], "abcdef"))
     assert joined == "abcdef"
+
+
+def test_redistribute_unspaced_target_ignores_a_far_away_space():
+    """An unspaced (Chinese) translation whose only space sits around a Latin
+    name is not snapped to it: the cut lands after the clause punctuation
+    near the proportional position, or at that position itself."""
+    src = ["Wir fahren morgen frueh nach Berlin,",
+           "und dann gehen wir zu Google", "und essen zusammen."]
+    out = translation._redistribute(
+        src, "我们明天一早去柏林，然后我们去 Google 然后一起吃饭。")
+    assert out == ["我们明天一早去柏林，", "然后我们去 Google", "然后一起吃饭。"]
+    # A Latin-script text still snaps to its nearest space at any distance.
+    assert translation._redistribute(["aaaaaaaaaaaa", "bbb"],
+                                     "first part is long tail") == \
+        ["first part is long", "tail"]
 
 
 def test_redistribute_never_emits_empty_members():
@@ -562,6 +595,21 @@ def test_faithful_copy_guard_sees_through_collapsed_whitespace(base_cfg,
     assert res[1]["en"] == "nOCH WAS HIER."
     assert any("segment 1" in w and "output copies input" in w
                for w in warns)
+
+
+def test_unknown_source_echo_is_no_kept_original(base_cfg, monkeypatch):
+    """No source language: a target in the text's own language is not
+    short-circuited, and the model's unchanged text is the correct answer —
+    no "translation failed" warning, no kept mark, no retry call."""
+    calls = []
+    _install_fake(monkeypatch, lambda t: t if t.startswith("Wir")
+                  else _xlate(t), calls)
+    res, warns, meta = _run(translation.translate_segments(
+        _segs("Wir sehen uns morgen im Büro."), ["de", "en"],
+        mode="faithful"))
+    assert res[0]["de"] == "Wir sehen uns morgen im Büro."
+    assert meta["kept"] == {} and warns == []
+    assert len(calls) == 2                        # one call per target
 
 
 def test_fluent_group_revert_never_marks_a_blank_member_kept(base_cfg,
@@ -1864,6 +1912,33 @@ class TestRenderPrompt:
                                          target, "", ""))
         assert seen["prompt"] == preview
 
+    def test_script_and_region_target_folds_to_the_script_entry(self):
+        """A script subtag the table names wins over the region behind it:
+        "zh_Hant_TW" / "zh-Hant-HK" are Traditional Chinese, as
+        canonical_code folds them; an unlisted script still stays."""
+        assert translation._prompt_target("zh_Hant_TW") == "zh-Hant"
+        assert translation._prompt_target("sr-Latn") == "sr-Latn"
+        p = translation.render_prompt("Hallo", "zh-Hant-HK", source="de",
+                                      family="chatml")
+        assert "Traditional Chinese" in p["messages"][0]["content"]
+
+    def test_preview_and_run_fold_the_source_too(self, monkeypatch):
+        """The lab's free-form SOURCE ("jpn") is folded like the target, in
+        the preview and the run alike — a real request never sends "jpn"."""
+        p = translation.render_prompt("Hallo", "de", source="jpn",
+                                      family="gemma-translate")
+        preview = p.get("messages") or p.get("text")
+        assert "source_lang_code:ja," in str(preview)
+        seen = {}
+
+        def fake_complete(llm, fam, prompt, max_tokens):
+            seen["prompt"] = prompt
+            return "ok"
+        monkeypatch.setattr(translation, "_complete", fake_complete)
+        _run(translation._run_completion(object(), "gemma-translate", "Hallo",
+                                         "jpn", "de", "", ""))
+        assert seen["prompt"] == preview
+
     def test_unknown_source_custom_template_renders_empty(self):
         p = translation.render_prompt(
             "Hallo", "fr", template="[{source_language}] {text}")
@@ -2113,12 +2188,23 @@ def _fake_cache(files_by_repo):
     return NS(repos=repos)
 
 
-def test_cached_gguf_resolves_unique_match(monkeypatch):
+def test_cached_gguf_resolves_unique_match(monkeypatch, tmp_path):
     import huggingface_hub
-    monkeypatch.setattr(huggingface_hub, "scan_cache_dir",
-                        lambda cache_dir=None: _fake_cache(
-                            {"org/repo": ["m.Q4.gguf", "README.md"]}))
+    from faster_whisper_backend.runtime import hf_cache
+    # The offline resolver scans DOWNLOAD_ROOT's hub cache, where the online
+    # load downloaded it — the hub's own default froze HF_HOME at import.
+    monkeypatch.delenv("HF_HUB_CACHE", raising=False)
+    monkeypatch.delenv("HF_HOME", raising=False)
+    monkeypatch.setattr(cfg, "DOWNLOAD_ROOT", str(tmp_path), raising=False)
+    seen = []
+
+    def _scan(cache_dir=None):
+        seen.append(cache_dir)
+        return _fake_cache({"org/repo": ["m.Q4.gguf", "README.md"]})
+    monkeypatch.setattr(huggingface_hub, "scan_cache_dir", _scan)
     assert translation._cached_gguf("org/repo", "Q4") == "/c/m.Q4.gguf"
+    assert seen == [hf_cache.hub_cache_dir()] == [
+        os.path.join(str(tmp_path), "hf", "hub")]
 
 
 def test_cached_gguf_none_on_ambiguous_or_missing(monkeypatch):

@@ -25,14 +25,16 @@ NOTHING IS EVER SILENTLY LOST
 
 Every exit releases the receipt exactly once, with a note saying why: the
 client cancelled, the translation failed, nobody claimed it, the buffer
-filled, a second park superseded it, or the server shut down. A held receipt that vanished would be worse
-than the split one it replaces.
+filled, a second park superseded it, or the server shut down. A held receipt
+that vanished would be worse than the split one it replaces.
 
 This module deliberately imports nothing from the app. It stores the
 renderer's kwargs rather than rendered text (so the claim can add sections
 rather than concatenate blocks), and the caller does the rendering and the
-logging. That keeps it importable from both main and streaming_routes with
-no cycle.
+logging — every release path through transcription.receipt's
+_log_held_receipts. That keeps it importable from main, the streaming and
+translation routes, transcription.receipt and the restart service with no
+cycle.
 """
 
 from __future__ import annotations

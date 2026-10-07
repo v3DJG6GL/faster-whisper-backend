@@ -215,17 +215,23 @@ class RunPlan:
             if extractor:
                 self._extractor = extractor
             if n and n > 0:
-                self._download_bytes = float(n)
-                # A link whose probe gave no duration would leave every
-                # audio-driven stage without an estimate: the download alone
-                # fills the bar to the cap and the hold parks it there for the
-                # whole decode. Seed the same bytes prior a file upload gets;
-                # probe and decoder outrank it, a later byte count refines it.
-                if _DURATION_RANK.get(self._audio_src, -1) <= \
-                        _DURATION_RANK["bytes-prior"]:
-                    self._audio_s = float(n) / BYTES_PER_AUDIO_SECOND
-                    self._audio_src = "bytes-prior"
+                self._seed_bytes_prior_locked(n)
             self._recompute()
+
+    def _seed_bytes_prior_locked(self, n: int | float) -> None:
+        """Record the download's byte count. A link whose probe gave no
+        duration would leave every audio-driven stage without an estimate:
+        the download alone fills the bar to the cap and the hold parks it
+        there for the whole decode. Seed the same bytes prior a file upload
+        gets; probe and decoder outrank it, a later byte count refines it.
+        Both byte sources call this: set_download_bytes and the download's
+        own ticks (tick's total_bytes), the only count a probe with neither
+        a size nor a duration leaves."""
+        self._download_bytes = float(n)
+        if _DURATION_RANK.get(self._audio_src, -1) <= \
+                _DURATION_RANK["bytes-prior"]:
+            self._audio_s = float(n) / BYTES_PER_AUDIO_SECOND
+            self._audio_src = "bytes-prior"
 
     def set_segments(self, n: int | None) -> None:
         if n is None or n < 0:
@@ -367,7 +373,7 @@ class RunPlan:
             if progress is not None:
                 st.frac = max(0.0, min(1.0, float(progress)))
             if st.name == "downloading" and total_bytes and total_bytes > 0:
-                self._download_bytes = float(total_bytes)
+                self._seed_bytes_prior_locked(total_bytes)
             if target and st.units:
                 self._advance_units_locked(st, target, target_progress, now)
             self._recompute()

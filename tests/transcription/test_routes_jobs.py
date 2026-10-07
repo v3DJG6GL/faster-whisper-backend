@@ -239,9 +239,24 @@ def test_expired_row_reads_as_unknown(client):
     js.start(job_id=_PID, request_id="req", kind="transcribe", user_id=None,
              key_id=None, model="m", source_kind="file", source_name="a",
              ttl_s=0.0, max_rows=100, max_bytes=0)
+    js.finish(job_id=_PID, state="failed", ttl_s=0.0)
     time.sleep(0.01)
     assert client.get(f"/v1/jobs/{_PID}").status_code == 404
     assert client.get("/v1/jobs").json() == {"jobs": []}
+
+
+def test_a_running_row_past_a_short_ttl_is_still_found(client, monkeypatch):
+    """JOBS_TTL_S counts from the finish: a run that outlives a short TTL
+    must not 404 (a re-attaching client would decide its job is gone)."""
+    js.start(job_id=_PID, request_id="req", kind="transcribe", user_id=None,
+             key_id=None, model="m", source_kind="file", source_name="a",
+             ttl_s=600.0, max_rows=100, max_bytes=0)
+    real = time.time
+    monkeypatch.setattr(time, "time", lambda: real() + 700)
+    assert client.get(f"/v1/jobs/{_PID}").status_code == 200
+    assert [r["job_id"] for r in
+            client.get("/v1/jobs?all=1").json()["jobs"]] \
+        == [_PID]
 
 
 def test_list_filters_state_and_rejects_unknown_state(client, app_module,

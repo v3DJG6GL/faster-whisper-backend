@@ -448,6 +448,14 @@ async def translate_text(request: Request,
             here — a second recent-jobs row would show the one job twice."""
             nonlocal _job_finished
             _job_kw = None
+            if status != "ok":
+                # Closed first, as the batch handler's translating error arms
+                # do: the snapshot stored on the job row must not show the
+                # stage active with its in-flight target still running.
+                try:
+                    _rplan.stage_failed("translating")
+                except Exception:  # noqa: BLE001 — never fail on the plan
+                    pass
             if _job_row and status != "ok":
                 # The success tail stamps `done` with the payload itself.
                 # Written off the loop in the `finally` below (jobs_store's
@@ -646,8 +654,11 @@ async def translate_text(request: Request,
     # model's load (as the batch stage reads it): 0 when it was already
     # resident. Not "slot held → first progress callback": a same-language
     # target or a blank first group calls back before any model is loaded.
-    _load_s = float(tx_receipt._stage_extras(_tr_key, _hb["t_ready"])
-                    .get("load_secs") or 0.0)
+    # ONE registry scan for the load and the device: three separate lookups
+    # could straddle an LRU eviction and print two devices for one run.
+    _extras = tx_receipt._stage_extras(_tr_key, _hb["t_ready"])
+    _load_s = float(_extras.get("load_secs") or 0.0)
+    _tr_device = _extras.get("device")
     # Segments whose guard fallback kept the source text in at least one
     # target — the usage ledger's kept_original, as the batch stage counts it.
     _n_kept = sum(1 for _k in (meta.get("kept") or {}).values() if _k)
@@ -674,7 +685,7 @@ async def translate_text(request: Request,
         _tr_stage = {"name": "translating", "secs": round(_elapsed, 3),
                      "model": _used_model or None,
                      "load_secs": round(_load_s, 3),
-                     "device": tx_receipt._model_compute_device(_tr_key)[1],
+                     "device": _tr_device,
                      "detail": f"{len(seg_in)} segs → {','.join(targets)}",
                      "targets": list(targets),
                      "kept_original": _n_kept}
@@ -694,7 +705,7 @@ async def translate_text(request: Request,
         if _held is not None:
             _held["translation"] = {
                 "model": _used_model or None,
-                "device": tx_receipt._model_compute_device(_tr_key)[1] or tx_receipt._OMIT,
+                "device": _tr_device or tx_receipt._OMIT,
                 "targets": list(targets),
                 "source": (source or "").strip() or tx_receipt._OMIT,
                 "mode": mode,
@@ -719,7 +730,7 @@ async def translate_text(request: Request,
         try:
             logger.info(tx_receipt._format_translate_block(
                 request_id=request_id, model_name=_used_model,
-                device=tx_receipt._model_compute_device(_tr_key)[1],
+                device=_tr_device,
                 targets=list(targets), source=source, mode=mode,
                 result=(f"{len(seg_in)} segs · {total_chars} chars in / "
                         f"{_chars_out} out · {len(warnings)} guard fallbacks"),

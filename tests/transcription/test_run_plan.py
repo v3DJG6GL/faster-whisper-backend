@@ -161,6 +161,35 @@ def test_download_bytes_seed_a_duration_prior_when_the_probe_had_none(
     assert p.snapshot()["overall"] < 0.5
 
 
+def test_download_ticks_seed_the_bytes_prior_when_nothing_else_did(
+        ledger, clock):
+    """The probe gave neither a duration nor a size, so the download's own
+    ticks carry the only byte count: they must seed the prior too, or each
+    poll during the download raises the hold to the download fraction and
+    parks the bar there for the decode."""
+    p = _plan(clock, kind="url", stages=["downloading", "transcribing"])
+    p.set_audio_seconds(None, src="probe")
+    p.set_download_bytes(None)
+    p.tick(stage="downloading", progress=0.0)
+    clock.advance(10)
+    p.tick(stage="downloading", progress=0.9,
+           total_bytes=3000 * run_plan.BYTES_PER_AUDIO_SECOND)
+    assert p._audio_src == "bytes-prior"
+    assert p.snapshot()["overall"] < 0.5
+    p.set_download_bytes(3000 * run_plan.BYTES_PER_AUDIO_SECOND)
+    p.stage_done("downloading")
+    p.tick(stage="transcribing", progress=0.1)
+    assert p.snapshot()["overall"] < 0.5
+
+
+def test_download_ticks_never_override_a_probed_duration(ledger, clock):
+    p = _plan(clock, kind="url", stages=["downloading", "transcribing"])
+    p.set_audio_seconds(600.0, src="probe")
+    p.tick(stage="downloading", progress=0.5,
+           total_bytes=3000 * run_plan.BYTES_PER_AUDIO_SECOND)
+    assert p._audio_s == 600.0 and p._audio_src == "probe"
+
+
 def test_download_bytes_never_override_a_probed_duration(ledger, clock):
     p = _plan(clock, kind="url", stages=["downloading", "transcribing"])
     p.set_audio_seconds(600.0, src="probe")

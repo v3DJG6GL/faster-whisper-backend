@@ -103,6 +103,103 @@ def test_cancel_during_register_keeps_the_model_cached_and_frees_the_lease(
         model_registry._loaded_models.clear()
 
 
+def test_cancel_during_construction_finishes_the_build_under_the_lock(
+        monkeypatch):
+    """A cancelled load must not release the load lock while its constructor
+    is still running on the executor thread: the next waiter would start a
+    second build of the same model. The build is finished, cached unleased,
+    and the retry gets that model without a second constructor call."""
+    import threading
+    _stub_load(monkeypatch)
+    monkeypatch.setattr(tx_models, "_model_load_lock", asyncio.Lock())
+    entered, go = threading.Event(), threading.Event()
+    built = []
+
+    def _slow_model(path, **kw):
+        built.append(path)
+        entered.set()
+        go.wait(5)
+        return FakeModel()
+    fw = types.ModuleType("faster_whisper")
+    fw.WhisperModel = _slow_model
+    monkeypatch.setitem(sys.modules, "faster_whisper", fw)
+
+    async def run():
+        a = asyncio.create_task(tx_models._get_or_load_model("x", lease=True))
+        while not entered.is_set():
+            await asyncio.sleep(0.01)
+        a.cancel()
+        await asyncio.sleep(0.05)
+        b = asyncio.create_task(tx_models._get_or_load_model("x", lease=True))
+        await asyncio.sleep(0.05)
+        assert len(built) == 1          # B waits on the lock A still holds
+        go.set()
+        try:
+            await a
+        except asyncio.CancelledError:
+            pass
+        else:
+            raise AssertionError("the cancelled load must re-raise")
+        return await b
+
+    try:
+        got = asyncio.run(run())
+        assert built == ["x"]
+        assert got is tx_models._loaded_models["x"]
+        assert "x" in model_registry._loaded_models
+        assert tx_models._model_leases.get("x", 0) == 1    # B's lease only
+    finally:
+        go.set()
+        tx_models._model_leases.pop("x", None)
+        tx_models._loaded_models.clear()
+        model_registry._loaded_models.clear()
+
+
+def test_predownload_capture_scope_runs_on_the_executor_thread(monkeypatch):
+    """The whisper pre-download's capture scope lives inside the executor
+    callable, like the GGUF and pyannote fetches: a scope held on the loop
+    across the await logged a cancelled caller's still-running download as
+    aborted and wrote its done row on the event loop."""
+    import contextlib
+    import threading
+
+    import huggingface_hub
+    from faster_whisper_backend.runtime import download_progress
+    _stub_load(monkeypatch)
+    monkeypatch.setattr(tx_models, "_model_load_lock", asyncio.Lock())
+    monkeypatch.setattr(tx_models.cfg, "LOCAL_FILES_ONLY", False,
+                        raising=False)
+    seen = {}
+
+    @contextlib.contextmanager
+    def _spy_capture(label, cb=None, **kw):
+        seen["enter"] = threading.get_ident()
+        try:
+            yield types.SimpleNamespace(tqdm_kwargs={"tqdm_class": "T"})
+        finally:
+            seen["exit"] = threading.get_ident()
+    monkeypatch.setattr(download_progress, "capture", _spy_capture)
+
+    def _fake_snapshot(**kw):
+        seen["snapshot"] = threading.get_ident()
+        seen["kwargs"] = kw
+    monkeypatch.setattr(huggingface_hub, "snapshot_download", _fake_snapshot)
+
+    async def run():
+        seen["loop"] = threading.get_ident()
+        await tx_models._get_or_load_model("org/x")
+
+    try:
+        asyncio.run(run())
+        assert seen["enter"] == seen["snapshot"] == seen["exit"]
+        assert seen["enter"] != seen["loop"]
+        assert seen["kwargs"]["repo_id"] == "org/x"
+        assert seen["kwargs"]["tqdm_class"] == "T"
+    finally:
+        tx_models._loaded_models.clear()
+        model_registry._loaded_models.clear()
+
+
 def test_hardware_change_during_a_queued_load_reaches_the_constructor(
         monkeypatch):
     """A MODEL_DEVICE change saved while a cold load is still downloading or

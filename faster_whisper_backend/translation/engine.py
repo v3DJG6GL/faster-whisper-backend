@@ -52,8 +52,8 @@ from faster_whisper_backend.runtime import hf_cache
 from faster_whisper_backend.runtime import model_registry
 from faster_whisper_backend.runtime import system_stats
 from faster_whisper_backend.core.languages import (
-    _normalise_code, canonical_code, language_codes, language_name, lookup,
-    same_language)
+    _NAMES, _normalise_code, canonical_code, language_codes, language_name,
+    lookup, same_language)
 from faster_whisper_backend.core.loop_lock import LoopLock
 
 logger = logging.getLogger("whisper-server")
@@ -427,8 +427,9 @@ def render_prompt(text: str, target: str, *, source: "str | None" = None,
         fam_name = "custom" if template is not None else resolve_family(ref)
     # An unknown source stays EMPTY, exactly as translate_segments passes
     # it — only _build_gemma defaults to "en" itself (its wire format
-    # needs a code); every other builder drops the "from X" clause.
-    source_code = (source or "").strip()
+    # needs a code); every other builder drops the "from X" clause. Both
+    # codes take the run's fold (_prompt_target).
+    source_code = _prompt_target((source or "").strip())
     target = _prompt_target(target)
     fam = _FAMILIES[fam_name]
     if fam_name == "custom":
@@ -1002,11 +1003,22 @@ def _merge_sentences(segments: "list[dict]") -> "list[list[int]]":
     return groups
 
 
+# Clause punctuation an unspaced (Han/kana) translation can be cut after —
+# no ASCII "." or ",", which also sit inside numbers ("3.5", "1,000").
+_UNSPACED_CUT_PUNCT = frozenset("，。、！？；：!?;")
+_UNSPACED_RE = re.compile(r"[\u3040-\u30ff\u3400-\u9fff]")
+
+
 def _redistribute(group_texts: "list[str]", translated: str) -> "list[str]":
     """Split one group's translated text back across its member segments,
     proportionally by each member's share of the group's source char length,
     cutting at the word boundary (space) nearest each proportional cut.
-    Members whose source is blank get an empty piece."""
+    Unspaced (Chinese/Japanese) text has no word boundaries — its only
+    spaces sit around a Latin name — so it is cut after the nearest clause
+    punctuation, else the nearest space, and only when that boundary lies
+    within a quarter of the member's share of the ideal cut; else at the raw
+    proportional position. Members whose source is blank get an empty
+    piece."""
     n = len(group_texts)
     if n <= 1:
         return [translated.strip()] if n == 1 else []
@@ -1023,6 +1035,11 @@ def _redistribute(group_texts: "list[str]", translated: str) -> "list[str]":
     if not translated:
         return [""] * n
     spaces = [i for i, ch in enumerate(translated) if ch == " "]
+    unspaced = len(_UNSPACED_RE.findall(translated)) / len(translated) > 0.3
+    # Unspaced: a cut lands AFTER the punctuation, which stays on its clause.
+    tiers = ([[i + 1 for i, ch in enumerate(translated)
+               if ch in _UNSPACED_CUT_PUNCT], spaces] if unspaced
+             else [spaces])
     total = sum(len(t) for t in group_texts) or 1
     cuts: "list[int]" = []
     acc = 0
@@ -1030,19 +1047,27 @@ def _redistribute(group_texts: "list[str]", translated: str) -> "list[str]":
     for i, t in enumerate(group_texts[:-1]):
         acc += len(t)
         ideal = len(translated) * acc / total
-        # Only spaces strictly PAST the previous cut are candidates — two
+        reach = (len(translated) * len(t) / total / 4 if unspaced
+                 else float("inf"))
+        # Only boundaries strictly PAST the previous cut are candidates — two
         # ideals snapping to the same space would otherwise clamp into an
         # empty member slice (a cue with source text rendering blank).
-        cands = [s for s in spaces if s > prev]
-        if cands:
-            cut = min(cands, key=lambda s: abs(s - ideal))
-        else:
+        cut = None
+        for tier in tiers:
+            cands = [s for s in tier if s > prev]
+            if cands:
+                best = min(cands, key=lambda s: abs(s - ideal))
+                if abs(best - ideal) <= reach:
+                    cut = best
+                    break
+        snapped = cut is not None
+        if cut is None:
             cut = int(round(ideal))
         # Forced forward, and reserving one char per REMAINING member so the
         # leading cuts can never eat the tail. (A translation shorter than
         # the member count is unsplittable — the caller reverts the group.)
         cut = max(prev + 1, min(cut, len(translated) - (n - 1 - i)))
-        if not cands:
+        if not snapped:
             # No word boundary left: raw proportional cut, pushed past any
             # whitespace-only slice (which .strip() would empty).
             while cut < len(translated) and not translated[prev:cut].strip():
@@ -1107,18 +1132,26 @@ _RATIO_FLOOR_CHARS = 20
 
 
 _CJK_TARGETS = {"zh", "ja", "ko", "yue"}
+# The CJK targets written with Han characters: Korean output is Hangul, so a
+# Han clause copied into a "ko" target is untranslated.
+_HAN_SHARING_TARGETS = {"zh", "ja", "yue"}
 _CJK_CHAR_RE = re.compile(r"[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]")
 # Kana and Hangul only: no two different CJK targets share these (unlike Han).
 _KANA_HANGUL_RE = re.compile(r"[\u3040-\u30ff\uac00-\ud7af]")
+_HAN_RE = re.compile(r"[\u3400-\u9fff]")
+
+
+def _target_base(target: "str | None") -> str:
+    """``target``'s base subtag, folded the way same_language folds: an API
+    client may send the ISO 639-3 spelling ("jpn", "cmn")."""
+    if not target:
+        return ""
+    return (canonical_code(target) or target).strip().lower().split("-")[0]
 
 
 def _target_is_cjk(target: "str | None") -> bool:
-    """Whether ``target`` names a CJK language, folded the way same_language
-    folds: an API client may send the ISO 639-3 spelling ("jpn", "cmn")."""
-    if not target:
-        return False
-    return ((canonical_code(target) or target).strip().lower().split("-")[0]
-            in _CJK_TARGETS)
+    """Whether ``target`` names a CJK language (see _target_base)."""
+    return _target_base(target) in _CJK_TARGETS
 
 
 def _digits(text: str) -> "Counter[int]":
@@ -1142,7 +1175,8 @@ def _ratio_bounds(src: str, target: "str | None") -> "tuple[float, float]":
 
 
 def _guard_reason(src: str, out: str, *,
-                  target: "str | None" = None) -> "str | None":
+                  target: "str | None" = None,
+                  source_known: bool = True) -> "str | None":
     """Reason string when a translated segment fails a sanity guard, else
     None. Guards: empty output; length ratio outside script-aware bounds
     (only once either side reaches the 20-char floor); digit mismatch
@@ -1152,9 +1186,13 @@ def _guard_reason(src: str, out: str, *,
     multiset check rejected correct translations en masse; digits compare
     by value, so native-script digits are the same number); verbatim input
     copy of two words or more (each CJK character counts as one, as an
-    unspaced clause is a single \\w+ run; for a CJK target only kana and
-    Hangul count, Han text is shared) when the target differs from the
-    source; repetition loop."""
+    unspaced clause is a single \\w+ run; for a Han-writing target — zh,
+    ja, yue — Han text is shared and does not count, only kana and Hangul
+    do) when the target differs from the source — skipped when the source
+    language is unknown (``source_known=False``: a target in the text's own
+    language is not short-circuited then, and the unchanged text is its
+    correct translation); repetition loop not present in the source (a
+    repeated chant translates to a repeated chant)."""
     s = (src or "").strip()
     o = (out or "").strip()
     if not o:
@@ -1170,17 +1208,22 @@ def _guard_reason(src: str, out: str, *,
     # A one-word line ("OK.", "Netflix.", "Hm.") often translates to
     # itself; only a copied phrase is evidence of an untranslated output.
     # Whitespace is compared collapsed: a numbered batch prompt carries each
-    # segment with its newlines and runs of spaces folded. For a CJK target
-    # the CJK-character floor counts kana and Hangul only: zh→zh-Hant
-    # ("大家好") and ja→zh ("日本") legitimately share Han text, but an
-    # unchanged kana or Hangul clause is never another CJK language's
-    # translation.
-    if (" ".join(o.split()) == " ".join(s.split())
-            and (len(re.findall(r"\w+", s)) >= 2
-                 or len((_KANA_HANGUL_RE if _target_is_cjk(target)
+    # segment with its newlines and runs of spaces folded. For a Han-writing
+    # target (zh, ja, yue) Han text counts neither as words nor toward the
+    # CJK-character floor, which counts kana and Hangul only: zh→zh-Hant
+    # ("大家好，我是小明。") and ja→zh ("日本、東京。") legitimately share
+    # Han text — punctuation included — but an unchanged kana or Hangul
+    # clause is never another CJK language's translation. A Korean target
+    # counts Han too: Korean output is Hangul.
+    shares_han = _target_base(target) in _HAN_SHARING_TARGETS
+    if (source_known and " ".join(o.split()) == " ".join(s.split())
+            and (len(re.findall(r"\w+", _HAN_RE.sub(" ", s) if shares_han
+                                else s)) >= 2
+                 or len((_KANA_HANGUL_RE if shares_han
                          else _CJK_CHAR_RE).findall(s)) >= 2)):
         return "output copies input"
-    if _REPETITION_RE.search(o[:_REPETITION_SCAN_CHARS]):
+    if (_REPETITION_RE.search(o[:_REPETITION_SCAN_CHARS])
+            and not _REPETITION_RE.search(s[:_REPETITION_SCAN_CHARS])):
         return "repetition loop"
     return None
 
@@ -1205,13 +1248,18 @@ def _context_lines(segments: "list[dict]", upto: int, count: int) -> str:
 
 
 def _prompt_target(code: str) -> str:
-    """The target code as the prompt spells it — ONE fold for the run
-    (_run_completion) and the prompt lab's preview (render_prompt). The lab
-    passes its free-form target raw ("jpn", "zh_hant"): folded to the table's
-    spelling ("ja", "zh-Hant") the code-using builders (Gemma, Seed-X) and the
-    language name match what the run sends. _normalise_code, not
-    canonical_code: a script subtag the table does not list ("sr-Latn") is
-    still the target's script and must reach the prompt."""
+    """A language code as the prompt spells it — ONE fold for the run
+    (_run_completion) and the prompt lab's preview (render_prompt), for the
+    target and the source alike. The lab passes its free-form codes raw
+    ("jpn", "zh_hant"): folded to the table's spelling ("ja", "zh-Hant") the
+    code-using builders (Gemma, Seed-X) and the language name match what the
+    run sends. A script entry the table names wins over any region after it
+    ("zh_Hant_TW" → "zh-Hant", Traditional Chinese, as canonical_code folds
+    it); otherwise _normalise_code: a script subtag the table does not list
+    ("sr-Latn") is still the target's script and must reach the prompt."""
+    canon = canonical_code(code) if code else None
+    if canon and "-" in canon and canon.lower() in _NAMES:
+        return canon
     return _normalise_code(code) or code
 
 
@@ -1223,6 +1271,7 @@ async def _run_completion(llm, family: str, text: str, source_code: str,
     only) renders THAT template instead of cfg.TRANSLATION_PROMPT_TEMPLATE —
     the admin template-test path, never persisted."""
     fam = _FAMILIES[family]
+    source_code = _prompt_target(source_code or "")
     target_code = _prompt_target(target_code)
     if template_override is not None and family == "custom":
         prompt = [{"role": "user", "content": _render_custom_template(
@@ -1431,6 +1480,13 @@ async def translate_segments(
             template_override if template_override is not None
             else (getattr(cfg, "TRANSLATION_PROMPT_TEMPLATE", "") or "")))
 
+    def _guard(src: str, out: str, target: str) -> "str | None":
+        # No source: same_language cannot short-circuit a target in the
+        # text's own language, so an unchanged output is no evidence of a
+        # failed translation (_guard_reason's source_known).
+        return _guard_reason(src, out, target=target,
+                             source_known=bool(source_code))
+
     def _mark_kept(idx: int, target: str) -> None:
         kept.setdefault(idx, []).append(target)
 
@@ -1440,7 +1496,7 @@ async def translate_segments(
         dominant failure mode — a context-free prompt is the highest-value
         second attempt). Returns (output, guard_reason)."""
         out = await _translate_one(src, target, "")
-        return out, _guard_reason(src, out, target=target)
+        return out, _guard(src, out, target)
 
     def _keep_original(span: str, indices: "list[int]", target: str,
                        reason: str) -> None:
@@ -1461,7 +1517,7 @@ async def translate_segments(
         same output)."""
         nonlocal last_ok
         out = await _translate_one(text, target, context)
-        reason = _guard_reason(text, out, target=target)
+        reason = _guard(text, out, target)
         if reason is None:
             last_ok = out
             return out
@@ -1534,7 +1590,7 @@ async def translate_segments(
                         continue
                     for j, out in zip(live_idx, parsed):
                         src = segments[j].get("text") or ""
-                        reason = _guard_reason(src, out, target=target)
+                        reason = _guard(src, out, target)
                         if reason is None:
                             results[j][target] = out
                             last_ok = out
@@ -1578,7 +1634,7 @@ async def translate_segments(
                     continue
                 context = _context_lines(segments, group[0], ctx_n)
                 translated = await _translate_one(joined, target, context)
-                reason = _guard_reason(joined, translated, target=target)
+                reason = _guard(joined, translated, target)
                 if reason is not None and \
                         ((context and ctx_changes) or not greedy):
                     # ONE retry WITHOUT context (see _guarded_single); greedy

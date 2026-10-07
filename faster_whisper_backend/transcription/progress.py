@@ -57,9 +57,12 @@ _BATCH_PROGRESS_STALE_S = 2 * 3600
 # since _PROGRESS_OWNER was popped too — and leave it readable by any
 # authenticated caller until the stale sweep. A closed id is a no-op in
 # _progress_set until a fresh owner-stamped seed re-opens it. Bounded by the
-# TTL sweep in _progress_close (every run end).
+# TTL sweep in _progress_close (every run end); each suppressed tick restamps
+# the tombstone, so a stage thread still ticking keeps its id closed however
+# long it outlives the close, and the TTL is never shorter than the stale
+# sweep's.
 _PROGRESS_CLOSED: "dict[str, float]" = {}
-_PROGRESS_CLOSED_TTL_S = 600
+_PROGRESS_CLOSED_TTL_S = _BATCH_PROGRESS_STALE_S
 
 
 def _progress_close(pid: "str | None") -> None:
@@ -282,6 +285,7 @@ def _progress_set(pid: "str | None", **fields) -> None:
     elif pid in _PROGRESS_CLOSED:
         # A stage thread of a run that already closed: nothing to update,
         # and re-creating the entry would leave it owner-less.
+        _PROGRESS_CLOSED[pid] = time.monotonic()
         return
     _job_id = _JOB_BY_PID.get(pid)
     if _job_id:
@@ -317,6 +321,11 @@ def _progress_set(pid: "str | None", **fields) -> None:
         _PROGRESS_OWNER[pid] = fields["owner"]
     entry = _BATCH_PROGRESS.get(pid)
     if entry is None:
+        if pid in _PROGRESS_CLOSED and fields.get("owner") is None:
+            # The loop-thread close landed after the check at the top (this
+            # tick ran job_update / on_stage_start on an executor thread in
+            # between): same no-op, never an owner-less resurrection.
+            return
         # Snapshot (list(...)) before iterating: this branch runs on executor
         # threads too, and the handler's finally pops entries on the loop
         # thread — iterating the live dict would raise "dictionary changed

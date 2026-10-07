@@ -118,6 +118,12 @@ def test_confident_word_between_two_single_zero_length_words_stays():
     chain = [_w(" a", 0.0, 0.4), _w(" b", 0.4, 0.4), _w(" c", 0.4, 0.9, 0.95),
              _w(" d", 0.9, 0.9), _w(" e", 0.9, 1.5, 0.95), _w(" f", 1.5, 1.5)]
     assert sg.find_tail_cut(chain, "", zero_tail=2) is None
+    # a short confident word after a single collapsed word is no absorber
+    # when the word past it is not a second zero-length one (here the unsure
+    # absorber): the real word "c" stays, only the tail behind it goes
+    short = [_w(" a", 0.0, 0.5), _w(" b", 0.5, 0.5), _w(" c", 0.5, 1.0, 0.95),
+             _w(" d", 1.0, 1.0), _w(" u", 1.0, 1.5, 0.05), _w(" z", 1.5, 1.5)]
+    assert sg.find_tail_cut(short, "", zero_tail=2) == (3, ["zero_tail"])
 
 
 def test_sandwiched_absorber_is_taken_once_and_only_when_short_or_unsure():
@@ -131,6 +137,11 @@ def test_sandwiched_absorber_is_taken_once_and_only_when_short_or_unsure():
     assert sg.find_tail_cut(long_sure, "", zero_tail=2) == (3, ["zero_tail"])
     long_unsure = long_sure[:2] + [_w(" lang", 0.5, 3.0, 0.05)] + pile
     assert sg.find_tail_cut(long_unsure, "", zero_tail=2) == (1, ["zero_tail"])
+    # the same long unsure word once the one unsure absorber went to a word
+    # closer to the end: only the sandwich rule's "or unsure" can take it
+    used = long_unsure[:3] + [_w(" x0", 3.0, 3.0), _w(" x1", 3.0, 3.0),
+                              _w(" u", 3.0, 3.5, 0.05), _w(" z", 3.5, 3.5)]
+    assert sg.find_tail_cut(used, "", zero_tail=2) == (1, ["zero_tail"])
 
 
 def test_zero_tail_min_words_one_is_off():

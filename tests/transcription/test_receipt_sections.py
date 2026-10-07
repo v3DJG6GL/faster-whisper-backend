@@ -60,7 +60,7 @@ def test_no_stage_sections_without_stages(app_module):
     assert "spk" not in block
 
 
-def test_stage_sections_appear_only_for_stages_that_ran(app_module):
+def test_stage_sections_need_their_params(app_module):
     block = _block(app_module, stages=_STAGES,
                    diarization={"model": "pyannote/speaker-diarization-3.1",
                                 "num_speakers": None, "min_speakers": 2,
@@ -69,6 +69,43 @@ def test_stage_sections_appear_only_for_stages_that_ran(app_module):
     # Asked for nothing else, so nothing else is claimed.
     assert "─── Separation" not in block
     assert "─── Translation" not in block
+
+
+def test_stage_ran_excludes_soft_failed_and_missing_stages():
+    """The gate main.py uses to decide whether a stage's params dict is
+    passed at all: a soft-failed row (it carries `error`) did not run."""
+    ran = tx_receipt._stage_ran
+    assert ran(_STAGES, "diarizing") is True
+    failed = [{"name": "diarizing", "secs": 3.0, "detail": "failed",
+               "error": "RuntimeError: boom"}]
+    assert ran(failed, "diarizing") is False
+    assert ran(_STAGES, "rescoring") is False
+    assert ran([{"secs": 1.0}], "diarizing") is False
+    assert ran(None, "diarizing") is False
+
+
+def test_stage_field_omits_a_missing_stage_or_key():
+    field = tx_receipt._stage_field
+    assert field(_STAGES, "separating", "device") == "cuda"
+    assert field(_STAGES, "separating", "nope") is tx_receipt._OMIT
+    assert field(_STAGES, "rescoring", "device") is tx_receipt._OMIT
+    assert field(None, "diarizing", "device") is tx_receipt._OMIT
+
+
+def test_soft_failed_diarization_prints_no_diarization_section(app_module):
+    """Built the way main.py builds it: the params dict only when the stage
+    ran, so a soft-failed diarizing row gets no section and no bogus
+    speaker count."""
+    stages = [_STAGES[1], {"name": "diarizing", "secs": 3.0,
+                           "detail": "failed", "error": "RuntimeError"}]
+    diarization = ({"model": "pyannote/speaker-diarization-3.1",
+                    "device": tx_receipt._stage_field(stages, "diarizing",
+                                                      "device"),
+                    "result": "2 speakers across 2 segments"}
+                   if tx_receipt._stage_ran(stages, "diarizing") else None)
+    block = _block(app_module, stages=stages, diarization=diarization)
+    assert "─── Diarization" not in block
+    assert "2 speakers" not in block
 
 
 # ---------------------------------------------------------------------------

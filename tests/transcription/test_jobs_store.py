@@ -192,7 +192,8 @@ def test_list_is_newest_first_filtered_and_limited(db):
 
 def test_prune_ttl_rows_and_bytes(db):
     # Expired.
-    old = _start(db, job_id="e" * 32, ttl_s=0.0)
+    old = _start(db, job_id="e" * 32)
+    db.finish(job_id=old, state="failed", ttl_s=0.0)
     time.sleep(0.01)
     assert db.prune(ttl_s=_TTL, max_rows=0, max_bytes=0) == 1
     assert db.get(old) is None
@@ -234,12 +235,32 @@ def test_byte_cap_never_eats_rows_that_hold_no_bytes(db):
 
 
 def test_lazy_prune_runs_every_nth_insert(db):
-    _start(db, job_id="e" * 32, ttl_s=0.0, prune_every=3)  # counter 1
+    _start(db, job_id="e" * 32, prune_every=3)  # counter 1
+    db.finish(job_id="e" * 32, state="failed", ttl_s=0.0)
     time.sleep(0.01)
     _start(db, job_id="1" * 32, prune_every=3)  # counter 2
     assert db.get("e" * 32) is not None
     _start(db, job_id="2" * 32, prune_every=3)  # counter 3 → prune
     assert db.get("e" * 32) is None
+
+
+def test_a_run_longer_than_a_short_ttl_stays_listed_and_finishes(
+        db, monkeypatch):
+    """JOBS_TTL_S counts from the finish: a running row outliving a short
+    TTL is still listed, fetchable and spared by the prune, and its result
+    is stored when it finishes."""
+    jid = _start(db, job_id="f" * 32, ttl_s=600.0)
+    real = time.time
+    monkeypatch.setattr(js.time, "time", lambda: real() + 700)
+    assert [r["job_id"] for r in db.list_jobs(user_id="u1", key_id="k1")] \
+        == [jid]
+    assert float(db.get(jid)["expires_ts"]) >= js.time.time()
+    db.prune(ttl_s=600.0, max_rows=0, max_bytes=0)
+    assert db.get(jid) is not None
+    assert db.finish(job_id=jid, state="done", result={"text": "ok"},
+                     ttl_s=600.0) is True
+    row = db.get(jid)
+    assert row["expires_ts"] == pytest.approx(js.time.time() + 600.0, abs=5)
 
 
 def test_mark_running_as_failed_flips_only_running_rows(db):

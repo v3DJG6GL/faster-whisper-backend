@@ -1015,13 +1015,19 @@ async def _get_or_load_model(name: str, *, lease: bool = False) -> "WhisperModel
                     _snap_kwargs["revision"] = _revision
                 if _auth_token:
                     _snap_kwargs["token"] = _auth_token
-                try:
+                def _fetch():
+                    # The capture scope lives on the download's own thread,
+                    # as the GGUF and pyannote fetches do: held on the loop
+                    # across the await, a cancelled caller logged an
+                    # "aborted" download the thread then finished, and the
+                    # done row's SQLite write ran on the event loop.
                     with download_progress.capture(
                             _dl_label, cb=_dl_hook) as _cap:
-                        _snap_kwargs.update(_cap.tqdm_kwargs)
-                        await loop.run_in_executor(
-                            None,
-                            lambda: snapshot_download(**_snap_kwargs))
+                        return snapshot_download(**_snap_kwargs,
+                                                 **_cap.tqdm_kwargs)
+
+                try:
+                    await loop.run_in_executor(None, _fetch)
                 finally:
                     jobs.job_end(_dl_job)
         except Exception as _dl_err:  # noqa: BLE001 — best-effort
@@ -1092,16 +1098,36 @@ async def _get_or_load_model(name: str, *, lease: bool = False) -> "WhisperModel
         vram_before = system_stats.gpu_mem_used_bytes(_vram_index)
         loaded_device = primary_device
         loaded_compute = primary_compute
+        # A cancellation that landed on a constructor await. The executor
+        # thread cannot be stopped, so the build is finished under the lock
+        # (released early, the next waiter would start a second constructor
+        # of the same model next to it: twice the peak VRAM, an OOM down the
+        # CPU fallback, a polluted VRAM delta), cached unleased, and the
+        # cancellation re-raised once it is registered.
+        _cancelled: "asyncio.CancelledError | None" = None
+
+        async def _construct(kw: dict):
+            nonlocal _cancelled
+            fut = loop.run_in_executor(None,
+                                       lambda: WhisperModel(load_path, **kw))
+            while True:
+                try:
+                    return await asyncio.shield(fut)
+                except asyncio.CancelledError as c:
+                    if fut.cancelled():
+                        raise
+                    _cancelled = _cancelled or c
+
         try:
             # `load_path` is `name` for already-CT2 / local repos; for
             # auto-converted HF repos it's the local converted directory.
-            new_model = await loop.run_in_executor(
-                None,
-                lambda: WhisperModel(load_path, **load_kwargs),
-            )
+            new_model = await _construct(load_kwargs)
             _decode_trace.install(new_model)
             logger.info("Model loaded on %s: %s", primary_device, name)
         except Exception as e:
+            if _cancelled is not None:
+                # Nobody is waiting for this model: no fallback build.
+                raise _cancelled from e
             logger.error("%s load failed for %s, falling back to %s: %s",
                          primary_device, name, fallback_device, e)
             fallback_kwargs = {
@@ -1109,10 +1135,7 @@ async def _get_or_load_model(name: str, *, lease: bool = False) -> "WhisperModel
                 "device": fallback_device,
                 "compute_type": fallback_compute,
             }
-            new_model = await loop.run_in_executor(
-                None,
-                lambda: WhisperModel(load_path, **fallback_kwargs),
-            )
+            new_model = await _construct(fallback_kwargs)
             _decode_trace.install(new_model)
             loaded_device = fallback_device
             loaded_compute = fallback_compute
@@ -1133,7 +1156,9 @@ async def _get_or_load_model(name: str, *, lease: bool = False) -> "WhisperModel
         # stop the registry write already on the thread, and a registry
         # entry with no cached model is a phantom nothing ever unregisters.
         _loaded_models[name] = new_model
-        if lease:
+        # A cancelled caller never receives the model: it stays unleased.
+        leased = lease and _cancelled is None
+        if leased:
             _model_leases[name] = _model_leases.get(name, 0) + 1
         # Off the loop: register_loaded_model persists the measurement
         # (model_sizes.record -> atomic_json.save_lock + fsync), which can
@@ -1149,12 +1174,14 @@ async def _get_or_load_model(name: str, *, lease: bool = False) -> "WhisperModel
             )
         except BaseException as e:
             # The caller never receives the model, so never releases.
-            if lease:
+            if leased:
                 _release_model_lease(name)
             if not isinstance(e, asyncio.CancelledError):
                 # A failed register leaves nothing cached, as before.
                 _loaded_models.pop(name, None)
             raise
+        if _cancelled is not None:
+            raise _cancelled
         return new_model
 
 

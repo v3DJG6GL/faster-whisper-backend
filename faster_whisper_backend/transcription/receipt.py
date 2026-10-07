@@ -714,10 +714,14 @@ def _format_request_block(
     `stages` / `separation` / `diarization` / `translation` / `speakers` /
     `warnings` / `skipped` describe the post-decode pipeline. All optional:
     this renderer was written when the pipeline was decode and nothing else,
-    and callers that still are (live dictation, the test modules) pass none
-    of them and get exactly the block they got before. A stage section is
-    emitted only when that stage actually ran, so a decode-only receipt is
-    unchanged and a four-stage one finally says what it did."""
+    and a caller that passes none of them gets exactly that block. Live
+    dictation is not such a caller: it passes `stages`, `guards` and
+    `decode_trace`, a held receipt is parked with a `translation`
+    placeholder, and the translate request that claims it fills that in and
+    appends a translating stage — a change to those sections shows in
+    dictation receipts too. A stage section is emitted only when
+    that stage actually ran, so a decode-only receipt is unchanged and a
+    four-stage one finally says what it did."""
     title_rule = "═" * _LOG_WIDTH
     rule = "─" * _LOG_WIDTH
 
