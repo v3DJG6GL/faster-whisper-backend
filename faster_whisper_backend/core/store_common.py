@@ -131,12 +131,13 @@ def open_wal_db(path: str) -> sqlite3.Connection:
     recommendation (full durability against power loss is FULL, but NORMAL is
     fine against process crash and ~10x faster on small writes)."""
     os.makedirs(os.path.dirname(os.path.abspath(path)) or ".", exist_ok=True)
+    # timeout= is the busy timeout: pysqlite calls sqlite3_busy_timeout with
+    # it, so no separate PRAGMA busy_timeout is needed.
     conn = sqlite3.connect(path, check_same_thread=False, isolation_level=None,
                            timeout=BUSY_TIMEOUT_S)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL;")
     conn.execute("PRAGMA synchronous=NORMAL;")
-    conn.execute(f"PRAGMA busy_timeout={int(BUSY_TIMEOUT_S * 1000)};")
     return conn
 
 

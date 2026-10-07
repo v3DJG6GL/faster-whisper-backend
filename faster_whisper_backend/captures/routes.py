@@ -1426,8 +1426,12 @@ async def create_sample_api(
         if _lang:
             group_language = _lang
             break
+    # Off the loop too: the insert blocks on both store locks, which
+    # captures_store.clear_all holds across a full VACUUM (see
+    # patch_capture_api) — inline, a Merge during a clear parks every request.
     try:
-        _insert_sample_with_sid(
+        await asyncio.to_thread(functools.partial(
+            _insert_sample_with_sid,
             sid=sid,
             user_id=owner_user_id,
             member_ids=member_ids,
@@ -1438,7 +1442,7 @@ async def create_sample_api(
             duration_ms=duration_ms,
             language=group_language,
             member_trims=member_trims,
-        )
+        ))
     except Exception:
         # Insert failed — roll back the WAV we just wrote so the
         # next merge attempt for the same captures starts clean.
@@ -1731,13 +1735,17 @@ def _insert_sample_with_sid(
                     raise HTTPException(
                         status.HTTP_409_CONFLICT,
                         "capture already belongs to a sample")
+            # Inside the try, as in dissolve_sample: a COMMIT that fails
+            # (SQLITE_FULL / IOERR / BUSY) can leave the transaction open on
+            # the shared autocommit connection, and every later BEGIN then
+            # fails until a restart.
+            conn.execute("COMMIT")
         except BaseException:
             # Guarded like samples_store.dissolve_sample: keep the real error
             # when SQLite already rolled back by itself.
             if conn.in_transaction:
                 conn.execute("ROLLBACK")
             raise
-        conn.execute("COMMIT")
     captures_merge_proposer.invalidate(user_id)
     logger.info(
         "[samples] created sid=%s user=%s n=%d dur=%.1fs",

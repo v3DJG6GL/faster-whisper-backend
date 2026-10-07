@@ -909,6 +909,28 @@ def test_reprocess_vad_failure_fallback_writes_under_the_rebuild_lock(
     assert gs.get_sample(sid)["is_stale"] == 1
 
 
+def test_reprocess_vad_failure_fallback_counts_a_failed_flag_write_skipped(
+        captures_store_db, groups_store_db, monkeypatch, tmp_path):
+    """When the best-effort is_stale write fails too, the sample is still
+    exported: counting it "stale" (flagged, excluded from export) misreported
+    it."""
+    from faster_whisper_backend.captures import samples_store as gs
+    from faster_whisper_backend.captures import vad_reprocess as vr
+
+    sid = "f" * 32
+    _grouped_capture(captures_store_db, monkeypatch, tmp_path, sid)
+
+    def _fail(*a, **kw):
+        raise RuntimeError("database is locked")
+
+    monkeypatch.setattr(gs, "get_members", _fail)
+    monkeypatch.setattr(gs, "update_sample", _fail)
+    vr._run()
+    st = vr.status()
+    assert st["status"] == "done" and st["stale"] == 0 and st["skipped"] == 1
+    assert gs.get_sample(sid)["is_stale"] == 0
+
+
 def test_create_sample_rejects_member_already_grouped(
         captures_store_db, groups_store_db, monkeypatch, tmp_path):
     """create_sample_api now awaits between validation and insert, so a
@@ -970,6 +992,60 @@ def test_insert_sample_with_sid_holds_captures_lock(
     )
     assert seen == {"captures_lock_held": True}
     assert captures_store.get_capture(cid)["sample_id"] == sid
+
+
+def test_insert_sample_with_sid_rolls_back_a_failed_commit(
+        captures_store_db, groups_store_db, monkeypatch, tmp_path):
+    """COMMIT sat outside the try: a commit-time SQLITE_FULL / IOERR left the
+    transaction open on the shared autocommit connection, and every later
+    BEGIN failed with "cannot start a transaction within a transaction"."""
+    import sqlite3
+
+    from faster_whisper_backend.captures import routes as cr
+    from faster_whisper_backend.captures import samples_store as gs
+    from faster_whisper_backend.captures import store as captures_store
+
+    cid = _ready_capture(captures_store, monkeypatch, tmp_path, language="de",
+                         translations=None)
+    real_conn = gs._require_conn()
+    failed = []
+
+    class _Conn:
+        def execute(self, sql, *args, **kwargs):
+            if str(sql).strip().upper() == "COMMIT" and not failed:
+                failed.append(sql)
+                raise sqlite3.OperationalError("database or disk is full")
+            return real_conn.execute(sql, *args, **kwargs)
+
+        def __getattr__(self, name):
+            return getattr(real_conn, name)
+
+    monkeypatch.setattr(gs, "_require_conn", lambda: _Conn())
+    kwargs = dict(user_id="alice", member_ids=[cid], transcript="quelle",
+                  join_strategy="space", silence_ms=300,
+                  member_hash_map={cid: "h"}, duration_ms=1000, language="de",
+                  member_trims={})
+    with pytest.raises(sqlite3.OperationalError):
+        cr._insert_sample_with_sid(sid="e" * 32, **kwargs)
+    assert failed and not real_conn.in_transaction
+    assert real_conn.execute("SELECT COUNT(*) FROM capture_samples").fetchone()[0] == 0
+    assert captures_store.get_capture(cid)["sample_id"] is None
+    # The connection is usable again: the next merge commits.
+    cr._insert_sample_with_sid(sid="f" * 32, **kwargs)
+    assert captures_store.get_capture(cid)["sample_id"] == "f" * 32
+
+
+def test_create_sample_runs_the_insert_off_the_event_loop():
+    """_insert_sample_with_sid blocks on both store locks, which clear_all
+    holds across a full VACUUM; called inline it parked the event loop."""
+    import inspect
+
+    from faster_whisper_backend.captures import routes as cr
+
+    src = inspect.getsource(cr.create_sample_api)
+    assert ("await asyncio.to_thread(functools.partial(\n"
+            "            _insert_sample_with_sid,") in src
+    assert "        _insert_sample_with_sid(\n" not in src
 
 
 def test_list_samples_projects_chip_offsets_without_hydrating_words(
@@ -1128,6 +1204,22 @@ def test_page_load_drops_a_superseded_filter_response(client):
     more = html[html.index("async function loadMoreSamples()"):]
     more = more[:more.index("async function reloadCounts()")]
     assert "var seq = _loadSeq;" in more and "if (seq !== _loadSeq) return;" in more
+    # reloadCounts (after a bulk status / undo / delete) is filter-scoped too,
+    # and a total_count of 0 is a real count, not a missing field.
+    counts = html[html.index("async function reloadCounts()"):]
+    counts = counts[:counts.index("reloadStats();")]
+    assert "var seq = _loadSeq;" in counts and "if (seq !== _loadSeq) return;" in counts
+    assert "if (typeof j.total_count === 'number') _totalCount = j.total_count;" in counts
+
+
+def test_sample_save_does_not_resend_status(client):
+    """The group's status buttons auto-save a narrow PATCH; Save resending
+    the status loaded with the view reverted another tab's change."""
+    html = client.get("/captures").text
+    save = html[html.index("saveTBtn.onclick = function() {"):]
+    save = save[:save.index("saveTBtn.disabled = true;")]
+    assert "admin_notes:   sampleState.adminNotes," in save
+    assert "status:" not in save
 
 
 def _mixed_pair(task_b=None, lang_b="de"):

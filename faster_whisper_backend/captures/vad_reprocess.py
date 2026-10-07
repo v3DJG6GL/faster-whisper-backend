@@ -141,19 +141,20 @@ def _run() -> None:
                 # the main path, so the flag never clobbers a regenerate that
                 # just cleared it nor touches a sample locked since the
                 # snapshot. The inner `with` has exited, so re-acquiring is
-                # safe.
-                untouched = False
+                # safe. Counted stale only once the flag is written: when the
+                # write itself fails the sample is still exported, so it is
+                # counted skipped.
+                flagged = False
                 try:
                     with capture_samples._rebuild_lock(sid):
                         fresh = capture_samples_store.get_sample(sid)
-                        if fresh is None or fresh.get("is_locked"):
-                            untouched = True
-                        else:
+                        if fresh is not None and not fresh.get("is_locked"):
                             capture_samples_store.update_sample(sid, {"is_stale": 1})
+                            flagged = True
                 except Exception:  # noqa: BLE001 — the DB may be what failed
                     pass
                 with _state_lock:
-                    _state["skipped" if untouched else "stale"] += 1
+                    _state["stale" if flagged else "skipped"] += 1
             finally:
                 with _state_lock:
                     _state["processed"] += 1

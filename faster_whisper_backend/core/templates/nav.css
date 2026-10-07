@@ -709,7 +709,7 @@ header .page-link.allowed { display: inline-flex; }
   z-index: 20; margin-top: 0.25rem; padding: 0;
   background: var(--panel); border: 1px solid var(--border);
   border-radius: 6px; max-height: 18rem; width: 22rem;
-  max-width: calc(100vw - 1rem);   /* _anchorPopover's 8px viewport pad, both sides */
+  max-width: calc(100vw - 16px);   /* _anchorPopover's 8px viewport pad, both sides (px: 1rem follows --fs-base) */
   overflow-y: auto; font-size: var(--fs-sm);
   box-shadow: 0 6px 20px rgba(0, 0, 0, 0.4); }
 .lang-picker-search { position: sticky; top: 0;

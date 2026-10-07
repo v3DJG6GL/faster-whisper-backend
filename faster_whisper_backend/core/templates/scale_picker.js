@@ -5,9 +5,13 @@
   if(!sel)return;
   // Storage can be blocked (getItem throws) and a hand-edited value can match
   // no option (selectedIndex -1): either used to stop this IIFE before the
-  // cycle button and the width toggle were wired.
+  // cycle button and the width toggle were wired. SCALE_BOOTSTRAP_HEAD has
+  // already applied a stale value pre-paint, so re-sync the page to the
+  // option the select shows and drop the stale key.
   var saved=null;try{saved=localStorage.getItem(KEY);}catch(e){}
   if(saved&&[].some.call(sel.options,function(o){return o.value===saved;})){sel.value=saved;}
+  else if(saved){document.documentElement.style.setProperty('--fs-base',sel.value+'px');
+    try{localStorage.removeItem(KEY);}catch(e){}}
   sel.addEventListener('change',function(){
     document.documentElement.style.setProperty('--fs-base',sel.value+'px');
     try{localStorage.setItem(KEY,sel.value);}catch(e){}

@@ -74,6 +74,15 @@ def test_scale_picker_survives_blocked_storage_and_a_stale_value():
     assert "(function(){try{" in head and "}catch(e){}})();" in head
 
 
+def test_scale_picker_resyncs_the_page_to_a_stale_value_fallback():
+    """The head bootstrap applies any persisted value pre-paint; a stale one
+    rendered the page at that size while the select said "100%"."""
+    js = web_common.SCALE_PICKER_JS
+    assert ("else if(saved){document.documentElement.style.setProperty("
+            "'--fs-base',sel.value+'px');\n"
+            "    try{localStorage.removeItem(KEY);}catch(e){}}") in js
+
+
 def test_header_utility_cluster_self_aligns():
     css = web_common.NAV_CSS
     # drawer mode takes #navrow out of flow, so nothing else in the row grows
@@ -132,6 +141,26 @@ def test_pick_pop_and_activity_pop_are_no_longer_absolute():
     assert "max-width: min(90vw, var(--col))" in pick
     hact = re.search(r"\.hact-pop \{[^}]*\}", css).group(0)
     assert "position: absolute" not in hact
+
+
+def test_popover_fallback_portals_even_when_the_layer_is_already_unhidden():
+    """pick_list and the activity cluster set hidden=false before show(): the
+    fallback isOpen() was then already true and the body portal, nested in
+    the `if (!isOpen())` guard, was skipped on the first open."""
+    js = web_common.POPOVER_JS
+    show = js[js.index("function show() {"):js.index("function hide() {")]
+    portal = ("if (!nativePop && popEl.parentNode !== document.body) "
+              "document.body.appendChild(popEl);")
+    assert show.count("document.body.appendChild(popEl)") == 1
+    assert show.index(portal) < show.index("if (!isOpen()) {")
+
+
+def test_activity_popover_treats_zero_vram_as_no_reading():
+    """Sibling of the /stats models-table fix: a cuda NVML delta of 0 is
+    stored as vram_mb 0.0, which the header popover rendered as "0.0G"."""
+    js = web_common.ACTIVITY_CLUSTER_JS
+    assert "m.vram_mb ? gb(m.vram_mb) + 'G' : null" in js
+    assert "vram_mb != null" not in js
 
 
 def test_activity_popover_markup_is_a_native_popover(client):

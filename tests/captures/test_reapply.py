@@ -118,6 +118,16 @@ def test_start_is_idempotent_while_running(fake_thread):
     assert captures_reapply._worker is worker1
 
 
+def test_start_while_running_queues_one_more_pass(fake_thread):
+    """quick-config auto-starts this job on every save and has no manual
+    re-apply button, so a save landing mid-run must not be dropped."""
+    captures_reapply.start()
+    assert captures_reapply._rerun_requested is False
+    captures_reapply.start()
+    assert captures_reapply._rerun_requested is True
+    assert len(fake_thread.created) == 1
+
+
 def test_start_after_done_spawns_again(fake_thread):
     captures_reapply.start()
     assert len(fake_thread.created) == 1
@@ -281,3 +291,37 @@ def test_run_skips_a_row_whose_owner_identity_fails_to_resolve(
     assert "reapplyi skipped" in caplog.text
     assert cs.get_capture("reapplyid001")["final"] == "hello"
     assert cs.get_capture("reapplyid002")["final"] == "HELLO [final]"
+
+
+def test_run_reapplies_rules_saved_while_a_pass_was_running(
+        captures_store_db, fake_pipeline, monkeypatch, fake_thread):
+    """A start() during a pass used to return the running state only: the
+    pass kept its ident snapshot of the OLD rules and finished "done", so the
+    newer save was never applied to any capture."""
+    from faster_whisper_backend.settings import config as cfg
+
+    cs = captures_store_db
+    monkeypatch.setattr(cfg, "CAPTURES_PIPELINE_RULES_EXCLUDE", None,
+                        raising=False)
+    conn = cs._require_conn()
+    _insert(conn, "reapplyrr001", language="de")
+    captures_reapply.start()
+    rules = {"v": "A"}
+
+    def _postprocess_text(text, **kw):
+        out = f"{text} [{rules['v']}]"
+        if rules["v"] == "A":
+            # An admin saves rule set B while pass A is mid-walk.
+            rules["v"] = "B"
+            captures_reapply.start()
+        return out
+
+    monkeypatch.setattr(pl_engine, "_postprocess_text", _postprocess_text)
+    captures_reapply._run()
+
+    st = captures_reapply.status()
+    assert st["status"] == "done" and st["error"] is None
+    assert st["processed"] == 1 and st["captures_updated"] == 1
+    assert captures_reapply._rerun_requested is False
+    assert cs.get_capture("reapplyrr001")["final"] == "hello [B]"
+    assert len(fake_thread.created) == 1

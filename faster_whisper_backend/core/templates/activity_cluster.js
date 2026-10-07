@@ -136,8 +136,10 @@
       h += '<div class="sec"><div class="sec-t">Loaded models · '
         + models.length + '</div>';
       models.forEach(function(m){
+        // A falsy vram_mb (null, or a cuda NVML delta of exactly 0) is no
+        // reading, as in the /stats models table -- not "0.0G".
         var bits = [m.device, m.compute_type,
-                    m.vram_mb != null ? gb(m.vram_mb) + 'G' : null]
+                    m.vram_mb ? gb(m.vram_mb) + 'G' : null]
           .filter(Boolean).map(esc).join(' · ');
         h += '<div class="modline"><span class="mn">' + esc(m.name)
           + '</span><span>' + bits + '</span></div>';

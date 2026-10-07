@@ -531,9 +531,13 @@ def _propose_merges_locked(
     for k in list(_CACHE)[:max(0, len(_CACHE) - _CACHE_MAX + 1)]:
         _CACHE.pop(k, None)
     # A write invalidated mid-sweep: these proposals predate it, so return
-    # them to this caller but do not cache them as fresh.
-    if _GEN == gen0:
-        _CACHE[cache_key] = (time.time(), proposals)
+    # them to this caller but do not cache them as fresh. Write first, then
+    # re-check: invalidate() bumps _GEN before it pops, so one landing after
+    # the write pops the entry itself, and one landing before the re-check is
+    # caught by it. A check-then-write would leave a gap between the two.
+    _CACHE[cache_key] = (time.time(), proposals)
+    if _GEN != gen0:
+        _CACHE.pop(cache_key, None)
     logger.info(
         "[proposer] user=%s n_eligible=%d sessions=%d candidates=%d proposals=%d",
         # cache_key embeds the caller-supplied ?user_id= for an admin, which is

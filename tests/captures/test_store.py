@@ -602,6 +602,26 @@ def test_evict_excludes_group_members(captures_store_db, groups_store_db, monkey
     assert n_ungrouped == 1
 
 
+def test_evicting_create_invalidates_every_proposer_key(
+        captures_store_db, monkeypatch, tmp_path):
+    """The cap eviction drops OTHER identities' oldest rows, so invalidating
+    only the inserter's key left another user's cached proposals naming
+    deleted captures."""
+    cs = captures_store_db
+    from faster_whisper_backend.captures import merge_proposer
+    from faster_whisper_backend.settings import config
+    monkeypatch.setattr(config, "CAPTURES_MAX", 5000, raising=False)
+    monkeypatch.setattr(config, "CAPTURES_MAX_MB", 5000, raising=False)
+    calls = []
+    monkeypatch.setattr(merge_proposer, "invalidate", calls.append)
+    old = _make(cs, monkeypatch, tmp_path, user_id="u2")
+    assert calls == ["u2"]
+    monkeypatch.setattr(config, "CAPTURES_MAX", 1, raising=False)
+    _make(cs, monkeypatch, tmp_path, user_id="u1")
+    assert cs.get_capture(old) is None
+    assert calls == ["u2", None]
+
+
 def test_evict_disabled_when_caps_below_one(captures_store_db, monkeypatch, tmp_path):
     cs = captures_store_db
     from faster_whisper_backend.settings import config

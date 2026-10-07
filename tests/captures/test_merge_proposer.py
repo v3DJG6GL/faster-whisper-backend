@@ -471,6 +471,46 @@ def test_propose_does_not_cache_a_sweep_invalidated_mid_flight(
     assert c2 is False
 
 
+def test_propose_cache_write_cannot_outrun_an_invalidate(
+        captures_store_db, monkeypatch, trim_disabled):
+    """The _GEN guard was check-then-write: an invalidate() landing between
+    the check and the store popped a key that was not there yet, and the
+    pre-write proposals were then cached as fresh for a whole TTL."""
+    cs = captures_store_db
+    _insert_eligible(cs, "caprace00000001", ts=1000.0, text="alpha")
+    _insert_eligible(cs, "caprace00000002", ts=1001.0, text="bravo")
+
+    class _RacingCache(dict):
+        def __setitem__(self, key, value):
+            P.invalidate("u1")
+            super().__setitem__(key, value)
+
+    monkeypatch.setattr(P, "_CACHE", _RacingCache())
+    proposals, cached = P.propose_merges(
+        user_id_filter=None, is_admin=True, caller_user_id="admin")
+    assert cached is False and proposals
+    assert P._ALL_USERS not in P._CACHE
+
+
+def test_retention_sweep_drops_cached_proposals(
+        captures_store_db, monkeypatch, trim_disabled):
+    """sweep_retention deleted aged captures without invalidating, so the
+    next Auto-propose served cached proposals naming deleted ids (accepting
+    one 404s in the merge modal)."""
+    cs = captures_store_db
+    _insert_eligible(cs, "capretn00000001", ts=1000.0, text="alpha")
+    _insert_eligible(cs, "capretn00000002", ts=1001.0, text="bravo")
+    first, _ = P.propose_merges(
+        user_id_filter=None, is_admin=True, caller_user_id="admin")
+    assert first
+    monkeypatch.setattr(P.cfg, "CAPTURES_RETENTION_DAYS", 1, raising=False)
+    assert cs.sweep_retention() == 2
+    assert cs.get_capture("capretn00000001") is None
+    again, cached = P.propose_merges(
+        user_id_filter=None, is_admin=True, caller_user_id="admin")
+    assert (again, cached) == ([], False)
+
+
 def test_propose_greedy_non_overlap_claim(captures_store_db, monkeypatch, trim_disabled):
     cs = captures_store_db
     # Three eligible clips; cap proposals to enforce one claim, ensure no

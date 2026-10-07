@@ -437,7 +437,7 @@ def create_capture(
                     translation_source or None, task or None,
                 ),
             )
-            _evict_to_cap(conn)
+            evicted_any = _evict_to_cap(conn)
     except Exception:
         _safe_unlink(abs_path)
         raise
@@ -448,10 +448,12 @@ def create_capture(
         len(words or []), int(wav_bytes),
     )
     # Drop the proposer cache so the freshly-recorded clip is eligible on
-    # the next Auto-propose-merges call instead of waiting up to TTL_S.
+    # the next Auto-propose-merges call instead of waiting up to TTL_S. The
+    # cap eviction drops OTHER identities' rows too, so then every user's
+    # cached proposals may name deleted captures.
     try:
         from faster_whisper_backend.captures import merge_proposer as captures_merge_proposer
-        captures_merge_proposer.invalidate(user_id)
+        captures_merge_proposer.invalidate(None if evicted_any else user_id)
     except Exception:
         pass
     return cid
@@ -532,10 +534,11 @@ def _truncate_translations(translations: "dict[str, str] | None",
     return _dump(lo)
 
 
-def _evict_to_cap(conn: sqlite3.Connection) -> None:
+def _evict_to_cap(conn: sqlite3.Connection) -> bool:
     """Enforce CAPTURES_MAX (row count) and CAPTURES_MAX_MB (total
     audio bytes). Drops rows + their audio files in _EVICTION_ORDER
-    priority. _lock is already held by the caller."""
+    priority. _lock is already held by the caller. Returns whether any
+    row was dropped (the caller then invalidates every proposer key)."""
     try:
         from faster_whisper_backend.settings import config as cfg
         row_cap = int(getattr(cfg, "CAPTURES_MAX", 5000))
@@ -544,7 +547,7 @@ def _evict_to_cap(conn: sqlite3.Connection) -> None:
         row_cap = 5000
         mb_cap = 5000
     if row_cap < 1 and mb_cap < 1:
-        return
+        return False
 
     # Count only what this function can actually evict. Every eviction query
     # below filters `sample_id IS NULL` (a grouped row backs a merged WAV and
@@ -572,6 +575,10 @@ def _evict_to_cap(conn: sqlite3.Connection) -> None:
             evicted += evicted_status
 
     bytes_freed = 0
+    # Set when the byte pass ran at all: a row whose audio is already gone
+    # frees 0 bytes yet is still dropped. Over-reporting only costs the
+    # proposer one cache miss.
+    byte_pass = False
     if mb_cap >= 1:
         # Walk every row to sum audio bytes — there's no cached size
         # column, so this is O(N) getsize calls per insert. Hot-path
@@ -580,6 +587,7 @@ def _evict_to_cap(conn: sqlite3.Connection) -> None:
         byte_cap = mb_cap * 1024 * 1024
         total_bytes = _total_audio_bytes(conn)
         if total_bytes > byte_cap:
+            byte_pass = True
             for status in _EVICTION_ORDER:
                 if total_bytes <= byte_cap:
                     break
@@ -595,6 +603,7 @@ def _evict_to_cap(conn: sqlite3.Connection) -> None:
             " rows_dropped=%d, bytes_freed=%d",
             row_cap, mb_cap, evicted, bytes_freed,
         )
+    return bool(evicted or byte_pass)
 
 
 def _total_audio_bytes(conn: sqlite3.Connection) -> int:
@@ -1312,6 +1321,13 @@ def sweep_retention() -> int:
                 _safe_unlink(abs_audio_path(trimmed))
             except ValueError:
                 pass
+    # Aged rows of every identity are gone: a cached proposal naming one
+    # would 404 on accept. Lazy import + best-effort, as in clear_all.
+    try:
+        from faster_whisper_backend.captures import merge_proposer as captures_merge_proposer
+        captures_merge_proposer.invalidate(None)
+    except Exception:
+        pass
     logger.warning(
         "[captures] retention sweep deleted %d rows older than %d days",
         len(rows), days,

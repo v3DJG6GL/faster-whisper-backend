@@ -74,12 +74,13 @@
       return !popEl.hidden && popEl.style.display !== 'none';
     }
     function show() {
+      // Portal before the isOpen() check: pick_list and the activity cluster
+      // un-hide the layer before show(), so on a first open the fallback
+      // isOpen() is already true and a portal inside the guard was skipped.
+      if (!nativePop && popEl.parentNode !== document.body) document.body.appendChild(popEl);
       if (!isOpen()) {
         if (nativePop) { try { popEl.showPopover(); } catch (e) {} }
-        else {
-          if (popEl.parentNode !== document.body) document.body.appendChild(popEl);
-          popEl.hidden = false; popEl.style.display = '';
-        }
+        else { popEl.hidden = false; popEl.style.display = ''; }
       }
       place(); startListening();
     }

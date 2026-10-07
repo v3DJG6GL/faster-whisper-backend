@@ -94,6 +94,8 @@
   .status-btn .cnt { font-family: var(--font-mono); font-size: 0.85em; color: var(--help);
     margin-left: 0.35em; font-variant-numeric: tabular-nums; }
   .status-btn.active .cnt { color: inherit; opacity: 0.8; }
+  /* per-card status groups never fill it: no trailing gap off-centring the label */
+  .status-btn .cnt:empty { display: none; }
 
   /* ---- summary strip ---- */
   #stats-strip { border: 1px solid var(--border); border-radius: 6px; background: var(--panel);
@@ -1352,7 +1354,6 @@
     var rows = _selectedRows();
     if (!rows.length) return;
     var ids = rows.map(function(r) { return r.id; });
-    var word = { reviewed: 'reviewed', ready: 'ready', dismissed: 'dismissed', new: 'new' }[status] || status;
     try {
       var j = await api('PATCH', '/captures/api/bulk', { ids: ids, status: status });
       var updated = j.updated || [], skipped = j.skipped || [];
@@ -1364,7 +1365,7 @@
       var why = {};
       skipped.forEach(function(s) { why[s.reason] = (why[s.reason] || 0) + 1; });
       var note = Object.keys(why).map(function(k) { return why[k] + ' ' + k.replace('_', ' '); }).join(', ');
-      var msg = updated.length + ' marked ' + word + (note ? ' · ' + skipped.length + ' skipped (' + note + ')' : '');
+      var msg = updated.length + ' marked ' + status + (note ? ' · ' + skipped.length + ' skipped (' + note + ')' : '');
       toast(msg, false, updated.length ? { label: 'Undo', fn: function() { _undoBulk(updated); } } : null);
     } catch (e) {
       if (e.message !== 'unauthorized') toast('Bulk update failed: ' + e.message, true);
@@ -3068,10 +3069,15 @@
 
   // Counts + strip together: every status change on a row moves both.
   async function reloadCounts() {
+    // _listUrl carries the current speaker filter: a load() for a newer
+    // filter that lands first must keep its counts (see _loadSeq).
+    var seq = _loadSeq;
     try {
       var j = await api('GET', _listUrl(1));
+      if (seq !== _loadSeq) return;
       _counts = j.counts || _counts;
-      _totalCount = j.total_count || _totalCount;
+      // A numeric check: 0 (the last captures in scope deleted) is a count.
+      if (typeof j.total_count === 'number') _totalCount = j.total_count;
       updateCaptureBadge(!!j.enabled);
       updateCounts();
     } catch (_) {}
@@ -5068,8 +5074,10 @@
 
         // --- Save handler: PATCH everything; mutate the card in place. ---
         saveTBtn.onclick = function() {
+          // No `status`, as in the capture card's Save: the status buttons
+          // auto-save their own narrow PATCH, and resending it here would
+          // revert a change another tab made since this view loaded.
           var payload = {
-            status:        sampleState.newStatus,
             admin_notes:   sampleState.adminNotes,
             corrections:   sampleState.corrections.map(function(c) {
               return {

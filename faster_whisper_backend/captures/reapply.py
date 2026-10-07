@@ -17,7 +17,11 @@ Scope:
 
 Single-worker model:
   - At most one job runs at a time. Concurrent start() returns the
-    running job's current state.
+    running job's current state and queues ONE more pass: the running
+    pass snapshots the rules it started with (ident_cache), and the
+    quick-config page auto-starts this job on every save with no manual
+    re-apply button, so a save landing mid-run would otherwise never be
+    applied. The worker re-walks every row before it reports "done".
   - Job state lives in process memory. A service restart wipes it
     — acceptable, since the user just clicks the button again.
 """
@@ -46,6 +50,9 @@ _state: dict[str, Any] = {
     "error":            None,
 }
 _worker: "threading.Thread | None" = None
+# Set by a start() that found a pass running (under _state_lock); the worker
+# consumes it and runs one more pass with the rules as they are by then.
+_rerun_requested = False
 
 
 def status() -> dict[str, Any]:
@@ -56,10 +63,12 @@ def status() -> dict[str, Any]:
 def start() -> dict[str, Any]:
     """Idempotent: if a job is running, return its current state
     instead of spawning a second worker."""
-    global _worker
+    global _worker, _rerun_requested
     with _state_lock:
         if _state["status"] == "running":
+            _rerun_requested = True
             return dict(_state)
+        _rerun_requested = False
         _state.update({
             "status":           "running",
             "started_ts":       time.time(),
@@ -77,120 +86,23 @@ def start() -> dict[str, Any]:
 
 
 def _run() -> None:
+    global _rerun_requested
     try:
-        from faster_whisper_backend.captures import store as captures_store
-        from faster_whisper_backend.captures import samples_store as capture_samples_store
-        from faster_whisper_backend.settings import config as cfg
-
-        captures_excludes = getattr(cfg, "CAPTURES_PIPELINE_RULES_EXCLUDE", None)
-
-        conn = captures_store._require_conn()
-        total_row = conn.execute("SELECT COUNT(*) FROM captures").fetchone()
-        with _state_lock:
-            _state["total"] = int(total_row[0]) if total_row else 0
-
-        affected_sample_ids: set[str] = set()
-        # Materialise the small projection up front — captures_store.update_capture
-        # writes back to the same connection inside the loop, and an open
-        # cursor on the same connection can skip/revisit rows when the
-        # underlying table is mutated mid-walk. Payload is just ids +
-        # short text columns (no words / segments), so memory
-        # stays bounded even at tens of thousands of rows.
-        rows = conn.execute(
-            "SELECT id, raw_text AS raw, final_text AS final, text_for_training, model, sample_id, user_id, language, task"
-            " FROM captures ORDER BY created_ts DESC"
-        ).fetchall()
-        # Reprocess re-runs ONLY the pipeline (no model re-decode), so it
-        # resolves the owning USER's effective pipeline rules (no key — captures
-        # store no key_id — and no per-request layer). Memoised per
-        # (user_id, model) so a bulk reapply does one resolve per distinct pair,
-        # not one per row. Config is snapshotted for the run's duration.
-        ident_cache: dict = {}
-
-        def _ident_for(uid, model_id):
-            key = (uid, model_id)
-            if key not in ident_cache:
-                ident_cache[key] = effective_config.build_ident({"user_id": uid}, model_id)
-            return ident_cache[key]
-
-        for r in rows:
-            cid = r["id"]
-            raw_text = r["raw"] or ""
-            patch: dict[str, str] = {}
-            # Scope by the TEXT language ("en" for task=translate), as the
-            # live run did — see captures_store.text_language.
-            text_lang = captures_store.text_language(r)
-            try:
-                # Inside the per-row try: a resolve failure skips this row
-                # instead of aborting the run before the group rebuild.
-                ident = _ident_for(r["user_id"], r["model"])
-                new_final = pl_engine._postprocess_text(
-                    raw_text, model_name=r["model"], ident=ident,
-                    language=text_lang,
-                )
-            except Exception as e:
-                logger.warning(
-                    "[reapply] capture %s skipped: %s", cid[:8], e,
-                )
-                with _state_lock:
-                    _state["processed"] += 1
-                continue
-            if new_final != (r["final"] or ""):
-                patch["final"] = new_final
-                if r["sample_id"]:
-                    affected_sample_ids.add(r["sample_id"])
-            # Training-form text reflects PIPELINE_RULES minus the
-            # captures-specific excludes. When no excludes are configured
-            # the pipeline output is identical — skip the second run.
-            if captures_excludes:
-                try:
-                    new_training = pl_engine._postprocess_text(
-                        raw_text, model_name=r["model"],
-                        extra_excludes=captures_excludes, ident=ident,
-                        language=text_lang,
-                    )
-                except Exception as e:
-                    logger.warning(
-                        "[reapply] capture %s training-form skipped: %s",
-                        cid[:8], e,
-                    )
-                    new_training = None
-            else:
-                new_training = new_final
-            if new_training is not None and new_training != (r["text_for_training"] or ""):
-                patch["text_for_training"] = new_training
-                # _build_default_transcript reads text_for_training before
-                # falling back to final/raw, so a training-form change must
-                # also trigger a group rebuild — final may be unchanged when
-                # captures_excludes drops a rule from the training pipeline.
-                if r["sample_id"]:
-                    affected_sample_ids.add(r["sample_id"])
-            if patch:
-                captures_store.update_capture(cid, patch)
-                with _state_lock:
-                    _state["captures_updated"] += 1
+        while True:
+            _run_pass()
             with _state_lock:
-                _state["processed"] += 1
-
-        if affected_sample_ids:
-            for sid in affected_sample_ids:
-                g = capture_samples_store.get_sample(sid)
-                if g is None or g.get("is_locked"):
-                    continue
-                members = capture_samples_store.get_members(sid)
-                new_t = capture_samples._build_default_transcript(
-                    members, g.get("transcript_join_strategy") or "space",
-                )
-                if new_t != (g.get("transcript") or ""):
-                    capture_samples_store.update_sample(
-                        sid, {"transcript": new_t},
-                    )
-                    with _state_lock:
-                        _state["groups_updated"] += 1
-
-        with _state_lock:
-            _state["status"] = "done"
-            _state["finished_ts"] = time.time()
+                if not _rerun_requested:
+                    _state["status"] = "done"
+                    _state["finished_ts"] = time.time()
+                    break
+                # Rules changed mid-pass: walk every row again with a fresh
+                # snapshot. Counters restart so the strip reports this pass.
+                _rerun_requested = False
+                _state.update({
+                    "total": 0, "processed": 0,
+                    "captures_updated": 0, "groups_updated": 0,
+                })
+            logger.info("[reapply] rules changed mid-run: re-applying again")
         logger.info(
             "[reapply] done: %d/%d captures, %d updated, %d groups",
             _state["processed"], _state["total"],
@@ -199,15 +111,131 @@ def _run() -> None:
     except Exception as e:
         logger.exception("[reapply] job failed")
         with _state_lock:
+            _rerun_requested = False
             _state["status"] = "error"
             _state["error"] = str(e)
             _state["finished_ts"] = time.time()
 
 
+def _run_pass() -> None:
+    """One walk over every capture with the rules as they are now. Raises on
+    a job-level failure; _run turns that into the "error" state."""
+    from faster_whisper_backend.captures import store as captures_store
+    from faster_whisper_backend.captures import samples_store as capture_samples_store
+    from faster_whisper_backend.settings import config as cfg
+
+    captures_excludes = getattr(cfg, "CAPTURES_PIPELINE_RULES_EXCLUDE", None)
+
+    conn = captures_store._require_conn()
+    total_row = conn.execute("SELECT COUNT(*) FROM captures").fetchone()
+    with _state_lock:
+        _state["total"] = int(total_row[0]) if total_row else 0
+
+    affected_sample_ids: set[str] = set()
+    # Materialise the small projection up front — captures_store.update_capture
+    # writes back to the same connection inside the loop, and an open
+    # cursor on the same connection can skip/revisit rows when the
+    # underlying table is mutated mid-walk. Payload is just ids +
+    # short text columns (no words / segments), so memory
+    # stays bounded even at tens of thousands of rows.
+    rows = conn.execute(
+        "SELECT id, raw_text AS raw, final_text AS final, text_for_training, model, sample_id, user_id, language, task"
+        " FROM captures ORDER BY created_ts DESC"
+    ).fetchall()
+    # Reprocess re-runs ONLY the pipeline (no model re-decode), so it
+    # resolves the owning USER's effective pipeline rules (no key — captures
+    # store no key_id — and no per-request layer). Memoised per
+    # (user_id, model) so a bulk reapply does one resolve per distinct pair,
+    # not one per row. Config is snapshotted for the run's duration.
+    ident_cache: dict = {}
+
+    def _ident_for(uid, model_id):
+        key = (uid, model_id)
+        if key not in ident_cache:
+            ident_cache[key] = effective_config.build_ident({"user_id": uid}, model_id)
+        return ident_cache[key]
+
+    for r in rows:
+        cid = r["id"]
+        raw_text = r["raw"] or ""
+        patch: dict[str, str] = {}
+        # Scope by the TEXT language ("en" for task=translate), as the
+        # live run did — see captures_store.text_language.
+        text_lang = captures_store.text_language(r)
+        try:
+            # Inside the per-row try: a resolve failure skips this row
+            # instead of aborting the run before the group rebuild.
+            ident = _ident_for(r["user_id"], r["model"])
+            new_final = pl_engine._postprocess_text(
+                raw_text, model_name=r["model"], ident=ident,
+                language=text_lang,
+            )
+        except Exception as e:
+            logger.warning(
+                "[reapply] capture %s skipped: %s", cid[:8], e,
+            )
+            with _state_lock:
+                _state["processed"] += 1
+            continue
+        if new_final != (r["final"] or ""):
+            patch["final"] = new_final
+            if r["sample_id"]:
+                affected_sample_ids.add(r["sample_id"])
+        # Training-form text reflects PIPELINE_RULES minus the
+        # captures-specific excludes. When no excludes are configured
+        # the pipeline output is identical — skip the second run.
+        if captures_excludes:
+            try:
+                new_training = pl_engine._postprocess_text(
+                    raw_text, model_name=r["model"],
+                    extra_excludes=captures_excludes, ident=ident,
+                    language=text_lang,
+                )
+            except Exception as e:
+                logger.warning(
+                    "[reapply] capture %s training-form skipped: %s",
+                    cid[:8], e,
+                )
+                new_training = None
+        else:
+            new_training = new_final
+        if new_training is not None and new_training != (r["text_for_training"] or ""):
+            patch["text_for_training"] = new_training
+            # _build_default_transcript reads text_for_training before
+            # falling back to final/raw, so a training-form change must
+            # also trigger a group rebuild — final may be unchanged when
+            # captures_excludes drops a rule from the training pipeline.
+            if r["sample_id"]:
+                affected_sample_ids.add(r["sample_id"])
+        if patch:
+            captures_store.update_capture(cid, patch)
+            with _state_lock:
+                _state["captures_updated"] += 1
+        with _state_lock:
+            _state["processed"] += 1
+
+    if affected_sample_ids:
+        for sid in affected_sample_ids:
+            g = capture_samples_store.get_sample(sid)
+            if g is None or g.get("is_locked"):
+                continue
+            members = capture_samples_store.get_members(sid)
+            new_t = capture_samples._build_default_transcript(
+                members, g.get("transcript_join_strategy") or "space",
+            )
+            if new_t != (g.get("transcript") or ""):
+                capture_samples_store.update_sample(
+                    sid, {"transcript": new_t},
+                )
+                with _state_lock:
+                    _state["groups_updated"] += 1
+
+
 def _reset_for_tests() -> None:
     """Test-only: back to the module's canonical idle shape."""
-    global _worker, _state
+    global _worker, _state, _rerun_requested
     _worker = None
+    _rerun_requested = False
     _state = {
         "status": "idle",
         "started_ts": None,
