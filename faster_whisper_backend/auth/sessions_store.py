@@ -25,9 +25,12 @@ stored value. Stored plaintext because it is, by design, handed to the client.
 
 Lookup is O(1) via an in-memory `_SESSION_INDEX: dict[token_hash, row]`,
 maintained INCREMENTALLY on create/revoke and rebuilt in full only on init,
-purge, or when PRAGMA data_version shows a sibling worker's commit. The
-sliding-TTL refresh on each lookup is debounced so an active session does not
-write to disk on every request.
+purge, or when PRAGMA data_version shows a sibling worker's commit.
+
+Expiry is absolute: a row lives SESSION_TTL_S from login, whatever the
+activity, and lookups never write. The cookie is set once at login with that
+max_age, so a row that slid forward only ever served a token replayed outside
+the browser (a copied cookie stayed valid for as long as it kept being used).
 """
 from __future__ import annotations
 
@@ -40,6 +43,7 @@ from hashlib import sha256
 from typing import Any
 
 from faster_whisper_backend.core import store_common
+from faster_whisper_backend.settings import config as cfg
 from faster_whisper_backend.settings import version as settings_version
 
 logger = logging.getLogger("whisper-api")
@@ -67,15 +71,10 @@ _SESSION_INDEX: dict[str, dict[str, Any]] = {}
 # logout / session revoke instead of honouring a dead cookie indefinitely.
 _DATA_VERSION: int = -1
 
-# Debounce window for sliding-expiry writes (seconds): an active session
-# refreshes its expiry at most once per this interval.
-_SLIDE_DEBOUNCE_S = 300.0
-_SLIDE_CACHE: dict[str, float] = {}
-
-# Throttle for the read-path sibling-commit check: every debounced slide
-# UPDATE is its own autocommit and moves PRAGMA data_version for every OTHER
+# Throttle for the read-path sibling-commit check: every sibling login and
+# logout is its own autocommit and moves PRAGMA data_version for every OTHER
 # worker, so with SERVER_WORKERS>1 unthrottled lookups would rebuild the whole
-# index (O(live sessions) under _lock) roughly once per slide. This caps the
+# index (O(live sessions) under _lock) once per such commit. This caps the
 # cost at one rebuild per interval per worker while keeping a cross-worker
 # revocation visible within ~1 s. The pre-write check in create/revoke stays
 # unthrottled (correctness before a write). The throttle applies to index
@@ -120,7 +119,6 @@ def init_db(db_path: str) -> None:
     # keep honouring tokens from a store that is no longer open.
     with _lock:
         _SESSION_INDEX = {}
-        _SLIDE_CACHE.clear()
     # Close the previous handle before rebinding (mirrors api_keys_store), or
     # every re-init leaks a connection plus its WAL/-shm handles.
     if _conn is not None:
@@ -192,14 +190,6 @@ def _rebuild_index_locked() -> None:
         }
         for r in rows
     }
-    # Drop debounce state for tokens that can no longer authenticate. Nothing
-    # else prunes this dict: it was popped only on an explicit /auth/logout, so
-    # every session token ever looked up left a permanent ~150-byte entry keyed
-    # by a 64-char hash — the half of the login-loop growth the hourly purge
-    # loop did not reclaim. Worst case for a resurrected token is one extra
-    # expiry UPDATE.
-    for _stale in [k for k in _SLIDE_CACHE if k not in _SESSION_INDEX]:
-        _SLIDE_CACHE.pop(_stale, None)
 
 
 def _data_version_locked() -> int:
@@ -219,7 +209,7 @@ def _refresh_if_sibling_committed(force: bool = False) -> None:
     uvicorn worker would leave the cookie valid in every other worker.
 
     Throttled to one check per _REFRESH_MIN_INTERVAL_S (see the constant's
-    comment): sibling slide-UPDATE commits are frequent, and each detected one
+    comment): sibling login/logout commits can be frequent, and each detected one
     costs a full O(live sessions) rebuild under _lock. `force=True` skips the
     interval (miss path of lookup_session): a session created by a sibling
     worker in the last second must not 401 the request that carries its
@@ -237,12 +227,16 @@ def _refresh_if_sibling_committed(force: bool = False) -> None:
 
 
 def _purge_expired_locked() -> None:
-    """Best-effort delete of revoked/expired rows. Caller holds _lock."""
+    """Best-effort delete of revoked/expired rows. Caller holds _lock.
+    `created_ts` past SESSION_TTL_S counts as expired too (see
+    _effective_expiry)."""
     conn = _require_conn()
+    now = time.time()
     try:
         conn.execute(
-            "DELETE FROM sessions WHERE revoked_ts IS NOT NULL OR expires_ts <= ?",
-            (time.time(),),
+            "DELETE FROM sessions WHERE revoked_ts IS NOT NULL OR expires_ts <= ?"
+            " OR created_ts <= ?",
+            (now, now - float(cfg.SESSION_TTL_S)),
         )
     except sqlite3.Error:
         pass  # cleanup is non-fatal
@@ -312,13 +306,11 @@ def lookup_session(raw_token: str) -> dict[str, Any] | None:
     """Resolve a raw session token to its active record. Returns
     `{user_id, key_id, csrf_token, created_ts, expires_ts}` (key_id may be
     None for pre-migration sessions) or None if missing / revoked / expired.
-    On a hit, slides the expiry forward (debounced).
 
-    Sliding window: each successful lookup extends expires_ts to
-    now + (original lifetime), so an actively-used session's ROW never
-    lapses. The browser side does not slide: /auth/login is the only
-    Set-Cookie, with max_age=SESSION_TTL_S, so the cookie itself expires
-    SESSION_TTL_S after login regardless of activity and the user re-logs in.
+    No sliding window: /auth/login is the only Set-Cookie, with
+    max_age=SESSION_TTL_S, so the browser re-logs in SESSION_TTL_S after
+    login regardless of activity, and the row ends at the same moment (see
+    _effective_expiry). Lookups never write.
     """
     if not raw_token or not _DB_READY:
         return None
@@ -333,46 +325,20 @@ def lookup_session(raw_token: str) -> dict[str, Any] | None:
         if rec is None:
             return None
     now = time.time()
-    if rec["expires_ts"] <= now:
+    if _effective_expiry(rec) <= now:
         # Lazily evict an index entry that lapsed since the last rebuild.
         with _lock:
             _SESSION_INDEX.pop(th, None)
-            _SLIDE_CACHE.pop(th, None)
         return None
-    _slide_expiry_debounced(th, rec)
     return dict(rec)
 
 
-def _slide_expiry_debounced(token_hash: str, rec: dict[str, Any]) -> None:
-    """Refresh expires_ts at most once per _SLIDE_DEBOUNCE_S per session.
-    Preserves the original lifetime (expires - created) as the window, so
-    created_ts moves with it: it marks the start of the current window. Left
-    at login, each slide would grow the next window by the session's age.
-
-    The whole read-check-write runs under _lock: _rebuild_index_locked()
-    iterates _SLIDE_CACHE under the lock, so mutating it from an unlocked
-    threadpool auth call raced with the purge loop and raised
-    "dictionary changed size during iteration". _lock is non-reentrant, but
-    the sole caller (lookup_session) does not hold it here."""
-    now = time.time()
-    conn = _require_conn()
-    with _lock:
-        last = _SLIDE_CACHE.get(token_hash, 0.0)
-        if now - last < _SLIDE_DEBOUNCE_S:
-            return
-        _SLIDE_CACHE[token_hash] = now
-        lifetime = rec["expires_ts"] - rec["created_ts"]
-        new_expires = now + lifetime
-        rec["expires_ts"] = new_expires  # keep the in-memory index current
-        rec["created_ts"] = now
-        try:
-            conn.execute(
-                "UPDATE sessions SET expires_ts = ?, created_ts = ?"
-                " WHERE token_hash = ? AND revoked_ts IS NULL",
-                (new_expires, now, token_hash),
-            )
-        except sqlite3.Error:
-            pass  # non-fatal: the in-memory expiry was already bumped
+def _effective_expiry(rec: dict[str, Any]) -> float:
+    """The stored expiry, capped at created_ts + the CURRENT SESSION_TTL_S.
+    The cap ends rows that older builds slid forward (their windows grew by
+    the session's age on every slide, so expires_ts can lie centuries out)
+    and lets a lowered SESSION_TTL_S reach sessions that already exist."""
+    return min(rec["expires_ts"], rec["created_ts"] + float(cfg.SESSION_TTL_S))
 
 
 def revoke_session(raw_token: str) -> None:
@@ -409,7 +375,6 @@ def revoke_session(raw_token: str) -> None:
             conn.execute(
                 "INSERT INTO meta (k, v) VALUES ('revocations', 1)"
                 " ON CONFLICT(k) DO UPDATE SET v = v + 1")
-        _SLIDE_CACHE.pop(th, None)
         # Drop the one key rather than re-reading every live session, mirroring
         # the incremental insert create_session already does. The full rebuild
         # here was O(live sessions) on the event loop — measured ~37 ms at
@@ -429,8 +394,8 @@ def revocation_generation() -> int:
     Read by settings_version.config_version()'s cross-worker probe: a logout
     bumps the config version only in the worker that served it, and the
     sessions table lives in its own DB file, so api_keys_store.data_version()
-    never moves for it. Not `PRAGMA data_version`: every sibling slide UPDATE
-    moves that, and every live stream would re-resolve auth on each one.
+    never moves for it. Not `PRAGMA data_version`: every sibling login moves
+    that, and every live stream would re-resolve auth on each one.
 
     When the counter moved, the index is refreshed with force=True before
     returning: the caller bumps the config version, a live stream then
@@ -466,4 +431,3 @@ def _reset_for_tests() -> None:
     _DATA_VERSION = -1
     _DB_READY = _conn is not None
     _LAST_REFRESH_TS = 0.0
-    _SLIDE_CACHE.clear()

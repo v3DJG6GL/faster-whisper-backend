@@ -884,6 +884,59 @@ def test_save_overrides_rejects_unknown_slug_without_local_rules(tmp_path, monke
     assert json.loads(open(p, encoding="utf-8").read())["BEAM_SIZE"] == 5
 
 
+def test_stale_stored_slug_only_blocks_saves_of_its_own_key(tmp_path, monkeypatch):
+    # The slug check used to run over the whole merged document whenever the
+    # save touched ANY slug-bearing key, so a stale exclude stored under
+    # MODEL_OVERRIDES 422'd every OVERRIDE_PROFILES / captures save too.
+    monkeypatch.setattr(cs, "_canonical_rule_slugs", lambda: {"known"})
+    p = tmp_path / "config.local.json"
+    p.write_text(json.dumps({"MODEL_OVERRIDES": {"m": {
+        "PIPELINE_RULES_EXCLUDE": ["gone"]}}}), encoding="utf-8")
+    cs.save_overrides({"OVERRIDE_PROFILES": {"p": {"BEAM_SIZE": 2}}}, str(p))
+    cs.save_overrides({"CAPTURES_PIPELINE_RULES_EXCLUDE": ["known"]}, str(p))
+    on_disk = json.loads(p.read_text(encoding="utf-8"))
+    assert on_disk["OVERRIDE_PROFILES"] == {"p": {"BEAM_SIZE": 2}}
+    # A typo in the key a save DOES submit is still refused.
+    before = p.read_text(encoding="utf-8")
+    with pytest.raises(ValidationError, match="typo"):
+        cs.save_overrides({"OVERRIDE_PROFILES": {"p": {
+            "PIPELINE_RULES_EXCLUDE": ["typo"]}}}, str(p))
+    with pytest.raises(ValidationError, match="typo"):
+        cs.save_overrides({"MODEL_OVERRIDES": {"m": {
+            "PIPELINE_RULES_EXCLUDE": ["typo"]}}}, str(p))
+    assert p.read_text(encoding="utf-8") == before
+
+
+def test_removing_the_local_rules_copy_refuses_refs_it_would_strand(
+        tmp_path, monkeypatch):
+    # Resetting PIPELINE_RULES makes the factory list canonical; a stored
+    # exclude naming a local-only rule would then 422 every later save of
+    # that key, so the reset is refused instead and the file kept.
+    factory = [{"name": "factory-rule"}, {"name": "trim-edges"}]
+    monkeypatch.setattr(cs, "load_factory_rules", lambda path=None: factory)
+    monkeypatch.setattr(cs, "_canonical_rule_slugs",
+                        lambda: {"factory-rule", "trim-edges", "my-local-rule"})
+    p = tmp_path / "config.local.json"
+    local = {
+        "PIPELINE_RULES": [
+            {"name": "my-local-rule", "label": "mine", "type": "regex-list",
+             "entries": [{"pattern": "x", "replacement": "y"}]},
+            {"name": "trim-edges", "label": "Trim edges", "type": "terminal"}],
+        "MODEL_OVERRIDES": {"large-v3": {
+            "PIPELINE_RULES_EXCLUDE": ["my-local-rule"]}},
+    }
+    p.write_text(json.dumps(local), encoding="utf-8")
+    before = p.read_text(encoding="utf-8")
+    with pytest.raises(ValidationError, match="my-local-rule"):
+        cs.save_overrides({"PIPELINE_RULES": None}, str(p))
+    assert p.read_text(encoding="utf-8") == before
+    # Without the stranded ref the reset goes through.
+    local["MODEL_OVERRIDES"]["large-v3"]["PIPELINE_RULES_EXCLUDE"] = ["factory-rule"]
+    p.write_text(json.dumps(local), encoding="utf-8")
+    cs.save_overrides({"PIPELINE_RULES": None}, str(p))
+    assert "PIPELINE_RULES" not in json.loads(p.read_text(encoding="utf-8"))
+
+
 def test_save_overrides_roundtrip_and_merge(tmp_path):
     p = str(tmp_path / "config.local.json")
     changed = cs.save_overrides({"BEAM_SIZE": 5}, p)

@@ -461,19 +461,20 @@ def test_use_auth_token_env_alias(monkeypatch):
     aliased onto WHISPER_HF_TOKEN at config import, and a set new-name value
     wins over the alias."""
     try:
+        # A host-supplied token would win over the alias; delenv also records
+        # it, so undo() restores it after the alias wrote over it below.
+        monkeypatch.delenv("WHISPER_HF_TOKEN", raising=False)
+        monkeypatch.delenv("WHISPER_HF_TOKEN_FILE", raising=False)
         _reload_with_env(monkeypatch, WHISPER_USE_AUTH_TOKEN="hf_old")
         assert config.HF_TOKEN == "hf_old"
         # The alias writes the NEW var straight into os.environ (so the _FILE
-        # loop and env_pinned_fields see it); monkeypatch can't undo that —
-        # clear it before the next reload (same caveat as the bootstrap-key
-        # test above).
-        os.environ.pop("WHISPER_HF_TOKEN", None)
+        # loop and env_pinned_fields see it); clear it before the next reload.
+        monkeypatch.delenv("WHISPER_HF_TOKEN", raising=False)
         _reload_with_env(monkeypatch, WHISPER_USE_AUTH_TOKEN="hf_old",
                          WHISPER_HF_TOKEN="hf_new")
         assert config.HF_TOKEN == "hf_new"
     finally:
         monkeypatch.undo()
-        os.environ.pop("WHISPER_HF_TOKEN", None)
         importlib.reload(config)
 
 
@@ -665,6 +666,7 @@ def test_legacy_in_repo_state_warns_when_ignored(tmp_path, monkeypatch):
     assert str(repo / "config.local.json") in warns[0]
     assert str(data / "config.local.json") in warns[0]
     assert "IGNORED" in warns[0]
+    assert "WHISPER_DATA_DIR" in warns[0]       # not a store: DATA_DIR advice
 
     # Once the configured file exists the warning goes away.
     (data / "config.local.json").write_text("{}", encoding="utf-8")
@@ -703,6 +705,10 @@ def test_legacy_data_dir_root_db_warns_when_ignored(tmp_path):
         {"api_keys.local.sqlite3": str(tmp_path / "db" / "api_keys.local.sqlite3")},
     )
     assert len(warns) == 1 and str(legacy) in warns[0]
+    # The DATA_DIR advice would be a no-op here (it already IS that folder);
+    # a store is reached through WHISPER_DB_DIR.
+    assert f"WHISPER_DB_DIR to {str(tmp_path)!r}" in warns[0]
+    assert "WHISPER_DATA_DIR" not in warns[0]
     # and silent when the configured path exists
     (tmp_path / "db").mkdir()
     (tmp_path / "db" / "api_keys.local.sqlite3").write_bytes(b"")
@@ -720,12 +726,13 @@ def test_renamed_keys_env_alias_is_table_driven(monkeypatch):
     old, new = "RECENT_TRANSCRIPTIONS_TTL_DAYS", "RECENT_TRANSCRIPTIONS_RETENTION_DAYS"
     assert config_renames.RENAMED_KEYS[old] == new
     try:
+        # Recorded first, so undo() also clears what the alias writes.
+        monkeypatch.delenv("WHISPER_" + new, raising=False)
         _reload_with_env(monkeypatch, WHISPER_RECENT_TRANSCRIPTIONS_TTL_DAYS="7")
         assert config.RECENT_TRANSCRIPTIONS_RETENTION_DAYS == 7
         assert any(old in w and new in w for w in config._ENV_WARNINGS)
     finally:
         monkeypatch.undo()
-        os.environ.pop("WHISPER_" + new, None)
         importlib.reload(config)
 
 
@@ -1262,6 +1269,75 @@ def test_stored_model_override_with_unknown_slug_keeps_its_other_fields(
         _reload_with_env(monkeypatch)
         assert config.MODEL_OVERRIDES.get("large-v3", {}).get("BEAM_SIZE") == 3
         assert not any("was dropped" in m for m in config._ENV_WARNINGS), \
+            config._ENV_WARNINGS
+    finally:
+        monkeypatch.undo()
+        importlib.reload(config)
+
+def test_stored_model_override_survives_an_env_allowlist_over_a_stored_one(
+        monkeypatch):
+    """With a STORED allowlist too, a stored entry is checked against that
+    one, not the narrower env allowlist: it passed load_overrides, and
+    dropping it here let the next per-model save erase it for good."""
+    from faster_whisper_backend.settings import config_store
+    monkeypatch.setattr(config_store, "load_overrides", lambda path=None: {
+        "ALLOWED_MODELS": {"tiny", "large-v3"},
+        "MODEL_OVERRIDES": {"tiny": {"BEAM_SIZE": 3}}})
+    try:
+        _reload_with_env(monkeypatch, WHISPER_ALLOWED_MODELS="large-v3")
+        assert config.ALLOWED_MODELS == {"large-v3"}
+        assert config.MODEL_OVERRIDES.get("tiny") == {"BEAM_SIZE": 3}
+        assert not any("was dropped" in m for m in config._ENV_WARNINGS), \
+            config._ENV_WARNINGS
+    finally:
+        monkeypatch.undo()
+        importlib.reload(config)
+
+
+def test_env_field_outside_env_allowlist_keeps_the_stored_allowlisted_entry(
+        monkeypatch):
+    """Same, plus a WHISPER_MODEL_OVERRIDE__ var the env allowlist refuses:
+    the env field is ignored, the stored fields stay."""
+    from faster_whisper_backend.settings import config_store
+    monkeypatch.setattr(config_store, "load_overrides", lambda path=None: {
+        "ALLOWED_MODELS": {"tiny", "large-v3"},
+        "MODEL_OVERRIDES": {"tiny": {"BEAM_SIZE": 3}}})
+    try:
+        _reload_with_env(monkeypatch, WHISPER_ALLOWED_MODELS="large-v3",
+                         WHISPER_MODEL_OVERRIDE__tiny__BEST_OF="3")
+        assert config.MODEL_OVERRIDES.get("tiny") == {"BEAM_SIZE": 3}
+        assert not any("was dropped" in m for m in config._ENV_WARNINGS), \
+            config._ENV_WARNINGS
+    finally:
+        monkeypatch.undo()
+        importlib.reload(config)
+
+
+def test_env_field_is_not_blamed_for_a_stored_dangling_slug(monkeypatch):
+    """An env BEST_OF on an entry whose STORED exclude names a removed rule
+    applies; the stored slug is not checked (as for a purely stored entry),
+    so the env pin is not reverted and blamed for it."""
+    from faster_whisper_backend.settings import config_store
+    monkeypatch.setattr(config_store, "load_overrides", lambda path=None: {
+        "MODEL_OVERRIDES": {"large-v3": {
+            "BEAM_SIZE": 3, "PIPELINE_RULES_EXCLUDE": ["no-such-rule"]}}})
+    try:
+        # A hyphenated model id is not a Python identifier: no **env kwarg.
+        monkeypatch.setenv("WHISPER_MODEL_OVERRIDE__large-v3__BEST_OF", "3")
+        importlib.reload(config)
+        entry = config.MODEL_OVERRIDES.get("large-v3", {})
+        assert entry.get("BEST_OF") == 3 and entry.get("BEAM_SIZE") == 3
+        assert not any("large-v3" in m for m in config._ENV_WARNINGS), \
+            config._ENV_WARNINGS
+        # An env-supplied exclude naming an unknown rule is still refused.
+        monkeypatch.setenv(
+            "WHISPER_MODEL_OVERRIDE__large-v3__PIPELINE_RULES_EXCLUDE",
+            "another-missing-rule")
+        importlib.reload(config)
+        assert "another-missing-rule" not in (
+            config.MODEL_OVERRIDES.get("large-v3", {}).get(
+                "PIPELINE_RULES_EXCLUDE") or [])
+        assert any("another-missing-rule" in m for m in config._ENV_WARNINGS), \
             config._ENV_WARNINGS
     finally:
         monkeypatch.undo()

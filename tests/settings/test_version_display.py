@@ -19,15 +19,21 @@ def _sentinel_version(monkeypatch):
     monkeypatch.setattr(build_info, "VERSION_SHORT", "v0.0.0-sentinel")
 
 
-def test_header_vtag_shell_carries_no_facts(client, monkeypatch):
+# The header chip is built once at web_common import and the page render is
+# lru_cached, so a patched sentinel can never reach it: the header tests pin
+# the exact empty shell instead (a fact baked into data-tip / data-build
+# would carry the REAL import-time version, not the sentinel).
+_EMPTY_VTAG = ('<button id="hdr-vtag" class="vtag" type="button" data-tip="" '
+               'data-build="" aria-label="Copy server build info" '
+               'onclick="_fwCopyBuild(this)"></button>')
+
+
+def test_header_vtag_shell_carries_no_facts(client):
     """The shared header rides host-gated (keyless) pages, so the chip ships
     as an empty shell — the facts arrive via /auth/whoami."""
-    _sentinel_version(monkeypatch)
     r = client.get("/logs")
     assert r.status_code == 200
-    assert 'id="hdr-vtag"' in r.text
-    assert 'onclick="_fwCopyBuild(this)"></button>' in r.text
-    assert "v0.0.0-sentinel" not in r.text
+    assert _EMPTY_VTAG in r.text
     assert build_info.BOOT_ID[:8] not in r.text
     # The placeholder must be substituted, never leak literally.
     assert "{{HEADER_VTAG}}" not in r.text
@@ -45,16 +51,14 @@ def test_whoami_carries_build_fields(client):
 
 
 def test_shared_header_page_leaks_no_build_to_unauthenticated_caller(
-    client, make_user_key, monkeypatch,
+    client, make_user_key,
 ):
     """Locked down + no credential: the page shell still renders (it is only
     host-gated) but must not disclose the version or the boot id."""
     make_user_key("admin", is_admin=True)
-    _sentinel_version(monkeypatch)
     r = client.get("/logs")
     assert r.status_code == 200
-    assert 'onclick="_fwCopyBuild(this)"></button>' in r.text
-    assert "v0.0.0-sentinel" not in r.text
+    assert _EMPTY_VTAG in r.text
     assert build_info.BOOT_ID[:8] not in r.text
     assert client.get("/auth/whoami").status_code == 401
 

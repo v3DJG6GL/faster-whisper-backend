@@ -126,8 +126,11 @@ def rename_slugs(slugs: Any) -> Any:
 
 def migrate_rule_slugs(raw: dict[str, Any]) -> dict[str, Any]:
     """Apply RENAMED_RULES to a stored overrides dict (in place; also
-    returned): the `name` of each stored PIPELINE_RULES entry and every slug
-    list. A stored rule already using the new name wins over the old one."""
+    returned): the `name` of each stored PIPELINE_RULES entry and the
+    top-level slug lists. The slug lists inside OVERRIDE_PROFILES /
+    MODEL_OVERRIDES bundles are migrate_bundle's job (via migrate_bundle_keys,
+    which every caller also runs). A stored rule already using the new name
+    wins over the old one."""
     rules = raw.get("PIPELINE_RULES")
     if isinstance(rules, list):
         # str only: a hand-edited non-string name must reach the schema's
@@ -141,15 +144,9 @@ def migrate_rule_slugs(raw: dict[str, Any]) -> dict[str, Any]:
                 if new not in names:
                     r["name"] = new
                     names.add(new)
-    bundles = [raw]
-    for key in ("OVERRIDE_PROFILES", "MODEL_OVERRIDES"):
-        group = raw.get(key)
-        if isinstance(group, dict):
-            bundles.extend(b for b in group.values() if isinstance(b, dict))
-    for b in bundles:
-        for key in _SLUG_LIST_KEYS:
-            if key in b:
-                b[key] = rename_slugs(b[key])
+    for key in _SLUG_LIST_KEYS:
+        if key in raw:
+            raw[key] = rename_slugs(raw[key])
     return raw
 
 

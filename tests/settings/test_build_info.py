@@ -127,5 +127,6 @@ def test_git_describe_passes_safe_directory(monkeypatch):
 
     monkeypatch.setattr(subprocess, "run", _run)
     assert build_info._resolve() == "v1.2.3"
-    argv = seen[0]
-    assert argv[argv.index("-c") + 1] == "safe.directory=*"
+    # Protected config only counts BEFORE the subcommand: a "-c" moved after
+    # "describe" is an unknown option there and the version reads "unknown".
+    assert seen[0][:4] == ["git", "-c", "safe.directory=*", "describe"]

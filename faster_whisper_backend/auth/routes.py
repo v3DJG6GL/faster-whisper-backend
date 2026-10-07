@@ -102,8 +102,8 @@ async def login(request: Request, response: Response):
     (double-submit). Open mode only means "no admin key exists yet"; ordinary
     user keys can, and a LAN browser whose /auth/whoami 401s needs this
     route to turn one into a cookie, or its login gate loops forever.
-    Returns the same shape as /auth/whoami so the client can populate chrome
-    without a second round-trip. CSRF-exempt (no session exists yet)."""
+    Returns the identity part of /auth/whoami's shape (no `build` object)
+    plus the CSRF token. CSRF-exempt (no session exists yet)."""
     if not _ak.is_locked_down() and _auth.open_mode_host_ok(request):
         return {"open_mode": True}
     # Below the open-mode short-circuit on purpose: open mode checks no

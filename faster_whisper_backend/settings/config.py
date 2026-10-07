@@ -909,8 +909,8 @@ SESSION_COOKIE_SECURE = _D("SESSION_COOKIE_SECURE")
 
 # Browser-session lifetime in seconds, counted from login: the cookie is set
 # once with this max_age and never re-issued, so the user re-logs in this long
-# after sign-in whatever the activity (the server-side row slides, see
-# sessions_store.lookup_session). Default 30 days.
+# after sign-in whatever the activity (the server-side row ends at the same
+# moment and never slides, see sessions_store.lookup_session). Default 30 days.
 SESSION_TTL_S = _D("SESSION_TTL_S")
 
 # Cookie names. Session cookie is HttpOnly (JS cannot read it); the CSRF
@@ -1138,7 +1138,7 @@ USAGE_UNREPORTED_AFTER_H = _D("USAGE_UNREPORTED_AFTER_H")
 API_KEYS_DB = _D("API_KEYS_DB")
 
 # Durable browser-session store (SQLite, WAL). Maps an opaque session token
-# to a user_id (+ per-session CSRF token + sliding expiry). Defaults to
+# to a user_id (+ per-session CSRF token + absolute expiry). Defaults to
 # {DB_DIR}/sessions.local.sqlite3; .gitignore matches the *.local.sqlite3*
 # triple wherever it lands inside the checkout.
 SESSIONS_DB = _D("SESSIONS_DB")
@@ -2237,11 +2237,12 @@ try:
         # [large-v3]) takes the revert/drop branch instead of booting
         # silently — the orphan would make every later per-model save 422
         # (save merges onto the stored allowlist). The factory allowlist alone
-        # is not checked, like a save that carries no ALLOWED_MODELS. An
-        # env-ONLY allowlist checks env-supplied entries only: a stored entry
-        # passed load_overrides, a save never sees the env allowlist, and
-        # dropping it here would let the next per-model save erase it from
-        # config.local.json for good.
+        # is not checked, like a save that carries no ALLOWED_MODELS. An env
+        # allowlist (WHISPER_ALLOWED_MODELS) checks env-supplied entries only:
+        # a stored entry passed load_overrides against the STORED allowlist,
+        # a save never sees the env one, and dropping it here would let the
+        # next per-model save erase it from config.local.json for good — so
+        # stored entries are checked against the stored allowlist instead.
         _env_json_models = (
             _ENV_VAR_MAPPING["MODEL_OVERRIDES"] in os.environ
             and _ENV_VAR_MAPPING["MODEL_OVERRIDES"] not in _ENV_UNPARSED)
@@ -2252,19 +2253,29 @@ try:
                 or ("WHISPER_ALLOWED_MODELS" in os.environ
                     and "ALLOWED_MODELS" not in _ENV_REJECTED))
             else {})
+        _stored_allowed = _ENV_PRE.get("ALLOWED_MODELS")
+        _stored_allowed_ctx = (
+            {"ALLOWED_MODELS": sorted(_stored_allowed)}
+            if "ALLOWED_MODELS" in _LOCAL_KEYS and _stored_allowed else {})
         # Same reasoning for rule slugs: a stored entry passed load_overrides
         # without a slug set, and dropping it here over one slug a factory
         # rules save removed would take its BEAM_SIZE, device, … with it (and
-        # the next per-model save would erase it). Only env-supplied entries
-        # are checked against the rules in force.
+        # the next per-model save would erase it). Only env-supplied slug
+        # lists are checked against the rules in force: an env BEST_OF on an
+        # entry whose STORED exclude dangles must not be the one blamed (and
+        # reverted) for that slug.
         _stored_slug_ctx: "dict[str, object]" = (
             _env_slug_ctx() if _env_json_models else {})
         for _mid, _entry in MODEL_OVERRIDES.items():
             _entry_ctx = (
-                _allowed_ctx if ("ALLOWED_MODELS" in _LOCAL_KEYS
-                                 or _mid in _ENV_OVERRIDE_FIELDS
+                _allowed_ctx if (_mid in _ENV_OVERRIDE_FIELDS
                                  or _env_json_models)
-                else {})
+                else _stored_allowed_ctx)
+            _entry_slug_ctx = (
+                _env_slug_ctx()
+                if (_ENV_OVERRIDE_FIELDS.get(_mid) or set()) & {
+                    "PIPELINE_RULES_EXCLUDE", "PIPELINE_RULES_INCLUDE"}
+                else _stored_slug_ctx)
             try:
                 # Keep the VALIDATED dump, not the raw entry: pydantic's lax
                 # mode coerces string leftovers ("false", "3") that the
@@ -2272,8 +2283,7 @@ try:
                 # ModelOverride can never stay live as a raw string.
                 _clean_overrides[_mid] = _AdminConfig.model_validate(
                     {**_entry_ctx, "MODEL_OVERRIDES": {_mid: _entry}},
-                    context=(_env_slug_ctx() if _mid in _ENV_OVERRIDE_FIELDS
-                             else _stored_slug_ctx)
+                    context=_entry_slug_ctx
                 ).model_dump(exclude_none=True)["MODEL_OVERRIDES"][_mid]
                 _env_vals = {_ef: _clean_overrides[_mid][_ef]
                              for _ef in (_ENV_OVERRIDE_FIELDS.get(_mid) or ())
@@ -2292,13 +2302,12 @@ try:
                             if _ef in _pre_entry:
                                 _reverted[_ef] = _pre_entry[_ef]
                     # The env fields are gone, so the rest is the stored
-                    # entry: an env-ONLY allowlist and the slug set do not
-                    # apply to it (see the comments above _env_json_models
-                    # and _stored_slug_ctx).
+                    # entry: the env allowlist and the slug set do not apply
+                    # to it (see the comments above _env_json_models and
+                    # _stored_slug_ctx).
                     _revert_ctx = (
-                        _allowed_ctx if ("ALLOWED_MODELS" in _LOCAL_KEYS
-                                         or _env_json_models)
-                        else {})
+                        _allowed_ctx if _env_json_models
+                        else _stored_allowed_ctx)
                     try:
                         _reverted = _AdminConfig.model_validate(
                             {**_revert_ctx, "MODEL_OVERRIDES": {_mid: _reverted}},
@@ -2354,11 +2363,19 @@ def _legacy_state_warnings(
              if os.path.normpath(c) != os.path.normpath(_configured)
              and os.path.exists(c)), None)
         if _legacy_path is not None and not os.path.exists(_configured):
+            # The stores resolve to {DATA_DIR}/db, so pointing WHISPER_DATA_DIR
+            # at a legacy *.sqlite3 file's folder can never reach it (and for
+            # a /data-root compose store that folder IS the data dir already).
+            _fix = (
+                f"set WHISPER_DB_DIR to "
+                f"{os.path.dirname(_legacy_path)!r}."
+                if _legacy_name.endswith(".sqlite3") else
+                f"set WHISPER_DATA_DIR (currently {data_dir!r}) to the old "
+                f"location.")
             out.append(
                 f"legacy state {_legacy_path} exists but the "
                 f"configured path {_configured} does not — it is being "
-                f"IGNORED. Move the file there, or set WHISPER_DATA_DIR "
-                f"(currently {data_dir!r}) to the old location."
+                f"IGNORED. Move the file there, or {_fix}"
             )
     return out
 

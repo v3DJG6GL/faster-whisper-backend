@@ -208,6 +208,30 @@ def test_factory_save_refuses_dropping_a_slug_stored_overrides_name(tmp_path):
         "CAPTURES_PIPELINE_RULES_EXCLUDE": ["gone"]}), encoding="utf-8")
     cs.save_factory_rules([_regex_rule("keep"), _terminal()],
                           path=path, overrides_path=str(local))
+    assert [r["name"] for r in cs.load_factory_rules(path)] == ["keep", "trim-edges"]
+
+
+def test_factory_save_ignores_a_ref_that_already_dangles(tmp_path):
+    """Only the slugs THIS save removes are refused: a stored ref that already
+    names no factory rule (left by a local-copy reset or a git-pulled rename)
+    must not brick every Defaults save, a no-op one included."""
+    import pytest
+    path = str(tmp_path / "config.json")
+    local = tmp_path / "config.local.json"
+    rules = [_regex_rule("keep"), _regex_rule("other"), _regex_rule("gone"),
+             _terminal()]
+    cs.save_factory_rules(rules, path=path, overrides_path=str(local))
+    local.write_text(json.dumps({"MODEL_OVERRIDES": {"large-v3": {
+        "PIPELINE_RULES_EXCLUDE": ["my-local-rule", "gone"]}}}), encoding="utf-8")
+    cs.save_factory_rules(rules, path=path, overrides_path=str(local))   # no-op
+    cs.save_factory_rules([_regex_rule("keep"), _regex_rule("gone"), _terminal()],
+                          path=path, overrides_path=str(local))   # drops "other"
+    assert [r["name"] for r in cs.load_factory_rules(path)] == [
+        "keep", "gone", "trim-edges"]
+    # Dropping a rule the stored ref DOES name is still refused.
+    with pytest.raises(ValidationError, match="gone"):
+        cs.save_factory_rules([_regex_rule("keep"), _terminal()],
+                              path=path, overrides_path=str(local))
 
 
 def test_terminal_must_be_last():

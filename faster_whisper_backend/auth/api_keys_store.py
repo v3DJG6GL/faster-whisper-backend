@@ -97,7 +97,7 @@ PAGES: tuple[str, ...] = ("quick_config", "captures", "reports", "stats", "logs"
 # (stats joined in v2: "own" = the caller's own jobs + usage, machine cards
 # replaced by a coarse server block unless STATS_OWN_SCOPE_SHOW_SYSTEM_METRICS is on.)
 SCOPED_PAGES: frozenset[str] = frozenset(
-    ("logs", "quick_config", "reports", "captures", "stats")
+    ("quick_config", "reports", "captures", "stats")
 )
 
 # Pages without a per-user notion — only none|all is meaningful.
@@ -207,7 +207,11 @@ def _require_conn() -> sqlite3.Connection:
 
 def hash_key(raw_key: str) -> str:
     """SHA-256 hex of the raw key bytes (UTF-8)."""
-    return sha256(raw_key.encode("utf-8")).hexdigest()
+    # surrogatepass: a lone surrogate from a JSON login body ("\ud800") would
+    # otherwise raise UnicodeEncodeError (an unauthenticated 500, uncounted by
+    # the login lockout). Valid keys hash exactly as before; this one just
+    # misses the index and fails like any wrong key.
+    return sha256(raw_key.encode("utf-8", "surrogatepass")).hexdigest()
 
 
 def generate_raw_key() -> str:
@@ -1045,7 +1049,11 @@ def rename_profile_refs(old: str, new: str) -> int:
                     touched += 1
             conn.execute("COMMIT")
         except BaseException:
-            conn.execute("ROLLBACK")
+            # SQLite may already have rolled back on its own (SQLITE_FULL,
+            # SQLITE_IOERR, ...); a bare ROLLBACK would then raise and
+            # replace the real error.
+            if conn.in_transaction:
+                conn.execute("ROLLBACK")
             raise
         if touched:
             _rebuild_index_locked()
@@ -1134,7 +1142,19 @@ def bootstrap_admin_from_env(raw_key: str) -> None:
     _refresh_if_sibling_committed()
     # If this hash already maps to an active key, nothing to do — and nothing
     # to complain about, however weak the value is by today's floor.
-    if _KEY_INDEX.get(h) is not None:
+    _existing = _KEY_INDEX.get(h)
+    if _existing is not None:
+        # The index holds every live key, admin or not. A NON-admin key here
+        # (a wrong key pasted into the env var) would leave the server open,
+        # or with no admin key, while the operator believes it is locked
+        # down — the same outcome the revoked-key branch below calls fatal.
+        if not _existing["is_admin"]:
+            raise BootstrapAdminError(
+                "WHISPER_BOOTSTRAP_ADMIN_KEY matches an existing NON-admin API "
+                "key. Refusing to start: it would not lock the server down. "
+                "Set the variable to a different key, or clear it and use the "
+                "existing admin credentials."
+            )
         logger.debug("[auth] bootstrap key already present — skipping")
         return
     if not _bootstrap_key_is_strong(raw_key):

@@ -68,6 +68,21 @@ def test_nonadmin_bootstrap_user_raises_bootstrap_admin_error(api_keys_db):
     assert api_keys_db.is_locked_down() is False
 
 
+def test_existing_nonadmin_key_raises_bootstrap_admin_error(api_keys_db):
+    # The env key pasted from a NON-admin user's key is already in the index;
+    # skipping silently would boot the server OPEN while the operator believes
+    # the env key locked it down.
+    uid = api_keys_db.create_user("alice", is_admin=False)
+    raw, _rec = api_keys_db.create_key(uid)
+    with pytest.raises(api_keys_store.BootstrapAdminError, match="NON-admin"):
+        api_keys_store.bootstrap_admin_from_env(raw)
+    assert api_keys_db.is_locked_down() is False
+    # An existing ADMIN key is still a silent no-op.
+    api_keys_store.bootstrap_admin_from_env(_KEY)
+    api_keys_store.bootstrap_admin_from_env(_KEY)
+    assert api_keys_db.is_locked_down() is True
+
+
 def test_lifespan_passes_bootstrap_errors_through_unwrapped(
         app_module, monkeypatch, caplog):
     monkeypatch.setattr(app_module.cfg, "BOOTSTRAP_ADMIN_KEY", _KEY,

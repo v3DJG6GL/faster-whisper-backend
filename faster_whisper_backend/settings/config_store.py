@@ -255,13 +255,16 @@ def save_factory_rules(rules: list[Any], path: str = FACTORY_PATH, *,
     out_rules = validated.model_dump(exclude_none=True, mode="json")["PIPELINE_RULES"]
     if "PIPELINE_RULES" not in env_pinned_fields():
         stored = load_overrides(overrides_path or OVERRIDES_PATH)
-        refs = {k: stored[k] for k in ("MODEL_OVERRIDES", "OVERRIDE_PROFILES",
-                                       "CAPTURES_PIPELINE_RULES_EXCLUDE")
-                if k in stored}
-        if refs and "PIPELINE_RULES" not in stored:
+        refs = {k: stored[k] for k in _SLUG_REF_KEYS if k in stored}
+        # Refuse only the slugs THIS save removes from the factory list: a ref
+        # that already dangles (a local-copy rule, a git-pulled rename) is not
+        # this edit's doing and must not brick every Defaults save.
+        out_names = {r["name"] for r in out_rules}
+        removed = _factory_slugs(path) - out_names
+        if refs and removed and "PIPELINE_RULES" not in stored:
             settings_schema.AdminConfig.model_validate(
                 refs, context={"canonical_slugs": frozenset(
-                    r["name"] for r in out_rules)})
+                    out_names | (_stored_ref_slugs(refs) - removed))})
     # config.json now holds ALL factory defaults, not just PIPELINE_RULES, so
     # read-modify-write to preserve the sibling scalar keys. A blind whole-file
     # replace (as before) would wipe every other default on a rules promote.
@@ -418,16 +421,29 @@ def save_overrides(
         env_effective = _env_effective_values()
         if env_effective:
             context["env_effective"] = env_effective
-        # The local file usually carries no PIPELINE_RULES copy (factory rules
-        # live in config.json), so the merged pass would never see the
-        # canonical slug list and a typo'd slug would persist silently. Scoped
-        # to saves that touch a slug-bearing key so a rule renamed in
-        # config.json cannot brick unrelated settings saves.
-        if "PIPELINE_RULES" not in merged and any(
-                k in payload for k in ("MODEL_OVERRIDES", "OVERRIDE_PROFILES",
-                                       "CAPTURES_PIPELINE_RULES_EXCLUDE")):
-            context["canonical_slugs"] = _save_canonical_slugs()
         validated = settings_schema.AdminConfig.model_validate(merged, context=context)
+        # The local file usually carries no PIPELINE_RULES copy (factory rules
+        # live in config.json), so the merged pass never sees the canonical
+        # slug list and a typo'd slug would persist silently. Checked in a
+        # separate pass over ONLY the slug-bearing keys this save submits, so
+        # a rule renamed or dropped in config.json cannot brick a save of the
+        # other keys (the merged pass would check every stored one).
+        if "PIPELINE_RULES" not in merged:
+            if ("PIPELINE_RULES" in payload and "PIPELINE_RULES" in existing
+                    and "PIPELINE_RULES" not in env_pinned_fields()):
+                # The local copy is being removed: the factory list becomes
+                # the one in force, so EVERY stored ref must survive it, or
+                # each later save of that key 422s on a slug nobody can see.
+                slug_keys = [k for k in _SLUG_REF_KEYS if merged.get(k) is not None]
+                slugs = _factory_slugs() if slug_keys else set()
+            else:
+                slug_keys = [k for k in _SLUG_REF_KEYS
+                             if k in payload and merged.get(k) is not None]
+                slugs = _save_canonical_slugs() if slug_keys else set()
+            if slugs:
+                settings_schema.AdminConfig.model_validate(
+                    {k: merged[k] for k in slug_keys},
+                    context={"canonical_slugs": frozenset(slugs)})
         if env_effective:
             # load_overrides validates the file ON ITS OWN (no env context),
             # at the next boot and in the hot-apply right after this save, and
@@ -532,6 +548,32 @@ def _canonical_rule_slugs() -> set[str]:
         if name:
             out.add(name)
     return out
+
+
+# Stored keys that name pipeline rules by slug (validated against the
+# canonical rule list on save; see save_overrides / save_factory_rules).
+_SLUG_REF_KEYS = ("MODEL_OVERRIDES", "OVERRIDE_PROFILES",
+                  "CAPTURES_PIPELINE_RULES_EXCLUDE")
+
+
+def _factory_slugs(path: str | None = None) -> set[str]:
+    """Slugs of the committed factory rules; empty set (= unknown, skip)
+    when config.json cannot be read."""
+    try:
+        return {r["name"] for r in load_factory_rules(path or FACTORY_PATH)}
+    except Exception:  # noqa: BLE001 — a broken factory file is reported elsewhere
+        return set()
+
+
+def _stored_ref_slugs(refs: dict[str, Any]) -> set[str]:
+    """Every rule slug named by the slug-bearing keys of a stored dict."""
+    out: set[str] = set(refs.get("CAPTURES_PIPELINE_RULES_EXCLUDE") or [])
+    for group in ("MODEL_OVERRIDES", "OVERRIDE_PROFILES"):
+        for bundle in (refs.get(group) or {}).values():
+            if isinstance(bundle, dict):
+                for k in ("PIPELINE_RULES_EXCLUDE", "PIPELINE_RULES_INCLUDE"):
+                    out.update(bundle.get(k) or [])
+    return {s for s in out if isinstance(s, str)}
 
 
 def _save_canonical_slugs() -> set[str]:

@@ -120,7 +120,10 @@ def test_rule_rename_migrates_every_stored_reference():
         "MODEL_OVERRIDES": {"m": {"PIPELINE_RULES_EXCLUDE": ["dictation-map"]}},
         "OVERRIDE_PROFILES": {"p": {"PIPELINE_RULES_INCLUDE": ["dictation-map", "de-dictation-map"]}},
     }
+    # Both run on every stored / env path (config_store._migrate_legacy_keys,
+    # config.py's JSON env loop): the bundles' slug lists are migrate_bundle's.
     renames.migrate_rule_slugs(raw)
+    renames.migrate_bundle_keys(raw)
     assert [r["name"] for r in raw["PIPELINE_RULES"]] == ["de-dictation-map", "other"]
     assert raw["CAPTURES_PIPELINE_RULES_EXCLUDE"] == ["capitalize-after-terminator", "de-dictation-map"]
     assert raw["MODEL_OVERRIDES"]["m"]["PIPELINE_RULES_EXCLUDE"] == ["de-dictation-map"]

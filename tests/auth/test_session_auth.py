@@ -1,5 +1,5 @@
 """Cookie-session auth: /auth/login + /auth/logout, cookie-authenticated
-access to protected routes, sliding TTL, user revocation, the Secure flag,
+access to protected routes, absolute TTL, user revocation, the Secure flag,
 and the CSRF guard (enforced for cookie auth, exempt for bearer clients).
 
 TestClient keeps an httpx cookie jar across requests on the same instance,
@@ -108,7 +108,7 @@ def test_logout_clears_session(client, make_user_key):
     assert client.get("/settings/state").status_code == 401
 
 
-# --- sliding TTL / expiry ---------------------------------------------------
+# --- absolute TTL / expiry -------------------------------------------------
 
 def test_expired_session_is_rejected(client, make_user_key):
     from faster_whisper_backend.auth import sessions_store
@@ -123,54 +123,82 @@ def test_expired_session_is_rejected(client, make_user_key):
     assert client.get("/settings/state").status_code == 401
 
 
-def test_active_session_slides_expiry(client, make_user_key):
+def test_active_session_does_not_move_expiry(client, make_user_key):
     import time
     from faster_whisper_backend.auth import sessions_store
     _uid, raw = make_user_key("root", is_admin=True)
     client.post("/auth/login", json={"key": raw})
-    # Read the stored expiry, then force a slide by clearing the debounce.
     before = sessions_store._require_conn().execute(
-        "SELECT expires_ts FROM sessions"
-    ).fetchone()[0]
-    sessions_store._SLIDE_CACHE.clear()
+        "SELECT created_ts, expires_ts FROM sessions"
+    ).fetchone()
     time.sleep(0.01)
     assert client.get("/settings/state").status_code == 200
     after = sessions_store._require_conn().execute(
-        "SELECT expires_ts FROM sessions"
-    ).fetchone()[0]
-    assert after > before
+        "SELECT created_ts, expires_ts FROM sessions"
+    ).fetchone()
+    assert tuple(after) == tuple(before)
 
 
-def test_sliding_window_stays_equal_to_the_ttl(tmp_path, monkeypatch):
-    # The slide keeps the original lifetime (expires - created) as the window.
-    # created_ts used to stay at login, so every slide grew the next window by
-    # the session's age: 1000, 1400, 2200, 3400 s for a 1000 s TTL slid every
-    # 400 s, and a raw token used outside a browser outlived SESSION_TTL_S.
+def _fake_clock_store(tmp_path, monkeypatch, clock):
     import types
     from faster_whisper_backend.auth import sessions_store
-    clock = [10_000.0]
     monkeypatch.setattr(sessions_store, "time",
                         types.SimpleNamespace(time=lambda: clock[0]))
     sessions_store.init_db(str(tmp_path / "sessions.sqlite3"))
+    return sessions_store
+
+
+def _close_fake_clock_store(sessions_store):
+    sessions_store._require_conn().close()
+    sessions_store._conn = None
+    sessions_store._reset_for_tests()
+
+
+def test_active_session_ends_ttl_after_login(tmp_path, monkeypatch):
+    # The row used to slide on every lookup, so a raw token replayed outside
+    # the browser (whose cookie dies TTL after login) stayed valid for as long
+    # as it kept being used.
+    clock = [10_000.0]
+    sessions_store = _fake_clock_store(tmp_path, monkeypatch, clock)
     try:
         raw, _csrf = sessions_store.create_session("u" * 32, ttl_s=1000.0)
-        for _ in range(4):
-            clock[0] += sessions_store._SLIDE_DEBOUNCE_S + 100.0
-            rec = sessions_store.lookup_session(raw)
-            assert rec is not None
-            assert rec["expires_ts"] - clock[0] == 1000.0
-            stored = sessions_store._require_conn().execute(
-                "SELECT expires_ts FROM sessions").fetchone()[0]
-            assert stored - clock[0] == 1000.0
-        # The rebuilt index (purge, sibling commit) keeps the same window.
+        for _ in range(2):
+            clock[0] += 400.0
+            assert sessions_store.lookup_session(raw) is not None
+        clock[0] += 200.0                          # 1000 s after login
+        assert sessions_store.lookup_session(raw) is None
         sessions_store.purge_expired()
-        clock[0] += sessions_store._SLIDE_DEBOUNCE_S + 100.0
-        rec = sessions_store.lookup_session(raw)
-        assert rec["expires_ts"] - clock[0] == 1000.0
+        assert sessions_store.lookup_session(raw) is None
     finally:
-        sessions_store._require_conn().close()
-        sessions_store._conn = None
-        sessions_store._reset_for_tests()
+        _close_fake_clock_store(sessions_store)
+
+
+def test_legacy_slid_session_is_capped_at_the_configured_ttl(
+        tmp_path, monkeypatch):
+    # Older builds slid rows forward with windows that grew by the session's
+    # age (created_ts pinned at login), so a stored expires_ts can lie far
+    # out. created_ts + the current SESSION_TTL_S caps it, which also lets a
+    # lowered TTL reach existing sessions.
+    clock = [10_000_000.0]
+    ttl = 1000.0
+    sessions_store = _fake_clock_store(tmp_path, monkeypatch, clock)
+    monkeypatch.setattr(sessions_store.cfg, "SESSION_TTL_S", int(ttl))
+    try:
+        raw, _csrf = sessions_store.create_session("u" * 32, ttl_s=ttl)
+        sessions_store._require_conn().execute(
+            "UPDATE sessions SET created_ts = ?, expires_ts = ?",
+            (clock[0] - 10 * ttl, clock[0] + 10 * ttl))
+        sessions_store.purge_expired()             # reaped, not just hidden
+        assert sessions_store._require_conn().execute(
+            "SELECT COUNT(*) FROM sessions").fetchone()[0] == 0
+        # Same cap on the lookup path for a row still in the index.
+        raw2, _ = sessions_store.create_session("v" * 32, ttl_s=10 * ttl)
+        assert sessions_store.lookup_session(raw2) is not None
+        clock[0] += ttl
+        assert sessions_store.lookup_session(raw2) is None
+        assert sessions_store.lookup_session(raw) is None
+    finally:
+        _close_fake_clock_store(sessions_store)
 
 
 # --- user revocation kills live sessions ------------------------------------
@@ -412,8 +440,7 @@ def test_revoke_in_sibling_worker_is_seen_after_local_write(tmp_path):
     next write. create_session/revoke_session used to re-stamp _DATA_VERSION
     AFTER their own commit; since a connection's own commit does not move its
     own PRAGMA data_version, that re-stamp absorbed B's commit and marked it
-    seen — leaving the revoked cookie authenticating in A forever (the sliding
-    TTL renews it on every lookup)."""
+    seen — leaving the revoked cookie authenticating in A until it expired."""
     db = str(tmp_path / "sessions.db")
     a = _worker("sessions_store_a", db)
     b = _worker("sessions_store_b", db)
@@ -438,10 +465,10 @@ def test_revoke_in_sibling_worker_is_seen_after_local_write(tmp_path):
 
 
 def test_lookup_sibling_check_is_throttled(tmp_path):
-    """The read-path sibling-commit check is rate-limited: every debounced
-    slide UPDATE is its own autocommit and moves PRAGMA data_version for every
+    """The read-path sibling-commit check is rate-limited: every login and
+    logout is its own autocommit and moves PRAGMA data_version for every
     OTHER worker, so an unthrottled check made each sibling rebuild the whole
-    O(N) index roughly once per slide. A tight lookup loop must trigger the
+    O(N) index once per such commit. A tight lookup loop must trigger the
     rebuild at most a couple of times, not once per call."""
     db = str(tmp_path / "sessions.db")
     w = _worker("sessions_store_throttle", db)
@@ -494,33 +521,6 @@ def test_fresh_sibling_login_seen_inside_throttle_window(tmp_path):
     assert b.lookup_session(raw) is not None            # inside the 1 s window
 
 
-def test_slide_expiry_touches_slide_cache_only_under_the_lock(tmp_path):
-    """_slide_expiry_debounced read and wrote _SLIDE_CACHE OUTSIDE _lock while
-    _rebuild_index_locked() iterates that same dict under the lock — a
-    threadpool auth lookup racing the hourly purge_expired() task raised
-    'dictionary changed size during iteration'. Assert the invariant directly
-    (a timing race makes a flaky test): every access happens with _lock held."""
-    db = str(tmp_path / "sessions.db")
-    w = _worker("sessions_store_slide", db)
-    unlocked = []
-
-    class Probe(dict):
-        def get(self, key, *a):
-            if not w._lock.locked():
-                unlocked.append(("get", key))
-            return super().get(key, *a)
-
-        def __setitem__(self, key, value):
-            if not w._lock.locked():
-                unlocked.append(("set", key))
-            super().__setitem__(key, value)
-
-    w._SLIDE_CACHE = Probe()
-    raw, _csrf = w.create_session("u", 3600.0)
-    assert w.lookup_session(raw) is not None      # drives the slide path
-    assert unlocked == []
-
-
 # --- failed-login throttle --------------------------------------------------
 
 def test_login_failures_are_throttled(client, app_module, make_user_key):
@@ -538,6 +538,21 @@ def test_login_failures_are_throttled(client, app_module, make_user_key):
     assert body["error"]["type"] == "rate_limit_exceeded"
     assert body["error"]["param"] == "LOGIN_FAILURE_RATE"
     assert body["detail"] == body["error"]["message"]
+
+
+def test_login_with_lone_surrogate_key_is_401_and_counted(
+        client, app_module, make_user_key):
+    """A lone-surrogate JSON escape made hash_key raise UnicodeEncodeError:
+    an unauthenticated 500 that the failure throttle never counted."""
+    make_user_key("root", is_admin=True)
+    body = b'{"key":"\\ud800"}'
+    hdrs = {"content-type": "application/json"}
+    limit = int(app_module.cfg.LOGIN_FAILURE_RATE)
+    for _ in range(limit):
+        assert client.post("/auth/login", content=body,
+                           headers=hdrs).status_code == 401
+    assert client.post("/auth/login", content=body,
+                       headers=hdrs).status_code == 429
 
 
 def test_login_success_resets_the_window(client, app_module, make_user_key):

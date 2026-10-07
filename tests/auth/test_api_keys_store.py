@@ -219,6 +219,28 @@ def test_rename_profile_refs_is_all_or_nothing(api_keys_db, monkeypatch):
     assert ak.rename_profile_refs("clinic-de", "clinic-deutsch") == 2
 
 
+def test_rename_profile_refs_keeps_the_real_error_after_sqlite_rolled_back(
+        api_keys_db, monkeypatch):
+    """SQLite rolls the transaction back by itself on SQLITE_FULL / IOERR; a
+    bare ROLLBACK then raised "no transaction is active" and replaced the
+    real error in the overrides route's 500 detail."""
+    import json
+    ak = api_keys_db
+    conn = ak._require_conn()
+    u = ak.create_user("u", is_admin=False)
+    conn.execute("UPDATE users SET permissions=? WHERE id=?", (json.dumps({
+        "pages": {}, "config": {"direct": {}, "profiles": ["clinic-de"]}}), u))
+
+    def _full(binding, old, new):
+        conn.execute("ROLLBACK")      # what SQLite does on its own
+        raise sqlite3.OperationalError("database or disk is full")
+    monkeypatch.setattr(ak, "_rewrite_profile_in_binding", _full)
+    with pytest.raises(sqlite3.OperationalError, match="disk is full"):
+        ak.rename_profile_refs("clinic-de", "clinic-deutsch")
+    assert not conn.in_transaction
+    assert ak.get_user_config(u)["profiles"] == ["clinic-de"]
+
+
 # ---------------------------------------------------------------------------
 # create_key validation
 # ---------------------------------------------------------------------------
@@ -387,6 +409,14 @@ def test_stats_accepts_own_scope(api_keys_db):
     assert ak.get_user_permissions(uid)["pages"]["stats"] == "own"
     assert "stats" in ak.SCOPED_PAGES
     assert "stats" not in ak.ACCESS_ONLY_PAGES
+
+
+def test_scoped_and_access_only_pages_are_disjoint():
+    # /settings/api-keys reports both sets; a page in both would be offered
+    # "own" that set_user_permissions then rejects.
+    assert not (api_keys_store.SCOPED_PAGES & api_keys_store.ACCESS_ONLY_PAGES)
+    assert api_keys_store.SCOPED_PAGES | api_keys_store.ACCESS_ONLY_PAGES == set(
+        api_keys_store.PAGES)
 
 
 def test_default_nonadmin_perms_stats_own(api_keys_db):

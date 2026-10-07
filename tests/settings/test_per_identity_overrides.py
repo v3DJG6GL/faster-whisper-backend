@@ -431,10 +431,13 @@ def test_me_server_info_limits_and_keeps(client, app_module, monkeypatch):
 
 def test_me_server_info_url_limits_only_with_url_download(
         client, app_module, monkeypatch):
-    monkeypatch.setattr(app_module.cfg, "URL_DOWNLOAD_ENABLED", True)
     monkeypatch.setattr(app_module.cfg, "URL_MAX_DURATION_S", 600)
     monkeypatch.setattr(app_module.cfg, "URL_ALLOWED_EXTRACTORS", ["Youtube"])
     monkeypatch.setattr(app_module.cfg, "URL_ALLOW_DIRECT_MEDIA", False)
+    monkeypatch.setattr(app_module.cfg, "URL_DOWNLOAD_ENABLED", False)
+    limits = client.get("/v1/me").json()["server_info"]["limits"]
+    assert not [k for k in limits if k.startswith("url_")], limits
+    monkeypatch.setattr(app_module.cfg, "URL_DOWNLOAD_ENABLED", True)
     limits = client.get("/v1/me").json()["server_info"]["limits"]
     assert limits["url_max_duration_s"] == 600
     assert limits["url_allowed_extractors"] == ["Youtube"]
