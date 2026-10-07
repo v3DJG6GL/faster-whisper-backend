@@ -43,10 +43,12 @@ _BATCH_PROGRESS: "dict[str, dict]" = {}
 # progress_id → owner, remembered from the handler's seed so an entry that an
 # executor-thread stage re-creates after a cap eviction keeps its owner stamp
 # instead of coming back owner-less and readable/cancellable by any caller.
-# Popped in the handlers' finally (alongside _BATCH_PROGRESS) and in the
-# stale sweep.  Deliberately NOT popped in the cap eviction — that is
-# exactly the moment an executor thread can re-create the entry and needs
-# the stamp.
+# Popped in the handlers' finally (alongside _BATCH_PROGRESS).  Deliberately
+# NOT popped in the cap eviction — that is exactly the moment an executor
+# thread can re-create the entry and needs the stamp — and an owner-stamped
+# entry is never stale-swept: a run waiting on the GPU gate ticks nothing
+# for as long as the queue holds it, and its handler's _progress_close
+# retires the entry anyway.
 _PROGRESS_OWNER: "dict[str, str]" = {}
 _BATCH_PROGRESS_MAX = 200
 _BATCH_PROGRESS_STALE_S = 2 * 3600
@@ -205,7 +207,8 @@ async def _jobs_start_async(pid: "str | None", **kw) -> bool:
         def _close(f: "asyncio.Future") -> None:
             if not f.cancelled() and f.exception() is None and f.result():
                 f.get_loop().run_in_executor(None, lambda: _jobs_finish_sync(
-                    pid, status="error", error="request aborted"))
+                    pid, status="error", error="request aborted",
+                    request_id=kw.get("request_id")))
         fut.add_done_callback(_close)
         raise
 
@@ -226,10 +229,15 @@ def _job_error_text(status: str, exc: "BaseException | None",
 def _jobs_finish_sync(pid: str, *, status: str, payload=None,
                       error: "str | None" = None, stages=None, plan=None,
                       model: "str | None" = None,
-                      task: "str | None" = None) -> None:
+                      task: "str | None" = None,
+                      request_id: "str | None" = None) -> None:
     """Stamp the terminal state. `payload` is the response object exactly as
     the handler returned it (dict, or the `text` format's str); it is stored
-    only for status "ok". Blocking SQLite — call off the loop for big runs."""
+    only for status "ok". `request_id` is the run's own (the one
+    _jobs_start stored): the run closes its progress entry before this
+    lands, so a same-id re-post can have replaced the row meanwhile, and
+    its `running` row must not take this run's state and payload.
+    Blocking SQLite — call off the loop for big runs."""
     state = {"ok": "done", "cancelled": "cancelled"}.get(status, "failed")
     try:
         result = None
@@ -237,9 +245,11 @@ def _jobs_finish_sync(pid: str, *, status: str, payload=None,
             result = _jsonable_encoder(payload)
         if not _jobs_store.finish(job_id=pid, state=state, error=error,
                                   result=result, stages=stages, plan=plan,
-                                  model=model, task=task, ttl_s=_jobs_ttl_s()):
-            # Evicted meanwhile (row cap / byte cap / TTL): a re-attaching
-            # client gets 404, and this line is what explains it.
+                                  model=model, task=task, ttl_s=_jobs_ttl_s(),
+                                  request_id=request_id):
+            # Evicted meanwhile (row cap / byte cap / TTL), or superseded by
+            # a same-id re-post: a re-attaching client gets 404 (or the new
+            # run), and this line is what explains it.
             logger.info("[jobs] row %s gone before finish — result not stored",
                         pid[:8])
     except Exception as e:  # noqa: BLE001
@@ -330,11 +340,14 @@ def _progress_set(pid: "str | None", **fields) -> None:
         # threads too, and the handler's finally pops entries on the loop
         # thread — iterating the live dict would raise "dictionary changed
         # size during iteration" out of a healthy stage callback.
+        # Owner-stamped entries are skipped (see _PROGRESS_OWNER): sweeping
+        # a live run that is only waiting would 404 its owner and let its
+        # next tick re-create the entry owner-less.
         now = time.monotonic()
         for k in [k for k, v in list(_BATCH_PROGRESS.items())
-                  if now - v.get("updated", 0) > _BATCH_PROGRESS_STALE_S]:
+                  if now - v.get("updated", 0) > _BATCH_PROGRESS_STALE_S
+                  and k not in _PROGRESS_OWNER]:
             _BATCH_PROGRESS.pop(k, None)
-            _PROGRESS_OWNER.pop(k, None)
         if len(_BATCH_PROGRESS) >= _BATCH_PROGRESS_MAX:
             _snap = list(_BATCH_PROGRESS.items())
             if _snap:

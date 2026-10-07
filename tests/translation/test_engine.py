@@ -313,6 +313,10 @@ def test_guard_reasons():
     # A source that really repeats (a chant, a lyric) translates to a
     # repeating output: that is no generation loop.
     assert g("Ja, " * 15 + "ja.", "Yes, " * 15 + "yes.", target="en") is None
+    # ...but the chant does not excuse a real loop elsewhere in the output.
+    chant = "Ja, " * 16 + "ja. Und dann ging ich nach Hause und habe gegessen."
+    assert g(chant, "Yes, " * 16 + "yes." + " And then I went home," * 5,
+             target="en") == "repetition loop"
     # With the source language unknown the copy check is off: a target in
     # the text's own language legitimately returns it unchanged.
     assert g("Hallo Welt", "Hallo Welt", source_known=False) is None
@@ -331,6 +335,13 @@ def test_guard_repetition_scan_is_fast_on_large_clean_output():
     out = " ".join(random.Random(2).choices(words, k=9000))
     t0 = time.monotonic()
     assert translation._guard_reason(src, out) is None
+    assert time.monotonic() - t0 < 5.0
+    # A looping output makes the guard scan the SOURCE too: that scan must
+    # stay inside the window as well (a whole 50 kB clean source would take
+    # tens of seconds).
+    t0 = time.monotonic()
+    assert translation._guard_reason(src, "abcdefghijkl " * 4 + out) == \
+        "repetition loop"
     assert time.monotonic() - t0 < 5.0
 
 
@@ -1609,6 +1620,47 @@ def test_contended_locks_survive_a_second_event_loop(lru_env, monkeypatch):
         assert a is b
         assert load_lock in (None, translation._loading["o/a"])
         load_lock = translation._loading["o/a"]
+
+
+def test_a_cancel_mid_load_finishes_the_build_under_the_ref_lock(
+        lru_env, monkeypatch):
+    """A cancellation landing on the load await cannot stop llama.cpp on
+    its thread: the per-ref lock must stay held until the build lands, so
+    the next request for the ref gets that build instead of starting a
+    second load next to it. The cancelled caller's model stays unleased."""
+    made, stats = lru_env
+    started = threading.Event()
+    release = threading.Event()
+    calls = []
+
+    def slow_load(ref, device, family, download_cb=None):
+        calls.append(ref)
+        started.set()
+        assert release.wait(5)
+        made[ref] = _FakeLlama(ref)
+        return made[ref]
+    monkeypatch.setattr(translation, "_load_blocking", slow_load)
+
+    async def run():
+        first = asyncio.ensure_future(
+            translation._get_model("o/a", lease=True))
+        await asyncio.get_running_loop().run_in_executor(
+            None, started.wait, 5)
+        first.cancel()
+        await asyncio.sleep(0.05)
+        second = asyncio.ensure_future(translation._get_model("o/a"))
+        await asyncio.sleep(0.05)    # parked on the still-held ref lock
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await first
+        return await second
+    llm = asyncio.run(run())
+    assert calls == ["o/a"]
+    assert llm is made["o/a"] and translation._models["o/a"] is llm
+    assert "o/a" not in translation._active
+    assert translation._loads_in_flight == 0
+    assert stats["registered"] == [
+        (translation._STATS_PREFIX + "o/a", "cpu", "gguf")]
 
 
 def test_concurrent_misses_respect_max_loaded_models(lru_env, monkeypatch):

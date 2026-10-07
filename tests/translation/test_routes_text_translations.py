@@ -133,9 +133,10 @@ def test_serial_translations_are_not_rate_limited(client, app_module,
 def test_per_minute_backstop_429s_and_releases_the_held_receipt(
         client, app_module, monkeypatch):
     """The per-minute counter is hit FIRST inside the release-on-reject
-    bracket: over the ceiling the request 429s with the config field named,
-    and a parked dictation receipt is handed back instead of left to the
-    sweeper."""
+    bracket — ahead of the body validation, so a loop of malformed bodies is
+    counted too: over the ceiling the request 429s with the config field
+    named, and a parked dictation receipt is handed back instead of left to
+    the sweeper."""
     from faster_whisper_backend.transcription import receipt_hold
 
     _enable(app_module, monkeypatch, TRANSLATE_RATE_PER_MIN=2)
@@ -143,8 +144,14 @@ def test_per_minute_backstop_429s_and_releases_the_held_receipt(
     window = tr_routes._text_translate_rate
     window._state.clear()
     try:
-        for _ in range(2):
-            assert client.post(URL, json=_body()).status_code == 200
+        # A body that fails validation still counts against the window.
+        assert client.post(URL, json={"segments": [], "targets": ["en"]}
+                           ).status_code == 422
+        assert client.post(URL, json=_body()).status_code == 200
+        # Over the ceiling a malformed body is refused by the window, not
+        # by the validation it never reaches.
+        assert client.post(URL, json={"segments": [], "targets": ["en"]}
+                           ).status_code == 429
         r = client.post(URL, json=_body())
         assert r.status_code == 429, r.text
         body = r.json()

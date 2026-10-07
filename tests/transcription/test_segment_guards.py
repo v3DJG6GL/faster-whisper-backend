@@ -174,13 +174,15 @@ def test_burst_keeps_spoken_words_after_an_early_squeezed_word():
 
 def test_burst_fallback_never_starts_at_a_real_one_frame_word():
     # The same squeezed " a" with two spoken words after it, but a pile of
-    # fast words that are not short (0.07 s long, 0.07 s apart): no close
+    # fast words that are not short (0.09 s long, 0.10 s apart): no close
     # word looks made up, so the fallback decides. It must start at the
-    # pile, not at " a" — that would drop "real real2" with it.
+    # pile, not at " a" — that would drop "real real2" with it. Every
+    # threshold has margin (0.09 vs the 0.07 s floor, 0.10 and 0.14/0.16 vs
+    # the 1/8 s gap), so the fixture stays on the fallback path.
     words = [_w(f" w{i}", 0.3 * i, 0.3 * i + 0.3) for i in range(5)] + [
-        _w(" a", 4.40, 4.44), _w(" real", 4.50, 4.625),
-        _w(" real2", 4.625, 4.70)] + [
-        _w(f" x{i}", 4.75 + 0.07 * i, 4.82 + 0.07 * i) for i in range(9)]
+        _w(" a", 4.40, 4.44), _w(" real", 4.48, 4.62),
+        _w(" real2", 4.62, 4.74)] + [
+        _w(f" x{i}", 4.78 + 0.10 * i, 4.87 + 0.10 * i) for i in range(6)]
     idx, rules = sg.find_tail_cut(words, "", burst=8)
     assert rules == ["burst"]
     assert words[idx].word == " x0"

@@ -39,3 +39,22 @@ def test_me_translation_models_lead_with_the_callers_effective_model(
     j = client.get("/v1/me").json()
     assert [m["id"] for m in j["translation_models"]] == [
         "org/x:Q4", "org/d:Q4", "org/a:Q4"]
+
+
+def test_me_advertises_the_retained_cap_for_kept_media(client, app_module,
+                                                       monkeypatch):
+    """POST /v1/audio/media and the video rungs' over_cap use
+    media_store.max_retainable_bytes(); /v1/me must advertise that, while
+    media_max_bytes stays the (larger) transcription ceiling."""
+    from faster_whisper_backend.media import subtitle_mux as pk
+    monkeypatch.setattr(app_module.cfg, "MEDIA_PACKAGE_ENABLED", True,
+                        raising=False)
+    monkeypatch.setattr(pk, "ffmpeg_capabilities",
+                        lambda: pk.FfmpegCaps(True, True, True, None, "7.0"))
+    monkeypatch.setattr(app_module.cfg, "MEDIA_MAX_BYTES", 10_000_000_000)
+    monkeypatch.setattr(app_module.cfg, "RETAINED_MEDIA_MAX_BYTES",
+                        5_000_000_000)
+    j = client.get("/v1/me").json()
+    assert j["media_max_bytes"] == 10_000_000_000
+    assert j["retained_max_bytes"] == 5_000_000_000
+    assert j["media_package"]["max_upload_bytes"] == 5_000_000_000

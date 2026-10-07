@@ -287,12 +287,17 @@ def finish(
     model: str | None = None,
     task: str | None = None,
     ttl_s: float,
+    request_id: str | None = None,
 ) -> bool:
     """Stamp the terminal state (+ the verbatim response payload on `done`).
     `result` may be a dict (json / verbose_json) or a str (the `text`
     format) — json.dumps serialises either, and the result route hands the
     decoded value back, so the client receives what the POST would have.
-    Returns False when the row is gone (pruned meanwhile)."""
+    `request_id` (the run's own, as start() stored it) scopes the stamp to
+    that run: a same-id re-post that superseded the row after this run
+    closed its progress entry keeps its `running` row instead of getting
+    this run's state and payload. Returns False when the row is gone
+    (pruned meanwhile) or now belongs to another run."""
     if state not in STATES or state == "running":
         raise ValueError(f"finish: not a terminal state: {state!r}")
     conn = _require_conn()
@@ -305,7 +310,8 @@ def finish(
             "UPDATE jobs SET state = ?, error = ?, result_json = ?, "
             "result_bytes = ?, stages_json = ?, plan_json = ?, "
             "model = COALESCE(?, model), task = COALESCE(?, task), "
-            "finished_ts = ?, expires_ts = ? WHERE job_id = ?",
+            "finished_ts = ?, expires_ts = ? WHERE job_id = ?"
+            + (" AND request_id = ?" if request_id is not None else ""),
             (
                 state,
                 _clip(error, _CAP_ERROR) if state != "done" else None,
@@ -314,6 +320,7 @@ def finish(
                 _side_json(stages), _side_json(plan),
                 _clip(model, _CAP_MODEL), _clip(task, _CAP_SMALL),
                 now, now + float(ttl_s), job_id,
+                *((request_id,) if request_id is not None else ()),
             ),
         )
         return bool(cur.rowcount)
@@ -454,7 +461,9 @@ def mark_running_as_failed(error: str) -> int:
     process's death. Returns the count flipped to `failed`. Only sound with
     ONE worker (the supported setup): the DB is shared, so with
     SERVER_WORKERS > 1 a respawned worker would fail its siblings' live
-    runs — skipped then; prune()'s expiry pass collects the dead rows."""
+    runs — skipped then; prune()'s expiry pass collects the dead rows.
+    The flip is a finish: expires_ts is restamped to now + JOBS_TTL_S, as
+    finish() does, instead of keeping start()'s running floor."""
     from faster_whisper_backend.settings import config as cfg
     try:
         workers = int(getattr(cfg, "SERVER_WORKERS", 1) or 1)
@@ -463,13 +472,14 @@ def mark_running_as_failed(error: str) -> int:
     if workers > 1:
         logger.info("[jobs] interrupted-run flip skipped (multi-worker)")
         return 0
+    ttl_s = float(getattr(cfg, "JOBS_TTL_S", 259_200))
     conn = _require_conn()
     now = time.time()
     with _lock:
         cur = conn.execute(
-            "UPDATE jobs SET state = 'failed', error = ?, finished_ts = ? "
-            "WHERE state = 'running'",
-            (_clip(error, _CAP_ERROR), now),
+            "UPDATE jobs SET state = 'failed', error = ?, finished_ts = ?, "
+            "expires_ts = ? WHERE state = 'running'",
+            (_clip(error, _CAP_ERROR), now, now + ttl_s),
         )
         return cur.rowcount or 0
 

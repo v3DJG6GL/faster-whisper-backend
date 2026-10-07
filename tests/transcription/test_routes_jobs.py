@@ -447,11 +447,13 @@ def test_video_landing_before_the_finish_is_attached_by_the_handler(
     monkeypatch.setattr(media_video.time, "sleep", lambda s: None)
     state = {"state": "done", "media_id": "cd" * 16, "expires_at": 5,
              "height": 720, "container": "mp4", "bytes": 88}
-    media_video._jobs_attach_video_sync(_PID, dict(state))   # still running
+    # False = "still running, gave up": the caller then leaves the close to
+    # the handler side.
+    assert media_video._jobs_attach_video_sync(_PID, dict(state)) is False
     assert js.get_result(_PID) is None
     js.finish(job_id=_PID, state="done", ttl_s=3600,
               result={"text": "hallo", "source_video_pending": True})
-    media_video._jobs_attach_video_sync(_PID, dict(state))   # handler side
+    assert media_video._jobs_attach_video_sync(_PID, dict(state)) is True
     stored = js.get_result(_PID)
     assert "source_video_pending" not in stored
     assert stored["source_video_media_id"] == "cd" * 16

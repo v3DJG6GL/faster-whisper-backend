@@ -2,6 +2,7 @@
 feature flags), /v1/override-profiles* and /v1/request-default-settings (with
 its deprecated /v1/decode-defaults alias).
 """
+import asyncio
 import time
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -19,6 +20,7 @@ from faster_whisper_backend.transcription import progress as tx_progress
 from faster_whisper_backend.translation import engine as _tr
 from faster_whisper_backend.translation import gating as tr_gating
 from faster_whisper_backend.media import download as _udl
+from faster_whisper_backend.media import media_store as url_media_store
 from faster_whisper_backend.media import subtitle_mux as _pk
 
 router = APIRouter()
@@ -136,10 +138,15 @@ async def whoami_capabilities(user: dict = Depends(_get_current_user_dep)):
         getattr(cfg, "URL_DOWNLOAD_ENABLED", False))
     if caps["url_download_enabled"]:
         caps["yt_dlp_version"] = _udl.yt_dlp_version()
-    # The one media ceiling, so the client can label a preview's rungs over
-    # the cap, size its own local copies and refuse an oversized upload
+    # The transcription ceiling (an upload or a link's audio for a run), so
+    # the client can size its own local copies and refuse an oversized file
     # before sending it. Always present: uploads are capped too.
     caps["media_max_bytes"] = int(getattr(cfg, "MEDIA_MAX_BYTES", 10_000_000_000))
+    # Additive: the cap for a file the server KEEPS (POST /v1/audio/media,
+    # a link's video) — media_store.max_retainable_bytes(), at most
+    # media_max_bytes and lower when RETAINED_MEDIA_MAX_BYTES is. A
+    # preview's rungs are flagged over_cap against this one.
+    caps["retained_max_bytes"] = url_media_store.max_retainable_bytes()
     # Additive: whether a link's VIDEO can be kept/fetched (keep_video on the
     # transcription form, POST /v1/audio/url-media/video). Always present;
     # the detail key rides only when on — same discipline as yt_dlp_version.
@@ -167,14 +174,18 @@ async def whoami_capabilities(user: dict = Depends(_get_current_user_dep)):
     # The flag is always present; the detail block rides only when the
     # feature is on — its `reason` says why ffmpeg cannot (a stripped build).
     _pk_on = bool(getattr(cfg, "MEDIA_PACKAGE_ENABLED", True))
-    _pk_caps = _pk.ffmpeg_capabilities() if _pk_on else None
+    # Off the loop: a probe that timed out at startup is not cached, so this
+    # call can run ffmpeg (seconds) instead of hitting the cache.
+    _pk_caps = (await asyncio.to_thread(_pk.ffmpeg_capabilities)
+                if _pk_on else None)
     caps["media_package_enabled"] = bool(_pk_on and _pk_caps and _pk_caps.available)
     if _pk_on:
         caps["media_package"] = {
             "containers": [c for c, ok in (("mkv", _pk_caps.mkv), ("mp4", _pk_caps.mp4)) if ok],
             "max_tracks": _pk.MAX_TRACKS,
             "max_srt_bytes": _pk.MAX_SRT_BYTES,
-            "max_upload_bytes": int(getattr(cfg, "MEDIA_MAX_BYTES", 10_000_000_000)),
+            # The cap POST /v1/audio/media enforces (a retained file).
+            "max_upload_bytes": url_media_store.max_retainable_bytes(),
             "reason": None if _pk_caps.available else _pk_caps.reason,
             "ffmpeg_version": _pk_caps.version,
         }

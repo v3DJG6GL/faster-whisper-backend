@@ -763,9 +763,29 @@ async def _get_model(ref: str, *, lease: bool = False, download_cb=None):
         vram_before = system_stats.gpu_mem_used_bytes()
         loop = asyncio.get_running_loop()
         t0 = time.perf_counter()
+        # A cancellation that lands on the load await (a dropped /v1/translate
+        # connection, a batch run's disconnect) cannot stop llama.cpp on the
+        # executor thread. Released early, the per-ref lock would let the next
+        # request start a second load of the same model next to it (twice the
+        # peak VRAM, a polluted VRAM delta) — so the build is finished under
+        # the lock, cached unleased, and the cancellation re-raised once it is
+        # registered (same shape as transcription.models' _construct).
+        _cancelled: "asyncio.CancelledError | None" = None
+        fut = loop.run_in_executor(
+            None, _load_blocking, ref, device, family, download_cb)
         try:
-            llm = await loop.run_in_executor(
-                None, _load_blocking, ref, device, family, download_cb)
+            while True:
+                try:
+                    llm = await asyncio.shield(fut)
+                    break
+                except asyncio.CancelledError as c:
+                    if fut.cancelled():
+                        raise
+                    _cancelled = _cancelled or c
+        except Exception as e:
+            if _cancelled is not None:
+                raise _cancelled from e
+            raise
         finally:
             _loads_in_flight -= 1
         vram_after = system_stats.gpu_mem_used_bytes()
@@ -783,14 +803,16 @@ async def _get_model(ref: str, *, lease: bool = False, download_cb=None):
             _models[ref] = llm
             _params[ref] = params
             _last_used[ref] = time.monotonic()
-            if lease:
+            # A cancelled caller never receives the model: it stays unleased.
+            leased = lease and _cancelled is None
+            if leased:
                 _active[ref] = _active.get(ref, 0) + 1
         try:
             await asyncio.to_thread(
                 model_registry.register_loaded_model,
                 _STATS_PREFIX + ref, vram, device, "gguf", load_secs)
         except BaseException:
-            if lease:
+            if leased:
                 _release_model(ref)   # the caller never receives the model
             raise
         if _models.get(ref) is not llm:
@@ -807,6 +829,8 @@ async def _get_model(ref: str, *, lease: bool = False, download_cb=None):
             metrics.record_model_load(_STATS_PREFIX + ref, load_secs)
         except Exception:  # noqa: BLE001 — stats only
             pass
+        if _cancelled is not None:
+            raise _cancelled
         return llm
 
 
@@ -1192,7 +1216,9 @@ def _guard_reason(src: str, out: str, *,
     language is unknown (``source_known=False``: a target in the text's own
     language is not short-circuited then, and the unchanged text is its
     correct translation); repetition loop not present in the source (a
-    repeated chant translates to a repeated chant)."""
+    repeated chant translates to a repeated chant — but only as many looped
+    runs as the source has: a chant does not excuse a loop elsewhere in the
+    same output)."""
     s = (src or "").strip()
     o = (out or "").strip()
     if not o:
@@ -1222,8 +1248,9 @@ def _guard_reason(src: str, out: str, *,
                  or len((_KANA_HANGUL_RE if shares_han
                          else _CJK_CHAR_RE).findall(s)) >= 2)):
         return "output copies input"
-    if (_REPETITION_RE.search(o[:_REPETITION_SCAN_CHARS])
-            and not _REPETITION_RE.search(s[:_REPETITION_SCAN_CHARS])):
+    if _REPETITION_RE.search(o[:_REPETITION_SCAN_CHARS]) and (
+            len(_REPETITION_RE.findall(o[:_REPETITION_SCAN_CHARS]))
+            > len(_REPETITION_RE.findall(s[:_REPETITION_SCAN_CHARS]))):
         return "repetition loop"
     return None
 

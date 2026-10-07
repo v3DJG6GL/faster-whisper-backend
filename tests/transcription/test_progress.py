@@ -47,3 +47,23 @@ def test_a_close_racing_a_tick_leaves_no_owner_less_entry(monkeypatch):
     monkeypatch.setattr(tx_progress.jobs, "job_update", lambda *a, **kw: None)
     tx_progress._progress_set(_PID, stage="waiting", owner="bob")
     assert tx_progress._BATCH_PROGRESS[_PID]["owner"] == "bob"
+
+
+def test_the_stale_sweep_spares_an_owner_stamped_run():
+    """A batch run waiting on the GPU gate ticks nothing for as long as the
+    queue holds it: the stale sweep must not pop it (404 to its owner) and
+    let its next tick re-create the entry owner-less. An owner-less stale
+    entry (an invented id) is still swept."""
+    _stray = "5a1e" * 8
+    tx_progress._progress_set(_PID, stage="waiting", owner="u1")
+    tx_progress._progress_set(_stray, stage="waiting")
+    _old = time.monotonic() - tx_progress._BATCH_PROGRESS_STALE_S - 1
+    tx_progress._BATCH_PROGRESS[_PID]["updated"] = _old
+    tx_progress._BATCH_PROGRESS[_stray]["updated"] = _old
+    tx_progress._progress_set("0f" * 16, stage="waiting", owner="u2")
+    assert _stray not in tx_progress._BATCH_PROGRESS
+    tx_progress._progress_set(_PID, stage="analyzing")
+    assert tx_progress._BATCH_PROGRESS[_PID]["owner"] == "u1"
+    assert tx_progress._progress_entry_for(
+        _PID, {"user_id": "u1"})["stage"] == "analyzing"
+    assert tx_progress._progress_entry_for(_PID, {"user_id": "mallory"}) is None

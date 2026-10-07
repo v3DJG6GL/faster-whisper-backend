@@ -466,7 +466,8 @@ async def translate_text(request: Request,
                     error=(str(exc) if isinstance(exc, _tr.TranslationError)
                            else tx_progress._job_error_text(status, exc,
                                                 "translation failed")),
-                    plan=_rplan.snapshot()["plan"], model=(_tr_model or None))
+                    plan=_rplan.snapshot()["plan"], model=(_tr_model or None),
+                    request_id=request_id)
                 _job_finished = True
             try:
                 if status == "ok":
@@ -576,7 +577,8 @@ async def translate_text(request: Request,
             _job_finished = True
             await tx_progress._jobs_finish(_pid, status="error",
                                            error="request aborted",
-                                           model=(_tr_model or None))
+                                           model=(_tr_model or None),
+                                           request_id=request_id)
         raise
     except asyncio.CancelledError:
         # A BaseException: none of the arms here see it. Flag it for the
@@ -632,7 +634,8 @@ async def translate_text(request: Request,
         if _job_row and not _job_finished and not _receipt_claimed_below:
             tx_progress._jobs_finish_sync(
                 _pid, status=("cancelled" if _aborted else "error"),
-                error="request aborted", model=(_tr_model or None))
+                error="request aborted", model=(_tr_model or None),
+                request_id=request_id)
             _job_finished = True
         if _aborted and not _receipt_claimed_below:
             # The arms' _record_run, minus its awaits: without this an
@@ -768,7 +771,8 @@ async def translate_text(request: Request,
         # `running`.
         await tx_progress._jobs_finish(
             _pid, status="ok", payload=_result, plan=_result["plan"],
-            model=(meta.get("model") or _tr_model or None))
+            model=(meta.get("model") or _tr_model or None),
+            request_id=request_id)
     # Teach the rates ledger — off the loop (a locked, fsync'd file rewrite)
     # and LAST, so a cancellation landing on this await skips nothing.
     try:

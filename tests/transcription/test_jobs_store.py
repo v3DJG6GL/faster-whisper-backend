@@ -53,7 +53,9 @@ def test_start_and_finish_round_trip_dict_result(db):
     jid = _start(db)
     row = db.get(jid)
     assert row["state"] == "running" and row["result_available"] is False
-    assert row["expires_ts"] >= row["created_ts"] + _TTL - 1
+    # The running floor, not the TTL: _TTL is below it, so this pins it.
+    assert row["expires_ts"] == pytest.approx(
+        row["created_ts"] + js._RUNNING_FLOOR_S, abs=1)
     assert db.finish(job_id=jid, state="done", result={"text": "hallo"},
                      stages=[{"name": "transcribing", "secs": 1.5}],
                      plan=[{"stage": "transcribing"}], ttl_s=_TTL)
@@ -271,6 +273,36 @@ def test_mark_running_as_failed_flips_only_running_rows(db):
     assert db.get(a)["state"] == "failed"
     assert db.get(a)["error"] == "server restarted"
     assert db.get(b)["state"] == "done"
+
+
+def test_mark_running_as_failed_restamps_the_expiry_from_the_flip(
+        db, monkeypatch):
+    # The flip is the run's finish: a short TTL counts from it, not from
+    # start()'s 24 h running floor.
+    from faster_whisper_backend.settings import config as cfg
+    monkeypatch.setattr(cfg, "SERVER_WORKERS", 1, raising=False)
+    monkeypatch.setattr(cfg, "JOBS_TTL_S", 600, raising=False)
+    a = _start(db, job_id="a" * 32, ttl_s=600.0)
+    assert db.get(a)["expires_ts"] > js.time.time() + 3600
+    assert db.mark_running_as_failed("server restarted") == 1
+    row = db.get(a)
+    assert row["expires_ts"] == pytest.approx(row["finished_ts"] + 600.0,
+                                              abs=1)
+
+
+def test_finish_with_a_stale_request_id_leaves_the_re_posted_row_alone(db):
+    # Run A closed its progress entry, a same-id re-post B started a fresh
+    # row, then A's late finish lands: it must not stamp B's row.
+    jid = _start(db, request_id="req-a")
+    _start(db, request_id="req-b")
+    assert db.finish(job_id=jid, state="done", result={"text": "A's"},
+                     ttl_s=_TTL, request_id="req-a") is False
+    row = db.get(jid)
+    assert row["request_id"] == "req-b" and row["state"] == "running"
+    assert db.get_result(jid) is None
+    assert db.finish(job_id=jid, state="done", result={"text": "B's"},
+                     ttl_s=_TTL, request_id="req-b") is True
+    assert db.get_result(jid) == {"text": "B's"}
 
 
 def test_mark_running_as_failed_is_skipped_with_several_workers(db, monkeypatch):
