@@ -51,6 +51,8 @@ ffmpeg/
 SECURITY-REVIEW_NOTES.md
 CODE-REVIEW_NOTES.md
 SIMPLIFY_NOTES.md
+# Per-run review work dirs (full slice diffs, prompts, findings).
+.review-run*/
 .coverage
 .pytest_cache/
 .ruff_cache/
@@ -58,11 +60,19 @@ htmlcov/
 tmp/
 .vscode/
 .idea/
-# Gitignored local data that carries transcript text or dictation audio.
-manifest.jsonl
-*.wav
-*.mp3
-*.m4a
+# Gitignored local data that carries transcript text or dictation audio, at
+# any depth: an in-repo DATA_DIR not named data/ keeps capture audio under
+# <dir>/captures/groups/xx/yy/ and the capture export's manifest.jsonl beside
+# it. No tracked file outside tests/ uses these names.
+**/manifest.jsonl
+**/*.wav
+**/*.mp3
+**/*.m4a
+# Retained link downloads and uploaded videos (URL_MEDIA_DIR defaults to
+# {DATA_DIR}/url_media; every extension, plus the staging/upload spools) under
+# such a DATA_DIR. Any depth is safe here, unlike `**/logs/`: a package of
+# that name is implausible.
+**/url_media/
 # Tracked trees nothing in the image reads at runtime: the test suite runs on
 # the CI runner, not in the image, and the installers / compose files run on
 # the host. `*.md` is root-only here (static/VENDOR.md still ships).

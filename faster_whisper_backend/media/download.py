@@ -758,9 +758,20 @@ GUARD_MODULE = os.path.join(GUARD_DIR, "fwb_ssrf_guard", "yt_dlp_plugins",
 # The needle every guard refusal carries; classify_error maps it to a
 # client-safe message. Must equal fwb_ssrf_guard.MARKER (pinned by a test).
 GUARD_MARKER = "fwb-ssrf-guard"
+# Two refusals that are NOT "the site could not be reached" and carry their
+# own, longer needle (still containing GUARD_MARKER, so the taxonomy matches
+# them first): the guard refusing an external downloader (ffmpeg, aria2c…)
+# for a format, and the launcher failing closed because it could not install
+# the guard in the child. Must equal fwb_ssrf_guard.EXTERNAL_FD_MARKER and
+# run_guarded_yt_dlp._UNAVAILABLE_MARKER (pinned by tests).
+GUARD_EXTERNAL_FD_MARKER = GUARD_MARKER + "-external-fd"
+GUARD_UNAVAILABLE_MARKER = GUARD_MARKER + "-unavailable"
 
 _guard_ok = False
 _guard_announced = False
+# The guard module guard_self_check loaded (its observe_dials hook bounds the
+# in-process probe by wall clock — see probe()). None until the first check.
+_guard_module = None
 
 
 def guard_self_check(*, force: bool = False) -> None:
@@ -776,7 +787,7 @@ def guard_self_check(*, force: bool = False) -> None:
     cached — from probe() and download(). Raises UrlDownloadError, which is
     CLIENT-SAFE by contract: the yt-dlp version and the real cause go to the
     log, never to the caller."""
-    global _guard_ok, _guard_announced
+    global _guard_ok, _guard_announced, _guard_module
     if _guard_ok and not force:
         return
     try:
@@ -795,6 +806,7 @@ def guard_self_check(*, force: bool = False) -> None:
                                "no longer recognise a refusal")
         if not module.is_installed():
             raise RuntimeError("the guard handler did not register")
+        _guard_module = module
     except Exception as e:  # noqa: BLE001 — ANY failure must fail closed
         _guard_ok = False
         logger.error(
@@ -873,11 +885,19 @@ def _policy_check_extractor(key: str, info: dict) -> None:
     """The extractor that actually produced `info` must pass the policy the
     offline match was held to: a Generic URL admitted as direct media must
     not have been handed to a site extractor, and under an allowlist a
-    delegation must land on an allowlisted extractor."""
+    delegation must land on an allowlisted extractor. A site extractor
+    handing a scraped embed URL on to GenericIE is held to URL_ALLOW_GENERIC
+    too (GenericIE scrapes any page), unless GenericIE served it as a plain
+    media file ("direct"), which URL_ALLOW_DIRECT_MEDIA admits."""
     xk = str(info.get("extractor_key") or key)
     if xk == key:
         return
     if key == "Generic" and not getattr(cfg, "URL_ALLOW_GENERIC", False):
+        raise UrlPolicyError(
+            "this link leads to a site the server's URL policy doesn't allow")
+    if (xk == "Generic" and not getattr(cfg, "URL_ALLOW_GENERIC", False)
+            and not (info.get("direct")
+                     and getattr(cfg, "URL_ALLOW_DIRECT_MEDIA", True))):
         raise UrlPolicyError(
             "this link leads to a site the server's URL policy doesn't allow")
     allowed = _allowed_extractor_keys()
@@ -946,8 +966,22 @@ async def probe(url: str, *, timeout: float) -> UrlMediaInfo:
         }
         if pin:
             opts["allowed_extractors"] = pin
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            return ydl.sanitize_info(ydl.extract_info(url, download=False))
+        # socket_timeout is per socket op: a host dribbling one header byte
+        # per op would hold this pool thread for as long as it likes (the
+        # wait_for below abandons only the await). Every socket the guard
+        # dials for this thread is shut at the deadline instead — the same
+        # cutoff the direct-media probe and capped_get use.
+        observe = getattr(_guard_module, "observe_dials", None)
+        with _WallClockCutoff(max(1.0, deadline - time.monotonic())) as cutoff:
+            if observe is not None:
+                observe(cutoff.add)
+            try:
+                with yt_dlp.YoutubeDL(opts) as ydl:
+                    return ydl.sanitize_info(
+                        ydl.extract_info(url, download=False))
+            finally:
+                if observe is not None:
+                    observe(None)
 
     try:
         info = await asyncio.wait_for(
@@ -957,7 +991,7 @@ async def probe(url: str, *, timeout: float) -> UrlMediaInfo:
         raise UrlTimeoutError("the site took too long to answer") from None
     except Exception as e:  # noqa: BLE001 — classify, never forward raw
         _log_probe_failure(url, e)
-        raise UrlDownloadError(classify_error(str(e))) from None
+        raise classified_error(str(e)) from None
     if not isinstance(info, dict):
         raise UrlDownloadError("the site returned no usable media info")
     _policy_check_info(info)
@@ -1116,7 +1150,14 @@ async def fetch_thumbnail_data_uri(
 # ── error taxonomy ──────────────────────────────────────────────────────────
 # (substring-of-tool-output, client-safe message). Order matters: first hit
 # wins, and the more specific conditions sit above the catch-alls.
+_HANDOFF_REFUSED = "this link leads to a site the server's URL policy doesn't allow"
 _ERROR_TAXONOMY: "tuple[tuple[tuple[str, ...], str], ...]" = (
+    # The two guard refusals with their own needle, ABOVE the bare marker
+    # they contain: neither is the site being unreachable.
+    ((GUARD_UNAVAILABLE_MARKER,),
+     "link downloads are unavailable on this server"),
+    ((GUARD_EXTERNAL_FD_MARKER,),
+     "this media needs a downloader the server does not allow"),
     # First, and by an exact marker: the SSRF guard refused a hop. Its text
     # names the host and the internal address it resolved to — server-log
     # material only, so it must never fall through to a message that quotes
@@ -1143,6 +1184,10 @@ _ERROR_TAXONOMY: "tuple[tuple[tuple[str, ...], str], ...]" = (
     (("video unavailable", "has been removed", "no longer available",
       "account associated with this video has been terminated"),
      "this media is unavailable or has been removed"),
+    # The extractor pin (pinned_extractors) at work: the URL's extractor
+    # handed off to one the policy does not load. Without a pin GenericIE
+    # matches every URL, so this text only ever means a policy refusal.
+    (("no suitable extractor",), _HANDOFF_REFUSED),
     (("unsupported url",),
      "this site isn't supported by the downloader"),
     (("live event", "premieres in", "this live event"),
@@ -1166,6 +1211,16 @@ def classify_error(stderr_tail: str) -> str:
     return (f"could not download media from this link (yt-dlp {ver} — "
             f"if the site recently changed, updating the server's yt-dlp "
             f"usually fixes this)")
+
+
+def classified_error(stderr_tail: str) -> UrlDownloadError:
+    """classify_error's message as the exception to raise: a UrlPolicyError
+    (the failures card's policy_blocked class) when the text is a policy
+    refusal, a plain UrlDownloadError otherwise."""
+    message = classify_error(stderr_tail)
+    if message == _HANDOFF_REFUSED:
+        return UrlPolicyError(message)
+    return UrlDownloadError(message)
 
 
 # ── download ────────────────────────────────────────────────────────────────
@@ -1224,6 +1279,10 @@ def build_download_argv(url: str, *, dest_dir: str, max_bytes: int,
         # No yt-dlp config file (system, user, portable) may add options —
         # a `--downloader` there would hand fetches to an external program.
         "--ignore-config",
+        # A format of protocol "m3u8" (not m3u8_native — Twitter Spaces,
+        # twitcasting…) defaults to FFmpegFD, which the guard refuses: send
+        # it to the native HlsFD, which fetches through the guarded handler.
+        "--downloader", "m3u8:native",
         *_use_extractors(extractors),
         "-f", DOWNLOAD_FORMAT,
         "--no-playlist",
@@ -1296,6 +1355,7 @@ def build_video_download_argv(url: str, *, dest_dir: str, max_bytes: int,
         sys.executable, GUARD_LAUNCHER,
         "--no-plugin-dirs", "--plugin-dirs", GUARD_DIR,
         "--ignore-config",
+        "--downloader", "m3u8:native",   # see build_download_argv
         *_use_extractors(extractors),
         "-f", fmt,
         "--merge-output-format", container,
@@ -1607,7 +1667,7 @@ async def _run_yt_dlp(
         logger.warning("[url-dl] yt-dlp exited %s for host %s: %s",
                        proc.returncode, host_for_log(url),
                        log_safe(tail, keep_end=True))
-        raise UrlDownloadError(classify_error(tail))
+        raise classified_error(tail)
 
     result = find_result(dest_dir)
     if result is None:

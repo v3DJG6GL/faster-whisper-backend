@@ -559,3 +559,59 @@ def test_failed_reload_redoes_the_free_an_orphan_deferred_to_it(monkeypatch):
     assert "uvr:Foo.onnx" not in model_registry._loaded_models
     assert bgm_separation.actual_device() is None
     assert bgm_separation._deferred_free == set()
+
+
+# --- a task cancelled mid-separation (shutdown, framework cancel) ------------
+
+def test_task_cancel_mid_separation_defers_the_drop_and_unlinks_the_output(
+        monkeypatch):
+    """The awaiting task is cancelled while the executor thread is still
+    inside sep.separate: the lease is gone, but a non-forced drop must not
+    free a session the zombie still uses, and the vocals WAV it writes has
+    no owner left — the zombie side unlinks it."""
+    import asyncio
+    import threading
+    import time
+    import types
+    monkeypatch.setattr(bgm_separation, "_progress_tls", types.SimpleNamespace())
+    monkeypatch.setattr(bgm_separation, "_leases", {})
+    monkeypatch.setattr(bgm_separation, "_orphans", {})
+    entered, gate = threading.Event(), threading.Event()
+    written: "list[str]" = []
+
+    class _Sep:
+        def separate(self, path, custom_output_names=None):
+            entered.set()
+            gate.wait(5)
+            fd, out = tempfile.mkstemp(prefix="vocals-test-", suffix=".wav")
+            os.close(fd)
+            written.append(out)
+            return [out]
+
+    sep = _Sep()
+    monkeypatch.setattr(bgm_separation, "_separator", sep)
+    monkeypatch.setattr(bgm_separation, "_separator_key", ("Foo.onnx", "cpu"))
+    monkeypatch.setattr(bgm_separation.cfg, "BGM_SEPARATION_UVR_MODEL", "Foo",
+                        raising=False)
+    monkeypatch.setattr(bgm_separation.cfg, "BGM_SEPARATION_DEVICE", "cpu",
+                        raising=False)
+
+    async def _main():
+        task = asyncio.create_task(bgm_separation.separate("in.wav"))
+        while not entered.is_set():
+            await asyncio.sleep(0.01)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert bgm_separation._leases == {}
+        assert await bgm_separation.drop_separator(force=False) is False
+        assert bgm_separation._separator is sep
+        gate.set()
+
+    asyncio.run(_main())
+    deadline = time.monotonic() + 5
+    while (not written or os.path.exists(written[0])) \
+            and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert len(written) == 1
+    assert not os.path.exists(written[0])

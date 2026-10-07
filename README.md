@@ -286,7 +286,7 @@ huggingface_hub into the models volume (`HF_HOME`).
 
 ### Rate limits & concurrency
 
-Eleven request budgets, all in the **Concurrency & Request Limits** settings
+Fourteen request budgets, all in the **Concurrency & Request Limits** settings
 group, all with `WHISPER_*` env twins, and all **hot** — the limiters re-read
 their ceiling on every call, so raising one applies to the next request with
 no restart and no bucket reset.
@@ -300,6 +300,9 @@ no restart and no bucket reset.
 | `URL_VIDEO_RATE_PER_MIN` | 6/min | a link run that keeps the video (`keep_video`) or `POST /v1/audio/url-media/video` — each pulls up to `MEDIA_MAX_BYTES` from the site |
 | `URL_SUBTITLES_RATE_PER_MIN` | 6/min | `POST /v1/audio/url-subtitles` — a re-probe plus up to 8 capped subtitle GETs from the site |
 | `URL_LANGUAGE_RATE_PER_MIN` | 4/min | `POST /v1/audio/url-language` — fetches the link's audio (or, for a segmented stream, just the segments it samples) and runs three short language detections on the GPU |
+| `MEDIA_UPLOAD_RATE_PER_MIN` | 6/min | `POST /v1/audio/media` — a video uploaded for the subtitle export |
+| `MEDIA_PACKAGE_RATE_PER_MIN` | 12/min | `POST /v1/audio/media/{media_id}/package` |
+| `MEDIA_PACKAGE_MAX_INFLIGHT_PER_USER` | concurrency (default 1) | the same route — how many video exports one caller may have *running* |
 | `JOBS_RATE_PER_MIN` | 120/min | `GET`/`DELETE /v1/jobs*` — a re-attached client polls its job once a second |
 | `CAPTURES_AUDIO_RATE_PER_MIN` | 240/min | capture-audio fetches |
 | `REPORTS_SUBMIT_RATE_PER_10MIN` | 20/10 min | user report submissions |

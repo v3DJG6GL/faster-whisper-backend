@@ -483,6 +483,18 @@ def _drop_locked(*, force: bool = False) -> bool:
         logger.info("[bgm] separation model %s is in use — eviction deferred",
                     model)
         return False
+    # A CANCELLED job has already released its lease while its executor
+    # thread may still be inside sep.separate (see _separate_mutex): freeing
+    # now would unregister the stats row and "unload" a session that is still
+    # allocated, and the next request would load a second copy beside it. The
+    # mutex is the one lock that tracks a running separation (same guard as
+    # translation.engine._drop_locked).
+    if not force:
+        if not _separate_mutex.acquire(blocking=False):
+            logger.info("[bgm] a separation is still running — eviction of "
+                        "%s deferred", model)
+            return False
+        _separate_mutex.release()
     _separator = None
     _separator_key = None
     if leased:
@@ -502,14 +514,13 @@ def _drop_locked(*, force: bool = False) -> bool:
     return True
 
 
-def _release_locked(model: str, sep=None) -> None:
+def _release_locked(model: str, sep) -> None:
     """Drop one lease. Caller holds _lock. ``sep`` is the object the holder
     was handed by ``_get_separator``: when it IS the live singleton the holder
     is a live one even if orphans of the same model exist (a same-model reload
     after a device change orphans the old separator under the SAME key), so
     its release must not be charged to the orphan bucket — that would free the
-    dying separator's stats early and skip the idle-clock restamp below.
-    Without ``sep`` (legacy callers) orphans are decremented first, as before."""
+    dying separator's stats early and skip the idle-clock restamp below."""
     global _last_used_monotonic
     live = sep is not None and sep is _separator
     n = 0 if live else _orphans.get(model, 0)
@@ -533,7 +544,7 @@ def _release_locked(model: str, sep=None) -> None:
         model_registry.touch_loaded_model(_STATS_PREFIX + model)
 
 
-async def _release_separator(model: str, sep=None) -> None:
+async def _release_separator(model: str, sep) -> None:
     """Release a lease taken by ``_get_separator(..., lease=True)``. Pass the
     separator that call returned so a live holder is told apart from an
     orphan of the same model (see ``_release_locked``).
@@ -694,6 +705,11 @@ async def separate(path: str, *, model_filename: "str | None" = None,
 async def _separate_with(sep, path: str, *, progress_cb, cancel_check) -> str:
     """Run one separation on an already-leased separator (see ``separate``)."""
     out_name = f"vocals-{uuid.uuid4().hex}"
+    # Hand-off with the awaiting task: a task cancelled mid-run (shutdown, a
+    # framework cancel) leaves _run going in its thread with nobody left to
+    # own the vocals WAV it writes — whichever side comes second unlinks it.
+    handoff = {"abandoned": False, "out": None}
+    handoff_lock = threading.Lock()
 
     def _run() -> str:
         if cancel_check is not None and cancel_check():
@@ -717,6 +733,8 @@ async def _separate_with(sep, path: str, *, progress_cb, cancel_check) -> str:
                 # re-check before paying for prepare_mix on a dead request.
                 if cancel_check is not None and cancel_check():
                     raise BgmCancelled()
+                if handoff["abandoned"]:
+                    raise BgmCancelled()
                 _progress_tls.load_t0 = time.perf_counter()
                 logger.info("[bgm] loading audio for separation")
                 outputs = sep.separate(
@@ -733,11 +751,24 @@ async def _separate_with(sep, path: str, *, progress_cb, cancel_check) -> str:
             out = os.path.join(tempfile.gettempdir(), out)
         if not os.path.exists(out):
             raise RuntimeError(f"separator output missing: {out}")
-        return out
+        with handoff_lock:
+            if not handoff["abandoned"]:
+                handoff["out"] = out
+                return out
+        _unlink_quietly(out)
+        raise BgmCancelled()
 
     loop = asyncio.get_running_loop()
     try:
         result = await loop.run_in_executor(None, _run)
+    except asyncio.CancelledError:
+        with handoff_lock:
+            handoff["abandoned"] = True
+            done_out = handoff["out"]
+        if done_out:
+            # _run finished but the result never reached us.
+            _unlink_quietly(done_out)
+        raise
     except BgmCancelled:
         logger.info("[bgm] separation cancelled by client")
         raise
@@ -751,6 +782,13 @@ async def _separate_with(sep, path: str, *, progress_cb, cancel_check) -> str:
     # finally), which is gated on the LEASED key — _separator_key here may
     # already name a different model a concurrent load swapped in.
     return result
+
+
+def _unlink_quietly(path: str) -> None:
+    try:
+        os.unlink(path)
+    except OSError:
+        pass
 
 
 async def drop_separator(*, force: bool = True) -> bool:
@@ -845,6 +883,10 @@ async def idle_evictor_loop() -> None:
             # reach us without either module importing the other.
             if _separator_key and model_registry.is_warm(
                     _STATS_PREFIX + _separator_key[0]):
+                continue
+            # A job lease would only make _drop_locked decline (and log so)
+            # every tick of a separation longer than the timeout.
+            if _separator_key and _leases.get(_separator_key[0], 0):
                 continue
             if time.monotonic() - _last_used_monotonic >= timeout:
                 await drop_separator(force=False)

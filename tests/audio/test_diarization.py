@@ -647,3 +647,39 @@ def test_orphan_release_mid_register_keeps_the_new_row(monkeypatch):
     with monkeypatch.context() as m:
         m.setattr(diarization, "_pipeline_key", None)
         diarization._free_locked("A")   # tidy the real registry row
+
+
+# --- a cancelled job's zombie inference defers the idle drop ----------------
+
+def test_idle_drop_waits_for_a_zombie_inference(monkeypatch):
+    """A cancelled diarize released its lease, but its executor thread is
+    still inside pipe() holding _infer_mutex: a non-forced drop must decline
+    (no unregister, no "unloaded") until the thread lets go."""
+    import asyncio
+    import threading
+    from faster_whisper_backend.runtime import model_registry
+    monkeypatch.setattr(diarization, "_pipeline", object())
+    monkeypatch.setattr(diarization, "_pipeline_key", ("m1", "cpu", 4))
+    monkeypatch.setattr(diarization, "_leases", {})
+    monkeypatch.setattr(diarization, "_orphans", {})
+    unregistered: "list[str]" = []
+    monkeypatch.setattr(model_registry, "unregister_loaded_model",
+                        unregistered.append)
+    held, release = threading.Event(), threading.Event()
+
+    def _zombie():
+        with diarization._infer_mutex:
+            held.set()
+            release.wait(5)
+    t = threading.Thread(target=_zombie, daemon=True)
+    t.start()
+    try:
+        assert held.wait(5)
+        assert asyncio.run(diarization.drop_pipeline(force=False)) is False
+        assert diarization._pipeline is not None
+        assert unregistered == []
+    finally:
+        release.set()
+        t.join(5)
+    assert asyncio.run(diarization.drop_pipeline(force=False)) is True
+    assert unregistered == ["pyannote:m1"]

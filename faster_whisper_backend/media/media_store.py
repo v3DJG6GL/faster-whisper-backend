@@ -351,8 +351,12 @@ def _evict_over_cap(protect: "str | set[str] | tuple[str, ...] | None" = None,
     for mid, _e in sorted(items, key=lambda kv: kv[1]["created"]):
         if total <= cap:
             break
-        if mid in keep or mid not in _REG:
+        if mid in keep:
             continue
+        # A concurrent caller may have dropped it since the snapshot: its
+        # bytes are gone all the same, so they still leave the total (else
+        # this pass evicts the next-oldest file below the cap). _drop is
+        # idempotent.
         total -= _e["size"]
         _drop(mid)
 

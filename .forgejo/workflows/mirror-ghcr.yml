@@ -7,13 +7,13 @@
 # no rebuild — so the Forgejo registry stays the single source of truth.
 # Same pattern as nextcloud-fpm-nginx/mirror-ghcr.yml.
 #
-# Deliberately a SEPARATE workflow, not a job in ci.yml: a mirror job
-# doing the sync inline after `build` would have to be skipped on PR
-# runs, and skipped-`needs` jobs hang the whole run on Forgejo v15
-# (forgejo#12937). Instead ci.yml ends with an always()-run `mirror` job
-# that POSTs to this workflow's dispatch endpoint once per publishing
-# run — dispatch bypasses the event pipeline, so the run-scoped actions
-# token is accepted there.
+# Deliberately a SEPARATE workflow, not a job in ci.yml: one dispatch per
+# publishing run instead of a registry_package burst (see below). ci.yml
+# ends with an always()-run `mirror` job that POSTs to this workflow's
+# dispatch endpoint once per publishing run — dispatch bypasses the event
+# pipeline, so the run-scoped actions token is accepted there. (The split
+# originally also dodged skipped-`needs` jobs hanging a run on Forgejo v15,
+# forgejo#12937; this instance runs v16, where that is fixed.)
 #
 # No registry_package trigger (removed 2026-08-26): Forgejo fires that
 # event once per package VERSION published — one publish = one event per
@@ -140,7 +140,8 @@ jobs:
 
           if [ "$FROM" = upstream ]; then
             if [ -n "${REG_USER:-}" ] && [ -n "${REG_TOKEN:-}" ]; then
-              if curl -fsS --retry 3 -u "${REG_USER}:${REG_TOKEN}"                    --upload-file "$ASSET" "$CACHE"; then
+              if curl -fsS --retry 3 -u "${REG_USER}:${REG_TOKEN}" \
+                   --upload-file "$ASSET" "$CACHE"; then
                 echo "crane ${CRANE_VERSION}: cached in the tools registry"
               else
                 echo "::notice::could not cache crane ${CRANE_VERSION} in the tools registry (REGISTRY_USER needs write access to the 'tools' owner's packages); continuing with the verified upstream download"

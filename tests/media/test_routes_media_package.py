@@ -49,11 +49,21 @@ def package_enabled(app_module, tmp_path, monkeypatch):
         probe_calls.append(path)
         return _streams()
     monkeypatch.setattr(pk, "probe_streams", _probe)
+
+    # The empty-caption scan would run the host's real `ffmpeg -bsfs` (and
+    # an ffmpeg demux of the fake source) for every h264 package.
+    async def _no_strip(*a, **k):
+        return False
+    monkeypatch.setattr(pk, "_empty_captions_to_strip", _no_strip)
     latch = {"path": None}
 
     def _argv(src, srt_paths, tracks, *, container, out_path, default_track, **kw):
+        # "<latch>.started" says the job got this far — past the in-flight
+        # slot it holds — before it blocks on the latch.
         script = f"""
 import os, shutil, time
+if {latch['path']!r}:
+    open({latch['path']!r} + ".started", "w").close()
 while {latch['path']!r} and os.path.exists({latch['path']!r}):
     time.sleep(0.02)
 shutil.copyfile({src!r}, {out_path!r})
@@ -423,7 +433,12 @@ def test_package_inflight_limit_and_release(client, package_enabled, tmp_path):
                                   json={"container": "mkv"})
     t = threading.Thread(target=_first)
     t.start()
-    time.sleep(0.3)
+    # Wait until the first job demonstrably holds the slot (its package
+    # step started), not a fixed sleep a loaded runner can outrun.
+    deadline = time.monotonic() + 10
+    while not os.path.exists(latch + ".started"):
+        assert time.monotonic() < deadline, "the first package never started"
+        time.sleep(0.02)
     r = client.post(f"/v1/audio/media/{mid}/package", json={"container": "mkv"})
     assert r.status_code == 429
     assert "video export" in r.json()["detail"]

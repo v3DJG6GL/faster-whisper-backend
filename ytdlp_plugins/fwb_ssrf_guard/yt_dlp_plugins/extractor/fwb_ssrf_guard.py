@@ -38,7 +38,9 @@ definition, see below):
 
 Every error message carries the marker `fwb-ssrf-guard`, which
 download.classify_error (faster_whisper_backend/media/download.py) maps to the client-safe "the site could not be
-reached from the server". The offending host/address appears only in the
+reached from the server" — except the external-downloader refusal, whose
+longer EXTERNAL_FD_MARKER maps to "this media needs a downloader the server
+does not allow". The offending host/address appears only in the
 message that the server logs at WARNING (yt-dlp stderr tail / probe failure),
 never in what a client is handed.
 
@@ -58,6 +60,8 @@ import importlib.util
 import os
 import socket
 import sys
+import threading
+import types
 import urllib.parse
 import urllib.request
 
@@ -71,6 +75,9 @@ from yt_dlp.networking.exceptions import RequestError
 # (as download.GUARD_MARKER). Changing it means changing the taxonomy entry
 # there too.
 MARKER = "fwb-ssrf-guard"
+# The external-downloader refusal's own needle (download.GUARD_EXTERNAL_FD_MARKER):
+# the site WAS reached, so it must not read as "could not be reached".
+EXTERNAL_FD_MARKER = MARKER + "-external-fd"
 
 GUARD_RH_KEY = "FwbSsrfGuard"
 RH_NAME = "fwb-guarded-urllib"
@@ -164,6 +171,31 @@ def _dials_a_proxy(conn) -> bool:
                 or getattr(conn, "_tunnel_host", None))
 
 
+# ── per-thread dial observer ────────────────────────────────────────────────
+# download.probe() bounds its in-process extract_info by WALL CLOCK: it hands
+# observe_dials() a callback that records every socket this thread dials, and
+# shuts them all at its deadline (a per-op socket timeout cannot stop a host
+# that dribbles one header byte per op). Kept in sys.modules, not in this
+# module: the file loads more than once per process and only the FIRST
+# load's handler is registered (see install()), so every load must share it.
+_DIALS = sys.modules.setdefault("fwb_ssrf_guard_dials",
+                                types.ModuleType("fwb_ssrf_guard_dials"))
+if not hasattr(_DIALS, "tls"):
+    _DIALS.tls = threading.local()
+
+
+def observe_dials(observer) -> None:
+    """Report every connection this thread opens from now on to
+    ``observer(sock)`` (the TLS-wrapped socket for https); None stops."""
+    _DIALS.tls.observer = observer
+
+
+def _observe(sock) -> None:
+    observer = getattr(_DIALS.tls, "observer", None)
+    if observer is not None:
+        observer(sock)
+
+
 def _connect_pinned(conn) -> "socket.socket":
     infos = _resolve_pinned(conn.host, conn.port, trusted=_dials_a_proxy(conn))
     last = None
@@ -192,6 +224,7 @@ class _PinnedHTTPConnection(http.client.HTTPConnection):
 
     def connect(self):
         self.sock = _connect_pinned(self)
+        _observe(self.sock)
         if self._tunnel_host:
             self._tunnel()
 
@@ -211,6 +244,7 @@ class _PinnedHTTPSConnection(http.client.HTTPSConnection):
         # (same rule as stdlib HTTPSConnection.connect).
         self.sock = self._context.wrap_socket(
             sock, server_hostname=self._tunnel_host or self.host)
+        _observe(self.sock)
 
 
 class _GuardedHTTPHandler(_urllib.HTTPHandler):
@@ -316,8 +350,8 @@ _FD_SENTINEL = "_fwb_ssrf_refused"
 def _refuse_external_fd(self, filename, info_dict):
     from yt_dlp.utils import DownloadError
     raise DownloadError(
-        f"{MARKER}: refusing {type(self).__name__}: an external downloader "
-        "fetches outside the address policy")
+        f"{EXTERNAL_FD_MARKER}: refusing {type(self).__name__}: an external "
+        "downloader fetches outside the address policy")
 
 
 setattr(_refuse_external_fd, _FD_SENTINEL, True)

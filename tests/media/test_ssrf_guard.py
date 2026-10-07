@@ -279,27 +279,75 @@ def test_net_policy_resolve_pinned_refuses_forbidden_answer(monkeypatch):
     assert net_policy.resolve_pinned("public.example", 443) == public
 
 
-def test_launcher_starts_yt_dlp_with_the_guard_flags():
-    """The exact flags build_download_argv uses must be valid on the pinned
-    yt-dlp, and the launcher must not fail closed on a healthy tree."""
+def _run_launcher(plugin_flags, tmp_path):
+    """The launcher with build_download_argv's plugin flags, run far enough
+    to load plugins (`--version` exits inside option parsing, before yt-dlp
+    ever loads one) but with no network: a data: URL, which the guard has
+    no handler for."""
     argv = udl.build_download_argv("https://example.com/a", dest_dir=".",
                                    max_bytes=1)
-    proc = subprocess.run(
-        argv[:5] + ["--version"], capture_output=True, text=True, timeout=60)
-    assert proc.returncode == 0, proc.stderr
-    assert udl.GUARD_MARKER not in proc.stderr  # no fail-closed, no traceback
+    return subprocess.run(
+        argv[:5] + plugin_flags
+        + ["--ignore-config", "-v", "--simulate", "--", "data:,"],
+        capture_output=True, text=True, timeout=60, cwd=str(tmp_path))
+
+
+def test_launcher_starts_yt_dlp_with_the_guard_flags(tmp_path):
+    """The launcher must not fail closed on a healthy tree, and the guard
+    must ALSO load through yt-dlp's official --plugin-dirs channel."""
+    proc = _run_launcher([], tmp_path)
+    assert udl.GUARD_UNAVAILABLE_MARKER not in proc.stderr  # no fail-closed
     assert "Error while importing module" not in proc.stderr
+    plugin_dirs = [ln for ln in proc.stderr.splitlines()
+                   if "Plugin directories:" in ln]
+    assert plugin_dirs and "fwb_ssrf_guard" in plugin_dirs[0], proc.stderr
+
+
+def test_launcher_check_sees_a_broken_plugin_import(tmp_path):
+    """Negative control for the test above: a plugin whose import raises
+    must show up in the same run, or the assertion there proves nothing."""
+    broken = tmp_path / "broken" / "pkg" / "yt_dlp_plugins" / "extractor"
+    broken.mkdir(parents=True)
+    (broken / "fwb_test_broken.py").write_text("raise ImportError('boom')\n")
+    proc = _run_launcher(["--plugin-dirs", str(tmp_path / "broken")], tmp_path)
+    assert "Error while importing module" in proc.stderr, proc.stderr
+
+
+def _ydl_opts(argv):
+    """The YoutubeDL params the download subprocess would build from
+    `argv` (interpreter and launcher dropped, and the trailing `-- url`)."""
+    import yt_dlp
+    assert argv[-2] == "--"
+    return yt_dlp.parse_options(argv[2:-2]).ydl_opts
 
 
 def test_pinned_download_flags_parse_on_the_pinned_yt_dlp():
-    """--ignore-config and --use-extractors (with a regex-escaped IE name)
-    must be accepted by the pinned yt-dlp, or every link download fails."""
+    """--ignore-config, --downloader and --use-extractors (with a
+    regex-escaped IE name) must be accepted by the pinned yt-dlp, the
+    extractor regexes must compile and the -f selector must parse, or every
+    link download fails. Done in-process: yt-dlp only validates the values
+    when it builds a YoutubeDL, which `--version` never reaches."""
+    import re
+
+    import yt_dlp
+    from yt_dlp.downloader import get_suitable_downloader
+    from yt_dlp.downloader.hls import HlsFD
     for build in (udl.build_download_argv, udl.build_video_download_argv):
         argv = build("https://example.com/a", dest_dir=".", max_bytes=1,
-                     extractors=["generic", "youtube:tab"])
-        proc = subprocess.run(argv[:-2] + ["--version"], capture_output=True,
-                              text=True, timeout=60)
-        assert proc.returncode == 0, proc.stderr
+                     extractors=["generic", re.escape("youtube:tab")])
+        opts = _ydl_opts(argv)
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            ydl.build_format_selector(opts["format"])
+        # protocol "m3u8" goes to the native HlsFD (guarded handler), not to
+        # the FFmpegFD the guard refuses.
+        assert get_suitable_downloader(
+            {"protocol": "m3u8", "url": "https://e.test/a.m3u8"}, opts) is HlsFD
+    # ...and the check can fail.
+    bad = _ydl_opts(udl.build_download_argv(
+        "https://example.com/a", dest_dir=".", max_bytes=1,
+        extractors=["[unclosed("]))
+    with pytest.raises(ValueError, match="allowed_extractors"):
+        yt_dlp.YoutubeDL(bad)
 
 
 # ---------------------------------------------------------------------------
@@ -347,6 +395,69 @@ def test_download_allows_a_public_looking_target(tmp_path, servers,
                             max_bytes=10_000_000, timeout=60))
     assert os.path.getsize(out) == len(PUBLIC_BODY)
     assert _Internal.hits == []
+
+
+class _Dribbler(http.server.BaseHTTPRequestHandler):
+    """200 audio/mpeg for the direct-media probe at once; yt-dlp's page GET
+    gets its status line and then one header byte every 0.3 s — never
+    tripping a per-op socket timeout, never finishing."""
+
+    def do_GET(self):
+        ua = self.headers.get("User-Agent") or ""
+        if ua.startswith("faster-whisper-backend"):
+            self.send_response(200)
+            self.send_header("Content-Type", "audio/mpeg")
+            self.send_header("Content-Length", str(len(PUBLIC_BODY)))
+            self.end_headers()
+            self.wfile.write(PUBLIC_BODY)
+            return
+        import time as _t
+        try:
+            self.wfile.write(b"HTTP/1.1 200 OK\r\n")
+            self.wfile.flush()
+            for _ in range(200):
+                self.wfile.write(b"X")
+                self.wfile.flush()
+                _t.sleep(0.3)
+        except OSError:
+            pass
+
+    def log_message(self, *a):
+        pass
+
+
+def test_probe_extraction_is_cut_at_its_wall_clock_deadline(
+        public_is_public, monkeypatch):
+    """socket_timeout is per op, so a host dribbling yt-dlp's headers held
+    the _PROBE_POOL worker long after the probe answered "took too long";
+    four such links wedged every worker (and every user's url-preview).
+    The guard's dial observer shuts the extraction's sockets at the
+    deadline, so the worker comes back."""
+    try:
+        with socket.socket() as s:
+            s.bind(("127.0.0.2", 0))
+    except OSError:  # pragma: no cover — non-Linux loopback aliasing
+        pytest.skip("this platform does not alias 127.0.0.2")
+    srv = _serve(_Dribbler, "127.0.0.2")
+    udl.guard_self_check(force=True)
+    monkeypatch.setattr(udl.cfg, "URL_ALLOW_GENERIC", False, raising=False)
+    monkeypatch.setattr(udl.cfg, "URL_ALLOW_DIRECT_MEDIA", True, raising=False)
+    monkeypatch.setattr(udl.cfg, "URL_ALLOWED_EXTRACTORS", [], raising=False)
+    url = f"http://127.0.0.2:{srv.server_port}/a.mp3"
+
+    async def _four():
+        return await asyncio.gather(
+            *(udl.probe(url, timeout=3) for _ in range(4)),
+            return_exceptions=True)
+    try:
+        results = _run(_four())
+        assert all(isinstance(r, udl.UrlTimeoutError) for r in results), results
+        # Every worker is free again shortly after the deadline.
+        futs = [udl._PROBE_POOL.submit(lambda: 1) for _ in range(4)]
+        assert [f.result(timeout=5) for f in futs] == [1] * 4
+    finally:
+        srv.shutdown()
+        srv.server_close()
 
 
 # ---------------------------------------------------------------------------
@@ -434,35 +545,64 @@ def test_guard_uses_the_same_net_policy_module():
     assert guard.MARKER == udl.GUARD_MARKER
 
 
-def test_launcher_marker_matches_the_parent():
-    """The launcher's fail-closed line carries its own copy of the marker;
-    a drift would turn a refused run into an unclassified error."""
+def _load_launcher():
     import importlib.util
     spec = importlib.util.spec_from_file_location("fwb_launcher_probe",
                                                   udl.GUARD_LAUNCHER)
     launcher = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(launcher)   # main() only runs under __main__
+    return launcher
+
+
+def test_launcher_marker_matches_the_parent():
+    """The launcher's fail-closed line carries its own copy of the marker;
+    a drift would turn a refused run into an unclassified error."""
+    launcher = _load_launcher()
     assert launcher._MARKER == udl.GUARD_MARKER
+    assert launcher._UNAVAILABLE_MARKER == udl.GUARD_UNAVAILABLE_MARKER
 
 
-def test_guard_copy_agrees_with_net_policy_address_by_address(guard_tree):
-    """The subprocess loads net_policy BY PATH; prove the file it reaches is
-    the repo's, verdict for verdict, so the two halves can never drift."""
+def test_launcher_fail_closed_line_reads_as_unavailable(monkeypatch, capsys):
+    """A child that cannot install the guard refuses to run: the client must
+    hear what guard_self_check says for the same condition, not that the
+    site could not be reached."""
+    launcher = _load_launcher()
+    monkeypatch.setattr(launcher, "_GUARD_PATH",
+                        os.path.join(REPO_ROOT, "no-such-guard.py"))
+    assert launcher.main() == 78
+    line = capsys.readouterr().err
+    assert udl.GUARD_UNAVAILABLE_MARKER in line
+    assert (udl.classify_error(line)
+            == "link downloads are unavailable on this server")
+
+
+def test_guard_copy_agrees_with_net_policy_address_by_address(guard_tree,
+                                                              tmp_path):
+    """The subprocess's guard loads net_policy BY PATH (the repo root is not
+    on its sys.path); prove the file it reaches through its OWN resolver is
+    the one beside it, verdict for verdict, so the two halves can never
+    drift."""
     child = subprocess.run(
-        [sys.executable, "-c",
+        [sys.executable, "-I", "-c",
          "import importlib.util,sys,json\n"
-         f"spec=importlib.util.spec_from_file_location('np', {os.path.join(os.path.dirname(guard_tree), 'faster_whisper_backend', 'core', 'net_policy.py')!r})\n"
-         "m=importlib.util.module_from_spec(spec); spec.loader.exec_module(m)\n"
-         "addrs=json.loads(sys.argv[1])\n"
-         "print(json.dumps([m.address_is_forbidden(a) for a in addrs]))",
-         json.dumps(_ADDRESS_CORPUS)],
-        capture_output=True, text=True, timeout=60)
+         "spec=importlib.util.spec_from_file_location('g', sys.argv[1])\n"
+         "g=importlib.util.module_from_spec(spec); spec.loader.exec_module(g)\n"
+         "addrs=json.loads(sys.argv[2])\n"
+         "print(json.dumps({'file': g.net_policy.__file__, 'verdicts':"
+         " [g.net_policy.address_is_forbidden(a) for a in addrs]}))",
+         udl.GUARD_MODULE, json.dumps(_ADDRESS_CORPUS)],
+        capture_output=True, text=True, timeout=60, cwd=str(tmp_path))
     assert child.returncode == 0, child.stderr
-    child_verdicts = json.loads(child.stdout)
+    out = json.loads(child.stdout)
+    assert os.path.realpath(out["file"]) == os.path.realpath(os.path.join(
+        os.path.dirname(guard_tree), "faster_whisper_backend", "core",
+        "net_policy.py"))
     ours = [net_policy.address_is_forbidden(a) for a in _ADDRESS_CORPUS]
-    # 127.0.0.2 is the copy's one deliberate difference (see guard_tree).
-    for addr, mine, theirs in zip(_ADDRESS_CORPUS, ours, child_verdicts):
+    for addr, mine, theirs in zip(_ADDRESS_CORPUS, ours, out["verdicts"]):
         if addr == "127.0.0.2":
+            # The copy's one deliberate difference (see guard_tree) — and
+            # the proof that the child read the copy, not the repo's file.
+            assert theirs is False
             continue
         assert mine == theirs, addr
 
@@ -491,6 +631,20 @@ def test_classify_error_maps_a_guard_refusal_without_leaking():
     msg = udl.classify_error(raw)
     assert msg == "the site could not be reached from the server"
     assert "169.254" not in msg and "evil.example" not in msg
+
+
+def test_classify_error_tells_an_external_downloader_refusal_apart():
+    """The site WAS reached: a format only an external program could fetch
+    is refused by the guard, which is no reason to retry."""
+    udl.guard_self_check(force=True)
+    guard = sys.modules["fwb_ssrf_guard_inproc"]
+    assert guard.EXTERNAL_FD_MARKER == udl.GUARD_EXTERNAL_FD_MARKER
+    from yt_dlp.downloader import external
+    with pytest.raises(Exception) as ei:
+        guard._refuse_external_fd(external.FFmpegFD.__new__(external.FFmpegFD),
+                                  "f", {})
+    assert (udl.classify_error(f"ERROR: {ei.value}")
+            == "this media needs a downloader the server does not allow")
 
 
 # --- an operator-configured proxy is a trusted hop -------------------------

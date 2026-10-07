@@ -265,6 +265,18 @@ def _drop_locked(*, force: bool = False) -> bool:
         logger.info("[diarize] pipeline %s is in use — eviction deferred",
                     model_id)
         return False
+    # A CANCELLED job has already released its lease while its executor
+    # thread may still be inside pipe() (see _infer_mutex): freeing now would
+    # unregister the stats row and "unload" a pipeline that is still
+    # allocated, and the next request would load a second copy beside it.
+    # The mutex is the one lock that tracks a running inference (same guard
+    # as translation.engine._drop_locked).
+    if not force:
+        if not _infer_mutex.acquire(blocking=False):
+            logger.info("[diarize] inference still running — eviction of %s "
+                        "deferred", model_id)
+            return False
+        _infer_mutex.release()
     _pipeline = None
     _pipeline_key = None
     if leased:
@@ -736,6 +748,10 @@ async def idle_evictor_loop() -> None:
             # reach us without either module importing the other.
             if _pipeline_key and model_registry.is_warm(
                     _STATS_PREFIX + _pipeline_key[0]):
+                continue
+            # A job lease would only make _drop_locked decline (and log so)
+            # every tick of a diarization longer than the timeout.
+            if _pipeline_key and _leases.get(_pipeline_key[0], 0):
                 continue
             if time.monotonic() - _last_used_monotonic >= timeout:
                 await drop_pipeline(force=False)

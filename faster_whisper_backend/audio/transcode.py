@@ -79,6 +79,22 @@ def refuse_multi_input(path: str) -> None:
         container.close()
 
 
+def _decoded_frames(container, stream):
+    """The audio frames of `stream` from where the container stands, skipping
+    a packet the decoder rejects as invalid data. One damaged frame in an
+    otherwise playable file (a bad mp3 frame, a flac block with a broken
+    CRC) must not abort the whole decode: faster-whisper's own decode_audio
+    tolerates it, so the file transcribes — while a bare container.decode()
+    raised InvalidDataError (a ValueError, i.e. "refused") here."""
+    invalid = _av().error.InvalidDataError
+    for packet in container.demux(stream):
+        try:
+            frames = packet.decode()
+        except invalid:
+            continue
+        yield from frames
+
+
 def _read_16k(container, stream, want: int, *, skip: int = 0,
               after: "float | None" = None):
     """Decode `stream` from where the container stands into 16 kHz mono
@@ -90,7 +106,7 @@ def _read_16k(container, stream, want: int, *, skip: int = 0,
     # Fresh per call: a resampler keeps samples buffered across a seek.
     resampler = _av().AudioResampler(format="flt", layout="mono", rate=16000)
     chunks, have = [], 0
-    for frame in container.decode(stream):
+    for frame in _decoded_frames(container, stream):
         # A seek lands on the keyframe at or before `after`.
         if (after is not None and frame.time is not None
                 and frame.time + frame.samples / frame.sample_rate < after):
@@ -169,7 +185,7 @@ def transcode_to_wav(src_path: str, dst_path: str, *,
             format=_OUT_FORMAT, layout=layout, rate=rate,
         )
 
-        for frame in in_container.decode(in_stream):
+        for frame in _decoded_frames(in_container, in_stream):
             # PyAV recomputes pts when None; the input frame's pts is on
             # the input timebase and would corrupt the output otherwise.
             frame.pts = None

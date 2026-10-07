@@ -29,11 +29,14 @@ _GUARD_PATH = os.path.join(
     os.path.dirname(os.path.abspath(__file__)),
     "fwb_ssrf_guard", "yt_dlp_plugins", "extractor", "fwb_ssrf_guard.py")
 
-# Marker the parent greps for; faster_whisper_backend/media/download.py
-# classify_error maps it to the client-safe "the site could not be reached
-# from the server". Must equal download.GUARD_MARKER and the guard's own
-# MARKER (both pinned by tests/media/test_ssrf_guard.py).
+# Marker the parent greps for. Must equal download.GUARD_MARKER and the
+# guard's own MARKER (both pinned by tests/media/test_ssrf_guard.py). The
+# fail-closed line below carries the longer _UNAVAILABLE_MARKER
+# (download.GUARD_UNAVAILABLE_MARKER), which classify_error matches BEFORE
+# the bare marker: the server refusing to run is "link downloads are
+# unavailable on this server", not the site being unreachable.
 _MARKER = "fwb-ssrf-guard"
+_UNAVAILABLE_MARKER = _MARKER + "-unavailable"
 
 
 def _install_guard():
@@ -59,8 +62,9 @@ def main() -> int:
         except Exception:  # noqa: BLE001
             version = "unknown"
         sys.stderr.write(
-            f"ERROR: {_MARKER}: refusing to run unguarded — could not install "
-            f"the SSRF guard for yt-dlp {version}: {type(e).__name__}: {e}\n")
+            f"ERROR: {_UNAVAILABLE_MARKER}: refusing to run unguarded — could "
+            f"not install the SSRF guard for yt-dlp {version}: "
+            f"{type(e).__name__}: {e}\n")
         return 78  # EX_CONFIG
     import yt_dlp
     return yt_dlp.main(sys.argv[1:])

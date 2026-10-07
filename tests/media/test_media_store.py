@@ -90,6 +90,29 @@ def test_lru_eviction_over_byte_cap(tmp_path, monkeypatch):
     assert ums.resolve(third, user_id=None) is not None
 
 
+def test_eviction_counts_an_entry_a_concurrent_caller_already_dropped(
+        tmp_path, monkeypatch):
+    """register() and the janitor's sweep() evict on worker threads with no
+    lock: when the other caller drops the oldest entry between this pass's
+    snapshot and its loop, those bytes are gone all the same — skipping it
+    without subtracting them evicted the next-oldest file too, although the
+    store was already under the cap (and that file's GET 404'd)."""
+    a = ums.register(_make_src(tmp_path, "a.m4a", size=100), user_id=None)
+    x = ums.register(_make_src(tmp_path, "x.m4a", size=100), user_id=None)
+    y = ums.register(_make_src(tmp_path, "y.m4a", size=100), user_id=None)
+    monkeypatch.setattr(ums.cfg, "RETAINED_MEDIA_MAX_BYTES", 250, raising=False)
+
+    class _Racy(dict):
+        def items(self):
+            snap = list(super().items())
+            ums._drop(a)            # the concurrent caller's eviction
+            return snap
+    with monkeypatch.context() as m:
+        m.setattr(ums, "_REG", _Racy(ums._REG))
+        ums._evict_over_cap()
+        assert set(ums._REG) == {x, y}
+
+
 def test_register_oversized_file_returns_none_and_keeps_older(tmp_path,
                                                               monkeypatch):
     monkeypatch.setattr(ums.cfg, "RETAINED_MEDIA_MAX_BYTES", 50, raising=False)

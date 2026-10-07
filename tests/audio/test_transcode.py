@@ -267,3 +267,52 @@ def test_refuse_multi_input_passes_a_clip_and_leaves_av_errors_to_the_decoder(
     junk = tmp_path / "junk.bin"
     junk.write_bytes(b"not media at all\x00\x01")
     assert audio_transcode.refuse_multi_input(str(junk)) is None
+
+
+# ---------------------------------------------------------------------------
+# A damaged frame mid-file is skipped, not a refusal
+# ---------------------------------------------------------------------------
+
+def _damaged_mp3(path, *, seconds=8):
+    """An 8 s 440 Hz mp3 with 400 random bytes in the middle — still
+    decodable by faster-whisper, but one packet makes the decoder raise
+    InvalidDataError (a ValueError, the "refused" class main.py tests for)."""
+    import random
+
+    import av
+    with av.open(path, "w", format="mp3") as out:
+        st = out.add_stream("libmp3lame", rate=RATE)
+        st.layout = "mono"
+        t = np.arange(RATE * seconds) / RATE
+        x = (0.3 * np.sin(2 * np.pi * 440 * t)).astype(np.float32)
+        for i in range(0, len(x), 1152):
+            fr = av.AudioFrame.from_ndarray(
+                x[i:i + 1152].reshape(1, -1), format="flt", layout="mono")
+            fr.sample_rate = RATE
+            for pkt in st.encode(fr):
+                out.mux(pkt)
+        for pkt in st.encode(None):
+            out.mux(pkt)
+    data = bytearray(open(path, "rb").read())
+    rnd = random.Random(0)
+    mid = len(data) // 2
+    for i in range(mid, mid + 400):
+        data[i] = rnd.randrange(256)
+    with open(path, "wb") as f:
+        f.write(data)
+    return path
+
+
+def test_transcode_skips_a_damaged_frame(tmp_path):
+    src = _damaged_mp3(str(tmp_path / "damaged.mp3"))
+    dst = str(tmp_path / "out.wav")
+    assert audio_transcode.transcode_to_wav_16k_mono(src, dst) > 44
+    with wave.open(dst, "rb") as w:
+        # Most of the 8 s survive: only the damaged packets are dropped.
+        assert w.getnframes() > 6 * RATE
+
+
+def test_decode_pieces_skip_a_damaged_frame(tmp_path):
+    src = _damaged_mp3(str(tmp_path / "damaged.mp3"))
+    pieces = audio_transcode.decode_pieces_16k(src, [0.0, 3.5, 6.0], 1.0)
+    assert [len(p) for p in pieces] == [RATE] * 3

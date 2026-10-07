@@ -144,9 +144,15 @@ def test_direct_media_probe_gates_generic(monkeypatch):
         _run(udl.check_url_policy("https://x/page.html"))
 
 
-def _probe_with_extractor(monkeypatch, matched, ran):
-    """probe() with the offline match saying `matched` and a stand-in
-    yt-dlp whose extraction ended in the extractor `ran`."""
+def _stand_in_yt_dlp(monkeypatch, matched, info):
+    """probe() with the offline match saying `matched` and a stand-in yt-dlp
+    whose extract_info returns `info` (a dict, or a callable of the URL that
+    returns or raises). Returns the YoutubeDL opts the probe built.
+
+    The stand-in has no .networking, so the SSRF guard cannot install into
+    it — and probe() fails closed when it can't. Nothing here reaches the
+    network, so the check is stubbed out along with the downloader itself
+    (the guard's own behaviour is covered by test_ssrf_guard.py)."""
     captured: dict = {}
 
     class _FakeYDL:
@@ -160,7 +166,7 @@ def _probe_with_extractor(monkeypatch, matched, ran):
             return False
 
         def extract_info(self, url, download=False):
-            return {"title": "t", "extractor_key": ran}
+            return info(url) if callable(info) else info
 
         def sanitize_info(self, info):
             return info
@@ -172,6 +178,13 @@ def _probe_with_extractor(monkeypatch, matched, ran):
     monkeypatch.setattr(udl, "match_extractor", lambda u: matched)
     monkeypatch.setattr(udl, "_direct_media_probe_sync", lambda u, timeout: True)
     return captured
+
+
+def _probe_with_extractor(monkeypatch, matched, ran):
+    """probe() with the offline match saying `matched` and a stand-in
+    yt-dlp whose extraction ended in the extractor `ran`."""
+    return _stand_in_yt_dlp(monkeypatch, matched,
+                            {"title": "t", "extractor_key": ran})
 
 
 def test_probe_refuses_a_direct_media_link_handed_to_a_site_extractor(monkeypatch):
@@ -193,8 +206,56 @@ def test_probe_refuses_a_delegation_off_the_allowlist(monkeypatch):
     _probe_with_extractor(monkeypatch, "Youtube", "Vimeo")
     # The stand-in yt_dlp has no extractor registry to map the allowlist on.
     monkeypatch.setattr(udl, "pinned_extractors", lambda key: ["youtube"])
-    with pytest.raises(udl.UrlPolicyError, match="allowed list"):
+    # "leads to a site": the delegation gate's wording, not the offline
+    # gate's ("isn't on the server's allowed list") — a regression there
+    # must not keep this test green.
+    with pytest.raises(udl.UrlPolicyError, match="leads to a site"):
         _run(udl.probe("https://x/watch", timeout=5.0))
+
+
+def test_probe_refuses_a_site_extractor_handing_off_to_generic(monkeypatch):
+    """Default config (no allowlist, so no pin): a site extractor that
+    url_result()s a scraped embed URL lands on GenericIE, which scrapes any
+    page — the widening URL_ALLOW_GENERIC=off forbids. A plain media file
+    GenericIE served directly is what URL_ALLOW_DIRECT_MEDIA admits."""
+    monkeypatch.setattr(udl.cfg, "URL_ALLOW_GENERIC", False, raising=False)
+    monkeypatch.setattr(udl.cfg, "URL_ALLOW_DIRECT_MEDIA", True, raising=False)
+    monkeypatch.setattr(udl.cfg, "URL_ALLOWED_EXTRACTORS", [], raising=False)
+    with pytest.raises(udl.UrlPolicyError, match="leads to a site"):
+        udl._policy_check_extractor("Youtube", {"extractor_key": "Generic"})
+    udl._policy_check_extractor(
+        "Youtube", {"extractor_key": "Generic", "direct": True})
+    monkeypatch.setattr(udl.cfg, "URL_ALLOW_DIRECT_MEDIA", False, raising=False)
+    with pytest.raises(udl.UrlPolicyError, match="leads to a site"):
+        udl._policy_check_extractor(
+            "Youtube", {"extractor_key": "Generic", "direct": True})
+    monkeypatch.setattr(udl.cfg, "URL_ALLOW_GENERIC", True, raising=False)
+    udl._policy_check_extractor("Youtube", {"extractor_key": "Generic"})
+
+
+def test_probe_reports_a_pinned_out_hand_off_as_a_policy_refusal(monkeypatch):
+    """The REAL yt-dlp, pinned by allowed_extractors, never returns a
+    delegated info dict: it raises "No suitable extractor (X) found". That
+    is the policy at work, not a broken yt-dlp — the client must not be
+    told to update the downloader."""
+    monkeypatch.setattr(udl.cfg, "URL_ALLOW_GENERIC", False, raising=False)
+    monkeypatch.setattr(udl.cfg, "URL_ALLOW_DIRECT_MEDIA", True, raising=False)
+    monkeypatch.setattr(udl.cfg, "URL_ALLOWED_EXTRACTORS", [], raising=False)
+
+    def _pinned_out(url):
+        raise Exception("ERROR: No suitable extractor (Youtube) found for "
+                        "URL https://www.youtube.com/watch?v=x")
+    _stand_in_yt_dlp(monkeypatch, "Generic", _pinned_out)
+    with pytest.raises(udl.UrlPolicyError, match="leads to a site"):
+        _run(udl.probe("https://x/a.mp3", timeout=5.0))
+
+
+def test_classify_error_maps_no_suitable_extractor_to_the_policy():
+    raw = "ERROR: No suitable extractor (Youtube) found for URL https://x/a"
+    msg = udl.classify_error(raw)
+    assert msg == "this link leads to a site the server's URL policy doesn't allow"
+    assert isinstance(udl.classified_error(raw), udl.UrlPolicyError)
+    assert type(udl.classified_error("ERROR: Private video")) is udl.UrlDownloadError
 
 
 def test_probe_admits_the_extractor_it_matched(monkeypatch):
@@ -225,6 +286,11 @@ def test_download_argv_pins_the_extractors_and_ignores_config():
         assert argv[i + 1] == "generic"
         assert i < argv.index("--")
         assert "--ignore-config" in argv
+        # protocol "m3u8" formats go to the native HlsFD (through the
+        # guarded handler), not to the FFmpegFD the guard refuses.
+        j = argv.index("--downloader")
+        assert argv[j + 1] == "m3u8:native"
+        assert j < argv.index("--")
     assert "--use-extractors" not in udl.build_download_argv(
         "https://e.com/a", dest_dir="/tmp/x", max_bytes=1)
 
@@ -638,36 +704,11 @@ def test_probe_selects_download_format(monkeypatch):
     """Regression: without an explicit format, extract_info resolves the
     default merged VIDEO and filesize_approx trips the size cap for media
     whose audio track is far below it."""
-    captured: dict = {}
-
-    class _FakeYDL:
-        def __init__(self, opts):
-            captured.update(opts)
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *a):
-            return False
-
-        def extract_info(self, url, download=False):
-            return {"extractor_key": "Youtube", "title": "t",
-                    "duration": 60, "filesize": 900_000,
-                    "ext": "m4a", "abr": 129.5, "language": "de",
-                    "subtitles": {"de": [{"url": "https://e.test/s.vtt?pot=T"}]}}
-
-        def sanitize_info(self, info):
-            return info
-
-    fake = type(sys)("yt_dlp")
-    fake.YoutubeDL = _FakeYDL
-    monkeypatch.setitem(sys.modules, "yt_dlp", fake)
-    # The stand-in yt_dlp has no .networking, so the SSRF guard cannot install
-    # into it — and probe() fails closed when it can't. Nothing here reaches
-    # the network, so stub the check out along with the downloader itself.
-    # (The guard's own behaviour is covered by test_ssrf_guard.py.)
-    monkeypatch.setattr(udl, "guard_self_check", lambda **kw: None)
-    monkeypatch.setattr(udl, "match_extractor", lambda u: "Youtube")
+    captured = _stand_in_yt_dlp(monkeypatch, "Youtube", {
+        "extractor_key": "Youtube", "title": "t",
+        "duration": 60, "filesize": 900_000,
+        "ext": "m4a", "abr": 129.5, "language": "de",
+        "subtitles": {"de": [{"url": "https://e.test/s.vtt?pot=T"}]}})
     monkeypatch.setattr(udl.cfg, "URL_ALLOWED_EXTRACTORS", [], raising=False)
     # A cap smaller than any merged video but above the audio track: the
     # probe must pass, and estimated size must come from `filesize` too.
@@ -690,33 +731,10 @@ def test_probe_selects_download_format(monkeypatch):
 def test_probe_rejects_channel_page_as_playlist(monkeypatch):
     """A channel /videos tab extracts as _type=playlist — the client-safe
     rejection must be 'playlists aren't supported', not a timeout."""
-    class _FakeYDL:
-        def __init__(self, opts):
-            pass
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *a):
-            return False
-
-        def extract_info(self, url, download=False):
-            return {"_type": "playlist", "extractor_key": "YoutubeTab",
-                    "title": "c't 3003 - Videos",
-                    "entries": [{"_type": "url", "id": "x"}]}
-
-        def sanitize_info(self, info):
-            return info
-
-    fake = type(sys)("yt_dlp")
-    fake.YoutubeDL = _FakeYDL
-    monkeypatch.setitem(sys.modules, "yt_dlp", fake)
-    # The stand-in yt_dlp has no .networking, so the SSRF guard cannot install
-    # into it — and probe() fails closed when it can't. Nothing here reaches
-    # the network, so stub the check out along with the downloader itself.
-    # (The guard's own behaviour is covered by test_ssrf_guard.py.)
-    monkeypatch.setattr(udl, "guard_self_check", lambda **kw: None)
-    monkeypatch.setattr(udl, "match_extractor", lambda u: "YoutubeTab")
+    _stand_in_yt_dlp(monkeypatch, "YoutubeTab", {
+        "_type": "playlist", "extractor_key": "YoutubeTab",
+        "title": "c't 3003 - Videos",
+        "entries": [{"_type": "url", "id": "x"}]})
     monkeypatch.setattr(udl.cfg, "URL_ALLOWED_EXTRACTORS", [], raising=False)
     with pytest.raises(udl.UrlDownloadError, match="[Pp]laylist"):
         _run(udl.probe("https://www.youtube.com/@ct3003/videos", timeout=5.0))
@@ -739,28 +757,10 @@ def test_probe_extract_runs_on_probe_pool(monkeypatch):
     import threading
     seen: dict = {}
 
-    class _FakeYDL:
-        def __init__(self, opts):
-            pass
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *a):
-            return False
-
-        def extract_info(self, url, download=False):
-            seen["thread"] = threading.current_thread().name
-            return {"title": "t", "extractor_key": "Youtube"}
-
-        def sanitize_info(self, info):
-            return info
-
-    fake = type(sys)("yt_dlp")
-    fake.YoutubeDL = _FakeYDL
-    monkeypatch.setitem(sys.modules, "yt_dlp", fake)
-    monkeypatch.setattr(udl, "guard_self_check", lambda **kw: None)
-    monkeypatch.setattr(udl, "match_extractor", lambda u: "Youtube")
+    def _extract(url):
+        seen["thread"] = threading.current_thread().name
+        return {"title": "t", "extractor_key": "Youtube"}
+    _stand_in_yt_dlp(monkeypatch, "Youtube", _extract)
     monkeypatch.setattr(udl.cfg, "URL_ALLOWED_EXTRACTORS", [], raising=False)
     _run(udl.probe("https://example.com/watch?v=x", timeout=5.0))
     assert seen["thread"].startswith("url-probe")
@@ -1497,29 +1497,10 @@ def test_download_returns_an_uppercase_extension_file(tmp_path, monkeypatch):
 
 
 def test_probe_carries_the_ladder_when_video_is_enabled(monkeypatch):
-    class _FakeYDL:
-        def __init__(self, opts):
-            pass
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *a):
-            return False
-
-        def extract_info(self, url, download=False):
-            return {"extractor_key": "Youtube", "title": "t", "duration": 100.0,
-                    "filesize": 900_000, "ext": "m4a", "abr": 129.5,
-                    "formats": _LADDER_INFO["formats"]}
-
-        def sanitize_info(self, info):
-            return info
-
-    fake = type(sys)("yt_dlp")
-    fake.YoutubeDL = _FakeYDL
-    monkeypatch.setitem(sys.modules, "yt_dlp", fake)
-    monkeypatch.setattr(udl, "guard_self_check", lambda **kw: None)
-    monkeypatch.setattr(udl, "match_extractor", lambda u: "Youtube")
+    _stand_in_yt_dlp(monkeypatch, "Youtube", {
+        "extractor_key": "Youtube", "title": "t", "duration": 100.0,
+        "filesize": 900_000, "ext": "m4a", "abr": 129.5,
+        "formats": _LADDER_INFO["formats"]})
     monkeypatch.setattr(udl.cfg, "URL_ALLOWED_EXTRACTORS", [], raising=False)
     monkeypatch.setattr(udl.cfg, "MEDIA_MAX_BYTES", 100_000_000, raising=False)
     monkeypatch.setattr(udl.cfg, "URL_VIDEO_ENABLED", True, raising=False)
