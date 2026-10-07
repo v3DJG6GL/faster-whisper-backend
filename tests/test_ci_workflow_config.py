@@ -260,6 +260,30 @@ def test_ignore_files_anchor_every_root_only_dir():
     assert "secrets/" in docker
 
 
+def test_rotated_logs_under_an_in_repo_data_dir_are_ignored():
+    """LOG_FILE defaults to {DATA_DIR}/logs/whisper.log with rotation; under
+    an in-checkout DATA_DIR not named data/ (WHISPER_DATA_DIR=./state) the
+    root-anchored /logs/ misses it and `*.log` matches only the live file,
+    so the .1/.2 backups (the pipeline trace logs transcript text) were
+    committable, and main is mirrored publicly. Unanchored, like `*.log`."""
+    git = [ln.strip() for ln in _read(".gitignore").splitlines()]
+    assert "*.log.*" in git, ".gitignore: rotated *.log.N backups not ignored"
+    assert "**/*.log.*" in [ln.strip() for ln in _read(".dockerignore").splitlines()]
+
+
+def test_dockerignore_keeps_an_in_repo_data_dir_out_of_the_image():
+    """An in-repo DATA_DIR not named data/ (WHISPER_DATA_DIR=./state) keeps
+    capture audio, the capture export and retained link media below it;
+    a root-only `*.wav` (Docker's filepath.Match: * never crosses a /)
+    let a local `docker build` bake them into a layer."""
+    docker = [ln.strip() for ln in _read(".dockerignore").splitlines()]
+    for pat in ("**/manifest.jsonl", "**/*.wav", "**/*.mp3", "**/*.m4a",
+                "**/url_media/"):
+        assert pat in docker, f".dockerignore: {pat} missing"
+    for bare in ("manifest.jsonl", "*.wav", "*.mp3", "*.m4a"):
+        assert bare not in docker, f".dockerignore: {bare} is root-only"
+
+
 # --- Dockerfiles -------------------------------------------------------------
 
 def test_gpu_loader_path_matches_the_python_base_image():

@@ -397,6 +397,28 @@ def test_clear_local_override_keeps_it_when_config_json_is_unreadable(
     assert [x["name"] for x in local] == ["alpha", "beta", "trim-edges"]
 
 
+def test_clear_local_override_that_would_strand_a_ref_is_a_422(
+        client, app_module, tmp_path, monkeypatch):
+    """A stored per-model exclude naming a rule only the local copy has makes
+    the clear a refusal (config_store raises ValidationError): 422 with the
+    reason, not a 500, and the local list and running rules stay put."""
+    import json
+    from faster_whisper_backend.settings import config_store
+
+    _seed_factory(monkeypatch, tmp_path, _rules("alpha"))
+    with open(config_store.OVERRIDES_PATH, "w", encoding="utf-8") as f:
+        json.dump({"PIPELINE_RULES": _rules("alpha", "mine"),
+                   "MODEL_OVERRIDES": {"large-v3": {
+                       "PIPELINE_RULES_EXCLUDE": ["mine"]}}}, f)
+    before = open(config_store.OVERRIDES_PATH, encoding="utf-8").read()
+    running = app_module.cfg.PIPELINE_RULES
+    r = client.post("/settings/factory-rules/clear-local-override")
+    assert r.status_code == 422, r.text
+    assert "mine" in json.dumps(r.json()["errors"])
+    assert open(config_store.OVERRIDES_PATH, encoding="utf-8").read() == before
+    assert app_module.cfg.PIPELINE_RULES is running
+
+
 def _pin_pipeline_rules(monkeypatch, app_module):
     """Pin PIPELINE_RULES by env, stub the rebuild and park a sentinel rule
     list on cfg; returns the rebuild-call list."""

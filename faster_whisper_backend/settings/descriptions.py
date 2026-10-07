@@ -245,8 +245,9 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
         "audio in the window (batch + streaming final). A decode that gets "
         "stuck repeating itself otherwise runs to the model's hard limit and "
         "costs 15-20 s before it is discarded. Real speech is about 3 tokens "
-        "per second, so correct text is never touched; 30 s windows of long "
-        "files are unaffected. An attempt that ran into the limit says "
+        "per second, so at the default correct text is never touched; at 6.5 "
+        "or more 30 s windows of long files are unaffected, lower values also "
+        "cap them. An attempt that ran into the limit says "
         "'hit cap' in the log block's Decode trace. 0 = disabled. Default 10.",
     "SUPPRESS_BLANK":
         "Suppress blank token at start of decoder sampling. Default true. "

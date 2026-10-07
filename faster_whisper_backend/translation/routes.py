@@ -429,6 +429,11 @@ async def translate_text(request: Request,
                 job_id=_pid or request_id,
                 wait_s=metrics.take_wait(),
                 recent_row=folded_into is None,
+                # The dictation session this translation belongs to: its
+                # translating stage (with the targets) joins that session's
+                # usage job, so dictation.targets sees it and the meter does
+                # not count the dictation twice (usage_store checks the owner).
+                session_job_id=_client_job,
             )
 
         async def _record_run(status: str, exc: "BaseException | None" = None,

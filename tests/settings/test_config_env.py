@@ -13,6 +13,7 @@ import os
 import pytest
 
 from faster_whisper_backend.settings import config
+from tests.conftest import _repoint_path_default
 
 
 # ---------------------------------------------------------------------------
@@ -870,18 +871,10 @@ def test_per_model_env_override_invalid_without_stored_entry_is_dropped(monkeypa
 def _point_overrides_at(monkeypatch, path):
     """Repoint config_store.load_overrides at `path` the way tests/conftest.py
     does: the module constant AND the def-time-bound default argument."""
-    import inspect
     from faster_whisper_backend.settings import config_store
     monkeypatch.setattr(config_store, "OVERRIDES_PATH", str(path), raising=False)
-    # By name, not __defaults__[-1]: a later trailing default would otherwise
-    # be the one rewritten and `path` left pointing at the real file.
-    _fn = config_store.load_overrides
-    _with_default = [p.name for p in inspect.signature(_fn).parameters.values()
-                     if p.default is not inspect.Parameter.empty
-                     and p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)]
-    _defaults = list(_fn.__defaults__ or ())
-    _defaults[_with_default.index("path")] = str(path)
-    monkeypatch.setattr(_fn, "__defaults__", tuple(_defaults), raising=False)
+    # By name, not __defaults__[-1] (conftest's shared helper).
+    _repoint_path_default(monkeypatch, (config_store.load_overrides,), str(path))
 
 
 def test_env_cross_field_inconsistent_with_local_override_is_reverted(tmp_path, monkeypatch):

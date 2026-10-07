@@ -253,13 +253,12 @@ function _readEntries(parent) {
     // display. Only the literal cb:map editor escapes (it holds raw strings).
     const pat = (en.querySelector('.e-pattern') || {}).value || '';
     if (!pat) return;  // skip empty-pattern rows (no-op; stays in the DOM)
-    const o = { pattern: pat,
-                replacement: (en.querySelector('.e-repl') || {}).value || '' };
     const lbl = _unesc((en.querySelector('.e-label') || {}).value || '');
     const note = (en.querySelector('.e-note') || {}).value || '';  // textarea: real text
-    if (lbl) o.label = lbl;
-    if (note) o.note = note;
-    out.push(o);
+    // Always emit label/note ("" when empty), like the server's schema dump.
+    out.push({ pattern: pat,
+               replacement: (en.querySelector('.e-repl') || {}).value || '',
+               label: lbl, note: note });
   });
   return out;
 }

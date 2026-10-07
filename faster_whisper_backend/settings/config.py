@@ -528,8 +528,9 @@ DECODE_SKIP_RESIDUAL_WINDOWS: bool = _D("DECODE_SKIP_RESIDUAL_WINDOWS")
 # runs to the model's hard limit (224 tokens with a full hotwords prompt) at
 # ~83 ms a token on beam 10 — 2026-09-19 a 7 s dictation waited 18.6 s for a
 # looped rung that was then discarded. Real speech is about 3 tokens per second
-# (timestamps included), so 10 leaves a >3x margin; a 30 s window is never
-# affected. Applied inside the generate hook (transcription/decode_trace.py), NOT via
+# (timestamps included), so 10 leaves a >3x margin; at 6.5 or more a 30 s
+# window is never affected (lower values also cap long-file windows).
+# Applied inside the generate hook (transcription/decode_trace.py), NOT via
 # faster-whisper's max_new_tokens, which CTranslate2 halves and which raises
 # with a long prompt. A capped rung says "hit cap" in the Decode trace.
 # Applies to batch files and streaming finals. 0 = off.

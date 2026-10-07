@@ -1056,3 +1056,40 @@ def test_claimed_dictation_receipt_folds_into_the_utterance_row(
     utt = next(x for x in rows if x["request_id"] == "utt-rid")
     assert [s["name"] for s in utt["stages"]] == ["transcribing", "translating"]
     assert utt["processing_s"] >= 0.9   # stub translate takes ~0 s
+
+
+def test_dictation_translation_joins_its_session_usage_job(
+        client, app_module, monkeypatch, make_user_key):
+    """The desktop client mints a fresh progress_id per translate call and
+    names the dictation session only as client_job. The translating stage
+    joins that session's usage job (dictation.targets lists the target, the
+    translating meter counts the dictation once), and a client_job naming
+    another user's session never attaches."""
+    import zoneinfo
+
+    from faster_whisper_backend.stats import usage_store
+    _enable(app_module, monkeypatch)
+    _stub_translate(monkeypatch)
+    uid, raw = make_user_key("alice", is_admin=True)
+    bob, raw_bob = make_user_key("bob")
+    sess = "5e55" * 8
+    usage_store.record_usage(key_id="k", user_id=uid, audio_s=5.0, words=20,
+                             status="ok", kind="dictation", job_id=sess)
+    r = client.post(URL, json={**_body(), "client_job": sess,
+                               "progress_id": "a1" * 16},
+                    headers=bearer(raw))
+    assert r.status_code == 200, r.text
+    r = client.post(URL, json={**_body(), "client_job": sess,
+                               "progress_id": "b2" * 16},
+                    headers=bearer(raw_bob))
+    assert r.status_code == 200, r.text
+    utc = zoneinfo.ZoneInfo("UTC")
+    doc = usage_store.document(uid, days=1, tz=utc, tz_name="UTC")
+    assert doc["dictation"]["targets"] == [
+        {"code": "en", "runs": 1, "kept_original": 0}]
+    meter = next(s for s in doc["stages"] if s["stage"] == "translating")
+    assert (meter["runs"], meter["of_runs"]) == (1, 1)
+    # Bob's run is a text job of his own.
+    assert usage_store._require_conn().execute(
+        "SELECT kind FROM usage_jobs WHERE job_id = ?",
+        ("b2" * 16,)).fetchone()["kind"] == "text"

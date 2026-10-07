@@ -606,7 +606,15 @@ async def clear_local_pipeline_override(request: Request) -> JSONResponse:
             factory = await asyncio.to_thread(config_store.load_factory_rules)
             await asyncio.to_thread(
                 config_store.save_overrides, {"PIPELINE_RULES": None})
-        except (ValidationError, RuntimeError, OSError) as e:
+        except ValidationError as e:
+            # A stored per-model / profile / captures exclude still names a
+            # rule only the local copy has; the factory list would strand it.
+            logger.warning("[config] clear-local-override refused: %s", e)
+            return JSONResponse(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                content={"errors": settings_schema.format_validation_errors(e)},
+            )
+        except (RuntimeError, OSError) as e:
             logger.error("[config] clear-local-override failed: %s", e)
             raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR,
                                 f"could not clear local override: {e}")

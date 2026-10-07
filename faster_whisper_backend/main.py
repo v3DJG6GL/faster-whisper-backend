@@ -304,7 +304,7 @@ async def _sessions_purge_loop() -> None:
     """Hourly reap of revoked/expired session rows.
 
     Nothing else purges them at runtime: the lazy eviction in lookup_session
-    only fires for a token that is presented again, so with the 30-day sliding
+    only fires for a token that is presented again, so with the 30-day
     TTL a login loop grew both the sessions table and the in-memory index
     without bound. /auth/login takes any valid key and has no rate limit.
     Same shape as the retention loops above."""
@@ -2171,7 +2171,12 @@ async def transcribe(
                                     os.path.getsize(_sep_wav) / 1e6)
                                 _sep_src = _sep_wav
                             except Exception as _te:  # noqa: BLE001
-                                _refused = isinstance(_te, ValueError)
+                                # PyAV's errors subclass ValueError too; only
+                                # _open_audio's own ValueError (a playlist
+                                # container, no audio stream) is a refusal.
+                                import av as _av
+                                _refused = (isinstance(_te, ValueError)
+                                            and not isinstance(_te, _av.FFmpegError))
                                 logger.warning(
                                     "[bgm] input transcode failed (%s); %s",
                                     _log_safe(str(_te)),
@@ -2198,6 +2203,10 @@ async def transcribe(
                                 _sep_src = tmp_path
                         try:
                             tx_progress._check_cancelled(_pid)
+                            # Queue time for the slot, not demix work: the
+                            # plan bills it to wait_s (the "preparing" set
+                            # inside ends it).
+                            _ps(step="waiting")
                             async with tx_models.get_inference_semaphore():
                                 tx_progress._check_cancelled(_pid)
                                 # "preparing" stays up through model load and

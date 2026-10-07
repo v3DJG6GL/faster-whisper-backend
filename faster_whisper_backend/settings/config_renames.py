@@ -100,6 +100,14 @@ UPGRADED_RULE_ENTRIES: dict[str, tuple[tuple[str, str], tuple[str, str]]] = {
         ('(?:,|\\.)(- |-)', ''),
         ('(?<!\\d)(?:,|\\.)(- |-)', ''),
     ),
+    # Spanish opening marks: es-punctuation now runs before this rule, so
+    # the strip must take an opening ¿/¡ along with its closing mark (an
+    # orphaned "¿Qué hora es" otherwise), keeping it only where the closing
+    # mark survives (after a digit).
+    "Strip terminators & commas": (
+        ('(?<!\\d)[.?!]|(?<!\\d),|,(?!\\d)', ''),
+        ('(?<!\\d)[.?!]|¿(?![^?¿]*\\d\\?)|¡(?![^!¡]*\\d!)|(?<!\\d),|,(?!\\d)', ''),
+    ),
 }
 
 # Keys holding a list of rule slugs, at the top level and inside each

@@ -4779,7 +4779,16 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
       try {
         r = await api('POST', '/settings/factory-rules/clear-local-override');
       } catch (e) { alert('Could not reach the server.'); return; }
-      if (!r.ok) { alert("Dropping this server's rule list failed."); return; }
+      if (!r.ok) {
+        // 422: a stored per-model / profile exclude still names a rule only
+        // this server's list has; say which, the admin can act on it.
+        let why = '';
+        if (r.status === 422) {
+          try { why = ((await r.json()).errors || []).map((x) => x.msg).join(' '); } catch (_) {}
+        }
+        alert("Dropping this server's rule list failed." + (why ? ' ' + why : ''));
+        return;
+      }
       close();
       location.reload();
     };

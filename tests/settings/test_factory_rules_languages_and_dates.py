@@ -106,6 +106,23 @@ def test_spanish_patterns_pass_the_regex_guard():
     regex_guard.validate([[e["label"], e["pattern"], e["replacement"]] for e in entries])
 
 
+def test_spanish_marks_survive_the_whole_factory_pipeline(app_module):
+    """es-punctuation runs ahead of strip-auto-punctuation, which takes an
+    opening mark along with its closing one: no ¿/¡ lands on the wrong
+    sentence or is left orphaned."""
+    app_module.cfg.PIPELINE_RULES = copy.deepcopy(_factory_rules())
+    pl_engine.rebuild_caches()
+    run = lambda t: pl_engine._postprocess_text(t, model_name="", language="es")
+    assert run("Hola. Tienes 3?") == "Hola ¿Tienes 3?"
+    assert run("Cuántos son? 25!") == "Cuántos son ¡25!"
+    assert run("¿Qué hora es?") == "Qué hora es"
+    off = copy.deepcopy(_factory_rules())
+    next(r for r in off if r["name"] == "strip-auto-punctuation")["enabled"] = False
+    app_module.cfg.PIPELINE_RULES = off
+    pl_engine.rebuild_caches()
+    assert run("Qué hora es? Qué bien!") == "¿Qué hora es? ¡Qué bien!"
+
+
 def test_german_map_does_not_touch_spanish(app_module):
     app_module.cfg.PIPELINE_RULES = copy.deepcopy(_factory_rules())
     pl_engine.rebuild_caches()
@@ -193,6 +210,25 @@ def test_stored_old_hyphen_entry_is_upgraded_once():
     assert re.sub(old_pat, old_rep, "vom 3.-10 Oktober") == "vom 310 Oktober"
     assert re.sub(new_pat, new_rep, "vom 3.-10 Oktober") == "vom 3.-10 Oktober"
     assert re.sub(new_pat, new_rep, "a,-b") == "ab"
+
+
+def test_stored_old_strip_entry_is_upgraded_once():
+    """A stored copy from before es-punctuation moved ahead of the strip left
+    a Whisper-written "¿Qué hora es?" as an orphaned "¿Qué hora es"."""
+    rules = copy.deepcopy(_factory_rules())
+    (old_pat, old_rep), (new_pat, new_rep) = \
+        renames.UPGRADED_RULE_ENTRIES["Strip terminators & commas"]
+    e = next(e for r in rules for e in (r.get("entries") or [])
+             if e.get("label") == "Strip terminators & commas")
+    e["pattern"], e["replacement"] = old_pat, old_rep
+    raw = {"PIPELINE_RULES": rules}
+    assert renames.upgrade_rule_entries(raw) == [
+        "strip-auto-punctuation/Strip terminators & commas"]
+    assert raw["PIPELINE_RULES"] == _factory_rules()
+    assert renames.upgrade_rule_entries(raw) == []
+    assert re.sub(old_pat, old_rep, "¿Qué hora es?") == "¿Qué hora es"
+    assert re.sub(new_pat, new_rep, "¿Qué hora es?") == "Qué hora es"
+    assert re.sub(new_pat, new_rep, "¿Vienes a las 10?") == "¿Vienes a las 10?"
 
 
 def test_edited_factory_entry_is_left_alone():

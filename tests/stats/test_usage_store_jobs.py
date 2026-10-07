@@ -124,6 +124,18 @@ def test_colliding_job_id_of_another_user_is_not_merged(usage_store_db):
                        tz_name="UTC")["today"]["dictation"]["sessions"] == 1
 
 
+def test_job_language_is_capped(usage_store_db):
+    # The streaming fallback hands the client's handshake value through;
+    # stored at most 32 chars, like recent_transcriptions_store.
+    us = usage_store_db
+    us.record_usage(key_id="k", user_id="u", audio_s=1.0, words=1,
+                    status="ok", kind="dictation", job_id="l" * 32,
+                    language="x" * 500)
+    row = us._require_conn().execute(
+        "SELECT language FROM usage_jobs").fetchone()
+    assert row["language"] == "x" * 32
+
+
 def test_init_reclassifies_unknown_rows_as_dictation(tmp_path):
     """A DB migrated by the first per-kind build holds its history as
     'unknown'; the next start folds it into 'dictation', summing into a

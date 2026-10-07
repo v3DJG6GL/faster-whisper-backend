@@ -776,3 +776,34 @@ def test_a_refused_bgm_transcode_never_hands_the_original_to_the_separator(
     assert calls == []
     assert any("music separation skipped" in w
                for w in r.json().get("warnings") or [])
+
+
+def test_a_pyav_error_in_the_bgm_transcode_falls_back_to_the_original(
+        client, app_module, monkeypatch):
+    """PyAV's errors subclass ValueError too, but only _open_audio's own
+    ValueError is a refusal: any other av error keeps the run-12 fallback
+    (the separator decodes the original) instead of skipping separation."""
+    import av
+    from faster_whisper_backend.audio import bgm_separation
+    from faster_whisper_backend.audio import transcode as audio_transcode
+    monkeypatch.setattr(app_module.cfg, "BGM_SEPARATION_ENABLED", True,
+                        raising=False)
+    calls = []
+
+    async def _separate(path, **kw):
+        calls.append(path)
+        raise bgm_separation.BgmSeparationError("stub separator")
+    monkeypatch.setattr(bgm_separation, "separate", _separate)
+
+    def _invalid(src, dst, *, rate=44100, layout="stereo"):
+        raise av.error.InvalidDataError(1094995529, "Invalid data",
+                                        "avcodec_send_packet()")
+    monkeypatch.setattr(audio_transcode, "transcode_to_wav", _invalid)
+    r = client.post("/v1/audio/transcriptions",
+                    files={"file": ("a.mp3", b"ID3xxxx", "audio/mpeg")},
+                    data={"model": "whisper-1", "separate_bgm": "true",
+                          "response_format": "verbose_json"})
+    assert r.status_code == 200, r.text
+    assert len(calls) == 1 and not calls[0].endswith(".wav")
+    assert not any("could not be prepared" in w
+                   for w in r.json().get("warnings") or [])

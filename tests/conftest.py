@@ -150,18 +150,8 @@ _RESET_HOOKS: tuple[tuple[str, Any], ...] = (
     ("faster_whisper_backend.settings.effective_config",
      lambda m: m._last_warn.clear()),
     # the VAD-reprocess worker state, back to the module's idle shape.
-    ("faster_whisper_backend.captures.vad_reprocess",
-     lambda m: _reset_vad_reprocess(m)),
+    ("faster_whisper_backend.captures.vad_reprocess", "_reset_for_tests"),
 )
-
-
-def _reset_vad_reprocess(m) -> None:
-    m._worker = None
-    m._state = {
-        "status": "idle", "started_ts": None, "finished_ts": None,
-        "total": 0, "processed": 0, "rebuilt": 0, "skipped": 0,
-        "stale": 0, "error": None,
-    }
 
 
 @pytest.fixture(autouse=True)

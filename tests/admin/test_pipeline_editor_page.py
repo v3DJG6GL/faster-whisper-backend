@@ -283,3 +283,15 @@ def test_rule_comparisons_fill_in_schema_defaults(client):
     for key in ("languages: []", "exposed: false", "tags: []", "note: ''",
                 "color: ''"):
         assert key in add, key
+
+
+def test_regex_list_entries_are_read_back_in_the_schema_shape(client):
+    """The server copy of a regex-list entry always carries label and note
+    ("" when empty). The row reader dropped an empty one, so typing into a
+    note and deleting it again read the rule as "edited here"."""
+    html = _html(client)
+    body = html[html.index("function _readEntries(parent) {"):]
+    body = body[:body.index("\n}\n")]
+    assert "if (lbl) o.label = lbl;" not in body
+    assert "if (note) o.note = note;" not in body
+    assert "label: lbl, note: note" in body

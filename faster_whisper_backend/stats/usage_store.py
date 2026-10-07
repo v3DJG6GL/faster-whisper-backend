@@ -609,8 +609,11 @@ def record_usage(
                             "  wait_s      = wait_s + excluded.wait_s,"
                             "  error_class = COALESCE(error_class, excluded.error_class),"
                             "  error_stage = COALESCE(error_stage, excluded.error_stage)",
+                            # language capped like recent_transcriptions_store's
+                            # _CAP_LANGUAGE: a caller may hand a raw client value.
                             (jid, uid, kid, k, created_ts, status, a, w, p,
-                             model or None, language or None, wt, ecls, estg),
+                             model or None, (language or "")[:32] or None,
+                             wt, ecls, estg),
                         )
                 conn.execute(
                     "INSERT INTO usage_hourly"

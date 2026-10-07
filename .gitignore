@@ -68,6 +68,7 @@ Thumbs.db
 
 # Test artifacts / temp uploads
 *.log
+*.log.*
 /tmp/
 /logs/
 *.wav

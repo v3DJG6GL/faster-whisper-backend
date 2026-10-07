@@ -32,7 +32,10 @@ from faster_whisper_backend.captures import samples as capture_samples
 logger = logging.getLogger("whisper-api")
 
 _state_lock = threading.Lock()
-_state: dict[str, Any] = {
+# The idle shape: the module's starting state, what start() resets the
+# counters to, and what _reset_for_tests restores (one literal, so a new
+# counter cannot be missed in any of them).
+_IDLE_STATE: dict[str, Any] = {
     "status":       "idle",     # idle | running | done | error
     "started_ts":   None,
     "finished_ts":  None,
@@ -43,7 +46,15 @@ _state: dict[str, Any] = {
     "stale":        0,          # over-cap or build failure → flagged stale
     "error":        None,
 }
+_state: dict[str, Any] = dict(_IDLE_STATE)
 _worker: "threading.Thread | None" = None
+
+
+def _reset_for_tests() -> None:
+    """Test-only: back to the module's canonical idle shape."""
+    global _worker, _state
+    _worker = None
+    _state = dict(_IDLE_STATE)
 
 
 def status() -> dict[str, Any]:
@@ -57,17 +68,7 @@ def start() -> dict[str, Any]:
     with _state_lock:
         if _state["status"] == "running":
             return dict(_state)
-        _state.update({
-            "status":      "running",
-            "started_ts":  time.time(),
-            "finished_ts": None,
-            "total":       0,
-            "processed":   0,
-            "rebuilt":     0,
-            "skipped":     0,
-            "stale":       0,
-            "error":       None,
-        })
+        _state.update(_IDLE_STATE, status="running", started_ts=time.time())
     _worker = threading.Thread(target=_run, daemon=True, name="reprocess-vad")
     _worker.start()
     with _state_lock:
