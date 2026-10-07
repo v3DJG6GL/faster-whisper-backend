@@ -164,27 +164,31 @@ def _client_bounds(key: str) -> "tuple":
     return b["min"], b["max"]
 
 
+def _client_maxlen(key: str) -> int:
+    """maxlen of a client string decode key, read like _client_bounds."""
+    return settings_schema.client_key_bounds()[key]["maxlen"]
+
+
 _DECODE_INT_BOUNDS = {
-    "beam_size": (1, 20),
-    "best_of": (1, 20),
-    "no_repeat_ngram_size": (0, 10),
-    "language_detection_segments": _client_bounds("language_detection_segments"),
+    key: _client_bounds(key)
+    for key in ("beam_size", "best_of", "no_repeat_ngram_size",
+                "language_detection_segments")
 }
 _DECODE_FLOAT_BOUNDS = {
-    "no_speech_threshold": (0.0, 1.0),
-    "log_prob_threshold": (-10.0, 0.0),
-    "compression_ratio_threshold": (0.0, 10.0),
-    "patience": (0.5, 5.0),
-    "length_penalty": (0.1, 5.0),
-    "repetition_penalty": (0.5, 5.0),
-    "hallucination_silence_threshold": _client_bounds("hallucination_silence_threshold"),
-    "language_detection_threshold": _client_bounds("language_detection_threshold"),
+    key: _client_bounds(key)
+    for key in ("no_speech_threshold", "log_prob_threshold",
+                "compression_ratio_threshold", "patience", "length_penalty",
+                "repetition_penalty", "hallucination_silence_threshold",
+                "language_detection_threshold")
 }
 _DECODE_STR_CAPS = {
-    "hotwords": 2048,
-    "prepend_punctuations": 64,
-    "append_punctuations": 64,
+    key: _client_maxlen(key)
+    for key in ("hotwords", "prepend_punctuations", "append_punctuations")
 }
+# The VAD sub-params are applied inside the VAD block, not the scalar loops.
+_VAD_MIN_SILENCE_BOUNDS = _client_bounds("vad_min_silence_duration_ms")
+_VAD_SPEECH_PAD_BOUNDS = _client_bounds("vad_speech_pad_ms")
+_VAD_THRESHOLD_BOUNDS = _client_bounds("vad_threshold")
 # suppress_tokens is a list, so it gets a length cap plus a per-id range instead
 # of a scalar clamp. 256 ids is far more than any real suppression set; the range
 # is the Whisper vocabulary (the schema's bound, shared with the settings
@@ -275,11 +279,15 @@ def _apply_decode_overrides(kwargs, resolved_model, overrides, ident=None):
     if "suppress_tokens" in overrides:
         st = overrides["suppress_tokens"]
         ids = None
+        # Only the first _SUPPRESS_TOKENS_MAX entries are ever parsed (as for
+        # temperature): a streaming session re-reads its overrides on every
+        # partial, on the loop.
         try:
             if isinstance(st, list):
-                ids = [int(x) for x in st]
+                ids = [int(x) for x in st[:_SUPPRESS_TOKENS_MAX]]
             elif isinstance(st, str):
-                ids = [int(t.strip()) for t in st.split(",") if t.strip()]
+                toks = st.split(",", _SUPPRESS_TOKENS_MAX)[:_SUPPRESS_TOKENS_MAX]
+                ids = [int(t.strip()) for t in toks if t.strip()]
         except (TypeError, ValueError, OverflowError):
             # OverflowError: int(float('inf')) from a JSON Infinity / 1e999
             # literal — drop the malformed override like the clamp paths,
@@ -312,15 +320,16 @@ def _apply_decode_overrides(kwargs, resolved_model, overrides, ident=None):
             threshold=effective_config.cfg_for(resolved_model, "VAD_THRESHOLD", ident),
         ))
         if "vad_min_silence_duration_ms" in overrides:
-            cv = _clamp_int(overrides["vad_min_silence_duration_ms"], 0, 10000)
+            cv = _clamp_int(overrides["vad_min_silence_duration_ms"],
+                            *_VAD_MIN_SILENCE_BOUNDS)
             if cv is not None:
                 vp["min_silence_duration_ms"] = cv
         if "vad_speech_pad_ms" in overrides:
-            cv = _clamp_int(overrides["vad_speech_pad_ms"], 0, 2000)
+            cv = _clamp_int(overrides["vad_speech_pad_ms"], *_VAD_SPEECH_PAD_BOUNDS)
             if cv is not None:
                 vp["speech_pad_ms"] = cv
         if "vad_threshold" in overrides:
-            cv = _clamp_float(overrides["vad_threshold"], 0.0, 1.0)
+            cv = _clamp_float(overrides["vad_threshold"], *_VAD_THRESHOLD_BOUNDS)
             if cv is not None:
                 vp["threshold"] = cv
         kwargs["vad_parameters"] = vp

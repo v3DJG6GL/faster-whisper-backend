@@ -52,7 +52,8 @@ from faster_whisper_backend.runtime import hf_cache
 from faster_whisper_backend.runtime import model_registry
 from faster_whisper_backend.runtime import system_stats
 from faster_whisper_backend.core.languages import (
-    canonical_code, language_codes, language_name, lookup, same_language)
+    _normalise_code, canonical_code, language_codes, language_name, lookup,
+    same_language)
 from faster_whisper_backend.core.loop_lock import LoopLock
 
 logger = logging.getLogger("whisper-server")
@@ -428,6 +429,7 @@ def render_prompt(text: str, target: str, *, source: "str | None" = None,
     # it — only _build_gemma defaults to "en" itself (its wire format
     # needs a code); every other builder drops the "from X" clause.
     source_code = (source or "").strip()
+    target = _prompt_target(target)
     fam = _FAMILIES[fam_name]
     if fam_name == "custom":
         tpl = template if template is not None else \
@@ -911,6 +913,12 @@ async def idle_evictor_loop() -> None:
                     # module importing the other.
                     if model_registry.is_warm(_STATS_PREFIX + ref):
                         continue
+                    # A leased model mid-job reads as stale every tick; skip
+                    # it here so the tick does not log a deferred eviction
+                    # for it (_release_model restarts its clock), as
+                    # transcription.models._idle_evictor does.
+                    if _active.get(ref, 0) > 0:
+                        continue
                     if ref in _models and now - last >= timeout:
                         _drop_locked(ref)
         except asyncio.CancelledError:
@@ -1100,6 +1108,8 @@ _RATIO_FLOOR_CHARS = 20
 
 _CJK_TARGETS = {"zh", "ja", "ko", "yue"}
 _CJK_CHAR_RE = re.compile(r"[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]")
+# Kana and Hangul only: no two different CJK targets share these (unlike Han).
+_KANA_HANGUL_RE = re.compile(r"[\u3040-\u30ff\uac00-\ud7af]")
 
 
 def _target_is_cjk(target: "str | None") -> bool:
@@ -1141,9 +1151,10 @@ def _guard_reason(src: str, out: str, *,
     spoken-transcript MT constantly writes "sechzehn" as "16" and an exact
     multiset check rejected correct translations en masse; digits compare
     by value, so native-script digits are the same number); verbatim input
-    copy of two words or more (for a non-CJK target each CJK character
-    counts as one: an unspaced clause is a single \\w+ run) when the target
-    differs from the source; repetition loop."""
+    copy of two words or more (each CJK character counts as one, as an
+    unspaced clause is a single \\w+ run; for a CJK target only kana and
+    Hangul count, Han text is shared) when the target differs from the
+    source; repetition loop."""
     s = (src or "").strip()
     o = (out or "").strip()
     if not o:
@@ -1159,13 +1170,15 @@ def _guard_reason(src: str, out: str, *,
     # A one-word line ("OK.", "Netflix.", "Hm.") often translates to
     # itself; only a copied phrase is evidence of an untranslated output.
     # Whitespace is compared collapsed: a numbered batch prompt carries each
-    # segment with its newlines and runs of spaces folded. The CJK-character
-    # floor applies only to a non-CJK target: zh→zh-Hant ("大家好") and
-    # ja→zh ("日本") legitimately share text.
+    # segment with its newlines and runs of spaces folded. For a CJK target
+    # the CJK-character floor counts kana and Hangul only: zh→zh-Hant
+    # ("大家好") and ja→zh ("日本") legitimately share Han text, but an
+    # unchanged kana or Hangul clause is never another CJK language's
+    # translation.
     if (" ".join(o.split()) == " ".join(s.split())
             and (len(re.findall(r"\w+", s)) >= 2
-                 or (not _target_is_cjk(target)
-                     and len(_CJK_CHAR_RE.findall(s)) >= 2))):
+                 or len((_KANA_HANGUL_RE if _target_is_cjk(target)
+                         else _CJK_CHAR_RE).findall(s)) >= 2)):
         return "output copies input"
     if _REPETITION_RE.search(o[:_REPETITION_SCAN_CHARS]):
         return "repetition loop"
@@ -1191,6 +1204,17 @@ def _context_lines(segments: "list[dict]", upto: int, count: int) -> str:
     return "\n".join(lines)
 
 
+def _prompt_target(code: str) -> str:
+    """The target code as the prompt spells it — ONE fold for the run
+    (_run_completion) and the prompt lab's preview (render_prompt). The lab
+    passes its free-form target raw ("jpn", "zh_hant"): folded to the table's
+    spelling ("ja", "zh-Hant") the code-using builders (Gemma, Seed-X) and the
+    language name match what the run sends. _normalise_code, not
+    canonical_code: a script subtag the table does not list ("sr-Latn") is
+    still the target's script and must reach the prompt."""
+    return _normalise_code(code) or code
+
+
 async def _run_completion(llm, family: str, text: str, source_code: str,
                           target_code: str, context: str, glossary: str,
                           template_override: "str | None" = None) -> str:
@@ -1199,9 +1223,7 @@ async def _run_completion(llm, family: str, text: str, source_code: str,
     only) renders THAT template instead of cfg.TRANSLATION_PROMPT_TEMPLATE —
     the admin template-test path, never persisted."""
     fam = _FAMILIES[family]
-    # An ISO 639-3 target ("jpn") reaches here unfolded; the prompt names the
-    # language from the table's spelling ("ja" → "Japanese", not "Jpn").
-    target_code = canonical_code(target_code) or target_code
+    target_code = _prompt_target(target_code)
     if template_override is not None and family == "custom":
         prompt = [{"role": "user", "content": _render_custom_template(
             template_override, text, language_name(source_code),
@@ -1360,6 +1382,15 @@ async def translate_segments(
         except Exception:  # noqa: BLE001 — progress must never break us
             pass
 
+    def _blank_progress(step: str) -> None:
+        """The tick for blank members no model call was made for. Before the
+        target's start tick (_translate_one) it would start the run plan's
+        unit ahead of the model load and bill a cold load as translation
+        time, so it is held back then, unless it finishes the target (an
+        all-blank target loads nothing)."""
+        if unit_state["started"] or unit_state["done"] >= len(segments):
+            _progress(step, last_ok)
+
     def _check_cancel() -> None:
         if cancel_check is not None and cancel_check():
             raise TranslationCancelled()
@@ -1482,8 +1513,8 @@ async def translate_segments(
                     batch_no += 1
                     done_units += len(batch_idx)
                     unit_state["done"] += len(batch_idx)
-                    _progress(f"{target} {min(batch_no, n_batches)}/{n_batches}",
-                              last_ok)
+                    _blank_progress(
+                        f"{target} {min(batch_no, n_batches)}/{n_batches}")
                     continue
                 texts = [(segments[j].get("text") or "") for j in live_idx]
                 context = _context_lines(segments, i, ctx_n)
@@ -1543,7 +1574,7 @@ async def translate_segments(
                         results[j][target] = ""
                     done_units += len(group)
                     unit_state["done"] += len(group)
-                    _progress(f"{target} {g_no}/{len(groups)}", last_ok)
+                    _blank_progress(f"{target} {g_no}/{len(groups)}")
                     continue
                 context = _context_lines(segments, group[0], ctx_n)
                 translated = await _translate_one(joined, target, context)
@@ -1571,7 +1602,9 @@ async def translate_segments(
                         results[j][target] = segments[j].get("text") or ""
                     span = (f"segment {group[0] + 1}" if len(group) == 1 else
                             f"segments {group[0] + 1}-{group[-1] + 1}")
-                    _keep_original(span, group, target, reason)
+                    # A blank member stays blank — never a "kept original".
+                    _keep_original(span, [j for j, t in zip(group, src_texts)
+                                          if t.strip()], target, reason)
                 else:
                     for j, piece in zip(group, pieces):
                         results[j][target] = piece

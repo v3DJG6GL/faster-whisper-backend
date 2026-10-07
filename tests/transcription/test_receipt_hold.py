@@ -67,7 +67,7 @@ def test_sweep_releases_only_after_silence():
     time.sleep(0.08)
     out = receipt_hold.sweep()
     assert len(out) == 1
-    assert "no result within" in " ".join(out[0]["skipped"])
+    assert "no progress for" in " ".join(out[0]["skipped"])
     assert receipt_hold.pending() == 0
 
 
@@ -191,7 +191,7 @@ def test_validation_reject_releases_the_parked_receipt(client, app_module,
                                                        monkeypatch):
     """Every validation exit of the translate endpoint (422/413/429/400) must
     hand a parked dictation receipt back NOW — not leave it for the idle
-    sweeper to log ~90 s later with a 'no result within' note. "Back"
+    sweeper to log ~90 s later with a 'no progress for' note. "Back"
     means LOGGED with the reason — popped and dropped would be lost."""
     from faster_whisper_backend.transcription import receipt as tx_receipt
     logged = []

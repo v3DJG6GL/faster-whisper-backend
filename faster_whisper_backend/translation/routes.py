@@ -278,8 +278,8 @@ async def translate_text(request: Request,
     except BaseException:
         # Any rejection above (422/413/429/400) — or a client disconnect
         # mid-validation — must hand the parked receipt back NOW, or the
-        # sweeper logs it ~90 s later as "no result within 90s", out of
-        # order and with the wrong reason. Mirrors the acquire-refusal
+        # sweeper logs it ~90 s later as "no result and no progress for
+        # 90s", out of order and with the wrong reason. Mirrors the acquire-refusal
         # release below.
         tx_receipt._release_held_receipt(_held_key, "request rejected")
         raise
@@ -295,14 +295,11 @@ async def translate_text(request: Request,
         request_id[:8], len(seg_in), len(targets), ",".join(targets),
         _tr_model or "?", mode, _uid[:8] or "-")
     _t0 = time.perf_counter()
-    # Heartbeat + load-time bookkeeping shared with the progress wrapper.
-    # first_cb approximates "model ready" — good enough to split load from
-    # infer on the completion line when the model was cold. t_ready /
-    # was_loaded are stamped once the GPU slot is held (_mark_ready): the
-    # queue before it is wait (metrics.take_wait reports it), not load, and
-    # the model can be evicted while the request queues.
-    _hb = {"last_log": _t0, "last_pct": 0, "first_cb": None,
-           "t_ready": _t0, "was_loaded": True}
+    # Heartbeat bookkeeping shared with the progress wrapper, plus t_ready:
+    # stamped once the GPU slot is held (_mark_ready), the origin the model
+    # load is measured from — the queue before it is wait
+    # (metrics.take_wait reports it), not load.
+    _hb = {"last_log": _t0, "last_pct": 0, "t_ready": _t0}
     # Take the in-flight slot HERE rather than next to the rate check at
     # the top: a dozen `raise HTTPException` validation exits sit between
     # the two, and each one would have to remember to release a slot it
@@ -315,7 +312,8 @@ async def translate_text(request: Request,
         # Outside the try below, so the generic `except HTTPException`
         # release there never sees this refusal — without this the parked
         # dictation receipt would sit until the sweeper logged it as
-        # "no result within 90s" instead of the rejection it actually was.
+        # "no result and no progress for 90s" instead of the rejection it
+        # actually was.
         tx_receipt._release_held_receipt(_held_key, "request rejected — too many in flight")
         raise
     # Set only AFTER a successful acquire — the acquire itself sits
@@ -350,8 +348,6 @@ async def translate_text(request: Request,
         def _on_progress(f, step=None, last_text=None, target=None,
                          target_progress=None):
             now = time.perf_counter()
-            if _hb["first_cb"] is None:
-                _hb["first_cb"] = now
             # Restamp the held receipt's IDLE timer. This is what makes the
             # hold safe to keep short: a cold GGUF load that takes two minutes
             # keeps its receipt alive because it keeps reporting, while a
@@ -375,6 +371,7 @@ async def translate_text(request: Request,
             if last_text:
                 fields["last_text"] = last_text
             tx_progress._progress_set(_pid, **fields)
+            _tick_plan(**fields)
 
         def _on_download(done, total):
             frac = (done / total) if total else None
@@ -382,9 +379,28 @@ async def translate_text(request: Request,
                             total_bytes=total or None)
             tx_progress._progress_set(_pid, stage="downloading", progress=frac,
                           total_bytes=total or None)
+            _tick_plan(stage="downloading", progress=frac,
+                       total_bytes=total or None)
+
+        def _tick_plan(*, stage, progress=None, step=None, target=None,
+                       target_progress=None, total_bytes=None, **_):
+            """Without a progress_id the registry has no entry to tick the
+            plan through (_progress_set returns at once), and the response's
+            plan would close with took_s 0 for the stage and every target —
+            teaching the rate ledger nothing. Tick it directly then; with an
+            id, _progress_set already does. Never breaks a request."""
+            if _pid:
+                return
+            try:
+                _rplan.tick(stage=stage, progress=progress, target=target,
+                            target_progress=target_progress,
+                            total_bytes=total_bytes, step=step)
+            except Exception:  # noqa: BLE001
+                pass
 
         def _record_metrics(status: str, exc: "BaseException | None" = None,
-                            *, folded_into: "str | None" = None) -> None:
+                            *, folded_into: "str | None" = None,
+                            kept_original: int = 0) -> None:
             """The synchronous half of _record_run: the recent-jobs row and
             the usage rollup. Also called from the `finally` for a
             disconnect, where no await is safe."""
@@ -408,14 +424,16 @@ async def translate_text(request: Request,
                 stages=[{"name": "translate", "secs": secs,
                          "model": (_tr_model or None),
                          "detail": f"{len(seg_in)} segs → {','.join(targets)}",
-                         "targets": list(targets)}],
+                         "targets": list(targets),
+                         "kept_original": kept_original}],
                 job_id=_pid or request_id,
                 wait_s=metrics.take_wait(),
                 recent_row=folded_into is None,
             )
 
         async def _record_run(status: str, exc: "BaseException | None" = None,
-                              *, folded_into: "str | None" = None) -> None:
+                              *, folded_into: "str | None" = None,
+                              kept_original: int = 0) -> None:
             """Persist this run as a recent-jobs row (kind='translate') on every
             terminal path. No audio duration; segment count lives in the stage
             detail (words=0 — a segment count is not a word count).
@@ -447,7 +465,8 @@ async def translate_text(request: Request,
                         _rplan.finish_run(status)   # no IO: nothing is learned
                     except Exception:  # noqa: BLE001 — never fail on a ledger write
                         pass
-                _record_metrics(status, exc, folded_into=folded_into)
+                _record_metrics(status, exc, folded_into=folded_into,
+                                kept_original=kept_original)
             finally:
                 if _job_kw is not None:
                     await tx_progress._jobs_finish(_pid, **_job_kw)
@@ -466,6 +485,7 @@ async def translate_text(request: Request,
                       model=(_tr_model or None),
                       device=_tr._resolve_device(), compute="gguf",
                       owner=(user.get("user_id") or user.get("key_id")))
+        _tick_plan(stage="translating", progress=0.0)
         _job_row = await tx_progress._jobs_start_async(
             _pid, request_id=request_id, kind="translate",
             user_id=(user.get("user_id") or None), key_id=user.get("key_id"),
@@ -494,7 +514,6 @@ async def translate_text(request: Request,
 
             def _mark_ready():
                 _hb["t_ready"] = time.perf_counter()
-                _hb["was_loaded"] = _tr.is_resident(_tr_model)
             if _held_key:
                 # The held receipt is an IDLE timer only progress restamps:
                 # queued behind long batch runs, or loading a model from a
@@ -616,11 +635,17 @@ async def translate_text(request: Request,
                                  "aborted run", request_id[:8])
 
     _elapsed = time.perf_counter() - _t0
-    # Cold model: everything up to the first progress callback is load (the
-    # cache layer logs the exact load line too); warm model: all infer.
-    _load_s = (max(0.0, _hb["first_cb"] - _hb["t_ready"])
-               if (not _hb["was_loaded"] and _hb["first_cb"] is not None)
-               else 0.0)
+    _used_model = meta.get("model") or _tr_model
+    _tr_key = preload.stats_key("translation", _used_model or "")
+    # The load this request paid for, from the registry's own record of the
+    # model's load (as the batch stage reads it): 0 when it was already
+    # resident. Not "slot held → first progress callback": a same-language
+    # target or a blank first group calls back before any model is loaded.
+    _load_s = float(tx_receipt._stage_extras(_tr_key, _hb["t_ready"])
+                    .get("load_secs") or 0.0)
+    # Segments whose guard fallback kept the source text in at least one
+    # target — the usage ledger's kept_original, as the batch stage counts it.
+    _n_kept = sum(1 for _k in (meta.get("kept") or {}).values() if _k)
     _chars_out = sum(len(t) for d in per_seg for t in d.values())
     logger.info(
         "[translate] req=%s ✓ done in %.1fs (load %.1fs · infer %.1fs) · "
@@ -638,8 +663,6 @@ async def translate_text(request: Request,
     _folded_into: "str | None" = None
     _held = None
     if _held_key:
-        _used_model = meta.get("model") or _tr_model
-        _tr_key = preload.stats_key("translation", _used_model or "")
         # ONE stage row for both consumers (the /stats recent-jobs row and
         # the receipt's Pipeline table), so they cannot print different
         # seconds for the same stage.
@@ -648,7 +671,8 @@ async def translate_text(request: Request,
                      "load_secs": round(_load_s, 3),
                      "device": tx_receipt._model_compute_device(_tr_key)[1],
                      "detail": f"{len(seg_in)} segs → {','.join(targets)}",
-                     "targets": list(targets)}
+                     "targets": list(targets),
+                     "kept_original": _n_kept}
         _held = receipt_hold.claim(_held_key)
         if _held is not None and _held.get("request_id"):
             try:
@@ -659,7 +683,7 @@ async def translate_text(request: Request,
                     _folded_into = str(_held["request_id"])
             except Exception as _fe:  # noqa: BLE001 — a stats miss never fails the request
                 logger.warning("[translate] could not fold into utterance row: %s", _fe)
-    await _record_run("ok", folded_into=_folded_into)
+    await _record_run("ok", folded_into=_folded_into, kept_original=_n_kept)
 
     if _held_key:
         if _held is not None:
@@ -687,8 +711,6 @@ async def translate_text(request: Request,
         # API caller, or a capture that was already swept): still log ONE
         # receipt, so the translate is not just four progress lines with
         # no model / targets / user attached.
-        _used_model = meta.get("model") or _tr_model
-        _tr_key = preload.stats_key("translation", _used_model or "")
         try:
             logger.info(tx_receipt._format_translate_block(
                 request_id=request_id, model_name=_used_model,

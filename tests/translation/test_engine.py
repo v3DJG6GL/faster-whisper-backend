@@ -276,6 +276,14 @@ def test_guard_reasons():
     assert g("大家好", "大家好", target="zh-Hant") is None
     assert g("日本", "日本", target="zh") is None
     assert g("他在北京工作。", "他在北京工作。", target="zh-Hant") is None
+    # ...but no two CJK targets share kana or Hangul: an unchanged kana or
+    # Hangul clause is an untranslated echo whatever the CJK target.
+    assert g("今日は学校に行きました。", "今日は学校に行きました。",
+             target="zh") == "output copies input"
+    assert g("今日は学校に行きました。", "今日は学校に行きました。",
+             target="ko") == "output copies input"
+    assert g("오늘학교에갔어요", "오늘학교에갔어요", target="ja") == \
+        "output copies input"
     # Digits compare by value: the target script's native digits keep the
     # number; a changed native number still fails.
     assert g("Wir haben 16 Leute eingeladen.", "ما ۱۶ نفر را دعوت کردیم.",
@@ -556,6 +564,20 @@ def test_faithful_copy_guard_sees_through_collapsed_whitespace(base_cfg,
                for w in warns)
 
 
+def test_fluent_group_revert_never_marks_a_blank_member_kept(base_cfg,
+                                                             monkeypatch):
+    """A reverted fluent group keeps its members' source text; a blank
+    member stays blank, so it is no "kept original" either."""
+    _install_fake(monkeypatch, lambda t: t)          # copies → guard fails
+    segs = _segs("Guten Tag", "", "wie geht es dir.")
+    assert translation._merge_sentences(segs) == [[0, 1, 2]]
+    res, warns, meta = _run(translation.translate_segments(
+        segs, ["en"], source_lang="de", mode="fluent"))
+    assert [r["en"] for r in res] == ["Guten Tag", "", "wie geht es dir."]
+    assert meta["kept"] == {0: ["en"], 2: ["en"]}
+    assert len(warns) == 1 and "segments 1-3 (en)" in warns[0]
+
+
 _GUARD_SRC = "Nimm 5 Tabletten und ruf mich morgen frueh wieder an"
 _GUARD_SRC_NO_DIGITS = "Nimm die Tabletten und ruf mich morgen wieder an"
 
@@ -568,8 +590,8 @@ _GUARD_SRC_NO_DIGITS = "Nimm die Tabletten und ruf mich morgen wieder an"
     (_GUARD_SRC, lambda t: "ok", "length ratio"),
     (_GUARD_SRC_NO_DIGITS, lambda t: "abcdefghijkl" * 4, "repetition loop"),
 ])
-def test_guards_keep_original_after_one_retry(base_cfg, monkeypatch,
-                                              src, bad_out, reason):
+def test_guards_keep_original_without_retry_for_greedy_family(
+        base_cfg, monkeypatch, src, bad_out, reason):
     calls = []
     _install_fake(monkeypatch, bad_out, calls)
     res, warns, meta = _run(translation.translate_segments(
@@ -1269,17 +1291,9 @@ def lru_env(monkeypatch):
     monkeypatch.setattr(cfg, "TRANSLATION_MAX_LOADED_MODELS", 2,
                         raising=False)
     monkeypatch.setattr(cfg, "TRANSLATION_DEVICE", "cpu", raising=False)
-    _clear_lru_state()
+    # The model LRU itself is emptied before every test by conftest's
+    # autouse reset (translation.engine._reset_for_tests).
     yield made, stats
-    _clear_lru_state()
-
-
-def _clear_lru_state():
-    translation._models.clear()
-    translation._last_used.clear()
-    translation._active.clear()
-    translation._params.clear()
-    translation._loading.clear()
 
 
 def test_lru_eviction_bookkeeping(lru_env):
@@ -1709,17 +1723,12 @@ def test_busy_model_is_never_evicted():
     translation._models["org/busy:Q4"] = llm
     translation._last_used["org/busy:Q4"] = 0.0
     translation._active["org/busy:Q4"] = 1
-    try:
-        assert translation._drop_locked("org/busy:Q4") is False
-        assert "org/busy:Q4" in translation._models
-        assert not llm.closed
-        translation._active.pop("org/busy:Q4", None)
-        assert translation._drop_locked("org/busy:Q4") is True
-        assert llm.closed
-    finally:
-        translation._models.pop("org/busy:Q4", None)
-        translation._last_used.pop("org/busy:Q4", None)
-        translation._active.pop("org/busy:Q4", None)
+    assert translation._drop_locked("org/busy:Q4") is False
+    assert "org/busy:Q4" in translation._models
+    assert not llm.closed
+    translation._active.pop("org/busy:Q4", None)
+    assert translation._drop_locked("org/busy:Q4") is True
+    assert llm.closed
 
 
 def test_cjk_target_ratio_bounds_admit_compressed_output():
@@ -1828,6 +1837,32 @@ class TestRenderPrompt:
         assert p["text"] == translation._build_milmmt(
             "Hallo", "", "", "fr", "French", "", "")
         assert "English" not in p["text"]
+
+    @pytest.mark.parametrize("family,target,want", [
+        ("gemma-translate", "jpn", "target_lang_code:ja,"),
+        ("gemma-translate", "sr-Latn", "target_lang_code:sr-Latn,"),
+        ("seedx", "zh_hant", "Traditional Chinese"),
+        ("seedx", "sr-Latn", "<sr-Latn>"),
+    ])
+    def test_preview_folds_the_target_like_the_run(self, monkeypatch, family,
+                                                   target, want):
+        """The lab's free-form target ("jpn", "zh_hant") is folded the way
+        the run folds it, so the preview IS the prompt the model gets; a
+        script subtag the table does not list ("sr-Latn") stays a target of
+        its own in both."""
+        p = translation.render_prompt("Hallo", target, source="de",
+                                      family=family)
+        preview = p.get("messages") or p.get("text")
+        assert want in str(preview)
+        seen = {}
+
+        def fake_complete(llm, fam, prompt, max_tokens):
+            seen["prompt"] = prompt
+            return "ok"
+        monkeypatch.setattr(translation, "_complete", fake_complete)
+        _run(translation._run_completion(object(), family, "Hallo", "de",
+                                         target, "", ""))
+        assert seen["prompt"] == preview
 
     def test_unknown_source_custom_template_renders_empty(self):
         p = translation.render_prompt(
@@ -2029,10 +2064,6 @@ def test_draining_decode_blocks_eviction():
         assert llm.closed
     finally:
         release.set()
-        translation._models.pop("org/drain:Q4", None)
-        translation._last_used.pop("org/drain:Q4", None)
-        translation._params.pop("org/drain:Q4", None)
-        translation._active.pop("org/drain:Q4", None)
 
 
 def test_trim_stops_on_draining_decode(lru_env):
@@ -2137,7 +2168,6 @@ def test_run_plan_unit_clock_covers_the_whole_target(base_cfg, monkeypatch,
     from faster_whisper_backend.runtime import stage_rates
     from faster_whisper_backend.transcription import run_plan
     monkeypatch.setattr(stage_rates, "PATH", str(tmp_path / "rates.json"))
-    stage_rates._reset_for_tests()
     monkeypatch.setattr(cfg, "TRANSLATION_BATCH_SEGMENTS", batch,
                         raising=False)
     clock = {"t": 1000.0}
@@ -2159,15 +2189,58 @@ def test_run_plan_unit_clock_covers_the_whole_target(base_cfg, monkeypatch,
     def cb(f, s, t=None, target=None, target_progress=None):
         plan.tick(stage="translating", progress=f, target=target,
                   target_progress=target_progress)
-    try:
-        _run(translation.translate_segments(
-            _segs("Eins zwei.", "Drei vier."), ["en"], source_lang="de",
-            mode="faithful", progress_cb=cb))
-        unit = plan.snapshot()["plan"][0]["units"][0]
-        assert unit["state"] == "done"
-        assert unit["took_s"] == pytest.approx(10.0 if batch == 1 else 5.0)
-    finally:
-        stage_rates._reset_for_tests()
+    _run(translation.translate_segments(
+        _segs("Eins zwei.", "Drei vier."), ["en"], source_lang="de",
+        mode="faithful", progress_cb=cb))
+    unit = plan.snapshot()["plan"][0]["units"][0]
+    assert unit["state"] == "done"
+    assert unit["took_s"] == pytest.approx(10.0 if batch == 1 else 5.0)
+
+
+@pytest.mark.parametrize("mode,segs", [
+    ("faithful", [{"text": "", "speaker": None},
+                  {"text": "Hello whole world.", "speaker": None}]),
+    ("fluent", [{"text": "", "speaker": "A"},
+                {"text": "Hello whole world.", "speaker": "B"}]),
+])
+def test_blank_first_step_does_not_start_the_unit_before_the_load(
+        base_cfg, monkeypatch, tmp_path, mode, segs):
+    """A blank first batch / group calls back before any model call. Naming
+    the target there started the plan's unit ahead of the cold load, which
+    was then billed as translation time (and taught the ledger a slow rate)."""
+    from faster_whisper_backend.runtime import stage_rates
+    from faster_whisper_backend.transcription import run_plan
+    monkeypatch.setattr(stage_rates, "PATH", str(tmp_path / "rates.json"))
+    monkeypatch.setattr(cfg, "TRANSLATION_BATCH_SEGMENTS", 1, raising=False)
+    clock = {"t": 1000.0}
+    _install_fake(monkeypatch, _xlate)
+    inner = translation._complete
+
+    def slow(llm, family, prompt_or_msgs, max_tokens):
+        clock["t"] += 5.0            # every model call takes 5 s
+        return inner(llm, family, prompt_or_msgs, max_tokens)
+    monkeypatch.setattr(translation, "_complete", slow)
+
+    async def cold_load(ref, **kwargs):
+        clock["t"] += 10.0           # the cold load takes 10 s
+        return "STUB-LLM"
+    monkeypatch.setattr(translation, "_get_model", cold_load)
+
+    plan = run_plan.RunPlan(kind="text", now=lambda: clock["t"])
+    plan.set_stages(["translating"])
+    plan.set_segments(2)
+    plan.set_translation(["en"], model="m", device="cpu", mode=mode,
+                         source_lang="de")
+
+    def cb(f, s, t=None, target=None, target_progress=None):
+        plan.tick(stage="translating", progress=f, target=target,
+                  target_progress=target_progress)
+    res, _, _ = _run(translation.translate_segments(
+        segs, ["en"], source_lang="de", mode=mode, progress_cb=cb))
+    assert res[0]["en"] == ""
+    unit = plan.snapshot()["plan"][0]["units"][0]
+    assert unit["state"] == "done"
+    assert unit["took_s"] == pytest.approx(5.0)
 
 
 def test_progress_carries_target_and_target_progress(base_cfg, monkeypatch):

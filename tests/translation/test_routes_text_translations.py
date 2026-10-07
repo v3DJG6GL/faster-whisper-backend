@@ -248,6 +248,28 @@ def test_inflight_slot_is_released_on_cancellation(client, app_module,
         [("cancelled", "translate")]
 
 
+def test_cancellation_stamps_the_job_row_cancelled(client, app_module,
+                                                   monkeypatch):
+    """A disconnect unwinds past every arm: the `finally` stamps the jobs
+    row, and it says "cancelled", not "error"."""
+    import asyncio
+
+    _enable(app_module, monkeypatch)
+    finished = []
+
+    async def _cancelled(*args, **kwargs):
+        raise asyncio.CancelledError()
+    monkeypatch.setattr(translation, "translate_segments", _cancelled)
+    monkeypatch.setattr(tx_progress, "_jobs_finish_sync",
+                        lambda pid, **kw: finished.append((pid, kw)))
+    with pytest.raises(BaseException):
+        client.post(URL, json=_body(progress_id=_PID))
+    assert len(finished) == 1
+    assert finished[0][0] == _PID
+    assert finished[0][1]["status"] == "cancelled"
+    assert finished[0][1]["error"] == "request aborted"
+
+
 def test_inflight_zero_is_unlimited(client, app_module, monkeypatch):
     _enable(app_module, monkeypatch, TRANSLATE_MAX_INFLIGHT_PER_USER=0)
     _stub_translate(monkeypatch)
@@ -417,10 +439,31 @@ def test_ok_run_stamps_its_job_row_off_the_event_loop(client, app_module,
     assert seen == [("done", False)]
 
 
+def _register_load(secs):
+    """What translation.engine's load records in the model registry (minus
+    the model-size ledger write): the stub model loaded NOW in `secs`."""
+    import time
+
+    from faster_whisper_backend.runtime import model_registry
+    with model_registry._loaded_models_lock:
+        model_registry._loaded_models["gguf:org/d:Q4"] = {
+            "name": "gguf:org/d:Q4", "device": "cuda", "compute_type": "gguf",
+            "vram_bytes": None, "load_secs": secs, "loaded_at": time.time(),
+            "last_used": time.time(), "last_used_monotonic": time.monotonic()}
+
+
+def _logged_load_s(caplog):
+    done = [m for m in (rec.getMessage() for rec in caplog.records)
+            if "✓ done in" in m]
+    return float(re.search(r"\(load ([\d.]+)s", done[0]).group(1))
+
+
 def test_cold_load_excludes_the_gpu_queue_wait(client, app_module,
                                                monkeypatch, caplog):
-    """load = slot held → first progress callback. The GpuGate queue before
-    it is wait (metrics.take_wait reports it), never load."""
+    """load = the registry's record of a load that landed after the slot
+    was held. The GpuGate queue before it is wait (metrics.take_wait
+    reports it), never load — and a load another request finished while
+    this one queued was not paid for here."""
     import asyncio
     import contextlib
 
@@ -429,14 +472,21 @@ def test_cold_load_excludes_the_gpu_queue_wait(client, app_module,
     monkeypatch.setattr(translation, "_resolve_device", lambda: "cuda")
     monkeypatch.setattr(translation, "is_resident", lambda ref: False)
 
+    preloaded = {"during_queue": False}
+
     @contextlib.asynccontextmanager
     async def _busy_gate():
         await asyncio.sleep(0.6)            # queued behind batch runs
+        if preloaded["during_queue"]:
+            _register_load(5.0)             # someone else's load, meanwhile
+            await asyncio.sleep(0.05)
         yield
     monkeypatch.setattr(tx_models, "get_inference_semaphore", _busy_gate)
 
     async def _cold(segments, targets, *, progress_cb=None, **kwargs):
-        await asyncio.sleep(0.1)            # the model load
+        if not preloaded["during_queue"]:
+            await asyncio.sleep(0.1)        # the model load
+            _register_load(0.1)
         progress_cb(1.0)
         per_seg = [{t: f"{seg['text']}-{t}" for t in targets}
                    for seg in segments]
@@ -445,10 +495,123 @@ def test_cold_load_excludes_the_gpu_queue_wait(client, app_module,
     with caplog.at_level(logging.INFO, logger="whisper-api"):
         r = client.post(URL, json=_body())
     assert r.status_code == 200, r.text
-    done = [m for m in (rec.getMessage() for rec in caplog.records)
-            if "✓ done in" in m]
-    load = float(re.search(r"\(load ([\d.]+)s", done[0]).group(1))
-    assert 0.05 <= load < 0.5, done[0]
+    assert _logged_load_s(caplog) == pytest.approx(0.1)
+    caplog.clear()
+    preloaded["during_queue"] = True
+    with caplog.at_level(logging.INFO, logger="whisper-api"):
+        r = client.post(URL, json=_body())
+    assert r.status_code == 200, r.text
+    assert _logged_load_s(caplog) == 0.0
+
+
+def test_load_is_not_cut_short_by_an_early_callback(client, app_module,
+                                                     monkeypatch, caplog):
+    """A same-language first target (or a blank first group) calls back
+    before any model is loaded: the cold load that follows is still load,
+    not infer."""
+    import asyncio
+
+    _enable(app_module, monkeypatch)
+    monkeypatch.setattr(translation, "is_resident", lambda ref: False)
+
+    async def _verbatim_then_cold(segments, targets, *, progress_cb=None,
+                                  **kwargs):
+        progress_cb(0.5, "de 1/1", target="de", target_progress=1.0)
+        await asyncio.sleep(0.3)            # the model load for "en"
+        _register_load(0.3)
+        progress_cb(1.0, "en 1/1", target="en", target_progress=1.0)
+        per_seg = [{t: seg["text"] for t in targets} for seg in segments]
+        return per_seg, [], {"model": "org/d:Q4", "source": "de",
+                             "mode": "fluent"}
+    monkeypatch.setattr(translation, "translate_segments", _verbatim_then_cold)
+    with caplog.at_level(logging.INFO, logger="whisper-api"):
+        r = client.post(URL, json=_body(targets=["de", "en"], source="de"))
+    assert r.status_code == 200, r.text
+    assert _logged_load_s(caplog) == pytest.approx(0.3)
+
+
+def test_held_receipt_survives_a_gpu_queue_with_a_resident_model(
+        client, app_module, monkeypatch):
+    """The other half of the heartbeat: the model is resident, but the
+    request is queued behind batch runs for the GPU slot and reports no
+    progress meanwhile. The receipt must outlive that queue."""
+    import asyncio
+    import contextlib
+
+    from faster_whisper_backend.transcription import models as tx_models
+    from faster_whisper_backend.transcription import receipt_hold
+
+    _enable(app_module, monkeypatch)
+    monkeypatch.setattr(tr_routes, "_HOLD_HEARTBEAT_S", 0.05)
+    monkeypatch.setattr(translation, "_resolve_device", lambda: "cuda")
+    monkeypatch.setattr(translation, "is_resident", lambda ref: True)
+    swept = []
+
+    @contextlib.asynccontextmanager
+    async def _busy_gate():
+        # 0.5 s in the queue, a hold of 0.2 s, the sweeper running all along.
+        for _ in range(10):
+            await asyncio.sleep(0.05)
+            swept.extend(receipt_hold.sweep())
+        yield
+    monkeypatch.setattr(tx_models, "get_inference_semaphore", _busy_gate)
+    _stub_translate(monkeypatch)
+    receipt_hold.park("cap-q", {"file_label": "utt#1", "model_name": "m",
+                                "raw": "r", "final": "f", "seg_diag": [],
+                                "kwargs": {}, "info": None}, hold_s=0.2)
+    try:
+        r = client.post(URL, json=_body(captured_id="cap-q"))
+        assert r.status_code == 200, r.text
+        assert swept == []
+        assert receipt_hold.pending() == 0          # claimed by the request
+    finally:
+        receipt_hold._reset_for_tests()
+
+
+def test_plan_is_clocked_without_a_progress_id(client, app_module,
+                                               monkeypatch):
+    """progress_id is optional: without one the registry has no entry to
+    tick the plan through, so the handler ticks it itself — the response's
+    plan reports what the run took, not 0 s."""
+    import asyncio
+
+    _enable(app_module, monkeypatch)
+
+    async def _slow(segments, targets, *, progress_cb=None, **kwargs):
+        progress_cb(0.0, "de 0/1", target="de", target_progress=0.0)
+        await asyncio.sleep(0.6)
+        progress_cb(1.0, "de 1/1", target="de", target_progress=1.0)
+        per_seg = [{t: f"{seg['text']}-{t}" for t in targets}
+                   for seg in segments]
+        return per_seg, [], {"model": "org/d:Q4", "source": "", "mode": "fluent"}
+    monkeypatch.setattr(translation, "translate_segments", _slow)
+    r = client.post(URL, json=_body(targets=["de"]))
+    assert r.status_code == 200, r.text
+    stage = r.json()["plan"][0]
+    assert stage["state"] == "done"
+    assert stage["took_s"] > 0
+    assert stage["units"][0]["took_s"] > 0
+
+
+def test_kept_original_reaches_the_usage_stage(client, app_module,
+                                               monkeypatch):
+    """The usage ledger counts guard fallbacks from the stage dict's
+    structured kept_original, as the batch stage reports it."""
+    _enable(app_module, monkeypatch)
+
+    async def _fake(segments, targets, **kwargs):
+        per_seg = [{t: seg["text"] for t in targets} for seg in segments]
+        return per_seg, [
+            "segment 1 (en): kept original — translation failed (empty output)",
+        ], {"model": "org/d:Q4", "source": "de", "mode": "fluent",
+            "kept": {0: ["en"], 1: []}}
+    monkeypatch.setattr(translation, "translate_segments", _fake)
+    recorded = []
+    monkeypatch.setattr(tr_routes.metrics, "record_transcription",
+                        lambda **kw: recorded.append(kw))
+    r = client.post(URL, json=_body())
+    assert r.status_code == 200, r.text
+    assert [kw["stages"][0]["kept_original"] for kw in recorded] == [1]
 
 
 def test_held_receipt_survives_a_queued_translation(client, app_module,

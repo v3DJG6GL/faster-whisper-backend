@@ -153,6 +153,9 @@ def test_download_bytes_seed_a_duration_prior_when_the_probe_had_none(
     p.tick(stage="downloading", progress=0.0)
     clock.advance(10)
     p.stage_done("downloading")
+    # The progress route polls in this gap, before the decoder has measured
+    # anything: this snapshot is the one the monotonic hold would park.
+    assert p.snapshot()["overall"] < 0.5
     p.set_audio_seconds(3000.0, src="decoder")
     p.tick(stage="transcribing", progress=0.1)
     assert p.snapshot()["overall"] < 0.5
@@ -271,6 +274,29 @@ def test_waiting_time_is_billed_apart_from_the_stage(ledger, clock):
         pytest.approx(10.0)
 
 
+def test_separation_queue_is_wait_not_work(ledger, clock):
+    """Separation has no "waiting" sub-phase of its own: its queue for the
+    inference slot rides as step="waiting". It is queue time — the bar holds
+    and the learned rate is over the demix alone."""
+    p = _plan(clock, stages=["separating", "transcribing"])
+    p.set_audio_seconds(600.0, src="decoder")
+    p.tick(stage="separating", progress=None)
+    p.tick(stage="separating", step="waiting")
+    held = p.snapshot()["overall"]
+    clock.advance(300)
+    assert p.snapshot()["overall"] == held
+    assert _stage(p.snapshot(), "separating")["phase"] == "waiting"
+    p.tick(stage="separating", step="preparing")     # slot held
+    p.tick(stage="separating", progress=0.01, step=None)
+    clock.advance(75)
+    p.tick(stage="separating", progress=1.0, step=None)
+    p.stage_done("separating")
+    p.finish_run("ok")
+    # 600 audio seconds over 75 s of demix (not 375 s of wall) = 8x realtime
+    assert stage_rates.lookup("separating", None, None)["rate"] == \
+        pytest.approx(8.0)
+
+
 def test_translating_units_run_in_order_and_learn_per_unit(ledger, clock):
     p = _plan(clock, stages=["translating"], kind="text")
     p.set_segments(80)
@@ -314,6 +340,24 @@ def test_an_unticked_instant_unit_closes_as_instant(ledger, clock):
     assert by["fr"]["state"] == "done" and by["fr"]["took_s"] == 10.0
     assert by["de"] == {"target": "de", "instant": True, "state": "instant",
                         "took_s": 0.0}
+
+
+def test_a_failed_translation_finishes_no_open_unit(ledger, clock):
+    """A stage that fails mid-target never claims its open units translated:
+    the one in flight failed with it, the untouched ones stay queued."""
+    p = _plan(clock, stages=["translating"], kind="text")
+    p.set_segments(80)
+    p.set_translation(["de", "fr", "it"], model="m", device="cuda",
+                      mode="fluent", source_lang="en")
+    p.tick(stage="translating", target="de", target_progress=0.0)
+    clock.advance(10)
+    p.stage_failed("translating")
+    st = _stage(p.snapshot(), "translating")
+    assert st["state"] == "failed"
+    by = {u["target"]: u for u in st["units"]}
+    assert by["de"] == {"target": "de", "state": "failed", "took_s": 10.0}
+    assert by["fr"]["state"] == "queued"
+    assert by["it"]["state"] == "queued"
 
 
 def test_finish_run_writes_the_ledger_once(ledger, clock, monkeypatch):
@@ -530,7 +574,7 @@ def test_skipped_and_failed_stages(ledger, clock):
     p.tick(stage="transcribing", progress=1.0)
     clock.advance(100)
     p.stage_done("transcribing")
-    p.tick(stage="diarizing")
+    p.tick(stage="diarizing", target="segmentation")
     clock.advance(30)
     p.stage_failed("diarizing")
     snap = p.snapshot()
@@ -538,9 +582,15 @@ def test_skipped_and_failed_stages(ledger, clock):
                                           "state": "skipped"}
     assert _stage(snap, "diarizing")["state"] == "failed"
     assert _stage(snap, "diarizing")["took_s"] == 30.0
+    steps = {u["target"]: u["state"] for u in _stage(snap, "diarizing")["units"]}
+    assert steps == {"segmentation": "failed", "embeddings": "queued",
+                     "clustering": "queued"}
     assert snap["overall"] == 1.0
     p.finish_run("ok")
-    assert stage_rates.lookup("diarizing", None, None)["src"] == "seed"
+    # Learning is per step (diarizing.<step>); the 30 s segmentation unit
+    # would be a sample if a failed stage taught anything.
+    for step in run_plan.DIARIZE_STEPS:
+        assert stage_rates.lookup(f"diarizing.{step}", None, None)["src"] == "seed"
     assert stage_rates.lookup("transcribing", None, None)["src"] == "measured"
 
 

@@ -84,7 +84,7 @@ class Unit:
     started: float | None = None   # time.monotonic()
     took_s: float | None = None
     progress: float = 0.0
-    state: str = "queued"          # queued | running | done | instant
+    state: str = "queued"          # queued | running | done | instant | failed
 
     def to_dict(self, now: float) -> dict:
         out: dict = {"target": self.target, "state": self.state}
@@ -298,9 +298,11 @@ class RunPlan:
         name = SUBPHASE_OF.get(stage, stage)
         phase = stage if stage != name else None
         # Separation's transcode-to-WAV rides as a step, not a stage: it is
-        # warm-up all the same (no fraction, nothing to fill by time).
-        if phase is None and step == "preparing":
-            phase = "preparing"
+        # warm-up all the same (no fraction, nothing to fill by time). Its
+        # queue for the inference slot rides as step "waiting": queue time,
+        # billed to wait_s like transcribing's own "waiting" sub-phase.
+        if phase is None and step in ("preparing", "waiting"):
+            phase = step
         with self._lock:
             now = self._now()
             st = self._get(name)
@@ -458,6 +460,14 @@ class RunPlan:
         if state == "done":
             st.frac = 1.0
         for u in st.units or []:
+            if state != "done":
+                # A failed stage finished none of its open units: the one in
+                # flight failed with it, the queued ones never ran.
+                if u.state == "running":
+                    u.took_s = ((now - u.started) if u.started is not None
+                                else 0.0)
+                    u.state = "failed"
+                continue
             if u.state in ("queued", "running"):
                 # Same verdict as _advance_units_locked: a verbatim copy the
                 # stage never ticked is still "instant", not a translation.

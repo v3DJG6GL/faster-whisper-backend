@@ -62,8 +62,9 @@ looped tokens at beam 10, then 13.9 s on a sampled rung whose 17-token answer
 had to wait for a sibling candidate that looped to the limit (CTranslate2 runs
 all ``best_of`` candidates until the last one ends). Real speech here is about
 3 tokens per second, so the ``generate`` hook lowers ``max_length`` to what the
-window can plausibly need: ``30 + rate x window seconds`` tokens. A 30 s window
-is never affected (its cap exceeds the hard limit).
+window can plausibly need: ``30 + rate x window seconds`` tokens. At a rate of
+6.5 or more a 30 s window is never affected (its cap reaches the hard limit);
+a lower rate also caps the full 30 s windows of long files.
 
 faster-whisper's own ``max_new_tokens`` is NOT used: CTranslate2 decodes
 ``min(max_length // 2, max_length - prompt)`` tokens, so ``max_new_tokens=100``
