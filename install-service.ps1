@@ -632,6 +632,39 @@ function Invoke-WinSW {
 
 Write-Host "Installing $ServiceName service via WinSW..."
 Invoke-WinSW install
+
+# --- upgrade check (warn only, never moves anything) -------------------------
+# An older checkout kept the SQLite stores and config.local.json in the repo
+# root; the server now reads them from <repo>\data\db and <repo>\data. Starting
+# over that comes up with an EMPTY api_keys store: issued keys stop working
+# and the server drops into OPEN mode. A .env that pins the paths is left be.
+$envFile = Join-Path $RepoDir ".env"
+function Test-EnvSets([string]$name) {
+    (Test-Path $envFile) -and [bool](Select-String -Path $envFile -Quiet `
+        -Pattern "^\s*(export\s+)?$name=")
+}
+$dataDir = Join-Path $RepoDir "data"
+$dbDir   = Join-Path $dataDir "db"
+if (-not (Test-EnvSets "WHISPER_DB_DIR") -and -not (Test-EnvSets "WHISPER_DATA_DIR")) {
+    $legacyStores = @(Get-ChildItem -Path $RepoDir, $dataDir -Filter "*.local.sqlite3" `
+        -File -ErrorAction SilentlyContinue)
+    foreach ($legacy in $legacyStores) {
+        if (-not (Test-Path (Join-Path $dbDir $legacy.Name))) {
+            Write-Warning ("legacy store $($legacy.FullName) is IGNORED by the service " +
+                "(it reads $dbDir). Stop the service, move it with " +
+                "Move-Item '$($legacy.FullName)' '$dbDir' (or set WHISPER_DB_DIR=" +
+                "$($legacy.DirectoryName) in $envFile), then start it again.")
+        }
+    }
+}
+$legacyConfig = Join-Path $RepoDir "config.local.json"
+if (-not (Test-EnvSets "WHISPER_CONFIG_LOCAL") -and -not (Test-EnvSets "WHISPER_DATA_DIR") `
+        -and (Test-Path $legacyConfig) -and -not (Test-Path (Join-Path $dataDir "config.local.json"))) {
+    Write-Warning ("legacy $legacyConfig is IGNORED by the service (it reads " +
+        "$dataDir\config.local.json). Move it with Move-Item '$legacyConfig' '$dataDir', " +
+        "then restart the service.")
+}
+
 Write-Host "Starting $ServiceName service..."
 Invoke-WinSW start
 

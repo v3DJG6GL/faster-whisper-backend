@@ -649,6 +649,27 @@ def test_orphan_release_mid_register_keeps_the_new_row(monkeypatch):
         diarization._free_locked("A")   # tidy the real registry row
 
 
+# --- a cancel that lands during the mutex wait skips the inference ----------
+
+def test_cancel_after_the_mutex_wait_skips_the_inference():
+    """The _infer_mutex wait can be minutes (a zombie diarization); a request
+    cancelled meanwhile must not start pipe() once it gets the mutex."""
+    import asyncio
+    answers = iter([False])          # queued: not yet; acquired: cancelled
+    calls: "list[str]" = []
+
+    def _pipe(path, **_kw):
+        calls.append(path)
+        raise AssertionError("pipe() ran on a cancelled request")
+
+    with pytest.raises(diarization.DiarizeCancelled):
+        asyncio.run(diarization._diarize_with(
+            _pipe, "in.wav", num_speakers=None, min_speakers=None,
+            max_speakers=None, progress_cb=None,
+            cancel_check=lambda: next(answers, True)))
+    assert calls == []
+
+
 # --- a cancelled job's zombie inference defers the idle drop ----------------
 
 def test_idle_drop_waits_for_a_zombie_inference(monkeypatch):

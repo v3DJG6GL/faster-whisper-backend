@@ -11,7 +11,7 @@ import logging
 import os
 import shutil
 import time
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 
 from faster_whisper_backend.auth import rate_limit as _rl
 from faster_whisper_backend.transcription import jobs_store as _jobs_store
@@ -107,7 +107,9 @@ async def _download_video_for_run(pid: "str | None", url: str, rung: dict, *,
                                   protect: "str | None",
                                   run_finished: "list[bool]",
                                   mirror_stage: bool = False,
-                                  job_row: bool = False) -> dict:
+                                  job_row: bool = False,
+                                  finish_landed: "list[bool] | None" = None,
+                                  ) -> dict:
     """Fetch the VIDEO of `url` at `rung` into the media store and report it
     through the progress entry's `video` sub-object (and, for the on-demand
     route, the entry's own stage/progress). Returns the terminal state dict;
@@ -117,7 +119,11 @@ async def _download_video_for_run(pid: "str | None", url: str, rung: dict, *,
     then leaves the progress entry to us (`run_finished`), so the client can
     keep polling for `video.state` and still cancel the fetch. `job_row`:
     this run owns the durable job row under `pid`, whose stored result is
-    patched with the outcome when it was written while we were pending."""
+    patched with the outcome when it was written while we were pending.
+    `finish_landed`: the handler sets its slot (on the loop) right after its
+    own job finish returns, before it checks whether this task is done — so
+    an attach that gave up on a "running" row can tell whether the handler
+    already passed that check (then the attach + close are ours)."""
     state = _video_state(height=rung.get("height"),
                          container=rung.get("container") or "mkv",
                          total_bytes=rung.get("approx_bytes"),
@@ -146,14 +152,23 @@ async def _download_video_for_run(pid: "str | None", url: str, rung: dict, *,
     cancelled = False
     try:
         _pub(state="queued")
-        async with _url_staging_job() as job:
+        # The job dir is made only once the download slot is ours, and lives
+        # on (past the slot) until register() has moved the file out: a dir
+        # made while queued kept its creation mtime through the whole wait,
+        # and _reap_stale_staging (video wall clock + margin) deleted a live
+        # job queued behind full-timeout downloads.
+        async with AsyncExitStack() as job_stack:
             async with tx_models._get_url_download_semaphore():
                 if tx_progress._cancel_requested(pid):
                     raise _udl.UrlCancelled()
+                job = await job_stack.enter_async_context(_url_staging_job())
                 _pub(state="downloading")
                 path = await _udl.download_video(
                     url, dest_dir=job,
-                    max_bytes=int(getattr(cfg, "MEDIA_MAX_BYTES", 10_000_000_000)),
+                    # What register() can keep, not just MEDIA_MAX_BYTES:
+                    # a file over RETAINED_MEDIA_MAX_BYTES would be fetched
+                    # in full only to be dropped.
+                    max_bytes=url_media_store.max_retainable_bytes(),
                     max_height=(rung.get("height") if capped else None),
                     container=state["container"],
                     expected_total=rung.get("approx_bytes"),
@@ -225,6 +240,13 @@ async def _download_video_for_run(pid: "str | None", url: str, rung: dict, *,
             # via /v1/jobs/{id}/result needs the outcome. (A cancelled task
             # never gets here: the scrub then simply drops the flag.)
             attached = await asyncio.to_thread(_jobs_attach_video_sync, pid, dict(state))
+            if attached is False and finish_landed and finish_landed[0]:
+                # The finish committed just after the attach's last read, and
+                # the handler's continuation ran first: it saw this task still
+                # running and skipped its fallback attach and close. The
+                # swap is idempotent (it pops the flag): retry, then close.
+                attached = await asyncio.to_thread(
+                    _jobs_attach_video_sync, pid, dict(state))
     finally:
         # Closed only AFTER the attach: /result keeps the pending flag while
         # the progress entry is open, so closing first left a window where
@@ -232,7 +254,11 @@ async def _download_video_for_run(pid: "str | None", url: str, rung: dict, *,
         # when the attach gave up on a row still "running": the handler's
         # finish is still on its thread, its own attach does the swap and
         # it closes the entry after that.
-        if pid and run_finished[0] and attached is not False:
+        # With `finish_landed` set the handler has already passed its check
+        # and will not close: the entry is ours whatever the retry said.
+        if pid and run_finished[0] and (
+                attached is not False
+                or (finish_landed and finish_landed[0])):
             tx_progress._progress_close(pid)
     return dict(state)
 
@@ -324,13 +350,18 @@ async def _url_staging_job():
         await asyncio.shield(asyncio.to_thread(shutil.rmtree, job, True))
 
 
-async def _guarded_audio_download(pid: "str | None", url: str, dest_dir: str,
+async def _guarded_audio_download(pid: "str | None", url: str, dest_dir,
                                   *, max_bytes: "int | None" = None) -> str:
     """A link's whole AUDIO into `dest_dir` through the guarded download()
     under the URL download semaphore, reporting under `pid` and honouring
-    its cancel. Raises UrlDownloadError / UrlCancelled / _ClientCancelled."""
+    its cancel. `dest_dir` may be a no-arg coroutine function returning the
+    dir, called only once the slot is ours (a staging job made while queued
+    could be reaped as stale before its download even started). Raises
+    UrlDownloadError / UrlCancelled / _ClientCancelled."""
     async with tx_models._get_url_download_semaphore():
         tx_progress._check_cancelled(pid)
+        if callable(dest_dir):
+            dest_dir = await dest_dir()
         tx_progress._progress_set(pid, stage="downloading", progress=None)
         return await _udl.download(
             url, dest_dir=dest_dir, max_bytes=max_bytes,

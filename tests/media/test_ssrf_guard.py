@@ -470,14 +470,27 @@ def test_probe_extraction_is_cut_at_its_wall_clock_deadline(
     "file:///etc/passwd",
 ])
 def test_probe_refuses_non_http_redirect(target, servers, public_is_public,
-                                         monkeypatch):
+                                         monkeypatch, caplog):
     public, _ = servers
     _Public.redirect_to = target
     udl.guard_self_check(force=True)
     monkeypatch.setattr(udl.cfg, "URL_ALLOW_DIRECT_MEDIA", True, raising=False)
-    with pytest.raises(udl.UrlDownloadError) as ei:
-        _run(udl.probe(f"{public}/x.mp3", timeout=20))
+    with caplog.at_level("WARNING", logger="whisper-api"):
+        with pytest.raises(udl.UrlDownloadError) as ei:
+            _run(udl.probe(f"{public}/x.mp3", timeout=20))
     assert "could not be reached" in str(ei.value)
+    # The client wording is the same for an unreachable host, so it cannot
+    # tell the guard's refusal apart: check the raw error in the log.
+    failed = [r.getMessage() for r in caplog.records
+              if "[url-dl] probe failed" in r.getMessage()]
+    assert failed
+    if target.startswith("ftp:"):
+        # Without the guard's scheme refusal this would read "connection
+        # refused" (nothing listens on port 1).
+        assert udl.GUARD_MARKER in failed[-1]
+    # data: and file: never reach the guard: urllib's own redirect handler
+    # refuses a non-http/ftp Location first ("HTTP Error 302"). Those cases
+    # pin that the hop is refused at all, whichever layer does it.
 
 
 # ---------------------------------------------------------------------------

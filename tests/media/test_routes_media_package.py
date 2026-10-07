@@ -20,6 +20,7 @@ from faster_whisper_backend.media import subtitle_mux as pk
 
 _ID = "a" * 32
 _REAL_PROBE = pk.probe_streams   # before any fixture stubs it
+_REAL_BUILD_ARGV = pk.build_package_argv
 
 
 def _streams(**kw):
@@ -127,6 +128,68 @@ def test_upload_declared_length_over_cap_is_an_early_413(client, package_enabled
                     headers={"Content-Type": "application/octet-stream",
                              "Content-Length": "5000"})
     assert r.status_code == 413
+
+
+def test_upload_over_the_retention_cap_is_an_early_413_naming_it(
+        client, package_enabled, monkeypatch):
+    """register() drops a file over RETAINED_MEDIA_MAX_BYTES on arrival: an
+    upload between that cap and MEDIA_MAX_BYTES is refused up front with
+    the cap that binds, not with a 507 "store is full" after the transfer."""
+    monkeypatch.setattr(package_enabled.cfg, "MEDIA_MAX_BYTES", 10_000, raising=False)
+    monkeypatch.setattr(package_enabled.cfg, "RETAINED_MEDIA_MAX_BYTES", 1000,
+                        raising=False)
+    r = _upload(client, data=b"x" * 5000)
+    assert r.status_code == 413
+    assert "RETAINED_MEDIA_MAX_BYTES" in r.json()["detail"]
+
+    def _gen():
+        for _ in range(5):
+            yield b"x" * 1000
+    r = client.post("/v1/audio/media?ext=mp4", content=_gen(),
+                    headers={"Content-Type": "application/octet-stream"})
+    assert r.status_code == 413
+    assert not any(n.startswith("upload-") for n in os.listdir(ums.staging_dir()))
+
+
+def test_upload_without_disk_space_is_507_and_leaves_no_file(
+        client, package_enabled, monkeypatch):
+    from faster_whisper_backend.media import routes as media_routes
+    real = shutil.disk_usage
+
+    def _full(path):
+        return real(path)._replace(free=1024)
+    monkeypatch.setattr(media_routes.shutil, "disk_usage", _full)
+    r = _upload(client)
+    assert r.status_code == 507
+    assert "disk space" in r.json()["detail"]
+    assert not any(n.startswith("upload-") for n in os.listdir(ums.staging_dir()))
+
+
+def test_upload_hitting_a_full_disk_mid_stream_is_507(client, package_enabled,
+                                                      monkeypatch):
+    import errno
+    import io
+
+    from faster_whisper_backend.media import routes as media_routes
+    real_fdopen = os.fdopen
+
+    class _Full(io.RawIOBase):
+        def __init__(self, fd):
+            self._f = real_fdopen(fd, "wb")
+
+        def writable(self):
+            return True
+
+        def write(self, b):
+            raise OSError(errno.ENOSPC, "No space left on device")
+
+        def close(self):
+            self._f.close()
+            super().close()
+    monkeypatch.setattr(media_routes.os, "fdopen", lambda fd, mode: _Full(fd))
+    r = _upload(client)
+    assert r.status_code == 507
+    assert not any(n.startswith("upload-") for n in os.listdir(ums.staging_dir()))
 
 
 def test_upload_validation_and_gates(client, package_enabled, monkeypatch):
@@ -383,6 +446,42 @@ def test_package_validation_422(client, package_enabled, body):
     assert r.status_code == 422, r.text
 
 
+def test_package_lone_surrogates_are_422_or_stripped_never_500(
+        client, package_enabled, monkeypatch):
+    """A JSON body may carry a lone UTF-16 surrogate: in an SRT it is not
+    SRT (it cannot be encoded), in a label it is dropped — it would
+    otherwise reach ffmpeg's argv, where os.fsencode raises."""
+    import json
+
+    def _post(body):
+        # ASCII-escaped on the wire ("\\ud800"), as a client would send it:
+        # httpx's json= cannot encode a lone surrogate at all.
+        return client.post(f"/v1/audio/media/{mid}/package",
+                           content=json.dumps(body),
+                           headers={"Content-Type": "application/json"})
+    mid = _upload(client).json()["media_id"]
+    r = _post({"container": "mkv", "subtitles": [
+        {"lang": "en", "srt": "1\n00:00:00,000 --> 00:00:01,000\n\ud800\n"}]})
+    assert r.status_code == 422
+    assert "not SRT" in r.json()["detail"]
+    seen = {}
+
+    def _argv(src, srt_paths, tracks, *, container, out_path, default_track, **kw):
+        argv = _REAL_BUILD_ARGV(
+            src, srt_paths, tracks, container=container, out_path=out_path,
+            default_track=default_track, **kw)
+        seen["argv"] = argv
+        return [sys.executable, "-c", f"open({out_path!r}, 'wb').write(b'v')"]
+    monkeypatch.setattr(pk, "build_package_argv", _argv)
+    r = _post({"container": "mkv", "audio_lang": "en", "audio_label": "\ud800",
+               "subtitles": [{"lang": "en", "label": "\ud800x",
+                              "srt": "1\n00:00:00,000 --> 00:00:01,000\nHi\n"}]})
+    assert r.status_code == 200, r.text
+    for arg in seen["argv"]:
+        arg.encode("utf-8")              # no lone surrogate left anywhere
+    assert "title=x" in seen["argv"]
+
+
 def test_package_srt_over_the_size_cap_422(client, package_enabled):
     mid = _upload(client).json()["media_id"]
     big = "1\n00:00:00,000 --> 00:00:01,000\n" + "x" * (pk.MAX_SRT_BYTES + 1)
@@ -494,12 +593,13 @@ def test_retain_media_keeps_the_upload_and_returns_its_id(client, package_enable
     e = ums.resolve_entry(mid, user_id=None)
     assert e["kind"] == "video" and e["ext"] == "mp4"
     assert client.get(f"/v1/audio/url-media/{mid}").content.startswith(b"RIFF")
-    # Without the flag nothing is retained; the spool is gone either way.
+    # Without the flag nothing is retained; the spool (whisperup-) and any
+    # retained copy (urlmedia-) are gone either way.
     r = client.post("/v1/audio/transcriptions", files=_FILE,
                     data={"model": "whisper-1", "response_format": "verbose_json"})
     assert "source_media_id" not in r.json()
     assert not [n for n in os.listdir(tempfile.gettempdir())
-                if n.startswith("urlmedia-") and time.time() - os.path.getmtime(
+                if n.startswith(("urlmedia-", "whisperup-")) and time.time() - os.path.getmtime(
                     os.path.join(tempfile.gettempdir(), n)) < 5]
 
 
@@ -513,7 +613,7 @@ def test_retain_media_with_a_text_response_is_422(client, package_enabled):
     assert r.status_code == 422
     assert "retain_media" in r.json()["detail"]
     assert not [n for n in os.listdir(tempfile.gettempdir())
-                if n.startswith("urlmedia-") and time.time() - os.path.getmtime(
+                if n.startswith(("urlmedia-", "whisperup-")) and time.time() - os.path.getmtime(
                     os.path.join(tempfile.gettempdir(), n)) < 5]
     assert not [m for m, e in ums._REG.items() if e.get("kind") == "video"]
 
@@ -530,5 +630,5 @@ def test_retain_media_refused_by_the_store_leaves_no_copy(client, package_enable
     assert r.status_code == 200, r.text
     assert "source_media_id" not in r.json()
     assert not [n for n in os.listdir(tempfile.gettempdir())
-                if n.startswith("urlmedia-") and time.time() - os.path.getmtime(
+                if n.startswith(("urlmedia-", "whisperup-")) and time.time() - os.path.getmtime(
                     os.path.join(tempfile.gettempdir(), n)) < 5]

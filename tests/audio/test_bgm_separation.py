@@ -109,10 +109,14 @@ def test_separate_transcode_failure_falls_back_to_original(
         r = client.post(
             "/v1/audio/transcriptions",
             files={"file": ("a.m4a", b"\x00\x00\x00 ftypM4A ", "audio/mp4")},
-            data={"model": "whisper-1", "separate_bgm": "true"})
+            data={"model": "whisper-1", "separate_bgm": "true",
+                  "response_format": "verbose_json"})
         assert r.status_code == 200, r.text
         # Separation still ran — on the original file (soft-fail, no warning
-        # surfaced to the client for a transcode hiccup).
+        # surfaced to the client for a transcode hiccup). The refusal arm
+        # (a ValueError from _open_audio) is pinned in
+        # tests/main/test_routes_transcription.py.
+        assert "warnings" not in r.json()
         assert len(calls) == 1 and calls[0].endswith(".m4a")
     finally:
         app_module.cfg.BGM_SEPARATION_ENABLED = False

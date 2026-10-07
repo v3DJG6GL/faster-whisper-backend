@@ -79,6 +79,38 @@ def test_sweep_ttl_and_unknown_id(tmp_path, monkeypatch):
     assert ums.resolve("f" * 32, user_id=None) is None
 
 
+def test_touch_restarts_the_ttl_and_the_eviction_age(tmp_path, monkeypatch):
+    """A transcription reusing a language check's audio hands that id out
+    as its own: touch() must restart BOTH clocks, or the advertised id dies
+    at the check's original deadline / goes first under the byte cap."""
+    reused = ums.register(_make_src(tmp_path, "a.m4a", size=100), user_id=None)
+    other = ums.register(_make_src(tmp_path, "b.m4a", size=100), user_id=None)
+    now = time.monotonic()
+    ums._REG[reused]["created"] = now - 1000      # past the TTL below
+    ums._REG[other]["created"] = now - 100
+    ums.touch(reused)
+    ums.touch("f" * 32)                             # unknown id: a no-op
+    monkeypatch.setattr(ums.cfg, "URL_MEDIA_TTL_S", 600, raising=False)
+    ums.sweep()
+    assert ums.resolve(reused, user_id=None) is not None
+    # ...and it is now the NEWEST for the oldest-first byte cap.
+    monkeypatch.setattr(ums.cfg, "RETAINED_MEDIA_MAX_BYTES", 250, raising=False)
+    third = ums.register(_make_src(tmp_path, "c.m4a", size=100), user_id=None)
+    assert ums.resolve(other, user_id=None) is None
+    assert ums.resolve(reused, user_id=None) is not None
+    assert ums.resolve(third, user_id=None) is not None
+
+
+def test_max_retainable_bytes_is_the_lower_of_the_two_caps(monkeypatch):
+    monkeypatch.setattr(ums.cfg, "MEDIA_MAX_BYTES", 10_000, raising=False)
+    monkeypatch.setattr(ums.cfg, "RETAINED_MEDIA_MAX_BYTES", 1000, raising=False)
+    assert ums.max_retainable_bytes() == 1000
+    monkeypatch.setattr(ums.cfg, "RETAINED_MEDIA_MAX_BYTES", 50_000, raising=False)
+    assert ums.max_retainable_bytes() == 10_000
+    monkeypatch.setattr(ums.cfg, "RETAINED_MEDIA_MAX_BYTES", 0, raising=False)
+    assert ums.max_retainable_bytes() == 10_000      # 0 = no store cap
+
+
 def test_lru_eviction_over_byte_cap(tmp_path, monkeypatch):
     monkeypatch.setattr(ums.cfg, "RETAINED_MEDIA_MAX_BYTES", 250, raising=False)
     first = ums.register(_make_src(tmp_path, "a.m4a", size=100), user_id=None)

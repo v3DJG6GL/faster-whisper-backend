@@ -81,6 +81,18 @@ def staging_dir() -> str:
     return d
 
 
+def max_retainable_bytes() -> int:
+    """The largest single file register() can keep: MEDIA_MAX_BYTES, or
+    RETAINED_MEDIA_MAX_BYTES when an operator set it lower (_evict_over_cap
+    drops a newest file that alone exceeds the store cap). Every fetch whose
+    only purpose is to be retained (a video, an upload, a link's audio for
+    the language check) is held to this up front, not refused after the
+    whole transfer."""
+    cap = int(getattr(cfg, "MEDIA_MAX_BYTES", 10_000_000_000))
+    store = int(getattr(cfg, "RETAINED_MEDIA_MAX_BYTES", 50_000_000_000) or 0)
+    return min(cap, store) if store > 0 else cap
+
+
 def new_staging_job() -> str:
     """A fresh private job dir inside the staging area; the caller rmtree's
     it in its finally (sweep() catches the ones that never got there)."""

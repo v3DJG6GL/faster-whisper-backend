@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
-import functools
 import logging
 import os
 import re
@@ -355,15 +354,28 @@ async def _empty_captions_to_strip(src: str, video_codec: "str | None",
         return False
 
 
-@functools.lru_cache(maxsize=8)
+# The two ffmpeg probes below cache their answer for the process (the binary
+# cannot change without a restart) — but only a real answer: a probe that
+# timed out (a cold disk, a loaded host at startup) is asked again next time
+# instead of disabling packaging / the CC-track strip until a restart.
+_bsf_cache: "dict[str, bool]" = {}
+_caps_cache: "list[FfmpegCaps]" = []
+
+
 def ffmpeg_has_bsf(name: str) -> bool:
     """Whether the server's ffmpeg has the bitstream filter `name`."""
+    if name in _bsf_cache:
+        return _bsf_cache[name]
     try:
         out = subprocess.run([audio_ffmpeg.ffmpeg_exe(), "-hide_banner", "-bsfs"], capture_output=True,
                              text=True, check=False, timeout=15).stdout
+    except subprocess.TimeoutExpired:
+        return False                     # not cached: retried next call
     except (OSError, subprocess.SubprocessError):
-        return False
-    return re.search(rf"^\s*{re.escape(name)}\s*$", out or "", re.M) is not None
+        out = ""
+    has = re.search(rf"^\s*{re.escape(name)}\s*$", out or "", re.M) is not None
+    _bsf_cache[name] = has
+    return has
 
 
 
@@ -372,11 +384,24 @@ def _has(listing: str, name: str) -> bool:
     return re.search(rf"^\s*\S+\s+{re.escape(name)}\s", listing, re.M) is not None
 
 
-@functools.lru_cache(maxsize=1)
 def ffmpeg_capabilities() -> FfmpegCaps:
     """Whether the server's ffmpeg can package at all, and into which
-    containers. Cached: the binary cannot change without a restart. Three
-    subprocesses on first call — the lifespan warms it off the loop."""
+    containers. Cached: the binary cannot change without a restart (a
+    timed-out probe is not an answer and is not cached). Three subprocesses
+    on first call — the lifespan warms it off the loop."""
+    if _caps_cache:
+        return _caps_cache[0]
+    caps = _probe_ffmpeg_capabilities()
+    if caps is not None:
+        _caps_cache[:] = [caps]
+        return caps
+    return FfmpegCaps(False, False, False,
+                      "the server's ffmpeg did not answer in time; it is asked "
+                      "again on the next request", None)
+
+
+def _probe_ffmpeg_capabilities() -> "FfmpegCaps | None":
+    """ffmpeg_capabilities' uncached probe; None when it timed out."""
     exe = audio_ffmpeg.ffmpeg_exe()
     try:
         mux = subprocess.run([exe, "-hide_banner", "-muxers"], capture_output=True,
@@ -385,6 +410,8 @@ def ffmpeg_capabilities() -> FfmpegCaps:
                              text=True, timeout=15).stdout
         ver_out = subprocess.run([exe, "-version"], capture_output=True, text=True,
                                  timeout=15).stdout
+    except subprocess.TimeoutExpired:
+        return None
     except (OSError, subprocess.SubprocessError):
         return FfmpegCaps(False, False, False,
                           "no ffmpeg binary on the server (install ffmpeg or the "
@@ -403,5 +430,5 @@ def ffmpeg_capabilities() -> FfmpegCaps:
 
 
 def _reset_for_tests() -> None:
-    ffmpeg_capabilities.cache_clear()
-    ffmpeg_has_bsf.cache_clear()
+    _caps_cache.clear()
+    _bsf_cache.clear()

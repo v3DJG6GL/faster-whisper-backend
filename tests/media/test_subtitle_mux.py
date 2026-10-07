@@ -231,6 +231,37 @@ def test_ffmpeg_capabilities_parses_listings(monkeypatch):
     pk._reset_for_tests()
 
 
+def test_a_timed_out_ffmpeg_probe_is_not_cached(monkeypatch):
+    """One slow first call (cold disk, loaded host at startup) must not
+    disable packaging — or the empty-CC strip — until a restart."""
+    pk._reset_for_tests()
+    outs = {"-muxers": "  E  matroska        Matroska\n",
+            "-encoders": " S..... srt   SubRip\n",
+            "-version": "ffmpeg version 7.0.2\n",
+            "-bsfs": "filter_units\nnull\n"}
+    slow = {"left": 1}
+
+    class _R:
+        def __init__(self, stdout):
+            self.stdout = stdout
+
+    def _run(argv, **kw):
+        if slow["left"]:
+            slow["left"] -= 1
+            raise subprocess.TimeoutExpired(argv, kw.get("timeout"))
+        return _R(outs.get(argv[-1], ""))
+    monkeypatch.setattr(subprocess, "run", _run)
+    caps = pk.ffmpeg_capabilities()
+    assert not caps.available and "no ffmpeg" not in caps.reason
+    assert pk.ffmpeg_capabilities().available       # asked again, cached now
+    slow["left"] = 1
+    assert pk.ffmpeg_capabilities().available       # the cache held
+    slow["left"] = 1
+    assert pk.ffmpeg_has_bsf("filter_units") is False
+    assert pk.ffmpeg_has_bsf("filter_units") is True
+    pk._reset_for_tests()
+
+
 @pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="needs a system ffmpeg")
 def test_package_real_ffmpeg_muxes_language_tags(tmp_path):
     """End to end with the real binary: a 1 s test clip, two SRTs, PyAV

@@ -216,21 +216,101 @@ def test_probe_refuses_a_delegation_off_the_allowlist(monkeypatch):
 def test_probe_refuses_a_site_extractor_handing_off_to_generic(monkeypatch):
     """Default config (no allowlist, so no pin): a site extractor that
     url_result()s a scraped embed URL lands on GenericIE, which scrapes any
-    page — the widening URL_ALLOW_GENERIC=off forbids. A plain media file
-    GenericIE served directly is what URL_ALLOW_DIRECT_MEDIA admits."""
+    page — the widening URL_ALLOW_GENERIC=off forbids. A hand-off target
+    that passed the direct-media Content-Type check is what
+    URL_ALLOW_DIRECT_MEDIA admits — yt-dlp's "direct" flag alone is not."""
     monkeypatch.setattr(udl.cfg, "URL_ALLOW_GENERIC", False, raising=False)
     monkeypatch.setattr(udl.cfg, "URL_ALLOW_DIRECT_MEDIA", True, raising=False)
     monkeypatch.setattr(udl.cfg, "URL_ALLOWED_EXTRACTORS", [], raising=False)
     with pytest.raises(udl.UrlPolicyError, match="leads to a site"):
         udl._policy_check_extractor("Youtube", {"extractor_key": "Generic"})
-    udl._policy_check_extractor(
-        "Youtube", {"extractor_key": "Generic", "direct": True})
-    monkeypatch.setattr(udl.cfg, "URL_ALLOW_DIRECT_MEDIA", False, raising=False)
     with pytest.raises(udl.UrlPolicyError, match="leads to a site"):
         udl._policy_check_extractor(
             "Youtube", {"extractor_key": "Generic", "direct": True})
+    udl._policy_check_extractor(
+        "Youtube", {"extractor_key": "Generic"}, handoff_is_media=True)
+    monkeypatch.setattr(udl.cfg, "URL_ALLOW_DIRECT_MEDIA", False, raising=False)
+    with pytest.raises(udl.UrlPolicyError, match="leads to a site"):
+        udl._policy_check_extractor(
+            "Youtube", {"extractor_key": "Generic"}, handoff_is_media=True)
     monkeypatch.setattr(udl.cfg, "URL_ALLOW_GENERIC", True, raising=False)
     udl._policy_check_extractor("Youtube", {"extractor_key": "Generic"})
+
+
+def _handoff_policy(monkeypatch):
+    monkeypatch.setattr(udl.cfg, "URL_ALLOW_GENERIC", False, raising=False)
+    monkeypatch.setattr(udl.cfg, "URL_ALLOW_DIRECT_MEDIA", True, raising=False)
+    monkeypatch.setattr(udl.cfg, "URL_ALLOWED_EXTRACTORS", [], raising=False)
+
+
+def test_probe_admits_an_hls_manifest_handed_off_to_generic(monkeypatch):
+    """GenericIE turns an audio/mpegurl manifest into m3u8 formats and never
+    sets "direct" — yet the same URL pasted directly passes check_url_policy.
+    The hand-off is judged by that same Content-Type check, on the URL
+    GenericIE was handed."""
+    _handoff_policy(monkeypatch)
+    _stand_in_yt_dlp(monkeypatch, "Youtube", {
+        "title": "t", "extractor_key": "Generic",
+        "webpage_url": "https://cdn.example/live.m3u8",
+        "url": "https://cdn.example/live/variant.m3u8",
+        "protocol": "m3u8_native"})
+    probed: "list[str]" = []
+
+    def _media(u, timeout):
+        probed.append(u)
+        return True
+    monkeypatch.setattr(udl, "_direct_media_probe_sync", _media)
+    assert _run(udl.probe("https://x/watch", timeout=5.0)).extractor_key == "Generic"
+    assert probed == ["https://cdn.example/live.m3u8"]
+
+
+def test_probe_refuses_a_direct_flagged_non_media_hand_off(monkeypatch):
+    """GenericIE flags ANY non-HTML body "direct" (octet-stream, JSON…);
+    the offline gate would refuse that URL, so the hand-off is refused
+    too."""
+    _handoff_policy(monkeypatch)
+    _stand_in_yt_dlp(monkeypatch, "Youtube", {
+        "title": "t", "extractor_key": "Generic", "direct": True,
+        "url": "https://cdn.example/blob.bin",
+        "webpage_url": "https://x/watch"})
+    probed: "list[str]" = []
+
+    def _octet_stream(u, timeout):
+        probed.append(u)
+        return False
+    monkeypatch.setattr(udl, "_direct_media_probe_sync", _octet_stream)
+    with pytest.raises(udl.UrlPolicyError, match="leads to a site"):
+        _run(udl.probe("https://x/watch", timeout=5.0))
+    # A "direct" result is judged by the URL GenericIE served as-is.
+    assert probed == ["https://cdn.example/blob.bin"]
+
+
+def test_download_subprocess_cannot_hand_off_to_a_scraped_generic_page(
+        monkeypatch):
+    """The subprocess re-extracts from scratch, so the probe's hand-off gate
+    never sees ITS extraction: with URL_ALLOW_GENERIC off a site key's argv
+    carries match filters that admit only the site's own result or a media
+    file / manifest GenericIE served itself."""
+    import yt_dlp
+    _handoff_policy(monkeypatch)
+    filters = udl.handoff_match_filters("Youtube")
+    assert udl.handoff_match_filters("Generic") is None
+    for build in (udl.build_download_argv, udl.build_video_download_argv):
+        argv = build("https://e.com/a", dest_dir="/tmp/x", max_bytes=1,
+                     match_filters=filters)
+        assert argv.index("--match-filters") < argv.index("--")
+        match = yt_dlp.parse_options(argv[2:-2]).ydl_opts["match_filter"]
+        assert match({"extractor_key": "Youtube", "protocol": "https"}) is None
+        assert match({"extractor_key": "Generic", "protocol": "https",
+                      "direct": True}) is None
+        assert match({"extractor_key": "Generic",
+                      "protocol": "m3u8_native"}) is None
+        assert "does not pass filter" in match(
+            {"extractor_key": "Generic", "protocol": "https"})
+    monkeypatch.setattr(udl.cfg, "URL_ALLOW_DIRECT_MEDIA", False, raising=False)
+    assert udl.handoff_match_filters("Youtube") == ["extractor_key!=Generic"]
+    monkeypatch.setattr(udl.cfg, "URL_ALLOW_GENERIC", True, raising=False)
+    assert udl.handoff_match_filters("Youtube") is None
 
 
 def test_probe_reports_a_pinned_out_hand_off_as_a_policy_refusal(monkeypatch):
@@ -260,6 +340,7 @@ def test_classify_error_maps_no_suitable_extractor_to_the_policy():
 
 def test_probe_admits_the_extractor_it_matched(monkeypatch):
     monkeypatch.setattr(udl.cfg, "URL_ALLOW_GENERIC", False, raising=False)
+    monkeypatch.setattr(udl.cfg, "URL_ALLOW_DIRECT_MEDIA", True, raising=False)
     monkeypatch.setattr(udl.cfg, "URL_ALLOWED_EXTRACTORS", [], raising=False)
     _probe_with_extractor(monkeypatch, "Generic", "Generic")
     assert _run(udl.probe("https://x/a.mp3", timeout=5.0)).extractor_key == "Generic"
@@ -399,7 +480,8 @@ def _fake_argv(script: str) -> "list[str]":
 def _patch_argv(monkeypatch, script: str):
     monkeypatch.setattr(
         udl, "build_download_argv",
-        lambda url, *, dest_dir, max_bytes, extractors=None: _fake_argv(
+        lambda url, *, dest_dir, max_bytes, extractors=None,
+        match_filters=None: _fake_argv(
             script.replace("__DEST__", dest_dir)))
 
 
@@ -461,6 +543,18 @@ import os
 open(os.path.join(r"__DEST__", "media.m4a.part"), "wb").write(b"x")
 """)
     with pytest.raises(udl.UrlDownloadError, match="size limit"):
+        _run(udl.download("https://example.com/v", dest_dir=str(tmp_path),
+                          max_bytes=10_000, timeout=30))
+
+
+def test_download_filtered_out_run_is_the_policy_refusal(tmp_path, monkeypatch):
+    # handoff_match_filters at work: clean exit, nothing fetched — the site
+    # policy's refusal, not the size cap.
+    _patch_argv(monkeypatch, """
+print("[download] t does not pass filter (extractor_key!=Generic), skipping ..",
+      flush=True)
+""")
+    with pytest.raises(udl.UrlPolicyError, match="leads to a site"):
         _run(udl.download("https://example.com/v", dest_dir=str(tmp_path),
                           max_bytes=10_000, timeout=30))
 
@@ -986,6 +1080,7 @@ def test_thumbnail_cuts_a_dribbled_header(monkeypatch):
     sync layer: capped_get's outer wait_for gives up at timeout + 2 s and
     soft-fails to None, which would pass this bound with the cut gone while
     the pool thread stays wedged for the whole ~7 s dribble."""
+    import http.client
     import time as _t
     from faster_whisper_backend.core import net_policy as np
     monkeypatch.setattr(udl, "_host_is_forbidden", lambda h: False)
@@ -996,7 +1091,9 @@ def test_thumbnail_cuts_a_dribbled_header(monkeypatch):
     try:
         port = srv.getsockname()[1]
         t0 = _t.monotonic()
-        with pytest.raises(Exception):
+        # The cut surfaces as http.client's BadStatusLine / a socket error;
+        # anything else (a TypeError, a host-gate refusal) never reached it.
+        with pytest.raises((http.client.HTTPException, OSError)):
             udl._capped_get(f"http://127.0.0.1:{port}/t.jpg", max_bytes=512_000,
                             timeout=0.5, accept=lambda c: c.startswith("image/"))
         assert _t.monotonic() - t0 < 4.0   # see the probe test above
@@ -1288,17 +1385,15 @@ def _patch_video_argv(monkeypatch, script: str):
     monkeypatch.setattr(
         udl, "build_video_download_argv",
         lambda url, *, dest_dir, max_bytes, max_height=None, container="mkv",
-        format_ids=None, extractors=None: _fake_argv(script.replace("__DEST__", dest_dir)))
+        format_ids=None, extractors=None, match_filters=None: _fake_argv(
+            script.replace("__DEST__", dest_dir)))
 
 
 _TWO_STREAMS_SCRIPT = """
-import os, sys, time
+import os, sys
 print("dl:500 1000 NA", flush=True)
-time.sleep(0.35)
 print("dl:1000 1000 NA", flush=True)
-time.sleep(0.35)
 print("dl:100 300 NA", flush=True)
-time.sleep(0.35)
 print("dl:300 300 NA", flush=True)
 open(os.path.join(r"__DEST__", "media.mkv"), "wb").write(b"x" * 64)
 """
@@ -1321,13 +1416,10 @@ def test_download_video_counts_cumulatively_across_two_streams(tmp_path, monkeyp
 
 
 _TWO_LEGS_BY_ID_SCRIPT = """
-import os, sys, time
+import os, sys
 print("dl:500 NA NA 616", flush=True)
-time.sleep(0.35)
 print("dl:1200 1200 NA 616", flush=True)
-time.sleep(0.35)
 print("dl:100 300 NA 140", flush=True)
-time.sleep(0.35)
 print("dl:300 300 NA 140", flush=True)
 open(os.path.join(r"__DEST__", "media.mkv"), "wb").write(b"x" * 64)
 """
@@ -1355,13 +1447,10 @@ def test_download_video_denominator_is_per_leg(tmp_path, monkeypatch):
 
 
 _UNPRICED_AUDIO_LEG_SCRIPT = """
-import os, sys, time
+import os, sys
 print("dl:500 1000 NA 616", flush=True)
-time.sleep(0.35)
 print("dl:1000 1000 NA 616", flush=True)
-time.sleep(0.35)
 print("dl:100 NA NA 140", flush=True)
-time.sleep(0.35)
 print("dl:300 300 NA 140", flush=True)
 open(os.path.join(r"__DEST__", "media.mkv"), "wb").write(b"x" * 64)
 """
@@ -1383,11 +1472,9 @@ def test_download_video_never_reads_100_percent_while_a_leg_is_pending(tmp_path,
 
 
 _DROP_INSIDE_ONE_LEG_SCRIPT = """
-import os, sys, time
+import os, sys
 print("dl:500 1000 NA 616", flush=True)
-time.sleep(0.35)
 print("dl:200 1000 NA 616", flush=True)
-time.sleep(0.35)
 print("dl:1000 1000 NA 616", flush=True)
 open(os.path.join(r"__DEST__", "media.mkv"), "wb").write(b"x" * 64)
 """

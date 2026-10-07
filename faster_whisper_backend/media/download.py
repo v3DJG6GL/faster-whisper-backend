@@ -881,14 +881,68 @@ def pinned_extractors(key: str) -> "list[str] | None":
     return names or None
 
 
-def _policy_check_extractor(key: str, info: dict) -> None:
+def handoff_match_filters(key: str) -> "list[str] | None":
+    """yt-dlp `--match-filters` (OR'd) for the download subprocess of a URL
+    the offline match called `key`. The subprocess re-extracts from scratch,
+    so a site extractor can hand off to GenericIE there even though the
+    probe's _policy_check_extractor refused nothing: with URL_ALLOW_GENERIC
+    off, a GenericIE result is downloaded only when it is the plain media
+    file or HLS manifest GenericIE served itself — what
+    URL_ALLOW_DIRECT_MEDIA admits — never a scraped page. A filtered-out
+    run exits 0 with no file; _run_yt_dlp reports it as the policy refusal.
+    (The probe's verdict is stricter: it re-checks the Content-Type.)
+    None: no filter (Generic is the matched key — pinned_extractors already
+    holds it to GenericIE — or GenericIE is allowed outright)."""
+    if key == "Generic" or getattr(cfg, "URL_ALLOW_GENERIC", False):
+        return None
+    filters = ["extractor_key!=Generic"]
+    if getattr(cfg, "URL_ALLOW_DIRECT_MEDIA", True):
+        filters += ["direct", "protocol^=m3u8"]
+    return filters
+
+
+def _generic_handoff_target(key: str, info: dict) -> "str | None":
+    """The URL to hold to check_url_policy's direct-media verdict when a site
+    extractor (`key`) handed off to GenericIE with URL_ALLOW_GENERIC off and
+    URL_ALLOW_DIRECT_MEDIA on; None when no such re-check applies. A
+    "direct" result is the URL GenericIE served as-is ("url"); anything
+    else is judged by the URL GenericIE was handed ("webpage_url") — an HLS
+    manifest served as audio/mpegurl passes, a page GenericIE scraped does
+    not."""
+    if (key == "Generic" or str(info.get("extractor_key") or key) != "Generic"
+            or getattr(cfg, "URL_ALLOW_GENERIC", False)
+            or not getattr(cfg, "URL_ALLOW_DIRECT_MEDIA", True)):
+        return None
+    target = (info.get("url") if info.get("direct") else None) \
+        or info.get("webpage_url")
+    return target if isinstance(target, str) and target else None
+
+
+async def _handoff_serves_media(target: str, deadline: float) -> bool:
+    """check_url_policy's direct-media verdict (the same guarded capped
+    GET) for a GenericIE hand-off target, within the probe's deadline."""
+    try:
+        target = validate_url(target)
+    except UrlDownloadError:
+        return False
+    budget = max(1.0, min(float(getattr(cfg, "URL_SOCKET_TIMEOUT_S", 15)),
+                          deadline - time.monotonic()))
+    return await asyncio.get_running_loop().run_in_executor(
+        _PROBE_POOL, lambda: _direct_media_probe_sync(target, timeout=budget))
+
+
+def _policy_check_extractor(key: str, info: dict, *,
+                            handoff_is_media: bool = False) -> None:
     """The extractor that actually produced `info` must pass the policy the
     offline match was held to: a Generic URL admitted as direct media must
     not have been handed to a site extractor, and under an allowlist a
     delegation must land on an allowlisted extractor. A site extractor
     handing a scraped embed URL on to GenericIE is held to URL_ALLOW_GENERIC
-    too (GenericIE scrapes any page), unless GenericIE served it as a plain
-    media file ("direct"), which URL_ALLOW_DIRECT_MEDIA admits."""
+    too (GenericIE scrapes any page), unless the hand-off target passed the
+    same Content-Type check check_url_policy gives a pasted Generic URL
+    (`handoff_is_media`, see _generic_handoff_target) — what
+    URL_ALLOW_DIRECT_MEDIA admits. yt-dlp's own "direct" flag is not that
+    verdict: it marks any non-HTML body, and never an HLS manifest."""
     xk = str(info.get("extractor_key") or key)
     if xk == key:
         return
@@ -896,7 +950,7 @@ def _policy_check_extractor(key: str, info: dict) -> None:
         raise UrlPolicyError(
             "this link leads to a site the server's URL policy doesn't allow")
     if (xk == "Generic" and not getattr(cfg, "URL_ALLOW_GENERIC", False)
-            and not (info.get("direct")
+            and not (handoff_is_media
                      and getattr(cfg, "URL_ALLOW_DIRECT_MEDIA", True))):
         raise UrlPolicyError(
             "this link leads to a site the server's URL policy doesn't allow")
@@ -995,13 +1049,20 @@ async def probe(url: str, *, timeout: float) -> UrlMediaInfo:
     if not isinstance(info, dict):
         raise UrlDownloadError("the site returned no usable media info")
     _policy_check_info(info)
-    _policy_check_extractor(key, info)
+    handoff_is_media = False
+    _target = _generic_handoff_target(key, info)
+    if _target is not None:
+        handoff_is_media = await _handoff_serves_media(_target, deadline)
+    _policy_check_extractor(key, info, handoff_is_media=handoff_is_media)
     ladder: "list[dict]" = []
     if getattr(cfg, "URL_VIDEO_ENABLED", False):
         from faster_whisper_backend.runtime import stage_rates as _rates
         _xk = str(info.get("extractor_key") or key)
+        # A video rung is only ever fetched to be retained: price it
+        # against what the media store can keep.
+        from faster_whisper_backend.media import media_store as _ms
         ladder = build_video_ladder(
-            info, max_bytes=_effective_max_bytes(), extractor=_xk,
+            info, max_bytes=_ms.max_retainable_bytes(), extractor=_xk,
             approx_ratio=lambda fam: _rates.lookup(RATIO_STAGE, _xk, fam).get("rate"))
         if ladder:
             _fs = info.get("filesize_approx") or info.get("filesize")
@@ -1158,7 +1219,9 @@ _ERROR_TAXONOMY: "tuple[tuple[tuple[str, ...], str], ...]" = (
      "link downloads are unavailable on this server"),
     ((GUARD_EXTERNAL_FD_MARKER,),
      "this media needs a downloader the server does not allow"),
-    # First, and by an exact marker: the SSRF guard refused a hop. Its text
+    # Next (first of the non-guard rows, and only after the two longer guard
+    # needles above, which contain it), by an exact marker: the SSRF guard
+    # refused a hop. Its text
     # names the host and the internal address it resolved to — server-log
     # material only, so it must never fall through to a message that quotes
     # tool output.
@@ -1230,6 +1293,8 @@ def classified_error(stderr_tail: str) -> UrlDownloadError:
 # marker so progress lines are unambiguous against yt-dlp's [info] chatter.
 _PROGRESS_PREFIX = "dl:"
 _STDERR_TAIL_MAX = 4096
+# The stdout line yt-dlp prints for a result --match-filters rejected.
+_FILTERED_NEEDLE = b"does not pass filter"
 
 
 def _parse_progress_fields(line: str) -> "tuple[int, int | None, str | None] | None":
@@ -1261,10 +1326,13 @@ def _parse_progress_fields(line: str) -> "tuple[int, int | None, str | None] | N
 
 
 def build_download_argv(url: str, *, dest_dir: str, max_bytes: int,
-                        extractors: "list[str] | None" = None) -> "list[str]":
+                        extractors: "list[str] | None" = None,
+                        match_filters: "list[str] | None" = None,
+                        ) -> "list[str]":
     """The exact yt-dlp CLI invocation (separate function so tests can pin
     it). The URL is the only client-supplied element and follows '--'.
-    `extractors` is pinned_extractors()' answer for the URL."""
+    `extractors` is pinned_extractors()' answer for the URL,
+    `match_filters` handoff_match_filters()'."""
     return [
         # NOT `-m yt_dlp`: the launcher installs the SSRF guard first and
         # exits non-zero if it cannot (yt-dlp's plugin loader would only
@@ -1284,6 +1352,7 @@ def build_download_argv(url: str, *, dest_dir: str, max_bytes: int,
         # it to the native HlsFD, which fetches through the guarded handler.
         "--downloader", "m3u8:native",
         *_use_extractors(extractors),
+        *_match_filter_args(match_filters),
         "-f", DOWNLOAD_FORMAT,
         "--no-playlist",
         "--playlist-items", "1",  # belt+braces: never more than one item
@@ -1308,11 +1377,19 @@ def _use_extractors(extractors: "list[str] | None") -> "list[str]":
     return ["--use-extractors", ",".join(extractors)] if extractors else []
 
 
-async def _pinned_extractors_for(url: str) -> "list[str] | None":
-    """pinned_extractors() for `url`, matched offline again (the subprocess
-    re-extracts from the URL), on the probe pool."""
-    return await asyncio.get_running_loop().run_in_executor(
-        _PROBE_POOL, lambda: pinned_extractors(match_extractor(url)))
+def _match_filter_args(filters: "list[str] | None") -> "list[str]":
+    # Repeated --match-filters are OR'd by yt-dlp.
+    return [a for f in (filters or []) for a in ("--match-filters", f)]
+
+
+async def _extractor_policy_for(url: str) -> "tuple[list[str] | None, list[str] | None]":
+    """(pinned_extractors(), handoff_match_filters()) for `url`, matched
+    offline again (the subprocess re-extracts from the URL), on the probe
+    pool."""
+    def _both():
+        key = match_extractor(url)
+        return pinned_extractors(key), handoff_match_filters(key)
+    return await asyncio.get_running_loop().run_in_executor(_PROBE_POOL, _both)
 
 
 def video_format_selector(max_height: "int | None" = None,
@@ -1341,6 +1418,7 @@ def build_video_download_argv(url: str, *, dest_dir: str, max_bytes: int,
                               container: str = "mkv",
                               format_ids: "tuple[str | None, str | None] | None" = None,
                               extractors: "list[str] | None" = None,
+                              match_filters: "list[str] | None" = None,
                               ) -> "list[str]":
     """The yt-dlp invocation for the VIDEO of a link: the rung's exact
     formats (best video + best audio as the fallback) merged by ffmpeg into
@@ -1357,6 +1435,7 @@ def build_video_download_argv(url: str, *, dest_dir: str, max_bytes: int,
         "--ignore-config",
         "--downloader", "m3u8:native",   # see build_download_argv
         *_use_extractors(extractors),
+        *_match_filter_args(match_filters),
         "-f", fmt,
         "--merge-output-format", container,
         "--no-playlist",
@@ -1398,8 +1477,10 @@ async def download(
     guard_self_check()  # fail closed: never spawn an unguarded downloader
     max_bytes = int(max_bytes or _effective_max_bytes())
     timeout = float(timeout or getattr(cfg, "URL_DOWNLOAD_TIMEOUT_S", 900))
+    extractors, match_filters = await _extractor_policy_for(url)
     argv = build_download_argv(url, dest_dir=dest_dir, max_bytes=max_bytes,
-                               extractors=await _pinned_extractors_for(url))
+                               extractors=extractors,
+                               match_filters=match_filters)
 
     def _emit(downloaded: int, total: "int | None") -> None:
         if progress_cb is None:
@@ -1442,10 +1523,11 @@ async def download_video(
     timeout = float(timeout or getattr(cfg, "URL_VIDEO_DOWNLOAD_TIMEOUT_S", 3600))
     if container not in VIDEO_CONTAINERS:
         container = "mkv"
+    extractors, match_filters = await _extractor_policy_for(url)
     argv = build_video_download_argv(
         url, dest_dir=dest_dir, max_bytes=max_bytes, max_height=max_height,
         container=container, format_ids=format_ids,
-        extractors=await _pinned_extractors_for(url))
+        extractors=extractors, match_filters=match_filters)
     logger.info("[url-dl] video download starting (host %s): -f %s, expected %s",
                 host_for_log(url),
                 video_format_selector(max_height, format_ids).split("/")[0],
@@ -1598,6 +1680,7 @@ async def _run_yt_dlp(
     stderr_task = asyncio.create_task(_drain_stderr())
     last_cb = 0.0
     last_parsed: "tuple[int, int | None] | None" = None
+    filtered_out = False
     last_emitted: "tuple[int, int | None] | None" = None
     try:
         assert proc.stdout is not None
@@ -1614,6 +1697,8 @@ async def _run_yt_dlp(
                 continue
             if not raw:
                 break
+            if _FILTERED_NEEDLE in raw:
+                filtered_out = True
             fields = _parse_progress_fields(raw.decode("utf-8", "replace").strip())
             parsed = _cumulative(fields) if fields is not None else None
             # Belt and braces over --max-filesize, which only fires when the
@@ -1670,6 +1755,10 @@ async def _run_yt_dlp(
         raise classified_error(tail)
 
     result = find_result(dest_dir)
+    if result is None and filtered_out:
+        # handoff_match_filters at work: the run re-extracted to a result
+        # the site policy does not admit (exit 0, nothing fetched).
+        raise UrlPolicyError(_HANDOFF_REFUSED)
     if result is None:
         # --max-filesize skips (exit 0, no file) on some formats instead of
         # failing — a missing output after a clean exit means the cap bit.

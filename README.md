@@ -159,7 +159,8 @@ rebuild needed, volumes work with any UID out of the box.
 First server start eagerly preloads the models in `PRELOAD_MODELS` (by default
 two: `Systran/faster-whisper-large-v2` and `Systran/faster-whisper-large-v3` —
 several GB total) into `WHISPER_DOWNLOAD_ROOT`, which defaults to the models
-dir (`/models` in containers and on bare-metal Linux, `<repo>\models` on
+dir (`/models` in containers and for a plain `python main.py` on Linux,
+`<repo>/models` under the `install-service.sh` unit, `<repo>\models` on
 Windows); set `WHISPER_DOWNLOAD_ROOT=` empty to fall back to the standard
 HuggingFace cache (`~/.cache/huggingface`). Set `WHISPER_PRELOAD_MODELS=large-v2` (or empty) to
 download/warm fewer models at startup.
@@ -565,7 +566,7 @@ client.audio.transcriptions.create(model="primeline/whisper-large-v3-turbo-germa
 > short name or an `org/name` repo id, plus whatever `DEFAULT_MODEL` is set to;
 > filesystem paths sent by a client are refused).
 
-First-use of any new model triggers a one-time download (~600 MB to ~1.5 GB depending on the model) into `WHISPER_DOWNLOAD_ROOT` (the models dir by default: `<repo>\models` on Windows, `/models` in containers and on bare-metal Linux; the standard HuggingFace cache `~/.cache/huggingface` only when it is set empty). Subsequent loads come from cache (~5–10 s into VRAM).
+First-use of any new model triggers a one-time download (~600 MB to ~1.5 GB depending on the model) into `WHISPER_DOWNLOAD_ROOT` (the models dir by default: `<repo>\models` on Windows, `<repo>/models` under the `install-service.sh` unit, `/models` in containers and for a plain `python main.py` on Linux; the standard HuggingFace cache `~/.cache/huggingface` only when it is set empty). Subsequent loads come from cache (~5–10 s into VRAM).
 
 ## Service control
 

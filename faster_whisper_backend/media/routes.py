@@ -5,6 +5,8 @@ their per-identity limiters. The fetch helpers the transcription handler
 shares live in media/video.py.
 """
 import asyncio
+import contextlib
+import errno
 import logging
 import os
 import re
@@ -305,8 +307,13 @@ async def _download_link_audio(pid: "str | None", url: str,
     the SSRF guard) under the URL download semaphore; returns the media id,
     registered with `source_url` so a run of the same link can reuse it.
     Raises UrlDownloadError / UrlCancelled / _ClientCancelled."""
-    async with media_video._url_staging_job() as job:
-        path = await media_video._guarded_audio_download(pid, url, job)
+    async with contextlib.AsyncExitStack() as job_stack:
+        # The staging job is made once the download slot is ours (see
+        # _guarded_audio_download) and outlives it until register().
+        path = await media_video._guarded_audio_download(
+            pid, url, lambda: job_stack.enter_async_context(
+                media_video._url_staging_job()),
+            max_bytes=url_media_store.max_retainable_bytes())
         size = os.path.getsize(path)
         mid = await asyncio.to_thread(url_media_store.register, path, user_id=user_id,
                                       source_url=url)
@@ -328,9 +335,13 @@ async def _segmented_pieces(pid: "str | None", url: str, source: dict,
     import urllib.error
     t0 = time.perf_counter()
     try:
-        async with media_video._url_staging_job() as job:
+        async with contextlib.AsyncExitStack() as job_stack:
             async with tx_models._get_url_download_semaphore():
                 tx_progress._check_cancelled(pid)
+                # Made once the slot is ours: a dir made while queued could be
+                # reaped as stale (media_store._reap_stale_staging) mid-wait.
+                job = await job_stack.enter_async_context(
+                    media_video._url_staging_job())
                 tx_progress._progress_set(pid, stage="downloading", progress=None)
                 files, got = await _seg.fetch_pieces(
                     source, starts, seconds, job,
@@ -559,6 +570,10 @@ _media_package_inflight = _rl.InFlight(
             "wait for it to finish",
 )
 _MEDIA_EXT_RE = re.compile(r"\A[a-z0-9]{1,5}\Z")
+# Free space an upload must leave on the staging volume (the package route's
+# margin): a near-full disk is refused before the transfer, not after it.
+_UPLOAD_DISK_MARGIN = 64 * 1024 * 1024
+_NO_DISK = "not enough disk space on the server"
 _MEDIA_FILENAME_RE = re.compile(r"[^A-Za-z0-9 ._()\-]+")
 
 
@@ -604,11 +619,21 @@ async def upload_media(request: Request,
     ext = (request.query_params.get("ext") or "").strip().lower()
     if not _MEDIA_EXT_RE.match(ext):
         raise HTTPException(status_code=422, detail="expected ?ext=<container>")
-    cap = int(getattr(cfg, "MEDIA_MAX_BYTES", 10_000_000_000))
+    # register() drops a file over RETAINED_MEDIA_MAX_BYTES on arrival:
+    # refuse it here, before the transfer, naming the cap that binds.
+    cap = url_media_store.max_retainable_bytes()
+    too_large = ("upload too large"
+                 if cap >= int(getattr(cfg, "MEDIA_MAX_BYTES", 10_000_000_000))
+                 else "upload too large for the server's media store "
+                      "(RETAINED_MEDIA_MAX_BYTES)")
     _clen = request.headers.get("content-length")
     if _clen and _clen.isdigit() and int(_clen) > cap:
-        raise HTTPException(status_code=413, detail="upload too large")
-    part = os.path.join(url_media_store.staging_dir(), f"upload-{uuid.uuid4().hex}.{ext}.part")
+        raise HTTPException(status_code=413, detail=too_large)
+    staging = url_media_store.staging_dir()
+    if _clen and _clen.isdigit() and (
+            shutil.disk_usage(staging).free < int(_clen) + _UPLOAD_DISK_MARGIN):
+        raise HTTPException(status_code=507, detail=_NO_DISK)
+    part = os.path.join(staging, f"upload-{uuid.uuid4().hex}.{ext}.part")
     received = 0
     fd = os.open(part, os.O_WRONLY | os.O_CREAT | os.O_EXCL
                  | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0), 0o600)
@@ -621,8 +646,15 @@ async def upload_media(request: Request,
                         continue
                     received += len(chunk)
                     if received > cap:
-                        raise HTTPException(status_code=413, detail="upload too large")
+                        raise HTTPException(status_code=413, detail=too_large)
                     await asyncio.to_thread(f.write, chunk)
+        except OSError as e:
+            # A full disk (or quota) mid-stream — from a write or from the
+            # close's flush: the curated answer, not a bare 500. The finally
+            # drops the .part.
+            if e.errno in (errno.ENOSPC, getattr(errno, "EDQUOT", errno.ENOSPC)):
+                raise HTTPException(status_code=507, detail=_NO_DISK) from None
+            raise
         except ClientDisconnect:
             # main._max_body_mw cuts the receive channel at the same cap (a chunked
             # body declares no length) and flags it in the scope; anything
@@ -687,10 +719,16 @@ def _require_lang_code(value, field: str) -> str:
     return value.strip()
 
 
+# A lone UTF-16 surrogate survives json parsing ("\ud800") but not UTF-8
+# encoding: in the SRT size check, or os.fsencode of ffmpeg's argv (a
+# title=/handler_name= label), it is a bare 500 instead of a 422.
+_SURROGATE_RE = re.compile(r"[\ud800-\udfff]")
+
+
 def _clean_label(value) -> str:
-    """A client track title: control characters out, at most 64 chars; ""
-    when absent or not a string."""
-    return (re.sub(r"[\x00-\x1f\x7f]", "", value).strip()[:64]
+    """A client track title: control characters and lone surrogates out, at
+    most 64 chars; "" when absent or not a string."""
+    return (re.sub(r"[\x00-\x1f\x7f\ud800-\udfff]", "", value).strip()[:64]
             if isinstance(value, str) else "")
 
 
@@ -767,7 +805,8 @@ async def package_media(media_id: str, request: Request,
             raise HTTPException(status_code=422, detail=f"subtitles[{i}] must be an object")
         lang = _require_lang_code(t.get("lang"), f"subtitles[{i}].lang")
         srt = t.get("srt")
-        if not isinstance(srt, str) or "-->" not in srt or "\x00" in srt:
+        if (not isinstance(srt, str) or "-->" not in srt or "\x00" in srt
+                or _SURROGATE_RE.search(srt)):
             raise HTTPException(status_code=422,
                                 detail=f"subtitle track {i + 1} is not SRT")
         if len(srt.encode("utf-8")) > _pk.MAX_SRT_BYTES:

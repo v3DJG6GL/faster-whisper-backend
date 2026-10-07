@@ -191,7 +191,8 @@ def test_diarize_cancel_only_still_installs_the_hook(diar_cfg, monkeypatch,
                                                      tmp_path):
     """cancel_check without progress_cb must still be polled from the hook,
     not just at the pre-flight check."""
-    answers = iter([False, True])   # pre-flight passes; the hook cancels
+    # pre-flight and the post-mutex re-check pass; the hook cancels
+    answers = iter([False, False, True])
     state = {"hooked": False}
 
     class _HookedPipe:

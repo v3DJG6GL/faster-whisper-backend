@@ -85,7 +85,9 @@ def _decoded_frames(container, stream):
     otherwise playable file (a bad mp3 frame, a flac block with a broken
     CRC) must not abort the whole decode: faster-whisper's own decode_audio
     tolerates it, so the file transcribes — while a bare container.decode()
-    raised InvalidDataError (a ValueError, i.e. "refused") here."""
+    raised InvalidDataError here. That is a PyAV FFmpegError (a decode
+    failure: the caller falls back), NOT the plain ValueError main.py treats
+    as a refused input."""
     invalid = _av().error.InvalidDataError
     for packet in container.demux(stream):
         try:

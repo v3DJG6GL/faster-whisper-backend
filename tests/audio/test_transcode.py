@@ -276,7 +276,8 @@ def test_refuse_multi_input_passes_a_clip_and_leaves_av_errors_to_the_decoder(
 def _damaged_mp3(path, *, seconds=8):
     """An 8 s 440 Hz mp3 with 400 random bytes in the middle — still
     decodable by faster-whisper, but one packet makes the decoder raise
-    InvalidDataError (a ValueError, the "refused" class main.py tests for)."""
+    InvalidDataError (an av.FFmpegError, which main.py treats as a decode
+    failure, never as a refused input)."""
     import random
 
     import av

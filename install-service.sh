@@ -190,6 +190,31 @@ EOF
 mkdir -p "$REPO_DIR/data" "$REPO_DIR/models" "$REPO_DIR/logs"
 chown -R "$RUN_USER" "$REPO_DIR/data" "$REPO_DIR/models" "$REPO_DIR/logs"
 
+# Upgrade check, warn only (never moves anything — a .env may pin the old
+# paths on purpose): an older checkout kept the SQLite stores and
+# config.local.json in the repo root, the unit above roots them in data/db
+# and data/. Restarting over that comes up with an EMPTY api_keys store —
+# issued keys stop working and the server drops into OPEN mode.
+warn_legacy() { printf '\033[33mWARNING: %s\033[0m\n' "$*" >&2; }
+env_sets() {
+  [ -f "$REPO_DIR/.env" ] \
+    && grep -Eq "^[[:space:]]*(export[[:space:]]+)?$1=" "$REPO_DIR/.env"
+}
+if ! env_sets WHISPER_DB_DIR && ! env_sets WHISPER_DATA_DIR; then
+  for legacy in "$REPO_DIR"/*.local.sqlite3 "$REPO_DIR"/data/*.local.sqlite3; do
+    [ -e "$legacy" ] || continue
+    [ -e "$REPO_DIR/data/db/$(basename "$legacy")" ] && continue
+    warn_legacy "legacy store $legacy is IGNORED by the service (it reads $REPO_DIR/data/db/)." \
+      "Move it: sudo -u $RUN_USER mkdir -p $REPO_DIR/data/db && mv '$legacy' $REPO_DIR/data/db/" \
+      "— or set WHISPER_DB_DIR=$(dirname "$legacy") in $REPO_DIR/.env — then restart."
+  done
+fi
+if ! env_sets WHISPER_CONFIG_LOCAL && ! env_sets WHISPER_DATA_DIR \
+    && [ -e "$REPO_DIR/config.local.json" ] && [ ! -e "$REPO_DIR/data/config.local.json" ]; then
+  warn_legacy "legacy $REPO_DIR/config.local.json is IGNORED by the service (it reads $REPO_DIR/data/config.local.json)." \
+    "Move it: mv '$REPO_DIR/config.local.json' $REPO_DIR/data/ — then restart."
+fi
+
 echo "Enabling + restarting ${SERVICE_NAME} ..."
 systemctl daemon-reload
 systemctl enable "${SERVICE_NAME}"

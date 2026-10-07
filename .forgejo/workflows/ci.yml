@@ -285,7 +285,9 @@ jobs:
   # entirely: no double builds, and no interim :latest carrying a
   # describe-suffixed version. PRs still build to validate the Dockerfiles
   # without pushing; a workflow_dispatch run builds and publishes sha tags
-  # (manual rebuild escape hatch). The all-ci gate still fronts every
+  # (manual rebuild escape hatch). Dispatched on a v* tag it republishes
+  # that tag's vX/sha tags, and :latest only when it is the newest v* tag
+  # (the "newest" step) — an old release never takes latest back. The all-ci gate still fronts every
   # publish: on tag runs it verifies the suites were skipped deliberately
   # (the tagged commit tested green on its main-push run).
   #
@@ -446,6 +448,27 @@ jobs:
           username: ${{ secrets.REGISTRY_USER }}
           password: ${{ secrets.REGISTRY_TOKEN }}
 
+      # A workflow_dispatch on an OLD v* tag (rebuilding a past release for a
+      # base-image fix) skips the suites and publishes like a tag push — it
+      # must not move :latest (and, through the mirror, ghcr's latest*) back
+      # to that release: only the NEWEST v* tag may carry latest. ls-remote,
+      # not just the checkout's tags, so a release minted while this run
+      # queued still counts; the local tags are the fallback.
+      - name: Is this the newest release tag?
+        id: newest
+        run: |
+          set -euo pipefail
+          refs=$(git ls-remote --tags --refs origin 'v*' 2>/dev/null) \
+            || refs=$(git show-ref --tags || true)
+          newest=$(printf '%s\n' "$refs" \
+            | sed -n 's#.*refs/tags/\(v.*\)$#\1#p' | sort -V | tail -n 1)
+          is_newest=false
+          if [ "$GITHUB_REF_TYPE" = tag ] && [ "$GITHUB_REF_NAME" = "$newest" ]; then
+            is_newest=true
+          fi
+          echo "newest v* tag: ${newest:-none}; this ref: ${GITHUB_REF_NAME} → latest: ${is_newest}"
+          echo "is_newest=${is_newest}" >> "$GITHUB_OUTPUT"
+
       - name: Image metadata
         id: meta
         uses: docker/metadata-action@v6
@@ -464,7 +487,7 @@ jobs:
             latest=false
             suffix=${{ matrix.suffix }},onlatest=true
           tags: |
-            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') && steps.newest.outputs.is_newest == 'true' }}
             type=ref,event=tag
             type=sha,format=short
 

@@ -574,6 +574,11 @@ async def _diarize_with(pipe, path: str, *, num_speakers, min_speakers,
         if cancel_check is not None and cancel_check():
             raise DiarizeCancelled()
         with _infer_mutex:
+            # The wait above can be minutes (a cancelled request's zombie
+            # diarization) — re-check before paying for pipe() on a dead
+            # request, like bgm_separation does.
+            if cancel_check is not None and cancel_check():
+                raise DiarizeCancelled()
             # cancel_check alone still needs the hook — it is polled from
             # there, not just at the pre-flight check above.
             if progress_cb is not None or cancel_check is not None:
