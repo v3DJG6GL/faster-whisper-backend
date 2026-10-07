@@ -251,23 +251,32 @@ def _build_payload(scope: StatsScope = ADMIN_SCOPE, *,
     }
 
 
-def _rescope_on_version_change(request: Request, seen_version: int
-                               ) -> tuple[StatsScope, int] | None:
+# Wall-clock ceiling between re-resolves when the config version does not
+# move: a cookie session reaching SESSION_TTL_S bumps nothing (expiry is only
+# checked at lookup), so a version-only check streamed past it forever.
+_REAUTH_INTERVAL_S = 60.0
+
+
+def _rescope_on_version_change(request: Request, seen_version: int,
+                               resolved_at: float
+                               ) -> tuple[StatsScope, int, float] | None:
     """Stream helper: when settings_version.config_version() moved since
-    `seen_version` (a permission edit bumps it), re-resolve the caller and
-    return the fresh (scope, version); None when nothing changed. Raises
-    HTTPException when the caller lost access, which ends the stream (the
-    page reconnects and gets the 401/403).
+    `seen_version` (a permission edit bumps it), or _REAUTH_INTERVAL_S passed
+    since `resolved_at` (time.monotonic(); a session expiring bumps nothing),
+    re-resolve the caller and return the fresh (scope, version, resolved_at);
+    None when nothing is due. Raises HTTPException when the caller lost
+    access, which ends the stream (the page reconnects and gets the 401/403).
 
     Re-resolving rather than ending the stream matters with several workers:
     every sibling commit — including a key's debounced last_used_ts touch —
     bumps the version, and an ended stream makes the page discard its
     two-minute sparkline history on reconnect."""
     current = settings_version.config_version()
-    if current == seen_version:
+    now = time.monotonic()
+    if current == seen_version and now - resolved_at < _REAUTH_INTERVAL_S:
         return None
     fresh = auth.resolve_user_for_page_sse(request, "stats")
-    return stats_scope_for(fresh), current
+    return stats_scope_for(fresh), current, now
 
 
 @router.get(
@@ -805,24 +814,27 @@ async def stats_stream(
     The viewer's StatsScope is resolved once here and re-resolved whenever
     the config version moves (a permission edit), so an admin narrowing a
     user's stats scope takes effect on that user's open tab within a tick —
-    without the reconnect churn of ending the stream on every bump."""
+    without the reconnect churn of ending the stream on every bump — and
+    at least every _REAUTH_INTERVAL_S, so an expired session ends it."""
     _lite = bool(lite)
     scope = stats_scope_for(user)
     seen = settings_version.config_version()
+    resolved_at = time.monotonic()
 
     async def gen():
-        nonlocal scope, seen
+        nonlocal scope, seen, resolved_at
         while True:
             payload = await asyncio.to_thread(
                 _build_payload, scope, lite=_lite)
             yield f"data: {json.dumps(payload, allow_nan=False, default=str)}\n\n"
             await asyncio.sleep(1.0)
             try:
-                fresh = await asyncio.to_thread(_rescope_on_version_change, request, seen)
+                fresh = await asyncio.to_thread(
+                    _rescope_on_version_change, request, seen, resolved_at)
             except HTTPException:
                 return
             if fresh is not None:
-                scope, seen = fresh
+                scope, seen, resolved_at = fresh
 
     return web_common.sse_response(gen())
 

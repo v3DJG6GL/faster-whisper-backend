@@ -113,6 +113,11 @@ UNKNOWN_KIND = "unknown"
 # 'translating' stage and must land in the same row.
 _STAGE_ALIASES = {"translate": "translating"}
 
+# A per-job stage row's target list is the union over its requests (a
+# session translated into several languages); cap it so a client looping
+# through codes cannot grow one row without bound.
+_JOB_TARGETS_MAX = 32
+
 # Which jobs a stage COULD have run on — the denominator of the "ran on N of
 # M" meter. Translation applies to every kind (a dictation is translated via
 # the text endpoint, a file inline); the audio stages only to batch inputs.
@@ -631,7 +636,8 @@ def record_usage(
                     (h, kid, uid, k, err, w, a, p, 1 if new_session else 0),
                 )
                 for st in stage_rows:
-                    _record_stage(conn, h, uid, sjid or jid, a, st)
+                    _record_stage(conn, h, uid, sjid or jid, a, st,
+                                  attached=sjid is not None)
                 if late_outcome is not None and (w or a):
                     _roll_late_utterance(conn, late_outcome, w, a)
                 conn.execute("COMMIT")
@@ -644,12 +650,34 @@ def record_usage(
 
 
 def _record_stage(conn: sqlite3.Connection, hour: int, uid: str,
-                  jid: str | None, audio_s: float, st: dict[str, Any]) -> None:
+                  jid: str | None, audio_s: float, st: dict[str, Any],
+                  attached: bool = False) -> None:
     """One stage of one request into the per-job detail row and the hourly
     stage/target rollups. A dictation's stage repeats per utterance, so the
-    per-job row accumulates seconds instead of failing on the key."""
+    per-job row accumulates seconds instead of failing on the key, and its
+    targets are the union over the requests (a later one never drops an
+    earlier language).
+
+    `attached`: the request is a follow-up attached to a dictation session
+    (record_usage's session_job_id). Per-utterance translation sends one
+    per utterance, so only the session's first such stage counts a run, and
+    a target counts only when it is new to the session: the meter's
+    denominator is sessions, and the per-job (with=) path reads one row per
+    session too."""
     err = st.get("error")
+    new_targets = st["targets"]
+    count_run = True
     if jid is not None:
+        prev = conn.execute(
+            "SELECT targets FROM usage_job_stages WHERE job_id = ? AND stage = ?",
+            (jid, st["stage"])).fetchone()
+        stored = ([c for c in (prev["targets"] or "").split(",") if c]
+                  if prev is not None else [])
+        fresh = [t for t in dict.fromkeys(st["targets"]) if t not in stored]
+        merged = (stored + fresh)[:_JOB_TARGETS_MAX]
+        if attached:
+            count_run = prev is None
+            new_targets = fresh
         conn.execute(
             "INSERT INTO usage_job_stages"
             " (job_id, stage, secs, model, targets, speakers, retained, error)"
@@ -662,25 +690,26 @@ def _record_stage(conn: sqlite3.Connection, hour: int, uid: str,
             "  retained = COALESCE(excluded.retained, retained),"
             "  error    = COALESCE(error, excluded.error)",
             (jid, st["stage"], st["secs"], st["model"],
-             ",".join(st["targets"]) or None, st["speakers"], st["retained"], err),
+             ",".join(merged) or None, st["speakers"], st["retained"], err),
         )
     conn.execute(
         "INSERT INTO usage_stage_hourly"
         " (hour, user_id, stage, runs, audio_s, secs, speakers, retained_sum,"
         "  kept_original, errors)"
-        " VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
         " ON CONFLICT(hour, user_id, stage) DO UPDATE SET"
-        "  runs          = runs + 1,"
+        "  runs          = runs + excluded.runs,"
         "  audio_s       = audio_s + excluded.audio_s,"
         "  secs          = secs + excluded.secs,"
         "  speakers      = speakers + excluded.speakers,"
         "  retained_sum  = retained_sum + excluded.retained_sum,"
         "  kept_original = kept_original + excluded.kept_original,"
         "  errors        = errors + excluded.errors",
-        (hour, uid, st["stage"], audio_s, st["secs"], st["speakers"] or 0,
-         st["retained"] or 0.0, st["kept_original"], 1 if err else 0),
+        (hour, uid, st["stage"], 1 if count_run else 0, audio_s, st["secs"],
+         st["speakers"] or 0, st["retained"] or 0.0, st["kept_original"],
+         1 if err else 0),
     )
-    for target in st["targets"]:
+    for target in new_targets:
         conn.execute(
             "INSERT INTO usage_target_hourly (hour, user_id, stage, target, runs)"
             " VALUES (?, ?, ?, ?, 1)"

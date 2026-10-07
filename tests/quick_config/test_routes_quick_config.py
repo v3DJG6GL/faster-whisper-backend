@@ -141,6 +141,68 @@ def test_post_patch_own_guard_failing_pattern_still_422(client, app_module):
     assert "catastrophic backtracking" in r.text
 
 
+def test_post_patch_switching_off_a_guard_failing_rule_saves(client, app_module):
+    """An enabled-only patch leaves the rule's body untouched, so it is not
+    in the guard scope: switching OFF a pre-existing rule the current guard
+    refuses used to 422 ("catastrophic backtracking") until its entries were
+    rewritten. Changing its entries still runs the guard."""
+    slug = _expose_first_regex_list_rule(app_module)
+    assert slug is not None
+    rules = copy.deepcopy(list(app_module.cfg.PIPELINE_RULES))
+    rule = next(r for r in rules if isinstance(r, dict) and r.get("name") == slug)
+    rule["entries"] = [{"pattern": "(n|d|nd)+#", "replacement": "X"}]
+    app_module.cfg.PIPELINE_RULES = rules
+    r = client.post(
+        "/quick-config/state",
+        json={"rules_patch": {slug: {"enabled": False}}},
+    )
+    assert r.status_code == 200, r.text
+    assert slug in r.json()["saved"]
+    stored = next(x for x in app_module.cfg.PIPELINE_RULES
+                  if isinstance(x, dict) and x.get("name") == slug)
+    assert stored.get("enabled") is False
+    r = client.post(
+        "/quick-config/state",
+        json={"rules_patch": {slug: {
+            "entries": [{"pattern": "(n|d|nd)+#", "replacement": "Y"}]}}},
+    )
+    assert r.status_code == 422, r.text
+    assert "catastrophic backtracking" in r.text
+
+
+def test_stream_reauth_rechecks_an_expired_session_without_a_bump(
+        client, make_user_key, monkeypatch):
+    """Session expiry bumps no config version, so a version-only re-check
+    kept streaming every new trace to a cookie session past SESSION_TTL_S.
+    An unchanged version still re-resolves once the interval passed (the
+    helper is called directly — the stream itself is never driven)."""
+    import time
+
+    from fastapi import HTTPException
+
+    from faster_whisper_backend.auth import sessions_store
+    from faster_whisper_backend.quick_config import routes as qc_routes
+    from faster_whisper_backend.settings import config
+    from faster_whisper_backend.settings import version as settings_version
+    from tests.conftest import fake_request
+
+    make_user_key("root", is_admin=True)
+    uid, _raw = make_user_key("alice", pages={"quick_config": "all"})
+    token, _csrf = sessions_store.create_session(uid, 3600.0)
+    req = fake_request(headers={"cookie": f"{config.SESSION_COOKIE_NAME}={token}"})
+    seen = settings_version.config_version()
+    fresh = time.monotonic()
+    res = qc_routes._reauth_on_version_change(req, seen, fresh - 3600)
+    assert res is not None and res[1] == seen and res[2] >= fresh
+    at = res[2]
+    monkeypatch.setattr(config, "SESSION_TTL_S", 1e-6)
+    assert settings_version.config_version() == seen
+    assert qc_routes._reauth_on_version_change(req, seen, at) is None
+    with pytest.raises(HTTPException):
+        qc_routes._reauth_on_version_change(
+            req, seen, at - qc_routes._REAUTH_INTERVAL_S - 1)
+
+
 def test_recent_open_mode(client):
     r = client.get("/quick-config/recent")
     assert r.status_code == 200
@@ -525,6 +587,25 @@ def test_quick_config_page_save_and_recent_guards(client):
     assert body.index("await api(") < body.index("_seenReqIds = new Set();")
 
 
+def test_quick_config_page_refetches_only_on_a_refused_slug(client):
+    """No JS harness: pin the strings. Only a 403 or the "unknown rule
+    slug" 400 refetches and re-renders; the dictionary-cap 400s refuse no
+    rule, so they get a plain toast instead of "rules reloaded; your other
+    edits were kept". A 422 detail list renders its first message, not
+    "[object Object]", and the report comment is bounded like the server."""
+    html = client.get("/quick-config").text
+    save = html[html.index("async function _doSave("):
+                html.index("// --- Silent reapply strip")]
+    assert "/^unknown rule slug/.test(String(msg))" in save
+    assert save.index("if (!refusedSlug) { showToast(msg, 'err'); return; }") < (
+        save.index("rules reloaded; your other edits were kept"))
+    assert "msg = _detailText(j, msg);" in html
+    # Report submit / remove no longer copy a raw detail; only _doSave's
+    # non-422 branch does (a string there).
+    assert html.count("j.detail) msg = j.detail;") == 1
+    assert '<textarea class="rep-comment" rows="3" maxlength="65536"' in html
+
+
 def test_quick_config_page_reload_failure_and_reapply_guards(client):
     """No JS harness: pin the strings. loadOlder bails while a reload is in
     flight (its gen was already bumped, so the gen guard passed and the old
@@ -557,8 +638,8 @@ def test_quick_config_page_reload_failure_and_reapply_guards(client):
 
 def test_quick_config_page_failure_paths_recover(client):
     """No JS harness: pin the strings. A failed reload after a search change
-    restores the term the rows were loaded for; a refused (403/400) save
-    refetches and drops locked rules instead of re-sending them forever; a
+    restores the term the rows were loaded for; a refused (403 / unknown-slug
+    400) save refetches and drops locked rules instead of re-sending them forever; a
     thrown save and a thrown first load surface an error; the strip poller
     stops on 'idle' and on a lost session; the stream-recovery probe stands
     down when the browser's own reconnect won."""
@@ -572,7 +653,7 @@ def test_quick_config_page_failure_paths_recover(client):
     save = html[html.index("async function _doSave("):
                 html.index("// --- Silent reapply strip")]
     refused = save[save.index("if (!r.ok) {"):save.index("const result = await r.json();")]
-    assert "r.status !== 403 && r.status !== 400" in refused
+    assert "if (!refusedSlug) { showToast(msg, 'err'); return; }" in refused
     fetch = refused.index("const j = await fetchState();")
     assert fetch < refused.index("_diffsSince(initialRules)") < refused.index(
         "applyState(j);") < refused.index("rule.locked && !_isAdmin()") < refused.index(

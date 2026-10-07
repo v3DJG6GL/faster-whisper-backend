@@ -30,6 +30,11 @@ logger = logging.getLogger("whisper-api")
 
 _pending: list[dict[str, Any]] = []
 _ticks = 0
+# Busy ticks / ticks since the last sample: the sample window's busy share.
+# Not a slice of busy_ring — that holds 900 ticks, and the sample cadence
+# may be up to an hour.
+_busy_sum = 0
+_busy_n = 0
 _last_flush = 0.0
 _last_prune = 0.0
 _last_warn = 0.0
@@ -54,9 +59,12 @@ def tick(now: float | None = None) -> dict[str, Any] | None:
     """One second: append to the busy ring; on the sample cadence take a
     machine sample and queue it. Returns the sample when one was taken.
     Blocking (NVML / psutil) on sample ticks — run via to_thread."""
-    global _ticks
+    global _ticks, _busy_sum, _busy_n
     now = time.time() if now is None else float(now)
-    metrics.busy_ring.append(slot_busy_now())
+    busy = slot_busy_now()
+    metrics.busy_ring.append(busy)
+    _busy_sum += busy
+    _busy_n += 1
     _ticks += 1
     every = sample_every()
     if _ticks % every:
@@ -69,7 +77,8 @@ def tick(now: float | None = None) -> dict[str, Any] | None:
 def sample(now: float) -> dict[str, Any]:
     """One machine sample on the STATS_SYSTEM_METRICS_SAMPLE_S grid. NVML absent →
     the gpu fields are None; slot_busy is the busy share of the last
-    sample window."""
+    sample window (the ticks since the previous sample)."""
+    global _busy_sum, _busy_n
     every = sample_every()
     gpu = None
     try:
@@ -81,9 +90,8 @@ def sample(now: float) -> dict[str, Any]:
         host = system_stats._build_host() or {}
     except Exception:  # noqa: BLE001
         host = {}
-    ring = list(metrics.busy_ring)
-    window = ring[-every:]
-    busy = (sum(window) / len(window)) if window else 0.0
+    busy = (_busy_sum / _busy_n) if _busy_n else 0.0
+    _busy_sum = _busy_n = 0
     gpu = gpu or {}
     return {
         "ts": int(now) // every * every,
@@ -164,8 +172,8 @@ async def loop() -> None:
 
 
 def _reset_for_tests() -> None:
-    global _ticks, _last_flush, _last_prune, _last_warn
+    global _ticks, _last_flush, _last_prune, _last_warn, _busy_sum, _busy_n
     _pending.clear()
-    _ticks = 0
+    _ticks = _busy_sum = _busy_n = 0
     _last_flush = _last_prune = _last_warn = 0.0
     metrics.busy_ring.clear()

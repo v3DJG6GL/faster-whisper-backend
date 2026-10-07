@@ -398,8 +398,12 @@ def test_take_wait_without_a_seed_is_zero_and_take_resets():
     assert metrics.take_wait() == 0.0
 
     async def scenario():
-        gate = metrics.GpuGate(2)
+        # A contended acquire, so the first take has a wait to report: an
+        # uncontended one rounds to 0.0 and the reset could not fail.
+        gate = metrics.GpuGate(1)
+        await gate.acquire()
         metrics.seed_wait()
+        asyncio.get_running_loop().call_later(0.1, gate.release)
         async with gate:
             pass
         first = metrics.take_wait()
@@ -407,7 +411,8 @@ def test_take_wait_without_a_seed_is_zero_and_take_resets():
         return first, second
 
     first, second = asyncio.run(scenario())
-    assert isinstance(first, float) and first >= 0.0 and second == 0.0
+    # 100 ms hold: Windows sleeps in ~16 ms ticks (see the gate test above).
+    assert isinstance(first, float) and first >= 0.05 and second == 0.0
 
 
 def test_metrics_snapshot_carries_the_gate(tx_store):

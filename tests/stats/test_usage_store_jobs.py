@@ -260,6 +260,37 @@ def test_translation_attaches_to_its_dictation_session(usage_store_db):
         "dictation"]["targets"][0]["runs"] == 1
 
 
+def test_per_utterance_translations_count_one_run_per_session(usage_store_db):
+    """Per-utterance translation sends one POST per utterance, all naming
+    the same session. Each bumped the hourly translating runs, so the
+    rollup meter read "3 of 1" (300 %) while the with= path read 1 of 1,
+    and each attach overwrote the job row's targets: en, en, fr listed
+    only fr. The session counts one run, each language once."""
+    us = usage_store_db
+    sess = "s" * 32
+    tr = lambda code: [{"name": "translate", "secs": 1.0, "targets": [code]}]
+    for i, code in enumerate(("en", "en", "fr")):
+        us.record_usage(key_id="k", user_id="u", audio_s=5.0, words=20,
+                        status="ok", kind="dictation", job_id=sess)
+        us.record_usage(key_id="k", user_id="u", audio_s=0.0, words=0,
+                        status="ok", kind="text", job_id=f"{i}" * 32,
+                        stages=tr(code), session_job_id=sess)
+    doc = us.document("u", days=1, tz=_UTC, tz_name="UTC")
+    meter = next(s for s in doc["stages"] if s["stage"] == "translating")
+    assert (meter["runs"], meter["of_runs"]) == (1, 1)
+    assert meter["targets"] == [{"code": "en", "runs": 1},
+                                {"code": "fr", "runs": 1}]
+    assert doc["dictation"]["targets"] == [
+        {"code": "en", "runs": 1, "kept_original": 0},
+        {"code": "fr", "runs": 1, "kept_original": 0}]
+    narrowed = us.document("u", days=1, tz=_UTC, tz_name="UTC",
+                           with_stages=("translating",))
+    wmeter = next(s for s in narrowed["stages"] if s["stage"] == "translating")
+    assert (wmeter["runs"], wmeter["of_runs"]) == (1, 1)
+    assert wmeter["targets"] == meter["targets"]
+    assert narrowed["dictation"]["targets"] == doc["dictation"]["targets"]
+
+
 def test_with_document_dictation_targets_honour_the_kind_filter(usage_store_db):
     """The with= document claims every figure is kind-scoped, but
     dictation.targets hard-coded kind='dictation' and ignored the filter:
@@ -272,7 +303,7 @@ def test_with_document_dictation_targets_honour_the_kind_filter(usage_store_db):
                     kind="file", job_id="f" * 32, stages=tr("fr"))
     files = us.document("u", days=1, tz=_UTC, tz_name="UTC",
                         with_stages=("translating",), kinds=("file",))
-    assert files["range"].get("kind_scoped") is not False
+    assert "kind_scoped" not in files["range"]
     assert files["dictation"]["sessions"] == 0
     assert files["total"]["all"]["sessions"] == 1
     assert files["dictation"]["targets"] == []

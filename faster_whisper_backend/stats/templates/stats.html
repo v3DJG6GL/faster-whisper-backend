@@ -982,7 +982,19 @@ const hist = {
   cpu: [], ram_pct: [], lat_p50: [],
 };
 
+// The server's uptime at the last sample: when it goes backwards the server
+// restarted between two samples, and the sparks would join the samples from
+// before the outage to the fresh ones. The recovery probe used to clear the
+// ring on every reconnect, but the browser's own EventSource retry usually
+// beats it through a restart (onopen then cancels the probe).
+let _lastUptime = null;
 function pushHistory(snap) {
+  const up = typeof snap.uptime_sec === 'number' ? snap.uptime_sec : null;
+  if (up != null && _lastUptime != null && up < _lastUptime) {
+    histX.length = 0;
+    for (const k in hist) hist[k].length = 0;
+  }
+  if (up != null) _lastUptime = up;
   const now = Math.floor(snap.ts || (Date.now() / 1000));
   histX.push(now);
   hist.gpu_util.push(snap.gpu ? snap.gpu.util_pct ?? null : null);
@@ -1218,7 +1230,9 @@ function rangeLabel(secs) {
 }
 let _rangeSeq = 0;
 function loadRangeSparks() {
-  if (liveMode === 'live') return;
+  // A hidden tab skips the minute refresh (the visibility handler closes the
+  // SSE for the same reason) and reloads once on show.
+  if (liveMode === 'live' || document.visibilityState === 'hidden') return;
   const seq = ++_rangeSeq;
   const to = Math.floor(Date.now() / 1000), from = to - Number(liveMode);
   rangeTo = to; refreshRingChips();
@@ -2078,7 +2092,14 @@ function renderJobs(snap) {
     const left = (lastJobsSnap.recent_transcriptions || [])
       .filter(r => !now.has(rjId(r)) && !held.has(rjId(r)));
     if (left.length) rjHeld = left.concat(rjHeld).sort((a, b) => (b.ts || 0) - (a.ts || 0));
-    if (rjHeld.length > RJ_HELD_MAX) { rjResetPages(); rjDropped = true; }
+    // No row in common: a whole snapshot window of jobs came and went
+    // between the two (a hidden tab, a stream reconnect), so rows newer
+    // than the cursor are in neither list. Drop the anchor and say so
+    // rather than show a contiguous-looking table with a hole in it.
+    const prevRows = lastJobsSnap.recent_transcriptions || [];
+    const gap = prevRows.length && now.size && !prevRows.some(r => now.has(rjId(r)));
+    if (gap) { rjResetPages(); rjDropped = 'gap'; }
+    else if (rjHeld.length > RJ_HELD_MAX) { rjResetPages(); rjDropped = 'cap'; }
   }
   lastJobsSnap = snap;
   const flt = rjFilter();
@@ -2186,6 +2207,7 @@ function renderJobs(snap) {
   const note = $('rj-foot-note');
   if (note) note.textContent = rjExtra.length
     ? `${rjExtra.length} older job${rjExtra.length === 1 ? '' : 's'} loaded` + (rjExhausted ? ' · that is all' : '')
+    : rjDropped === 'gap' ? 'older pages dropped (gap in the live feed) · load older again'
     : rjDropped ? `older pages dropped after ${RJ_HELD_MAX} new jobs · load older again`
     : (rt.length ? 'newest jobs from the live snapshot' : '');
 }
@@ -2229,6 +2251,9 @@ function renderJobs(snap) {
 // --- SSE consumer ----------------------------------------------------------
 let es = null;
 let recoveryTimer = null;
+// Recovery back-off, kept across failures: onerror re-declaring it made
+// every new failure restart at 1.5 s. Only a (re)opened stream resets it.
+let recoveryDelay = 1500;
 const statusEl = $('status');
 wireRingControls();
 
@@ -2257,18 +2282,29 @@ function openStream() {
     // (re)connect ends recovery polling, or the probe would wipe the ring
     // history (and a freeze) and reopen a healthy stream.
     if (recoveryTimer) { clearTimeout(recoveryTimer); recoveryTimer = null; }
+    recoveryDelay = 1500;
   };
   es.onerror = () => {
     setStatus('reconnecting…', 'paused');
     // Service may have restarted. Mirror /settings: poll a cheap idempotent
     // endpoint until it 200s, then force-reopen the SSE. Back off on repeated
     // failures (1.5s → ×1.7 → cap 30s) so a genuine outage doesn't hammer.
+    // The probe carries the stream's own gate (the stats page permission and
+    // host gate): /v1/models 200s for any valid user, so a viewer whose stats
+    // access was removed reopened a 403ing stream forever.
     if (recoveryTimer) return;
-    let delay = 1500;
     const probe = async () => {
       try {
-        const r = await fetch('/v1/models', { cache: 'no-store' });
+        const r = await fetch('/stats/snapshot?lite=1', { cache: 'no-store' });
         if (!recoveryTimer) return;   // onopen / a tab hide cancelled it meanwhile
+        if (r.status === 401 || r.status === 403) {
+          clearTimeout(recoveryTimer);
+          recoveryTimer = null;
+          if (es) { try { es.close(); } catch {} es = null; }
+          setStatus(r.status === 401 ? 'signed out' : 'no access', 'paused');
+          if (r.status === 401 && window._showLoginGate) window._showLoginGate();
+          return;
+        }
         if (r.ok) {
           clearTimeout(recoveryTimer);
           recoveryTimer = null;
@@ -2280,10 +2316,10 @@ function openStream() {
         }
       } catch {}
       if (!recoveryTimer) return;
-      delay = Math.min(delay * 1.7, 30000);
-      recoveryTimer = setTimeout(probe, delay);
+      recoveryDelay = Math.min(recoveryDelay * 1.7, 30000);
+      recoveryTimer = setTimeout(probe, recoveryDelay);
     };
-    recoveryTimer = setTimeout(probe, delay);
+    recoveryTimer = setTimeout(probe, recoveryDelay);
   };
 }
 
@@ -2311,6 +2347,7 @@ document.addEventListener('visibilitychange', () => {
     }
     _hiddenAt = null;
     openStream();
+    if (liveMode !== 'live') loadRangeSparks();
   }
 });
 

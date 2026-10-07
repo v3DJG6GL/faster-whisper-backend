@@ -80,6 +80,14 @@ def test_migration_adds_columns_to_old_db(tmp_path):
         assert row["source"] == "file"
         assert row["wait_s"] is None and row["error_class"] is None
         assert row["error_stage"] is None
+        # The measurement columns were renamed in place with their data:
+        # list_recent's slow_rtf SQL reads the new names.
+        assert {"audio_s", "processing_s", "words"} <= cols
+        assert not ({"audio_dur_s", "proc_dur_s", "words_count"} & cols)
+        assert (row["audio_s"], row["processing_s"], row["words"]) == (2.0, 1.0, 5)
+        assert row["rtf"] == 2.0
+        assert [r["request_id"] for r in mod.list_recent(limit=10, slow_rtf=0.4)] == ["old1"]
+        assert mod.list_recent(limit=10, slow_rtf=0.6) == []
     finally:
         mod._require_conn().close()
         mod._conn = None

@@ -62,6 +62,51 @@ def test_every_nth_tick_takes_a_sample_on_the_grid(sampler, monkeypatch):
     assert len(sampler._pending) == 3
 
 
+def test_slot_busy_covers_a_sample_window_longer_than_the_ring(sampler, monkeypatch):
+    """STATS_SYSTEM_METRICS_SAMPLE_S may be up to 3600 but busy_ring holds
+    900 ticks: slicing the ring gave the last 15 minutes' share, not the
+    sample window's (0.333 here instead of 0.5)."""
+    monkeypatch.setattr(sampler.cfg, "STATS_SYSTEM_METRICS_SAMPLE_S", 1200, raising=False)
+    gate = metrics.GpuGate(2)
+    monkeypatch.setattr(metrics, "gpu_gate", gate)
+    gate.held = 1
+    taken = [sampler.tick(6_000_000 + i) for i in range(600)]
+    gate.held = 0
+    taken += [sampler.tick(6_000_000 + i) for i in range(600, 1200)]
+    samples = [s for s in taken if s]
+    assert len(samples) == 1 and samples[0]["slot_busy"] == 0.5
+    # The next window starts afresh.
+    taken = [sampler.tick(6_001_200 + i) for i in range(1200)]
+    assert [s["slot_busy"] for s in taken if s] == [0.0]
+
+
+def test_flush_failure_keeps_the_newest_rows_up_to_the_cap(sampler, sm_store, monkeypatch):
+    """A store failure keeps the queued rows for the next flush, capped at
+    600 // sample_every() (the newest), warns, and a later flush writes them."""
+    from faster_whisper_backend.stats import system_metrics_store
+    monkeypatch.setattr(sampler.cfg, "STATS_SYSTEM_METRICS_SAMPLE_S", 60, raising=False)
+    warned = []
+    monkeypatch.setattr(sampler, "_warn", lambda *a: warned.append(a))
+    real_record = system_metrics_store.record
+
+    def _boom(rows):
+        raise RuntimeError("disk full")
+    monkeypatch.setattr(system_metrics_store, "record", _boom)
+    import time
+    base = (int(time.time()) - 3600) // 60 * 60
+    for i in range(15 * 60):
+        sampler.tick(base + i)
+    assert len(sampler._pending) == 15
+    assert sampler.flush() == 0
+    assert warned
+    cap = 600 // 60
+    assert len(sampler._pending) == cap
+    assert [r["ts"] for r in sampler._pending] == [base + 60 * k for k in range(5, 15)]
+    monkeypatch.setattr(system_metrics_store, "record", real_record)
+    assert sampler.flush() == cap
+    assert sampler._pending == []
+
+
 def test_flush_writes_once_and_prune_drops_old(sampler, sm_store, monkeypatch):
     monkeypatch.setattr(sampler.cfg, "STATS_SYSTEM_METRICS_SAMPLE_S", 7, raising=False)
     monkeypatch.setattr(sampler.cfg, "STATS_SYSTEM_METRICS_RETENTION_DAYS", 14, raising=False)

@@ -122,19 +122,29 @@ def require_user_or_admin_sse(request: Request) -> dict[str, Any]:
     return auth.resolve_user_for_page_sse(request, "quick_config")
 
 
-def _reauth_on_version_change(request: Request, seen_version: int
-                              ) -> tuple[dict[str, Any], int] | None:
+# Wall-clock ceiling between re-resolves when the config version does not
+# move: a cookie session reaching SESSION_TTL_S bumps nothing (expiry is only
+# checked at lookup), so a version-only check streamed past it forever.
+_REAUTH_INTERVAL_S = 60.0
+
+
+def _reauth_on_version_change(request: Request, seen_version: int,
+                              resolved_at: float
+                              ) -> tuple[dict[str, Any], int, float] | None:
     """stream_recent helper (the /stats/stream _rescope_on_version_change
     pattern): when settings_version.config_version() moved since `seen_version`
-    (revoke / permission edit / logout bump it), re-resolve the caller and
-    return the fresh (record, version); None when nothing changed. Raises
-    HTTPException when the caller lost access, which ends the stream —
-    otherwise a revoked user's open tab kept receiving every new trace in
-    its old scope until the browser closed the EventSource."""
+    (revoke / permission edit / logout bump it), or _REAUTH_INTERVAL_S passed
+    since `resolved_at` (time.monotonic(); a session expiring bumps nothing),
+    re-resolve the caller and return the fresh (record, version, resolved_at);
+    None when nothing is due. Raises HTTPException when the caller lost
+    access, which ends the stream — otherwise a revoked user's open tab kept
+    receiving every new trace in its old scope until the browser closed the
+    EventSource."""
     current = settings_version.config_version()
-    if current == seen_version:
+    now = time.monotonic()
+    if current == seen_version and now - resolved_at < _REAUTH_INTERVAL_S:
         return None
-    return require_user_or_admin_sse(request), current
+    return require_user_or_admin_sse(request), current, now
 
 
 class QuickPatchPayload(BaseModel):
@@ -433,6 +443,9 @@ async def _apply_rules_patch_locked(
         )
 
     saved: list[str] = []
+    # The slugs whose BODY this patch changes (anything but `enabled`): the
+    # save-time guard is scoped to these, see the save call below.
+    guard_slugs: list[str] = []
     conflicts: list[dict[str, Any]] = []
     for slug, patch in rules_patch.items():
         if not isinstance(patch, dict):
@@ -532,6 +545,8 @@ async def _apply_rules_patch_locked(
             target["map_meta"] = {k: meta[k] for k in new_map if k in meta}
         target.update(patch)
         saved.append(slug)
+        if any(field != "enabled" for field in patch):
+            guard_slugs.append(slug)
 
     # If every patch conflicted, skip the save+rebuild — nothing to write.
     if not saved:
@@ -550,7 +565,11 @@ async def _apply_rules_patch_locked(
     # tightening, loading fine ever since — 422'd every save of any rule, and a
     # large rule set could burn the shared guard budget on its own. An error
     # may still name an untouched rule (non-guard validation covers the whole
-    # merged list) — the client surfaces this gracefully.
+    # merged list) — the client surfaces this gracefully. An enabled-only
+    # patch leaves the rule's body as it was, so it is not in guard_slugs:
+    # the guard (and the map-key collision check) would otherwise refuse
+    # switching OFF exactly such a pre-existing rule until its body was
+    # rewritten.
     # Off the event loop. The guard runs the candidate patterns in a child
     # process and waits up to _GUARD_TIMEOUT for it, so calling save_overrides
     # inline freezes the whole worker — every HTTP request, SSE stream and
@@ -565,7 +584,7 @@ async def _apply_rules_patch_locked(
             _GUARDED_SAVE_EXECUTOR,
             functools.partial(
                 config_store.save_overrides, {"PIPELINE_RULES": current_rules},
-                guard_slugs=frozenset(saved),
+                guard_slugs=frozenset(guard_slugs),
             ),
         )
     except ValidationError as e:
@@ -1132,6 +1151,7 @@ async def stream_recent(
     caller_uid = user.get("user_id") or ""
     sees_all = perms.scope("quick_config") == "all"
     seen = settings_version.config_version()
+    resolved_at = time.monotonic()
 
     def _visible(entry: dict[str, Any] | None) -> bool:
         if sees_all:
@@ -1142,17 +1162,18 @@ async def stream_recent(
         return bool(entry) and (entry.get("user_id") or "") == caller_uid
 
     async def _rescope() -> bool:
-        """Re-resolve the caller when the config version moved; False when
-        they lost access (the stream ends)."""
-        nonlocal caller_uid, sees_all, seen
+        """Re-resolve the caller when the config version moved or the
+        re-check interval passed; False when they lost access (the stream
+        ends)."""
+        nonlocal caller_uid, sees_all, seen, resolved_at
         try:
             # Off the loop: config_version() + the re-resolve hit SQLite.
             fresh = await asyncio.to_thread(
-                _reauth_on_version_change, request, seen)
+                _reauth_on_version_change, request, seen, resolved_at)
         except HTTPException:
             return False
         if fresh is not None:
-            rec, seen = fresh
+            rec, seen, resolved_at = fresh
             caller_uid = rec.get("user_id") or ""
             sees_all = rec["permissions"].scope("quick_config") == "all"
         return True

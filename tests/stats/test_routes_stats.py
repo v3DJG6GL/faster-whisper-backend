@@ -536,25 +536,65 @@ def test_stream_rechecks_version(client, make_user_key, app_module):
     from tests.conftest import fake_request as _fake_request
     from tests.conftest import bearer
 
+    import time
+
     src = inspect.getsource(stats_routes.stats_stream)
-    assert "await asyncio.to_thread(_rescope_on_version_change, " in src   # SQLite lookups off the loop
+    assert "_rescope_on_version_change, request, seen, resolved_at)" in src
+    assert "await asyncio.to_thread(" in src   # SQLite lookups off the loop
     assert "settings_version.config_version()" in src
 
     make_user_key("root", is_admin=True)
     uid, raw = make_user_key("alice", pages={"stats": "all"})
     req = _fake_request(headers=bearer(raw))
     seen = settings_version.config_version()
-    assert stats_routes._rescope_on_version_change(req, seen) is None
+    at = time.monotonic()
+    assert stats_routes._rescope_on_version_change(req, seen, at) is None
     from faster_whisper_backend.auth import api_keys_store
     api_keys_store.set_user_permissions(uid, {"pages": {"stats": "own"}})
-    res = stats_routes._rescope_on_version_change(req, seen)
+    res = stats_routes._rescope_on_version_change(req, seen, at)
     assert res is not None
-    scope, seen2 = res
+    scope, seen2, at2 = res
     assert scope.scope == "own" and scope.user_id == uid
-    assert seen2 != seen
+    assert seen2 != seen and at2 >= at
     api_keys_store.set_user_permissions(uid, {"pages": {"stats": "none"}})
     with pytest.raises(HTTPException):
-        stats_routes._rescope_on_version_change(req, seen2)
+        stats_routes._rescope_on_version_change(req, seen2, at2)
+
+
+def test_stream_rechecks_an_expired_session_without_a_bump(
+        client, make_user_key, monkeypatch):
+    """Session expiry bumps no config version, so a version-only re-check
+    kept streaming the 1 Hz payload to a cookie session past SESSION_TTL_S.
+    An unchanged version still re-resolves once the interval passed (the
+    helper is called directly — the stream itself is never driven)."""
+    import time
+
+    from fastapi import HTTPException
+
+    from faster_whisper_backend.auth import sessions_store
+    from faster_whisper_backend.settings import config
+    from faster_whisper_backend.settings import version as settings_version
+    from faster_whisper_backend.stats import routes as stats_routes
+    from tests.conftest import fake_request
+
+    make_user_key("root", is_admin=True)
+    uid, _raw = make_user_key("alice", pages={"stats": "all"})
+    token, _csrf = sessions_store.create_session(uid, 3600.0)
+    req = fake_request(headers={"cookie": f"{config.SESSION_COOKIE_NAME}={token}"})
+    seen = settings_version.config_version()
+    fresh = time.monotonic()
+    # Live session, stale timestamp: re-resolves, passes, timestamp moves.
+    res = stats_routes._rescope_on_version_change(req, seen, fresh - 3600)
+    assert res is not None and res[1] == seen and res[2] >= fresh
+    at = res[2]
+    monkeypatch.setattr(config, "SESSION_TTL_S", 1e-6)
+    assert settings_version.config_version() == seen
+    # Within the interval the check stays cheap (no re-resolve) ...
+    assert stats_routes._rescope_on_version_change(req, seen, at) is None
+    # ... and past it the expired session ends the stream.
+    with pytest.raises(HTTPException):
+        stats_routes._rescope_on_version_change(
+            req, seen, at - stats_routes._REAUTH_INTERVAL_S - 1)
 
 
 # ---------------------------------------------------------------------------
@@ -1533,7 +1573,7 @@ def test_stats_held_jobs_are_capped(client):
     assert "const RJ_HELD_MAX = 500;" in html
     jobs = html[html.index("function renderJobs(snap) {"):]
     cap = jobs.index(
-        "if (rjHeld.length > RJ_HELD_MAX) { rjResetPages(); rjDropped = true; }")
+        "else if (rjHeld.length > RJ_HELD_MAX) { rjResetPages(); rjDropped = 'cap'; }")
     assert cap < jobs.index("lastJobsSnap = snap;")
     assert "older pages dropped after ${RJ_HELD_MAX} new jobs" in jobs
 
@@ -1584,3 +1624,57 @@ def test_stats_window_caption_is_its_own_header_band(client):
     # not inside the filters row
     filters = t.index('id="sb-filters"')
     assert t.index("</div>", filters) < band
+
+
+def test_stats_js_turnaround_overlays_and_rhythm_compare_total(client):
+    """No JS harness: pin the strings. Everything painted over the
+    turnaround histogram's hit target lets the pointer through (the hatch
+    rect and the count text carry no data-tip, so hovering them hid the
+    tooltip); the rhythm legend's compare total counts every compare record,
+    also one the window's days grid has no column for (Oct 31 vs a Nov
+    window)."""
+    with pathlib.Path(REPO_ROOT, "static", "stats.js").open(encoding="utf-8") as f:
+        js = f.read()
+    ta = js[js.index("function renderTurnaround() {"):]
+    ta = ta[:ta.index("el.innerHTML = '<svg")]
+    for s in ("s += '<rect' + NP + ' x=\"' + x.toFixed(1)",
+              "s += '<text' + NP + ' x=\"'",
+              "s += '<text' + NP + ' class=\"' + (inside",
+              "s += '<line' + NP + ' class=\"q\"",
+              "+ '<text' + NP + ' class=\"q\""):
+        assert s in ta, s
+    assert "const NP = ' pointer-events=\"none\"';" in ta
+    fill = js[js.index("const fill = (target, doc, shiftDay) => {"):]
+    fill = fill[:fill.index("const cmpDelta = ")]
+    days = fill[fill.index("L.slotCell(h);"):]
+    assert days.index("target.tot += slotMeasure(h, M);") < days.index("if (i < 0) return;")
+    assert "cmpSum = cmpFill.tot;" in fill
+    assert "cmpCells.reduce(" not in fill
+
+
+def test_stats_page_stream_recovery_jobs_gap_and_hidden_range_refresh(client):
+    """No JS harness: pin the strings. The recovery probe hits an endpoint
+    behind the stream's own gate and stops on 401 / 403 (a /v1/models 200
+    reopened a 403ing stream every 1.5 s forever), with a back-off that
+    survives repeated failures; a server restart (uptime going backwards)
+    clears the rings whichever reconnect wins; an anchored jobs table with
+    no row in common with the previous snapshot drops its pages instead of
+    hiding the gap; a hidden tab skips the range-mode minute refresh."""
+    html = client.get("/stats").text
+    sse = html[html.index("function openStream() {"):html.index("const HIDE_CLEAR_MS")]
+    assert "fetch('/stats/snapshot?lite=1'" in sse
+    assert "fetch('/v1/models'" not in sse
+    assert "if (r.status === 401 || r.status === 403) {" in sse
+    assert "let delay" not in sse
+    assert "recoveryDelay = 1500;" in sse.split("es.onerror")[0]
+    push = html[html.index("function pushHistory(snap) {"):]
+    assert push.index("up < _lastUptime") < push.index("histX.push(now);")
+    jobs = html[html.index("function renderJobs(snap) {"):]
+    assert jobs.index("!prevRows.some(r => now.has(rjId(r)))") < jobs.index(
+        "lastJobsSnap = snap;")
+    assert "if (gap) { rjResetPages(); rjDropped = 'gap'; }" in jobs
+    assert "older pages dropped (gap in the live feed)" in html
+    rng = html[html.index("function loadRangeSparks() {"):]
+    assert rng.index("document.visibilityState === 'hidden'") < rng.index("fetch(")
+    hidden = html[html.index("document.addEventListener('visibilitychange'"):]
+    assert "if (liveMode !== 'live') loadRangeSparks();" in hidden

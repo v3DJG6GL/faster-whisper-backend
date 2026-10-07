@@ -516,6 +516,15 @@ function showToast(msg, kind) {
   setTimeout(() => { el.style.display = 'none'; }, 3500);
 }
 
+// An error body's `detail` as toast text. A FastAPI 422 carries a list of
+// error objects there, which textContent rendered as "[object Object]".
+function _detailText(j, fallback) {
+  const d = j && j.detail;
+  if (typeof d === 'string' && d) return d;
+  if (Array.isArray(d) && d[0] && d[0].msg) return String(d[0].msg);
+  return fallback;
+}
+
 function setStatus(s) {
   document.getElementById('status').textContent = s;
 }
@@ -1364,7 +1373,7 @@ function _buildReportForm(entry) {
     + '<label class="form-label">Comment'
     + ' <span class="help">(optional)</span>'
     + '</label>'
-    + '<textarea class="rep-comment" rows="3"'
+    + '<textarea class="rep-comment" rows="3" maxlength="65536"'
     + ' placeholder="What went wrong? Anything else the admin should know?"></textarea>'
     + '<div class="rep-actions">'
     + '  <button type="button" class="rep-cancel">Cancel</button>'
@@ -1658,7 +1667,7 @@ async function submitReport(form) {
     });
     if (!r.ok) {
       let msg = 'Report failed (' + r.status + ')';
-      try { const j = await r.json(); if (j && j.detail) msg = j.detail; } catch (_) {}
+      try { const j = await r.json(); msg = _detailText(j, msg); } catch (_) {}
       showToast(msg, 'err');
       return;
     }
@@ -1712,7 +1721,7 @@ async function removeReport(form) {
     );
     if (!r.ok) {
       let msg = 'Remove failed (' + r.status + ')';
-      try { const j = await r.json(); if (j && j.detail) msg = j.detail; } catch (_) {}
+      try { const j = await r.json(); msg = _detailText(j, msg); } catch (_) {}
       showToast(msg, 'err');
       return;
     }
@@ -2275,7 +2284,12 @@ async function _doSave(patch, fingerprints) {
     let msg = 'save failed (' + r.status + ')';
     try { const j = await r.json(); if (j && j.detail) msg = j.detail; } catch (_) {}
     setStatus('save failed');
-    if (r.status !== 403 && r.status !== 400) { showToast(msg, 'err'); return; }
+    // Only a refused slug takes the refetch path: the dictionary-cap 400s
+    // refuse no rule, so a refetch would put the same oversized edit back
+    // and the next Save would bounce identically — a plain toast says it.
+    const refusedSlug = r.status === 403
+      || (r.status === 400 && /^unknown rule slug/.test(String(msg)));
+    if (!refusedSlug) { showToast(msg, 'err'); return; }
     // One refused slug fails the whole POST (a rule an admin locked, or
     // removed / un-exposed, since this page loaded), and dirty would keep
     // re-sending it, so every later Save got the same refusal. Refetch, keep

@@ -817,6 +817,10 @@ function renderTurnaround() {
   // Bars stack per job kind in the kind chips' colours (file / url /
   // text / dictation); a kind-filtered window is a single colour.
   const kinds = Object.keys(t.by_kind || {}).sort((a, b) => KINDS.indexOf(a) - KINDS.indexOf(b));
+  // Everything painted over the hit target (hatch, labels, counts, the
+  // p50 / p95 markers) lets the pointer through: it carries no data-tip,
+  // so hovering it hid the tooltip over the very share it explains.
+  const NP = ' pointer-events="none"';
   t.counts.forEach((c, i) => {
     const h = c / mx * ih, y = pt + ih - h, x = pl + i * bw + 1;
     const share = t.wait_share[i] || 0;
@@ -836,12 +840,12 @@ function renderTurnaround() {
     }
     // an invisible full-height hit target so thin bars and empty buckets still answer hover
     s += '<rect' + attrs + ' x="' + (pl + i * bw).toFixed(1) + '" y="' + pt + '" width="' + bw.toFixed(1) + '" height="' + ih + '" fill="transparent"/>';
-    if (share > 0) s += '<rect x="' + x.toFixed(1) + '" y="' + (pt + ih - h * share).toFixed(1) + '" width="' + (bw - 2).toFixed(1) + '" height="' + (h * share).toFixed(1) + '" fill="url(#ta-hatch)" rx="2"/>';
-    if (i % labelEvery === 0) s += '<text x="' + (x + bw / 2 - 1).toFixed(1) + '" y="' + (H - 4) + '" text-anchor="middle">' + esc(fmtEdge(t.edges_s[i])) + '</text>';
+    if (share > 0) s += '<rect' + NP + ' x="' + x.toFixed(1) + '" y="' + (pt + ih - h * share).toFixed(1) + '" width="' + (bw - 2).toFixed(1) + '" height="' + (h * share).toFixed(1) + '" fill="url(#ta-hatch)" rx="2"/>';
+    if (i % labelEvery === 0) s += '<text' + NP + ' x="' + (x + bw / 2 - 1).toFixed(1) + '" y="' + (H - 4) + '" text-anchor="middle">' + esc(fmtEdge(t.edges_s[i])) + '</text>';
     // job count: inside the bar when it is tall enough, else just above it
     if (c > 0 && bw >= 16) {
       const inside = h >= 16;
-      s += '<text class="' + (inside ? 'cnt in' : 'cnt') + '" x="' + (x + bw / 2 - 1).toFixed(1) + '" y="' + (inside ? y + 11 : y - 3).toFixed(1) + '" text-anchor="middle">' + c + '</text>';
+      s += '<text' + NP + ' class="' + (inside ? 'cnt in' : 'cnt') + '" x="' + (x + bw / 2 - 1).toFixed(1) + '" y="' + (inside ? y + 11 : y - 3).toFixed(1) + '" text-anchor="middle">' + c + '</text>';
     }
   });
   const xOf = (v) => {
@@ -860,8 +864,8 @@ function renderTurnaround() {
     const tw = text.length * 6.6;
     const lx = Math.min(W - tw, Math.max(x + 3, lastLabelEnd + 6));
     lastLabelEnd = lx + tw;
-    s += '<line class="q" x1="' + x.toFixed(1) + '" x2="' + x.toFixed(1) + '" y1="' + (pt - 2) + '" y2="' + (pt + ih) + '"/>'
-      + '<text class="q" x="' + lx.toFixed(1) + '" y="' + (pt - 4) + '">' + esc(text) + '</text>';
+    s += '<line' + NP + ' class="q" x1="' + x.toFixed(1) + '" x2="' + x.toFixed(1) + '" y1="' + (pt - 2) + '" y2="' + (pt + ih) + '"/>'
+      + '<text' + NP + ' class="q" x="' + lx.toFixed(1) + '" y="' + (pt - 4) + '">' + esc(text) + '</text>';
   });
   el.innerHTML = '<svg width="' + W + '" height="' + H + '" viewBox="0 0 ' + W + ' ' + H + '">' + s + '</svg>';
   wireTips(el, '[data-tip]', (target) => {
@@ -1694,10 +1698,15 @@ function renderHours() {
   // Fill from the source the rhythm reads; `shiftDay` maps a compare-window
   // day onto this grid too (prev: the window offset; yoy: the same calendar
   // day a year on, since a constant 365/366 slips a day across a leap day).
+  // `target.tot` sums every record, also one with no cell on this grid: the
+  // days grid of a one-month window has that month's columns, so a compare
+  // window reaching into a longer month (Oct 31 for a Nov window) dropped
+  // whole days from the legend's "vs prev" total.
   const fill = (target, doc, shiftDay) => {
     if (mode === 'hours' || mode === 'days') {
       (mode === 'hours' ? doc.hours : doc.dom_hours || []).forEach(h => {
         const i = mode === 'hours' ? h.dow * 24 + h.hour : L.slotCell(h);
+        target.tot += slotMeasure(h, M);
         if (i < 0) return;
         target.c[i] += slotMeasure(h, M); target.s[i] += slotMeasure(h, C);
         if (target.k) KINDS.forEach(k => { if (kindOn(k)) addKind(k, i, Number(M === 'words' ? h[k] || 0 : (h[M] || {})[k] || 0), Number(C === 'words' ? h[k] || 0 : (h[C] || {})[k] || 0)); });
@@ -1705,28 +1714,30 @@ function renderHours() {
       return;
     }
     (doc.series || []).forEach(p => {
-      const i = L.dayCell(shiftDay ? shiftDay(p.day) : p.day); if (i < 0) return;
+      const i = L.dayCell(shiftDay ? shiftDay(p.day) : p.day);
       const all = kindScoped(p) || {};
+      target.tot += Number(all[M] || 0);
+      if (i < 0) return;
       target.c[i] += Number(all[M] || 0); target.s[i] += Number(all[C] || 0);
       if (target.k) KINDS.forEach(k => { if (kindOn(k) && p[k]) addKind(k, i, Number(p[k][M] || 0), Number(p[k][C] || 0)); });
     });
   };
-  fill({ c: cells, s: sess, k: true }, lastDoc, null);
+  fill({ c: cells, s: sess, k: true, tot: 0 }, lastDoc, null);
   const cmpSrc = { hours: 'hours', days: 'dom_hours', months: 'series' }[mode];
   const cmp = lastDoc.compare && lastDoc.compare[cmpSrc] ? lastDoc.compare : null;
-  const cmpCells = new Array(N).fill(0);
+  const cmpCells = new Array(N).fill(0), cmpFill = { c: cmpCells, s: new Array(N).fill(0), k: false, tot: 0 };
   const yearOn = day => {
     const [y, m, d] = ymOfDay(day);
     return Math.round(Date.UTC(y + 1, m, Math.min(d, new Date(Date.UTC(y + 1, m + 1, 0)).getUTCDate())) / DAY_MS);
   };
-  if (cmp) fill({ c: cmpCells, s: new Array(N).fill(0), k: false }, cmp,
+  if (cmp) fill(cmpFill, cmp,
     mode !== 'months' ? null : cmp.mode === 'yoy' ? yearOn : (day => day + rg.from - cmp.range.from));
   const br = quantileBreaks(cells);
   let peak = -1, peakV = 0;
   cells.forEach((v, i) => { if (v > peakV) { peakV = v; peak = i; } });
   const colTot = new Array(L.cols).fill(0), rowTot = new Array(L.rows).fill(0);
   cells.forEach((v, i) => { colTot[i % L.cols] += v; rowTot[Math.floor(i / L.cols)] += v; });
-  const winSum = cells.reduce((a, v) => a + v, 0), cmpSum = cmpCells.reduce((a, v) => a + v, 0);
+  const winSum = cells.reduce((a, v) => a + v, 0), cmpSum = cmpFill.tot;
   const cmpDelta = (cur, prev) => {
     if (!cmp) return '';
     if (!(prev > 0)) return cur > 0 ? 'new vs ' + cmpWord() : '— vs ' + cmpWord();
