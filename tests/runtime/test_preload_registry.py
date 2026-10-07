@@ -446,6 +446,26 @@ def test_register_plan_failure_cleanup_never_drops_another_users_plan(
     assert preload.is_warm("pyannote:p/b") is False
 
 
+def test_failure_cleanup_finds_a_rekeyed_plan_with_a_refused_entry(
+        monkeypatch):
+    """The collision re-key derives the id from the UNFILTERED entries, so a
+    statically refused entry next to a valid one cannot move the inserted
+    plan out of the wrapper cleanup's reach."""
+    _enable(monkeypatch)
+    _fits(monkeypatch, (None, "size_unknown"))
+    preload.register_plan("alice", [("diarization", "p/a")], plan_id="c" * 8)
+
+    def _boom(*a, **k):
+        raise RuntimeError("ledger on fire")
+    monkeypatch.setattr(model_sizes, "fits", _boom)
+    r = preload.register_plan(
+        "bob", [("diarization", "p/b"), ("separation", "")], plan_id="c" * 8)
+    assert {m["state"] for m in r["models"]} == {"deferred"}
+    assert [p for p in preload._plans.values() if p.user_id == "bob"] == []
+    assert preload.is_warm("pyannote:p/b") is False
+    assert preload._plans["c" * 8].user_id == "alice"
+
+
 # --- thread safety -----------------------------------------------------------
 
 def test_sync_entry_points_are_thread_safe_against_the_sweeper(monkeypatch):

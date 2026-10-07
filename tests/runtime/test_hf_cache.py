@@ -45,3 +45,15 @@ def test_hf_hub_cache_wins_over_hf_home(monkeypatch, tmp_path):
     monkeypatch.setenv("USERPROFILE", str(tmp_path))
     monkeypatch.setenv("HF_HUB_CACHE", "~/hub")
     assert hf_cache.hub_cache_dir() == os.path.join(str(tmp_path), "hub")
+
+
+def test_legacy_huggingface_hub_cache_alias_wins_over_hf_home(monkeypatch,
+                                                              tmp_path):
+    # huggingface_hub still honours the deprecated HUGGINGFACE_HUB_CACHE
+    # above HF_HOME/hub; following HF_HOME instead would split whisper's
+    # download from the GGUF/pyannote cache and the size lookup.
+    monkeypatch.delenv("HF_HUB_CACHE", raising=False)
+    monkeypatch.setenv("HUGGINGFACE_HUB_CACHE", str(tmp_path / "x"))
+    monkeypatch.setenv("HF_HOME", str(tmp_path / "y"))
+    assert hf_cache.hub_cache_dir() == str(tmp_path / "x")
+    assert hf_cache.hub_lookup_dir() == str(tmp_path / "x")

@@ -14,9 +14,10 @@ Same shape as runtime/model_sizes.py (a JSON file under the data dir, an
 mtime-cached read that never raises, an atomic locked write) with one
 deliberate difference: the path is resolved at CALL time through _path(),
 never bound as a default argument. model_sizes binds `path=PATH` at def
-time on _read/_write/_write_locked, which is why tests must patch those
-three functions' __defaults__ to keep a direct caller out of the real /data
-(its record() does resolve PATH at call time).
+time on _read/_write_locked, which is why tests must repoint those two
+functions' `path` default (tests.conftest._repoint_path_default) to keep a
+direct caller out of the real /data (its record() does resolve PATH at call
+time).
 """
 
 from __future__ import annotations

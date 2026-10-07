@@ -345,14 +345,17 @@ def test_recreated_progress_entry_keeps_its_owner(client, app_module,
         tx_progress._PROGRESS_OWNER.pop(_PID, None)
 
 
-def test_owner_map_is_pruned_with_the_stale_sweep(app_module):
+def test_owner_map_survives_the_stale_sweep(app_module):
+    # An owner-stamped run (one waiting on the GPU gate ticks nothing) is
+    # never stale-swept (F90.1, tests/transcription/test_progress.py): the
+    # entry and its owner stamp stay together until the handler's close.
     tx_progress._progress_set(_PID, stage="waiting", owner="u1")
     try:
         tx_progress._BATCH_PROGRESS[_PID]["updated"] = -1e9
-        # Any entry creation runs the stale sweep; it must prune both maps.
+        # Any entry creation runs the stale sweep.
         tx_progress._progress_set("d00d" * 8, stage="waiting")
-        assert _PID not in tx_progress._BATCH_PROGRESS
-        assert _PID not in tx_progress._PROGRESS_OWNER
+        assert tx_progress._BATCH_PROGRESS[_PID]["owner"] == "u1"
+        assert tx_progress._PROGRESS_OWNER[_PID] == "u1"
     finally:
         tx_progress._BATCH_PROGRESS.pop(_PID, None)
         tx_progress._BATCH_PROGRESS.pop("d00d" * 8, None)

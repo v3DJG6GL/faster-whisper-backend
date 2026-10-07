@@ -75,3 +75,24 @@ def test_app_env_keeps_factory_rule_writes_off_the_repo_config(app_module,
         assert os.path.realpath(default).startswith(root)
     # ...and the copy still holds the shipped rules.
     assert config_store.load_factory_rules()
+
+
+def test_session_data_dir_is_a_throwaway_dir_even_when_exported():
+    """conftest re-roots WHISPER_DATA_DIR unconditionally and drops the
+    narrower path knobs, so a sourced deploy .env cannot point the
+    import-time defaults at the operator's live data."""
+    import os
+    import tempfile
+
+    from faster_whisper_backend.runtime import model_sizes, stage_rates
+    from faster_whisper_backend.settings import config as cfg
+    from tests import conftest
+
+    data_dir = os.path.realpath(os.environ["WHISPER_DATA_DIR"])
+    assert data_dir == os.path.realpath(conftest._TEST_DATA_DIR)
+    assert data_dir.startswith(os.path.realpath(tempfile.gettempdir()))
+    assert {"WHISPER_DB_DIR", "WHISPER_JOBS_DB",
+            "WHISPER_URL_MEDIA_DIR"} <= conftest._DATA_PATH_ENV
+    # All three froze at import, before any fixture could repoint them.
+    for path in (cfg._DB_DIR, model_sizes.PATH, stage_rates.PATH):
+        assert os.path.realpath(path).startswith(data_dir + os.sep), path

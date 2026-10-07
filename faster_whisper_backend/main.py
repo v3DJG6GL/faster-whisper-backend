@@ -1418,6 +1418,9 @@ async def transcribe(
     _retain_media = (_form_bool(retain_media) is True and source_url is None
                      and bool(getattr(cfg, "MEDIA_PACKAGE_ENABLED", True)))
     _retained_upload: "str | None" = None
+    # Why an asked-for retain was declined before the run; joins _warnings
+    # once that list exists.
+    _retain_warning: "str | None" = None
     # Set only AFTER the load returns, so the outer finally never releases a
     # lease that was never taken (a rejected/failed load takes none).
     _leased_model: "str | None" = None
@@ -1722,7 +1725,16 @@ async def transcribe(
                 _rplan.set_audio_seconds(
                     audio_bytes / _run_plan.BYTES_PER_AUDIO_SECOND,
                     src="bytes-prior")
-                if _retain_media:
+                if _retain_media and (
+                        audio_bytes > url_media_store.max_retainable_bytes()):
+                    # register() would move the whole file in only for
+                    # _evict_over_cap to drop it at once (the store cap is
+                    # below MEDIA_MAX_BYTES): decline up front, like POST
+                    # /v1/audio/media, and say why instead of going silent.
+                    _retain_warning = (
+                        "retain_media: the upload exceeds the server's media "
+                        "store (RETAINED_MEDIA_MAX_BYTES) — not retained")
+                elif _retain_media:
                     # A hardlink of the spool (same TMPDIR): the pipeline may
                     # replace tmp_path with a vocals stem and unlinks it in
                     # the finally; this copy survives for the media store.
@@ -1863,6 +1875,8 @@ async def transcribe(
             # Music separation: same shape again. Soft-failed optional stages
             # (this and diarization) collect their explanations in _warnings.
             _warnings: "list[str]" = []
+            if _retain_warning:
+                _warnings.append(_retain_warning)
             # Requested stages this server declines to run (feature disabled).
             # Mirrored into the progress entry the moment each skip is known,
             # so a polling client can mark the stage "skipped" live instead of
@@ -2410,18 +2424,18 @@ async def transcribe(
                 # the lazy generator is consumed inside the capture, that is
                 # where every window after the first is decoded.
                 with _decode_trace.capture(_kw, skip_residual=_skip,
-                                           token_cap_per_s=_cap) as _tr:
+                                           token_cap_per_s=_cap) as _trace:
                     if _audio is not None:
                         _segs, _info = _model.transcribe(_audio, **_kw)
                         _t["pre_secs"] = time.perf_counter() - _pre
                         _out = _collect(_segs, _info, _pad_ms / 1000.0)
-                        _t["trace"] = _decode_trace.finish(_tr, _out, _info)
+                        _t["trace"] = _decode_trace.finish(_trace, _out, _info)
                         return (*_shift_to_original_timeline(
                             _out, _info, _pad_ms / 1000.0), True)
                     _segs, _info = _model.transcribe(_path, **_kw)
                     _t["pre_secs"] = time.perf_counter() - _pre
                     _out = _collect(_segs, _info)
-                    _t["trace"] = _decode_trace.finish(_tr, _out, _info)
+                    _t["trace"] = _decode_trace.finish(_trace, _out, _info)
                     return _out, _info, False
             loop = asyncio.get_running_loop()
             _ps(stage="waiting", progress=None,
@@ -3214,6 +3228,10 @@ async def transcribe(
                     # register() moved the file; on a refusal (None) it may
                     # still be on disk, and the inner finally unlinks it.
                     _retained_upload = None
+                else:
+                    _warnings.append(
+                        "retain_media: the media store could not keep the "
+                        "upload — not retained")
 
             if response_format == "verbose_json":
                 response = {

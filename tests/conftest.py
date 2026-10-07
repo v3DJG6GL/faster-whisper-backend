@@ -43,16 +43,31 @@ import pytest
 # import `main` at COLLECTION time (before any fixture monkeypatch runs), so
 # root every default into a throwaway dir for the whole test session. The
 # app_module fixture still pins each store to its own tmp_path per test.
+# ALWAYS, not only when unset: a shell with a sourced deploy .env exports
+# WHISPER_DATA_DIR (and maybe the narrower knobs below), and every
+# import-time default (config._DB_DIR, model_sizes.PATH, stage_rates.PATH,
+# config_store.OVERRIDES_PATH) would then name the operator's live data.
 import atexit
+import json
 import shutil
 import tempfile
 
-if not os.environ.get("WHISPER_DATA_DIR"):
-    _TEST_DATA_DIR = tempfile.mkdtemp(prefix="whisper-test-data-")
-    os.environ["WHISPER_DATA_DIR"] = _TEST_DATA_DIR
-    # ignore_errors: a still-open SQLite handle keeps the file locked on
-    # Windows; a leftover dir there must not fail the run.
-    atexit.register(shutil.rmtree, _TEST_DATA_DIR, True)
+_TEST_DATA_DIR = tempfile.mkdtemp(prefix="whisper-test-data-")
+os.environ["WHISPER_DATA_DIR"] = _TEST_DATA_DIR
+# ignore_errors: a still-open SQLite handle keeps the file locked on
+# Windows; a leftover dir there must not fail the run.
+atexit.register(shutil.rmtree, _TEST_DATA_DIR, True)
+# The knobs that re-root part of the data layout past WHISPER_DATA_DIR: the
+# fixed ones, plus WHISPER_<FIELD> for every store config.json places under
+# {DATA_DIR}/{DB_DIR} (read from the file so a new store cannot be missed).
+with open(os.path.join(os.path.dirname(os.path.dirname(
+        os.path.abspath(__file__))), "config.json"), encoding="utf-8") as _fh:
+    _DATA_PATH_ENV = {"WHISPER_DB_DIR", "WHISPER_MODEL_SIZES_PATH",
+                      "WHISPER_STAGE_RATES_PATH", "WHISPER_CONFIG_LOCAL"} | {
+        "WHISPER_" + k for k, v in json.load(_fh).items()
+        if isinstance(v, str) and ("{DATA_DIR}" in v or "{DB_DIR}" in v)}
+for _k in _DATA_PATH_ENV:
+    os.environ.pop(_k, None)
 
 RATE = 16000
 
@@ -475,6 +490,23 @@ class FakeModel:
 @pytest.fixture
 def fake_model():
     return FakeModel()
+
+
+def resolve_import_from(node, package: str) -> str:
+    """The absolute module an `ast.ImportFrom` names, as the import system
+    would resolve it inside `package` (a module's package is its file's
+    directory, an __init__ included): `from ..audio import x` in
+    faster_whisper_backend.runtime is faster_whisper_backend.audio. The AST
+    import guards compare these, so a relative spelling cannot slip past a
+    scan that only knows the absolute one. "" for an unresolvable one."""
+    if not node.level:
+        return node.module or ""
+    import importlib.util
+    try:
+        return importlib.util.resolve_name(
+            "." * node.level + (node.module or ""), package)
+    except (ImportError, ValueError):
+        return ""
 
 
 def _repoint_path_default(monkeypatch, fns, path: str,

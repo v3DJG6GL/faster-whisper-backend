@@ -165,8 +165,11 @@ def _build_host() -> dict[str, Any]:
         cache_dir = hf_cache.hub_lookup_dir()
     except Exception:  # noqa: BLE001 — stats only
         cache_dir = os.path.expanduser("~/.cache/huggingface")
+    # Absolute first: a relative DOWNLOAD_ROOT ("models") would otherwise
+    # stop the walk at its own missing first component, never reaching cwd.
+    cache_dir = os.path.abspath(cache_dir)
     while not os.path.exists(cache_dir) and \
-            os.path.dirname(cache_dir) not in ("", cache_dir):
+            os.path.dirname(cache_dir) != cache_dir:
         cache_dir = os.path.dirname(cache_dir)
     try:
         disk_free_gb = round(psutil.disk_usage(cache_dir).free / (1024 ** 3), 1)

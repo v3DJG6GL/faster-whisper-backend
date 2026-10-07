@@ -253,6 +253,30 @@ def test_disk_size_sizes_only_the_requested_gguf_quant(ledger, tmp_path,
     assert model_sizes.disk_size("gguf:tencent/HY-MT1.5-7B-GGUF") == 1000
 
 
+def test_disk_size_finds_a_gguf_quant_cached_in_an_older_snapshot(
+        ledger, tmp_path, monkeypatch):
+    """translation.engine resolves a quant across every cached revision, so
+    a quant fetched before the repo moved on must keep its disk prior."""
+    hf = tmp_path / "hf"
+    snaps = hf / "hub" / "models--org--x" / "snapshots"
+    (snaps / "A").mkdir(parents=True)
+    (snaps / "B").mkdir()
+    (snaps / "A" / "x-Q4_K_M.gguf").write_bytes(b"x" * 1000)
+    (snaps / "B" / "x-Q8_0.gguf").write_bytes(b"x" * 2000)
+    os.utime(snaps / "A", (1_000_000, 1_000_000))
+    os.utime(snaps / "B", (2_000_000, 2_000_000))
+    monkeypatch.setenv("HF_HOME", str(hf))
+
+    assert model_sizes.disk_size("gguf:org/x:Q4_K_M") == 1000
+    assert model_sizes.disk_size("gguf:org/x:Q8_0") == 2000
+    # The same name in two revisions is one file, sized from the newest.
+    (snaps / "B" / "x-Q4_K_M.gguf").write_bytes(b"x" * 1500)
+    os.utime(snaps / "B", (2_000_000, 2_000_000))
+    assert model_sizes.disk_size("gguf:org/x:Q4_K_M") == 1500
+    # Two different names across revisions: no single match.
+    assert model_sizes.disk_size("gguf:org/x") is None
+
+
 def test_disk_size_is_none_when_nothing_is_there(ledger, tmp_path, monkeypatch):
     monkeypatch.setenv("HF_HOME", str(tmp_path / "nope"))
     assert model_sizes.disk_size("gguf:no/such") is None

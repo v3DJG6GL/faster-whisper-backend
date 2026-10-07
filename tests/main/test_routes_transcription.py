@@ -830,3 +830,44 @@ def test_a_full_capture_store_still_records_a_batch_request(
     r = _post(client)
     assert r.status_code == 200, r.text
     assert len(created) == 1
+
+
+def _retain_on(app_module, monkeypatch, tmp_path):
+    monkeypatch.setattr(app_module.cfg, "MEDIA_PACKAGE_ENABLED", True,
+                        raising=False)
+    monkeypatch.setattr(app_module.cfg, "URL_MEDIA_DIR",
+                        str(tmp_path / "url_media"), raising=False)
+
+
+def test_retain_media_over_the_store_cap_is_declined_with_a_warning(
+        client, app_module, monkeypatch, tmp_path):
+    """A store cap below MEDIA_MAX_BYTES: an upload the store would drop at
+    once is never copied or registered, and the response says why instead
+    of silently omitting source_media_id."""
+    from faster_whisper_backend.media import media_store
+    _retain_on(app_module, monkeypatch, tmp_path)
+    monkeypatch.setattr(app_module.cfg, "RETAINED_MEDIA_MAX_BYTES", 4,
+                        raising=False)
+    calls = []
+    monkeypatch.setattr(media_store, "register",
+                        lambda *a, **kw: calls.append("register"))
+    monkeypatch.setattr(media_store, "make_pipeline_copy",
+                        lambda *a, **kw: calls.append("copy"))
+    r = _post(client, response_format="json", retain_media="true")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert "source_media_id" not in body
+    assert any("RETAINED_MEDIA_MAX_BYTES" in w for w in body["warnings"])
+    assert calls == []
+
+
+def test_retain_media_refused_by_register_says_so(client, app_module,
+                                                  monkeypatch, tmp_path):
+    from faster_whisper_backend.media import media_store
+    _retain_on(app_module, monkeypatch, tmp_path)
+    monkeypatch.setattr(media_store, "register", lambda *a, **kw: None)
+    r = _post(client, response_format="json", retain_media="true")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert "source_media_id" not in body
+    assert any(w.startswith("retain_media:") for w in body["warnings"])

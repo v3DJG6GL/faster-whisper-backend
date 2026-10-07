@@ -581,7 +581,9 @@ def _register_plan(user_id, entries, *, plan_id, denied, stage_ahead,
         return {"plan_id": pid, "expires_in_s": 0, "models": results}
 
     # Filtered AFTER the id is derived, so the id stays the one
-    # register_plan's failure cleanup re-derives from the same `kept`.
+    # register_plan's failure cleanup re-derives from the same `kept`;
+    # `id_kept` keeps that unfiltered list for the collision re-derive below.
+    id_kept = kept
     refused = {e: r for e in kept if (r := _static_refusal(*e))}
     kept = [e for e in kept if e not in refused]
     refused_rows = [{"family": f, "id": m, "state": "deferred", "reason": r}
@@ -604,8 +606,9 @@ def _register_plan(user_id, entries, *, plan_id, denied, stage_ahead,
             # A supplied id may only ever adopt the caller's OWN plan. Naming
             # another user's id would merge into theirs, extend its TTL and
             # let their stage advances warm this caller's entries — so the
-            # collision is treated as a miss and the id re-derived.
-            pid = derive_plan_id(user_id or "", kept)
+            # collision is treated as a miss and the id re-derived (from the
+            # unfiltered list, the id register_plan's cleanup looks under).
+            pid = derive_plan_id(user_id or "", id_kept)
             plan = _plans.get(pid)
         if plan is None:
             if len(_plans) >= _MAX_PLANS:

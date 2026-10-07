@@ -38,6 +38,12 @@ def _resolve() -> str:
     env = (os.environ.get("WHISPER_BUILD_VERSION") or "").strip()
     if env:
         return env
+    # Only the checkout's OWN repository: without a .git here (tarball
+    # install) git would walk up to a parent repo and, with safe.directory=*
+    # below, run its config's hooks (core.fsmonitor) as the service account.
+    # A .git FILE (a worktree) counts; the ceiling stops discovery either way.
+    if not os.path.exists(os.path.join(REPO_ROOT, ".git")):
+        return "unknown"
     try:
         # safe.directory on the command line (protected config): a service
         # account that does not own the checkout (Windows LocalSystem on a
@@ -49,6 +55,8 @@ def _resolve() -> str:
             ["git", "-c", "safe.directory=*",
              "describe", "--tags", "--always", "--dirty"],
             cwd=REPO_ROOT,
+            env={**os.environ,
+                 "GIT_CEILING_DIRECTORIES": os.path.dirname(REPO_ROOT)},
             capture_output=True,
             text=True,
             timeout=5,

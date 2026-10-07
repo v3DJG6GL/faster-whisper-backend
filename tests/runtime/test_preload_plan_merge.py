@@ -139,6 +139,9 @@ def test_whisper_placement_uses_the_per_model_override(monkeypatch):
 def test_second_start_on_a_new_loop_does_not_reuse_the_old_queue():
     async def _first():
         await preload.start()
+        # One step for the worker: it awaits _queue.get(), which binds the
+        # queue to THIS loop, so a reused queue would kill loop 2's worker.
+        await asyncio.sleep(0)
         await preload.stop()
     asyncio.run(_first())
     old_queue = preload._queue

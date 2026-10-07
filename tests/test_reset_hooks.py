@@ -393,16 +393,50 @@ def test_no_package_module_imports_main():
     for py in sorted(pkg.rglob("*.py")):
         if py.name == "__main__.py":
             continue
-        for node in ast.walk(ast.parse(py.read_text(encoding="utf-8"))):
-            if (isinstance(node, ast.ImportFrom) and node.module == "faster_whisper_backend"
-                    and any(a.name == "main" for a in node.names)):
-                offenders.append(f"{py.relative_to(pkg)}:{node.lineno}")
-            elif isinstance(node, ast.ImportFrom) and node.module == "faster_whisper_backend.main":
-                offenders.append(f"{py.relative_to(pkg)}:{node.lineno}")
-            elif isinstance(node, ast.Import) and any(
-                    a.name == "faster_whisper_backend.main" for a in node.names):
-                offenders.append(f"{py.relative_to(pkg)}:{node.lineno}")
+        package = ".".join(py.parent.relative_to(REPO_ROOT).parts)
+        offenders += [f"{py.relative_to(pkg)}:{n}" for n in _main_imports(
+            ast.parse(py.read_text(encoding="utf-8")), package)]
     assert not offenders, offenders
+
+
+def _main_imports(tree, package: str) -> "list[int]":
+    """Line numbers in `tree` (a module of `package`) that import main: any
+    absolute or relative spelling, or a lazy importlib.import_module."""
+    from tests.conftest import resolve_import_from
+    main = "faster_whisper_backend.main"
+    lines = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            mod = resolve_import_from(node, package)
+            if mod == main or (mod == "faster_whisper_backend" and any(
+                    a.name == "main" for a in node.names)):
+                lines.append(node.lineno)
+        elif isinstance(node, ast.Import) and any(
+                a.name == main for a in node.names):
+            lines.append(node.lineno)
+        elif (isinstance(node, ast.Call) and node.args
+              and isinstance(node.args[0], ast.Constant)
+              and node.args[0].value == main
+              and ((isinstance(node.func, ast.Name)
+                    and node.func.id == "import_module")
+                   or (isinstance(node.func, ast.Attribute)
+                       and node.func.attr == "import_module"))):
+            lines.append(node.lineno)
+    return lines
+
+
+def test_the_main_import_scan_sees_relative_and_lazy_spellings():
+    # Guards the scan above against passing vacuously on the cycle-breaker
+    # shapes it was not first written for.
+    src = ("from . import main\n"
+           "from ..main import app\n"
+           "from .. import main as m\n"
+           "import importlib\n"
+           "importlib.import_module('faster_whisper_backend.main')\n"
+           "from .. import paths\n")
+    tree = ast.parse(src)
+    assert _main_imports(tree, "faster_whisper_backend.runtime") == [2, 3, 5]
+    assert _main_imports(tree, "faster_whisper_backend") == [1, 5]
 
 
 # P18: the decode/job-pipeline modules left core/ (shared infra only) for

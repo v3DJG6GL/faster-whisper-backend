@@ -92,6 +92,11 @@ class PreloadRequest(BaseModel):
     # operator can tell WHICH trigger ran, not just that one did. Bounded
     # and never used for anything but display.
     trigger: "str | None" = Field(default=None, max_length=32)
+    # The OVERRIDE_PROFILES entry the job will send as override_profile, so
+    # the allowlist and locks are judged against the same ident the batch
+    # handler builds. An unknown or unpermitted name contributes nothing
+    # (effective_config's request-profile gate), exactly as on that path.
+    override_profile: "str | None" = Field(default=None, max_length=64)
 
 
 # The cfg field that picks each non-whisper family's model: the key into the
@@ -167,15 +172,18 @@ def _effective_stage_models(
         user: dict, body: "PreloadRequest",
 ) -> "tuple[dict[str, str], frozenset[str]]":
     """The caller's identity/per-model effective stage models, resolved
-    against the whisper model the plan names (else DEFAULT_MODEL) — the ident
-    the batch handler builds for the same job — plus which of those fields
+    against the whisper model the plan names (else DEFAULT_MODEL) and the
+    body's override_profile — the ident the batch handler builds for the same
+    job — plus which of those fields
     the ident locks. ({}, empty) on any failure, which degrades to the
     global-only rule."""
     resolved_model = next(
         (preload.normalize_id("whisper", m.id) for m in body.models
          if m.family == "whisper"), "") or getattr(cfg, "DEFAULT_MODEL", "")
     try:
-        ident = effective_config.build_ident(user, resolved_model)
+        ident = effective_config.build_ident(
+            user, resolved_model,
+            request_profile=(body.override_profile or "").strip() or None)
         keys = _FAMILY_CFG_KEY.values()
         return ({k: (effective_config.cfg_for(resolved_model, k, ident)
                      or "").strip() for k in keys},

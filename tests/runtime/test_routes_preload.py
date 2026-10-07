@@ -222,6 +222,29 @@ def test_identity_effective_stage_model_is_not_reported_not_allowed(
     assert row["reason"] == "not_allowed"
 
 
+def test_a_request_profile_stage_model_is_judged_like_the_batch_job(
+        client, app_module, monkeypatch):
+    # The job sends override_profile=X and runs X's DIARIZATION_MODEL; a
+    # preload naming the same profile must be admitted for it, not deferred
+    # not_allowed off the identity-only ident.
+    cfg = _enable(app_module, monkeypatch)
+    monkeypatch.setattr(cfg, "DIARIZATION_ALLOWED_MODELS", [], raising=False)
+    monkeypatch.setattr(cfg, "DIARIZATION_MODEL", "p/global", raising=False)
+    monkeypatch.setattr(cfg, "ALLOW_REQUEST_OVERRIDE_PROFILE", True,
+                        raising=False)
+    monkeypatch.setattr(cfg, "OVERRIDE_PROFILES",
+                        {"diar": {"DIARIZATION_MODEL": "p/profiled"}},
+                        raising=False)
+    models = [{"family": "diarization", "id": "p/profiled"}]
+    row = _one(client, {"models": models, "override_profile": "diar"})
+    assert row.get("reason") != "not_allowed"
+    row = _one(client, {"models": models})
+    assert row["state"] == "deferred" and row["reason"] == "not_allowed"
+    # An unknown profile contributes nothing, as on the batch path.
+    row = _one(client, {"models": models, "override_profile": "nope"})
+    assert row["reason"] == "not_allowed"
+
+
 def test_a_locked_stage_model_admits_only_the_effective_value(
         client, app_module, monkeypatch):
     # A locked knob resolves to the server value in the batch handler (a
@@ -326,6 +349,10 @@ def test_repeat_post_reuses_the_plan_and_does_not_grow_the_queue(
 
     r1 = client.post(_URL, json=_body()).json()
     depth = preload._queue.qsize()
+    # The first POST really queued its entry, so the non-growth check below
+    # exercises the dedupe rather than comparing two empty queues.
+    assert depth >= 1
+    assert r1["models"][0]["state"] in ("loading", "queued")
     r2 = client.post(_URL, json=_body()).json()
     assert r2["plan_id"] == r1["plan_id"]
     assert len(preload._plans) == 1

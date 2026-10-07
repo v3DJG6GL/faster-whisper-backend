@@ -11,6 +11,8 @@ local autouse fixture clears it between tests so cases don't observe each
 other's writes.
 """
 
+import os
+
 import pytest
 
 from faster_whisper_backend.runtime import model_registry
@@ -196,3 +198,25 @@ def test_disk_free_reads_the_download_root_drive(monkeypatch, tmp_path):
     monkeypatch.setenv("HF_HOME", str(tmp_path / "other"))
     system_stats._build_host()
     assert seen[-1] == str(tmp_path / "other")
+
+
+def test_disk_free_walks_a_relative_download_root_up_to_cwd(monkeypatch,
+                                                            tmp_path):
+    """A relative DOWNLOAD_ROOT whose dir does not exist yet still reads the
+    drive it will land on (the cwd's), not None."""
+    from faster_whisper_backend.settings import config as cfg
+    monkeypatch.delenv("HF_HOME", raising=False)
+    monkeypatch.delenv("HF_HUB_CACHE", raising=False)
+    monkeypatch.delenv("HUGGINGFACE_HUB_CACHE", raising=False)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cfg, "DOWNLOAD_ROOT", "models", raising=False)
+    seen = []
+    real = system_stats.psutil.disk_usage
+
+    def _spy(path):
+        seen.append(path)
+        return real(path)
+    monkeypatch.setattr(system_stats.psutil, "disk_usage", _spy)
+    host = system_stats._build_host()
+    assert seen == [os.getcwd()]
+    assert host["disk_free_gb"] is not None

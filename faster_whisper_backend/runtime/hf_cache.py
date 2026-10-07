@@ -12,9 +12,10 @@ import os
 
 
 def hub_cache_dir() -> "str | None":
-    """The cache_dir to pass to a hub download: a set HF_HUB_CACHE wins (the
-    hub ranks it above HF_HOME too, so whisper's own hub-default download
-    lands there), else HF_HOME/hub, else <DOWNLOAD_ROOT>/hf/hub, else None
+    """The cache_dir to pass to a hub download: a set HF_HUB_CACHE (or its
+    legacy alias HUGGINGFACE_HUB_CACHE) wins (the hub ranks both above
+    HF_HOME too, so whisper's own hub-default download lands there), else
+    HF_HOME/hub, else <DOWNLOAD_ROOT>/hf/hub, else None
     (the hub's own default).
 
     Expanded the way the hub expands them (python-dotenv and systemd
@@ -23,7 +24,8 @@ def hub_cache_dir() -> "str | None":
     explicit cache_dir ("~" only). Unexpanded, the download lands under the
     home dir while the lookup checks a cwd-relative "~/..." that never
     exists."""
-    hub_cache = os.environ.get("HF_HUB_CACHE")
+    hub_cache = (os.environ.get("HF_HUB_CACHE")
+                 or os.environ.get("HUGGINGFACE_HUB_CACHE"))
     if hub_cache:
         return os.path.expandvars(os.path.expanduser(hub_cache))
     hf_home = os.environ.get("HF_HOME")
@@ -50,4 +52,5 @@ def hub_lookup_dir() -> str:
         return constants.HF_HUB_CACHE
     except ImportError:
         return (os.environ.get("HF_HUB_CACHE")
+                or os.environ.get("HUGGINGFACE_HUB_CACHE")
                 or os.path.join(os.path.expanduser("~/.cache/huggingface"), "hub"))
