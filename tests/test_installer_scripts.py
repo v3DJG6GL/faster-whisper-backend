@@ -216,3 +216,25 @@ def test_installers_require_python_312():
     ps1 = _read("install-service.ps1")
     assert "sys.version_info >= (3, 12)" in ps1
     assert "Python 3.10" not in ps1
+
+
+def test_installers_warn_about_legacy_repo_root_state_before_the_start():
+    # Since the data-dir move the service reads data/db/ and
+    # data/config.local.json; stores and config left in the repo root are
+    # silently ignored. Both installers warn (never move) BEFORE the service
+    # (re)starts, so an upgrade does not quietly come up with empty state.
+    sh = _read("install-service.sh")
+    restart = re.search(r'^systemctl restart "\$\{SERVICE_NAME\}"', sh, re.M)
+    assert restart
+    head = sh[:restart.start()]
+    assert "warn_legacy()" in head
+    assert '"$REPO_DIR"/*.local.sqlite3' in head
+    assert re.search(r'warn_legacy "legacy \$REPO_DIR/config\.local\.json', head)
+    ps1 = _read("install-service.ps1")
+    check = ps1.index("# --- upgrade check")
+    start = ps1.index("\nInvoke-WinSW start")
+    assert check < start
+    block = ps1[check:start]
+    assert '-Filter "*.local.sqlite3"' in block
+    assert block.count("Write-Warning") >= 2   # stores + config.local.json
+    assert "config.local.json" in block

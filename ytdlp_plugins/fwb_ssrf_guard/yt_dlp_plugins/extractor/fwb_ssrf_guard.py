@@ -132,7 +132,7 @@ def _resolve_pinned(host: str, port: int, *, trusted: bool = False):
         raise RequestError(f"{MARKER}: request has no host")
     try:
         infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
-    except OSError as e:
+    except (OSError, UnicodeError) as e:  # `a..com`: IDNA can't encode it
         raise RequestError(f"{MARKER}: {host} did not resolve ({e})") from None
     if not infos:
         raise RequestError(f"{MARKER}: {host} did not resolve")

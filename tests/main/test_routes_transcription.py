@@ -807,3 +807,26 @@ def test_a_pyav_error_in_the_bgm_transcode_falls_back_to_the_original(
     assert len(calls) == 1 and not calls[0].endswith(".wav")
     assert not any("could not be prepared" in w
                    for w in r.json().get("warnings") or [])
+
+
+def test_a_full_capture_store_still_records_a_batch_request(
+        client, app_module, fake_model, monkeypatch):
+    """At CAPTURES_MAX the batch gate used to refuse before create_capture
+    could run its _evict_to_cap, so the documented oldest-first rotation never
+    happened and every later request silently recorded nothing (the streaming
+    twin is pinned in tests/streaming/test_finalize_paths.py)."""
+    from faster_whisper_backend.captures import store as captures_store
+
+    monkeypatch.setattr(app_module.cfg, "CAPTURES_RECORDING_ENABLED", True,
+                        raising=False)
+    monkeypatch.setattr(app_module.cfg, "CAPTURES_RECORDING_SAMPLE_RATE", 1.0,
+                        raising=False)
+    monkeypatch.setattr(app_module.cfg, "CAPTURES_MAX", 10, raising=False)
+    monkeypatch.setattr(captures_store, "count_evictable", lambda: 10)
+    created = []
+    monkeypatch.setattr(captures_store, "create_capture",
+                        lambda **kw: created.append(kw) or "cap-test-id")
+
+    r = _post(client)
+    assert r.status_code == 200, r.text
+    assert len(created) == 1

@@ -1002,6 +1002,13 @@ window._renderWaterfall = (function () {
     var j = await r.json();
     if (seq !== _resolveSeq) return;
     exOut.innerHTML = '';
+    if (j.binding_fault) {
+      // Fail-closed lock with no owning layer: name the reason.
+      var bf = document.createElement('p'); bf.className = 'status err';
+      bf.textContent = 'Binding store unreadable — every field is locked '
+        + '(fail-closed) until it can be read again.';
+      exOut.appendChild(bf);
+    }
     if (j.profiles_applied && j.profiles_applied.length) {
       var pa = document.createElement('p'); pa.className = 'hint';
       pa.textContent = 'profiles applied (earlier wins): ' + j.profiles_applied.join(' → ');

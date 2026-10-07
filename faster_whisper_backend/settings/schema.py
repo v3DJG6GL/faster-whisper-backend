@@ -17,6 +17,7 @@ from __future__ import annotations
 import functools
 import ipaddress
 import re
+import typing
 from pathlib import PurePath, PureWindowsPath
 from typing import Annotated, Any, Literal
 
@@ -1738,9 +1739,13 @@ class AdminConfig(BaseModel):
         # config.local.json has to keep failing validation at LOAD (the
         # documented fail-safe whole-file drop) instead of loading cleanly
         # and raising re.error on every request at match time.
+        from faster_whisper_backend.pipeline import regex_guard
         for where, pat, repl, _slug in checks:
             if not repl:
                 continue
+            # `(?:(?:a{0}){N}){N}` loops N*N times even on "" — refuse on the
+            # counts alone before the in-process .sub below (also at LOAD).
+            regex_guard.check_fixed_counts(where, pat)
             try:
                 re.compile(pat).sub(repl, "")
             except (re.error, IndexError) as e:
@@ -1758,7 +1763,6 @@ class AdminConfig(BaseModel):
             to_guard = (checks if guard_slugs is None
                         else [c for c in checks if c[3] in guard_slugs])
             if to_guard:
-                from faster_whisper_backend.pipeline import regex_guard
                 regex_guard.validate([c[:3] for c in to_guard])
         return v
 
@@ -2228,10 +2232,45 @@ def _virtual_defs(scope: str) -> dict[str, Any]:
     }
 
 
+@functools.lru_cache(maxsize=None)
+def _nonempty_str_fields(model: type[BaseModel]) -> frozenset[str]:
+    """The fields of `model` typed `Annotated[str, Field(min_length>=1)] |
+    None` (REVISION, BGM_SEPARATION_UVR_MODEL, …): '' can never be a valid
+    value for them. Cached per class: the fields are fixed at import."""
+    out = set()
+    for name, info in model.model_fields.items():
+        for arm in typing.get_args(info.annotation) or (info.annotation,):
+            args = typing.get_args(arm)
+            if not args or args[0] is not str:
+                continue
+            metas = [m for a in args[1:]
+                     for m in (getattr(a, "metadata", None) or [a])]
+            if any((getattr(m, "min_length", 0) or 0) >= 1 for m in metas):
+                out.add(name)
+    return frozenset(out)
+
+
 class _CallTimeOverrideBase(BaseModel):
     """Config + validator carrier for the generated _CallTimeOverrideMixin
     (create_model can't attach validators directly)."""
     model_config = {"extra": "forbid", "protected_namespaces": ()}
+
+    @model_validator(mode="before")
+    @classmethod
+    def _empty_nonempty_str_is_no_override(cls, data: Any) -> Any:
+        """'' for a field that needs at least one character means "no
+        override" (absent = inherit), not a 422 for the whole save: the
+        /settings per-model pane seeds `+ override` with '' for string kinds
+        (REVISION has no global value to seed from), and a cleared string
+        widget stores ''. Fields where '' IS a valid value keep it — there an
+        explicit '' still beats the inherited value."""
+        if not isinstance(data, dict):
+            return data
+        drop = _nonempty_str_fields(cls)
+        if not any(data.get(k) == "" for k in drop):
+            return data
+        return {k: v for k, v in data.items()
+                if not (k in drop and v == "")}
 
     @field_validator("SEGMENT_ZERO_LENGTH_TAIL_MIN_WORDS", "SEGMENT_HEAD_ECHO_MIN_WORDS",
                      check_fields=False)

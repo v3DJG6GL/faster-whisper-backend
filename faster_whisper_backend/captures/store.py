@@ -308,8 +308,8 @@ def _user_clause(user_id: "str | list[str] | None") -> tuple[str, list[Any]]:
 def count(user_id: "str | list[str] | None" = None) -> int:
     """Total row count (any status), unfiltered or owner-scoped. Cheap;
     used by /quick-config to decide whether to surface the reapply-rules
-    modal and by the captures list toolbar total. The ingest cap gate must
-    use count_evictable(), which mirrors _evict_to_cap's scope.
+    modal and by the captures list toolbar total. count_evictable() is the
+    count that mirrors _evict_to_cap's scope.
 
     `user_id=None` means "do not filter" (admin / scope=all); a string
     narrows to a single owner so a scope=own toolbar total matches the
@@ -324,12 +324,14 @@ def count(user_id: "str | list[str] | None" = None) -> int:
 
 
 def count_evictable() -> int:
-    """Row count the ingest cap gate should compare against CAPTURES_MAX.
+    """Row count _evict_to_cap holds against CAPTURES_MAX. (No ingest gate
+    compares it to the cap any more: a full store rotates its oldest rows out
+    in create_capture instead of refusing new ones.)
 
     Mirrors _evict_to_cap's scope: only ungrouped rows (`sample_id IS
     NULL`) count, because grouped rows back a merged WAV and are bounded
     by retention, not by this cap. Comparing the unfiltered count()
-    against the cap would wedge ingestion shut once grouped rows alone
+    against the cap would wedge an ingest gate shut once grouped rows alone
     reach CAPTURES_MAX while the evictor sees nothing to evict."""
     conn = _require_conn()
     row = conn.execute(

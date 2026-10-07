@@ -6,7 +6,9 @@
 # - faster_whisper_backend/__main__.py runs the server at import, so the
 #   suite can never execute it.
 # - ytdlp_plugins/run_guarded_yt_dlp.py is the launcher the guard runs as a
-#   subprocess; coverage does not follow subprocesses here.
+#   subprocess. test_ssrf_guard.py loads it in-process too, but only for
+#   its fail-closed path; the success path (it execs yt-dlp) only ever runs
+#   in the subprocess, which coverage does not follow here.
 [run]
 branch = True
 source =

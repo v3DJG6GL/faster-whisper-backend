@@ -103,6 +103,26 @@ def test_all_release_tag_runs_share_one_concurrency_group():
 
 # --- .forgejo/workflows/mirror-ghcr.yml -------------------------------------
 
+def test_only_the_newest_release_tag_moves_latest():
+    # A workflow_dispatch on an OLD v* tag publishes like a tag push; with
+    # only the startsWith(refs/tags/v) check it moved :latest (and, through
+    # the mirror, ghcr's latest*) back to that release.
+    ci = _read(".forgejo", "workflows", "ci.yml")
+    build = ci[ci.index("\n  build:\n"):]
+    build = build[:build.index("\n  mirror:\n")]
+    meta = build.index("uses: docker/metadata-action@")
+    newest = build.index("id: newest")
+    assert newest < meta, "the newest step must run before the metadata step"
+    step = build[build.rindex("- name:", 0, newest):meta]
+    assert "git ls-remote --tags" in step
+    assert "GITHUB_REF_NAME" in step
+    latest = [ln for ln in _code_lines(build[meta:])
+              if "type=raw,value=latest" in ln]
+    assert len(latest) == 1
+    assert "startsWith(github.ref, 'refs/tags/v')" in latest[0]
+    assert "steps.newest.outputs.is_newest == 'true'" in latest[0]
+
+
 def test_mirror_skips_already_mirrored_sha_tags():
     # The growing history of sha-<short> tags must not cost two digest
     # round trips per tag on every dispatch and cron, so one already on the
@@ -249,7 +269,7 @@ def test_ignore_files_anchor_every_root_only_dir():
     a faster_whisper_backend/logs/ package from every image (a real probe
     build showed it). `*.lock` would swallow a committed tool lockfile."""
     git = [ln.strip() for ln in _read(".gitignore").splitlines()]
-    for d in ("logs", "tmp", "ffmpeg"):
+    for d in ("logs", "tmp", "ffmpeg", "secrets"):
         assert f"/{d}/" in git, f".gitignore: anchor {d}/ to the root"
         assert f"{d}/" not in git and f"**/{d}/" not in git
     assert "*.lock" not in git
@@ -282,6 +302,15 @@ def test_dockerignore_keeps_an_in_repo_data_dir_out_of_the_image():
         assert pat in docker, f".dockerignore: {pat} missing"
     for bare in ("manifest.jsonl", "*.wav", "*.mp3", "*.m4a"):
         assert bare not in docker, f".dockerignore: {bare} is root-only"
+
+
+def test_gitignore_keeps_retained_url_media_out_of_git():
+    """URL_MEDIA_DIR ({DATA_DIR}/url_media) holds retained link downloads
+    and uploaded videos in any container format; under an in-checkout
+    DATA_DIR not named data/ the *.wav/*.mp3/*.m4a globs miss .webm/.mp4,
+    and main is mirrored publicly."""
+    git = [ln.strip() for ln in _read(".gitignore").splitlines()]
+    assert "url_media/" in git, ".gitignore: url_media/ not ignored"
 
 
 # --- Dockerfiles -------------------------------------------------------------

@@ -545,6 +545,12 @@ def validate_url(url: str) -> str:
         raise UrlDownloadError("only http(s) URLs are supported")
     if not parts.hostname:
         raise UrlDownloadError("the URL has no host")
+    # An empty or >63-char label (`a..com`) or a lone surrogate makes
+    # getaddrinfo raise UnicodeError downstream: answer a client 400 here.
+    try:
+        parts.hostname.encode("idna")
+    except UnicodeError:
+        raise UrlDownloadError("the URL's host name is invalid") from None
     return u
 
 

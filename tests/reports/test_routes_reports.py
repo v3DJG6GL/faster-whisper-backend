@@ -157,6 +157,18 @@ def test_reports_page_status_and_delete_survive_a_refresh_race(client):
     assert "if (sel.isConnected) {" in st[:st.index("\n  }\n")]
 
 
+def test_page_api_error_shows_a_422_detail_list_as_text(client):
+    """A FastAPI 422 carries `detail` as a list of error objects;
+    new Error(list) toasted "[object Object]"."""
+    html = client.get("/reports").text
+    api = html[html.index("async function api(method, url, body) {"):]
+    api = api[:api.index("\n  }\n")]
+    assert "if (j && j.detail) msg = j.detail;" not in api
+    assert "if (typeof d === 'string' && d) msg = d;" in api
+    assert ("else if (Array.isArray(d) && d[0] && d[0].msg) "
+            "msg = String(d[0].msg);") in api
+
+
 def test_patch_report_invalid_status_422(client):
     sub = client.post(_SUBMIT, json=_payload(request_id="patch-1"))
     rid = sub.json()["id"]

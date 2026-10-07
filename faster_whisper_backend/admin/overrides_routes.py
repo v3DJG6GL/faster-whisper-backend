@@ -426,6 +426,9 @@ async def resolve(user_id: str = "", key_id: str = "", model: str = "",
         "fields": fields,
         "rules": r.rule_provenance or {},
         "profiles_applied": r.profiles_applied,
+        # A binding-store fault locks every field fail-closed with no
+        # owning layer; say so instead of "everything locked, by no one".
+        "binding_fault": bool(getattr(r, "binding_fault", False)),
     }
 
 

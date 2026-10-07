@@ -662,6 +662,32 @@ def test_map_meta_pruned_to_map_keys():
     assert m.PIPELINE_RULES[0].map_meta == {"Komma": 5}
 
 
+def test_regex_list_nested_fixed_counts_refused_before_the_template_sub():
+    # The in-process template check (`.sub(repl, "")`) runs on EVERY
+    # validation path, LOAD included, before the out-of-process guard:
+    # `(?:(?:a{0}){N}){N}` loops N*N times even on "", so 1e5 x 1e5 never
+    # returned. The counts are now refused match-free first. Run in a thread
+    # so a regression fails here instead of hanging the suite.
+    import threading
+    out = {}
+
+    def _validate():
+        try:
+            _ok(PIPELINE_RULES=[{
+                "name": "rl", "label": "RL", "type": "regex-list",
+                "entries": [{"pattern": "(?:(?:a{0}){100000}){100000}",
+                             "replacement": "y"}]}, _terminal()])
+            out["result"] = "accepted"
+        except ValidationError as e:
+            out["result"] = str(e)
+
+    t = threading.Thread(target=_validate, daemon=True)
+    t.start()
+    t.join(5.0)
+    assert not t.is_alive(), "template check hung on nested fixed counts"
+    assert "nested fixed counts" in out["result"]
+
+
 def test_map_key_collision_check_is_scoped_to_guard_slugs():
     """An untouched dictionary with colliding keys (it loads fine: load runs
     without the guard context) must not 422 a save scoped to another rule."""
@@ -723,6 +749,33 @@ def test_model_override_bounds_inherit_global():
 def test_admin_extra_forbid_on_override():
     with pytest.raises(ValidationError):
         settings_schema.ModelOverride.model_validate({"NONSENSE": 1})
+
+
+def test_empty_override_for_a_nonempty_str_field_means_no_override():
+    # The /settings per-model pane seeds `+ override` with '' for string
+    # kinds (REVISION has no global to seed from) and a cleared string widget
+    # stores ''. For a field needing >= 1 character that 422'd the whole save;
+    # '' now means "no override" (absent = inherit).
+    m = settings_schema.ModelOverride.model_validate(
+        {"REVISION": "", "BGM_SEPARATION_UVR_MODEL": "", "BEAM_SIZE": 3})
+    assert m.REVISION is None and m.BGM_SEPARATION_UVR_MODEL is None
+    assert "REVISION" not in m.model_fields_set
+    assert m.BEAM_SIZE == 3
+    p = settings_schema.OverrideProfile.model_validate(
+        {"BGM_SEPARATION_UVR_MODEL": ""})
+    assert p.BGM_SEPARATION_UVR_MODEL is None
+    # A real value still validates and is kept.
+    m = settings_schema.ModelOverride.model_validate(
+        {"REVISION": "main", "BGM_SEPARATION_UVR_MODEL": "UVR-MDX-NET-Inst_HQ_3"})
+    assert (m.REVISION, m.BGM_SEPARATION_UVR_MODEL) == (
+        "main", "UVR-MDX-NET-Inst_HQ_3")
+
+
+def test_empty_override_keeps_an_explicit_empty_where_empty_is_valid():
+    # Only fields where '' can never validate are dropped: an explicit ''
+    # elsewhere still beats the inherited value (test_explicit_empty_overrides).
+    m = settings_schema.ModelOverride.model_validate({"DEFAULT_LANGUAGE": ""})
+    assert m.DEFAULT_LANGUAGE == "" and "DEFAULT_LANGUAGE" in m.model_fields_set
 
 
 # ---------------------------------------------------------------------------

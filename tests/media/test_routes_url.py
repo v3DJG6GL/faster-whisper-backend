@@ -290,6 +290,15 @@ def test_preview_policy_reject_400(client, url_enabled, monkeypatch):
     assert "live" in r.json()["detail"]
 
 
+def test_preview_and_source_url_with_an_unencodable_host_are_400(client, url_enabled):
+    # `a..com`: getaddrinfo raises UnicodeError, which escaped as a 500.
+    bad = "https://a..com/x.mp3"
+    r = client.post("/v1/audio/url-preview", json={"url": bad})
+    assert r.status_code == 400, r.text
+    assert "host name is invalid" in r.json()["detail"]
+    assert _post_url(client, source_url=bad).status_code == 400
+
+
 def test_preview_validation(client, url_enabled):
     assert client.post("/v1/audio/url-preview", json={}).status_code == 422
     assert client.post("/v1/audio/url-preview",
@@ -532,10 +541,16 @@ def test_keep_video_attach_that_gave_up_leaves_the_progress_entry_open(
     """When the attach gives up on a row still "running" (the handler's
     finish is still on its thread), the video task must not close the
     entry: /result would then scrub `source_video_pending` before the
-    handler's own attach swapped in the video keys."""
-    import time as _time
+    handler's own attach swapped in the video keys.
+
+    The video lands INSIDE the handler's job finish, so the finish has not
+    returned yet (`finish_landed` unset) when the task gives up — released
+    after the response instead, the finish has landed and the task owns the
+    fallback (tests/main/test_video_attach_order.py)."""
+    import asyncio
 
     calls: list = []
+    open_after_give_up: list = []
 
     def _gave_up(pid, state):
         calls.append(pid)
@@ -543,17 +558,24 @@ def test_keep_video_attach_that_gave_up_leaves_the_progress_entry_open(
     monkeypatch.setattr(media_video, "_jobs_attach_video_sync", _gave_up)
     release = video_enabled._video_gate["make"]()
     video_enabled._video_gate["release"] = release
-    r = _post_url(client, keep_video="true", progress_id=_PID)
-    assert r.status_code == 200 and r.json().get("source_video_pending") is True
-    release.set()
-    for _ in range(300):
-        if calls:
-            break
-        _time.sleep(0.01)
-    _time.sleep(0.1)
+    real_finish = tx_progress._jobs_finish
+
+    async def _finish_still_pending(pid, **kw):
+        release.set()
+        for _ in range(300):
+            if calls:
+                break
+            await asyncio.sleep(0.01)
+        await asyncio.sleep(0.1)    # let the video task run its finally
+        open_after_give_up.append(pid in tx_progress._BATCH_PROGRESS)
+        await real_finish(pid, **kw)
+    monkeypatch.setattr(tx_progress, "_jobs_finish", _finish_still_pending)
+
     try:
-        assert calls == [_PID]
-        assert _PID in tx_progress._BATCH_PROGRESS
+        r = _post_url(client, keep_video="true", progress_id=_PID)
+        assert r.status_code == 200 and r.json().get("source_video_pending") is True
+        assert calls[:1] == [_PID]
+        assert open_after_give_up == [True]
     finally:
         tx_progress._progress_close(_PID)
 

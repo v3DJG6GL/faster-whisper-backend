@@ -207,6 +207,35 @@ def test_resolve_decode_master_gate_off_reports_ignored(client, make_user_key):
     assert bs["client_sim"]["outcome"] == "ignored_locked"  # gate, not field-lock
 
 
+def test_resolve_reports_a_binding_store_fault(client, make_user_key, monkeypatch):
+    # A binding-fetch fault locks every field fail-closed with no owning
+    # layer; the explorer showed "locked" everywhere and gave no reason.
+    from faster_whisper_backend.auth import api_keys_store
+    _, _, h = _admin(make_user_key)
+    uid, _ = make_user_key("carol", is_admin=False)
+    params = {"user_id": uid, "model": "whisper-1"}
+    rj = client.get(f"{OV}/resolve", headers=h, params=params).json()
+    assert rj["binding_fault"] is False
+
+    def _boom(_ident_id):
+        raise RuntimeError("database is locked")
+
+    monkeypatch.setattr(api_keys_store, "get_user_config", _boom)
+    r = client.get(f"{OV}/resolve", headers=h, params=params)
+    assert r.status_code == 200, r.text
+    rj = r.json()
+    assert rj["binding_fault"] is True
+    assert rj["fields"]["DEFAULT_LANGUAGE"]["locked"] is True
+
+
+def test_page_explorer_names_a_binding_fault(client):
+    html = client.get(OV).text
+    dr = html[html.index("async function doResolve() {"):]
+    dr = dr[:dr.index("\n  }\n")]
+    assert "if (j.binding_fault) {" in dr
+    assert "Binding store unreadable" in dr
+
+
 def test_per_key_config_overrides_user(client, make_user_key):
     _, _, h = _admin(make_user_key)
     uid, _ = make_user_key("alice", is_admin=False)

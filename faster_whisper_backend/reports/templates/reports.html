@@ -322,7 +322,11 @@
       var msg = 'HTTP ' + resp.status;
       try {
         var j = await resp.json();
-        if (j && j.detail) msg = j.detail;
+        // A 422 carries `detail` as a list of error objects: new Error(list)
+        // would toast "[object Object]".
+        var d = j && j.detail;
+        if (typeof d === 'string' && d) msg = d;
+        else if (Array.isArray(d) && d[0] && d[0].msg) msg = String(d[0].msg);
       } catch(_) {}
       throw new Error(msg);
     }

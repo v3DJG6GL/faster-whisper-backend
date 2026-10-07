@@ -279,6 +279,18 @@ def test_net_policy_resolve_pinned_refuses_forbidden_answer(monkeypatch):
     assert net_policy.resolve_pinned("public.example", 443) == public
 
 
+def test_guard_resolve_pinned_fails_closed_on_a_host_idna_cannot_encode():
+    """`a..com` (empty label) or a 64-char label makes getaddrinfo raise
+    UnicodeError, not OSError; inside the yt-dlp child it must still end as
+    the guard's RequestError (fail closed), never an unhandled error."""
+    udl.guard_self_check(force=True)
+    guard = sys.modules["fwb_ssrf_guard_inproc"]
+    from yt_dlp.networking.exceptions import RequestError
+    for host in ("a..com", "a" * 64 + ".com"):
+        with pytest.raises(RequestError, match=guard.MARKER):
+            guard._resolve_pinned(host, 443)
+
+
 def _run_launcher(plugin_flags, tmp_path):
     """The launcher with build_download_argv's plugin flags, run far enough
     to load plugins (`--version` exits inside option parsing, before yt-dlp

@@ -1400,6 +1400,10 @@ async def transcribe(
     _video_task: "asyncio.Task | None" = None
     _video_result: "dict | None" = None
     _run_finished = [False]
+    # Set (on the loop) right after the job finish below returns, BEFORE the
+    # handler checks whether the video task is done: a task whose attach gave
+    # up on the still-"running" row then knows the fallback is its own.
+    _finish_landed = [False]
     # The video landed before the run ended: the progress entry is closed
     # only after the outer finally's job finish + video attach (see there).
     _close_after_attach = False
@@ -1691,6 +1695,7 @@ async def transcribe(
                                 capped=_video_max_height is not None,
                                 user_id=_user_id, protect=_source_media_id,
                                 run_finished=_run_finished,
+                                finish_landed=_finish_landed,
                                 job_row=_job_row))
                         # keep_video is refused without a progress_id.
                         media_video._VIDEO_TASKS[_pid] = _video_task
@@ -1748,7 +1753,7 @@ async def transcribe(
             # broken — forcing word_timestamps=True there produces empty
             # transcripts. Skip capture instead.
             #
-            # Sampling roll + cap check + size guard happen at handler
+            # Sampling roll + size guard happen at handler
             # entry so we don't waste DTW CPU on requests that won't
             # land. Duration filter is post-transcribe (we don't know
             # the duration yet).
@@ -1757,7 +1762,6 @@ async def transcribe(
             if (getattr(cfg, "CAPTURES_RECORDING_ENABLED", False)
                     and gate_word_ts):
                 try:
-                    cap_max = int(getattr(cfg, "CAPTURES_MAX", 5000))
                     hard_lim = int(getattr(
                         cfg, "CAPTURES_RECORDING_AUDIO_BYTES_HARD_LIMIT",
                         100_000_000,
@@ -1765,8 +1769,10 @@ async def transcribe(
                     sample_rate = float(getattr(
                         cfg, "CAPTURES_RECORDING_SAMPLE_RATE", 1.0,
                     ))
-                    if (captures_store.count_evictable() < cap_max
-                            and audio_bytes < hard_lim
+                    # No CAPTURES_MAX term: create_capture's _evict_to_cap
+                    # rotates the oldest rows out (dismissed → … → ready);
+                    # refusing at the cap meant it never ran.
+                    if (audio_bytes < hard_lim
                             and random.random() < sample_rate):
                         will_capture = True
                         want_word_ts = True  # force DTW for capture
@@ -3447,6 +3453,10 @@ async def transcribe(
                     stages=(_stage_timings or None),
                     plan=_rplan.snapshot()["plan"],
                     model=resolved_model, task=_task_now)
+                # No await between this and the done() check below: either
+                # this side sees the task done and does the fallback attach +
+                # close, or the task sees the flag and does them itself.
+                _finish_landed[0] = True
                 # The video may have landed while the finish above was on its
                 # thread — its own attach then saw "running" and gave up. The
                 # swap is idempotent (it pops the flag), so both sides may try.

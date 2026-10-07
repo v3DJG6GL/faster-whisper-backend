@@ -47,6 +47,15 @@ def test_validate_url_rejects(url):
         udl.validate_url(url)
 
 
+def test_validate_url_rejects_a_host_idna_cannot_encode():
+    # An empty or >63-char label makes getaddrinfo raise UnicodeError
+    # downstream (a 500 from url-preview); refuse it here as a client error.
+    for url in ("https://a..com/x.mp3", "https://" + "a" * 64 + ".com/x.mp3"):
+        with pytest.raises(udl.UrlDownloadError, match="host name is invalid"):
+            udl.validate_url(url)
+    assert udl.validate_url("https://bücher.de/x.mp3") == "https://bücher.de/x.mp3"
+
+
 def test_validate_url_rejects_overlong():
     with pytest.raises(udl.UrlDownloadError):
         udl.validate_url("https://example.com/" + "a" * 2048)
