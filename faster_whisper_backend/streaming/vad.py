@@ -89,8 +89,9 @@ class SileroEndpointer:
         self._model = get_vad_model()
         self.threshold = float(threshold)
         # The energy gate a mid-stream Silero failure degrades to: the same
-        # configured level the construction-time fallback honours.
-        self._energy_dbfs = float(energy_dbfs)
+        # gate (configured level AND hysteresis) the construction-time
+        # fallback builds, so both fallbacks behave alike.
+        self._energy = EnergyEndpointer(threshold_dbfs=float(energy_dbfs))
         # Silero's built-in hysteresis (off-threshold below the on-threshold),
         # floored at a small positive value: a configured threshold < 0.15 would
         # otherwise make _off negative, so the latch could never release (prob is
@@ -125,7 +126,12 @@ class SileroEndpointer:
                 self._degraded = True
                 logger.warning("[streaming-vad] Silero call failed mid-stream; "
                                "degrading to the energy gate for this session.")
-            prob = 1.0 if rms_dbfs(frame) > self._energy_dbfs else 0.0
+            # Hand the latch over, so an utterance in progress carries on
+            # under the energy gate's own hysteresis instead of a bare
+            # per-frame threshold that flickers around the level.
+            self._energy._speaking = self._speaking
+            self._speaking = self._energy.is_speech(frame)
+            return self._speaking
         if self._speaking:
             if prob < self._off:
                 self._speaking = False
@@ -135,6 +141,7 @@ class SileroEndpointer:
 
     def reset(self) -> None:
         self._speaking = False
+        self._energy.reset()
         self._buf = np.zeros(self._win, dtype=np.float32)
 
 

@@ -72,6 +72,10 @@ def test_silero_mid_stream_degradation_honours_the_configured_energy_gate(monkey
     ep = make_endpointer("silero", energy_dbfs=-60.0)
     assert isinstance(ep, streaming_vad.SileroEndpointer)
     assert ep.is_speech(_frame(10 ** (-50 / 20))) is True     # -50 dBFS > -60
+    # The same 6 dB hysteresis as the construction-time EnergyEndpointer: a
+    # dip just under the level does not flip speech off frame by frame.
+    assert ep.is_speech(_frame(10 ** (-63 / 20))) is True
+    assert ep.is_speech(_frame(10 ** (-70 / 20))) is False
 
 
 def test_make_endpointer_auto_falls_back_when_silero_unavailable(monkeypatch):

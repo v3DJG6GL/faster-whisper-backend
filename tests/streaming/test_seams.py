@@ -80,15 +80,9 @@ def _self_correction(a_words, b_words):
     return _clean(a_words[-1]) == "punkt" and _clean(b_words[0]) == "strichpunkt"
 
 
-def _run(main, utts, language_of):
-    """One session over `utts`. `language_of(k)` is the formatting language
-    once k utterances are in — the route sets it from each final's decode
-    BEFORE formatting (auto language: the decode's detection)."""
+def _run(main, utts, language):
+    """One session over `utts`, formatted in `language` throughout."""
     finals = []
-    k = [0]
-
-    def lang():
-        return language_of(k[0])
 
     async def emit(m):
         if m["type"] == "final":
@@ -103,16 +97,15 @@ def _run(main, utts, language_of):
     s = StreamSession(
         config=StreamConfig(), endpointer=EnergyEndpointer(),
         decode_partial=_dp, decode_final=_df,
-        postprocess=lambda raw: pl_engine._postprocess_text(raw, model_name="", language=lang()),
+        postprocess=lambda raw: pl_engine._postprocess_text(raw, model_name="", language=language),
         emit=emit,
-        holdback=lambda raw: pl_engine.holdback_start(raw, model_name="", language=lang()),
-        format_key=lang,
-        diagnose=lambda a, b: pl_engine.seam_culprit(a, b, model_name="", language=lang()),
+        holdback=lambda raw: pl_engine.holdback_start(raw, model_name="", language=language),
+        format_key=lambda: language,
+        diagnose=lambda a, b: pl_engine.seam_culprit(a, b, model_name="", language=language),
     )
 
     async def go():
         for u in utts:
-            k[0] += 1
             s.raw_confirmed += u
             await s._emit_update()
         await s.close()
@@ -142,33 +135,32 @@ def _splits(words, rng):
     return out
 
 
-def _check(main, corpus, modes, caplog):
+def _check(main, corpus, language, caplog):
     rng = random.Random(12345)
     checked = warned = 0
     for passage in corpus:
         words = "".join(passage).strip().split(" ")
         for utts, seams in _splits(words, rng):
-            for mode, language_of in modes:
-                caplog.clear()
-                with caplog.at_level(logging.WARNING, logger="faster_whisper_backend.streaming.session"):
-                    finals = _run(main, utts, language_of)
-                checked += 1
-                docs = [m["committed"] + m["tail"] for m in finals]
-                committeds = [m["committed"] for m in finals]
-                for x, y in zip(docs, docs[1:]):
-                    assert y.startswith(x), (mode, utts, x, y)
-                for x, y in zip(committeds, committeds[1:]):
-                    assert y.startswith(x), (mode, utts, x, y)
-                assert all("¿" not in d and "¡" not in d for d in docs), (mode, utts, docs)
-                seam_warnings = [r for r in caplog.records if "seam:" in r.getMessage()]
-                if seam_warnings:
-                    warned += 1
-                    assert any(_self_correction(a, b) for a, b in seams), (
-                        mode, utts, [r.getMessage() for r in seam_warnings])
-                else:
-                    full = pl_engine._postprocess_text("".join(utts), model_name="",
-                                                  language=language_of(len(utts)))
-                    assert committeds[-1] == full, (mode, utts, committeds[-1], full)
+            caplog.clear()
+            with caplog.at_level(logging.WARNING, logger="faster_whisper_backend.streaming.session"):
+                finals = _run(main, utts, language)
+            checked += 1
+            docs = [m["committed"] + m["tail"] for m in finals]
+            committeds = [m["committed"] for m in finals]
+            for x, y in zip(docs, docs[1:]):
+                assert y.startswith(x), (utts, x, y)
+            for x, y in zip(committeds, committeds[1:]):
+                assert y.startswith(x), (utts, x, y)
+            assert all("¿" not in d and "¡" not in d for d in docs), (utts, docs)
+            seam_warnings = [r for r in caplog.records if "seam:" in r.getMessage()]
+            if seam_warnings:
+                warned += 1
+                assert any(_self_correction(a, b) for a, b in seams), (
+                    utts, [r.getMessage() for r in seam_warnings])
+            else:
+                full = pl_engine._postprocess_text("".join(utts), model_name="",
+                                                   language=language)
+                assert committeds[-1] == full, (utts, committeds[-1], full)
     return checked, warned
 
 
@@ -177,14 +169,14 @@ def test_german_documents_never_rewrite_sent_text(app_module, caplog):
     # before every compose, exactly as the route does. That route ordering
     # (no '¿' on German questions under auto) is pinned by
     # test_routes_streaming.py::test_stream_formats_the_first_final_in_the_detected_language.
-    checked, warned = _check(app_module, DE, [("de", lambda k: "de")], caplog)
+    checked, warned = _check(app_module, DE, "de", caplog)
     assert checked > 700
     # Only the Punkt | Strichpunkt splits may hit the safety net.
     assert warned <= 8
 
 
 def test_english_documents_never_rewrite_sent_text(app_module, caplog):
-    checked, warned = _check(app_module, EN, [("en", lambda k: "en")], caplog)
+    checked, warned = _check(app_module, EN, "en", caplog)
     assert checked > 50 and warned == 0
 
 

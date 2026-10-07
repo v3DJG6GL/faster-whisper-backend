@@ -107,6 +107,13 @@ _CLOSING_PUNCT = ".,:;!?%)]}…»“‘"
 
 def _common_prefix_len(a: str, b: str) -> int:
     """Length of the longest common leading substring of ``a`` and ``b``."""
+    # The document only grows (see _compose), so one is nearly always a prefix
+    # of the other: answer that in C instead of a per-character Python loop
+    # over the whole, unbounded document on every final.
+    if a.startswith(b):
+        return len(b)
+    if b.startswith(a):
+        return len(a)
     n = min(len(a), len(b))
     i = 0
     while i < n and a[i] == b[i]:
@@ -338,7 +345,10 @@ class StreamSession:
                     # (the frame that locks everything confirmed so far as
                     # committed). A failed final DECODE never gets here —
                     # _finalize_inner falls back to the partial transcript —
-                    # so this is postprocess, the emit or on_final raising.
+                    # so this is the emit or on_final raising. A postprocess
+                    # that raised gets here too but is NOT recovered: the
+                    # closing commit below re-runs postprocess over the same
+                    # text and raises again, to the route's error handling.
                     # Type only — the message can carry a client-chosen
                     # handshake string.
                     logger.warning("[stream %s] finalize failed on close (%s); "

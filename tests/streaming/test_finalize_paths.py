@@ -366,6 +366,60 @@ def test_translate_expect_parks_when_translation_is_enabled(
     assert receipt_hold.pending() >= 1
 
 
+# ---- capture gate -----------------------------------------------------------
+
+
+def _dictate_one(ws):
+    ws.send_bytes(_pcm(8000, 2500))
+    ws.send_bytes(_pcm(0, 1500))
+    ws.send_json({"type": "stop"})
+    return _drain(ws)
+
+
+def test_a_full_capture_store_still_records_and_leaves_eviction_to_the_store(
+        client, app_module, monkeypatch):
+    """At CAPTURES_MAX the gate used to refuse before create_capture could run
+    its _evict_to_cap, so the documented oldest-first rotation never happened
+    and every later dictation silently recorded nothing."""
+    from faster_whisper_backend.captures import store as captures_store
+
+    monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
+    monkeypatch.setattr(app_module.cfg, "CAPTURES_RECORDING_ENABLED", True, raising=False)
+    monkeypatch.setattr(app_module.cfg, "CAPTURES_MAX", 10, raising=False)
+    monkeypatch.setattr(captures_store, "count_evictable", lambda: 10)
+    created = []
+    monkeypatch.setattr(captures_store, "create_capture",
+                        lambda **kw: created.append(kw) or "cap-test-id")
+
+    with client.websocket_connect(_STREAM_URL) as ws:
+        assert _config(ws)["type"] == "ready"
+        msgs, _code = _dictate_one(ws)
+    assert any(m["type"] == "final" for m in msgs)
+    assert len(created) == 1
+
+
+def test_turning_capture_recording_off_mid_session_stops_recording(
+        client, app_module, monkeypatch):
+    """CAPTURES_RECORDING_ENABLED is a privacy switch: switched off while a
+    dictation socket is open, the next utterance on that socket is not
+    written to the captures store."""
+    from faster_whisper_backend.captures import store as captures_store
+
+    monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
+    monkeypatch.setattr(app_module.cfg, "CAPTURES_RECORDING_ENABLED", True, raising=False)
+    created = []
+    monkeypatch.setattr(captures_store, "create_capture",
+                        lambda **kw: created.append(kw) or "cap-test-id")
+
+    with client.websocket_connect(_STREAM_URL) as ws:
+        assert _config(ws)["type"] == "ready"
+        monkeypatch.setattr(app_module.cfg, "CAPTURES_RECORDING_ENABLED", False,
+                            raising=False)
+        msgs, _code = _dictate_one(ws)
+    assert any(m["type"] == "final" for m in msgs)
+    assert created == []
+
+
 # ---- refusals carry their close code ---------------------------------------
 
 

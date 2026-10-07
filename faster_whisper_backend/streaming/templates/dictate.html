@@ -236,7 +236,11 @@
   function onMessage(ev) {
     let m; try { m = JSON.parse(ev.data); } catch { return; }
     if (stopTimer) armStopTimer(STOP_WAIT_MS);
-    if (m.type === "ready") { setStatus("listening", "live"); }
+    // Stop during a cold model load: "ready" arrives after the mic is already
+    // released, so it must not put "listening" over "finishing…".
+    if (m.type === "ready") {
+      if (running && statusEl.className !== "error") setStatus("listening", "live");
+    }
     else if (m.type === "partial") { renderPartial(m.committed, m.pending); }
     else if (m.type === "final") {
       // committed = locked prefix; tail = the newest sentence (a display hint —

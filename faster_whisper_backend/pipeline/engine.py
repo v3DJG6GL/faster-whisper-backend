@@ -32,20 +32,23 @@ logger = logging.getLogger("whisper-api")
 # rebuild_caches() compiles each rule's regex pattern once at module load and
 # again on admin WebUI save of a cache_rebuild field (settings/schema.py
 # CACHE_REBUILD_FIELDS).
-# Disabled rules and skipped types (terminal, empty patterns) are filtered
-# out of the compiled list — the runtime walker is just a tight for-loop.
+# The terminal row, empty patterns and invalid regexes are left out of the
+# compiled list; globally-disabled rules stay in it and are filtered per call,
+# so a per-model PIPELINE_RULES_INCLUDE can force-enable them.
 
 from dataclasses import dataclass, field as _dc_field
 
 
 @dataclass(frozen=True)
 class _CompiledRule:
-    """One row of the compiled pipeline. `payload` carries type-specific data:
+    """One row of the compiled pipeline. `payload` is the second argument of
+    the rule's `pattern.sub` (see _apply_rule):
       regex-list (per entry)      → replacement string
-      callback:lowercase-wordlist → frozenset[str] of lowercase words
-      callback:map                → dict[str_lower, str] lookup
-      callback:dedup              → None (callback hardcoded)
-      callback:upper              → None (callback hardcoded)
+      callback:lowercase-wordlist → replacer closed over the lowercase wordlist
+      callback:map                → replacer from dictation_map.compile_map
+                                    (the lookup itself is in `map_lookup`)
+      callback:dedup              → _dedup_callback
+      callback:upper              → _upper_callback
     `name` is the rule slug used for per-model EXCLUDE / INCLUDE matching.
     `enabled` mirrors the global `rule.enabled` flag — checked at runtime
     rather than at compile time so per-model PIPELINE_RULES_INCLUDE can

@@ -144,6 +144,14 @@ _SHORTHAND_CHARS = {
     "n": "\n", "t": "\t", "r": "\r", "f": "\f", "v": "\v",
 }
 
+# Cap on the product of nested minimum counts along any group-nesting path
+# (see _fixed_count_product). Python runs a fixed count over a zero-width body all
+# the same, so `(?:(?:a{0}){N}){N}` loops N*N times on EVERY input, the empty
+# string included — an uninterruptible in-process hang wherever the pattern
+# is first matched (the overlap check, the schema's template check). No
+# dictation rule needs anything near this many repetitions.
+_MAX_FIXED_COUNT = 10 ** 4
+
 _SELF = os.path.abspath(__file__)
 
 
@@ -199,6 +207,72 @@ def _read_quantifier(pat: str, i: int) -> "tuple[bool, bool, int, bool]":
     if i < len(pat) and pat[i] in "?+":
         i += 1  # lazy or possessive suffix
     return repeats, atomic, i, variable
+
+
+def _fixed_count_product(pat: str) -> int:
+    """The largest product of the MINIMUM counts of ``{n}`` / ``{n,m}`` /
+    ``{n,}`` quantifiers along any group-nesting path of ``pat``:
+    ``(?:(?:a{0}){30}){40}`` → 1200.
+
+    Only the minimum is forced: past it the engine stops a loop whose body
+    matched empty, so ``(?:(?:a{0}){0,100000}){0,100000}`` is instant while
+    ``(?:(?:a{0}){3000}){3000}`` spins 9 million times (~3 s) even on "".
+    Each count contributes at least 1 — ``a{0}`` still costs its enclosing
+    loops their full iteration count — and ``*`` / ``+`` / ``?`` count as 1.
+    Escapes, classes and ``(?#...)`` comments are skipped as in the screen.
+    """
+    pat = _strip_verbose(pat)
+    n = len(pat)
+
+    def _count(j: int) -> "tuple[int, int]":
+        if j < n and pat[j] == "{":
+            end = pat.find("}", j)
+            if end != -1:
+                lo, comma, hi = pat[j + 1:end].partition(",")
+                if ((_ascii_digits(lo) or (comma and not lo))
+                        and (_ascii_digits(hi) or not hi)):
+                    # Ten digits already exceed the engine's MAXREPEAT.
+                    return max(int(lo[:10] or "0"), 1), end + 1
+        return 1, j
+
+    stack = [1]
+    i = 0
+    while i < n:
+        c = pat[i]
+        if c == "(":
+            if pat.startswith("(?#", i):
+                end = pat.find(")", i)
+                i = n if end == -1 else end + 1
+                continue
+            stack.append(1)
+            i += 1
+            continue
+        if c == ")" and len(stack) > 1:
+            inner = stack.pop()
+            mult, i = _count(i + 1)
+            stack[-1] = max(stack[-1], inner * mult)
+            continue
+        if c == "\\":
+            i += 2
+        elif c == "[":
+            i = _skip_class(pat, i)[1] + 1
+        else:
+            i += 1
+        mult, i = _count(i)
+        stack[-1] = max(stack[-1], mult)
+    return max(stack)
+
+
+def check_fixed_counts(where: str, pattern: str) -> None:
+    """Raise ``ValueError(f"{where}: ...")`` when ``pattern`` nests fixed
+    counts past ``_MAX_FIXED_COUNT`` (see there). Cheap and match-free, so it
+    is safe to run before anything that matches the pattern in-process."""
+    if pattern and _fixed_count_product(pattern) > _MAX_FIXED_COUNT:
+        raise ValueError(
+            f"{where}: regex test failed: nested fixed counts repeat more than "
+            f"{_MAX_FIXED_COUNT} times (e.g. `(?:(?:x){{1000}}){{1000}}`), which "
+            "can hang the server even on empty input — use smaller counts."
+        )
 
 
 def _skip_class(pat: str, i: int) -> "tuple[int, int, bool]":
@@ -460,9 +534,13 @@ def _nested_repetition(pat: str) -> bool:
             # is `(?:a|aa)(?:a|aa)` repeated, and `(?:c|(n|nn))+#` repeats
             # the `(n|nn)` split exactly as `(n|nn)+#` does. Mark the parent
             # as repeating, so a variable quantifier on any enclosing group
-            # refuses it. A possessive or atomic group never re-splits.
+            # refuses it. A possessive or atomic group never re-splits — and
+            # neither does one whose split a mandatory, disjoint next atom
+            # pins down: `(?:(?:um|umm), )+` (see _follower_fixes_split).
             elif (spans and not frame["atomic"] and not possessive
-                    and _spans_overlap(pat, spans)):
+                    and _spans_overlap(pat, spans)
+                    and not (i == close + 1
+                             and _follower_fixes_split(pat, spans, i))):
                 stack[-1]["rep"] = True
             continue
         if c == "|":
@@ -499,6 +577,102 @@ def _spans_overlap(pat: str, spans: "list[tuple[int, int]]") -> bool:
     # text: (cx|[bc]x)+# splits "cxcx…" both ways. Refuse when one branch
     # matches the start of another branch's witness.
     return any(_branches_overlap(a, b) for a in stripped for b in stripped)
+
+
+def _follower_fixes_split(pat: str, spans: "list[tuple[int, int]]", i: int) -> bool:
+    """True if the atom at ``pat[i]``, right after an UN-quantified alternation
+    group whose branches are ``spans``, leaves each match of that group exactly
+    one way to split.
+
+    `(?:(?:um|umm), )+` overlaps (`um` is a prefix of `umm`), but the `,` that
+    must follow can't be matched by any branch character, so the group's match
+    has to end right before the next `,` — and since no two branches have the
+    same width, at most one branch fits that span. One parse per repetition is
+    linear, so the enclosing repeat is not refused for it. Deliberately narrow:
+    every branch must be a run of single-character, unquantified atoms; the
+    follower a mandatory literal, escaped character or plain character class
+    (`\\b` / `\\B` before it are skipped — they only restrict the match); and
+    no follower character may be matched by any branch atom, case-insensitively
+    and with DOTALL, so a flag elsewhere in the pattern cannot widen an atom
+    past the check. Anything else answers False and keeps the refusal:
+    `(?:(?:ax|[ab]x)c)+#` has two same-width branches matching `ax`, and
+    `((?:a|aa)a?)+#` has an optional follower — both stay exponential.
+    """
+    import re
+    n = len(pat)
+    while pat.startswith(("\\b", "\\B"), i):
+        i += 2
+    if i >= n or pat[i] in "()|^$.*+?{":
+        return False
+    char, group, j = _next_atom(pat, i)
+    if char is None or group is not None:
+        return False
+    k = _read_quantifier(pat, j)[2]
+    if k > j:
+        q = pat[j:k]
+        lo = q[1:].split(",")[0].rstrip("}?+") if q[0] == "{" else ""
+        if not (q[0] == "+" or (q[0] == "{" and _ascii_digits(lo) and int(lo) >= 1)):
+            return False
+    follower = _follower_chars(pat[i:j])
+    if not follower:
+        return False
+    widths = set()
+    atoms = []
+    for a, b in spans:
+        branch = _strip_outer_group(pat[a:b])
+        count, p = 0, 0
+        while p < len(branch):
+            if branch[p] in "()|^$*+?{":
+                return False
+            c, g, e = _next_atom(branch, p)
+            if c is None or g is not None or _read_quantifier(branch, e)[2] != e:
+                return False
+            atoms.append(branch[p:e])
+            count += 1
+            p = e
+        if not count or count in widths:
+            return False
+        widths.add(count)
+    try:
+        compiled = [re.compile(x, re.IGNORECASE | re.DOTALL) for x in set(atoms)]
+    except re.error:
+        return False
+    return not any(rx.fullmatch(ch) for rx in compiled for ch in follower)
+
+
+def _follower_chars(atom: str) -> "set[str] | None":
+    """Every character the single atom ``atom`` matches, or None when that set
+    is not small and explicit: a literal, an escaped non-alphanumeric
+    character, or a non-negated class of such characters and short ranges.
+    Shorthands (``\\w``), negated classes and escaped letters answer None."""
+    if atom.startswith("\\"):
+        return {atom[1]} if len(atom) == 2 and not atom[1].isalnum() else None
+    if not atom.startswith("["):
+        return {atom} if len(atom) == 1 else None
+    body = atom[1:-1]
+    if not body or body[0] == "^":
+        return None
+    out: set[str] = set()
+    p = 0
+    while p < len(body):
+        c = body[p]
+        if c == "\\":
+            if p + 1 >= len(body) or body[p + 1].isalnum():
+                return None
+            c, p = body[p + 1], p + 2
+        else:
+            p += 1
+        if p + 1 < len(body) and body[p] == "-":
+            hi = body[p + 1]
+            if hi in "\\[" or ord(hi) < ord(c) or ord(hi) - ord(c) > 256:
+                return None
+            out.update(chr(x) for x in range(ord(c), ord(hi) + 1))
+            p += 2
+        else:
+            out.add(c)
+    # Each one with its case variants: under (?i) the follower matches those
+    # too, and the branch atoms are compiled case-insensitively against them.
+    return out | {v for c in out for v in (c.lower(), c.upper())}
 
 
 def _loose_quantifier(b: str) -> bool:
@@ -542,10 +716,13 @@ def _branches_overlap(a: str, b: str) -> bool:
     even on a 64-character witness — and never when it holds any quantifier
     but a fixed count: optional atoms backtrack exponentially too
     (``a?a?…aa…`` against ``aa…``). A group without ``|`` and with only
-    fixed counts, like ``(?:h)a``, matches one way and is still checked.
+    fixed counts, like ``(?:h)a``, matches one way and is still checked —
+    unless its nested counts multiply past ``_MAX_FIXED_COUNT``:
+    ``(?:(?:a{0}){N}){N}`` loops N*N times however short the witness is.
     """
     import re
-    if a == b or ("(" in b and "|" in b) or _loose_quantifier(b):
+    if (a == b or ("(" in b and "|" in b) or _loose_quantifier(b)
+            or _fixed_count_product(b) > _MAX_FIXED_COUNT):
         return False
     w = _witness(a)
     if not w:
@@ -845,6 +1022,9 @@ def validate(checks: list, timeout: float | None = None) -> None:
     # than any wall-clock probe on inputs the fixtures don't happen to contain,
     # so they are refused on shape rather than on measured time.
     for where, pattern, _repl in checks:
+        # Before the overlap check below, which matches branch fragments
+        # in-process.
+        check_fixed_counts(where, pattern)
         if pattern and _nested_repetition(pattern):
             raise ValueError(
                 f"{where}: regex test failed: nested repetition "
@@ -873,7 +1053,7 @@ def validate(checks: list, timeout: float | None = None) -> None:
         idx = _last_index(getattr(exc, "stderr", None))
         where = checks[idx][0] if isinstance(idx, int) and 0 <= idx < len(checks) else "a rule"
         raise ValueError(
-            f"{where}: regex took > {budget:.0f} s on the guard's test inputs "
+            f"{where}: regex took > {budget:.2g} s on the guard's test inputs "
             "(1 KB of prose, a 4x longer copy, short repetitive runs, and the "
             "text the preceding rules produce) — likely catastrophic "
             "backtracking. Simplify the pattern."

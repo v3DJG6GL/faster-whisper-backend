@@ -717,7 +717,9 @@ def test_aborted_handshake_releases_the_per_user_slot(client, app_module,
     async def _gone(self, *args, **kwargs):
         raise RuntimeError("client went away during the handshake")
     monkeypatch.setattr(starlette.websockets.WebSocket, "accept", _gone)
-    with pytest.raises(Exception):
+    # Exactly the injected error: a handshake idle-timeout close (4408) would
+    # also empty _counts, without ever taking the aborted-accept path.
+    with pytest.raises(RuntimeError, match="client went away during the handshake"):
         with client.websocket_connect(_STREAM_URL) as ws:
             ws.receive_json()
     assert streaming_routes._stream_sessions._counts == {}

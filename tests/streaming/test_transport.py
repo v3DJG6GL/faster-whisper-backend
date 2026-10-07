@@ -55,6 +55,7 @@ def test_raw_transport_is_passthrough():
         assert isinstance(t, RawPcmTransport)
         await t.start()
         await t.feed(b"\x01\x02\x03\x04")
+        assert not t.dead
         await t.aclose()
 
     asyncio.run(run())
@@ -97,9 +98,11 @@ def test_ffmpeg_transport_dead_reader_warns_once(caplog):
                 break
             await asyncio.sleep(0.05)
         assert t._reader_dead
+        assert t.dead                  # the route ends the session on this
         for _ in range(50):
             await t.feed(b"\x00")
         await t.aclose()
+        assert not t.dead              # a closed transport is finished, not dead
 
     asyncio.run(run())
     assert sum("ffmpeg exited" in r.getMessage() for r in caplog.records) == 1
@@ -235,3 +238,46 @@ def test_stream_route_accepts_webm_via_ffmpeg(app_module, monkeypatch):
     finals = [m for m in msgs if m["type"] == "final"]
     assert finals, "expected a final from the decoded WebM"
     assert "welt" in "".join(m["committed"] + m.get("tail", "") for m in finals)
+
+
+def test_stream_route_ends_the_session_when_the_decoder_dies(app_module, monkeypatch):
+    """A dead ffmpeg discards every later frame while the audio keeps re-arming
+    the idle deadline — the producer must say so and end the session instead
+    of holding a STREAMING_MAX_SESSIONS slot until the client gives up."""
+    from faster_whisper_backend.streaming import routes as stream_routes
+    monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
+    feeds = []
+
+    class _DyingTransport:
+        dead = False
+
+        def __init__(self, sink, **_kw):
+            pass
+
+        async def start(self):
+            pass
+
+        async def feed(self, data):
+            feeds.append(data)
+            self.dead = True
+
+        async def aclose(self):
+            pass
+
+    monkeypatch.setattr(stream_routes, "make_transport",
+                        lambda fmt, sink, **kw: _DyingTransport(sink, **kw))
+    with TestClient(app_module.app, client=("127.0.0.1", 12345)) as client:
+        with client.websocket_connect("/v1/audio/transcriptions/stream") as ws:
+            ws.send_json({"type": "config", "model": "whisper-1",
+                          "audio": {"format": "webm"}})
+            assert ws.receive_json()["type"] == "ready"
+            ws.send_bytes(b"\x1a\x45\xdf\xa3 corrupt")
+            msgs = []
+            try:
+                for _ in range(50):
+                    msgs.append(ws.receive_json())
+            except WebSocketDisconnect:
+                pass
+    errors = [m for m in msgs if m.get("type") == "error"]
+    assert [m["code"] for m in errors] == ["decoder_failed"], msgs
+    assert len(feeds) == 1

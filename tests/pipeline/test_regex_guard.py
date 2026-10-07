@@ -471,3 +471,75 @@ def test_group_spelled_overlapping_branch_is_rejected(pat):
     """A branch that holds a group but no `|` matches linearly, so the
     in-process overlap match still runs on it — `(?:h)a` overlaps `haha`."""
     assert g._nested_repetition(pat)
+
+
+@pytest.mark.parametrize("pat", [
+    r"(?:\b(?:um|umm)\b[,.] )+",
+    r"(?:(?:um|umm), )+",
+    r"(?:(?:the|then) )+",
+    r"((?:\d|\d\d)\.)+",
+    r"(?:(?:Mr|Mrs)\. [A-Z]\w)+",
+])
+def test_overlap_pinned_by_a_mandatory_disjoint_follower_passes(pat):
+    """`(?:(?:um|umm), )+`: the `,` no branch can match ends the group's match
+    at one place, and only one branch has that width — one parse per
+    repetition, so ordinary filler/abbreviation cleanups are not refused."""
+    assert not g._nested_repetition(pat)
+    g.validate([("r", pat, "")])
+
+
+@pytest.mark.parametrize("pat", [
+    r"((?:a|aa){2})+$",
+    r"(?:c|(n|nn))+#",
+    r"((?:a|aa)a?)+#",
+    r"(?:(?:ax|[ab]x)c)+#",
+    r"(?:(?:a|ab)b)+#",
+    r"(?i)(?:(?:um|umm)M)+#",
+])
+def test_overlap_without_a_pinning_follower_is_still_rejected(pat):
+    """A fixed count, a `)`, an optional or overlapping follower, same-width
+    branches, or a follower a branch matches under (?i) — the split stays
+    ambiguous."""
+    with pytest.raises(ValueError, match="nested repetition"):
+        g.validate([("r", pat, "")])
+
+
+def _returns_within(fn, seconds=5.0):
+    import threading
+    out = {}
+
+    def _run():
+        try:
+            out["value"] = fn()
+        except Exception as exc:  # noqa: BLE001 - asserted on by the caller
+            out["error"] = exc
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+    t.join(seconds)
+    assert not t.is_alive(), "hung"
+    return out
+
+
+def test_nested_zero_width_fixed_counts_are_refused_without_matching():
+    """`(?:(?:a{0}){N}){N}` loops N*N times on any input, so the in-process
+    overlap match on that branch used to pin the request thread. Refused on
+    the counts alone, before anything matches the pattern."""
+    pat = "(x|(?:(?:a{0}){4000000000}){4000000000}x)+"
+    out = _returns_within(lambda: g.validate([("r", pat, "")]))
+    assert isinstance(out.get("error"), ValueError)
+    assert "nested fixed counts" in str(out["error"])
+    out = _returns_within(lambda: g._nested_repetition(pat))
+    assert "error" not in out
+    with pytest.raises(ValueError, match="nested fixed counts"):
+        g.check_fixed_counts("r", "(?:(?:a{0}){100000}){100000}")
+
+
+def test_fixed_count_product_counts_only_forced_iterations():
+    assert g._fixed_count_product(r"(?:(?:a{0}){30}){40}") == 1200
+    assert g._fixed_count_product(r"(?:\.\d{3}){2}") == 6
+    # Past the minimum an empty iteration ends the loop, so these are cheap.
+    assert g._fixed_count_product(r"(?:(?:a{0}){0,100000}){0,100000}") == 1
+    assert g._fixed_count_product(r".{0,20000}") == 1
+    # Escaped / class / comment braces are not quantifiers.
+    assert g._fixed_count_product(r"\{99999\}[{](?#{99999})") == 1
+    g.check_fixed_counts("r", r"\d{4}-\d{2}-\d{2}")

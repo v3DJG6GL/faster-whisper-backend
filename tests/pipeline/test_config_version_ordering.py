@@ -35,3 +35,29 @@ def test_apply_hot_changes_bumps_version_after_cfg_is_current(monkeypatch):
     assert latched["beam"] == 10                       # consumer saw OLD cfg…
     assert cfg.BEAM_SIZE == 3                          # …cfg is current now…
     assert settings_version.config_version() > latched["version"]   # …so it re-resolves
+
+
+def test_apply_hot_changes_bumps_version_before_model_eviction(monkeypatch):
+    # drain_then_evict waits on the model-load lock, which a concurrent load
+    # holds for its whole constructor. The re-resolve bump must not queue
+    # behind that: by the time eviction starts, cfg is current and the
+    # version already says so.
+    from faster_whisper_backend.transcription import models as tx_models
+    monkeypatch.setattr(cfg, "MODEL_DEVICE", "cuda", raising=False)
+    monkeypatch.setattr(config_store, "env_pinned_fields", lambda: frozenset())
+    monkeypatch.setattr(config_store, "load_overrides",
+                        lambda: {"MODEL_DEVICE": "cpu"})
+    monkeypatch.setattr(pl_apply, "EVICTORS",
+                        {k: (lambda: asyncio.sleep(0)) for k in pl_apply.EVICTORS})
+    seen = {}
+
+    async def _drain(model_id=None):
+        seen["version"] = settings_version.config_version()
+        return []
+    monkeypatch.setattr(tx_models, "drain_then_evict", _drain)
+
+    before = settings_version.config_version()
+    asyncio.run(pl_apply.apply_hot_changes({"MODEL_DEVICE": "cpu"}))
+
+    assert "version" in seen                    # MODEL_DEVICE is load-time
+    assert seen["version"] > before

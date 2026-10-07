@@ -178,6 +178,33 @@ _CLIENT_OVERRIDE_KEYS: frozenset[str] = frozenset(
 _LANGUAGE_RE = re.compile(r"\A[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8}){0,2}\Z")
 
 
+def _handshake_language(raw: object) -> "str | None":
+    """The handshake `language` as the Whisper code the decoder accepts.
+
+    Tri-state, same as batch: not a string → None (inherit DEFAULT_LANGUAGE);
+    blank → "" (explicit auto-detect, the client's cleared state). Otherwise
+    the value is lower-cased and kept when it, or a locale tag's primary
+    subtag (`de-DE` → `de`, `pt-BR` → `pt`), is one of Whisper's codes —
+    faster-whisper's tokenizer raises on anything else (`DE`, `en-US`), which
+    in streaming fails every partial and final with no error frame, and the
+    language-tagged pipeline rules are keyed by these codes too. Anything
+    else is unusable, so it is treated as absent (None), as is anything not
+    even shaped like a language code (CR/LF would reach the WARNING log raw).
+    """
+    if not isinstance(raw, str):
+        return None
+    value = raw.strip()
+    if not value:
+        return ""
+    if not _LANGUAGE_RE.match(value):
+        return None
+    value = value.lower()
+    for cand in (value, value.split("-", 1)[0]):
+        if cand in settings_schema.WHISPER_LANGUAGE_CODES:
+            return cand
+    return None
+
+
 async def _refuse(ws: WebSocket, code: int, reason: str) -> None:
     """Refuse a handshake so the client learns WHY: accept (echoing the bearer
     subprotocol, or a browser fails the handshake before it sees anything),
@@ -673,12 +700,11 @@ async def transcribe_stream(ws: WebSocket) -> None:
         _req_language = conf.get("language")
         # Tri-state, same as batch: key ABSENT → None → inherit DEFAULT_LANGUAGE;
         # present-but-empty → "" → explicit auto-detect (the client's cleared state).
-        # Anything not shaped like a language code is treated as absent: the
-        # value reaches faster-whisper, which on an English-only model logs it
-        # raw (CR/LF included) at WARNING on every partial, and the usage row.
-        req_language = _req_language.strip() if isinstance(_req_language, str) else None
-        if req_language and not _LANGUAGE_RE.match(req_language):
-            req_language = None
+        # A value that is not (or does not reduce to) a Whisper code is treated
+        # as absent and reported in the ready frame's overrides_ignored.
+        req_language = _handshake_language(_req_language)
+        _language_dropped = (req_language is None and isinstance(_req_language, str)
+                             and bool(_req_language.strip()))
         response_format = conf.get("response_format", "json")
         # Per-connection initial prompt (the client's "Vocabulary / prompt"). Sentinel,
         # same as batch: key ABSENT → inherit DEFAULT_PROMPT; present (incl. "") →
@@ -809,8 +835,11 @@ async def transcribe_stream(ws: WebSocket) -> None:
             _model_leases_held.append(name)
             return model
 
+        # The model the ledger row below names: the one whose load raised.
+        _loading = final_model
         try:
             final_model_obj = await _load_with_keepalive(final_model)
+            _loading = partial_model_name
             partial_model_obj = (
                 final_model_obj if partial_model_name == final_model
                 else await _load_with_keepalive(partial_model_name)
@@ -828,7 +857,7 @@ async def transcribe_stream(ws: WebSocket) -> None:
                 _ec, _es = metrics.classify_error(exc, status="error",
                                                   stage="transcribing")
                 metrics.record_transcription(
-                    model=str(final_model or ""), audio_dur=0.0, proc_dur=0.0,
+                    model=str(_loading or ""), audio_dur=0.0, proc_dur=0.0,
                     status="error", words=0, kind="dictate",
                     request_id=session_id, user_id=user.get("user_id"),
                     key_id=user.get("key_id"), username=user.get("username"),
@@ -872,6 +901,8 @@ async def transcribe_stream(ws: WebSocket) -> None:
         overrides_ignored = sorted(k for k in req_overrides
                                    if k in ident.locked_client_keys)
         _note_pinned_condition(req_overrides, overrides_ignored)
+        if _language_dropped:
+            overrides_ignored.append("language")
         if "DEFAULT_LANGUAGE" in ident.locked:
             _locked_lang = effective_config.cfg_for(final_model, "DEFAULT_LANGUAGE", ident) or ""
             if req_language and req_language != _locked_lang:
@@ -999,7 +1030,9 @@ async def transcribe_stream(ws: WebSocket) -> None:
 
         # Captures are eligible only when the model allows the DTW word path
         # (per-model WORD_TIMESTAMPS_ENABLED) — same gate as the batch route.
-        cap_enabled = bool(getattr(cfg, "CAPTURES_RECORDING_ENABLED", False)) and gate_final_words
+        # CAPTURES_RECORDING_ENABLED itself is read per utterance in on_final:
+        # it is a privacy switch, and turning it off must stop recording on a
+        # long-lived socket too, not only on the next connection.
         # The final decode stashes its faster-whisper info / segment diagnostics /
         # word list here so on_final (serialized right after, under the session
         # lock) can build the rich log block + the capture row without re-decoding.
@@ -1224,16 +1257,18 @@ async def transcribe_stream(ws: WebSocket) -> None:
         def _maybe_capture(rid, info, raw_text, final_text, words, fw_info,
                            segments=()):
             """Persist a fine-tuning capture for this utterance, mirroring the batch
-            route's eligibility gate (sampling / count cap / size / duration / disk)."""
+            route's eligibility gate (sampling / size / duration / disk). No
+            CAPTURES_MAX gate: a full store is create_capture's _evict_to_cap's
+            job, which rotates the oldest rows out in its documented priority
+            order — refusing here at the cap meant that eviction never ran and
+            every later utterance silently recorded nothing."""
             try:
                 from faster_whisper_backend.captures import store as captures_store
                 audio = info["audio"]
                 pcm_bytes = int(getattr(audio, "size", 0)) * 2
-                cap_max = int(getattr(cfg, "CAPTURES_MAX", 5000))
                 hard_lim = int(getattr(cfg, "CAPTURES_RECORDING_AUDIO_BYTES_HARD_LIMIT", 100_000_000))
                 sample = float(getattr(cfg, "CAPTURES_RECORDING_SAMPLE_RATE", 1.0))
-                if not (captures_store.count_evictable() < cap_max and pcm_bytes < hard_lim
-                        and random.random() < sample):
+                if not (pcm_bytes < hard_lim and random.random() < sample):
                     return None
                 dur = float(info["audio_dur"])
                 min_s = float(getattr(cfg, "CAPTURES_RECORDING_MIN_DURATION_S", 0.5))
@@ -1318,11 +1353,13 @@ async def transcribe_stream(ws: WebSocket) -> None:
                     "the partial-committed transcript",
                     session_id[:8], info["utterance"])
             elif not decoded:
+                _trimmed = info.get("trimmed_sec") or 0.0
                 logger.info(
                     "[stream %s] utt#%s: near-silence gate skipped the final "
-                    "decode — the text is the partial-committed transcript "
-                    "(%.2fs banked by a mid-utterance trim)",
-                    session_id[:8], info["utterance"], info["trimmed_sec"])
+                    "decode — the text is the partial-committed transcript%s",
+                    session_id[:8], info["utterance"],
+                    (f" ({_trimmed:.2f}s banked by a mid-utterance trim)"
+                     if _trimmed else ""))
             elif info.get("trimmed_sec"):
                 # The session banked the trimmed audio + committed words, so
                 # raw_text / words / info["audio"] all span the WHOLE utterance;
@@ -1335,7 +1372,8 @@ async def transcribe_stream(ws: WebSocket) -> None:
                     info["audio_dur"] - info["trimmed_sec"], info["trimmed_sec"])
 
             captured_id = None
-            if cap_enabled and raw_text.strip():
+            if (gate_final_words and getattr(cfg, "CAPTURES_RECORDING_ENABLED", False)
+                    and raw_text.strip()):
                 # seg_diag is on the decode BUFFER's timeline; after a trim the
                 # capture's audio and words span the whole utterance (the
                 # session re-bases the decode's words by the same offset, which
@@ -1549,6 +1587,8 @@ async def transcribe_stream(ws: WebSocket) -> None:
                 overrides_ignored = sorted(k for k in req_overrides
                                            if k in ident.locked_client_keys)
                 _note_pinned_condition(req_overrides, overrides_ignored)
+                if _language_dropped:
+                    overrides_ignored.append("language")
                 req_language = _client_language
                 if "DEFAULT_LANGUAGE" in ident.locked:
                     _ll = effective_config.cfg_for(final_model, "DEFAULT_LANGUAGE", ident) or ""
@@ -1817,6 +1857,20 @@ async def transcribe_stream(ws: WebSocket) -> None:
                     if msg["bytes"]:
                         _last_audio = _loop.time()
                     await transport.feed(msg["bytes"])
+                    if getattr(transport, "dead", False):
+                        # The ffmpeg decoder exited (corrupt container bytes, a
+                        # crash): every later frame would be discarded while the
+                        # audio keeps re-arming the idle deadline. Say so and
+                        # end the session; the close still commits what decoded.
+                        logger.info("[stream %s] audio decoder stopped — closing",
+                                    session_id[:8])
+                        async with send_lock:
+                            try:
+                                await ws.send_json({"type": "error", "code": "decoder_failed",
+                                                    "message": "audio decoder stopped; closing"})
+                            except Exception:  # noqa: BLE001 — peer may be gone
+                                pass
+                        break
                 elif msg.get("text") is not None:
                     try:
                         ctrl = json.loads(msg["text"])

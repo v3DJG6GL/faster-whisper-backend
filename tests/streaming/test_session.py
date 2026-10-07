@@ -163,9 +163,10 @@ def test_close_falls_back_on_a_failed_final_decode_and_still_commits(caplog):
 
 
 def test_close_survives_failing_on_final_and_still_commits(caplog):
-    """The finalize failures that DO reach close()'s tolerance: postprocess,
-    the emit or on_final raising during the drain finalize. Logged, not
-    raised — the closing document still commits the confirmed text."""
+    """The finalize failures close() tolerates: the emit or on_final raising
+    during the drain finalize. Logged, not raised — the closing document
+    still commits the confirmed text. (A raising postprocess is not among
+    them: the closing commit re-runs it over the same text.)"""
     import logging
 
     s, msgs = _make_session(postprocess=lambda raw: raw,

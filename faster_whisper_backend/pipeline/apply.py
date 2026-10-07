@@ -215,6 +215,17 @@ async def apply_hot_changes(
     if needs_cache_rebuild:
         await rebuild_caches_off_loop("admin update")
 
+    # save_overrides already bumped the config version when the FILE was
+    # written, but the running cfg only got the new values in the setattr loop
+    # above — two awaits later. A streaming session whose _refresh_ident ran
+    # in that window stamped the new version while resolving from the OLD cfg
+    # and would never re-resolve. Bump again now that cfg is current; consumers
+    # only compare for inequality, so the cost is one redundant re-resolve.
+    # Here, not at the end: drain_then_evict below waits on the model-load
+    # lock, which a concurrent load holds for its whole constructor, and
+    # nothing after this point changes what a session resolves from cfg.
+    settings_version.bump_config_version()
+
     # Eviction-on-edit: when a load-time field changed (globally or per-model),
     # drop the affected loaded model(s) from the cache so the next request
     # reloads them with the new settings. In-flight transcribes finish on the
@@ -287,14 +298,6 @@ async def apply_hot_changes(
     # From cfg, not `written`, so an env pin or a reset to baseline wins.
     if "CONSOLE_LOG_LEVEL" in written:
         log_setup.apply_console_log_level(getattr(cfg, "CONSOLE_LOG_LEVEL", "warning"))
-
-    # save_overrides already bumped the config version when the FILE was
-    # written, but the running cfg only got the new values in the setattr loop
-    # above — two awaits later. A streaming session whose _refresh_ident ran
-    # in that window stamped the new version while resolving from the OLD cfg
-    # and would never re-resolve. Bump again now that cfg is current; consumers
-    # only compare for inequality, so the cost is one redundant re-resolve.
-    settings_version.bump_config_version()
 
     return {
         "hot_applied": hot_changed,

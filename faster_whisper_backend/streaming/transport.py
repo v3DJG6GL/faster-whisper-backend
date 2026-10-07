@@ -32,6 +32,11 @@ class RawPcmTransport:
     def __init__(self, sink: Sink):
         self._sink = sink
 
+    @property
+    def dead(self) -> bool:
+        """Never: there is no decoder to die (see FfmpegTransport.dead)."""
+        return False
+
     async def start(self) -> None:
         pass
 
@@ -58,6 +63,13 @@ class FfmpegTransport:
         self._closed = False
         self._reader_dead = False
         self._dead_logged = False
+
+    @property
+    def dead(self) -> bool:
+        """True once ffmpeg stopped producing PCM before aclose(): every later
+        feed() is discarded, so the route ends the session instead of letting
+        it hold a slot while decoding nothing."""
+        return self._reader_dead and not self._closed
 
     async def start(self) -> None:
         self._proc = await asyncio.create_subprocess_exec(

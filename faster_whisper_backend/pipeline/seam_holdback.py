@@ -48,9 +48,9 @@ _TOKEN_RE = re.compile(r"\S+")
 
 
 def norm(tok: str) -> str:
-    """Comparison form of one word: NFKC, casefold, ß → ss, edge punctuation
-    stripped except ``-`` and ``/``."""
-    s = unicodedata.normalize("NFKC", tok or "").casefold().replace("ß", "ss")
+    """Comparison form of one word: NFKC, casefold (which also folds ß and ẞ
+    to ss), edge punctuation stripped except ``-`` and ``/``."""
+    s = unicodedata.normalize("NFKC", tok or "").casefold()
     i, j = 0, len(s)
     while i < j and _edge_punct(s[i]):
         i += 1

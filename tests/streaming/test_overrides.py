@@ -390,6 +390,36 @@ def test_model_load_failure_records_a_classified_error_row(
     assert err_rows[0]["kind"] == "dictate"
 
 
+def test_partial_model_load_failure_row_names_the_partial_model(
+        client, make_user_key, fake_model, app_module, monkeypatch):
+    """The final model loads fine and the STREAMING_PARTIAL_MODEL one fails:
+    the error row is charged to the model that failed, not the final one."""
+    _, raw_alice = make_user_key("alice")
+    monkeypatch.setattr(app_module.cfg, "STREAMING_PARTIAL_MODEL", "tiny-preview",
+                        raising=False)
+    real = tx_models._get_or_load_model
+
+    async def _load(name, *, lease=False):
+        if name == "tiny-preview":
+            raise RuntimeError("CUDA out of memory. Tried to allocate 2.00 GiB")
+        return await real(name, lease=lease)
+
+    monkeypatch.setattr(tx_models, "_get_or_load_model", _load)
+    from faster_whisper_backend.stats import metrics
+    rows = []
+    monkeypatch.setattr(metrics, "record_transcription", lambda **kw: rows.append(kw))
+
+    with client.websocket_connect(
+            "/v1/audio/transcriptions/stream", headers=bearer(raw_alice)) as ws:
+        ws.send_json({"type": "config", "model": "whisper-1",
+                      "audio": {"format": "pcm_s16le", "sample_rate": 16000}})
+        msgs = _drain(ws)
+
+    assert any(m.get("code") == "model_load_failed" for m in msgs), msgs
+    err_rows = [r for r in rows if r.get("status") == "error"]
+    assert [r["model"] for r in err_rows] == ["tiny-preview"], rows
+
+
 def test_handshake_drops_unknown_decode_override_keys(
         client, make_user_key, fake_model, app_module, monkeypatch):
     """Unknown `decode_overrides` keys are discarded at the handshake instead of
@@ -459,6 +489,44 @@ def test_handshake_language_that_is_not_a_code_is_treated_as_absent(
 
     assert "language" in fake_model.last_kwargs   # a decode ran
     assert fake_model.last_kwargs["language"] is None
+
+
+@pytest.mark.parametrize("raw,expected", [
+    ("de", "de"), ("DE", "de"), ("de-DE", "de"), ("pt-BR", "pt"),
+    ("en-US", "en"), ("haw", "haw"), ("xx", None), ("xx-YY", None),
+    ("English", None), ("", ""), ("  ", ""), (None, None), (7, None),
+])
+def test_handshake_language_reduces_to_a_whisper_code(raw, expected):
+    """faster-whisper's tokenizer raises on anything outside its own code
+    list, which in streaming fails every decode with no error frame — so a
+    case variant or locale tag is reduced to the Whisper code, and anything
+    that does not reduce to one is treated as absent."""
+    from faster_whisper_backend.streaming.routes import _handshake_language
+    assert _handshake_language(raw) == expected
+
+
+@pytest.mark.parametrize("language,expected", [("EN", "en"), ("en-US", "en"), ("xx", None)])
+def test_handshake_language_reaches_the_model_as_a_whisper_code(
+        client, make_user_key, fake_model, app_module, monkeypatch, language, expected):
+    monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
+    monkeypatch.setattr(app_module.cfg, "DEFAULT_LANGUAGE", None, raising=False)
+    _, raw_alice = make_user_key("alice")
+
+    with client.websocket_connect(
+            "/v1/audio/transcriptions/stream", headers=bearer(raw_alice)) as ws:
+        ws.send_json({"type": "config", "model": "whisper-1", "language": language,
+                      "audio": {"format": "pcm_s16le", "sample_rate": 16000}})
+        ready = ws.receive_json()
+        assert ready["type"] == "ready"
+        # An unusable value is reported, not silently swapped.
+        assert ("language" in ready.get("overrides_ignored", [])) == (expected is None)
+        ws.send_bytes(_pcm(8000, 2500))
+        ws.send_bytes(_pcm(0, 1500))
+        ws.send_json({"type": "stop"})
+        _drain(ws)
+
+    assert "language" in fake_model.last_kwargs   # a decode ran
+    assert fake_model.last_kwargs["language"] == expected
 
 
 # --- mid-connection credential revalidation ----------------------------------
