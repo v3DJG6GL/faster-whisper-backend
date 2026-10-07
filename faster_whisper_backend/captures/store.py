@@ -437,7 +437,16 @@ def create_capture(
                     translation_source or None, task or None,
                 ),
             )
-            evicted_any = _evict_to_cap(conn)
+            # The connection is autocommit, so the row above is already
+            # committed: an eviction failure (disk full, I/O error) must not
+            # reach the unlink below and leave a listed row with no audio.
+            # Eviction is best-effort; the next insert retries it.
+            try:
+                evicted_any = _evict_to_cap(conn)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("[captures] evict-to-cap failed: %s", e)
+                # It may have dropped rows before failing.
+                evicted_any = True
     except Exception:
         _safe_unlink(abs_path)
         raise
@@ -633,6 +642,17 @@ def _total_audio_bytes(conn: sqlite3.Connection) -> int:
     return total
 
 
+def _delete_ids(conn: sqlite3.Connection, ids: list[str]) -> None:
+    """DELETE rows by id, chunked to stay under SQLite's bind-variable limit
+    (a byte pass with CAPTURES_MAX=0 can drop tens of thousands of rows)."""
+    for off in range(0, len(ids), 500):
+        chunk = ids[off:off + 500]
+        conn.execute(
+            f"DELETE FROM captures WHERE id IN ({','.join('?' * len(chunk))})",
+            chunk,
+        )
+
+
 def _drop_oldest_with_status(
     conn: sqlite3.Connection, status: str, limit: int,
 ) -> int:
@@ -651,9 +671,7 @@ def _drop_oldest_with_status(
     ).fetchall()
     if not rows:
         return 0
-    ids = [r["id"] for r in rows]
-    placeholders = ",".join("?" * len(ids))
-    conn.execute(f"DELETE FROM captures WHERE id IN ({placeholders})", ids)
+    _delete_ids(conn, [r["id"] for r in rows])
     for r in rows:
         try:
             _safe_unlink(abs_audio_path(r["audio_relpath"]))
@@ -710,10 +728,7 @@ def _drop_oldest_by_bytes(
                 pass
         freed += sz
     if drop_ids:
-        placeholders = ",".join("?" * len(drop_ids))
-        conn.execute(
-            f"DELETE FROM captures WHERE id IN ({placeholders})", drop_ids,
-        )
+        _delete_ids(conn, drop_ids)
         for p in drop_paths:
             _safe_unlink(p)
     return freed
@@ -816,8 +831,9 @@ def get_capture(cid: str) -> dict[str, Any] | None:
 
 
 def get_captures_light(ids: list[str]) -> dict[str, dict[str, Any]]:
-    """{id: {id, user_id, status, sample_id}} for the ids that exist — the
-    four columns the bulk endpoints' admission checks read. No `SELECT *`
+    """{id: {id, user_id, status, sample_id, audio_relpath}} for the ids that
+    exist — the columns the bulk endpoints' admission checks read (the
+    relpath only to tell a restored audio_missing row). No `SELECT *`
     and no _row_to_dict: get_capture json.loads the words + segments blobs
     (hundreds of KB each), which a 1000-id bulk request would parse and
     throw away. Chunked to stay under SQLite's bind-variable limit."""
@@ -829,12 +845,13 @@ def get_captures_light(ids: list[str]) -> dict[str, dict[str, Any]]:
     for off in range(0, len(ids), 500):
         chunk = ids[off:off + 500]
         cur = conn.execute(
-            "SELECT id, user_id, status, sample_id FROM captures"
-            f" WHERE id IN ({','.join('?' * len(chunk))})", chunk,
+            "SELECT id, user_id, status, sample_id, audio_relpath"
+            f" FROM captures WHERE id IN ({','.join('?' * len(chunk))})", chunk,
         )
         for r in cur.fetchall():
             out[r["id"]] = {"id": r["id"], "user_id": r["user_id"],
-                            "status": r["status"], "sample_id": r["sample_id"]}
+                            "status": r["status"], "sample_id": r["sample_id"],
+                            "audio_relpath": r["audio_relpath"]}
     return out
 
 

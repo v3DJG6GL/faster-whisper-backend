@@ -633,10 +633,12 @@ def test_preview_merge_audio_is_not_cacheable(client, make_user_key,
 
 
 def test_audio_rate_limit_is_hot_and_per_identity(client, app_module,
-                                                  monkeypatch):
+                                                  monkeypatch, make_user_key):
     """The cap is read from config on every call, so a test can lower it to 2
     and raise it to 0 (= unlimited) without restarting anything. A missing cid
-    404s, but only AFTER the limiter runs — which is what we are measuring."""
+    404s, but only AFTER the limiter runs — which is what we are measuring.
+    The budget is per identity: a second caller keeps its own after the
+    first one is throttled."""
     monkeypatch.setattr(app_module.cfg, "CAPTURES_AUDIO_RATE_PER_MIN", 2,
                         raising=False)
     assert client.get("/captures/api/nope0001/audio").status_code == 404
@@ -648,11 +650,18 @@ def test_audio_rate_limit_is_hot_and_per_identity(client, app_module,
     assert body["error"]["type"] == "rate_limit_exceeded"
     assert body["detail"] == body["error"]["message"]
 
+    # A different identity (a keyed user, charged by user id, not by the
+    # anonymous caller's host) is not throttled by the first one's bucket.
+    _uid, raw = make_user_key("root", is_admin=True)
+    assert client.get("/captures/api/nope0001/audio",
+                      headers=bearer(raw)).status_code == 404
+
     # 0 = unlimited, applied to the very next request with no reset.
     monkeypatch.setattr(app_module.cfg, "CAPTURES_AUDIO_RATE_PER_MIN", 0,
                         raising=False)
     for _ in range(20):
-        assert client.get("/captures/api/nope0001/audio").status_code == 404
+        assert client.get("/captures/api/nope0001/audio",
+                          headers=bearer(raw)).status_code == 404
 
 
 # ---------------------------------------------------------------------------
@@ -1212,6 +1221,22 @@ def test_page_load_drops_a_superseded_filter_response(client):
     assert "if (typeof j.total_count === 'number') _totalCount = j.total_count;" in counts
 
 
+def test_page_group_autoload_skips_open_capture_cards(client):
+    """loadMoreSamples ends in a full render(), which rebuilds every open
+    capture card from the server: the scroll auto-trigger must hold off
+    while one is open, and a manual load asks before dropping unsaved
+    edits. Under audio_missing (no group has it) there is no footer."""
+    html = client.get("/captures").text
+    foot = html[html.index("function appendMoreFooter(list) {"):]
+    foot = foot[:foot.index("io.observe(more);")]
+    assert "_filtStatus === 'audio_missing') return;" in foot
+    assert "|| Object.keys(_openRows).length !== 0) return;" in foot
+    more = html[html.index("async function loadMoreSamples()"):]
+    more = more[:more.index("async function reloadCounts()")]
+    assert more.index("return st && st.dirty;") < more.index("render();")
+    assert "if (dirty && !(await _confirm({" in more
+
+
 def test_sample_save_does_not_resend_status(client):
     """The group's status buttons auto-save a narrow PATCH; Save resending
     the status loaded with the view reverted another tab's change."""
@@ -1477,3 +1502,39 @@ def test_preview_save_chips_writes_off_the_loop_and_skips_newly_grouped(
     assert r.status_code == 200, r.text
     assert seen == [(ids[0], False, True)]
     assert list(r.json()["saved"]) == [ids[0]]
+
+
+def test_patch_keeps_every_chip_the_schema_accepts(client, make_user_key):
+    """The store used to stop at 50 chips while the schema took 200: Save
+    toasted "Saved." and chips 51+ were gone on reload."""
+    from faster_whisper_backend.captures import store as captures_store
+
+    _uid, raw = make_user_key("root", is_admin=True)
+    _insert_member(captures_store._require_conn(), "chipcap00001", None)
+    chips = [{"wrong": "w", "correct": f"c{i}", "idx": i} for i in range(51)]
+    r = client.patch("/captures/api/chipcap00001", headers=bearer(raw),
+                     json={"corrections": chips})
+    assert r.status_code == 200, r.text
+    assert len(r.json()["capture"]["corrections"]) == 51
+    assert len(captures_store.get_capture("chipcap00001")["corrections"]) == 51
+
+
+def test_patch_refuses_a_merge_that_grows_past_the_chip_cap(
+        client, make_user_key):
+    """A three-way merge can add the user's chips on top of a full stored
+    list; that is a 422 naming the limit, not a silently shortened save."""
+    from faster_whisper_backend.captures import store as captures_store
+    from faster_whisper_backend.core import text_corrections
+
+    _uid, raw = make_user_key("root", is_admin=True)
+    _insert_member(captures_store._require_conn(), "chipcap00002", None)
+    cap = text_corrections.CAP_CORRECTIONS
+    full = [{"wrong": "w", "correct": f"c{i}", "idx": i} for i in range(cap)]
+    captures_store.update_capture("chipcap00002", {"corrections": full})
+    r = client.patch("/captures/api/chipcap00002", headers=bearer(raw),
+                     json={"corrections": [{"wrong": "w", "correct": "x",
+                                            "idx": cap + 5}],
+                           "baseline_corrections": []})
+    assert r.status_code == 422
+    assert str(cap) in r.json()["detail"]
+    assert len(captures_store.get_capture("chipcap00002")["corrections"]) == cap

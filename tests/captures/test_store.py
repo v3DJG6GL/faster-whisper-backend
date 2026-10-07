@@ -391,7 +391,7 @@ def test_empty_owner_list_matches_nothing(captures_store_db, monkeypatch,
 
 def test_get_captures_light_projection_and_chunking(captures_store_db,
                                                     monkeypatch, tmp_path):
-    """The bulk guard's lookup: four columns, no words / segments decode,
+    """The bulk guard's lookup: five columns, no words / segments decode,
     unknown ids absent, and more ids than one IN-list chunk."""
     cs = captures_store_db
     cid = _make(cs, monkeypatch, tmp_path, user_id="alice")
@@ -405,7 +405,8 @@ def test_get_captures_light_projection_and_chunking(captures_store_db,
 
     got = cs.get_captures_light([cid, "nope", cid, "", *many])
     assert got[cid] == {"id": cid, "user_id": "alice", "status": "new",
-                        "sample_id": None}
+                        "sample_id": None,
+                        "audio_relpath": cs.get_capture(cid)["audio_relpath"]}
     assert "nope" not in got and len(got) == 1101
     assert cs.get_captures_light([]) == {}
 
@@ -620,6 +621,42 @@ def test_evicting_create_invalidates_every_proposer_key(
     _make(cs, monkeypatch, tmp_path, user_id="u1")
     assert cs.get_capture(old) is None
     assert calls == ["u2", None]
+
+
+def test_failing_eviction_keeps_the_committed_row_and_its_audio(
+        captures_store_db, monkeypatch, tmp_path):
+    """The INSERT is committed (autocommit connection) before the eviction
+    runs, so an eviction error must not unlink the new row's WAV."""
+    import sqlite3
+
+    cs = captures_store_db
+
+    def _boom(conn):
+        raise sqlite3.OperationalError("database or disk is full")
+
+    monkeypatch.setattr(cs, "_evict_to_cap", _boom)
+    cid = _make(cs, monkeypatch, tmp_path)
+    row = cs.get_capture(cid)
+    assert row is not None
+    assert os.path.isfile(cs.abs_audio_path(row["audio_relpath"]))
+
+
+def test_evict_deletes_more_ids_than_one_in_list_chunk(
+        captures_store_db, monkeypatch, tmp_path):
+    cs = captures_store_db
+    from faster_whisper_backend.settings import config
+    conn = cs._require_conn()
+    many = [f"evict{i:07d}" for i in range(1100)]
+    conn.executemany(
+        "INSERT INTO captures (id, created_ts, model, audio_relpath,"
+        " audio_format, raw_text, final_text, words, segments, corrections,"
+        " status, user_id) VALUES (?,1.0,'m','x.wav','wav','r','f','[]','[]',"
+        "'[]','dismissed','bob')", [(i,) for i in many])
+    monkeypatch.setattr(config, "CAPTURES_MAX", 1, raising=False)
+    monkeypatch.setattr(config, "CAPTURES_MAX_MB", 0, raising=False)
+    with cs._lock:
+        assert cs._evict_to_cap(conn) is True
+    assert cs.count() == 1
 
 
 def test_evict_disabled_when_caps_below_one(captures_store_db, monkeypatch, tmp_path):

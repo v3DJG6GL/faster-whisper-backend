@@ -81,12 +81,19 @@ def test_captures_migration_upgrades_a_pre_existing_table(tmp_path):
           corrections_json TEXT NOT NULL DEFAULT '[]',
           admin_notes TEXT NOT NULL DEFAULT '',
           status TEXT NOT NULL DEFAULT 'new', reviewed_ts REAL,
-          user_id TEXT, sample_id TEXT, sample_order INTEGER);
+          user_id TEXT, sample_id TEXT, sample_order INTEGER,
+          translations_json TEXT);
     """)
+    old.execute(
+        "INSERT INTO captures (id, created_ts, model, duration_seconds,"
+        " audio_relpath, audio_format, raw, final, words_json,"
+        " translations_json) VALUES (?,?,?,?,?,?,?,?,?,?)",
+        ("keep", 1.0, "m", 2.5, "a/b/keep.wav", "wav", "r", "f", "[]",
+         '{"en": "hello"}'))
     old.execute(
         "INSERT INTO captures (id, created_ts, model, audio_relpath,"
         " audio_format, raw, final, words_json) VALUES (?,?,?,?,?,?,?,?)",
-        ("keep", 1.0, "m", "a/b/keep.wav", "wav", "r", "f", "[]"))
+        ("bare", 2.0, "m", "a/b/bare.wav", "wav", "r", "f", "[]"))
     old.commit()
     old.close()
 
@@ -100,10 +107,13 @@ def test_captures_migration_upgrades_a_pre_existing_table(tmp_path):
                      "translations_json"} & cols)
         got = captures_store.get_capture("keep")
         assert got is not None
+        # Every rename keeps its data, not just the column name.
         assert got["words"] == []
-        assert got["final"] == "f"
-        # A pre-migration row reads back with no translations, not a crash.
-        assert got["translations"] == {}
+        assert got["raw"] == "r" and got["final"] == "f"
+        assert got["audio_s"] == 2.5
+        assert got["translations"] == {"en": "hello"}
+        # A row that never had translations reads back empty, not a crash.
+        assert captures_store.get_capture("bare")["translations"] == {}
 
 
 def test_captures_translations_round_trip_as_a_keyed_map(

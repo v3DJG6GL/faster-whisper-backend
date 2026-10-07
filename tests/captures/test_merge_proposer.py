@@ -369,6 +369,30 @@ def test_propose_admin_unknown_user_returns_nothing_uncached(
     assert P._user_cache_key("u1") in P._CACHE
 
 
+def test_propose_admin_open_mode_sentinel_is_a_known_user(
+        captures_store_db, monkeypatch, trim_disabled):
+    """Open-mode captures are stored under the "(open-mode)" sentinel, which
+    has no users row — filtering on it must still sweep those captures."""
+    from faster_whisper_backend.auth import api_keys_store
+    cs = captures_store_db
+    sentinel = api_keys_store.OPEN_MODE_USER["user_id"]
+    _insert_eligible(cs, "cap0000000000o1", ts=1000.0, user_id=sentinel,
+                     text="alpha text one")
+    _insert_eligible(cs, "cap0000000000o2", ts=1001.0, user_id=sentinel,
+                     text="beta text two")
+    monkeypatch.setattr(api_keys_store, "get_user", lambda uid: None)
+
+    proposals, _ = P.propose_merges(
+        user_id_filter=sentinel, is_admin=True, caller_user_id="admin")
+    assert len(proposals) == 1
+    assert set(proposals[0]["member_ids"]) == {"cap0000000000o1",
+                                               "cap0000000000o2"}
+
+    proposals, _ = P.propose_merges(
+        user_id_filter="ghost", is_admin=True, caller_user_id="admin")
+    assert proposals == []
+
+
 def test_propose_cache_is_capped_at_cache_max(
         captures_store_db, monkeypatch, trim_disabled):
     """_CACHE_MAX evicts the oldest entry before a new one is stored."""

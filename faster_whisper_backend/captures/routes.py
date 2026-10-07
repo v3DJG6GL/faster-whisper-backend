@@ -191,14 +191,16 @@ class PatchCaptureIn(BaseModel):
     # (_CAP_CORRECTED / _CAP_ADMIN_NOTES), so nothing a client may
     # legitimately save is rejected here.
     corrected_text: str | None = Field(default=None, max_length=100_000)
-    corrections: list[CorrectionIn] | None = Field(default=None, max_length=200)
+    corrections: list[CorrectionIn] | None = Field(
+        default=None, max_length=text_corrections.CAP_CORRECTIONS)
     # Snapshot of `corrections` the client loaded with this capture.
     # When provided alongside `corrections`, the server applies a
     # three-way merge against the current DB state so a concurrent
     # write (another admin in another tab, or a group save touching this
     # member) doesn't get clobbered by the user's save. Omitted → legacy
     # replace.
-    baseline_corrections: list[CorrectionIn] | None = Field(default=None, max_length=200)
+    baseline_corrections: list[CorrectionIn] | None = Field(
+        default=None, max_length=text_corrections.CAP_CORRECTIONS)
     admin_notes: str | None = Field(default=None, max_length=8000)
 
 
@@ -721,6 +723,18 @@ async def get_audio_api(
     )
 
 
+def _audio_still_missing(row: dict[str, Any]) -> bool:
+    """True while an audio_missing row's original WAV is really absent. The
+    status is only set at boot (reconcile_on_startup) and never cleared, so
+    a file restored after a late mount must not keep the row un-triageable
+    forever. A relpath that escapes the audio root counts as missing."""
+    try:
+        return not os.path.isfile(
+            captures_store.abs_audio_path(row.get("audio_relpath") or ""))
+    except ValueError:
+        return True
+
+
 def _bulk_guard(
     ids: list[str], user: dict[str, Any], kind: str,
 ) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
@@ -783,13 +797,16 @@ async def bulk_status_api(
         rows, skipped = _bulk_guard(payload.ids, user, "capture-bulk-status")
         ok_ids: list[str] = []
         for r in rows:
-            if r.get("status") == "audio_missing":
+            if r.get("status") == "audio_missing" and _audio_still_missing(r):
                 # system status — the file is gone; nothing to review
                 skipped.append({"id": r["id"], "reason": "audio_missing"})
             else:
                 ok_ids.append(r["id"])
         updated = captures_store.bulk_update_status(ok_ids, payload.status) \
             if ok_ids else []
+        # The store returns rows in index order; report them in request order.
+        pos = {cid: i for i, cid in enumerate(ok_ids)}
+        updated.sort(key=lambda u: pos.get(u["id"], len(pos)))
         # A row deleted between the guard and the write (another tab, the
         # retention evictor) is absent from `updated`; report it, as
         # bulk-delete does, so updated + skipped covers every submitted id.
@@ -861,10 +878,12 @@ async def patch_capture_api(
         )
         _audit_cross_user_read(user, row, "capture-patch", cid)
         _assert_member_sample_not_locked(row, user)
-        if payload.status is not None and row.get("status") == "audio_missing":
+        if (payload.status is not None
+                and row.get("status") == "audio_missing"
+                and _audio_still_missing(row)):
             # Same rule as bulk_status_api: a system status — the file is
             # gone; nothing to review, and a ready row would leave eviction
-            # tier 2 for the protected last tier.
+            # tier 2 for the protected last tier. A restored file lifts it.
             raise HTTPException(status.HTTP_409_CONFLICT, "audio missing")
         patch: dict[str, Any] = {}
         if payload.status is not None:
@@ -882,6 +901,12 @@ async def patch_capture_api(
                 baseline = [c.model_dump() for c in payload.baseline_corrections]
                 edited = text_corrections.three_way_merge_corrections(
                     baseline, edited, current,
+                )
+            if text_corrections.over_cap(edited):
+                raise HTTPException(
+                    status.HTTP_422_UNPROCESSABLE_CONTENT,
+                    f"a capture holds at most"
+                    f" {text_corrections.CAP_CORRECTIONS} corrections",
                 )
             patch["corrections"] = edited
         if payload.admin_notes is not None:
@@ -1103,18 +1128,21 @@ class PreviewSaveChipsIn(BaseModel):
     out to per-member captures via _split_corrections_to_members."""
     model_config = {"extra": "forbid"}
     member_ids: list[str] = Field(min_length=1, max_length=30)
-    corrections: list[CorrectionIn] = Field(default_factory=list, max_length=200)
+    corrections: list[CorrectionIn] = Field(
+        default_factory=list, max_length=text_corrections.CAP_CORRECTIONS)
 
 
 class PatchSampleIn(BaseModel):
     model_config = {"extra": "forbid"}
     is_locked: bool | None = None
-    corrections: list[CorrectionIn] | None = Field(default=None, max_length=200)
+    corrections: list[CorrectionIn] | None = Field(
+        default=None, max_length=text_corrections.CAP_CORRECTIONS)
     # Snapshot of the group-derived chips at GET time. When provided
     # alongside `corrections`, the server applies a three-way merge
     # against the current member-projected chips so concurrent reports
     # / cross-tab admin saves survive. Omitted → legacy replace.
-    baseline_corrections: list[CorrectionIn] | None = Field(default=None, max_length=200)
+    baseline_corrections: list[CorrectionIn] | None = Field(
+        default=None, max_length=text_corrections.CAP_CORRECTIONS)
     status: Literal["new", "reviewed", "ready", "dismissed"] | None = None
     admin_notes: str | None = Field(default=None, max_length=8000)
 
@@ -2323,6 +2351,14 @@ async def patch_sample_api(
                     baseline, edited, current,
                 )
             by_member = _split_corrections_to_members(edited, members_now)
+            # Before any write: a member past the store's cap would lose
+            # chips silently.
+            if any(text_corrections.over_cap(c) for c in by_member.values()):
+                raise HTTPException(
+                    status.HTTP_422_UNPROCESSABLE_CONTENT,
+                    f"a member capture holds at most"
+                    f" {text_corrections.CAP_CORRECTIONS} corrections",
+                )
             # Skip members whose chip set didn't change — a 30-member group
             # with one edited chip otherwise fires 30 UPDATEs where 29 are
             # idempotent rewrites of the same JSON column.

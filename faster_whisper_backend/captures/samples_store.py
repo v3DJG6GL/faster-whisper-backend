@@ -317,34 +317,37 @@ def dissolve_sample(sid: str) -> None:
     conn = _require_conn()
     with capture_samples._rebuild_lock(sid):
         g = get_sample(sid)
-        if g is None:
-            return
-        with _lock, captures_store._lock:
-            conn.execute("BEGIN IMMEDIATE")
+        if g is not None:
+            with _lock, captures_store._lock:
+                conn.execute("BEGIN IMMEDIATE")
+                try:
+                    conn.execute(
+                        "UPDATE captures SET sample_id = NULL, sample_order = NULL"
+                        " WHERE sample_id = ?",
+                        (sid,),
+                    )
+                    conn.execute("DELETE FROM capture_samples WHERE id = ?", (sid,))
+                    conn.execute("COMMIT")
+                except BaseException:
+                    # SQLite may already have rolled back on its own (SQLITE_FULL,
+                    # SQLITE_IOERR, ...); a bare ROLLBACK would then raise and
+                    # replace the real error.
+                    if conn.in_transaction:
+                        conn.execute("ROLLBACK")
+                    raise
             try:
-                conn.execute(
-                    "UPDATE captures SET sample_id = NULL, sample_order = NULL"
-                    " WHERE sample_id = ?",
-                    (sid,),
-                )
-                conn.execute("DELETE FROM capture_samples WHERE id = ?", (sid,))
-                conn.execute("COMMIT")
-            except BaseException:
-                # SQLite may already have rolled back on its own (SQLITE_FULL,
-                # SQLITE_IOERR, ...); a bare ROLLBACK would then raise and
-                # replace the real error.
-                if conn.in_transaction:
-                    conn.execute("ROLLBACK")
-                raise
-        try:
-            abs_p = abs_path_for(g["merged_wav_relpath"])
-            if os.path.exists(abs_p):
-                os.unlink(abs_p)
-        except (OSError, ValueError) as e:
-            logger.warning("[groups] failed to unlink %s: %s",
-                           g["merged_wav_relpath"], e)
+                abs_p = abs_path_for(g["merged_wav_relpath"])
+                if os.path.exists(abs_p):
+                    os.unlink(abs_p)
+            except (OSError, ValueError) as e:
+                logger.warning("[groups] failed to unlink %s: %s",
+                               g["merged_wav_relpath"], e)
     # The sample is gone for good (its id never returns): drop its lock entry.
+    # Also when a racing dissolve removed it first: that call's release was a
+    # no-op while this one still pinned the sid.
     capture_samples._release_rebuild_lock(sid)
+    if g is None:
+        return
     try:
         from faster_whisper_backend.captures import merge_proposer as captures_merge_proposer
         captures_merge_proposer.invalidate(g.get("user_id"))

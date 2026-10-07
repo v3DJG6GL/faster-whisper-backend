@@ -53,6 +53,12 @@ _worker: "threading.Thread | None" = None
 # Set by a start() that found a pass running (under _state_lock); the worker
 # consumes it and runs one more pass with the rules as they are by then.
 _rerun_requested = False
+# Ids rewritten so far in the current job (every pass of it). The reported
+# totals are their sizes: a queued rerun walks every row again, and a row it
+# finds already current must not erase pass 1's count — nor may a row
+# rewritten in both passes count twice.
+_updated_cids: set[str] = set()
+_updated_sids: set[str] = set()
 
 
 def status() -> dict[str, Any]:
@@ -69,6 +75,8 @@ def start() -> dict[str, Any]:
             _rerun_requested = True
             return dict(_state)
         _rerun_requested = False
+        _updated_cids.clear()
+        _updated_sids.clear()
         _state.update({
             "status":           "running",
             "started_ts":       time.time(),
@@ -96,12 +104,10 @@ def _run() -> None:
                     _state["finished_ts"] = time.time()
                     break
                 # Rules changed mid-pass: walk every row again with a fresh
-                # snapshot. Counters restart so the strip reports this pass.
+                # snapshot. The progress bar restarts for this pass; the
+                # updated totals keep counting for the whole job.
                 _rerun_requested = False
-                _state.update({
-                    "total": 0, "processed": 0,
-                    "captures_updated": 0, "groups_updated": 0,
-                })
+                _state.update({"total": 0, "processed": 0})
             logger.info("[reapply] rules changed mid-run: re-applying again")
         logger.info(
             "[reapply] done: %d/%d captures, %d updated, %d groups",
@@ -210,7 +216,8 @@ def _run_pass() -> None:
         if patch:
             captures_store.update_capture(cid, patch)
             with _state_lock:
-                _state["captures_updated"] += 1
+                _updated_cids.add(cid)
+                _state["captures_updated"] = len(_updated_cids)
         with _state_lock:
             _state["processed"] += 1
 
@@ -228,7 +235,8 @@ def _run_pass() -> None:
                     sid, {"transcript": new_t},
                 )
                 with _state_lock:
-                    _state["groups_updated"] += 1
+                    _updated_sids.add(sid)
+                    _state["groups_updated"] = len(_updated_sids)
 
 
 def _reset_for_tests() -> None:
@@ -236,6 +244,8 @@ def _reset_for_tests() -> None:
     global _worker, _state, _rerun_requested
     _worker = None
     _rerun_requested = False
+    _updated_cids.clear()
+    _updated_sids.clear()
     _state = {
         "status": "idle",
         "started_ts": None,

@@ -325,3 +325,34 @@ def test_run_reapplies_rules_saved_while_a_pass_was_running(
     assert captures_reapply._rerun_requested is False
     assert cs.get_capture("reapplyrr001")["final"] == "hello [B]"
     assert len(fake_thread.created) == 1
+
+
+def test_rerun_keeps_the_job_totals_of_the_earlier_pass(
+        captures_store_db, fake_pipeline, monkeypatch, fake_thread):
+    """A queued rerun walks every row again; a row pass 1 rewrote is current
+    by then, so resetting the totals per pass reported "0 updated" for a job
+    that rewrote it."""
+    from faster_whisper_backend.settings import config as cfg
+
+    cs = captures_store_db
+    monkeypatch.setattr(cfg, "CAPTURES_PIPELINE_RULES_EXCLUDE", None,
+                        raising=False)
+    _insert(cs._require_conn(), "reapplyrt001", language="de")
+    captures_reapply.start()
+    calls = []
+
+    def _postprocess_text(text, **kw):
+        calls.append(text)
+        if len(calls) == 1:
+            # A second save (same rules) lands while pass 1 is mid-walk.
+            captures_reapply.start()
+        return f"{text} [A]"
+
+    monkeypatch.setattr(pl_engine, "_postprocess_text", _postprocess_text)
+    captures_reapply._run()
+
+    st = captures_reapply.status()
+    assert len(calls) == 2                      # both passes walked the row
+    assert st["status"] == "done" and st["error"] is None
+    assert st["processed"] == 1 and st["captures_updated"] == 1
+    assert cs.get_capture("reapplyrt001")["final"] == "hello [A]"

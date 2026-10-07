@@ -409,9 +409,14 @@ def _propose_merges_locked(
         # effort on purpose — this module must not start failing because the
         # key store is uninitialised (it is not a dependency of a sweep), and
         # _CACHE_MAX bounds the dict either way.
+        # Open-mode captures carry the "(open-mode)" sentinel id, which has
+        # no users row but is a real owner of rows here.
         from faster_whisper_backend.auth import api_keys_store
         try:
-            _known = api_keys_store.get_user(user_id_filter) is not None
+            _known = (
+                user_id_filter == api_keys_store.OPEN_MODE_USER["user_id"]
+                or api_keys_store.get_user(user_id_filter) is not None
+            )
         except Exception:  # noqa: BLE001 - store not ready / unavailable
             _known = True
         if not _known:

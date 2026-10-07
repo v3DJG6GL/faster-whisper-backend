@@ -62,7 +62,7 @@ def host_is_forbidden(host: str) -> bool:
     counts as forbidden too (we can't vouch for what we can't look up)."""
     try:
         infos = socket.getaddrinfo(host, None, proto=socket.IPPROTO_TCP)
-    except OSError:
+    except (OSError, UnicodeError):  # UnicodeError: a host IDNA can't encode
         return True
     if not infos:
         return True
@@ -85,7 +85,7 @@ def resolve_pinned(host: str, port: int, *, trusted: bool = False) -> list:
     the proxy does the final resolve."""
     try:
         infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
-    except OSError:
+    except (OSError, UnicodeError):  # UnicodeError: a host IDNA can't encode
         infos = []
     if not infos or (not trusted
                      and any(address_is_forbidden(i[4][0]) for i in infos)):

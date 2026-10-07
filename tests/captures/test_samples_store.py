@@ -309,6 +309,36 @@ def test_dissolve_waits_for_an_in_flight_rebuild(captures_store_db,
     assert gs.get_sample(sid) is None
 
 
+def test_racing_dissolves_drop_the_lock_entry(captures_store_db,
+                                              groups_store_db):
+    """Two dissolves of one sid: the winner's release is a no-op while the
+    loser is still pinned, so the loser (which finds the row gone) must drop
+    the dead sid's lock entry itself."""
+    import threading
+    import time
+
+    from faster_whisper_backend.captures import samples as capture_samples
+
+    gs = groups_store_db
+    sid = "gdissolverace001"
+    _insert_group(gs, sid)
+    with capture_samples._rebuild_lock(sid):
+        threads = [threading.Thread(target=gs.dissolve_sample, args=(sid,))
+                   for _ in range(2)]
+        for t in threads:
+            t.start()
+        deadline = time.monotonic() + 5
+        while (capture_samples._rebuild_inflight.get(sid, 0) < 3
+               and time.monotonic() < deadline):
+            time.sleep(0.01)
+        assert capture_samples._rebuild_inflight.get(sid) == 3
+    for t in threads:
+        t.join(5)
+    assert gs.get_sample(sid) is None
+    assert sid not in capture_samples._rebuild_locks
+    assert sid not in capture_samples._rebuild_inflight
+
+
 # ---------------------------------------------------------------------------
 # expire_samples_older_than
 # ---------------------------------------------------------------------------

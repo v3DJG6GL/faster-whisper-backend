@@ -192,14 +192,14 @@ def test_bulk_status_updates_and_reports_prev(client, make_user_key):
          reviewed_ts=123.0)
 
     r = client.patch("/captures/api/bulk", headers=bearer(raw_root),
-                     json={"ids": ["a1a1a1a1a1a1", "a2a2a2a2a2a2",
-                                   "a1a1a1a1a1a1"], "status": "ready"})
+                     json={"ids": ["a2a2a2a2a2a2", "a1a1a1a1a1a1",
+                                   "a2a2a2a2a2a2"], "status": "ready"})
     assert r.status_code == 200
     body = r.json()
     assert body["status"] == "ready" and body["skipped"] == []
-    assert body["updated"] == [                      # de-duplicated, in order
-        {"id": "a1a1a1a1a1a1", "prev_status": "new"},
-        {"id": "a2a2a2a2a2a2", "prev_status": "reviewed"}]
+    assert body["updated"] == [          # de-duplicated, in request order
+        {"id": "a2a2a2a2a2a2", "prev_status": "reviewed"},
+        {"id": "a1a1a1a1a1a1", "prev_status": "new"}]
     for cid in ("a1a1a1a1a1a1", "a2a2a2a2a2a2"):
         row = captures_store.get_capture(cid)
         assert row["status"] == "ready" and row["reviewed_ts"] > 1000.0
@@ -284,6 +284,43 @@ def test_single_patch_on_audio_missing_row_saves_edits_but_not_status(
                      json={"status": "ready"})
     assert r.status_code == 409
     assert captures_store.get_capture("gone00000002")["status"] == "audio_missing"
+
+
+def _restore_audio(captures_store, cid):
+    import os
+    p = captures_store.abs_audio_path(
+        captures_store.get_capture(cid)["audio_relpath"])
+    os.makedirs(os.path.dirname(p), exist_ok=True)
+    with open(p, "wb") as f:
+        f.write(b"RIFF")
+
+
+def test_audio_missing_row_with_restored_file_can_be_retriaged(
+        client, make_user_key):
+    """audio_missing is only set at boot and never cleared: once the WAV is
+    back (late mount, restore) both the single and the bulk status PATCH
+    accept the row again instead of locking it out of the export."""
+    from faster_whisper_backend.captures import store as captures_store
+
+    _root, raw_root = make_user_key("root", is_admin=True)
+    uid, _ = make_user_key("alice", pages={"captures": "own"})
+    conn = captures_store._require_conn()
+    _row(conn, "back00000001", user_id=uid, status="audio_missing")
+    _row(conn, "back00000002", user_id=uid, status="audio_missing")
+    _restore_audio(captures_store, "back00000001")
+    _restore_audio(captures_store, "back00000002")
+
+    r = client.patch("/captures/api/back00000001", headers=bearer(raw_root),
+                     json={"status": "reviewed"})
+    assert r.status_code == 200, r.text
+    assert captures_store.get_capture("back00000001")["status"] == "reviewed"
+
+    body = client.patch("/captures/api/bulk", headers=bearer(raw_root),
+                        json={"ids": ["back00000002"], "status": "ready"}).json()
+    assert body["skipped"] == []
+    assert body["updated"] == [{"id": "back00000002",
+                                "prev_status": "audio_missing"}]
+    assert captures_store.get_capture("back00000002")["status"] == "ready"
 
 
 def test_bulk_status_skips_locked_member_for_nonadmin_only(client, make_user_key):

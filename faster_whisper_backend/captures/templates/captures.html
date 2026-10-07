@@ -3039,6 +3039,19 @@
     // Groups are paged newest-first; hydrating one costs a capture read per
     // member, so they arrive a page at a time instead of all at once.
     if (!_samplesNext || _samplesLoading) return;
+    // The render() in `finally` re-expands every open capture card from a
+    // fresh GET, which would silently drop unsaved chip / notes / status
+    // edits — ask first.
+    var dirty = Object.keys(_openRows).some(function(id) {
+      var st = _openRows[id];
+      return st && st.dirty;
+    });
+    if (dirty && !(await _confirm({
+        title: 'Load more groups?',
+        body: 'An open capture has unsaved edits that will be lost.',
+        confirmLabel: 'Load more', danger: true })))
+      return;
+    if (!_samplesNext || _samplesLoading) return;
     _samplesLoading = true;
     var seq = _loadSeq;
     // Flip the footer button in place: a full render() here would revoke
@@ -5214,7 +5227,10 @@
     combined.sort(function(a, b) { return b.ts - a.ts; });
 
     function appendMoreFooter(list) {
-      if (!_samplesNext) return;
+      // No group ever has the captures-only audio_missing status, so paging
+      // in more of them under that filter would only fetch for nothing (an
+      // empty list keeps the footer in view and re-triggers every page).
+      if (!_samplesNext || _filtStatus === 'audio_missing') return;
       // Footer for the remaining group pages. Built with DOM APIs (no
       // innerHTML) and auto-triggered when it scrolls into view, with the
       // button as the fallback for browsers without IntersectionObserver
@@ -5232,10 +5248,12 @@
       if (!_samplesLoading && window.IntersectionObserver) {
         var io = new IntersectionObserver(function(entries) {
           // Re-rendering collapses open group cards (their <audio> does
-          // not survive the innerHTML wipe), so while one is expanded
-          // let only the manual button page further — never the scroll
-          // auto-trigger.
-          if (Object.keys(_openSamples).length !== 0) return;
+          // not survive the innerHTML wipe) and rebuilds open capture
+          // cards from the server (dropping unsaved edits), so while
+          // either is expanded let only the manual button page further —
+          // never the scroll auto-trigger.
+          if (Object.keys(_openSamples).length !== 0
+              || Object.keys(_openRows).length !== 0) return;
           if (entries.some(function(e) { return e.isIntersecting; })) {
             io.disconnect();
             loadMoreSamples();

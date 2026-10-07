@@ -21,7 +21,10 @@ from typing import Any
 # via Pydantic, but accept-then-trim is what protects against future code
 # paths that bypass the route (admin scripts, migrations).
 CAP_CORRECTION_FIELD = 200
-CAP_CORRECTIONS = 50
+# Same as the captures PATCH schemas' list bound (max_length=200): a capture
+# runs up to 10 minutes, and a chip the route accepted must not be dropped
+# here without a word.
+CAP_CORRECTIONS = 200
 
 
 def clean_corrections(items: list[Any] | None) -> list[dict[str, Any]]:
@@ -54,6 +57,20 @@ def clean_corrections(items: list[Any] | None) -> list[dict[str, Any]]:
         if len(out) >= CAP_CORRECTIONS:
             break
     return out
+
+
+def over_cap(items: list[Any] | None) -> bool:
+    """True when clean_corrections would cut valid entries (non-empty
+    `correct`) at CAP_CORRECTIONS — lets a route refuse with a 422 instead
+    of saving a silently shortened list (a three-way merge can grow past
+    the schema's bound)."""
+    n = 0
+    for it in items or []:
+        if isinstance(it, dict) and str(it.get("correct", "") or "").strip():
+            n += 1
+            if n > CAP_CORRECTIONS:
+                return True
+    return False
 
 
 def three_way_merge_corrections(

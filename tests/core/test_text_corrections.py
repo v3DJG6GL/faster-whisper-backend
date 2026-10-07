@@ -86,10 +86,20 @@ def test_idx_end_without_idx_dropped():
     assert "idx" not in out and "idx_end" not in out
 
 
-def test_list_cap_50():
-    items = [{"correct": f"c{i}"} for i in range(80)]
+def test_list_cap():
+    items = [{"correct": f"c{i}"} for i in range(250)]
     out = tc.clean_corrections(items)
-    assert len(out) == tc.CAP_CORRECTIONS == 50
+    # Matches the captures PATCH schemas' max_length, so nothing they
+    # accept is dropped here.
+    assert len(out) == tc.CAP_CORRECTIONS == 200
+
+
+def test_over_cap_counts_only_entries_the_cleaner_keeps():
+    valid = [{"correct": f"c{i}"} for i in range(tc.CAP_CORRECTIONS)]
+    assert not tc.over_cap(valid)
+    assert not tc.over_cap(valid + [{"correct": " "}, "junk", {"wrong": "x"}])
+    assert tc.over_cap(valid + [{"correct": "one more"}])
+    assert not tc.over_cap(None)
 
 
 def test_unicode_preserved():
