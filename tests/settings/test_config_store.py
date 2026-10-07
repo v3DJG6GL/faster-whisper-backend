@@ -166,6 +166,20 @@ def test_session_cookie_names_must_differ():
     _bad(SESSION_CSRF_COOKIE_NAME=sess_default)
 
 
+def test_prefixed_cookie_name_needs_the_secure_flag():
+    # A browser drops a __Host- / __Secure- cookie set without Secure, so the
+    # login answered 200 and the gate looped with no cookie and no error.
+    # Refused on save only: at load a failure would drop every override.
+    def save(**fields):
+        return settings_schema.AdminConfig.model_validate(fields, context={"on_save": True})
+    with pytest.raises(ValidationError):
+        save(SESSION_COOKIE_NAME="__Host-s")
+    with pytest.raises(ValidationError):
+        save(SESSION_CSRF_COOKIE_NAME="__secure-c", SESSION_COOKIE_SECURE=False)
+    save(SESSION_COOKIE_NAME="__Host-s", SESSION_COOKIE_SECURE=True)
+    _ok(SESSION_COOKIE_NAME="__Host-s")
+
+
 # ---------------------------------------------------------------------------
 # Patterns / literals
 # ---------------------------------------------------------------------------
@@ -688,6 +702,21 @@ def test_regex_list_nested_fixed_counts_refused_before_the_template_sub():
     assert "nested fixed counts" in out["result"]
 
 
+def test_nested_fixed_counts_refused_at_load_without_a_replacement():
+    # The count screen sat after the empty-replacement skip, so a "delete the
+    # match" entry or a callback pattern row loaded cleanly (the out-of-process
+    # guard runs only on a save) and looped N*N in-process on every request.
+    pat = "(?:(?:a{0}){100000}){100000}"
+    for rule in (
+            {"name": "rl", "label": "RL", "type": "regex-list",
+             "entries": [{"pattern": pat, "replacement": ""}]},
+            {"name": "dd", "label": "DD", "type": "callback:dedup",
+             "pattern": pat}):
+        with pytest.raises(ValidationError, match="nested fixed counts"):
+            settings_schema.AdminConfig.model_validate(
+                {"PIPELINE_RULES": [rule, _terminal()]})
+
+
 def test_map_key_collision_check_is_scoped_to_guard_slugs():
     """An untouched dictionary with colliding keys (it loads fine: load runs
     without the guard context) must not 422 a save scoped to another rule."""
@@ -982,6 +1011,41 @@ def test_stale_stored_slug_only_blocks_saves_of_its_own_entry(tmp_path, monkeypa
              "c": {"PIPELINE_RULES_EXCLUDE": ["typo"]}}):
         with pytest.raises(ValidationError, match="typo"):
             cs.save_overrides({"OVERRIDE_PROFILES": profiles}, str(p))
+    assert p.read_text(encoding="utf-8") == before
+
+
+def test_stale_stored_slug_does_not_block_edits_of_its_own_entry(tmp_path, monkeypatch):
+    # The pages draw rows only for live rules and send an unseen stale slug
+    # back unchanged, so a rename or any edit of the entry carrying it (or a
+    # toggle in a captures list holding one) 422'd with no way to clear it.
+    # Only the slugs a save adds are checked, as validate_binding does.
+    monkeypatch.setattr(cs, "_canonical_rule_slugs", lambda: {"known"})
+    p = tmp_path / "config.local.json"
+    p.write_text(json.dumps({
+        "OVERRIDE_PROFILES": {"a": {"BEAM_SIZE": 3},
+                              "b": {"PIPELINE_RULES_EXCLUDE": ["gone"]}},
+        "CAPTURES_PIPELINE_RULES_EXCLUDE": ["gone"]}), encoding="utf-8")
+    cs.save_overrides({"OVERRIDE_PROFILES": {
+        "a": {"BEAM_SIZE": 3},
+        "b": {"PIPELINE_RULES_EXCLUDE": ["gone"], "BEAM_SIZE": 2}}}, str(p))
+    cs.save_overrides({"OVERRIDE_PROFILES": {
+        "a": {"BEAM_SIZE": 3},
+        "c": {"PIPELINE_RULES_EXCLUDE": ["gone"], "BEAM_SIZE": 2}}}, str(p))
+    cs.save_overrides({"CAPTURES_PIPELINE_RULES_EXCLUDE": ["gone", "known"]}, str(p))
+    on_disk = json.loads(p.read_text(encoding="utf-8"))
+    assert on_disk["OVERRIDE_PROFILES"]["c"] == {
+        "PIPELINE_RULES_EXCLUDE": ["gone"], "BEAM_SIZE": 2}
+    assert "b" not in on_disk["OVERRIDE_PROFILES"]
+    assert on_disk["CAPTURES_PIPELINE_RULES_EXCLUDE"] == ["gone", "known"]
+    # A new unknown slug is still refused, next to the stale one too.
+    before = p.read_text(encoding="utf-8")
+    with pytest.raises(ValidationError, match="typo"):
+        cs.save_overrides({"OVERRIDE_PROFILES": {
+            "a": {"BEAM_SIZE": 3},
+            "c": {"PIPELINE_RULES_EXCLUDE": ["gone", "typo"]}}}, str(p))
+    with pytest.raises(ValidationError, match="typo"):
+        cs.save_overrides({"CAPTURES_PIPELINE_RULES_EXCLUDE": [
+            "gone", "known", "typo"]}, str(p))
     assert p.read_text(encoding="utf-8") == before
 
 

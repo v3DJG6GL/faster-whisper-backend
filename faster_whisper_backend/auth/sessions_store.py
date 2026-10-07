@@ -8,8 +8,9 @@ SDKs) never touch this — they keep sending `Authorization: Bearer`.
 Storage layout:
 
   cfg.SESSIONS_DB — SQLite (WAL) with two tables:
-    sessions — { token_hash, user_id, csrf_token, created_ts,
-                 expires_ts, revoked_ts }
+    sessions — { token_hash, user_id, key_id, csrf_token, created_ts,
+                 expires_ts, revoked_ts }  (key_id = the API key the
+               session signed in with, so per-key locks bind on cookies)
     meta     — { k, v }: one 'revocations' counter, bumped per logout so a
                sibling worker's config_version() notices it (see
                revocation_generation)

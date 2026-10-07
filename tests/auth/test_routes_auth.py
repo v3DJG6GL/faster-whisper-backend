@@ -404,3 +404,20 @@ def test_quick_config_stream_rescopes_and_ends(client, make_user_key,
         raise AssertionError(f"stream kept going after revoke: {got!r}")
 
     asyncio.run(drive())
+
+
+def test_first_origin_rejection_is_logged_right_after_host_boot(
+        monkeypatch, caplog):
+    # time.monotonic() counts from host boot; a 0.0 start swallowed the first
+    # rejection (the one naming TRUSTED_ORIGINS) within a minute of boot.
+    import logging
+    import types
+    from faster_whisper_backend.auth import hosts
+    hosts._reset_for_tests()
+    monkeypatch.setattr(hosts.time, "monotonic", lambda: 5.0)
+    req = types.SimpleNamespace(
+        method="POST", url=types.SimpleNamespace(path="/x"),
+        headers={"origin": "https://evil.example", "host": "app"})
+    with caplog.at_level(logging.WARNING, logger="whisper-api"):
+        hosts._log_origin_rejected(req)
+    assert any("does not match Host" in r.getMessage() for r in caplog.records)

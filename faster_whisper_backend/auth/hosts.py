@@ -125,7 +125,9 @@ def configure_origins(cors_origins: list[str], trusted_origins: list[str]) -> No
 # credential, so an unauthenticated caller could otherwise drive the log at
 # request rate (same reasoning as auth/dependencies.py's open-mode nag interval).
 _ORIGIN_REJECT_LOG_INTERVAL_S = 60.0
-_origin_reject_logged_at = 0.0
+# -inf, not 0.0: time.monotonic() counts from host boot, so 0.0 swallowed the
+# first rejection of a server started within a minute of boot.
+_origin_reject_logged_at = float("-inf")
 
 
 def _origin_is_allowed(request) -> bool:
@@ -192,4 +194,4 @@ def _reset_for_tests() -> None:
     _RESET_HOOKS). The origin lists are configuration main installs, not
     per-test state."""
     global _origin_reject_logged_at
-    _origin_reject_logged_at = 0.0
+    _origin_reject_logged_at = float("-inf")

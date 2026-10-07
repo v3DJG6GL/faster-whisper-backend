@@ -235,13 +235,20 @@ def _split_display_parts(raw_key: str) -> tuple[str, str]:
 # ---------------------------------------------------------------------
 
 def _row_to_user_dict(row: sqlite3.Row) -> dict[str, Any]:
+    perms = _parse_permissions(row["permissions"] if "permissions" in row.keys() else None)
+    if isinstance(perms.get("config"), dict):
+        # The per-user drawer sends this blob back on every save: migrate it
+        # as _row_to_key_dict does a key's, or a stored guard at 1 / a renamed
+        # key or slug 422s any edit (set_user_permissions reads the stored
+        # shape through get_user_permissions, not here).
+        perms["config"] = _parse_binding(perms["config"])
     return {
         "id": row["id"],
         "username": row["username"],
         "is_admin": bool(row["is_admin"]),
         "created_ts": float(row["created_ts"]),
         "revoked_ts": float(row["revoked_ts"]) if row["revoked_ts"] is not None else None,
-        "permissions": _parse_permissions(row["permissions"] if "permissions" in row.keys() else None),
+        "permissions": perms,
     }
 
 
@@ -561,6 +568,7 @@ def create_key(user_id: str, *, label: str = "") -> tuple[str, dict[str, Any]]:
     now = time.time()
     conn = _require_conn()
     with _lock:
+        was_locked = _IS_LOCKED_DOWN
         conn.execute(
             "INSERT INTO api_keys"
             " (id, user_id, key_hash, key_prefix, key_last4, label,"
@@ -569,6 +577,12 @@ def create_key(user_id: str, *, label: str = "") -> tuple[str, dict[str, Any]]:
             (kid, user_id, h, kp, k4, label, now),
         )
         _rebuild_index_locked()
+        locked_now = _IS_LOCKED_DOWN
+    if locked_now and not was_locked:
+        # The first admin key ends open mode: a keyless live stream resolved
+        # as the synthetic admin must re-authenticate, and this worker's own
+        # commit never moves the sibling probe's data_version.
+        settings_version.bump_config_version()
     logger.info(
         "[auth] key created kid=%s user=%s prefix=%s label=%s",
         kid[:8], user_id[:8], kp, store_common.log_safe(label) or "(no label)",
@@ -774,12 +788,15 @@ def get_user_record(user_id: str) -> dict[str, Any] | None:
 def _touch_last_used_debounced(key_id: str) -> None:
     """Update last_used_ts at most once per _LAST_USED_DEBOUNCE_S per key.
     Read of last_used_ts goes to the index (which doesn't track it) → we
-    cache a separate small dict here."""
-    now = time.time()
-    last = _LAST_USED_CACHE.get(key_id, 0.0)
-    if now - last < _LAST_USED_DEBOUNCE_S:
+    cache a separate small dict here. The debounce runs on the monotonic
+    clock (a backwards wall-clock step froze the writes for its length); the
+    stored value stays wall-clock."""
+    mono = time.monotonic()
+    last = _LAST_USED_CACHE.get(key_id)
+    if last is not None and mono - last < _LAST_USED_DEBOUNCE_S:
         return
-    _LAST_USED_CACHE[key_id] = now
+    _LAST_USED_CACHE[key_id] = mono
+    now = time.time()
     conn = _require_conn()
     try:
         with _lock:

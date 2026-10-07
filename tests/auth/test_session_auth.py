@@ -46,7 +46,17 @@ def test_login_open_mode_off_admin_allowlist_issues_a_session(app_module):
         assert r.json()["open_mode"] is False
         assert any("whisper_session=" in ln.lower()
                    for ln in _set_cookie_lines(r))
-        assert c.get("/auth/whoami").status_code == 200
+        who = c.get("/auth/whoami")
+        assert who.status_code == 200
+        # A real session, not the synthetic admin: whoami must say so, or the
+        # shared chrome hides the sign-out button and shows "open mode".
+        assert who.json()["open_mode"] is False
+        assert who.json()["username"] == "alice"
+
+
+def test_whoami_open_mode_for_the_allowlisted_synthetic_admin(client):
+    body = client.get("/auth/whoami").json()
+    assert body["open_mode"] is True and body["is_admin"] is True
 
 
 def test_login_good_key_sets_cookies(client, make_user_key):
@@ -622,10 +632,13 @@ def test_revoke_session_bumps_config_version(client, make_user_key):
     from faster_whisper_backend.settings import version as settings_version
     _uid, raw = make_user_key("root", is_admin=True)
     tok = client.post("/auth/login", json={"key": raw}).json()["csrf_token"]
-    v0 = settings_version.config_version()
+    # The raw counter, not config_version(): its sibling probe also bumps for
+    # the logout's revocation counter once its 0.25 s throttle has passed, so
+    # on a slow run it would pass without revoke_session's own bump.
+    v0 = settings_version._CONFIG_VERSION
     r = client.post("/auth/logout", headers={"X-CSRF-Token": tok})
     assert r.status_code == 200
-    assert settings_version.config_version() > v0
+    assert settings_version._CONFIG_VERSION > v0
 
 
 def test_csrf_non_ascii_token_is_403_not_500(client, make_user_key):

@@ -405,7 +405,8 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
     "DIARIZATION_ALLOWED_MODELS":
         "Allowlist of pyannote pipeline ids clients may request per-call. "
         "Both supported pipelines are listed by default; remove one to "
-        "forbid it.",
+        "forbid it. The configured DIARIZATION_MODEL (global or per-model) "
+        "always passes, so only a pipeline other than it can be forbidden.",
     "DIARIZATION_PRELOAD":
         "Load the diarization pipeline at startup instead of on first use, "
         "so the first diarize request skips the warm-up (costs VRAM while "

@@ -44,7 +44,10 @@ async def whoami(
     credential AND the server is locked down — the WebUI re-prompts."""
     perms = user.get("permissions")
     out = {
-        "open_mode": not _ak.is_locked_down(),
+        # Only the synthetic admin is "open mode": a host outside the admin
+        # allowlist signs in with a real key while no admin key exists, and
+        # needs the sign-out button and its own name like any session.
+        "open_mode": user.get("user_id") == _ak.OPEN_MODE_USER["user_id"],
         "user_id": user.get("user_id"),
         "username": user.get("username"),
         "is_admin": bool(user.get("is_admin")),
@@ -169,6 +172,11 @@ async def logout(request: Request, response: Response):
     raw = request.cookies.get(cfg.SESSION_COOKIE_NAME, "")
     if raw:
         sessions_store.revoke_session(raw)
-    response.delete_cookie(cfg.SESSION_COOKIE_NAME, path="/")
-    response.delete_cookie(cfg.SESSION_CSRF_COOKIE_NAME, path="/")
+    # Same attributes as login set them: a browser refuses the clearing
+    # Set-Cookie of a __Host- / __Secure- name that lacks Secure.
+    secure = bool(cfg.SESSION_COOKIE_SECURE)
+    response.delete_cookie(cfg.SESSION_COOKIE_NAME, path="/", secure=secure,
+                           httponly=True, samesite="lax")
+    response.delete_cookie(cfg.SESSION_CSRF_COOKIE_NAME, path="/",
+                           secure=secure, samesite="lax")
     return {"ok": True}

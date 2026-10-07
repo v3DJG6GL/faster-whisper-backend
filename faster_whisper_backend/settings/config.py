@@ -1731,6 +1731,20 @@ def _env_validation_reason(exc: BaseException, skip: "set[tuple]" = frozenset())
     return str(exc).splitlines()[0].strip()
 
 
+def _env_guard_off(var: str, field: str, value: object) -> object:
+    """A segment guard at 1 is refused since older releases accepted it, and 1
+    already behaved as off: an env value of 1 becomes 0 with a note, the
+    migration a stored or bundle value gets (config_store.
+    _migrate_segment_guards), instead of being reverted to the factory
+    threshold, which would turn the guard ON."""
+    from faster_whisper_backend.settings import config_store as _cs
+    _d = {field: value}
+    if _cs._migrate_segment_guards(_d, ""):
+        _ENV_WARNINGS.append(
+            f"{var}=1 is no longer accepted; using 0 (off, as 1 already behaved)")
+    return _d[field]
+
+
 try:
     from faster_whisper_backend.settings.schema import AdminConfig as _AdminConfig
     from faster_whisper_backend.settings.schema import ENV_VAR_MAPPING as _ENV_VAR_MAPPING
@@ -1776,7 +1790,8 @@ try:
         _kind = _env_reader_kind(_field, _cur)
         if _kind in _EMPTY_IS_VALUE_KINDS:
             _EMPTY_IS_VALUE.add(_field)
-        globals()[_field] = _ENV_READER_FUNCS[_kind](_env, _cur)
+        globals()[_field] = _env_guard_off(
+            _env, _field, _ENV_READER_FUNCS[_kind](_env, _cur))
 
     # Wildcard-host origins in an env list: drop just those entries, as the
     # config.local.json migration does (config_store._migrate_legacy_keys) —
@@ -2000,7 +2015,7 @@ for _k, _v in os.environ.items():
             f"works but will be removed in a later release.")
         _field = _new_field
     _model_id = _decode_model_id(_enc_id)
-    _coerced = _coerce_override_value(_field, _v)
+    _coerced = _env_guard_off(_k, _field, _coerce_override_value(_field, _v))
     if _coerced is _UNPARSED:
         _ENV_WARNINGS.append(
             f"{_k}={_v!r} is not a valid boolean; ignoring it for {_model_id}")
@@ -2211,19 +2226,28 @@ try:
         # browser's serialisation (a stored list gets that via load_overrides),
         # and the exact-match origin checks miss a mixed-case env spelling.
         _left = [_f for _f in sorted(_changed) if _f not in _ENV_REJECTED]
+        _normed: "dict[str, object]" = {}
         if _left:
             try:
                 _norm = _AdminConfig.model_validate(_effective_env_dict(),
                                                     context=_env_slug_ctx())
-                for _f in _left:
-                    _v = getattr(_norm, _f, None)
-                    if isinstance(_v, str) and isinstance(globals()[_f], str):
-                        globals()[_f] = _v
-                    elif (isinstance(_v, list) and isinstance(globals()[_f], list)
-                          and all(type(_x) is str for _x in _v)):
-                        globals()[_f] = _v
+                _normed = {_f: getattr(_norm, _f, None) for _f in _left}
             except Exception:  # noqa: BLE001 — the passes above already reported
-                pass
+                # A pre-env error (_PRE_ENV_SIGS) fails the full pass whatever
+                # the env values are; normalize each survivor on its own then,
+                # or a mixed-case env origin stays unmatched by the guard.
+                for _f in _left:
+                    try:
+                        _normed[_f] = getattr(_AdminConfig.model_validate(
+                            {_f: globals()[_f]}), _f, None)
+                    except Exception:  # noqa: BLE001
+                        pass
+        for _f, _v in _normed.items():
+            if isinstance(_v, str) and isinstance(globals()[_f], str):
+                globals()[_f] = _v
+            elif (isinstance(_v, list) and isinstance(globals()[_f], list)
+                  and all(type(_x) is str for _x in _v)):
+                globals()[_f] = _v
 
     # MODEL_OVERRIDES is assembled key-by-key from the
     # WHISPER_MODEL_OVERRIDE__<id>__<FIELD> convention, which bypasses

@@ -35,7 +35,9 @@ _CONFIG_VERSION = 0
 _KEYS_DATA_VERSION: int = -1
 # config_version() runs synchronously on the event loop once per partial-decode
 # interval per live streaming session, and the probe is a PRAGMA under
-# api_keys_store._lock — the lock every store read/write holds. Rate-limit it
+# api_keys_store._lock — the lock every store read/write holds — plus a SELECT
+# under sessions_store._lock (revocation_generation), which on a moved counter
+# also rebuilds the session index, O(live sessions). Rate-limit it
 # so the loop cannot queue behind an unrelated store write more than ~4×/s;
 # a sibling worker's binding change is still seen within this window, far
 # below the utterance cadence that consumes the counter.

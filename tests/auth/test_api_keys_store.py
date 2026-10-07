@@ -700,3 +700,84 @@ def test_parse_binding_migrates_renamed_rule_slugs():
         {"overrides": {k: v for k, v in b["direct"].items() if k != "locks"},
          "profiles": b["profiles"]})
     assert stored["direct"]["PIPELINE_RULES_EXCLUDE"] == ["de-dictation-map"]
+
+
+def test_list_users_migrates_the_user_binding_the_drawer_sends_back(api_keys_db):
+    """The per-user drawer reads list_users() and sends the blob back on
+    every save; a raw stored guard at 1 or a pre-rename key 422'd any edit
+    (keys already arrived migrated through _row_to_key_dict)."""
+    import json
+    ak = api_keys_db
+    uid = ak.create_user("u", is_admin=False)
+    ak._require_conn().execute(
+        "UPDATE users SET permissions = ? WHERE id = ?",
+        (json.dumps({"pages": {}, "config": {"direct": {
+            "SEGMENT_HEAD_ECHO_MIN_WORDS": 1, "SEGMENT_MAX_WORDS_PER_SEC": 3.0},
+            "profiles": []}}), uid))
+    user = next(u for u in ak.list_users() if u["id"] == uid)
+    direct = user["permissions"]["config"]["direct"]
+    assert direct["SEGMENT_HEAD_ECHO_MIN_WORDS"] == 0
+    assert direct["SEGMENT_MAX_WORDS_PER_S"] == 3.0
+    ak.set_user_permissions(uid, {"config": {"overrides": {
+        k: v for k, v in direct.items() if k != "locks"}, "profiles": []}})
+    assert ak.get_user_config(uid)["direct"]["SEGMENT_HEAD_ECHO_MIN_WORDS"] == 0
+
+
+def test_first_admin_key_bumps_the_config_version(api_keys_db):
+    """Creating the first admin key ends open mode; a keyless live stream
+    resolved as the synthetic admin re-authenticates only on this counter."""
+    from faster_whisper_backend.settings import version as settings_version
+    ak = api_keys_db
+    uid = ak.create_user("root", is_admin=True)
+    v0 = settings_version._CONFIG_VERSION
+    assert ak.is_locked_down() is False
+    ak.create_key(uid)
+    assert ak.is_locked_down() is True
+    assert settings_version._CONFIG_VERSION > v0
+
+
+def test_last_used_debounce_survives_a_backwards_wall_clock_step(
+        api_keys_db, monkeypatch):
+    # The debounce compared wall-clock times: after a backwards step no
+    # last_used_ts write happened for the step plus 60 s.
+    ak = api_keys_db
+    uid = ak.create_user("u", is_admin=False)
+    raw, rec = ak.create_key(uid)
+    mono = [1000.0]
+    wall = [2_000_000.0]
+    monkeypatch.setattr(ak.time, "monotonic", lambda: mono[0])
+    monkeypatch.setattr(ak.time, "time", lambda: wall[0])
+    ak._LAST_USED_CACHE.clear()
+    ak.lookup_by_raw_key(raw)
+    assert ak.get_key(rec["id"])["last_used_ts"] == 2_000_000.0
+    mono[0] += 61.0
+    wall[0] -= 3600.0                       # NTP stepped the clock back an hour
+    ak.lookup_by_raw_key(raw)
+    assert ak.get_key(rec["id"])["last_used_ts"] == 2_000_000.0 - 3600.0
+
+
+def test_binding_saves_keep_a_stored_profile_name_that_vanished(
+        api_keys_db, monkeypatch):
+    """A bound profile name can vanish without the delete guard (env pin,
+    hand edit); the drawer sends it back unseen, so only names a save ADDS
+    must exist."""
+    from faster_whisper_backend.settings import config as cfg
+    ak = api_keys_db
+    uid = ak.create_user("u", is_admin=False)
+    _raw, rec = ak.create_key(uid)
+    monkeypatch.setattr(cfg, "OVERRIDE_PROFILES", {"gone": {"BEAM_SIZE": 2},
+                                                   "here": {"BEAM_SIZE": 3}})
+    body = {"overrides": {}, "profiles": ["gone"],
+            "allowed_override_profiles": ["gone"]}
+    ak.set_key_config(uid, rec["id"], body)
+    ak.set_user_permissions(uid, {"config": body})
+    monkeypatch.setattr(cfg, "OVERRIDE_PROFILES", {"here": {"BEAM_SIZE": 3}})
+    edit = {**body, "locks": [], "allow_request_override_profile": True}
+    assert ak.set_key_config(uid, rec["id"], edit)["profiles"] == ["gone"]
+    ak.set_user_permissions(uid, {"config": edit})
+    for added in ({**body, "profiles": ["gone", "typo"]},
+                  {**body, "allowed_override_profiles": ["gone", "typo"]}):
+        with pytest.raises(ValueError, match="typo"):
+            ak.set_key_config(uid, rec["id"], added)
+        with pytest.raises(ValueError, match="typo"):
+            ak.set_user_permissions(uid, {"config": added})

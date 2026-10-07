@@ -1576,6 +1576,20 @@ class AdminConfig(BaseModel):
                 f"(both {sess!r}) — the CSRF Set-Cookie would overwrite the "
                 f"session cookie and every browser login would fail"
             )
+        # Browsers silently drop a __Host- / __Secure- Set-Cookie without the
+        # Secure attribute: the login answers 200, no cookie is stored, and
+        # the login gate loops with no error anywhere. Refused on SAVE only:
+        # at load a failure drops every override, and bearer-key API access
+        # still works with such a file.
+        if ((info.context or {}).get("on_save")
+                and not _effective(self, "SESSION_COOKIE_SECURE", False, info=info)):
+            for fld, name in (("SESSION_COOKIE_NAME", sess),
+                              ("SESSION_CSRF_COOKIE_NAME", csrf)):
+                if str(name).lower().startswith(("__host-", "__secure-")):
+                    raise ValueError(
+                        f"{fld} {name!r} carries a __Host-/__Secure- prefix, "
+                        f"which browsers accept only with SESSION_COOKIE_SECURE "
+                        f"on — enable it or drop the prefix")
         return self
 
     @field_validator("SEGMENT_ZERO_LENGTH_TAIL_MIN_WORDS", "SEGMENT_HEAD_ECHO_MIN_WORDS")
@@ -1741,11 +1755,13 @@ class AdminConfig(BaseModel):
         # and raising re.error on every request at match time.
         from faster_whisper_backend.pipeline import regex_guard
         for where, pat, repl, _slug in checks:
+            # `(?:(?:a{0}){N}){N}` loops N*N times even on "" — refuse on the
+            # counts alone (match-free) for EVERY entry, an empty replacement
+            # and a callback pattern row included, before the in-process .sub
+            # below (also at LOAD, where the out-of-process guard never runs).
+            regex_guard.check_fixed_counts(where, pat)
             if not repl:
                 continue
-            # `(?:(?:a{0}){N}){N}` loops N*N times even on "" — refuse on the
-            # counts alone before the in-process .sub below (also at LOAD).
-            regex_guard.check_fixed_counts(where, pat)
             try:
                 re.compile(pat).sub(repl, "")
             except (re.error, IndexError) as e:

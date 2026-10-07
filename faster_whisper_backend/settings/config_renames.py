@@ -187,17 +187,29 @@ def upgrade_rule_entries(raw: dict[str, Any]) -> list[str]:
     return done
 
 
+# Renamed keys whose env reader takes "" as a value (HF_TOKEN is
+# str_or_none: an explicitly empty WHISPER_HF_TOKEN disables the token), so a
+# present-but-empty new name still wins over the old one. Every other new
+# name's reader keeps the default for "".
+_EMPTY_NEW_IS_SET: frozenset[str] = frozenset({"HF_TOKEN"})
+
+
 def alias_env(environ: MutableMapping[str, str]) -> list[str]:
     """Copy each set ``WHISPER_<old>[_FILE]`` onto ``WHISPER_<new>[_FILE]``
     when the new name is unset. A set new-name value always wins — in EITHER
     spelling: a stale ``WHISPER_USE_AUTH_TOKEN`` must not be copied onto
     ``WHISPER_HF_TOKEN`` when the operator moved to ``WHISPER_HF_TOKEN_FILE``
-    (the plain var would then shadow the file). Returns one warning line per
-    alias applied or old name ignored, for the startup log."""
+    (the plain var would then shadow the file). An EMPTY new-name value
+    counts as unset — its reader keeps the default for "" (a blank template
+    line must not swallow the operator's old-name value) — except for the
+    plain keys in _EMPTY_NEW_IS_SET, whose reader takes "" as a value.
+    Returns one warning line per alias applied or old name ignored, for the
+    startup log."""
     warnings: list[str] = []
     for old, new in RENAMED_KEYS.items():
-        new_set = [ENV_PREFIX + new + sfx for sfx in ("", "_FILE")
-                   if ENV_PREFIX + new + sfx in environ]
+        plain = ENV_PREFIX + new
+        new_set = [n for n in (plain, plain + "_FILE") if environ.get(n) or (
+            n == plain and n in environ and new in _EMPTY_NEW_IS_SET)]
         for sfx in ("", "_FILE"):
             o, n = ENV_PREFIX + old + sfx, ENV_PREFIX + new + sfx
             if not environ.get(o):

@@ -1389,3 +1389,69 @@ def test_env_slug_list_is_not_blamed_for_a_stored_sibling_list(monkeypatch):
     finally:
         monkeypatch.undo()
         importlib.reload(config)
+
+
+def test_env_guard_at_one_means_off_not_the_factory_threshold(monkeypatch):
+    """1 is refused since older releases accepted it, and 1 already behaved
+    as off; reverting the env value to the factory 3 / 2 turned the guard ON.
+    The stored and bundle paths map it to 0, and so does the env layer."""
+    try:
+        _reload_with_env(monkeypatch,
+                         WHISPER_SEGMENT_HEAD_ECHO_MIN_WORDS="1",
+                         WHISPER_SEGMENT_ZERO_LENGTH_TAIL_MIN_WORDS="1")
+        assert config.SEGMENT_HEAD_ECHO_MIN_WORDS == 0
+        assert config.SEGMENT_ZERO_LENGTH_TAIL_MIN_WORDS == 0
+        assert "SEGMENT_HEAD_ECHO_MIN_WORDS" not in config._ENV_REJECTED
+        assert any("WHISPER_SEGMENT_HEAD_ECHO_MIN_WORDS=1 is no longer accepted"
+                   in m for m in config._ENV_WARNINGS), config._ENV_WARNINGS
+    finally:
+        monkeypatch.undo()
+        importlib.reload(config)
+
+
+def test_per_model_env_guard_at_one_means_off(monkeypatch):
+    try:
+        _reload_with_env(
+            monkeypatch,
+            **{"WHISPER_MODEL_OVERRIDE__large-v3__SEGMENT_HEAD_ECHO_MIN_WORDS": "1"})
+        assert config.MODEL_OVERRIDES["large-v3"]["SEGMENT_HEAD_ECHO_MIN_WORDS"] == 0
+        assert any("no longer accepted" in m and "large-v3" in m
+                   for m in config._ENV_WARNINGS), config._ENV_WARNINGS
+    finally:
+        monkeypatch.undo()
+        importlib.reload(config)
+
+
+def test_env_values_are_normalized_next_to_a_pre_env_error(monkeypatch):
+    """A pre-env error fails the full normalization pass whatever the env
+    values are, so a surviving mixed-case env origin stayed unmatched by the
+    exact-match origin guard; each survivor is normalized on its own then."""
+    with open(os.path.join(config._REPO_DIR, "config.json"), encoding="utf-8") as f:
+        rules = json.load(f)["PIPELINE_RULES"]
+    one = [r for r in rules if r["name"] == "strip-stray-symbols"]
+    try:
+        _reload_with_env(monkeypatch, WHISPER_PIPELINE_RULES=json.dumps(one),
+                         WHISPER_TRUSTED_ORIGINS="https://App.Example.com",
+                         WHISPER_CONSOLE_LOG_LEVEL="WARNING")
+        assert config.TRUSTED_ORIGINS == ["https://app.example.com"]
+        assert config.CONSOLE_LOG_LEVEL == "warning"
+    finally:
+        monkeypatch.undo()
+        importlib.reload(config)
+
+
+def test_alias_env_treats_an_empty_new_name_as_unset():
+    """A blank template line (WHISPER_SESSION_TTL_S=) next to the old name
+    swallowed the operator's value: the reader keeps the default for "".
+    Only HF_TOKEN takes "" as a value (an explicit disable), so it still wins."""
+    from faster_whisper_backend.settings import config_renames
+    env = {"WHISPER_SESSION_TTL_SECONDS": "3600", "WHISPER_SESSION_TTL_S": ""}
+    config_renames.alias_env(env)
+    assert env["WHISPER_SESSION_TTL_S"] == "3600"
+    env = {"WHISPER_USE_AUTH_TOKEN": "hf_x", "WHISPER_HF_TOKEN_FILE": ""}
+    config_renames.alias_env(env)
+    assert env["WHISPER_HF_TOKEN"] == "hf_x"
+    env = {"WHISPER_USE_AUTH_TOKEN": "hf_x", "WHISPER_HF_TOKEN": ""}
+    warns = config_renames.alias_env(env)
+    assert env["WHISPER_HF_TOKEN"] == ""
+    assert any("WHISPER_USE_AUTH_TOKEN is ignored" in w for w in warns)

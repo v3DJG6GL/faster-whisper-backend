@@ -421,7 +421,9 @@ def save_overrides(
         # Screen regex rules only when this save actually submits rules —
         # otherwise one stored legacy pattern that fails today's structural
         # screen would brick every unrelated settings save.
-        context: dict[str, Any] = {"guard_regex": True} if "PIPELINE_RULES" in payload else {}
+        context: dict[str, Any] = {"on_save": True}
+        if "PIPELINE_RULES" in payload:
+            context["guard_regex"] = True
         if guard_slugs is not None:
             context["guard_slugs"] = frozenset(guard_slugs)
         # Cross-field checks must see the env-pinned siblings that will be in
@@ -589,8 +591,12 @@ def _changed_slug_refs(payload: dict[str, Any], merged: dict[str, Any],
     _SLUG_REF_KEYS key the payload carries, the MODEL_OVERRIDES /
     OVERRIDE_PROFILES entries that differ from the stored ones (the WebUI and
     the profile rename send the whole dict, so one stale stored entry must not
-    block an edit of its siblings), and CAPTURES_PIPELINE_RULES_EXCLUDE whole
-    when it differs."""
+    block an edit of its siblings), and CAPTURES_PIPELINE_RULES_EXCLUDE when
+    it differs. Only the slugs a value ADDS are kept for the check, as
+    validate_binding does: a slug the stored entry with the same id already
+    names (any entry of the stored group, for a renamed id), or the stored
+    captures list, is dropped, because the pages draw rows only for live rules
+    and send an unseen stale slug back unchanged, so it could not be cleared."""
     out: dict[str, Any] = {}
     for k in _SLUG_REF_KEYS:
         new = merged.get(k)
@@ -599,11 +605,21 @@ def _changed_slug_refs(payload: dict[str, Any], merged: dict[str, Any],
         old = existing.get(k)
         if isinstance(new, dict):
             old = old if isinstance(old, dict) else {}
-            entries = {eid: v for eid, v in new.items() if old.get(eid) != v}
+            entries = {}
+            for eid, v in new.items():
+                if old.get(eid) == v:
+                    continue
+                stale = _stored_ref_slugs({k: {eid: old[eid]} if eid in old else old})
+                if isinstance(v, dict) and stale:
+                    v = {f: ([s for s in x if s not in stale] if (
+                        f in ("PIPELINE_RULES_EXCLUDE", "PIPELINE_RULES_INCLUDE")
+                        and isinstance(x, list)) else x) for f, x in v.items()}
+                entries[eid] = v
             if entries:
                 out[k] = entries
         elif new != old:
-            out[k] = new
+            stale = _stored_ref_slugs({k: old}) if isinstance(old, list) else set()
+            out[k] = [s for s in new if s not in stale] if isinstance(new, list) else new
     return out
 
 
@@ -611,27 +627,26 @@ def _save_canonical_slugs() -> set[str]:
     """Slug set for a save that does not carry PIPELINE_RULES: the live list
     (config.json + env + any local copy), falling back to the committed
     factory file; empty set = unknown → validators skip."""
-    live = _canonical_rule_slugs()
-    if live:
-        return live
-    try:
-        return {r["name"] for r in load_factory_rules()}
-    except Exception:
-        return set()
+    return _canonical_rule_slugs() or _factory_slugs()
 
 
-def validate_profile_refs(names: Any) -> list[str]:
+def validate_profile_refs(names: Any, stored: Any = ()) -> list[str]:
     """Validate an ORDERED list of profile names referenced by a user/key
     binding. Each must match the profile-name shape AND exist in the current
-    OVERRIDE_PROFILES (save rejects dangling references). Order is preserved
-    (precedence is positional, earlier-wins); duplicates are dropped. Empty /
-    None → []. Raises ValueError on any bad / unknown name."""
+    OVERRIDE_PROFILES (save rejects dangling references) — unless `stored`
+    (the same list of the binding before this save) already names it: a
+    profile that vanished without the delete guard (env pin, hand edit, a
+    dropped config.local.json) must not block an unrelated edit, as
+    validate_binding's slug check. Order is preserved (precedence is
+    positional, earlier-wins); duplicates are dropped. Empty / None → [].
+    Raises ValueError on any bad / unknown name."""
     if names is None:
         return []
     if not isinstance(names, list):
         raise ValueError("profiles must be a list of strings")
     from faster_whisper_backend.settings import config as _cfg
     available = set((getattr(_cfg, "OVERRIDE_PROFILES", None) or {}).keys())
+    kept = set(stored) if isinstance(stored, list) else set()
     out: list[str] = []
     seen: set[str] = set()
     for n in names:
@@ -644,7 +659,7 @@ def validate_profile_refs(names: Any) -> list[str]:
             raise ValueError(
                 f"invalid profile name {n!r} — lowercase a-z0-9- only, "
                 "max 32 chars, no leading hyphen")
-        if nm not in available:
+        if nm not in available and nm not in kept:
             raise ValueError(f"unknown profile {nm!r} — create it first")
         if nm in seen:
             continue
@@ -658,21 +673,23 @@ def validate_profile_refs(names: Any) -> list[str]:
 ALLOWED_PROFILES_WILDCARD = "*"
 
 
-def validate_allowed_profiles(raw: Any) -> list[str] | None:
+def validate_allowed_profiles(raw: Any, stored: Any = ()) -> list[str] | None:
     """Validate a per-identity ALLOWLIST of override-profile names a client may
     REQUEST. This is distinct from `profiles` (which are forced-applied layers);
     the allowlist only restricts which names a per-request `override_profile`
     may select. None = inherit / no restriction (every requestable profile is
     allowed). The wildcard "*" (alone) = explicitly all. An explicit list
     restricts to those names — each must match the profile-name shape AND exist;
-    [] = allow none. Raises ValueError on a bad / unknown name."""
+    [] = allow none. A name `stored` (the binding's allowlist before this
+    save) already holds passes as in validate_profile_refs. Raises
+    ValueError on a bad / unknown name."""
     if raw is None:
         return None
     if not isinstance(raw, list):
         raise ValueError("allowed_override_profiles must be a list of strings")
     if any(p == ALLOWED_PROFILES_WILDCARD for p in raw):
         return [ALLOWED_PROFILES_WILDCARD]
-    return validate_profile_refs(raw)
+    return validate_profile_refs(raw, stored)
 
 
 def validate_binding(raw: Any, previous: Any = None) -> dict[str, Any]:
@@ -695,7 +712,9 @@ def validate_binding(raw: Any, previous: Any = None) -> dict[str, Any]:
     shape): a rule slug its direct blob already names is not refused, since
     the drawer sends the whole blob back and a slug a later rules edit
     removed must not block an unrelated edit of the same binding — only the
-    slugs this save adds are checked, as save_overrides does.
+    slugs this save adds are checked, as save_overrides does. The same holds
+    for a profile name its `profiles` / `allowed_override_profiles` lists
+    already hold.
     Raises ValueError on any invalid field / bound / lock target / unknown
     profile reference / unknown pipeline slug."""
     if not isinstance(raw, dict):
@@ -730,9 +749,11 @@ def validate_binding(raw: Any, previous: Any = None) -> dict[str, Any]:
             if unknown:
                 raise ValueError(
                     f"{list_name} references unknown rule slugs: {unknown}")
+    prev = previous if isinstance(previous, dict) else {}
     out: dict[str, Any] = {
         "direct": direct,
-        "profiles": validate_profile_refs(raw.get("profiles")),
+        "profiles": validate_profile_refs(raw.get("profiles"),
+                                          prev.get("profiles")),
     }
     for fld in ("allow_request_override_profile", "allow_request_decode_overrides"):
         v = raw.get(fld)
@@ -742,7 +763,8 @@ def validate_binding(raw: Any, previous: Any = None) -> dict[str, Any]:
             raise ValueError(f"{fld} must be a boolean or null")
     allow = raw.get("allowed_override_profiles")
     if allow is not None:
-        out["allowed_override_profiles"] = validate_allowed_profiles(allow)
+        out["allowed_override_profiles"] = validate_allowed_profiles(
+            allow, prev.get("allowed_override_profiles"))
     # Admin force — NOT a request gate: does not inherit, is not bound by the
     # override-profile gate. True = suppress every bound/requested profile for
     # this identity. Stored only when explicitly set.
