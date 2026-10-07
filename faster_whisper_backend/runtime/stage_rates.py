@@ -111,7 +111,10 @@ def _read() -> dict[str, dict]:
                         if "ts" in v:
                             row["ts"] = v["ts"]
                         rates[k] = row
-    except (OSError, ValueError):
+    except (OSError, ValueError, OverflowError, RecursionError):
+        # OverflowError: a 400-digit integer literal is a valid JSON int
+        # that math.isfinite() cannot convert; RecursionError: a deeply
+        # nested document.
         rates = {}
     _cache, _cache_mtime = rates, mtime
     return rates

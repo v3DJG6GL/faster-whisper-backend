@@ -141,6 +141,14 @@ _RESET_HOOKS: tuple[tuple[str, Any], ...] = (
     # model_sizes.lookup/disk_size would otherwise get the cached real value.
     ("faster_whisper_backend.stats.routes",
      lambda m: m._size_meta_cache.clear()),
+    # rendered page shells: a page rendered under one test's config / nav
+    # state must not be served from the cache to the next.
+    ("faster_whisper_backend.core.web_common",
+     lambda m: m._render_page_cached.cache_clear()),
+    # the 60 s per-identity WARNING throttle: an earlier test's identity
+    # fault would downgrade a later test's caplog WARNING to DEBUG.
+    ("faster_whisper_backend.settings.effective_config",
+     lambda m: m._last_warn.clear()),
     # the VAD-reprocess worker state, back to the module's idle shape.
     ("faster_whisper_backend.captures.vad_reprocess",
      lambda m: _reset_vad_reprocess(m)),
@@ -539,6 +547,18 @@ def isolate_app_env(tmp_path, monkeypatch) -> None:
     _repoint_path_default(monkeypatch, (config_store.load_overrides,
                                         config_store.save_overrides),
                           _tmp_overrides)
+    # Same trap for the committed factory file: POST /settings/factory-rules
+    # calls save_factory_rules(rules) with no path, so a route test that
+    # posts a valid list would atomically overwrite the git-tracked repo
+    # config.json. Point both functions at a per-test copy (reads still see
+    # the shipped rules) instead of relying on each test to opt in.
+    _tmp_factory = str(tmp_path / "config.json")
+    shutil.copyfile(config_store.FACTORY_PATH, _tmp_factory)
+    monkeypatch.setattr(config_store, "FACTORY_PATH", _tmp_factory,
+                        raising=False)
+    _repoint_path_default(monkeypatch, (config_store.load_factory_rules,
+                                        config_store.save_factory_rules),
+                          _tmp_factory)
 
     from faster_whisper_backend.settings import config as cfg
     # Re-apply env onto the already-imported config singleton.

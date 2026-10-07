@@ -500,7 +500,8 @@ def register_plan(user_id: "str | None",
                   plan_id: "str | None" = None,
                   denied: "dict[tuple[str, str], str] | None" = None,
                   stage_ahead: bool = True,
-                  trigger: "str | None" = None) -> dict:
+                  trigger: "str | None" = None,
+                  user_name: "str | None" = None) -> dict:
     """Create or restamp a plan; returns the endpoint's response body.
 
     NEVER raises. Every failure mode — an unknown family, a full registry, a
@@ -514,7 +515,10 @@ def register_plan(user_id: "str | None",
 
     `trigger` is a free-text label naming what asked for this plan
     (dictation / transcribe / viewer / job), echoed into the log receipt so
-    an operator can tell which client path fired."""
+    an operator can tell which client path fired.
+
+    `user_name` is the caller's display name for the plan's /stats row (the
+    page shows and filters `user` as a username); the opaque id when unset."""
     kept = [(f, m) for f, m in entries if (f, m) not in (denied or {})]
     kept.sort(key=lambda e: _FAMILY_STAGE.get(e[0], 99))
     resolved_pid = (plan_id or "").strip() or derive_plan_id(user_id or "", kept)
@@ -522,7 +526,7 @@ def register_plan(user_id: "str | None",
     try:
         return _register_plan(user_id, entries, plan_id=plan_id,
                               denied=denied or {}, stage_ahead=stage_ahead,
-                              trigger=trigger)
+                              trigger=trigger, user_name=user_name)
     except Exception as e:  # noqa: BLE001 — a preload must never fail a request
         logger.error("[preload] register_plan failed: %s", e)
         # _register_plan may have inserted the Plan (and its warm lease)
@@ -548,7 +552,7 @@ def register_plan(user_id: "str | None",
 
 
 def _register_plan(user_id, entries, *, plan_id, denied, stage_ahead,
-                   trigger=None) -> dict:
+                   trigger=None, user_name=None) -> dict:
     now = time.monotonic()
     ttl = _ttl()
     kept = [(f, m) for f, m in entries if (f, m) not in denied]
@@ -672,7 +676,7 @@ def _register_plan(user_id, entries, *, plan_id, denied, stage_ahead,
                 # Visible in /stats: warming is real GPU work and an operator
                 # watching the activity cluster must be able to see it happen.
                 plan.job_id = jobs.job_start(
-                    "preload", user=user_id, user_id=user_id,
+                    "preload", user=user_name or user_id, user_id=user_id,
                     model=", ".join(stats_key(f, m)
                                     for f, m in plan.entries)[:200],
                     detail=f"plan {pid[:8]}")
@@ -788,9 +792,11 @@ def on_stage_start(plan_id: str, stage: str) -> None:
                 # nothing, so a job that re-reports "separating" after
                 # diarizing cannot walk the plan backwards.
                 return
-            plan.cursor = idx
+            # The cursor moves only once the walk is through: a full queue
+            # returns with it untouched, so the next tick of this same stage
+            # retries instead of the next stage start walking past the entry.
             for i, (fam, mid) in enumerate(plan.entries):
-                if plan.stages[i] <= plan.cursor:
+                if plan.stages[i] <= idx:
                     continue
                 key = stats_key(fam, mid)
                 if key in plan.inflight:
@@ -810,6 +816,7 @@ def on_stage_start(plan_id: str, stage: str) -> None:
                 plan.inflight.add(key)
                 item = (plan_id, fam, mid)
                 break
+            plan.cursor = idx
         if item is not None:
             logger.debug("[preload] plan %s stage %s → warming %s ahead",
                          plan_id[:8], stage, stats_key(item[1], item[2]))

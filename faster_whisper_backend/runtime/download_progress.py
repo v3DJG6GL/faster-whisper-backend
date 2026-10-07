@@ -226,9 +226,19 @@ _live: "list[_Capture]" = []
 # them; the last scope out restores these, whatever order the scopes exit in.
 _saved_attrs: "list[tuple[Any, str, Any]]" = []
 _PATCH_TARGETS = (
+    # The http_get bar (utils.tqdm._get_progress_bar_context reads this
+    # global) and _create_progress_bar's issubclass() check.
     ("huggingface_hub.utils.tqdm", "tqdm"),
+    # The xet reporter binds `tqdm` at import and builds an LFS file's bars
+    # from it when the caller passes no tqdm_class (pyannote's
+    # Pipeline.from_pretrained): unpatched, those bars are the ORIGINAL
+    # class, record nothing, and fail the patched issubclass() check above,
+    # so they skip the log-level disable and render to stderr.
+    ("huggingface_hub.utils._xet_progress_reporting", "tqdm"),
+    # snapshot_download's import-bound default class, same two reasons.
+    ("huggingface_hub._snapshot_download", "hf_tqdm"),
     # Defensive no-op on hub >= 1.29 (file_download imports tqdm only for
-    # annotations and builds its bar through utils.tqdm); kept for older hubs.
+    # annotations); kept for older hubs.
     ("huggingface_hub.file_download", "tqdm"),
 )
 

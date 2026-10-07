@@ -229,7 +229,7 @@ def test_stage_ahead_upgrades_on_merge_and_never_downgrades(monkeypatch):
     assert preload._plans["4" * 8].stage_ahead is True
 
 
-# --- PC10: a new job on the same plan starts fresh ---------------------------
+# --- a merge re-validates the warmed keys against residency ------------------
 
 def test_merge_prunes_warmed_keys_that_are_no_longer_resident(monkeypatch):
     _enable(monkeypatch)
@@ -274,6 +274,8 @@ def test_stage_ahead_rewarms_a_warmed_entry_that_was_dropped(monkeypatch):
     asyncio.run(_run())
     assert "pyannote:p/x" not in plan.warmed
 
+
+# --- PC10: a new job on the same plan starts fresh ---------------------------
 
 def test_a_job_binding_rewinds_the_cursor_a_client_post_does_not(monkeypatch):
     _enable(monkeypatch)

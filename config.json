@@ -510,6 +510,35 @@
       ]
     },
     {
+      "name": "es-punctuation",
+      "label": "ES: Punctuation",
+      "enabled": true,
+      "languages": [
+        "es"
+      ],
+      "locked": false,
+      "seeded": true,
+      "exposed": false,
+      "color": "",
+      "tags": [],
+      "note": "Spanish opens a question with ¿ and an exclamation with ¡; Whisper usually writes only the closing mark. Adds the opening mark at the start of the sentence (after . ! ? … or a line break), unless it is already there. A period between two digits (3.5, 10.23) does not end a sentence.",
+      "type": "regex-list",
+      "entries": [
+        {
+          "pattern": "(^\\s*|(?<=[.!?…])(?!(?<=\\d\\.)\\d)\\s*|(?<=\\n)\\s*)(?!¿)((?:[^.!?…¿\\n]|(?<=\\d)\\.(?=\\d))+\\?)",
+          "replacement": "\\1¿\\2",
+          "label": "es-opening-question-mark",
+          "note": "Qué hora es? → ¿Qué hora es?"
+        },
+        {
+          "pattern": "(^\\s*|(?<=[.!?…])(?!(?<=\\d\\.)\\d)\\s*|(?<=\\n)\\s*)(?!¡)((?:[^.!?…¡\\n]|(?<=\\d)\\.(?=\\d))+!)",
+          "replacement": "\\1¡\\2",
+          "label": "es-opening-exclamation-mark",
+          "note": "Qué bien! → ¡Qué bien!"
+        }
+      ]
+    },
+    {
       "name": "strip-auto-punctuation",
       "label": "Strip auto-punctuation",
       "enabled": true,
@@ -520,11 +549,11 @@
       "tags": [
         "manual-punctation"
       ],
-      "note": "Removes . ? ! and commas, except a . ? ! after a digit or a comma between two digits (so 3.14 and 1,000 survive).",
+      "note": "Removes . ? ! and commas, except a . ? ! after a digit or a comma between two digits (so 3.14 and 1,000 survive). A Spanish opening ¿ / ¡ goes with its closing mark: it stays only when that mark follows a digit.",
       "type": "regex-list",
       "entries": [
         {
-          "pattern": "(?<!\\d)[.?!]|(?<!\\d),|,(?!\\d)",
+          "pattern": "(?<!\\d)[.?!]|¿(?![^?¿]*\\d\\?)|¡(?![^!¡]*\\d!)|(?<!\\d),|,(?!\\d)",
           "replacement": "",
           "label": "Strip terminators & commas",
           "note": ""
@@ -641,35 +670,6 @@
       "note": "Capitalizes a lowercase letter right after a hyphen: Eisen-infusion → Eisen-Infusion.",
       "type": "callback:upper",
       "pattern": "(-)([a-zäöüß])"
-    },
-    {
-      "name": "es-punctuation",
-      "label": "ES: Punctuation",
-      "enabled": true,
-      "languages": [
-        "es"
-      ],
-      "locked": false,
-      "seeded": true,
-      "exposed": false,
-      "color": "",
-      "tags": [],
-      "note": "Spanish opens a question with ¿ and an exclamation with ¡; Whisper usually writes only the closing mark. Adds the opening mark at the start of the sentence (after . ! ? … or a line break), unless it is already there. A period between two digits (3.5, 10.23) does not end a sentence.",
-      "type": "regex-list",
-      "entries": [
-        {
-          "pattern": "(^\\s*|(?<=[.!?…])(?!(?<=\\d\\.)\\d)\\s*|(?<=\\n)\\s*)(?!¿)((?:[^.!?…¿\\n]|(?<=\\d)\\.(?=\\d))+\\?)",
-          "replacement": "\\1¿\\2",
-          "label": "es-opening-question-mark",
-          "note": "Qué hora es? → ¿Qué hora es?"
-        },
-        {
-          "pattern": "(^\\s*|(?<=[.!?…])(?!(?<=\\d\\.)\\d)\\s*|(?<=\\n)\\s*)(?!¡)((?:[^.!?…¡\\n]|(?<=\\d)\\.(?=\\d))+!)",
-          "replacement": "\\1¡\\2",
-          "label": "es-opening-exclamation-mark",
-          "note": "Qué bien! → ¡Qué bien!"
-        }
-      ]
     },
     {
       "name": "digit-and-whitespace-tidy",

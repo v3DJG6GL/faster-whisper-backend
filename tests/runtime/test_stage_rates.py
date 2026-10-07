@@ -86,6 +86,19 @@ def test_a_hand_edited_count_never_raises(ledger):
         {"rate": 7.0, "src": "measured", "n": 1}
 
 
+@pytest.mark.parametrize("body", [
+    '{"version": 1, "rates": {"transcribing|||": {"rate": 1%s}}}' % ("0" * 400),
+    '{"version": 1, "rates": {"transcribing|||": {"rate": 6.0, "n": 1%s}}}'
+    % ("0" * 400),
+    "[" * 100000 + "]" * 100000,
+])
+def test_an_overflowing_or_deeply_nested_file_degrades_to_seeds(ledger, body):
+    with open(ledger, "w", encoding="utf-8") as f:
+        f.write(body)
+    stage_rates._reset_for_tests()
+    assert stage_rates.lookup("transcribing", None, None)["src"] == "seed"
+
+
 def test_record_many_is_one_write_folded_in_order(ledger, monkeypatch):
     from faster_whisper_backend.core import atomic_json
     writes = []

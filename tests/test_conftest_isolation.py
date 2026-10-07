@@ -57,3 +57,21 @@ def test_repoint_path_default_targets_the_named_parameter(monkeypatch):
         return other
     with pytest.raises(AssertionError):
         _repoint_path_default(monkeypatch, (no_path,), "/tmp/x")
+
+
+def test_app_env_keeps_factory_rule_writes_off_the_repo_config(app_module,
+                                                               tmp_path):
+    """POST /settings/factory-rules saves through save_factory_rules' `path`
+    default: under the app fixture both it and FACTORY_PATH must name a
+    per-test copy, never the committed config.json."""
+    import inspect
+    import os
+    from faster_whisper_backend.settings import config_store
+    root = os.path.realpath(str(tmp_path))
+    assert os.path.realpath(config_store.FACTORY_PATH).startswith(root)
+    for fn in (config_store.load_factory_rules,
+               config_store.save_factory_rules):
+        default = inspect.signature(fn).parameters["path"].default
+        assert os.path.realpath(default).startswith(root)
+    # ...and the copy still holds the shipped rules.
+    assert config_store.load_factory_rules()

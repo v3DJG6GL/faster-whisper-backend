@@ -71,6 +71,21 @@ _NOT_RESET = {
         "_trusted_origins": "configuration main installs at app build "
                             "(configure_origins), re-armed by its reload",
     },
+    "faster_whisper_backend.core.web_common": {
+        "_SEVERITY_LOG": "process-lifetime log-level ring the logging handler "
+                         "feeds; the tests that read it substitute their own",
+        "SSE_HEADERS": "constant response headers",
+        "STAGE_COLORS": "constant stage → colour map",
+        "KIND_COLORS": "constant kind → colour map",
+        "_NAV_SPEC": "constant nav table",
+        "_PAGE_KEY_BY_CURRENT": "constant page map",
+        "_PAGE_PATH_BY_CURRENT": "constant page map",
+        "_HEADER_SLUG_BY_CURRENT": "constant page map",
+        "_COL_CLASS_BY_CURRENT": "constant page map",
+    },
+    "faster_whisper_backend.settings.effective_config": {
+        "_CONFIG_TO_CLIENT_KEY": "constant config → client-key map",
+    },
     "faster_whisper_backend.pipeline.apply": {
         "EVICTORS": "constant bucket → drop-callable table",
         "_RULES_LOCK": "a LoopLock keeps one asyncio.Lock per running loop and "

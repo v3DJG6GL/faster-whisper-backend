@@ -8,6 +8,7 @@ release that can never be repaired. The CI itself cannot be executed here.
 """
 import json
 import os
+import re
 
 from faster_whisper_backend.paths import REPO_ROOT as REPO
 
@@ -67,14 +68,19 @@ def test_both_checkouts_clean_untracked_state():
 
 def test_build_legend_names_every_extra_the_dockerfile_installs():
     # The legend is where a CI reader learns what INCLUDE_EXTRAS=1 costs.
+    # Derived from the INCLUDE_EXTRAS install line, so a fourth extra added
+    # there without a legend word (and a map entry here) fails.
     ci = _read(".forgejo", "workflows", "ci.yml")
     dockerfile = _read("Dockerfile")
     legend = ci[ci.index("cpu-full"):ci.index("gpu-full — Dockerfile.gpu")]
-    for req in ("diarize", "bgm", "translate"):
-        assert "requirements-%s.txt" % req in dockerfile
-    assert "diarization" in legend
-    assert "separation" in legend
-    assert "translation" in legend
+    block = dockerfile[dockerfile.index('if [ "${INCLUDE_EXTRAS}" = "1" ]'):]
+    block = block[:block.index("\n    fi")]
+    installed = set(re.findall(r"-r requirements-(\w+)\.txt", block))
+    words = {"diarize": "diarization", "bgm": "separation",
+             "translate": "translation"}
+    assert installed == set(words)
+    for word in words.values():
+        assert word in legend
 
 
 def test_tag_runs_bake_the_pushed_tag_not_git_describe():

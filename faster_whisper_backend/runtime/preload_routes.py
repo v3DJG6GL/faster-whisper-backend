@@ -127,7 +127,12 @@ def _allowed(family: str, model_id: str,
     effective = effective or {}
     _cfg_key = _FAMILY_CFG_KEY.get(family)
     if _cfg_key is not None and _cfg_key in locked:
-        return bool(model_id) and model_id == effective.get(_cfg_key)
+        want = effective.get(_cfg_key) or ""
+        if family == "translation":
+            # A locked "" still runs the server default (the job resolves
+            # an empty TRANSLATION_MODEL to it), so that is what to warm.
+            want = want or tr_gating._translation_default_model()
+        return bool(model_id) and model_id == want
     if family == "whisper":
         model_id = preload.normalize_id(family, model_id)
         if not model_id:
@@ -216,4 +221,5 @@ async def preload_models(body: PreloadRequest,
     return preload.register_plan(user.get("user_id"), entries,
                                  plan_id=body.plan_id, denied=denied,
                                  stage_ahead=body.stage_ahead,
-                                 trigger=trigger)
+                                 trigger=trigger,
+                                 user_name=user.get("username"))

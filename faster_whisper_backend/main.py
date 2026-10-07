@@ -720,17 +720,8 @@ _cors_origins = list(getattr(cfg, "CORS_ALLOW_ORIGINS", []) or [])
 # The origin guard (auth/hosts.py) gets the raw lists via configure_origins
 # below and treats '*' as a literal, never allow-all.
 _cors_allow_all = "*" in _cors_origins
-if _cors_origins:
-    from fastapi.middleware.cors import CORSMiddleware
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=["*"] if _cors_allow_all else _cors_origins,
-        allow_credentials=not _cors_allow_all,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
-    logger.info("CORS enabled for origins: %s",
-                "* (any)" if _cors_allow_all else ", ".join(_cors_origins))
+# The CORSMiddleware itself is registered after the last @app.middleware
+# below, so it is the OUTERMOST layer (see _security_headers_mw).
 
 # Extra origins the unsafe-method origin guard accepts besides the request's
 # own Host — for a reverse proxy that rewrites Host to the upstream. Read ONLY
@@ -1111,7 +1102,8 @@ _CSP = (
 
 @app.middleware("http")
 async def _security_headers_mw(request: Request, call_next):
-    """Outermost layer: response headers every route should carry.
+    """Outermost @app.middleware layer (only CORSMiddleware, when enabled,
+    wraps it): response headers every route should carry.
 
     Registered last so it wraps _metrics_mw/_max_body_mw/_csrf_mw and therefore
     also stamps their early 403/413 returns.
@@ -1143,6 +1135,25 @@ async def _security_headers_mw(request: Request, call_next):
     response.headers.setdefault("Referrer-Policy", "no-referrer")
     response.headers.setdefault("Content-Security-Policy", _CSP)
     return response
+
+
+# Registered after every @app.middleware, so it wraps them all (Starlette
+# makes the LAST registered middleware the outermost): the early 403/413 that
+# _csrf_mw/_max_body_mw return then still carry Access-Control-Allow-Origin,
+# and an allowed cross-origin caller reads the real refusal instead of an
+# opaque CORS error. A preflight is answered here, before the inner guards,
+# none of which act on an OPTIONS request without a body anyway.
+if _cors_origins:
+    from fastapi.middleware.cors import CORSMiddleware
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"] if _cors_allow_all else _cors_origins,
+        allow_credentials=not _cors_allow_all,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+    logger.info("CORS enabled for origins: %s",
+                "* (any)" if _cors_allow_all else ", ".join(_cors_origins))
 
 
 @app.exception_handler(_rl.RateLimited)
@@ -1350,6 +1361,31 @@ async def transcribe(
     # seeded with the stages the Form args imply, refined as facts land,
     # ticked by every _progress_set, read by every poll.
     _rplan = _run_plan.RunPlan(kind="url" if source_url is not None else "file")
+    _plan_ticks: "dict[str, str | None]" = {}
+
+    def _ps(**fields) -> None:
+        """tx_progress._progress_set for this request. Without a progress_id
+        there is no registry entry to publish (it returns at once), but the
+        run plan still needs every stage tick: the verbose_json receipt's
+        took_s and the rates ledger are both clocked from them, and an
+        unticked stage closes with took_s 0.0. Stage and step are sticky,
+        as in the registry entry."""
+        if _pid:
+            tx_progress._progress_set(_pid, **fields)
+            return
+        for k in ("stage", "step"):
+            if k in fields:
+                _plan_ticks[k] = fields[k]
+        try:
+            _rplan.tick(stage=_plan_ticks.get("stage"),
+                        progress=fields.get("progress"),
+                        target=fields.get("target"),
+                        target_progress=fields.get("target_progress"),
+                        total_bytes=fields.get("total_bytes"),
+                        step=_plan_ticks.get("step"))
+        except Exception:  # noqa: BLE001 — progress must never break a request
+            pass
+
     tmp_path = None
     # Transcribe-from-URL state: the private download dir (rmtree'd in the
     # inner finally on every path) and the retention id echoed to the client.
@@ -1440,11 +1476,8 @@ async def transcribe(
             translate_to=translate_to))
         if _pid:
             tx_progress._RUN_PLAN_BY_PID[_pid] = _rplan
-        tx_progress._progress_set(_pid,
-                      stage=("resolving" if source_url is not None
-                             else "waiting"),
-                      progress=None,
-                      owner=(_user_id or _key_id))
+        _ps(stage=("resolving" if source_url is not None else "waiting"),
+            progress=None, owner=(_user_id or _key_id))
         _close_in_outer = True
         _job_row = await tx_progress._jobs_start_async(
             _pid, request_id=request_id, kind="transcribe",
@@ -1546,9 +1579,9 @@ async def transcribe(
                         or (int(_uinfo.duration * _uinfo.abr * 125)
                             if _uinfo.duration and _uinfo.abr else None),
                         extractor=(_uinfo.extractor_key or None))
-                    tx_progress._progress_set(_pid, stage="downloading", progress=None,
-                                  total_bytes=None,
-                                  step=(_uinfo.extractor_key or None))
+                    _ps(stage="downloading", progress=None,
+                        total_bytes=None,
+                        step=(_uinfo.extractor_key or None))
                     # The audio a language check of this link already
                     # downloaded (POST /v1/audio/url-language): reused when
                     # the caller may, else the run downloads as usual.
@@ -1640,14 +1673,14 @@ async def transcribe(
                     if _rung is None:
                         _video_result = media_video._video_state(
                             state="failed", error="this link has no video track")
-                        tx_progress._progress_set(_pid, video=dict(_video_result))
+                        _ps(video=dict(_video_result))
                     elif _rung.get("over_cap"):
                         _video_result = media_video._video_state(
                             state="failed",
                             error="the video exceeds the server's size limit",
                             height=_rung.get("height"),
                             container=_rung.get("container"))
-                        tx_progress._progress_set(_pid, video=dict(_video_result))
+                        _ps(video=dict(_video_result))
                     else:
                         # Network-bound and off the GPU path: it runs beside
                         # the pipeline, never delays the transcript, and is
@@ -1752,14 +1785,10 @@ async def transcribe(
             # an explicit "" into None for model.transcribe (passing "" trips the
             # tnfru/primeline finetunes' documented failure mode).
             ignored: "list[str]" = []
-            if "DEFAULT_PROMPT" in ident.locked:
-                _prompt = effective_config.cfg_for(resolved_model, "DEFAULT_PROMPT", ident)
-                if prompt is not None and prompt != _prompt:
-                    ignored.append("prompt")
-            elif prompt is not None:
-                _prompt = prompt
-            else:
-                _prompt = effective_config.cfg_for(resolved_model, "DEFAULT_PROMPT", ident)
+            _prompt = effective_config._resolve_request_knob(
+                resolved_model, ident, ignored,
+                "DEFAULT_PROMPT", "prompt", prompt,
+                default=effective_config._NO_DEFAULT)
             initial_prompt_arg = _prompt if _prompt else None
 
             _vad_filter = effective_config.cfg_for(resolved_model, "VAD_FILTER", ident)
@@ -1778,15 +1807,12 @@ async def transcribe(
             # likewise forbids the client's `language` param.
             # (`_decode_language`, not the `_language` ledger field above:
             # that one stays None until the decode has actually run.)
-            if "DEFAULT_LANGUAGE" in ident.locked:
-                _decode_language = effective_config.cfg_for(resolved_model, "DEFAULT_LANGUAGE", ident)
-                if language is not None and language != _decode_language:
-                    ignored.append("language")
-            else:
-                # Present-but-empty is an explicit "auto-detect" (the client's
-                # cleared state); only an ABSENT field inherits the config.
-                _decode_language = (language if language is not None
-                                    else effective_config.cfg_for(resolved_model, "DEFAULT_LANGUAGE", ident))
+            # Present-but-empty is an explicit "auto-detect" (the client's
+            # cleared state); only an ABSENT field inherits the config.
+            _decode_language = effective_config._resolve_request_knob(
+                resolved_model, ident, ignored,
+                "DEFAULT_LANGUAGE", "language", language,
+                default=effective_config._NO_DEFAULT)
             # Task: absent field inherits the resolved TASK config (per-identity
             # > per-model > global, default "transcribe"); a LOCKED TASK forbids
             # the client's `task` param the way a locked DEFAULT_LANGUAGE binds
@@ -1804,15 +1830,9 @@ async def transcribe(
             # Diarization request knobs: same absent-inherits / locked-wins
             # shape as task above. The capacity gate (DIARIZATION_ENABLED)
             # is checked at the stage itself and soft-fails into `warnings`.
-            _diarize_req = _form_bool(diarize)
-            if "DIARIZE" in ident.locked:
-                _diarize = bool(effective_config.cfg_for(resolved_model, "DIARIZE", ident))
-                if _diarize_req is not None and _diarize_req != _diarize:
-                    ignored.append("diarize")
-            elif _diarize_req is not None:
-                _diarize = _diarize_req
-            else:
-                _diarize = bool(effective_config.cfg_for(resolved_model, "DIARIZE", ident))
+            _diarize = bool(effective_config._resolve_request_knob(
+                resolved_model, ident, ignored,
+                "DIARIZE", "diarize", _form_bool(diarize), default=False))
             _spk = {}
             for _cfg_name, _client_name, _client_val in (
                 ("DIARIZATION_NUM_SPEAKERS", "num_speakers", num_speakers),
@@ -1850,17 +1870,12 @@ async def transcribe(
                 would silently stop the client's rail from showing it."""
                 _skipped.append(stage)
                 _rplan.skip(stage)
-                tx_progress._progress_set(_pid, skipped=list(_skipped))
+                _ps(skipped=list(_skipped))
 
-            _sep_req = _form_bool(separate_bgm)
-            if "SEPARATE_BGM" in ident.locked:
-                _separate = bool(effective_config.cfg_for(resolved_model, "SEPARATE_BGM", ident))
-                if _sep_req is not None and _sep_req != _separate:
-                    ignored.append("separate_bgm")
-            elif _sep_req is not None:
-                _separate = _sep_req
-            else:
-                _separate = bool(effective_config.cfg_for(resolved_model, "SEPARATE_BGM", ident))
+            _separate = bool(effective_config._resolve_request_knob(
+                resolved_model, ident, ignored,
+                "SEPARATE_BGM", "separate_bgm", _form_bool(separate_bgm),
+                default=False))
             # Per-request stage models (pyannote pipeline id / UVR model):
             # same ladder again. A non-empty allowlist that misses the
             # resolved value soft-fails by skipping THAT stage — before its
@@ -2027,7 +2042,7 @@ async def transcribe(
                     _plan_hint = None   # malformed → derive one, never a 422
                 _plan = preload.register_plan(
                     _user_id, _preload_entries, plan_id=_plan_hint,
-                    trigger="job")
+                    trigger="job", user_name=user.get("username"))
                 tx_progress._PLAN_BY_PID[_pid] = _plan["plan_id"]
 
             # Now that the stage plan is resolved, tell the running-jobs
@@ -2114,8 +2129,8 @@ async def transcribe(
                     try:
                         _sep_t0 = time.perf_counter()
                         _cur_stage = "separating"
-                        tx_progress._progress_set(
-                            _pid, stage="separating", progress=None,
+                        _ps(
+                            stage="separating", progress=None,
                             position=None, last_text=None,
                             model=(_separation_model or None),
                             # The ONNX session's real placement once a model
@@ -2144,7 +2159,7 @@ async def transcribe(
                                     prefix="sepsrc-", suffix=".wav")
                                 os.close(_tfd)
                                 _tc0 = time.perf_counter()
-                                tx_progress._progress_set(_pid, step="preparing")
+                                _ps(step="preparing")
                                 await asyncio.to_thread(
                                     _transcode.transcode_to_wav, tmp_path,
                                     _sep_wav, rate=44100, layout="stereo")
@@ -2176,7 +2191,7 @@ async def transcribe(
                                     # ffmpeg) have no protocol whitelist and
                                     # no playlist refusal. The soft-fail arm
                                     # below warns and transcribes as is.
-                                    tx_progress._progress_set(_pid, step=None)
+                                    _ps(step=None)
                                     raise _bgm_separation.BgmSeparationError(
                                         "music separation skipped: the file "
                                         "could not be prepared") from _te
@@ -2189,16 +2204,16 @@ async def transcribe(
                                 # the separator's own audio load/normalize
                                 # (~40 s on long inputs); the first demix
                                 # chunk clears it via the progress callback.
-                                tx_progress._progress_set(_pid, step="preparing")
+                                _ps(step="preparing")
                                 _vocals_path = await _bgm_separation.separate(
                                     _sep_src,
                                     model_filename=(_separation_model or None),
-                                    progress_cb=lambda f: tx_progress._progress_set(
-                                        _pid, progress=f, step=None),
+                                    progress_cb=lambda f: _ps(
+                                        progress=f, step=None),
                                     cancel_check=lambda: tx_progress._cancel_requested(
                                         _pid))
                         finally:
-                            tx_progress._progress_set(_pid, step=None)
+                            _ps(step=None)
                             # The intermediate WAV is ours alone — unlink it
                             # even on cancel/failure (it's ~10× the source;
                             # leaking one per request adds up fast).
@@ -2303,11 +2318,11 @@ async def transcribe(
                         max(0.0, min(1.0, float(_dav) / _dur))
                         if _kw.get("vad_filter") and _dur > 0 and _dav is not None
                         else None)
-                    tx_progress._progress_set(_pid, stage="transcribing", progress=0.0,
-                                  duration=_dur or None, position=None,
-                                  last_text=None, model=resolved_model,
-                                  device=_dev, compute=_compute,
-                                  vad_retained=_retained)
+                    _ps(stage="transcribing", progress=0.0,
+                        duration=_dur or None, position=None,
+                        last_text=None, model=resolved_model,
+                        device=_dev, compute=_compute,
+                        vad_retained=_retained)
                     _rplan.set_audio_seconds(_dur, src="decoder")
                     _rplan.set_vad_retained(_retained)
                     _out = []
@@ -2322,8 +2337,7 @@ async def transcribe(
                             _out.append(_s)
                             if _dur > 0:
                                 _frac = min(1.0, float(_s.end) / _dur)
-                                tx_progress._progress_set(
-                                    _pid,
+                                _ps(
                                     progress=_frac,
                                     position=float(_s.end),
                                     # Live tail for the client's run panel.
@@ -2344,9 +2358,9 @@ async def transcribe(
                 # until _collect's first entry (lead-pad decode, transcribe()'s
                 # eager audio decode + Silero VAD pass) used to be misreported
                 # as "waiting". Own stage so the client can label it honestly.
-                tx_progress._progress_set(_pid, stage="analyzing", progress=None,
-                              position=None, last_text=None, step=None,
-                              model=None, device=None, compute=None)
+                _ps(stage="analyzing", progress=None,
+                    position=None, last_text=None, step=None,
+                    model=None, device=None, compute=None)
                 # One origin for both branches, taken BEFORE the lead-pad
                 # pre-decode, so the "vad" row bills decode + pad + Silero
                 # as its own detail claims (a padded ndarray input skips
@@ -2385,9 +2399,9 @@ async def transcribe(
                     _t["trace"] = _decode_trace.finish(_tr, _out, _info)
                     return _out, _info, False
             loop = asyncio.get_running_loop()
-            tx_progress._progress_set(_pid, stage="waiting", progress=None,
-                          position=None, last_text=None, step=None,
-                          model=None, device=None, compute=None)
+            _ps(stage="waiting", progress=None,
+                position=None, last_text=None, step=None,
+                model=None, device=None, compute=None)
             tx_progress._check_cancelled(_pid)
             async with tx_models.get_inference_semaphore():
                 tx_progress._check_cancelled(_pid)
@@ -2611,8 +2625,8 @@ async def transcribe(
                     try:
                         _diar_t0 = time.perf_counter()
                         _cur_stage = "diarizing"
-                        tx_progress._progress_set(
-                            _pid, stage="diarizing", progress=None,
+                        _ps(
+                            stage="diarizing", progress=None,
                             position=None, last_text=None, step=None,
                             model=(_diarization_model or None),
                             device=_diarization._resolve_device())
@@ -2625,8 +2639,8 @@ async def transcribe(
                                 min_speakers=_spk.get("min_speakers"),
                                 max_speakers=_spk.get("max_speakers"),
                                 model_id=(_diarization_model or None),
-                                progress_cb=lambda f, step=None, **kw: tx_progress._progress_set(
-                                    _pid, progress=f, step=step,
+                                progress_cb=lambda f, step=None, **kw: _ps(
+                                    progress=f, step=step,
                                     target=kw.get("target"),
                                     target_progress=kw.get("target_progress")),
                                 cancel_check=lambda: tx_progress._cancel_requested(_pid),
@@ -2711,8 +2725,8 @@ async def transcribe(
                             _tr_t0 = time.perf_counter()
                             _cur_stage = "translating"
                             tx_progress._check_cancelled(_pid)
-                            tx_progress._progress_set(
-                                _pid, stage="translating", progress=0.0,
+                            _ps(
+                                stage="translating", progress=0.0,
                                 position=None, last_text=None, step=None,
                                 model=(_tr_model or None),
                                 device=_tr._resolve_device(),
@@ -2739,8 +2753,8 @@ async def transcribe(
                                     progress_cb=lambda f, step=None,
                                         last_text=None, target=None,
                                         target_progress=None:
-                                        tx_progress._progress_set(
-                                            _pid, stage="translating",
+                                        _ps(
+                                            stage="translating",
                                             model=(_tr_model or None),
                                             compute="gguf",
                                             progress=f, step=step,
@@ -2751,8 +2765,8 @@ async def transcribe(
                                     cancel_check=lambda:
                                         tx_progress._cancel_requested(_pid),
                                     download_cb=lambda done, total:
-                                        tx_progress._progress_set(
-                                            _pid, stage="downloading",
+                                        _ps(
+                                            stage="downloading",
                                             progress=((done / total)
                                                       if total else None),
                                             total_bytes=total or None),

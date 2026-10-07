@@ -603,6 +603,34 @@ def test_verbose_json_carries_plan_receipt_and_entry_is_gone(client,
     assert "plan" not in r.json()
 
 
+def test_plan_receipt_is_clocked_without_a_progress_id(client, app_module,
+                                                      fake_model,
+                                                      monkeypatch):
+    """A plain OpenAI-style POST sends no progress_id, so nothing publishes
+    progress — but the run plan must still be ticked, or every stage closes
+    with took_s 0.0 and the rates ledger never learns from API callers."""
+    import time
+    from faster_whisper_backend.runtime import stage_rates
+    from faster_whisper_backend.transcription import run_plan
+    monkeypatch.setattr(run_plan, "_MIN_SAMPLE_S", 0.0)
+    orig = fake_model.transcribe
+
+    def slow(path, **kw):
+        segs, info = orig(path, **kw)
+
+        def _gen():
+            time.sleep(0.05)
+            yield from segs
+        return _gen(), info
+    monkeypatch.setattr(fake_model, "transcribe", slow)
+    r = _post(client, response_format="verbose_json")
+    assert r.status_code == 200, r.text
+    plan = {s["stage"]: s for s in r.json()["plan"]}
+    assert plan["transcribing"]["state"] == "done"
+    assert plan["transcribing"]["took_s"] > 0.0
+    assert any(k.startswith("transcribing|") for k in stage_rates._read())
+
+
 def test_plan_reports_skipped_separation(client, app_module):
     """A requested-but-declined stage is in the plan as `skipped`, not
     dropped: the client's rail still gets a row to explain."""

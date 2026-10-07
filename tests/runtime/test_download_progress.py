@@ -69,6 +69,45 @@ def test_capture_patches_and_restores_hub_tqdm():
         assert getattr(mod, attr, None) is prev
 
 
+def test_capture_reports_an_xet_bar_built_without_tqdm_class(monkeypatch):
+    # pyannote's Pipeline.from_pretrained passes no tqdm_class, and an LFS
+    # file then goes through xet_get, whose reporter builds its bars from
+    # the `tqdm` it bound at import — the capture must reach that one too.
+    xet = pytest.importorskip("huggingface_hub.utils._xet_progress_reporting")
+    monkeypatch.setattr(dp, "_CB_MIN_INTERVAL_S", 0.0)
+    calls = []
+    with dp.capture("pyannote:x", cb=lambda d, t: calls.append((d, t)),
+                    record=False) as cap:
+        rep = xet.XetDownloadProgressReporter(
+            reconstruction_desc="x", total=100, log_level=logging.INFO,
+            name="huggingface_hub.xet_get")
+        assert cap.bars
+        rep.reconstruction_bar.update(40)
+        assert calls[-1] == (40, 100)
+        rep.reconstruction_bar.close()
+        if rep.transfer_bar is not None:
+            rep.transfer_bar.close()
+
+
+def test_capture_keeps_the_hub_disable_for_snapshot_default_bars():
+    # snapshot_download's import-bound hf_tqdm must stay a class the patched
+    # issubclass() check recognises, or its bars skip the log-level/TTY
+    # disable and render to stderr while any capture is live.
+    sd = importlib.import_module("huggingface_hub._snapshot_download")
+    ut = importlib.import_module("huggingface_hub.utils.tqdm")
+
+    def _disabled():
+        bar = ut._create_progress_bar(cls=sd.hf_tqdm, log_level=logging.INFO,
+                                      total=1, unit="B")
+        try:
+            return bar.disable
+        finally:
+            bar.close()
+    outside = _disabled()
+    with dp.capture("x", record=False):
+        assert _disabled() == outside
+
+
 def test_capture_logs_buckets_and_done(monkeypatch, caplog):
     monkeypatch.setattr(dp, "_CB_MIN_INTERVAL_S", 0.0)
     with caplog.at_level(logging.INFO, logger="whisper-api"):

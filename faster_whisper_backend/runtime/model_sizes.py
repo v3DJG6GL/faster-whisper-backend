@@ -238,9 +238,13 @@ def lookup(name: str, device: str, compute_type: str) -> dict | None:
     /stats shows the source so an estimate is never mistaken for a
     measurement."""
     models = _read()
-    rec = models.get(_key(name, device, compute_type))
+    exact = _key(name, device, compute_type)
+    rec = models.get(exact)
     if rec is not None:
-        return {"bytes": int(rec["bytes"]), "src": rec.get("src") or "measured",
+        # The same provenance rule as the fallback below: a stray non-cuda
+        # "measured" row is only a disk-grade prior, never a measurement.
+        return {"bytes": int(rec["bytes"]),
+                "src": "measured" if _is_measured(exact, rec) else "disk",
                 "n": int(rec.get("n") or 0), "ts": rec.get("ts")}
     # Any-device fallback: a cpu/int8 measurement is a poor proxy for a
     # cuda/float16 load, but a rough number beats no check at all — and the
@@ -400,6 +404,11 @@ def _model_path(name: str) -> "str | None":
     # separate root keyed by quantisation (see transcription.models._converted_dir_for),
     # which this name-only lookup cannot address; the source repo is an
     # adequate prior for it.
+    # DEFAULT_MODEL may be a local CT2 directory, which the loader opens in
+    # place: size that directory, not a hub leaf that never exists.
+    local = os.path.expanduser(name)
+    if os.path.isdir(local):
+        return local
     try:
         from faster_whisper.utils import _MODELS
         repo = _MODELS.get(name) or name

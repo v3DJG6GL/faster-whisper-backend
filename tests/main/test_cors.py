@@ -161,3 +161,25 @@ def test_cors_star_allows_any_origin(tmp_path, monkeypatch):
         monkeypatch.delenv("WHISPER_CORS_ALLOW_ORIGINS", raising=False)
         importlib.reload(importlib.import_module("faster_whisper_backend.settings.config"))
         importlib.reload(main)
+
+
+def test_an_early_413_still_carries_the_cors_header(tmp_path, monkeypatch):
+    """CORSMiddleware wraps the body cap and the CSRF guard: their early
+    413/403 must still name the allowed origin, or the browser hides the
+    refusal behind an opaque CORS error."""
+    origin = "http://localhost:9999"
+    main, cfg = _reload_main(tmp_path, monkeypatch, origin)
+    monkeypatch.setattr(cfg, "MAX_JSON_BODY_BYTES", 1024, raising=False)
+    try:
+        with TestClient(main.app, client=("127.0.0.1", 12345)) as client:
+            r = client.put("/v1/synced-client-settings",
+                           content=b'{"pad": "' + b"x" * 4096 + b'"}',
+                           headers={"Origin": origin,
+                                    "Content-Type": "application/json"})
+        assert r.status_code == 413
+        assert r.headers.get("access-control-allow-origin") == origin
+    finally:
+        close_app_stores()
+        monkeypatch.delenv("WHISPER_CORS_ALLOW_ORIGINS", raising=False)
+        importlib.reload(importlib.import_module("faster_whisper_backend.settings.config"))
+        importlib.reload(main)

@@ -513,6 +513,47 @@ def test_cursor_is_monotone_and_only_looks_forward(monkeypatch):
     assert preload.STAGE_INDEX["analyzing"] == preload.STAGE_INDEX["transcribing"]
 
 
+def test_a_full_queue_keeps_the_cursor_so_the_next_tick_retries(monkeypatch):
+    """on_stage_start used to advance the cursor before it knew it could
+    enqueue: a full queue at that tick lost the stage-ahead warm for good,
+    since every later tick of the same stage stopped at the cursor."""
+    _enable(monkeypatch)
+    _fits(monkeypatch, (None, "size_unknown"))
+    preload.register_plan("u", [("separation", "UVR-A"),
+                                ("diarization", "p/x")], plan_id="2" * 8)
+    plan = preload._plans["2" * 8]
+
+    class _Q:
+        def __init__(self, n):
+            self.n = n
+
+        def qsize(self):
+            return self.n
+
+    monkeypatch.setattr(preload, "_queue", _Q(preload._MAX_QUEUE))
+    preload.on_stage_start("2" * 8, "separating")
+    assert plan.inflight == set()
+    assert plan.cursor == -1
+    monkeypatch.setattr(preload, "_queue", _Q(0))
+    preload.on_stage_start("2" * 8, "separating")
+    assert preload.stats_key("diarization", "p/x") in plan.inflight
+    assert plan.cursor == 0
+
+
+def test_the_preload_job_row_carries_the_display_name(monkeypatch):
+    """/stats shows and filters a job's `user` as a username; the preload
+    row must not put the opaque id there."""
+    from faster_whisper_backend.core import jobs
+    _enable(monkeypatch)
+    _fits(monkeypatch, (None, "size_unknown"))
+    preload.register_plan("uid1", [("diarization", "p/x")], plan_id="3" * 8,
+                          user_name="alice")
+    rows = [j for j in jobs.jobs_snapshot(include_identity=True,
+                                          user_id="uid1")
+            if j["kind"] == "preload"]
+    assert [j["user"] for j in rows] == ["alice"]
+
+
 def test_diagnostics_shape():
     d = preload.diagnostics()
     assert set(d) == {"enabled", "worker_alive", "plans", "warm",

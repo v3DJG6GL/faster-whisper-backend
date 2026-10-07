@@ -438,6 +438,22 @@ def test_a_disk_prior_replaces_a_stray_cpu_measurement(ledger):
     assert (got["bytes"], got["src"]) == (5000, "disk")
 
 
+def test_an_exact_stray_cpu_measurement_reads_as_disk(ledger):
+    """The exact-placement hit applies the same provenance rule as the
+    fallback: a cpu row an older build wrote as "measured" is a VRAM delta,
+    not a measurement of the cpu load, so /stats must not call it one."""
+    model_sizes.record("z", "cpu", "int8", 300)
+    got = model_sizes.lookup("z", "cpu", "int8")
+    assert (got["bytes"], got["src"]) == (300, "disk")
+
+
+def test_disk_size_sizes_a_local_model_directory(ledger, tmp_path):
+    """DEFAULT_MODEL may be a local CT2 directory the loader opens in place;
+    it must be sized there, not looked up as a never-existing hub leaf."""
+    (tmp_path / "model.bin").write_bytes(b"x" * 1234)
+    assert model_sizes.disk_size(str(tmp_path)) == 1234
+
+
 def test_tilde_roots_resolve_under_the_home_dir(ledger, tmp_path,
                                                  monkeypatch):
     """The hub expands "~" in HF_HOME and in an explicit cache_dir; a .env

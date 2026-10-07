@@ -231,6 +231,22 @@ def test_a_locked_stage_model_admits_only_the_effective_value(
     assert row.get("reason") != "not_allowed"
 
 
+def test_a_locked_empty_translation_model_admits_the_default(monkeypatch):
+    # A locked TRANSLATION_MODEL with no value (config.json ships "", and an
+    # identity binding fault locks every field) still runs the server default
+    # in the job, so the preload must admit — and warm — exactly that ref.
+    from faster_whisper_backend.runtime import preload_routes
+    from faster_whisper_backend.settings import config as cfg
+    monkeypatch.setattr(cfg, "TRANSLATION_DEFAULT_MODEL",
+                        "org/repo-GGUF:Q4_K_M", raising=False)
+    eff = {"TRANSLATION_MODEL": ""}
+    locked = frozenset({"TRANSLATION_MODEL"})
+    assert preload_routes._allowed("translation", "org/repo-GGUF:Q4_K_M",
+                                   eff, locked)
+    assert not preload_routes._allowed("translation", "org/other-GGUF:Q8_0",
+                                       eff, locked)
+
+
 def test_disabled_stage_is_202_deferred_stage_disabled(client, app_module,
                                                        monkeypatch):
     _enable(app_module, monkeypatch, DIARIZATION_ENABLED=False)
