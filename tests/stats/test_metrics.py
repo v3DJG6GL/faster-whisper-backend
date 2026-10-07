@@ -114,10 +114,28 @@ def test_model_load_bucket0_survives_trim():
 # record_transcription
 # ---------------------------------------------------------------------------
 
-def test_record_transcription_falsy_request_id_noop():
-    # No request_id -> early return, no import/persist attempted, no raise.
+def test_record_transcription_falsy_request_id_noop(tx_store, usage_store_db):
+    # No request_id -> early return, nothing persisted, no raise. The stores
+    # are open, so a missing guard would show up as rows, not as a
+    # swallowed RuntimeError.
     metrics.record_transcription("m", 1.0, 0.5, "ok", 3, request_id=None)
     metrics.record_transcription("m", 1.0, 0.5, "ok", 3, request_id="")
+    assert tx_store.count() == 0
+    assert usage_store_db.totals_by_key() == []
+
+
+def test_record_transcription_passes_the_session_job_to_the_usage_rollup(
+        monkeypatch):
+    """A dictation's follow-up translation hands its client_job through, so
+    usage_store can attach the translating stage to the session's job."""
+    from faster_whisper_backend.stats import usage_store
+    seen = {}
+    monkeypatch.setattr(usage_store, "record_usage", lambda **kw: seen.update(kw))
+    metrics.record_transcription("m", 0.0, 0.5, "ok", 0, request_id="r1",
+                                 kind="translate", recent_row=False,
+                                 session_job_id="s" * 32)
+    assert seen["session_job_id"] == "s" * 32
+    assert seen["kind"] == "text"
 
 
 def test_record_transcription_swallows_store_errors():

@@ -555,6 +555,49 @@ def test_quick_config_page_reload_failure_and_reapply_guards(client):
     assert "status === 'running'" not in start
 
 
+def test_quick_config_page_failure_paths_recover(client):
+    """No JS harness: pin the strings. A failed reload after a search change
+    restores the term the rows were loaded for; a refused (403/400) save
+    refetches and drops locked rules instead of re-sending them forever; a
+    thrown save and a thrown first load surface an error; the strip poller
+    stops on 'idle' and on a lost session; the stream-recovery probe stands
+    down when the browser's own reconnect won."""
+    html = client.get("/quick-config").text
+    body = html[html.index("async function reloadRecent()"):
+                html.index("async function loadOlder()")]
+    fail = body[body.index("if (!j) {"):body.index("list.innerHTML = '';")]
+    assert "if (q !== _listQuery) _searchQuery = _listQuery;" in fail
+    assert fail.index("_searchQuery = _listQuery;") < fail.index("return;")
+    assert body.index("_listQuery = q;") > body.index("if (!j) {")
+    save = html[html.index("async function _doSave("):
+                html.index("// --- Silent reapply strip")]
+    refused = save[save.index("if (!r.ok) {"):save.index("const result = await r.json();")]
+    assert "r.status !== 403 && r.status !== 400" in refused
+    fetch = refused.index("const j = await fetchState();")
+    assert fetch < refused.index("_diffsSince(initialRules)") < refused.index(
+        "applyState(j);") < refused.index("rule.locked && !_isAdmin()") < refused.index(
+        "_reapplyDiffs(diffs);")
+    do_save = html[html.index("async function doSave()"):
+                   html.index("async function _doSave(")]
+    catch = do_save[do_save.index("} catch (e) {"):do_save.index("} finally {")]
+    assert "setStatus('save failed');" in catch
+    load = html[html.index("async function load()"):html.index("function applyState(j)")]
+    assert load.index("try {") < load.index("await fetchState()") < load.index(
+        "} catch (e) {") < load.index("setStatus('load failed');")
+    poll = html[html.index("async function _pollStripOnce()"):
+                html.index("async function startReapplyJobSilent(")]
+    idle = poll[poll.index("} else if (s.status === 'idle') {"):]
+    assert "clearInterval(_stripPoll); _stripPoll = null;" in idle
+    lost = poll[poll.index("if (!r.ok) {"):poll.index("let s;")]
+    assert "r.status === 401 || r.status === 403" in lost
+    assert "clearInterval(_stripPoll); _stripPoll = null;" in lost
+    probe = html[html.index("const probe = async () => {"):
+                 html.index("// --- Field-level diff helpers")]
+    assert probe.index("await api('GET', '/quick-config/recent?limit=1');") < probe.index(
+        "if (!_recoveryTimer) return;") < probe.index("if (r.ok) {")
+    assert "if (!_recoveryTimer) return;   // onopen cancelled it meanwhile" in probe
+
+
 def test_redact_collapses_hidden_rule_ordinals():
     """The schema's guard messages read `rule {idx} ({slug!r}) entry {e}:`
     — after the slug swap the ordinal still gave away the hidden rule's list

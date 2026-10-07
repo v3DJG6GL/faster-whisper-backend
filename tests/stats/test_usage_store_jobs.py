@@ -209,6 +209,45 @@ def test_dictation_targets_per_language_with_kept_count(usage_store_db):
     assert narrowed["dictation"]["targets"] == doc["dictation"]["targets"]
 
 
+def test_translation_attaches_to_its_dictation_session(usage_store_db):
+    """A dictation's follow-up translation is its own POST under a fresh
+    progress id: its translating stage landed on a kind='text' job, so
+    dictation.targets was always [] and the translating meter counted the
+    dictation AND a text session. With session_job_id naming the same
+    user's dictation job, the stage attaches there and no second session
+    is counted; another user's session id, an unknown one and a failed
+    translation record as before."""
+    us = usage_store_db
+    sess = "s" * 32
+    tr = [{"name": "translate", "secs": 1.0, "targets": ["de"]}]
+    us.record_usage(key_id="k", user_id="u", audio_s=5.0, words=20, status="ok",
+                    kind="dictation", job_id=sess)
+    us.record_usage(key_id="k", user_id="u", audio_s=0.0, words=0, status="ok",
+                    kind="text", job_id="p" * 32, stages=tr, session_job_id=sess)
+    doc = us.document("u", days=1, tz=_UTC, tz_name="UTC")
+    assert doc["dictation"]["targets"] == [
+        {"code": "de", "runs": 1, "kept_original": 0}]
+    meter = next(s for s in doc["stages"] if s["stage"] == "translating")
+    assert (meter["runs"], meter["of_runs"]) == (1, 1)
+    assert doc["total"]["text"]["requests"] == 1
+    assert doc["total"]["text"]["sessions"] == 0
+    conn = us._require_conn()
+    assert conn.execute("SELECT 1 FROM usage_jobs WHERE job_id = ?",
+                        ("p" * 32,)).fetchone() is None
+    # Someone else's session, an unknown id, a failed run: own text job.
+    us.record_usage(key_id="k2", user_id="v", audio_s=0.0, words=0, status="ok",
+                    kind="text", job_id="q" * 32, stages=tr, session_job_id=sess)
+    us.record_usage(key_id="k", user_id="u", audio_s=0.0, words=0, status="ok",
+                    kind="text", job_id="r" * 32, stages=tr, session_job_id="x" * 32)
+    us.record_usage(key_id="k", user_id="u", audio_s=0.0, words=0, status="error",
+                    kind="text", job_id="e" * 32, stages=tr, session_job_id=sess)
+    for jid in ("q", "r", "e"):
+        assert conn.execute("SELECT kind FROM usage_jobs WHERE job_id = ?",
+                            (jid * 32,)).fetchone()["kind"] == "text", jid
+    assert us.document("u", days=1, tz=_UTC, tz_name="UTC")[
+        "dictation"]["targets"][0]["runs"] == 1
+
+
 def test_with_document_dictation_targets_honour_the_kind_filter(usage_store_db):
     """The with= document claims every figure is kind-scoped, but
     dictation.targets hard-coded kind='dictation' and ignored the filter:
@@ -227,6 +266,21 @@ def test_with_document_dictation_targets_honour_the_kind_filter(usage_store_db):
     assert files["dictation"]["targets"] == []
     dicts = us.document("u", days=1, tz=_UTC, tz_name="UTC",
                         with_stages=("translating",), kinds=("dictation",))
+    assert dicts["dictation"]["targets"] == [
+        {"code": "de", "runs": 1, "kept_original": 0}]
+
+
+def test_rollup_document_dictation_targets_honour_the_kind_filter(usage_store_db):
+    """Rollup-path twin: without with_stages, dictation.sessions is
+    kind-filtered, so the per-job targets read must be too."""
+    us = usage_store_db
+    us.record_usage(key_id="k", user_id="u", audio_s=5.0, words=20, status="ok",
+                    kind="dictation", job_id="d" * 32,
+                    stages=[{"name": "translating", "secs": 1.0, "targets": ["de"]}])
+    files = us.document("u", days=1, tz=_UTC, tz_name="UTC", kinds=("file",))
+    assert files["dictation"]["sessions"] == 0
+    assert files["dictation"]["targets"] == []
+    dicts = us.document("u", days=1, tz=_UTC, tz_name="UTC", kinds=("dictation",))
     assert dicts["dictation"]["targets"] == [
         {"code": "de", "runs": 1, "kept_original": 0}]
 

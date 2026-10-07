@@ -788,7 +788,7 @@
   <!-- Latency -->
   <div class="grid-stack-item" gs-id="latency" gs-x="0" gs-y="12" gs-w="6" gs-h="5">
    <div class="grid-stack-item-content"><div class="card">
-    <h3>Request latency (last <span id="lat-n">0</span>) <span class="win" data-win="ring"></span></h3>
+    <h3>Request latency (last <span id="lat-n">0</span>) <span class="win" data-win="ring" data-ring="live"></span></h3>
     <div id="lat-val" class="val">— <span class="sub">ms p50</span></div>
     <div id="lat-meta" class="meta"></div>
     <div class="spark-wrap">
@@ -1134,13 +1134,17 @@ function scrubStep(delta) {
   const cur = frozenTs == null ? xs.length - 1 : nearestIdx(xs, frozenTs);
   scrubTo(cur + delta);
 }
+// Park every spark's cursor off-plot: a cursor left on a sample is
+// re-resolved on every setData and would freeze the readouts again. A
+// programmatic setCursor is not published to the sync group (see scrubTo),
+// so parking only one spark left the others on their sample.
+function parkSparkCursors() {
+  Object.values(sparks).forEach(u => { if (u) { try { u.setCursor({ left: -10, top: -10 }); } catch (_) {} } });
+}
 function backToLive() {
   frozenTs = null;
   applyFreeze();
-  // Park the shared crosshair off-plot too: a cursor left on a sample is
-  // re-resolved on every setData and would freeze the readouts again.
-  const any = Object.values(sparks).find(Boolean);
-  if (any) { try { any.setCursor({ left: -10, top: -10 }); } catch (_) {} }
+  parkSparkCursors();
   const sc = $('ring-scrub'); if (sc) sc.value = '119';
   refreshStatusPill();
 }
@@ -1187,6 +1191,13 @@ function refreshRingChips() {
     cls = 'win live'; html = '<b>live</b> · last 2 min';
   }
   document.querySelectorAll('.card .win[data-win="ring"]').forEach(el => {
+    // Latency has no sampled history: in range mode its spark and readout
+    // keep the live 2-minute ring, so its chip must not claim the window.
+    if (liveMode !== 'live' && el.dataset.ring === 'live') {
+      el.className = 'win live'; el.innerHTML = '<b>live</b> · last 2 min';
+      el.title = 'the 2-minute live ring at 1 Hz (latency has no sampled history)';
+      return;
+    }
     el.className = cls; el.innerHTML = html;
     el.title = liveMode !== 'live' ? 'sampled history (rings control)' : frozenTs != null
       ? 'readouts frozen at this sample — click to go back to live' : 'the 2-minute live ring at 1 Hz';
@@ -1235,7 +1246,9 @@ function loadRangeSparks() {
           else { applyFreeze(); refreshStatusPill(); }
         }
         const last = j.avg.length ? j.avg[j.avg.length - 1] : null;
-        const mx = j.max.length ? Math.max(...j.max) : null;
+        // Null buckets (no sample, no NVML temperature) are not a 0 maximum.
+        const maxes = (j.max || []).filter(v => v != null);
+        const mx = maxes.length ? Math.max(...maxes) : null;
         rangeHeads[key] = (last == null ? '—' : Math.round(last)) + ' · max ' + (mx == null ? '—' : Math.round(mx));
         const head = $(SPARK_HEAD[key]);
         if (head) head.textContent = rangeHeads[key];
@@ -1258,6 +1271,7 @@ function setLiveMode(v) {
     return;
   }
   frozenTs = null; applyFreeze();
+  parkSparkCursors();
   loadRangeSparks();
   rangeTimer = setInterval(loadRangeSparks, 60000);
   refreshStatusPill();
@@ -2314,7 +2328,16 @@ fetch('/stats/snapshot', { cache: 'no-store' })
     pushHistory(snap); render(snap);
   })
   .catch(err => console.warn('[stats] initial fetch failed', err))
-  .finally(openStream);
+  .finally(() => {
+    // A page opened in a background tab must not hold a 1 Hz stream until
+    // its first visit: the visibilitychange handler opens it on show.
+    if (document.visibilityState === 'hidden') {
+      if (_hiddenAt == null) _hiddenAt = Date.now();
+      setStatus('paused (hidden)', 'paused');
+      return;
+    }
+    openStream();
+  });
 
 })();
 </script>

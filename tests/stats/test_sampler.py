@@ -13,7 +13,7 @@ import os
 
 
 @pytest.fixture
-def sampler(tx_store, monkeypatch):
+def sampler(monkeypatch):
     stats_sampler._reset_for_tests()
     monkeypatch.setattr(metrics, "gpu_gate", None)
     monkeypatch.setattr(metrics, "in_flight_transcriptions", 0)

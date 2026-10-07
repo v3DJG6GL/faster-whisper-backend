@@ -52,3 +52,26 @@ def test_adopt_legacy_moves_sys_samples_once(sm_store, tmp_path):
                           ).fetchone() is None
     assert sm_store.adopt_legacy(legacy) == 0
     legacy.close()
+
+
+class _AutoRolledBackConn:
+    """A connection whose batch insert fails the way SQLITE_FULL does: SQLite
+    has already rolled the transaction back by itself when the error lands."""
+
+    def __init__(self, real):
+        self._real = real
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+    def executemany(self, *a, **kw):
+        self._real.execute("ROLLBACK")
+        raise sqlite3.OperationalError("database or disk is full")
+
+
+def test_record_keeps_the_real_error_when_sqlite_rolled_back(sm_store, monkeypatch):
+    """A bare ROLLBACK after SQLite's own rollback raised "cannot rollback -
+    no transaction is active" and replaced the disk-full error."""
+    monkeypatch.setattr(sm_store, "_conn", _AutoRolledBackConn(sm_store._conn))
+    with pytest.raises(sqlite3.OperationalError, match="database or disk is full"):
+        sm_store.record([{"ts": 1000, "gpu_util": 1.0}])

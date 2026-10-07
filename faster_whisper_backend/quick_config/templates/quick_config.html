@@ -693,6 +693,10 @@ let _seenReqIds = new Set();
 // Active free-text filter (server-side substring over raw/final). Empty =
 // unfiltered newest-first view.
 let _searchQuery = '';
+// The term the rows on screen were loaded for. A failed reload after a search
+// change restores _searchQuery to it, so the rows, the "Load older" cursor and
+// the live-push filter keep agreeing (and the next keystroke retries).
+let _listQuery = '';
 // Active stream-recovery poller (mirrors /stats); non-null while reconnecting.
 let _recoveryTimer = null;
 // Bumped by every reloadRecent: a response (reload or load-older) that lands
@@ -1796,6 +1800,9 @@ async function reloadRecent() {
     // cursor on screen (live pushes during the wait already landed there)
     // instead of wiping the panel to "No transcriptions yet".
     _pushedDuringReload = null;
+    // A failed SEARCH CHANGE must not leave the new term over the old term's
+    // rows: loadOlder would page the new term from the old cursor.
+    if (q !== _listQuery) _searchQuery = _listQuery;
     return;
   }
   const live = _pushedDuringReload || [];
@@ -1804,6 +1811,7 @@ async function reloadRecent() {
   // set, and the rebuild below would wipe it while the new set skipped it.
   _seenReqIds = new Set();
   _oldestLoadedTs = null;
+  _listQuery = q;
   const rows = (j && j.recent) || [];
   // Server returns newest-first; appending in order leaves newest at the top.
   list.innerHTML = '';
@@ -1938,6 +1946,10 @@ function startStream() {
     const probe = async () => {
       try {
         const r = await api('GET', '/quick-config/recent?limit=1');
+        // The browser's own reconnect may have succeeded meanwhile (onopen
+        // nulls the timer): tearing that healthy stream down would also wipe
+        // the "Load older" pages the user paged in.
+        if (!_recoveryTimer) return;
         if (r.ok) {
           clearTimeout(_recoveryTimer);
           _recoveryTimer = null;
@@ -1946,6 +1958,7 @@ function startStream() {
           return;
         }
       } catch (_) { /* keep polling */ }
+      if (!_recoveryTimer) return;   // onopen cancelled it meanwhile
       delay = Math.min(delay * 1.7, 30000);
       _recoveryTimer = setTimeout(probe, delay);
     };
@@ -2082,8 +2095,16 @@ async function fetchState() {
 }
 
 async function load() {
-  const j = await fetchState();
-  if (j) applyState(j);
+  // Always resolves: a rejected first fetch (server restarting, proxy error
+  // page) used to skip reloadRecent() and startStream() in the bootstrap
+  // chain, leaving the page at "loading…" with no stream to recover on.
+  try {
+    const j = await fetchState();
+    if (j) applyState(j);
+  } catch (e) {
+    setStatus('load failed');
+    showToast('load failed: ' + ((e && e.message) || e), 'err');
+  }
 }
 
 function applyState(j) {
@@ -2206,6 +2227,11 @@ async function doSave() {
   _syncSaveBtns();
   try {
     await _doSave(patch, fingerprints);
+  } catch (e) {
+    // fetch() rejects on a dropped connection and r.json() on a cut-off
+    // body; without this the status stayed at "saving…" with no toast.
+    showToast('save failed: ' + ((e && e.message) || e) + ' — reload to check what was saved', 'err');
+    setStatus('save failed');
   } finally {
     _saving = false;
     _syncSaveBtns();
@@ -2248,8 +2274,23 @@ async function _doSave(patch, fingerprints) {
   if (!r.ok) {
     let msg = 'save failed (' + r.status + ')';
     try { const j = await r.json(); if (j && j.detail) msg = j.detail; } catch (_) {}
-    showToast(msg, 'err');
     setStatus('save failed');
+    if (r.status !== 403 && r.status !== 400) { showToast(msg, 'err'); return; }
+    // One refused slug fails the whole POST (a rule an admin locked, or
+    // removed / un-exposed, since this page loaded), and dirty would keep
+    // re-sending it, so every later Save got the same refusal. Refetch, keep
+    // the edits on rules that are still editable and drop the rest.
+    const j = await fetchState();
+    if (!j) { showToast(msg, 'err'); return; }
+    const diffs = _diffsSince(initialRules);
+    applyState(j);
+    for (const rule of liveRules) {
+      if (rule.locked && !_isAdmin()) diffs.delete(rule.name);
+    }
+    _reapplyDiffs(diffs);   // skips rules that no longer exist
+    renderCards();
+    updateButtons();
+    showToast(msg + ' — rules reloaded; your other edits were kept, review and Save again.', 'err');
     return;
   }
   const result = await r.json();
@@ -2357,8 +2398,20 @@ async function _pollStripOnce() {
   let r;
   try { r = await api('GET', '/quick-config/reapply-rules/status'); }
   catch (_) { return null; }
-  if (!r.ok) return null;
-  const s = await r.json();
+  if (!r.ok) {
+    // An expired session (401) or lost access (403) never recovers by
+    // polling: stop instead of re-polling every 1.5 s for the tab's life.
+    if (r.status === 401 || r.status === 403) {
+      if (_stripPoll) { clearInterval(_stripPoll); _stripPoll = null; }
+      const strip = document.getElementById('reapply-strip');
+      strip.classList.add('err');
+      strip.querySelector('.r-label').textContent =
+        'Re-apply status unavailable (HTTP ' + r.status + ')';
+    }
+    return null;
+  }
+  let s;
+  try { s = await r.json(); } catch (_) { return null; }
   const strip = document.getElementById('reapply-strip');
   const fill = strip.querySelector('.r-fill');
   const stats = strip.querySelector('.r-stats');
@@ -2382,6 +2435,14 @@ async function _pollStripOnce() {
     strip.classList.add('err');
     if (_stripPoll) { clearInterval(_stripPoll); _stripPoll = null; }
     // Don't auto-hide on error — the user needs to see it.
+  } else if (s.status === 'idle') {
+    // The job state lives in memory: 'idle' while a job was being polled
+    // means the server restarted mid-job (or captures were turned off).
+    // Terminal, like on the start path; the interval would otherwise run
+    // for the life of the tab under a stale "Re-applying rules…".
+    label.textContent = 'Re-apply interrupted (server restarted?)';
+    strip.classList.add('err');
+    if (_stripPoll) { clearInterval(_stripPoll); _stripPoll = null; }
   }
   return s.status || null;
 }

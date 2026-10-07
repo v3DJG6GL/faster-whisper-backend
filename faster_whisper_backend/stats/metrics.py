@@ -335,7 +335,8 @@ def record_transcription(model: str, audio_dur: float, proc_dur: float,
                          wait_s: float | None = None,
                          error_class: str | None = None,
                          error_stage: str | None = None,
-                         recent_row: bool = True) -> None:
+                         recent_row: bool = True,
+                         session_job_id: str | None = None) -> None:
     """Called from the transcribe handler's outer finally on every
     /transcribe request (both success and error paths). UPSERTs the
     timing half of the recent-transcriptions row keyed by request_id;
@@ -367,7 +368,11 @@ def record_transcription(model: str, audio_dur: float, proc_dur: float,
     ``recent_row=False`` skips the recent-jobs row and keeps only the usage
     rollup — for a dictation's follow-up translation, which is folded into
     the utterance's own row (recent_transcriptions_store.append_stage)
-    instead of showing up as a second, unlinked job."""
+    instead of showing up as a second, unlinked job.
+
+    ``session_job_id`` is that translation's dictation session (its
+    ``client_job``): usage_store.record_usage attaches the stage rows to the
+    session's job when it is the same user's (see there)."""
     if not request_id:
         return
     try:
@@ -412,6 +417,7 @@ def record_transcription(model: str, audio_dur: float, proc_dur: float,
             wait_s=wait_s,
             error_class=error_class,
             error_stage=error_stage,
+            session_job_id=session_job_id,
         )
     except Exception as e:
         logger.warning("[metrics] usage rollup failed: %s", e)

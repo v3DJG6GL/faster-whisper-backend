@@ -357,8 +357,10 @@ def _label_rows(rows: list[dict[str, Any]], by: str, *, scrub: bool,
     names = api_keys_store.get_usernames(
         [r["user_id"] for r in rows if r.get("user_id")])
 
+    # A sentinel id ("(open-mode)") names nobody: scrubbing it only made it
+    # read like a real person on the board.
     def _user_label(uid: str) -> str:
-        if scrub and uid != caller_uid:
+        if scrub and uid != caller_uid and not (uid or "").startswith("("):
             return _opaque_user_label(uid)
         return names.get(uid) or uid
 
@@ -369,7 +371,7 @@ def _label_rows(rows: list[dict[str, Any]], by: str, *, scrub: bool,
             r["label"] = _user_label(r["id"])
         elif by == "key":
             kid = r["id"]
-            if scrub and not mine:
+            if scrub and not mine and not (kid or "").startswith("("):
                 r["label"] = _opaque_key_label(kid)
             else:
                 krec = (api_keys_store.get_key(kid)
@@ -771,6 +773,14 @@ async def stats_history(
     # an absurd value inside SQLite's integer range.
     step_s = (min(max(cadence, int(step)), max(cadence, int(t1 - t0)))
               if step else auto)
+    # A store whose init_db failed at startup (logged, non-fatal) raised from
+    # _require_conn() here: a bare 500 with a traceback on every spark fetch.
+    if not system_metrics_store.is_open():
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="system metrics history unavailable — see the startup log "
+                   "for the system-metrics store error (STATS_SYSTEM_METRICS_DB "
+                   "path/permissions)")
     series = await asyncio.to_thread(
         system_metrics_store.list_series, metric=metric, from_ts=t0,
         to_ts=t1, step_s=step_s)

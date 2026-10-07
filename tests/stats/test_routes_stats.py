@@ -116,7 +116,10 @@ def test_header_activity_cluster_shell_on_every_page(client):
         assert '/stats/stream?lite=1' in html, path
         assert '<span id="hact-jobs" class="v">0</span>' in html, path
         # GPU/VRAM values render as placeholders, never live numbers.
-        assert 'id="hact-gpuv"' in html, path
+        assert '<span id="hact-gpuv" class="v">&ndash;</span>' in html, path
+        assert '<span id="hact-vramv" class="v">&ndash;</span>' in html, path
+        # ...and the button ships default-hidden.
+        assert re.search(r'<button id="hact"[^>]*\shidden[\s>]', html), path
 
 
 def test_header_activity_cluster_inert_on_headerless_hub(client):
@@ -898,6 +901,16 @@ def test_stats_history_shape_step_cap_and_gate(client, make_user_key):
                       headers=bearer(raw_all)).status_code == 200
 
 
+def test_stats_history_503_when_store_failed_to_open(client, monkeypatch):
+    """init_db failing at startup is logged and non-fatal; the history route
+    answered every spark fetch with a bare 500 from _require_conn()."""
+    from faster_whisper_backend.stats import system_metrics_store
+    monkeypatch.setattr(system_metrics_store, "_conn", None)
+    r = client.get("/stats/history?metric=cpu_pct")
+    assert r.status_code == 503
+    assert "system metrics history unavailable" in r.json()["detail"]
+
+
 def test_snapshot_carries_slot_busy(client):
     snap = client.get("/stats/snapshot").json()
     assert set(snap["slot_busy"]) == {"pct_1m", "pct_5m", "pct_15m", "samples"}
@@ -1130,6 +1143,35 @@ def test_stats_page_ring_scrubber_range_mode_and_tail_cards(client):
     assert "turnaround_p50.delta)) + ' vs ' + cmpWord()" not in js
 
 
+def test_stats_page_ring_resume_range_chips_and_background_tab(client):
+    """A programmatic setCursor is not published to the sync group, so
+    back-to-live and the switch to range mode park EVERY spark's cursor (one
+    left on a sample re-froze the readouts on the next setData); the latency
+    chip keeps "live" in range mode (it has no history); an all-null window
+    max reads "—", not 0; a page opened in a background tab does not open
+    its stream until shown."""
+    html = client.get("/stats").text
+    park = html[html.index("function parkSparkCursors()"):html.index("function backToLive()")]
+    assert "Object.values(sparks).forEach(u =>" in park
+    assert "u.setCursor({ left: -10, top: -10 })" in park
+    back = html[html.index("function backToLive()"):html.index("function refreshStatusPill()")]
+    assert "parkSparkCursors();" in back
+    assert ".find(Boolean)" not in back
+    mode = html[html.index("function setLiveMode(v)"):html.index("function ringsInert()")]
+    rng = mode[mode.index("frozenTs = null; applyFreeze();"):]
+    assert rng.index("parkSparkCursors();") < rng.index("loadRangeSparks();")
+    assert 'data-win="ring" data-ring="live"></span></h3>' in html
+    chips = html[html.index("function refreshRingChips()"):]
+    assert chips.index("el.dataset.ring === 'live'") < chips.index(
+        "el.className = cls; el.innerHTML = html;")
+    assert "const maxes = (j.max || []).filter(v => v != null);" in html
+    assert "Math.max(...j.max)" not in html
+    boot = html[html.index("fetch('/stats/snapshot', { cache: 'no-store' })"):]
+    assert ".finally(openStream);" not in boot
+    assert boot.index("if (document.visibilityState === 'hidden') {") < boot.index(
+        "openStream();")
+
+
 def test_stats_usage_list_filters_kinds_users_keys(client):
     """The page's filter bar sends comma lists: `kinds` keeps only those
     job kinds (client-side splits AND the server breakdowns), `users` /
@@ -1210,6 +1252,32 @@ def test_stats_usage_list_filters_respect_scope(client, make_user_key):
     assert doc["filter"]["users"] == [bob_label]
 
 
+def test_stats_scrubbed_viewer_sees_sentinel_ids_literally(client, make_user_key):
+    """The open-mode sentinel names nobody, so a non-admin 'all' viewer sees
+    "(open-mode)" on the user and key pickers, not an opaque label that reads
+    like a real person; real users stay scrubbed."""
+    import time
+    from tests.conftest import bearer
+    from faster_whisper_backend.stats import usage_store as us
+    h = int(time.time() // 3600)
+    make_user_key("root", is_admin=True)
+    _, viewer_raw = make_user_key("viewer", pages={"stats": "all"})
+    us.record_usage(key_id=None, user_id=None, audio_s=5.0, words=1,
+                    status="ok", hour=h, processing_s=1.0, job_id="o1", kind="file")
+    us.record_usage(key_id="kb", user_id="bob", audio_s=30.0, words=3,
+                    status="ok", hour=h, processing_s=1.0, job_id="b1", kind="url")
+    hdr = bearer(viewer_raw)
+    users = {r["id"]: r["label"] for r in
+             client.get("/stats/pick?dim=user", headers=hdr).json()["rows"]}
+    assert users[us.OPEN_MODE_ID] == us.OPEN_MODE_ID
+    assert re.fullmatch(r"user-[0-9a-f]{8}", users["bob"])
+    keys = {r["id"]: r for r in
+            client.get("/stats/pick?dim=key", headers=hdr).json()["rows"]}
+    assert keys[us.OPEN_MODE_ID]["label"] == us.OPEN_MODE_ID
+    assert keys[us.OPEN_MODE_ID]["user_label"] == us.OPEN_MODE_ID
+    assert re.fullmatch(r"key-[0-9a-f]{8}", keys["kb"]["label"])
+
+
 def test_stats_usage_scrubbed_viewer_filters_by_picked_row_id(client, make_user_key):
     """A non-admin 'all' viewer filters by the row `id` /stats/pick and the
     leaderboard hand it (static/stats.js sends Q.users/Q.keys, never labels)
@@ -1285,7 +1353,23 @@ def test_stats_js_tail_never_shows_the_previous_window(client):
         "not available for your scope")
     tail = js[js.index("function loadTail(seq) {"):js.index("function setKind()")]
     assert "tailNote = '— unavailable —';" in tail
+    # The tail only re-renders over THIS load's usage document; an older
+    # one (usage still pending or failed) would mix two windows.
+    assert tail.count("if (lastDoc && _docSeq === seq) {") == 2
+    assert "if (lastDoc) {" not in tail
+    assert load.index("lastDoc = j;") < load.index("_docSeq = mine;")
     assert "esc(tailNote)" in js[js.index("function renderFailures()"):]
+
+
+def test_stats_js_chart_month_ticks_on_long_ranges():
+    """Past 400 days the x labels read only YY.MM: the ticks sit on UTC month
+    starts every k months, not on a fixed day step that drifts off them."""
+    with pathlib.Path(REPO_ROOT, "static", "stats.js").open(encoding="utf-8") as f:
+        js = f.read()
+    splits = js[js.index("splits: (u) => {"):js.index("values: (u, splits) =>")]
+    month = splits[splits.index("if (days > 400) {"):]
+    assert "Date.UTC(y, m, 1) / 1000" in month
+    assert month.index("return out;") < month.index("t += step * 86400")
 
 
 def test_stats_board_unknown_kind_row_not_clickable(client):

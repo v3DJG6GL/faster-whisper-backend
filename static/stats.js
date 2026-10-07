@@ -642,6 +642,7 @@ let lastDoc = null;
 let lastTail = null;
 let tailNote = '— loading —';   // what the tail-fed cards say while lastTail is null
 let _seq = 0;
+let _docSeq = 0;   // the load() seq that produced lastDoc
 const usageCards = () => document.querySelectorAll('.usage-fed');
 
 function queryString() {
@@ -686,14 +687,16 @@ function loadTail(seq) {
       else lastTail = j;
       // The usage document may still be in flight: its arrival renders
       // everything (renderAll), so only refresh the tail-fed cards when it
-      // is already here.
-      if (lastDoc) { renderHeadline(); renderTurnaround(); renderFailures(); }
+      // is already here. A lastDoc from an earlier load (this one's usage
+      // fetch still pending, or failed) is the OLD window: mixing the new
+      // tail into it would show two windows side by side.
+      if (lastDoc && _docSeq === seq) { renderHeadline(); renderTurnaround(); renderFailures(); }
     })
     .catch(err => {
       console.warn('[stats] tail fetch failed', err);
       if (seq !== _seq) return;
       tailNote = '— unavailable —';
-      if (lastDoc) { renderHeadline(); renderTurnaround(); renderFailures(); }
+      if (lastDoc && _docSeq === seq) { renderHeadline(); renderTurnaround(); renderFailures(); }
     });
 }
 // Kinds narrow the document's per-kind splits on the client, but the
@@ -727,6 +730,7 @@ function load() {
       }
       hideError();
       lastDoc = j;
+      _docSeq = mine;
       // Names for picked user ids the picker never resolved (a pasted or
       // reloaded users= link): the jobs table matches running rows by name.
       Object.assign(pickLabels.user, (j.filter || {}).user_labels || {});
@@ -1261,6 +1265,20 @@ function renderChart() {
           let step = ladder[ladder.length - 1];
           for (const s of ladder) { if (px / (spanDays / s) >= 65) { step = s; break; } }
           const out = [];
+          if (days > 400) {
+            // The labels read only YY.MM here and month buckets sit on the
+            // 1st: a fixed day step drifts off month starts (a 91-day step
+            // from Jan 1 reaches Dec 31, labelled .12 under the January
+            // bar), so tick on UTC month starts every k months instead.
+            const k = Math.max(1, Math.round(step / 30.44));
+            const d0 = new Date(x0 * 1000);
+            const y = d0.getUTCFullYear();
+            let m = d0.getUTCMonth();
+            if (Date.UTC(y, m, 1) / 1000 < x0) m += 1;
+            m = Math.ceil(m / k) * k;
+            for (let t; (t = Date.UTC(y, m, 1) / 1000) <= x1 + 1; m += k) out.push(t);
+            return out;
+          }
           for (let t = x0; t <= x1 + 1; t += step * 86400) out.push(t);
           return out;
         },

@@ -217,3 +217,31 @@ def test_series_and_leaderboard_carry_proc_s_and_sessions(usage_store_db):
     assert board[0]["processing_s"] == 5.0 and board[0]["sessions"] == 2
     assert us.leaderboard(by="user", metric="audio_s")[0]["user_id"] == "b"
     assert us.leaderboard(by="user", metric="sessions")[0]["user_id"] == "a"
+
+
+def test_record_usage_logs_the_real_error_when_sqlite_rolled_back(
+        usage_store_db, monkeypatch, caplog):
+    """SQLite rolls back by itself on SQLITE_FULL; a bare ROLLBACK then raised
+    "cannot rollback - no transaction is active", and that is what the
+    record_usage warning logged instead of the disk-full cause."""
+    import logging
+    import sqlite3
+    us = usage_store_db
+    real = us._conn
+
+    class _AutoRolledBackConn:
+        def __getattr__(self, name):
+            return getattr(real, name)
+
+        def execute(self, sql, *a):
+            if sql.startswith("INSERT INTO usage_hourly"):
+                real.execute("ROLLBACK")
+                raise sqlite3.OperationalError("database or disk is full")
+            return real.execute(sql, *a)
+
+    monkeypatch.setattr(us, "_conn", _AutoRolledBackConn())
+    with caplog.at_level(logging.WARNING):
+        us.record_usage(key_id="k1", user_id="u1", audio_s=1.0, words=1,
+                        status="ok", hour=100)
+    assert "database or disk is full" in caplog.text
+    assert "cannot rollback" not in caplog.text

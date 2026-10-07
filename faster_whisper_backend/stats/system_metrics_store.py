@@ -92,7 +92,11 @@ def adopt_legacy(legacy: sqlite3.Connection) -> int:
                 [tuple(r) for r in rows])
             conn.execute("COMMIT")
         except Exception:
-            conn.execute("ROLLBACK")
+            # SQLite may already have rolled back on its own (SQLITE_FULL,
+            # SQLITE_IOERR, ...); a bare ROLLBACK would then raise "no
+            # transaction is active" and replace the real error.
+            if conn.in_transaction:
+                conn.execute("ROLLBACK")
             raise
     legacy.execute("DROP TABLE sys_samples")
     legacy.commit()
@@ -118,7 +122,8 @@ def record(rows: list[dict[str, Any]]) -> int:
             )
             conn.execute("COMMIT")
         except Exception:
-            conn.execute("ROLLBACK")
+            if conn.in_transaction:
+                conn.execute("ROLLBACK")
             raise
     return len(rows)
 

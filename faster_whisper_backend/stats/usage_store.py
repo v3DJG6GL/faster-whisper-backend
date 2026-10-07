@@ -42,9 +42,10 @@ summing the hours that fall inside that timezone's local day:
 
   - the desktop app's /v1/usage document reckons in the CALLER's IANA zone
     (`tz` param → zoneinfo), falling back to the server's local zone;
-  - the admin /stats + /api-keys dashboards reckon in the SERVER's local
-    timezone (the operator's perspective), via local_day_start_hour() and
-    epoch_day_for().
+  - the /stats dashboard reckons in the viewer's `tz` the same way (server-
+    local when absent);
+  - the admin /api-keys usage window reckons in the SERVER's local
+    timezone (the operator's perspective), via local_day_start_hour().
 
 `series()` aggregates hours into server-local days and returns days-since-epoch,
 so `day * 86400` is still UTC midnight of that calendar date and the WebUI's
@@ -339,7 +340,11 @@ def _fold_legacy_hourly(conn: sqlite3.Connection) -> None:
             conn.execute("DROP TABLE usage_hourly_legacy")
             conn.execute("COMMIT")
         except Exception:
-            conn.execute("ROLLBACK")
+            # SQLite may already have rolled back on its own (SQLITE_FULL,
+            # SQLITE_IOERR, ...); a bare ROLLBACK would then raise "no
+            # transaction is active" and replace the real error.
+            if conn.in_transaction:
+                conn.execute("ROLLBACK")
             raise
     logger.info("[usage] migrated %d hourly rows to the per-kind rollup",
                 cur.rowcount or 0)
@@ -379,7 +384,8 @@ def _reclassify_unknown_hourly(conn: sqlite3.Connection) -> None:
             conn.execute("DELETE FROM usage_hourly WHERE kind=?", (UNKNOWN_KIND,))
             conn.execute("COMMIT")
         except Exception:
-            conn.execute("ROLLBACK")
+            if conn.in_transaction:
+                conn.execute("ROLLBACK")
             raise
     logger.info("[usage] reclassified %d unknown-kind hourly rows as dictation", n)
 
@@ -412,11 +418,12 @@ def local_day_start_hour(days_ago: int = 0) -> int:
     """UTC epoch-hour of SERVER-LOCAL midnight `days_ago` days back (0 =
     today). `datetime(date)` has no tzinfo → its .timestamp() interprets the
     naive value in local time, so this is the correct local-midnight instant
-    even across DST. Used by the admin /stats + /api-keys windows.
+    even across DST. Used by the /settings/api-keys usage window and the
+    /quick-config self-usage banner (/stats resolves its own window).
 
-    Clamped here rather than at each call site: stats_routes bounds `days` to
-    3650 before calling, the /settings/api-keys usage window does not, and an
-    unbounded value overflows the date arithmetic into an unhandled 500."""
+    Clamped here rather than at each call site: the callers do not bound
+    `days`, and an unbounded value overflows the date arithmetic into an
+    unhandled 500."""
     days_ago = max(0, min(int(days_ago), 3650))
     d = datetime.date.today() - datetime.timedelta(days=days_ago)
     midnight_ts = datetime.datetime(d.year, d.month, d.day).timestamp()
@@ -505,6 +512,7 @@ def record_usage(
     wait_s: float | None = None,
     error_class: str | None = None,
     error_stage: str | None = None,
+    session_job_id: str | None = None,
 ) -> None:
     """Record one transcription request (a batch run, a text translation, or
     ONE dictation utterance) into the rollups. Best-effort: any failure is
@@ -520,7 +528,16 @@ def record_usage(
     `job_id` groups utterances into a session: the first record under an id
     creates the job row and counts the session; later ones only add to its
     sums. Without a job id every request is its own session. `hour` lets
-    tests seed history; the job row is then stamped at that hour too."""
+    tests seed history; the job row is then stamped at that hour too.
+
+    `session_job_id` names the dictation session a successful follow-up
+    request belongs to (a translation's client-supplied `client_job`). When
+    it is an existing kind='dictation' job of the SAME user, the request's
+    stage rows attach to that job (dictation.targets reads them there) and
+    it counts no session of its own, so a translated dictation is one run on
+    the translating meter, not a dictation plus a text session. Anything
+    else (unknown id, someone else's job, a failed request, which keeps its
+    own job for the failures card) records as if it were absent."""
     try:
         kid = key_id or OPEN_MODE_ID
         uid = user_id or OPEN_MODE_ID
@@ -535,12 +552,24 @@ def record_usage(
         estg = (error_stage[:32] if isinstance(error_stage, str) and error_stage else None)
         k = _norm_kind(kind)
         jid = job_id[:64] if isinstance(job_id, str) and job_id else None
+        sjid = (session_job_id[:64]
+                if isinstance(session_job_id, str) and session_job_id and not err
+                else None)
         stage_rows = _stage_rows(stages)
         conn = _require_conn()
         with _lock:
             conn.execute("BEGIN")
             try:
-                new_session = True
+                if sjid is not None:
+                    sess = conn.execute(
+                        "SELECT user_id, kind FROM usage_jobs WHERE job_id = ?",
+                        (sjid,)).fetchone()
+                    if (sess is None or sess["user_id"] != uid
+                            or sess["kind"] != "dictation"):
+                        sjid = None   # client-supplied: never someone else's job
+                    else:
+                        jid = None    # part of that session, not a job of its own
+                new_session = sjid is None
                 late_outcome: sqlite3.Row | None = None
                 if jid is not None:
                     owner = conn.execute(
@@ -599,12 +628,13 @@ def record_usage(
                     (h, kid, uid, k, err, w, a, p, 1 if new_session else 0),
                 )
                 for st in stage_rows:
-                    _record_stage(conn, h, uid, jid, a, st)
+                    _record_stage(conn, h, uid, sjid or jid, a, st)
                 if late_outcome is not None and (w or a):
                     _roll_late_utterance(conn, late_outcome, w, a)
                 conn.execute("COMMIT")
             except Exception:
-                conn.execute("ROLLBACK")
+                if conn.in_transaction:
+                    conn.execute("ROLLBACK")
                 raise
     except Exception as e:
         logger.warning("[usage] record_usage failed: %s", e)
@@ -768,7 +798,8 @@ def record_outcome(
             _roll_outcome(conn, job, activation, delivery, translation, app_id)
             conn.execute("COMMIT")
         except Exception:
-            conn.execute("ROLLBACK")
+            if conn.in_transaction:
+                conn.execute("ROLLBACK")
             raise
     return "accepted"
 
@@ -827,7 +858,8 @@ def sweep(
                 ).rowcount or 0
             conn.execute("COMMIT")
         except Exception:
-            conn.execute("ROLLBACK")
+            if conn.in_transaction:
+                conn.execute("ROLLBACK")
             raise
     pruned_hourly = prune(retention_days=hourly_retention_days)
     return {"marked": marked, "jobs": pruned_jobs, "apps": pruned_apps,
@@ -2200,7 +2232,8 @@ def _fill_from_rollups(conn, doc, user_id, tz, today, start_hour, end_hour,
     doc["dictation"] = _dictation(conn, user_id, start_hour, end_hour,
                                   window["dictation"])
     doc["dictation"]["targets"] = _dictation_targets(
-        conn, user_id, start_hour * 3600, end_hour * 3600, key_id=key_id)
+        conn, user_id, start_hour * 3600, end_hour * 3600, key_id=key_id,
+        kinds=kinds)
     app_where, app_params = _scope_where(user_id)
     doc["apps"] = [
         {"app_id": r["app_id"], "sessions": int(r["sessions"] or 0),
@@ -2469,8 +2502,9 @@ def _dictation_targets(conn: sqlite3.Connection, user_id: str | None,
     the original. Per-job rows keep USAGE_JOBS_RETENTION_DAYS, so a window
     beyond that shows fewer runs here than the outcome buckets do.
 
-    `kinds` narrows the with= document, which claims every figure is
-    kind-scoped: a filter without dictation leaves no dictation targets."""
+    `kinds` narrows both documents (the with= one claims every figure is
+    kind-scoped, the rollup one filters dictation.sessions by kind): a
+    filter without dictation leaves no dictation targets."""
     if kinds and "dictation" not in kinds:
         return []
     by_code: dict[str, dict[str, int]] = {}
