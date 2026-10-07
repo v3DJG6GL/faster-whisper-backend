@@ -579,7 +579,11 @@ window._renderWaterfall = (function () {
                       { old: oldName, new: newName });
     if (await guard403(r)) return;
     if (r.status === 409) {
-      setStatus('a profile named "' + newName + '" already exists', 'err'); return;
+      // Two 409s: the name collision, and an env-pinned library (the detail
+      // names the env var to rename in) — show the server's reason.
+      var jc = await r.json().catch(function () { return {}; });
+      setStatus(jc.detail || ('a profile named "' + newName + '" already exists'), 'err');
+      return;
     }
     if (!r.ok) { setStatus('rename failed (' + r.status + ')', 'err'); return; }
     var j = await r.json();

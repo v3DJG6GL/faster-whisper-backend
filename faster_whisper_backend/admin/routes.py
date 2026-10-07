@@ -641,14 +641,14 @@ async def clear_local_pipeline_override(request: Request) -> JSONResponse:
 # above any realistic transcript the test panel sends.
 
 
-def _pipeline_rules_max() -> int:
-    """AdminConfig.PIPELINE_RULES' max_length, read off the schema.
+def _pipeline_rules_max_or_none() -> int | None:
+    """AdminConfig.PIPELINE_RULES' max_length, read off the schema; None
+    when the walk finds no constraint.
 
     The bound sits inside an `Annotated[list[...], Field(max_length=...)]`
     union arm (`... | None`), so `model_fields[...].metadata` is EMPTY and
     the derivation has to walk the annotation's arms for the FieldInfo
-    carrying a MaxLen constraint. Falls back to the historical 200 if the
-    metadata layout ever changes (a test pins the derivation against that)."""
+    carrying a MaxLen constraint."""
     field = settings_schema.AdminConfig.model_fields["PIPELINE_RULES"]
     for arm in (field.annotation, *get_args(field.annotation)):
         for fi in getattr(arm, "__metadata__", ()):
@@ -656,7 +656,15 @@ def _pipeline_rules_max() -> int:
                 ml = getattr(m, "max_length", None)
                 if isinstance(ml, int):
                     return ml
-    return 200
+    return None
+
+
+def _pipeline_rules_max() -> int:
+    """_pipeline_rules_max_or_none(), falling back to the historical 200 if
+    the metadata layout ever changes. The fallback equals today's bound, so
+    a test pins the walk itself (not None) rather than the value."""
+    found = _pipeline_rules_max_or_none()
+    return found if found is not None else 200
 
 
 _TEST_PIPELINE_MAX_RULES = _pipeline_rules_max()
@@ -967,7 +975,7 @@ async def translation_test(
         raise HTTPException(status.HTTP_403_FORBIDDEN,
                             "translation is disabled (TRANSLATION_ENABLED)")
     fam = (body.family or "").strip().lower() or None
-    if fam is not None and fam not in translation._FAMILIES:
+    if fam is not None and fam != "auto" and fam not in translation._FAMILIES:
         return JSONResponse(status_code=status.HTTP_400_BAD_REQUEST,
                             content={"error": f"unknown prompt family '{fam}'"})
     # Same admission rule as the request path — tr_gating._translation_model_allowed
@@ -980,11 +988,17 @@ async def translation_test(
         return JSONResponse(
             status_code=status.HTTP_400_BAD_REQUEST,
             content={"error": "model is not in TRANSLATION_ALLOWED_MODELS"})
+    # An explicit "auto" (the lab's UNSAVED select) is name detection, not
+    # resolve_family: that returns the SAVED pin, so the lab previewed and
+    # ran a family no request would use once "auto" is saved.
+    if fam == "auto":
+        fam = translation.detect_family(ref or default)
     # Custom-family template only — a stale textarea must not leak into a
-    # built-in family's test. Resolve the EFFECTIVE family first: the lab
-    # sends family=null for "auto", and render_prompt/translate_segments
-    # would otherwise treat any non-None template as the custom family,
-    # so the panel would preview/test a family a real request never uses.
+    # built-in family's test. Resolve the EFFECTIVE family first: an API
+    # caller may send family=null (the saved setting applies), and
+    # render_prompt/translate_segments would otherwise treat any non-None
+    # template as the custom family, so the panel would preview/test a
+    # family a real request never uses.
     eff = fam or translation.resolve_family(ref or default)
     template = body.template if eff == "custom" else None
     prompt = translation.render_prompt(

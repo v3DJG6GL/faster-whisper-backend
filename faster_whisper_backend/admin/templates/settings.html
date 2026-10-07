@@ -277,14 +277,6 @@
   .rule-origin-badge.local-only { color: var(--green); }
   .rule-moved-badge { font-size: var(--fs-xs); font-family: var(--font-mono);
     color: var(--cyan); white-space: nowrap; }
-  /* Per-row + list-wide "promote to config.json" affordances */
-  .promote-btn { background: none; border: 1px solid var(--cyan); color: var(--cyan);
-    border-radius: 3px; padding: 0 0.375rem; cursor: pointer; font: inherit;
-    font-size: var(--fs-xs); }
-  .promote-btn:hover { background: #161b22; }
-  .promote-all-btn { background: none; border: none; padding: 0; cursor: pointer;
-    font: inherit; font-size: var(--fs-xs); color: var(--cyan);
-    text-decoration: underline; text-underline-offset: 2px; }
   /* Promote diff / confirm modal */
   .rule-modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.6);
     display: flex; align-items: center; justify-content: center; z-index: 1000; }
@@ -295,13 +287,6 @@
   .rule-modal-buttons { display: flex; gap: 0.5rem; justify-content: flex-end;
     margin-top: 0.875rem; flex-wrap: wrap; }
   .rule-modal-buttons button.primary { color: var(--cyan); border-color: var(--cyan); }
-  .promote-diff { margin-top: 0.5rem; }
-  .promote-diff-row { display: grid; grid-template-columns: minmax(7rem, 14rem) 1fr 1fr;
-    gap: 0.5rem; font-family: var(--font-mono); font-size: var(--fs-xs);
-    padding: 0.25rem 0; border-bottom: 1px solid var(--border); }
-  .promote-diff-key { color: var(--dim); overflow-wrap: anywhere; }
-  .promote-diff-old { color: var(--red); white-space: pre-wrap; word-break: break-all; }
-  .promote-diff-new { color: var(--green); white-space: pre-wrap; word-break: break-all; }
   .promote-change-line { font-size: var(--fs-sm); margin-top: 0.25rem; }
   .promote-unsaved-note { color: var(--yellow); font-size: var(--fs-xs);
     margin-top: 0.5rem; }
@@ -505,15 +490,13 @@
   .rule-row .head-actions { display: flex; align-items: center; gap: 0.2rem;
     margin-left: auto; position: relative; }
   .rule-row .expand-btn, .rule-row .delete-btn, .rule-row .reset-link,
-  .rule-row .promote-btn, .rule-row .color-btn {
+  .rule-row .color-btn {
     display: inline-flex; align-items: center; gap: 0.3rem; background: transparent;
     border: 1px solid transparent; border-radius: 6px; color: var(--dim);
     padding: 0.2rem 0.45rem; cursor: pointer; font: inherit; font-family: var(--font-sans);
     font-size: var(--fs-xs); white-space: nowrap; }
   .rule-row .expand-btn:hover, .rule-row .color-btn:hover,
   .rule-row .reset-link:hover { color: var(--fg); background: #1f2630; border-color: var(--border); }
-  .rule-row .promote-btn { color: var(--cyan); border-color: rgba(121,192,255,0.3); }
-  .rule-row .promote-btn:hover { background: rgba(121,192,255,0.1); border-color: var(--cyan); }
   .rule-row .delete-btn { color: var(--red); }
   .rule-row .delete-btn:hover { background: rgba(248,81,73,0.1); border-color: rgba(248,81,73,0.4); }
   .rule-row button:disabled { opacity: 0.5; cursor: default; }
@@ -899,6 +882,10 @@ const PIPELINE_ONLY = SETTINGS_VIEW === 'pipeline';
 
 const $ = (id) => document.getElementById(id);
 
+// Blocked site data makes the localStorage getter itself throw SecurityError;
+// a bare read inside render() blanked the whole page. null = the defaults.
+function _lsGet(k) { try { return localStorage.getItem(k); } catch (_) { return null; } }
+
 function toast(msg, isErr) {
   const el = $('toast');
   el.textContent = msg;
@@ -1261,9 +1248,8 @@ function makeEditor(name) {
     });
   }
   // MODEL_OVERRIDES is a dict[model_id, dict[field, value]] — too freeform
-  // for the standard editors. Render as a JSON textarea with parse-validation
-  // on every input. Save sends the parsed object; pydantic validates server-
-  // side. Future polish: master-detail UI per the original design.
+  // for the standard editors: the master-detail modelOverridesEditor. Save
+  // sends the whole object; pydantic validates server-side.
   if (name === 'MODEL_OVERRIDES') return modelOverridesEditor(name, v || {});
   // Type dispatch — keep this strict. Order matters: check shape (object vs.
   // array vs. boolean vs. number) BEFORE name-based heuristics, otherwise
@@ -1395,14 +1381,14 @@ function modelOverridesEditor(name, v) {
 
   // LOAD_TIME_FIELDS subset that overlaps with ModelOverride. Editing any of
   // these triggers drain-then-evict on save (no service restart). Injected at
-  // render time from config_store.LOAD_TIME_FIELDS ∩ ModelOverride fields.
+  // render time from settings_schema.LOAD_TIME_FIELDS ∩ ModelOverride fields.
   const LOAD_TIME_FIELDS = new Set({{MO_LOAD_TIME_FIELDS_JSON}});
 
   // Per-field widget metadata. Injected at render time: derived server-side
   // from the ModelOverride JSON schema (kind/min/max/opts can never drift
   // from the pydantic bounds), merged with a small overlay for the extras a
   // schema can't express (textarea/nullable_float kinds, step, placeholder)
-  // — see admin_routes._MO_FIELD_META_OVERLAY. Enum opts still come from the
+  // — see _MO_FIELD_META_OVERLAY in admin/routes.py. Enum opts still come from the
   // server `choices` (AdminConfig Literal) at render time (see
   // makeInputWidget); the schema-derived opts are only a fallback.
   const FIELD_META = {{MO_FIELD_META_JSON}};
@@ -1584,7 +1570,7 @@ function modelOverridesEditor(name, v) {
       cnt.textContent = (n ? '(' + n + ')' : '');
       // Collapse indicator: ▾ when expanded, ▸ when collapsed. Only the
       // active row reveals it via .active CSS opacity.
-      const collapsed = (localStorage.getItem('mo.detail.' + id) === '0');
+      const collapsed = (_lsGet('mo.detail.' + id) === '0');
       const ind = document.createElement('span');
       ind.className = 'mo-collapse-ind';
       ind.textContent = (collapsed ? '▸' : '▾');
@@ -1592,7 +1578,7 @@ function modelOverridesEditor(name, v) {
       item.addEventListener('click', () => {
         if (selectedId === id) {
           // Active row → toggle collapse for this model.
-          const isCollapsed = (localStorage.getItem('mo.detail.' + id) === '0');
+          const isCollapsed = (_lsGet('mo.detail.' + id) === '0');
           try {
             localStorage.setItem('mo.detail.' + id, isCollapsed ? '1' : '0');
           } catch (_) {}
@@ -1674,7 +1660,7 @@ function modelOverridesEditor(name, v) {
       mainpane.classList.remove('collapsed');
       return;
     }
-    const isCollapsed = (localStorage.getItem('mo.detail.' + selectedId) === '0');
+    const isCollapsed = (_lsGet('mo.detail.' + selectedId) === '0');
     mainpane.classList.toggle('collapsed', isCollapsed);
   }
 
@@ -1735,7 +1721,7 @@ function modelOverridesEditor(name, v) {
       sum.textContent = 'Advanced — ' + (sec.advTitle || 'more knobs');
       det.appendChild(sum);
       const lsKey = 'mo.adv.' + sec.id;
-      det.open = localStorage.getItem(lsKey) === '1';
+      det.open = _lsGet(lsKey) === '1';
       det.addEventListener('toggle', () => {
         try { localStorage.setItem(lsKey, det.open ? '1' : '0'); } catch (_) {}
       });
@@ -2333,10 +2319,12 @@ function translationTemplateEditor(name, v) {
       target: (tgtIn.value || 'en').trim(),
       source: (srcIn.value || '').trim() || null,
       model: modelSel.value || null,
-      family: (currentValue('TRANSLATION_PROMPT_FAMILY') || 'auto') === 'auto'
-        ? null : currentValue('TRANSLATION_PROMPT_FAMILY'),
+      // 'auto' is sent as-is: null would fall back to the SAVED family.
+      family: currentValue('TRANSLATION_PROMPT_FAMILY') || 'auto',
       glossary: gloss.value || null,
-      template: t.value || null,
+      // A cleared textarea sends '' — null would fall back to the SAVED
+      // template (the server drops it for non-custom families anyway).
+      template: t.value,
       preview: !!preview,
     };
   }
@@ -2653,7 +2641,7 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
   const expandedNames = new Set();
   if (!isChecklist) {
     try {
-      const _saved = JSON.parse(localStorage.getItem('pipeline.expanded') || '[]');
+      const _saved = JSON.parse(_lsGet('pipeline.expanded') || '[]');
       if (Array.isArray(_saved)) _saved.forEach(s => expandedNames.add(s));
     } catch (_) {}
   }
@@ -4185,7 +4173,7 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
   const _RV_CONFIG = { t: 'config.json', s: 'git-tracked — shared by every deployment' };
   // o: { title, up (true = this server -> config.json), verb, left:[h,sub],
   //      right:[h,sub], groups:[{id, name, meta, rows, pick, checked, open}],
-  //      extraEls, warn, lose, confirm(n) -> label, confirmClass,
+  //      extraEls, warn, lose, confirm(n, selectedGroups) -> label, confirmClass,
   //      onConfirm(selectedIds) }
   // Left column = what gets overwritten, right column = what it becomes.
   function _reviewDialog(o) {
@@ -4300,7 +4288,7 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
       if (c.removed) chip('removed', '− ' + c.removed + ' removed');
       if (c.changed) chip('changed', '~ ' + c.changed + ' changed');
       if (c.moved) chip('', '↕ ' + c.moved + ' moved');
-      ok.textContent = o.confirm(sel.length);
+      ok.textContent = o.confirm(sel.length, sel);
       // A single-rule dialog with no rows: both sides are already identical
       // (config.json is re-fetched before a promote). Say so instead of
       // showing an empty table above an enabled confirm button.
@@ -4571,7 +4559,7 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
     return (await r.json()).PIPELINE_RULES || [];
   }
   // config.json can move under an open page (git pull, another admin's
-  // promote): the down-direction actions re-read it first, like the promotes.
+  // promote): every sync action (up and down) re-reads it first.
   async function _refreshFactory() {
     try { factoryRules = await _fetchFactory(); }
     catch (e) { alert('Could not load config.json.'); return false; }
@@ -4580,12 +4568,8 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
   }
   async function _promoteOne(rule) {
     if (!rule || rule.type === 'terminal') return;
-    let fresh;
-    try { fresh = await _fetchFactory(); }
-    catch (e) { alert('Could not load config.json.'); return; }
-    factoryRules = fresh;
-    refreshControlsVisibility();
-    const base = fresh.find(b => b.name === rule.name) || null;
+    if (!(await _refreshFactory())) return;
+    const base = _factoryRule(rule.name);
     const label = rule.label || rule.name;
     const st = _ruleStatus(rule);
     _reviewDialog({
@@ -4615,11 +4599,7 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
     refreshControlsVisibility();
   }
   async function _promoteAll() {
-    let fresh;
-    try { fresh = await _fetchFactory(); }
-    catch (e) { alert('Could not load config.json.'); return; }
-    factoryRules = fresh;
-    refreshControlsVisibility();
+    if (!(await _refreshFactory())) return;
     const groups = [];
     let nDiverged = 0;
     rules.forEach(r => {
@@ -4669,7 +4649,17 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
           + ' with this server\'s version.' : '',
         _seededOrderDirty() ? 'The rule order on this server differs from config.json and is written as well.' : '',
       ].filter(Boolean).join(' '),
-      confirm: n => '↑ Promote ' + n + ' selected rule' + (n === 1 ? '' : 's'),
+      // A ticked 'rm:' group DELETES that rule from config.json: the label
+      // names the removals instead of counting them as promotes.
+      confirm: (n, sel) => {
+        const rm = sel.filter(g => g.id.startsWith('rm:')).length;
+        const up = n - rm;
+        const parts = [];
+        if (up || !rm) parts.push('↑ Promote ' + up + ' selected rule' + (up === 1 ? '' : 's'));
+        if (rm) parts.push((up ? 'remove ' : '↑ Remove ') + rm + ' rule' + (rm === 1 ? '' : 's')
+          + ' from config.json');
+        return parts.join(' · ');
+      },
       confirmClass: 'solid-up',
       onConfirm: async (ids) => {
         const promote = new Set(ids.filter(i => !i.startsWith('rm:')));
@@ -4684,11 +4674,7 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
     });
   }
   async function _promoteOrder() {
-    let fresh;
-    try { fresh = await _fetchFactory(); }
-    catch (e) { alert('Could not load config.json.'); return; }
-    factoryRules = fresh;
-    refreshControlsVisibility();
+    if (!(await _refreshFactory())) return;
     const body = document.createElement('div');
     const intro = document.createElement('div');
     intro.className = 'help';
@@ -5257,7 +5243,7 @@ function render() {
     secDet.className = 'section-details';
     const secKey = 'sec.global.' + g.title;
     secDet.dataset.lsKey = secKey;
-    secDet.open = localStorage.getItem(secKey) !== '0';
+    secDet.open = _lsGet(secKey) !== '0';
     secDet.addEventListener('toggle', () => {
       try { localStorage.setItem(secKey, secDet.open ? '1' : '0'); } catch (_) {}
       refreshSectionToggleAllLabel();
@@ -5310,7 +5296,7 @@ function render() {
         det.appendChild(sum);
         det.appendChild(fieldsWrap);
         const lsKey = 'adv.global.' + g.title + '.' + sub.title;
-        det.open = localStorage.getItem(lsKey) === '1';
+        det.open = _lsGet(lsKey) === '1';
         det.addEventListener('toggle', () => {
           try { localStorage.setItem(lsKey, det.open ? '1' : '0'); } catch (_) {}
         });

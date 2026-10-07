@@ -3,7 +3,7 @@
 <title>{{HEADER_TITLE}}</title>
 {{PAGE_META}}
 {{SCALE_BOOTSTRAP_HEAD}}
-<script>(function(){var v=localStorage.getItem('whisper-log-zoom');
+<script>(function(){var v=null;try{v=localStorage.getItem('whisper-log-zoom');}catch(e){}
   if(v)document.documentElement.style.setProperty('--log-zoom',v);})();</script>
 <style>
   :root {
@@ -804,14 +804,18 @@
       STEPS.forEach((s,i)=>{ const d=Math.abs(s-v); if(d<dist){dist=d;best=i;} });
       return best;
     }
-    let idx = nearestIdx(parseFloat(localStorage.getItem(KEY)) || 1);
+    // Blocked site data makes the localStorage getter throw: fall back to
+    // the default zoom and skip the write, or the +/- buttons die with it.
+    let saved = null;
+    try { saved = localStorage.getItem(KEY); } catch (_) {}
+    let idx = nearestIdx(parseFloat(saved) || 1);
     function apply(){
       const v = STEPS[idx];
       document.documentElement.style.setProperty('--log-zoom', v);
       pct.textContent = Math.round(v*100) + '%';
       minus.disabled = idx === 0;
       plus.disabled  = idx === STEPS.length - 1;
-      localStorage.setItem(KEY, v);
+      try { localStorage.setItem(KEY, v); } catch (_) {}
     }
     minus.addEventListener('click', () => { if(idx>0){idx--; apply();} });
     plus .addEventListener('click', () => { if(idx<STEPS.length-1){idx++; apply();} });

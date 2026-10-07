@@ -133,7 +133,7 @@ def test_logs_stream_delivers_a_line_logged_during_the_backlog(
 
     monkeypatch.setattr(logs_routes, "_read_chain_window", _read_then_log)
     monkeypatch.setattr(logs_routes, "_logs_stream_reauth",
-                        lambda request, seen: seen)
+                        lambda request, seen, resolved_at: (seen, resolved_at))
 
     async def drive():
         gen = logs_routes._stream_log_lines(None)
@@ -148,3 +148,57 @@ def test_logs_stream_delivers_a_line_logged_during_the_backlog(
             await gen.aclose()
 
     asyncio.run(drive())
+
+
+def test_logs_stream_reauth_rechecks_an_expired_session_without_a_bump(
+        client, make_user_key, monkeypatch):
+    """Session expiry bumps no config version, so a version-only re-check
+    kept streaming every user's request blocks to a cookie session past
+    SESSION_TTL_S. An unchanged version still re-resolves once the interval
+    passed (called directly — the stream itself is never driven)."""
+    import time
+
+    import pytest
+    from fastapi import HTTPException
+
+    from faster_whisper_backend.admin import logs_routes
+    from faster_whisper_backend.auth import sessions_store
+    from faster_whisper_backend.settings import config
+    from faster_whisper_backend.settings import version as settings_version
+    from tests.conftest import fake_request
+
+    make_user_key("root", is_admin=True)
+    uid, _raw = make_user_key("alice", pages={"logs": "all"})
+    token, _csrf = sessions_store.create_session(uid, 3600.0)
+    req = fake_request(headers={"cookie": f"{config.SESSION_COOKIE_NAME}={token}"})
+    seen = settings_version.config_version()
+    fresh = time.monotonic()
+    # Live session, stale timestamp: re-resolves, passes, timestamp moves.
+    v, at = logs_routes._logs_stream_reauth(req, seen, fresh - 3600)
+    assert v == seen and at >= fresh
+    # Session now past SESSION_TTL_S; nothing bumped the version.
+    monkeypatch.setattr(config, "SESSION_TTL_S", 1e-6)
+    assert settings_version.config_version() == seen
+    # Within the interval the check stays cheap (no re-resolve) ...
+    assert logs_routes._logs_stream_reauth(req, seen, at) == (seen, at)
+    # ... and past it the expired session ends the stream.
+    with pytest.raises(HTTPException):
+        logs_routes._logs_stream_reauth(
+            req, seen, at - logs_routes._REAUTH_INTERVAL_S - 1)
+
+
+def test_logs_page_template_guards_every_localstorage_access():
+    """Blocked site data makes the localStorage getter throw: the head
+    bootstrap threw on every load and the zoom IIFE aborted (dead +/-
+    buttons). Read the template itself — the shared snippets substituted
+    into the page are not this file's."""
+    from pathlib import Path
+
+    from faster_whisper_backend.admin import logs_routes
+
+    src = (Path(logs_routes.__file__).parent / "templates" / "log_viewer.html"
+           ).read_text(encoding="utf-8")
+    lines = [ln for ln in src.splitlines() if "localStorage." in ln]
+    assert len(lines) == 3
+    for ln in lines:
+        assert "try" in ln, ln

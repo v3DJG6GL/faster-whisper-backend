@@ -49,10 +49,11 @@ def _guard(monkeypatch):
 
     monkeypatch.setattr(restart_service.os, "execv", _boom_execv)
     monkeypatch.setattr(restart_service.os, "_exit", _boom_exit)
-    # The real flush drains receipt_hold and calls system_stats.shutdown()
-    # (which flips the module-global NVML_OK for the rest of the session); only
-    # _order_probe swaps in its own recorder; the direct-call test runs the
-    # real function through _REAL_FLUSH with both halves stubbed.
+    # The real flush drains receipt_hold, flushes the stats sampler and calls
+    # system_stats.shutdown() (which flips the module-global NVML_OK for the
+    # rest of the session); only _order_probe swaps in its own recorder; the
+    # direct-call test runs the real function through _REAL_FLUSH with every
+    # duty stubbed.
     monkeypatch.setattr(restart_service, "_flush_before_exit", lambda: None)
     monkeypatch.setattr(
         restart_service.subprocess, "Popen",

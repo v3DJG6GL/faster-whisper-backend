@@ -119,6 +119,44 @@ def test_list_with_legacy_nonfinite_trace_ts_reads_created_ts(client):
     assert row["trace_ts"] == row["created_ts"]
 
 
+def test_submit_nonfinite_stages_keeps_list_renderable(client):
+    """FastAPI's json.loads accepts a bare Infinity, and `stages: list[Any]`
+    is out of allow_inf_nan's reach: one submit 500'd every later list and
+    export. The blob is refused, the list stays strict JSON."""
+    import json
+    r = client.post(
+        _SUBMIT, headers={"content-type": "application/json"},
+        content=json.dumps(_payload(request_id="inf-stages"))[:-1]
+        + ', "stages": [{"name": "t", "secs": Infinity}]}')
+    assert r.status_code == 200, r.text
+    r = client.get("/reports/api/list")
+    assert r.status_code == 200
+    row = json.loads(r.text, parse_constant=lambda c: 1 / 0)["reports"][0]
+    assert row["stages"] == []
+    assert client.get("/reports/api/export").status_code == 200
+
+
+def test_reports_page_status_and_delete_survive_a_refresh_race(client):
+    """A Refresh landing while a status PATCH / DELETE was in flight left
+    the delta applied on top of server counts that may already hold it
+    (totals shifted twice) and the status on a detached row. Such an
+    action now reloads instead; the latest-started load() wins."""
+    html = client.get("/reports").text
+    ld = html[html.index("async function load() {"):]
+    ld = ld[:ld.index("\n  }\n")]
+    assert "var seq = ++_loadSeq;" in ld
+    assert ld.count("if (seq !== _loadSeq) return;") == 2
+    assert "_loadLanded++;" in ld
+    for fn, delta in (("onStatusChange(r, sel)", "adjustCounts(prev, r.status);"),
+                      ("onDelete(r)", "adjustCounts(r.status, null);")):
+        body = html[html.index(f"async function {fn} {{"):]
+        body = body[:body.index("\n  }\n")]
+        assert "var gen = _loadGen();" in body, fn
+        assert ("if (_loadGen() !== gen) load();\n      else " + delta) in body, fn
+    st = html[html.index("async function onStatusChange(r, sel) {"):]
+    assert "if (sel.isConnected) {" in st[:st.index("\n  }\n")]
+
+
 def test_patch_report_invalid_status_422(client):
     sub = client.post(_SUBMIT, json=_payload(request_id="patch-1"))
     rid = sub.json()["id"]

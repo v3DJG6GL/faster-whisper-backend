@@ -295,3 +295,25 @@ def test_regex_list_entries_are_read_back_in_the_schema_shape(client):
     assert "if (lbl) o.label = lbl;" not in body
     assert "if (note) o.note = note;" not in body
     assert "label: lbl, note: note" in body
+
+
+def test_promote_paths_share_the_factory_refresh(client):
+    """The three promote paths hand-copied _refreshFactory's fetch / alert /
+    assign / repaint; one copy drifting would change only that path."""
+    html = _html(client)
+    for fn in ("_promoteOne", "_promoteAll", "_promoteOrder"):
+        body = html[html.index(f"async function {fn}("):]
+        body = body[:body.index("\n  }\n")]
+        assert "if (!(await _refreshFactory())) return;" in body, fn
+        assert "_fetchFactory()" not in body, fn
+
+
+def test_promote_all_label_names_removals(client):
+    """A ticked 'rm:' group deletes that rule from config.json, yet the
+    confirm read '↑ Promote 1 selected rule'."""
+    html = _html(client)
+    assert "ok.textContent = o.confirm(sel.length, sel);" in html
+    body = html[html.index("async function _promoteAll("):]
+    body = body[:body.index("\n  }\n")]
+    assert "const rm = sel.filter(g => g.id.startsWith('rm:')).length;" in body
+    assert "' from config.json'" in body

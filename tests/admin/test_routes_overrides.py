@@ -365,6 +365,36 @@ def test_rename_profile_env_pinned_409(client, make_user_key, monkeypatch):
     assert calls == []
 
 
+def test_page_rename_409_shows_the_server_detail(client):
+    """The rename route has two 409s (env-pinned library, name collision);
+    doRename mapped both to 'already exists', hiding the env pin."""
+    html = client.get(OV).text
+    body = html[html.index("async function doRename(oldName, newName) {"):]
+    body = body[:body.index("\n  }\n")]
+    branch = body[body.index("if (r.status === 409) {"):]
+    branch = branch[:branch.index("return;")]
+    assert "r.json()" in branch
+    assert "setStatus(jc.detail || (" in branch
+
+
+def test_state_save_env_pinned_409(client, make_user_key, monkeypatch):
+    """apply_hot_changes skips an env-pinned OVERRIDE_PROFILES, so a save
+    reported "saved" while the editor reloaded the env value and
+    config.local.json quietly diverged. Refused like rename, nothing written."""
+    from faster_whisper_backend.settings import config_store
+    _, _, h = _admin(make_user_key)
+    _make_profile(client, h, "clinic-de", BEAM_SIZE=8)
+    before = config_store.load_overrides()
+    monkeypatch.setattr(
+        config_store, "env_pinned_fields",
+        lambda: {"OVERRIDE_PROFILES": "WHISPER_OVERRIDE_PROFILES"})
+    r = client.post(f"{OV}/state", headers=h, json={"OVERRIDE_PROFILES": {
+        "clinic-de": {"BEAM_SIZE": 8}, "other": {"BEAM_SIZE": 3}}})
+    assert r.status_code == 409, r.text
+    assert "WHISPER_OVERRIDE_PROFILES" in r.json()["detail"]
+    assert config_store.load_overrides() == before
+
+
 def test_rename_profile_unknown_404(client, make_user_key):
     _, _, h = _admin(make_user_key)
     r = client.post(f"{OV}/profiles/rename", headers=h,

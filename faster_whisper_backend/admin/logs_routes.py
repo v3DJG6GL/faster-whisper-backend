@@ -5,6 +5,7 @@ template is templates/log_viewer.html.
 import asyncio
 import io
 import os
+import time
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse
@@ -61,8 +62,11 @@ def _read_chain_window(active_path: str, skip: int, want: int) -> "tuple[list[st
 
     Walks the chain newest-file first (active log → .1 → .2 → …),
     reading each file backward in 8 KB blocks until we've accumulated
-    `skip + want` lines across the chain. One file is held in memory
-    at a time; ~10 MB worst case for the default LOG_MAX_BYTES."""
+    `skip + want` lines across the chain. Raw bytes are held one file at
+    a time, but every decoded line up to `skip + want` is kept, so a deep
+    "Load older" (up to _LOG_OLDER_MAX_PAGES pages) can decode most of the
+    rotation chain into memory, and each further click re-reads it from
+    the chain head."""
     target = skip + want
     # `collected` is built in oldest→newest order: each older file's
     # tail is prepended to the running list as we walk the chain
@@ -112,29 +116,41 @@ def _read_chain_window(active_path: str, skip: int, want: int) -> "tuple[list[st
     return list(reversed(window)), next_skip
 
 
-def _logs_stream_reauth(request: Request, seen_version: int) -> int:
+# Wall-clock ceiling between re-resolves when the config version does not
+# move: a cookie session reaching SESSION_TTL_S bumps nothing (expiry is only
+# checked at lookup), so a version-only check streamed past it forever.
+_REAUTH_INTERVAL_S = 60.0
+
+
+def _logs_stream_reauth(request: Request, seen_version: int,
+                        resolved_at: float) -> "tuple[int, float]":
     """Live-tail helper (the /stats/stream _rescope_on_version_change
     pattern): when settings_version.config_version() moved since `seen_version`
     — revoke_user / revoke_key / set_user_permissions / logout all bump it —
-    re-resolve the caller through the same "logs" gate the connect used.
+    or _REAUTH_INTERVAL_S passed since `resolved_at` (time.monotonic(); a
+    session expiring bumps nothing), re-resolve the caller through the same
+    "logs" gate the connect used.
     Raises HTTPException when the credential no longer resolves or lost
     scope("logs") == "all", which ends the stream; otherwise returns the
-    version to compare against on the next tick. Without this an open tab
-    kept receiving every new request block (raw + final text of every
-    user) after the admin revoked it, until the browser closed the
-    EventSource."""
+    (version, resolved_at) pair to compare against on the next tick. Without
+    this an open tab kept receiving every new request block (raw + final
+    text of every user) after the admin revoked it, until the browser closed
+    the EventSource."""
     current = settings_version.config_version()
-    if current == seen_version:
-        return seen_version
+    now = time.monotonic()
+    if current == seen_version and now - resolved_at < _REAUTH_INTERVAL_S:
+        return seen_version, resolved_at
     _require_logs_page_sse(auth_dependencies.resolve_user_for_page_sse(request, "logs"))
-    return current
+    return current, now
 
 
 async def _stream_log_lines(request: Request):
     """Yield SSE events: one for each existing tail line, then live tail.
-    Re-authenticates `request` whenever the config version moves (see
-    _logs_stream_reauth) and ends the stream once access is gone."""
+    Re-authenticates `request` whenever the config version moves or
+    _REAUTH_INTERVAL_S passes (see _logs_stream_reauth) and ends the stream
+    once access is gone."""
     seen = settings_version.config_version()
+    resolved_at = time.monotonic()
     initial = int(getattr(cfg, "LOG_VIEWER_INITIAL_LINES", 2000))
     # Off the loop, same as /logs/older: this walks the rotation chain
     # backwards in 8 KB blocks and an async generator inside a
@@ -167,7 +183,8 @@ async def _stream_log_lines(request: Request):
         await asyncio.sleep(0.5)
         try:
             # Off the loop: config_version() and the re-resolve hit SQLite.
-            seen = await asyncio.to_thread(_logs_stream_reauth, request, seen)
+            seen, resolved_at = await asyncio.to_thread(
+                _logs_stream_reauth, request, seen, resolved_at)
         except HTTPException:
             return
         try:

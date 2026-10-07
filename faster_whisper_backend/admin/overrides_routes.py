@@ -192,6 +192,16 @@ async def post_state(payload: dict[str, Any], request: Request) -> JSONResponse:
     if unknown:
         raise HTTPException(status.HTTP_400_BAD_REQUEST,
                             f"unexpected fields for this page: {sorted(unknown)}")
+    # An env-pinned library (WHISPER_OVERRIDE_PROFILES) keeps its running
+    # value: apply_hot_changes skips the pinned field, so the page would
+    # reload the env value under a green "saved" while config.local.json
+    # quietly holds a divergent library that takes over once the env var is
+    # unset. Refuse like rename does; save() shows this detail.
+    pinned_by = config_store.env_pinned_fields().get("OVERRIDE_PROFILES")
+    if pinned_by and "OVERRIDE_PROFILES" in payload:
+        raise HTTPException(status.HTTP_409_CONFLICT,
+                            f"OVERRIDE_PROFILES is pinned by {pinned_by}; "
+                            "edit the profiles there")
     # The "profile is in use — unbind it first" rule existed ONLY in the page
     # JS (startDelete), and _build_usage's own docstring already calls itself
     # "the usage-aware delete guard". save_overrides performs no such check —

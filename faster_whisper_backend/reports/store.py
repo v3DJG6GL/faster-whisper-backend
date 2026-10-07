@@ -168,6 +168,11 @@ def _clean_trace_ts(value: Any, now: float) -> float:
     return max(0.0, min(ts, _MAX_TRACE_TS)) or now
 
 
+def _reject_json_constant(name: str) -> Any:
+    """json.loads parse_constant: refuse Infinity / -Infinity / NaN."""
+    raise ValueError(f"non-finite JSON constant {name}")
+
+
 def _row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
     """Materialize a row, decoding the JSON-bearing columns. Returns
     plain Python types ready for JSON serialization on the wire."""
@@ -193,9 +198,13 @@ def _row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
         d["corrections"] = json.loads(d.get("corrections") or "[]")
     except (TypeError, ValueError):
         d["corrections"] = []
-    # Absent on rows written before the provenance migration.
+    # Absent on rows written before the provenance migration. A row stored
+    # before upsert_report refused non-finite floats may hold a bare
+    # Infinity/NaN: reject it here (-> []) like a legacy trace_ts, or the
+    # strict list/export renders raised on every load.
     try:
-        d["stages"] = json.loads(d.get("stages") or "[]")
+        d["stages"] = json.loads(d.get("stages") or "[]",
+                                 parse_constant=_reject_json_constant)
         if not isinstance(d["stages"], list):
             d["stages"] = []
     except (TypeError, ValueError):
@@ -317,10 +326,13 @@ def upsert_report(
     # first submission recorded rather than blank it (recent_transcriptions_store
     # .record does the same). _row_to_dict maps NULL to [] on read.
     # Stored whole or not at all: a sliced JSON array is never valid JSON.
+    # allow_nan=False: `stages` is list[Any], so the route's allow_inf_nan
+    # never reaches a float inside it, and a stored bare Infinity made every
+    # strict /reports/api/list and /export render raise (-> not stored).
     stages_t: str | None = None
     if stages:
         try:
-            blob = json.dumps(stages, ensure_ascii=False)
+            blob = json.dumps(stages, ensure_ascii=False, allow_nan=False)
         except (TypeError, ValueError):
             blob = None
         if blob is not None and len(blob) <= _CAP_STAGES_JSON:

@@ -353,6 +353,27 @@ def test_non_finite_trace_ts_never_reaches_the_row(reports_store_db):
         assert math.isfinite(rs.get_report(rid)["trace_ts"])
 
 
+def test_non_finite_stages_never_reach_the_row(reports_store_db):
+    """`stages` is list[Any]: the route's allow_inf_nan never reaches a float
+    inside it, and a stored bare Infinity made every strict list / export
+    render raise. Refused on write; a legacy blob reads back as []."""
+    import json
+    rs = reports_store_db
+    for i, bad in enumerate((float("inf"), float("-inf"), float("nan"))):
+        rid, _ = _submit(rs, request_id=f"s-{i}",
+                         stages=[{"name": "t", "secs": bad}])
+        assert rs.get_report(rid)["stages"] == []
+    json.dumps(rs.list_reports(limit=None), allow_nan=False)   # no raise
+    rid, _ = _submit(rs, request_id="legacy",
+                     stages=[{"name": "t", "secs": 1.5}])
+    assert rs.get_report(rid)["stages"] == [{"name": "t", "secs": 1.5}]
+    rs._require_conn().execute(
+        "UPDATE reports SET stages = ? WHERE id = ?",
+        ('[{"name": "t", "secs": Infinity}]', rid))
+    assert rs.get_report(rid)["stages"] == []
+    json.dumps(rs.list_reports(limit=None), allow_nan=False)
+
+
 def test_request_id_is_truncated(reports_store_db):
     """Every other submitted field is bounded; request_id was not, and it is
     indexed twice."""

@@ -469,6 +469,14 @@
   var _allReports = [];
   var _counts = { open: 0, resolved: 0, dismissed: 0 };
   var _truncated = false;
+  // _loadSeq counts load() starts (the latest-started load wins),
+  // _loadLanded the snapshots applied. A status change / delete captures
+  // _loadGen() before its request: when a Refresh started or landed
+  // meanwhile, its snapshot may or may not already hold the change, so the
+  // delta is not applied on top of it — the action reloads instead.
+  var _loadSeq = 0;
+  var _loadLanded = 0;
+  function _loadGen() { return _loadSeq + _loadLanded; }
   // Unsaved admin-notes drafts by report id. render() rebuilds every card
   // (search keystroke, filter change, a delete, Refresh), so a draft held
   // only in the old textarea was silently lost; renderCard seeds from here.
@@ -746,6 +754,7 @@
   async function onStatusChange(r, sel) {
     var newStatus = sel.value;
     var prev = r.status;
+    var gen = _loadGen();
     sel.className = 'status-' + newStatus;
     try {
       var j = await api('PATCH', '/reports/api/' + encodeURIComponent(r.id),
@@ -753,10 +762,16 @@
       r.status = j.report.status;
       r.resolved_ts = j.report.resolved_ts;
       toast('Status updated.');
-      adjustCounts(prev, r.status);
+      // A Refresh meanwhile replaced the rows and counts with a snapshot
+      // that may already include this change: the delta would shift the
+      // totals twice (or the live row keeps the old status). Reload.
+      if (_loadGen() !== gen) load();
+      else adjustCounts(prev, r.status);
     } catch (e) {
-      sel.value = prev;
-      sel.className = 'status-' + prev;
+      if (sel.isConnected) {
+        sel.value = prev;
+        sel.className = 'status-' + prev;
+      }
       toast('Failed: ' + e.message, true);
     }
   }
@@ -796,12 +811,16 @@
 
   async function onDelete(r) {
     if (!confirm('Delete this report permanently?')) return;
+    var gen = _loadGen();
     try {
       await api('DELETE', '/reports/api/' + encodeURIComponent(r.id));
       _allReports = _allReports.filter(function(x) { return x.id !== r.id; });
       delete _drafts[r.id];
       render();
-      adjustCounts(r.status, null);
+      // Same Refresh race as onStatusChange: never decrement a snapshot
+      // that may already exclude the row.
+      if (_loadGen() !== gen) load();
+      else adjustCounts(r.status, null);
       toast('Deleted.');
     } catch (e) {
       toast('Failed: ' + e.message, true);
@@ -893,8 +912,11 @@
   // Load
   // -------------------------------------------------------------------
   async function load() {
+    var seq = ++_loadSeq;
     try {
       var j = await api('GET', '/reports/api/list');
+      if (seq !== _loadSeq) return;     // a newer load() owns the page
+      _loadLanded++;
       _allReports = j.reports || [];
       _counts = j.counts || { open: 0, resolved: 0, dismissed: 0 };
       _truncated = !!j.truncated;
@@ -905,6 +927,7 @@
       // when whoami.is_admin=true. Adding it here unconditionally would
       // leak admin chrome to non-admins with reports=own/all scope.
     } catch (e) {
+      if (seq !== _loadSeq) return;
       if (e.message === 'unauthorized' || e.message === 'not-admin') return;
       toast('Failed to load reports: ' + e.message, true);
     }

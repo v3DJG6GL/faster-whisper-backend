@@ -1,5 +1,7 @@
 """Integration tests for /settings admin routes (admin UI enabled by default)."""
 
+import json
+
 import pytest
 
 from faster_whisper_backend.pipeline import apply as pl_apply
@@ -717,6 +719,26 @@ def test_test_pipeline_rule_cap_tracks_schema():
     expected = next(m.max_length for m in fi.metadata
                     if getattr(m, "max_length", None) is not None)
     assert admin_routes._TEST_PIPELINE_MAX_RULES == expected
+    # The fallback (200) equals today's bound, so the value alone cannot
+    # tell a working walk from a silent fallback: pin the walk itself.
+    assert admin_routes._pipeline_rules_max_or_none() is not None
+
+
+def test_pipeline_rules_max_follows_a_moved_schema_bound(monkeypatch):
+    """With the bound moved off the 200 fallback, the derived cap follows it."""
+    from typing import Annotated
+
+    from pydantic import Field
+
+    from faster_whisper_backend.admin import routes as admin_routes
+    from faster_whisper_backend.settings import schema as settings_schema
+
+    field = settings_schema.AdminConfig.model_fields["PIPELINE_RULES"]
+    monkeypatch.setattr(
+        field, "annotation",
+        Annotated[list[settings_schema.PipelineRule], Field(max_length=7)] | None)
+    assert admin_routes._pipeline_rules_max_or_none() == 7
+    assert admin_routes._pipeline_rules_max() == 7
 
 
 def test_post_state_requires_admin_when_locked(client, make_user_key):
@@ -1006,8 +1028,8 @@ def test_translation_test_endpoint_threads_template_override(
 
 def test_translation_test_family_auto_drops_template_for_builtin_family(
         client, app_module, monkeypatch):
-    """The lab sends family=null for "auto" but still posts the (saved)
-    textarea value. translate_segments treats any non-None template as the
+    """A caller sending family=null (the saved "auto" applies) still posts
+    the textarea value. translate_segments treats any non-None template as the
     custom family, so a hunyuan model would have been tested — and its chip
     reported — as "custom". The effective family must decide."""
     from faster_whisper_backend.translation import engine as translation
@@ -1036,6 +1058,52 @@ def test_translation_test_family_auto_drops_template_for_builtin_family(
     assert r.status_code == 200, r.text
     assert seen["kwargs"]["template_override"] is None
     assert seen["kwargs"]["family_override"] is None
+
+
+def test_translation_test_explicit_auto_detects_instead_of_the_saved_pin(
+        client, app_module, monkeypatch):
+    """The lab's UNSAVED select says "auto" while the SAVED family pins
+    gemma-translate: null fell back to resolve_family (the saved pin), so the
+    lab previewed a family no request uses once "auto" is saved. An explicit
+    "auto" detects from the model name, and the page sends it as-is."""
+    from faster_whisper_backend.translation import engine as translation
+
+    monkeypatch.setattr(app_module.cfg, "TRANSLATION_ENABLED", True)
+    monkeypatch.setattr(app_module.cfg, "TRANSLATION_ALLOWED_MODELS", set())
+    monkeypatch.setattr(app_module.cfg, "TRANSLATION_PROMPT_FAMILY",
+                        "gemma-translate")
+    ref = "org/qwen2.5-7b-instruct-GGUF:Q4_K_M"
+    assert translation.detect_family(ref) == "chatml"
+    r = client.post("/settings/translation-test", json={
+        "text": "Hallo", "target": "en", "source": "de", "model": ref,
+        "family": "auto", "preview": True})
+    assert r.status_code == 200, r.text
+    assert r.json()["prompt"]["family"] == translation.detect_family(ref)
+    text = client.get("/settings").text
+    body = text[text.index("function labBody(preview) {"):]
+    body = body[:body.index("\n  }\n")]
+    assert "family: currentValue('TRANSLATION_PROMPT_FAMILY') || 'auto'," in body
+
+
+def test_translation_test_cleared_custom_template_is_not_the_saved_one(
+        client, app_module, monkeypatch):
+    """The lab sent `t.value || null`: a cleared custom textarea fell back
+    to the SAVED template, so the preview/test showed text the editor no
+    longer held. '' is now sent and rendered as-is."""
+    monkeypatch.setattr(app_module.cfg, "TRANSLATION_ENABLED", True)
+    monkeypatch.setattr(app_module.cfg, "TRANSLATION_PROMPT_TEMPLATE",
+                        "SAVED-SENTINEL {text} -> {target_language}")
+    r = client.post("/settings/translation-test", json={
+        "text": "Hallo", "target": "en", "source": "de",
+        "family": "custom", "template": "", "preview": True})
+    assert r.status_code == 200, r.text
+    prompt = r.json()["prompt"]
+    assert prompt["family"] == "custom"
+    assert "SAVED-SENTINEL" not in json.dumps(prompt)
+    text = client.get("/settings").text
+    body = text[text.index("function labBody(preview) {"):]
+    body = body[:body.index("\n  }\n")]
+    assert "template: t.value," in body
 
 
 def test_translation_test_403_when_disabled(client, app_module):
@@ -1313,3 +1381,22 @@ def test_header_reload_asks_before_dropping_unsaved_edits(client):
     rl = rl[:rl.index("};")]
     assert "Object.keys(dirty).length > 0" in rl and "confirm(" in rl
     assert "return loadState();" in rl
+
+
+def test_settings_page_guards_every_localstorage_read(client):
+    """Blocked site data makes the localStorage getter throw; a bare read
+    inside render() left /settings with a blank main pane. Every read goes
+    through _lsGet (try/catch, null = default), like the writes. Read the
+    template itself — the shared snippets substituted into the page are not
+    this file's."""
+    from pathlib import Path
+
+    from faster_whisper_backend.admin import routes as admin_routes
+
+    assert client.get("/settings").status_code == 200
+    text = (Path(admin_routes.__file__).parent / "templates" / "settings.html"
+            ).read_text(encoding="utf-8")
+    helper = ("function _lsGet(k) { try { return localStorage.getItem(k); }"
+              " catch (_) { return null; } }")
+    assert text.count(helper) == 1
+    assert text.replace(helper, "").count("localStorage.getItem(") == 0
