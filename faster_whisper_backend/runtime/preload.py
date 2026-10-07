@@ -424,12 +424,9 @@ def _admit(family: str, model_id: str) -> "tuple[str, str | None]":
     happens; the enqueue verdict is a forecast."""
     if not _enabled():
         return ("deferred", "disabled")
-    if family not in FAMILIES:
-        return ("deferred", "not_allowed")
-    if not normalize_id(family, model_id):
-        return ("deferred", "not_allowed")
-    if not _stage_enabled(family):
-        return ("deferred", "stage_disabled")
+    refusal = _static_refusal(family, model_id)
+    if refusal:
+        return ("deferred", refusal)
 
     if is_resident(family, model_id):
         # Residency is the answer AND a courtesy: the touch restarts the IDLE
@@ -473,6 +470,18 @@ def _admit(family: str, model_id: str) -> "tuple[str, str | None]":
             return (_pending_state(), None)
         return ("deferred", "size_unknown")
     return ("deferred", reason or "size_unknown")
+
+
+def _static_refusal(family: str, model_id: str) -> "str | None":
+    """The rungs of the ladder no later retry can pass (until a settings
+    change): an unknown family, a blank id, a disabled stage. Registration
+    reports such an entry without adding it to the plan — it could never be
+    warmed, so it would only hold the plan's /stats row open."""
+    if family not in FAMILIES or not normalize_id(family, model_id):
+        return "not_allowed"
+    if not _stage_enabled(family):
+        return "stage_disabled"
+    return None
 
 
 def _pending_state() -> str:
@@ -571,6 +580,22 @@ def _register_plan(user_id, entries, *, plan_id, denied, stage_ahead,
         _log_plan_receipt(pid, user_id, results, trigger)
         return {"plan_id": pid, "expires_in_s": 0, "models": results}
 
+    # Filtered AFTER the id is derived, so the id stays the one
+    # register_plan's failure cleanup re-derives from the same `kept`.
+    refused = {e: r for e in kept if (r := _static_refusal(*e))}
+    kept = [e for e in kept if e not in refused]
+    refused_rows = [{"family": f, "id": m, "state": "deferred", "reason": r}
+                    for (f, m), r in refused.items()]
+    refused_rows += [{"family": f, "id": m, "state": "deferred",
+                      "reason": denied[(f, m)]}
+                     for f, m in entries if (f, m) in denied]
+    if not kept:
+        # Nothing to warm or retry: a Plan here would only take one of the
+        # _MAX_PLANS slots for the TTL, and could push a live plan of
+        # another user out as "registry full". A same-id plan is left as is.
+        _log_plan_receipt(pid, user_id, refused_rows, trigger)
+        return {"plan_id": pid, "expires_in_s": 0, "models": refused_rows}
+
     results: "list[dict]" = []
     to_enqueue: "list[tuple[str, str, str]]" = []
     with _lock:
@@ -664,15 +689,12 @@ def _register_plan(user_id, entries, *, plan_id, denied, stage_ahead,
             row["reason"] = reason
         results.append(row)
 
-    for fam, mid in entries:
-        if (fam, mid) in denied:
-            results.append({"family": fam, "id": mid, "state": "deferred",
-                            "reason": denied[(fam, mid)]})
+    results += refused_rows
 
     with _lock:
         plan = _plans.get(pid)
         if plan is not None:
-            if plan.job_id is None and not _all_warmed_locked(plan):
+            if plan.job_id is None and not _settled_locked(plan):
                 # Visible in /stats: warming is real GPU work and an operator
                 # watching the activity cluster must be able to see it happen.
                 plan.job_id = jobs.job_start(
@@ -745,15 +767,22 @@ def _drop_plan_locked(plan_id: str, why: str) -> None:
     _recompute_warm_locked()
 
 
-def _all_warmed_locked(plan: Plan) -> bool:
-    return all(stats_key(f, m) in plan.warmed for f, m in plan.entries)
+def _settled_locked(plan: Plan) -> bool:
+    """Nothing queued and nothing a later stage advance could still retry.
+    A DEFERRED entry stays open only while a retry is possible: on a
+    stage-ahead plan, at a stage still ahead of the cursor. A client-driven
+    plan (stage_ahead=False) is never advanced, and an entry at or behind
+    the cursor is loaded in-band by the job itself."""
+    return not plan.inflight and all(
+        stats_key(f, m) in plan.warmed
+        or not plan.stage_ahead or plan.stages[i] <= plan.cursor
+        for i, (f, m) in enumerate(plan.entries))
 
 
 def _end_job_if_settled_locked(plan: Plan) -> None:
-    """Close the /stats job row once every entry is loaded. A DEFERRED entry
-    is not settled — a later stage advance retries it, and the row should stay
-    up while that is still possible."""
-    if plan.job_id and _all_warmed_locked(plan):
+    """Close the /stats job row once the plan is settled (see
+    _settled_locked); the row stays up while a retry is still possible."""
+    if plan.job_id and _settled_locked(plan):
         jobs.job_end(plan.job_id)
         plan.job_id = None
 
@@ -817,6 +846,8 @@ def on_stage_start(plan_id: str, stage: str) -> None:
                 item = (plan_id, fam, mid)
                 break
             plan.cursor = idx
+            # The cursor just passed entries the job now loads in-band.
+            _end_job_if_settled_locked(plan)
         if item is not None:
             logger.debug("[preload] plan %s stage %s → warming %s ahead",
                          plan_id[:8], stage, stats_key(item[1], item[2]))
@@ -833,6 +864,7 @@ def _enqueue_threadsafe(item: "tuple[str, str, str]") -> None:
         # reports `queued`, and nothing ever loads.
         logger.debug("[preload] enqueue dropped (worker not running): %s",
                      stats_key(item[1], item[2]))
+        _forget_inflight(item)
         return
     try:
         loop.call_soon_threadsafe(q.put_nowait, item)
@@ -841,6 +873,19 @@ def _enqueue_threadsafe(item: "tuple[str, str, str]") -> None:
         # last progress callback. Nothing to warm on a dying process.
         logger.debug("[preload] enqueue dropped (loop closing): %s",
                      stats_key(item[1], item[2]))
+        _forget_inflight(item)
+
+
+def _forget_inflight(item: "tuple[str, str, str]") -> None:
+    """Undo the caller's inflight mark for a dropped item: left in place,
+    a re-POST reports it `queued` without enqueueing it again and
+    on_stage_start skips it, so nothing ever loads it."""
+    plan_id, fam, mid = item
+    with _lock:
+        plan = _plans.get(plan_id)
+        if plan is not None:
+            plan.inflight.discard(stats_key(fam, mid))
+            _end_job_if_settled_locked(plan)
 
 
 # =============================================================================
@@ -976,6 +1021,13 @@ async def start() -> None:
     # die on its first get() and every plan would sit at `queued` forever.
     if _queue is None or _loop is not loop:
         _queue = asyncio.Queue()
+        # Whatever the old queue held is gone with it: its keys must leave
+        # the plans' inflight sets (see _forget_inflight), or a surviving
+        # plan reports them `queued` forever.
+        with _lock:
+            for plan in _plans.values():
+                plan.inflight.clear()
+                _end_job_if_settled_locked(plan)
     _loop = loop
     # Same for the worker: a task left pending on a previous loop that closed
     # without stop() is never done(), yet it can never consume this queue.

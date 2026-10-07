@@ -43,7 +43,7 @@ from __future__ import annotations
 import logging
 from typing import Literal
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 
 from faster_whisper_backend.settings import config as cfg
@@ -109,7 +109,7 @@ def _allowed(family: str, model_id: str,
     whisper: judged on the RESOLVED id (`whisper-1` → DEFAULT_MODEL, the
     same mapping the transcribe route applies before its gate). An EMPTY
     ALLOWED_MODELS admits the configured default plus any WELL-FORMED id —
-    the same `_MODEL_ID_RE` / no-".." guard `tx_models._get_or_load_model`
+    `tx_models._check_model_name`, the gate pair `_get_or_load_model`
     applies, so a path-shaped id is deferred here instead of wasting a queue
     slot on a load the guard rejects anyway. A non-empty one admits exactly
     its members, as that gate does (the default is NOT implied: a load of it
@@ -137,12 +137,13 @@ def _allowed(family: str, model_id: str,
         model_id = preload.normalize_id(family, model_id)
         if not model_id:
             return False
-        allow = set(getattr(cfg, "ALLOWED_MODELS", None) or ())
-        if not allow:
-            return model_id == getattr(cfg, "DEFAULT_MODEL", "") or (
-                ".." not in model_id
-                and bool(tx_models._MODEL_ID_RE.match(model_id)))
-        return model_id in allow
+        # The loader's own gate pair, called rather than mirrored, so a new
+        # rule there cannot leave the preload admitting what it refuses.
+        try:
+            tx_models._check_model_name(model_id)
+        except HTTPException:
+            return False
+        return True
     if family == "diarization":
         allow = set(getattr(cfg, "DIARIZATION_ALLOWED_MODELS", None) or ())
         # Only a SET value joins: an unset one must not make "" allowed.

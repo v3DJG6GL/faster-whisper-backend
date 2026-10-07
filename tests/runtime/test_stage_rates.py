@@ -86,6 +86,16 @@ def test_a_hand_edited_count_never_raises(ledger):
         {"rate": 7.0, "src": "measured", "n": 1}
 
 
+def test_a_hand_edited_bool_rate_is_dropped(ledger):
+    """A bool is an int: "rate": true must not read as a measured 1.0
+    (1 byte/s for downloading, 1x realtime) and skew every ETA."""
+    with open(ledger, "w", encoding="utf-8") as f:
+        f.write('{"version": 1, "rates": {"transcribing|||": '
+                '{"rate": true, "n": 3}}}')
+    stage_rates._reset_for_tests()
+    assert stage_rates.lookup("transcribing", None, None)["src"] == "seed"
+
+
 @pytest.mark.parametrize("body", [
     '{"version": 1, "rates": {"transcribing|||": {"rate": 1%s}}}' % ("0" * 400),
     '{"version": 1, "rates": {"transcribing|||": {"rate": 6.0, "n": 1%s}}}'

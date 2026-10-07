@@ -124,17 +124,29 @@ def test_diarization_block_present_when_stage_labels_nobody(
 
 def test_separation_row_has_no_transcode_detail_for_wav_input(
         client, app_module, monkeypatch):
+    from faster_whisper_backend.audio import transcode as audio_transcode
     app_module.cfg.BGM_SEPARATION_ENABLED = True
     _stub_separate(monkeypatch)
-    seen = {}
-    _capture_receipt(app_module, monkeypatch, seen)
+    # The detail alone cannot tell a skipped transcode from a failed one
+    # (the real transcode raises on these fake bytes and the fallback drops
+    # the detail too): the transcode must not even be attempted. Recorded,
+    # not raised — the fallback arm would swallow an AssertionError.
+    calls = []
+    monkeypatch.setattr(audio_transcode, "transcode_to_wav",
+                        lambda *a, **k: calls.append(a))
     try:
-        r = _post(client, separate_bgm="true")
-        assert r.status_code == 200, r.text
+        for name in ("a.wav", "a.flac"):
+            seen = {}
+            _capture_receipt(app_module, monkeypatch, seen)
+            r = _post(client, files={"file": (name, b"RIFFxxxxWAVE",
+                                              "audio/wav")},
+                      separate_bgm="true")
+            assert r.status_code == 200, r.text
+            row = next(s for s in seen["stages"] if s["name"] == "separating")
+            assert not row.get("detail")
     finally:
         app_module.cfg.BGM_SEPARATION_ENABLED = False
-    row = next(s for s in seen["stages"] if s["name"] == "separating")
-    assert not row.get("detail")
+    assert calls == []
 
 
 def test_separation_row_keeps_transcode_detail_when_transcode_ran(

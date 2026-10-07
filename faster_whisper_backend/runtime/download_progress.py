@@ -88,6 +88,10 @@ class _Capture:
         self._started_logged = False
         self._last_log = self.t0
         self._last_bucket = 0
+        # Largest aggregate total seen: snapshot_download grows its
+        # reconstruct bar's total per file, and a grown total lowers the
+        # percentage, so the bucket high-water mark must come down with it.
+        self._last_total = 0
         self._last_cb = 0.0
         # Largest aggregate handed to cb so far. bump() computes the sum
         # under the lock but delivers outside it, so a snapshot worker that
@@ -106,21 +110,30 @@ class _Capture:
             self.bars[bar_id] = [int(done), max(0, int(total or 0))]
             done_b = sum(v[0] for v in self.bars.values())
             total_b = sum(v[1] for v in self.bars.values())
-            if not self._started_logged and total_b > 0:
+            pct = int(done_b * 100 / total_b) if total_b else 0
+            bucket = pct // _LOG_BUCKET_PCT
+            if total_b > self._last_total:
+                self._last_total = total_b
+                self._last_bucket = min(self._last_bucket, bucket)
+            # A completion-shaped aggregate inside the scope is not news: a
+            # small file (config.json) can finish before model.bin's size
+            # joins the total, reading as "100% of 2 KB". Nothing is logged
+            # or delivered for it; the exit's done receipt and final cb
+            # report the real completion.
+            partial = done_b < total_b or not total_b   # total unknown: bytes
+            if total_b and partial and not self._started_logged:
                 self._started_logged = True
                 logger.info("[download] %s started (%s expected)",
                             self.label, _fmt_bytes(total_b))
-            pct = int(done_b * 100 / total_b) if total_b else 0
-            bucket = pct // _LOG_BUCKET_PCT
-            if (bucket > self._last_bucket
-                    or now - self._last_log >= _LOG_MIN_INTERVAL_S):
+            if partial and (bucket > self._last_bucket
+                            or now - self._last_log >= _LOG_MIN_INTERVAL_S):
                 self._last_bucket = bucket
                 self._last_log = now
                 secs = max(1e-6, now - self.t0)
                 logger.info("[download] %s %d%% (%s/%s · %s/s)",
                             self.label, pct, _fmt_bytes(done_b),
                             _fmt_bytes(total_b), _fmt_bytes(done_b / secs))
-            fire_cb = (self.cb is not None
+            fire_cb = (self.cb is not None and partial
                        and now - self._last_cb >= _CB_MIN_INTERVAL_S
                        and done_b >= self._last_sent)
             if fire_cb:

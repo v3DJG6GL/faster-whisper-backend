@@ -173,6 +173,14 @@ def _reset_singletons():
     yield
 
 
+@pytest.fixture(autouse=True)
+def _no_inherited_hf_hub_cache(monkeypatch):
+    """runtime.hf_cache ranks HF_HUB_CACHE above HF_HOME: an exported value
+    in the shell running the suite would override every test that points
+    HF_HOME (or DOWNLOAD_ROOT) at a tmp dir. A test that wants it sets it."""
+    monkeypatch.delenv("HF_HUB_CACHE", raising=False)
+
+
 # ---------------------------------------------------------------------------
 # Per-store fixtures (fresh temp DB per test)
 # ---------------------------------------------------------------------------
@@ -556,7 +564,7 @@ def isolate_app_env(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(cfg, "PRELOAD_MODELS", [], raising=False)
     monkeypatch.setattr(cfg, "DEFAULT_MODEL", "", raising=False)
 
-    # model_sizes has the same default-ARG trap: _read/_write/_write_locked
+    # model_sizes has the same default-ARG trap: _read/_write_locked
     # bind path=PATH at def time, so a direct caller would otherwise write the
     # measured-size ledger into the REAL /data (or <repo>\data). record()
     # resolves PATH at call time, so the PATH patch covers it.
@@ -567,7 +575,7 @@ def isolate_app_env(tmp_path, monkeypatch) -> None:
     from faster_whisper_backend.runtime import stage_rates
     monkeypatch.setattr(stage_rates, "PATH",
                         str(tmp_path / "stage_rates.json"), raising=False)
-    _repoint_path_default(monkeypatch, (model_sizes._read, model_sizes._write,
+    _repoint_path_default(monkeypatch, (model_sizes._read,
                                         model_sizes._write_locked), _tmp_sizes)
 
     # The rules engine compiles cfg.PIPELINE_RULES at its own import, not at
@@ -630,14 +638,14 @@ def close_app_stores() -> None:
 @pytest.fixture
 def model_sizes_ledger(tmp_path, monkeypatch):
     """Repoint the measured-size ledger at tmp_path/model_sizes.json: PATH
-    *and* the path default ARG of _read/_write/_write_locked (bound at def
+    *and* the path default ARG of _read/_write_locked (bound at def
     time — the same trap app_module documents for config_store). Yields the
     path. For tests that reach model_sizes.record() without app_module — a
     model_registry registration with a positive VRAM delta is a measurement."""
     from faster_whisper_backend.runtime import model_sizes
     p = str(tmp_path / "model_sizes.json")
     monkeypatch.setattr(model_sizes, "PATH", p, raising=False)
-    _repoint_path_default(monkeypatch, (model_sizes._read, model_sizes._write,
+    _repoint_path_default(monkeypatch, (model_sizes._read,
                                         model_sizes._write_locked), p)
     model_sizes._reset_for_tests()
     yield p

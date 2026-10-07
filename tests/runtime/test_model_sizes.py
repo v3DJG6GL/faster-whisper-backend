@@ -153,6 +153,25 @@ def test_a_nonsense_size_row_is_dropped(ledger, monkeypatch, row):
                             reserve_bytes=0) == (None, "size_unknown")
 
 
+@pytest.mark.parametrize("body", [
+    '{"version": 1, "models": {"a|cuda|f16": {"bytes": 1%s}}}' % ("0" * 400),
+    '{"version": 1, "models": {"a|cuda|f16": {"bytes": 10, "n": 1%s}}}'
+    % ("0" * 400),
+    "[" * 100000 + "]" * 100000,
+])
+def test_an_overflowing_or_deeply_nested_file_degrades_to_no_data(
+        ledger, monkeypatch, body):
+    """_read NEVER raises: math.isfinite() cannot convert a 400-digit JSON
+    int, and json.load recurses on a deeply nested document. Either one
+    escaping would 500 /stats and break a preload fit check."""
+    monkeypatch.setattr(model_sizes, "disk_size", lambda name: None)
+    with open(ledger, "w", encoding="utf-8") as f:
+        f.write(body)
+    model_sizes._reset_for_tests()
+    assert model_sizes._read(ledger) == {}
+    assert model_sizes.lookup("a", "cuda", "f16") is None
+
+
 def test_a_nonsense_count_reads_as_zero(ledger):
     with open(ledger, "w", encoding="utf-8") as f:
         f.write('{"version": 1, "models": {"a|cuda|f16": '
@@ -416,6 +435,22 @@ def test_proxy_prefers_a_same_device_measurement_over_a_disk_row(ledger):
     model_sizes.record("large-v3", "cpu", "float32", 9 * GB)
     got = model_sizes.lookup("large-v3", "cpu", "int16")
     assert (got["bytes"], got["src"]) == (5 * GB, "proxy")
+
+
+def test_a_live_disk_walk_beats_another_placements_disk_row(ledger,
+                                                             monkeypatch):
+    """disk_size() is name-only, so a stored disk row of ANOTHER placement
+    is never better than a fresh walk, only staler: an inflated pre-fix
+    prior under a placement that is never loaded again must not defer a
+    model that fits. The stored row stands in only when the walk finds
+    nothing."""
+    model_sizes.record("m", "cpu", "int8", 2 * GB, measured=False)
+    monkeypatch.setattr(model_sizes, "disk_size", lambda name: 1 * GB)
+    got = model_sizes.lookup("m", "cuda", "float16")
+    assert (got["bytes"], got["src"]) == (1 * GB, "disk")
+    monkeypatch.setattr(model_sizes, "disk_size", lambda name: None)
+    got = model_sizes.lookup("m", "cuda", "float16")
+    assert (got["bytes"], got["src"]) == (2 * GB, "disk")
 
 
 def test_a_newer_disk_prior_replaces_an_older_one(ledger):

@@ -102,8 +102,10 @@ def _read() -> dict[str, dict]:
             if isinstance(raw, dict):
                 for k, v in raw.items():
                     r = v.get("rate") if isinstance(v, dict) else None
-                    if (isinstance(r, (int, float)) and math.isfinite(r)
-                            and r > 0):
+                    # A bool is an int: a hand-edited "rate": true is not
+                    # a measured rate of 1.0.
+                    if (isinstance(r, (int, float)) and not isinstance(r, bool)
+                            and math.isfinite(r) and r > 0):
                         # Normalised here, once: lookup() and the fold
                         # below trust `n`, and a hand-edited "n": "many"
                         # must not raise out of either.

@@ -329,9 +329,11 @@ def test_recreated_progress_entry_keeps_its_owner(client, app_module,
     make_user_key("root", is_admin=True)  # locks the app down: bob is bob
     try:
         tx_progress._progress_set(_PID, stage="waiting", owner=uid_alice)
-        # An executor-thread stage tick after the handler's finally popped
-        # the entry (or after the cap eviction took it) re-creates it —
-        # with the owner stamp, not as an open, owner-less entry.
+        # An executor-thread stage tick after the cap eviction took the
+        # entry (the pop below stands in for it) re-creates it — with the
+        # owner stamp, not as an open, owner-less entry. (After the
+        # handler's finally, _progress_close tombstones the id instead, and
+        # a late tick is a no-op.)
         tx_progress._BATCH_PROGRESS.pop(_PID)
         tx_progress._progress_set(_PID, progress=0.5, last_text="x")
         assert tx_progress._BATCH_PROGRESS[_PID]["owner"] == uid_alice

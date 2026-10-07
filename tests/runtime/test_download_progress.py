@@ -117,7 +117,10 @@ def test_capture_logs_buckets_and_done(monkeypatch, caplog):
                 bar.update(10)
     msgs = [r.getMessage() for r in caplog.records]
     assert any("[download] gguf:org/m started" in m for m in msgs)
-    assert any("100%" in m for m in msgs)
+    assert any("90%" in m for m in msgs)
+    # 100% is the done receipt's job, not a bucket line (see the growing-
+    # total test below).
+    assert not any("100%" in m for m in msgs)
     assert any("done:" in m for m in msgs)
     # 10%-bucket throttle: 100 update() calls, but only a line per crossed
     # 10% bucket — unthrottled logging would emit ~100.
@@ -185,6 +188,32 @@ def test_callback_never_walks_backwards(monkeypatch):
     dones = [d for d, _ in calls]
     assert dones == sorted(dones)
     assert 500 not in dones
+
+
+def test_a_growing_snapshot_total_keeps_the_bucket_lines(monkeypatch, caplog):
+    # snapshot_download's reconstruct bar starts at total=0 and grows per
+    # file: config.json can register AND finish before model.bin's size
+    # joins. That 100%-of-2-KB moment is neither a "started" size, a bucket
+    # line nor a completion cb, and the real download keeps its 10% lines.
+    monkeypatch.setattr(dp, "_CB_MIN_INTERVAL_S", 0.0)
+    calls = []
+    with caplog.at_level(logging.INFO, logger="whisper-api"):
+        with dp.capture("whisper:large-v3", record=False,
+                        cb=lambda d, t: calls.append((d, t))):
+            bar = _mk_bar(total=0, name="huggingface_hub.snapshot_download")
+            bar.total += 2000
+            bar.update(2000)
+            bar.total += 10 ** 9
+            for _ in range(100):
+                bar.update(10 ** 7)
+    msgs = [r.getMessage() for r in caplog.records]
+    started = [m for m in msgs if "started" in m]
+    assert started and "2.0 KB expected" not in started[0]
+    for pct in range(10, 100, 10):
+        assert any(f" {pct}% (" in m for m in msgs), pct
+    assert calls[0] != (2000, 2000)
+    assert all(d < t for d, t in calls[:-1])
+    assert calls[-1] == (10 ** 9 + 2000, 10 ** 9 + 2000)
 
 
 def test_failed_download_gets_no_done_receipt(monkeypatch, caplog):

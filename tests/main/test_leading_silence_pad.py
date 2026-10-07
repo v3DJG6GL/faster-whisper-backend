@@ -73,6 +73,47 @@ def test_timestamps_shifted_back_to_original_timeline(client, app_module, monkey
     ]
 
 
+def test_live_progress_and_plan_use_the_original_timeline(
+        client, app_module, monkeypatch):
+    # _collect runs BEFORE the shift: the decoder's padded duration must not
+    # reach the run plan (the "decoder" rank wins, so the receipt, the ETA
+    # and every learned rate would carry the pad) nor the progress entry.
+    from faster_whisper_backend.transcription import progress as tx_progress
+    from faster_whisper_backend.transcription import run_plan
+    seg = FakeSegment("hallo welt", 0.6, 1.4, [])
+    info = FakeInfo(duration=1.5)
+    info.duration_after_vad = 1.2
+    model = FakeModel(segments=[seg], info=info)
+
+    async def _loader(name, *, lease=False):
+        return model
+    monkeypatch.setattr(tx_models, "_get_or_load_model", _loader)
+    secs = []
+    real_set = run_plan.RunPlan.set_audio_seconds
+
+    def _spy_set(self, s, *, src):
+        if src == "decoder":
+            secs.append(s)
+        return real_set(self, s, src=src)
+    monkeypatch.setattr(run_plan.RunPlan, "set_audio_seconds", _spy_set)
+    ticks = []
+    real_ps = tx_progress._progress_set
+
+    def _spy_ps(pid, **fields):
+        ticks.append(fields)
+        return real_ps(pid, **fields)
+    monkeypatch.setattr(tx_progress, "_progress_set", _spy_ps)
+
+    app_module.cfg.LEADING_SILENCE_PAD_MS = 500
+    r = _post(client, _wav_bytes(seconds=1.0), progress_id="0adf1e0e0001")
+    assert r.status_code == 200
+    assert secs == [pytest.approx(1.0)]
+    assert [t["duration"] for t in ticks if "duration" in t] == [
+        pytest.approx(1.0)]
+    assert [t["position"] for t in ticks
+            if t.get("position") is not None] == [pytest.approx(0.9)]
+
+
 def test_pad_zero_passes_path_through(client, app_module, fake_model):
     app_module.cfg.LEADING_SILENCE_PAD_MS = 0
     r = _post(client, _wav_bytes(seconds=1.0))

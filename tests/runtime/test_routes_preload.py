@@ -178,8 +178,24 @@ def test_a_blank_stage_model_id_is_never_allowed(client, app_module,
         r = client.post(_URL, json={"models": [{"family": fam, "id": "   "}]})
         assert r.status_code == 202
         assert r.json()["models"][0]["reason"] == "not_allowed"
-        plan = preload._plans.get(r.json()["plan_id"])
-        assert plan is None or (plan.entries == [] and plan.job_id is None)
+        assert preload._plans.get(r.json()["plan_id"]) is None
+
+
+def test_an_all_denied_post_takes_no_plan_slot(client, app_module,
+                                               monkeypatch):
+    """Nothing to warm: an empty Plan would hold one of the _MAX_PLANS slots
+    for the TTL and push another user's live plan out as "registry full"."""
+    _enable(app_module, monkeypatch)
+    for i in range(preload._MAX_PLANS):
+        preload.register_plan(f"other{i}", [("diarization", "p/x")],
+                              plan_id=f"{i:08d}")
+    full = set(preload._plans)
+    assert len(full) == preload._MAX_PLANS
+    r = client.post(_URL, json={"models": [{"family": "separation",
+                                            "id": "UVR-Not-Allowed"}]})
+    assert r.status_code == 202
+    assert r.json()["models"][0]["reason"] == "not_allowed"
+    assert set(preload._plans) == full
 
 
 def test_identity_effective_stage_model_is_not_reported_not_allowed(
@@ -250,9 +266,14 @@ def test_a_locked_empty_translation_model_admits_the_default(monkeypatch):
 def test_disabled_stage_is_202_deferred_stage_disabled(client, app_module,
                                                        monkeypatch):
     _enable(app_module, monkeypatch, DIARIZATION_ENABLED=False)
-    row = _one(client, _body())
+    r = client.post(_URL, json=_body())
+    row = r.json()["models"][0]
     assert row["state"] == "deferred"
     assert row["reason"] == "stage_disabled"
+    # Never retriable while the stage is off: no plan, so no /stats row.
+    assert preload._plans.get(r.json()["plan_id"]) is None
+    from faster_whisper_backend.core import jobs
+    assert [j for j in jobs.jobs_snapshot() if j["kind"] == "preload"] == []
 
 
 def test_feature_off_is_202_deferred_disabled(client, app_module, monkeypatch):

@@ -12,14 +12,20 @@ import os
 
 
 def hub_cache_dir() -> "str | None":
-    """The cache_dir to pass to a hub download: a set HF_HOME wins, else
-    <DOWNLOAD_ROOT>/hf/hub, else None (the hub's own default).
+    """The cache_dir to pass to a hub download: a set HF_HUB_CACHE wins (the
+    hub ranks it above HF_HOME too, so whisper's own hub-default download
+    lands there), else HF_HOME/hub, else <DOWNLOAD_ROOT>/hf/hub, else None
+    (the hub's own default).
 
     Expanded the way the hub expands them (python-dotenv and systemd
-    Environment= leave "~" alone): HF_HOME like huggingface_hub.constants
-    (vars, then "~"), DOWNLOAD_ROOT like an explicit cache_dir ("~" only).
-    Unexpanded, the download lands under the home dir while the lookup
-    checks a cwd-relative "~/..." that never exists."""
+    Environment= leave "~" alone): HF_HUB_CACHE and HF_HOME like
+    huggingface_hub.constants (vars, then "~"), DOWNLOAD_ROOT like an
+    explicit cache_dir ("~" only). Unexpanded, the download lands under the
+    home dir while the lookup checks a cwd-relative "~/..." that never
+    exists."""
+    hub_cache = os.environ.get("HF_HUB_CACHE")
+    if hub_cache:
+        return os.path.expandvars(os.path.expanduser(hub_cache))
     hf_home = os.environ.get("HF_HOME")
     if hf_home:
         return os.path.join(

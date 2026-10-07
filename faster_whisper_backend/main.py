@@ -2316,12 +2316,21 @@ async def transcribe(
                 # each yielded segment carries its end time, and info.duration
                 # is known up front — that ratio is genuine decode progress
                 # (the executor thread's dict writes are GIL-atomic).
-                def _collect(_gen, _info):
-                    _dur = float(getattr(_info, "duration", 0.0) or 0.0)
+                def _collect(_gen, _info, _pad_s=0.0):
+                    # Live figures on the ORIGINAL timeline, like the shifted
+                    # result (_shift_to_original_timeline runs only after
+                    # this): a padded duration would put the pad into the
+                    # progress entry and, at the "decoder" rank nothing
+                    # outranks, into the plan's audio seconds and so every
+                    # learned rate.
+                    _dur = max(0.0, float(getattr(_info, "duration", 0.0)
+                                          or 0.0) - _pad_s)
                     _compute, _dev = tx_receipt._model_compute_device(resolved_model)
                     # VAD receipt: transcribe() ran Silero eagerly before
                     # returning, so duration_after_vad is already known here.
-                    # Only meaningful when the filter actually ran.
+                    # Only meaningful when the filter actually ran. Clamped
+                    # like the shift clamps it, so this and the "vad" row
+                    # agree.
                     _dav = getattr(_info, "duration_after_vad", None)
                     _retained = (
                         max(0.0, min(1.0, float(_dav) / _dur))
@@ -2345,10 +2354,11 @@ async def transcribe(
                                 raise tx_progress._ClientCancelled()
                             _out.append(_s)
                             if _dur > 0:
-                                _frac = min(1.0, float(_s.end) / _dur)
+                                _end = max(0.0, float(_s.end) - _pad_s)
+                                _frac = min(1.0, _end / _dur)
                                 _ps(
                                     progress=_frac,
-                                    position=float(_s.end),
+                                    position=_end,
                                     # Live tail for the client's run panel.
                                     last_text=(_s.text or "").strip()[:300] or None)
                                 _b = int(_frac * 20)
@@ -2356,7 +2366,7 @@ async def transcribe(
                                     _log_bucket = _b
                                     logger.info(
                                         "[transcribe] %d%% (%.1fs / %.1fs)",
-                                        _b * 5, float(_s.end), _dur)
+                                        _b * 5, _end, _dur)
                     except _decode_trace.ResidualWindowSkipped:
                         # The stop rule ended the stream after the window that
                         # reached the end of the audio; everything yielded so
@@ -2398,7 +2408,7 @@ async def transcribe(
                     if _audio is not None:
                         _segs, _info = _model.transcribe(_audio, **_kw)
                         _t["pre_secs"] = time.perf_counter() - _pre
-                        _out = _collect(_segs, _info)
+                        _out = _collect(_segs, _info, _pad_ms / 1000.0)
                         _t["trace"] = _decode_trace.finish(_tr, _out, _info)
                         return (*_shift_to_original_timeline(
                             _out, _info, _pad_ms / 1000.0), True)

@@ -535,8 +535,13 @@ def test_a_full_queue_keeps_the_cursor_so_the_next_tick_retries(monkeypatch):
     assert plan.inflight == set()
     assert plan.cursor == -1
     monkeypatch.setattr(preload, "_queue", _Q(0))
+    # No loop behind the fake queue: a real _enqueue_threadsafe would drop
+    # the item and (rightly) undo its inflight mark.
+    enqueued = []
+    monkeypatch.setattr(preload, "_enqueue_threadsafe", enqueued.append)
     preload.on_stage_start("2" * 8, "separating")
     assert preload.stats_key("diarization", "p/x") in plan.inflight
+    assert enqueued == [("2" * 8, "diarization", "p/x")]
     assert plan.cursor == 0
 
 
@@ -552,6 +557,61 @@ def test_the_preload_job_row_carries_the_display_name(monkeypatch):
                                           user_id="uid1")
             if j["kind"] == "preload"]
     assert [j["user"] for j in rows] == ["alice"]
+
+
+def _preload_rows(user_id):
+    from faster_whisper_backend.core import jobs
+    return [j for j in jobs.jobs_snapshot(include_identity=True,
+                                          user_id=user_id)
+            if j["kind"] == "preload"]
+
+
+def test_a_client_driven_plan_with_a_deferral_opens_no_live_row(monkeypatch):
+    """stage_ahead=False: nothing ever advances the plan, so a deferred
+    entry can never be retried — the /stats row must not stay up (for the
+    TTL, or forever under a re-POSTing dictation client)."""
+    _enable(monkeypatch)
+    _fits(monkeypatch, (False, "insufficient_vram"))
+    monkeypatch.setattr(preload, "_idle_peer", lambda *a, **k: None)
+    out = preload.register_plan("u5", [("diarization", "p/x")],
+                                plan_id="5" * 8, stage_ahead=False)
+    assert out["models"][0]["reason"] == "insufficient_vram"
+    assert preload._plans["5" * 8].job_id is None
+    assert _preload_rows("u5") == []
+
+
+def test_a_job_plan_row_ends_once_the_cursor_passes_a_deferred_entry(
+        monkeypatch):
+    """The job loads an entry at or behind the cursor in-band; preload
+    never retries it, so it must not hold the row open."""
+    _enable(monkeypatch)
+    _fits(monkeypatch, (False, "insufficient_vram"))
+    monkeypatch.setattr(preload, "_idle_peer", lambda *a, **k: None)
+    preload.register_plan("u6", [("diarization", "p/x")], plan_id="6" * 8)
+    plan = preload._plans["6" * 8]
+    assert plan.job_id is not None            # still retriable ahead
+    preload.on_stage_start("6" * 8, "diarizing")
+    assert plan.job_id is None
+    assert _preload_rows("u6") == []
+
+
+def test_a_dropped_enqueue_forgets_its_inflight_mark(monkeypatch):
+    """No worker running: the item is dropped, and its key must leave
+    inflight, or a re-POST reports it `queued` forever with nothing
+    loading it."""
+    _enable(monkeypatch)
+    _fits(monkeypatch, (True, None))
+
+    class _Q:
+        def qsize(self):
+            return 0
+
+        def empty(self):
+            return True
+    monkeypatch.setattr(preload, "_queue", _Q())    # no _loop behind it
+    preload.register_plan("u7", [("diarization", "p/x")], plan_id="7" * 8)
+    plan = preload._plans["7" * 8]
+    assert plan.inflight == set()
 
 
 def test_diagnostics_shape():

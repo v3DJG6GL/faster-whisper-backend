@@ -106,7 +106,10 @@ def _read(path: str = PATH) -> dict[str, dict]:
                         if isinstance(v.get("src"), str):
                             row["src"] = v["src"]
                         models[k] = row
-    except (OSError, ValueError):
+    except (OSError, ValueError, OverflowError, RecursionError):
+        # OverflowError: a 400-digit integer literal is a valid JSON int
+        # that math.isfinite() cannot convert; RecursionError: a deeply
+        # nested document.
         models = {}
     _cache, _cache_mtime = models, mtime
     return models
@@ -117,11 +120,6 @@ def _count(n) -> int:
             and math.isfinite(n) and n > 0):
         return int(n)
     return 0
-
-
-def _write(models: dict[str, dict], path: str = PATH) -> None:
-    with atomic_json.save_lock(path):
-        _write_locked(models, path)
 
 
 def _write_locked(models: dict[str, dict], path: str = PATH) -> None:
@@ -184,9 +182,9 @@ def _is_measured(k: str, row: dict) -> bool:
 
 def _record_locked(k: str, vram_bytes: int, measured: bool, src: str,
                    path: str) -> None:
-    """The merge half of record(). Writes through _write_locked, never
-    _write: the caller may already hold atomic_json.save_lock(path), which is
-    not reentrant."""
+    """The merge half of record(). Writes through _write_locked without
+    taking the lock: the caller may already hold
+    atomic_json.save_lock(path), which is not reentrant."""
     global _cache_mtime
     # Drop the mtime cache so the merge sees a peer's just-written rows.
     _cache_mtime = None
@@ -252,8 +250,9 @@ def lookup(name: str, device: str, compute_type: str) -> dict | None:
     # Ranked, not first-match: the ledger is written sorted, so "cpu" would
     # always beat "cuda" and a cpu DISK row would shadow a measurement on the
     # same card. A measurement on the same device family first, then one on
-    # any device, then a disk row (or a stray non-cuda "measured" row, see
-    # _is_measured); max() within a rank stays conservative.
+    # any device; a disk row (or a stray non-cuda "measured" row, see
+    # _is_measured) only after the live disk walk below. max() within a rank
+    # stays conservative.
     prefix = f"{name}|"
     cuda = (device or "").startswith("cuda")
     best = None
@@ -267,13 +266,10 @@ def lookup(name: str, device: str, compute_type: str) -> dict | None:
             rank = 0 if peer_cuda == cuda else 1
         cand = (-rank, int(v["bytes"]))
         if best is None or cand > best[0]:
-            best = (cand, v, k)
-    if best is not None:
-        _cand, v, best_k = best
-        # A disk-walk peer row is still only a disk walk, not a proxy
-        # measurement.
-        return {"bytes": int(v["bytes"]),
-                "src": "proxy" if _is_measured(best_k, v) else "disk",
+            best = (cand, v)
+    if best is not None and best[0][0] > -2:   # rank 0/1: a measurement
+        v = best[1]
+        return {"bytes": int(v["bytes"]), "src": "proxy",
                 "n": int(v.get("n") or 0), "ts": v.get("ts")}
     # Never measured anywhere. Fall back to what the model WEIGHS ON DISK,
     # which for a GGUF or an ONNX file is a solid lower bound on its resident
@@ -281,9 +277,20 @@ def lookup(name: str, device: str, compute_type: str) -> dict | None:
     # is even plausible. Without this, a model that has never been loaded
     # cannot be sized, so preload refuses it, so it is never loaded, so it is
     # never measured — the deadlock this fallback exists to break.
+    #
+    # Also ahead of a stored disk row of ANOTHER placement: disk_size() is
+    # name-only, so such a row can never be more accurate than a fresh
+    # walk, only staler — a pre-fix build's inflated prior (symlink double
+    # count, every GGUF quant) survives for any placement that is never
+    # loaded again. The stored row is kept only for a model no longer on
+    # disk.
     size = disk_size(name)
     if size is None:
-        return None
+        if best is None:
+            return None
+        v = best[1]
+        return {"bytes": int(v["bytes"]), "src": "disk",
+                "n": int(v.get("n") or 0), "ts": v.get("ts")}
     return {"bytes": int(size), "src": "disk", "n": 0, "ts": None}
 
 
@@ -388,7 +395,8 @@ def _model_path(name: str) -> "str | None":
         return os.path.join(root or tempfile.gettempdir(), "audio-separator",
                             model)
     # Where translation / diarization downloads land (hf_cache owns the
-    # precedence: HF_HOME, else <DOWNLOAD_ROOT>/hf, else the hub default).
+    # precedence: HF_HUB_CACHE, else HF_HOME/hub, else <DOWNLOAD_ROOT>/hf,
+    # else the hub default).
     hub = hf_cache.hub_lookup_dir()
     if name.startswith("gguf:"):
         repo = name[5:].split(":", 1)[0]

@@ -28,3 +28,20 @@ def test_lookup_follows_hf_hub_cache_when_downloads_use_the_hub_default(monkeypa
     assert hf_cache.hub_lookup_dir() == "/custom/hub"
     assert model_sizes._model_path("gguf:org/repo:Q4") == os.path.join(
         "/custom/hub", "models--org--repo")
+
+
+def test_hf_hub_cache_wins_over_hf_home(monkeypatch, tmp_path):
+    # The hub ranks HF_HUB_CACHE above HF_HOME/hub, and whisper's own
+    # hub-default download follows it: the GGUFs, pyannote and the size
+    # lookup must land in the same dir, not re-download under HF_HOME.
+    monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path / "a"))
+    monkeypatch.setenv("HF_HOME", str(tmp_path / "b"))
+    monkeypatch.setattr(cfg, "DOWNLOAD_ROOT", str(tmp_path / "c"),
+                        raising=False)
+    assert hf_cache.hub_cache_dir() == str(tmp_path / "a")
+    assert hf_cache.hub_lookup_dir() == str(tmp_path / "a")
+    # "~" expanded like huggingface_hub.constants does.
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    monkeypatch.setenv("HF_HUB_CACHE", "~/hub")
+    assert hf_cache.hub_cache_dir() == os.path.join(str(tmp_path), "hub")
