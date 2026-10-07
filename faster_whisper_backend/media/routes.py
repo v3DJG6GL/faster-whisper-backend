@@ -476,8 +476,6 @@ async def url_language(request: Request,
     _user_id = user.get("user_id")
 
     def _detect(model, audio) -> "tuple[str | None, float]":
-        if not _has_speech(audio):
-            return None, 0.0
         try:
             lang, prob, _all = model.detect_language(audio=audio, vad_filter=True)
         except ValueError:
@@ -509,24 +507,32 @@ async def url_language(request: Request,
                             _log_safe(type(e).__name__))
                 raise _udl.UrlDownloadError(
                     "the link's audio could not be decoded") from None
-        tx_progress._progress_set(pid, stage="waiting", progress=None)
-        model = await tx_models._get_or_load_model(model_name, lease=True)
-        try:
-            # CTranslate2 raises RuntimeError for an English-only model.
-            if not getattr(getattr(model, "model", None), "is_multilingual", True):
-                raise _english_only()
-            tx_progress._check_cancelled(pid)
-            _w0 = time.perf_counter()
-            async with tx_models.get_inference_semaphore():
-                wait_s = time.perf_counter() - _w0
-                heard = []
-                for i, piece in enumerate(audio):
-                    tx_progress._check_cancelled(pid)
-                    tx_progress._progress_set(pid, stage="transcribing", step="language",
-                                  progress=i / len(audio), model=model_name)
-                    heard.append(await asyncio.to_thread(_detect, model, piece))
-        finally:
-            tx_models._release_model_lease(model_name)
+        # The VAD gate is CPU-only: run it before the model load and the GPU
+        # gate, so a silent or music-only link never loads a model or waits
+        # for a GPU slot only to answer "unknown".
+        speech = await asyncio.to_thread(lambda: [_has_speech(p) for p in audio])
+        heard: "list[tuple[str | None, float]]" = [(None, 0.0)] * len(audio)
+        wait_s = 0.0
+        if any(speech):
+            tx_progress._progress_set(pid, stage="waiting", progress=None)
+            model = await tx_models._get_or_load_model(model_name, lease=True)
+            try:
+                # CTranslate2 raises RuntimeError for an English-only model.
+                if not getattr(getattr(model, "model", None), "is_multilingual", True):
+                    raise _english_only()
+                tx_progress._check_cancelled(pid)
+                _w0 = time.perf_counter()
+                async with tx_models.get_inference_semaphore():
+                    wait_s = time.perf_counter() - _w0
+                    for i, piece in enumerate(audio):
+                        if not speech[i]:
+                            continue
+                        tx_progress._check_cancelled(pid)
+                        tx_progress._progress_set(pid, stage="transcribing", step="language",
+                                      progress=i / len(audio), model=model_name)
+                        heard[i] = await asyncio.to_thread(_detect, model, piece)
+            finally:
+                tx_models._release_model_lease(model_name)
         result = _lc.vote(heard)
         pieces = [{"at": at, "language": lang, "probability": round(p, 3)}
                   for at, (lang, p) in zip(starts, heard)]
@@ -660,7 +666,7 @@ async def upload_media(request: Request,
             # body declares no length) and flags it in the scope; anything
             # else is a client that went away mid-upload.
             if received >= cap or request.scope.get("state", {}).get("body_cap_hit"):
-                raise HTTPException(status_code=413, detail="upload too large")
+                raise HTTPException(status_code=413, detail=too_large)
             raise HTTPException(status_code=400, detail="upload interrupted")
         if received == 0:
             raise HTTPException(status_code=422, detail="empty upload")

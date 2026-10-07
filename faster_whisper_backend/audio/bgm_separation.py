@@ -560,10 +560,12 @@ async def _release_separator(model: str, sep) -> None:
 
 
 async def _get_separator(model_filename: "str | None" = None, *,
-                         lease: bool = False):
+                         lease: bool = False, speculative: bool = False):
     """Return the cached separator, (re)loading when config (or a per-request
     ``model_filename`` override) changed it — the (model, device) key below
-    re-keys the singleton per call."""
+    re-keys the singleton per call. ``speculative`` (a preload): None
+    instead of a load that would collide with a running job (see ``busy``),
+    re-checked under _lock."""
     global _separator, _separator_key, _last_used_monotonic, _loading_key
     model = _model_filename(model_filename)
     device = _resolve_device()
@@ -586,6 +588,13 @@ async def _get_separator(model_filename: "str | None" = None, *,
             if lease:
                 _leases[model] = _leases.get(model, 0) + 1
             return _separator
+        # A preload's busy() verdict was taken before it waited on _lock: a
+        # job may have loaded and leased another separator meanwhile, and the
+        # force-drop below would orphan it and load the warm-up beside it.
+        if speculative and busy(model):
+            logger.info("[bgm] preload of %s declined: a running job holds "
+                        "another separator", model)
+            return None
         # force: a request for a DIFFERENT model must never be blocked by a
         # running job — orphaning lets both coexist until the old one drains.
         _drop_locked(force=True)
@@ -862,11 +871,13 @@ def placement() -> "tuple[str, str]":
     return (actual_device() or _resolve_device(), "onnx")
 
 
-async def load_unleased(model: str) -> None:
+async def load_unleased(model: str) -> bool:
     """Load ``model`` WITHOUT a lease: the separator stays evictable the
     moment a real job needs the memory. Evict a held peer first (see
-    ``drop_separator(force=False)``), or this load orphans it."""
-    await _get_separator(model)
+    ``drop_separator(force=False)``), or this load orphans it. False when
+    the load was declined because it would collide with a running job
+    (``busy``, re-checked under the lock) — nothing was loaded."""
+    return await _get_separator(model, speculative=True) is not None
 
 
 async def idle_evictor_loop() -> None:

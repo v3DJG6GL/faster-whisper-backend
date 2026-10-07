@@ -944,6 +944,9 @@ def test_language_check_no_speech_is_unknown(client, url_enabled, lang_check, mo
     lang_check.heard = [("en", 0.341)]   # faster-whisper 1.2 on padded silence
     body = client.post("/v1/audio/url-language", json={"url": _URL}).json()
     assert body["verdict"] == "unknown" and body["language"] is None
+    # The CPU-only VAD gate runs first: no speech anywhere, no model lease
+    # (no load, no GPU slot).
+    assert lang_check.released == [] and lang_check.detect_calls == 0
 
 
 def test_language_check_silent_pieces_never_reach_the_model(

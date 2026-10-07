@@ -253,12 +253,74 @@ def test_a_timed_out_ffmpeg_probe_is_not_cached(monkeypatch):
     monkeypatch.setattr(subprocess, "run", _run)
     caps = pk.ffmpeg_capabilities()
     assert not caps.available and "no ffmpeg" not in caps.reason
-    assert pk.ffmpeg_capabilities().available       # asked again, cached now
+    # Asked again — on a background thread, so this call still answers
+    # "not in time"; the answer is cached once that probe lands.
+    assert not pk.ffmpeg_capabilities().available
+    pk._caps_state["thread"].join(timeout=5)
+    assert pk.ffmpeg_capabilities().available       # cached now
     slow["left"] = 1
     assert pk.ffmpeg_capabilities().available       # the cache held
     slow["left"] = 1
     assert pk.ffmpeg_has_bsf("filter_units") is False
     assert pk.ffmpeg_has_bsf("filter_units") is True
+    pk._reset_for_tests()
+
+
+def test_a_retried_ffmpeg_probe_is_single_flight_and_off_the_caller(monkeypatch):
+    """After a timed-out first probe, request handlers call this on the event
+    loop: a re-probe there froze the server for up to 3 x 15 s per call. The
+    retry runs on its own thread, one at a time; callers get the fallback."""
+    import threading
+    pk._reset_for_tests()
+    monkeypatch.setattr(pk, "_probe_ffmpeg_capabilities", lambda: None)
+    assert not pk.ffmpeg_capabilities().available     # the first, timed out
+    gate = threading.Event()
+    probes = []
+    ok = pk.FfmpegCaps(True, True, True, None, "7")
+
+    def _blocking():
+        probes.append(threading.current_thread())
+        gate.wait(5)
+        return ok
+    monkeypatch.setattr(pk, "_probe_ffmpeg_capabilities", _blocking)
+    try:
+        first = pk.ffmpeg_capabilities()
+        second = pk.ffmpeg_capabilities()
+        assert not first.available and not second.available
+        assert "did not answer in time" in second.reason
+        for _ in range(100):
+            if probes:
+                break
+            threading.Event().wait(0.01)
+        assert len(probes) == 1                       # single-flight
+        assert probes[0] is not threading.current_thread()
+    finally:
+        gate.set()
+    pk._caps_state["thread"].join(timeout=5)
+    assert pk.ffmpeg_capabilities() == ok
+    assert len(probes) == 1
+    pk._reset_for_tests()
+
+
+def test_a_spawn_failure_is_not_cached_but_a_missing_binary_is(monkeypatch):
+    import errno
+    pk._reset_for_tests()
+
+    def _eagain(argv, **kw):
+        raise OSError(errno.EAGAIN, "Resource temporarily unavailable")
+    monkeypatch.setattr(subprocess, "run", _eagain)
+    assert pk._probe_ffmpeg_capabilities() is None
+    assert pk.ffmpeg_has_bsf("filter_units") is False
+    assert pk._bsf_cache == {}
+
+    def _missing(argv, **kw):
+        raise FileNotFoundError(argv[0])
+    monkeypatch.setattr(subprocess, "run", _missing)
+    caps = pk.ffmpeg_capabilities()
+    assert not caps.available and "no ffmpeg" in caps.reason
+    assert pk._caps_cache == [caps]
+    assert pk.ffmpeg_has_bsf("filter_units") is False
+    assert pk._bsf_cache == {"filter_units": False}
     pk._reset_for_tests()
 
 
@@ -325,6 +387,21 @@ def test_package_real_ffmpeg_writes_per_track_dispositions(tmp_path):
                     "Whisper", "Site", "Translation", "Auto"]
         finally:
             shutil.rmtree(os.path.dirname(out), ignore_errors=True)
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="needs a system ffmpeg")
+def test_probe_streams_reads_a_non_utf8_title(tmp_path):
+    """An AVI whose RIFF INFO title is cp1252 ("Müller"), passed through raw
+    by ffmpeg: PyAV's default metadata_errors="strict" raised
+    UnicodeDecodeError and the route cached a playable video as unreadable."""
+    pytest.importorskip("av")
+    src = str(tmp_path / "src.avi")
+    subprocess.run([b"ffmpeg", b"-hide_banner", b"-loglevel", b"error", b"-y",
+                    b"-f", b"lavfi", b"-i", b"testsrc=size=64x64:rate=10:duration=1",
+                    b"-c:v", b"mpeg4", b"-metadata", b"title=M\xfcller",
+                    src.encode()], check=True, timeout=60)
+    streams = pk.probe_streams(src)
+    assert streams.video_codec == "mpeg4" and streams.width == 64
 
 
 def test_build_package_argv_maps_the_probed_video_index():

@@ -46,7 +46,11 @@ def _open_audio(src_path: str):
     # "-protocol_whitelist pipe" on the realtime path for the same reason —
     # and the demuxer refusal below stops a playlist reading a sibling
     # local file through the whitelisted file protocol itself.
-    container = _av().open(src_path, options={"protocol_whitelist": "file"})
+    # metadata_errors="ignore" as in faster-whisper's decode_audio: PyAV's
+    # default "strict" raises UnicodeDecodeError (a ValueError — read as a
+    # refusal upstream) on a non-UTF-8 tag, e.g. a cp1252 RIFF INFO title.
+    container = _av().open(src_path, options={"protocol_whitelist": "file"},
+                           metadata_errors="ignore")
     if audio_ffmpeg.is_multi_input_format(getattr(container.format, "name", None)):
         container.close()
         raise ValueError("unsupported container")
@@ -68,7 +72,8 @@ def refuse_multi_input(path: str) -> None:
     that caller's own error handling."""
     av = _av()
     try:
-        container = av.open(path, options={"protocol_whitelist": "file"})
+        container = av.open(path, options={"protocol_whitelist": "file"},
+                            metadata_errors="ignore")
     except av.FFmpegError:
         return
     try:

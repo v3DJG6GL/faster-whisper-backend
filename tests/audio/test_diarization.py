@@ -704,3 +704,37 @@ def test_idle_drop_waits_for_a_zombie_inference(monkeypatch):
         t.join(5)
     assert asyncio.run(diarization.drop_pipeline(force=False)) is True
     assert unregistered == ["pyannote:m1"]
+
+
+# --- a preload re-checks busy() under the lock --------------------------------
+
+def test_preload_declines_under_the_lock_when_a_job_holds_another_pipeline(
+        monkeypatch):
+    """preload admits on busy() BEFORE load_unleased waits on _lock; a job
+    that loaded and leased another pipeline meanwhile must not be orphaned
+    by the speculative load (two pipelines in memory)."""
+    import asyncio
+    cfg = diarization.cfg
+    monkeypatch.setattr(cfg, "DIARIZATION_DEVICE", "cpu", raising=False)
+    monkeypatch.setattr(cfg, "DIARIZATION_EMBEDDING_BATCH_SIZE", 4,
+                        raising=False)
+    held = object()
+    monkeypatch.setattr(diarization, "_pipeline", held)
+    monkeypatch.setattr(diarization, "_pipeline_key", ("p/a", "cpu", 4))
+    monkeypatch.setattr(diarization, "_leases", {"p/a": 1})
+    monkeypatch.setattr(diarization, "_orphans", {})
+    loads: list = []
+    monkeypatch.setattr(diarization, "_load_blocking",
+                        lambda m, d, b: loads.append(m) or object())
+
+    assert asyncio.run(diarization.load_unleased("p/b")) is False
+    assert loads == []
+    assert diarization._pipeline is held
+    assert diarization._leases == {"p/a": 1} and diarization._orphans == {}
+    # A draining orphan declines too.
+    monkeypatch.setattr(diarization, "_pipeline", None)
+    monkeypatch.setattr(diarization, "_pipeline_key", None)
+    monkeypatch.setattr(diarization, "_leases", {})
+    monkeypatch.setattr(diarization, "_orphans", {"p/a": 1})
+    assert asyncio.run(diarization.load_unleased("p/b")) is False
+    assert loads == []

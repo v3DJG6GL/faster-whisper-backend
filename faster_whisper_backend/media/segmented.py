@@ -250,6 +250,17 @@ async def fetch_pieces(source: dict, starts: "list[float]", seconds: float,
             raise Unsupported("the site ignored a byte range")
         return body
 
+    async def playlist(url: str) -> "tuple[str, str]":
+        """A playlist's text and the URL that answered: relative URIs
+        resolve against the redirect target (a tokenised manifest endpoint
+        bouncing to a CDN edge), as hls.js, ffmpeg and yt-dlp resolve them."""
+        if cancel_check():
+            raise _udl.UrlCancelled()
+        _ctype, body, final = await _udl.capped_get(
+            url, max_bytes=PLAYLIST_MAX_BYTES, deadline=deadline,
+            headers=headers, want_url=True)
+        return body.decode("utf-8", errors="replace"), final
+
     if source.get("protocol") == "dash":
         media = dash_media(source.get("fragments"), source.get("base"))
     else:
@@ -257,8 +268,7 @@ async def fetch_pieces(source: dict, starts: "list[float]", seconds: float,
         for _hop in range(2):  # a master playlist, then its media playlist
             if not isinstance(url, str) or not url:
                 raise Unsupported("the stream has no playlist address")
-            parsed = parse_hls((await get((url, None), PLAYLIST_MAX_BYTES)).decode(
-                "utf-8", errors="replace"), url)
+            parsed = parse_hls(*await playlist(url))
             if isinstance(parsed, Media):
                 media = parsed
                 break

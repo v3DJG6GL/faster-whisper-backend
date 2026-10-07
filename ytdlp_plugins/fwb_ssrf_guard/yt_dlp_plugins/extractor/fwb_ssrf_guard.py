@@ -15,8 +15,10 @@ WHAT this module installs (import side effect, idempotent — see install()):
   * the removal of the built-in http(s) handlers from yt-dlp's registry, so
     nothing can fall through to an unguarded opener when ours declines a
     request (a `data:`/`ftp:`/`file:` URL, or an extractor asking for TLS
-    impersonation). Websocket handlers are left alone — they speak ws(s),
-    which this download path never uses for media bytes; and
+    impersonation) — and of the Websockets handler, which dials ws(s) with
+    no address policy, DNS pin or redirect gate. Extraction does open
+    websockets (FC2 live, niconico live), but every format that needs one
+    ends in FFmpegFD, which is refused below anyway; and
   * a refusal in every downloader that hands the fetch to another program
     (ExternalFD — ffmpeg, aria2c, curl, wget… — and RtmpFD's rtmpdump). Those
     open URLs themselves, outside the RequestHandler registry: HlsFD alone
@@ -82,9 +84,10 @@ EXTERNAL_FD_MARKER = MARKER + "-external-fd"
 GUARD_RH_KEY = "FwbSsrfGuard"
 RH_NAME = "fwb-guarded-urllib"
 
-# Built-in handlers that can speak http(s) (or data/ftp/file). They are
-# unregistered by install() so ours is the only way out of the process.
-_SUPERSEDED_RH_KEYS = ("Urllib", "Requests", "CurlCFFI")
+# Built-in handlers that can speak http(s) (or data/ftp/file), and ws(s).
+# They are unregistered by install() so ours is the only way out of the
+# process.
+_SUPERSEDED_RH_KEYS = ("Urllib", "Requests", "CurlCFFI", "Websockets")
 
 
 # ── the shared policy ───────────────────────────────────────────────────────

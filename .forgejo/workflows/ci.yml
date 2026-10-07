@@ -453,7 +453,9 @@ jobs:
       # must not move :latest (and, through the mirror, ghcr's latest*) back
       # to that release: only the NEWEST v* tag may carry latest. ls-remote,
       # not just the checkout's tags, so a release minted while this run
-      # queued still counts; the local tags are the fallback.
+      # queued still counts; the local tags are the fallback. Only strict
+      # vX.Y.Z tags count (release.yml's own filter): a v1.2.3-rc1 or a
+      # "vendor-x" would sort after every release under sort -V.
       - name: Is this the newest release tag?
         id: newest
         run: |
@@ -461,9 +463,12 @@ jobs:
           refs=$(git ls-remote --tags --refs origin 'v*' 2>/dev/null) \
             || refs=$(git show-ref --tags || true)
           newest=$(printf '%s\n' "$refs" \
-            | sed -n 's#.*refs/tags/\(v.*\)$#\1#p' | sort -V | tail -n 1)
+            | sed -n 's#.*refs/tags/\(v.*\)$#\1#p' \
+            | { grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' || true; } \
+            | sort -V | tail -n 1)
           is_newest=false
-          if [ "$GITHUB_REF_TYPE" = tag ] && [ "$GITHUB_REF_NAME" = "$newest" ]; then
+          if [ "$GITHUB_REF_TYPE" = tag ] && [ -n "$newest" ] \
+              && [ "$GITHUB_REF_NAME" = "$newest" ]; then
             is_newest=true
           fi
           echo "newest v* tag: ${newest:-none}; this ref: ${GITHUB_REF_NAME} → latest: ${is_newest}"

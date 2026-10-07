@@ -158,7 +158,11 @@ def probe_streams(path: str) -> MediaStreams:
     unreadable."""
     import av  # optional dependency; the route maps ImportError to 503
 
-    with av.open(path, options={"protocol_whitelist": "file"}) as c:
+    # metadata_errors="replace": PyAV's default "strict" raises
+    # UnicodeDecodeError on a non-UTF-8 tag (an AVI with a cp1252 RIFF INFO
+    # title), and the route would cache a playable video as unreadable.
+    with av.open(path, options={"protocol_whitelist": "file"},
+                 metadata_errors="replace") as c:
         if audio_ffmpeg.is_multi_input_format(getattr(c.format, "name", None)):
             raise ValueError("unsupported container")
         videos = [s for s in c.streams if s.type == "video"]
@@ -356,10 +360,21 @@ async def _empty_captions_to_strip(src: str, video_codec: "str | None",
 
 # The two ffmpeg probes below cache their answer for the process (the binary
 # cannot change without a restart) — but only a real answer: a probe that
-# timed out (a cold disk, a loaded host at startup) is asked again next time
-# instead of disabling packaging / the CC-track strip until a restart.
+# timed out (a cold disk, a loaded host at startup) or could not spawn (EAGAIN
+# / ENOMEM from fork on a loaded host) is asked again next time instead of
+# disabling packaging / the CC-track strip until a restart. A missing or
+# non-executable binary IS a real answer.
 _bsf_cache: "dict[str, bool]" = {}
 _caps_cache: "list[FfmpegCaps]" = []
+# ffmpeg_capabilities' retry is single-flight and, after the first attempt,
+# runs on its own thread: request handlers (/v1/me, the package routes) call
+# it on the event loop, and a re-probe there is up to 3 x 15 s of a frozen
+# server while ffmpeg stays slow.
+_caps_lock = threading.Lock()
+_caps_state: "dict" = {"tried": False, "busy": False, "thread": None}
+_CAPS_PENDING = FfmpegCaps(False, False, False,
+                           "the server's ffmpeg did not answer in time; it is "
+                           "asked again on the next request", None)
 
 
 def ffmpeg_has_bsf(name: str) -> bool:
@@ -369,10 +384,10 @@ def ffmpeg_has_bsf(name: str) -> bool:
     try:
         out = subprocess.run([audio_ffmpeg.ffmpeg_exe(), "-hide_banner", "-bsfs"], capture_output=True,
                              text=True, check=False, timeout=15).stdout
-    except subprocess.TimeoutExpired:
-        return False                     # not cached: retried next call
-    except (OSError, subprocess.SubprocessError):
+    except (FileNotFoundError, PermissionError):
         out = ""
+    except (OSError, subprocess.SubprocessError):
+        return False                     # not cached: retried next call
     has = re.search(rf"^\s*{re.escape(name)}\s*$", out or "", re.M) is not None
     _bsf_cache[name] = has
     return has
@@ -388,20 +403,43 @@ def ffmpeg_capabilities() -> FfmpegCaps:
     """Whether the server's ffmpeg can package at all, and into which
     containers. Cached: the binary cannot change without a restart (a
     timed-out probe is not an answer and is not cached). Three subprocesses
-    on first call — the lifespan warms it off the loop."""
+    on the first call — the lifespan warms it off the loop. Every later
+    probe runs on a background thread, one at a time: the caller gets the
+    "did not answer in time" caps until it lands."""
     if _caps_cache:
         return _caps_cache[0]
-    caps = _probe_ffmpeg_capabilities()
-    if caps is not None:
-        _caps_cache[:] = [caps]
+    with _caps_lock:
+        if _caps_cache:
+            return _caps_cache[0]
+        if _caps_state["busy"]:
+            return _CAPS_PENDING             # a probe is already running
+        retry = _caps_state["tried"]
+        _caps_state.update(tried=True, busy=True)
+        if retry:
+            t = threading.Thread(target=_caps_probe_once, daemon=True,
+                                 name="ffmpeg-caps-probe")
+            _caps_state["thread"] = t
+    if retry:
+        t.start()
+        return _CAPS_PENDING
+    return _caps_probe_once() or _CAPS_PENDING
+
+
+def _caps_probe_once() -> "FfmpegCaps | None":
+    """Run the probe, cache a real answer, release the single-flight slot."""
+    try:
+        caps = _probe_ffmpeg_capabilities()
+        if caps is not None:
+            _caps_cache[:] = [caps]
         return caps
-    return FfmpegCaps(False, False, False,
-                      "the server's ffmpeg did not answer in time; it is asked "
-                      "again on the next request", None)
+    finally:
+        with _caps_lock:
+            _caps_state["busy"] = False
 
 
 def _probe_ffmpeg_capabilities() -> "FfmpegCaps | None":
-    """ffmpeg_capabilities' uncached probe; None when it timed out."""
+    """ffmpeg_capabilities' uncached probe; None when it timed out or could
+    not spawn (worth asking again)."""
     exe = audio_ffmpeg.ffmpeg_exe()
     try:
         mux = subprocess.run([exe, "-hide_banner", "-muxers"], capture_output=True,
@@ -410,12 +448,12 @@ def _probe_ffmpeg_capabilities() -> "FfmpegCaps | None":
                              text=True, timeout=15).stdout
         ver_out = subprocess.run([exe, "-version"], capture_output=True, text=True,
                                  timeout=15).stdout
-    except subprocess.TimeoutExpired:
-        return None
-    except (OSError, subprocess.SubprocessError):
+    except (FileNotFoundError, PermissionError):
         return FfmpegCaps(False, False, False,
                           "no ffmpeg binary on the server (install ffmpeg or the "
                           "imageio-ffmpeg wheel)", None)
+    except (OSError, subprocess.SubprocessError):
+        return None
     ver = None
     m = re.search(r"ffmpeg version (\S+)", ver_out or "")
     if m:
@@ -430,5 +468,9 @@ def _probe_ffmpeg_capabilities() -> "FfmpegCaps | None":
 
 
 def _reset_for_tests() -> None:
+    t = _caps_state["thread"]
+    if t is not None and t is not threading.current_thread():
+        t.join(timeout=5)
     _caps_cache.clear()
     _bsf_cache.clear()
+    _caps_state.update(tried=False, busy=False, thread=None)

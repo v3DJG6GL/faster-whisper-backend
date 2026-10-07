@@ -210,8 +210,13 @@ jobs:
           # below, per variant. The sha-* tags go LAST so this set is
           # complete when they come up.
           touched=""
+          # Membership tests read a here-string, never `printf | grep -q`:
+          # grep -q exits on the first match, and once a list outgrows the
+          # 64 KiB pipe buffer the still-writing printf takes SIGPIPE, so
+          # under pipefail the pipeline returns 141 — "not found" — for every
+          # early match (latest* sorts first).
           for lt in latest latest-gpu latest-full latest-gpu-full; do
-            if printf '%s\n' "$tags" | grep -qxF "$lt"; then
+            if grep -qxF "$lt" <<< "$tags"; then
               rev=$(crane config "$SRC_IMAGE:$lt" | sed -n 's/.*"org\.opencontainers\.image\.revision":"\([0-9a-f]*\)".*/\1/p')
               if [ -n "$rev" ]; then
                 touched="$touched sha-${rev:0:7}${lt#latest}"
@@ -237,7 +242,7 @@ jobs:
                 case " $touched " in
                   *" $tag "*) ;;
                   *)
-                    if printf '%s\n' "$dst_tags" | grep -qxF "$tag"; then
+                    if grep -qxF "$tag" <<< "$dst_tags"; then
                       fresh=$((fresh + 1))
                       immutable=$((immutable + 1))
                       continue

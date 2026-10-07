@@ -1,7 +1,10 @@
-"""Tests for audio_transcode.transcode_to_wav_16k_mono (PyAV in-process).
+"""Tests for audio/transcode.py (PyAV in-process).
 
-Real PyAV is installed, so the happy path is a true round-trip. Error paths:
-PyAV missing -> RuntimeError; no audio stream -> ValueError (with dst cleanup).
+Real PyAV is installed, so the happy path is a true round-trip. Also here:
+the error paths (PyAV missing, no audio stream, dst cleanup after a
+mid-stream failure), the demuxer SSRF guard (protocol_whitelist=file pin,
+ffconcat/multi-input refusal, refuse_multi_input), non-UTF-8 tags,
+decode_pieces_16k seeking / start_time offset and damaged-frame skipping.
 """
 
 import fractions
@@ -115,6 +118,55 @@ def test_transcode_unreadable_input_cleans_up(tmp_path):
     assert not os.path.exists(dst)
 
 
+def test_transcode_mid_stream_failure_unlinks_dst(tmp_path, monkeypatch):
+    """A failure AFTER the output container is open (the tests above all
+    fail inside _open_audio, before dst exists) closes the output and
+    unlinks the partial dst."""
+    src = _write_src_wav(str(tmp_path / "in.wav"), rate=RATE, nchannels=1)
+    dst = str(tmp_path / "out.wav")
+    real = audio_transcode._decoded_frames
+
+    def _one_then_boom(container, stream):
+        for frame in real(container, stream):
+            yield frame
+            break
+        assert os.path.exists(dst)
+        raise RuntimeError("boom")
+    monkeypatch.setattr(audio_transcode, "_decoded_frames", _one_then_boom)
+    with pytest.raises(RuntimeError, match="boom"):
+        audio_transcode.transcode_to_wav_16k_mono(src, dst)
+    assert not os.path.exists(dst)
+
+
+def _with_info_title(path, title: bytes):
+    """Append a RIFF LIST/INFO/INAM chunk carrying raw `title` bytes (a
+    Windows-made WAV with a cp1252 title looks like this)."""
+    import struct
+    data = bytearray(open(path, "rb").read())
+    sub = b"INAM" + struct.pack("<I", len(title)) + title
+    if len(title) % 2:
+        sub += b"\x00"
+    chunk = b"LIST" + struct.pack("<I", 4 + len(sub)) + b"INFO" + sub
+    data += chunk
+    data[4:8] = struct.pack("<I", len(data) - 8)
+    with open(path, "wb") as f:
+        f.write(bytes(data))
+    return path
+
+
+def test_non_utf8_riff_info_tag_decodes(tmp_path):
+    """PyAV's default metadata_errors="strict" raises UnicodeDecodeError (a
+    ValueError, which the upload route reads as a refusal) on a non-UTF-8
+    tag; faster-whisper decodes the same file fine."""
+    src = _with_info_title(
+        _write_src_wav(str(tmp_path / "in.wav"), rate=RATE, nchannels=1),
+        b"\xff\xfe\xfa\x00")
+    assert audio_transcode.refuse_multi_input(src) is None
+    dst = str(tmp_path / "out.wav")
+    assert audio_transcode.transcode_to_wav_16k_mono(src, dst) > 44
+    assert len(audio_transcode.decode_pieces_16k(src, [0.0], 0.25)[0]) > 0
+
+
 # ---------------------------------------------------------------------------
 # The input open pins protocol_whitelist=file (concat/HLS/SDP SSRF guard)
 # ---------------------------------------------------------------------------
@@ -139,6 +191,7 @@ def test_transcode_input_open_pins_file_protocol_whitelist(tmp_path, monkeypatch
     in_opens = [kw for f, kw in opens if f == src]
     assert len(in_opens) == 1
     assert in_opens[0].get("options") == {"protocol_whitelist": "file"}
+    assert in_opens[0].get("metadata_errors") == "ignore"
 
 
 def test_transcode_rejects_ffconcat_playlist_referencing_a_file(tmp_path):

@@ -176,7 +176,7 @@ def test_guard_registers_in_process():
     assert _REQUEST_HANDLERS["FwbSsrfGuard"].RH_NAME == "fwb-guarded-urllib"
     # The point is not that ours exists but that nothing UNGUARDED is left to
     # fall back to when ours declines a request (data:/ftp:, impersonation).
-    for superseded in ("Urllib", "Requests", "CurlCFFI"):
+    for superseded in ("Urllib", "Requests", "CurlCFFI", "Websockets"):
         assert superseded not in _REQUEST_HANDLERS
 
 

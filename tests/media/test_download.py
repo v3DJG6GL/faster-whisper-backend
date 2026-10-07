@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import os
 import sys
+import time
 
 import pytest
 
@@ -54,6 +55,16 @@ def test_validate_url_rejects_a_host_idna_cannot_encode():
         with pytest.raises(udl.UrlDownloadError, match="host name is invalid"):
             udl.validate_url(url)
     assert udl.validate_url("https://bücher.de/x.mp3") == "https://bücher.de/x.mp3"
+
+
+def test_validate_url_rejects_a_lone_surrogate():
+    """A JSON body can carry "\\ud800" in the path or query: it could never
+    reach the download child's argv (UnicodeEncodeError → a 500 after the
+    probe), so it is a client error up front."""
+    for url in ("https://example.com/a\ud800",
+                "https://www.youtube.com/watch?v=dQw4w9WgXcQ&x=\udfff"):
+        with pytest.raises(udl.UrlDownloadError, match="invalid characters"):
+            udl.validate_url(url)
 
 
 def test_validate_url_rejects_overlong():
@@ -255,14 +266,18 @@ def _handoff_policy(monkeypatch):
 def test_probe_admits_an_hls_manifest_handed_off_to_generic(monkeypatch):
     """GenericIE turns an audio/mpegurl manifest into m3u8 formats and never
     sets "direct" — yet the same URL pasted directly passes check_url_policy.
-    The hand-off is judged by that same Content-Type check, on the URL
-    GenericIE was handed."""
+    The hand-off is judged by that same Content-Type check, on the manifest
+    GenericIE fetched. The info is url_transparent-shaped: yt-dlp overlays
+    the outer site result, so webpage_url is the SITE page, not the
+    manifest."""
     _handoff_policy(monkeypatch)
+    fmt = {"format_id": "hls-1", "protocol": "m3u8_native",
+           "url": "https://cdn.example/live/variant.m3u8",
+           "manifest_url": "https://cdn.example/live.m3u8"}
     _stand_in_yt_dlp(monkeypatch, "Youtube", {
         "title": "t", "extractor_key": "Generic",
-        "webpage_url": "https://cdn.example/live.m3u8",
-        "url": "https://cdn.example/live/variant.m3u8",
-        "protocol": "m3u8_native"})
+        "webpage_url": "https://site.example/watch",
+        **fmt, "formats": [fmt]})
     probed: "list[str]" = []
 
     def _media(u, timeout):
@@ -271,6 +286,44 @@ def test_probe_admits_an_hls_manifest_handed_off_to_generic(monkeypatch):
     monkeypatch.setattr(udl, "_direct_media_probe_sync", _media)
     assert _run(udl.probe("https://x/watch", timeout=5.0)).extractor_key == "Generic"
     assert probed == ["https://cdn.example/live.m3u8"]
+
+
+def test_probe_bounds_the_hand_off_check_by_the_probe_deadline(monkeypatch):
+    """The hand-off re-check (DNS outside the socket cutoff, a busy probe
+    pool) spends from the probe's one wall-clock budget like the steps
+    before it: "took too long", not a request running past the timeout."""
+    import threading
+    _handoff_policy(monkeypatch)
+    _stand_in_yt_dlp(monkeypatch, "Youtube", {
+        "title": "t", "extractor_key": "Generic",
+        "webpage_url": "https://cdn.example/live.m3u8",
+        "protocol": "m3u8_native"})
+    release = threading.Event()
+
+    def _slow(u, timeout):
+        release.wait(10)
+        return True
+    monkeypatch.setattr(udl, "_direct_media_probe_sync", _slow)
+    t0 = time.monotonic()
+    try:
+        with pytest.raises(udl.UrlTimeoutError, match="too long"):
+            _run(udl.probe("https://x/watch", timeout=0.5))
+        assert time.monotonic() - t0 < 3.0
+    finally:
+        release.set()
+
+
+def test_generic_handoff_target_picks_the_manifest(monkeypatch):
+    _handoff_policy(monkeypatch)
+    page = "https://site.example/watch"
+    # A plain `url` hand-off with no manifest_url: the URL GenericIE got.
+    assert udl._generic_handoff_target("Youtube", {
+        "extractor_key": "Generic", "webpage_url": page}) == page
+    # Formats naming two different manifests: nothing to judge, refuse.
+    assert udl._generic_handoff_target("Youtube", {
+        "extractor_key": "Generic", "webpage_url": page, "formats": [
+            {"manifest_url": "https://a.example/1.m3u8"},
+            {"manifest_url": "https://b.example/2.m3u8"}]}) is None
 
 
 def test_probe_refuses_a_direct_flagged_non_media_hand_off(monkeypatch):
@@ -913,6 +966,9 @@ def _fake_opener(monkeypatch, body: bytes, ctype: str = "text/vtt",
         def read(self, n):
             return self._chunks.pop(0) if self._chunks else b""
 
+        def geturl(self):
+            return "https://edge.e.com/b"      # where the redirects ended
+
         def __enter__(self):
             return self
 
@@ -932,6 +988,8 @@ def test_capped_get_caps_filters_and_refuses_hosts(monkeypatch):
     _fake_opener(monkeypatch, b"x" * 5000)
     assert udl._capped_get("https://e.com/a", max_bytes=5000, timeout=1.0) == (
         "text/vtt", b"x" * 5000)
+    assert udl._capped_get("https://e.com/a", max_bytes=5000, timeout=1.0,
+                           want_url=True)[2] == "https://edge.e.com/b"
     with pytest.raises(udl.UrlDownloadError, match="size limit"):
         udl._capped_get("https://e.com/a", max_bytes=4999, timeout=1.0)
     with pytest.raises(udl.UrlDownloadError, match="unexpected file type"):

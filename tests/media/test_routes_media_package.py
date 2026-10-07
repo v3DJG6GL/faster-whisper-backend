@@ -61,11 +61,15 @@ def package_enabled(app_module, tmp_path, monkeypatch):
     def _argv(src, srt_paths, tracks, *, container, out_path, default_track, **kw):
         # "<latch>.started" says the job got this far — past the in-flight
         # slot it holds — before it blocks on the latch.
+        # The wait has its own deadline: a regressed guard or a failed
+        # assert before the unlink must fail the test, not hang the suite.
         script = f"""
 import os, shutil, time
 if {latch['path']!r}:
     open({latch['path']!r} + ".started", "w").close()
-while {latch['path']!r} and os.path.exists({latch['path']!r}):
+deadline = time.time() + 20
+while ({latch['path']!r} and os.path.exists({latch['path']!r})
+       and time.time() < deadline):
     time.sleep(0.02)
 shutil.copyfile({src!r}, {out_path!r})
 with open({out_path!r}, "ab") as f:
@@ -421,12 +425,16 @@ def test_package_body_cap_covers_every_limit_compliant_request(
 
 def test_upload_whose_spool_vanished_is_a_deliberate_500(
         client, package_enabled, monkeypatch):
+    from faster_whisper_backend.media import routes as media_routes
+
     def _gone(src, dst):
         raise FileNotFoundError(src)
-    monkeypatch.setattr(package_enabled.os, "replace", _gone)
+    monkeypatch.setattr(media_routes.os, "replace", _gone)
     r = _upload(client)
     assert r.status_code == 500
     assert r.json()["detail"] == "upload staging file vanished"
+    # The handler's finally still drops the .part.
+    assert not any(n.startswith("upload-") for n in os.listdir(ums.staging_dir()))
 
 
 @pytest.mark.parametrize("body", [
@@ -530,21 +538,26 @@ def test_package_inflight_limit_and_release(client, package_enabled, tmp_path):
     def _first():
         result["r"] = client.post(f"/v1/audio/media/{mid}/package",
                                   json={"container": "mkv"})
-    t = threading.Thread(target=_first)
+    t = threading.Thread(target=_first, daemon=True)
     t.start()
-    # Wait until the first job demonstrably holds the slot (its package
-    # step started), not a fixed sleep a loaded runner can outrun.
-    deadline = time.monotonic() + 10
-    while not os.path.exists(latch + ".started"):
-        assert time.monotonic() < deadline, "the first package never started"
-        time.sleep(0.02)
-    r = client.post(f"/v1/audio/media/{mid}/package", json={"container": "mkv"})
-    assert r.status_code == 429
-    assert "video export" in r.json()["detail"]
-    os.unlink(latch)
-    t.join(timeout=30)
+    try:
+        # Wait until the first job demonstrably holds the slot (its package
+        # step started), not a fixed sleep a loaded runner can outrun.
+        deadline = time.monotonic() + 10
+        while not os.path.exists(latch + ".started"):
+            assert time.monotonic() < deadline, "the first package never started"
+            time.sleep(0.02)
+        r = client.post(f"/v1/audio/media/{mid}/package", json={"container": "mkv"})
+        assert r.status_code == 429
+        # The in-flight guard's wording — the rate limiter's 429 also says
+        # "video export".
+        assert "running" in r.json()["detail"]
+    finally:
+        if os.path.exists(latch):
+            os.unlink(latch)
+        t.join(timeout=30)
+        package_enabled._package_latch["path"] = None
     assert result["r"].status_code == 200
-    package_enabled._package_latch["path"] = None
     assert client.post(f"/v1/audio/media/{mid}/package",
                        json={"container": "mkv"}).status_code == 200
 

@@ -55,8 +55,10 @@ logger = logging.getLogger("whisper-api")
 
 _URL_MAX_LEN = 2048
 # Anything a shell/log/terminal could misread. URLs have no business carrying
-# raw whitespace or C0/C1 bytes (they'd be %-encoded in a real URL).
-_URL_UNSAFE_RE = re.compile(r"[\s\x00-\x1f\x7f-\x9f]")
+# raw whitespace or C0/C1 bytes (they'd be %-encoded in a real URL). A lone
+# surrogate (a JSON body can carry "\ud800") cannot be encoded into the
+# download child's argv: refused here, not a 500 after the probe.
+_URL_UNSAFE_RE = re.compile(r"[\s\x00-\x1f\x7f-\x9f\ud800-\udfff]")
 
 # Content types accepted by the direct-media probe. application/ogg is the
 # registered type for .ogg/.opus; everything else must declare audio/* or
@@ -912,15 +914,27 @@ def _generic_handoff_target(key: str, info: dict) -> "str | None":
     extractor (`key`) handed off to GenericIE with URL_ALLOW_GENERIC off and
     URL_ALLOW_DIRECT_MEDIA on; None when no such re-check applies. A
     "direct" result is the URL GenericIE served as-is ("url"); anything
-    else is judged by the URL GenericIE was handed ("webpage_url") — an HLS
-    manifest served as audio/mpegurl passes, a page GenericIE scraped does
-    not."""
+    else is judged by the manifest GenericIE fetched (the formats'
+    "manifest_url") — an HLS manifest served as audio/mpegurl passes, a page
+    GenericIE scraped does not. Not "webpage_url": on a url_transparent
+    hand-off (the common site → embed delegation) yt-dlp overlays the OUTER
+    result's fields, so it names the site's page. That is only the fallback
+    when no format names a manifest; formats naming two refuse (None)."""
     if (key == "Generic" or str(info.get("extractor_key") or key) != "Generic"
             or getattr(cfg, "URL_ALLOW_GENERIC", False)
             or not getattr(cfg, "URL_ALLOW_DIRECT_MEDIA", True)):
         return None
-    target = (info.get("url") if info.get("direct") else None) \
-        or info.get("webpage_url")
+    if info.get("direct"):
+        target = info.get("url")
+    else:
+        fmts = [info, *(info.get("requested_formats") or []),
+                *(info.get("formats") or [])]
+        manifests = {f["manifest_url"] for f in fmts if isinstance(f, dict)
+                     and isinstance(f.get("manifest_url"), str)
+                     and f["manifest_url"]}
+        if len(manifests) > 1:
+            return None
+        target = manifests.pop() if manifests else info.get("webpage_url")
     return target if isinstance(target, str) and target else None
 
 
@@ -1058,7 +1072,15 @@ async def probe(url: str, *, timeout: float) -> UrlMediaInfo:
     handoff_is_media = False
     _target = _generic_handoff_target(key, info)
     if _target is not None:
-        handoff_is_media = await _handoff_serves_media(_target, deadline)
+        # Under the same deadline as the two steps above: the hand-off
+        # host's DNS (picked by the site) and a busy _PROBE_POOL both sit
+        # outside the probe's own socket cutoff.
+        try:
+            handoff_is_media = await asyncio.wait_for(
+                _handoff_serves_media(_target, deadline),
+                max(0.0, deadline - time.monotonic()))
+        except asyncio.TimeoutError:
+            raise UrlTimeoutError("the site took too long to answer") from None
     _policy_check_extractor(key, info, handoff_is_media=handoff_is_media)
     ladder: "list[dict]" = []
     if getattr(cfg, "URL_VIDEO_ENABLED", False):
@@ -1131,7 +1153,8 @@ def _log_probe_failure(url: str, e: Exception) -> None:
 
 def _capped_get(url: str, *, max_bytes: int, timeout: float,
                 accept=lambda ctype: True,
-                headers: "dict[str, str] | None" = None) -> "tuple[str, bytes]":
+                headers: "dict[str, str] | None" = None,
+                want_url: bool = False) -> "tuple[str, bytes]":
     """One small GET under the address policy: http(s) only, a forbidden
     host refused before any I/O, the guarded opener (pinned DNS, every
     redirect hop re-checked), the body read in chunks under `max_bytes` and
@@ -1139,7 +1162,10 @@ def _capped_get(url: str, *, max_bytes: int, timeout: float,
     header phase gets a hard cutoff too: a dribbled status line never trips
     the per-op timeout). Returns (content type, body). Sync — callers await
     capped_get, which runs it on _PROBE_POOL. `headers` (the extractor's,
-    e.g. a site's Referer) go on top of our User-Agent. Raises
+    e.g. a site's Referer) go on top of our User-Agent. `want_url` adds the
+    URL that answered (after redirects, each hop already policy-checked) as
+    a third item — what an HLS playlist's relative URIs resolve against.
+    Raises
     UrlDownloadError (client-safe) for a refused host, an unaccepted content
     type, an over-cap or over-time body; transport errors
     (urllib.error.HTTPError included) propagate for the caller."""
@@ -1174,12 +1200,14 @@ def _capped_get(url: str, *, max_bytes: int, timeout: float,
         if (length and length.isdigit() and not getattr(resp, "chunked", False)
                 and len(buf) < int(length)):
             raise UrlDownloadError("the site sent an incomplete file")
-    return ctype, bytes(buf)
+        final = (resp.geturl() or url) if want_url else url
+    return (ctype, bytes(buf), final) if want_url else (ctype, bytes(buf))
 
 
 async def capped_get(url: str, *, max_bytes: int, deadline: float,
                      accept=lambda ctype: True,
-                     headers: "dict[str, str] | None" = None) -> "tuple[str, bytes]":
+                     headers: "dict[str, str] | None" = None,
+                     want_url: bool = False) -> "tuple[str, bytes]":
     """_capped_get on _PROBE_POOL under a monotonic `deadline` shared by a
     whole request: this GET gets the socket timeout or what is left of the
     deadline, whichever is shorter (UrlTimeoutError when nothing is left),
@@ -1191,7 +1219,7 @@ async def capped_get(url: str, *, max_bytes: int, deadline: float,
     return await asyncio.wait_for(asyncio.get_running_loop().run_in_executor(
         _PROBE_POOL, lambda: _capped_get(
             url, max_bytes=max_bytes, timeout=timeout, accept=accept,
-            headers=headers)), timeout + 2.0)
+            headers=headers, want_url=want_url)), timeout + 2.0)
 
 
 async def fetch_thumbnail_data_uri(

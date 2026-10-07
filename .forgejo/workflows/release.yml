@@ -2,9 +2,11 @@
 #
 # Version tagging — the single place that mints v* tags. Sibling of
 # faster-whisper-frontend/release.yml, but structurally inverted: this repo
-# has NO version files (the tag IS the version — build_info.py and ci.yml
-# both resolve it via `git describe --tags`), so there is no bump-commit,
-# only a tag. And unlike the frontend — which pushes its tag with the
+# has NO version files (the tag IS the version — ci.yml bakes the pushed
+# tag's own name (GITHUB_REF_NAME) into the images on a tag run, never
+# `git describe`, which is ambiguous when a manual minor/major lands on an
+# already patch-tagged commit; build_info.py's describe is the bare-metal
+# fallback), so there is no bump-commit, only a tag. And unlike the frontend — which pushes its tag with the
 # actions token precisely so the push event is swallowed (its own run
 # already builds the release) — this repo NEEDS the tag-push event to fire:
 # ci.yml's `tags: ['v*']` run is what bakes the clean vX.Y.Z into the
@@ -48,7 +50,9 @@
 #     compensation between them: a 5xx, a network blip or a token-scope
 #     problem on the second one used to be unrecoverable (the re-dispatch
 #     took the no-op branch forever, so that version never got its
-#     changelog entry, and every run reported success).
+#     changelog entry, and every run reported success). That holds after
+#     a newer commit was tagged too: a superseded target that carries its
+#     own vX.Y.Z tag emits it for the same probe-then-POST repair.
 #   * out-of-order CI completions (an older commit's all-ci finishing after
 #     a newer commit was already tagged) are detected via an ancestor check
 #     and skipped — tags stay monotonic along main.
@@ -110,6 +114,10 @@ jobs:
             echo "::error::target commit $target not found in history"
             exit 1
           fi
+          # The input is free text (a short sha, a branch or tag name all
+          # pass the check above): normalise to the full sha once, so the
+          # string comparisons against rev-parse output below are exact.
+          target=$(git rev-parse "$target^{commit}")
 
           # Only commits reachable from main get version tags — a manual
           # dispatch from a side branch would otherwise version untested code.
@@ -137,7 +145,10 @@ jobs:
           # Per-commit opt-out, auto runs only (a human clicking the button
           # has decided; the marker exists so chore/docs pushes can decline
           # the patch release the continuous path would otherwise mint).
-          if [ -n "$TARGET_SHA" ] && git log -1 --format=%B "$target" | grep -qF '[skip release]'; then
+          # A here-string, not `git log | grep -q`: grep -q exits on the first
+          # match, and a long message's still-writing git log would take
+          # SIGPIPE — under pipefail, "no marker".
+          if [ -n "$TARGET_SHA" ] && grep -qF '[skip release]' <<< "$(git log -1 --format=%B "$target")"; then
             echo "::notice::[skip release] marker on $target — no tag"
             echo "tag=" >> "$GITHUB_OUTPUT"
             exit 0
@@ -180,6 +191,18 @@ jobs:
           # Monotonicity: an older commit whose CI run finished late must not
           # get a tag above a newer, already-tagged commit.
           if [ -n "$latest_commit" ] && [ "$latest_commit" != "$target" ] && git merge-base --is-ancestor "$target" "$latest_commit"; then
+            # A re-run of THIS commit's failed release (main moved on and
+            # minted a newer tag meanwhile): its own tag goes to the
+            # probe-then-POST step below, which repairs a missing release.
+            own=$(git tag --points-at "$target" -l 'v*' | { grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' || true; } | sort -V | tail -1)
+            if [ -n "$own" ]; then
+              prev=$(git tag -l 'v*' | { grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' || true; } | sort -V \
+                | awk -v t="$own" '$0 == t { print p; exit } { p = $0 }' || true)
+              echo "::notice::$target is an ancestor of $latest ($latest_commit) but already tagged $own — no new tag; checking its release"
+              echo "tag=$own" >> "$GITHUB_OUTPUT"
+              echo "prev=${prev:-v0.0.0}" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
             echo "::notice::$target is an ancestor of $latest ($latest_commit) — superseded, no tag"
             echo "tag=" >> "$GITHUB_OUTPUT"
             exit 0

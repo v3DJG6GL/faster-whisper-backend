@@ -646,15 +646,23 @@ function Test-EnvSets([string]$name) {
 $dataDir = Join-Path $RepoDir "data"
 $dbDir   = Join-Path $dataDir "db"
 if (-not (Test-EnvSets "WHISPER_DB_DIR") -and -not (Test-EnvSets "WHISPER_DATA_DIR")) {
+    # Warn while a legacy store EXISTS, not only while <dbDir>\<name> is
+    # missing: the start below creates an empty store there on the first run,
+    # which would silence every later run while the old keys sit ignored. The
+    # stores are WAL databases: the -wal/-shm sidecars move with the file, the
+    # fresh store's own sidecars go first, and -Force replaces the empty file.
     $legacyStores = @(Get-ChildItem -Path $RepoDir, $dataDir -Filter "*.local.sqlite3" `
         -File -ErrorAction SilentlyContinue)
     foreach ($legacy in $legacyStores) {
-        if (-not (Test-Path (Join-Path $dbDir $legacy.Name))) {
-            Write-Warning ("legacy store $($legacy.FullName) is IGNORED by the service " +
-                "(it reads $dbDir). Stop the service, move it with " +
-                "Move-Item '$($legacy.FullName)' '$dbDir' (or set WHISPER_DB_DIR=" +
-                "$($legacy.DirectoryName) in $envFile), then start it again.")
-        }
+        $target = Join-Path $dbDir $legacy.Name
+        Write-Warning ("legacy store $($legacy.FullName) is IGNORED by the service " +
+            "(it reads $dbDir). Move it: Stop-Service $ServiceName; " +
+            "Remove-Item '$target-wal','$target-shm' -ErrorAction SilentlyContinue; " +
+            "Move-Item '$($legacy.FullName)*' '$dbDir' -Force; Start-Service $ServiceName " +
+            "(-Force replaces the EMPTY store a start without it created -- skip it if " +
+            "$target holds keys you issued since) -- or set WHISPER_DB_DIR=" +
+            "$($legacy.DirectoryName) in $envFile and restart. Already moved? " +
+            "Delete the leftover $($legacy.FullName).")
     }
 }
 $legacyConfig = Join-Path $RepoDir "config.local.json"

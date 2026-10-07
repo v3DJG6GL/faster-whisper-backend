@@ -343,11 +343,14 @@ async def _release_pipeline(model_id: str, pipe=None) -> None:
     _release_locked(model_id, pipe)
 
 
-async def _get_pipeline(model_id: "str | None" = None, *, lease: bool = False):
+async def _get_pipeline(model_id: "str | None" = None, *, lease: bool = False,
+                        speculative: bool = False):
     """Return the cached pipeline, (re)loading when config (or a per-request
     ``model_id`` override) changed it. ``model_id`` empty/None falls back to
     cfg.DIARIZATION_MODEL; the (model, device, batch) key below re-keys the
-    singleton per call, so alternating models simply reload."""
+    singleton per call, so alternating models simply reload.
+    ``speculative`` (a preload): None instead of a load that would collide
+    with a running job (see ``busy``), re-checked under _lock."""
     global _pipeline, _pipeline_key, _last_used_monotonic
     model_id = _resolve_model_id(model_id)
     device = _resolve_device()
@@ -371,6 +374,13 @@ async def _get_pipeline(model_id: "str | None" = None, *, lease: bool = False):
             if lease:
                 _leases[model_id] = _leases.get(model_id, 0) + 1
             return _pipeline
+        # A preload's busy() verdict was taken before it waited on _lock: a
+        # job may have loaded and leased another pipeline meanwhile, and the
+        # force-drop below would orphan it and load the warm-up beside it.
+        if speculative and busy(model_id):
+            logger.info("[diarize] preload of %s declined: a running job "
+                        "holds another pipeline", model_id)
+            return None
         # force: a request for a DIFFERENT model must never be blocked by a
         # running job — orphaning lets both coexist until the old one drains.
         _drop_locked(force=True)
@@ -730,11 +740,13 @@ def placement() -> "tuple[str, str]":
     return (_resolve_device(), "torch")
 
 
-async def load_unleased(model_id: str) -> None:
+async def load_unleased(model_id: str) -> bool:
     """Load ``model_id`` WITHOUT a lease: the pipeline stays evictable the
     moment a real job needs the memory. Evict a held peer first (see
-    ``drop_pipeline(force=False)``), or this load orphans it."""
-    await _get_pipeline(model_id)
+    ``drop_pipeline(force=False)``), or this load orphans it. False when
+    the load was declined because it would collide with a running job
+    (``busy``, re-checked under the lock) — nothing was loaded."""
+    return await _get_pipeline(model_id, speculative=True) is not None
 
 
 async def idle_evictor_loop() -> None:

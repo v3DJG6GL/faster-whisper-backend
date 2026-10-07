@@ -131,12 +131,20 @@ def test_separate_wav_input_skips_transcode(
         calls = []
         _stub_separate(monkeypatch, calls)
 
+        # Record instead of only raising: the route swallows any transcode
+        # exception and falls back to the original file, so a raise alone
+        # could never fail this test if the wav/flac skip regressed.
+        tc_calls = []
+
         def _never(src, dst, *, rate, layout):
+            tc_calls.append(src)
             raise AssertionError("wav input must not be transcoded")
 
         monkeypatch.setattr(audio_transcode, "transcode_to_wav", _never)
         r = _post(client, separate_bgm="true")
         assert r.status_code == 200, r.text
+        assert tc_calls == []
+        assert "warnings" not in r.json()
         assert len(calls) == 1 and calls[0].endswith(".wav")
     finally:
         app_module.cfg.BGM_SEPARATION_ENABLED = False
@@ -619,3 +627,24 @@ def test_task_cancel_mid_separation_defers_the_drop_and_unlinks_the_output(
         time.sleep(0.01)
     assert len(written) == 1
     assert not os.path.exists(written[0])
+
+
+def test_preload_declines_under_the_lock_when_a_job_holds_another_separator(
+        monkeypatch):
+    """Same re-check as diarization: a speculative load that waited on _lock
+    must not orphan a separator a job leased meanwhile."""
+    import asyncio
+    _foo_model(monkeypatch)
+    held = object()
+    monkeypatch.setattr(bgm_separation, "_separator", held)
+    monkeypatch.setattr(bgm_separation, "_separator_key", ("Bar.onnx", "cpu"))
+    monkeypatch.setattr(bgm_separation, "_leases", {"Bar.onnx": 1})
+    loads: list = []
+    monkeypatch.setattr(bgm_separation, "_load_blocking",
+                        lambda m, d: loads.append(m) or object())
+
+    assert asyncio.run(bgm_separation.load_unleased("Foo")) is False
+    assert loads == []
+    assert bgm_separation._separator is held
+    assert bgm_separation._leases == {"Bar.onnx": 1}
+    assert bgm_separation._orphans == {}

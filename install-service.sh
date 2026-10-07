@@ -155,6 +155,32 @@ if [ "$GPU" -eq 1 ]; then
   NVIDIA_ENV_LINE="Environment=LD_LIBRARY_PATH=${LD_PATHS}"
 fi
 
+# Whether the checkout's .env sets a variable. A .env pin must win over the
+# unit: config.py's load_dotenv never overrides a variable the real
+# environment already has, so an Environment= line below would silently throw
+# away e.g. WHISPER_DATA_DIR=/srv/whisper — and restart on an empty key store.
+env_sets() {
+  [ -f "$REPO_DIR/.env" ] \
+    && grep -Eq "^[[:space:]]*(export[[:space:]]+)?$1=" "$REPO_DIR/.env"
+}
+# Bare-metal Linux: root the container-first default paths (/data, /models)
+# in the checkout instead, mirroring the Windows in-checkout layout — without
+# these the service user cannot create /data/db and startup crash-loops.
+# Each only when .env does not pin it already.
+DATA_ENV_LINE="" MODELS_ENV_LINE="" LOG_ENV_LINE="" STATE_DIRS=()
+if ! env_sets WHISPER_DATA_DIR; then
+  DATA_ENV_LINE="Environment=WHISPER_DATA_DIR=${REPO_DIR}/data"
+  STATE_DIRS+=("$REPO_DIR/data")
+fi
+if ! env_sets WHISPER_MODELS_DIR; then
+  MODELS_ENV_LINE="Environment=WHISPER_MODELS_DIR=${REPO_DIR}/models"
+  STATE_DIRS+=("$REPO_DIR/models")
+fi
+if ! env_sets WHISPER_LOG_FILE; then
+  LOG_ENV_LINE="Environment=WHISPER_LOG_FILE=${REPO_DIR}/logs/whisper.log"
+  STATE_DIRS+=("$REPO_DIR/logs")
+fi
+
 UNIT="/etc/systemd/system/${SERVICE_NAME}.service"
 echo "Writing $UNIT ..."
 cat > "$UNIT" <<EOF
@@ -167,12 +193,10 @@ Wants=network-online.target
 Type=simple
 User=${RUN_USER}
 WorkingDirectory=${REPO_DIR}
-# Bare-metal Linux: root the container-first default paths (/data, /models)
-# in the checkout instead, mirroring the Windows in-checkout layout — without
-# these the service user cannot create /data/db and startup crash-loops.
-Environment=WHISPER_DATA_DIR=${REPO_DIR}/data
-Environment=WHISPER_MODELS_DIR=${REPO_DIR}/models
-Environment=WHISPER_LOG_FILE=${REPO_DIR}/logs/whisper.log
+# In-checkout state paths (unless ${REPO_DIR}/.env pins them).
+${DATA_ENV_LINE}
+${MODELS_ENV_LINE}
+${LOG_ENV_LINE}
 ${NVIDIA_ENV_LINE}
 # 'python main.py' is the shim over faster_whisper_backend/main.py; matches what the
 # cross-platform self-restart (os.execv) re-execs.
@@ -186,9 +210,12 @@ EOF
 
 # Pre-create the state dirs the unit pins above, owned by the service user
 # (api_keys_store refuses to start when it cannot create its db dir; faster_whisper_backend/main.py
-# soft-fails to stderr-only logging when logs/ cannot be created).
-mkdir -p "$REPO_DIR/data" "$REPO_DIR/models" "$REPO_DIR/logs"
-chown -R "$RUN_USER" "$REPO_DIR/data" "$REPO_DIR/models" "$REPO_DIR/logs"
+# soft-fails to stderr-only logging when logs/ cannot be created). A .env-pinned
+# path is the operator's to provision.
+if [ "${#STATE_DIRS[@]}" -gt 0 ]; then
+  mkdir -p "${STATE_DIRS[@]}"
+  chown -R "$RUN_USER" "${STATE_DIRS[@]}"
+fi
 
 # Upgrade check, warn only (never moves anything — a .env may pin the old
 # paths on purpose): an older checkout kept the SQLite stores and
@@ -196,17 +223,22 @@ chown -R "$RUN_USER" "$REPO_DIR/data" "$REPO_DIR/models" "$REPO_DIR/logs"
 # and data/. Restarting over that comes up with an EMPTY api_keys store —
 # issued keys stop working and the server drops into OPEN mode.
 warn_legacy() { printf '\033[33mWARNING: %s\033[0m\n' "$*" >&2; }
-env_sets() {
-  [ -f "$REPO_DIR/.env" ] \
-    && grep -Eq "^[[:space:]]*(export[[:space:]]+)?$1=" "$REPO_DIR/.env"
-}
+# Warn while a legacy store EXISTS, not only while data/db/<name> is missing:
+# the restart below creates an empty data/db/<name> on the first run, which
+# would silence every later run while the old keys sit ignored. The stores are
+# WAL databases, so the -wal/-shm sidecars move with the file, and the fresh
+# store's own sidecars must go first (or they replay onto the moved file).
 if ! env_sets WHISPER_DB_DIR && ! env_sets WHISPER_DATA_DIR; then
   for legacy in "$REPO_DIR"/*.local.sqlite3 "$REPO_DIR"/data/*.local.sqlite3; do
     [ -e "$legacy" ] || continue
-    [ -e "$REPO_DIR/data/db/$(basename "$legacy")" ] && continue
+    target="$REPO_DIR/data/db/$(basename "$legacy")"
     warn_legacy "legacy store $legacy is IGNORED by the service (it reads $REPO_DIR/data/db/)." \
-      "Move it: sudo -u $RUN_USER mkdir -p $REPO_DIR/data/db && mv '$legacy' $REPO_DIR/data/db/" \
-      "— or set WHISPER_DB_DIR=$(dirname "$legacy") in $REPO_DIR/.env — then restart."
+      "Move it: systemctl stop ${SERVICE_NAME} && sudo -u $RUN_USER mkdir -p $REPO_DIR/data/db" \
+      "&& rm -f '$target' '$target-wal' '$target-shm' && mv '$legacy'* $REPO_DIR/data/db/" \
+      "&& systemctl start ${SERVICE_NAME} (the rm drops the EMPTY store a start without it" \
+      "created — skip it if $target holds keys you issued since) — or set" \
+      "WHISPER_DB_DIR=$(dirname "$legacy") in $REPO_DIR/.env and restart. Already moved?" \
+      "Delete the leftover $legacy."
   done
 fi
 if ! env_sets WHISPER_CONFIG_LOCAL && ! env_sets WHISPER_DATA_DIR \

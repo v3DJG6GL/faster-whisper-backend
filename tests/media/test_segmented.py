@@ -275,6 +275,25 @@ def test_fetch_hls_ts_pieces(served, tmp_path):
     _assert_pieces_hit(pieces, starts, 6.0)
 
 
+def test_fetch_hls_resolves_segments_against_the_redirect_target(
+        fake_capped_get, tmp_path):
+    """A tokenised manifest endpoint that redirects to a CDN edge: relative
+    segment URIs resolve against the URL that answered, not the one asked."""
+    names = [f"s{i}.ts" for i in range(12)]
+    edge = "https://edge.cdn.test/x/y/index.m3u8"
+    for name, body in zip(names, ts_segments(12)):
+        fake_capped_get.table[f"https://edge.cdn.test/x/y/{name}"] = body
+    fake_capped_get.table[edge] = hls_playlist(names).encode()
+    fake_capped_get.redirects["https://site.test/manifest?token=1"] = edge
+    pieces, got = _fetch({"protocol": "hls",
+                          "url": "https://site.test/manifest?token=1"},
+                         [5.0], 6.0, tmp_path)
+    assert got["segments"] == 2
+    assert all(u.startswith("https://edge.cdn.test/x/y/s")
+               for u, _h in fake_capped_get.calls[1:])
+    _assert_pieces_hit(pieces, [5.0], 6.0)
+
+
 def test_fetch_dash_fmp4_pieces(served, tmp_path):
     table, calls = served
     init, frags = fmp4_init_and_fragments(12)
