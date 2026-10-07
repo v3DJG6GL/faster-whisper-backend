@@ -2206,7 +2206,10 @@ try:
 
         # What a before-normalizer made of a surviving env string is the
         # runtime value (WHISPER_CONSOLE_LOG_LEVEL=WARNING -> "warning"), not
-        # the raw spelling the pass above only checked.
+        # the raw spelling the pass above only checked. The same holds for a
+        # list of strings: the origin validators lowercase each entry to the
+        # browser's serialisation (a stored list gets that via load_overrides),
+        # and the exact-match origin checks miss a mixed-case env spelling.
         _left = [_f for _f in sorted(_changed) if _f not in _ENV_REJECTED]
         if _left:
             try:
@@ -2215,6 +2218,9 @@ try:
                 for _f in _left:
                     _v = getattr(_norm, _f, None)
                     if isinstance(_v, str) and isinstance(globals()[_f], str):
+                        globals()[_f] = _v
+                    elif (isinstance(_v, list) and isinstance(globals()[_f], list)
+                          and all(type(_x) is str for _x in _v)):
                         globals()[_f] = _v
             except Exception:  # noqa: BLE001 — the passes above already reported
                 pass
@@ -2262,9 +2268,9 @@ try:
         # without a slug set, and dropping it here over one slug a factory
         # rules save removed would take its BEAM_SIZE, device, … with it (and
         # the next per-model save would erase it). Only env-supplied slug
-        # lists are checked against the rules in force: an env BEST_OF on an
-        # entry whose STORED exclude dangles must not be the one blamed (and
-        # reverted) for that slug.
+        # lists are checked against the rules in force: an env BEST_OF (or an
+        # env EXCLUDE) on an entry whose STORED exclude / include dangles must
+        # not be the one blamed (and reverted) for that slug.
         _stored_slug_ctx: "dict[str, object]" = (
             _env_slug_ctx() if _env_json_models else {})
         for _mid, _entry in MODEL_OVERRIDES.items():
@@ -2272,20 +2278,25 @@ try:
                 _allowed_ctx if (_mid in _ENV_OVERRIDE_FIELDS
                                  or _env_json_models)
                 else _stored_allowed_ctx)
-            _entry_slug_ctx = (
-                _env_slug_ctx()
-                if (_ENV_OVERRIDE_FIELDS.get(_mid) or set()) & {
-                    "PIPELINE_RULES_EXCLUDE", "PIPELINE_RULES_INCLUDE"}
-                else _stored_slug_ctx)
+            _env_slug_fields = sorted(
+                (_ENV_OVERRIDE_FIELDS.get(_mid) or set()) & {
+                    "PIPELINE_RULES_EXCLUDE", "PIPELINE_RULES_INCLUDE"})
             try:
                 # Keep the VALIDATED dump, not the raw entry: pydantic's lax
                 # mode coerces string leftovers ("false", "3") that the
                 # frozenset lookup above missed, so a field newly added to
                 # ModelOverride can never stay live as a raw string.
-                _clean_overrides[_mid] = _AdminConfig.model_validate(
+                _valid_entry = _AdminConfig.model_validate(
                     {**_entry_ctx, "MODEL_OVERRIDES": {_mid: _entry}},
-                    context=_entry_slug_ctx
+                    context=_stored_slug_ctx
                 ).model_dump(exclude_none=True)["MODEL_OVERRIDES"][_mid]
+                if _env_slug_fields:
+                    _AdminConfig.model_validate(
+                        {"MODEL_OVERRIDES": {_mid: {
+                            _ef: _entry[_ef] for _ef in _env_slug_fields
+                            if _ef in _entry}}},
+                        context=_env_slug_ctx())
+                _clean_overrides[_mid] = _valid_entry
                 _env_vals = {_ef: _clean_overrides[_mid][_ef]
                              for _ef in (_ENV_OVERRIDE_FIELDS.get(_mid) or ())
                              if _ef in _clean_overrides[_mid]}

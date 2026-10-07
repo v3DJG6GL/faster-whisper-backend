@@ -5,6 +5,7 @@ CRUD, the atomic last-admin guard (including a threaded concurrency test),
 lockdown state transitions, and the permission model.
 """
 
+import logging
 import sqlite3
 import threading
 
@@ -411,6 +412,34 @@ def test_stats_accepts_own_scope(api_keys_db):
     assert "stats" not in ak.ACCESS_ONLY_PAGES
 
 
+def test_binding_saves_keep_a_stored_slug_a_rules_edit_removed(
+        api_keys_db, monkeypatch):
+    """The binding drawer sends the whole overrides blob back: a rule slug the
+    stored user / key binding already names (removed from the rules since)
+    must not 422 an edit of another field, while a newly added unknown slug
+    still does."""
+    from faster_whisper_backend.settings import config_store
+    ak = api_keys_db
+    uid = ak.create_user("u", is_admin=False)
+    _raw, rec = ak.create_key(uid)
+    slugs = {"x", "known"}
+    monkeypatch.setattr(config_store, "_canonical_rule_slugs", lambda: set(slugs))
+    body = {"overrides": {"PIPELINE_RULES_EXCLUDE": ["x"]}}
+    ak.set_user_permissions(uid, {"config": body})
+    ak.set_key_config(uid, rec["id"], body)
+    slugs.discard("x")                                   # rule "x" deleted
+    edit = {"overrides": {"PIPELINE_RULES_EXCLUDE": ["x"], "BEAM_SIZE": 3}}
+    ak.set_user_permissions(uid, {"config": edit})
+    ak.set_key_config(uid, rec["id"], edit)
+    assert ak.get_user_config(uid)["direct"]["BEAM_SIZE"] == 3
+    assert ak.get_key_config(rec["id"])["direct"]["BEAM_SIZE"] == 3
+    added = {"overrides": {"PIPELINE_RULES_EXCLUDE": ["x", "typo"]}}
+    with pytest.raises(ValueError, match="typo"):
+        ak.set_user_permissions(uid, {"config": added})
+    with pytest.raises(ValueError, match="typo"):
+        ak.set_key_config(uid, rec["id"], added)
+
+
 def test_scoped_and_access_only_pages_are_disjoint():
     # /settings/api-keys reports both sets; a page in both would be offered
     # "own" that set_user_permissions then rejects.
@@ -543,7 +572,7 @@ def test_bootstrap_admin_from_env_is_idempotent(api_keys_db):
 
 
 def test_bootstrap_admin_from_env_accepts_a_key_a_sibling_worker_registered(
-        api_keys_db, tmp_path):
+        api_keys_db, tmp_path, caplog):
     # Every uvicorn worker runs the bootstrap at boot. A sibling that commits
     # the user + key after this worker's init_db built its index must not make
     # this worker refuse to start over a key that is in fact registered.
@@ -570,12 +599,17 @@ def test_bootstrap_admin_from_env_accepts_a_key_a_sibling_worker_registered(
         sibling.close()
     assert api_keys_db._KEY_INDEX.get(h) is None   # this worker's stale index
 
+    caplog.set_level(logging.DEBUG, logger=api_keys_store.logger.name)
     api_keys_store.bootstrap_admin_from_env(_BOOTSTRAP_KEY)
 
     rows = api_keys_db._require_conn().execute(
         "SELECT COUNT(*) FROM api_keys WHERE key_hash = ?", (h,)).fetchone()[0]
     assert rows == 1
     assert api_keys_db.is_locked_down() is True
+    # The sibling refresh before the live-hash check is what found the key:
+    # without it the INSERT's IntegrityError fallback lands on the same rows.
+    assert "bootstrap key already present" in caplog.text
+    assert "registered by a sibling" not in caplog.text
 
 
 def test_failed_reinit_clears_db_ready(api_keys_db, tmp_path):

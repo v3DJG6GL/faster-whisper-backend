@@ -129,6 +129,25 @@ def test_window_roll_restarts_the_counter(window):
     assert window._state["alice"][0] == 1
 
 
+def test_window_rolls_on_the_monotonic_clock_despite_a_wall_clock_step(
+        window, monkeypatch):
+    """A wall clock stepped back an hour (NTP correction, VM resume) made
+    `now - start` negative, so a spent window (a login lockout) stayed shut
+    for the size of the step instead of window_s."""
+    import types
+    mono = [5000.0]
+    monkeypatch.setattr(rate_limit, "time", types.SimpleNamespace(
+        time=lambda: 1_000_000.0 - 3600.0, monotonic=lambda: mono[0]))
+    for _ in range(3):
+        window.penalize("alice")
+    with pytest.raises(rate_limit.RateLimited):
+        window.guard("alice")
+    mono[0] += window.window_s + 1.0
+    window.guard("alice")  # the window rolled: must not raise
+    window.hit("alice")
+    assert window._state["alice"][0] == 1
+
+
 def test_two_keys_do_not_share_a_bucket(window):
     for _ in range(3):
         window.hit("alice")

@@ -143,7 +143,8 @@ def _fake_clock_store(tmp_path, monkeypatch, clock):
     import types
     from faster_whisper_backend.auth import sessions_store
     monkeypatch.setattr(sessions_store, "time",
-                        types.SimpleNamespace(time=lambda: clock[0]))
+                        types.SimpleNamespace(time=lambda: clock[0],
+                                              monotonic=lambda: clock[0]))
     sessions_store.init_db(str(tmp_path / "sessions.sqlite3"))
     return sessions_store
 
@@ -482,7 +483,7 @@ def test_lookup_sibling_check_is_throttled(tmp_path):
         orig()
 
     w._rebuild_index_locked = counting_rebuild
-    w._LAST_REFRESH_TS = 0.0
+    w._LAST_REFRESH_TS = float("-inf")
     for _ in range(50):
         w._DATA_VERSION = -999          # every check that runs must rebuild
         assert w.lookup_session(raw) is not None
@@ -506,6 +507,31 @@ def test_sibling_revoke_seen_on_read_path_after_interval(tmp_path):
 
     b.revoke_session(raw)
     a._REFRESH_MIN_INTERVAL_S = 0.0     # "the interval has elapsed"
+    assert a.lookup_session(raw) is None
+
+
+def test_sibling_revoke_seen_after_a_backwards_wall_clock_step(tmp_path):
+    """The read-path throttle runs on the monotonic clock: a wall clock
+    stepped back (NTP correction, VM resume) made the elapsed time negative,
+    and every HIT skipped the sibling check until the wall clock passed the
+    old stamp again — a sibling's logout went unseen for the size of the
+    step instead of ~1 s."""
+    import time as _time
+    import types
+    db = str(tmp_path / "sessions.db")
+    a = _worker("sessions_store_step_a", db)
+    b = _worker("sessions_store_step_b", db)
+    wall = [_time.time()]
+    mono = [1000.0]
+    a.time = types.SimpleNamespace(time=lambda: wall[0],
+                                   monotonic=lambda: mono[0])
+
+    raw, _csrf = b.create_session("victim", 3600.0)
+    assert a.lookup_session(raw) is not None     # miss: forced check, stamps
+    assert a.lookup_session(raw) is not None     # hit inside the interval
+    wall[0] -= 600.0                              # wall clock stepped back
+    b.revoke_session(raw)                         # sibling worker logs out
+    mono[0] += a._REFRESH_MIN_INTERVAL_S + 0.5   # the interval elapses
     assert a.lookup_session(raw) is None
 
 

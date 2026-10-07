@@ -13,11 +13,15 @@ def _keep_process_identity():
     """importlib.reload re-mints BOOT_ID / STARTED_AT / STARTED_UTC, but
     transcription/catalog_routes imports BOOT_ID by value at import time and
     serves it on /v1/models (main.py logs it at startup) — a reload here
-    would leave them diverged for the rest of the session. Reinstate the
-    originals after each test's reloads."""
-    saved = (build_info.BOOT_ID, build_info.STARTED_AT, build_info.STARTED_UTC)
+    would leave them diverged for the rest of the session. APP_VERSION /
+    VERSION_SHORT are copied by value the same way, and a reload re-runs
+    `git describe`, whose answer can change mid-run (a -dirty flip, a new
+    tag). Reinstate the originals after each test's reloads."""
+    saved = (build_info.BOOT_ID, build_info.STARTED_AT, build_info.STARTED_UTC,
+             build_info.APP_VERSION, build_info.VERSION_SHORT)
     yield
-    build_info.BOOT_ID, build_info.STARTED_AT, build_info.STARTED_UTC = saved
+    (build_info.BOOT_ID, build_info.STARTED_AT, build_info.STARTED_UTC,
+     build_info.APP_VERSION, build_info.VERSION_SHORT) = saved
 
 
 def test_resolves_to_nonempty_string():

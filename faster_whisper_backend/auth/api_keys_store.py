@@ -867,7 +867,10 @@ def set_key_config(user_id: str, key_id: str, body: dict[str, Any]) -> dict[str,
     the key doesn't belong to `user_id` / is revoked. No index rebuild — config
     is resolved per-request, not carried in the auth index."""
     from faster_whisper_backend.settings import config_store
-    binding = config_store.validate_binding(body)  # raises ValueError
+    # The stored binding lets a rule slug it already names pass (a rules edit
+    # may have removed it since); only slugs this save adds are checked.
+    binding = config_store.validate_binding(
+        body, previous=get_key_config(key_id))  # raises ValueError
     conn = _require_conn()
     with _lock:
         cur = conn.execute(
@@ -938,11 +941,15 @@ def set_user_permissions(user_id: str, perms: dict[str, Any]) -> dict[str, Any]:
 
     # Config binding: present → validate; absent → preserve; empty → clear.
     incoming_config = perms.get("config")
-    clean_config = (config_store.validate_binding(incoming_config)
+    # The stored binding lets a rule slug it already names pass (see
+    # set_key_config).
+    existing_perms = get_user_permissions(user_id)
+    clean_config = (config_store.validate_binding(
+                        incoming_config,
+                        previous=_parse_binding(existing_perms.get("config")))
                     if incoming_config is not None else None)
 
     # Merge: incoming wins, otherwise keep what's stored, otherwise "none".
-    existing_perms = get_user_permissions(user_id)
     existing_pages = existing_perms.get("pages") or {}
     merged_pages: dict[str, str] = {}
     for page in PAGES:
@@ -1219,8 +1226,8 @@ def bootstrap_admin_from_env(raw_key: str) -> None:
         # Deliberately NOT logging kp here: unlike a generated key, this value
         # is human-chosen and only has to clear _BOOTSTRAP_KEY_MIN_LEN, so the
         # 8-char display prefix is a real fraction of the secret — and the
-        # server log is readable by every non-admin, who get the /logs page by
-        # default. The hash prefix identifies the key without revealing it.
+        # server log is readable by any non-admin granted the /logs page.
+        # The hash prefix identifies the key without revealing it.
         logger.info(
             "[auth] bootstrap admin key registered from "
             "WHISPER_BOOTSTRAP_ADMIN_KEY (user=bootstrap-admin, sha256=%s)",

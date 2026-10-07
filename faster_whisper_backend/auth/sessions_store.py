@@ -79,8 +79,10 @@ _DATA_VERSION: int = -1
 # revocation visible within ~1 s. The pre-write check in create/revoke stays
 # unthrottled (correctness before a write). The throttle applies to index
 # HITS only; a miss forces the check so a sibling's fresh login is never bounced.
+# Measured on the monotonic clock: a backwards wall-clock step would make the
+# elapsed time negative and skip every HIT's check for the size of the step.
 _REFRESH_MIN_INTERVAL_S = 1.0
-_LAST_REFRESH_TS: float = 0.0
+_LAST_REFRESH_TS: float = float("-inf")
 # Last 'revocations' counter revocation_generation() returned. When it moves,
 # the index is refreshed past the throttle above (see that function).
 _LAST_REV_GEN: int = -1
@@ -218,10 +220,10 @@ def _refresh_if_sibling_committed(force: bool = False) -> None:
     global _LAST_REFRESH_TS
     if _conn is None or not _DB_READY:
         return
-    if not force and time.time() - _LAST_REFRESH_TS < _REFRESH_MIN_INTERVAL_S:
+    if not force and time.monotonic() - _LAST_REFRESH_TS < _REFRESH_MIN_INTERVAL_S:
         return
     with _lock:
-        _LAST_REFRESH_TS = time.time()
+        _LAST_REFRESH_TS = time.monotonic()
         if _data_version_locked() != _DATA_VERSION:
             _rebuild_index_locked()
 
@@ -427,7 +429,9 @@ def purge_expired() -> None:
 def _reset_for_tests() -> None:
     """Drop the in-memory caches so the autouse test fixture starts clean."""
     global _SESSION_INDEX, _DATA_VERSION, _DB_READY, _LAST_REFRESH_TS
+    global _LAST_REV_GEN
     _SESSION_INDEX = {}
     _DATA_VERSION = -1
     _DB_READY = _conn is not None
-    _LAST_REFRESH_TS = 0.0
+    _LAST_REFRESH_TS = float("-inf")
+    _LAST_REV_GEN = -1

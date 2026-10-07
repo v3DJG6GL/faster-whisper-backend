@@ -907,6 +907,69 @@ def test_stale_stored_slug_only_blocks_saves_of_its_own_key(tmp_path, monkeypatc
     assert p.read_text(encoding="utf-8") == before
 
 
+def test_stale_stored_slug_only_blocks_saves_of_its_own_entry(tmp_path, monkeypatch):
+    # The WebUI /state save and the profile rename send the WHOLE profiles
+    # dict, so checking every entry of a submitted key let one stale stored
+    # exclude in profile b 422 every edit of profile a.
+    monkeypatch.setattr(cs, "_canonical_rule_slugs", lambda: {"known"})
+    p = tmp_path / "config.local.json"
+    p.write_text(json.dumps({"OVERRIDE_PROFILES": {
+        "a": {"BEAM_SIZE": 2},
+        "b": {"PIPELINE_RULES_EXCLUDE": ["gone"]}}}), encoding="utf-8")
+    cs.save_overrides({"OVERRIDE_PROFILES": {
+        "a": {"BEAM_SIZE": 3},
+        "b": {"PIPELINE_RULES_EXCLUDE": ["gone"]}}}, str(p))
+    on_disk = json.loads(p.read_text(encoding="utf-8"))
+    assert on_disk["OVERRIDE_PROFILES"]["a"] == {"BEAM_SIZE": 3}
+    # A typo in an entry the save changes or adds is still refused.
+    before = p.read_text(encoding="utf-8")
+    for profiles in (
+            {"a": {"BEAM_SIZE": 3}, "b": {"PIPELINE_RULES_EXCLUDE": ["typo"]}},
+            {"a": {"BEAM_SIZE": 3}, "b": {"PIPELINE_RULES_EXCLUDE": ["gone"]},
+             "c": {"PIPELINE_RULES_EXCLUDE": ["typo"]}}):
+        with pytest.raises(ValidationError, match="typo"):
+            cs.save_overrides({"OVERRIDE_PROFILES": profiles}, str(p))
+    assert p.read_text(encoding="utf-8") == before
+
+
+def test_stored_top_level_guard_at_one_is_migrated_not_fatal(tmp_path, capsys):
+    # The top-level segment guards started refusing 1 after releases that
+    # stored it; one left in config.local.json dropped every override at boot
+    # and 422'd every save, the failure the bundle migration already covers.
+    p = tmp_path / "config.local.json"
+    p.write_text(json.dumps({"SERVER_PORT": 9000,
+                             "SEGMENT_ZERO_LENGTH_TAIL_MIN_WORDS": 1,
+                             "SEGMENT_HEAD_ECHO_MIN_WORDS": 1}), encoding="utf-8")
+    out = cs.load_overrides(str(p))
+    assert out["SERVER_PORT"] == 9000
+    assert out["SEGMENT_ZERO_LENGTH_TAIL_MIN_WORDS"] == 0
+    assert out["SEGMENT_HEAD_ECHO_MIN_WORDS"] == 0
+    assert "SEGMENT_HEAD_ECHO_MIN_WORDS=1" in capsys.readouterr().err
+    cs.save_overrides({"BEST_OF": 3}, str(p))
+    on_disk = json.loads(p.read_text(encoding="utf-8"))
+    assert on_disk["SERVER_PORT"] == 9000 and on_disk["BEST_OF"] == 3
+    assert on_disk["SEGMENT_ZERO_LENGTH_TAIL_MIN_WORDS"] == 0
+
+
+def test_binding_save_keeps_a_stored_slug_a_rules_edit_removed(monkeypatch):
+    # The binding drawer sends the whole overrides blob back, so a slug the
+    # binding already stored (since removed from the rules) must not 422 an
+    # edit of an unrelated field; a slug the save ADDS is still checked.
+    monkeypatch.setattr(cs, "_canonical_rule_slugs", lambda: {"known"})
+    previous = {"direct": {"PIPELINE_RULES_EXCLUDE": ["x"]}, "profiles": []}
+    out = cs.validate_binding(
+        {"overrides": {"PIPELINE_RULES_EXCLUDE": ["x"], "BEAM_SIZE": 3}},
+        previous=previous)
+    assert out["direct"] == {"PIPELINE_RULES_EXCLUDE": ["x"], "BEAM_SIZE": 3}
+    with pytest.raises(ValueError, match="typo"):
+        cs.validate_binding(
+            {"overrides": {"PIPELINE_RULES_EXCLUDE": ["x", "typo"]}},
+            previous=previous)
+    # Without the stored binding the stale slug is refused as before.
+    with pytest.raises(ValueError, match="'x'"):
+        cs.validate_binding({"overrides": {"PIPELINE_RULES_EXCLUDE": ["x"]}})
+
+
 def test_removing_the_local_rules_copy_refuses_refs_it_would_strand(
         tmp_path, monkeypatch):
     # Resetting PIPELINE_RULES makes the factory list canonical; a stored

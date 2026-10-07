@@ -1,5 +1,7 @@
-"""The three WebUI version surfaces render the build version:
-header vtag (every shared-header page) / hub build line / settings card."""
+"""The three WebUI version surfaces — header vtag (every shared-header page)
+/ hub build line / settings card — ship as empty shells on the host-gated,
+keyless pages; the build facts arrive as data on the authenticated
+/auth/whoami and /settings/state payloads."""
 
 import importlib.metadata
 import platform
@@ -8,21 +10,11 @@ import re
 from faster_whisper_backend import build_info
 from faster_whisper_backend.settings import config as cfg
 
-# A short or generic real version ("dev", the Dockerfile default) is a
-# substring of ordinary markup ("device"), so the absence checks look for a
-# unique stand-in instead. The renderers read build_info by attribute.
-_SENTINEL = "v0.0.0-sentinel-7f3a9c"
-
-
-def _sentinel_version(monkeypatch):
-    monkeypatch.setattr(build_info, "APP_VERSION", _SENTINEL)
-    monkeypatch.setattr(build_info, "VERSION_SHORT", "v0.0.0-sentinel")
-
-
 # The header chip is built once at web_common import and the page render is
-# lru_cached, so a patched sentinel can never reach it: the header tests pin
-# the exact empty shell instead (a fact baked into data-tip / data-build
-# would carry the REAL import-time version, not the sentinel).
+# lru_cached, and the hub is a static template: the shell tests pin the exact
+# empty markup (a short real version such as "dev", the Dockerfile default,
+# is a substring of ordinary markup like "device", so an absence check on it
+# proves nothing).
 _EMPTY_VTAG = ('<button id="hdr-vtag" class="vtag" type="button" data-tip="" '
                'data-build="" aria-label="Copy server build info" '
                'onclick="_fwCopyBuild(this)"></button>')
@@ -63,17 +55,13 @@ def test_shared_header_page_leaks_no_build_to_unauthenticated_caller(
     assert client.get("/auth/whoami").status_code == 401
 
 
-def test_hub_hero_build_line_shell_carries_no_facts(client, monkeypatch):
+def test_hub_hero_build_line_shell_carries_no_facts(client):
     """The hub is host-gated but keyless, so the hero's build caption ships as
     an empty shell — the facts arrive via /auth/whoami, like the header chip."""
-    _sentinel_version(monkeypatch)
     r = client.get("/")
     assert r.status_code == 200
     assert '<p class="buildline"></p>' in r.text
-    assert "v0.0.0-sentinel" not in r.text
     assert build_info.BOOT_ID[:8] not in r.text
-    # The placeholder must be gone, never leak literally.
-    assert "{{BUILD_LINE}}" not in r.text
 
 
 def test_settings_identity_card_shell_carries_no_facts(client):

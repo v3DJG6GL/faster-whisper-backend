@@ -129,6 +129,10 @@ class FixedWindow:
     window and again at the start of the next. That burst is acceptable for
     every use here (these are flood guards, not quotas) and buys a two-tuple
     of state per key instead of a timestamp list.
+
+    Windows run on the monotonic clock: the state is per-process memory, and
+    a wall-clock step back would hold a window (and a login lockout) shut for
+    the size of the step, a step forward reset every window early.
     """
 
     def __init__(self, *, config_field: str, window_s: float,
@@ -155,7 +159,7 @@ class FixedWindow:
         if limit <= 0:
             return
         key = key or "<unknown>"
-        now = time.time()
+        now = time.monotonic()
         with self._lock:
             n, start = self._state.get(key, (0, now))
             if now - start > self.window_s:
@@ -179,7 +183,7 @@ class FixedWindow:
         if limit <= 0:
             return
         key = key or "<unknown>"
-        now = time.time()
+        now = time.monotonic()
         with self._lock:
             n, start = self._state.get(key, (0, now))
         if now - start > self.window_s:
@@ -195,7 +199,7 @@ class FixedWindow:
         if limit <= 0:
             return False
         key = key or "<unknown>"
-        now = time.time()
+        now = time.monotonic()
         with self._lock:
             n, start = self._state.get(key, (0, now))
             if now - start > self.window_s:

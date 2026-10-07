@@ -45,6 +45,20 @@ OVERRIDES_PATH = os.environ.get("WHISPER_CONFIG_LOCAL") or os.path.normpath(
 FACTORY_PATH = os.path.join(_REPO_DIR, "config.json")
 
 
+def _migrate_segment_guards(d: dict[str, Any], prefix: str) -> list[str]:
+    """Rewrite a segment guard stored at 1 to 0 (in place): the validators
+    refuse 1 since it was stored, and 1 already behaved as off. Returns one
+    note per change, each key prefixed with `prefix`."""
+    notes: list[str] = []
+    for guard in ("SEGMENT_ZERO_LENGTH_TAIL_MIN_WORDS",
+                  "SEGMENT_HEAD_ECHO_MIN_WORDS"):
+        if d.get(guard) == 1 and not isinstance(d[guard], bool):
+            d[guard] = 0
+            notes.append(f"{prefix}{guard}=1 is no longer accepted; stored "
+                         f"as 0 (off, as 1 already behaved)")
+    return notes
+
+
 def migrate_tightened_bundle(bundle: dict[str, Any], label: str) -> list[str]:
     """Rewrite one OverrideProfile-shaped bundle's values that the validators
     started refusing after it was stored (in place) — see
@@ -52,13 +66,7 @@ def migrate_tightened_bundle(bundle: dict[str, Any], label: str) -> list[str]:
     change, prefixed with `label`; the caller decides where they go (stderr at
     config load, _ENV_WARNINGS for an env bundle, nowhere for a per-identity
     binding re-parsed on every decode)."""
-    notes: list[str] = []
-    for guard in ("SEGMENT_ZERO_LENGTH_TAIL_MIN_WORDS",
-                  "SEGMENT_HEAD_ECHO_MIN_WORDS"):
-        if bundle.get(guard) == 1 and not isinstance(bundle[guard], bool):
-            bundle[guard] = 0
-            notes.append(f"{label}.{guard}=1 is no longer accepted; stored "
-                         f"as 0 (off, as 1 already behaved)")
+    notes = _migrate_segment_guards(bundle, f"{label}.")
     for key, check in (("TEMPERATURE", settings_schema._temperature_csv),
                        ("SUPPRESS_TOKENS", settings_schema._suppress_tokens_csv),
                        ("DEFAULT_LANGUAGE", settings_schema._language_code)):
@@ -82,11 +90,11 @@ def _migrate_tightened_bundle_values(raw: dict[str, Any]) -> list[str]:
     (in place). Returns one note per change for the caller's log.
 
     The bundles gained AdminConfig's value rules late: the two segment guards
-    refuse 1, TEMPERATURE / SUPPRESS_TOKENS must parse as CSV. The per-profile
-    / per-model grid accepted those values before, and one of them left in a
-    stored bundle fails load_overrides' whole-file validation — every admin
-    override is then ignored at boot, and every save 422s. A guard at 1 was
-    already off at runtime, so it becomes 0 (off); an unparseable CSV is
+    refuse 1 (top level too), TEMPERATURE / SUPPRESS_TOKENS must parse as CSV.
+    The per-profile / per-model grid accepted those values before, and one of
+    them left in a stored bundle fails load_overrides' whole-file validation —
+    every admin override is then ignored at boot, and every save 422s. A guard
+    at 1 was already off at runtime, so it becomes 0 (off); an unparseable CSV is
     dropped (inherit), with its lock. DEFAULT_LANGUAGE (top level too) gained
     a Whisper-code membership check: an unknown code failed every decode
     that relied on it, so it is dropped (inherit). SUPPRESS_TOKENS (top
@@ -94,7 +102,7 @@ def _migrate_tightened_bundle_values(raw: dict[str, Any]) -> list[str]:
     every decode, so it is dropped the same way. Per-identity bindings
     (api_keys_store._parse_binding) and the env JSON bundles (config.py) run
     the same per-bundle rules via migrate_tightened_bundle."""
-    notes: list[str] = []
+    notes = _migrate_segment_guards(raw, "")
     for key, check in (("DEFAULT_LANGUAGE", settings_schema._language_code),
                        ("SUPPRESS_TOKENS", settings_schema._suppress_tokens_csv)):
         val = raw.get(key)
@@ -425,25 +433,24 @@ def save_overrides(
         # The local file usually carries no PIPELINE_RULES copy (factory rules
         # live in config.json), so the merged pass never sees the canonical
         # slug list and a typo'd slug would persist silently. Checked in a
-        # separate pass over ONLY the slug-bearing keys this save submits, so
+        # separate pass over ONLY the slug-bearing values this save changes, so
         # a rule renamed or dropped in config.json cannot brick a save of the
-        # other keys (the merged pass would check every stored one).
+        # other keys or entries (the merged pass would check every stored one).
         if "PIPELINE_RULES" not in merged:
             if ("PIPELINE_RULES" in payload and "PIPELINE_RULES" in existing
                     and "PIPELINE_RULES" not in env_pinned_fields()):
                 # The local copy is being removed: the factory list becomes
                 # the one in force, so EVERY stored ref must survive it, or
                 # each later save of that key 422s on a slug nobody can see.
-                slug_keys = [k for k in _SLUG_REF_KEYS if merged.get(k) is not None]
-                slugs = _factory_slugs() if slug_keys else set()
+                slug_refs = {k: merged[k] for k in _SLUG_REF_KEYS
+                             if merged.get(k) is not None}
+                slugs = _factory_slugs() if slug_refs else set()
             else:
-                slug_keys = [k for k in _SLUG_REF_KEYS
-                             if k in payload and merged.get(k) is not None]
-                slugs = _save_canonical_slugs() if slug_keys else set()
+                slug_refs = _changed_slug_refs(payload, merged, existing)
+                slugs = _save_canonical_slugs() if slug_refs else set()
             if slugs:
                 settings_schema.AdminConfig.model_validate(
-                    {k: merged[k] for k in slug_keys},
-                    context={"canonical_slugs": frozenset(slugs)})
+                    slug_refs, context={"canonical_slugs": frozenset(slugs)})
         if env_effective:
             # load_overrides validates the file ON ITS OWN (no env context),
             # at the next boot and in the hot-apply right after this save, and
@@ -576,6 +583,30 @@ def _stored_ref_slugs(refs: dict[str, Any]) -> set[str]:
     return {s for s in out if isinstance(s, str)}
 
 
+def _changed_slug_refs(payload: dict[str, Any], merged: dict[str, Any],
+                       existing: dict[str, Any]) -> dict[str, Any]:
+    """The slug-bearing values a save changes, for its slug check: of each
+    _SLUG_REF_KEYS key the payload carries, the MODEL_OVERRIDES /
+    OVERRIDE_PROFILES entries that differ from the stored ones (the WebUI and
+    the profile rename send the whole dict, so one stale stored entry must not
+    block an edit of its siblings), and CAPTURES_PIPELINE_RULES_EXCLUDE whole
+    when it differs."""
+    out: dict[str, Any] = {}
+    for k in _SLUG_REF_KEYS:
+        new = merged.get(k)
+        if k not in payload or new is None:
+            continue
+        old = existing.get(k)
+        if isinstance(new, dict):
+            old = old if isinstance(old, dict) else {}
+            entries = {eid: v for eid, v in new.items() if old.get(eid) != v}
+            if entries:
+                out[k] = entries
+        elif new != old:
+            out[k] = new
+    return out
+
+
 def _save_canonical_slugs() -> set[str]:
     """Slug set for a save that does not carry PIPELINE_RULES: the live list
     (config.json + env + any local copy), falling back to the committed
@@ -644,7 +675,7 @@ def validate_allowed_profiles(raw: Any) -> list[str] | None:
     return validate_profile_refs(raw)
 
 
-def validate_binding(raw: Any) -> dict[str, Any]:
+def validate_binding(raw: Any, previous: Any = None) -> dict[str, Any]:
     """Validate a per-identity config binding sent by the WebUI and return the
     stored shape {"direct": {...}, "profiles": [...], + optional request gates}.
 
@@ -660,6 +691,11 @@ def validate_binding(raw: Any) -> dict[str, Any]:
     `apply_no_profiles` is a different beast — an ADMIN FORCE, not a request gate:
     True suppresses every bound/requested profile for the identity (plain
     defaults); it does NOT inherit and is NOT bound by ALLOW_REQUEST_OVERRIDE_PROFILE.
+    `previous` is the binding stored before this save (the get_*_config
+    shape): a rule slug its direct blob already names is not refused, since
+    the drawer sends the whole blob back and a slug a later rules edit
+    removed must not block an unrelated edit of the same binding — only the
+    slugs this save adds are checked, as save_overrides does.
     Raises ValueError on any invalid field / bound / lock target / unknown
     profile reference / unknown pipeline slug."""
     if not isinstance(raw, dict):
@@ -683,8 +719,14 @@ def validate_binding(raw: Any) -> dict[str, Any]:
     direct.pop("requestable", None)
     canonical = _canonical_rule_slugs()
     if canonical:
+        old_direct = previous.get("direct") if isinstance(previous, dict) else None
+        if not isinstance(old_direct, dict):
+            old_direct = {}
         for list_name in ("PIPELINE_RULES_EXCLUDE", "PIPELINE_RULES_INCLUDE"):
-            unknown = [s for s in (direct.get(list_name) or []) if s not in canonical]
+            stored = old_direct.get(list_name)
+            known = canonical | ({x for x in stored if isinstance(x, str)}
+                                 if isinstance(stored, list) else set())
+            unknown = [s for s in (direct.get(list_name) or []) if s not in known]
             if unknown:
                 raise ValueError(
                     f"{list_name} references unknown rule slugs: {unknown}")

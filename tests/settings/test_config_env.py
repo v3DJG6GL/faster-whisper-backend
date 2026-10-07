@@ -691,9 +691,11 @@ def test_legacy_in_repo_state_warns_when_ignored(tmp_path, monkeypatch):
 
 def test_legacy_state_mapping_uses_the_loader_overrides_path():
     """The startup call feeds config_store.OVERRIDES_PATH (the file the loader
-    actually reads) into the mapping — not a re-derived copy of the rule."""
+    actually reads) into the mapping — not a re-derived copy of the rule.
+    Identity, not equality: the ImportError fallback re-derives an equal
+    string, which `==` cannot tell apart from the imported one."""
     from faster_whisper_backend.settings import config_store
-    assert config._overrides_path == config_store.OVERRIDES_PATH
+    assert config._overrides_path is config_store.OVERRIDES_PATH
 
 def test_legacy_data_dir_root_db_warns_when_ignored(tmp_path):
     """Pre-db-layout compose installs kept SQLite stores at the data-dir
@@ -1180,6 +1182,23 @@ def test_env_wildcard_origin_drops_only_that_entry(monkeypatch):
         importlib.reload(config)
 
 
+def test_env_origins_are_lowercased_like_stored_ones(monkeypatch):
+    """The origin validators lowercase scheme and host to the browser's
+    serialisation (a stored list gets that via load_overrides); a mixed-case
+    env list kept its raw spelling and missed every exact Origin match."""
+    try:
+        _reload_with_env(
+            monkeypatch,
+            WHISPER_TRUSTED_ORIGINS="https://Whisper.Example.com",
+            WHISPER_CORS_ALLOW_ORIGINS="*,http://App.Local:8000")
+        assert config.TRUSTED_ORIGINS == ["https://whisper.example.com"]
+        assert config.CORS_ALLOW_ORIGINS == ["*", "http://app.local:8000"]
+        assert "TRUSTED_ORIGINS" not in config._ENV_REJECTED
+    finally:
+        monkeypatch.undo()
+        importlib.reload(config)
+
+
 def test_env_wildcard_only_origins_are_rejected_not_pinned(monkeypatch):
     """A var whose every entry is a wildcard controls nothing once stripped:
     it must not badge the field as env-pinned, or the /settings apply path
@@ -1330,6 +1349,41 @@ def test_env_field_is_not_blamed_for_a_stored_dangling_slug(monkeypatch):
         assert "another-missing-rule" not in (
             config.MODEL_OVERRIDES.get("large-v3", {}).get(
                 "PIPELINE_RULES_EXCLUDE") or [])
+        assert any("another-missing-rule" in m for m in config._ENV_WARNINGS), \
+            config._ENV_WARNINGS
+    finally:
+        monkeypatch.undo()
+        importlib.reload(config)
+
+
+def test_env_slug_list_is_not_blamed_for_a_stored_sibling_list(monkeypatch):
+    """A valid env EXCLUDE on an entry whose STORED include names a removed
+    rule applies: only the env-supplied lists are slug-checked, so the env
+    pin is not reverted and blamed for the stored dangling slug."""
+    from faster_whisper_backend.settings import config_store
+    monkeypatch.setattr(config_store, "load_overrides", lambda path=None: {
+        "MODEL_OVERRIDES": {"large-v3": {
+            "BEAM_SIZE": 3, "PIPELINE_RULES_INCLUDE": ["no-such-rule"]}}})
+    try:
+        monkeypatch.setenv(
+            "WHISPER_MODEL_OVERRIDE__large-v3__PIPELINE_RULES_EXCLUDE",
+            "capitalize-after-terminator")
+        importlib.reload(config)
+        entry = config.MODEL_OVERRIDES.get("large-v3", {})
+        assert entry.get("PIPELINE_RULES_EXCLUDE") == [
+            "capitalize-after-terminator"]
+        assert entry.get("BEAM_SIZE") == 3
+        assert not any("large-v3" in m for m in config._ENV_WARNINGS), \
+            config._ENV_WARNINGS
+        # An env exclude naming an unknown rule is still refused.
+        monkeypatch.setenv(
+            "WHISPER_MODEL_OVERRIDE__large-v3__PIPELINE_RULES_EXCLUDE",
+            "another-missing-rule")
+        importlib.reload(config)
+        entry = config.MODEL_OVERRIDES.get("large-v3", {})
+        assert "another-missing-rule" not in (
+            entry.get("PIPELINE_RULES_EXCLUDE") or [])
+        assert entry.get("BEAM_SIZE") == 3
         assert any("another-missing-rule" in m for m in config._ENV_WARNINGS), \
             config._ENV_WARNINGS
     finally:
