@@ -36,7 +36,9 @@ def test_every_sync_action_goes_through_the_review_dialog(client):
 def test_diff_is_per_map_key_and_per_list_entry(client):
     html = _html(client)
     assert "add(k + ' · ' + JSON.stringify(key), js(o[key]), js(n[key]));" in html
-    assert "'same entries, different order'" in html
+    # A key-order-only map difference is no change (the server re-sorts map
+    # keys): no spurious "moved" row next to the real ones.
+    assert "'same entries, different order'" not in html
 
 
 def test_sync_actions_are_buttons_above_the_list(client):
@@ -317,3 +319,54 @@ def test_promote_all_label_names_removals(client):
     body = body[:body.index("\n  }\n")]
     assert "const rm = sel.filter(g => g.id.startsWith('rm:')).length;" in body
     assert "' from config.json'" in body
+
+
+def _fn(html, sig):
+    body = html[html.index(sig):]
+    return body[:body.index("\n  }\n")]
+
+
+def test_unshadowed_promote_syncs_the_running_value(client):
+    """With no config.local.json list, a promote makes the promoted list the
+    running PIPELINE_RULES, but fieldDef kept the old config.json: Save stayed
+    lit (_afterPromoteStamp even re-set it raw) and the "press Save as well"
+    note led to a full local copy shadowing every later config.json update."""
+    html = _html(client)
+    post = _fn(html, "async function _postFactory(arr) {")
+    unsh = post[post.index("if (!out.shadowed_by_local && !out.env_pinned) {"):]
+    assert "fd.value = JSON.parse(JSON.stringify(out.rules));" in unsh
+    assert "_setRulesDirty();" in unsh
+    stamp = _fn(html, "function _afterPromoteStamp() {")
+    assert "_setRulesDirty();" in stamp
+    assert "setDirty(name," not in stamp
+    note = _fn(html, "function _unsavedNoteEl() {")
+    assert "fd.provenance !== 'local.json'" in note
+
+
+def test_single_rule_promote_discloses_an_order_change(client):
+    """_promoteOne's payload walks the CURRENT order, so a local reorder is
+    written into config.json too; its dialog now says so like Promote all."""
+    body = _fn(_html(client), "async function _promoteOne(rule) {")
+    assert "extraEls: [_seededOrderDirty() ? _orderChangeEl() : null]" in body
+    assert "is written as well." in body
+
+
+def test_label_reslug_is_gated_on_config_json_membership(client):
+    """A rule promoted from here keeps seeded:false locally; a label edit
+    re-slugged it and detached it from its config.json copy."""
+    html = _html(client)
+    assert "const slugFixed = r => r.seeded || _factoryHas(r.name);" in html
+    assert "if (!slugFixed(rule)) {" in html
+    assert "labelLbl.textContent = slugFixed(rule)" in html
+    assert "if (!rule.seeded) {" not in html
+
+
+def test_new_slugs_are_unique_against_config_json_too(client):
+    """A custom rule could take the name of a config.json rule this server's
+    list predates: it then read as "edited here" against an unrelated rule
+    and a promote overwrote the config.json one."""
+    html = _html(client)
+    assert ("const slugSet = new Set(rules.map(r => r.name)"
+            ".concat(factoryRules.map(b => b.name)));") in html
+    assert ".concat(factoryRules.map(b => b.name)));\n" in html[
+        html.index("if (!slugFixed(rule)) {"):]

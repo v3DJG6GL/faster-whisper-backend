@@ -252,14 +252,11 @@ def _server_ident_fields() -> dict[str, str]:
     # decode (whisper) model's observed device may drive the device word — a
     # cuda pyannote pipeline on a MODEL_DEVICE=cpu box must not flip the card
     # (and a cpu gguf translator loaded first must not hide a cuda decode).
-    # model_role() reads the family prefixes from their one home,
-    # model_registry.MODEL_ROLE_PREFIXES; whisper's bare names are "transcribing".
+    # Each snapshot entry already carries its `role` (model_role() reads the
+    # family prefixes from their one home, model_registry.MODEL_ROLE_PREFIXES;
+    # whisper's bare names are "transcribing").
     loaded = model_registry.loaded_models_snapshot()
-    _dec = next(
-        (e for e in loaded
-         if model_registry.model_role(str(e.get("name") or ""))[0]
-         == "transcribing"),
-        None)
+    _dec = next((e for e in loaded if e.get("role") == "transcribing"), None)
     device = str((_dec.get("device") if _dec else None)
                  or getattr(cfg, "MODEL_DEVICE", "") or "")
     if device.startswith("cuda"):
@@ -719,6 +716,19 @@ async def test_pipeline(payload: dict[str, Any]) -> JSONResponse:
         "production produces"
     )
 
+    def _fixed_count_msg(pat: str) -> str | None:
+        """The save-time fixed-count screen (regex_guard.check_fixed_counts),
+        as a not_run advisory. `(?:(?:a{0}){N}){N}` is no "nested repetition"
+        yet loops N*N times on any input, and sre holds the GIL for the whole
+        match, so a 2 s guard thread would freeze the process, not one core.
+        Runs BEFORE _nested_repetition, whose overlap check matches fragments
+        in-process (the same order regex_guard.validate uses)."""
+        try:
+            regex_guard.check_fixed_counts("pattern", pat)
+        except ValueError as e:
+            return f"{e} Not executed here: a timed-out dry-run thread cannot be interrupted."
+        return None
+
     sample = str(payload.get("sample") or "")
     rules = payload.get("rules") or []
     if not isinstance(rules, list):
@@ -771,10 +781,11 @@ async def test_pipeline(payload: dict[str, Any]) -> JSONResponse:
                         ep = entry.get("pattern", "") or ""
                         if not ep:
                             continue
-                        if regex_guard._nested_repetition(str(ep)):
+                        fc_msg = _fixed_count_msg(str(ep))
+                        if fc_msg is not None or regex_guard._nested_repetition(str(ep)):
                             # Wins over an earlier compile error: `not_run`
                             # needs its "not executed here" caveat shown.
-                            bad = _NESTED_REP_MSG
+                            bad = fc_msg or _NESTED_REP_MSG
                             lout["not_run"] = True
                             continue
                         try:
@@ -833,6 +844,10 @@ async def test_pipeline(payload: dict[str, Any]) -> JSONResponse:
                 pattern = rule.get("pattern", "") or ""
                 if not pattern:
                     return {**common, "after": text, "skipped": True}
+                fc_msg = _fixed_count_msg(str(pattern))
+                if fc_msg is not None:
+                    return {**common, "after": text, "error": fc_msg,
+                            "not_run": True}
                 if regex_guard._nested_repetition(str(pattern)):
                     return {**common, "after": text, "error": _NESTED_REP_MSG,
                             "not_run": True}

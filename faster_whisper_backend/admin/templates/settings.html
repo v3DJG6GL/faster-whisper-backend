@@ -953,7 +953,11 @@ function renderServerIdent(ident) {
   box.classList.add('ready');
 }
 
-async function loadState() {
+// `keep` (save() only): edits made while the save POST was in flight. They
+// are re-applied on top of the fresh server values instead of being dropped
+// with the rest of `dirty`; an entry the server now already holds falls away
+// (same equality rule as setDirty).
+async function loadState(keep) {
   const r = await api('GET', '/settings/state');
   if (r.status === 401) return;  // the shared login gate is already showing
   if (r.status === 403 && typeof _renderNoAccessLanding === 'function') {
@@ -979,8 +983,14 @@ async function loadState() {
   // covered the body-class add — keep this comment as a breadcrumb.
   renderServerIdent(state.server_ident);
   dirty = {};
-  $('save-btn').disabled = true;
-  $('discard-btn').disabled = true;
+  for (const k of Object.keys(keep || {})) {
+    const f = state.fields[k];
+    if (!f || f.provenance === 'env') continue;
+    if (JSON.stringify(f.value) !== JSON.stringify(keep[k])) dirty[k] = keep[k];
+  }
+  const clean = Object.keys(dirty).length === 0;
+  $('save-btn').disabled = clean;
+  $('discard-btn').disabled = clean;
   $('status').textContent = 'loaded ' + Object.keys(state.fields).length + ' fields';
   $('status').className = 'pill ok';
   render();
@@ -2418,7 +2428,12 @@ function translationTemplateEditor(name, v) {
         if (done || !pr.ok) return;
         const p = await pr.json();
         if (done) return;
-        if (p.stage === 'downloading') {
+        // The last download tick (progress 1.0) stays the entry's stage until
+        // the "translating" start tick, which only comes once the GGUF is in
+        // VRAM: a finished download IS the load phase.
+        if (p.stage === 'downloading' && p.progress != null && p.progress >= 1) {
+          stage.textContent = 'Loading model…';
+        } else if (p.stage === 'downloading') {
           const pct = p.progress != null ? Math.round(p.progress * 100) : null;
           let txt = 'Downloading model' + (pct != null ? '… ' + pct + '%' : '…');
           if (p.total_bytes) {
@@ -3644,13 +3659,18 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
     // the kebab-case slug stays in sync without a separate field. Live
     // updates the header lbl/slug spans without a full repaint to
     // preserve focus/caret position during typing.
+    // Membership in config.json — not the seeded flag — is authoritative
+    // (as in _canReset/_canDelete): a rule promoted from here keeps
+    // seeded:false locally, and re-slugging it would detach it from its
+    // config.json copy (local-only here, "missing" there).
+    const slugFixed = r => r.seeded || _factoryHas(r.name);
     if (rule.type !== 'terminal') {
       const labelWrap = document.createElement('div');
       labelWrap.className = 'rule-label-edit';
       const labelLbl = document.createElement('div');
       labelLbl.className = 'help';
-      labelLbl.textContent = rule.seeded
-        ? 'label: (slug stays fixed for seeded rules)'
+      labelLbl.textContent = slugFixed(rule)
+        ? 'label: (slug stays fixed for rules in config.json)'
         : 'label: (slug regenerates from label)';
       labelWrap.appendChild(labelLbl);
       const labelInp = document.createElement('input');
@@ -3661,8 +3681,13 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
       labelInp.addEventListener('input', () => {
         rule.label = labelInp.value;
         lbl.textContent = labelInp.value || rule.name;
-        if (!rule.seeded) {
-          const others = new Set(rules.filter(r => r !== rule).map(r => r.name));
+        if (!slugFixed(rule)) {
+          // Unique against config.json too: a config.json rule this server's
+          // list predates (new in an update) must not lose its name to a
+          // custom rule — it would read as "edited here" and a promote
+          // would overwrite it.
+          const others = new Set(rules.filter(r => r !== rule).map(r => r.name)
+            .concat(factoryRules.map(b => b.name)));
           const newSlug = _ensureUniqueSlug(_slugify(labelInp.value), others);
           if (newSlug !== rule.name) {
             if (expandedNames.has(rule.name)) {
@@ -3960,7 +3985,9 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
     cancel.addEventListener('click', () => form.remove());
     ok.addEventListener('click', () => {
       const lbl = labelInp.value.trim() || 'Custom rule';
-      const slugSet = new Set(rules.map(r => r.name));
+      // config.json names too (see the label editor): never take the name
+      // of a config.json rule this server does not have yet.
+      const slugSet = new Set(rules.map(r => r.name).concat(factoryRules.map(b => b.name)));
       const slug = _ensureUniqueSlug(_slugify(lbl), slugSet);
       const t = typeSel.value;
       // A newly-added rule is local-only (seeded:false) until promoted to
@@ -4089,13 +4116,14 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
         o = o || {}; n = n || {};
         const mk = Array.from(new Set(Object.keys(o).concat(Object.keys(n))))
           .sort(new Intl.Collator('de', { sensitivity: 'base', numeric: true }).compare);
-        let sub = 0;
         mk.forEach(key => {
           if (js(o[key]) === js(n[key])) return;
-          sub++;
           add(k + ' · ' + JSON.stringify(key), js(o[key]), js(n[key]));
         });
-        if (!sub) add(k, 'same ' + mk.length + ' entries', 'same entries, different order', 'moved');
+        // No row when only the key order differs: map order
+        // has no effect — the server re-sorts map keys (apply._sort_dicts)
+        // and dictation_map orders the alternation by key length, and
+        // _ruleContentEqual / _ruleHash already compare through _sortDeep.
         return;
       }
       const isList = v => Array.isArray(v) && v.every(isObj);
@@ -4470,7 +4498,13 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
                 .map(r => r.label || r.name);
   }
   function _unsavedNoteEl() {
+    // Only while a config.local.json list shadows config.json: without one,
+    // the promoted list becomes this server's running value (_postFactory
+    // syncs it), and a Save would pin a full local copy that shadows every
+    // later config.json update.
     if (!_pipelineDirty()) return null;
+    const fd = fieldDef(name);
+    if (!fd || fd.provenance !== 'local.json') return null;
     const w = document.createElement('div');
     w.className = 'promote-unsaved-note';
     w.textContent = '⚠ You have unsaved edits on this page. Promote writes them into '
@@ -4549,7 +4583,23 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
       return null;
     }
     const out = await resp.json();
-    if (Array.isArray(out.rules)) factoryRules = out.rules;
+    if (Array.isArray(out.rules)) {
+      factoryRules = out.rules;
+      // config.json IS the baseline (the server refreshed cfg._BASELINE).
+      // With no config.local.json list and no env pin, the promoted list is
+      // also what this server runs now: mirror it into fieldDef so the dirty
+      // compare is against the running value. The stale old value kept Save
+      // lit, and that Save wrote a full local copy (PIPELINE_RULES is
+      // prune-exempt) shadowing every later config.json update.
+      const fd = fieldDef(name);
+      if (fd) {
+        fd.default_value = JSON.parse(JSON.stringify(out.rules));
+        if (!out.shadowed_by_local && !out.env_pinned) {
+          fd.value = JSON.parse(JSON.stringify(out.rules));
+          _setRulesDirty();
+        }
+      }
+    }
     paintAll();
     return out;
   }
@@ -4578,7 +4628,13 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
       left: ['config.json now', base ? 'will be replaced' : 'rule does not exist'],
       right: ['After promote', "this server's version"],
       groups: [{ id: rule.name, name: label, rows: _ruleDiffRows(base, rule) }],
-      warn: st === 'diverged' ? 'config.json changed since this rule was last in sync. Promoting replaces those newer config.json changes with your version — the left column shows what would go.' : '',
+      // The payload walks the CURRENT order (_buildFactoryPayload), so a
+      // local reorder is written too — say so, as Promote all does.
+      extraEls: [_seededOrderDirty() ? _orderChangeEl() : null],
+      warn: [
+        st === 'diverged' ? 'config.json changed since this rule was last in sync. Promoting replaces those newer config.json changes with your version — the left column shows what would go.' : '',
+        _seededOrderDirty() ? 'The rule order on this server differs from config.json and is written as well.' : '',
+      ].filter(Boolean).join(' '),
       confirm: () => '↑ Promote to config.json',
       confirmClass: 'solid-up',
       onConfirm: async () => {
@@ -4592,10 +4648,12 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
   }
   // After a promote the promoted rules equal config.json again: record the
   // new rev so a later config.json change reads as "config.json is newer".
+  // Through _setRulesDirty, not a raw setDirty: a restamp against a server
+  // copy that holds no revs (or one _postFactory just synced) is no edit.
   function _afterPromoteStamp() {
     const before = JSON.stringify(rules);
     _stampConfigRevs();
-    if (JSON.stringify(rules) !== before) setDirty(name, JSON.parse(JSON.stringify(rules)));
+    if (JSON.stringify(rules) !== before) _setRulesDirty();
     refreshControlsVisibility();
   }
   async function _promoteAll() {
@@ -5323,7 +5381,11 @@ async function save() {
   // Disable BEFORE the await so rapid double-clicks can't fire two
   // POSTs with the same dirty payload. setDirty() re-enables on edit.
   $('save-btn').disabled = true;
-  const r = await api('POST', '/settings/state', dirty);
+  // What THIS request carries: the page stays editable while it is in
+  // flight, and an edit made meanwhile is not in it — it must stay dirty
+  // after the reply instead of being wiped with `dirty = {}`.
+  const sent = JSON.parse(JSON.stringify(dirty));
+  const r = await api('POST', '/settings/state', sent);
   if (r.status === 422) {
     const j = await r.json();
     const msg = (j.errors || [])
@@ -5338,15 +5400,22 @@ async function save() {
     return;
   }
   const result = await r.json();
-  dirty = {};
-  $('discard-btn').disabled = true;
-
+  const later = {};
+  for (const k of Object.keys(dirty)) {
+    if (!Object.prototype.hasOwnProperty.call(sent, k)
+        || JSON.stringify(dirty[k]) !== JSON.stringify(sent[k])) later[k] = dirty[k];
+  }
+  // Reload on BOTH branches: the server already set the cold fields on cfg
+  // as well (a reload shows the new value), so a stale fieldDef(name).value
+  // made a revert to the old value compare equal in setDirty() — unsaveable
+  // until a manual reload. The restart modal sits outside #main, so the
+  // re-render does not close it.
+  await loadState(later);
   if (result.requires_restart && result.cold_pending.length > 0) {
     showRestartModal(result.cold_pending);
   } else {
     toast('saved ' + result.saved.length + ' field(s); ' +
           result.hot_applied.length + ' applied live');
-    await loadState();
   }
 }
 

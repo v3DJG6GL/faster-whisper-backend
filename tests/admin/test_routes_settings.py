@@ -603,6 +603,36 @@ def test_test_pipeline_nested_repetition_screened_not_run(client):
     assert steps[1].get("not_run") is True
 
 
+def test_test_pipeline_fixed_count_nest_screened_not_run(client):
+    """A fixed-count nest is no "nested repetition", yet loops N*N times on
+    any input while sre holds the GIL: the dry run must refuse it with the
+    save-time check_fixed_counts screen, in both the regex-list and the
+    single-pattern branch, instead of starting a guard thread."""
+    import time as _time
+    pat = r"(?:(?:a{0}){3000}){3000}"
+    t0 = _time.monotonic()
+    r = client.post(
+        "/settings/test-pipeline",
+        json={
+            "sample": "abcd",
+            "rules": [
+                {"name": "fc-list", "type": "regex-list", "enabled": True,
+                 "entries": [{"pattern": pat, "replacement": ""}]},
+                {"name": "fc-single", "type": "callback:upper",
+                 "enabled": True, "pattern": pat},
+            ],
+        },
+    )
+    assert _time.monotonic() - t0 < 1.0
+    assert r.status_code == 200, r.text
+    steps = r.json()["steps"]
+    for step in steps[:2]:
+        assert "nested fixed counts" in (step["error"] or "")
+        assert step.get("not_run") is True
+        assert not step["slow"]
+        assert step["after"] == "abcd"
+
+
 def test_test_pipeline_regex_list_screen_message_beats_compile_error(client):
     """A regex-list step whose screened entry follows a bad-compile entry still
     explains why it is not_run, and keeps the valid entries' real output."""
@@ -1400,3 +1430,41 @@ def test_settings_page_guards_every_localstorage_read(client):
               " catch (_) { return null; } }")
     assert text.count(helper) == 1
     assert text.replace(helper, "").count("localStorage.getItem(") == 0
+
+
+def _settings_save_body(client):
+    html = client.get("/settings").text
+    body = html[html.index("async function save() {"):]
+    return html, body[:body.index("\n}\n")]
+
+
+def test_settings_save_reloads_state_on_the_restart_branch_too(client):
+    """A cold save + Cancel in the restart modal left fieldDef values at the
+    pre-save value while cfg already held the new one: reverting the field
+    compared equal in setDirty() and could not be saved."""
+    _, body = _settings_save_body(client)
+    tail = body[body.index("const result = await r.json();"):]
+    assert tail.index("await loadState(later);") \
+        < tail.index("if (result.requires_restart")
+    assert tail.count("loadState(") == 1
+
+
+def test_settings_save_keeps_edits_made_while_in_flight(client):
+    """The page stays editable during the POST; `dirty = {}` after the reply
+    wiped an edit made meanwhile (hot path: re-rendered away; cold path:
+    Save did nothing). Only what was sent counts as saved."""
+    html, body = _settings_save_body(client)
+    assert "const sent = JSON.parse(JSON.stringify(dirty));" in body
+    assert "await api('POST', '/settings/state', sent);" in body
+    assert "dirty = {};" not in body
+    ls = html[html.index("async function loadState(keep) {"):]
+    ls = ls[:ls.index("\n}\n")]
+    assert "for (const k of Object.keys(keep || {})) {" in ls
+
+
+def test_translation_lab_finished_download_reads_as_loading(client):
+    """The last download tick (progress 1.0) stays the stage until the
+    translating tick, i.e. for the whole multi-GB load into VRAM."""
+    html = client.get("/settings").text
+    assert ("if (p.stage === 'downloading' && p.progress != null "
+            "&& p.progress >= 1) {\n          stage.textContent = 'Loading model…';") in html

@@ -116,7 +116,8 @@ def test_identity_card_reports_configured_device_not_nvml(app_module, monkeypatc
 
     # and a loaded cuda model wins over the config fallback
     monkeypatch.setattr(model_registry, "loaded_models_snapshot",
-                        lambda: [{"name": "large-v3", "device": "cuda"}])
+                        lambda: [{"name": "large-v3", "role": "transcribing",
+                                  "device": "cuda"}])
     ident = admin_routes._server_ident_fields()
     assert "gpu — NVIDIA GeForce RTX 3080" in ident["runs_as"]
 

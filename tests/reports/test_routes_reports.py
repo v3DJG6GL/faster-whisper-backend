@@ -147,14 +147,50 @@ def test_reports_page_status_and_delete_survive_a_refresh_race(client):
     assert "var seq = ++_loadSeq;" in ld
     assert ld.count("if (seq !== _loadSeq) return;") == 2
     assert "_loadLanded++;" in ld
-    for fn, delta in (("onStatusChange(r, sel)", "adjustCounts(prev, r.status);"),
-                      ("onDelete(r)", "adjustCounts(r.status, null);")):
+    for fn, cond, delta in (
+            ("onStatusChange(r, sel)", "if (_loadGen() !== gen || _loadsOpen) load();",
+             "adjustCounts(prev, r.status);"),
+            ("onDelete(r)",
+             "if (_loadGen() !== gen || _loadsOpen || busy || _statusBusy[r.id]) load();",
+             "adjustCounts(r.status, null);")):
         body = html[html.index(f"async function {fn} {{"):]
         body = body[:body.index("\n  }\n")]
         assert "var gen = _loadGen();" in body, fn
-        assert ("if (_loadGen() !== gen) load();\n      else " + delta) in body, fn
+        assert (cond + "\n      else " + delta) in body, fn
     st = html[html.index("async function onStatusChange(r, sel) {"):]
     assert "if (sel.isConnected) {" in st[:st.index("\n  }\n")]
+
+
+def test_reports_page_actions_supersede_a_refresh_still_in_flight(client):
+    """A Refresh clicked just BEFORE an action already bumped _loadSeq, so the
+    gen check missed it: when its (older) GET answered after the PATCH /
+    DELETE, the stale snapshot landed over the delta — a deleted card came
+    back, a status or saved notes reverted. load() counts open loads and
+    every action reloads while one is open."""
+    html = client.get("/reports").text
+    ld = html[html.index("async function load() {"):]
+    ld = ld[:ld.index("\n  }\n")]
+    assert "_loadsOpen++;" in ld
+    assert "} finally {\n      _loadsOpen--;" in ld
+    notes = html[html.index("async function onSaveNotes(r, ta, btn, dirty) {"):]
+    notes = notes[:notes.index("\n  }\n")]
+    assert "if (_loadsOpen) load();" in notes
+
+
+def test_reports_page_status_change_is_serialized_per_row(client):
+    """Two status changes on one card before the first PATCH answered both
+    read the same `prev` and shifted the totals twice; a delete meanwhile
+    decremented the old status. The select stays disabled while its PATCH
+    is in flight (also across re-renders), and such a delete reloads."""
+    html = client.get("/reports").text
+    st = html[html.index("async function onStatusChange(r, sel) {"):]
+    st = st[:st.index("\n  }\n")]
+    assert "_statusBusy[r.id] = true;\n    sel.disabled = true;" in st
+    fin = st[st.index("} finally {"):]
+    assert "delete _statusBusy[r.id];" in fin and "live.disabled = false;" in fin
+    card = html[html.index("function renderCard(r) {"):]
+    card = card[:card.index("\n  }\n")]
+    assert "if (_statusBusy[r.id]) sel.disabled = true;" in card
 
 
 def test_page_api_error_shows_a_422_detail_list_as_text(client):

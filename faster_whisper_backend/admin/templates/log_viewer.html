@@ -759,9 +759,23 @@
       statusEl.textContent = 'reconnecting…';
       statusEl.className = 'pill paused';
       if (_logRecoveryTimer) return;
+      // The probe carries the stream's own gate (host + logs page): /v1/models
+      // 200s for any valid user, so an expired sign-in polled "reconnecting…"
+      // forever, and a user whose logs access was removed reopened a 403ing
+      // stream (blanking the pane) every 3 s. A skip past the paging cap is
+      // answered as chain-end without any disk I/O.
       const probe = async () => {
         try {
-          const r = await fetch('/v1/models', { cache: 'no-store' });
+          const r = await fetch('/logs/older?skip=999999999999&limit=1', { cache: 'no-store' });
+          if (!_logRecoveryTimer) return;   // onopen cancelled it meanwhile
+          if (r.status === 401 || r.status === 403) {
+            clearTimeout(_logRecoveryTimer);
+            _logRecoveryTimer = null;
+            statusEl.textContent = r.status === 401 ? 'signed out' : 'no access';
+            statusEl.className = 'pill paused';
+            if (r.status === 401 && window._showLoginGate) window._showLoginGate();
+            return;
+          }
           if (r.ok) {
             clearTimeout(_logRecoveryTimer);
             _logRecoveryTimer = null;

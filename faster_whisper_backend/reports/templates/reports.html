@@ -478,9 +478,20 @@
   // _loadGen() before its request: when a Refresh started or landed
   // meanwhile, its snapshot may or may not already hold the change, so the
   // delta is not applied on top of it — the action reloads instead.
+  // _loadsOpen counts loads still in flight: a Refresh clicked just BEFORE
+  // an action already bumped _loadSeq, so the gen check cannot see it, and
+  // its GET may have been served before the PATCH / DELETE committed. If it
+  // is still open when the action completes, its stale snapshot would land
+  // after the delta — so the action reloads to supersede it.
   var _loadSeq = 0;
   var _loadLanded = 0;
+  var _loadsOpen = 0;
   function _loadGen() { return _loadSeq + _loadLanded; }
+  // Report ids with a status PATCH in flight. The status select stays
+  // disabled until it answers (renderCard honours this across re-renders):
+  // two overlapping changes both read the same `prev` and shifted the
+  // totals twice, and a delete meanwhile decremented the old status.
+  var _statusBusy = {};
   // Unsaved admin-notes drafts by report id. render() rebuilds every card
   // (search keystroke, filter change, a delete, Refresh), so a draft held
   // only in the old textarea was silently lost; renderCard seeds from here.
@@ -592,6 +603,7 @@
       if (v === r.status) o.selected = true;
       sel.appendChild(o);
     });
+    if (_statusBusy[r.id]) sel.disabled = true;
     sel.addEventListener('change', function() { onStatusChange(r, sel); });
     head.appendChild(sel);
 
@@ -760,16 +772,19 @@
     var prev = r.status;
     var gen = _loadGen();
     sel.className = 'status-' + newStatus;
+    _statusBusy[r.id] = true;
+    sel.disabled = true;
     try {
       var j = await api('PATCH', '/reports/api/' + encodeURIComponent(r.id),
         { status: newStatus });
       r.status = j.report.status;
       r.resolved_ts = j.report.resolved_ts;
       toast('Status updated.');
-      // A Refresh meanwhile replaced the rows and counts with a snapshot
-      // that may already include this change: the delta would shift the
-      // totals twice (or the live row keeps the old status). Reload.
-      if (_loadGen() !== gen) load();
+      // A Refresh meanwhile (or still in flight) replaced the rows and counts
+      // with a snapshot that may or may not include this change: the delta
+      // would shift the totals twice (or the live row keeps the old
+      // status). Reload.
+      if (_loadGen() !== gen || _loadsOpen) load();
       else adjustCounts(prev, r.status);
     } catch (e) {
       if (sel.isConnected) {
@@ -777,6 +792,12 @@
         sel.className = 'status-' + prev;
       }
       toast('Failed: ' + e.message, true);
+    } finally {
+      delete _statusBusy[r.id];
+      sel.disabled = false;
+      // A re-render meanwhile built a new (disabled) select for this row.
+      var live = document.querySelector('.report-card[data-id="' + CSS.escape(String(r.id)) + '"] select');
+      if (live) live.disabled = false;
     }
   }
 
@@ -807,6 +828,10 @@
       }
       btn.disabled = !changed;
       dirty.classList.toggle('hidden', !changed);
+      // A Refresh still in flight may carry the old notes and would land
+      // after this; a fresh load supersedes it (the draft carry-over above
+      // keeps any text typed meanwhile).
+      if (_loadsOpen) load();
       toast('Notes saved.');
     } catch (e) {
       toast('Failed to save notes: ' + e.message, true);
@@ -816,14 +841,16 @@
   async function onDelete(r) {
     if (!confirm('Delete this report permanently?')) return;
     var gen = _loadGen();
+    var busy = !!_statusBusy[r.id];
     try {
       await api('DELETE', '/reports/api/' + encodeURIComponent(r.id));
       _allReports = _allReports.filter(function(x) { return x.id !== r.id; });
       delete _drafts[r.id];
       render();
       // Same Refresh race as onStatusChange: never decrement a snapshot
-      // that may already exclude the row.
-      if (_loadGen() !== gen) load();
+      // that may already exclude the row. A status PATCH in flight for this
+      // row leaves r.status unsettled, so the delta cannot be trusted either.
+      if (_loadGen() !== gen || _loadsOpen || busy || _statusBusy[r.id]) load();
       else adjustCounts(r.status, null);
       toast('Deleted.');
     } catch (e) {
@@ -917,6 +944,7 @@
   // -------------------------------------------------------------------
   async function load() {
     var seq = ++_loadSeq;
+    _loadsOpen++;
     try {
       var j = await api('GET', '/reports/api/list');
       if (seq !== _loadSeq) return;     // a newer load() owns the page
@@ -934,6 +962,8 @@
       if (seq !== _loadSeq) return;
       if (e.message === 'unauthorized' || e.message === 'not-admin') return;
       toast('Failed to load reports: ' + e.message, true);
+    } finally {
+      _loadsOpen--;
     }
   }
 

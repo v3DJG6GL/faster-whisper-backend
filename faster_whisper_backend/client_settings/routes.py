@@ -114,7 +114,8 @@ async def put_client_settings(
     409 = `base_version` is stale — the body carries the CURRENT state so
     the client can 3-way merge and re-PUT without another GET round-trip.
     413 = blob over the server cap; 422 = blob is not strict JSON (a
-    non-finite float — nothing is stored). Force-push is just a PUT echoing the
+    non-finite float, or a lone UTF-16 surrogate in the blob or the device
+    label — nothing is stored). Force-push is just a PUT echoing the
     version fetched a moment ago; there is no bypass flag."""
     try:
         # Off the loop: put() re-serialises the caller's already-parsed dict

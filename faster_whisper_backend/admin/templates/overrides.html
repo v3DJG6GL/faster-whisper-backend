@@ -903,32 +903,65 @@ window._renderWaterfall = (function () {
   }
 
   // ---- save / discard ----
+  // Refresh only the server-side state S (usage map, saved profiles, rules…)
+  // and leave the working copy `profiles` / `snapshot` alone: a refused save
+  // or an edit made while the POST was in flight must not be thrown away.
+  async function refreshServerState() {
+    var r = await fetch('/settings/overrides/state');
+    if (await guard403(r)) return false;
+    if (!r.ok) return false;
+    S = await r.json();
+    return true;
+  }
+  var saving = false;           // one POST at a time (a double click sent two)
   async function save() {
-    setStatus('saving…');
-    var r = await api('POST', '/settings/overrides/state', { OVERRIDE_PROFILES: profiles });
-    if (await guard403(r)) return;
-    if (r.status === 422) {
-      var j = await r.json();
-      setStatus('invalid: ' + (j.errors || []).map(function (e) { return e.loc + ' ' + e.msg; }).join('; '), 'err');
-      return;
+    if (saving) return;
+    saving = true; saveBtn.disabled = true;
+    try {
+      setStatus('saving…');
+      // What THIS request carries: edits made while it is in flight are not
+      // in the server copy and must stay dirty afterwards.
+      var sent = JSON.stringify(profiles);
+      var r = await api('POST', '/settings/overrides/state', { OVERRIDE_PROFILES: JSON.parse(sent) });
+      if (await guard403(r)) return;
+      if (r.status === 422) {
+        var j = await r.json();
+        setStatus('invalid: ' + (j.errors || []).map(function (e) { return e.loc + ' ' + e.msg; }).join('; '), 'err');
+        return;
+      }
+      if (r.status === 409) {
+        // The whole save was refused — the in-use guard (which profiles are
+        // still bound) or an env-pinned OVERRIDE_PROFILES. Surface the
+        // actionable detail and refresh the stale usage map that let the
+        // delete through client-side, but KEEP the working copy: the valid
+        // edits riding along must survive (restore the bound profile and
+        // save again, or copy them into the env var).
+        var jc = await r.json().catch(function () { return {}; });
+        await refreshServerState();
+        render();
+        setStatus(jc.detail || 'profile still in use', 'err');
+        return;
+      }
+      if (!r.ok) { setStatus('save failed (' + r.status + ')', 'err'); return; }
+      if (JSON.stringify(profiles) !== sent) {
+        // Edited while saving: the server copy lacks the newer edit, so a
+        // full reload would silently drop it. Mark only what was sent as
+        // saved and keep the working copy dirty.
+        snapshot = sent;
+        await refreshServerState();
+        render();
+        setStatus('saved — newer edits are not saved yet', 'ok');
+        return;
+      }
+      snapshot = sent;
+      await loadState(true);    // refresh usage + canonical values
+      // loadState replaced `profiles`; every widget still closes over the old
+      // profiles[sel], so without a re-render the next edit lands on an orphan.
+      render();
+      setStatus('saved', 'ok');
+    } finally {
+      saving = false; refreshButtons();
     }
-    if (r.status === 409) {
-      // Server-side in-use guard: surface its actionable detail (which
-      // profiles are still bound) and refresh the stale usage map that let
-      // the delete through client-side.
-      var jc = await r.json().catch(function () { return {}; });
-      await loadState(true);
-      render(); refreshButtons();
-      setStatus(jc.detail || 'profile still in use', 'err');
-      return;
-    }
-    if (!r.ok) { setStatus('save failed (' + r.status + ')', 'err'); return; }
-    snapshot = JSON.stringify(profiles);
-    await loadState(true);    // refresh usage + canonical values
-    // loadState replaced `profiles`; every widget still closes over the old
-    // profiles[sel], so without a re-render the next edit lands on an orphan.
-    render();
-    setStatus('saved', 'ok'); refreshButtons();
   }
   function discard() {
     profiles = JSON.parse(snapshot);

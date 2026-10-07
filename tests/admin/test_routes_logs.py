@@ -202,3 +202,23 @@ def test_logs_page_template_guards_every_localstorage_access():
     assert len(lines) == 3
     for ln in lines:
         assert "try" in ln, ln
+
+
+def test_logs_page_recovery_probe_carries_the_stream_gate(client):
+    """The SSE recovery probe polled /v1/models (any valid user): an expired
+    sign-in showed "reconnecting…" forever, and a user whose logs access was
+    removed reopened a 403ing stream every 3 s. It now probes a logs-gated
+    route and stops on 401 (login gate) / 403 (no access)."""
+    html = client.get("/logs").text
+    on = html[html.index("es.onerror = () => {"):]
+    on = on[:on.index("es.onopen = () => {")]
+    assert "fetch('/v1/models'" not in on
+    assert "fetch('/logs/older?skip=999999999999&limit=1'" in on
+    branch = on[on.index("if (r.status === 401 || r.status === 403) {"):]
+    branch = branch[:branch.index("return;")]
+    assert "_logRecoveryTimer = null;" in branch
+    assert "window._showLoginGate()" in branch
+    # The probe URL is answered as chain-end, with no disk I/O.
+    r = client.get("/logs/older?skip=999999999999&limit=1")
+    assert r.status_code == 200, r.text
+    assert r.json() == {"lines": [], "next_skip": None}

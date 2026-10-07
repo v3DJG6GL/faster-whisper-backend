@@ -484,9 +484,42 @@ def test_page_save_rerenders_after_reloading_state(client):
     html = client.get(OV).text
     body = html[html.index("async function save() {"):]
     body = body[:body.index("\n  }\n")]
-    ok = body[body.index("snapshot = JSON.stringify(profiles);"):]
+    ok = body[body.index("snapshot = sent;\n      await loadState(true);"):]
     assert ok.index("await loadState(true);") < ok.index("render();") \
         < ok.index("setStatus('saved', 'ok');")
+
+
+def _page_save_body(client):
+    html = client.get(OV).text
+    body = html[html.index("async function save() {"):]
+    return body[:body.index("\n  }\n")]
+
+
+def test_page_save_409_keeps_the_working_copy(client):
+    """Both 409s (in-use guard, env-pinned OVERRIDE_PROFILES) refuse the WHOLE
+    save; loadState(true) then replaced `profiles`/`snapshot` with the server
+    copy, silently dropping every other unsaved edit. The branch refreshes
+    only the server state S and leaves the working copy dirty."""
+    body = _page_save_body(client)
+    branch = body[body.index("if (r.status === 409) {"):]
+    branch = branch[:branch.index("return;")]
+    assert "loadState(" not in branch
+    assert "profiles =" not in branch and "snapshot =" not in branch
+    assert "await refreshServerState();" in branch
+    assert "setStatus(jc.detail || 'profile still in use', 'err');" in branch
+
+
+def test_page_save_keeps_edits_made_while_in_flight(client):
+    """An edit made while the POST is in flight is not in the server copy, so
+    the success path must not reload over it; and one POST at a time."""
+    body = _page_save_body(client)
+    assert "if (saving) return;" in body
+    assert "var sent = JSON.stringify(profiles);" in body
+    assert "{ OVERRIDE_PROFILES: JSON.parse(sent) }" in body
+    late = body[body.index("if (JSON.stringify(profiles) !== sent) {"):]
+    late = late[:late.index("return;")]
+    assert "snapshot = sent;" in late and "loadState(" not in late
+    assert "saving = false; refreshButtons();" in body[body.index("} finally {"):]
 
 
 def test_page_explorer_drops_stale_answers(client):
