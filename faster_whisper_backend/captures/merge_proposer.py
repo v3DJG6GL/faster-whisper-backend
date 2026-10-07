@@ -545,8 +545,9 @@ def _propose_merges_locked(
         _CACHE.pop(cache_key, None)
     logger.info(
         "[proposer] user=%s n_eligible=%d sessions=%d candidates=%d proposals=%d",
-        # cache_key embeds the caller-supplied ?user_id= for an admin, which is
-        # never validated against a real user — screen it out of the log.
+        # cache_key embeds the caller-supplied ?user_id= for an admin, which
+        # skips the known-user check above when the key store is unavailable
+        # — screen it out of the log.
         store_common.log_safe(cache_key),
         len(eligible), len(sessions), len(all_candidates), len(proposals),
     )

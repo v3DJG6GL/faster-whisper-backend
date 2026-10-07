@@ -23,7 +23,9 @@ Single-worker model:
     re-apply button, so a save landing mid-run would otherwise never be
     applied. The worker re-walks every row before it reports "done".
   - Job state lives in process memory. A service restart wipes it
-    — acceptable, since the user just clicks the button again.
+    and nothing resumes the walk: rows it had not reached keep the old
+    rules until the next rules save, or until an admin runs "Reprocess
+    all · Pipeline rules" from the /captures Advanced menu (same worker).
 """
 from __future__ import annotations
 
@@ -102,6 +104,11 @@ def _run() -> None:
                 if not _rerun_requested:
                     _state["status"] = "done"
                     _state["finished_ts"] = time.time()
+                    # Snapshot under the lock: a start() landing after the
+                    # release resets _state to a fresh job's zeros.
+                    summary = (_state["processed"], _state["total"],
+                               _state["captures_updated"],
+                               _state["groups_updated"])
                     break
                 # Rules changed mid-pass: walk every row again with a fresh
                 # snapshot. The progress bar restarts for this pass; the
@@ -110,9 +117,7 @@ def _run() -> None:
                 _state.update({"total": 0, "processed": 0})
             logger.info("[reapply] rules changed mid-run: re-applying again")
         logger.info(
-            "[reapply] done: %d/%d captures, %d updated, %d groups",
-            _state["processed"], _state["total"],
-            _state["captures_updated"], _state["groups_updated"],
+            "[reapply] done: %d/%d captures, %d updated, %d groups", *summary,
         )
     except Exception as e:
         logger.exception("[reapply] job failed")

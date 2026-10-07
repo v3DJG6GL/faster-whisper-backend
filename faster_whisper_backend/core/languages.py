@@ -68,8 +68,7 @@ def language_name(code: "str | None") -> str:
     if hit:
         return hit
     base = code.strip().lower().replace("_", "-").split("-")[0]
-    folded = _LEGACY_639_1.get(base, _ISO639_3_TO_1.get(base, base))
-    return _NAMES.get(folded) or base.title()
+    return _NAMES.get(_fold_base(base)) or base.title()
 
 
 def language_label(code: "str | None") -> str:
@@ -111,6 +110,14 @@ _ISO639_3_TO_1: "dict[str, str]" = dict(pair.split("=")[::-1] for pair in """
 _LEGACY_639_1: "dict[str, str]" = {
     "iw": "he", "in": "id", "ji": "yi", "mo": "ro", "jv": "jw"}
 
+
+def _fold_base(base: str) -> str:
+    """A lowercase base subtag in the table's spelling: a withdrawn 639-1
+    code first, then ISO 639-3 → 639-1; anything else unchanged. The one
+    place the spelling tables are applied, so every function that folds
+    ("iw" → "he", "deu" → "de") agrees on what one language is."""
+    return _LEGACY_639_1.get(base, _ISO639_3_TO_1.get(base, base))
+
 # The inverse: 639-1 → ISO 639-2/T (terminology codes — `deu` not `ger`,
 # `fra` not `fre`: what ffmpeg writes and what Matroska/MP4 players expect).
 # Built in reverse so the FIRST 3-letter code per language wins ("zh" →
@@ -127,7 +134,7 @@ def iso639_2t(code: "str | None") -> str:
     code the table lacks already is one ("yue", "haw"), and an unknown code
     becomes "und" rather than an invalid tag."""
     base = (code or "").strip().lower().split("-")[0]
-    base = _LEGACY_639_1.get(base, _ISO639_3_TO_1.get(base, base))
+    base = _fold_base(base)
     if len(base) == 3 and base.isalpha() and base not in _ISO639_1_TO_2T:
         return base
     return _ISO639_1_TO_2T.get(base, "und")
@@ -142,8 +149,7 @@ def canonical_code(code: str) -> "str | None":
     rule ("zh_Hant_TW" → "zh-Hant"); a withdrawn 639-1 code maps to its
     successor ("iw" → "he")."""
     base, _, sub = code.strip().replace("_", "-").partition("-")
-    base = base.lower()
-    base = _LEGACY_639_1.get(base, _ISO639_3_TO_1.get(base, base))
+    base = _fold_base(base.lower())
     if base not in _NAMES:
         return None
     script = sub.split("-", 1)[0]
@@ -165,9 +171,7 @@ def same_language(a: "str | None", b: "str | None") -> bool:
     b_base, _, b_sub = b.strip().lower().replace("_", "-").partition("-")
     # Through the same spelling tables canonical_code uses: Whisper says
     # "he"/"jw", a client may send the withdrawn "iw" or the standard "jv".
-    a_base = _LEGACY_639_1.get(a_base, _ISO639_3_TO_1.get(a_base, a_base))
-    b_base = _LEGACY_639_1.get(b_base, _ISO639_3_TO_1.get(b_base, b_base))
-    if a_base != b_base:
+    if _fold_base(a_base) != _fold_base(b_base):
         return False
 
     def script(sub: str) -> str:
@@ -190,8 +194,7 @@ def _normalise_code(code: str) -> str:
     canonical_code it keeps every subtag, so "fr-CA" and "sr-Latn" stay
     their own targets."""
     base, sep, sub = code.strip().replace("_", "-").partition("-")
-    base = base.lower()
-    base = _LEGACY_639_1.get(base, _ISO639_3_TO_1.get(base, base))
+    base = _fold_base(base.lower())
     if not sep:
         return base
     if len(sub) == 4 and sub.isalpha():

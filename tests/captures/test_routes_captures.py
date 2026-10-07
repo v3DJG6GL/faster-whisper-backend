@@ -7,6 +7,7 @@ fabricating audio blobs.
 
 import json
 import os
+import re
 
 import pytest
 from starlette.testclient import TestClient
@@ -760,6 +761,35 @@ def test_export_duration_describes_the_trimmed_companion(
     assert [r["duration"] for r in rows] == [pytest.approx(9.1)] * 2
 
 
+def test_export_falls_back_to_the_original_when_the_trimmed_file_is_gone(
+        captures_store_db, groups_store_db, monkeypatch, tmp_path):
+    """A stale audio_trimmed_relpath (partial restore, manual cleanup) used to
+    drop the whole row from the export without a word, while the audio
+    endpoint plays the original: the original is packed, at its full
+    length."""
+    import io
+    import tarfile
+
+    from faster_whisper_backend.captures import routes as captures_routes
+
+    captures_store = captures_store_db
+    cid = _ready_capture(captures_store, monkeypatch, tmp_path,
+                         language="de", translations={})
+    row = captures_store.get_capture(cid)
+    with captures_store._lock:
+        with captures_store._require_conn() as conn:
+            conn.execute(
+                "UPDATE captures SET audio_s = 12.4, audio_trimmed_relpath = ?,"
+                " audio_trim_lead_ms = 2000, audio_trim_trail_ms = 1300"
+                " WHERE id = ?", (row["audio_relpath"] + ".trim.wav", cid))
+    rows = _export_manifest()
+    assert [r["duration"] for r in rows] == [pytest.approx(12.4)]
+    blob = b"".join(captures_routes._build_export_stream("ready", True))
+    with tarfile.open(fileobj=io.BytesIO(blob), mode="r:gz") as tar:
+        assert [n for n in tar.getnames() if n.startswith("audio/")] == [
+            f"audio/{cid}.wav"]
+
+
 def test_rebuild_lock_survives_prune_while_in_flight():
     """A Lock handed out but not yet acquired must not be pruned: the prune in
     _get_rebuild_lock skips sids pinned in _rebuild_inflight, so a second
@@ -1202,6 +1232,49 @@ def test_page_merge_gate_mirrors_the_language_and_task_partition(client):
     assert "&& !mixedLangTask;" in bar
 
 
+def test_page_unsaved_edits_guard_covers_groups_and_bulk_actions(client):
+    """Every render() rebuilds open capture cards from the server and
+    collapses open group cards. The "Load more groups" guard only saw capture
+    cards, and the bulk Mark / Undo / Delete paths had no guard at all, so
+    unsaved chip / notes edits vanished without a confirm."""
+    html = client.get("/captures").text
+    guard = html[html.index("function _anyOpenDirty()"):]
+    guard = guard[:guard.index("async function _okToDropOpenEdits(")]
+    assert "_openRows[id]" in guard and "st.dirty" in guard
+    assert "_openSamples[id]" in guard and "st.state && st.state.dirty" in guard
+    assert "_openSamples[g.id] = { audio: audio, state: sampleState };" in html
+    for fn, nxt in (("async function loadMoreSamples()", "_samplesLoading = true;"),
+                    ("async function _bulkStatus(", "await api("),
+                    ("async function _undoBulk(", "await api("),
+                    ("async function _bulkDelete()", "await api(")):
+        body = html[html.index(fn):]
+        body = body[:body.index(nxt)]
+        assert "_okToDropOpenEdits(" in body, fn
+
+
+def test_page_render_drops_hidden_rows_from_the_selection(client):
+    """A filter or search change kept hidden ids selected, so a bulk Dismiss /
+    Delete reached rows no longer on screen."""
+    html = client.get("/captures").text
+    r = html[html.index("render = function() {"):]
+    r = r[:r.index("list.innerHTML = '';")]
+    assert "_selection.delete(id)" in r
+    assert "if (!r.sample_id) selectable[r.id] = true;" in r
+    assert "_updateActionBar();" in r
+
+
+def test_page_error_toasts_read_a_422_detail_list(client):
+    """FastAPI's 422 `detail` is a list of {msg, ...}; assigning it to the
+    toast text printed "[object Object]"."""
+    html = client.get("/captures").text
+    helper = html[html.index("function _detailMsg(j, fallback)"):]
+    helper = helper[:helper.index("\n  }\n")]
+    assert "typeof d === 'string'" in helper
+    assert "Array.isArray(d)" in helper and "d[0].msg" in helper
+    assert re.search(r"\b\w*msg = \w+\.detail;", html) is None
+    assert html.count("_detailMsg(await ") == 4
+
+
 def test_page_load_drops_a_superseded_filter_response(client):
     """Out-of-order /list responses for two quick speaker-picker ticks must
     not leave the older filter's rows on screen."""
@@ -1233,8 +1306,8 @@ def test_page_group_autoload_skips_open_capture_cards(client):
     assert "|| Object.keys(_openRows).length !== 0) return;" in foot
     more = html[html.index("async function loadMoreSamples()"):]
     more = more[:more.index("async function reloadCounts()")]
-    assert more.index("return st && st.dirty;") < more.index("render();")
-    assert "if (dirty && !(await _confirm({" in more
+    assert (more.index("await _okToDropOpenEdits('Load more groups?'")
+            < more.index("render();"))
 
 
 def test_sample_save_does_not_resend_status(client):
@@ -1418,6 +1491,39 @@ def test_patch_capture_runs_off_the_loop_under_the_corrections_lock(
                         json={"status": "bogus"}).status_code in (400, 422)
 
 
+def test_audio_and_delete_read_the_row_off_the_loop(client, make_user_key,
+                                                    monkeypatch):
+    """get_capture json.loads the words + segments blobs on the connection
+    clear_all VACUUMs; the audio route (reviewers fire it in bursts) and the
+    delete route must not run it on the event loop."""
+    import asyncio
+
+    from faster_whisper_backend.captures import store as captures_store
+
+    uid, raw_key = make_user_key("root", is_admin=True)
+    _insert_member(captures_store._require_conn(), "offloop00001", None,
+                   user_id=uid)
+    seen: list = []
+    real = captures_store.get_capture
+
+    def _spy(cid):
+        try:
+            asyncio.get_running_loop()
+            seen.append(True)
+        except RuntimeError:
+            seen.append(False)
+        return real(cid)
+
+    monkeypatch.setattr(captures_store, "get_capture", _spy)
+    h = bearer(raw_key)
+    # No WAV on disk: the row is found, then the file probe answers 410.
+    assert client.get("/captures/api/offloop00001/audio",
+                      headers=h).status_code == 410
+    assert client.delete("/captures/api/offloop00001",
+                         headers=h).status_code == 200
+    assert seen and not any(seen)
+
+
 def test_patch_of_a_sample_dissolved_mid_apply_is_404(client, make_user_key,
                                                      monkeypatch):
     """A dissolve committed between the route's get_sample and _apply's
@@ -1461,6 +1567,52 @@ def test_sample_chip_save_holds_the_corrections_lock(client, make_user_key,
                      json={"corrections": [], "baseline_corrections": []})
     assert r.status_code == 200, r.text
     assert held and held[0] is True
+
+
+def test_a_group_holding_more_chips_than_one_member_may_saves(
+        client, make_user_key):
+    """A group's chips are the projection of every member's chips, so the
+    group schemas must not bound it by the PER-MEMBER cap: two members with
+    101 chips each made every group Save a 422 before the real per-member
+    check could run. That per-member check is still the limit."""
+    from faster_whisper_backend.captures import samples_store as gs
+    from faster_whisper_backend.captures import store as captures_store
+    from faster_whisper_backend.core import text_corrections
+
+    cap = text_corrections.CAP_CORRECTIONS
+    uid, raw_key = make_user_key("root", is_admin=True)
+    sid = "grpcap0000001"
+    conn = captures_store._require_conn()
+    _insert_sample(conn, gs, sid, locked=False, user_id=uid)
+    n_words = cap + 1
+    words = json.dumps([{"word": f"w{i}", "start": i * 0.1,
+                         "end": i * 0.1 + 0.05} for i in range(n_words)])
+    half = cap // 2 + 1
+    chips = json.dumps([{"wrong": "", "correct": "x", "idx": i}
+                        for i in range(half)])
+    for order, cid in enumerate(("grpcapmem001", "grpcapmem002")):
+        _insert_member(conn, cid, sid, user_id=uid)
+        conn.execute("UPDATE captures SET words = ?, corrections = ?,"
+                     " sample_order = ? WHERE id = ?",
+                     (words, chips, order, cid))
+    projected = ([{"wrong": "", "correct": "x", "idx": i}
+                  for i in range(half)]
+                 + [{"wrong": "", "correct": "x", "idx": n_words + i}
+                    for i in range(half)])
+    assert len(projected) > cap
+    h = bearer(raw_key)
+    r = client.patch(f"/captures/api/samples/{sid}", headers=h,
+                     json={"corrections": projected,
+                           "baseline_corrections": projected})
+    assert r.status_code == 200, r.text
+    # One member pushed past the store cap is the per-member 422.
+    over = ([{"wrong": "", "correct": "y", "idx": i} for i in range(cap + 1)]
+            + projected[half:])
+    r = client.patch(f"/captures/api/samples/{sid}", headers=h,
+                     json={"corrections": over,
+                           "baseline_corrections": projected})
+    assert r.status_code == 422, r.text
+    assert f"a member capture holds at most {cap}" in r.json()["detail"]
 
 
 def test_preview_save_chips_writes_off_the_loop_and_skips_newly_grouped(

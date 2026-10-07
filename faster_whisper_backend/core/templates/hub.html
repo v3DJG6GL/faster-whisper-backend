@@ -74,9 +74,10 @@
      whoami pass (the pills' .admin-only class only has effect in <header>). */
   .hub-sev { display: none; align-items: center; gap: 0.25rem; }
   body.hub-admin .hub-sev { display: inline-flex; }
-  /* The activity cluster rides {{SEV_PILLS}} into every shell, but its JS
-     bails on this headerless page — hide the empty flex item so it does not
-     consume the strip's gap. */
+  /* The activity cluster rides the severity-pills placeholder into every
+     shell (never spell it here: render_page substitutes it inside this
+     comment too), but its JS bails on this headerless page — hide the
+     empty flex item so it does not consume the strip's gap. */
   .hub-sev .hact-wrap { display: none; }
   /* The pills sit two wrappers deep (.hdr-status > .sevpills) with no
      whitespace between them — carry the strip's gap down to them. */

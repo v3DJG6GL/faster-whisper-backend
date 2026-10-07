@@ -97,3 +97,61 @@ def test_hub_carries_the_pill_gap_into_the_wrappers():
     assert re.search(
         r"\.hub-sev \.hdr-status, \.hub-sev \.sevpills \{ display: inline-flex;"
         r"\s*align-items: center; gap: 0\.25rem; \}", home_routes._HUB_HTML)
+
+
+def test_hub_css_never_spells_the_pills_placeholder():
+    """render_page substitutes {{SEV_PILLS}} everywhere, so the literal in a
+    CSS comment injected the whole pills + activity fragment into the hub's
+    <style> block (inert only while the fragment has no `*/`)."""
+    css = home_routes._HUB_HTML[:home_routes._HUB_HTML.index("</style>")]
+    assert "{{SEV_PILLS}}" not in css
+
+
+# ---- c8: the lone pills chip gets its border back ---------------------------
+
+def test_activity_fuse_rules_skip_the_c8_step():
+    """At c8 the activity half is display:none but keeps .allowed; the fuse
+    rule (0,4,1) out-ranked `header.c8 .sevpills` (0,2,1), so the lone pills
+    chip kept border-left:0 and square left corners."""
+    css = web_common.NAV_CSS
+    assert ("header:not(.c8) .hact-wrap:has(.hdr-activity.allowed)"
+            " + .sevpills {") in css
+    assert ("body.role-admin header:not(.c8) .hdr-status"
+            " .hdr-activity.allowed {") in css
+    assert "\nheader .hact-wrap:has(" not in css
+
+
+# ---- activity cluster: no phantom GPU, no endless 401 retry -----------------
+
+def test_activity_cluster_reads_no_gpu_on_a_cpu_only_server():
+    """The own-scope lite payload keeps a coarse gpu dict on a GPU-less box;
+    only server.gpu.present says so. Both the header readout and the popover
+    must go through the present-aware accessor."""
+    js = web_common.ACTIVITY_CLUSTER_JS
+    acc = js[js.index("function gpuOf(snap)"):]
+    acc = acc[:acc.index("\n  }\n")]
+    assert "sg.present === false" in acc and "return null" in acc
+    feed = js[js.index("function feed(snap)"):js.index("function renderPop()")]
+    assert "var gpu = gpuOf(snap);" in feed
+    pop = js[js.index("function renderPop()"):js.index("function releaseHold()")]
+    assert "var gpu = gpuOf(s)" in pop
+    assert "snap.gpu || null;\n    setBar" not in js
+
+
+def test_activity_cluster_stops_on_a_401_or_403():
+    """After the stream ends on an expired session or a revoked stats
+    permission, the reopen got 401/403 every 30 s forever in every tab. A
+    fatal close probes once; 401/403 hides the button and stops until the
+    next auth change."""
+    js = web_common.ACTIVITY_CLUSTER_JS
+    onerr = js[js.index("es.onerror = function()"):js.index("function closeStream()")]
+    assert "fetch('/stats/snapshot?lite=1'" in onerr
+    assert "st === 401 || st === 403" in onerr
+    deny = onerr[onerr.index("st === 401"):onerr.index("return;")]
+    assert "denied = true;" in deny and "btn.hidden = true;" in deny
+    # the retry is only scheduled after the probe, never straight away
+    assert onerr.index("fetch(") < onerr.index("setTimeout(")
+    opener = js[js.index("function openStream()"):js.index("es = new EventSource")]
+    assert "denied) return;" in opener
+    auth = js[js.index("'whisper:auth-changed'"):]
+    assert "denied = false;" in auth[:auth.index("syncAllowed();")]

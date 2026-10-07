@@ -17,6 +17,10 @@
   // the live button node is wiped by the very next rebuild.
   var cancelling = {};
   var retryTimer = null, delay = 1500;
+  // Set when a probe after a fatal stream close got 401/403 (expired
+  // session, revoked stats permission): stop reconnecting until the next
+  // whisper:auth-changed instead of retrying every 30 s forever.
+  var denied = false;
 
   function esc(s){ return String(s == null ? '' : s)
     .replace(/&/g,'&amp;').replace(/</g,'&lt;')
@@ -29,6 +33,15 @@
   function kindCls(k){
     return {transcribe:'tr', stream:'tr', translate:'tl',
             dictate:'dc', download:'dl', preload:'pl'}[k] || '';
+  }
+
+  // The snapshot's gpu dict, or null when the server has no GPU: the
+  // own-scope lite payload keeps a coarse {busy, mem_*} dict even on a
+  // CPU-only box, and only its `server.gpu.present` says the GPU is absent.
+  function gpuOf(snap){
+    var sg = snap.server && snap.server.gpu;
+    if (sg && sg.present === false) return null;
+    return snap.gpu || null;
   }
 
   function setBar(el, pct){
@@ -47,7 +60,7 @@
     var jobs = snap.jobs || [];
     jobsEl.textContent = jobs.length;
     btn.classList.toggle('idle', jobs.length === 0);
-    var gpu = snap.gpu || null;
+    var gpu = gpuOf(snap);
     setBar(gpuEl, gpu ? (gpu.util_pct != null ? gpu.util_pct : null) : null);
     setBar(vramEl, gpu && gpu.mem_total_mb
       ? gpu.mem_used_mb / gpu.mem_total_mb * 100 : null);
@@ -109,7 +122,7 @@
         + Math.max(0, Math.min(100, pct || 0)).toFixed(0) + '%"></i></span>'
         + '<span class="rv">' + val + '</span></div>';
     }
-    var gpu = s.gpu, host = s.host || {};
+    var gpu = gpuOf(s), host = s.host || {};
     if (gpu && gpu.util_pct == null && gpu.busy != null) {
       row('GPU', gpu.busy ? 100 : 0, 'c-cyan', gpu.busy ? 'busy' : 'idle');
       if (gpu.mem_total_mb)
@@ -224,7 +237,7 @@
   });
 
   function openStream(){
-    if (es || onStats() || !allowed) return;
+    if (es || onStats() || !allowed || denied) return;
     if (document.visibilityState === 'hidden') return;
     try {
       es = new EventSource('/stats/stream?lite=1');
@@ -235,10 +248,27 @@
         // A transient drop keeps readyState CONNECTING and the browser
         // retries on its own; an HTTP error response leaves it CLOSED (2)
         // with no retry, so reopen ourselves with backoff (mirrors /stats).
+        // EventSource hides the status, so probe once: 401/403 means the
+        // session expired or stats access was revoked -- hide and stop.
         if (es && es.readyState === 2) {
           closeStream();
-          retryTimer = setTimeout(openStream, delay);
-          delay = Math.min(delay * 1.7, 30000);
+          fetch('/stats/snapshot?lite=1',
+                { credentials: 'same-origin', cache: 'no-store' })
+            .then(function(r){ return r.status; },
+                  function(){ return 0; })
+            .then(function(st){
+              if (st === 401 || st === 403) {
+                denied = true;
+                btn.hidden = true;
+                closePop();
+                return;
+              }
+              if (retryTimer || es) return;
+              retryTimer = setTimeout(function(){
+                retryTimer = null; openStream();
+              }, delay);
+              delay = Math.min(delay * 1.7, 30000);
+            });
         }
       };
     } catch(_) {}
@@ -292,7 +322,15 @@
                 attributeFilter: ['class'] });
   }
   window.addEventListener('whisper:auth-changed', function(){
-    setTimeout(syncAllowed, 0);
+    setTimeout(function(){
+      // A fresh sign-in may restore what the 401/403 probe took away; with
+      // `allowed` unchanged syncAllowed would not reopen on its own.
+      if (denied) {
+        denied = false;
+        if (allowed) { btn.hidden = false; openStream(); }
+      }
+      syncAllowed();
+    }, 0);
   });
   syncAllowed();
 })();</script>

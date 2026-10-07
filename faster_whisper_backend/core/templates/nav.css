@@ -246,9 +246,12 @@ header .sevpills { display: inline-flex; align-items: center; gap: 0.55rem;
 /* every pill is admin-only, so the wrapper's box is too (a :not() hide, so
    the c2 / c9 ladder rules are not out-ranked) */
 body:not(.role-admin) header .sevpills { display: none; }
-header .hact-wrap:has(.hdr-activity.allowed) + .sevpills {
+/* not at c8: the activity half is display:none there but keeps .allowed, so
+   an unscoped fuse rule (0,4,1) out-ranked the c8 restore and left the lone
+   pills chip without its left border */
+header:not(.c8) .hact-wrap:has(.hdr-activity.allowed) + .sevpills {
   border-radius: 0 6px 6px 0; border-left: 0; }
-body.role-admin header .hdr-status .hdr-activity.allowed {
+body.role-admin header:not(.c8) .hdr-status .hdr-activity.allowed {
   border-radius: 6px 0 0 6px; border-right: 0; }
 header .sevpill::before { content: ""; width: 0.5em; height: 0.5em; flex: none;
   border-radius: 50%; background: currentColor; opacity: 0.5; align-self: center; }

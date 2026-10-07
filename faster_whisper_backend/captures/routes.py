@@ -665,31 +665,15 @@ def _sniff_audio_mime(abs_path: str, fallback_ext: str) -> str:
     }.get(ext, "application/octet-stream")
 
 
-@router.get(
-    "/api/{cid}/audio",
-    dependencies=[Depends(require_page("captures"))],
-)
-async def get_audio_api(
-    cid: str,
-    request: Request,
-    original: bool = Query(False),
-    user: dict[str, Any] = Depends(get_current_user),
-) -> FileResponse:
-    _audio_rate.hit(rate_limit.identity_key(user, request))
-    row = captures_store.get_capture(cid)
-    if row is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "capture not found")
-    user["permissions"].assert_can_read_row(
-        row, "captures", user.get("user_id") or "",
-        detail="capture not found",
-    )
-    _audit_cross_user_read(user, row, "audio", cid)
-    # Prefer the trimmed WAV when one exists — that's what the export
-    # uses, so reviewers should hear the same thing. Falls back to the
-    # original if the trimmed file is missing on disk for any reason.
-    # `?original=1` serves the untrimmed utterance instead: that is the audio
-    # the decode actually received, which a latency / hallucination replay
-    # needs (the trim removes exactly the silence such bugs live in).
+def _capture_audio_file(row: dict[str, Any], original: bool) -> tuple[str, str]:
+    """(abs path, mime) of the file get_audio_api serves for `row`.
+
+    Prefer the trimmed WAV when one exists — that's what the export
+    uses, so reviewers should hear the same thing. Falls back to the
+    original if the trimmed file is missing on disk for any reason.
+    `original=True` serves the untrimmed utterance instead: that is the audio
+    the decode actually received, which a latency / hallucination replay
+    needs (the trim removes exactly the silence such bugs live in)."""
     trimmed_rel = None if original else row.get("audio_trimmed_relpath")
     abs_path: str | None = None
     if trimmed_rel:
@@ -706,7 +690,32 @@ async def get_audio_api(
             raise HTTPException(status.HTTP_404_NOT_FOUND, "audio path invalid")
         if not os.path.isfile(abs_path):
             raise HTTPException(status.HTTP_410_GONE, "audio file is gone")
-    mime = _sniff_audio_mime(abs_path, row.get("audio_format", ""))
+    return abs_path, _sniff_audio_mime(abs_path, row.get("audio_format", ""))
+
+
+@router.get(
+    "/api/{cid}/audio",
+    dependencies=[Depends(require_page("captures"))],
+)
+async def get_audio_api(
+    cid: str,
+    request: Request,
+    original: bool = Query(False),
+    user: dict[str, Any] = Depends(get_current_user),
+) -> FileResponse:
+    _audio_rate.hit(rate_limit.identity_key(user, request))
+    # Off the loop: this is the busiest captures endpoint (reviewers audition
+    # card after card), and get_capture json.loads the words + segments blobs
+    # on the shared connection that clear_all VACUUMs.
+    row = await asyncio.to_thread(captures_store.get_capture, cid)
+    if row is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "capture not found")
+    user["permissions"].assert_can_read_row(
+        row, "captures", user.get("user_id") or "",
+        detail="capture not found",
+    )
+    _audit_cross_user_read(user, row, "audio", cid)
+    abs_path, mime = await asyncio.to_thread(_capture_audio_file, row, original)
     # FileResponse handles Range automatically — seeking in the karaoke
     # player won't re-download the whole file.
     return FileResponse(
@@ -933,7 +942,7 @@ async def delete_capture_api(
     """Delete a single capture. `scope=own` users can delete only their
     own; `scope=all` users (incl. admins) can delete any. Bulk wipe is
     via /clear which stays admin-only."""
-    row = captures_store.get_capture(cid)
+    row = await asyncio.to_thread(captures_store.get_capture, cid)
     if row is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "capture not found")
     user["permissions"].assert_can_read_row(
@@ -1111,15 +1120,24 @@ async def reprocess_vad_status_api() -> JSONResponse:
 # Join strategy + inter-member silence are GLOBAL admin settings now
 # (cfg.CAPTURES_SAMPLE_JOIN_STRATEGY / cfg.CAPTURES_VAD_MARGIN_SAMPLE_INTERNAL_MS),
 # not per-request — so the merge/preview/patch payloads no longer carry them.
+_MAX_GROUP_MEMBERS = 30
+# A group's chips are the projection of ALL its members' chips, so the
+# group-level schemas bound the whole projection; the binding limit is per
+# member (CAP_CORRECTIONS), checked with over_cap after the split. Bounding
+# the group list by the per-member cap 422'd every save of a group whose
+# members together held more than 200 chips.
+_CAP_GROUP_CORRECTIONS = text_corrections.CAP_CORRECTIONS * _MAX_GROUP_MEMBERS
+
+
 class CreateSampleIn(BaseModel):
     model_config = {"extra": "forbid"}
-    member_ids: list[str] = Field(min_length=1, max_length=30)
+    member_ids: list[str] = Field(min_length=1, max_length=_MAX_GROUP_MEMBERS)
 
 
 class PreviewMergeIn(BaseModel):
     """Preview the merged audio without creating a sample."""
     model_config = {"extra": "forbid"}
-    member_ids: list[str] = Field(min_length=1, max_length=30)
+    member_ids: list[str] = Field(min_length=1, max_length=_MAX_GROUP_MEMBERS)
 
 
 class PreviewSaveChipsIn(BaseModel):
@@ -1127,22 +1145,22 @@ class PreviewSaveChipsIn(BaseModel):
     GLOBAL word indices into the merged karaoke strip; server fans them
     out to per-member captures via _split_corrections_to_members."""
     model_config = {"extra": "forbid"}
-    member_ids: list[str] = Field(min_length=1, max_length=30)
+    member_ids: list[str] = Field(min_length=1, max_length=_MAX_GROUP_MEMBERS)
     corrections: list[CorrectionIn] = Field(
-        default_factory=list, max_length=text_corrections.CAP_CORRECTIONS)
+        default_factory=list, max_length=_CAP_GROUP_CORRECTIONS)
 
 
 class PatchSampleIn(BaseModel):
     model_config = {"extra": "forbid"}
     is_locked: bool | None = None
     corrections: list[CorrectionIn] | None = Field(
-        default=None, max_length=text_corrections.CAP_CORRECTIONS)
+        default=None, max_length=_CAP_GROUP_CORRECTIONS)
     # Snapshot of the group-derived chips at GET time. When provided
     # alongside `corrections`, the server applies a three-way merge
     # against the current member-projected chips so concurrent reports
     # / cross-tab admin saves survive. Omitted → legacy replace.
     baseline_corrections: list[CorrectionIn] | None = Field(
-        default=None, max_length=text_corrections.CAP_CORRECTIONS)
+        default=None, max_length=_CAP_GROUP_CORRECTIONS)
     status: Literal["new", "reviewed", "ready", "dismissed"] | None = None
     admin_notes: str | None = Field(default=None, max_length=8000)
 
@@ -1665,6 +1683,14 @@ async def preview_save_chips_api(
     )
     chips_in = [c.model_dump(exclude_none=True) for c in payload.corrections]
     per_member = _split_corrections_to_members(chips_in, captures)
+    # Before any write, as in patch_sample_api: the schema bounds the whole
+    # projection, the store caps each member.
+    if any(text_corrections.over_cap(c) for c in per_member.values()):
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            f"a member capture holds at most"
+            f" {text_corrections.CAP_CORRECTIONS} corrections",
+        )
 
     saved: dict[str, int] = {}
     members_corrections: dict[str, list[dict[str, Any]]] = {}
@@ -2758,24 +2784,32 @@ def _build_export_stream(only_status: str | None, include_audio: bool):
             text = capture_samples._apply_chips_to_text(base, row.get("corrections") or [])
             if not text.strip():
                 continue
-            # Audio path: prefer the trimmed companion if one was produced.
-            # Either way, the manifest line is skipped if the file isn't on
-            # disk (defense against the audio_missing leak path).
-            rel = row.get("audio_trimmed_relpath") or row.get("audio_relpath")
-            if not rel:
+            # Audio path: prefer the trimmed companion if one was produced and
+            # is still on disk, else the original (as get_audio_api plays it:
+            # a stale trimmed relpath must not drop a row the reviewer heard).
+            # The manifest line is skipped only if neither file is on disk
+            # (defense against the audio_missing leak path).
+            rel = abs_p = None
+            trimmed = False
+            for cand in (row.get("audio_trimmed_relpath"), row.get("audio_relpath")):
+                if not cand:
+                    continue
+                try:
+                    cand_abs = captures_store.abs_audio_path(cand)
+                except ValueError:
+                    continue
+                if os.path.isfile(cand_abs):
+                    rel, abs_p = cand, cand_abs
+                    trimmed = cand == row.get("audio_trimmed_relpath")
+                    break
+            if rel is None:
                 continue
             # The manifest duration must describe the file actually packed:
             # the trimmed companion is shorter by the cut lead + trail.
             dur = float(row.get("audio_s") or 0.0)
-            if row.get("audio_trimmed_relpath"):
+            if trimmed:
                 dur = max(0.0, dur - (int(row.get("audio_trim_lead_ms") or 0)
                                       + int(row.get("audio_trim_trail_ms") or 0)) / 1000.0)
-            try:
-                abs_p = captures_store.abs_audio_path(rel)
-            except ValueError:
-                continue
-            if not os.path.isfile(abs_p):
-                continue
             ext = os.path.splitext(rel)[1].lstrip(".").lower() or "wav"
             audio_name = f"audio/{cid}.{ext}"
             manifest_lines.write(json.dumps(_build_manifest_row(

@@ -340,6 +340,30 @@ def count_evictable() -> int:
     return int(row[0]) if row else 0
 
 
+def ready_fills_cap() -> bool:
+    """True when ungrouped "ready" rows alone reach CAPTURES_MAX.
+
+    _evict_to_cap drops in _EVICTION_ORDER and "ready" comes last, so a fresh
+    row (status "new", the newest of its status) is evicted by its own insert
+    exactly when the ready rows already fill the cap: the documented "ready
+    wins" policy. Recording it then only costs a transcode, a WAV write and a
+    dead capture id, so create_capture checks this first and the ingest gates
+    can use it to skip the forced word timestamps too."""
+    try:
+        from faster_whisper_backend.settings import config as cfg
+        row_cap = int(getattr(cfg, "CAPTURES_MAX", 5000))
+    except Exception:
+        row_cap = 5000
+    if row_cap < 1:
+        return False
+    conn = _require_conn()
+    row = conn.execute(
+        "SELECT COUNT(*) FROM captures"
+        " WHERE status = 'ready' AND sample_id IS NULL",
+    ).fetchone()
+    return (int(row[0]) if row else 0) >= row_cap
+
+
 def create_capture(
     *,
     audio_src_path: str,
@@ -357,15 +381,23 @@ def create_capture(
     translation_model: str | None = None,
     translation_source: str | None = None,
     task: str | None = None,
-) -> str:
+) -> str | None:
     """Transcode source audio into a 16 kHz mono WAV at the row's
     audio_relpath, then insert the SQLite row. On row-insert failure
     we unlink the audio file so we never orphan a multi-MB blob.
+
+    Returns None (nothing recorded) when the cap eviction would drop the new
+    row itself, i.e. the store is full of "ready" rows (see ready_fills_cap),
+    so no caller traces a capture id that no longer exists.
 
     Every internal file is RIFF/WAVE — universal browser playback
     (Firefox on Linux ships no AAC decoder, so we can't store .m4a)
     and Whisper's native input rate, so fine-tuning loses no quality."""
     from faster_whisper_backend.audio import transcode as audio_transcode
+
+    if ready_fills_cap():
+        logger.info("[captures] not recorded: ready rows fill CAPTURES_MAX")
+        return None
 
     cid = uuid.uuid4().hex
     relpath = _relpath_for(cid, "wav")
@@ -449,15 +481,31 @@ def create_capture(
                 logger.warning("[captures] evict-to-cap failed: %s", e)
                 # It may have dropped rows before failing.
                 evicted_any = True
+            # The eviction can still drop the new row itself (ready rows
+            # outweigh the byte cap, or filled the row cap since the check
+            # above); it already unlinked its audio. A failing probe must
+            # not reach the unlink below either.
+            survived = True
+            if evicted_any:
+                try:
+                    survived = conn.execute(
+                        "SELECT 1 FROM captures WHERE id = ?", (cid,),
+                    ).fetchone() is not None
+                except Exception:  # noqa: BLE001
+                    pass
     except Exception:
         _safe_unlink(abs_path)
         raise
 
-    logger.info(
-        "[captures] created id=%s model=%s dur=%.1fs words=%d wav_bytes=%d",
-        cid[:8], model or "?", float(audio_s or 0.0),
-        len(words or []), int(wav_bytes),
-    )
+    if not survived:
+        logger.info("[captures] not recorded: evicted by its own insert"
+                    " (ready rows fill the cap)")
+    else:
+        logger.info(
+            "[captures] created id=%s model=%s dur=%.1fs words=%d wav_bytes=%d",
+            cid[:8], model or "?", float(audio_s or 0.0),
+            len(words or []), int(wav_bytes),
+        )
     # Drop the proposer cache so the freshly-recorded clip is eligible on
     # the next Auto-propose-merges call instead of waiting up to TTL_S. The
     # cap eviction drops OTHER identities' rows too, so then every user's
@@ -467,7 +515,7 @@ def create_capture(
         captures_merge_proposer.invalidate(None if evicted_any else user_id)
     except Exception:
         pass
-    return cid
+    return cid if survived else None
 
 
 def _truncate_json(items: list[Any], cap_bytes: int) -> str:
@@ -1324,11 +1372,10 @@ def sweep_retention() -> int:
         ).fetchall()
         if not rows:
             return 0
-        ids = [r["id"] for r in rows]
-        placeholders = ",".join("?" * len(ids))
-        conn.execute(
-            f"DELETE FROM captures WHERE id IN ({placeholders})", ids,
-        )
+        # Chunked like the cap eviction: one IN-list over every over-age row
+        # can exceed SQLite's bind-variable limit (32766 on stock builds),
+        # and then every sweep raised and nothing ever expired.
+        _delete_ids(conn, [r["id"] for r in rows])
     for r in rows:
         try:
             _safe_unlink(abs_audio_path(r["audio_relpath"]))

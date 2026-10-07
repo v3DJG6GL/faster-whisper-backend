@@ -1167,11 +1167,21 @@
     }
     if (!resp.ok) {
       var msg = 'HTTP ' + resp.status;
-      try { var j = await resp.json(); if (j && j.detail) msg = j.detail; }
+      try { msg = _detailMsg(await resp.json(), msg); }
       catch(_) {}
       throw new Error(msg);
     }
     return await resp.json();
+  }
+
+  // An error body's message: FastAPI's 422 `detail` is a list of
+  // {loc, msg, ...} objects, which a bare detail assignment toasted as
+  // "[object Object]" (same handling as the reports page).
+  function _detailMsg(j, fallback) {
+    var d = j && j.detail;
+    if (typeof d === 'string' && d) return d;
+    if (Array.isArray(d) && d.length && d[0] && d[0].msg) return String(d[0].msg);
+    return fallback;
   }
 
   {{NOT_ADMIN_LANDING_JS}}
@@ -1350,9 +1360,32 @@
     });
   }
 
+  // True when an open capture card or group card holds unsaved chip /
+  // notes / status edits. Every render() rebuilds open capture cards from a
+  // fresh GET and collapses open group cards, so callers that end in one ask
+  // first (_okToDropOpenEdits).
+  function _anyOpenDirty() {
+    return Object.keys(_openRows).some(function(id) {
+      var st = _openRows[id];
+      return st && st.dirty;
+    }) || Object.keys(_openSamples).some(function(id) {
+      var st = _openSamples[id];
+      return st && st.state && st.state.dirty;
+    });
+  }
+  async function _okToDropOpenEdits(title, confirmLabel) {
+    if (!_anyOpenDirty()) return true;
+    return !!(await _confirm({
+      title: title,
+      body: 'An open capture or group has unsaved edits that will be lost.',
+      confirmLabel: confirmLabel, danger: true }));
+  }
+
   async function _bulkStatus(status) {
     var rows = _selectedRows();
     if (!rows.length) return;
+    if (!(await _okToDropOpenEdits('Mark ' + rows.length + ' ' + status + '?', 'Continue')))
+      return;
     var ids = rows.map(function(r) { return r.id; });
     try {
       var j = await api('PATCH', '/captures/api/bulk', { ids: ids, status: status });
@@ -1376,6 +1409,8 @@
   // sample was locked meanwhile, or whose audio vanished, as locked /
   // audio_missing — so the toast names each reason, like _bulkStatus.
   async function _undoBulk(updated) {
+    if (!(await _okToDropOpenEdits('Undo the bulk change?', 'Undo')))
+      return;
     var groups = {};
     updated.forEach(function(u) { (groups[u.prev_status] = groups[u.prev_status] || []).push(u.id); });
     var restored = 0, why = {};
@@ -1403,6 +1438,8 @@
   async function _bulkDelete() {
     var rows = _selectedRows();
     if (!rows.length) return;
+    if (!(await _okToDropOpenEdits('Delete ' + rows.length + ' selected?', 'Continue')))
+      return;
     var sec = rows.reduce(function(a, r) { return a + (r.audio_s || 0); }, 0);
     var ok = await _confirm({
       title: 'Delete ' + rows.length + ' capture' + (rows.length === 1 ? '' : 's') + '?',
@@ -3040,16 +3077,9 @@
     // member, so they arrive a page at a time instead of all at once.
     if (!_samplesNext || _samplesLoading) return;
     // The render() in `finally` re-expands every open capture card from a
-    // fresh GET, which would silently drop unsaved chip / notes / status
-    // edits — ask first.
-    var dirty = Object.keys(_openRows).some(function(id) {
-      var st = _openRows[id];
-      return st && st.dirty;
-    });
-    if (dirty && !(await _confirm({
-        title: 'Load more groups?',
-        body: 'An open capture has unsaved edits that will be lost.',
-        confirmLabel: 'Load more', danger: true })))
+    // fresh GET and collapses every open group card, which would silently
+    // drop unsaved chip / notes / status edits — ask first.
+    if (!(await _okToDropOpenEdits('Load more groups?', 'Load more')))
       return;
     if (!_samplesNext || _samplesLoading) return;
     _samplesLoading = true;
@@ -3864,12 +3894,12 @@
         ]);
         if (!audioResp.ok) {
           var amsg = 'preview failed (' + audioResp.status + ')';
-          try { var aj = await audioResp.json(); if (aj && aj.detail) amsg = aj.detail; } catch (_) {}
+          try { amsg = _detailMsg(await audioResp.json(), amsg); } catch (_) {}
           throw new Error(amsg);
         }
         if (!wordsResp.ok) {
           var wmsg = 'word-preview failed (' + wordsResp.status + ')';
-          try { var wj = await wordsResp.json(); if (wj && wj.detail) wmsg = wj.detail; } catch (_) {}
+          try { wmsg = _detailMsg(await wordsResp.json(), wmsg); } catch (_) {}
           throw new Error(wmsg);
         }
         var blob = await audioResp.blob();
@@ -3970,7 +4000,7 @@
     });
     if (!resp.ok) {
       var msg = 'chip save failed (' + resp.status + ')';
-      try { var j = await resp.json(); if (j && j.detail) msg = j.detail; } catch (_) {}
+      try { msg = _detailMsg(await resp.json(), msg); } catch (_) {}
       throw new Error(msg);
     }
     state.baselineCorrections = JSON.parse(JSON.stringify(state.corrections));
@@ -5183,7 +5213,9 @@
         applyServerSample(detail);
         body.dataset.built = '1';
         body.dataset.fetching = '';
-        _openSamples[g.id] = { audio: audio };
+        // `state` lets the unsaved-edits guard (_anyOpenDirty) see this
+        // card's dirty flag before a render() collapses it.
+        _openSamples[g.id] = { audio: audio, state: sampleState };
       })
       .catch(function(e) {
         body.dataset.fetching = '';
@@ -5197,6 +5229,19 @@
     var rows = applyFilters(_allCaptures);
     var list = document.getElementById('list');
     var openIds = Object.keys(_openRows);
+    // A filter / search change must not leave hidden rows selected: the bulk
+    // Dismiss / Delete act on the whole selection, so it would reach rows no
+    // longer on screen. Keep exactly what select-all could pick now.
+    var selectable = {};
+    rows.forEach(function(r) { if (!r.sample_id) selectable[r.id] = true; });
+    var pruned = false;
+    _selection.forEach(function(id) {
+      if (!selectable[id]) { _selection.delete(id); pruned = true; }
+    });
+    if (pruned) {
+      if (_lastSelectId && !_selection.has(_lastSelectId)) _lastSelectId = null;
+      _updateActionBar();
+    }
     // Group cards don't persist open state across render — innerHTML wipe
     // destroys their <audio>, so revoke any tracked blob URL first.
     Object.keys(_openSamples).forEach(function(sid) {

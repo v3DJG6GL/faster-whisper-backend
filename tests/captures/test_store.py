@@ -6,6 +6,7 @@ disabled, reconcile_on_startup, sweep_retention."""
 
 import json
 import os
+import sqlite3
 import wave
 
 import pytest
@@ -654,9 +655,88 @@ def test_evict_deletes_more_ids_than_one_in_list_chunk(
         "'[]','dismissed','bob')", [(i,) for i in many])
     monkeypatch.setattr(config, "CAPTURES_MAX", 1, raising=False)
     monkeypatch.setattr(config, "CAPTURES_MAX_MB", 0, raising=False)
-    with cs._lock:
-        assert cs._evict_to_cap(conn) is True
+    # Builds differ (Debian's sqlite allows 250000 variables, stock 32766):
+    # lower the limit below the 1099 ids so one unchunked IN-list would fail.
+    old = conn.getlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER)
+    conn.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 999)
+    try:
+        with cs._lock:
+            assert cs._evict_to_cap(conn) is True
+    finally:
+        conn.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, old)
     assert cs.count() == 1
+
+
+def _seed_ready(cs, n, ts=1.0):
+    cs._require_conn().executemany(
+        "INSERT INTO captures (id, created_ts, model, audio_relpath,"
+        " audio_format, raw_text, final_text, words, segments, corrections,"
+        " status, user_id) VALUES (?,?,'m','x.wav','wav','r','f','[]','[]',"
+        "'[]','ready','bob')", [(f"ready{i:07d}", ts) for i in range(n)])
+
+
+def test_a_store_full_of_ready_rows_records_nothing(
+        captures_store_db, monkeypatch, tmp_path):
+    """"ready" is evicted last, so with ready rows filling CAPTURES_MAX the new
+    row was the one evicted by its own insert: the caller still got its id and
+    traced a capture link to a deleted row, after a wasted transcode."""
+    cs = captures_store_db
+    from faster_whisper_backend.audio import transcode as audio_transcode
+    from faster_whisper_backend.settings import config
+    monkeypatch.setattr(config, "CAPTURES_MAX", 10, raising=False)
+    monkeypatch.setattr(config, "CAPTURES_MAX_MB", 0, raising=False)
+    _seed_ready(cs, 10)
+    assert cs.ready_fills_cap() is True
+    _fake_transcode(cs, monkeypatch)
+    src = tmp_path / "src_in.bin"
+    src.write_bytes(b"junk")
+    calls = []
+    real = audio_transcode.transcode_to_wav_16k_mono
+    monkeypatch.setattr(audio_transcode, "transcode_to_wav_16k_mono",
+                        lambda a, b: calls.append(a) or real(a, b))
+    assert cs.create_capture(
+        audio_src_path=str(src), request_id="r", model="m", language="de",
+        audio_s=1.0, raw="r", final="f", words=[], segments=[]) is None
+    assert calls == []
+    assert cs.count() == 10
+
+
+def test_a_byte_cap_that_evicts_the_new_row_returns_none(
+        captures_store_db, monkeypatch, tmp_path):
+    """The byte pass reaches "new" before "ready", so ready audio over
+    CAPTURES_MAX_MB evicts the fresh row: create_capture must not hand back
+    the id of a row it already deleted."""
+    cs = captures_store_db
+    from faster_whisper_backend.settings import config
+    monkeypatch.setattr(config, "CAPTURES_MAX", 5000, raising=False)
+    monkeypatch.setattr(config, "CAPTURES_MAX_MB", 1, raising=False)
+    ready = _make(cs, monkeypatch, tmp_path)
+    cs.update_capture(ready, {"status": "ready"})
+    # Just under the cap alone; the new row's WAV tips the total over it.
+    with open(cs.abs_audio_path(cs.get_capture(ready)["audio_relpath"]),
+              "r+b") as f:
+        f.truncate(1024 * 1024 - 16)
+    assert _make(cs, monkeypatch, tmp_path) is None
+    assert cs.count() == 1
+    assert cs.get_capture(ready) is not None
+
+
+def test_an_older_new_row_is_evicted_before_the_fresh_one(
+        captures_store_db, monkeypatch, tmp_path):
+    cs = captures_store_db
+    from faster_whisper_backend.settings import config
+    monkeypatch.setattr(config, "CAPTURES_MAX", 5000, raising=False)
+    monkeypatch.setattr(config, "CAPTURES_MAX_MB", 0, raising=False)
+    older = _make(cs, monkeypatch, tmp_path)
+    cs._require_conn().execute(
+        "UPDATE captures SET created_ts=0.5 WHERE id=?", (older,))
+    _seed_ready(cs, 9)
+    monkeypatch.setattr(config, "CAPTURES_MAX", 10, raising=False)
+    assert cs.ready_fills_cap() is False
+    fresh = _make(cs, monkeypatch, tmp_path)
+    assert fresh is not None and cs.get_capture(fresh) is not None
+    assert cs.get_capture(older) is None
+    assert cs.count() == 10
 
 
 def test_evict_disabled_when_caps_below_one(captures_store_db, monkeypatch, tmp_path):
@@ -739,6 +819,29 @@ def test_sweep_retention_deletes_old(captures_store_db, monkeypatch, tmp_path):
     assert cs.get_capture(old) is None
 
 
+def test_sweep_retention_deletes_more_ids_than_one_in_list_chunk(
+        captures_store_db, monkeypatch):
+    """An over-age set larger than SQLite's bind-variable limit must still be
+    swept: one unchunked IN-list raised "too many SQL variables" on every pass,
+    so retention silently stopped deleting anything."""
+    cs = captures_store_db
+    from faster_whisper_backend.settings import config
+    monkeypatch.setattr(config, "CAPTURES_RETENTION_DAYS", 30, raising=False)
+    conn = cs._require_conn()
+    conn.executemany(
+        "INSERT INTO captures (id, created_ts, model, audio_relpath,"
+        " audio_format, raw_text, final_text, words, segments, corrections,"
+        " status, user_id) VALUES (?,1.0,'m','x.wav','wav','r','f','[]','[]',"
+        "'[]','new','bob')", [(f"aged{i:07d}",) for i in range(1100)])
+    old = conn.getlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER)
+    conn.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 999)
+    try:
+        assert cs.sweep_retention() == 1100
+    finally:
+        conn.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, old)
+    assert cs.count() == 0
+
+
 def _group_one(cs, gs, sid, member, sample_ts, member_ts):
     conn = cs._require_conn()
     conn.execute(
@@ -773,10 +876,10 @@ def test_sweep_retention_protects_members_of_a_current_sample(
 def test_count_evictable_ignores_grouped_members(
     captures_store_db, groups_store_db, monkeypatch, tmp_path,
 ):
-    """The ingest cap gate compares count_evictable() to CAPTURES_MAX; grouped
-    rows are bounded by retention, not the cap, so they must not count —
-    otherwise grouped rows alone at the cap wedge ingestion shut while the
-    evictor sees nothing to evict."""
+    """count_evictable() mirrors _evict_to_cap's scope: grouped rows are
+    bounded by retention, not the cap, so they must not count. No ingest gate
+    reads it any more (a full store rotates in create_capture); the two "full
+    store still records" route tests patch it so a revived count gate fails."""
     import time
     cs = captures_store_db
     gs = groups_store_db
