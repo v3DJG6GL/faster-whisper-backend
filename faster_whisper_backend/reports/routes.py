@@ -308,8 +308,9 @@ async def list_reports_api(
     # 0.36 s — the remaining 1.8 s was JSONResponse rendering the body. Rows
     # are plain types out of _row_to_dict, and the dumps kwargs mirror
     # Starlette's JSONResponse.render (allow_nan=False in particular: a
-    # legacy non-finite trace_ts must raise here, not emit bare `NaN` that
-    # breaks the browser's response.json()). Matches captures_routes.
+    # non-finite value must raise here, not emit bare `NaN` that breaks the
+    # browser's response.json(); _row_to_dict already maps a legacy
+    # non-finite trace_ts to created_ts). Matches captures_routes.
     body = await asyncio.to_thread(_render)
     return Response(content=body, media_type="application/json")
 
@@ -444,8 +445,8 @@ async def export_reports_api() -> Response:
             "reports": reports_store.list_reports(limit=None),
         }
         # allow_nan=False for the same reason as list_reports_api: a
-        # non-finite legacy trace_ts must fail loudly here, not ship a
-        # "backup" carrying bare Infinity/NaN that no strict parser reads.
+        # non-finite value must fail loudly here, not ship a "backup"
+        # carrying bare Infinity/NaN that no strict parser reads.
         return json.dumps(payload, ensure_ascii=False, indent=2,
                           allow_nan=False)
 

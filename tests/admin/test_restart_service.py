@@ -242,24 +242,32 @@ def test_winsw_restart_bang_flushes_before_exit(monkeypatch):
 
 
 def test_flush_before_exit_swallows_failures(monkeypatch):
-    """A broken flush must never block the restart itself, and a failing
-    receipt flush must not skip the NVML shutdown after it."""
+    """A broken flush must never block the restart itself: every duty is
+    attempted in order (held receipts, stats samples, NVML), and a failing
+    one must not skip the ones after it."""
     from faster_whisper_backend.runtime import system_stats
+    from faster_whisper_backend.stats import sampler
     from faster_whisper_backend.transcription import receipt_hold
 
     reached = []
 
     def _boom_flush(*a, **k):
+        reached.append("flush")
         raise RuntimeError("receipt flush exploded")
+
+    def _boom_sampler():
+        reached.append("sampler")
+        raise RuntimeError("sampler flush exploded")
 
     def _boom_shutdown():
         reached.append("shutdown")
         raise RuntimeError("nvml exploded")
 
     monkeypatch.setattr(receipt_hold, "flush_all", _boom_flush)
+    monkeypatch.setattr(sampler, "flush", _boom_sampler)
     monkeypatch.setattr(system_stats, "shutdown", _boom_shutdown)
     _REAL_FLUSH()  # must not raise
-    assert reached == ["shutdown"]
+    assert reached == ["flush", "sampler", "shutdown"]
 
 
 # --- hard-restart TMPDIR sweep ----------------------------------------------
@@ -290,12 +298,19 @@ def test_reclaim_hard_restart_orphans(tmp_path, monkeypatch):
     fresh_dir.mkdir()
     (fake_tmp / "sepsrc-live.wav").write_bytes(b"x")
     (fake_tmp / "unrelated.txt").write_bytes(b"x")
+    # /captures merge preview + merge_wavs' own `.tmp` sibling.
+    for name in ("preview_merge_x.wav", "preview_merge_x.wav.abc.tmp"):
+        p = fake_tmp / name
+        p.write_bytes(b"x")
+        os.utime(p, (old, old))
 
     restart_service.reclaim_hard_restart_orphans()
 
     assert not old_dir.exists()
     assert not (fake_tmp / "sepsrc-dead.wav").exists()
     assert not (fake_tmp / "vocals-dead.wav").exists()
+    assert not (fake_tmp / "preview_merge_x.wav").exists()
+    assert not (fake_tmp / "preview_merge_x.wav.abc.tmp").exists()
     assert fresh_dir.exists()
     assert (fake_tmp / "sepsrc-live.wav").exists()
     assert (fake_tmp / "unrelated.txt").exists()

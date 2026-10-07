@@ -257,3 +257,29 @@ def test_reset_on_a_rule_config_json_dropped_says_so(client):
     body = body[:body.index("\n  }\n")]
     assert "if (!base) return;" not in body
     assert "paintAll();" in body and "_toast(" in body
+
+
+def test_rule_comparisons_fill_in_schema_defaults(client):
+    """The server copy (model_dump) always carries note "", tags [] etc.;
+    the editor's serializers can leave an empty one out. A rule missing a
+    default read as "edited here" (and kept Save lit, and flipped the
+    promote-all drop dialog to "lossy"), so both comparisons fill them in,
+    and the add dialog seeds them like the server dump."""
+    html = _html(client)
+    strip = html[html.index("function _ruleStrip(r) {"):]
+    strip = strip[:strip.index("\n  }\n")]
+    assert "const c = _withDefaults(r);" in strip
+    sans = html[html.index("function _sansRevs(v, keep) {"):]
+    sans = sans[:sans.index("\n  }\n")]
+    assert "const c = _withDefaults(r);" in sans
+    assert "return _sortDeep(c);" in sans
+    fill = html[html.index("function _withDefaults(r) {"):]
+    fill = fill[:fill.index("\n  }\n")]
+    for key in ("languages: []", "exposed: false", "tags: []", "note: ''",
+                "color: ''", "label: ''"):
+        assert key in fill, key
+    add = html[html.index("const newRule = {"):]
+    add = add[:add.index("};")]
+    for key in ("languages: []", "exposed: false", "tags: []", "note: ''",
+                "color: ''"):
+        assert key in add, key

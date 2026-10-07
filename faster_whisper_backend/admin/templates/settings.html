@@ -1049,7 +1049,10 @@ function setDirty(name, value) {
       || name === 'TRANSLATION_ALLOWED_MODELS'
       || name === 'TRANSLATION_PRELOAD_MODELS'
       || name === 'BGM_SEPARATION_ALLOWED_MODELS') {
-    document.dispatchEvent(new CustomEvent('admin:model-lists-changed'));
+    // detail.name lets an editor skip its own edits: the multi-select's
+    // free-form textarea would otherwise be rebuilt on every keystroke.
+    document.dispatchEvent(new CustomEvent('admin:model-lists-changed',
+                                           { detail: { name } }));
   }
   // Notify per-field listeners (currently the ↺ Reset button) so they can
   // refresh their "value differs from default?" display.
@@ -2071,7 +2074,11 @@ function modelDropdownEditor(name, v, lists) {
     wrap.appendChild(sel);
   }
   render();
-  _registerAdminListener('admin:model-lists-changed', 'modelDropdown:' + name, render);
+  // A re-render builds fresh controls: keep an env-pinned field's disabled.
+  _registerAdminListener('admin:model-lists-changed', 'modelDropdown:' + name, () => {
+    render();
+    if (isEnvPinned(name)) disableEnvPinnedEditor(wrap);
+  });
   return wrap;
 }
 
@@ -2149,7 +2156,14 @@ function modelMultiSelectEditor(name, v, lists) {
     wrap.appendChild(help);
   }
   render();
-  _registerAdminListener('admin:model-lists-changed', 'modelMultiSelect:' + name, render);
+  // Skip this field's own edits (the controls already show them; a rebuild
+  // would drop the textarea's focus and its trailing newline on every
+  // keystroke). A re-render keeps an env-pinned field's controls disabled.
+  _registerAdminListener('admin:model-lists-changed', 'modelMultiSelect:' + name, (e) => {
+    if (e && e.detail && e.detail.name === name) return;
+    render();
+    if (isEnvPinned(name)) disableEnvPinnedEditor(wrap);
+  });
   return wrap;
 }
 
@@ -2182,9 +2196,12 @@ function translationTemplateEditor(name, v) {
     return row;
   };
   const modelSel = document.createElement('select');
+  // SAVED values, not currentValue(): POST /settings/translation-test checks
+  // the model against the saved allowlist/default, so an unsaved entry
+  // offered here would only answer 400 "not in TRANSLATION_ALLOWED_MODELS".
   function refreshModels() {
-    const def = (currentValue('TRANSLATION_DEFAULT_MODEL') || '').trim();
-    const allowed = currentValue('TRANSLATION_ALLOWED_MODELS') || [];
+    const def = (fieldDef('TRANSLATION_DEFAULT_MODEL').value || '').trim();
+    const allowed = fieldDef('TRANSLATION_ALLOWED_MODELS').value || [];
     const opts = [];
     if (def) opts.push(def);
     (Array.isArray(allowed) ? allowed : []).forEach(r => {
@@ -2417,8 +2434,8 @@ function translationTemplateEditor(name, v) {
           const pct = p.progress != null ? Math.round(p.progress * 100) : null;
           let txt = 'Downloading model' + (pct != null ? '… ' + pct + '%' : '…');
           if (p.total_bytes) {
-            const done = p.progress != null ? p.progress * p.total_bytes : null;
-            txt += ' (' + (done != null ? fmtGB(done) : '?') + ' / '
+            const doneBytes = p.progress != null ? p.progress * p.total_bytes : null;
+            txt += ' (' + (doneBytes != null ? fmtGB(doneBytes) : '?') + ' / '
               + fmtGB(p.total_bytes) + ' GB)';
           }
           stage.textContent = txt;
@@ -2495,15 +2512,13 @@ function translationTemplateEditor(name, v) {
 
   // Family/model-list edits re-render (the readout is family- AND
   // model-aware — family=auto resolves from the picked model server-side).
+  // No refresh on unsaved model-list edits: the lab offers saved values only
+  // (see refreshModels); loadState() rebuilds it after a save.
   _registerAdminListener('admin:dirty', 'translationLab', (e) => {
     if (!e.detail) return;
     if (e.detail.name === 'TRANSLATION_PROMPT_FAMILY') {
       showFamily(currentValue('TRANSLATION_PROMPT_FAMILY'));
       schedulePreview();
-    }
-    if (e.detail.name === 'TRANSLATION_ALLOWED_MODELS'
-        || e.detail.name === 'TRANSLATION_DEFAULT_MODEL') {
-      refreshModels(); schedulePreview();
     }
   });
   return wrap;
@@ -2723,13 +2738,28 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
     }
     return o;
   }
+  // The server copy (schema model_dump) always carries the schema defaults;
+  // the editor's serializers (rule_editor.js _readEntries, the add dialog)
+  // may leave an empty one out. Fill them in before any comparison, so a
+  // missing `note: ""` never reads as an edit. Filling (not dropping) keeps
+  // a canonical rule — and so every stored config_rev hash — unchanged.
+  function _withDefaults(r) {
+    if (!r || typeof r !== 'object') return Object.assign({}, r);
+    const c = Object.assign({ enabled: true, languages: [], locked: false,
+                              exposed: false, tags: [], note: '', color: '' }, r);
+    if (Array.isArray(c.entries)) {
+      c.entries = c.entries.map(e => (e && typeof e === 'object')
+        ? Object.assign({ replacement: '', label: '', note: '' }, e) : e);
+    }
+    return c;
+  }
   // Content equality ignoring the vestigial `seeded` flag (config.json is
   // always seeded:true; a rule only on this server is seeded:false — not a
   // real diff), the server-owned `map_meta` timestamps (present on disk once
   // a cb:map entry is touched via /quick-config, absent from config.json)
   // and the editor's own `config_rev` bookkeeping.
   function _ruleStrip(r) {
-    const c = Object.assign({}, r);
+    const c = _withDefaults(r);
     delete c.seeded;
     delete c.map_meta;
     delete c.config_rev;
@@ -2894,11 +2924,13 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
   // stored rev, a rev-only change is real (_afterPromoteStamp's restamp) and
   // dropping it would read the next config.json change as 'diverged'.
   // `keep`: name → the server copy's config_rev.
+  // Schema defaults are filled in (and keys sorted) on both sides, so an
+  // empty field the editor's serializers leave out is no edit either.
   function _sansRevs(v, keep) {
     return JSON.stringify((v || []).map(r => {
-      const c = Object.assign({}, r);
+      const c = _withDefaults(r);
       if (!(keep && keep.get(r && r.name))) delete c.config_rev;
-      return c;
+      return _sortDeep(c);
     }));
   }
   function _setRulesDirty() {
@@ -3945,9 +3977,12 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
       const t = typeSel.value;
       // A newly-added rule is local-only (seeded:false) until promoted to
       // config.json — save_factory_rules normalises seeded:true on promote.
+      // The schema-default keys match the server's canonical copy, so the
+      // rule compares equal to config.json once promoted.
       const newRule = {
         name: slug, label: lbl, type: t,
-        enabled: true, locked: false, seeded: false,
+        enabled: true, languages: [], locked: false, seeded: false,
+        exposed: false, tags: [], note: '', color: '',
       };
       // Seed empty type-specific fields; the user fills them in via the
       // expanded body editor (auto-opened below). Empty patterns are

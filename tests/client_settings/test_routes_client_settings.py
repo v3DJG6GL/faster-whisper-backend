@@ -84,6 +84,21 @@ def test_non_finite_float_rejected_and_nothing_stored(client):
     assert r.json()["version"] == 0 and r.json()["blob"] is None
 
 
+def test_lone_surrogate_422_and_nothing_stored(client):
+    """A `\\ud800` escape parses fine but cannot be stored as UTF-8: a 422
+    for malformed input with nothing written — not a 413 "too large" for a
+    few-byte payload. Same for the device label."""
+    for body in (b'{"blob":{"x":"\\ud800"},"base_version":0}',
+                 b'{"blob":{"x":1},"device":"\\ud800","base_version":0}'):
+        r = client.put(_URL, content=body,
+                       headers={"content-type": "application/json"})
+        assert r.status_code == 422, (body, r.text)
+        assert "surrogate" in r.json()["detail"]
+    r = client.get(_URL)
+    assert r.status_code == 200
+    assert r.json()["version"] == 0 and r.json()["blob"] is None
+
+
 def test_legacy_non_finite_row_serves_null_not_500(client, make_user_key):
     """A row stored before the write side refused NaN still holds the bare
     literal. Parsed as float('nan') it 500'd the 409 merge body (JSONResponse

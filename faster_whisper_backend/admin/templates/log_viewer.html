@@ -573,12 +573,13 @@
       + ' ' + _p2(d.getHours()) + ':' + _p2(d.getMinutes()) + ':' + _p2(d.getSeconds());
     return local + line.slice(m[1].length);
   }
-  // DOM cap for live-tail appends only. Lines a "Load older" click brought in
-  // raise the trim bound by their count (_olderInDom), so the next live line
-  // does not trim the batch the user just asked for straight back out; live
-  // lines still evict the oldest rows one for one past that.
+  // DOM cap for live-tail appends only. Elements a "Load older" click brought
+  // in (its lines plus their fold controls) raise the trim bound by their
+  // count (_olderInDom), so the next live line does not trim the batch the
+  // user just asked for straight back out; live lines still evict the oldest
+  // rows one for one past that.
   const _LOG_DOM_MAX = {{LOG_VIEWER_DOM_MAX}};
-  // Lines prepended by "Load older" since the last Clear / (re)connect.
+  // Elements prepended by "Load older" since the last Clear / (re)connect.
   let _olderInDom = 0;
   // Persists across append() calls so a skipped step's 3 lines (arriving as 3
   // separate SSE events) dim as one group.
@@ -677,12 +678,16 @@
   // in the DOM. Reset by openLogStream(), advanced by every append()
   // (backlog + live) and by each successful /logs/older batch length.
   let _logsSkip = 0;
+  // Bumped by openLogStream(): a batch fetched against the old DOM and
+  // cursor must not land on the replayed backlog.
+  let _logsGen = 0;
   let _logsOlderBusy = false;
   const loadOlderBtn = document.getElementById('loadOlderBtn');
   if (loadOlderBtn) {
     loadOlderBtn.addEventListener('click', async () => {
       if (_logsOlderBusy) return;
       _logsOlderBusy = true;
+      const gen = _logsGen;
       loadOlderBtn.disabled = true;
       const prevLabel = loadOlderBtn.textContent;
       loadOlderBtn.textContent = 'Loading…';
@@ -696,6 +701,9 @@
           return;
         }
         const j = await r.json();
+        // A reconnect meanwhile reset the DOM and the cursor this batch's
+        // offset was read from: drop it (the finally re-enables the button).
+        if (gen !== _logsGen) return;
         const lines = (j && j.lines) || [];
         // Prepend to top of #log, preserving line order (oldest-first
         // batch → first inserted ends up at the very top, last inserted
@@ -704,9 +712,13 @@
         const frag = document.createDocumentFragment();
         const olderDim = { dimLeft: 0 };   // batch-local; no leak to live tail
         for (const line of lines) appendLine(frag, line, olderDim);
+        // Count before the insert empties the fragment: appendLine adds a
+        // .fold-ctl per folded block, and the trim bound counts elements.
+        // The cursor counts lines only.
+        const added = frag.childElementCount;
         log.insertBefore(frag, log.firstChild);
         _logsSkip += lines.length;
-        _olderInDom += lines.length;
+        _olderInDom += added;
         // The batch carries its own .match rows: refresh the n/m counter.
         if (filterText) queueNav();
         if (j.next_skip == null) loadOlderBtn.style.display = 'none';
@@ -733,6 +745,7 @@
     log.innerHTML = '';
     _resetLiveDim();
     _logsSkip = 0;
+    _logsGen++;
     _olderInDom = 0;
     const lo = document.getElementById('loadOlderBtn');
     if (lo) lo.style.display = 'none';

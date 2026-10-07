@@ -88,6 +88,10 @@ def test_reports_page_notes_draft_survives_a_rerender(client):
     save = save[:save.index("\n  }\n")]
     assert "btn.disabled = true;" not in save
     assert "btn.disabled = !changed;" in save
+    # A render() during the PATCH: the saved notes reach the live row (a
+    # Refresh replaced the objects) and the live card's controls are synced.
+    assert "_allReports.forEach(function(x) { if (x.id === r.id) x.admin_notes = saved; });" in save
+    assert save.index("if (!btn.isConnected)") < save.index("btn.disabled = !changed;")
 
 
 def test_reports_list(client):
@@ -98,19 +102,21 @@ def test_reports_list(client):
     assert "reports" in body and "counts" in body
 
 
-def test_list_with_legacy_nonfinite_trace_ts_raises_not_nan(client):
-    """A pre-guard row with a non-finite trace_ts must make the hand-rolled
-    list serializer raise (allow_nan=False, mirroring JSONResponse.render)
-    instead of emitting bare `NaN` — invalid JSON the browser chokes on."""
-    import pytest
+def test_list_with_legacy_nonfinite_trace_ts_reads_created_ts(client):
+    """A pre-guard row with a non-finite trace_ts reads back as its
+    created_ts: the strict list serializer (allow_nan=False, kept as the
+    backstop) would otherwise raise on every load of the triage page."""
+    import json
     from faster_whisper_backend.reports import store as reports_store
     client.post(_SUBMIT, json=_payload(request_id="nan-1"))
     # inf, not nan: Python's sqlite3 binds nan as NULL (NOT NULL constraint),
     # but inf round-trips through the REAL column and is equally non-finite.
     reports_store._require_conn().execute(
         "UPDATE reports SET trace_ts = ?", (float("inf"),))
-    with pytest.raises(ValueError):
-        client.get("/reports/api/list")
+    r = client.get("/reports/api/list")
+    assert r.status_code == 200
+    row = json.loads(r.text)["reports"][0]     # strict: no bare Infinity
+    assert row["trace_ts"] == row["created_ts"]
 
 
 def test_patch_report_invalid_status_422(client):
@@ -165,18 +171,20 @@ def test_export_reports_admin(client):
     assert body["reports"][0]["request_id"] == "exp-1"
 
 
-def test_export_with_legacy_nonfinite_trace_ts_raises_not_infinity(client):
-    """The export shares the store and rows with /reports/api/list, so it
-    must fail the same way on a non-finite trace_ts (allow_nan=False)
-    instead of returning 200 with bare `Infinity` — a "backup" JSON.parse,
-    jq and every strict parser reject."""
-    import pytest
+def test_export_with_legacy_nonfinite_trace_ts_reads_created_ts(client):
+    """The export shares the store and rows with /reports/api/list, so a
+    non-finite trace_ts reads back as created_ts there too: a 200 with
+    strict JSON, never bare `Infinity` (which JSON.parse, jq and every
+    strict parser reject) and never a 500."""
+    import json
     from faster_whisper_backend.reports import store as reports_store
     client.post(_SUBMIT, json=_payload(request_id="nan-exp"))
     reports_store._require_conn().execute(
         "UPDATE reports SET trace_ts = ?", (float("inf"),))
-    with pytest.raises(ValueError):
-        client.get("/reports/api/export")
+    r = client.get("/reports/api/export")
+    assert r.status_code == 200
+    row = json.loads(r.text)["reports"][0]
+    assert row["trace_ts"] == row["created_ts"]
 
 
 def test_list_signals_truncation_with_uncapped_counts(client, monkeypatch):

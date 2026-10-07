@@ -172,6 +172,13 @@ def _row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
     """Materialize a row, decoding the JSON-bearing columns. Returns
     plain Python types ready for JSON serialization on the wire."""
     d = dict(row)
+    # A row stored before _clean_trace_ts guarded the write can still hold
+    # +/-inf: the strict (allow_nan=False) list/export renders would raise on
+    # it every load, so it reads back as its creation time instead.
+    if "trace_ts" in d:
+        ts = d["trace_ts"]
+        if not isinstance(ts, (int, float)) or not math.isfinite(ts):
+            d["trace_ts"] = d.get("created_ts") or 0.0
     # Columns are raw_text / final_text (every store agrees); the API and
     # the pages keep the established raw / final keys.
     if "raw_text" in d:

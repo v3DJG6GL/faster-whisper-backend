@@ -765,13 +765,27 @@
     try {
       var j = await api('PATCH', '/reports/api/' + encodeURIComponent(r.id),
         { admin_notes: ta.value });
-      r.admin_notes = j.report.admin_notes;
+      var saved = j.report.admin_notes;
+      r.admin_notes = saved;
+      // A Refresh while the PATCH was in flight replaced the row objects:
+      // carry the saved notes onto the live row too, or the next render
+      // shows the old text as if the save was lost.
+      _allReports.forEach(function(x) { if (x.id === r.id) x.admin_notes = saved; });
       // Text typed while the PATCH was in flight was not sent: keep it
       // marked unsaved. _drafts holds the latest text even if a re-render
       // replaced `ta` meanwhile.
       var cur = _hasDraft(r.id) ? _drafts[r.id] : ta.value;
-      var changed = cur !== (r.admin_notes || '');
+      var changed = cur !== (saved || '');
       if (!changed) delete _drafts[r.id];
+      // A re-render meanwhile detached btn/dirty; its card marked the draft
+      // dirty against the old notes, so sync the live card's controls too.
+      if (!btn.isConnected) {
+        var live = document.querySelector('.report-card[data-id="' + CSS.escape(String(r.id)) + '"]');
+        if (live) {
+          btn = live.querySelector('.rc-notes button.primary') || btn;
+          dirty = live.querySelector('.rc-notes .dirty') || dirty;
+        }
+      }
       btn.disabled = !changed;
       dirty.classList.toggle('hidden', !changed);
       toast('Notes saved.');

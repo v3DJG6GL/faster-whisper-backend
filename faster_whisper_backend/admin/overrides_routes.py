@@ -271,6 +271,15 @@ async def rename_profile(payload: _RenameProfileIn, request: Request) -> JSONRes
     whole point of renaming is usually to retitle a profile that is already in
     use. The library's dict order is irrelevant (the page sorts for display), so
     the rename keeps the surviving overrides exactly and only swaps the key."""
+    # An env-pinned library (WHISPER_OVERRIDE_PROFILES) keeps its running
+    # value and comes back at the next restart: the cascade would then leave
+    # every binding naming a profile the env never defines, dropping that
+    # layer and its locks (fail-open). Refuse before any save or cascade.
+    pinned_by = config_store.env_pinned_fields().get("OVERRIDE_PROFILES")
+    if pinned_by:
+        raise HTTPException(status.HTTP_409_CONFLICT,
+                            f"OVERRIDE_PROFILES is pinned by {pinned_by}; "
+                            "rename the profile there")
     profiles = dict(getattr(cfg, "OVERRIDE_PROFILES", None) or {})
     old = payload.old.strip().lower()
     new = payload.new.strip().lower()

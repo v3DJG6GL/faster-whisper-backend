@@ -558,9 +558,14 @@ async def post_factory_rules(payload: dict[str, Any], request: Request) -> JSONR
         overrides = await asyncio.to_thread(config_store.load_overrides)
         local_rules = overrides.get("PIPELINE_RULES")
         shadowed = isinstance(local_rules, list)
-        cfg.PIPELINE_RULES = local_rules if shadowed else [dict(r) for r in saved]
-
-        await pl_apply.rebuild_caches_off_loop("factory-rules save")
+        # An env-pinned PIPELINE_RULES (WHISPER_PIPELINE_RULES) keeps its
+        # running value, as on post_state (pl_apply.apply_hot_changes skips
+        # pinned names): the file write above still lands for the next
+        # deployment without the var.
+        env_pinned = "PIPELINE_RULES" in config_store.env_pinned_fields()
+        if not env_pinned:
+            cfg.PIPELINE_RULES = local_rules if shadowed else [dict(r) for r in saved]
+            await pl_apply.rebuild_caches_off_loop("factory-rules save")
 
     client_host = request.client.host if request.client else "?"
     logger.info("[config] factory-rules update from=%s rules=%d shadowed_by_local=%s",
@@ -569,6 +574,7 @@ async def post_factory_rules(payload: dict[str, Any], request: Request) -> JSONR
     return JSONResponse({
         "saved": len(saved),
         "shadowed_by_local": shadowed,
+        "env_pinned": env_pinned,
         "rules": pl_apply.canon_rules(saved),
     })
 
@@ -594,21 +600,30 @@ async def clear_local_pipeline_override(request: Request) -> JSONResponse:
     # Shared pipeline lock: same whole-key write race as post_state.
     async with pl_apply.rules_lock():
         try:
+            # Read config.json FIRST: a broken factory file must fail the
+            # clear before the local override is removed from disk, or disk
+            # and the running pipeline would disagree.
+            factory = await asyncio.to_thread(config_store.load_factory_rules)
             await asyncio.to_thread(
                 config_store.save_overrides, {"PIPELINE_RULES": None})
-            factory = await asyncio.to_thread(config_store.load_factory_rules)
         except (ValidationError, RuntimeError, OSError) as e:
             logger.error("[config] clear-local-override failed: %s", e)
             raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR,
                                 f"could not clear local override: {e}")
 
-        cfg.PIPELINE_RULES = factory
-        await pl_apply.rebuild_caches_off_loop("clearing local override")
+        # Env-pinned PIPELINE_RULES keeps its running value (see
+        # post_factory_rules); only the file write lands.
+        env_pinned = "PIPELINE_RULES" in config_store.env_pinned_fields()
+        if not env_pinned:
+            cfg.PIPELINE_RULES = factory
+            await pl_apply.rebuild_caches_off_loop("clearing local override")
 
     client_host = request.client.host if request.client else "?"
     logger.info("[config] local PIPELINE_RULES override cleared from=%s — "
-                "config.json (%d rules) is now live", client_host, len(factory))
-    return JSONResponse({"ok": True, "rules": len(factory)})
+                "config.json (%d rules) is %s", client_host, len(factory),
+                "on disk (env-pinned, not live)" if env_pinned else "now live")
+    return JSONResponse({"ok": True, "rules": len(factory),
+                         "env_pinned": env_pinned})
 
 
 # Dry-run input bounds. Every rule can burn a full 2 s of a worker thread, so

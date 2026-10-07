@@ -76,6 +76,21 @@ def test_non_finite_blob_raises(client_settings_store_db):
     assert store.get("u1")["blob"] == {"n": 1}        # nothing clobbered
 
 
+def test_lone_surrogate_raises_invalid_blob(client_settings_store_db):
+    """A lone surrogate cannot be encoded as UTF-8: it is malformed input
+    (InvalidBlob, 422), not the bare ValueError the 413 "too large" path
+    catches — for the blob and the device label, in put and force_put."""
+    store = client_settings_store_db
+    with pytest.raises(store.InvalidBlob):
+        store.put("u1", {"x": "\ud800"}, 0)
+    with pytest.raises(store.InvalidBlob):
+        store.put("u1", {"n": 1}, 0, device="\ud800")
+    assert store.get("u1") is None                    # nothing landed
+    with pytest.raises(store.InvalidBlob):
+        store.force_put("u1", {"x": "\ud800"})
+    assert store.get("u1") is None
+
+
 def test_log_bytes_is_utf8_size(client_settings_store_db, caplog):
     """The `bytes=` INFO field must be the stored UTF-8 size (what the cap
     and list_meta measure), not a character count."""

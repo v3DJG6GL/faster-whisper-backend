@@ -524,7 +524,7 @@ async def import_client_settings_api(
         # Before `except ValueError` — InvalidBlob subclasses it.
         raise HTTPException(
             status.HTTP_422_UNPROCESSABLE_CONTENT,
-            "settings blob must be strict JSON (no NaN/Infinity)",
+            "settings blob must be strict JSON (no NaN/Infinity, no lone surrogates)",
         )
     except ValueError:
         raise HTTPException(

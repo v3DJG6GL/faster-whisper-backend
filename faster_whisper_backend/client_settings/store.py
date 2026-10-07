@@ -59,6 +59,8 @@ class InvalidBlob(ValueError):
     (NaN/Infinity). Rejected BEFORE any write: json.dumps with the default
     allow_nan=True would store the bare literal, the response render would
     then 500 on it, and the next GET would quietly serve the value as null.
+    Also raised for a lone UTF-16 surrogate (a JSON `\\ud800` escape parses fine
+    but cannot be encoded as UTF-8) in the blob or the device label.
     Routes map this to 422. Subclasses ValueError so `except ValueError`
     (the 413 path) must come AFTER `except InvalidBlob`."""
 
@@ -195,6 +197,31 @@ def list_meta() -> list[dict[str, Any]]:
     return [dict(r) for r in rows]
 
 
+def _serialize(blob: Any, device: str | None) -> tuple[str, int, str | None]:
+    """Shared put()/force_put() validation: (blob_json, utf-8 size, device).
+
+    Raises InvalidBlob for a non-finite float or a lone surrogate (in the
+    blob or the device label — UnicodeEncodeError is a ValueError too, and
+    would otherwise surface as the 413 "too large"), ValueError past
+    _CAP_BLOB."""
+    try:
+        blob_json = json.dumps(
+            blob, ensure_ascii=False, separators=(",", ":"), allow_nan=False,
+        )
+    except ValueError:
+        raise InvalidBlob("blob contains a non-finite float (NaN/Infinity)") from None
+    dev = str(device)[:_CAP_DEVICE] if device else None
+    try:
+        blob_bytes = len(blob_json.encode("utf-8"))
+        if dev:
+            dev.encode("utf-8")
+    except UnicodeEncodeError:
+        raise InvalidBlob("blob or device contains an unpaired UTF-16 surrogate") from None
+    if blob_bytes > _CAP_BLOB:
+        raise ValueError("blob too large")
+    return blob_json, blob_bytes, dev
+
+
 def put(
     user_id: str,
     blob: Any,
@@ -211,21 +238,13 @@ def put(
                  the 409 body (or None if the row vanished mid-flight).
 
     Raises ValueError if the serialized blob exceeds _CAP_BLOB, InvalidBlob
-    (a ValueError subclass) if it holds a non-finite float.
+    (a ValueError subclass) if it holds a non-finite float or a lone
+    surrogate.
     Force-push needs no special flag: send the version just fetched and
     the CAS matches unless someone else wrote in between — which is
     exactly the conflict the versioning exists to catch.
     """
-    try:
-        blob_json = json.dumps(
-            blob, ensure_ascii=False, separators=(",", ":"), allow_nan=False,
-        )
-    except ValueError:
-        raise InvalidBlob("blob contains a non-finite float (NaN/Infinity)") from None
-    blob_bytes = len(blob_json.encode("utf-8"))
-    if blob_bytes > _CAP_BLOB:
-        raise ValueError("blob too large")
-    dev = str(device)[:_CAP_DEVICE] if device else None
+    blob_json, blob_bytes, dev = _serialize(blob, device)
     now = time.time()
     conn = _require_conn()
     with _lock:
@@ -283,20 +302,11 @@ def force_put(
     sees a newer server copy: the imported settings propagate through
     the devices' normal merge path with no device-side changes.
 
-    Raises InvalidBlob for a non-finite float (NaN/Infinity) and
-    ValueError if the serialized blob exceeds _CAP_BLOB (the route maps
-    them to 422 and 413, same as put()). InvalidBlob subclasses
-    ValueError, so callers must catch it first."""
-    try:
-        blob_json = json.dumps(
-            blob, ensure_ascii=False, separators=(",", ":"), allow_nan=False,
-        )
-    except ValueError:
-        raise InvalidBlob("blob contains a non-finite float (NaN/Infinity)") from None
-    blob_bytes = len(blob_json.encode("utf-8"))
-    if blob_bytes > _CAP_BLOB:
-        raise ValueError("blob too large")
-    dev = str(device)[:_CAP_DEVICE] if device else None
+    Raises InvalidBlob for a non-finite float (NaN/Infinity) or a lone
+    surrogate, and ValueError if the serialized blob exceeds _CAP_BLOB
+    (the route maps them to 422 and 413, same as put()). InvalidBlob
+    subclasses ValueError, so callers must catch it first."""
+    blob_json, blob_bytes, dev = _serialize(blob, device)
     now = time.time()
     conn = _require_conn()
     with _lock:

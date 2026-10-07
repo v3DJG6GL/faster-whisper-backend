@@ -5,6 +5,7 @@ import pytest
 from faster_whisper_backend.pipeline import apply as pl_apply
 from faster_whisper_backend.pipeline import engine as pl_engine
 from faster_whisper_backend.transcription import progress as tx_progress
+from tests.conftest import _repoint_path_default
 
 
 def test_settings_page_loopback(client):
@@ -230,6 +231,39 @@ def test_settings_page_has_no_hardcoded_enum_opts(client):
     assert "'int8_float16','int8','float32'" not in page
 
 
+def test_preload_editor_skips_its_own_model_list_event(client):
+    """With an empty allowlist the preload field is a free-form textarea; its
+    own setDirty dispatched admin:model-lists-changed, the editor re-rendered
+    and the textarea lost focus (and its trailing newline) every keystroke."""
+    page = client.get("/settings").text
+    assert ("document.dispatchEvent(new CustomEvent('admin:model-lists-changed',\n"
+            "                                           { detail: { name } }));") in page
+    multi = page[page.index("function modelMultiSelectEditor("):]
+    multi = multi[:multi.index("\n}\n")]
+    assert "if (e && e.detail && e.detail.name === name) return;" in multi
+
+
+def test_model_editors_stay_disabled_when_env_pinned_after_a_rerender(client):
+    """disableEnvPinnedEditor ran once at row build; a re-render on a source
+    list change built fresh, enabled controls for an env-pinned field."""
+    page = client.get("/settings").text
+    for fn in ("function modelDropdownEditor(", "function modelMultiSelectEditor("):
+        body = page[page.index(fn):]
+        body = body[:body.index("\n}\n")]
+        assert "if (isEnvPinned(name)) disableEnvPinnedEditor(wrap);" in body, fn
+
+
+def test_translation_lab_models_come_from_saved_values(client):
+    """POST /settings/translation-test checks the SAVED allowlist/default: an
+    unsaved entry offered by the lab only answered 400."""
+    page = client.get("/settings").text
+    fn = page[page.index("function refreshModels() {"):]
+    fn = fn[:fn.index("\n  }\n")]
+    assert "fieldDef('TRANSLATION_DEFAULT_MODEL').value" in fn
+    assert "fieldDef('TRANSLATION_ALLOWED_MODELS').value" in fn
+    assert "currentValue(" not in fn
+
+
 def test_get_factory_rules(client):
     r = client.get("/settings/factory-rules")
     assert r.status_code == 200
@@ -268,13 +302,9 @@ def _seed_factory(monkeypatch, tmp_path, rules):
     # By NAME, not defaults[-1]: a later trailing default (save_factory_rules'
     # overrides_path) would take the repoint and leave `path` on the REAL
     # config.json — which the next factory-rules POST then overwrites.
-    for fn in (config_store.load_factory_rules, config_store.save_factory_rules):
-        code = fn.__code__
-        defaults = list(fn.__defaults__ or ())
-        names = code.co_varnames[:code.co_argcount][-len(defaults):]
-        assert "path" in names, fn
-        defaults[names.index("path")] = tmp_factory
-        monkeypatch.setattr(fn, "__defaults__", tuple(defaults), raising=False)
+    _repoint_path_default(monkeypatch, (config_store.load_factory_rules,
+                                        config_store.save_factory_rules),
+                          tmp_factory)
     return tmp_factory
 
 
@@ -340,6 +370,90 @@ def test_post_factory_rules_refuses_dropping_a_slug_a_stored_exclude_names(
     assert open(tmp_factory, encoding="utf-8").read() == before
 
 
+def test_clear_local_override_keeps_it_when_config_json_is_unreadable(
+        client, monkeypatch):
+    """config.json is read BEFORE the local override is removed: a broken
+    factory file 500s with config.local.json still holding PIPELINE_RULES,
+    instead of dropping the local list while the old rules keep running."""
+    from faster_whisper_backend.settings import config_store
+
+    config_store.save_overrides({"PIPELINE_RULES": _rules("alpha", "beta")})
+    saves = []
+    real_save = config_store.save_overrides
+
+    def _spy_save(*a, **k):
+        saves.append(a)
+        return real_save(*a, **k)
+
+    def _broken(*a, **k):
+        raise RuntimeError("config.json is malformed")
+
+    monkeypatch.setattr(config_store, "save_overrides", _spy_save)
+    monkeypatch.setattr(config_store, "load_factory_rules", _broken)
+    r = client.post("/settings/factory-rules/clear-local-override")
+    assert r.status_code == 500, r.text
+    assert saves == []
+    local = config_store.load_overrides().get("PIPELINE_RULES")
+    assert [x["name"] for x in local] == ["alpha", "beta", "trim-edges"]
+
+
+def _pin_pipeline_rules(monkeypatch, app_module):
+    """Pin PIPELINE_RULES by env, stub the rebuild and park a sentinel rule
+    list on cfg; returns the rebuild-call list."""
+    from faster_whisper_backend.settings import config_store
+
+    monkeypatch.setattr(config_store, "env_pinned_fields",
+                        lambda: {"PIPELINE_RULES": "WHISPER_PIPELINE_RULES"})
+    rebuilds = []
+
+    async def _rebuild(reason):
+        rebuilds.append(reason)
+
+    monkeypatch.setattr(pl_apply, "rebuild_caches_off_loop", _rebuild)
+    monkeypatch.setattr(app_module.cfg, "PIPELINE_RULES", _rules("pinned"),
+                        raising=False)
+    return rebuilds
+
+
+def test_post_factory_rules_keeps_env_pinned_running_rules(
+        client, app_module, tmp_path, monkeypatch):
+    """With WHISPER_PIPELINE_RULES pinning the field, a promote writes
+    config.json but leaves the running rules alone (the env-pin contract
+    pl_apply.apply_hot_changes enforces for /settings saves)."""
+    import json
+
+    tmp_factory = _seed_factory(monkeypatch, tmp_path, _rules("alpha"))
+    rebuilds = _pin_pipeline_rules(monkeypatch, app_module)
+    r = client.post("/settings/factory-rules",
+                    json={"PIPELINE_RULES": _rules("beta")})
+    assert r.status_code == 200, r.text
+    assert r.json()["env_pinned"] is True
+    assert [x["name"] for x in app_module.cfg.PIPELINE_RULES] == [
+        "pinned", "trim-edges"]
+    assert rebuilds == []
+    with open(tmp_factory, encoding="utf-8") as f:
+        assert [x["name"] for x in json.load(f)["PIPELINE_RULES"]] == [
+            "beta", "trim-edges"]
+
+
+def test_clear_local_override_keeps_env_pinned_running_rules(
+        client, app_module, tmp_path, monkeypatch):
+    """Clearing the local override under an env pin removes it from
+    config.local.json but does not swap the running rules to config.json."""
+    from faster_whisper_backend.settings import config_store
+
+    _seed_factory(monkeypatch, tmp_path, _rules("alpha"))
+    config_store.save_overrides({"PIPELINE_RULES": _rules("local")})
+    rebuilds = _pin_pipeline_rules(monkeypatch, app_module)
+    r = client.post("/settings/factory-rules/clear-local-override")
+    assert r.status_code == 200, r.text
+    assert r.json()["env_pinned"] is True
+    assert [x["name"] for x in app_module.cfg.PIPELINE_RULES] == [
+        "pinned", "trim-edges"]
+    assert rebuilds == []
+    assert "PIPELINE_RULES" not in config_store.load_overrides()
+
+
 def test_test_pipeline_dry_run(client):
     r = client.post(
         "/settings/test-pipeline",
@@ -363,7 +477,6 @@ def test_test_pipeline_stops_at_the_engine_output_bound(client):
     # text passes _POSTPROCESS_MAX_CHARS. The dry run used to keep doubling,
     # reporting a `final` production never produces and echoing every
     # multi-MB step twice.
-    from faster_whisper_backend.pipeline import engine as pl_engine
     bound = pl_engine._POSTPROCESS_MAX_CHARS
     dbl = {"pattern": ".+", "replacement": "\\g<0>\\g<0>"}
     rules = [{"name": f"r{i}", "type": "regex-list", "enabled": True,
@@ -1047,7 +1160,7 @@ def test_translation_test_progress_entry_is_owner_stamped(
     from tests.conftest import bearer
 
     app_module.cfg.TRANSLATION_ENABLED = True
-    _uid, raw = make_user_key("root", is_admin=True)
+    uid, raw = make_user_key("root", is_admin=True)
     pid = "feed" * 8
     seen = {}
 
@@ -1061,7 +1174,7 @@ def test_translation_test_progress_entry_is_owner_stamped(
                     json={"text": "hallo", "target": "en", "progress_id": pid},
                     headers=bearer(raw))
     assert r.status_code == 200, r.text
-    assert seen["owner"] is not None
+    assert seen["owner"] == uid
 
 
 def test_translation_test_model_allowlist_gate(client, app_module):
@@ -1136,7 +1249,7 @@ def test_prompt_lab_family_widgets_follow_a_failed_preview(client):
     fail = fail[:fail.index("readout.textContent = r.status === 403")]
     assert "showFamily(currentValue('TRANSLATION_PROMPT_FAMILY'));" in fail
     lst = html[html.index("_registerAdminListener('admin:dirty', 'translationLab'"):]
-    lst = lst[:lst.index("TRANSLATION_ALLOWED_MODELS")]
+    lst = lst[:lst.index("\n  });\n")]
     assert "showFamily(currentValue('TRANSLATION_PROMPT_FAMILY'));" in lst
     rp = html[html.index("function renderPrompt(p) {"):]
     assert "showFamily(p.family);" in rp[:rp.index("\n  }\n")]

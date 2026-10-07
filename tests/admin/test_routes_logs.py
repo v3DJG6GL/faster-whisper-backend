@@ -61,12 +61,34 @@ def test_logs_page_load_older_batch_survives_the_live_trim(client):
     click fetched the same batch again."""
     html = client.get("/logs").text
     assert "while (log.childElementCount > _LOG_DOM_MAX + _olderInDom)" in html
-    older = html[html.index("log.insertBefore(frag, log.firstChild);"):]
-    assert "_olderInDom += lines.length;" in older[:older.index("next_skip")]
+    # The bound counts elements: the batch's fold controls count too, read
+    # off the fragment BEFORE the insert empties it.
+    count = html.index("const added = frag.childElementCount;")
+    insert = html.index("log.insertBefore(frag, log.firstChild);")
+    assert count < insert
+    older = html[insert:]
+    older = older[:older.index("next_skip")]
+    assert "_olderInDom += added;" in older
+    assert "_olderInDom += lines.length;" not in older
+    assert "_logsSkip += lines.length;" in older     # the cursor counts lines
     clear = html[html.index("clearBtn.addEventListener('click'"):]
     assert "_olderInDom = 0;" in clear[:clear.index("});")]
     reopen = html[html.index("function openLogStream()"):]
     assert "_olderInDom = 0;" in reopen[:reopen.index("es = new EventSource")]
+
+
+def test_logs_page_load_older_drops_a_batch_from_before_a_reconnect(client):
+    """A "Load older" fetch still in flight when openLogStream() reset the
+    DOM and cursors landed its old-offset batch above the replayed backlog
+    and added its length to the fresh counters."""
+    html = client.get("/logs").text
+    reopen = html[html.index("function openLogStream()"):]
+    assert "_logsGen++;" in reopen[:reopen.index("es = new EventSource")]
+    click = html[html.index("loadOlderBtn.addEventListener('click'"):]
+    assert "const gen = _logsGen;" in click[:click.index("await fetch(url)")]
+    after = click[click.index("await r.json();"):]
+    assert after.index("if (gen !== _logsGen) return;") \
+        < after.index("log.insertBefore(frag, log.firstChild);")
 
 
 def test_logs_page_search_counter_follows_load_older_and_clear(client):

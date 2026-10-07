@@ -343,6 +343,28 @@ def test_rename_profile_failed_cascade_keeps_the_old_name(
     assert "DEFAULT_LANGUAGE" in effective_config.resolve(None, user_id=uid).locked
 
 
+def test_rename_profile_env_pinned_409(client, make_user_key, monkeypatch):
+    """An env-pinned OVERRIDE_PROFILES comes back at the next restart with
+    only `old`: a cascaded rename would strand every binding on a missing
+    profile (its locks gone). Refused before any save, alias or cascade."""
+    from faster_whisper_backend.auth import api_keys_store
+    from faster_whisper_backend.settings import config as cfg
+    _, _, h = _admin(make_user_key)
+    _make_profile(client, h, "clinic-de", BEAM_SIZE=8)
+    before = dict(cfg.OVERRIDE_PROFILES)
+    monkeypatch.setenv("WHISPER_OVERRIDE_PROFILES",
+                       json.dumps({"clinic-de": {"BEAM_SIZE": 8}}))
+    calls = []
+    monkeypatch.setattr(api_keys_store, "rename_profile_refs",
+                        lambda old, new: calls.append((old, new)) or 0)
+    r = client.post(f"{OV}/profiles/rename", headers=h,
+                    json={"old": "clinic-de", "new": "clinic-deutsch"})
+    assert r.status_code == 409, r.text
+    assert "WHISPER_OVERRIDE_PROFILES" in r.json()["detail"]
+    assert cfg.OVERRIDE_PROFILES == before
+    assert calls == []
+
+
 def test_rename_profile_unknown_404(client, make_user_key):
     _, _, h = _admin(make_user_key)
     r = client.post(f"{OV}/profiles/rename", headers=h,

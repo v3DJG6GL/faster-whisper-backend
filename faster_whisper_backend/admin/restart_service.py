@@ -47,14 +47,21 @@ def _flush_before_exit() -> None:
     """Last-chance flush of the shutdown obligations that lose data.
 
     os.execv / os._exit below bypass the ASGI shutdown, so the lifespan's
-    teardown never runs. Two of its duties are lossy if skipped: held
+    teardown never runs. Three of its duties are lossy if skipped: held
     dictation receipts would vanish unlogged (receipt_hold's contract is
-    that NOTHING is silently lost) and NVML would leak driver handles.
+    that NOTHING is silently lost), the stats sampler's last minute of
+    queued system samples would leave a gap in /stats history, and NVML
+    would leak driver handles.
     Best-effort — a restart must never fail because a flush did."""
     try:
         from faster_whisper_backend.transcription import receipt_hold as _receipt_hold
         tx_receipt._log_held_receipts(_receipt_hold.flush_all())
     except Exception:  # noqa: BLE001 — flushing must not block the restart
+        pass
+    try:
+        from faster_whisper_backend.stats import sampler as _stats_sampler
+        _stats_sampler.flush()
+    except Exception:  # noqa: BLE001
         pass
     try:
         from faster_whisper_backend.runtime import system_stats as _system_stats
@@ -126,7 +133,7 @@ def trigger_self_restart(delay_sec: float = 1.5) -> str:
         # Give WinSW a moment to register the restart command, then exit.
         # os._exit (not sys.exit): bypass uvicorn's signal handlers and
         # Python's atexit hooks. The lossy lifespan duties (held receipts,
-        # NVML) are flushed below; everything else — temp files, child
+        # stats samples, NVML) are flushed below; everything else — temp files, child
         # processes — is reclaimed by the OS plus the next startup's TMPDIR
         # sweep (reclaim_hard_restart_orphans below).
         time.sleep(0.2)
@@ -143,8 +150,9 @@ def reclaim_hard_restart_orphans() -> None:
     The admin restart path (trigger_self_restart: os.execv / os._exit) skips the
     ASGI shutdown, so in-flight requests leak their `urldl-` job dirs,
     `urlmedia-` pipeline copies (url_media_store.make_pipeline_copy),
-    `whisperup-` upload spools, `sepsrc-`/`vocals-` separation WAVs and
-    `fwb-pkg-` subtitle-package workdirs with no finally to reclaim them —
+    `whisperup-` upload spools, `sepsrc-`/`vocals-` separation WAVs,
+    `fwb-pkg-` subtitle-package workdirs and /captures `preview_merge_`
+    WAVs (plus merge_wavs' `.tmp` sibling) with no finally to reclaim them —
     url_media_store.startup_reset() wipes only URL_MEDIA_DIR (a same-fs `urlmedia-` copy is a hardlink whose retained
     name that reset already dropped). Single-service
     assumption (as documented for SERVER_WORKERS); a small age guard keeps
@@ -157,7 +165,8 @@ def reclaim_hard_restart_orphans() -> None:
     now = time.time()
     for name in names:
         if not name.startswith(("urldl-", "urlmedia-", "whisperup-",
-                                "sepsrc-", "vocals-", "fwb-pkg-")):
+                                "sepsrc-", "vocals-", "fwb-pkg-",
+                                "preview_merge_")):
             continue
         path = os.path.join(tmp, name)
         try:
