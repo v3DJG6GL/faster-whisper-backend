@@ -1623,7 +1623,10 @@ def test_concurrent_misses_respect_max_loaded_models(lru_env, monkeypatch):
     kept = next(iter(translation._models))
     evicted = "o/b" if kept == "o/a" else "o/a"
     assert made[evicted].closed
-    assert stats["unregistered"] == [translation._STATS_PREFIX + evicted]
+    # One unregister from the trim, plus a second (idempotent) one when the
+    # evicted load's own register was still on its thread — _get_model's
+    # phantom cleanup. Either way only the evicted ref is ever unregistered.
+    assert set(stats["unregistered"]) == {translation._STATS_PREFIX + evicted}
     assert not made[kept].closed
 
 
