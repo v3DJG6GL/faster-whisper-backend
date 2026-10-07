@@ -967,7 +967,11 @@ async def _handle(item: "tuple[str, str, str]") -> None:
             await _evict(family, peer)
 
     t0 = time.perf_counter()
-    await _load(family, model_id)
+    # `is False`, not falsy: only a singleton's explicit decline means nothing
+    # was loaded (an orphan or a running job's pipeline holds the slot).
+    if await _load(family, model_id) is False:
+        logger.info("[preload] %s deferred: a running job holds the slot", key)
+        return
     logger.info("[preload] warmed %s in %.1fs", key, time.perf_counter() - t0)
     with _lock:
         plan = _plans.get(plan_id)
@@ -975,21 +979,24 @@ async def _handle(item: "tuple[str, str, str]") -> None:
             plan.warmed.add(key)
 
 
-async def _load(family: str, model_id: str) -> None:
+async def _load(family: str, model_id: str) -> bool:
     """Load without a lease. A preload deliberately takes no job lease: the
-    model must stay evictable the moment a real request needs the memory."""
+    model must stay evictable the moment a real request needs the memory.
+    False when a singleton declined the load because a running job holds
+    another model — nothing was loaded."""
     mid = normalize_id(family, model_id)
     if family == "whisper":
         await tx_models.load_unleased(mid)
     elif family == "diarization":
         from faster_whisper_backend.audio import diarization
-        await diarization.load_unleased(mid)
+        return await diarization.load_unleased(mid)
     elif family == "separation":
         from faster_whisper_backend.audio import bgm_separation
-        await bgm_separation.load_unleased(mid)
+        return await bgm_separation.load_unleased(mid)
     elif family == "translation":
         from faster_whisper_backend.translation import engine as translation
         await translation.load_unleased(mid)
+    return True
 
 
 async def _evict(family: str, peer_id: str) -> None:

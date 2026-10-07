@@ -2381,6 +2381,18 @@ except NameError:
 # otherwise silently start with factory config / an empty key store — warn so
 # the operator knows to move the files or point WHISPER_DATA_DIR at them.
 # (main drains _ENV_WARNINGS into the logger once logging is up.)
+def _looks_fresh(configured: str, legacy: str) -> bool:
+    """The configured store was created AFTER the legacy one and is smaller —
+    the empty store a start without the old file made (store_common.open_wal_db
+    creates it on first use, so "configured path missing" alone would silence
+    every later start while the old keys sit ignored)."""
+    try:
+        c, old = os.stat(configured), os.stat(legacy)
+    except OSError:
+        return False
+    return c.st_mtime > old.st_mtime and c.st_size < old.st_size
+
+
 def _legacy_state_warnings(
     repo_dir: str, data_dir: str, configured: "dict[str, str]"
 ) -> "list[str]":
@@ -2398,20 +2410,34 @@ def _legacy_state_warnings(
             (c for c in _candidates
              if os.path.normpath(c) != os.path.normpath(_configured)
              and os.path.exists(c)), None)
-        if _legacy_path is not None and not os.path.exists(_configured):
-            # The stores resolve to {DATA_DIR}/db, so pointing WHISPER_DATA_DIR
-            # at a legacy *.sqlite3 file's folder can never reach it (and for
-            # a /data-root compose store that folder IS the data dir already).
-            _fix = (
-                f"set WHISPER_DB_DIR to "
-                f"{os.path.dirname(_legacy_path)!r}."
-                if _legacy_name.endswith(".sqlite3") else
-                f"set WHISPER_DATA_DIR (currently {data_dir!r}) to the old "
-                f"location.")
+        if _legacy_path is None:
+            continue
+        _missing = not os.path.exists(_configured)
+        if not _missing and not (_legacy_name.endswith(".sqlite3")
+                                 and _looks_fresh(_configured, _legacy_path)):
+            continue
+        # The stores resolve to {DATA_DIR}/db, so pointing WHISPER_DATA_DIR
+        # at a legacy *.sqlite3 file's folder can never reach it (and for
+        # a /data-root compose store that folder IS the data dir already).
+        _fix = (
+            f"set WHISPER_DB_DIR to "
+            f"{os.path.dirname(_legacy_path)!r}."
+            if _legacy_name.endswith(".sqlite3") else
+            f"set WHISPER_DATA_DIR (currently {data_dir!r}) to the old "
+            f"location.")
+        if _missing:
             out.append(
                 f"legacy state {_legacy_path} exists but the "
                 f"configured path {_configured} does not — it is being "
                 f"IGNORED. Move the file there, or {_fix}"
+            )
+        else:
+            out.append(
+                f"legacy state {_legacy_path} exists and the configured "
+                f"store {_configured} looks freshly created (newer and "
+                f"smaller) — the legacy one is being IGNORED. Stop the "
+                f"server, delete the fresh store's -wal/-shm files, then move "
+                f"the legacy file plus its -wal/-shm over it, or {_fix}"
             )
     return out
 

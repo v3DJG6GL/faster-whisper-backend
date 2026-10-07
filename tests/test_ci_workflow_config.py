@@ -116,6 +116,9 @@ def test_only_the_newest_release_tag_moves_latest():
     step = build[build.rindex("- name:", 0, newest):meta]
     assert "git ls-remote --tags" in step
     assert "GITHUB_REF_NAME" in step
+    # Only strict vX.Y.Z tags compete for "newest": an rc/vendor tag sorts
+    # after every release under sort -V and no release would move :latest.
+    assert "grep -E '^v[0-9]+\\.[0-9]+\\.[0-9]+$'" in step
     latest = [ln for ln in _code_lines(build[meta:])
               if "type=raw,value=latest" in ln]
     assert len(latest) == 1
@@ -135,6 +138,12 @@ def test_mirror_skips_already_mirrored_sha_tags():
     body = mirror[mirror.index("for tag in $tags; do"):]
     assert "sha-*)" in body
     assert 'grep -qxF "$tag"' in body
+    # Membership reads a here-string: `printf | grep -q` under pipefail
+    # returns 141 (SIGPIPE, read as "not found") once the list outgrows the
+    # 64 KiB pipe buffer.
+    assert not [ln for ln in _code_lines(mirror) if "| grep -q" in ln]
+    assert 'grep -qxF "$tag" <<< "$dst_tags"' in body
+    assert 'grep -qxF "$lt" <<< "$tags"' in mirror
     assert 'touched="$touched sha-${rev:0:7}${variant}"' in body
     assert '*" $tag "*) ;;' in body
     # latest*/v* are re-pushable and keep the full compare.
@@ -171,6 +180,20 @@ def test_rerun_for_an_already_tagged_commit_can_repair_its_release():
     assert 'echo "tag=$latest" >> "$GITHUB_OUTPUT"' in branch
     assert 'echo "prev=${prev:-v0.0.0}" >> "$GITHUB_OUTPUT"' in branch
     assert 'echo "tag=" ' not in branch
+
+
+def test_rerun_of_a_superseded_tagged_commit_repairs_its_own_release():
+    # Main moved on and minted a newer tag while this commit's release POST
+    # failed: the monotonicity branch must hand THIS commit's own tag to the
+    # release step instead of reporting "superseded" with an empty tag. The
+    # target is peeled to a commit first, so a tag-object input still matches
+    # `--points-at` and the ancestor test.
+    rel = _read(".forgejo", "workflows", "release.yml")
+    mono = rel[rel.index("# Monotonicity"):]
+    mono = mono[:mono.index('case "$BUMP" in')]
+    assert 'git tag --points-at "$target"' in mono
+    assert 'echo "tag=$own" >> "$GITHUB_OUTPUT"' in mono
+    assert 'target=$(git rev-parse "$target^{commit}")' in rel
 
 
 def test_release_creation_probes_before_posting():

@@ -164,10 +164,12 @@ async def url_preview(request: Request,
         "abr": info.abr,
         # The video rungs the site offers (highest first, one trailing
         # "audio only" entry), each with the container a merge would give
-        # and an over-cap flag against media_max_bytes. [] when video is
-        # off or the link has none.
+        # and an over-cap flag against retained_max_bytes (the largest file
+        # the media store keeps; media_max_bytes stays the transcription
+        # ceiling). [] when video is off or the link has none.
         "video_ladder": info.video_ladder,
         "media_max_bytes": int(getattr(cfg, "MEDIA_MAX_BYTES", 10_000_000_000)),
+        "retained_max_bytes": url_media_store.max_retainable_bytes(),
         # The longest link this server downloads (the client flags a longer
         # one before "Add link").
         "url_max_duration_s": int(getattr(cfg, "URL_MAX_DURATION_S", 0) or 0),

@@ -136,6 +136,19 @@ def test_job_language_is_capped(usage_store_db):
     assert row["language"] == "x" * 32
 
 
+def test_job_model_is_capped(usage_store_db):
+    # A refused stream handshake hands its raw `model` string (up to the
+    # socket's max frame size) through; stored at most 128 chars, like
+    # jobs_store.
+    us = usage_store_db
+    us.record_usage(key_id="k", user_id="u", audio_s=1.0, words=1,
+                    status="error", kind="dictation", job_id="m" * 32,
+                    model="m" * 10000)
+    row = us._require_conn().execute(
+        "SELECT model FROM usage_jobs").fetchone()
+    assert len(row["model"]) == 128
+
+
 def test_init_reclassifies_unknown_rows_as_dictation(tmp_path):
     """A DB migrated by the first per-kind build holds its history as
     'unknown'; the next start folds it into 'dictation', summing into a

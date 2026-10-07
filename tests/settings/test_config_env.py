@@ -714,11 +714,27 @@ def test_legacy_data_dir_root_db_warns_when_ignored(tmp_path):
     assert "WHISPER_DATA_DIR" not in warns[0]
     # and silent when the configured path exists
     (tmp_path / "db").mkdir()
-    (tmp_path / "db" / "api_keys.local.sqlite3").write_bytes(b"")
+    fresh = tmp_path / "db" / "api_keys.local.sqlite3"
+    fresh.write_bytes(b"")
+    mapping = {"api_keys.local.sqlite3": str(fresh)}
     assert cfg._legacy_state_warnings(
-        str(tmp_path / "repo"), str(tmp_path),
-        {"api_keys.local.sqlite3": str(tmp_path / "db" / "api_keys.local.sqlite3")},
-    ) == []
+        str(tmp_path / "repo"), str(tmp_path), mapping) == []
+
+    # ...unless it is the empty store a start without the old file created:
+    # newer AND smaller than the legacy one. The first start creates it, so
+    # "configured path missing" alone would silence every later run.
+    legacy.write_bytes(b"k" * 4096)
+    os.utime(legacy, (1_000_000, 1_000_000))
+    os.utime(fresh, (2_000_000, 2_000_000))
+    warns = cfg._legacy_state_warnings(
+        str(tmp_path / "repo"), str(tmp_path), mapping)
+    assert len(warns) == 1 and str(legacy) in warns[0]
+    assert "freshly created" in warns[0] and "IGNORED" in warns[0]
+    # A configured store bigger than the legacy one is in use: silent.
+    fresh.write_bytes(b"k" * 8192)
+    os.utime(fresh, (2_000_000, 2_000_000))
+    assert cfg._legacy_state_warnings(
+        str(tmp_path / "repo"), str(tmp_path), mapping) == []
 
 
 def test_renamed_keys_env_alias_is_table_driven(monkeypatch):

@@ -415,6 +415,32 @@ def test_worker_evicts_the_cold_translation_peer_it_chose_even_when_it_fits(
     assert loaded == [("translation", "o/new:Q4")]
 
 
+def test_a_declined_singleton_load_does_not_mark_the_plan_warm(monkeypatch):
+    """diarization/bgm_separation.load_unleased answer False when a running
+    job holds the slot (busy, re-checked under their lock): nothing loaded,
+    so the key must not land in plan.warmed. A None (the whisper and
+    translation loaders, older stubs) still reads as loaded."""
+    _enable(monkeypatch, MODEL_PRELOAD_EVICT_IDLE_MODELS=False)
+    monkeypatch.setattr(preload, "_admit", lambda f, m: ("loading", None))
+    monkeypatch.setattr(preload, "is_resident", lambda f, m: False)
+    verdict = [False]
+
+    async def _load(family, mid):
+        return verdict[0]
+    monkeypatch.setattr(preload, "_load", _load)
+
+    pid = "6" * 8
+    preload.register_plan("u", [("diarization", "p/x")], plan_id=pid)
+    key = preload.stats_key("diarization", "p/x")
+
+    asyncio.run(preload._handle((pid, "diarization", "p/x")))
+    assert key not in preload._plans[pid].warmed
+
+    verdict[0] = None
+    asyncio.run(preload._handle((pid, "diarization", "p/x")))
+    assert key in preload._plans[pid].warmed
+
+
 # --- PC12: the warm lease comes from the plan, not from _admit ---------------
 
 def test_resident_entry_is_warm_through_its_plan_only(monkeypatch):

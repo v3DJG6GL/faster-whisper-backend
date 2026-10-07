@@ -387,6 +387,8 @@ def test_a_full_capture_store_still_records_and_leaves_eviction_to_the_store(
     monkeypatch.setattr(app_module.cfg, "CAPTURES_RECORDING_ENABLED", True, raising=False)
     monkeypatch.setattr(app_module.cfg, "CAPTURES_MAX", 10, raising=False)
     monkeypatch.setattr(captures_store, "count_evictable", lambda: 10)
+    # Not a store full of "ready" rows (the real DB state must not decide).
+    monkeypatch.setattr(captures_store, "ready_fills_cap", lambda: False)
     created = []
     monkeypatch.setattr(captures_store, "create_capture",
                         lambda **kw: created.append(kw) or "cap-test-id")
@@ -396,6 +398,26 @@ def test_a_full_capture_store_still_records_and_leaves_eviction_to_the_store(
         msgs, _code = _dictate_one(ws)
     assert any(m["type"] == "final" for m in msgs)
     assert len(created) == 1
+
+
+def test_a_store_full_of_ready_captures_skips_the_stream_capture(
+        client, app_module, monkeypatch):
+    """Ready rows alone fill CAPTURES_MAX: the new row would be evicted by its
+    own insert, so the utterance is not handed to create_capture (no WAV)."""
+    from faster_whisper_backend.captures import store as captures_store
+
+    monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
+    monkeypatch.setattr(app_module.cfg, "CAPTURES_RECORDING_ENABLED", True, raising=False)
+    monkeypatch.setattr(captures_store, "ready_fills_cap", lambda: True)
+    created = []
+    monkeypatch.setattr(captures_store, "create_capture",
+                        lambda **kw: created.append(kw) or "cap-test-id")
+
+    with client.websocket_connect(_STREAM_URL) as ws:
+        assert _config(ws)["type"] == "ready"
+        msgs, _code = _dictate_one(ws)
+    assert any(m["type"] == "final" for m in msgs)
+    assert created == []
 
 
 def test_turning_capture_recording_off_mid_session_stops_recording(

@@ -1592,7 +1592,13 @@
       sec.appendChild(arow);
 
       if (mode === 'restrict') {
-        var names = Object.keys(ovState().profiles || {}).sort();
+        // A stored name whose profile no longer exists still renders (ticked,
+        // marked missing) so the admin can untick it; the backend accepts a
+        // name the stored binding already holds.
+        var live = ovState().profiles || {};
+        var names = Object.keys(live).concat(al.filter(function (n) {
+          return n !== '*' && !Object.prototype.hasOwnProperty.call(live, n);
+        })).sort();
         var box = document.createElement('div'); box.className = 'ov-checks';
         if (!names.length) {
           var e = document.createElement('span'); e.className = 'lbl';
@@ -1610,7 +1616,8 @@
             _syncSave();
           };
           lab.appendChild(cb);
-          lab.appendChild(document.createTextNode(' ' + n));
+          lab.appendChild(document.createTextNode(' ' + n +
+            (Object.prototype.hasOwnProperty.call(live, n) ? '' : ' (missing)')));
           box.appendChild(lab);
         });
         sec.appendChild(box);

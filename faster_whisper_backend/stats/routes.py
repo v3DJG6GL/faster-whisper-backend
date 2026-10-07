@@ -193,7 +193,8 @@ def _build_payload(scope: StatsScope = ADMIN_SCOPE, *,
     page can shape itself on the first frame. When `scope.sees_machine` is
     False the machine keys are absent and a `server` block (see
     _coarse_server) stands in; the lite variant keeps a coarse `gpu` dict
-    {busy, mem_used_mb, mem_total_mb} so the header cluster keeps working."""
+    {busy, mem_used_mb, mem_total_mb} (None on a GPU-less server, like the
+    machine payload's) so the header cluster keeps working."""
     sysnap = system_stats.system_snapshot()
     base = {
         "ts": time.time(),
@@ -211,8 +212,9 @@ def _build_payload(scope: StatsScope = ADMIN_SCOPE, *,
             g = server["gpu"]
             return {
                 **base,
-                "gpu": {"busy": g["busy"], "mem_used_mb": g["mem_used_mb"],
-                        "mem_total_mb": g["mem_total_mb"]},
+                "gpu": ({"busy": g["busy"], "mem_used_mb": g["mem_used_mb"],
+                         "mem_total_mb": g["mem_total_mb"]}
+                        if g["present"] else None),
                 "models": [],
                 "server": server,
             }

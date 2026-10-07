@@ -376,8 +376,11 @@ curl -X POST http://localhost:8000/v1/models/preload \
 
 Families are `whisper`, `diarization`, `separation` and `translation`. (There
 is deliberately no `vad`: Silero ships inside faster-whisper, runs on the CPU
-and has neither a registry entry nor an evictor.) Each entry comes back with
-one of four states:
+and has neither a registry entry nor an evictor.) A client that transcribes
+with `override_profile` should send the same `override_profile` here, so the
+allowlist and locks are judged against the profile its job will run with (an
+unknown or unpermitted profile is ignored, as on the transcription form). Each
+entry comes back with one of four states:
 
 - **`resident`** — already loaded; its idle clock was restarted.
 - **`loading`** — the worker is loading it now.

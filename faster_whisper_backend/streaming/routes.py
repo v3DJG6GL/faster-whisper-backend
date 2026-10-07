@@ -1277,7 +1277,9 @@ async def transcribe_stream(ws: WebSocket) -> None:
             CAPTURES_MAX gate: a full store is create_capture's _evict_to_cap's
             job, which rotates the oldest rows out in its documented priority
             order — refusing here at the cap meant that eviction never ran and
-            every later utterance silently recorded nothing."""
+            every later utterance silently recorded nothing. The one cap term
+            is a store whose "ready" rows alone fill it: the new row would be
+            evicted by its own insert, so skip before the WAV write."""
             try:
                 from faster_whisper_backend.captures import store as captures_store
                 audio = info["audio"]
@@ -1300,6 +1302,8 @@ async def transcribe_stream(ws: WebSocket) -> None:
                 if free <= 1_000_000_000:
                     logger.warning("[stream %s] capture skipped: low disk (%.0f MB free)",
                                    session_id[:8], free / (1024 * 1024))
+                    return None
+                if captures_store.ready_fills_cap():
                     return None
                 training_text = pl_engine._postprocess_text(
                     raw_text, model_name=final_model, trace=None,

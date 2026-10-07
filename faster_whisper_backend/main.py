@@ -1781,11 +1781,20 @@ async def transcribe(
                     sample_rate = float(getattr(
                         cfg, "CAPTURES_RECORDING_SAMPLE_RATE", 1.0,
                     ))
-                    # No CAPTURES_MAX term: create_capture's _evict_to_cap
-                    # rotates the oldest rows out (dismissed → … → ready);
-                    # refusing at the cap meant it never ran.
+                    # The only cap term is "ready rows alone fill the cap":
+                    # _evict_to_cap would then evict the new row itself, so
+                    # create_capture records nothing — skip the forced DTW
+                    # too. Any other full store rotates its oldest rows out
+                    # (dismissed → … → ready) and still records.
+                    def _ready_fills_cap() -> bool:
+                        try:
+                            return captures_store.ready_fills_cap()
+                        except Exception:  # noqa: BLE001
+                            # Store unavailable: let create_capture surface it.
+                            return False
                     if (audio_bytes < hard_lim
-                            and random.random() < sample_rate):
+                            and random.random() < sample_rate
+                            and not _ready_fills_cap()):
                         will_capture = True
                         want_word_ts = True  # force DTW for capture
                 except Exception as _ce:
@@ -3470,7 +3479,11 @@ async def transcribe(
                     error=tx_progress._job_error_text(_status, _exc),
                     stages=(_stage_timings or None),
                     plan=_rplan.snapshot()["plan"],
-                    model=resolved_model, task=_task_now)
+                    model=resolved_model, task=_task_now,
+                    # Scoped to this run's row: the progress entry closed
+                    # (and the URL dir rmtree awaited) before this lands, so a
+                    # same-id re-post may already own the row.
+                    request_id=request_id)
                 # No await between this and the done() check below: either
                 # this side sees the task done and does the fallback attach +
                 # close, or the task sees the flag and does them itself.

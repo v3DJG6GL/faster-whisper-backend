@@ -457,8 +457,23 @@ def test_own_scope_full_payload_is_coarse(client):
     assert [r["audio_s"] for r in snap["recent_transcriptions"]] == [1.0]
 
 
-def test_own_scope_lite_payload_scoped(client):
+def _with_gpu(monkeypatch, present=True):
+    """Pin system_snapshot's gpu answer: the coarse lite `gpu` dict exists
+    only on a server with a GPU, and the test host may have none."""
+    from faster_whisper_backend.runtime import system_stats
+    real = system_stats.system_snapshot
+
+    def _snap():
+        out = dict(real())
+        out["gpu"] = ({"util_pct": 0, "mem_used_mb": 100, "mem_total_mb": 8000}
+                      if present else None)
+        return out
+    monkeypatch.setattr(system_stats, "system_snapshot", _snap)
+
+
+def test_own_scope_lite_payload_scoped(client, monkeypatch):
     from faster_whisper_backend.stats import routes as stats_routes
+    _with_gpu(monkeypatch)
     a, b = _seed_jobs()
     try:
         snap = stats_routes._build_payload(
@@ -470,6 +485,14 @@ def test_own_scope_lite_payload_scoped(client):
     assert set(snap["gpu"]) == {"busy", "mem_used_mb", "mem_total_mb"}
     assert snap["models"] == []
     assert [j["id"] for j in snap["jobs"]] == [a]
+
+    # A GPU-less server: no coarse dict (the machine payload's gpu is None
+    # there too); server.gpu.present still says so.
+    _with_gpu(monkeypatch, present=False)
+    snap = stats_routes._build_payload(
+        stats_routes.stats_scope_for(_user("own")), lite=True)
+    assert snap["gpu"] is None
+    assert snap["server"]["gpu"]["present"] is False
 
 
 def test_own_scope_toggle_restores_machine(client, app_module, monkeypatch):
@@ -510,8 +533,9 @@ def test_nonadmin_all_scope_unchanged(client):
     assert "progress_id" not in rows[b]
 
 
-def test_snapshot_route_own_user_over_http(client, make_user_key):
+def test_snapshot_route_own_user_over_http(client, make_user_key, monkeypatch):
     from tests.conftest import bearer
+    _with_gpu(monkeypatch)
     make_user_key("root", is_admin=True)
     uid, raw = make_user_key("alice", pages={"stats": "own"})
     a = jobs.job_start("transcribe", model="m", user="alice", user_id=uid)

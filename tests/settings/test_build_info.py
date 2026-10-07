@@ -1,6 +1,7 @@
 """build_info version resolution: env override > git describe > "unknown"."""
 
 import importlib
+import os
 import subprocess
 
 import pytest
@@ -118,15 +119,19 @@ def test_process_identity_survives_the_reload_tests():
     assert main.BOOT_ID == build_info.BOOT_ID
 
 
-def test_git_describe_passes_safe_directory(monkeypatch):
+def test_git_describe_passes_safe_directory(monkeypatch, tmp_path):
     """A service account that does not own the checkout (Windows LocalSystem
     on a user-cloned repo) hits git's dubious-ownership refusal unless
     safe.directory is passed as protected command-line config."""
     monkeypatch.delenv("WHISPER_BUILD_VERSION", raising=False)
+    (tmp_path / ".git").mkdir()
+    monkeypatch.setattr(build_info, "REPO_ROOT", str(tmp_path))
     seen = []
+    seen_kw = []
 
     def _run(argv, **kw):
         seen.append(list(argv))
+        seen_kw.append(kw)
         return subprocess.CompletedProcess(argv, 0, stdout="v1.2.3\n", stderr="")
 
     monkeypatch.setattr(subprocess, "run", _run)
@@ -134,3 +139,17 @@ def test_git_describe_passes_safe_directory(monkeypatch):
     # Protected config only counts BEFORE the subcommand: a "-c" moved after
     # "describe" is an unknown option there and the version reads "unknown".
     assert seen[0][:4] == ["git", "-c", "safe.directory=*", "describe"]
+    # The ceiling keeps discovery inside the checkout: git never walks up to
+    # a parent repository.
+    assert seen_kw[0]["env"]["GIT_CEILING_DIRECTORIES"] == os.path.dirname(str(tmp_path))
+
+
+def test_no_dot_git_never_runs_git(monkeypatch, tmp_path):
+    """A tarball install (no .git in the checkout) must not let git walk up
+    to a parent repo — with safe.directory=* that repo's hooks would run."""
+    monkeypatch.delenv("WHISPER_BUILD_VERSION", raising=False)
+    monkeypatch.setattr(build_info, "REPO_ROOT", str(tmp_path))
+    calls = []
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: calls.append(a))
+    assert build_info._resolve() == "unknown"
+    assert calls == []

@@ -98,6 +98,7 @@ nssm.exe
 SIMPLIFY_NOTES.md
 CODE-REVIEW_NOTES.md
 SECURITY-REVIEW_NOTES.md
+.review-run*/
 
 # Tool caches
 .ruff_cache/

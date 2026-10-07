@@ -324,6 +324,31 @@ def test_progress_updates_during_decode(client, app_module, fake_model):
     assert pid not in tx_progress._BATCH_PROGRESS
 
 
+def test_job_finish_is_scoped_to_the_runs_request_id(
+        client, app_module, monkeypatch):
+    # The handler closes its progress entry before the job-row finish, so a
+    # same-id re-post can own the row by then: the finish carries the run's
+    # own request_id (the one the start stored) to leave that row alone.
+    pid = "a1" * 16
+    starts, finishes = [], []
+    real_start = tx_progress._jobs_start_async
+    real_finish = tx_progress._jobs_finish
+
+    async def _start(p, **kw):
+        starts.append(kw.get("request_id"))
+        return await real_start(p, **kw)
+
+    async def _finish(p, **kw):
+        finishes.append(kw.get("request_id"))
+        return await real_finish(p, **kw)
+    monkeypatch.setattr(tx_progress, "_jobs_start_async", _start)
+    monkeypatch.setattr(tx_progress, "_jobs_finish", _finish)
+    r = _post(client, response_format="json", progress_id=pid)
+    assert r.status_code == 200, r.text
+    assert len(finishes) == 1
+    assert starts[0] and finishes == starts
+
+
 def test_progress_entry_is_closed_on_a_413_before_the_decode(
         client, app_module, monkeypatch):
     # The entry is seeded before the Content-Length gate; a failure there
@@ -823,6 +848,8 @@ def test_a_full_capture_store_still_records_a_batch_request(
                         raising=False)
     monkeypatch.setattr(app_module.cfg, "CAPTURES_MAX", 10, raising=False)
     monkeypatch.setattr(captures_store, "count_evictable", lambda: 10)
+    # Not a store full of "ready" rows (the real DB state must not decide).
+    monkeypatch.setattr(captures_store, "ready_fills_cap", lambda: False)
     created = []
     monkeypatch.setattr(captures_store, "create_capture",
                         lambda **kw: created.append(kw) or "cap-test-id")
@@ -830,6 +857,26 @@ def test_a_full_capture_store_still_records_a_batch_request(
     r = _post(client)
     assert r.status_code == 200, r.text
     assert len(created) == 1
+
+
+def test_a_store_full_of_ready_captures_skips_the_batch_capture(
+        client, app_module, fake_model, monkeypatch):
+    """Ready rows alone fill CAPTURES_MAX: _evict_to_cap would evict the new
+    row itself, so the gate records nothing and does not force DTW."""
+    from faster_whisper_backend.captures import store as captures_store
+
+    monkeypatch.setattr(app_module.cfg, "CAPTURES_RECORDING_ENABLED", True,
+                        raising=False)
+    monkeypatch.setattr(app_module.cfg, "CAPTURES_RECORDING_SAMPLE_RATE", 1.0,
+                        raising=False)
+    monkeypatch.setattr(captures_store, "ready_fills_cap", lambda: True)
+    created = []
+    monkeypatch.setattr(captures_store, "create_capture",
+                        lambda **kw: created.append(kw) or "cap-test-id")
+
+    r = _post(client)
+    assert r.status_code == 200, r.text
+    assert created == []
 
 
 def _retain_on(app_module, monkeypatch, tmp_path):

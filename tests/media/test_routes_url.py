@@ -257,6 +257,7 @@ def test_preview_happy_path(client, url_enabled, monkeypatch):
         "extractor": "Youtube", "estimated_bytes": 4096, "thumbnail": None,
         "ext": "m4a", "abr": 128.0,
         "video_ladder": [], "media_max_bytes": url_enabled.cfg.MEDIA_MAX_BYTES,
+        "retained_max_bytes": url_media_store.max_retainable_bytes(),
         "url_max_duration_s": url_enabled.cfg.URL_MAX_DURATION_S,
         "language": None, "subtitle_tracks": [],
     }
@@ -412,6 +413,22 @@ def test_preview_carries_the_ladder(client, video_enabled, monkeypatch):
     body = client.post("/v1/audio/url-preview", json={"url": _URL}).json()
     assert [r["height"] for r in body["video_ladder"]] == [1080, 720, None]
     assert body["media_max_bytes"] == video_enabled.cfg.MEDIA_MAX_BYTES
+
+
+def test_preview_advertises_the_retained_cap_the_rungs_are_flagged_against(
+        client, video_enabled, monkeypatch):
+    # The ladder's over_cap flags are judged against max_retainable_bytes():
+    # with a store cap below MEDIA_MAX_BYTES the preview must say so, while
+    # media_max_bytes stays the transcription ceiling.
+    async def _thumb(url, **kw):
+        return None
+    monkeypatch.setattr(url_download, "fetch_thumbnail_data_uri", _thumb)
+    cap = video_enabled.cfg.MEDIA_MAX_BYTES
+    monkeypatch.setattr(video_enabled.cfg, "RETAINED_MEDIA_MAX_BYTES", cap // 2,
+                        raising=False)
+    body = client.post("/v1/audio/url-preview", json={"url": _URL}).json()
+    assert body["retained_max_bytes"] == cap // 2
+    assert body["media_max_bytes"] == cap
 
 
 def test_keep_video_response_carries_video_id_when_the_task_finishes(

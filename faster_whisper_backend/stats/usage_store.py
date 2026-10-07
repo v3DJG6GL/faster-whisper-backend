@@ -118,6 +118,10 @@ _STAGE_ALIASES = {"translate": "translating"}
 # through codes cannot grow one row without bound.
 _JOB_TARGETS_MAX = 32
 
+# usage_jobs.model cap; matches jobs_store._CAP_MODEL. A refused stream
+# handshake hands its raw client `model` string through record_usage.
+_CAP_MODEL = 128
+
 # Which jobs a stage COULD have run on — the denominator of the "ran on N of
 # M" meter. Translation applies to every kind (a dictation is translated via
 # the text endpoint, a file inline); the audio stages only to batch inputs.
@@ -625,10 +629,13 @@ def record_usage(
                             "  wait_s      = wait_s + excluded.wait_s,"
                             "  error_class = COALESCE(error_class, excluded.error_class),"
                             "  error_stage = COALESCE(error_stage, excluded.error_stage)",
-                            # language capped like recent_transcriptions_store's
-                            # _CAP_LANGUAGE: a caller may hand a raw client value.
+                            # model and language capped like jobs_store's
+                            # _CAP_MODEL / recent_transcriptions_store's
+                            # _CAP_LANGUAGE: a caller may hand a raw client value
+                            # (a refused stream handshake's model string).
                             (jid, uid, kid, k, created_ts, status, a, w, p,
-                             model or None, (language or "")[:32] or None,
+                             (model or "")[:_CAP_MODEL] or None,
+                             (language or "")[:32] or None,
                              wt, ecls, estg),
                         )
                 conn.execute(
