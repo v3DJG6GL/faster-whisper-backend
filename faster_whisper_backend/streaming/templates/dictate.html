@@ -266,7 +266,10 @@
       // after Stop too, so it runs before the guard.
       // Unknown states are ignored on purpose (the server may grow more).
       if (m.state === "dropped") renderPartial("", "");
-      uttState = m.state === "dropped" ? null : m.state;
+      // Only the known states move uttState: an unknown one arriving after
+      // "decoding" must not cut Stop's long decode window to STOP_WAIT_MS.
+      if (m.state === "dropped") uttState = null;
+      else if (m.state === "open" || m.state === "decoding") uttState = m.state;
       // After Stop the forced final decode may take far longer than a frame
       // gap (large-v3 on CPU): give the fallback the long window.
       if (stopTimer && m.state === "decoding") armStopTimer(STOP_DECODE_WAIT_MS);

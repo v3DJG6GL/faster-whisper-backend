@@ -45,9 +45,17 @@ def test_admin_and_quick_config_writers_wait_on_the_same_lock(monkeypatch):
         entered.append("save_factory_rules")
         raise OSError("stop here")
 
+    async def _sync(fn, *a, **k):
+        return fn(*a, **k)
+
     monkeypatch.setattr(quick_config_routes, "_apply_rules_patch_locked", _qc_locked)
     monkeypatch.setattr(config_store, "save_overrides", _save_overrides)
     monkeypatch.setattr(config_store, "save_factory_rules", _save_factory_rules)
+    # Run the writers' offloaded save inline: a writer that bypassed the lock
+    # then records itself before the next yield, instead of whenever an
+    # executor thread happens to get scheduled — the probe below is no
+    # longer a race against thread start-up.
+    monkeypatch.setattr(admin_routes.asyncio, "to_thread", _sync)
 
     async def scenario():
         lock = pl_apply.rules_lock()
@@ -64,7 +72,10 @@ def test_admin_and_quick_config_writers_wait_on_the_same_lock(monkeypatch):
             await asyncio.sleep(0)
         held_out = list(entered)
         lock.release()
-        results = await asyncio.gather(*tasks, return_exceptions=True)
+        # Bounded, so a writer wedged on the lock fails here instead of
+        # hanging the suite (no pytest-timeout).
+        results = await asyncio.wait_for(
+            asyncio.gather(*tasks, return_exceptions=True), timeout=5)
         return held_out, results
 
     held_out, results = asyncio.run(scenario())
@@ -80,7 +91,12 @@ def test_admin_and_quick_config_writers_wait_on_the_same_lock(monkeypatch):
 
 
 def test_scalar_admin_save_stays_off_the_rules_lock(monkeypatch):
-    """Unrelated scalar saves do not queue behind a PIPELINE_RULES write."""
+    """Unrelated scalar saves do not queue behind a PIPELINE_RULES write.
+
+    The lock is a plain, non-reentrant asyncio lock held by this very task,
+    so a regression that puts scalar saves on it would block forever —
+    bounded by wait_for, it fails as a TimeoutError instead of hanging the
+    suite (no pytest-timeout)."""
     entered: list[str] = []
 
     def _save_overrides(payload):
@@ -92,7 +108,8 @@ def test_scalar_admin_save_stays_off_the_rules_lock(monkeypatch):
     async def scenario():
         async with pl_apply.rules_lock():
             with pytest.raises(HTTPException):
-                await admin_routes.post_state({"BEAM_SIZE": 3}, None)
+                await asyncio.wait_for(
+                    admin_routes.post_state({"BEAM_SIZE": 3}, None), timeout=5)
             return list(entered)
 
     assert asyncio.run(scenario()) == ["save_overrides"]

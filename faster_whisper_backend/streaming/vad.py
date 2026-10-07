@@ -83,11 +83,14 @@ class SileroEndpointer:
 
     _CTX_FRAMES = 3  # frames of lookback prepended to the decision window
 
-    def __init__(self, threshold: float = 0.5):
+    def __init__(self, threshold: float = 0.5, energy_dbfs: float = -42.0):
         from faster_whisper.vad import get_vad_model  # noqa: PLC0415
 
         self._model = get_vad_model()
         self.threshold = float(threshold)
+        # The energy gate a mid-stream Silero failure degrades to: the same
+        # configured level the construction-time fallback honours.
+        self._energy_dbfs = float(energy_dbfs)
         # Silero's built-in hysteresis (off-threshold below the on-threshold),
         # floored at a small positive value: a configured threshold < 0.15 would
         # otherwise make _off negative, so the latch could never release (prob is
@@ -122,7 +125,7 @@ class SileroEndpointer:
                 self._degraded = True
                 logger.warning("[streaming-vad] Silero call failed mid-stream; "
                                "degrading to the energy gate for this session.")
-            prob = 1.0 if rms_dbfs(frame) > -42.0 else 0.0
+            prob = 1.0 if rms_dbfs(frame) > self._energy_dbfs else 0.0
         if self._speaking:
             if prob < self._off:
                 self._speaking = False
@@ -141,7 +144,7 @@ def make_endpointer(backend: str = "auto", *, threshold: float = 0.5,
     (try Silero, fall back to Energy with a logged warning)."""
     if backend in ("silero", "auto"):
         try:
-            return SileroEndpointer(threshold=threshold)
+            return SileroEndpointer(threshold=threshold, energy_dbfs=energy_dbfs)
         except Exception as exc:  # noqa: BLE001 — any failure → fall back
             if backend == "silero":
                 raise

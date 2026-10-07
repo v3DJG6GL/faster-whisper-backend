@@ -85,8 +85,9 @@ class FfmpegTransport:
                 if not chunk:
                     break
                 await self._sink(chunk)
-        except asyncio.CancelledError:
-            pass
+        # A cancel is NOT swallowed: aclose() awaits this task through
+        # wait_for, which hands an outer cancel (server shutdown) on to it —
+        # returning normally here would lose that cancel.
         except Exception as exc:  # noqa: BLE001
             logger.warning("[ffmpeg-transport] reader error: %s", exc)
         finally:
@@ -125,8 +126,7 @@ class FfmpegTransport:
                 try:
                     await asyncio.wait_for(self._reader, timeout=5.0)
                 except asyncio.TimeoutError:
-                    # wait_for (3.12+) has already cancelled AND awaited the
-                    # reader (_drain_stdout swallows the CancelledError) —
+                    # wait_for has already cancelled AND awaited the reader —
                     # nothing to join.
                     pass
             try:

@@ -434,21 +434,8 @@ def _nested_repetition(pat: str) -> bool:
                 # (a|ab)+, (x|xx)+y, (n|d|nd)+# all let one run of input be
                 # split many ways, which backtracks exponentially. An empty
                 # branch — (|a)+ — is the degenerate case of the same thing.
-                if spans:
-                    branches = [pat[a:b] for a, b in spans]
-                    stripped = [_strip_outer_group(b) for b in branches]
-                    if len(set(stripped)) < len(stripped):
-                        return True
-                    if any(b != a and b.startswith(a)
-                           for a in stripped for b in stripped):
-                        return True
-                    # Overlap through a class or shorthand is the same trap
-                    # with no shared text: (cx|[bc]x)+# splits "cxcx…" both
-                    # ways. Refuse when one branch matches the start of
-                    # another branch's witness.
-                    if any(_branches_overlap(a, b)
-                           for a in stripped for b in stripped):
-                        return True
+                if spans and _spans_overlap(pat, spans):
+                    return True
             # A lookaround is matched once and never backtracked into, so a
             # repeat inside it cannot split the enclosing group's input
             # ambiguously: (x(?=a+)y)+ is linear. Same for the BODY of an
@@ -468,6 +455,15 @@ def _nested_repetition(pat: str) -> bool:
             # matches each repetition exactly one way.
             if (frame["rep"] and not frame["atomic"]) or variable:
                 stack[-1]["rep"] = True
+            # An overlapping alternation splits its input many ways whether
+            # or not it carries a quantifier of its own: `((?:a|aa){2})+$`
+            # is `(?:a|aa)(?:a|aa)` repeated, and `(?:c|(n|nn))+#` repeats
+            # the `(n|nn)` split exactly as `(n|nn)+#` does. Mark the parent
+            # as repeating, so a variable quantifier on any enclosing group
+            # refuses it. A possessive or atomic group never re-splits.
+            elif (spans and not frame["atomic"] and not possessive
+                    and _spans_overlap(pat, spans)):
+                stack[-1]["rep"] = True
             continue
         if c == "|":
             stack[-1]["alts"].append(i)
@@ -483,19 +479,73 @@ def _nested_repetition(pat: str) -> bool:
     return False
 
 
+def _spans_overlap(pat: str, spans: "list[tuple[int, int]]") -> bool:
+    """True if two of the alternation branches ``pat[a:b]`` in ``spans`` can
+    match the same start of the input — the shape that lets one run of input
+    split many ways once the alternation repeats.
+
+    (a|a)* — identical alternatives overlap, so the engine re-tries the same
+    split every way round. Prefix-ambiguous branches are the same trap without
+    being byte-identical: (a|ab)+, (x|xx)+y, (n|d|nd)+# all let one run of
+    input be split many ways, which backtracks exponentially. An empty branch
+    — (|a)+ — is the degenerate case of the same thing.
+    """
+    stripped = [_strip_outer_group(pat[a:b]) for a, b in spans]
+    if len(set(stripped)) < len(stripped):
+        return True
+    if any(b != a and b.startswith(a) for a in stripped for b in stripped):
+        return True
+    # Overlap through a class or shorthand is the same trap with no shared
+    # text: (cx|[bc]x)+# splits "cxcx…" both ways. Refuse when one branch
+    # matches the start of another branch's witness.
+    return any(_branches_overlap(a, b) for a in stripped for b in stripped)
+
+
+def _loose_quantifier(b: str) -> bool:
+    """True if ``b`` holds any quantifier other than a fixed count ``{n}`` /
+    ``{n,n}`` — an optional ``?`` / ``{0,1}`` (or a lazy suffix) as well as a
+    repeat. Escapes and character classes are skipped; the ``?`` that opens a
+    ``(?:`` / ``(?P<`` / lookaround prefix is not a quantifier."""
+    n = len(b)
+    i = 0
+    while i < n:
+        c = b[i]
+        if c == "\\":
+            i += 2
+            continue
+        if c == "[":
+            i = _skip_class(b, i)[1] + 1
+            continue
+        if c == "(" and i + 1 < n and b[i + 1] == "?":
+            i += 2
+            continue
+        if c in "*+?":
+            return True
+        if c == "{":
+            j = b.find("}", i)
+            if j != -1:
+                lo, comma, hi = b[i + 1:j].partition(",")
+                if comma and (not lo or lo != hi):
+                    return True
+        i += 1
+    return False
+
+
 def _branches_overlap(a: str, b: str) -> bool:
     """True if branch ``b`` matches a prefix of a string branch ``a`` matches.
 
     Best effort over ``_witness``: an empty witness, or a branch that does not
     compile on its own (a group reference, an inline flag), never counts as an
-    overlap. Nor does a ``b`` that still holds a group: this runs IN-PROCESS
-    on a user-supplied fragment, and nested unquantified alternations
-    (``(?:x|xx)(?:x|xx)…``) backtrack exponentially even on a 64-character
-    witness. A group-free branch has no variable quantifier by the time this
-    runs (the frame's "rep" check returned first), so its match is linear.
+    overlap. This runs IN-PROCESS on a user-supplied fragment, so ``b`` is
+    matched only when that match is linear: never when it holds a nested
+    alternation — unquantified ``(?:x|xx)(?:x|xx)…`` backtracks exponentially
+    even on a 64-character witness — and never when it holds any quantifier
+    but a fixed count: optional atoms backtrack exponentially too
+    (``a?a?…aa…`` against ``aa…``). A group without ``|`` and with only
+    fixed counts, like ``(?:h)a``, matches one way and is still checked.
     """
     import re
-    if a == b or "(" in b:
+    if a == b or ("(" in b and "|" in b) or _loose_quantifier(b):
         return False
     w = _witness(a)
     if not w:

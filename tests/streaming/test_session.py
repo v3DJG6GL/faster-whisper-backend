@@ -462,10 +462,14 @@ def _neue_zeile(raw):
 
 
 def _queued_final(texts):
+    """A decode_final returning each item in turn; an item is the text, or a
+    ``(text, dropped_all)`` pair for a decode that dropped its segments."""
     queue = list(texts)
 
     async def decode_final(audio, prompt):
-        return (queue.pop(0), [], False)
+        item = queue.pop(0)
+        text, dropped_all = item if isinstance(item, tuple) else (item, False)
+        return (text, [], dropped_all)
     return decode_final
 
 
@@ -605,7 +609,7 @@ def test_dropped_final_keeps_the_hold():
     """An utterance whose final decode drops everything adds no text: the held
     word stays held and joins the utterance after it."""
     s, msgs = _make_session(
-        postprocess=_neue_zeile, decode_final=_queued_final(["bla neue", "", " zeile text."]),
+        postprocess=_neue_zeile, decode_final=_queued_final(["bla neue", ("", True), " zeile text."]),
         cfg=StreamConfig(**_FAST, hard_break_silence_ms=0),
         holdback=_hold_trailing("neue"))
 

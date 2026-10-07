@@ -423,3 +423,51 @@ def test_overlap_check_never_runs_a_grouped_branch_in_process():
             "g._nested_repetition('(?:' + 'x' * 64 + '|' + '(?:x|xx)' * 40 + '!)+')")
     subprocess.run([sys.executable, "-I", "-c", code, str(Path(g.__file__).resolve())],
                    check=True, timeout=30)
+
+
+def test_overlap_check_never_runs_an_optional_atom_branch_in_process():
+    """`?` / `{0,1}` are not variable quantifiers, so a group-free branch of
+    optional atoms never set the frame's "rep" — and `_branches_overlap`
+    matched `a?…a?a…a` against an `a…a` witness in-process: the classic
+    a?^n a^n blowup (n=26 took 3 s, doubling per +1). Same child + timeout
+    as the grouped-branch case, so a regression fails instead of hanging."""
+    import subprocess
+    import sys
+    from pathlib import Path
+    code = ("import importlib.util as u, sys; "
+            "s = u.spec_from_file_location('rg', sys.argv[1]); g = u.module_from_spec(s); "
+            "s.loader.exec_module(g); "
+            "g._nested_repetition('(?:' + 'a' * 40 + '|' + 'a?' * 40 + 'a' * 40 + ')+'); "
+            "g._nested_repetition('(?:' + 'a' * 40 + '|' + 'a{0,1}' * 40 + 'a' * 40 + ')+')")
+    subprocess.run([sys.executable, "-I", "-c", code, str(Path(g.__file__).resolve())],
+                   check=True, timeout=30)
+
+
+@pytest.mark.parametrize("pat", [r"(?:c|(n|nn))+#", r"(?:(n|nn)c?)+#"])
+def test_overlapping_alternation_inside_a_repeated_group_is_rejected(pat):
+    """The `(n|nn)` split is repeated by the enclosing `+` exactly as in
+    `(n|nn)+#`, even when the alternation is not the group's whole body —
+    and no probe input holds an `n` run, so the timed probes never saw it."""
+    assert g._nested_repetition(pat)
+
+
+def test_unrepeated_overlapping_alternation_still_passes():
+    for pat in (r"(n|nn)#", r"(?:x(n|nn)y)", r"(?:x(n|nn)y)?#"):
+        assert not g._nested_repetition(pat), pat
+
+
+@pytest.mark.parametrize("pat", [r"((?:a|aa){2})+$", r"(?:(?:ha|haha){2})+$", r"((a|aa){3})+"])
+def test_fixed_count_overlapping_alternation_inside_a_repeat_is_rejected(pat):
+    """`X{2}` is `XX`: a fixed count only matches one way when its body does.
+    An overlapping alternation under `{2}` still splits every run many ways,
+    so repeating it is exponential (the run-7 `((a|aa){3})+` blowup)."""
+    assert g._nested_repetition(pat)
+    with pytest.raises(ValueError, match="nested repetition"):
+        g.validate([("r", pat, "")])
+
+
+@pytest.mark.parametrize("pat", [r"((?:h)a|haha)+$", r"((?:a)b|[a]b[a]b)+$"])
+def test_group_spelled_overlapping_branch_is_rejected(pat):
+    """A branch that holds a group but no `|` matches linearly, so the
+    in-process overlap match still runs on it — `(?:h)a` overlaps `haha`."""
+    assert g._nested_repetition(pat)

@@ -53,6 +53,27 @@ def test_silero_off_threshold_floored_at_low_threshold():
     assert streaming_vad.SileroEndpointer(threshold=0.5)._off == pytest.approx(0.35)
 
 
+def test_silero_mid_stream_degradation_honours_the_configured_energy_gate(monkeypatch):
+    """A Silero failure mid-session degrades to the energy gate at the
+    configured STREAMING_GATE_RMS_DBFS (make_endpointer's energy_dbfs), not a
+    hard-coded -42 dBFS that would gate quiet speech for the rest of it."""
+    fw_vad = pytest.importorskip("faster_whisper.vad")
+
+    class _FailsAfterProbe:
+        calls = 0
+
+        def __call__(self, audio):
+            self.calls += 1
+            if self.calls > 1:
+                raise RuntimeError("onnx session died")
+            return np.zeros(audio.shape[0] // 512, dtype=np.float32)
+
+    monkeypatch.setattr(fw_vad, "get_vad_model", _FailsAfterProbe)
+    ep = make_endpointer("silero", energy_dbfs=-60.0)
+    assert isinstance(ep, streaming_vad.SileroEndpointer)
+    assert ep.is_speech(_frame(10 ** (-50 / 20))) is True     # -50 dBFS > -60
+
+
 def test_make_endpointer_auto_falls_back_when_silero_unavailable(monkeypatch):
     class _Boom:
         def __init__(self, *a, **k):

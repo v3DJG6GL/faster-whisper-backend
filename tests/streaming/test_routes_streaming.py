@@ -223,10 +223,13 @@ def test_dictate_page_stop_flow_guards(app_module):
     assert 'if (!running || statusEl.className === "error") return;' in on_msg
     # A decode announced BEFORE Stop sends nothing until it finishes, so
     # stop() itself picks the long window from the remembered state, which a
-    # final or a dropped frame clears.
+    # final or a dropped frame clears. Only the known states set it: an
+    # unknown state after "decoding" must not cut Stop to the short window.
     assert ('armStopTimer(uttState === "decoding" ? STOP_DECODE_WAIT_MS : STOP_WAIT_MS);'
             in stop_body)
-    assert 'uttState = m.state === "dropped" ? null : m.state;' in on_msg
+    assert 'if (m.state === "dropped") uttState = null;' in on_msg
+    assert ('else if (m.state === "open" || m.state === "decoding") uttState = m.state;'
+            in on_msg)
     final_branch = on_msg.split('m.type === "final"', 1)[1].split("else if (m.type", 1)[0]
     assert "uttState = null;" in final_branch
     # Stop during the worklet load: dropStart detaches the socket's handlers,
@@ -988,7 +991,7 @@ def test_stream_final_and_previews_cut_the_made_up_tail(app_module, fake_model,
     assert partials
     assert all("abzuschliessen" not in m["committed"] + m.get("pending", "")
                for m in partials)
-    assert metrics.guard_hits["burst"] >= 1          # finals only — previews uncounted
+    assert metrics.guard_hits["burst"] == 1          # one final; previews uncounted
     assert "cut made-up tail of final segment (burst+zero_tail+repeat" in caplog.text
     assert "tail_cut" in caplog.text
 

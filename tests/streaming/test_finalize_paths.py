@@ -369,7 +369,37 @@ def test_translate_expect_parks_when_translation_is_enabled(
 # ---- refusals carry their close code ---------------------------------------
 
 
-def test_disabled_refusal_closes_after_accept_with_4503(app_module, monkeypatch):
+@pytest.fixture
+def ws_sends(monkeypatch):
+    """Every ASGI message the server-side WebSocket sends, as
+    ``(socket id, type, close code)``. Starlette's TestClient reports a
+    PRE-accept close as the same WebSocketDisconnect(code, reason) a
+    post-accept one raises, so the close code arriving proves nothing about
+    the accept — a real server answers a pre-accept close with a bare HTTP 403
+    and the browser never sees the code. This spy is the proof instead."""
+    from starlette.websockets import WebSocket
+
+    sent: list[tuple[int, str, "int | None"]] = []
+    real_send = WebSocket.send
+
+    async def _spy(self, message):
+        sent.append((id(self), message["type"], message.get("code")))
+        return await real_send(self, message)
+
+    monkeypatch.setattr(WebSocket, "send", _spy)
+    return sent
+
+
+def _assert_accepted_before_close(sent, code):
+    closes = [i for i, (_sid, typ, c) in enumerate(sent)
+              if typ == "websocket.close" and c == code]
+    assert closes, sent
+    sid = sent[closes[0]][0]
+    assert any(s == sid and typ == "websocket.accept"
+               for s, typ, _c in sent[:closes[0]]), sent
+
+
+def test_disabled_refusal_closes_after_accept_with_4503(app_module, monkeypatch, ws_sends):
     from faster_whisper_backend.streaming.routes import _WS_DISABLED
 
     monkeypatch.setattr(app_module.cfg, "STREAMING_ENABLED", False, raising=False)
@@ -377,13 +407,12 @@ def test_disabled_refusal_closes_after_accept_with_4503(app_module, monkeypatch)
         with pytest.raises(WebSocketDisconnect) as ei:
             with client.websocket_connect(_STREAM_URL) as ws:
                 ws.receive_json()
-    # A pre-accept close surfaces as a handshake error (HTTP 403), never as a
-    # close with this code — so the code arriving proves the accept happened.
     assert ei.value.code == _WS_DISABLED
     assert "disabled" in (ei.value.reason or "")
+    _assert_accepted_before_close(ws_sends, _WS_DISABLED)
 
 
-def test_unauth_refusal_closes_after_accept_with_4401(app_module):
+def test_unauth_refusal_closes_after_accept_with_4401(app_module, ws_sends):
     from faster_whisper_backend.streaming.routes import _WS_UNAUTH
 
     with TestClient(app_module.app, client=("203.0.113.9", 1234)) as c:
@@ -391,9 +420,10 @@ def test_unauth_refusal_closes_after_accept_with_4401(app_module):
             with c.websocket_connect(_STREAM_URL) as ws:
                 ws.receive_json()
     assert ei.value.code == _WS_UNAUTH
+    _assert_accepted_before_close(ws_sends, _WS_UNAUTH)
 
 
-def test_origin_refusal_closes_after_accept_with_4403(client, app_module):
+def test_origin_refusal_closes_after_accept_with_4403(client, app_module, ws_sends):
     from faster_whisper_backend.streaming.routes import _WS_BAD_ORIGIN
 
     with pytest.raises(WebSocketDisconnect) as ei:
@@ -401,9 +431,10 @@ def test_origin_refusal_closes_after_accept_with_4403(client, app_module):
                 _STREAM_URL, headers={"origin": "https://evil.example"}) as ws:
             ws.receive_json()
     assert ei.value.code == _WS_BAD_ORIGIN
+    _assert_accepted_before_close(ws_sends, _WS_BAD_ORIGIN)
 
 
-def test_cap_refusal_closes_after_accept_with_4429(client, app_module, monkeypatch):
+def test_cap_refusal_closes_after_accept_with_4429(client, app_module, monkeypatch, ws_sends):
     from faster_whisper_backend.streaming.routes import _WS_TOO_MANY
 
     monkeypatch.setattr(app_module.cfg, "STREAMING_MAX_SESSIONS", 1, raising=False)
@@ -415,6 +446,7 @@ def test_cap_refusal_closes_after_accept_with_4429(client, app_module, monkeypat
                 ws2.receive_json()
         assert ei.value.code == _WS_TOO_MANY
         assert "live sessions" in (ei.value.reason or "")
+    _assert_accepted_before_close(ws_sends, _WS_TOO_MANY)
 
 
 # ---- handshake reporting / jobs row / queue item cap ---------------------------

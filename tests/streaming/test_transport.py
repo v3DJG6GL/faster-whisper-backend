@@ -143,6 +143,75 @@ def test_ffmpeg_transport_cancelled_aclose_still_kills_the_process():
     assert asyncio.run(run())
 
 
+class _StuckProc:
+    """An ffmpeg stand-in whose stdout never yields and that never exits."""
+    returncode = None
+    killed = False
+
+    class stdin:
+        @staticmethod
+        def is_closing():
+            return False
+
+        @staticmethod
+        def close():
+            pass
+
+    class stdout:
+        @staticmethod
+        async def read(_n):
+            await asyncio.Event().wait()
+
+    async def wait(self):
+        await asyncio.Event().wait()
+
+    def kill(self):
+        self.killed = True
+
+
+async def _nosink(b):
+    pass
+
+
+def test_ffmpeg_transport_cancel_during_reader_join_propagates():
+    """A cancel while aclose() joins the stdout reader went to the reader task,
+    which swallowed it and returned — so aclose() carried on and returned
+    normally inside a handler that was meant to be cancelled. It must raise,
+    and the process must still be killed."""
+    async def run():
+        t = FfmpegTransport(_nosink)
+        t._proc = _StuckProc()
+        t._reader = asyncio.create_task(t._drain_stdout())
+        task = asyncio.create_task(t.aclose())
+        await asyncio.sleep(0.05)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        return t._proc.killed, t._reader_dead
+
+    assert asyncio.run(run()) == (True, True)
+
+
+def test_ffmpeg_transport_reader_join_timeout_still_returns(monkeypatch):
+    """The other side: a reader that outlives the join timeout is cancelled by
+    wait_for, which reports a TimeoutError — aclose() returns normally."""
+    real_wait_for = asyncio.wait_for
+
+    def _short(aw, timeout):
+        return real_wait_for(aw, timeout=0.05)
+
+    monkeypatch.setattr(asyncio, "wait_for", _short)
+
+    async def run():
+        t = FfmpegTransport(_nosink)
+        t._proc = _StuckProc()
+        t._reader = asyncio.create_task(t._drain_stdout())
+        await t.aclose()
+        return t._proc.killed, t._reader.cancelled()
+
+    assert asyncio.run(run()) == (True, True)
+
+
 def test_stream_route_accepts_webm_via_ffmpeg(app_module, monkeypatch):
     # Force the energy gate — the synthetic sine tone is not real speech, so the
     # Silero VAD would reject it; this test only checks the ffmpeg decode path.

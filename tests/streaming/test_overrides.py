@@ -5,6 +5,8 @@ final decode. Driven in-process; no faster-whisper needed."""
 import logging
 import time
 
+import pytest
+
 from faster_whisper_backend.settings import effective_config
 from tests._streaming_helpers import const_pcm, ws_drain
 from tests.conftest import bearer
@@ -266,13 +268,10 @@ def test_model_load_failure_delivers_generic_error_and_closes(
     assert errors[0]["message"] == "model could not be loaded"
 
 
-def test_model_load_failure_with_peer_gone_is_not_logged_as_server_error(
-        client, make_user_key, app_module, monkeypatch, caplog):
-    """A peer that hangs up while the handshake is being refused (here: during
-    a failed model load) is a plain disconnect — not a traceback and not a
-    status="error" dictation row. Starlette raises WebSocketDisconnect on the
-    refusal send and RuntimeError on the following close; both must stay
-    inside the guarded refusal path."""
+def _refused_load_with_peer_gone(client, make_user_key, monkeypatch, caplog, gone_send):
+    """Drive a failed model load whose refusal send hits a gone peer
+    (``gone_send`` replaces Starlette's WebSocket.send); returns the ledger
+    rows and the ERROR records the handler wrote."""
     _, raw_alice = make_user_key("alice")
 
     async def _boom(name, *, lease=False):
@@ -281,19 +280,7 @@ def test_model_load_failure_with_peer_gone_is_not_logged_as_server_error(
     monkeypatch.setattr(tx_models, "_get_or_load_model", _boom)
 
     from starlette.websockets import WebSocket as _WS
-    _real_send = _WS.send
-
-    async def _gone_send(self, message):
-        # Fail at the ASGI layer (below Starlette's own send()), so its state
-        # machine turns the OSError into WebSocketDisconnect and flips the
-        # socket to DISCONNECTED — the exact uvicorn peer-gone sequence.
-        if message["type"] != "websocket.accept":
-            async def _asgi_gone(_msg):
-                raise OSError("peer gone")
-            self._send = _asgi_gone
-        return await _real_send(self, message)
-
-    monkeypatch.setattr(_WS, "send", _gone_send)
+    monkeypatch.setattr(_WS, "send", gone_send(_WS.send))
 
     from faster_whisper_backend.stats import metrics
     rows = []
@@ -316,10 +303,91 @@ def test_model_load_failure_with_peer_gone_is_not_logged_as_server_error(
             time.sleep(0.025)
         assert not streaming_routes._active_sessions, "handler did not finish"
 
-    assert not [r for r in rows if r.get("status") == "error"], rows
-    assert not [r for r in caplog.records
-                if r.levelno >= logging.ERROR and "error:" in r.getMessage()], \
-        [r.getMessage() for r in caplog.records]
+    errors = [r for r in caplog.records
+              if r.levelno >= logging.ERROR and "error:" in r.getMessage()]
+    return rows, errors
+
+
+def _assert_one_load_failure_row(rows, errors):
+    # The model-load branch writes exactly ONE classified error row; a refusal
+    # error escaping to the blanket handler would add a second (and log).
+    err_rows = [r for r in rows if r.get("status") == "error"]
+    assert len(err_rows) == 1, rows
+    assert err_rows[0]["kind"] == "dictate" and err_rows[0]["error_class"], rows
+    assert not errors, [r.getMessage() for r in errors]
+
+
+def test_model_load_failure_with_peer_gone_is_not_logged_as_server_error(
+        client, make_user_key, app_module, monkeypatch, caplog):
+    """A peer that hangs up while the handshake is being refused (here: during
+    a failed model load) is a plain disconnect — not a traceback and not a
+    second, unclassified error row. Here the ASGI send raises OSError, which
+    Starlette turns into WebSocketDisconnect on the refusal send (the close is
+    never reached). The handler's outer `except WebSocketDisconnect` would
+    swallow that too, so the RuntimeError variant below is the one that pins
+    the guard."""
+    def _gone(real_send):
+        async def _gone_send(self, message):
+            # Fail at the ASGI layer (below Starlette's own send()), so its state
+            # machine turns the OSError into WebSocketDisconnect and flips the
+            # socket to DISCONNECTED — the exact uvicorn peer-gone sequence.
+            if message["type"] != "websocket.accept":
+                async def _asgi_gone(_msg):
+                    raise OSError("peer gone")
+                self._send = _asgi_gone
+            return await real_send(self, message)
+        return _gone_send
+
+    _assert_one_load_failure_row(
+        *_refused_load_with_peer_gone(client, make_user_key, monkeypatch, caplog, _gone))
+
+
+def test_model_load_failure_on_a_disconnected_socket_is_not_logged_as_server_error(
+        client, make_user_key, app_module, monkeypatch, caplog):
+    """The socket is already DISCONNECTED when the refusal is sent, so
+    Starlette raises RuntimeError — which only _safe_ws_send's guard keeps
+    from reaching the blanket `except Exception` (an "error:" log and a
+    second error row)."""
+    from starlette.websockets import WebSocketState
+
+    def _gone(real_send):
+        async def _gone_send(self, message):
+            if message["type"] != "websocket.accept":
+                self.application_state = WebSocketState.DISCONNECTED
+            return await real_send(self, message)
+        return _gone_send
+
+    _assert_one_load_failure_row(
+        *_refused_load_with_peer_gone(client, make_user_key, monkeypatch, caplog, _gone))
+
+
+def test_model_load_failure_records_a_classified_error_row(
+        client, make_user_key, app_module, monkeypatch):
+    """The model-load refusal returns before the blanket handler's ledger row,
+    so it writes its own: a CUDA OOM on a live dictation shows on /stats as
+    cuda_oom, like the identical batch failure."""
+    _, raw_alice = make_user_key("alice")
+
+    async def _oom(name, *, lease=False):
+        raise RuntimeError("CUDA out of memory. Tried to allocate 2.00 GiB")
+
+    monkeypatch.setattr(tx_models, "_get_or_load_model", _oom)
+    from faster_whisper_backend.stats import metrics
+    rows = []
+    monkeypatch.setattr(metrics, "record_transcription", lambda **kw: rows.append(kw))
+
+    with client.websocket_connect(
+            "/v1/audio/transcriptions/stream", headers=bearer(raw_alice)) as ws:
+        ws.send_json({"type": "config", "model": "whisper-1",
+                      "audio": {"format": "pcm_s16le", "sample_rate": 16000}})
+        msgs = _drain(ws)
+
+    assert any(m.get("code") == "model_load_failed" for m in msgs), msgs
+    err_rows = [r for r in rows if r.get("status") == "error"]
+    assert len(err_rows) == 1, rows
+    assert err_rows[0]["error_class"] == "cuda_oom"
+    assert err_rows[0]["error_stage"] == "transcribing"
+    assert err_rows[0]["kind"] == "dictate"
 
 
 def test_handshake_drops_unknown_decode_override_keys(
@@ -367,6 +435,30 @@ def test_handshake_drops_unknown_decode_override_keys(
     assert "not_a_real_key" not in fake_model.last_kwargs
     assert "__proto__" not in fake_model.last_kwargs
     assert seen_keys and all(k == ["beam_size"] for k in seen_keys), seen_keys
+
+
+@pytest.mark.parametrize("language", ["en\nFAKE log record", "x" * 5000])
+def test_handshake_language_that_is_not_a_code_is_treated_as_absent(
+        client, make_user_key, fake_model, app_module, monkeypatch, language):
+    """The handshake `language` reaches faster-whisper, which logs it raw (CR/LF
+    included) on an English-only model on every partial, and the usage row.
+    A value not shaped like a language code is dropped at the handshake."""
+    monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
+    monkeypatch.setattr(app_module.cfg, "DEFAULT_LANGUAGE", None, raising=False)
+    _, raw_alice = make_user_key("alice")
+
+    with client.websocket_connect(
+            "/v1/audio/transcriptions/stream", headers=bearer(raw_alice)) as ws:
+        ws.send_json({"type": "config", "model": "whisper-1", "language": language,
+                      "audio": {"format": "pcm_s16le", "sample_rate": 16000}})
+        assert ws.receive_json()["type"] == "ready"
+        ws.send_bytes(_pcm(8000, 2500))
+        ws.send_bytes(_pcm(0, 1500))
+        ws.send_json({"type": "stop"})
+        _drain(ws)
+
+    assert "language" in fake_model.last_kwargs   # a decode ran
+    assert fake_model.last_kwargs["language"] is None
 
 
 # --- mid-connection credential revalidation ----------------------------------

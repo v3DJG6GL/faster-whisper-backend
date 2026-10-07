@@ -54,6 +54,7 @@ import json
 import logging
 import os
 import random
+import re
 import shutil
 import tempfile
 import time
@@ -171,6 +172,10 @@ _WS_IDLE_TIMEOUT = 4408  # client sent no audio for STREAMING_IDLE_TIMEOUT_S
 # unbounded, connection-lifetime dict of attacker-chosen keys.
 _CLIENT_OVERRIDE_KEYS: frozenset[str] = frozenset(
     settings_schema.CONFIG_TO_CLIENT_KEY.values())
+
+
+# The handshake `language`: a Whisper code (`de`, `haw`) or a BCP-47-ish tag.
+_LANGUAGE_RE = re.compile(r"\A[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8}){0,2}\Z")
 
 
 async def _refuse(ws: WebSocket, code: int, reason: str) -> None:
@@ -668,7 +673,12 @@ async def transcribe_stream(ws: WebSocket) -> None:
         _req_language = conf.get("language")
         # Tri-state, same as batch: key ABSENT → None → inherit DEFAULT_LANGUAGE;
         # present-but-empty → "" → explicit auto-detect (the client's cleared state).
+        # Anything not shaped like a language code is treated as absent: the
+        # value reaches faster-whisper, which on an English-only model logs it
+        # raw (CR/LF included) at WARNING on every partial, and the usage row.
         req_language = _req_language.strip() if isinstance(_req_language, str) else None
+        if req_language and not _LANGUAGE_RE.match(req_language):
+            req_language = None
         response_format = conf.get("response_format", "json")
         # Per-connection initial prompt (the client's "Vocabulary / prompt"). Sentinel,
         # same as batch: key ABSENT → inherit DEFAULT_PROMPT; present (incl. "") →
@@ -811,6 +821,21 @@ async def transcribe_stream(ws: WebSocket) -> None:
             # bare CR/LF would forge extra records in the /logs viewer.
             logger.warning("[stream %s] model load failed: %s",
                            session_id[:8], store_common.log_safe(str(exc)))
+            # This return skips the blanket handler's ledger row, so write the
+            # same one here: a CUDA OOM / missing model on a live dictation
+            # shows on /stats like the identical batch failure. Best effort.
+            try:
+                _ec, _es = metrics.classify_error(exc, status="error",
+                                                  stage="transcribing")
+                metrics.record_transcription(
+                    model=str(final_model or ""), audio_dur=0.0, proc_dur=0.0,
+                    status="error", words=0, kind="dictate",
+                    request_id=session_id, user_id=user.get("user_id"),
+                    key_id=user.get("key_id"), username=user.get("username"),
+                    key_label=user.get("key_label"), job_id=usage_job_id,
+                    error_class=_ec, error_stage=_es)
+            except Exception:  # noqa: BLE001 — never mask the refusal
+                pass
             # Generic client message — the raw exception text can carry model
             # dir/filesystem paths; the detail is already in the server log above.
             await _safe_ws_send(ws, {"type": "error", "code": "model_load_failed",
