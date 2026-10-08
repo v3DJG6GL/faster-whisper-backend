@@ -709,8 +709,11 @@ def busy(model_id: str) -> bool:
     until the job drains — right for a real request, wrong for a speculative
     warm-up. A draining orphan counts too: it is keyed by ITS id and
     _drop_locked(force) nulled the singleton key, so it is invisible to the
-    key check, and loading beside it is the same two-in-memory outcome."""
-    if _orphans:
+    key check, and loading beside it is the same two-in-memory outcome. So
+    does a held _infer_mutex: a cancelled job releases its lease at once, but
+    its executor thread (the zombie _drop_locked guards against) is still
+    inside pipe(), and the force-drop would free the pipeline under it."""
+    if _orphans or _infer_mutex.locked():
         return True
     key = _pipeline_key
     if not key or key[0] == model_id:

@@ -302,6 +302,29 @@ def test_a_retried_ffmpeg_probe_is_single_flight_and_off_the_caller(monkeypatch)
     pk._reset_for_tests()
 
 
+def test_a_retry_thread_that_cannot_start_frees_the_probe_slot(monkeypatch):
+    """Thread.start raising "can't start new thread" (EAGAIN on a loaded
+    host) must neither 500 the caller nor leave busy set — that answered
+    "pending" for the rest of the process."""
+    import threading
+    pk._reset_for_tests()
+    monkeypatch.setattr(pk, "_probe_ffmpeg_capabilities", lambda: None)
+    assert not pk.ffmpeg_capabilities().available     # the first, timed out
+
+    def _no_thread(self):
+        raise RuntimeError("can't start new thread")
+    with monkeypatch.context() as m:
+        m.setattr(threading.Thread, "start", _no_thread)
+        assert pk.ffmpeg_capabilities() is pk._CAPS_PENDING
+    assert pk._caps_state["busy"] is False
+    ok = pk.FfmpegCaps(True, True, True, None, "7")
+    monkeypatch.setattr(pk, "_probe_ffmpeg_capabilities", lambda: ok)
+    assert pk.ffmpeg_capabilities() is pk._CAPS_PENDING  # a probe starts
+    pk._caps_state["thread"].join(timeout=5)
+    assert pk.ffmpeg_capabilities() == ok
+    pk._reset_for_tests()
+
+
 def test_a_spawn_failure_is_not_cached_but_a_missing_binary_is(monkeypatch):
     import errno
     pk._reset_for_tests()

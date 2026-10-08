@@ -324,6 +324,20 @@ def test_package_mkv_happy_path_streams_the_file_and_cleans_up(client, package_e
     assert after <= before
 
 
+def test_package_filename_keeps_non_ascii_letters(client, package_enabled):
+    """An ASCII-only sanitiser turned "Vortrag Übung" into "Vortrag bung";
+    letters in any script survive (sent as RFC 5987 filename*), a decomposed
+    Ü included, while separators and bidi marks still go."""
+    mid = _upload(client).json()["media_id"]
+    r = client.post(f"/v1/audio/media/{mid}/package",
+                    json={"container": "mkv", "subtitles": _tracks(),
+                          "default_track": 0,
+                          "filename": "Vortrag U\u0308bung/\u202e日本"})
+    assert r.status_code == 200, r.text
+    assert ("filename*=utf-8''Vortrag%20%C3%9Cbung%E6%97%A5%E6%9C%AC.mkv"
+            in r.headers["content-disposition"])
+
+
 @pytest.mark.parametrize("rng,status", [("bytes=999999999999-", 416), ("bytes=x-y", 400)])
 def test_package_range_refusal_still_removes_the_workdir(client, package_enabled,
                                                         rng, status):
@@ -595,6 +609,15 @@ def test_sweep_reaps_stale_upload_parts(package_enabled):
     assert not os.path.exists(part)
 
 
+def _recent_spools() -> "list[str]":
+    """Upload spools (whisperup-) and retained copies (urlmedia-) written in
+    the tempdir during the last 5 s — what a request must not leave behind."""
+    tmp = tempfile.gettempdir()
+    return [n for n in os.listdir(tmp)
+            if n.startswith(("urlmedia-", "whisperup-"))
+            and time.time() - os.path.getmtime(os.path.join(tmp, n)) < 5]
+
+
 def test_retain_media_keeps_the_upload_and_returns_its_id(client, package_enabled):
     _FILE = {"file": ("a.mp4", b"RIFFxxxxWAVE" + b"\0" * 64, "video/mp4")}
     r = client.post("/v1/audio/transcriptions", files=_FILE,
@@ -611,9 +634,7 @@ def test_retain_media_keeps_the_upload_and_returns_its_id(client, package_enable
     r = client.post("/v1/audio/transcriptions", files=_FILE,
                     data={"model": "whisper-1", "response_format": "verbose_json"})
     assert "source_media_id" not in r.json()
-    assert not [n for n in os.listdir(tempfile.gettempdir())
-                if n.startswith(("urlmedia-", "whisperup-")) and time.time() - os.path.getmtime(
-                    os.path.join(tempfile.gettempdir(), n)) < 5]
+    assert not _recent_spools()
 
 
 def test_retain_media_with_a_text_response_is_422(client, package_enabled):
@@ -625,9 +646,7 @@ def test_retain_media_with_a_text_response_is_422(client, package_enabled):
                           "retain_media": "true"})
     assert r.status_code == 422
     assert "retain_media" in r.json()["detail"]
-    assert not [n for n in os.listdir(tempfile.gettempdir())
-                if n.startswith(("urlmedia-", "whisperup-")) and time.time() - os.path.getmtime(
-                    os.path.join(tempfile.gettempdir(), n)) < 5]
+    assert not _recent_spools()
     assert not [m for m, e in ums._REG.items() if e.get("kind") == "video"]
 
 
@@ -642,6 +661,4 @@ def test_retain_media_refused_by_the_store_leaves_no_copy(client, package_enable
                           "retain_media": "true"})
     assert r.status_code == 200, r.text
     assert "source_media_id" not in r.json()
-    assert not [n for n in os.listdir(tempfile.gettempdir())
-                if n.startswith(("urlmedia-", "whisperup-")) and time.time() - os.path.getmtime(
-                    os.path.join(tempfile.gettempdir(), n)) < 5]
+    assert not _recent_spools()

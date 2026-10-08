@@ -155,14 +155,38 @@ if [ "$GPU" -eq 1 ]; then
   NVIDIA_ENV_LINE="Environment=LD_LIBRARY_PATH=${LD_PATHS}"
 fi
 
-# Whether the checkout's .env sets a variable. A .env pin must win over the
+# Whether the checkout's .env pins a variable. A .env pin must win over the
 # unit: config.py's load_dotenv never overrides a variable the real
 # environment already has, so an Environment= line below would silently throw
 # away e.g. WHISPER_DATA_DIR=/srv/whisper — and restart on an empty key store.
-env_sets() {
-  [ -f "$REPO_DIR/.env" ] \
-    && grep -Eq "^[[:space:]]*(export[[:space:]]+)?$1=" "$REPO_DIR/.env"
+# Read by the service's own python-dotenv (none installed: the server reads no
+# .env either), so `KEY = value` counts and an empty value does not (config.py
+# treats "" as unset and falls back to /data, which the service user cannot
+# create). A value still holding a `$` does not count either: dotenv leaves a
+# bare $PWD as is, and systemd sets no PWD for ${PWD} — the unit pin stays.
+env_value() {
+  [ -f "$REPO_DIR/.env" ] || return 0
+  "$PY" -I -c 'import sys
+try:
+    from dotenv import dotenv_values
+except ImportError:
+    sys.exit(0)
+print((dotenv_values(sys.argv[1], interpolate=False).get(sys.argv[2]) or "").strip())' \
+    "$REPO_DIR/.env" "$1" 2>/dev/null || true
 }
+env_sets() {
+  local v
+  v="$(env_value "$1")"
+  [ -n "$v" ] && [ "${v#*\$}" = "$v" ]
+}
+for name in WHISPER_DATA_DIR WHISPER_DB_DIR WHISPER_MODELS_DIR WHISPER_LOG_FILE; do
+  case "$(env_value "$name")" in
+    *'$'*) printf '\033[33mWARNING: %s\033[0m\n' \
+      "$REPO_DIR/.env sets $name to a value with a \$ the service cannot expand" \
+      "(dotenv leaves \$PWD as is; systemd sets no PWD) — ignored by this installer;" \
+      "use an absolute path." >&2 ;;
+  esac
+done
 # Bare-metal Linux: root the container-first default paths (/data, /models)
 # in the checkout instead, mirroring the Windows in-checkout layout — without
 # these the service user cannot create /data/db and startup crash-loops.
@@ -176,7 +200,9 @@ if ! env_sets WHISPER_MODELS_DIR; then
   MODELS_ENV_LINE="Environment=WHISPER_MODELS_DIR=${REPO_DIR}/models"
   STATE_DIRS+=("$REPO_DIR/models")
 fi
-if ! env_sets WHISPER_LOG_FILE; then
+# LOG_FILE defaults to {DATA_DIR}/logs/whisper.log: a pinned data root keeps
+# the log with it (the service can write there — its stores live below it).
+if ! env_sets WHISPER_LOG_FILE && ! env_sets WHISPER_DATA_DIR; then
   LOG_ENV_LINE="Environment=WHISPER_LOG_FILE=${REPO_DIR}/logs/whisper.log"
   STATE_DIRS+=("$REPO_DIR/logs")
 fi
@@ -228,9 +254,19 @@ warn_legacy() { printf '\033[33mWARNING: %s\033[0m\n' "$*" >&2; }
 # would silence every later run while the old keys sit ignored. The stores are
 # WAL databases, so the -wal/-shm sidecars move with the file, and the fresh
 # store's own sidecars must go first (or they replay onto the moved file).
+# A store with its own .env pin (WHISPER_API_KEYS_DB=...) is read from there,
+# not data/db — moving it would strand the live store, so it is left be.
+store_env() {
+  case "$1" in
+    system_metrics.local.sqlite3) echo WHISPER_STATS_SYSTEM_METRICS_DB ;;
+    *.local.sqlite3) local stem="${1%.local.sqlite3}"
+      echo "WHISPER_${stem^^}_DB" ;;
+  esac
+}
 if ! env_sets WHISPER_DB_DIR && ! env_sets WHISPER_DATA_DIR; then
   for legacy in "$REPO_DIR"/*.local.sqlite3 "$REPO_DIR"/data/*.local.sqlite3; do
     [ -e "$legacy" ] || continue
+    env_sets "$(store_env "$(basename "$legacy")")" && continue
     target="$REPO_DIR/data/db/$(basename "$legacy")"
     warn_legacy "legacy store $legacy is IGNORED by the service (it reads $REPO_DIR/data/db/)." \
       "Move it: systemctl stop ${SERVICE_NAME} && sudo -u $RUN_USER mkdir -p $REPO_DIR/data/db" \

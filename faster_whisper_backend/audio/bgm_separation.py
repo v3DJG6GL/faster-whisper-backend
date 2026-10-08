@@ -839,8 +839,12 @@ def busy(model: str) -> bool:
     until the job drains — right for a real request, wrong for a speculative
     warm-up. A draining orphan counts too: it is keyed by ITS filename and
     _drop_locked(force) nulled the singleton key, so it is invisible to the
-    key check, and loading beside it is the same two-in-memory outcome."""
-    if _orphans:
+    key check, and loading beside it is the same two-in-memory outcome. So
+    does a held _separate_mutex: a cancelled job releases its lease at once,
+    but its executor thread (the zombie _drop_locked guards against) is still
+    inside sep.separate, and the force-drop would free the separator under
+    it."""
+    if _orphans or _separate_mutex.locked():
         return True
     key = _separator_key
     if not key or key[0] == model:

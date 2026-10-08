@@ -118,6 +118,7 @@ MAX_FETCH = 8                      # tracks per request
 TRACK_MAX_BYTES = 2 * 1024 * 1024  # one track
 TOTAL_MAX_BYTES = 8 * 1024 * 1024  # one request
 _FETCH_BUDGET_S = 60.0             # all tracks of one request, wall clock
+_RATE_LIMITED = "the site is rate-limiting subtitle downloads"
 
 
 def sniff(body: bytes, ext: str) -> str:
@@ -148,11 +149,17 @@ async def fetch_tracks(info, ids: "list[str]") -> "tuple[list[dict], list[dict]]
     budget = TOTAL_MAX_BYTES
     tracks: "list[dict]" = []
     failed: "list[dict]" = []
+    rate_limited = False
     for tid in ids:
         track, src = by_id.get(tid), info.subtitle_sources.get(tid)
         try:
             if track is None or src is None:
                 raise _udl.UrlDownloadError("the link no longer offers this track")
+            if rate_limited:
+                # Same reasoning as the spent budget below: after a 429 every
+                # further GET is another near-certain 429 that only deepens
+                # the site's throttle.
+                raise _udl.UrlDownloadError(_RATE_LIMITED)
             if budget <= 0:
                 # No GET at all: a max_bytes=0 request still costs the site a
                 # connect (YouTube rate-limits timedtext hard), and its "over
@@ -175,8 +182,9 @@ async def fetch_tracks(info, ids: "list[str]") -> "tuple[list[dict], list[dict]]
             tracks.append({"id": tid, "lang": track["lang"], "kind": track["kind"],
                            "ext": track["ext"], "text": sniff(body, track["ext"])})
         except urllib.error.HTTPError as e:
+            rate_limited = rate_limited or e.code == 429
             failed.append({"id": tid, "error": (
-                "the site is rate-limiting subtitle downloads" if e.code == 429
+                _RATE_LIMITED if e.code == 429
                 else f"the site refused the subtitle download (HTTP {e.code})")})
         except _udl.UrlDownloadError as e:
             failed.append({"id": tid, "error": str(e)})

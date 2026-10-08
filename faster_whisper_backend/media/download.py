@@ -64,6 +64,13 @@ _URL_UNSAFE_RE = re.compile(r"[\s\x00-\x1f\x7f-\x9f\ud800-\udfff]")
 # registered type for .ogg/.opus; everything else must declare audio/* or
 # video/*.
 _DIRECT_MEDIA_TYPES = ("audio/", "video/", "application/ogg")
+# HLS manifest types, admitted only for a site → GenericIE hand-off (see
+# _generic_handoff_target): the download child's match filter takes the same
+# manifest ("protocol^=m3u8"), but a pasted link to a bare manifest stays
+# held to _DIRECT_MEDIA_TYPES. Most CDNs answer the two application/* types
+# (RFC 8216), which the audio/ prefix never matched.
+_HLS_MANIFEST_TYPES = ("application/vnd.apple.mpegurl", "application/x-mpegurl",
+                       "audio/mpegurl", "audio/x-mpegurl")
 
 
 class UrlDownloadError(RuntimeError):
@@ -709,10 +716,12 @@ def _guarded_opener(cutoff: "_WallClockCutoff | None" = None,
         _NoPrivateRedirects())
 
 
-def _direct_media_probe_sync(url: str, *, timeout: float) -> bool:
+def _direct_media_probe_sync(url: str, *, timeout: float,
+                             accept_hls: bool = False) -> bool:
     """Capped GET (first byte only) that answers: does this URL serve
     audio/video directly? Host gate + redirect gate + pinned DNS keep it
-    off internal ranges. Never raises for 'no' — only returns False."""
+    off internal ranges. Never raises for 'no' — only returns False.
+    `accept_hls` also counts an HLS manifest (_HLS_MANIFEST_TYPES)."""
     # `timeout` is a wall-clock budget: the opener's timeout is per-socket-
     # op, so a host dribbling one header byte per op could otherwise hold
     # this worker thread far past it (the outer wait_for abandons the
@@ -736,7 +745,8 @@ def _direct_media_probe_sync(url: str, *, timeout: float) -> bool:
             resp.read(1)  # some servers ignore Range; never read more
     except Exception:  # noqa: BLE001 — unreachable/odd server ⇒ not direct media
         return False
-    return ctype.startswith(_DIRECT_MEDIA_TYPES)
+    return ctype.startswith(_DIRECT_MEDIA_TYPES) or (
+        accept_hls and ctype in _HLS_MANIFEST_TYPES)
 
 
 # The policy probes (extractor match, DNS in _host_is_forbidden, the capped
@@ -898,7 +908,9 @@ def handoff_match_filters(key: str) -> "list[str] | None":
     file or HLS manifest GenericIE served itself — what
     URL_ALLOW_DIRECT_MEDIA admits — never a scraped page. A filtered-out
     run exits 0 with no file; _run_yt_dlp reports it as the policy refusal.
-    (The probe's verdict is stricter: it re-checks the Content-Type.)
+    (The probe's verdict is stricter: it re-checks the Content-Type of the
+    URL GenericIE was handed, so a scraped page embedding HLS is refused
+    there while this filter's protocol^=m3u8 would take it.)
     None: no filter (Generic is the matched key — pinned_extractors already
     holds it to GenericIE — or GenericIE is allowed outright)."""
     if key == "Generic" or getattr(cfg, "URL_ALLOW_GENERIC", False):
@@ -909,23 +921,42 @@ def handoff_match_filters(key: str) -> "list[str] | None":
     return filters
 
 
-def _generic_handoff_target(key: str, info: dict) -> "str | None":
+def _is_outer_site_page(key: str, url: str, page: str) -> bool:
+    """Does `page` (a GenericIE result's webpage_url) name the site page the
+    probe started from — the probed `url` itself, or a page the matched
+    `key` extractor claims (its canonical form)?"""
+    if page == url:
+        return True
+    try:
+        import yt_dlp.extractor  # lazy: optional dependency
+        return bool(yt_dlp.extractor.get_info_extractor(key).suitable(page))
+    except Exception:  # noqa: BLE001 — unknown key / broken pattern ⇒ not it
+        return False
+
+
+def _generic_handoff_target(key: str, info: dict, url: str) -> "str | None":
     """The URL to hold to check_url_policy's direct-media verdict when a site
-    extractor (`key`) handed off to GenericIE with URL_ALLOW_GENERIC off and
-    URL_ALLOW_DIRECT_MEDIA on; None when no such re-check applies. A
-    "direct" result is the URL GenericIE served as-is ("url"); anything
-    else is judged by the manifest GenericIE fetched (the formats'
-    "manifest_url") — an HLS manifest served as audio/mpegurl passes, a page
-    GenericIE scraped does not. Not "webpage_url": on a url_transparent
+    extractor (`key`, matched on the probed `url`) handed off to GenericIE
+    with URL_ALLOW_GENERIC off and URL_ALLOW_DIRECT_MEDIA on; None when no
+    such re-check applies. A "direct" result is the URL GenericIE served
+    as-is ("url"). On a plain hand-off "webpage_url" is the URL GenericIE
+    was handed: a manifest it served itself passes, a page it scraped (even
+    one embedding HLS) answers text/html and does not. On a url_transparent
     hand-off (the common site → embed delegation) yt-dlp overlays the OUTER
-    result's fields, so it names the site's page. That is only the fallback
-    when no format names a manifest; formats naming two refuse (None)."""
+    result's fields, so "webpage_url" names the site's own page; only then
+    is the hand-off judged by the manifest GenericIE fetched (the formats'
+    "manifest_url"), with webpage_url as the fallback when no format names
+    one; formats naming two refuse (None)."""
     if (key == "Generic" or str(info.get("extractor_key") or key) != "Generic"
             or getattr(cfg, "URL_ALLOW_GENERIC", False)
             or not getattr(cfg, "URL_ALLOW_DIRECT_MEDIA", True)):
         return None
+    page = info.get("webpage_url")
     if info.get("direct"):
         target = info.get("url")
+    elif isinstance(page, str) and page and not _is_outer_site_page(
+            key, url, page):
+        target = page
     else:
         fmts = [info, *(info.get("requested_formats") or []),
                 *(info.get("formats") or [])]
@@ -934,7 +965,7 @@ def _generic_handoff_target(key: str, info: dict) -> "str | None":
                      and f["manifest_url"]}
         if len(manifests) > 1:
             return None
-        target = manifests.pop() if manifests else info.get("webpage_url")
+        target = manifests.pop() if manifests else page
     return target if isinstance(target, str) and target else None
 
 
@@ -948,7 +979,8 @@ async def _handoff_serves_media(target: str, deadline: float) -> bool:
     budget = max(1.0, min(float(getattr(cfg, "URL_SOCKET_TIMEOUT_S", 15)),
                           deadline - time.monotonic()))
     return await asyncio.get_running_loop().run_in_executor(
-        _PROBE_POOL, lambda: _direct_media_probe_sync(target, timeout=budget))
+        _PROBE_POOL,
+        lambda: _direct_media_probe_sync(target, timeout=budget, accept_hls=True))
 
 
 def _policy_check_extractor(key: str, info: dict, *,
@@ -1070,7 +1102,7 @@ async def probe(url: str, *, timeout: float) -> UrlMediaInfo:
         raise UrlDownloadError("the site returned no usable media info")
     _policy_check_info(info)
     handoff_is_media = False
-    _target = _generic_handoff_target(key, info)
+    _target = _generic_handoff_target(key, info, url)
     if _target is not None:
         # Under the same deadline as the two steps above: the hand-off
         # host's DNS (picked by the site) and a busy _PROBE_POOL both sit

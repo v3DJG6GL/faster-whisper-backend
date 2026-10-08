@@ -162,7 +162,7 @@ def test_fetch_returns_text_and_client_safe_failures(served):
     info_with, _asked = served
     info = info_with({"de": ("vtt", _VTT), "en": ("vtt", 429), "fr": ("vtt", 403),
                       "it": ("vtt", b"#EXTM3U\n")})
-    tracks, failed = _fetch(info, ["m-de", "m-en", "m-fr", "m-it", "m-xx"])
+    tracks, failed = _fetch(info, ["m-de", "m-fr", "m-it", "m-en", "m-xx"])
     assert tracks == [{"id": "m-de", "lang": "de", "kind": "manual", "ext": "vtt",
                        "text": _VTT.decode("utf-8-sig")}]
     errors = {f["id"]: f["error"] for f in failed}
@@ -171,6 +171,17 @@ def test_fetch_returns_text_and_client_safe_failures(served):
     assert "playlist" in errors["m-it"]
     assert "no longer offers" in errors["m-xx"]
     assert not any("subs.test" in e for e in errors.values())
+
+
+def test_fetch_stops_asking_a_site_that_answered_429(served):
+    """A rate-limited site gets no further GETs in the same request: each
+    would be another near-certain 429 that deepens the throttle."""
+    info_with, asked = served
+    info = info_with({"de": ("vtt", 429), "en": ("vtt", _VTT), "fr": ("vtt", _VTT)})
+    tracks, failed = _fetch(info, ["m-de", "m-en", "m-fr"])
+    assert tracks == [] and len(asked) == 1
+    assert [f["error"] for f in failed] == [
+        "the site is rate-limiting subtitle downloads"] * 3
 
 
 def test_fetch_caps_each_track_and_the_request(served):

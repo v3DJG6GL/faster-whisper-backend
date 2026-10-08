@@ -648,3 +648,28 @@ def test_preload_declines_under_the_lock_when_a_job_holds_another_separator(
     assert bgm_separation._separator is held
     assert bgm_separation._leases == {"Bar.onnx": 1}
     assert bgm_separation._orphans == {}
+
+
+def test_a_zombie_separation_makes_the_singleton_busy(monkeypatch):
+    """Same zombie as diarization: a cancelled job's thread still inside
+    sep.separate holds _separate_mutex after its lease is gone, so busy()
+    must refuse the speculative load that would force-drop it."""
+    import asyncio
+    _foo_model(monkeypatch)
+    held = object()
+    monkeypatch.setattr(bgm_separation, "_separator", held)
+    monkeypatch.setattr(bgm_separation, "_separator_key", ("Bar.onnx", "cpu"))
+    monkeypatch.setattr(bgm_separation, "_leases", {})
+    monkeypatch.setattr(bgm_separation, "_orphans", {})
+    loads: list = []
+    monkeypatch.setattr(bgm_separation, "_load_blocking",
+                        lambda m, d: loads.append(m) or object())
+    assert bgm_separation.busy("Foo.onnx") is False
+    bgm_separation._separate_mutex.acquire()
+    try:
+        assert bgm_separation.busy("Foo.onnx") is True
+        assert asyncio.run(bgm_separation.load_unleased("Foo")) is False
+    finally:
+        bgm_separation._separate_mutex.release()
+    assert loads == []
+    assert bgm_separation._separator is held

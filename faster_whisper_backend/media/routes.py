@@ -13,6 +13,7 @@ import re
 import shutil
 import tempfile
 import time
+import unicodedata
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -164,9 +165,10 @@ async def url_preview(request: Request,
         "abr": info.abr,
         # The video rungs the site offers (highest first, one trailing
         # "audio only" entry), each with the container a merge would give
-        # and an over-cap flag against retained_max_bytes (the largest file
-        # the media store keeps; media_max_bytes stays the transcription
-        # ceiling). [] when video is off or the link has none.
+        # and an over-cap flag: a video rung against retained_max_bytes (the
+        # largest file the media store keeps), the "audio only" rung against
+        # media_max_bytes (the transcription ceiling — a run fetches it
+        # without keeping it). [] when video is off or the link has none.
         "video_ladder": info.video_ladder,
         "media_max_bytes": int(getattr(cfg, "MEDIA_MAX_BYTES", 10_000_000_000)),
         "retained_max_bytes": url_media_store.max_retainable_bytes(),
@@ -582,7 +584,11 @@ _MEDIA_EXT_RE = re.compile(r"\A[a-z0-9]{1,5}\Z")
 # margin): a near-full disk is refused before the transfer, not after it.
 _UPLOAD_DISK_MARGIN = 64 * 1024 * 1024
 _NO_DISK = "not enough disk space on the server"
-_MEDIA_FILENAME_RE = re.compile(r"[^A-Za-z0-9 ._()\-]+")
+# Letters and digits in any script (\w on a str pattern): FileResponse sends
+# a non-ASCII name as RFC 5987 filename*=utf-8''…, so only controls, bidi
+# marks, separators and punctuation need to go. NFC first, or a decomposed
+# "Ü" would lose its combining mark (category Mn is not \w).
+_MEDIA_FILENAME_RE = re.compile(r"[^\w .()\-]+")
 
 
 def _package_gate() -> None:
@@ -837,7 +843,8 @@ async def package_media(media_id: str, request: Request,
         audio_lang = _require_lang_code(audio_lang, "audio_lang")
     audio_label = _clean_label(body.get("audio_label")) or None
     filename = body.get("filename")
-    stem = (_MEDIA_FILENAME_RE.sub("", filename).strip()[:80]
+    stem = (_MEDIA_FILENAME_RE.sub(
+        "", unicodedata.normalize("NFC", filename)).strip()[:80]
             if isinstance(filename, str) else "") or media_id
     entry = url_media_store.resolve_entry(media_id, user_id=user.get("user_id"))
     if entry is None:

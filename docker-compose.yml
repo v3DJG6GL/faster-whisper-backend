@@ -115,7 +115,8 @@ services:
     #       ip  saddr != 172.31.9.0/24 return          # only this service
     #       ct  state established,related return       # replies to inbound
     #       ip  daddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16,
-    #                   127.0.0.0/8, 169.254.0.0/16 } drop
+    #                   127.0.0.0/8, 169.254.0.0/16, 100.64.0.0/10,
+    #                   0.0.0.0/8 } drop
     #     }
     #   }
     #

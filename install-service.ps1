@@ -561,6 +561,19 @@ Write-Host "WinSW.exe verified at: $WinSWExe ($([math]::Round((Get-Item $WinSWEx
 # for crashes. The "real" graceful-restart path (admin WebUI button) is
 # driven by restart_service.py spawning `WhisperAPI.exe restart!` BEFORE
 # os._exit(0) -- v2's <onfailure> semantics on exit-0 are unreliable.
+#
+# Whether the checkout's .env sets a variable to a non-empty value (spaces
+# around "=" allowed, as python-dotenv reads it; an empty or comment-only
+# value is unset to config.py too). A .env pin must win over the service: a
+# WinSW <env> is the real process environment and load_dotenv never
+# overrides that, so the <env> line below would silently throw it away.
+$envFile = Join-Path $RepoDir ".env"
+function Test-EnvSets([string]$name) {
+    (Test-Path $envFile) -and [bool](Select-String -Path $envFile -Quiet `
+        -Pattern "^\s*(export\s+)?$name\s*=\s*[^\s#]")
+}
+$logEnvLine = if (Test-EnvSets "WHISPER_LOG_FILE") { "" } else {
+    '<env name="WHISPER_LOG_FILE" value="%BASE%\logs\whisper.log"/>' }
 $xml = @"
 <?xml version="1.0" encoding="UTF-8"?>
 <service>
@@ -593,7 +606,8 @@ $xml = @"
     <keepFiles>8</keepFiles>
   </log>
 
-  <env name="WHISPER_LOG_FILE" value="%BASE%\logs\whisper.log"/>
+  <!-- In-checkout log file (unless .env pins WHISPER_LOG_FILE). -->
+  $logEnvLine
   <!-- The admin WebUI is ON by default (ADMIN_UI_ENABLED in config.json).
        To pin it via env instead (overrides config.json; "0" turns it off),
        uncomment the line below, then re-run this install script.
@@ -637,12 +651,8 @@ Invoke-WinSW install
 # An older checkout kept the SQLite stores and config.local.json in the repo
 # root; the server now reads them from <repo>\data\db and <repo>\data. Starting
 # over that comes up with an EMPTY api_keys store: issued keys stop working
-# and the server drops into OPEN mode. A .env that pins the paths is left be.
-$envFile = Join-Path $RepoDir ".env"
-function Test-EnvSets([string]$name) {
-    (Test-Path $envFile) -and [bool](Select-String -Path $envFile -Quiet `
-        -Pattern "^\s*(export\s+)?$name=")
-}
+# and the server drops into OPEN mode. A .env that pins the paths is left be
+# (Test-EnvSets, above the XML).
 $dataDir = Join-Path $RepoDir "data"
 $dbDir   = Join-Path $dataDir "db"
 if (-not (Test-EnvSets "WHISPER_DB_DIR") -and -not (Test-EnvSets "WHISPER_DATA_DIR")) {
@@ -651,9 +661,15 @@ if (-not (Test-EnvSets "WHISPER_DB_DIR") -and -not (Test-EnvSets "WHISPER_DATA_D
     # which would silence every later run while the old keys sit ignored. The
     # stores are WAL databases: the -wal/-shm sidecars move with the file, the
     # fresh store's own sidecars go first, and -Force replaces the empty file.
+    # A store with its own .env pin (WHISPER_API_KEYS_DB=...) is read from
+    # there, not <dbDir> -- moving it would strand the live store.
     $legacyStores = @(Get-ChildItem -Path $RepoDir, $dataDir -Filter "*.local.sqlite3" `
         -File -ErrorAction SilentlyContinue)
     foreach ($legacy in $legacyStores) {
+        $stem = $legacy.Name -replace '\.local\.sqlite3$', ''
+        $storeEnv = if ($stem -eq "system_metrics") { "WHISPER_STATS_SYSTEM_METRICS_DB" } `
+            else { "WHISPER_$($stem.ToUpper())_DB" }
+        if (Test-EnvSets $storeEnv) { continue }
         $target = Join-Path $dbDir $legacy.Name
         Write-Warning ("legacy store $($legacy.FullName) is IGNORED by the service " +
             "(it reads $dbDir). Move it: Stop-Service $ServiceName; " +

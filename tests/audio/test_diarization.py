@@ -738,3 +738,32 @@ def test_preload_declines_under_the_lock_when_a_job_holds_another_pipeline(
     monkeypatch.setattr(diarization, "_orphans", {"p/a": 1})
     assert asyncio.run(diarization.load_unleased("p/b")) is False
     assert loads == []
+
+
+def test_a_zombie_inference_makes_the_singleton_busy(monkeypatch):
+    """A cancelled diarize released its lease, but its executor thread still
+    holds _infer_mutex inside pipe(): busy() must say so, or the preload's
+    load_unleased force-drops (unregisters, empty_cache) the pipeline under
+    the zombie and loads a second one beside it."""
+    import asyncio
+    cfg = diarization.cfg
+    monkeypatch.setattr(cfg, "DIARIZATION_DEVICE", "cpu", raising=False)
+    monkeypatch.setattr(cfg, "DIARIZATION_EMBEDDING_BATCH_SIZE", 4,
+                        raising=False)
+    held = object()
+    monkeypatch.setattr(diarization, "_pipeline", held)
+    monkeypatch.setattr(diarization, "_pipeline_key", ("p/a", "cpu", 4))
+    monkeypatch.setattr(diarization, "_leases", {})
+    monkeypatch.setattr(diarization, "_orphans", {})
+    loads: list = []
+    monkeypatch.setattr(diarization, "_load_blocking",
+                        lambda m, d, b: loads.append(m) or object())
+    assert diarization.busy("p/b") is False
+    diarization._infer_mutex.acquire()
+    try:
+        assert diarization.busy("p/b") is True
+        assert asyncio.run(diarization.load_unleased("p/b")) is False
+    finally:
+        diarization._infer_mutex.release()
+    assert loads == []
+    assert diarization._pipeline is held

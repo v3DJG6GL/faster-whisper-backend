@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import threading
 
 import pytest
 
@@ -64,8 +65,13 @@ def url_enabled(app_module, tmp_path, monkeypatch):
             f.write(b"m4a-bytes" * 8)
         return path
 
+    async def _no_thumb(url, **kw):
+        return None
+
     monkeypatch.setattr(url_download, "probe", _probe)
     monkeypatch.setattr(url_download, "download", _download)
+    # The preview never fetches a real thumbnail.
+    monkeypatch.setattr(url_download, "fetch_thumbnail_data_uri", _no_thumb)
     return app_module
 
 
@@ -245,10 +251,7 @@ def test_translations_twin_accepts_source_url(client, url_enabled):
 
 # --- preview endpoint --------------------------------------------------------
 
-def test_preview_happy_path(client, url_enabled, monkeypatch):
-    async def _thumb(url, **kw):
-        return None
-    monkeypatch.setattr(url_download, "fetch_thumbnail_data_uri", _thumb)
+def test_preview_happy_path(client, url_enabled):
     r = client.post("/v1/audio/url-preview", json={"url": _URL})
     assert r.status_code == 200
     body = r.json()
@@ -264,16 +267,12 @@ def test_preview_happy_path(client, url_enabled, monkeypatch):
 
 
 def test_preview_lists_tracks_never_their_urls(client, url_enabled, monkeypatch):
-    async def _thumb(url, **kw):
-        return None
-
     async def _probe(url, *, timeout):
         return _info(url=url, language="de", subtitle_tracks=[
             {"id": "m-de-CH", "lang": "de-CH", "name": "German", "kind": "manual",
              "ext": "vtt", "hoh": False}],
             subtitle_sources={"m-de-CH": {"url": "https://x.test/s?pot=SECRET",
                                           "ext": "vtt"}})
-    monkeypatch.setattr(url_download, "fetch_thumbnail_data_uri", _thumb)
     monkeypatch.setattr(url_download, "probe", _probe)
     r = client.post("/v1/audio/url-preview", json={"url": _URL})
     body = r.json()
@@ -306,10 +305,7 @@ def test_preview_validation(client, url_enabled):
                        content=b"not json").status_code == 422
 
 
-def test_preview_rate_limited(client, url_enabled, monkeypatch):
-    async def _thumb(url, **kw):
-        return None
-    monkeypatch.setattr(url_download, "fetch_thumbnail_data_uri", _thumb)
+def test_preview_rate_limited(client, url_enabled):
     limit = int(url_enabled.cfg.URL_PREVIEW_RATE_PER_MIN)
     for _ in range(limit):
         assert client.post("/v1/audio/url-preview",
@@ -324,17 +320,13 @@ def test_preview_rate_limited(client, url_enabled, monkeypatch):
     assert body["detail"] == body["error"]["message"]
 
 
-def test_preview_rate_limit_is_per_user(client, url_enabled, make_user_key,
-                                        monkeypatch):
+def test_preview_rate_limit_is_per_user(client, url_enabled, make_user_key):
     """Two identities must not share a bucket. The loopback `client` fixture
     runs in OPEN mode as one synthetic admin, so a user-keyed limit would
     degrade to a single shared bucket there — real keys are needed (creating
     the first admin key also flips the app to locked-down)."""
     from tests.conftest import bearer
 
-    async def _thumb(url, **kw):
-        return None
-    monkeypatch.setattr(url_download, "fetch_thumbnail_data_uri", _thumb)
     _uid_a, key_a = make_user_key("alice", is_admin=True)
     _uid_b, key_b = make_user_key("bob", is_admin=True)
 
@@ -366,18 +358,16 @@ _LADDER = [
 @pytest.fixture
 def video_enabled(url_enabled, monkeypatch):
     """url_enabled + video on, a two-rung ladder, and a download_video stub
-    that writes `media.<container>` after one progress tick."""
-    import asyncio
-
+    that writes `media.<container>` after one progress tick. A test that
+    sets `_video_gate["release"]` to a threading.Event (not an asyncio one:
+    the test sets it from the TestClient's caller thread while the app loop
+    runs the task) holds the download until it is set."""
     app_module = url_enabled
     monkeypatch.setattr(app_module.cfg, "URL_VIDEO_ENABLED", True, raising=False)
-    import threading
 
     calls: list = []
-    # A threading.Event (not an asyncio one): the test sets it from the
-    # TestClient's caller thread while the app loop runs the task.
-    gate: dict = {"release": None}
-    gate["make"] = threading.Event
+    # "make": tests/main/test_video_attach_order.py builds its gate through it.
+    gate: dict = {"release": None, "make": threading.Event}
 
     async def _probe(url, *, timeout):
         return _info(url=url, video_ladder=[dict(r) for r in _LADDER])
@@ -406,10 +396,7 @@ def video_enabled(url_enabled, monkeypatch):
     return app_module
 
 
-def test_preview_carries_the_ladder(client, video_enabled, monkeypatch):
-    async def _thumb(url, **kw):
-        return None
-    monkeypatch.setattr(url_download, "fetch_thumbnail_data_uri", _thumb)
+def test_preview_carries_the_ladder(client, video_enabled):
     body = client.post("/v1/audio/url-preview", json={"url": _URL}).json()
     assert [r["height"] for r in body["video_ladder"]] == [1080, 720, None]
     assert body["media_max_bytes"] == video_enabled.cfg.MEDIA_MAX_BYTES
@@ -420,9 +407,6 @@ def test_preview_advertises_the_retained_cap_the_rungs_are_flagged_against(
     # The ladder's over_cap flags are judged against max_retainable_bytes():
     # with a store cap below MEDIA_MAX_BYTES the preview must say so, while
     # media_max_bytes stays the transcription ceiling.
-    async def _thumb(url, **kw):
-        return None
-    monkeypatch.setattr(url_download, "fetch_thumbnail_data_uri", _thumb)
     cap = video_enabled.cfg.MEDIA_MAX_BYTES
     monkeypatch.setattr(video_enabled.cfg, "RETAINED_MEDIA_MAX_BYTES", cap // 2,
                         raising=False)
@@ -472,7 +456,7 @@ def test_keep_video_response_carries_video_id_when_the_task_finishes(
 def test_keep_video_pending_then_progress_reports_done(client, video_enabled):
     import time as _time
 
-    release = video_enabled._video_gate["make"]()
+    release = threading.Event()
     video_enabled._video_gate["release"] = release
     r = _post_url(client, keep_video="true", progress_id=_PID)
     assert r.status_code == 200, r.text
@@ -505,7 +489,7 @@ def test_keep_video_finishing_late_lands_in_the_stored_job_result(
         client, video_enabled):
     import time as _time
 
-    release = video_enabled._video_gate["make"]()
+    release = threading.Event()
     video_enabled._video_gate["release"] = release
     r = _post_url(client, keep_video="true", progress_id=_PID)
     assert r.status_code == 200 and r.json().get("source_video_pending") is True
@@ -538,7 +522,7 @@ def test_keep_video_attach_runs_while_the_progress_entry_is_open(
         open_at_attach.append(pid in tx_progress._BATCH_PROGRESS)
         real_attach(pid, state)
     monkeypatch.setattr(media_video, "_jobs_attach_video_sync", _attach)
-    release = video_enabled._video_gate["make"]()
+    release = threading.Event()
     video_enabled._video_gate["release"] = release
     r = _post_url(client, keep_video="true", progress_id=_PID)
     assert r.status_code == 200 and r.json().get("source_video_pending") is True
@@ -564,8 +548,6 @@ def test_keep_video_attach_that_gave_up_leaves_the_progress_entry_open(
     returned yet (`finish_landed` unset) when the task gives up — released
     after the response instead, the finish has landed and the task owns the
     fallback (tests/main/test_video_attach_order.py)."""
-    import asyncio
-
     calls: list = []
     open_after_give_up: list = []
 
@@ -573,7 +555,7 @@ def test_keep_video_attach_that_gave_up_leaves_the_progress_entry_open(
         calls.append(pid)
         return False
     monkeypatch.setattr(media_video, "_jobs_attach_video_sync", _gave_up)
-    release = video_enabled._video_gate["make"]()
+    release = threading.Event()
     video_enabled._video_gate["release"] = release
     real_finish = tx_progress._jobs_finish
 
@@ -584,7 +566,10 @@ def test_keep_video_attach_that_gave_up_leaves_the_progress_entry_open(
                 break
             await asyncio.sleep(0.01)
         await asyncio.sleep(0.1)    # let the video task run its finally
-        open_after_give_up.append(pid in tx_progress._BATCH_PROGRESS)
+        # bool(calls): the attach came from the video task, before the
+        # handler's own fallback attach (after real_finish) could add one.
+        open_after_give_up.append(
+            (bool(calls), pid in tx_progress._BATCH_PROGRESS))
         await real_finish(pid, **kw)
     monkeypatch.setattr(tx_progress, "_jobs_finish", _finish_still_pending)
 
@@ -592,7 +577,7 @@ def test_keep_video_attach_that_gave_up_leaves_the_progress_entry_open(
         r = _post_url(client, keep_video="true", progress_id=_PID)
         assert r.status_code == 200 and r.json().get("source_video_pending") is True
         assert calls[:1] == [_PID]
-        assert open_after_give_up == [True]
+        assert open_after_give_up == [(True, True)]
     finally:
         tx_progress._progress_close(_PID)
 
@@ -821,8 +806,6 @@ def subs_enabled(url_enabled, fake_capped_get, monkeypatch):
 def test_preview_lists_no_tracks_when_subtitles_are_off(client, subs_enabled,
                                                         monkeypatch):
     monkeypatch.setattr(subs_enabled.cfg, "URL_SUBTITLES_ENABLED", False, raising=False)
-    monkeypatch.setattr(url_download, "fetch_thumbnail_data_uri",
-                        lambda *a, **k: asyncio.sleep(0))
     assert client.post("/v1/audio/url-preview",
                        json={"url": _URL}).json()["subtitle_tracks"] == []
 

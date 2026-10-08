@@ -420,7 +420,15 @@ def ffmpeg_capabilities() -> FfmpegCaps:
                                  name="ffmpeg-caps-probe")
             _caps_state["thread"] = t
     if retry:
-        t.start()
+        try:
+            t.start()
+        except RuntimeError as e:
+            # "can't start new thread" — the loaded-host case worth retrying:
+            # free the slot, or busy stays set and every later call answers
+            # "pending" until a restart.
+            with _caps_lock:
+                _caps_state.update(busy=False, thread=None)
+            logger.warning("ffmpeg capability re-probe not started: %s", e)
         return _CAPS_PENDING
     return _caps_probe_once() or _CAPS_PENDING
 

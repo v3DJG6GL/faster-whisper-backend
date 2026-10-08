@@ -83,9 +83,10 @@ RUN groupadd -g "${PGID}" app \
 # volumes — see docker-compose.yml — not baked into the image.
 COPY . .
 
-# Build identity: CI stamps the `git describe` string here (see ci.yml) so
-# /v1/models and the WebUI can report the exact build — the image carries no
-# .git to describe at runtime (.dockerignore). Local builds default to "dev".
+# Build identity: CI stamps the tag name here on a tag run, the `git describe`
+# string otherwise (see ci.yml), so /v1/models and the WebUI can report the
+# exact build — the image carries no .git to describe at runtime
+# (.dockerignore). Local builds default to "dev".
 ARG BUILD_VERSION=dev
 ENV WHISPER_BUILD_VERSION=${BUILD_VERSION}
 

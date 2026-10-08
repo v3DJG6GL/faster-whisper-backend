@@ -196,7 +196,8 @@ def _stand_in_yt_dlp(monkeypatch, matched, info):
     monkeypatch.setitem(sys.modules, "yt_dlp", fake)
     monkeypatch.setattr(udl, "guard_self_check", lambda **kw: None)
     monkeypatch.setattr(udl, "match_extractor", lambda u: matched)
-    monkeypatch.setattr(udl, "_direct_media_probe_sync", lambda u, timeout: True)
+    monkeypatch.setattr(udl, "_direct_media_probe_sync",
+                        lambda u, timeout, **kw: True)
     return captured
 
 
@@ -268,21 +269,21 @@ def test_probe_admits_an_hls_manifest_handed_off_to_generic(monkeypatch):
     sets "direct" — yet the same URL pasted directly passes check_url_policy.
     The hand-off is judged by that same Content-Type check, on the manifest
     GenericIE fetched. The info is url_transparent-shaped: yt-dlp overlays
-    the outer site result, so webpage_url is the SITE page, not the
-    manifest."""
+    the outer site result, so webpage_url is the SITE page (the probed
+    URL), not the manifest."""
     _handoff_policy(monkeypatch)
     fmt = {"format_id": "hls-1", "protocol": "m3u8_native",
            "url": "https://cdn.example/live/variant.m3u8",
            "manifest_url": "https://cdn.example/live.m3u8"}
     _stand_in_yt_dlp(monkeypatch, "Youtube", {
         "title": "t", "extractor_key": "Generic",
-        "webpage_url": "https://site.example/watch",
+        "webpage_url": "https://x/watch",
         **fmt, "formats": [fmt]})
     probed: "list[str]" = []
 
-    def _media(u, timeout):
+    def _media(u, timeout, accept_hls=False):
         probed.append(u)
-        return True
+        return accept_hls
     monkeypatch.setattr(udl, "_direct_media_probe_sync", _media)
     assert _run(udl.probe("https://x/watch", timeout=5.0)).extractor_key == "Generic"
     assert probed == ["https://cdn.example/live.m3u8"]
@@ -300,7 +301,7 @@ def test_probe_bounds_the_hand_off_check_by_the_probe_deadline(monkeypatch):
         "protocol": "m3u8_native"})
     release = threading.Event()
 
-    def _slow(u, timeout):
+    def _slow(u, timeout, **kw):
         release.wait(10)
         return True
     monkeypatch.setattr(udl, "_direct_media_probe_sync", _slow)
@@ -318,12 +319,33 @@ def test_generic_handoff_target_picks_the_manifest(monkeypatch):
     page = "https://site.example/watch"
     # A plain `url` hand-off with no manifest_url: the URL GenericIE got.
     assert udl._generic_handoff_target("Youtube", {
-        "extractor_key": "Generic", "webpage_url": page}) == page
+        "extractor_key": "Generic", "webpage_url": page}, page) == page
     # Formats naming two different manifests: nothing to judge, refuse.
     assert udl._generic_handoff_target("Youtube", {
         "extractor_key": "Generic", "webpage_url": page, "formats": [
             {"manifest_url": "https://a.example/1.m3u8"},
-            {"manifest_url": "https://b.example/2.m3u8"}]}) is None
+            {"manifest_url": "https://b.example/2.m3u8"}]}, page) is None
+    # url_transparent: webpage_url is the site's canonical page (one the
+    # matched extractor claims), so the manifest is what GenericIE fetched.
+    yt = "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+    assert udl._generic_handoff_target("Youtube", {
+        "extractor_key": "Generic", "webpage_url": yt,
+        "formats": [{"manifest_url": "https://cdn.example/x.m3u8"}]},
+        "https://youtu.be/dQw4w9WgXcQ") == "https://cdn.example/x.m3u8"
+
+
+def test_generic_handoff_target_judges_a_scraped_page_by_the_page(
+        monkeypatch):
+    """A plain hand-off to an HTML page GenericIE scraped (a <video> pointing
+    at HLS): its formats name the embedded manifest, which answers mpegurl,
+    but the URL GenericIE was handed is the page — text/html, refused."""
+    _handoff_policy(monkeypatch)
+    assert udl._generic_handoff_target("Youtube", {
+        "extractor_key": "Generic",
+        "webpage_url": "https://evil.example/page.html",
+        "formats": [{"manifest_url": "https://cdn.example/x.m3u8"}]},
+        "https://www.youtube.com/watch?v=dQw4w9WgXcQ") == (
+        "https://evil.example/page.html")
 
 
 def test_probe_refuses_a_direct_flagged_non_media_hand_off(monkeypatch):
@@ -337,7 +359,7 @@ def test_probe_refuses_a_direct_flagged_non_media_hand_off(monkeypatch):
         "webpage_url": "https://x/watch"})
     probed: "list[str]" = []
 
-    def _octet_stream(u, timeout):
+    def _octet_stream(u, timeout, **kw):
         probed.append(u)
         return False
     monkeypatch.setattr(udl, "_direct_media_probe_sync", _octet_stream)
@@ -1090,21 +1112,34 @@ def test_direct_media_probe_pins_dns_against_rebinding(monkeypatch):
     assert hits["n"] == 0
 
 
+def _no_proxy(monkeypatch):
+    """net_policy honours http(s)_proxy: a shell that exports one would make
+    urllib dial the proxy instead of the loopback server under test."""
+    for var in ("http_proxy", "HTTP_PROXY", "https_proxy", "HTTPS_PROXY",
+                "no_proxy", "NO_PROXY"):
+        monkeypatch.delenv(var, raising=False)
+
+
 def _dribbling_server(header: bytes, interval: float):
     """A loopback server that sends `header` one byte per `interval`, i.e.
-    always under a per-socket-op timeout, never finishing in a hurry."""
+    always under a per-socket-op timeout, never finishing in a hurry.
+    Returns (socket, accepted): the Event proves the client got as far as
+    the dribble — a fast refusal before connecting would otherwise pass
+    for the cut."""
     import socket as _s
     import threading as _th
     import time as _t
     srv = _s.socket()
     srv.bind(("127.0.0.1", 0))
     srv.listen(1)
+    accepted = _th.Event()
 
     def serve():
         try:
             conn, _ = srv.accept()
         except OSError:
             return
+        accepted.set()
         with conn:
             for b in header:
                 try:
@@ -1113,7 +1148,7 @@ def _dribbling_server(header: bytes, interval: float):
                     return
                 _t.sleep(interval)
     _th.Thread(target=serve, daemon=True).start()
-    return srv
+    return srv, accepted
 
 
 def test_direct_media_probe_cuts_a_dribbled_header(monkeypatch):
@@ -1126,7 +1161,8 @@ def test_direct_media_probe_cuts_a_dribbled_header(monkeypatch):
     from faster_whisper_backend.core import net_policy as np
     monkeypatch.setattr(udl, "_host_is_forbidden", lambda h: False)
     monkeypatch.setattr(np, "address_is_forbidden", lambda a: False)
-    srv = _dribbling_server(
+    _no_proxy(monkeypatch)
+    srv, accepted = _dribbling_server(
         b"HTTP/1.1 200 OK\r\nContent-Type: audio/mpeg\r\nContent-Length: 1\r\n\r\nx",
         0.1)
     try:
@@ -1135,6 +1171,7 @@ def test_direct_media_probe_cuts_a_dribbled_header(monkeypatch):
         out = udl._direct_media_probe_sync(
             f"http://127.0.0.1:{port}/a.mp3", timeout=0.5)
         assert out is False
+        assert accepted.is_set()
         # The dribble alone takes ~7 s. 4 s, not 2: a loaded CI runner needed
         # 2.5 s for the 0.5 s deadline (run 1078) and the cut is still proven.
         assert _t.monotonic() - t0 < 4.0
@@ -1152,7 +1189,8 @@ def test_thumbnail_cuts_a_dribbled_header(monkeypatch):
     from faster_whisper_backend.core import net_policy as np
     monkeypatch.setattr(udl, "_host_is_forbidden", lambda h: False)
     monkeypatch.setattr(np, "address_is_forbidden", lambda a: False)
-    srv = _dribbling_server(
+    _no_proxy(monkeypatch)
+    srv, accepted = _dribbling_server(
         b"HTTP/1.1 200 OK\r\nContent-Type: image/jpeg\r\nContent-Length: 1\r\n\r\nx",
         0.1)
     try:
@@ -1163,9 +1201,47 @@ def test_thumbnail_cuts_a_dribbled_header(monkeypatch):
         with pytest.raises((http.client.HTTPException, OSError)):
             udl._capped_get(f"http://127.0.0.1:{port}/t.jpg", max_bytes=512_000,
                             timeout=0.5, accept=lambda c: c.startswith("image/"))
+        assert accepted.is_set()
         assert _t.monotonic() - t0 < 4.0   # see the probe test above
     finally:
         srv.close()
+
+
+def test_direct_media_probe_admits_an_hls_manifest_only_for_a_hand_off(
+        monkeypatch):
+    """CDNs answer an HLS manifest as application/vnd.apple.mpegurl, which
+    no audio/ video/ prefix matches: the hand-off verdict (accept_hls) must
+    take it, while a pasted link to a bare manifest stays refused."""
+    import http.server
+    import threading
+    from faster_whisper_backend.core import net_policy as np
+    monkeypatch.setattr(udl, "_host_is_forbidden", lambda h: False)
+    monkeypatch.setattr(np, "address_is_forbidden", lambda a: False)
+    _no_proxy(monkeypatch)
+
+    class _H(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            body = b"#EXTM3U\n"
+            self.send_response(200)
+            self.send_header("Content-Type",
+                             "application/vnd.apple.mpegurl; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *a):
+            pass
+
+    srv = http.server.HTTPServer(("127.0.0.1", 0), _H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    url = f"http://127.0.0.1:{srv.server_port}/live.m3u8"
+    try:
+        assert udl._direct_media_probe_sync(
+            url, timeout=3, accept_hls=True) is True
+        assert udl._direct_media_probe_sync(url, timeout=3) is False
+    finally:
+        srv.shutdown()
+        srv.server_close()
 
 
 def test_cutoff_shuts_a_socket_added_after_it_fired():
