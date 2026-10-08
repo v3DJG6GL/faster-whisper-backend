@@ -393,6 +393,24 @@ def test_gpu_gate_snapshot_reports_the_oldest_waiter():
     assert after["queue_depth"] == 0 and after["held"] == 0
 
 
+def test_gpu_gate_snapshot_survives_the_last_waiter_leaving_mid_read():
+    """snapshot() runs in a worker thread while acquire() pops _waiting on
+    the loop: a truthiness check then min() could see the last waiter leave
+    in between and raise on an empty sequence (a 500 on /stats/snapshot)."""
+    gate = metrics.GpuGate(1)
+    assert gate.snapshot() == {"capacity": 1, "held": 0, "queue_depth": 0,
+                               "oldest_wait_s": 0.0}
+
+    class _EmptiedBetween(dict):
+        # Non-empty when tested, empty by the time it is read.
+        def __bool__(self):
+            return True
+
+    gate._waiting = _EmptiedBetween()
+    snap = gate.snapshot()
+    assert (snap["queue_depth"], snap["oldest_wait_s"]) == (0, 0.0)
+
+
 def test_take_wait_without_a_seed_is_zero_and_take_resets():
     import asyncio
     assert metrics.take_wait() == 0.0

@@ -148,13 +148,19 @@ class GpuGate(asyncio.Semaphore):
         super().release()
 
     def snapshot(self) -> dict[str, Any]:
+        # Called off the loop (the stats payloads build in a worker thread)
+        # while acquire() pops _waiting on it: a truthiness check then min()
+        # could see the last waiter leave in between and raise on an empty
+        # sequence. min(default=) is one C call under the GIL; `now` is read
+        # after it, so a waiter added meanwhile cannot read as negative.
+        oldest = min(self._waiting.values(), default=None)
         now = time.monotonic()
-        oldest = min(self._waiting.values()) if self._waiting else None
         return {
             "capacity": self.capacity,
             "held": self.held,
             "queue_depth": len(self._waiting),
-            "oldest_wait_s": round(now - oldest, 1) if oldest is not None else 0.0,
+            "oldest_wait_s": (round(max(0.0, now - oldest), 1)
+                              if oldest is not None else 0.0),
         }
 
 

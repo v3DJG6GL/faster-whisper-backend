@@ -505,6 +505,15 @@ async def _apply_rules_patch_locked(
                     f"field '{field}' is not editable on rule '{slug}' "
                     f"(type={rtype})",
                 )
+        # Strictly a bool: Pydantic's lax `enabled: bool` turns 1 / "true" /
+        # "on" into True inside save_overrides, which the `is True` check that
+        # puts a switched-on rule into guard_slugs below would not see — a
+        # guard-failing body could go live unguarded.
+        if "enabled" in patch and not isinstance(patch["enabled"], bool):
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                f"rules_patch['{slug}']['enabled'] must be true or false",
+            )
         # Optimistic-concurrency: if the client sent a fingerprint, it must
         # match what's on disk now. Mismatch → another writer changed this rule
         # between load and save; skip + report rather than clobber. Patches

@@ -203,6 +203,7 @@ CREATE TABLE IF NOT EXISTS usage_job_stages (
   retained REAL,
   error    TEXT,
   kept_original INTEGER NOT NULL DEFAULT 0,
+  audio_s  REAL,
   PRIMARY KEY (job_id, stage)
 );
 
@@ -281,6 +282,9 @@ _COLUMN_MIGRATIONS: dict[str, tuple[tuple[str, str], ...]] = {
     "usage_job_stages": (
         ("error", "ADD COLUMN error TEXT"),
         ("kept_original", "ADD COLUMN kept_original INTEGER NOT NULL DEFAULT 0"),
+        # NULL on rows written before it: the readers fall back to the job's
+        # audio there (what they always read).
+        ("audio_s", "ADD COLUMN audio_s REAL"),
     ),
     "usage_stage_hourly": (
         ("errors", "ADD COLUMN errors INTEGER NOT NULL DEFAULT 0"),
@@ -681,7 +685,10 @@ def _record_stage(conn: sqlite3.Connection, hour: int, uid: str,
     session_job_id: per-utterance translation) once per utterance too. The
     meter's denominator is sessions, and the per-job (with=) path reads one
     row per session; a batch job writes each stage once, so nothing changes
-    for it."""
+    for it. The hourly speakers / retained sums are averaged over those runs,
+    so they too take only the run's first row (the per-job row keeps one
+    value per session as well): a dictation's per-utterance "vad" stage
+    summed every utterance's ratio over one run and read 4.5 for 0.9."""
     err = st.get("error")
     new_targets = st["targets"]
     count_run = True
@@ -700,10 +707,13 @@ def _record_stage(conn: sqlite3.Connection, hour: int, uid: str,
         conn.execute(
             "INSERT INTO usage_job_stages"
             " (job_id, stage, secs, model, targets, speakers, retained, error,"
-            "  kept_original)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+            "  kept_original, audio_s)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
             " ON CONFLICT(job_id, stage) DO UPDATE SET"
             "  secs     = secs + excluded.secs,"
+            # NULL (a pre-column row) stays NULL: its readers fall back
+            # to the job's audio rather than to a partial sum.
+            "  audio_s  = audio_s + excluded.audio_s,"
             "  model    = COALESCE(excluded.model, model),"
             "  targets  = COALESCE(excluded.targets, targets),"
             "  speakers = COALESCE(excluded.speakers, speakers),"
@@ -712,7 +722,7 @@ def _record_stage(conn: sqlite3.Connection, hour: int, uid: str,
             "  kept_original = kept_original + excluded.kept_original",
             (jid, st["stage"], st["secs"], st["model"],
              ",".join(merged) or None, st["speakers"], st["retained"], err,
-             st["kept_original"]),
+             st["kept_original"], audio_s),
         )
     conn.execute(
         "INSERT INTO usage_stage_hourly"
@@ -728,7 +738,8 @@ def _record_stage(conn: sqlite3.Connection, hour: int, uid: str,
         "  kept_original = kept_original + excluded.kept_original,"
         "  errors        = errors + excluded.errors",
         (hour, uid, st["stage"], 1 if count_run else 0, audio_s, st["secs"],
-         st["speakers"] or 0, st["retained"] or 0.0, st["kept_original"],
+         (st["speakers"] or 0) if count_run else 0,
+         (st["retained"] or 0.0) if count_run else 0.0, st["kept_original"],
          1 if err else 0),
     )
     for target in new_targets:
@@ -1728,7 +1739,8 @@ def overview(
                                      key_col="usage_jobs.key_id", kinds=kinds,
                                      kind_col="usage_jobs.kind")
         for r in conn.execute(
-            "SELECT s.stage, s.secs, usage_jobs.created_ts, usage_jobs.audio_s"
+            "SELECT s.stage, s.secs, usage_jobs.created_ts,"
+            " COALESCE(s.audio_s, usage_jobs.audio_s) AS audio_s"
             " FROM usage_job_stages s JOIN usage_jobs ON usage_jobs.job_id = s.job_id"
             + where + _with_clause(with_stages)
             + " AND usage_jobs.created_ts >= ? AND usage_jobs.created_ts < ?",
@@ -2443,7 +2455,10 @@ def _fill_from_jobs(conn, doc, user_id, tz, today, with_stages,
 def _stages_from_jobs(conn: sqlite3.Connection, job_ids: list[str],
                       window: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
     """Stage rows over the narrowed jobs. A stage the caller filtered on
-    shows runs == of_runs; the others show how often they co-occurred."""
+    shows runs == of_runs; the others show how often they co-occurred.
+    A stage's audio is its own (the requests that ran it), as in the
+    rollup: a translation attached to a dictation session carries none,
+    where the joined job's audio is the whole dictation's."""
     agg: dict[str, dict[str, Any]] = {}
     targets: dict[str, dict[str, int]] = {}
     # Chunk the IN list: SQLite's default variable limit is generous but
@@ -2453,7 +2468,8 @@ def _stages_from_jobs(conn: sqlite3.Connection, job_ids: list[str],
         marks = ",".join("?" * len(chunk))
         for r in conn.execute(
             "SELECT s.stage, s.secs, s.targets, s.speakers, s.retained,"
-            " s.kept_original, j.audio_s FROM usage_job_stages s JOIN usage_jobs j"
+            " s.kept_original, COALESCE(s.audio_s, j.audio_s) AS audio_s"
+            " FROM usage_job_stages s JOIN usage_jobs j"
             " ON j.job_id = s.job_id WHERE s.job_id IN (" + marks + ")", chunk,
         ):
             stage = r["stage"]

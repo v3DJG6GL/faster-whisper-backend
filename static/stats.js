@@ -154,12 +154,15 @@ document.addEventListener('keydown', (e) => {
     const w = Math.max(Math.min(2, cols), Math.min(cols, (node.w || 1) + dir[0]));
     const h = Math.max(2, (node.h || 1) + dir[1]);
     grid.update(item, { w, h });
-    announceLayout(item.getAttribute('gs-id') + ' resized to ' + w + ' by ' + h);
+    // Announce where the tile landed, read back from the node: gravity
+    // (float: false) and collisions often place it elsewhere than asked.
+    announceLayout(item.getAttribute('gs-id') + ' resized to ' + node.w + ' by ' + node.h);
   } else {
     const x = Math.max(0, Math.min(cols - (node.w || 1), (node.x || 0) + dir[0]));
     const y = Math.max(0, (node.y || 0) + dir[1]);
     grid.update(item, { x, y });
-    announceLayout(item.getAttribute('gs-id') + ' moved to column ' + (x + 1) + ', row ' + (y + 1));
+    announceLayout(item.getAttribute('gs-id') + ' moved to column ' + ((node.x || 0) + 1)
+      + ', row ' + ((node.y || 0) + 1));
   }
 });
 
@@ -639,6 +642,10 @@ function validateCustom() {
 
 // ---------------------------------------------------------------- fetch
 let lastDoc = null;
+// The metric lastDoc was ranked and valued by (the server echoes it).
+// setMetric writes Q.metric before its load lands, and a failed load keeps
+// lastDoc on screen: the chart, tip, legend and table format THIS one.
+function docMetric() { return (lastDoc && lastDoc.metric) || Q.metric; }
 let lastTail = null;
 let tailNote = '— loading —';   // what the tail-fed cards say while lastTail is null
 let _seq = 0;
@@ -1029,7 +1036,10 @@ function windowChipHtml(noStage) {
   return html;
 }
 function renderWindowChips() {
-  const sig = [Q.range, Q.from, Q.to, Q.compare, filterCount()].join('|');
+  // The filter VALUES, not their count: swapping one kind / user / stage
+  // for another re-slices every usage card just as adding one does.
+  const sig = [Q.range, Q.from, Q.to, Q.compare,
+               ...[Q.kinds, Q.with, Q.users, Q.keys].map(a => a.join(','))].join('|');
   const pulse = _winSig != null && sig !== _winSig;
   _winSig = sig;
   const html = windowChipHtml(), title = ($('sb-summary') || {}).textContent || '';
@@ -1168,18 +1178,18 @@ function updateTip(u) {
   rows.forEach(ln => {
     const v = Number(ln.values[idx] || 0); total += v;
     html += '<div class="tip-row"><span class="usage-swatch" style="background:' + ln.color + '"></span>'
-      + '<span>' + esc(ln.label) + '</span><span class="tip-val">' + fmtMetric(Q.metric, v) + '</span></div>';
+      + '<span>' + esc(ln.label) + '</span><span class="tip-val">' + fmtMetric(docMetric(), v) + '</span></div>';
   });
   if (rows.length > 1) html += '<div class="tip-row tot"><span>total</span><span class="tip-val">'
-    + fmtMetric(Q.metric, total) + '</span></div>';
+    + fmtMetric(docMetric(), total) + '</span></div>';
   if (cmpTotal) {
     const c = cmpTotal[idx] || 0;
     html += '<div class="tip-row cmp"><span>' + cmpWord() + '</span><span class="tip-val">'
-      + fmtMetric(Q.metric, c) + (c > 0 ? ' · ' + ((total - c) / c * 100).toFixed(0) + ' %' : '') + '</span></div>';
+      + fmtMetric(docMetric(), c) + (c > 0 ? ' · ' + ((total - c) / c * 100).toFixed(0) + ' %' : '') + '</span></div>';
   }
   const orect = u.over.getBoundingClientRect();
   showTipAt(html, orect.left + u.cursor.left, orect.top + u.cursor.top);
-  announce(fmtDate(xs[idx]) + ': ' + rows.map(ln => ln.label + ' ' + fmtMetric(Q.metric, ln.values[idx] || 0)).join(', '));
+  announce(fmtDate(xs[idx]) + ': ' + rows.map(ln => ln.label + ' ' + fmtMetric(docMetric(), ln.values[idx] || 0)).join(', '));
 }
 // One tooltip element for every card (usage chart, turnaround bars, busy
 // hours cells): fixed-positioned beside the pointer, flipped when it would
@@ -1236,7 +1246,7 @@ function renderChart() {
     if (empty) {
       empty.classList.remove('hidden');
       if (lastDoc && lastDoc.range) {
-        empty.textContent = 'No ' + METRIC_LABEL[Q.metric] + ' between ' + fmtDay(lastDoc.range.from)
+        empty.textContent = 'No ' + METRIC_LABEL[docMetric()] + ' between ' + fmtDay(lastDoc.range.from)
           + ' and ' + fmtDay(lastDoc.range.to) + (Q.with.length ? ' for jobs that ran every chosen stage' : '')
           + '. Widen the range or clear a filter.';
       } else {
@@ -1300,7 +1310,7 @@ function renderChart() {
         grid: { stroke: '#21262d', width: 1 },
         ticks: { stroke: '#30363d', width: 1, size: 3 },
         font: remPx(0.733) + 'px ' + MONO,
-        values: (u, splits) => splits.map(v => fmtMetric(Q.metric, v)) },
+        values: (u, splits) => splits.map(v => fmtMetric(docMetric(), v)) },
     ],
     series: seriesSpec(),
   }, chartData(), chartEl);
@@ -1344,7 +1354,7 @@ if (wrap) wrap.addEventListener('keydown', (e) => {
 // colours never move with the survivors (identity, not rank).
 function renderLegend() {
   const el = $('usage-legend'); if (!el) return;
-  const what = METRIC_LABEL[Q.metric] + ' per ' + lastDoc.bucket + ' · '
+  const what = METRIC_LABEL[docMetric()] + ' per ' + lastDoc.bucket + ' · '
     + (stacked ? 'stacked by kind' : (lastDoc.by === 'user' || lastDoc.by === 'key')
        ? 'top 8 by ' + lastDoc.by + ', rest folded into “others”' : 'by ' + lastDoc.by)
     + (breakdownUnscoped() ? ' · all kinds / keys (the stage rollups are not narrowed by the kind or key filter)' : '');
@@ -1380,9 +1390,9 @@ function renderTable() {
   xs.forEach((x, i) => {
     let tot = 0;
     h += '<tr><td>' + fmtDate(x) + '</td>' + vis.map(ln => { const v = Number(ln.values[i] || 0); tot += v;
-      return '<td class="num">' + fmtMetric(Q.metric, v) + '</td>'; }).join('')
-      + (vis.length > 1 ? '<td class="num"><b>' + fmtMetric(Q.metric, tot) + '</b></td>' : '')
-      + (cmpTotal ? '<td class="num dim">' + fmtMetric(Q.metric, cmpTotal[i] || 0) + '</td>' : '') + '</tr>';
+      return '<td class="num">' + fmtMetric(docMetric(), v) + '</td>'; }).join('')
+      + (vis.length > 1 ? '<td class="num"><b>' + fmtMetric(docMetric(), tot) + '</b></td>' : '')
+      + (cmpTotal ? '<td class="num dim">' + fmtMetric(docMetric(), cmpTotal[i] || 0) + '</td>' : '') + '</tr>';
   });
   el.innerHTML = h + '</tbody></table>';
 }

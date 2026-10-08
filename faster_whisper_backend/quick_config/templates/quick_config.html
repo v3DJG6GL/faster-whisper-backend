@@ -2302,7 +2302,7 @@ async function _doSave(patch, fingerprints) {
   }
   if (!r.ok) {
     let msg = 'save failed (' + r.status + ')';
-    try { const j = await r.json(); if (j && j.detail) msg = j.detail; } catch (_) {}
+    try { const j = await r.json(); msg = _detailText(j, msg); } catch (_) {}
     setStatus('save failed');
     // Only a refused slug takes the refetch path: the dictionary-cap 400s
     // refuse no rule, so a refetch would put the same oversized edit back

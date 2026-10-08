@@ -176,6 +176,18 @@ def test_post_patch_switching_off_a_guard_failing_rule_saves(client, app_module)
     stored = next(x for x in app_module.cfg.PIPELINE_RULES
                   if isinstance(x, dict) and x.get("name") == slug)
     assert stored.get("enabled") is False
+    # Pydantic's lax bool turned 1 / "true" / "on" into True past the
+    # `is True` check that scopes the guard, so the refused body went live.
+    for truthy in (1, "true", "on"):
+        r = client.post(
+            "/quick-config/state",
+            json={"rules_patch": {slug: {"enabled": truthy}}},
+        )
+        assert r.status_code == 400, (truthy, r.text)
+        assert "must be true or false" in r.text
+        stored = next(x for x in app_module.cfg.PIPELINE_RULES
+                      if isinstance(x, dict) and x.get("name") == slug)
+        assert stored.get("enabled") is False, truthy
     r = client.post(
         "/quick-config/state",
         json={"rules_patch": {slug: {
@@ -228,9 +240,9 @@ def test_recent_open_mode(client):
 def test_recent_query_filters_raw_and_final(client):
     import time as _time
     from faster_whisper_backend.stats import recent_transcriptions_store
-    # Newest rows in the store: the suite's other transcriptions record real
-    # timestamps, and a page holds only the newest N — epoch 1.0/2.0 rows
-    # dropped off it once enough tests ran ahead of this one.
+    # Current timestamps: the store is per-test, but its lazy-prune counter
+    # is process-wide, so an insert here can run the prune — and an
+    # epoch-era row is older than RECENT_TRANSCRIPTIONS_RETENTION_DAYS.
     _base = _time.time() + 1000.0
     recent_transcriptions_store.record_trace(
         request_id="q1", model="m", raw="patient hat Fieber",
@@ -598,9 +610,10 @@ def test_quick_config_page_refetches_only_on_a_refused_slug(client):
     assert save.index("if (!refusedSlug) { showToast(msg, 'err'); return; }") < (
         save.index("rules reloaded; your other edits were kept"))
     assert "msg = _detailText(j, msg);" in html
-    # Report submit / remove no longer copy a raw detail; only _doSave's
-    # non-422 branch does (a string there).
-    assert html.count("j.detail) msg = j.detail;") == 1
+    # Report submit / remove and _doSave's non-422 branch all go through
+    # _detailText; none copies a raw (possibly list-shaped) detail.
+    assert "msg = _detailText(j, msg);" in save
+    assert html.count("j.detail) msg = j.detail;") == 0
     assert '<textarea class="rep-comment" rows="3" maxlength="65536"' in html
 
 

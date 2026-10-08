@@ -1237,6 +1237,19 @@ def test_stats_page_ring_resume_range_chips_and_background_tab(client):
         "openStream();")
 
 
+def test_stats_page_range_mode_freeze_owns_only_the_range_readouts(client):
+    """Switching from a frozen live ring to 1h/24h/7d left lat-now (no
+    range series, still live) painted frozen; the minute range refresh
+    overwrote a frozen readout with the window summary in yellow."""
+    html = client.get("/stats").text
+    rf = html[html.index("function applyRangeFreeze() {"):html.index("function makeSpark(")]
+    assert "const owned = Object.values(SPARK_HEAD);" in rf
+    assert rf.index("el.classList.remove('frozen');") < rf.index(
+        "for (const [key, id] of Object.entries(SPARK_HEAD))")
+    load = html[html.index("function loadRangeSparks() {"):html.index("function setLiveMode(v)")]
+    assert "const head = frozenTs == null ? $(SPARK_HEAD[key]) : null;" in load
+
+
 def test_stats_usage_list_filters_kinds_users_keys(client):
     """The page's filter bar sends comma lists: `kinds` keeps only those
     job kinds (client-side splits AND the server breakdowns), `users` /
@@ -1390,7 +1403,8 @@ def test_recent_jobs_who_filter_matches_by_user_id(client):
 def test_stats_js_chart_never_all_hidden_after_reload(client):
     """Hide a series in the legend, then narrow the kind filter to that very
     kind: the reload must not draw an empty chart with the empty message
-    hidden, so renderChart mirrors the legend's never-blank guard."""
+    hidden, so prepareLines applies the legend's never-blank guard (before
+    the compare total and the legend), and renderChart no longer does."""
     with pathlib.Path(REPO_ROOT, "static", "stats.js").open(encoding="utf-8") as f:
         js = f.read()
     assert "if (hidden.size === curLines.length) hidden.clear();" in js
@@ -1424,6 +1438,24 @@ def test_stats_js_tail_never_shows_the_previous_window(client):
     assert "if (lastDoc) {" not in tail
     assert load.index("lastDoc = j;") < load.index("_docSeq = mine;")
     assert "esc(tailNote)" in js[js.index("function renderFailures()"):]
+
+
+def test_stats_js_usage_chart_formats_the_drawn_documents_metric(client):
+    """setMetric writes Q.metric before its load lands, and a failed load
+    keeps lastDoc on screen: a hover, T or a legend click then formatted
+    lastDoc's audio seconds as word counts (or the reverse) and the legend
+    named the wrong metric. The chart, tip, legend and table format the
+    metric lastDoc echoes."""
+    with pathlib.Path(REPO_ROOT, "static", "stats.js").open(encoding="utf-8") as f:
+        js = f.read()
+    assert "function docMetric() { return (lastDoc && lastDoc.metric) || Q.metric; }" in js
+    for start, end in (("function updateTip(u) {", "function showTipAt("),
+                       ("function renderChart() {", "function refreshChart() {"),
+                       ("function renderLegend() {", "let tableMode = false;"),
+                       ("function renderTable() {", "let boardSort = ")):
+        body = js[js.index(start):js.index(end)]
+        assert "docMetric()" in body, start
+        assert "Q.metric" not in body, start
 
 
 def test_stats_js_chart_month_ticks_on_long_ranges():

@@ -11,10 +11,7 @@ import zoneinfo
 
 import pytest
 
-
-def _D(iso):
-    """days-since-epoch of an ISO date — the wire form of `day`."""
-    return (datetime.date.fromisoformat(iso) - datetime.date(1970, 1, 1)).days
+from tests.stats._usage_helpers import epoch_day as _D
 
 _ZH = zoneinfo.ZoneInfo("Europe/Zurich")
 _UTC = zoneinfo.ZoneInfo("UTC")
@@ -321,6 +318,50 @@ def test_dictation_utterance_stage_counts_one_run_per_session(usage_store_db):
     o = us.overview(user_id="u", tz=_UTC, tz_name="UTC", days=1, by="stage")
     board = {r["id"]: r["totals"] for r in o["leaderboard"]}
     assert board["transcribing"]["sessions"] == 1
+
+
+def test_attached_translation_audio_is_the_same_on_both_paths(usage_store_db):
+    """A dictation's per-utterance translation is recorded with no audio
+    and attached to the session's job. The rollup added 0 s to the
+    translating stage, but the with= path and the by=stage breakdown read
+    the joined job's audio (the whole dictation): the RTF column went from
+    "—" to a made-up ratio depending on which source answered."""
+    us = usage_store_db
+    sess = "s" * 32
+    us.record_usage(key_id="k", user_id="u", audio_s=30.0, words=20,
+                    status="ok", kind="dictation", job_id=sess,
+                    stages=[{"name": "vad", "secs": 0.1, "retained": 0.9}])
+    us.record_usage(key_id="k", user_id="u", audio_s=0.0, words=0, status="ok",
+                    kind="text", job_id="p" * 32, session_job_id=sess,
+                    stages=[{"name": "translate", "secs": 1.0, "targets": ["de"]}])
+    for with_stages in ((), ("translating",)):
+        doc = us.document("u", days=1, tz=_UTC, tz_name="UTC",
+                          with_stages=with_stages)
+        st = {s["stage"]: s for s in doc["stages"]}
+        assert st["translating"]["audio_s"] == 0.0, with_stages
+        assert st["vad"]["audio_s"] == 30.0, with_stages
+    for with_stages in ((), ("translating",)):
+        o = us.overview(user_id="u", tz=_UTC, tz_name="UTC", days=1, by="stage",
+                        with_stages=with_stages)
+        board = {r["id"]: r["totals"] for r in o["leaderboard"]}
+        assert board["translating"]["audio_s"] == 0.0, with_stages
+
+
+def test_dictation_utterance_vad_retained_averages_over_one_run(usage_store_db):
+    """Each dictation utterance carries a "vad" stage under the session's
+    job id. The run counted once but the hourly retained sum took every
+    utterance, so five utterances at 0.9 read retained_avg 4.5 ("-350 %
+    skipped") on the rollup path while the with= path read 0.9."""
+    us = usage_store_db
+    for _ in range(5):
+        us.record_usage(key_id="k", user_id="u", audio_s=5.0, words=20,
+                        status="ok", kind="dictation", job_id="J" * 32,
+                        stages=[{"name": "vad", "secs": 0.1, "retained": 0.9}])
+    for with_stages in ((), ("vad",)):
+        doc = us.document("u", days=1, tz=_UTC, tz_name="UTC",
+                          with_stages=with_stages)
+        meter = next(s for s in doc["stages"] if s["stage"] == "vad")
+        assert (meter["runs"], meter["retained_avg"]) == (1, 0.9), with_stages
 
 
 def test_attached_targets_past_the_cap_count_once(usage_store_db):
@@ -1104,7 +1145,7 @@ def test_init_adds_v2_ledger_columns_to_a_pre_v2_db(tmp_path):
         conn = usage_store._require_conn()
         cols = lambda t: {r["name"] for r in conn.execute(f"PRAGMA table_info({t})")}
         assert {"wait_s", "error_class", "error_stage"} <= cols("usage_jobs")
-        assert {"error", "kept_original"} <= cols("usage_job_stages")
+        assert {"error", "kept_original", "audio_s"} <= cols("usage_job_stages")
         assert "errors" in cols("usage_stage_hourly")
         for t in ("usage_jobs", "usage_hourly"):
             assert "processing_s" in cols(t) and "proc_s" not in cols(t), t

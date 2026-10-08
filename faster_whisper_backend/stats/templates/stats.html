@@ -1279,7 +1279,9 @@ function loadRangeSparks() {
         const maxes = (j.max || []).filter(v => v != null);
         const mx = maxes.length ? Math.max(...maxes) : null;
         rangeHeads[key] = (last == null ? '—' : Math.round(last)) + ' · max ' + (mx == null ? '—' : Math.round(mx));
-        const head = $(SPARK_HEAD[key]);
+        // The frozen readouts win (as in applyRangeHeads): the freeze above
+        // just wrote this one.
+        const head = frozenTs == null ? $(SPARK_HEAD[key]) : null;
         if (head) head.textContent = rangeHeads[key];
       })
       .catch(() => {});
@@ -1374,6 +1376,12 @@ function applyFreeze() {
 // sample nearest the frozen timestamp, with the window's clock text.
 function applyRangeFreeze() {
   const fmtOf = {}; READOUTS.forEach(([id, , fmt]) => { fmtOf[id] = fmt; });
+  // A readout with no range series (lat-now) stays live in range mode: a
+  // freeze carried over from the live ring must not keep it painted frozen.
+  const owned = Object.values(SPARK_HEAD);
+  for (const [id] of READOUTS) {
+    const el = owned.includes(id) ? null : $(id); if (el) el.classList.remove('frozen');
+  }
   for (const [key, id] of Object.entries(SPARK_HEAD)) {
     const el = $(id); if (!el) continue;
     const d = rangeData[key];
