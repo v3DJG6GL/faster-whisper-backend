@@ -1075,10 +1075,13 @@ def _redistribute(group_texts: "list[str]", translated: str) -> "list[str]":
                  else float("inf"))
         # Only boundaries strictly PAST the previous cut are candidates — two
         # ideals snapping to the same space would otherwise clamp into an
-        # empty member slice (a cue with source text rendering blank).
+        # empty member slice (a cue with source text rendering blank). The
+        # slice must hold text too: in a double space ("know.  Yes") the
+        # second space is past a cut on the first, yet slices to " ".
         cut = None
         for tier in tiers:
-            cands = [s for s in tier if s > prev]
+            cands = [s for s in tier
+                     if s > prev and translated[prev:s].strip()]
             if cands:
                 best = min(cands, key=lambda s: abs(s - ideal))
                 if abs(best - ideal) <= reach:

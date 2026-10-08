@@ -294,6 +294,7 @@ def test_text_walk_falls_back_to_joined_words():
 
 def test_everything_cut_leaves_empty_text():
     seg = _seg([_w(f" x{i}", 1.0, 1.0) for i in range(12)])
+    seg.end = 9.0          # the made-up end the cut words stretched out to
     info = sg.apply_tail_guards(seg, burst=8, zero_tail=2)
     assert seg.text == "" and seg.words == [] and info["n"] == 12
     assert seg.end == seg.start == 1.0, "the made-up end must not survive"
@@ -448,3 +449,21 @@ def test_describe_head_cut():
     s = sg.describe_head_cut({"rules": ["head_echo"], "n": 2, "from": 0.0, "to": 0.5,
                               "text": " am Abend"})
     assert s == "prompt echo · 2 words 0.00-0.50s: ' am Abend'"
+
+
+def test_tail_guard_limits_read_one_as_off(monkeypatch):
+    """A count of 1 passes the schema but the guard ignores it: the limits
+    (and so the receipt's guard rows) say 0, not a rule that never fires."""
+    from faster_whisper_backend.settings import effective_config
+    from faster_whisper_backend.transcription import guards as tx_guards
+    vals = {"SEGMENT_MAX_WORD_BURST_PER_S": 8.0,
+            "SEGMENT_ZERO_LENGTH_TAIL_MIN_WORDS": 1,
+            "SEGMENT_REPEAT_COLLAPSE_MIN_REPEATS": 1,
+            "SEGMENT_HEAD_ECHO_MIN_WORDS": 1}
+    monkeypatch.setattr(effective_config, "cfg_for",
+                        lambda model, key, ident=None: vals[key])
+    limits = tx_guards.tail_guard_limits("m", None)
+    assert limits == {"burst": 8.0, "zero_tail": 0, "repeats": 0}
+    assert tx_guards.head_echo_min_words("m", None) == 0
+    vals["SEGMENT_REPEAT_COLLAPSE_MIN_REPEATS"] = 3
+    assert tx_guards.tail_guard_limits("m", None)["repeats"] == 3

@@ -45,6 +45,11 @@ hook raises ``ResidualWindowSkipped`` before the encoder runs, and
 ``consume()`` turns that into a normal end of the segment stream. Windows of a
 long file are untouched: a full 30 s window never sets the flag. Language
 detection pads the first window before any decode and cannot set it either.
+Nor does a short window whose output ends inside an unfinished segment (a
+consecutive timestamp pair, then text with no closing timestamp):
+faster-whisper drops that trailing text and seeks back to the last timestamp,
+so the next window re-decodes audio this one did NOT finish — refusing it
+would lose the text.
 
 The stop is OFF whenever faster-whisper's ``hallucination_silence_threshold``
 is active (it needs word timestamps): that path throws a short window's
@@ -211,11 +216,28 @@ class DecodeTrace:
         # Only a window that is actually decoded can mark the end: language
         # detection pads the first window too, before any decode.
         if w["len_frames"] is not None and w["len_frames"] < self.n_frames:
+            if not self.reached_end:
+                w["arms_end"] = True    # note_output may take it back
             self.reached_end = True
         self.pending_len_frames = None
         self.pending_encode_s = None
         self.windows.append(w)
         return w
+
+    def note_output(self, w: dict, tokens, timestamp_begin) -> None:
+        """The window's chosen tokens. When they hold a consecutive timestamp
+        pair and end on text, faster-whisper (_split_segments_by_timestamps)
+        drops that unfinished segment and seeks back to the last timestamp:
+        the next window re-decodes it, so this window's end mark is undone."""
+        if not w.get("arms_end") or timestamp_begin is None or not tokens:
+            return
+        tb = int(timestamp_begin)
+        if tokens[-1] >= tb:
+            return                      # timestamp ending: nothing left over
+        if any(tokens[i] >= tb and tokens[i - 1] >= tb
+               for i in range(1, len(tokens))):
+            self.reached_end = False
+            w["arms_end"] = False
 
     def close_window(self, w: dict, chosen) -> None:
         w["secs"] = time.perf_counter() - w["t0"]
@@ -423,6 +445,11 @@ def install(model):
                 raise
             finally:
                 _tls.tokenizer = None
+            try:
+                tr.note_output(w, list(result[0].sequences_ids[0]),
+                               getattr(tokenizer, "timestamp_begin", None))
+            except Exception:
+                pass
             chosen = None
             try:
                 chosen = {"alp": float(result[1]), "temperature": float(result[2]),

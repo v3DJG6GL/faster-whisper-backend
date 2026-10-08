@@ -421,6 +421,21 @@ def test_redistribute_unspaced_target_ignores_a_far_away_space():
         ["first part is long", "tail"]
 
 
+def test_redistribute_double_space_never_empties_member():
+    """A double space in the reply: the second space lies past a cut on the
+    first, but the slice between them is blank — snapping to it emptied the
+    member and the caller reverted the whole group to the source."""
+    pieces = translation._redistribute(["aaaaaaaaa", "b", "ccccccccc"],
+                                       "xxxxxxxxx  yyyyyyyyy")
+    assert len(pieces) == 3 and all(pieces)
+    pieces = translation._redistribute(
+        ["I do not know.", "Yes", "that is fine okay"],
+        "Ich weiss nicht.  Ja das ist gut okay")
+    assert len(pieces) == 3 and all(pieces)
+    assert " ".join(pieces).split() == \
+        "Ich weiss nicht. Ja das ist gut okay".split()
+
+
 def test_redistribute_never_emits_empty_members():
     """3+ members whose ideal cuts snap to the same space must not yield an
     empty slice (the cue would silently render blank in SRT/VTT/UI)."""
@@ -611,14 +626,16 @@ def test_faithful_copy_guard_sees_through_collapsed_whitespace(base_cfg,
 def test_unknown_source_echo_is_no_kept_original(base_cfg, monkeypatch):
     """No source language: a target in the text's own language is not
     short-circuited, and the model's unchanged text is the correct answer —
-    no "translation failed" warning, no kept mark, no retry call."""
+    no "translation failed" warning, no kept mark, no retry call. The fake
+    echoes every call: with no source to compare against, an unchanged
+    reply is accepted under the other target ("en") as well."""
     calls = []
-    _install_fake(monkeypatch, lambda t: t if t.startswith("Wir")
-                  else _xlate(t), calls)
+    _install_fake(monkeypatch, lambda t: t, calls)
     res, warns, meta = _run(translation.translate_segments(
         _segs("Wir sehen uns morgen im Büro."), ["de", "en"],
         mode="faithful"))
     assert res[0]["de"] == "Wir sehen uns morgen im Büro."
+    assert res[0]["en"] == "Wir sehen uns morgen im Büro."
     assert meta["kept"] == {} and warns == []
     assert len(calls) == 2                        # one call per target
 

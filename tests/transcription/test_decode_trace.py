@@ -57,6 +57,7 @@ class _CT2:
 
 class _Tokenizer:
     eot = 50257
+    timestamp_begin = 50364
 
     def decode(self, tokens):
         return " ".join("w" if t < 100 else "loop" for t in tokens)
@@ -92,7 +93,8 @@ class _Model:
             r = self.model.generate(encoder_output, [prompt], length_penalty=1.0, **kw)[0]
             n = len(r.sequences_ids[0])
             alp = r.scores[0] * n / (n + 1)
-            cr = 3.0 if any(tok >= 100 for tok in r.sequences_ids[0]) else 0.8
+            cr = 3.0 if any(100 <= tok < _Tokenizer.timestamp_begin
+                            for tok in r.sequences_ids[0]) else 0.8
             last = (r, alp, t, cr)
             fails = cr > self.thr["cr"] or alp < self.thr["lp"]
             silence = r.no_speech_prob > self.thr["ns"] and alp < self.thr["lp"]
@@ -335,6 +337,46 @@ def test_residual_window_is_refused_before_it_is_encoded():
     assert w2["outcome"] == "skipped · previous window reached end of audio"
     assert w2["start_s"] == pytest.approx(2.2 - 0.47, abs=0.01)
     assert w2["len_s"] == pytest.approx(0.47)
+
+
+_TS = _Tokenizer.timestamp_begin
+
+
+def test_unfinished_last_segment_is_re_decoded_not_refused():
+    """A short window whose output ends on text after a consecutive
+    timestamp pair (<|0.00|> A<|2.00|><|2.00|> B, then EOT): faster-whisper
+    drops the unfinished "B" and seeks back to 2.00 s. The next window
+    re-decodes it — refusing that window would lose "B". The window after
+    the re-decode (single-timestamp ending) still arms the stop."""
+    plan = [[([_TS, 5, _TS + 100, _TS + 100, 6], -0.5, 0.01)],
+            [([_TS, 6, _TS + 50], -0.5, 0.01)]]
+    m = _Model(plan, _THR)
+    m.duration = 3.2
+    m.windows = [{"frames": 319, "seek": 0, "yield": 1},
+                 {"frames": 119, "seek": 200, "yield": 1},
+                 {"frames": 20, "seek": 300, "yield": 0}]
+    dt.install(m)
+    segs, t = _run_stop(m, skip_residual=True)
+    assert len(segs) == 2
+    assert len(m.model.calls) == 2, "the re-decode reached the decoder"
+    assert [w.get("skipped") for w in t["windows"]] == [None, None, "residual"]
+
+
+@pytest.mark.parametrize("tokens", [
+    [_TS, 5, _TS + 100],                # single-timestamp ending
+    [_TS, 5],                           # no consecutive timestamp pair
+    [_TS, 5, _TS + 100, _TS + 100],     # pair at the very end: nothing left
+], ids=["lone-timestamp-ending", "no-pair", "pair-ending"])
+def test_finished_output_still_arms_the_residual_stop(tokens):
+    """Output faster-whisper keeps in full: the window after it is the
+    leftover the stop exists for (the 43 s incident), still refused."""
+    m = _Model([[(tokens, -0.5, 0.01)]], _THR)
+    m.windows = [{"frames": 219, "seek": 0, "yield": 1},
+                 {"frames": 47, "seek": 172, "yield": 0}]
+    dt.install(m)
+    segs, t = _run_stop(m, skip_residual=True)
+    assert len(segs) == 1 and len(m.model.calls) == 1
+    assert t["skipped_windows"] == 1
 
 
 def test_residual_stop_is_off_unless_asked():

@@ -96,6 +96,19 @@ def test_finish_rejects_running_and_unknown_states(db):
     assert db.finish(job_id="0" * 32, state="done", ttl_s=_TTL) is False
 
 
+def test_finish_with_an_unstorable_result_stamps_failed_not_running(db):
+    # A lone surrogate (echoed from a client body) cannot be encoded as
+    # UTF-8: the run still ends, as `failed`, instead of finish() raising
+    # and leaving the row `running` until the 24 h floor.
+    jid = _start(db)
+    assert db.finish(job_id=jid, state="done",
+                     result={"segments": [{"id": "\ud800"}]}, ttl_s=_TTL)
+    row = db.get(jid)
+    assert row["state"] == "failed"
+    assert row["error"] == "result could not be stored"
+    assert row["result_available"] is False and db.get_result(jid) is None
+
+
 def test_start_replaces_a_finished_row_under_the_same_id(db):
     jid = _start(db)
     db.finish(job_id=jid, state="done", result={"text": "1"}, ttl_s=_TTL)
@@ -265,7 +278,9 @@ def test_a_run_longer_than_a_short_ttl_stays_listed_and_finishes(
     assert row["expires_ts"] == pytest.approx(js.time.time() + 600.0, abs=5)
 
 
-def test_mark_running_as_failed_flips_only_running_rows(db):
+def test_mark_running_as_failed_flips_only_running_rows(db, monkeypatch):
+    from faster_whisper_backend.settings import config as cfg
+    monkeypatch.setattr(cfg, "SERVER_WORKERS", 1, raising=False)
     a = _start(db, job_id="a" * 32)
     b = _start(db, job_id="b" * 32)
     db.finish(job_id=b, state="done", result={"text": "1"}, ttl_s=_TTL)

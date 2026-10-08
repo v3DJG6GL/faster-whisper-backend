@@ -23,6 +23,16 @@ URL = "/v1/text/translations"
 _PID = "feed" * 8  # 32 hex chars — passes _PROGRESS_ID_RE
 
 
+def _park(key, *, hold_s, **extra):
+    """Park a dictation receipt the way the transcribe route does — one
+    entry shape for every test, so a new required key lands in one place."""
+    from faster_whisper_backend.transcription import receipt_hold
+    payload = {"file_label": "utt#1", "model_name": "m", "raw": "r",
+               "final": "f", "seg_diag": [], "kwargs": {}, "info": None}
+    payload.update(extra)
+    receipt_hold.park(key, payload, hold_s=hold_s)
+
+
 # --- happy path --------------------------------------------------------------
 
 def test_translates_and_echoes_ids_in_input_order(client, app_module,
@@ -158,9 +168,7 @@ def test_per_minute_backstop_429s_and_releases_the_held_receipt(
         assert body["error"]["param"] == "TRANSLATE_RATE_PER_MIN"
         assert r.headers["Retry-After"] == str(body["error"]["retry_after"])
 
-        receipt_hold.park("cap2", {"file_label": "utt#1", "model_name": "m",
-                                   "raw": "r", "final": "f", "seg_diag": [],
-                                   "kwargs": {}, "info": None}, hold_s=90)
+        _park("cap2", hold_s=90)
         r = client.post(URL, json=_body(captured_id="cap2"))
         assert r.status_code == 429
         assert receipt_hold.pending() == 0
@@ -258,20 +266,31 @@ def test_inflight_slot_is_released_on_cancellation(client, app_module,
 def test_cancellation_stamps_the_job_row_cancelled(client, app_module,
                                                    monkeypatch):
     """A disconnect unwinds past every arm: the `finally` stamps the jobs
-    row, and it says "cancelled", not "error"."""
+    row, and it says "cancelled", not "error". The write runs on a worker,
+    never on the event loop: it waits on jobs_store's lock, which a prune
+    or a big finish can hold for a while."""
     import asyncio
+    import threading
 
     _enable(app_module, monkeypatch)
     finished = []
+    loop_thread = []
+    done = threading.Event()
 
     async def _cancelled(*args, **kwargs):
+        loop_thread.append(threading.current_thread())
         raise asyncio.CancelledError()
+
+    def _finish(pid, **kw):
+        finished.append((pid, kw, threading.current_thread()))
+        done.set()
     monkeypatch.setattr(translation, "translate_segments", _cancelled)
-    monkeypatch.setattr(tx_progress, "_jobs_finish_sync",
-                        lambda pid, **kw: finished.append((pid, kw)))
+    monkeypatch.setattr(tx_progress, "_jobs_finish_sync", _finish)
     with pytest.raises(BaseException):
         client.post(URL, json=_body(progress_id=_PID))
+    assert done.wait(5)
     assert len(finished) == 1
+    assert finished[0][2] is not loop_thread[0], "ran on the event loop"
     assert finished[0][0] == _PID
     assert finished[0][1]["status"] == "cancelled"
     assert finished[0][1]["error"] == "request aborted"
@@ -354,6 +373,33 @@ def test_422_malformed_shapes(client, app_module, monkeypatch):
         r = client.post(URL, json=case)
         assert r.status_code == 422, (case, r.status_code, r.text)
     assert "capped at" in r.json()["detail"]     # the last case: entry cap
+    assert calls == []
+
+
+def test_422_lone_surrogate_in_text_or_id(client, app_module, monkeypatch):
+    """A JSON "\\ud800" escape parses into a str UTF-8 cannot encode. A text
+    copied through unchanged or an echoed id would only fail when the
+    response (or the job row) is encoded, after the run was recorded as ok:
+    refused up front instead, and a parked receipt is handed back."""
+    import json
+    from faster_whisper_backend.transcription import receipt_hold
+
+    _enable(app_module, monkeypatch)
+    calls = []
+    _stub_translate(monkeypatch, calls=calls)
+    try:
+        for seg in ({"id": 1, "text": "a\ud800"},
+                    {"id": "\ud800", "text": "a"}):
+            _park("cap-u", hold_s=90)
+            r = client.post(URL, content=json.dumps(
+                {"segments": [seg], "targets": ["en"],
+                 "captured_id": "cap-u"}),
+                headers={"Content-Type": "application/json"})
+            assert r.status_code == 422, r.text
+            assert "surrogate" in r.json()["detail"]
+            assert receipt_hold.pending() == 0
+    finally:
+        receipt_hold._reset_for_tests()
     assert calls == []
 
 
@@ -563,9 +609,7 @@ def test_held_receipt_survives_a_gpu_queue_with_a_resident_model(
         yield
     monkeypatch.setattr(tx_models, "get_inference_semaphore", _busy_gate)
     _stub_translate(monkeypatch)
-    receipt_hold.park("cap-q", {"file_label": "utt#1", "model_name": "m",
-                                "raw": "r", "final": "f", "seg_diag": [],
-                                "kwargs": {}, "info": None}, hold_s=0.2)
+    _park("cap-q", hold_s=0.2)
     try:
         r = client.post(URL, json=_body(captured_id="cap-q"))
         assert r.status_code == 200, r.text
@@ -644,9 +688,7 @@ def test_held_receipt_survives_a_queued_translation(client, app_module,
                    for seg in segments]
         return per_seg, [], {"model": "org/d:Q4", "source": "", "mode": "fluent"}
     monkeypatch.setattr(translation, "translate_segments", _slow)
-    receipt_hold.park("cap-q", {"file_label": "utt#1", "model_name": "m",
-                                "raw": "r", "final": "f", "seg_diag": [],
-                                "kwargs": {}, "info": None}, hold_s=0.2)
+    _park("cap-q", hold_s=0.2)
     try:
         r = client.post(URL, json=_body(captured_id="cap-q"))
         assert r.status_code == 200, r.text
@@ -840,9 +882,7 @@ def test_inflight_refusal_releases_the_held_receipt(client, app_module,
     gauge = tr_routes._translate_inflight
     for _ in range(int(app_module.cfg.TRANSLATE_MAX_INFLIGHT_PER_USER)):
         gauge.acquire(_open_key())
-    receipt_hold.park("cap1", {"file_label": "utt#1", "model_name": "m",
-                               "raw": "r", "final": "f", "seg_diag": [],
-                               "kwargs": {}, "info": None}, hold_s=90)
+    _park("cap1", hold_s=90)
     try:
         r = client.post(URL, json=_body(captured_id="cap1"))
         assert r.status_code == 429
@@ -863,16 +903,14 @@ def test_validation_reject_releases_the_held_receipt(client, app_module,
 
     _enable(app_module, monkeypatch)
     _stub_translate(monkeypatch)
-    payload = {"file_label": "utt#1", "model_name": "m", "raw": "r",
-               "final": "f", "seg_diag": [], "kwargs": {}, "info": None}
     try:
-        receipt_hold.park("cap-v", payload, hold_s=90)
+        _park("cap-v", hold_s=90)
         r = client.post(URL, json={"segments": [], "targets": ["en"],
                                    "captured_id": "cap-v"})
         assert r.status_code == 422, r.text
         assert receipt_hold.pending() == 0
 
-        receipt_hold.park("cap-s", payload, hold_s=90)
+        _park("cap-s", hold_s=90)
         r = client.post(URL, json=_body(
             segments=[{"id": 0, "text": "x" * 200_001}], captured_id="cap-s"))
         assert r.status_code == 413, r.text
@@ -1057,10 +1095,8 @@ def test_claimed_dictation_receipt_folds_into_the_utterance_row(
     rts.record_timing(request_id="utt-rid", model="w", audio_s=4.0,
                       processing_s=0.9, status="ok", words=7, kind="dictate",
                       stages=[{"name": "transcribing", "secs": 0.9}])
-    receipt_hold.park("cap-fold", {"file_label": "utt#0", "model_name": "w",
-                                   "raw": "r", "final": "f", "seg_diag": [],
-                                   "kwargs": {}, "info": None,
-                                   "request_id": "utt-rid"}, hold_s=90)
+    _park("cap-fold", hold_s=90, file_label="utt#0", model_name="w",
+          request_id="utt-rid")
     try:
         r = client.post(URL, json=_body(captured_id="cap-fold"))
         assert r.status_code == 200, r.text

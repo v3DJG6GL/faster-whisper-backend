@@ -16,14 +16,20 @@ from faster_whisper_backend.transcription.receipt import PlainText
 _WORD_RATE_MIN_WORDS = 3
 
 
+def _off_below_two(n: int) -> int:
+    """A count rule the guard ignores below 2 reads 0 (off) on the receipt,
+    never a 1 that looks on but never fires."""
+    return n if n >= 2 else 0
+
+
 def tail_guard_limits(model_name, ident) -> dict:
     """The three tail-cut settings (transcription/segment_guards.py) resolved for this
     model + identity, as apply_tail_guards kwargs. Shared by the batch route and
-    both streaming decodes."""
+    both streaming decodes. The two counts treat 1 as off, like the guard does."""
     return {
         "burst": float(effective_config.cfg_for(model_name, "SEGMENT_MAX_WORD_BURST_PER_S", ident) or 0),
-        "zero_tail": int(effective_config.cfg_for(model_name, "SEGMENT_ZERO_LENGTH_TAIL_MIN_WORDS", ident) or 0),
-        "repeats": int(effective_config.cfg_for(model_name, "SEGMENT_REPEAT_COLLAPSE_MIN_REPEATS", ident) or 0),
+        "zero_tail": _off_below_two(int(effective_config.cfg_for(model_name, "SEGMENT_ZERO_LENGTH_TAIL_MIN_WORDS", ident) or 0)),
+        "repeats": _off_below_two(int(effective_config.cfg_for(model_name, "SEGMENT_REPEAT_COLLAPSE_MIN_REPEATS", ident) or 0)),
     }
 
 
@@ -57,8 +63,7 @@ def head_echo_min_words(model_name, ident) -> int:
     """SEGMENT_HEAD_ECHO_MIN_WORDS resolved for this model + identity (the head
     twin of tail_guard_limits; kept apart because it is not an
     apply_tail_guards kwarg). 1 is treated as off, like the guard does."""
-    n = int(effective_config.cfg_for(model_name, "SEGMENT_HEAD_ECHO_MIN_WORDS", ident) or 0)
-    return n if n >= 2 else 0
+    return _off_below_two(int(effective_config.cfg_for(model_name, "SEGMENT_HEAD_ECHO_MIN_WORDS", ident) or 0))
 
 
 def head_echo_rows(min_words: int, cut: "dict | None") -> dict:

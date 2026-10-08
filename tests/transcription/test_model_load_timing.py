@@ -277,6 +277,40 @@ def _register_stale(name):
 
 
 def test_evictor_does_not_claim_an_unload_it_was_refused(monkeypatch, caplog):
+    """A lease taken between the pre-scan and the locked drop: the drop is
+    refused, so no unload is logged and no full gc runs on the loop."""
+    import gc
+    _register_stale("a")
+    tx_models._model_leases.pop("a", None)
+    seen = {"n": 0}
+
+    def _is_warm(name):
+        # Called once in the pre-scan and once under the lock: the lease
+        # lands between the two, after "a" was listed as stale.
+        seen["n"] += 1
+        if seen["n"] == 2:
+            tx_models._model_leases["a"] = 1
+        return False
+    monkeypatch.setattr(model_registry, "is_warm", _is_warm)
+    collected = []
+    monkeypatch.setattr(gc, "collect", lambda *a: collected.append(1))
+    try:
+        with caplog.at_level(logging.INFO, logger="whisper-api"):
+            _run_one_evictor_tick(monkeypatch)
+        assert seen["n"] == 2, "the tick reached the locked drop"
+        assert "a" in tx_models._loaded_models
+        msgs = [r.getMessage() for r in caplog.records]
+        assert not any("[idle-evict] unload" in m for m in msgs)
+        assert any("eviction deferred" in m for m in msgs)
+        # Nothing was unloaded, so nothing to reclaim: no full gc on the loop.
+        assert collected == []
+    finally:
+        tx_models._model_leases.pop("a", None)
+        tx_models._loaded_models.clear()
+        model_registry._loaded_models.clear()
+
+
+def test_evictor_prescan_skips_a_leased_model(monkeypatch, caplog):
     import gc
     _register_stale("a")
     tx_models._model_leases["a"] = 1

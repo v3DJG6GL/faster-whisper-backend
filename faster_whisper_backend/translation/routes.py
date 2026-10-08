@@ -5,6 +5,7 @@ main next to the transcription handler.
 """
 import asyncio
 import functools
+import json
 import logging
 import re
 import time
@@ -146,6 +147,15 @@ async def translate_text(request: Request,
 
     try:
         _text_translate_rate.hit(_inflight_key)
+        # A JSON "\ud800" escape parses into a str UTF-8 cannot encode: an
+        # echoed id or a text copied through unchanged would then fail the
+        # response (and the job row's result) only after the run is recorded.
+        try:
+            json.dumps(body, ensure_ascii=False).encode("utf-8")
+        except ValueError:          # UnicodeEncodeError is a ValueError
+            raise HTTPException(
+                status_code=422,
+                detail="body contains invalid Unicode (lone surrogate)")
         segments = body.get("segments")
         if not isinstance(segments, list) or not segments:
             raise HTTPException(status_code=422,
@@ -630,12 +640,16 @@ async def translate_text(request: Request,
             tx_progress._RUN_PLAN_BY_PID.pop(_pid, None)
         # Catch-all for a disconnect unwinding past every arm (the arms
         # above write off the loop; no await is safe in here). The success
-        # path claims below, so it is excluded here.
+        # path claims below, so it is excluded here. Handed to a worker
+        # without awaiting (as _jobs_start_async's cancel path does): the
+        # write waits on jobs_store's lock, which a prune or a big finish
+        # can hold long enough to freeze the loop.
         if _job_row and not _job_finished and not _receipt_claimed_below:
-            tx_progress._jobs_finish_sync(
+            asyncio.get_running_loop().run_in_executor(None, functools.partial(
+                tx_progress._jobs_finish_sync,
                 _pid, status=("cancelled" if _aborted else "error"),
                 error="request aborted", model=(_tr_model or None),
-                request_id=request_id)
+                request_id=request_id))
             _job_finished = True
         if _aborted and not _receipt_claimed_below:
             # The arms' _record_run, minus its awaits: without this an

@@ -197,6 +197,22 @@ def test_download_bytes_never_override_a_probed_duration(ledger, clock):
     assert p._audio_s == 600.0 and p._audio_src == "probe"
 
 
+def test_a_download_without_a_fraction_fills_by_work_time_only(ledger, clock):
+    """A download that reports no fraction (no total bytes) fills the bar
+    by the clock. The resolve before it is warm-up: once it ends, the bar
+    must not jump by its length — the ETA leaves it out too."""
+    p = _plan(clock, kind="url", stages=["downloading", "transcribing"])
+    p.tick(stage="resolving")
+    clock.advance(15)
+    p.set_download_bytes(60_000_000, extractor="Youtube")   # est 20 s
+    p.tick(stage="downloading", progress=None)
+    st = p._get("downloading")
+    assert p._fraction(st, clock()) == pytest.approx(0.0)
+    clock.advance(5)
+    assert p._fraction(st, clock()) == pytest.approx(5 / 20)
+    assert _stage(p.snapshot(), "downloading")["est_s"] == pytest.approx(20.0)
+
+
 # --- progression --------------------------------------------------------------
 
 def test_took_replaces_est_and_overall_is_monotone(ledger, clock):
@@ -400,11 +416,16 @@ def test_finish_run_writes_the_ledger_once(ledger, clock, monkeypatch):
         writes.append(1)
         return real(*a, **kw)
     monkeypatch.setattr(atomic_json, "atomic_write_json", counting)
-    p = _plan(clock, stages=["transcribing", "diarizing", "translating"])
+    p = _plan(clock, kind="url", stages=["downloading", "transcribing",
+                                         "diarizing", "translating"])
     p.set_audio_seconds(600.0, src="decoder")
     p.set_segments(80)
     p.set_translation(["fr", "fi", "sv"], model="m", device="cuda",
                       mode="fluent")
+    p.set_download_bytes(30_000_000, extractor="Youtube")
+    p.tick(stage="downloading", progress=0.0)
+    clock.advance(5)
+    p.stage_done("downloading")
     p.tick(stage="transcribing", progress=0.0)
     clock.advance(60)
     p.stage_done("transcribing")
@@ -422,6 +443,8 @@ def test_finish_run_writes_the_ledger_once(ledger, clock, monkeypatch):
     assert len(writes) == 1
     p.finish_run("ok")                  # idempotent
     assert len(writes) == 1
+    assert stage_rates.lookup("downloading", "Youtube", None)["rate"] == \
+        pytest.approx(6_000_000.0)
     assert stage_rates.lookup("transcribing", None, None)["rate"] == \
         pytest.approx(10.0)
     assert stage_rates.lookup("diarizing.embeddings", None, None)["rate"] == \

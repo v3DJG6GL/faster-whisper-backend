@@ -687,8 +687,10 @@ class RunPlan:
         # not report said nothing real.
         if st.phase is not None:
             return 0.0
+        # The clock fill counts work time only, as the ETA does: a warm-up
+        # (or queue) that just ended must not jump the bar by its length.
         if st.est_s:
-            return min(st.elapsed(now) / st.est_s, 0.95)
+            return min(self._work_elapsed(st, now) / st.est_s, 0.95)
         return 0.0
 
     def _overall_locked(self, now: float) -> float | None:

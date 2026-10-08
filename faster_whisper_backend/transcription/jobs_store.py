@@ -303,8 +303,16 @@ def finish(
     conn = _require_conn()
     now = time.time()
     blob: str | None = None
+    blob_bytes = 0
     if state == "done" and result is not None:
-        blob = json.dumps(result, ensure_ascii=False)
+        try:
+            blob = json.dumps(result, ensure_ascii=False)
+            blob_bytes = len(blob.encode("utf-8"))
+        except (TypeError, ValueError):   # UnicodeEncodeError is a ValueError
+            # A payload that cannot be stored (a lone surrogate echoed from
+            # a client body) still ends the run: raising here would leave
+            # the row `running` until the 24 h floor.
+            state, error, blob = "failed", "result could not be stored", None
     with _lock:
         cur = conn.execute(
             "UPDATE jobs SET state = ?, error = ?, result_json = ?, "
@@ -316,7 +324,7 @@ def finish(
                 state,
                 _clip(error, _CAP_ERROR) if state != "done" else None,
                 blob,
-                len(blob.encode("utf-8")) if blob is not None else 0,
+                blob_bytes,
                 _side_json(stages), _side_json(plan),
                 _clip(model, _CAP_MODEL), _clip(task, _CAP_SMALL),
                 now, now + float(ttl_s), job_id,

@@ -417,9 +417,15 @@ def test_decode_trace_header_carries_the_total_wall_time(app_module):
 
 def test_one_fmt_secs_helper(app_module):
     assert tx_receipt._fmt_secs(None) == "-" and tx_receipt._fmt_secs(1.26) == "1.3s"
-    import inspect
-    assert inspect.getsource(tx_receipt).count("def _fmt_secs(") == 1
-    assert "def _fmt_secs(" not in inspect.getsource(app_module)
+    # Across the whole package, not just receipt.py + main.py: the code that
+    # left main in the 2026-10 refactor (guards, stats, media) is where a
+    # second copy would land.
+    import pathlib
+    import faster_whisper_backend
+    pkg = pathlib.Path(faster_whisper_backend.__file__).parent
+    defs = [f.relative_to(pkg).as_posix() for f in sorted(pkg.rglob("*.py"))
+            for _ in range(f.read_text(encoding="utf-8").count("def _fmt_secs("))]
+    assert defs == ["transcription/receipt.py"]
 
 
 def test_failed_stage_row_carries_its_error_class():
