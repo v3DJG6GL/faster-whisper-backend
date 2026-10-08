@@ -171,7 +171,8 @@ def test_prefixed_cookie_name_needs_the_secure_flag():
     # login answered 200 and the gate looped with no cookie and no error.
     # Refused on save only: at load a failure would drop every override.
     def save(**fields):
-        return settings_schema.AdminConfig.model_validate(fields, context={"on_save": True})
+        return settings_schema.AdminConfig.model_validate(
+            fields, context={"cookie_prefix_check": True})
     with pytest.raises(ValidationError):
         save(SESSION_COOKIE_NAME="__Host-s")
     with pytest.raises(ValidationError):
@@ -966,6 +967,46 @@ def test_save_overrides_rejects_unknown_slug_without_local_rules(tmp_path, monke
     assert json.loads(open(p, encoding="utf-8").read())["BEAM_SIZE"] == 5
 
 
+def test_empty_rule_list_leaves_no_valid_slug_on_save(tmp_path):
+    """An explicit PIPELINE_RULES of [] read as "unknown, skip", so every
+    EXCLUDE / INCLUDE ref saved with it dangled silently. On a save touching
+    the rules or a ref it now means "no valid slug"; a load (no context)
+    stays permissive, since a load failure drops every override."""
+    bad = {"PIPELINE_RULES": [],
+           "MODEL_OVERRIDES": {"small": {"PIPELINE_RULES_EXCLUDE": ["nope"]}}}
+    with pytest.raises(ValidationError):
+        settings_schema.AdminConfig.model_validate(
+            bad, context={"empty_rules_known": True})
+    with pytest.raises(ValidationError):
+        settings_schema.AdminConfig.model_validate(
+            {"PIPELINE_RULES": [], "CAPTURES_PIPELINE_RULES_EXCLUDE": ["nope"]},
+            context={"empty_rules_known": True})
+    settings_schema.AdminConfig.model_validate(bad)      # load: still skips
+    # A partial validation with neither rules nor context still skips.
+    _ok(MODEL_OVERRIDES={"small": {"PIPELINE_RULES_EXCLUDE": ["nope"]}})
+    p = str(tmp_path / "config.local.json")
+    with pytest.raises(ValidationError):
+        cs.save_overrides(bad, p)
+    assert not os.path.exists(p)
+    # A stored [] with a dangling ref does not refuse an unrelated save.
+    with open(p, "w", encoding="utf-8") as f:
+        json.dump(bad, f)
+    cs.save_overrides({"BEAM_SIZE": 3}, p)
+    assert cs.load_overrides(p)["BEAM_SIZE"] == 3
+
+
+def test_validate_binding_checks_slugs_against_an_empty_live_rule_list(monkeypatch):
+    """An explicit empty live rule list skipped the binding slug check (and
+    the save fell back to factory slugs not in force): any typo saved."""
+    monkeypatch.setattr(cs_config, "PIPELINE_RULES", [])
+    with pytest.raises(ValueError, match="typo"):
+        cs.validate_binding({"overrides": {"PIPELINE_RULES_EXCLUDE": ["typo"]}})
+    assert cs._save_canonical_slugs() == set()
+    # No list at all = unknown: skipped, as before.
+    monkeypatch.setattr(cs_config, "PIPELINE_RULES", None)
+    cs.validate_binding({"overrides": {"PIPELINE_RULES_EXCLUDE": ["typo"]}})
+
+
 def test_stale_stored_slug_only_blocks_saves_of_its_own_key(tmp_path, monkeypatch):
     # The slug check used to run over the whole merged document whenever the
     # save touched ANY slug-bearing key, so a stale exclude stored under
@@ -1240,6 +1281,43 @@ def test_save_overrides_refuses_a_file_only_an_env_pin_makes_valid(tmp_path,
                                     "STREAMING_BUFFER_TRIM_S": 13.0}
 
 
+def test_save_overrides_prefixed_cookie_name_with_env_pinned_secure(tmp_path,
+                                                                  monkeypatch):
+    """The bare re-check (run because an env pin exists) dropped the env
+    context but kept the save-only cookie-prefix check, so it fell back to
+    the baseline Secure=False and refused a cookie that IS Secure."""
+    monkeypatch.setattr(cs, "_env_effective_values",
+                        lambda: {"SESSION_COOKIE_SECURE": True})
+    p = str(tmp_path / "config.local.json")
+    cs.save_overrides({"SESSION_COOKIE_NAME": "__Host-s"}, p)
+    assert cs.load_overrides(p)["SESSION_COOKIE_NAME"] == "__Host-s"
+    cs.save_overrides({"BEAM_SIZE": 3}, p)   # later unrelated save passes
+    # Without the env pin the same save is still refused.
+    monkeypatch.setattr(cs, "_env_effective_values", lambda: {})
+    q = str(tmp_path / "other.json")
+    with pytest.raises(ValidationError):
+        cs.save_overrides({"SESSION_COOKIE_NAME": "__Host-s"}, q)
+    assert not os.path.exists(q)
+
+
+def test_save_overrides_stored_prefixed_cookie_blocks_only_cookie_saves(tmp_path,
+                                                                       monkeypatch):
+    """A __Host- name stored with Secure off (pre-check file or hand edit)
+    must not 422 every unrelated save — only a save touching the cookie
+    keys, as guard_regex is scoped to saves that submit rules."""
+    monkeypatch.setattr(cs, "_env_effective_values", lambda: {})
+    p = tmp_path / "config.local.json"
+    p.write_text(json.dumps({"SESSION_COOKIE_NAME": "__Host-s"}), encoding="utf-8")
+    cs.save_overrides({"BEAM_SIZE": 3}, str(p))
+    assert json.loads(p.read_text(encoding="utf-8"))["BEAM_SIZE"] == 3
+    with pytest.raises(ValidationError):
+        cs.save_overrides({"SESSION_COOKIE_SECURE": False}, str(p))
+    with pytest.raises(ValidationError):
+        cs.save_overrides({"SESSION_COOKIE_NAME": "__Host-s"}, str(p))
+    # Saving the fix itself goes through.
+    cs.save_overrides({"SESSION_COOKIE_SECURE": True}, str(p))
+
+
 def test_save_overrides_invalid_raises(tmp_path):
     p = str(tmp_path / "config.local.json")
     with pytest.raises(ValidationError):
@@ -1511,6 +1589,33 @@ def test_cors_origins_lowercased():
 def test_trusted_origins_lowercased():
     assert _ok(TRUSTED_ORIGINS=["https://MyHost.local"]).TRUSTED_ORIGINS == [
         "https://myhost.local"]
+
+
+def test_origins_uppercase_scheme_is_lowercased_not_refused():
+    # The scheme was matched case-sensitively BEFORE the .lower() the
+    # docstrings promise, so 'HTTPS://A.com' got a 422.
+    assert _ok(TRUSTED_ORIGINS=["HTTPS://A.com"]).TRUSTED_ORIGINS == ["https://a.com"]
+    assert _ok(CORS_ALLOW_ORIGINS=["HTTP://B.com:80"]).CORS_ALLOW_ORIGINS == [
+        "http://b.com:80"]
+
+
+@pytest.mark.parametrize("bad", ["https://u@a.com", "https://a.com:1:2",
+                                 "https://a.com:x"])
+def test_origins_with_userinfo_or_junk_port_refused_on_save(tmp_path, bad):
+    # Such an entry never equals a browser Origin header, so it saved cleanly
+    # and silently did nothing. Refused on a save that submits the list;
+    # load keeps accepting it (a load failure drops every override).
+    p = str(tmp_path / "config.local.json")
+    for key in ("TRUSTED_ORIGINS", "CORS_ALLOW_ORIGINS"):
+        with pytest.raises(ValidationError):
+            cs.save_overrides({key: [bad]}, p)
+        _ok(**{key: [bad]})
+    assert not os.path.exists(p)
+    cs.save_overrides({"TRUSTED_ORIGINS": ["https://a.com:8443", "http://[::1]:8000"]}, p)
+    # A stored one does not block an unrelated save.
+    with open(p, "w", encoding="utf-8") as f:
+        json.dump({"TRUSTED_ORIGINS": [bad]}, f)
+    cs.save_overrides({"BEAM_SIZE": 3}, p)
 
 
 def test_load_overrides_strips_wildcard_origins_keeps_rest(tmp_path):

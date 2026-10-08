@@ -557,6 +557,72 @@ def test_fresh_sibling_login_seen_inside_throttle_window(tmp_path):
     assert b.lookup_session(raw) is not None            # inside the 1 s window
 
 
+def test_index_miss_after_sibling_commit_does_not_rebuild(tmp_path):
+    """A miss forced a FULL rebuild whenever a sibling had committed, so junk
+    cookies on worker B plus a login loop on worker A cost B one O(N)
+    rebuild per login. The miss now fetches just that one token."""
+    db = str(tmp_path / "sessions.db")
+    a = _worker("sessions_store_miss_a", db)
+    b = _worker("sessions_store_miss_b", db)
+    b._REFRESH_MIN_INTERVAL_S = 3600.0   # every later HIT stays throttled
+    assert b.lookup_session("junk-0") is None          # stamps the throttle
+    calls = []
+    orig = b._rebuild_index_locked
+
+    def counting_rebuild():
+        calls.append(1)
+        orig()
+
+    b._rebuild_index_locked = counting_rebuild
+    for i in range(5):
+        a.create_session(f"u{i}", 3600.0)               # sibling commit
+        assert b.lookup_session(f"junk-{i + 1}") is None
+    assert calls == []
+    # A session the sibling created inside the window is still found on its
+    # first lookup, without a rebuild.
+    raw, _csrf = a.create_session("fresh", 3600.0)
+    assert b.lookup_session(raw)["user_id"] == "fresh"
+    assert calls == []
+
+
+def test_revoke_failing_on_the_counter_leaves_no_half_revoked_session(tmp_path):
+    """The connection autocommits, so the revoke UPDATE and the revocations
+    counter were two commits: a failure on the second left the row revoked
+    while this worker's index still honoured the cookie. Now one transaction,
+    and the local index drops the token whatever happens."""
+    import sqlite3
+
+    db = str(tmp_path / "sessions.db")
+    w = _worker("sessions_store_revoke_fail", db)
+    raw, _csrf = w.create_session("u", 3600.0)
+    assert w.lookup_session(raw) is not None
+    real = w._conn
+
+    class _FailingMeta:
+        def execute(self, sql, *args):
+            if sql.startswith("INSERT INTO meta"):
+                raise sqlite3.OperationalError("database is locked")
+            return real.execute(sql, *args)
+
+        def __getattr__(self, name):
+            return getattr(real, name)
+
+    w._conn = _FailingMeta()
+    try:
+        with pytest.raises(sqlite3.OperationalError):
+            w.revoke_session(raw)
+        assert w.lookup_session(raw) is None
+    finally:
+        w._conn = real
+    # Rolled back as a unit: no revoked row without its counter bump.
+    row = real.execute("SELECT revoked_ts FROM sessions").fetchone()
+    assert row[0] is None
+    assert real.execute(
+        "SELECT v FROM meta WHERE k = 'revocations'").fetchone() is None
+    w.revoke_session(raw)                                 # a retry succeeds
+    assert real.execute("SELECT revoked_ts FROM sessions").fetchone()[0] is not None
+
+
 # --- failed-login throttle --------------------------------------------------
 
 def test_login_failures_are_throttled(client, app_module, make_user_key):

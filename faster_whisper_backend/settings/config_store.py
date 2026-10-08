@@ -346,6 +346,11 @@ def with_env_model_overrides(model_overrides: Any) -> Any:
     return out
 
 
+# A save touching any of these runs schema's __Host-/__Secure- cookie check.
+_COOKIE_PREFIX_KEYS = ("SESSION_COOKIE_NAME", "SESSION_CSRF_COOKIE_NAME",
+                       "SESSION_COOKIE_SECURE")
+
+
 def save_overrides(
     payload: dict[str, Any],
     path: str = OVERRIDES_PATH,
@@ -421,11 +426,23 @@ def save_overrides(
         # Screen regex rules only when this save actually submits rules —
         # otherwise one stored legacy pattern that fails today's structural
         # screen would brick every unrelated settings save.
-        context: dict[str, Any] = {"on_save": True}
+        context: dict[str, Any] = {}
         if "PIPELINE_RULES" in payload:
             context["guard_regex"] = True
         if guard_slugs is not None:
             context["guard_slugs"] = frozenset(guard_slugs)
+        # Same scoping for the __Host-/__Secure- cookie check: a name stored
+        # before that check existed (or hand-edited) must not 422 a save of
+        # unrelated keys. A None (revert) still touches the key.
+        if any(k in payload for k in _COOKIE_PREFIX_KEYS):
+            context["cookie_prefix_check"] = True
+        if "TRUSTED_ORIGINS" in payload or "CORS_ALLOW_ORIGINS" in payload:
+            context["strict_origins"] = True   # schema._origin_entry
+        # A stored or submitted PIPELINE_RULES of [] leaves no valid slug: a
+        # save touching the rules or a slug ref checks against it instead of
+        # skipping as "unknown" (schema._canonical_slugs; load still skips).
+        if any(k in payload for k in ("PIPELINE_RULES", *_SLUG_REF_KEYS)):
+            context["empty_rules_known"] = True
         # Cross-field checks must see the env-pinned siblings that will be in
         # force, as the restart-time env pass does (see schema._effective).
         env_effective = _env_effective_values()
@@ -446,11 +463,11 @@ def save_overrides(
                 # each later save of that key 422s on a slug nobody can see.
                 slug_refs = {k: merged[k] for k in _SLUG_REF_KEYS
                              if merged.get(k) is not None}
-                slugs = _factory_slugs() if slug_refs else set()
+                slugs = (_factory_slugs() or None) if slug_refs else None
             else:
                 slug_refs = _changed_slug_refs(payload, merged, existing)
-                slugs = _save_canonical_slugs() if slug_refs else set()
-            if slugs:
+                slugs = _save_canonical_slugs() if slug_refs else None
+            if slugs is not None:
                 settings_schema.AdminConfig.model_validate(
                     slug_refs, context={"canonical_slugs": frozenset(slugs)})
         if env_effective:
@@ -458,10 +475,15 @@ def save_overrides(
             # at the next boot and in the hot-apply right after this save, and
             # drops EVERY override on a failure. A file that is consistent only
             # thanks to an env pin would be written and then thrown away, so
-            # it must also pass the bare check. The regex guard already ran.
+            # it must also pass the bare check. The regex guard already ran,
+            # and the cookie-prefix check is save-only (load never runs it),
+            # so re-running it without the env-pinned Secure flag would
+            # refuse a cookie that IS Secure.
             settings_schema.AdminConfig.model_validate(merged, context={
                 k: v for k, v in context.items()
-                if k not in ("env_effective", "guard_regex", "guard_slugs")})
+                if k not in ("env_effective", "guard_regex", "guard_slugs",
+                             "cookie_prefix_check", "empty_rules_known",
+                             "strict_origins")})
         to_write = validated.model_dump(exclude_none=True, mode="json")
 
         atomic_json.atomic_write_json(to_write, path, sort_keys=True, tmp_prefix=".config.local.")
@@ -547,12 +569,17 @@ def env_pinned_fields() -> dict[str, str]:
 # "locks": [...]}; validate_binding() turns it into the stored shape, applying
 # the same OverrideProfile schema (bounds + lock-field check) the profiles use.
 
-def _canonical_rule_slugs() -> set[str]:
+def _canonical_rule_slugs() -> set[str] | None:
     """The set of rule slugs in the live PIPELINE_RULES list (post-load dicts
-    or rule objects), for cross-checking per-identity include/exclude."""
+    or rule objects), for cross-checking per-identity include/exclude. An
+    explicit empty list gives an empty set (no valid slug); None = unknown
+    (no list at all), skip."""
     from faster_whisper_backend.settings import config as _cfg
+    rules = getattr(_cfg, "PIPELINE_RULES", None)
+    if not isinstance(rules, list):
+        return None
     out: set[str] = set()
-    for r in (getattr(_cfg, "PIPELINE_RULES", None) or []):
+    for r in rules:
         name = r.get("name") if isinstance(r, dict) else getattr(r, "name", None)
         if name:
             out.add(name)
@@ -623,11 +650,15 @@ def _changed_slug_refs(payload: dict[str, Any], merged: dict[str, Any],
     return out
 
 
-def _save_canonical_slugs() -> set[str]:
+def _save_canonical_slugs() -> set[str] | None:
     """Slug set for a save that does not carry PIPELINE_RULES: the live list
-    (config.json + env + any local copy), falling back to the committed
-    factory file; empty set = unknown → validators skip."""
-    return _canonical_rule_slugs() or _factory_slugs()
+    (config.json + env + any local copy; an explicit [] = no valid slug),
+    falling back to the committed factory file only when the live list is
+    unknown; None = unknown → validators skip."""
+    live = _canonical_rule_slugs()
+    if live is not None:
+        return live
+    return _factory_slugs() or None
 
 
 def validate_profile_refs(names: Any, stored: Any = ()) -> list[str]:
@@ -737,7 +768,7 @@ def validate_binding(raw: Any, previous: Any = None) -> dict[str, Any]:
     # override blob — never persist it inside a binding.
     direct.pop("requestable", None)
     canonical = _canonical_rule_slugs()
-    if canonical:
+    if canonical is not None:
         old_direct = previous.get("direct") if isinstance(previous, dict) else None
         if not isinstance(old_direct, dict):
             old_direct = {}

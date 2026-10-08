@@ -2007,11 +2007,19 @@ for _k, _v in os.environ.items():
     _field = _rest[_idx + 2:]
     # Honour the same rename table as the top-level env aliases and the
     # config.local.json migration, so an old per-model field name still works.
+    # The new name wins when both are set, as in config_renames.alias_env —
+    # otherwise the os.environ order (which compose / systemd do not fix)
+    # decided which of the two values applied.
     if _field in _renames.RENAMED_KEYS:
         _new_field = _renames.RENAMED_KEYS[_field]
+        _new_var = f"{_OVERRIDE_PREFIX}{_enc_id}__{_new_field}"
+        if os.environ.get(_new_var):
+            _ENV_WARNINGS.append(
+                f"{_k} is ignored: {_new_var} (its new name) is set.")
+            continue
         _ENV_WARNINGS.append(
             f"{_k} uses the renamed field {_field}; use "
-            f"{_OVERRIDE_PREFIX}{_enc_id}__{_new_field} — the old name still "
+            f"{_new_var} — the old name still "
             f"works but will be removed in a later release.")
         _field = _new_field
     _model_id = _decode_model_id(_enc_id)
@@ -2190,7 +2198,11 @@ try:
         # whatever still stands as a group — as the FULL effective config,
         # because the model validators fill absent members from _BASELINE,
         # which predates config.local.json; revert the fields the error names
-        # (or the whole remainder when it names none) until the group passes.
+        # until the group passes. An error that names none (loc=()) reverts
+        # the members whose single revert clears it — reverting the whole
+        # remainder threw out every unrelated env value with it (a session
+        # cookie Secure flag included) under the sizing triple's message —
+        # and the whole remainder only when no single revert helps.
         for _ in range(len(_changed) + 1):
             _left = [_f for _f in sorted(_changed) if _f not in _ENV_REJECTED]
             if not _left:
@@ -2216,6 +2228,17 @@ try:
                                 _named.append(_gf0)
                     except Exception:  # noqa: BLE001
                         pass
+                if not _named:
+                    _cur = _error_sigs(_gerr) - _PRE_ENV_SIGS
+                    for _f in _left:
+                        try:
+                            _AdminConfig.model_validate(
+                                _effective_env_dict(**{_f: _ENV_PRE[_f]}),
+                                context=_env_slug_ctx())
+                        except Exception as _serr:  # noqa: BLE001
+                            if not _cur or _cur & _error_sigs(_serr):
+                                continue   # this revert alone does not clear it
+                        _named.append(_f)
                 for _f in (_named or _left):
                     _revert_env_field(_f, _reason)
 
@@ -2374,6 +2397,27 @@ except NameError:
     pass
 
 
+# A __Host- / __Secure- cookie name without Secure: browsers drop the
+# Set-Cookie and the login gate loops with no error anywhere. /settings
+# refuses it on save (schema._validate_cookie_names_differ), but the env and
+# config.local.json load paths must not fail over it (a load failure drops
+# every override, and bearer-key access still works) — so warn only.
+if not SESSION_COOKIE_SECURE:
+    for _f in ("SESSION_COOKIE_NAME", "SESSION_CSRF_COOKIE_NAME"):
+        _name = globals()[_f]
+        if not str(_name).lower().startswith(("__host-", "__secure-")):
+            continue
+        _var = "WHISPER_" + _f
+        _src = (_var if os.environ.get(_var) and _f not in _ENV_REJECTED
+                else "config.local.json" if _f in _LOCAL_KEYS else "config.json")
+        _ENV_WARNINGS.append(
+            f"{_f} {_name!r} (from {_src}) carries a __Host-/__Secure- prefix "
+            f"but SESSION_COOKIE_SECURE is off — browsers drop such a cookie "
+            f"and every WebUI login loops; enable SESSION_COOKIE_SECURE "
+            f"(WHISPER_SESSION_COOKIE_SECURE=true behind HTTPS) or drop the "
+            f"prefix")
+
+
 # --- Legacy in-repo runtime state left behind by the data-dir rework --------
 # Runtime state used to live under the checkout; it now resolves under
 # WHISPER_DATA_DIR (see the data-layout comment at the top). An in-place
@@ -2382,15 +2426,38 @@ except NameError:
 # the operator knows to move the files or point WHISPER_DATA_DIR at them.
 # (main drains _ENV_WARNINGS into the logger once logging is up.)
 def _looks_fresh(configured: str, legacy: str) -> bool:
-    """The configured store was created AFTER the legacy one and is smaller —
-    the empty store a start without the old file made (store_common.open_wal_db
-    creates it on first use, so "configured path missing" alone would silence
-    every later start while the old keys sit ignored)."""
+    """The configured store was created AFTER the legacy one, is smaller and
+    holds no rows — the empty store a start without the old file made
+    (store_common.open_wal_db creates it on first use, so "configured path
+    missing" alone would silence every later start while the old keys sit
+    ignored). Newer-and-smaller alone also matches a store in real use that
+    holds less than a leftover copy, or one a "clear all" VACUUMed below it,
+    and the warning's advice would then overwrite live data. Any SQLite error
+    counts as not fresh."""
     try:
         c, old = os.stat(configured), os.stat(legacy)
     except OSError:
         return False
-    return c.st_mtime > old.st_mtime and c.st_size < old.st_size
+    if not (c.st_mtime > old.st_mtime and c.st_size < old.st_size):
+        return False
+    import pathlib
+    import sqlite3
+    try:
+        conn = sqlite3.connect(
+            pathlib.Path(configured).resolve().as_uri() + "?mode=ro", uri=True)
+        try:
+            tables = [r[0] for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+                " AND name NOT LIKE 'sqlite_%'")]
+            return not any(
+                conn.execute(
+                    'SELECT 1 FROM "%s" LIMIT 1' % t.replace('"', '""')
+                ).fetchone()
+                for t in tables)
+        finally:
+            conn.close()
+    except (sqlite3.Error, OSError, ValueError):
+        return False
 
 
 def _legacy_state_warnings(
@@ -2434,10 +2501,14 @@ def _legacy_state_warnings(
         else:
             out.append(
                 f"legacy state {_legacy_path} exists and the configured "
-                f"store {_configured} looks freshly created (newer and "
-                f"smaller) — the legacy one is being IGNORED. Stop the "
-                f"server, delete the fresh store's -wal/-shm files, then move "
-                f"the legacy file plus its -wal/-shm over it, or {_fix}"
+                f"store {_configured} looks freshly created (newer, "
+                f"smaller and without rows) — the legacy one is being "
+                f"IGNORED. If you have not migrated this store yet: stop the "
+                f"server, back up the configured store (this replaces "
+                f"everything in it), delete its -wal/-shm files, then move "
+                f"the legacy file plus its -wal/-shm over it, or {_fix} If "
+                f"the legacy file is an old copy, delete or rename it to "
+                f"silence this warning."
             )
     return out
 

@@ -79,7 +79,10 @@ _DATA_VERSION: int = -1
 # cost at one rebuild per interval per worker while keeping a cross-worker
 # revocation visible within ~1 s. The pre-write check in create/revoke stays
 # unthrottled (correctness before a write). The throttle applies to index
-# HITS only; a miss forces the check so a sibling's fresh login is never bounced.
+# HITS only. A miss is not throttled, so a sibling's fresh login is never
+# bounced, but it never rebuilds either: after a sibling commit it fetches
+# just that one token (_fetch_on_miss). A forced full rebuild per miss let
+# junk cookies plus a sibling's login loop cost O(N) per login again.
 # Measured on the monotonic clock: a backwards wall-clock step would make the
 # elapsed time negative and skip every HIT's check for the size of the step.
 _REFRESH_MIN_INTERVAL_S = 1.0
@@ -214,10 +217,10 @@ def _refresh_if_sibling_committed(force: bool = False) -> None:
     Throttled to one check per _REFRESH_MIN_INTERVAL_S (see the constant's
     comment): sibling login/logout commits can be frequent, and each detected one
     costs a full O(live sessions) rebuild under _lock. `force=True` skips the
-    interval (miss path of lookup_session): a session created by a sibling
-    worker in the last second must not 401 the request that carries its
-    brand-new cookie; the PRAGMA header read is cheap and a rebuild still
-    happens only when data_version actually moved."""
+    interval (revocation_generation: a moved revocations counter must not
+    meet a stale index); the PRAGMA header read is cheap and a rebuild still
+    happens only when data_version actually moved. The miss path of
+    lookup_session uses _fetch_on_miss instead of forcing this."""
     global _LAST_REFRESH_TS
     if _conn is None or not _DB_READY:
         return
@@ -227,6 +230,42 @@ def _refresh_if_sibling_committed(force: bool = False) -> None:
         _LAST_REFRESH_TS = time.monotonic()
         if _data_version_locked() != _DATA_VERSION:
             _rebuild_index_locked()
+
+
+def _fetch_on_miss(th: str) -> dict[str, Any] | None:
+    """Index-miss path of lookup_session: when a sibling worker committed
+    since the last rebuild, SELECT just this token's live row and index it —
+    the session a sibling created inside the throttle window (login on worker
+    A, next request on worker B) must not 401. One indexed row read instead
+    of a full rebuild. _DATA_VERSION is NOT re-stamped, so the next throttled
+    HIT still rebuilds in full and absorbs the sibling's revocations."""
+    if _conn is None or not _DB_READY:
+        return None
+    with _lock:
+        if _data_version_locked() == _DATA_VERSION:
+            return None   # no sibling commit: a genuine miss
+        try:
+            r = _require_conn().execute(
+                "SELECT user_id, key_id, csrf_token, created_ts, expires_ts"
+                " FROM sessions WHERE token_hash = ? AND revoked_ts IS NULL"
+                " AND expires_ts > ?",
+                (th, time.time()),
+            ).fetchone()
+        except sqlite3.Error:
+            return None
+        if r is None:
+            return None
+        # Same five keys as _rebuild_index_locked (see the _SESSION_INDEX
+        # invariant).
+        rec = {
+            "user_id": r["user_id"],
+            "key_id": r["key_id"],
+            "csrf_token": r["csrf_token"],
+            "created_ts": float(r["created_ts"]),
+            "expires_ts": float(r["expires_ts"]),
+        }
+        _SESSION_INDEX[th] = rec
+        return rec
 
 
 def _purge_expired_locked() -> None:
@@ -323,8 +362,7 @@ def lookup_session(raw_token: str) -> dict[str, Any] | None:
     if rec is None:
         # A miss may be a session a sibling worker created inside the
         # throttle window (login on worker A, next request on worker B).
-        _refresh_if_sibling_committed(force=True)
-        rec = _SESSION_INDEX.get(th)
+        rec = _fetch_on_miss(th)
         if rec is None:
             return None
     now = time.time()
@@ -368,25 +406,43 @@ def revoke_session(raw_token: str) -> None:
         # sibling worker has committed since the last check.
         if _data_version_locked() != _DATA_VERSION:
             _rebuild_index_locked()
-        cur = conn.execute(
-            "UPDATE sessions SET revoked_ts = ?"
-            " WHERE token_hash = ? AND revoked_ts IS NULL",
-            (now, th),
-        )
-        revoked = cur.rowcount > 0
-        if revoked:
-            conn.execute(
-                "INSERT INTO meta (k, v) VALUES ('revocations', 1)"
-                " ON CONFLICT(k) DO UPDATE SET v = v + 1")
-        # Drop the one key rather than re-reading every live session, mirroring
-        # the incremental insert create_session already does. The full rebuild
-        # here was O(live sessions) on the event loop — measured ~37 ms at
-        # 20 000 rows, and /auth/login is throttled only on failures
-        # (`LOGIN_FAILURE_RATE`) with no per-user cap, so N is
-        # caller-growable. No post-commit re-stamp: our own commit does not
-        # move PRAGMA data_version on this connection, and re-stamping would
-        # swallow a sibling's commit that landed since the last check.
-        _SESSION_INDEX.pop(th, None)
+        # The connection autocommits, so without the explicit transaction the
+        # revoke and the counter bump were two commits: a SQLITE_BUSY / disk
+        # error on the second left the row revoked with this worker's index
+        # still honouring it (our own commit does not move our data_version)
+        # and the siblings' counter never moving.
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                cur = conn.execute(
+                    "UPDATE sessions SET revoked_ts = ?"
+                    " WHERE token_hash = ? AND revoked_ts IS NULL",
+                    (now, th),
+                )
+                revoked = cur.rowcount > 0
+                if revoked:
+                    conn.execute(
+                        "INSERT INTO meta (k, v) VALUES ('revocations', 1)"
+                        " ON CONFLICT(k) DO UPDATE SET v = v + 1")
+                conn.execute("COMMIT")
+            except BaseException:
+                try:
+                    conn.execute("ROLLBACK")
+                except sqlite3.Error:
+                    pass
+                raise
+        finally:
+            # Drop the one key rather than re-reading every live session,
+            # mirroring the incremental insert create_session already does.
+            # The full rebuild here was O(live sessions) on the event loop —
+            # measured ~37 ms at 20 000 rows, and /auth/login is throttled
+            # only on failures (`LOGIN_FAILURE_RATE`) with no per-user cap, so
+            # N is caller-growable. No post-commit re-stamp: our own commit
+            # does not move PRAGMA data_version on this connection, and
+            # re-stamping would swallow a sibling's commit that landed since
+            # the last check. In a finally: a failed write still stops THIS
+            # worker honouring the cookie it was asked to sign out.
+            _SESSION_INDEX.pop(th, None)
     if revoked:
         settings_version.bump_config_version()   # signed-out identity's live streaming idents re-auth
 

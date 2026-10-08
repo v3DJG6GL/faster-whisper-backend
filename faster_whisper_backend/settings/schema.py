@@ -574,6 +574,29 @@ def _suppress_tokens_csv(v: str | None) -> str | None:
     return v
 
 
+# Outline of a browser origin (scheme://host[:port], no path / query / '*'),
+# and the stricter form a save that submits origins is held to: no userinfo
+# ('u@'), at most one numeric :port, an IPv6 host bracketed. An entry failing
+# only the strict form never equals an Origin header and silently does
+# nothing, but load keeps accepting it — a load failure drops every override.
+_ORIGIN_RE = re.compile(r"https?://[^/?#\s*]+")
+_STRICT_ORIGIN_RE = re.compile(
+    r"https?://(?:\[[0-9a-f:.]+\]|[^/?#\s*@:\[\]]+)(?::[0-9]{1,5})?")
+
+
+def _origin_entry(entry: str, info: ValidationInfo) -> str | None:
+    """`entry` lowercased (the browser's serialisation; lowercased BEFORE the
+    match, so 'HTTPS://A.com' is accepted as the docstrings promise), or None
+    when it is not an origin. The strict form applies when config_store sets
+    `strict_origins` (a save whose payload carries the origin lists)."""
+    low = entry.lower()
+    if not _ORIGIN_RE.fullmatch(low):
+        return None
+    if (info.context or {}).get("strict_origins") and not _STRICT_ORIGIN_RE.fullmatch(low):
+        return None
+    return low
+
+
 def _effective(model: BaseModel, name: str, fallback: Any = None,
                info: "ValidationInfo | None" = None) -> Any:
     """The EFFECTIVE value of `name` for a cross-field model validator: the
@@ -1578,10 +1601,12 @@ class AdminConfig(BaseModel):
             )
         # Browsers silently drop a __Host- / __Secure- Set-Cookie without the
         # Secure attribute: the login answers 200, no cookie is stored, and
-        # the login gate loops with no error anywhere. Refused on SAVE only:
-        # at load a failure drops every override, and bearer-key API access
-        # still works with such a file.
-        if ((info.context or {}).get("on_save")
+        # the login gate loops with no error anywhere. Refused on SAVE only,
+        # and only by a save that touches one of the three keys
+        # (config_store sets cookie_prefix_check): at load a failure drops
+        # every override, and bearer-key API access still works with such a
+        # file; config warns about it at boot instead.
+        if ((info.context or {}).get("cookie_prefix_check")
                 and not _effective(self, "SESSION_COOKIE_SECURE", False, info=info)):
             for fld, name in (("SESSION_COOKIE_NAME", sess),
                               ("SESSION_CSRF_COOKIE_NAME", csrf)):
@@ -1809,13 +1834,22 @@ class AdminConfig(BaseModel):
             )
         return self
 
-    def _canonical_slugs(self, info: ValidationInfo) -> "set[str] | frozenset[str]":
+    def _canonical_slugs(
+            self, info: ValidationInfo) -> "set[str] | frozenset[str] | None":
         """The slug set the reference validators below check against: this
         payload's own PIPELINE_RULES when it carries them, else the
-        `canonical_slugs` validation context; empty = unknown, skip."""
-        if self.PIPELINE_RULES is not None:
+        `canonical_slugs` validation context (an empty set = no valid slug);
+        None = unknown, skip. A payload's explicit empty PIPELINE_RULES
+        counts as "no valid slug" only on a save that sets
+        `empty_rules_known` (config_store.save_overrides, when the payload
+        touches the rules or a slug-bearing key): load_overrides drops every
+        override on a failure, so load stays as permissive as before."""
+        ctx = info.context or {}
+        if self.PIPELINE_RULES:
             return {r.name for r in self.PIPELINE_RULES}
-        return (info.context or {}).get("canonical_slugs") or set()
+        if self.PIPELINE_RULES is not None:
+            return set() if ctx.get("empty_rules_known") else None
+        return ctx.get("canonical_slugs")
 
     @model_validator(mode="after")
     def _validate_pipeline_rule_slugs(self, info: ValidationInfo) -> "AdminConfig":
@@ -1831,7 +1865,7 @@ class AdminConfig(BaseModel):
         if self.MODEL_OVERRIDES is None:
             return self
         canonical = self._canonical_slugs(info)
-        if not canonical:
+        if canonical is None:
             return self
         for model_id, override in self.MODEL_OVERRIDES.items():
             for list_name in ("PIPELINE_RULES_EXCLUDE", "PIPELINE_RULES_INCLUDE"):
@@ -1856,7 +1890,7 @@ class AdminConfig(BaseModel):
         if self.OVERRIDE_PROFILES is None:
             return self
         canonical = self._canonical_slugs(info)
-        if not canonical:
+        if canonical is None:
             return self
         for pname, prof in self.OVERRIDE_PROFILES.items():
             for list_name in ("PIPELINE_RULES_EXCLUDE", "PIPELINE_RULES_INCLUDE"):
@@ -1880,7 +1914,7 @@ class AdminConfig(BaseModel):
         if self.CAPTURES_PIPELINE_RULES_EXCLUDE is None:
             return self
         canonical = self._canonical_slugs(info)
-        if not canonical:
+        if canonical is None:
             return self
         unknown = [s for s in self.CAPTURES_PIPELINE_RULES_EXCLUDE
                    if s not in canonical]
@@ -1955,7 +1989,8 @@ class AdminConfig(BaseModel):
 
     @field_validator("CORS_ALLOW_ORIGINS")
     @classmethod
-    def _validate_cors_origins(cls, v: list[str] | None) -> list[str] | None:
+    def _validate_cors_origins(cls, v: list[str] | None,
+                               info: ValidationInfo) -> list[str] | None:
         """Each entry must be '*' or a bare browser origin: scheme://host[:port]
         with NO path/query (matching what the browser sends in the Origin header);
         scheme and host are lowercased to match the browser's serialisation."""
@@ -1966,19 +2001,20 @@ class AdminConfig(BaseModel):
             if entry == "*":
                 out.append(entry)
                 continue
-            m = re.fullmatch(r"https?://[^/?#\s*]+", entry)
-            if not m:
+            m = _origin_entry(entry, info)
+            if m is None:
                 raise ValueError(
                     f"'{entry}' is not a valid CORS origin — use 'scheme://host[:port]' "
                     f"(e.g. 'https://app.example.com' or 'http://192.168.1.50:8000') "
                     f"or '*'; no trailing path/slash, and no wildcard host."
                 )
-            out.append(entry.lower())
+            out.append(m)
         return out
 
     @field_validator("TRUSTED_ORIGINS")
     @classmethod
-    def _validate_trusted_origins(cls, v: list[str] | None) -> list[str] | None:
+    def _validate_trusted_origins(cls, v: list[str] | None,
+                                  info: ValidationInfo) -> list[str] | None:
         """Same entry shape as CORS_ALLOW_ORIGINS, minus '*': a wildcard here
         would accept every cross-site Origin and disable the guard outright.
         Scheme and host are lowercased to match the browser's serialisation."""
@@ -1986,14 +2022,15 @@ class AdminConfig(BaseModel):
             return v
         out: list[str] = []
         for entry in v:
-            if not re.fullmatch(r"https?://[^/?#\s*]+", entry):
+            m = _origin_entry(entry, info)
+            if m is None:
                 raise ValueError(
                     f"'{entry}' is not a valid trusted origin — use "
                     f"'scheme://host[:port]' (e.g. 'https://whisper.example.com' "
                     f"or 'http://192.168.1.50:8000'); no trailing path/slash, "
                     f"and no '*'."
                 )
-            out.append(entry.lower())
+            out.append(m)
         return out
 
 

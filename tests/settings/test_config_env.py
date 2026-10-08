@@ -644,6 +644,32 @@ def test_env_cross_field_triple_inconsistent_pair_is_reverted(monkeypatch):
         importlib.reload(config)
 
 
+def test_env_cross_field_backstop_keeps_unrelated_env_values(monkeypatch):
+    """A loc=() model-validator error names no field, and the backstop then
+    reverted the WHOLE remainder: an inconsistent captures pair also threw
+    out WHISPER_SESSION_COOKIE_SECURE (a non-Secure cookie on HTTPS) and
+    WHISPER_BEAM_SIZE, each blamed with the captures-sizing message."""
+    try:
+        _reload_with_env(
+            monkeypatch,
+            WHISPER_CAPTURES_SAMPLE_MIN_DURATION_S="10",
+            WHISPER_CAPTURES_PROPOSER_TARGET_S="5",
+            WHISPER_SESSION_COOKIE_SECURE="true",
+            WHISPER_BEAM_SIZE="3",
+        )
+        assert config.SESSION_COOKIE_SECURE is True
+        assert config.BEAM_SIZE == 3
+        assert "SESSION_COOKIE_SECURE" not in config._ENV_REJECTED
+        assert "BEAM_SIZE" not in config._ENV_REJECTED
+        assert ({"CAPTURES_SAMPLE_MIN_DURATION_S", "CAPTURES_PROPOSER_TARGET_S"}
+                & config._ENV_REJECTED)
+        assert not [m for m in config._ENV_WARNINGS
+                    if "WHISPER_BEAM_SIZE" in m or "WHISPER_SESSION_COOKIE_SECURE" in m]
+    finally:
+        monkeypatch.undo()
+        importlib.reload(config)
+
+
 def test_legacy_in_repo_state_warns_when_ignored(tmp_path, monkeypatch):
     """An in-place upgrade that still has runtime state under the checkout,
     with nothing at the configured (data-dir) location, must say so instead of
@@ -733,6 +759,40 @@ def test_legacy_data_dir_root_db_warns_when_ignored(tmp_path):
     # A configured store bigger than the legacy one is in use: silent.
     fresh.write_bytes(b"k" * 8192)
     os.utime(fresh, (2_000_000, 2_000_000))
+    assert cfg._legacy_state_warnings(
+        str(tmp_path / "repo"), str(tmp_path), mapping) == []
+
+
+def test_legacy_store_warning_needs_an_empty_configured_store(tmp_path):
+    """Newer-and-smaller alone also matched a store in real use that holds
+    less than a leftover legacy copy (or one a "clear all" VACUUMed below
+    it), and the advice to move the legacy file over it destroyed live rows.
+    The configured store must also hold no rows."""
+    import sqlite3
+    from faster_whisper_backend.settings import config as cfg
+    legacy = tmp_path / "api_keys.local.sqlite3"
+    legacy.write_bytes(b"k" * 200_000)
+    (tmp_path / "db").mkdir()
+    store = tmp_path / "db" / "api_keys.local.sqlite3"
+    conn = sqlite3.connect(str(store))
+    conn.execute("CREATE TABLE users (id TEXT PRIMARY KEY)")
+    conn.commit()
+    conn.close()
+    os.utime(legacy, (1_000_000, 1_000_000))
+    os.utime(store, (2_000_000, 2_000_000))
+    mapping = {"api_keys.local.sqlite3": str(store)}
+    # Same schema, zero rows: the fresh store a start without the file made.
+    warns = cfg._legacy_state_warnings(
+        str(tmp_path / "repo"), str(tmp_path), mapping)
+    assert len(warns) == 1 and "freshly created" in warns[0]
+    assert "back up" in warns[0] and "delete or rename" in warns[0]
+    # One row: a store in use, even though newer and smaller — silent.
+    conn = sqlite3.connect(str(store))
+    conn.execute("INSERT INTO users VALUES ('u1')")
+    conn.commit()
+    conn.close()
+    os.utime(store, (2_000_000, 2_000_000))
+    assert store.stat().st_size < legacy.stat().st_size
     assert cfg._legacy_state_warnings(
         str(tmp_path / "repo"), str(tmp_path), mapping) == []
 
@@ -1053,6 +1113,25 @@ def test_per_model_env_renamed_slug_keeps_the_whole_entry(monkeypatch):
         assert config.MODEL_OVERRIDES["TINY"] == {
             "PIPELINE_RULES_EXCLUDE": ["de-dictation-map"],
             "SEGMENT_MAX_WORDS_PER_S": 4.0}
+    finally:
+        monkeypatch.undo()
+        importlib.reload(config)
+
+
+@pytest.mark.parametrize("old_first", [True, False])
+def test_per_model_env_new_field_name_wins_over_the_old_one(monkeypatch, old_first):
+    """With both spellings set, the later os.environ entry overwrote the
+    earlier one, so a stale old-name line could win depending on the
+    process environment order. The new name wins, as in alias_env."""
+    old = ("WHISPER_MODEL_OVERRIDE__tiny__SEGMENT_MAX_WORDS_PER_SEC", "4")
+    new = ("WHISPER_MODEL_OVERRIDE__tiny__SEGMENT_MAX_WORDS_PER_S", "6")
+    try:
+        for k, v in ((old, new) if old_first else (new, old)):
+            monkeypatch.setenv(k, v)
+        importlib.reload(config)
+        assert config.MODEL_OVERRIDES["tiny"]["SEGMENT_MAX_WORDS_PER_S"] == 6
+        assert any(m.startswith(old[0]) and "is ignored" in m
+                   for m in config._ENV_WARNINGS), config._ENV_WARNINGS
     finally:
         monkeypatch.undo()
         importlib.reload(config)
@@ -1471,3 +1550,39 @@ def test_alias_env_treats_an_empty_new_name_as_unset():
     warns = config_renames.alias_env(env)
     assert env["WHISPER_HF_TOKEN"] == ""
     assert any("WHISPER_USE_AUTH_TOKEN is ignored" in w for w in warns)
+
+
+def test_alias_env_empty_plain_hf_token_does_not_block_the_old_file_var():
+    """The empty-HF_TOKEN-is-a-value exception blocked the old _FILE spelling
+    too, while the _FILE indirection reads the file whenever the plain var is
+    empty: WHISPER_USE_AUTH_TOKEN_FILE + a blank WHISPER_HF_TOKEN= left
+    HF_TOKEN None, the new _FILE spelling with the same blank line worked."""
+    from faster_whisper_backend.settings import config_renames
+    env = {"WHISPER_USE_AUTH_TOKEN_FILE": "/x", "WHISPER_HF_TOKEN": ""}
+    warns = config_renames.alias_env(env)
+    assert env["WHISPER_HF_TOKEN_FILE"] == "/x"
+    assert not any("is ignored" in w for w in warns)
+    # A non-empty new spelling still blocks it.
+    env = {"WHISPER_USE_AUTH_TOKEN_FILE": "/x", "WHISPER_HF_TOKEN_FILE": "/y"}
+    config_renames.alias_env(env)
+    assert env["WHISPER_HF_TOKEN_FILE"] == "/y"
+
+
+def test_prefixed_cookie_name_without_secure_warns_at_load(monkeypatch):
+    """/settings refuses a __Host-/__Secure- name without Secure, but the env
+    and file load paths skip that check (a load failure would drop every
+    override) — they must at least leave a startup warning, not a silent
+    login loop."""
+    try:
+        monkeypatch.delenv("WHISPER_SESSION_COOKIE_SECURE", raising=False)
+        _reload_with_env(monkeypatch, WHISPER_SESSION_COOKIE_NAME="__Host-s")
+        assert config.SESSION_COOKIE_NAME == "__Host-s"   # warned, not reverted
+        assert [m for m in config._ENV_WARNINGS
+                if m.startswith("SESSION_COOKIE_NAME '__Host-s' (from "
+                                "WHISPER_SESSION_COOKIE_NAME)")], config._ENV_WARNINGS
+        monkeypatch.setenv("WHISPER_SESSION_COOKIE_SECURE", "true")
+        importlib.reload(config)
+        assert not [m for m in config._ENV_WARNINGS if "__Host-/__Secure-" in m]
+    finally:
+        monkeypatch.undo()
+        importlib.reload(config)

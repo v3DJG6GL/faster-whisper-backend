@@ -202,20 +202,25 @@ def alias_env(environ: MutableMapping[str, str]) -> list[str]:
     (the plain var would then shadow the file). An EMPTY new-name value
     counts as unset — its reader keeps the default for "" (a blank template
     line must not swallow the operator's old-name value) — except for the
-    plain keys in _EMPTY_NEW_IS_SET, whose reader takes "" as a value.
+    plain keys in _EMPTY_NEW_IS_SET, whose reader takes "" as a value. That
+    exception blocks only the old PLAIN name: the _FILE indirection reads the
+    file whenever the plain var is empty, so an empty plain var must not
+    block the old _FILE spelling either.
     Returns one warning line per alias applied or old name ignored, for the
     startup log."""
     warnings: list[str] = []
     for old, new in RENAMED_KEYS.items():
         plain = ENV_PREFIX + new
-        new_set = [n for n in (plain, plain + "_FILE") if environ.get(n) or (
-            n == plain and n in environ and new in _EMPTY_NEW_IS_SET)]
+        set_nonempty = [n for n in (plain, plain + "_FILE") if environ.get(n)]
+        new_set = set_nonempty or (
+            [plain] if plain in environ and new in _EMPTY_NEW_IS_SET else [])
         for sfx in ("", "_FILE"):
             o, n = ENV_PREFIX + old + sfx, ENV_PREFIX + new + sfx
             if not environ.get(o):
                 continue
-            if new_set:
-                warnings.append(f"{o} is ignored: {new_set[0]} (its new name) "
+            blocking = new_set if sfx == "" else set_nonempty
+            if blocking:
+                warnings.append(f"{o} is ignored: {blocking[0]} (its new name) "
                                 f"is set.")
                 continue
             environ[n] = environ[o]

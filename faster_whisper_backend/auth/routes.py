@@ -41,7 +41,10 @@ async def whoami(
     present only for cookie-authenticated callers (set by
     user_from_session_cookie on request.state) so the client can attach
     X-CSRF-Token without parsing the cookie. A 401 means no valid
-    credential AND the server is locked down — the WebUI re-prompts."""
+    credential AND no synthetic admin for this caller: the server is locked
+    down, or it is in open mode but the host is outside
+    ADMIN_WEBUI_ALLOWED_HOSTS (open_mode_host_ok) — either way the WebUI
+    re-prompts."""
     perms = user.get("permissions")
     out = {
         # Only the synthetic admin is "open mode": a host outside the admin

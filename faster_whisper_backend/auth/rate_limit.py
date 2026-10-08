@@ -22,9 +22,11 @@ script / accidental double-click / one client starving the others", not a
 motivated attacker spreading load across workers. Anything stronger needs
 shared state (Redis) and does not belong in-process.
 
-Imports are deliberately limited to stdlib + fastapi + config: captures_routes
-and reports_routes import this module and `main` imports them, so importing
-`main` here would close a cycle and break the app at startup.
+Imports are deliberately limited to stdlib + fastapi + config: the route
+modules (captures/, reports/, media/, translation/, streaming/, stats/,
+transcription/ and auth/routes.py) and media/video.py import this module
+and `main` imports them, so importing `main` here would close a cycle and break the app at
+startup.
 """
 
 from __future__ import annotations
