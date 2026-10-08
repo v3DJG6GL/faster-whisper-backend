@@ -67,9 +67,14 @@ class InvalidBlob(ValueError):
 # Size caps — applied server-side before insert. The blob is opaque JSON, so
 # an over-cap payload is REJECTED (ValueError → route maps to 413), never
 # truncated: cutting JSON mid-document would hand every other device a
-# corrupt config. 512 KB fits dozens of backends/profiles with headroom.
+# corrupt config. Sized to the desktop client's sync ceiling
+# (faster-whisper-frontend transport/sync.rs: SYNC_MAX_BODY 4 MiB less its
+# 4 KiB SYNC_RESPONSE_MARGIN), which it sizes at ~2.5x the worst-case LEGIT
+# blob of ~1.5 MB — a lower cap here 413'd every push of a large but valid
+# config. The request body is clamped to MAX_JSON_BODY_BYTES (4 MiB default)
+# before the router runs anyway.
 # The device label is informational metadata → truncation is harmless.
-_CAP_BLOB = 512_000
+_CAP_BLOB = 4 * 1024 * 1024 - 4096
 _CAP_DEVICE = 200
 
 _SCHEMA = """

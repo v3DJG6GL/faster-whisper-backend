@@ -375,12 +375,16 @@ def _resolve_model(model: str | None) -> str | None:
 
 @router.get("/resolve",
             dependencies=[Depends(require_admin_webui_host), Depends(require_admin)])
-async def resolve(user_id: str = "", key_id: str = "", model: str = "",
-                  sim: str = "") -> dict[str, Any]:
+def resolve(user_id: str = "", key_id: str = "", model: str = "",
+            sim: str = "") -> dict[str, Any]:
     """Effective-config waterfall for (user_id [, key_id], model), optionally
     simulating a client per-request decode_override (`sim` = JSON object of
     lowercase decode keys). Returns, per field, the ordered layer stack with the
-    winner, lock state, and the simulated client outcome."""
+    winner, lock state, and the simulated client outcome.
+
+    Plain `def` (FastAPI threadpool): the resolve reads key/user bindings from
+    SQLite under api_keys_store._lock, which a profile-rename cascade holds for
+    a whole scan — that wait must not land on the event loop."""
     sim_dict: dict[str, Any] = {}
     if sim.strip():
         try:

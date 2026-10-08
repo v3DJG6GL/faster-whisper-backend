@@ -119,7 +119,7 @@ async def put_client_settings(
     version fetched a moment ago; there is no bypass flag."""
     try:
         # Off the loop: put() re-serialises the caller's already-parsed dict
-        # with json.dumps + encode BEFORE the 512 KB cap can reject it. The
+        # with json.dumps + encode BEFORE the blob cap can reject it. The
         # body is already clamped to MAX_JSON_BODY_BYTES (4 MiB default) by
         # main.py's _max_body_mw before the router runs, so the cost is
         # bounded by that knob — not MAX_REQUEST_BYTES — but a 4 MiB

@@ -193,6 +193,21 @@ def test_reports_page_status_change_is_serialized_per_row(client):
     assert "if (_statusBusy[r.id]) sel.disabled = true;" in card
 
 
+def test_reports_page_status_change_resyncs_a_re_rendered_select(client):
+    """A re-render during the PATCH (search keystroke, filter change) built the
+    card's select from r.status while it still held the old status; finally
+    only re-enabled it, so the dropdown showed the old status while the
+    counts and the server said the new one."""
+    html = client.get("/reports").text
+    st = html[html.index("async function onStatusChange(r, sel) {"):]
+    st = st[:st.index("\n  }\n")]
+    fin = st[st.index("} finally {"):]
+    sync = fin[fin.index("if (live && live !== sel) {"):]
+    assert "live.value = r.status;" in sync[:sync.index("}")]
+    assert "live.className = 'status-' + (r.status || 'open');" in sync
+    assert fin.index("live.value = r.status;") < fin.index("live.disabled = false;")
+
+
 def test_page_api_error_shows_a_422_detail_list_as_text(client):
     """A FastAPI 422 carries `detail` as a list of error objects;
     new Error(list) toasted "[object Object]"."""

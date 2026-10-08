@@ -484,8 +484,8 @@ def test_page_save_rerenders_after_reloading_state(client):
     html = client.get(OV).text
     body = html[html.index("async function save() {"):]
     body = body[:body.index("\n  }\n")]
-    ok = body[body.index("snapshot = sent;\n      await loadState(true);"):]
-    assert ok.index("await loadState(true);") < ok.index("render();") \
+    ok = body[body.index("if (fresh) adoptServerProfiles(true);"):]
+    assert ok.index("adoptServerProfiles(true);") < ok.index("render();") \
         < ok.index("setStatus('saved', 'ok');")
 
 
@@ -518,8 +518,16 @@ def test_page_save_keeps_edits_made_while_in_flight(client):
     assert "{ OVERRIDE_PROFILES: JSON.parse(sent) }" in body
     late = body[body.index("if (JSON.stringify(profiles) !== sent) {"):]
     late = late[:late.index("return;")]
-    assert "snapshot = sent;" in late and "loadState(" not in late
+    assert "loadState(" not in late and "adoptServerProfiles(" not in late
     assert "saving = false; refreshButtons();" in body[body.index("} finally {"):]
+    # The edited-while-saving check runs AFTER the awaited state GET: an edit
+    # typed during that second round trip is as unsaved as one during the POST.
+    ok = body[body.index("if (!r.ok) { setStatus('save failed ("):]
+    assert ok.index("snapshot = sent;") \
+        < ok.index("var fresh = await refreshServerState();") \
+        < ok.index("if (JSON.stringify(profiles) !== sent) {") \
+        < ok.index("if (fresh) adoptServerProfiles(true);")
+    assert "loadState(" not in ok
 
 
 def test_page_explorer_drops_stale_answers(client):

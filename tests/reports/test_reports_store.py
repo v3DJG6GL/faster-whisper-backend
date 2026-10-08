@@ -313,7 +313,6 @@ def test_oversized_stages_store_a_valid_blob(reports_store_db):
     _CAP_STAGES_JSON mid-token used to be written verbatim, decoded to [] only
     because _row_to_dict swallows the ValueError, and then survived every
     later COALESCE update. The store must write parseable JSON or nothing."""
-    import json
     rs = reports_store_db
     big = [{"name": "transcribing", "note": "x" * (rs._CAP_STAGES_JSON + 10)}]
     rid, _ = _submit(rs, stages=big)
@@ -321,7 +320,7 @@ def test_oversized_stages_store_a_valid_blob(reports_store_db):
     raw = rs._require_conn().execute(
         "SELECT stages FROM reports WHERE id = ?", (rid,)).fetchone()[0]
     # "nothing" is NULL, not "[]": the update path COALESCEs the column.
-    assert raw is None or json.loads(raw) == []
+    assert raw is None
 
 
 def test_oversized_stages_resubmission_keeps_first_provenance(reports_store_db):

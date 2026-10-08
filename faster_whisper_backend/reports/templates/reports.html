@@ -795,8 +795,14 @@
     } finally {
       delete _statusBusy[r.id];
       sel.disabled = false;
-      // A re-render meanwhile built a new (disabled) select for this row.
+      // A re-render meanwhile built a new (disabled) select for this row —
+      // from r.status while it still held `prev`. Show what r.status holds
+      // now (the new status on success, still prev on failure).
       var live = document.querySelector('.report-card[data-id="' + CSS.escape(String(r.id)) + '"] select');
+      if (live && live !== sel) {
+        live.value = r.status;
+        live.className = 'status-' + (r.status || 'open');
+      }
       if (live) live.disabled = false;
     }
   }

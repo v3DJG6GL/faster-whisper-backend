@@ -246,3 +246,27 @@ def test_rename_revoked_key_409(client):
         json={"label": "too late"},
     )
     assert r.status_code == 409
+
+
+def test_store_backed_handlers_run_off_the_event_loop():
+    """Every handler that touches api_keys_store is a plain `def` (FastAPI's
+    threadpool): the store's threading _lock is held by the profile-rename
+    cascade for a whole scan, and an `async def` caller would wait for it on
+    the event loop, freezing live streaming sockets and SSE feeds."""
+    import inspect
+
+    from faster_whisper_backend.admin import api_keys_routes, overrides_routes
+
+    for fn in (
+        api_keys_routes.list_users_api,
+        api_keys_routes.create_user_api,
+        api_keys_routes.revoke_user_api,
+        api_keys_routes.list_user_keys_api,
+        api_keys_routes.create_user_key_api,
+        api_keys_routes.revoke_key_api,
+        api_keys_routes.patch_user_permissions_api,
+        api_keys_routes.rename_key_api,
+        api_keys_routes.patch_key_config_api,
+        overrides_routes.resolve,
+    ):
+        assert not inspect.iscoroutinefunction(fn), fn.__name__

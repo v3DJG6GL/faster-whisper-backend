@@ -155,13 +155,19 @@ async def api_keys_page() -> HTMLResponse:
 
 # ---------------------------------------------------------------------
 # JSON APIs
+#
+# The store-backed handlers below are plain `def` so FastAPI runs them in its
+# threadpool: every api_keys_store call takes the store's threading _lock,
+# which rename_profile_refs holds for a whole users+keys scan. An admin page
+# load landing during that cascade must not block the event loop (and with it
+# every in-flight streaming WebSocket and SSE feed).
 # ---------------------------------------------------------------------
 
 @router.get(
     "/api/users",
     dependencies=[Depends(require_admin)],
 )
-async def list_users_api() -> JSONResponse:
+def list_users_api() -> JSONResponse:
     # Snapshot of every exposed (non-terminal) rule's tag list. Lets
     # the matrix UI render the "Will see: N of M rules" preview live
     # as the admin edits a user's tags — no extra roundtrip.
@@ -219,7 +225,7 @@ async def list_users_api() -> JSONResponse:
     "/api/users",
     dependencies=[Depends(require_admin)],
 )
-async def create_user_api(payload: CreateUserIn) -> JSONResponse:
+def create_user_api(payload: CreateUserIn) -> JSONResponse:
     try:
         uid = api_keys_store.create_user(payload.username, payload.is_admin)
     except ValueError as e:
@@ -231,7 +237,7 @@ async def create_user_api(payload: CreateUserIn) -> JSONResponse:
     "/api/users/{uid}",
     dependencies=[Depends(require_admin)],
 )
-async def revoke_user_api(uid: str) -> JSONResponse:
+def revoke_user_api(uid: str) -> JSONResponse:
     user = api_keys_store.get_user(uid)
     if user is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "user not found")
@@ -251,7 +257,7 @@ async def revoke_user_api(uid: str) -> JSONResponse:
     "/api/users/{uid}/keys",
     dependencies=[Depends(require_admin)],
 )
-async def list_user_keys_api(uid: str) -> JSONResponse:
+def list_user_keys_api(uid: str) -> JSONResponse:
     if api_keys_store.get_user(uid) is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "user not found")
     return JSONResponse({"keys": api_keys_store.list_keys(user_id=uid)})
@@ -294,7 +300,7 @@ async def usage_api(days: int = 0) -> JSONResponse:
     "/api/users/{uid}/keys",
     dependencies=[Depends(require_admin)],
 )
-async def create_user_key_api(uid: str, payload: CreateKeyIn) -> JSONResponse:
+def create_user_key_api(uid: str, payload: CreateKeyIn) -> JSONResponse:
     """Show-once raw key on creation. Subsequent reads via list_user_keys
     never return the raw value. A label is mandatory at this boundary (the
     store stays lenient for internal/test callers); blank/whitespace -> 400."""
@@ -312,7 +318,7 @@ async def create_user_key_api(uid: str, payload: CreateKeyIn) -> JSONResponse:
     "/api/users/{uid}/keys/{kid}",
     dependencies=[Depends(require_admin)],
 )
-async def revoke_key_api(uid: str, kid: str) -> JSONResponse:
+def revoke_key_api(uid: str, kid: str) -> JSONResponse:
     key = api_keys_store.get_key(kid)
     if key is None or key["user_id"] != uid:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "key not found")
@@ -332,7 +338,7 @@ async def revoke_key_api(uid: str, kid: str) -> JSONResponse:
     "/api/users/{uid}/permissions",
     dependencies=[Depends(require_admin)],
 )
-async def patch_user_permissions_api(
+def patch_user_permissions_api(
     uid: str, payload: PatchPermissionsIn,
 ) -> JSONResponse:
     """PATCH-merge per-page permissions onto a user. Returns the
@@ -364,7 +370,7 @@ async def patch_user_permissions_api(
     "/api/users/{uid}/keys/{kid}/label",
     dependencies=[Depends(require_admin)],
 )
-async def rename_key_api(
+def rename_key_api(
     uid: str, kid: str, payload: RenameKeyIn,
 ) -> JSONResponse:
     """Rename an existing key's display label. 404 if the key isn't this
@@ -388,7 +394,7 @@ async def rename_key_api(
     "/api/users/{uid}/keys/{kid}/config",
     dependencies=[Depends(require_admin)],
 )
-async def patch_key_config_api(
+def patch_key_config_api(
     uid: str, kid: str, payload: ConfigBindingIn,
 ) -> JSONResponse:
     """Validate + persist a per-key config binding (override profiles + direct
@@ -513,7 +519,7 @@ async def import_client_settings_api(
     await _cs_user_or_404(uid)
     try:
         # Off the loop: force_put json.dumps + encodes the whole blob BEFORE
-        # the 512 KB cap can reject it (see client_settings_routes.put_client_settings).
+        # the blob cap can reject it (see client_settings_routes.put_client_settings).
         state = await asyncio.to_thread(
             client_settings_store.force_put,
             uid, payload.blob, device="WebUI import",

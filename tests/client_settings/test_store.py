@@ -62,6 +62,19 @@ def test_oversize_blob_rejected(client_settings_store_db):
     assert store.get("u1") is None  # nothing landed
 
 
+def test_worst_case_legit_blob_is_accepted(client_settings_store_db):
+    """The desktop client sizes its sync ceiling (4 MiB) at ~2.5x a ~1.5 MB
+    worst-case legitimate blob (500 backends + 500 profiles + rules +
+    secrets); the old 512 KB cap 413'd every push of such a config."""
+    store = client_settings_store_db
+    blob = {"backends": [{"name": f"b{i}", "prompt": "p" * 1500}
+                         for i in range(1000)]}
+    assert len(json.dumps(blob, separators=(",", ":"))) > 1_500_000
+    ok, state = store.put("u1", blob, 0)
+    assert ok is True and state["version"] == 1
+    assert store.get("u1")["blob"] == blob
+
+
 def test_non_finite_blob_raises(client_settings_store_db):
     """A non-finite float is rejected BEFORE any write: json.dumps with the
     default allow_nan=True would store a bare NaN literal that the response
@@ -341,3 +354,40 @@ def test_force_put_returns_own_write_despite_concurrent_writer(client_settings_s
         assert store.get("u1")["version"] == 3
     finally:
         other.close()
+
+
+def test_init_db_renames_the_legacy_updated_at_column(client_settings_store_db, tmp_path):
+    """An install from before the 2026-09 rename has `updated_at`; init_db
+    renames it in place, keeping the row, and writes go on working."""
+    import sqlite3
+
+    store = client_settings_store_db
+    path = tmp_path / "legacy_client_settings.sqlite3"
+    conn = sqlite3.connect(str(path))
+    conn.executescript("""
+        CREATE TABLE client_settings (
+          user_id    TEXT    NOT NULL,
+          profile    TEXT    NOT NULL DEFAULT '',
+          blob       TEXT    NOT NULL,
+          version    INTEGER NOT NULL,
+          updated_at REAL    NOT NULL,
+          device     TEXT,
+          PRIMARY KEY (user_id, profile)
+        );
+        INSERT INTO client_settings VALUES ('u1', '', '{"a":1}', 3, 1700000000.5, 'old-pc');
+    """)
+    conn.commit()
+    conn.close()
+
+    store.init_db(str(path))
+    got = store.get("u1")
+    assert got["blob"] == {"a": 1}
+    assert got["version"] == 3
+    assert got["updated_ts"] == 1700000000.5
+    assert got["device"] == "old-pc"
+    ok, state = store.put("u1", {"a": 2}, 3)
+    assert ok is True and state["version"] == 4
+    assert state["updated_ts"] > 1700000000.5
+    # Idempotent: a second start finds updated_ts and leaves it alone.
+    store.init_db(str(path))
+    assert store.get("u1")["blob"] == {"a": 2}

@@ -1245,6 +1245,7 @@ def test_translation_test_progress_id_seeds_registry(
     seen = {}
 
     async def fake_translate(segments, targets, **kwargs):
+        seen["registry_ids"] = set(tx_progress._BATCH_PROGRESS)
         seen["at_start"] = dict(tx_progress._BATCH_PROGRESS.get(pid) or {})
         kwargs["download_cb"](512, 1024)
         seen["downloading"] = dict(tx_progress._BATCH_PROGRESS.get(pid) or {})
@@ -1266,9 +1267,15 @@ def test_translation_test_progress_id_seeds_registry(
     assert pid not in tx_progress._BATCH_PROGRESS       # popped by finally
 
     # Malformed id: ignored (no registry entry), request still succeeds.
+    # Checked while the request runs — the route's finally would pop a wrongly
+    # seeded entry before the test could look afterwards.
+    seen.clear()
     r = client.post("/settings/translation-test", json={
         "text": "hallo", "target": "en", "progress_id": "NOT-HEX"})
     assert r.status_code == 200, r.text
+    assert "registry_ids" in seen                        # the fake ran
+    assert "NOT-HEX" not in seen["registry_ids"]
+    assert "not-hex" not in seen["registry_ids"]
 
 
 def test_translation_test_progress_entry_is_owner_stamped(
@@ -1443,8 +1450,8 @@ def test_settings_save_reloads_state_on_the_restart_branch_too(client):
     pre-save value while cfg already held the new one: reverting the field
     compared equal in setDirty() and could not be saved."""
     _, body = _settings_save_body(client)
-    tail = body[body.index("const result = await r.json();"):]
-    assert tail.index("await loadState(later);") \
+    tail = body[body.index("result = await r.json();"):]
+    assert tail.index("await loadState({ sent, before, dirtyRef });") \
         < tail.index("if (result.requires_restart")
     assert tail.count("loadState(") == 1
 
@@ -1457,9 +1464,44 @@ def test_settings_save_keeps_edits_made_while_in_flight(client):
     assert "const sent = JSON.parse(JSON.stringify(dirty));" in body
     assert "await api('POST', '/settings/state', sent);" in body
     assert "dirty = {};" not in body
-    ls = html[html.index("async function loadState(keep) {"):]
+    ls = html[html.index("async function loadState(saved) {"):]
     ls = ls[:ls.index("\n}\n")]
-    assert "for (const k of Object.keys(keep || {})) {" in ls
+    assert "for (const k of Object.keys(keep)) {" in ls
+    # The carry-over is worked out from the live `dirty` AFTER the awaited
+    # GET: an edit typed during that second round trip survives too.
+    assert ls.index("state = await r.json();") \
+        < ls.index("const keep = saved ? _editsSince(saved) : {};") \
+        < ls.index("dirty = {};")
+
+
+def test_settings_save_keeps_a_revert_made_while_in_flight(client):
+    """Setting a sent field back to its old value during the POST dropped it
+    from `dirty` (setDirty compared against the not-yet-reloaded pre-save
+    value), so the reload showed the saved value as clean and the revert was
+    lost. The pre-save values ride along and a sent field that left `dirty`
+    comes back as an edit — unless a Discard/reload replaced `dirty`."""
+    html, body = _settings_save_body(client)
+    assert ("for (const k of Object.keys(sent)) before[k] = "
+            "JSON.parse(JSON.stringify(fieldDef(k).value));") in body
+    assert "const dirtyRef = dirty;" in body
+    assert body.index("const dirtyRef = dirty;") \
+        < body.index("await api('POST', '/settings/state', sent);")
+    es = html[html.index("function _editsSince(saved) {"):]
+    es = es[:es.index("\n}\n")]
+    assert "if (dirty === saved.dirtyRef) {" in es
+    assert "if (!has(dirty, k)) out[k] = saved.before[k];" in es
+
+
+def test_settings_save_reports_a_dropped_request(client):
+    """A rejected fetch or a cut-off reply left Save disabled with no toast
+    while `dirty` still held the edits — they looked accepted."""
+    _, body = _settings_save_body(client)
+    tc = body[body.index("try {"):body.index("await loadState(")]
+    assert "await api('POST', '/settings/state', sent);" in tc
+    assert "result = await r.json();" in tc
+    c = tc[tc.index("} catch (e) {"):]
+    assert "— reload to check what was saved', true);" in c
+    assert "$('save-btn').disabled = Object.keys(dirty).length === 0;" in c
 
 
 def test_translation_lab_finished_download_reads_as_loading(client):
@@ -1468,3 +1510,37 @@ def test_translation_lab_finished_download_reads_as_loading(client):
     html = client.get("/settings").text
     assert ("if (p.stage === 'downloading' && p.progress != null "
             "&& p.progress >= 1) {\n          stage.textContent = 'Loading model…';") in html
+
+
+def test_rule_lock_leaves_the_sync_slot_buttons_live(client):
+    """A locked rule disabled every input/button of the picker's whole line,
+    and that line also hosts the sync slot: "↓ Update" was shown on a locked
+    rule config.json moved past but rendered disabled. The lock scopes to the
+    language picker itself."""
+    html = _settings_html(client)
+    lock = html[html.index("function _applyLockState() {"):]
+    lock = lock[:lock.index("\n    }\n")]
+    assert "closest('.row-header-line2')" not in lock
+    assert ("if (_langPicker) _langPicker.el.querySelectorAll('input, button')"
+            in lock)
+
+
+def test_promote_one_warns_on_a_rule_without_a_sync_record(client):
+    """Promote all starts an 'edited' rule with no config_rev unticked (it may
+    be diverged); the per-row ↑ Promote overwrote it with no warning."""
+    html = _settings_html(client)
+    one = html[html.index("async function _promoteOne(rule) {"):]
+    one = one[:one.index("\n  }\n")]
+    assert "st === 'edited' && !rule.config_rev ?" in one
+
+
+def test_pipeline_test_panel_badges_a_step_that_hit_the_output_limit(client):
+    """The server also sets `capped` on the step that pushed the text past the
+    output bound (and on a regex-list whose entry walk stopped there); only a
+    skipped step's `capped` was read, so that step looked like a full run."""
+    html = _settings_html(client)
+    rows = html[html.index("(j.steps || []).forEach(step => {"):]
+    rows = rows[:rows.index("const changed = step.before !== step.after;")]
+    assert "else if (step.capped) badge = testBadge('warn'," in rows
+    assert rows.index("else if (step.capped)") \
+        < rows.index("else if (step.matches) badge")

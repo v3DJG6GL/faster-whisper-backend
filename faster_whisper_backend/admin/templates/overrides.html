@@ -943,19 +943,20 @@ window._renderWaterfall = (function () {
         return;
       }
       if (!r.ok) { setStatus('save failed (' + r.status + ')', 'err'); return; }
+      snapshot = sent;
+      // Refresh S first and compare AFTER that await: an edit made while the
+      // POST or this GET was in flight is not in the server copy, so adopting
+      // the server's profiles would silently drop it.
+      var fresh = await refreshServerState();
       if (JSON.stringify(profiles) !== sent) {
-        // Edited while saving: the server copy lacks the newer edit, so a
-        // full reload would silently drop it. Mark only what was sent as
-        // saved and keep the working copy dirty.
-        snapshot = sent;
-        await refreshServerState();
+        // Edited while saving: mark only what was sent as saved and keep
+        // the working copy dirty.
         render();
         setStatus('saved — newer edits are not saved yet', 'ok');
         return;
       }
-      snapshot = sent;
-      await loadState(true);    // refresh usage + canonical values
-      // loadState replaced `profiles`; every widget still closes over the old
+      if (fresh) adoptServerProfiles(true);   // canonical values
+      // That replaced `profiles`; every widget still closes over the old
       // profiles[sel], so without a re-render the next edit lands on an orphan.
       render();
       setStatus('saved', 'ok');
@@ -1070,11 +1071,15 @@ window._renderWaterfall = (function () {
     if (await guard403(r)) return false;
     if (!r.ok) { setStatus('load failed (' + r.status + ')', 'err'); return false; }
     S = await r.json();
+    adoptServerProfiles(keepSel);
+    return true;
+  }
+  // Replace the working copy with the saved profiles in S.
+  function adoptServerProfiles(keepSel) {
     profiles = JSON.parse(JSON.stringify(S.profiles || {}));
     snapshot = JSON.stringify(profiles);
     if (!keepSel) { var ns = profileNames(); sel = ns.length ? ns[0] : null; }
     else if (sel && !profiles[sel]) sel = null;
-    return true;
   }
   async function boot() {
     listEl = document.getElementById('profile-list');
