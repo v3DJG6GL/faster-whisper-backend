@@ -44,11 +44,14 @@ def test_linux_installer_cpu_full_uses_pytorch_cpu_index():
 
 
 def test_linux_installer_precreates_logs_dir():
-    # The unit pins WHISPER_LOG_FILE at $REPO_DIR/logs/whisper.log; without a
-    # pre-created, chowned logs/ the service degrades to stderr-only logging.
+    # The unit pins WHISPER_LOG_FILE at $REPO_DIR/logs/whisper.log (unless
+    # .env sets it); without a pre-created, chowned logs/ the service degrades
+    # to stderr-only logging. Each pinned dir joins STATE_DIRS with its line.
     sh = _read("install-service.sh")
-    assert re.search(r'mkdir -p .*"\$REPO_DIR/logs"', sh)
-    assert re.search(r'chown -R "\$RUN_USER" .*"\$REPO_DIR/logs"', sh)
+    assert re.search(r'LOG_ENV_LINE="Environment=WHISPER_LOG_FILE=\$\{REPO_DIR\}/logs/whisper.log"\n'
+                     r'\s*STATE_DIRS\+=\("\$REPO_DIR/logs"\)', sh)
+    assert 'mkdir -p "${STATE_DIRS[@]}"' in sh
+    assert 'chown -R "$RUN_USER" "${STATE_DIRS[@]}"' in sh
 
 
 # --- uninstall-service.ps1 ---------------------------------------------------
