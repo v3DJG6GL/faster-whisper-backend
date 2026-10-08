@@ -404,7 +404,14 @@ def test_get_captures_light_projection_and_chunking(captures_store_db,
         " status, user_id) VALUES (?,1.0,'m','x.wav','wav','r','f','[]','[]',"
         "'[]','new','bob')", [(i,) for i in many])
 
-    got = cs.get_captures_light([cid, "nope", cid, "", *many])
+    # Builds differ (Debian's sqlite allows 250000 variables, stock 32766):
+    # lower the limit below the 1101 ids so one unchunked IN-list would fail.
+    old = conn.getlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER)
+    conn.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 999)
+    try:
+        got = cs.get_captures_light([cid, "nope", cid, "", *many])
+    finally:
+        conn.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, old)
     assert got[cid] == {"id": cid, "user_id": "alice", "status": "new",
                         "sample_id": None,
                         "audio_relpath": cs.get_capture(cid)["audio_relpath"]}
@@ -628,8 +635,6 @@ def test_failing_eviction_keeps_the_committed_row_and_its_audio(
         captures_store_db, monkeypatch, tmp_path):
     """The INSERT is committed (autocommit connection) before the eviction
     runs, so an eviction error must not unlink the new row's WAV."""
-    import sqlite3
-
     cs = captures_store_db
 
     def _boom(conn):
@@ -665,6 +670,32 @@ def test_evict_deletes_more_ids_than_one_in_list_chunk(
     finally:
         conn.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, old)
     assert cs.count() == 1
+
+
+def test_bulk_update_status_chunks_past_the_bind_variable_limit(
+        captures_store_db):
+    """BulkStatusIn admits 1000 ids; one IN-list of them (plus the two other
+    binds) overran the classic 999-variable limit and the route 500ed."""
+    cs = captures_store_db
+    conn = cs._require_conn()
+    ids = [f"bulkst{i:06d}" for i in range(1000)]
+    conn.executemany(
+        "INSERT INTO captures (id, created_ts, model, audio_relpath,"
+        " audio_format, raw_text, final_text, words, segments, corrections,"
+        " status, user_id) VALUES (?,1.0,'m','x.wav','wav','r','f','[]','[]',"
+        "'[]','new','bob')", [(i,) for i in ids])
+    old = conn.getlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER)
+    conn.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 999)
+    try:
+        out = cs.bulk_update_status(ids, "ready")
+    finally:
+        conn.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, old)
+    assert len(out) == 1000
+    assert {o["prev_status"] for o in out} == {"new"}
+    assert conn.execute(
+        "SELECT COUNT(*) FROM captures WHERE status = 'ready'"
+        " AND reviewed_ts IS NOT NULL").fetchone()[0] == 1000
+    assert not conn.in_transaction
 
 
 def _seed_ready(cs, n, ts=1.0):

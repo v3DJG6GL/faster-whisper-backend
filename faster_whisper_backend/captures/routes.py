@@ -55,7 +55,6 @@ from faster_whisper_backend.auth import rate_limit
 from faster_whisper_backend.core import store_common
 from faster_whisper_backend.core import text_corrections
 from faster_whisper_backend.core import web_common
-from faster_whisper_backend.pipeline import engine as pl_engine
 from faster_whisper_backend.core.web_common import require_user_webui_host
 from faster_whisper_backend.auth.dependencies import get_current_user, require_admin, require_page
 from faster_whisper_backend.core import templates
@@ -451,21 +450,27 @@ async def by_request_id_api(
     all) sees every match. The endpoint backs the reports-page "show
     capture" jump, so the same scope rules that gate /captures itself
     apply here."""
-    rows = captures_store.find_by_request_id(request_id)
-    perms = user["permissions"]
-    if perms.scope("captures") == "own":
-        caller_uid = user.get("user_id")
-        rows = [r for r in rows if r.get("user_id") == caller_uid]
-    usernames = api_keys_store.get_usernames([r.get("user_id") for r in rows])
-    for r in rows:
-        # This route hands a scope=all non-admin the FULL capture row —
-        # raw/final text and the owner's resolved username — for someone
-        # else's capture, exactly the case the eleven read-by-id siblings
-        # audit. It was the only cross-user read-by-key path with no log line.
-        _audit_cross_user_read(user, r, "capture-by-request", r.get("id") or "")
-        _apply_trim_to_capture_row(r)
-        r["username"] = usernames.get(r.get("user_id"))
-    return JSONResponse({"captures": rows})
+    # Off the loop, like list_captures_api: find_by_request_id json.loads
+    # every matching row's words + segments blobs on the shared connection
+    # that clear_all VACUUMs.
+    def _run() -> list[dict[str, Any]]:
+        rows = captures_store.find_by_request_id(request_id)
+        perms = user["permissions"]
+        if perms.scope("captures") == "own":
+            caller_uid = user.get("user_id")
+            rows = [r for r in rows if r.get("user_id") == caller_uid]
+        usernames = api_keys_store.get_usernames([r.get("user_id") for r in rows])
+        for r in rows:
+            # This route hands a scope=all non-admin the FULL capture row —
+            # raw/final text and the owner's resolved username — for someone
+            # else's capture, exactly the case the eleven read-by-id siblings
+            # audit. It was the only cross-user read-by-key path with no log line.
+            _audit_cross_user_read(user, r, "capture-by-request", r.get("id") or "")
+            _apply_trim_to_capture_row(r)
+            r["username"] = usernames.get(r.get("user_id"))
+        return rows
+
+    return JSONResponse({"captures": await asyncio.to_thread(_run)})
 
 
 # Literal-path GET routes (export, groups) MUST be declared BEFORE the
@@ -589,7 +594,10 @@ async def get_capture_api(
     cid: str,
     user: dict[str, Any] = Depends(get_current_user),
 ) -> JSONResponse:
-    row = captures_store.get_capture(cid)
+    # Off the loop, like get_audio_api: every card expand lands here, and
+    # get_capture json.loads the words + segments blobs on the shared
+    # connection that clear_all VACUUMs.
+    row = await asyncio.to_thread(captures_store.get_capture, cid)
     if row is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "capture not found")
     # Scope guard. 404 (not 403) on cross-user access — a 403 would
@@ -942,15 +950,22 @@ async def delete_capture_api(
     """Delete a single capture. `scope=own` users can delete only their
     own; `scope=all` users (incl. admins) can delete any. Bulk wipe is
     via /clear which stays admin-only."""
-    row = await asyncio.to_thread(captures_store.get_capture, cid)
-    if row is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "capture not found")
-    user["permissions"].assert_can_read_row(
-        row, "captures", user.get("user_id") or "",
-        detail="capture not found",
-    )
-    _audit_cross_user_read(user, row, "capture-delete", cid)
-    _assert_member_sample_not_locked(row, user)
+    # Off the loop: get_capture json.loads the words + segments blobs, and
+    # the sample-lock check reads capture_samples, both on the shared
+    # connection that clear_all VACUUMs. The guards keep their order (scope
+    # 404 before the lock 409, which would confirm the row exists).
+    def _read_and_guard() -> None:
+        row = captures_store.get_capture(cid)
+        if row is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "capture not found")
+        user["permissions"].assert_can_read_row(
+            row, "captures", user.get("user_id") or "",
+            detail="capture not found",
+        )
+        _audit_cross_user_read(user, row, "capture-delete", cid)
+        _assert_member_sample_not_locked(row, user)
+
+    await asyncio.to_thread(_read_and_guard)
     # Off the loop: deleting a member auto-dissolves its sample, which waits
     # on that sample's rebuild lock (see samples_store.dissolve_sample).
     if not await asyncio.to_thread(captures_store.delete_capture, cid):
@@ -1023,35 +1038,30 @@ async def reprocess_capture_api(
         # may reprocess another user's row; the result must reflect that user's
         # rules). Pipeline-only: no key / no per-request layer on reprocess.
         ident = effective_config.build_ident({"user_id": row.get("user_id")}, row.get("model"))
+        text_lang = captures_store.text_language(row)
         try:
-            new_final = pl_engine._postprocess_text(raw, model_name=row.get("model"), ident=ident, language=captures_store.text_language(row))
+            new_final = captures_reapply.final_text(
+                raw, model=row.get("model"), ident=ident, language=text_lang)
         except Exception as e:
             logger.error("[captures] reprocess pipeline failed on `final`: %s", e)
             raise HTTPException(
                 status.HTTP_500_INTERNAL_SERVER_ERROR,
                 "pipeline reprocessing failed",
             )
-        # When no captures-specific excludes are configured, the training-text
-        # pass would produce byte-identical output to `final` — skip the
-        # second full pipeline pass and reuse.
-        if captures_excludes:
-            try:
-                new_training = pl_engine._postprocess_text(
-                    raw,
-                    model_name=row.get("model"),
-                    extra_excludes=captures_excludes,
-                    ident=ident,
-                    language=captures_store.text_language(row),
-                )
-            except Exception as e:
-                logger.error(
-                    "[captures] reprocess pipeline failed on `text_for_training`: %s", e)
-                raise HTTPException(
-                    status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    "pipeline reprocessing failed",
-                )
-        else:
-            new_training = new_final
+        # With no captures-specific excludes this is `new_final` itself
+        # (training_text skips the second pipeline pass).
+        try:
+            new_training = captures_reapply.training_text(
+                raw, new_final, model=row.get("model"), ident=ident,
+                language=text_lang, excludes=captures_excludes,
+            )
+        except Exception as e:
+            logger.error(
+                "[captures] reprocess pipeline failed on `text_for_training`: %s", e)
+            raise HTTPException(
+                status.HTTP_500_INTERNAL_SERVER_ERROR,
+                "pipeline reprocessing failed",
+            )
         patch: dict[str, Any] = {}
         if new_final != (row.get("final") or ""):
             patch["final"] = new_final
@@ -1682,7 +1692,11 @@ async def preview_save_chips_api(
             capture_samples._global_silence_ms(), user)
     )
     chips_in = [c.model_dump(exclude_none=True) for c in payload.corrections]
-    per_member = _split_corrections_to_members(chips_in, captures)
+    stored = {c["id"]: c.get("corrections") for c in captures}
+    per_member = {
+        mid: _keep_anchorless(chips, stored.get(mid))
+        for mid, chips in _split_corrections_to_members(chips_in, captures).items()
+    }
     # Before any write, as in patch_sample_api: the schema bounds the whole
     # projection, the store caps each member.
     if any(text_corrections.over_cap(c) for c in per_member.values()):
@@ -1815,7 +1829,9 @@ async def get_sample_api(
     sid: str,
     user: dict[str, Any] = Depends(get_current_user),
 ) -> JSONResponse:
-    g = capture_samples_store.get_sample(sid)
+    # Off the loop: the samples store shares the captures connection, which
+    # clear_all holds across a full VACUUM.
+    g = await asyncio.to_thread(capture_samples_store.get_sample, sid)
     if g is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "sample not found")
     # 404 (not 403) on cross-user — leaking existence violates OWASP IDOR.
@@ -1834,9 +1850,10 @@ async def get_sample_api(
 def _hydrate_members(members: list[dict[str, Any]]) -> None:
     """Populate `words` (decoded) and `model` on each member dict in
     place by fetching the full capture row once. `capture_samples_store.
-    get_members` drops words/model to keep the projection light;
-    the chip/karaoke helpers below need both. Idempotent — skips members
-    that already carry the fields."""
+    get_members` drops words to keep the projection light (it carries
+    `model` and a `word_count`); the chip/karaoke helpers below need the
+    words themselves. Idempotent — skips members that already carry both
+    fields."""
     for m in members:
         if "words" in m and "model" in m:
             continue
@@ -1901,7 +1918,9 @@ def _split_corrections_to_members(
     `update_capture(member_id, {"corrections": chips})` and reliably
     REPLACE each member's chip list. Chips whose `idx` is out of range
     are silently dropped; `idx_end` is clipped to the same member's
-    last word."""
+    last word. Anchorless chips (no integer `idx`) are dropped too, so a
+    caller that REPLACES re-adds each member's stored ones
+    (`_keep_anchorless`)."""
     word_counts: list[int] = []
     for m in members:
         word_counts.append(len(m.get("words") or []))
@@ -1936,6 +1955,29 @@ def _split_corrections_to_members(
                 c2.pop("idx_end", None)
         out[members[target]["id"]].append(c2)
     return out
+
+
+def _has_anchor(c: dict[str, Any]) -> bool:
+    """The projection/split test for a word anchor: an integer-able `idx`."""
+    try:
+        int(c["idx"])
+    except (TypeError, ValueError, KeyError):
+        return False
+    return True
+
+
+def _keep_anchorless(
+    chips: list[dict[str, Any]], existing: list[dict[str, Any]] | None,
+) -> list[dict[str, Any]]:
+    """`chips` (a member's share of a split group list) plus the member's
+    stored anchorless chips. Those have no global word index, so the
+    projection leaves them out and the split cannot hand them back; a
+    REPLACE of the member's list with the split result alone deleted them.
+    `clean_corrections` keeps such chips and `_apply_chips_to_text` applies
+    them, so they are kept as they are."""
+    keep = [c for c in (existing or [])
+            if isinstance(c, dict) and not _has_anchor(c)]
+    return chips + keep if keep else chips
 
 
 def _enrich_sample(g: dict[str, Any]) -> dict[str, Any]:
@@ -2028,7 +2070,9 @@ def _refresh_final_if_stale(
         # per-identity reprocess and producing wrong text for owners with
         # per-identity pipeline rules.
         ident = effective_config.build_ident({"user_id": row.get("user_id")}, row.get("model"))
-        fresh_final = pl_engine._postprocess_text(raw, model_name=row.get("model"), ident=ident, language=captures_store.text_language(row))
+        text_lang = captures_store.text_language(row)
+        fresh_final = captures_reapply.final_text(
+            raw, model=row.get("model"), ident=ident, language=text_lang)
     except Exception:
         return
     patch: dict[str, Any] = {}
@@ -2040,22 +2084,14 @@ def _refresh_final_if_stale(
     # CAPTURES_PIPELINE_RULES_EXCLUDE) without an underlying PIPELINE_RULES
     # change, and stale training text would mislead reviewers and
     # the export.
-    captures_excludes = getattr(cfg, "CAPTURES_PIPELINE_RULES_EXCLUDE", None)
-    if captures_excludes:
-        try:
-            fresh_training = pl_engine._postprocess_text(
-                raw,
-                model_name=row.get("model"),
-                extra_excludes=captures_excludes,
-                ident=ident,
-                language=captures_store.text_language(row),
-            )
-        except Exception:
-            fresh_training = None
-    else:
-        # No captures-specific excludes — training text is identical to
-        # final, skip the second pipeline pass.
-        fresh_training = fresh_final
+    try:
+        fresh_training = captures_reapply.training_text(
+            raw, fresh_final, model=row.get("model"), ident=ident,
+            language=text_lang,
+            excludes=getattr(cfg, "CAPTURES_PIPELINE_RULES_EXCLUDE", None),
+        )
+    except Exception:
+        fresh_training = None
     if fresh_training is not None and fresh_training != stored_training:
         patch["text_for_training"] = fresh_training
         row["text_for_training"] = fresh_training
@@ -2309,7 +2345,9 @@ async def patch_sample_api(
     payload: PatchSampleIn,
     user: dict[str, Any] = Depends(get_current_user),
 ) -> JSONResponse:
-    g = capture_samples_store.get_sample(sid)
+    # Off the loop: the samples store shares the captures connection, which
+    # clear_all holds across a full VACUUM.
+    g = await asyncio.to_thread(capture_samples_store.get_sample, sid)
     if g is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "sample not found")
     user["permissions"].assert_can_read_row(
@@ -2376,7 +2414,12 @@ async def patch_sample_api(
                 edited = text_corrections.three_way_merge_corrections(
                     baseline, edited, current,
                 )
-            by_member = _split_corrections_to_members(edited, members_now)
+            current_by_id = {m["id"]: (m.get("corrections") or []) for m in members_now}
+            by_member = {
+                mid: _keep_anchorless(chips, current_by_id.get(mid))
+                for mid, chips in _split_corrections_to_members(
+                    edited, members_now).items()
+            }
             # Before any write: a member past the store's cap would lose
             # chips silently.
             if any(text_corrections.over_cap(c) for c in by_member.values()):
@@ -2388,7 +2431,6 @@ async def patch_sample_api(
             # Skip members whose chip set didn't change — a 30-member group
             # with one edited chip otherwise fires 30 UPDATEs where 29 are
             # idempotent rewrites of the same JSON column.
-            current_by_id = {m["id"]: (m.get("corrections") or []) for m in members_now}
             for member_id, chips in by_member.items():
                 if json.dumps(current_by_id.get(member_id) or [], sort_keys=True) == \
                         json.dumps(chips, sort_keys=True):
@@ -2438,7 +2480,9 @@ async def regenerate_sample_api(
     global silence setting (so regenerate is how an existing sample adopts a
     changed global), refresh hashes, clear `is_stale`. Transcript is preserved
     (admin's edits stay)."""
-    g = capture_samples_store.get_sample(sid)
+    # Off the loop: the samples store shares the captures connection, which
+    # clear_all holds across a full VACUUM.
+    g = await asyncio.to_thread(capture_samples_store.get_sample, sid)
     if g is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "sample not found")
     user["permissions"].assert_can_read_row(
@@ -2448,7 +2492,6 @@ async def regenerate_sample_api(
     _audit_cross_user_read(user, g, "sample-regenerate", sid)
     if g["is_locked"] and not user.get("is_admin"):
         raise HTTPException(status.HTTP_409_CONFLICT, "sample is locked")
-    members = capture_samples_store.get_members(sid)
     silence_ms = capture_samples._global_silence_ms()
 
     def _regenerate() -> dict[str, Any]:
@@ -2458,6 +2501,7 @@ async def regenerate_sample_api(
             # rebuilt onto disk with no row (nor a 500 from _enrich_sample).
             if capture_samples_store.get_sample(sid) is None:
                 raise HTTPException(status.HTTP_404_NOT_FOUND, "sample not found")
+            members = capture_samples_store.get_members(sid)
             duration_ms, hashes, member_trims = capture_samples._build_merged_wav(
                 sid=sid,
                 member_ids=[m["id"] for m in members],
@@ -2485,7 +2529,9 @@ async def dissolve_sample_api(
     sid: str,
     user: dict[str, Any] = Depends(get_current_user),
 ) -> JSONResponse:
-    g = capture_samples_store.get_sample(sid)
+    # Off the loop: the samples store shares the captures connection, which
+    # clear_all holds across a full VACUUM.
+    g = await asyncio.to_thread(capture_samples_store.get_sample, sid)
     if g is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "sample not found")
     user["permissions"].assert_can_read_row(
@@ -2526,8 +2572,10 @@ def _ensure_sample_wav(g: dict[str, Any]) -> str:
             status.HTTP_410_GONE,
             "members deleted — sample is unrecoverable",
         )
+    # Only audio_relpath is read: the light projection, not a full row.
+    light = captures_store.get_captures_light([m["id"] for m in members])
     for m in members:
-        cap = captures_store.get_capture(m["id"])
+        cap = light.get(m["id"])
         if cap is None:
             raise HTTPException(
                 status.HTTP_410_GONE,
@@ -2575,7 +2623,9 @@ async def get_sample_audio_api(
     """Stream the merged WAV, self-healing if it's missing on disk
     but reconstructable from member captures."""
     _audio_rate.hit(rate_limit.identity_key(user, request))
-    g = capture_samples_store.get_sample(sid)
+    # Off the loop: the samples store shares the captures connection, which
+    # clear_all holds across a full VACUUM.
+    g = await asyncio.to_thread(capture_samples_store.get_sample, sid)
     if g is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "sample not found")
     user["permissions"].assert_can_read_row(

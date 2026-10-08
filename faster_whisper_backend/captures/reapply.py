@@ -63,6 +63,30 @@ _updated_cids: set[str] = set()
 _updated_sids: set[str] = set()
 
 
+def final_text(raw: str, *, model: Any, ident: Any, language: Any) -> str:
+    """A capture's `final` re-derived from its raw text with the owner's
+    pipeline (`ident`) scoped by the TEXT language
+    (captures_store.text_language). One recompute rule for the three
+    callers: this job, the /reprocess route and the on-read self-heal in
+    captures/routes.py — each keeps its own error handling."""
+    return pl_engine._postprocess_text(
+        raw, model_name=model, ident=ident, language=language,
+    )
+
+
+def training_text(raw: str, final: str, *, model: Any, ident: Any,
+                  language: Any, excludes: Any) -> str:
+    """`text_for_training`: the same pass minus the captures-specific
+    `excludes` (CAPTURES_PIPELINE_RULES_EXCLUDE). With no excludes it is
+    byte-identical to `final`, so the second pipeline pass is skipped."""
+    if not excludes:
+        return final
+    return pl_engine._postprocess_text(
+        raw, model_name=model, extra_excludes=excludes, ident=ident,
+        language=language,
+    )
+
+
 def status() -> dict[str, Any]:
     with _state_lock:
         return dict(_state)
@@ -177,9 +201,8 @@ def _run_pass() -> None:
             # Inside the per-row try: a resolve failure skips this row
             # instead of aborting the run before the group rebuild.
             ident = _ident_for(r["user_id"], r["model"])
-            new_final = pl_engine._postprocess_text(
-                raw_text, model_name=r["model"], ident=ident,
-                language=text_lang,
+            new_final = final_text(
+                raw_text, model=r["model"], ident=ident, language=text_lang,
             )
         except Exception as e:
             logger.warning(
@@ -193,23 +216,18 @@ def _run_pass() -> None:
             if r["sample_id"]:
                 affected_sample_ids.add(r["sample_id"])
         # Training-form text reflects PIPELINE_RULES minus the
-        # captures-specific excludes. When no excludes are configured
-        # the pipeline output is identical — skip the second run.
-        if captures_excludes:
-            try:
-                new_training = pl_engine._postprocess_text(
-                    raw_text, model_name=r["model"],
-                    extra_excludes=captures_excludes, ident=ident,
-                    language=text_lang,
-                )
-            except Exception as e:
-                logger.warning(
-                    "[reapply] capture %s training-form skipped: %s",
-                    cid[:8], e,
-                )
-                new_training = None
-        else:
-            new_training = new_final
+        # captures-specific excludes (the excludes snapshotted for the run).
+        try:
+            new_training = training_text(
+                raw_text, new_final, model=r["model"], ident=ident,
+                language=text_lang, excludes=captures_excludes,
+            )
+        except Exception as e:
+            logger.warning(
+                "[reapply] capture %s training-form skipped: %s",
+                cid[:8], e,
+            )
+            new_training = None
         if new_training is not None and new_training != (r["text_for_training"] or ""):
             patch["text_for_training"] = new_training
             # _build_default_transcript reads text_for_training before

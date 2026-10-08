@@ -1380,6 +1380,34 @@
       body: 'An open capture or group has unsaved edits that will be lost.',
       confirmLabel: confirmLabel, danger: true }));
   }
+  // The filter controls (status, speaker, model, search, Refresh) end in
+  // render() / load() too. Ask first; on a cancel `revert` puts the control
+  // back to what the list shows. A change made while the prompt is up is
+  // ignored here — `apply` reads the controls when it runs.
+  var _filterAsking = false;
+  async function _filterChange(apply, revert) {
+    if (_filterAsking) return;
+    _filterAsking = true;
+    var ok;
+    try {
+      ok = await _okToDropOpenEdits('Change the filter?', 'Change filter');
+    } finally {
+      _filterAsking = false;
+    }
+    if (ok) apply(); else revert();
+  }
+  // A list refresh nobody asked for (a finished background job, a sample
+  // created from a modal) must not drop unsaved edits either: skip it and
+  // say so while an open card is dirty. `msg` is the action's own toast,
+  // taken here so the skip note does not overwrite it.
+  function _loadUnlessDirty(msg, err) {
+    if (!_anyOpenDirty()) {
+      if (msg) toast(msg, err);
+      return load();
+    }
+    toast((msg ? msg + ' · ' : '')
+      + 'List not refreshed: an open card has unsaved edits. Refresh after saving.', err);
+  }
 
   async function _bulkStatus(status) {
     var rows = _selectedRows();
@@ -1605,6 +1633,8 @@
   var _speakerPicker = null;
   var _statusGroup = null;
   var _pendingModel = null;       // ?model= from the URL, applied once loaded
+  var _shownModel = 'all';        // model + search the last render() applied
+  var _shownSearch = '';
   var _stats = null;              // /captures/api/stats snapshot (whole queue)
   var _totalCount = 0;            // server total for the caller's scope
   var _me = null;
@@ -2914,9 +2944,10 @@
           _jobPollTimer = setTimeout(tick, 1000);
         } else {
           _jobPollTimer = null;
-          if (s && s.status === 'error') toast('Reprocess failed: ' + (s.error || ''), true);
-          else toast('Reprocess done.');
-          load();  // refresh the list (durations / stale pills may have changed)
+          var failed = !!(s && s.status === 'error');
+          // Refresh the list (durations / stale pills may have changed) —
+          // unless the reviewer is mid-edit: this finish is not their action.
+          _loadUnlessDirty(failed ? 'Reprocess failed: ' + (s.error || '') : 'Reprocess done.', failed);
           // The progress popover is a sibling of (not inside) #adv-menu so it
           // stays visible during the run; closing the menu does NOT dismiss it.
           // Leave the final summary up briefly, then hide it — unless a newer
@@ -3076,9 +3107,10 @@
     // Groups are paged newest-first; hydrating one costs a capture read per
     // member, so they arrive a page at a time instead of all at once.
     if (!_samplesNext || _samplesLoading) return;
-    // The render() in `finally` re-expands every open capture card from a
-    // fresh GET and collapses every open group card, which would silently
-    // drop unsaved chip / notes / status edits — ask first.
+    // The render() below re-expands every open capture card from a fresh GET
+    // and collapses every open group card, which would silently drop unsaved
+    // chip / notes / status edits — ask first (and again before rendering:
+    // a card can be opened and edited while the page is in flight).
     if (!(await _okToDropOpenEdits('Load more groups?', 'Load more')))
       return;
     if (!_samplesNext || _samplesLoading) return;
@@ -3088,6 +3120,7 @@
     // every open group card's audio and wipe the list mid-playback.
     var b = document.getElementById('btn-load-more-samples');
     if (b) { b.disabled = true; b.textContent = 'Loading more groups...'; }
+    var loaded = false;
     try {
       var q = '/captures/api/samples?limit=200' + _speakerQs()
         + '&before_ts=' + encodeURIComponent(_samplesNext.before_ts)
@@ -3102,12 +3135,27 @@
         if (!seen[g.id]) _allSamples.push(g);
       });
       _samplesNext = jg.next || null;
+      loaded = true;
     } catch (e) {
       if (seq === _loadSeq) toast('Failed to load more groups: ' + e.message, true);
     } finally {
       _samplesLoading = false;
-      render();
+      // No render() on a failure or a superseded page (load() has rendered
+      // its own list): only put the footer button back. A load() that
+      // rendered while this page was in flight drew it disabled too.
+      var fb = document.getElementById('btn-load-more-samples');
+      if (fb) {
+        fb.disabled = false;
+        fb.textContent = 'Load more groups';
+        fb.hidden = !_samplesNext;
+      }
     }
+    if (!loaded) return;
+    // On a cancel the merged groups stay in _allSamples and show on the
+    // next render.
+    if (!(await _okToDropOpenEdits('Show the loaded groups?', 'Show')))
+      return;
+    if (seq === _loadSeq) render();
   }
 
   // Counts + strip together: every status change on a row moves both.
@@ -3242,7 +3290,9 @@
       _stopAnyPreview();
       modal.classList.remove('show');
     };
-    document.getElementById('merge-commit').onclick = function() {
+    document.getElementById('merge-commit').onclick = async function() {
+      // The load() after the create rebuilds the list.
+      if (!(await _okToDropOpenEdits('Create the sample?', 'Create'))) return;
       _stopAnyPreview();
       // Server derives the transcript from members + chips on create
       // (mirrors the locked preview).
@@ -4198,7 +4248,6 @@
       await api('POST', '/captures/api/samples', {
         member_ids: p.member_ids,
       });
-      toast('Sample created (' + (p.member_count || p.member_ids.length) + ' clips)');
       // Drop the accepted proposal + any overlapping ones from the visible
       // list. Now-grouped members invalidate any other proposal that
       // contained them.
@@ -4212,7 +4261,7 @@
       // Refresh the main captures list so the new group appears outside
       // the modal. We do NOT re-fetch the proposals (per the user's
       // preferred UX); a manual Refresh re-ranks against current state.
-      load();
+      _loadUnlessDirty('Sample created (' + (p.member_count || p.member_ids.length) + ' clips)');
     } catch (e) {
       if (btn) { btn.disabled = false; btn.textContent = origText || 'Accept'; }
       if (e && e.message !== 'unauthorized' && e.message !== 'not-admin') {
@@ -4426,7 +4475,6 @@
         var resp = await api('POST', '/captures/api/samples', {
           member_ids: p.member_ids,
         });
-        toast('Sample created (' + (p.member_count || p.member_ids.length) + ' clips)');
         _batchAccepted++;
         // Splice accepted + any overlapping proposals (their members are
         // now grouped, so they'd be invalid anyway).
@@ -4444,7 +4492,8 @@
           sid: (resp && resp.sample_id) || null,
           clips: p.member_count || p.member_ids.length,
         };
-        load();   // refresh main captures list in background
+        // Refresh the main captures list in the background.
+        _loadUnlessDirty('Sample created (' + (p.member_count || p.member_ids.length) + ' clips)');
       } catch (e) {
         if (e && e.message !== 'unauthorized' && e.message !== 'not-admin') {
           toast(e.message || 'merge failed', true);
@@ -4512,8 +4561,8 @@
     _proposals = u.proposals;
     _batchAccepted = Math.max(0, _batchAccepted - 1);
     _batchUndo = null;
-    toast('Reverted — sample dissolved');
-    load();              // refresh main captures list (members freed again)
+    // Refresh the main captures list (members freed again).
+    _loadUnlessDirty('Reverted — sample dissolved');
     _renderBatchCard();
   }
 
@@ -5196,6 +5245,10 @@
 
         // --- Dissolve (full reload — the group disappears from the list). ---
         dissolveBtn.onclick = async function() {
+          // The load() after it rebuilds the list (like _bulkDelete: this
+          // prompt, then the action's own confirm).
+          if (!(await _okToDropOpenEdits('Dissolve sample?', 'Continue')))
+            return;
           if (!(await _confirm({
               title: 'Dissolve sample?',
               body: 'Dissolve this sample? Members return to the flat list; '
@@ -5226,6 +5279,9 @@
 
   // Override render() to also draw group cards interleaved by created_ts.
   render = function() {
+    // What the list shows, so a cancelled filter change can put it back.
+    _shownModel = document.getElementById('filt-model').value;
+    _shownSearch = document.getElementById('filt-search').value;
     var rows = applyFilters(_allCaptures);
     var list = document.getElementById('list');
     var openIds = Object.keys(_openRows);
@@ -5354,9 +5410,12 @@
       { value: 'audio_missing', label: 'Audio missing' },
     ];
     var grp = buildStatusButtonGroup(opts, _filtStatus, function(v) {
-      _filtStatus = v;
-      _syncUrl();
-      render();
+      _filterChange(function() {
+        _filtStatus = v;
+        grp.setValue(v);
+        _syncUrl();
+        render();
+      }, function() { grp.setValue(_filtStatus); });
     });
     _statusGroup = grp;
     document.getElementById('filt-status-wrap').appendChild(grp.root);
@@ -5387,7 +5446,10 @@
           return rows;
         });
       },
-      onChange: function(ids) { _filtSpeakers = ids; _syncUrl(); load(); },
+      onChange: function(ids) {
+        _filterChange(function() { _filtSpeakers = ids; _syncUrl(); load(); },
+          function() { if (_speakerPicker) _speakerPicker.setPicked(_filtSpeakers); });
+      },
     });
   })();
   document.getElementById('ss-toggle').addEventListener('click', function() {
@@ -5399,7 +5461,10 @@
   document.getElementById('ab-ready').addEventListener('click', function() { _bulkStatus('ready'); });
   document.getElementById('ab-dismiss').addEventListener('click', function() { _bulkStatus('dismissed'); });
   document.getElementById('ab-delete').addEventListener('click', _bulkDelete);
-  document.getElementById('filt-model').addEventListener('change', function() { _syncUrl(); updateCounts(); render(); });
+  document.getElementById('filt-model').addEventListener('change', function() {
+    _filterChange(function() { _syncUrl(); updateCounts(); render(); },
+      function() { document.getElementById('filt-model').value = _shownModel; });
+  });
   // Debounce search input: render() does a full list rebuild AND each
   // previously-open row re-runs toggleExpand → triggers a fresh
   // /captures/api/{cid} GET. Per-keystroke firing storms the server
@@ -5407,9 +5472,15 @@
   var _searchTimer = null;
   document.getElementById('filt-search').addEventListener('input', function() {
     if (_searchTimer) clearTimeout(_searchTimer);
-    _searchTimer = setTimeout(function() { _searchTimer = null; _syncUrl(); updateCounts(); render(); }, 150);
+    _searchTimer = setTimeout(function() {
+      _searchTimer = null;
+      _filterChange(function() { _syncUrl(); updateCounts(); render(); },
+        function() { document.getElementById('filt-search').value = _shownSearch; });
+    }, 150);
   });
-  document.getElementById('btn-refresh').addEventListener('click', load);
+  document.getElementById('btn-refresh').addEventListener('click', async function() {
+    if (await _okToDropOpenEdits('Refresh the list?', 'Refresh')) load();
+  });
   document.getElementById('btn-export').addEventListener('click', onExport);
   document.getElementById('btn-clear').addEventListener('click', onClearAll);
   document.getElementById('btn-reprocess-all').addEventListener('click', onReprocessAll);

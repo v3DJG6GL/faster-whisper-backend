@@ -1252,6 +1252,49 @@ def test_page_unsaved_edits_guard_covers_groups_and_bulk_actions(client):
         assert "_okToDropOpenEdits(" in body, fn
 
 
+def test_page_filters_and_background_reloads_ask_before_dropping_edits(client):
+    """The filter controls (status, speaker, model, search, Refresh) end in
+    render() / load(), which rebuild open capture cards from a fresh GET and
+    collapse group cards: they ask first and revert on a cancel. A finished
+    background job or modal action skips its reload while a card is dirty,
+    and loadMoreSamples no longer renders unconditionally in `finally`."""
+    html = client.get("/captures").text
+    helper = html[html.index("async function _filterChange(apply, revert)"):]
+    helper = helper[:helper.index("function _loadUnlessDirty(msg, err)")]
+    assert "await _okToDropOpenEdits(" in helper
+    assert "if (ok) apply(); else revert();" in helper
+    unless = html[html.index("function _loadUnlessDirty(msg, err)"):]
+    unless = unless[:unless.index("\n  }\n")]
+    assert "if (!_anyOpenDirty()) {" in unless and "return load();" in unless
+    assert unless.index("return load();") < unless.index("List not refreshed")
+    wire = html[html.index("var grp = buildStatusButtonGroup("):]
+    wire = wire[:wire.index("document.getElementById('btn-export')")]
+    assert wire.count("_filterChange(") == 4
+    assert "onChange: function(ids) { _filtSpeakers = ids;" not in wire
+    assert ("addEventListener('click', async function() {\n"
+            "    if (await _okToDropOpenEdits('Refresh the list?'") in wire
+    assert "getElementById('btn-refresh').addEventListener('click', load)" not in wire
+    poll = html[html.index("function _pollJob(statusUrl, render)"):]
+    poll = poll[:poll.index("}).catch(function(e) {")]
+    assert "_loadUnlessDirty(failed ?" in poll
+    assert "load();" not in poll and "toast(" not in poll
+    commit = html[html.index("getElementById('merge-commit').onclick"):]
+    commit = commit[:commit.index("api('POST', '/captures/api/samples'")]
+    assert "await _okToDropOpenEdits(" in commit
+    dissolve = html[html.index("dissolveBtn.onclick = async function() {"):]
+    dissolve = dissolve[:dissolve.index("api('DELETE'")]
+    assert "await _okToDropOpenEdits(" in dissolve
+    assert "        load();   // refresh main captures list" not in html
+    assert "    load();              // refresh main captures list" not in html
+    more = html[html.index("async function loadMoreSamples()"):]
+    more = more[:more.index("async function reloadCounts()")]
+    fin = more[more.index("} finally {"):more.index("if (!loaded) return;")]
+    assert "render();" not in fin
+    tail = more[more.index("if (!loaded) return;"):]
+    assert (tail.index("await _okToDropOpenEdits('Show the loaded groups?'")
+            < tail.index("render();"))
+
+
 def test_page_render_drops_hidden_rows_from_the_selection(client):
     """A filter or search change kept hidden ids selected, so a bulk Dismiss /
     Delete reached rows no longer on screen."""
@@ -1399,6 +1442,34 @@ def test_regenerate_of_a_sample_dissolved_mid_wait_is_404(client, make_user_key,
     assert built == []
 
 
+def test_build_merged_wav_resolves_member_audio_from_the_light_row(
+        client, monkeypatch):
+    """Only audio_relpath is needed, under the rebuild lock: no full-row
+    get_capture (a json.loads of the words + segments blobs) per member."""
+    from fastapi import HTTPException
+
+    from faster_whisper_backend.captures import samples as capture_samples
+    from faster_whisper_backend.captures import store as captures_store
+
+    ids = _mixed_pair(None, "de")
+
+    def _boom(cid):
+        raise AssertionError("_build_merged_wav must not call get_capture")
+
+    monkeypatch.setattr(captures_store, "get_capture", _boom)
+    monkeypatch.setattr(capture_samples.cfg,
+                        "CAPTURES_VAD_TRIM_ENABLED_FOR_SAMPLES", False,
+                        raising=False)
+    duration_ms, hashes, _trims = capture_samples._build_merged_wav(
+        sid="lightwav00001", member_ids=ids, silence_ms=100)
+    assert sorted(hashes) == sorted(ids) and duration_ms > 0
+    with pytest.raises(HTTPException) as ei:
+        capture_samples._build_merged_wav(
+            sid="lightwav00002", member_ids=[ids[0], "nosuchcid000"],
+            silence_ms=100)
+    assert ei.value.status_code == 404
+
+
 def _de_scoped_pipeline(monkeypatch):
     """Stand-in for a de-only rule: lowercases when scoped to "de"."""
     langs: list = []
@@ -1494,8 +1565,9 @@ def test_patch_capture_runs_off_the_loop_under_the_corrections_lock(
 def test_audio_and_delete_read_the_row_off_the_loop(client, make_user_key,
                                                     monkeypatch):
     """get_capture json.loads the words + segments blobs on the connection
-    clear_all VACUUMs; the audio route (reviewers fire it in bursts) and the
-    delete route must not run it on the event loop."""
+    clear_all VACUUMs; the audio route (reviewers fire it in bursts), the
+    card-expand detail route and the delete route must not run it on the
+    event loop."""
     import asyncio
 
     from faster_whisper_backend.captures import store as captures_store
@@ -1519,9 +1591,49 @@ def test_audio_and_delete_read_the_row_off_the_loop(client, make_user_key,
     # No WAV on disk: the row is found, then the file probe answers 410.
     assert client.get("/captures/api/offloop00001/audio",
                       headers=h).status_code == 410
+    assert client.get("/captures/api/offloop00001",
+                      headers=h).status_code == 200
     assert client.delete("/captures/api/offloop00001",
                          headers=h).status_code == 200
     assert seen and not any(seen)
+
+
+def test_sample_and_by_request_routes_read_the_store_off_the_loop():
+    """The samples store shares the captures connection that clear_all holds
+    across a VACUUM, so no route body may call one of these reads inline —
+    only inside a helper handed to asyncio.to_thread."""
+    import ast
+    import inspect
+    import textwrap
+
+    from faster_whisper_backend.captures import routes as cr
+
+    banned = {"get_sample", "get_members", "find_by_request_id",
+              "get_capture", "_assert_member_sample_not_locked"}
+
+    def _inline_calls(fn):
+        tree = ast.parse(textwrap.dedent(inspect.getsource(fn)))
+        route = tree.body[0]
+        out, todo = [], list(route.body)
+        while todo:
+            node = todo.pop()
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef,
+                                 ast.Lambda)):
+                continue  # a helper body runs wherever it is handed
+            if isinstance(node, ast.Call):
+                f = node.func
+                name = f.attr if isinstance(f, ast.Attribute) else getattr(
+                    f, "id", None)
+                if name in banned:
+                    out.append(name)
+            todo.extend(ast.iter_child_nodes(node))
+        return out
+
+    for fn in (cr.by_request_id_api, cr.get_capture_api, cr.delete_capture_api,
+               cr.get_sample_api, cr.patch_sample_api,
+               cr.regenerate_sample_api, cr.dissolve_sample_api,
+               cr.get_sample_audio_api):
+        assert _inline_calls(fn) == [], fn.__name__
 
 
 def test_patch_of_a_sample_dissolved_mid_apply_is_404(client, make_user_key,
@@ -1654,6 +1766,69 @@ def test_preview_save_chips_writes_off_the_loop_and_skips_newly_grouped(
     assert r.status_code == 200, r.text
     assert seen == [(ids[0], False, True)]
     assert list(r.json()["saved"]) == [ids[0]]
+
+
+def _two_word_member(conn, cid, sid, uid, order, chips):
+    from faster_whisper_backend.captures import store as captures_store
+
+    _insert_member(conn, cid, sid, user_id=uid)
+    words = json.dumps([{"word": w, "start": i * 0.1, "end": i * 0.1 + 0.05}
+                        for i, w in enumerate(("x", "y"))])
+    conn.execute("UPDATE captures SET words = ?, sample_order = ? WHERE id = ?",
+                 (words, order, cid))
+    captures_store.update_capture(cid, {"corrections": chips})
+
+
+def test_group_chip_save_keeps_a_members_anchorless_chip(
+        client, make_user_key):
+    """An anchorless chip (no idx — a PATCH that omitted it, or an idx the
+    cleaner stripped) has no place in the group projection, so the split
+    cannot hand it back; the REPLACE fan-out used to delete it on any chip
+    save of the group, even one editing a different member."""
+    from faster_whisper_backend.captures import samples_store as gs
+    from faster_whisper_backend.captures import store as captures_store
+
+    uid, raw_key = make_user_key("root", is_admin=True)
+    sid = "anchorless0001"
+    conn = captures_store._require_conn()
+    _insert_sample(conn, gs, sid, locked=False, user_id=uid)
+    free = {"wrong": "foo", "correct": "bar"}
+    _two_word_member(conn, "anchlessmem1", sid, uid, 0,
+                     [{"wrong": "x", "correct": "X", "idx": 0}, free])
+    _two_word_member(conn, "anchlessmem2", sid, uid, 1,
+                     [{"wrong": "x", "correct": "P", "idx": 0}])
+    h = bearer(raw_key)
+    proj = client.get(f"/captures/api/samples/{sid}",
+                      headers=h).json()["sample"]["corrections"]
+    assert [c["idx"] for c in proj] == [0, 2]
+    edited = [proj[0], dict(proj[1], correct="Q")]
+    r = client.patch(f"/captures/api/samples/{sid}", headers=h,
+                     json={"corrections": edited, "baseline_corrections": proj})
+    assert r.status_code == 200, r.text
+    m1 = captures_store.get_capture("anchlessmem1")["corrections"]
+    assert any(c["wrong"] == "foo" and c["correct"] == "bar"
+               and c.get("idx") is None for c in m1)
+    m2 = captures_store.get_capture("anchlessmem2")["corrections"]
+    assert [c["correct"] for c in m2] == ["Q"]
+
+
+def test_preview_save_chips_keeps_a_members_anchorless_chip(
+        client, make_user_key):
+    """Same REPLACE fan-out on a not-yet-merged proposal: the anchorless chip
+    of an unmerged member survives a chip save."""
+    from faster_whisper_backend.captures import store as captures_store
+
+    _uid, raw_key = make_user_key("root", is_admin=True)
+    ids = _mixed_pair(None, "de")
+    captures_store.update_capture(ids[0], {"corrections": [
+        {"wrong": "foo", "correct": "bar"}]})
+    r = client.post("/captures/api/samples/preview-save-chips",
+                    headers=bearer(raw_key),
+                    json={"member_ids": ids, "corrections": []})
+    assert r.status_code == 200, r.text
+    kept = captures_store.get_capture(ids[0])["corrections"]
+    assert [(c["wrong"], c["correct"]) for c in kept] == [("foo", "bar")]
+    assert r.json()["saved"][ids[0]] == 1
 
 
 def test_patch_keeps_every_chip_the_schema_accepts(client, make_user_key):

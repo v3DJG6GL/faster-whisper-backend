@@ -102,12 +102,14 @@ def three_way_merge_corrections(
           a concurrent edit).
 
     Merge key is `(idx, idx_end)` with idx_end defaulting to idx for
-    anchored chips. Anchorless chips (no integer `idx`) bypass the
-    three-way delta — they have no positional identity, so attempting
-    to match baseline-edit pairs collapses every (None, None) entry into
-    one and silently drops chips. Instead, the result keeps every
-    anchorless chip from `current` plus every anchorless chip from
-    `edited` (deduplicated by `(wrong, correct)`)."""
+    anchored chips. Anchorless chips (no integer `idx`) have no positional
+    identity — keying them by position collapses every (None, None) entry
+    into one and silently drops chips — so they are keyed by
+    `(wrong, correct)` instead, under the same delta rule: one the user
+    removed (in baseline, not in edited) is dropped, and edited ones are
+    added. With an empty baseline (the reports resubmit path) this is the
+    union of `current` and `edited`. An edit of an anchorless chip's
+    `correct` is a remove of the old key plus an add of the new one."""
     def key(c: dict[str, Any]) -> "tuple[int, int] | None":
         i = c.get("idx")
         if not isinstance(i, int):
@@ -131,7 +133,7 @@ def three_way_merge_corrections(
                 anchored[k] = c
         return anchored, anchorless
 
-    base_anc, _ = _split(baseline)
+    base_anc, base_free = _split(baseline)
     edit_anc, edit_free = _split(edited)
     cur_anc, cur_free = _split(current)
 
@@ -156,9 +158,12 @@ def three_way_merge_corrections(
         except (TypeError, ValueError):
             return (1, 0)
 
-    # Anchorless chips: union current + edited, deduped by (wrong, correct).
-    # Edited entries win on collision (latest user submission overwrites).
-    merged_free = {**cur_free, **edit_free}
+    # Anchorless chips: the same delta keyed by (wrong, correct). Without the
+    # baseline a removed (or re-worded) chip came straight back from
+    # `current`. Edited entries win on collision.
+    merged_free = {k: v for k, v in cur_free.items()
+                   if not (k in base_free and k not in edit_free)}
+    merged_free.update(edit_free)
     return sorted(out.values(), key=_sort_key) + sorted(
         merged_free.values(), key=_sort_key,
     )

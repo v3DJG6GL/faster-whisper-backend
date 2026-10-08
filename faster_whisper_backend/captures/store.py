@@ -1119,13 +1119,19 @@ def bulk_update_status(ids: list[str], new_status: str) -> list[dict[str, Any]]:
     if not ids:
         return []
     conn = _require_conn()
-    placeholders = ",".join("?" * len(ids))
     now = time.time()
+    # Chunked like _delete_ids / get_captures_light: BulkStatusIn admits 1000
+    # ids, past the classic 999 bind-variable limit. The UPDATE chunks share
+    # one transaction so the pass stays all-or-nothing, as the single
+    # statement was.
+    chunks = [ids[off:off + 500] for off in range(0, len(ids), 500)]
     with _lock:
-        prev = conn.execute(
-            f"SELECT id, status, user_id FROM captures"
-            f" WHERE id IN ({placeholders})", ids,
-        ).fetchall()
+        prev: list[sqlite3.Row] = []
+        for chunk in chunks:
+            prev.extend(conn.execute(
+                f"SELECT id, status, user_id FROM captures"
+                f" WHERE id IN ({','.join('?' * len(chunk))})", chunk,
+            ).fetchall())
         if not prev:
             return []
         found = [r["id"] for r in prev]
@@ -1134,17 +1140,25 @@ def bulk_update_status(ids: list[str], new_status: str) -> list[dict[str, Any]]:
         # "ready this week" in stats(). It is still reported (prev_status ==
         # new_status) so the caller's accounting and undo stay the same.
         if new_status == "new":
-            conn.execute(
-                f"UPDATE captures SET status = ?, reviewed_ts = NULL"
-                f" WHERE id IN ({','.join('?' * len(found))}) AND status != ?",
-                [new_status, *found, new_status],
-            )
+            sql, head = "UPDATE captures SET status = ?, reviewed_ts = NULL", [new_status]
         else:
-            conn.execute(
-                f"UPDATE captures SET status = ?, reviewed_ts = ?"
-                f" WHERE id IN ({','.join('?' * len(found))}) AND status != ?",
-                [new_status, now, *found, new_status],
-            )
+            sql, head = "UPDATE captures SET status = ?, reviewed_ts = ?", [new_status, now]
+        conn.execute("BEGIN")
+        try:
+            for off in range(0, len(found), 500):
+                chunk = found[off:off + 500]
+                conn.execute(
+                    f"{sql} WHERE id IN ({','.join('?' * len(chunk))})"
+                    f" AND status != ?",
+                    [*head, *chunk, new_status],
+                )
+            # Inside the try (see samples_store.dissolve_sample): a failed
+            # COMMIT can leave the transaction open on the shared connection.
+            conn.execute("COMMIT")
+        except BaseException:
+            if conn.in_transaction:
+                conn.execute("ROLLBACK")
+            raise
     owners = {r["user_id"] for r in prev}
     try:
         from faster_whisper_backend.captures import merge_proposer as captures_merge_proposer

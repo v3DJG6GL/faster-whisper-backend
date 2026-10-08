@@ -432,7 +432,8 @@ def test_bulk_delete_removes_rows_and_skips_locked(client, make_user_key):
 
 def test_bulk_guard_never_loads_the_full_capture_row(client, make_user_key,
                                                      monkeypatch):
-    """Admission reads id / user_id / status / sample_id only. get_capture
+    """Admission reads id / user_id / status / sample_id (plus audio_relpath,
+    to tell a restored audio_missing row) via get_captures_light. get_capture
     json.loads the words + segments blobs — per id, up to 1000 times."""
     from faster_whisper_backend.captures import store as captures_store
 

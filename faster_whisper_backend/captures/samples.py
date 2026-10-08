@@ -110,8 +110,12 @@ def _build_merged_wav(
 
     if member_paths is None:
         member_paths = []
+        # The light projection, not get_capture: only audio_relpath is read
+        # here, and this runs under the per-sid rebuild lock — a full row
+        # json.loads the words + segments blobs per member.
+        light = captures_store.get_captures_light(member_ids)
         for mid in member_ids:
-            cap = captures_store.get_capture(mid)
+            cap = light.get(mid)
             if cap is None:
                 raise HTTPException(
                     status.HTTP_404_NOT_FOUND, f"capture {mid} not found",

@@ -2,7 +2,7 @@
 
 Covers clean_corrections (field caps, idx/idx_end range rules, list cap,
 malformed tolerance) and three_way_merge_corrections (anchored delta rules,
-anchorless union/dedup, ordering).
+anchorless delta keyed by (wrong, correct), ordering).
 """
 
 from faster_whisper_backend.core import text_corrections as tc
@@ -188,6 +188,29 @@ def test_merge_anchorless_not_collapsed():
     cur = [_chip("a", "b"), _chip("c", "d")]
     out = tc.three_way_merge_corrections([], [], cur)
     assert len(out) == 2
+
+
+def test_merge_anchorless_user_removed():
+    # An anchorless chip in baseline but not edited is a removal; it used
+    # to come straight back from `current` and could never be deleted.
+    a = _chip("foo", "bar")
+    assert tc.three_way_merge_corrections([a], [], [a]) == []
+
+
+def test_merge_anchorless_user_edited_replaces_old():
+    # Re-wording `correct` is remove-old + add-new, not two chips.
+    a = _chip("foo", "bar")
+    a2 = _chip("foo", "baz")
+    assert tc.three_way_merge_corrections([a], [a2], [a]) == [a2]
+
+
+def test_merge_anchorless_concurrent_add_survives():
+    # A chip only in `current` (another tab's save) is not the user's delta.
+    a = _chip("foo", "bar")
+    other = _chip("x", "y")
+    out = tc.three_way_merge_corrections([a], [a], [a, other])
+    assert {(c["wrong"], c["correct"]) for c in out} == {
+        ("foo", "bar"), ("x", "y")}
 
 
 def test_merge_ordering_anchored_before_anchorless():

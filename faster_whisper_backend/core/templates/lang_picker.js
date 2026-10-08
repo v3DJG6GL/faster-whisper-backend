@@ -152,8 +152,17 @@
             + (allIn ? '✓ ' : '') + g + '</span>'
             + '<span class="lp-code">' + gc.join(', ') + '</span>';
           opt.addEventListener('click', function() {
-            if (allIn) { gc.forEach(function(c) { _removeCode(c); }); }
-            else { gc.forEach(function(c) { _addCode(c); }); }
+            // One commit for the whole family: a per-code _addCode /
+            // _removeCode loop fired onChange once per member, so the page
+            // saw (and committed) every half-applied list on the way.
+            if (allIn) {
+              codes = codes.filter(function(c) { return gc.indexOf(c) < 0; });
+            } else {
+              gc.forEach(function(c) { if (codes.indexOf(c) < 0) codes.push(c); });
+              codes.sort();
+            }
+            _renderPills();
+            _fire();
             _renderDropdown(searchInp ? searchInp.value : '');
           });
           dropContent.appendChild(opt);
