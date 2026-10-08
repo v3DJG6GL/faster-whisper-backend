@@ -217,7 +217,6 @@ class StreamSession:
 
         self.raw_confirmed = ""            # cross-utterance verbatim accumulator
         self._committed_len = 0            # chars of processed text locked as append-only committed
-        self._prev_processed = ""          # last emitted document (document-level LocalAgreement)
         self._reset_document()
         self._trimmed_text = ""            # committed text whose audio _maybe_trim cut away
         self._trimmed_sec = 0.0            # seconds of utterance audio _maybe_trim cut away
@@ -726,7 +725,6 @@ class StreamSession:
             })
         self.raw_confirmed = ""
         self._committed_len = 0
-        self._prev_processed = ""
         self._reset_document()
         self._prompt = self.base_prompt.strip()
         self._idle_silence_ms = 0
@@ -860,7 +858,6 @@ class StreamSession:
         committed = processed[:commit_len]
         tail = processed[commit_len:]
         self._committed_len = commit_len
-        self._prev_processed = processed
         self._sent = processed
         if raw_end is not None:
             self._sent_raw_end = raw_end
@@ -924,7 +921,7 @@ class StreamSession:
         newest sentence is reported as ``tail`` for one extra finalize. That
         split is presentation only — nothing in the tail is rewritten later. A
         safety valve commits an over-long tail so it can't grow without bound."""
-        agree = _common_prefix_len(processed, self._prev_processed)
+        agree = _common_prefix_len(processed, self._sent)   # _sent: the previous document
         boundary = 0
         for m in _TERMINATOR_RE.finditer(processed):
             if m.end() <= agree:

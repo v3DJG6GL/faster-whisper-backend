@@ -157,7 +157,7 @@ async def rebuild_caches_off_loop(reason: str) -> None:
 
 async def apply_hot_changes(
     written: dict[str, Any],
-    prev_model_overrides: "dict[str, Any] | None" = None,
+    _unused_prev_model_overrides: Any = None,
 ) -> dict[str, Any]:
     """Apply hot edits from a config save to the running cfg module, rebuild
     caches, and evict load-time-affected models.
@@ -170,6 +170,13 @@ async def apply_hot_changes(
 
     Returns a dict suitable to splat into the JSON response envelope:
       hot_applied, cold_pending, env_pinned_ignored, evicted.
+
+    The second parameter is ignored (admin/routes.py still passes its own
+    pre-save snapshot until that call is updated): the per-model eviction
+    diff snapshots the running MODEL_OVERRIDES itself, right before the
+    setattr. A caller's snapshot was taken before its awaited save, so two
+    overlapping saves both diffed against the same stale value and could
+    leave a model loaded under the settings in between.
     """
     # Apply hot edits to the running cfg module so the next request sees them.
     # We re-load from disk so the in-memory values get the same coercions
@@ -183,6 +190,9 @@ async def apply_hot_changes(
     cold_changed: list[str] = []
     needs_cache_rebuild = False
     env_pinned = config_store.env_pinned_fields()
+    # What the loaded models were built from: taken below with no await before
+    # the setattr, so a concurrent save cannot slip in between.
+    prev_model_overrides: "dict[str, Any] | None" = None
 
     for name in written:
         if name in env_pinned:
@@ -204,6 +214,7 @@ async def apply_hot_changes(
             # save_overrides keeps WHISPER_MODEL_OVERRIDE__ env values out of
             # the file; lay them back on the running cfg.
             new_val = config_store.with_env_model_overrides(new_val)
+            prev_model_overrides = dict(getattr(cfg, "MODEL_OVERRIDES", None) or {})
         setattr(cfg, name, new_val)
         if name in settings_schema.CACHE_REBUILD_FIELDS:
             needs_cache_rebuild = True
@@ -244,14 +255,15 @@ async def apply_hot_changes(
             # fallback: evict ALL models. They reload lazily so this is cheap.
             ev = await tx_models.drain_then_evict(None)
             evicted.extend(ev)
-        if "MODEL_OVERRIDES" in written:
+        if prev_model_overrides is not None:
             # Per-model override changed for one or more model ids — evict
             # only those whose LOAD-TIME subset (added, changed or removed
-            # key) differs between the pre-save snapshot and the new bundle.
+            # key) differs between the running value replaced above and the
+            # new bundle (None: env-pinned, nothing changed in memory).
             # A removed id whose bundle held only decode-time keys needs no
             # reload, matching the global-field rule.
             new_overrides = getattr(cfg, "MODEL_OVERRIDES", None) or {}
-            old_overrides = prev_model_overrides or {}
+            old_overrides = prev_model_overrides
             lt = settings_schema.LOAD_TIME_FIELDS
             for model_id in set(old_overrides) | set(new_overrides):
                 o = old_overrides.get(model_id)

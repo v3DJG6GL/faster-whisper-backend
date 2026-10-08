@@ -195,6 +195,21 @@ def test_dictate_page_keeps_the_socket_open_until_closing(app_module):
     assert "releaseMic()" in closing
 
 
+def test_dictate_page_boundary_strips_the_suffix_before_the_line_break(app_module):
+    """The server puts a configured output suffix in front of the boundary's
+    separator (and repeats it as m.suffix). With the default empty separator
+    the preview must still show a line break between documents, so the
+    fallback applies to the separator minus the suffix — not to the raw
+    separator, which the suffix alone made truthy (">> A <<>> B")."""
+    with TestClient(app_module.app, client=("127.0.0.1", 12345)) as client:
+        body = client.get("/dictate").text
+    block = body.split('m.type === "boundary"', 1)[1].split("else if (m.type", 1)[0]
+    assert 'const suf = m.suffix || "";' in block
+    assert 'const sep = (m.separator || "").slice(suf.length);' in block
+    assert 'if (docPrefix) docPrefix += suf + (sep || "\\n");' in block
+    assert 'docPrefix += m.separator || "\\n"' not in block
+
+
 def test_dictate_page_stop_flow_guards(app_module):
     """Pins the client half of the stop flow, which has no JS test harness:
     a Stop during the mic prompt / worklet load cancels the pending start
@@ -1046,10 +1061,24 @@ def test_stream_formats_the_first_final_in_the_detected_language(app_module, fak
     its decode detected. It used to be recorded only in on_final — after the
     final had gone out formatted with EVERY language's rules (a German
     question got the Spanish '¿') — and the closing final then formatted the
-    same sentence without it."""
-    from tests.conftest import FakeSegment
+    same sentence without it. The previews guess Spanish: _fmt_lang falls back
+    to the partials' guess, so with the preview language matching the final's
+    this test passed even with the final's own detection removed."""
+    from tests.conftest import FakeInfo, FakeSegment
     fake_model._segments = [FakeSegment(" Hat der Patient Fieber Fragezeichen", 0.0, 1.0)]
+    real_transcribe = fake_model.transcribe
+    seen = {"preview": 0, "final": 0}
+
+    def transcribe(path, **kwargs):
+        segs, info = real_transcribe(path, **kwargs)
+        if isinstance(kwargs.get("temperature"), (list, tuple)):
+            seen["final"] += 1          # the final decode's temperature ladder
+            return segs, info
+        seen["preview"] += 1
+        return segs, FakeInfo(language="es")
+    monkeypatch.setattr(fake_model, "transcribe", transcribe)
     msgs = _stream_once(app_module, monkeypatch)
+    assert seen["preview"] and seen["final"]
     docs = [m["committed"] + m.get("tail", "") for m in msgs if m["type"] == "final"]
     assert len(docs) >= 2                                # the utterance's final + the close
     assert docs[0] == "Hat der Patient Fieber?"

@@ -27,7 +27,7 @@ def _run(monkeypatch, old, new):
     monkeypatch.setattr(config_store, "load_overrides",
                         lambda: {"MODEL_OVERRIDES": new})
     monkeypatch.setattr(tx_models, "drain_then_evict", spy)
-    asyncio.run(pl_apply.apply_hot_changes({"MODEL_OVERRIDES": new}, old))
+    asyncio.run(pl_apply.apply_hot_changes({"MODEL_OVERRIDES": new}))
     return calls
 
 
@@ -35,6 +35,29 @@ def test_removing_load_time_key_evicts_model(monkeypatch):
     old = {"A": {"MODEL_DEVICE": "cpu", "BEAM_SIZE": 5}}
     new = {"A": {"BEAM_SIZE": 5}}
     assert _run(monkeypatch, old, new) == ["A"]
+
+
+def test_overlapping_save_diffs_against_the_running_value(monkeypatch):
+    # Two admin tabs both based on S0: A saved S1 (X on cuda) and X reloaded
+    # under it; B now saves S2 with X back at S0's cpu. The diff must run
+    # against what the running model was built from (S1), not a caller's
+    # pre-save S0 snapshot — against S0 nothing changed and X stayed on cuda.
+    s0 = {"X": {"MODEL_DEVICE": "cpu"}}
+    s1 = {"X": {"MODEL_DEVICE": "cuda"}}
+    s2 = {"X": {"MODEL_DEVICE": "cpu"}}
+    calls: list = []
+
+    async def spy(model_id=None):
+        calls.append(model_id)
+        return [model_id]
+
+    monkeypatch.setattr(cfg, "MODEL_OVERRIDES", s1, raising=False)
+    monkeypatch.setattr(config_store, "env_pinned_fields", lambda: frozenset())
+    monkeypatch.setattr(config_store, "load_overrides", lambda: {"MODEL_OVERRIDES": s2})
+    monkeypatch.setattr(tx_models, "drain_then_evict", spy)
+    # The stale snapshot a caller may still pass is ignored.
+    asyncio.run(pl_apply.apply_hot_changes({"MODEL_OVERRIDES": s2}, s0))
+    assert calls == ["X"]
 
 
 def test_unrelated_decode_edit_does_not_evict(monkeypatch):

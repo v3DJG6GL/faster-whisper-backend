@@ -239,6 +239,52 @@ def test_verbose_mode_is_scanned_without_its_whitespace_and_comments():
         g.validate([("r", r"(?x)z*([nd]+\ ?) +\#", "")])
 
 
+def test_verbose_mode_whitespace_does_not_steer_the_synthetic_probe():
+    """The synthetic probe and the chain seed must read a `(?x)` pattern the
+    way the engine does: `- * - * …` is `-*-*…`, whose run is dashes. Built
+    from the raw spacing, the probe was 240 spaces the pattern never touches
+    and validate() accepted what the unspaced spelling is refused for."""
+    pat = r"(?x)- * - * - * - * - * [#]"
+    synth = g._synthetic_fixture(pat)
+    assert synth is not None and synth.startswith("-" * g._SYNTH_RUN)
+    with pytest.raises(ValueError):
+        g.validate([("t", pat, "x")])
+
+
+@pytest.mark.parametrize("pat", [
+    r"(?i)\b(?:äh|Äh)+\b",
+    r"(?i)(?:ja |JA )+x",
+    r"(?:(?i:x)|y)(?:ab|AB)+#",
+])
+def test_case_variant_branches_overlap_under_ignorecase(pat):
+    """Under `(?i)` branches that differ only in case match the same input, so
+    a repeated group of them is `(a|a)+`: the overlap screen compared them
+    case-sensitively and validate() accepted an exponential pattern. A scoped
+    `(?i:...)` anywhere counts too (over-approximation)."""
+    assert g._nested_repetition(pat)
+    with pytest.raises(ValueError, match="nested repetition"):
+        g.validate([("e", pat, "")])
+
+
+def test_case_variant_branches_stay_distinct_without_ignorecase():
+    """Without IGNORECASE `äh` and `Äh` are different inputs, and an escape's
+    case is never folded: `\\d` and `\\D` are disjoint classes."""
+    assert not g._nested_repetition(r"(?:äh|Äh)+\b")
+    assert not g._nested_repetition(r"(?i)(?:\d|\D)+#")
+
+
+def test_overlap_through_a_later_nested_alternative_is_seen():
+    """A branch holding a nested alternation is compared through one witness
+    per alternative: `(?:a|b)c` overlaps `bc` through its SECOND alternative,
+    which the first-alternative witness ("ac") missed — the class spelling
+    `(?:[ab]c|bc)+#` was refused all along."""
+    assert g._witnesses("(?:a|b)c") == ["ac", "bc"]
+    assert g._nested_repetition(r"(?:(?:a|b)c|bc)+#")
+    assert g._nested_repetition(r"(?:bc|(?:a|b)c)+#")
+    with pytest.raises(ValueError, match="nested repetition"):
+        g.validate([("e", r"(?:(?:a|b)c|bc)+#", "")])
+
+
 def test_short_literal_expansions_are_accepted():
     """A bounded literal expansion of a short token is a normal dictation
     rule; the analytic growth bound must not refuse it."""

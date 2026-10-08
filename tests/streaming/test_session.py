@@ -282,7 +282,7 @@ def test_hard_break_resets_document_after_long_silence():
     assert boundaries[0]["separator"] == "\n"
     assert s.raw_confirmed == ""                  # document reset → fresh grouping next
     assert s._committed_len == 0
-    assert s._prev_processed == ""
+    assert s._sent == ""
 
 
 def test_no_partial_decode_storm_during_trailing_silence():

@@ -42,7 +42,9 @@ Protocol (see streaming_session for the emission contract):
      closing ``last`` final is the document, not an utterance: its ordinal
      belongs to none.
     {"type":"captured",id,utterance}  receipt for a stored capture (after its final)
-    {"type":"boundary",utterance,separator}  long-silence hard break: fresh document
+    {"type":"boundary",utterance,separator,suffix?}  long-silence hard break:
+     fresh document (``separator`` already starts with the closing output
+     suffix, which ``suffix`` repeats on its own)
     {"type":"closing"}  the server is done; the socket closes next
 
 The handshake's same-origin check is auth/hosts.py's, shared with main's
@@ -1244,25 +1246,38 @@ async def transcribe_stream(ws: WebSocket) -> None:
         # Whether a final of the current document has gone out (with the
         # prefix) and its suffix is still owed.
         _doc_open = [False]
+        # The prefix/suffix pair the open document started with. _refresh_ident
+        # rebinds out_prefix/out_suffix on a config bump, but within a document
+        # every final must extend the previous one (the diff-typing contract in
+        # the module docstring), so a new pair applies from the next document.
+        _doc_wrap = [out_prefix, out_suffix]
 
         async def emit(message):
             kind = message.get("type")
             if kind == "final":
                 if not include_words:
                     message.pop("words", None)   # word timestamps only for verbose_json
+                if not _doc_open[0]:
+                    _doc_wrap[:] = [out_prefix, out_suffix]
                 if message.get("committed") or message.get("tail"):
                     _doc_open[0] = True
-                if out_prefix:
+                prefix, suffix = _doc_wrap
+                if prefix:
                     if message.get("committed"):
-                        message["committed"] = out_prefix + message["committed"]
+                        message["committed"] = prefix + message["committed"]
                     elif message.get("tail"):
-                        message["tail"] = out_prefix + message["tail"]
-                if out_suffix and message.get("last"):
-                    message["committed"] = (message.get("committed") or "") + out_suffix
+                        message["tail"] = prefix + message["tail"]
+                if suffix and message.get("last"):
+                    message["committed"] = (message.get("committed") or "") + suffix
                     _doc_open[0] = False
             elif kind == "boundary":
-                if out_suffix and _doc_open[0]:
-                    message["separator"] = out_suffix + (message.get("separator") or "")
+                suffix = _doc_wrap[1]
+                if suffix and _doc_open[0]:
+                    # Also as its own field: a display client (/dictate) can
+                    # then tell the suffix from the separator proper and still
+                    # show the default empty separator as a line break.
+                    message["separator"] = suffix + (message.get("separator") or "")
+                    message["suffix"] = suffix
                 _doc_open[0] = False
             # Peer may have vanished mid-drain (page reload during dictation): the
             # socket is already closed, so swallow the send. Side-effects

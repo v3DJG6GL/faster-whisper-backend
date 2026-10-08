@@ -473,7 +473,12 @@ def _nested_repetition(pat: str) -> bool:
     A verbose-mode pattern is scanned with its whitespace and comments
     removed (``_strip_verbose``), and every pattern without its ``(?#...)``
     comments (``_strip_comments``).
+
+    Under IGNORECASE (``(?i)``, or over-approximating, any scoped ``(?i:...)``)
+    branches that differ only in case match the same input, so the overlap
+    test compares them case-insensitively: `(?i)(?:äh|Äh)+` is `(a|a)+`.
     """
+    icase = _ignorecase(pat)
     pat = _strip_comments(_strip_verbose(pat))
     n = len(pat)
     # One frame per open group plus a root frame. "rep": this level contains a
@@ -558,7 +563,7 @@ def _nested_repetition(pat: str) -> bool:
                 # (a|ab)+, (x|xx)+y, (n|d|nd)+# all let one run of input be
                 # split many ways, which backtracks exponentially. An empty
                 # branch — (|a)+ — is the degenerate case of the same thing.
-                if spans and _spans_overlap(pat, spans):
+                if spans and _spans_overlap(pat, spans, icase):
                     return True
             # A lookaround is matched once and never backtracked into, so a
             # repeat inside it cannot split the enclosing group's input
@@ -588,7 +593,7 @@ def _nested_repetition(pat: str) -> bool:
             # neither does one whose split a mandatory, disjoint next atom
             # pins down: `(?:(?:um|umm), )+` (see _follower_fixes_split).
             elif (spans and not frame["atomic"] and not possessive
-                    and _spans_overlap(pat, spans)
+                    and _spans_overlap(pat, spans, icase)
                     and not (i == close + 1
                              and _follower_fixes_split(pat, spans, i))):
                 stack[-1]["rep"] = True
@@ -610,7 +615,35 @@ def _nested_repetition(pat: str) -> bool:
     return False
 
 
-def _spans_overlap(pat: str, spans: "list[tuple[int, int]]") -> bool:
+def _ignorecase(pat: str) -> bool:
+    """True if any part of ``pat`` matches case-insensitively: a global
+    ``(?i)`` (or one the engine reads from a leading flag group), or — an
+    over-approximation — any scoped ``(?i:...)`` / ``(?i-x:...)`` anywhere."""
+    import re
+    try:
+        if re.compile(pat).flags & re.IGNORECASE:
+            return True
+    except Exception:  # noqa: BLE001 - an uncompilable pattern is refused elsewhere
+        return False
+    return re.search(r"\(\?[aLmsux]*i[aiLmsux]*(?:-[msx]*)?:", pat) is not None
+
+
+def _fold_case(branch: str) -> str:
+    """``branch`` lower-cased for comparison, escapes kept as written: ``\\D``
+    and ``\\d`` are different classes, not case variants."""
+    out = []
+    i = 0
+    while i < len(branch):
+        if branch[i] == "\\":
+            out.append(branch[i:i + 2])
+            i += 2
+            continue
+        out.append(branch[i].lower())
+        i += 1
+    return "".join(out)
+
+
+def _spans_overlap(pat: str, spans: "list[tuple[int, int]]", icase: bool = False) -> bool:
     """True if two of the alternation branches ``pat[a:b]`` in ``spans`` can
     match the same start of the input — the shape that lets one run of input
     split many ways once the alternation repeats.
@@ -620,16 +653,20 @@ def _spans_overlap(pat: str, spans: "list[tuple[int, int]]") -> bool:
     being byte-identical: (a|ab)+, (x|xx)+y, (n|d|nd)+# all let one run of
     input be split many ways, which backtracks exponentially. An empty branch
     — (|a)+ — is the degenerate case of the same thing.
+
+    ``icase``: the pattern matches case-insensitively somewhere, so branches
+    that differ only in case (``äh`` / ``Äh``) are the same branch.
     """
     stripped = [_strip_outer_group(pat[a:b]) for a, b in spans]
-    if len(set(stripped)) < len(stripped):
+    folded = [_fold_case(x) for x in stripped] if icase else stripped
+    if len(set(folded)) < len(folded):
         return True
-    if any(b != a and b.startswith(a) for a in stripped for b in stripped):
+    if any(b != a and b.startswith(a) for a in folded for b in folded):
         return True
     # Overlap through a class or shorthand is the same trap with no shared
     # text: (cx|[bc]x)+# splits "cxcx…" both ways. Refuse when one branch
     # matches the start of another branch's witness.
-    return any(_branches_overlap(a, b) for a in stripped for b in stripped)
+    return any(_branches_overlap(a, b, icase) for a in stripped for b in stripped)
 
 
 def _follower_fixes_split(pat: str, spans: "list[tuple[int, int]]", i: int) -> bool:
@@ -758,10 +795,15 @@ def _loose_quantifier(b: str) -> bool:
     return False
 
 
-def _branches_overlap(a: str, b: str) -> bool:
+def _branches_overlap(a: str, b: str, icase: bool = False) -> bool:
     """True if branch ``b`` matches a prefix of a string branch ``a`` matches.
 
-    Best effort over ``_witness``: an empty witness, or a branch that does not
+    Best effort over ``_witnesses`` — one per alternative of every group
+    nested in ``a``, so `(?:a|b)c` is seen to overlap `bc` through its second
+    alternative even though `(?:a|b)c` can never be the matcher (below).
+    ``icase`` compiles ``b`` case-insensitively, as the engine will. ``a == b``
+    is a branch paired with itself (two equal branches are caught earlier by
+    _spans_overlap's dedupe). An empty witness, or a branch that does not
     compile on its own (a group reference, an inline flag), never counts as an
     overlap. This runs IN-PROCESS on a user-supplied fragment, so ``b`` is
     matched only when that match is linear: never when it holds a nested
@@ -777,13 +819,11 @@ def _branches_overlap(a: str, b: str) -> bool:
     if (a == b or ("(" in b and "|" in b) or _loose_quantifier(b)
             or _fixed_count_product(b) > _MAX_FIXED_COUNT):
         return False
-    w = _witness(a)
-    if not w:
-        return False
     try:
-        return re.match(b, w) is not None
+        rx = re.compile(b, re.IGNORECASE if icase else 0)
     except Exception:  # noqa: BLE001 - a fragment need not compile alone
         return False
+    return any(w and rx.match(w) is not None for w in _witnesses(a))
 
 
 def _class_char(body: str, negated: bool) -> "str | None":
@@ -1024,7 +1064,7 @@ def _synthetic_fixture(pat: str) -> "str | None":
     run — the shape backtracking blows up on.
     """
     try:
-        char = _first_repeated_char(_strip_comments(pat))
+        char = _first_repeated_char(_strip_comments(_strip_verbose(pat)))
     except Exception:  # noqa: BLE001 - best effort, never fail the save
         return None
     if not char:
@@ -1050,24 +1090,38 @@ def _witness(pat: str, depth: int = 0) -> str:
     few wasted characters in a probe input; it can never reject anything by
     itself, because the chained probe's only verdict is the parent's timeout.
     """
-    out = []
+    return _witnesses(pat, depth)[0]
+
+
+def _witnesses(pat: str, depth: int = 0, limit: int = 16) -> "list[str]":
+    """Up to ``limit`` witnesses for ``pat`` (at least one, maybe ""), each at
+    most 64 characters: one per top-level alternative and per alternative of
+    every nested group, combined. The first is ``_witness``'s — every first
+    alternative. Built the same way: one representative character per atom,
+    a repeat written three times, optional atoms omitted."""
+    out: list[str] = []
+    cur = [""]
     i = 0
     n = len(pat)
-    while i < n and sum(len(p) for p in out) < 64:
+    while i < n and len(out) < limit:
         if pat[i] == "|":
-            break  # first alternative only
+            out.extend(cur)
+            cur = [""]
+            i += 1
+            continue
         char, group, j = _next_atom(pat, i)
         repeats, _atomic, k, _variable = _read_quantifier(pat, j)
         optional = k > j and not repeats  # `?` / `{0,1}` — leave it out
-        piece = ""
-        if group is not None:
-            piece = _witness(group, depth + 1) if depth < 4 else ""
-        elif char:
-            piece = char
-        if piece and not optional:
-            out.append(piece * (3 if repeats else 1))
+        if not optional and any(len(w) < 64 for w in cur):
+            if group is not None:
+                pieces = _witnesses(group, depth + 1, limit) if depth < 4 else []
+            else:
+                pieces = [char] if char else []
+            if pieces:
+                cur = [w + p * (3 if repeats else 1) for w in cur for p in pieces][:limit]
         i = max(k, j)
-    return "".join(out)[:64]
+    out.extend(cur)
+    return list(dict.fromkeys(w[:64] for w in out))[:limit]
 
 
 def _chain_advance(rx, pattern: str, replacement: str, chained: str) -> str:
@@ -1086,7 +1140,7 @@ def _chain_advance(rx, pattern: str, replacement: str, chained: str) -> str:
             # An entry that matches nothing in the running fixture substitutes
             # nothing, so its replacement — possibly the very run that
             # detonates a later entry — never enters the chain. Seed it.
-            seed = _witness(_strip_comments(pattern))
+            seed = _witness(_strip_comments(_strip_verbose(pattern)))
             if seed:
                 # Trim BEFORE appending so the seed is inside the cap: a chain
                 # already at the cap would otherwise drop it (and the

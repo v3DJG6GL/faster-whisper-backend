@@ -930,6 +930,53 @@ def test_stream_client_output_wrappers_survive_a_refresh(
     assert finals[-1]["last"] and finals[-1]["committed"].endswith(" <<")
 
 
+def test_stream_output_wrappers_change_only_at_a_document_boundary(
+        client, make_user_key, fake_model, app_module, monkeypatch):
+    # Within one document every final extends the previous one (clients may
+    # type just the difference), so a mid-document config bump must not swap
+    # the prefix of the open document: the new one applies after the boundary.
+    monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
+    monkeypatch.setattr(app_module.cfg, "STREAMING_HARD_BREAK_SILENCE_MS", 2000)
+    monkeypatch.setattr(app_module.cfg, "OUTPUT_PREFIX", "[old] ")
+    uid, raw_alice = make_user_key("alice")
+    from faster_whisper_backend.auth import api_keys_store
+    with client.websocket_connect(
+            "/v1/audio/transcriptions/stream", headers=bearer(raw_alice)) as ws:
+        ws.send_json({"type": "config", "model": "whisper-1",
+                      "audio": {"format": "pcm_s16le", "sample_rate": 16000}})
+        assert ws.receive_json()["type"] == "ready"
+        ws.send_bytes(_pcm(8000, 2500))
+        ws.send_bytes(_pcm(0, 1500))        # final, document stays open
+        early = []
+        while True:
+            m = ws.receive_json()
+            early.append(m)
+            if m.get("type") == "final":
+                break
+        monkeypatch.setattr(app_module.cfg, "OUTPUT_PREFIX", "[new] ")
+        api_keys_store.set_user_permissions(
+            uid, {"pages": {}, "config": {"overrides": {}, "profiles": [], "locks": []}})
+        ws.send_bytes(_pcm(8000, 2500))
+        ws.send_bytes(_pcm(0, 3000))        # final, then the hard break
+        ws.send_bytes(_pcm(8000, 2500))
+        ws.send_bytes(_pcm(0, 1500))
+        ws.send_json({"type": "stop"})
+        msgs = early + _drain(ws)
+    boundaries = [i for i, m in enumerate(msgs) if m.get("type") == "boundary"]
+    assert len(boundaries) == 1
+    texts = [(m.get("committed") or "") + (m.get("tail") or "")
+             for m in msgs[:boundaries[0]] if m.get("type") == "final"]
+    texts = [t for t in texts if t]
+    assert len(texts) >= 2
+    assert texts[0].startswith("[old] ")
+    for prev, cur in zip(texts, texts[1:]):
+        assert cur.startswith(prev), (prev, cur)
+    after = [(m.get("committed") or "") + (m.get("tail") or "")
+             for m in msgs[boundaries[0] + 1:] if m.get("type") == "final"]
+    after = [t for t in after if t]
+    assert after and all(t.startswith("[new] ") for t in after)
+
+
 def test_stream_output_suffix_closes_every_document_at_a_hard_break(
         client, make_user_key, fake_model, app_module, monkeypatch):
     # A hard break starts a fresh document that gets the prefix again, so the
@@ -955,6 +1002,9 @@ def test_stream_output_suffix_closes_every_document_at_a_hard_break(
     boundaries = [i for i, m in enumerate(msgs) if m.get("type") == "boundary"]
     assert len(boundaries) == 1
     assert msgs[boundaries[0]]["separator"] == " <<\n"
+    # The suffix also rides on its own, so a display client can tell it from
+    # the separator proper (/dictate shows an empty one as a line break).
+    assert msgs[boundaries[0]]["suffix"] == " <<"
     finals = [m for m in msgs if m.get("type") == "final"]
     after = [m for m in msgs[boundaries[0] + 1:] if m.get("type") == "final"]
     assert after and len(after) < len(finals)

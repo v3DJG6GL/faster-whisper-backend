@@ -291,7 +291,11 @@
       // `||` on purpose: the separator is what a TYPING client inserts between
       // documents, and its default is "" — on this preview page that would run
       // the two documents together, so an empty one shows as a line break.
-      if (docPrefix) docPrefix += m.separator || "\n";
+      // A configured output suffix arrives in front of the separator (and on
+      // its own as m.suffix): strip it first, or it alone would defeat the `||`.
+      const suf = m.suffix || "";
+      const sep = (m.separator || "").slice(suf.length);
+      if (docPrefix) docPrefix += suf + (sep || "\n");
       finalEl.textContent = docPrefix; tailEl.textContent = "";
     }
     else if (m.type === "loading") {
