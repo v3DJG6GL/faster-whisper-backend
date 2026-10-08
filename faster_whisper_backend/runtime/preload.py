@@ -137,8 +137,9 @@ def normalize_id(family: str, model_id: str) -> str:
     touches the whisper cache, so the same resolver runs here — a plan
     naming ``whisper-1`` must warm, and report resident, the model the client
     will actually be served. separation: audio-separator keys its singleton by
-    on-disk FILENAME while the allowlist holds friendly names. Both mappings
-    live here (and nowhere else) precisely because /v1/me open-coded the UVR
+    on-disk FILENAME while the allowlist holds friendly names, so the loader's
+    own rule (bgm_separation.model_filename) maps it. Callers go through here
+    rather than open-coding either mapping because /v1/me open-coded the UVR
     one once already — a second copy would disagree for exactly that case the
     moment one of them changed."""
     model_id = (model_id or "").strip()
@@ -154,7 +155,8 @@ def normalize_id(family: str, model_id: str) -> str:
         except Exception:  # noqa: BLE001 — a key must never fail to form
             return model_id
     if family == "separation":
-        return model_id if "." in model_id else f"{model_id}.onnx"
+        from faster_whisper_backend.audio import bgm_separation
+        return bgm_separation.model_filename(model_id)
     return model_id
 
 

@@ -300,3 +300,53 @@ def test_installers_warn_about_legacy_repo_root_state_before_the_start():
     assert '-Filter "*.local.sqlite3"' in block
     assert block.count("Write-Warning") >= 2   # stores + config.local.json
     assert "config.local.json" in block
+
+
+def _env_sets_runner(tmp_path):
+    """install-service.sh's env_value/env_sets, sourced on their own and run
+    against tmp_path/.env with the test venv's python (has python-dotenv)."""
+    sh = _read("install-service.sh")
+    funcs = "\n".join(re.search(rf"^{n}\(\) \{{\n.*?^\}}\n", sh, re.S | re.M).group(0)
+                      for n in ("env_value", "env_sets"))
+    (tmp_path / "f.sh").write_text(funcs, encoding="utf-8")
+
+    def run(line: str) -> bool:
+        (tmp_path / ".env").write_text(line + "\n", encoding="utf-8")
+        return subprocess.run(
+            ["bash", "-c", f'source "{tmp_path}/f.sh"; env_sets X'],
+            env={"REPO_DIR": str(tmp_path), "PY": sys.executable,
+                 "PATH": "/usr/bin:/bin"}).returncode == 0
+    return run
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="bash installer")
+def test_linux_env_sets_reads_dotenv_like_the_server(tmp_path):
+    # A .env pin must win over the unit's Environment= line, so env_sets has
+    # to agree with python-dotenv: a spaced key counts; an empty value (config.py
+    # falls back to /data) or an unexpanded $PWD does not — the unit pin stays.
+    run = _env_sets_runner(tmp_path)
+    for line in ("X=/a", "export X=/a", "X = /a"):
+        assert run(line), line
+    for line in ("#X=/a", "X=", 'X=""', "X=$PWD/data", "X=${PWD}/data", "X_Y=/a"):
+        assert not run(line), line
+
+
+def test_windows_installer_gates_the_log_file_env_on_the_dotenv():
+    # WinSW <env> is the real environment and load_dotenv never overrides it:
+    # a .env WHISPER_LOG_FILE pin was silently ignored on Windows.
+    ps1 = _read("install-service.ps1")
+    assert not re.search(r'^\s*<env name="WHISPER_LOG_FILE"', ps1, re.M)
+    assert 'Test-EnvSets "WHISPER_LOG_FILE"' in ps1
+    assert ps1.index("function Test-EnvSets") < ps1.index('$xml = @"')
+    assert ps1.index('Test-EnvSets "WHISPER_LOG_FILE"') < ps1.index(
+        "Set-Content -Path $WinSWXml")
+    assert r'-Pattern "^\s*(export\s+)?$name\s*=\s*[^\s#]"' in ps1
+
+
+def test_installers_leave_a_store_with_its_own_pin_alone():
+    # A store pinned by WHISPER_<NAME>_DB is read from there: the legacy
+    # "move it to data/db" recipe would strand the live store.
+    sh = _read("install-service.sh")
+    assert 'env_sets "$(store_env "$(basename "$legacy")")" && continue' in sh
+    ps1 = _read("install-service.ps1")
+    assert "if (Test-EnvSets $storeEnv) { continue }" in ps1

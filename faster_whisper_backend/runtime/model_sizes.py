@@ -401,15 +401,13 @@ def _model_path(name: str) -> "str | None":
     from faster_whisper_backend.settings import config as _cfg
     root = (getattr(_cfg, "DOWNLOAD_ROOT", "") or "").strip()
     if name.startswith("uvr:"):
-        model = name[4:]
-        if "." not in model:
-            model += ".onnx"
+        # The filename rule is the loader's own single copy, imported lazily
+        # (only a uvr key pays for it) so this module stays import-light.
+        from faster_whisper_backend.audio import bgm_separation
+        model = bgm_separation.model_filename(name[4:])
         # The directory bgm_separation.model_file_dir() loads from, tempdir
         # fallback included, so a default install (no DOWNLOAD_ROOT) is still
-        # sizeable. Mirrored rather than called: this module is reached from
-        # the loaded-model registry on every load and stays import-light, and
-        # a runtime → audio import would deepen the audio/runtime pair (audio
-        # imports runtime). tests/runtime/test_model_sizes.py pins the match.
+        # sizeable. tests/runtime/test_model_sizes.py pins the match.
         return os.path.join(root or tempfile.gettempdir(), "audio-separator",
                             model)
     # Where translation / diarization downloads land (hf_cache owns the

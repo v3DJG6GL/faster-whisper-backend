@@ -962,7 +962,9 @@ async def _max_body_mw(request: Request, call_next):
     # max_length cannot help: pydantic never sees the payload until the parse
     # has already built it. 4 MiB is ~2.5x the largest legitimate JSON body (a
     # full 10 000-entry callback:map patch at ~1.5 MiB worst case — 64-char
-    # keys + values; next largest is the 512 KB client_settings cap).
+    # keys + values; a max-config client_settings blob is ~1.5 MB too, and
+    # its store cap sits just under this clamp, at the desktop client's
+    # 4 MiB sync ceiling less 4 KiB).
     # getattr default, so no config-schema change is required. The media type
     # is parsed, not prefix-matched: FastAPI treats `application/*+json`
     # (merge-patch+json, ld+json, ...) as JSON and calls request.json() on

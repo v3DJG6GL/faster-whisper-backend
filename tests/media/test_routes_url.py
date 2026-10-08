@@ -366,8 +366,7 @@ def video_enabled(url_enabled, monkeypatch):
     monkeypatch.setattr(app_module.cfg, "URL_VIDEO_ENABLED", True, raising=False)
 
     calls: list = []
-    # "make": tests/main/test_video_attach_order.py builds its gate through it.
-    gate: dict = {"release": None, "make": threading.Event}
+    gate: dict = {"release": None}
 
     async def _probe(url, *, timeout):
         return _info(url=url, video_ladder=[dict(r) for r in _LADDER])

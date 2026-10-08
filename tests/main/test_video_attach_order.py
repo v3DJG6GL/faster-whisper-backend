@@ -8,6 +8,7 @@ nor the video keys. The keep_video stubs are the ones the url-route tests
 use (fixtures imported, not copied).
 """
 
+import threading
 import time
 
 from faster_whisper_backend.media import video as media_video
@@ -50,7 +51,7 @@ def test_handler_closes_the_entry_when_the_video_attach_gave_up(
     finish and must then close the entry itself (not leave it to the sweep)."""
     import asyncio
 
-    release = video_enabled._video_gate["make"]()
+    release = threading.Event()
     video_enabled._video_gate["release"] = release
     attach_calls: list = []
     real_attach = media_video._jobs_attach_video_sync
@@ -94,9 +95,8 @@ def test_task_closes_the_entry_when_the_handler_passed_its_check_first(
     attach and close. The `finish_landed` flag tells the task the fallback
     is its own: it retries the (idempotent) attach and closes the entry."""
     import asyncio
-    import threading
 
-    release = video_enabled._video_gate["make"]()
+    release = threading.Event()
     video_enabled._video_gate["release"] = release
     attach_calls: list = []
     finish_returned = threading.Event()

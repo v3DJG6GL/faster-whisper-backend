@@ -31,6 +31,25 @@ def test_small_json_body_is_not_rejected(client):
     assert r.status_code == 200, r.text
 
 
+def test_desktop_clients_largest_sync_push_is_accepted(client):
+    # The desktop client refuses to push a body past SYNC_MAX_BODY (4 MiB)
+    # less its 4 KiB SYNC_RESPONSE_MARGIN (faster-whisper-frontend
+    # transport/sync.rs), and client_settings' _CAP_BLOB sits at the same
+    # figure. A body of exactly that size, envelope included, must clear the
+    # JSON body clamp AND the store cap — a lower clamp would 413 every push
+    # of a large but valid config.
+    from faster_whisper_backend.client_settings import store
+    limit = 4 * 1024 * 1024 - 4096
+    shell = {"blob": {"pad": ""}, "base_version": 0, "device": "desk"}
+    pad = limit - len(json.dumps(shell, separators=(",", ":")).encode())
+    shell["blob"]["pad"] = "x" * pad
+    payload = json.dumps(shell, separators=(",", ":")).encode()
+    assert len(payload) == limit
+    assert store._CAP_BLOB >= limit
+    r = _put_json(client, payload)
+    assert r.status_code == 200, r.text
+
+
 def test_oversize_json_body_is_413(client):
     r = _put_json(client, _big_json(8 * 1024 * 1024))
     assert r.status_code == 413

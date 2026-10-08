@@ -449,9 +449,6 @@ async def post_state(payload: dict[str, Any], request: Request) -> JSONResponse:
     # scalar saves stay off the shared lock.
     _lock = (pl_apply.rules_lock() if "PIPELINE_RULES" in payload
              else contextlib.nullcontext())
-    _prev_model_overrides = (
-        getattr(cfg, "MODEL_OVERRIDES", None) or {}
-    ) if "MODEL_OVERRIDES" in payload else None
     async with _lock:
         try:
             # Off the loop: save_overrides validates PIPELINE_RULES through
@@ -469,7 +466,7 @@ async def post_state(payload: dict[str, Any], request: Request) -> JSONResponse:
             raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR,
                                 f"could not write config.local.json: {e}")
 
-        applied = await pl_apply.apply_hot_changes(written, _prev_model_overrides)
+        applied = await pl_apply.apply_hot_changes(written)
 
     client_host = request.client.host if request.client else "?"
     logger.info(

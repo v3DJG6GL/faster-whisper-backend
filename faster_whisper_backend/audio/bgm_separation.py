@@ -291,6 +291,14 @@ def _model_filename(name: "str | None" = None) -> str:
         (getattr(cfg, "BGM_SEPARATION_UVR_MODEL", "") or "").strip()
     if not name:
         raise BgmSeparationError("no BGM_SEPARATION_UVR_MODEL configured")
+    return model_filename(name)
+
+
+def model_filename(name: str) -> str:
+    """The on-disk filename audio-separator keys its singleton by, for a
+    friendly UVR model name (MDX models are .onnx). The one copy of the
+    rule: preload.normalize_id and model_sizes._model_path call it."""
+    name = (name or "").strip()
     return name if "." in name else f"{name}.onnx"
 
 

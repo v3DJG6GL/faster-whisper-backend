@@ -157,7 +157,6 @@ async def rebuild_caches_off_loop(reason: str) -> None:
 
 async def apply_hot_changes(
     written: dict[str, Any],
-    _unused_prev_model_overrides: Any = None,
 ) -> dict[str, Any]:
     """Apply hot edits from a config save to the running cfg module, rebuild
     caches, and evict load-time-affected models.
@@ -171,12 +170,10 @@ async def apply_hot_changes(
     Returns a dict suitable to splat into the JSON response envelope:
       hot_applied, cold_pending, env_pinned_ignored, evicted.
 
-    The second parameter is ignored (admin/routes.py still passes its own
-    pre-save snapshot until that call is updated): the per-model eviction
-    diff snapshots the running MODEL_OVERRIDES itself, right before the
-    setattr. A caller's snapshot was taken before its awaited save, so two
-    overlapping saves both diffed against the same stale value and could
-    leave a model loaded under the settings in between.
+    The per-model eviction diff snapshots the running MODEL_OVERRIDES itself,
+    right before the setattr. A caller's snapshot would be taken before its
+    awaited save, so two overlapping saves both diffed against the same stale
+    value and could leave a model loaded under the settings in between.
     """
     # Apply hot edits to the running cfg module so the next request sees them.
     # We re-load from disk so the in-memory values get the same coercions

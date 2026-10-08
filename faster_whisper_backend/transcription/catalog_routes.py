@@ -145,7 +145,8 @@ async def whoami_capabilities(user: dict = Depends(_get_current_user_dep)):
     # Additive: the cap for a file the server KEEPS (POST /v1/audio/media,
     # a link's video) — media_store.max_retainable_bytes(), at most
     # media_max_bytes and lower when RETAINED_MEDIA_MAX_BYTES is. A
-    # preview's rungs are flagged over_cap against this one.
+    # preview's VIDEO rungs are flagged over_cap against this one (its
+    # "audio only" rung against media_max_bytes).
     caps["retained_max_bytes"] = url_media_store.max_retainable_bytes()
     # Additive: whether a link's VIDEO can be kept/fetched (keep_video on the
     # transcription form, POST /v1/audio/url-media/video). Always present;

@@ -42,7 +42,6 @@ def test_overlapping_save_diffs_against_the_running_value(monkeypatch):
     # under it; B now saves S2 with X back at S0's cpu. The diff must run
     # against what the running model was built from (S1), not a caller's
     # pre-save S0 snapshot — against S0 nothing changed and X stayed on cuda.
-    s0 = {"X": {"MODEL_DEVICE": "cpu"}}
     s1 = {"X": {"MODEL_DEVICE": "cuda"}}
     s2 = {"X": {"MODEL_DEVICE": "cpu"}}
     calls: list = []
@@ -55,8 +54,7 @@ def test_overlapping_save_diffs_against_the_running_value(monkeypatch):
     monkeypatch.setattr(config_store, "env_pinned_fields", lambda: frozenset())
     monkeypatch.setattr(config_store, "load_overrides", lambda: {"MODEL_OVERRIDES": s2})
     monkeypatch.setattr(tx_models, "drain_then_evict", spy)
-    # The stale snapshot a caller may still pass is ignored.
-    asyncio.run(pl_apply.apply_hot_changes({"MODEL_OVERRIDES": s2}, s0))
+    asyncio.run(pl_apply.apply_hot_changes({"MODEL_OVERRIDES": s2}))
     assert calls == ["X"]
 
 

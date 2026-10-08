@@ -60,6 +60,17 @@ def test_stats_keys_and_uvr_friendly_name_normalisation():
     assert preload.stats_key("separation", "UVR-Foo.ckpt") == "uvr:UVR-Foo.ckpt"
 
 
+def test_separation_id_uses_the_loaders_filename_rule():
+    """preload and model_sizes key a UVR model by the loader's own single
+    filename rule, so is_resident / stats_key cannot drift from the
+    singleton key."""
+    for name in ("UVR-MDX-NET-Inst_HQ_4", "foo.ckpt"):
+        assert preload.normalize_id("separation", name) == \
+            bgm_separation.model_filename(name)
+    assert model_sizes._model_path("uvr:UVR-MDX-NET-Inst_HQ_4").endswith(
+        bgm_separation.model_filename("UVR-MDX-NET-Inst_HQ_4"))
+
+
 def test_blank_separation_id_stays_blank_and_is_not_admitted(monkeypatch):
     """A blank id must not become ".onnx": that would slip past _admit's
     emptiness guard, take a warm lease on `uvr:.onnx` and send the worker
@@ -202,6 +213,31 @@ def test_job_leased_singleton_is_family_busy_not_an_orphan(monkeypatch):
     monkeypatch.setattr(bgm_separation, "_separator_key", ("o.onnx", "cpu"))
     bgm_separation._leases["o.onnx"] = 1
     assert preload._admit("separation", "x") == ("deferred", "family_busy")
+
+
+def test_a_zombie_inference_singleton_is_family_busy(monkeypatch):
+    """A cancelled job released its lease but its thread still holds the
+    singleton's inference mutex: preload must defer, never force-drop it."""
+    _enable(monkeypatch)
+    _fits(monkeypatch, (True, None))
+    monkeypatch.setattr(diarization, "_pipeline_key", ("p/other", "cpu", 4))
+    monkeypatch.setattr(diarization, "_leases", {})
+    monkeypatch.setattr(diarization, "_orphans", {})
+    diarization._infer_mutex.acquire()
+    try:
+        assert preload._family_busy("diarization", "p/x") is True
+        assert preload._admit("diarization", "p/x") == ("deferred", "family_busy")
+    finally:
+        diarization._infer_mutex.release()
+
+    monkeypatch.setattr(bgm_separation, "_separator_key", ("o.onnx", "cpu"))
+    monkeypatch.setattr(bgm_separation, "_leases", {})
+    monkeypatch.setattr(bgm_separation, "_orphans", {})
+    bgm_separation._separate_mutex.acquire()
+    try:
+        assert preload._admit("separation", "x") == ("deferred", "family_busy")
+    finally:
+        bgm_separation._separate_mutex.release()
 
 
 def test_whisper_defers_while_the_model_load_lock_is_held(monkeypatch):
