@@ -93,10 +93,12 @@ class _Capture:
         # percentage, so the bucket high-water mark must come down with it.
         self._last_total = 0
         self._last_cb = 0.0
-        # Largest aggregate handed to cb so far. bump() computes the sum
-        # under the lock but delivers outside it, so a snapshot worker that
-        # computed 500 can be preempted and deliver after a peer's 800 —
-        # a stale delivery would walk the WebUI bar backwards.
+        # Largest aggregate handed to cb so far: an aggregate that regressed
+        # (a retry's update(-resume_size) rollback, a bar reset) is dropped
+        # rather than walking the WebUI bar backwards. It does NOT order
+        # concurrent deliveries: cb runs outside the lock, so two different
+        # bars of one scope can still deliver out of order (one bar cannot —
+        # ReportingTqdm holds its _dp_lock across bump()).
         self._last_sent = -1
 
     # -- called from ReportingTqdm ------------------------------------------

@@ -155,11 +155,13 @@ def _build_gpu() -> dict[str, Any] | None:
 
 def _build_host() -> dict[str, Any]:
     vmem = psutil.virtual_memory()
-    # Disk free on the drive containing the model cache — the dir
-    # model_sizes looks in (runtime.hf_cache.hub_lookup_dir: HF_HUB_CACHE, else
-    # HF_HOME/hub, else DOWNLOAD_ROOT/hf/hub where every whisper / GGUF / UVR
-    # download lands on bare metal, else the hub's own default). Walk up to the nearest existing
-    # ancestor so a not-yet-created cache dir still reads its drive.
+    # Disk free on the drive containing the model cache — the hub dir
+    # model_sizes looks in for GGUF / pyannote (runtime.hf_cache.hub_lookup_dir:
+    # HF_HUB_CACHE, else HF_HOME/hub, else DOWNLOAD_ROOT/hf/hub, else the hub's
+    # own default). Whisper (DOWNLOAD_ROOT itself) and UVR
+    # (DOWNLOAD_ROOT/audio-separator) sit beside it under the same root, so
+    # without a hub override it is their drive too. Walk up to the nearest
+    # existing ancestor so a not-yet-created cache dir still reads its drive.
     try:
         from faster_whisper_backend.runtime import hf_cache
         cache_dir = hf_cache.hub_lookup_dir()

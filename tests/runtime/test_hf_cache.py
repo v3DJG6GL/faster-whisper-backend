@@ -57,3 +57,11 @@ def test_legacy_huggingface_hub_cache_alias_wins_over_hf_home(monkeypatch,
     monkeypatch.setenv("HF_HOME", str(tmp_path / "y"))
     assert hf_cache.hub_cache_dir() == str(tmp_path / "x")
     assert hf_cache.hub_lookup_dir() == str(tmp_path / "x")
+
+
+def test_no_hub_cache_var_is_inherited_from_the_shell():
+    # conftest's autouse scrub: every variable hub_cache_dir() ranks above
+    # HF_HOME / DOWNLOAD_ROOT must be gone inside a test, or an exported one
+    # silently overrides each tmp-dir test. A new alias belongs in the scrub.
+    assert "HF_HUB_CACHE" not in os.environ
+    assert "HUGGINGFACE_HUB_CACHE" not in os.environ

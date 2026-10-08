@@ -6,6 +6,11 @@ that drops one of them reintroduces the reviewed bug.
 """
 import os
 import re
+import shutil
+import subprocess
+import sys
+
+import pytest
 
 from faster_whisper_backend.paths import REPO_ROOT as REPO
 
@@ -52,6 +57,60 @@ def test_linux_installer_precreates_logs_dir():
                      r'\s*STATE_DIRS\+=\("\$REPO_DIR/logs"\)', sh)
     assert 'mkdir -p "${STATE_DIRS[@]}"' in sh
     assert 'chown -R "$RUN_USER" "${STATE_DIRS[@]}"' in sh
+
+
+def test_linux_installer_unit_pins_yield_to_a_dotenv_pin():
+    # A .env pin must suppress the unit's Environment= line (and its
+    # pre-created dir): config.py's load_dotenv never overrides the real
+    # environment, so the unit line would silently win over the pin.
+    sh = _read("install-service.sh")
+    for var, line in (("WHISPER_DATA_DIR", "DATA_ENV_LINE"),
+                      ("WHISPER_MODELS_DIR", "MODELS_ENV_LINE"),
+                      ("WHISPER_LOG_FILE", "LOG_ENV_LINE")):
+        assert re.search(rf'if ! env_sets {var}\b[^\n]*; then\n\s*{line}=',
+                         sh), var
+
+
+def test_linux_installer_env_sets_reads_dotenv_like_the_service(tmp_path):
+    # Behavioural, not a grep: source the script's own env_value / env_sets
+    # into bash against a tmp .env and ask about each spelling.
+    bash = shutil.which("bash")
+    if bash is None or os.name == "nt":
+        pytest.skip("needs a POSIX bash")
+    sh = _read("install-service.sh")
+    start = sh.index("env_value() {")
+    end = sh.index("\n}\n", sh.index("env_sets() {")) + 3
+    funcs = sh[start:end]
+    (tmp_path / ".env").write_text(
+        "WHISPER_DATA_DIR=/srv/whisper\n"
+        "# WHISPER_DB_DIR=/commented/out\n"
+        "export WHISPER_MODELS_DIR=/srv/models\n"
+        "WHISPER_LOG_FILE = /srv/log/whisper.log\n"
+        "WHISPER_CONFIG_LOCAL=\n"
+        "WHISPER_JOBS_DB=$PWD/jobs.sqlite3\n", encoding="utf-8")
+    names = ("WHISPER_DATA_DIR", "WHISPER_DB_DIR", "WHISPER_MODELS_DIR",
+             "WHISPER_LOG_FILE", "WHISPER_CONFIG_LOCAL", "WHISPER_JOBS_DB",
+             "WHISPER_NOT_THERE")
+    script = funcs + "".join(
+        f'if env_sets {n}; then echo "{n}=1"; else echo "{n}=0"; fi\n'
+        for n in names)
+
+    def _run(repo_dir):
+        out = subprocess.run(
+            [bash, "-c", script], capture_output=True, text=True, timeout=60,
+            env={**os.environ, "REPO_DIR": str(repo_dir),
+                 "PY": sys.executable})
+        assert out.returncode == 0, out.stderr
+        return dict(line.split("=", 1) for line in out.stdout.split())
+    assert _run(tmp_path) == {
+        "WHISPER_DATA_DIR": "1", "WHISPER_DB_DIR": "0",
+        "WHISPER_MODELS_DIR": "1", "WHISPER_LOG_FILE": "1",
+        "WHISPER_CONFIG_LOCAL": "0", "WHISPER_JOBS_DB": "0",
+        "WHISPER_NOT_THERE": "0"}
+    # No .env at all: nothing is pinned.
+    empty = tmp_path / "no-env"
+    empty.mkdir()
+    assert set(_run(empty).values()) == {"0"}
 
 
 # --- uninstall-service.ps1 ---------------------------------------------------

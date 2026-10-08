@@ -240,7 +240,15 @@ def lookup(name: str, device: str, compute_type: str) -> dict | None:
     rec = models.get(exact)
     if rec is not None:
         # The same provenance rule as the fallback below: a stray non-cuda
-        # "measured" row is only a disk-grade prior, never a measurement.
+        # "measured" row is only a disk-grade prior, never a measurement —
+        # and, like a disk row of another placement there, never more
+        # accurate than a fresh walk, only staler (a pre-fix build's
+        # inflated prior survives for a placement no request loads again).
+        # The stored row is kept only for a model no longer on disk.
+        if not _is_measured(exact, rec):
+            size = disk_size(name)
+            if size is not None:
+                return {"bytes": int(size), "src": "disk", "n": 0, "ts": None}
         return {"bytes": int(rec["bytes"]),
                 "src": "measured" if _is_measured(exact, rec) else "disk",
                 "n": int(rec.get("n") or 0), "ts": rec.get("ts")}
@@ -320,20 +328,25 @@ def disk_size(name: str) -> int | None:
             return int(os.path.getsize(path))
         if os.path.isdir(path):
             total = 0
+            seen: "set[tuple[int, int]]" = set()
             for root, _dirs, files in os.walk(path):
                 for fn in files:
                     p = os.path.join(root, fn)
                     # A hub cache's snapshots/<rev>/* are symlinks into
-                    # blobs/, and getsize follows them: counting both would
-                    # double every weight. blobs/ holds the real bytes;
-                    # without symlink support the hub writes real files
-                    # and there are no links to skip.
-                    if os.path.islink(p):
-                        continue
+                    # blobs/: count each file once by the inode stat()
+                    # follows the link to, not by skipping links — a local
+                    # CT2 dir (or a snapshots/<rev> dir used as the model
+                    # path) whose model.bin links OUT of the tree must
+                    # still count its weights. A dangling link is skipped.
                     try:
-                        total += os.path.getsize(p)
+                        st = os.stat(p)
                     except OSError:
-                        pass
+                        continue
+                    if st.st_ino:   # 0: a filesystem without inode numbers
+                        if (st.st_dev, st.st_ino) in seen:
+                            continue
+                        seen.add((st.st_dev, st.st_ino))
+                    total += int(st.st_size)
             return total or None
     except Exception:  # noqa: BLE001 — a prior is never worth an exception
         return None

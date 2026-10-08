@@ -152,3 +152,58 @@ def test_non_multipart_non_json_keeps_a_256mib_backstop(client, app_module,
                             "Content-Length": str(300 * 1024 * 1024)})
     assert r.status_code == 413
     assert r.json() == {"detail": "request body too large"}
+
+
+def test_self_parsing_route_holds_a_non_json_type_to_the_json_cap(client):
+    # /auth/login calls request.json() itself, and Starlette parses the body
+    # whatever its Content-Type: a text/plain body there must not ride the
+    # 256 MiB backstop into json.loads (unauthenticated, CSRF-exempt, before
+    # the login failure limiter).
+    r = client.post("/auth/login", content=b"x" * (8 * 1024 * 1024),
+                    headers={"Content-Type": "text/plain"})
+    assert r.status_code == 413
+    assert r.json() == {"detail": "request body too large"}
+
+
+def test_chunked_non_json_body_to_a_self_parsing_route_is_cut_off(
+        client, monkeypatch):
+    # No Content-Length: the receive-side counter must stop the body at the
+    # JSON cap, so login's own parse fails and it sees no key at all —
+    # never the 8 MiB one.
+    from faster_whisper_backend.auth import api_keys_store
+    monkeypatch.setattr(api_keys_store, "is_locked_down", lambda: True)
+    keys = []
+    monkeypatch.setattr(api_keys_store, "lookup_by_raw_key",
+                        lambda key: keys.append(key))
+    payload = json.dumps({"key": "x" * (8 * 1024 * 1024)}).encode()
+
+    def _gen():
+        for i in range(0, len(payload), 65536):
+            yield payload[i:i + 65536]
+    client.post("/auth/login", content=_gen(),
+                headers={"Content-Type": "text/plain"})
+    assert keys == [""]
+
+
+def test_every_self_parsing_post_route_is_held_to_the_json_cap(app_module):
+    # A new route that parses its own JSON must join the path set, or a
+    # non-JSON Content-Type hands it the 256 MiB backstop again.
+    import inspect
+
+    def _walk(routes):
+        # FastAPI 0.141 wraps each include_router in an _IncludedRouter.
+        for r in routes:
+            if hasattr(r, "original_router"):
+                yield from _walk(r.original_router.routes)
+            else:
+                yield r
+    found = set()
+    for route in _walk(app_module.app.routes):
+        if "POST" not in (getattr(route, "methods", None) or ()):
+            continue
+        src = inspect.getsource(route.endpoint)
+        if "request.json()" in src or "_url_request(" in src:
+            found.add(route.path)
+    # The package route parses its own JSON under its own, larger ceiling.
+    found.discard("/v1/audio/media/{media_id}/package")
+    assert found == app_module._SELF_PARSED_JSON_PATHS

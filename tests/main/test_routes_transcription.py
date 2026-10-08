@@ -324,6 +324,40 @@ def test_progress_updates_during_decode(client, app_module, fake_model):
     assert pid not in tx_progress._BATCH_PROGRESS
 
 
+def test_pid_bindings_of_a_same_id_repost_survive_the_first_run(
+        client, app_module, monkeypatch):
+    # The inner finally closes the progress entry, and (in the URL flow) the
+    # rmtree is awaited before the outer finally pops the pid bindings; a
+    # same-id re-post can claim the id in that gap and bind its own job /
+    # plan / run plan. Simulated right at the close: the first run must
+    # leave those bindings alone.
+    pid = "b2" * 16
+    foreign_plan = object()
+    real_close = tx_progress._progress_close
+
+    def _close_then_repost(p):
+        real_close(p)
+        if p == pid:
+            tx_progress._JOB_BY_PID[pid] = "other-request"
+            tx_progress._PLAN_BY_PID[pid] = "other-plan"
+            tx_progress._RUN_PLAN_BY_PID[pid] = foreign_plan
+    monkeypatch.setattr(tx_progress, "_progress_close", _close_then_repost)
+    r = _post(client, response_format="json", progress_id=pid)
+    assert r.status_code == 200, r.text
+    assert tx_progress._JOB_BY_PID.get(pid) == "other-request"
+    assert tx_progress._PLAN_BY_PID.get(pid) == "other-plan"
+    assert tx_progress._RUN_PLAN_BY_PID.get(pid) is foreign_plan
+
+
+def test_pid_bindings_are_popped_when_the_run_still_owns_them(client):
+    pid = "b3" * 16
+    r = _post(client, response_format="json", progress_id=pid)
+    assert r.status_code == 200, r.text
+    assert pid not in tx_progress._JOB_BY_PID
+    assert pid not in tx_progress._PLAN_BY_PID
+    assert pid not in tx_progress._RUN_PLAN_BY_PID
+
+
 def test_job_finish_is_scoped_to_the_runs_request_id(
         client, app_module, monkeypatch):
     # The handler closes its progress entry before the job-row finish, so a
@@ -857,6 +891,7 @@ def test_a_full_capture_store_still_records_a_batch_request(
     r = _post(client)
     assert r.status_code == 200, r.text
     assert len(created) == 1
+    assert fake_model.last_kwargs["word_timestamps"] is True   # forced DTW
 
 
 def test_a_store_full_of_ready_captures_skips_the_batch_capture(
@@ -877,6 +912,9 @@ def test_a_store_full_of_ready_captures_skips_the_batch_capture(
     r = _post(client)
     assert r.status_code == 200, r.text
     assert created == []
+    # The costly half: a json response with no timestamp_granularities runs
+    # without DTW once the gate declines.
+    assert not fake_model.last_kwargs.get("word_timestamps")
 
 
 def _retain_on(app_module, monkeypatch, tmp_path):
@@ -918,3 +956,24 @@ def test_retain_media_refused_by_register_says_so(client, app_module,
     body = r.json()
     assert "source_media_id" not in body
     assert any(w.startswith("retain_media:") for w in body["warnings"])
+
+
+def test_retain_media_staging_failure_says_so(client, app_module,
+                                              monkeypatch, tmp_path):
+    """make_pipeline_copy returns None when both the hardlink and the copy
+    fail: the register block never runs, so the response must say why
+    instead of silently omitting source_media_id."""
+    from faster_whisper_backend.media import media_store
+    _retain_on(app_module, monkeypatch, tmp_path)
+    calls = []
+    monkeypatch.setattr(media_store, "register",
+                        lambda *a, **kw: calls.append("register"))
+    monkeypatch.setattr(media_store, "make_pipeline_copy",
+                        lambda *a, **kw: None)
+    r = _post(client, response_format="json", retain_media="true")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert "source_media_id" not in body
+    assert any(w.startswith("retain_media:") and "could not stage" in w
+               for w in body["warnings"])
+    assert calls == []

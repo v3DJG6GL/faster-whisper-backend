@@ -105,6 +105,11 @@ class _FakeNvml:
     def nvmlDeviceGetMemoryInfo(self, h):
         return {"h0": self._Mem(7000, 1000), "h1": self._Mem(100, 9000)}[h]
 
+    shutdowns = 0
+
+    def nvmlShutdown(self):
+        self.shutdowns += 1
+
 
 @pytest.fixture
 def two_gpus(monkeypatch):
@@ -158,13 +163,19 @@ def test_preload_sizes_whisper_on_its_device_index(monkeypatch):
 # shutdown
 # ---------------------------------------------------------------------------
 
-def test_shutdown_safe_and_idempotent():
-    # Safe whether NVML inited or not; safe to call twice. After shutdown
-    # NVML_OK must be False.
+def test_shutdown_safe_and_idempotent(two_gpus):
+    # Under the fake NVML, never the real one: shutdown flips the module
+    # global NVML_OK, which would change every later VRAM read on a GPU box
+    # (two_gpus' monkeypatch restores NVML_OK and _handles). It also makes
+    # the NVML_OK branch run where no real NVML exists (CI).
+    system_stats.gpu_mem_used_bytes(1)          # binds a handle
+    assert system_stats._handles
     system_stats.shutdown()
     assert system_stats.NVML_OK is False
+    assert system_stats._handles == {}
     system_stats.shutdown()  # no raise on second call
     assert system_stats.NVML_OK is False
+    assert system_stats.pynvml.shutdowns == 1
 
 
 # ---------------------------------------------------------------------------
@@ -206,8 +217,6 @@ def test_disk_free_walks_a_relative_download_root_up_to_cwd(monkeypatch,
     drive it will land on (the cwd's), not None."""
     from faster_whisper_backend.settings import config as cfg
     monkeypatch.delenv("HF_HOME", raising=False)
-    monkeypatch.delenv("HF_HUB_CACHE", raising=False)
-    monkeypatch.delenv("HUGGINGFACE_HUB_CACHE", raising=False)
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(cfg, "DOWNLOAD_ROOT", "models", raising=False)
     seen = []

@@ -180,7 +180,8 @@ def record_many(samples) -> None:
         try:
             stage, model, device, compute, rate = sample
             r = float(rate)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
+            # OverflowError: an int too large for a double (as in _read).
             continue
         if not math.isfinite(r) or r <= 0 or not stage:
             continue

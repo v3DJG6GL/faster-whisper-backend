@@ -124,6 +124,7 @@ def test_record_many_is_one_write_folded_in_order(ledger, monkeypatch):
         ("translating", "m", "cuda", "fluent", 8.0),
         ("diarizing.embeddings", "p", "cuda", None, 20.0),
         ("bad",),                                            # dropped
+        ("translating", "m", "cuda", "fluent", 10 ** 400),   # dropped
     ])
     assert len(writes) == 1
     rec = stage_rates.lookup("translating", "m", "cuda", "fluent")

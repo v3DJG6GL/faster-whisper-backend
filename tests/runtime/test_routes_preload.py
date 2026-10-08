@@ -337,6 +337,34 @@ def test_path_shaped_whisper_id_is_deferred_with_an_empty_allowlist(
     assert ok.get("reason") != "not_allowed"
 
 
+def test_a_refused_whisper_id_contributes_no_per_model_stage_model(
+        client, app_module, monkeypatch):
+    """The batch handler 400s a whisper id outside ALLOWED_MODELS before any
+    stage runs, so that id's MODEL_OVERRIDES stage model is one no real job
+    can use: the preload must not admit (and load) it either."""
+    cfg = _enable(app_module, monkeypatch)
+    monkeypatch.setattr(cfg, "ALLOWED_MODELS", ["tiny"], raising=False)
+    monkeypatch.setattr(cfg, "DIARIZATION_ALLOWED_MODELS", [], raising=False)
+    monkeypatch.setattr(cfg, "DIARIZATION_MODEL", "p/global", raising=False)
+    monkeypatch.setattr(cfg, "MODEL_OVERRIDES",
+                        {"bad": {"DIARIZATION_MODEL": "p/x"},
+                         "tiny": {"DIARIZATION_MODEL": "p/tiny"}},
+                        raising=False)
+
+    def _rows(models):
+        r = client.post(_URL, json={"models": models})
+        assert r.status_code == 202, r.text
+        return {(m["family"], m["id"]): m for m in r.json()["models"]}
+    rows = _rows([{"family": "whisper", "id": "bad"},
+                  {"family": "diarization", "id": "p/x"}])
+    assert rows[("diarization", "p/x")]["reason"] == "not_allowed"
+    # A refused id listed first does not pick the layer for an allowed one.
+    rows = _rows([{"family": "whisper", "id": "bad"},
+                  {"family": "whisper", "id": "tiny"},
+                  {"family": "diarization", "id": "p/tiny"}])
+    assert rows[("diarization", "p/tiny")].get("reason") != "not_allowed"
+
+
 # --- idempotency -------------------------------------------------------------
 
 def test_repeat_post_reuses_the_plan_and_does_not_grow_the_queue(

@@ -629,8 +629,17 @@ def test_a_dropped_enqueue_forgets_its_inflight_mark(monkeypatch):
         def empty(self):
             return True
     monkeypatch.setattr(preload, "_queue", _Q())    # no _loop behind it
-    preload.register_plan("u7", [("diarization", "p/x")], plan_id="7" * 8)
+    forgot = []
+    real_forget = preload._forget_inflight
+    monkeypatch.setattr(preload, "_forget_inflight",
+                        lambda item: (forgot.append(item), real_forget(item)))
+    body = preload.register_plan("u7", [("diarization", "p/x")],
+                                 plan_id="7" * 8)
     plan = preload._plans["7" * 8]
+    # Admitted and handed to the enqueue — not deferred before it, which
+    # would leave inflight empty without ever running the drop path.
+    assert [r["state"] for r in body["models"]] == ["loading"]
+    assert forgot == [("7" * 8, "diarization", "p/x")]
     assert plan.inflight == set()
 
 

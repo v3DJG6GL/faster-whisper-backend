@@ -93,6 +93,11 @@ def test_session_data_dir_is_a_throwaway_dir_even_when_exported():
     assert data_dir.startswith(os.path.realpath(tempfile.gettempdir()))
     assert {"WHISPER_DB_DIR", "WHISPER_JOBS_DB",
             "WHISPER_URL_MEDIA_DIR"} <= conftest._DATA_PATH_ENV
+    # Present-but-empty, not popped: config.py's load_dotenv() fills only
+    # ABSENT keys, so a popped knob would come back from a repo-local .env.
+    # LOG_FILE alone is popped ("" there switches file logging off).
+    for k in conftest._DATA_PATH_ENV - {"WHISPER_LOG_FILE"}:
+        assert os.environ.get(k) == "", k
     # All three froze at import, before any fixture could repoint them.
     for path in (cfg._DB_DIR, model_sizes.PATH, stage_rates.PATH):
         assert os.path.realpath(path).startswith(data_dir + os.sep), path

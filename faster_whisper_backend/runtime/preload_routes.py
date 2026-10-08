@@ -177,9 +177,16 @@ def _effective_stage_models(
     job — plus which of those fields
     the ident locks. ({}, empty) on any failure, which degrades to the
     global-only rule."""
+    # Only a whisper id the server ADMITS picks the per-model layer: the
+    # batch handler refuses any other before a stage runs, so its
+    # MODEL_OVERRIDES stage models are ones no real job could use.
+    whisper_ids = [m.id for m in body.models if m.family == "whisper"]
     resolved_model = next(
-        (preload.normalize_id("whisper", m.id) for m in body.models
-         if m.family == "whisper"), "") or getattr(cfg, "DEFAULT_MODEL", "")
+        (preload.normalize_id("whisper", mid) for mid in whisper_ids
+         if _allowed("whisper", mid)), "")
+    if whisper_ids and not resolved_model:
+        return {}, frozenset()
+    resolved_model = resolved_model or getattr(cfg, "DEFAULT_MODEL", "")
     try:
         ident = effective_config.build_ident(
             user, resolved_model,

@@ -60,6 +60,8 @@ _NOT_RESET = {
     "faster_whisper_backend.media.routes": {
         "_VIDEO_MIME": "constant container → mime map",
     },
+    # The retained-media registry (_REG); listed so the scan covers it.
+    "faster_whisper_backend.media.media_store": {},
     "faster_whisper_backend.transcription.jobs_routes": {},
     "faster_whisper_backend.transcription.catalog_routes": {},
     "faster_whisper_backend.translation.routes": {},

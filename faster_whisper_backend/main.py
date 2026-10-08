@@ -911,6 +911,20 @@ async def _csrf_mw(request: Request, call_next):
 _NON_UPLOAD_BODY_BACKSTOP = 268_435_456
 _MEDIA_PACKAGE_PATH_RE = re.compile(
     rf"\A/v1/audio/media/{url_media_store.MEDIA_ID_PATTERN}/package\Z")
+# POST routes that call `await request.json()` themselves: Starlette parses
+# the buffered body whatever its Content-Type, so a text/plain (or any other
+# non-JSON) body would otherwise ride the 256 MiB backstop into json.loads —
+# /auth/login before any credential or failure limiter. The package route
+# parses its own JSON too but keeps its own (larger) ceiling below.
+_SELF_PARSED_JSON_PATHS = frozenset({
+    "/auth/login",
+    "/v1/text/translations",
+    "/v1/audio/url-preview",
+    "/v1/audio/url-subtitles",
+    "/v1/audio/url-media/video",
+    "/v1/audio/url-media/audio",
+    "/v1/audio/url-language",
+})
 
 
 def _media_package_max_body_bytes() -> int:
@@ -955,7 +969,9 @@ async def _max_body_mw(request: Request, call_next):
     # it. A request with NO Content-Type at all is buffered whole (FastAPI
     # only JSON-parses it if strict_content_type is ever turned off), and the
     # routes that call request.json() themselves parse it whatever the
-    # header says. Both must share the ceiling or they bypass it. multipart media uploads always declare their
+    # header says. Both must share the ceiling or they bypass it (the
+    # self-parsing routes get it by path below, _SELF_PARSED_JSON_PATHS,
+    # whatever they declare). multipart media uploads always declare their
     # own media type and keep the full MAX_REQUEST_BYTES — sized for a
     # MEDIA_MAX_BYTES video, i.e. gigabytes. Every OTHER non-JSON body keeps
     # the old 256 MiB backstop: nothing but an upload has business being
@@ -978,6 +994,9 @@ async def _max_body_mw(request: Request, call_next):
             max_body = int(getattr(cfg, "MEDIA_MAX_BYTES", 10_000_000_000))
         elif _MEDIA_PACKAGE_PATH_RE.match(_path):
             max_body = _media_package_max_body_bytes()
+        elif _path in _SELF_PARSED_JSON_PATHS:
+            max_body = min(max_body, int(getattr(
+                cfg, "MAX_JSON_BODY_BYTES", 4_194_304)))
     _clen = request.headers.get("content-length")
     if _clen and _clen.isdigit() and int(_clen) > max_body:
         from fastapi.responses import JSONResponse
@@ -1421,6 +1440,9 @@ async def transcribe(
     # Why an asked-for retain was declined before the run; joins _warnings
     # once that list exists.
     _retain_warning: "str | None" = None
+    # The preload plan id this run bound to _pid (the outer finally pops the
+    # binding only while it is still this run's).
+    _bound_plan_id: "str | None" = None
     # Set only AFTER the load returns, so the outer finally never releases a
     # lease that was never taken (a rejected/failed load takes none).
     _leased_model: "str | None" = None
@@ -1740,6 +1762,12 @@ async def transcribe(
                     # the finally; this copy survives for the media store.
                     _retained_upload = await asyncio.to_thread(
                         url_media_store.make_pipeline_copy, tmp_path)
+                    if _retained_upload is None:
+                        # Link and copy both failed (logged server-side):
+                        # the register block below never runs, so say it.
+                        _retain_warning = (
+                            "retain_media: the server could not stage the "
+                            "upload for the media store — not retained")
 
             # The decoders below never go through transcode._open_audio's
             # guard: faster-whisper's decode_audio (the lead-pad pre-decode
@@ -2072,7 +2100,8 @@ async def transcribe(
                 _plan = preload.register_plan(
                     _user_id, _preload_entries, plan_id=_plan_hint,
                     trigger="job", user_name=user.get("username"))
-                tx_progress._PLAN_BY_PID[_pid] = _plan["plan_id"]
+                _bound_plan_id = _plan["plan_id"]
+                tx_progress._PLAN_BY_PID[_pid] = _bound_plan_id
 
             # Now that the stage plan is resolved, tell the running-jobs
             # registry what this job is going to DO. job_start fires before
@@ -3436,12 +3465,20 @@ async def transcribe(
                 # parse): its finally never ran, so nothing else closes the
                 # seeded "waiting" entry.
                 tx_progress._progress_close(_pid)
-            tx_progress._JOB_BY_PID.pop(_pid, None)
+            # Each binding is popped only while it is still THIS run's: the
+            # progress entry closed in the inner finally, and the URL flow's
+            # rmtree awaited since, so a same-id re-post may already have
+            # claimed _pid and bound its own job / plan / run plan.
+            if tx_progress._JOB_BY_PID.get(_pid) == request_id:
+                tx_progress._JOB_BY_PID.pop(_pid, None)
             # The plan itself is NOT cancelled here: its warm leases are what
             # keep the models this job just used alive for the next one, and
             # the TTL retires them on its own.
-            tx_progress._PLAN_BY_PID.pop(_pid, None)
-            tx_progress._RUN_PLAN_BY_PID.pop(_pid, None)
+            if (_bound_plan_id is not None
+                    and tx_progress._PLAN_BY_PID.get(_pid) == _bound_plan_id):
+                tx_progress._PLAN_BY_PID.pop(_pid, None)
+            if tx_progress._RUN_PLAN_BY_PID.get(_pid) is _rplan:
+                tx_progress._RUN_PLAN_BY_PID.pop(_pid, None)
         jobs.job_end(request_id)
         if _status != "ok" and _error_class is None:
             _error_class, _error_stage = metrics.classify_error(

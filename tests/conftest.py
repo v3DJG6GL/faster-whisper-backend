@@ -66,8 +66,17 @@ with open(os.path.join(os.path.dirname(os.path.dirname(
                       "WHISPER_STAGE_RATES_PATH", "WHISPER_CONFIG_LOCAL"} | {
         "WHISPER_" + k for k, v in json.load(_fh).items()
         if isinstance(v, str) and ("{DATA_DIR}" in v or "{DB_DIR}" in v)}
+# Set to "" rather than popped: settings/config.py runs load_dotenv() at
+# import, and a repo-local .env (install-service.sh keeps the pinned paths
+# there) would fill every key that is ABSENT — a popped knob comes straight
+# back. "" is present, so dotenv leaves it alone, and every path reader treats
+# it as unset. WHISPER_LOG_FILE is the exception: its reader is "passthrough",
+# where "" switches file logging off, so it stays popped.
 for _k in _DATA_PATH_ENV:
-    os.environ.pop(_k, None)
+    if _k == "WHISPER_LOG_FILE":
+        os.environ.pop(_k, None)
+    else:
+        os.environ[_k] = ""
 
 RATE = 16000
 
@@ -166,6 +175,10 @@ _RESET_HOOKS: tuple[tuple[str, Any], ...] = (
      lambda m: m._last_warn.clear()),
     # the VAD-reprocess worker state, back to the module's idle shape.
     ("faster_whisper_backend.captures.vad_reprocess", "_reset_for_tests"),
+    # the retained-media registry: only startup_reset() (a TestClient
+    # lifespan) clears it, and a unit test that register()s directly would
+    # leave a live entry for the next test's list / newest / evict reads.
+    ("faster_whisper_backend.media.media_store", lambda m: m._REG.clear()),
 )
 
 
@@ -190,10 +203,12 @@ def _reset_singletons():
 
 @pytest.fixture(autouse=True)
 def _no_inherited_hf_hub_cache(monkeypatch):
-    """runtime.hf_cache ranks HF_HUB_CACHE above HF_HOME: an exported value
-    in the shell running the suite would override every test that points
-    HF_HOME (or DOWNLOAD_ROOT) at a tmp dir. A test that wants it sets it."""
+    """runtime.hf_cache ranks HF_HUB_CACHE (and its legacy alias
+    HUGGINGFACE_HUB_CACHE) above HF_HOME: an exported value in the shell
+    running the suite would override every test that points HF_HOME (or
+    DOWNLOAD_ROOT) at a tmp dir. A test that wants it sets it."""
     monkeypatch.delenv("HF_HUB_CACHE", raising=False)
+    monkeypatch.delenv("HUGGINGFACE_HUB_CACHE", raising=False)
 
 
 # ---------------------------------------------------------------------------

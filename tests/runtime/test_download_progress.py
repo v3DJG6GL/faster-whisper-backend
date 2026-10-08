@@ -176,14 +176,14 @@ def test_snapshot_transfer_twin_bar_is_counted_once(monkeypatch):
 
 
 def test_callback_never_walks_backwards(monkeypatch):
-    # bump() aggregates under the lock but delivers outside it; a stale
-    # delivery from a preempted worker must be dropped, not sent.
+    # An aggregate that regressed (a retry's update(-resume_size) rollback)
+    # must be dropped, not delivered as a step backwards.
     monkeypatch.setattr(dp, "_CB_MIN_INTERVAL_S", 0.0)
     calls = []
     cap = dp._Capture("x", cb=lambda d, t: calls.append((d, t)))
     cap.add_bar(1, 1000)
     cap.bump(1, 800, 1000)
-    cap.bump(1, 500, 1000)      # a stale, smaller aggregate
+    cap.bump(1, 500, 1000)      # rolled back, smaller aggregate
     cap.bump(1, 900, 1000)
     dones = [d for d, _ in calls]
     assert dones == sorted(dones)

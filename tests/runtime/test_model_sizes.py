@@ -49,9 +49,15 @@ def test_placement_is_part_of_the_key(ledger):
     assert model_sizes.estimate("large-v3", "cpu", "int8") == 1 * GB
 
 
-def test_any_device_fallback_then_none(ledger):
-    model_sizes.record("gguf:some/repo", "cpu", "int8", 2 * GB)
-    assert model_sizes.estimate("gguf:some/repo", "cuda", "float16") == 2 * GB
+def test_any_device_fallback_then_none(ledger, monkeypatch):
+    # A cuda measurement stands in for another placement as a proxy (a cpu
+    # row would be disk-grade and never take this path). No disk walk, so
+    # the real hub cache cannot decide the outcome.
+    monkeypatch.setattr(model_sizes, "disk_size", lambda name: None)
+    model_sizes.record("gguf:some/repo", "cuda", "int8_float16", 2 * GB)
+    got = model_sizes.lookup("gguf:some/repo", "cpu", "int8")
+    assert (got["bytes"], got["src"]) == (2 * GB, "proxy")
+    assert model_sizes.estimate("gguf:some/repo", "cpu", "int8") == 2 * GB
     assert model_sizes.estimate("never-loaded", "cuda", "float16") is None
 
 
@@ -229,6 +235,42 @@ def test_disk_size_counts_snapshot_symlinks_once(ledger, tmp_path, monkeypatch):
     monkeypatch.setenv("HF_HOME", str(hf))
 
     assert model_sizes.disk_size("pyannote:org/repo") == 1000
+
+
+def test_disk_size_counts_a_symlink_that_points_out_of_the_tree(ledger,
+                                                                tmp_path):
+    """A local CT2 dir (DEFAULT_MODEL, sized in place) whose model.bin links
+    to another disk: the weights live outside the walked tree, so skipping
+    links would size only config.json."""
+    model = tmp_path / "model"
+    elsewhere = tmp_path / "elsewhere"
+    model.mkdir()
+    elsewhere.mkdir()
+    (elsewhere / "model.bin").write_bytes(b"x" * 100_000)
+    (model / "config.json").write_bytes(b"{}  ")
+    try:
+        os.symlink(elsewhere / "model.bin", model / "model.bin")
+    except OSError:
+        pytest.skip("no symlink support")
+    assert model_sizes.disk_size(str(model)) == 100_004
+
+
+def test_disk_size_sizes_an_all_symlink_dir(ledger, tmp_path):
+    """A hub snapshots/<rev> dir used directly as the model path holds only
+    links into ../../blobs: it has a size, not None (size_unknown)."""
+    blobs = tmp_path / "blobs"
+    rev = tmp_path / "snapshots" / "rev"
+    blobs.mkdir()
+    rev.mkdir(parents=True)
+    (blobs / "a").write_bytes(b"x" * 1000)
+    (blobs / "b").write_bytes(b"x" * 24)
+    try:
+        os.symlink(blobs / "a", rev / "model.bin")
+        os.symlink(blobs / "b", rev / "config.json")
+        os.symlink(tmp_path / "gone", rev / "dangling")   # skipped, not fatal
+    except OSError:
+        pytest.skip("no symlink support")
+    assert model_sizes.disk_size(str(rev)) == 1024
 
 
 def test_disk_size_sizes_only_the_requested_gguf_quant(ledger, tmp_path,
@@ -459,6 +501,30 @@ def test_proxy_prefers_a_same_device_measurement_over_a_disk_row(ledger):
     model_sizes.record("large-v3", "cpu", "float32", 9 * GB)
     got = model_sizes.lookup("large-v3", "cpu", "int16")
     assert (got["bytes"], got["src"]) == (5 * GB, "proxy")
+
+
+def test_a_live_disk_walk_beats_the_exact_placements_disk_row(
+        ledger, tmp_path, monkeypatch):
+    """The exact placement's disk prior is no better than a fresh walk
+    either: an inflated pre-fix row must not stand in for the real size
+    (preload would defer a model that fits). It is kept only for a model
+    no longer on disk; a measurement still wins outright."""
+    import shutil
+    hf = tmp_path / "hf"
+    blobs = hf / "hub" / "models--org--repo" / "blobs"
+    blobs.mkdir(parents=True)
+    (blobs / "a").write_bytes(b"x" * 3000)
+    monkeypatch.setenv("HF_HOME", str(hf))
+    model_sizes.record("pyannote:org/repo", "cuda", "float32", 30_000,
+                       measured=False)
+    got = model_sizes.lookup("pyannote:org/repo", "cuda", "float32")
+    assert (got["bytes"], got["src"]) == (3000, "disk")
+    shutil.rmtree(hf)
+    got = model_sizes.lookup("pyannote:org/repo", "cuda", "float32")
+    assert (got["bytes"], got["src"]) == (30_000, "disk")
+    model_sizes.record("pyannote:org/repo", "cuda", "float32", 50_000)
+    got = model_sizes.lookup("pyannote:org/repo", "cuda", "float32")
+    assert (got["bytes"], got["src"]) == (50_000, "measured")
 
 
 def test_a_live_disk_walk_beats_another_placements_disk_row(ledger,
