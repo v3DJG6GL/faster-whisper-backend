@@ -1255,7 +1255,20 @@ def test_cutoff_shuts_a_socket_added_after_it_fired():
         cutoff = udl._WallClockCutoff(10.0)
         cutoff.cut()
         cutoff.add(a)
-        assert a.recv(1) == b""
+        # The peer still talks: an unshut socket would read b"x". After the
+        # shutdown Linux answers EOF, while Windows blocks a silent socket
+        # and resets one that receives data — either way nothing is read.
+        try:
+            b.sendall(b"x")
+        except OSError:     # the peer of a shut socket may refuse it
+            pass
+        try:
+            got = a.recv(1)
+        except TimeoutError:
+            raise
+        except OSError:
+            got = b""
+        assert got == b""
     finally:
         a.close()
         b.close()

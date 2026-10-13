@@ -96,12 +96,14 @@ def test_a_hand_edited_bool_rate_is_dropped(ledger):
     assert stage_rates.lookup("transcribing", None, None)["src"] == "seed"
 
 
+# Explicit ids: the default one is the body, and pytest puts it in
+# PYTEST_CURRENT_TEST — Windows refuses an env value over 32767 characters.
 @pytest.mark.parametrize("body", [
     '{"version": 1, "rates": {"transcribing|||": {"rate": 1%s}}}' % ("0" * 400),
     '{"version": 1, "rates": {"transcribing|||": {"rate": 6.0, "n": 1%s}}}'
     % ("0" * 400),
     "[" * 100000 + "]" * 100000,
-])
+], ids=["huge-rate", "huge-count", "deep-nesting"])
 def test_an_overflowing_or_deeply_nested_file_degrades_to_seeds(ledger, body):
     with open(ledger, "w", encoding="utf-8") as f:
         f.write(body)

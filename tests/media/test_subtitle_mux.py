@@ -418,12 +418,17 @@ def test_probe_streams_reads_a_non_utf8_title(tmp_path):
     by ffmpeg: PyAV's default metadata_errors="strict" raised
     UnicodeDecodeError and the route cached a playable video as unreadable."""
     pytest.importorskip("av")
-    src = str(tmp_path / "src.avi")
-    subprocess.run([b"ffmpeg", b"-hide_banner", b"-loglevel", b"error", b"-y",
-                    b"-f", b"lavfi", b"-i", b"testsrc=size=64x64:rate=10:duration=1",
-                    b"-c:v", b"mpeg4", b"-metadata", b"title=M\xfcller",
-                    src.encode()], check=True, timeout=60)
-    streams = pk.probe_streams(src)
+    src = tmp_path / "src.avi"
+    # A Windows command line is Unicode and cannot carry the raw 0xFC byte,
+    # so ffmpeg writes a same-length ASCII placeholder that is patched in.
+    subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+                    "-f", "lavfi", "-i", "testsrc=size=64x64:rate=10:duration=1",
+                    "-c:v", "mpeg4", "-metadata", "title=MQller",
+                    str(src)], check=True, timeout=60)
+    data = src.read_bytes()
+    assert data.count(b"MQller") == 1
+    src.write_bytes(data.replace(b"MQller", b"M\xfcller"))
+    streams = pk.probe_streams(str(src))
     assert streams.video_codec == "mpeg4" and streams.width == 64
 
 

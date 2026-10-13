@@ -159,12 +159,14 @@ def test_a_nonsense_size_row_is_dropped(ledger, monkeypatch, row):
                             reserve_bytes=0) == (None, "size_unknown")
 
 
+# Explicit ids: the default one is the body, and pytest puts it in
+# PYTEST_CURRENT_TEST — Windows refuses an env value over 32767 characters.
 @pytest.mark.parametrize("body", [
     '{"version": 1, "models": {"a|cuda|f16": {"bytes": 1%s}}}' % ("0" * 400),
     '{"version": 1, "models": {"a|cuda|f16": {"bytes": 10, "n": 1%s}}}'
     % ("0" * 400),
     "[" * 100000 + "]" * 100000,
-])
+], ids=["huge-bytes", "huge-count", "deep-nesting"])
 def test_an_overflowing_or_deeply_nested_file_degrades_to_no_data(
         ledger, monkeypatch, body):
     """_read NEVER raises: math.isfinite() cannot convert a 400-digit JSON
@@ -593,8 +595,9 @@ def test_tilde_roots_resolve_under_the_home_dir(ledger, tmp_path,
     assert hf_cache.hub_lookup_dir().startswith(str(tmp_path))
     assert model_sizes._model_path("gguf:o/r:Q4").startswith(str(tmp_path))
     monkeypatch.delenv("HF_HOME")
-    assert hf_cache.hub_cache_dir() == os.path.join(str(tmp_path), "dl",
-                                                    "hf", "hub")
+    # normpath: on Windows expanduser keeps the "/" of "~/dl".
+    assert os.path.normpath(hf_cache.hub_cache_dir()) == os.path.join(
+        str(tmp_path), "dl", "hf", "hub")
     assert model_sizes._model_path("openai/whisper-tiny").startswith(
         str(tmp_path))
 

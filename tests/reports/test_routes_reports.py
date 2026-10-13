@@ -389,7 +389,7 @@ def test_patch_waits_for_the_store_lock_off_the_loop(client, app_module):
     import threading
     import time
 
-    import httpx
+    import httpx2 as httpx   # the declared dev dep; httpx is no longer transitive
 
     from faster_whisper_backend.reports import store as reports_store
     rid = client.post(_SUBMIT, json=_payload()).json()["id"]

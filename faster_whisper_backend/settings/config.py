@@ -1901,6 +1901,24 @@ def _decode_model_id(s: str) -> str:
     return s.replace("__SLASH__", "/").replace("__DOT__", ".")
 
 
+def _canonical_env_model_id(model_id: str) -> str:
+    """Windows upper-cases every environment variable NAME, so
+    WHISPER_MODEL_OVERRIDE__tiny__… arrives as …__TINY__… and the entry would
+    land under "TINY" — a model no allowlist names and no request ever
+    selects. There, map the id back onto the model it spells
+    case-insensitively (a stored override, the allowlist, DEFAULT_MODEL,
+    PRELOAD_MODELS); an unmatched bare name is a faster-whisper short name,
+    and those are all lower-case. Elsewhere names keep their case."""
+    if os.name != "nt":
+        return model_id
+    folded = model_id.casefold()
+    for known in (*MODEL_OVERRIDES, *sorted(ALLOWED_MODELS or ()),
+                  DEFAULT_MODEL, *(PRELOAD_MODELS or ())):
+        if isinstance(known, str) and known.casefold() == folded:
+            return known
+    return model_id if "/" in model_id else model_id.lower()
+
+
 # Module-level field-type lookup for _coerce_override_value. Names track
 # ModelOverride (settings/schema.py) — fields not in this class are pure
 # string passthroughs (TEMPERATURE) or rejected by pydantic at save time.
@@ -2022,7 +2040,7 @@ for _k, _v in os.environ.items():
             f"{_new_var} — the old name still "
             f"works but will be removed in a later release.")
         _field = _new_field
-    _model_id = _decode_model_id(_enc_id)
+    _model_id = _canonical_env_model_id(_decode_model_id(_enc_id))
     _coerced = _env_guard_off(_k, _field, _coerce_override_value(_field, _v))
     if _coerced is _UNPARSED:
         _ENV_WARNINGS.append(

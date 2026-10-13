@@ -44,7 +44,10 @@ def test_hf_hub_cache_wins_over_hf_home(monkeypatch, tmp_path):
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("USERPROFILE", str(tmp_path))
     monkeypatch.setenv("HF_HUB_CACHE", "~/hub")
-    assert hf_cache.hub_cache_dir() == os.path.join(str(tmp_path), "hub")
+    # normpath: on Windows expanduser keeps the "/" of "~/hub", as the hub's
+    # own expansion does — same dir, different spelling.
+    assert os.path.normpath(hf_cache.hub_cache_dir()) == os.path.join(
+        str(tmp_path), "hub")
 
 
 def test_legacy_huggingface_hub_cache_alias_wins_over_hf_home(monkeypatch,

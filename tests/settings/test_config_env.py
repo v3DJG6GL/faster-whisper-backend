@@ -1137,6 +1137,27 @@ def test_per_model_env_new_field_name_wins_over_the_old_one(monkeypatch, old_fir
         importlib.reload(config)
 
 
+def test_per_model_env_id_survives_windows_upper_casing(monkeypatch):
+    """Windows upper-cases env var names: WHISPER_MODEL_OVERRIDE__tiny__…
+    arrived as …__TINY__… and the entry landed under "TINY", which no
+    request selects and the allowlist check drops."""
+    import types
+    monkeypatch.setattr(config, "os", types.SimpleNamespace(name="nt"))
+    monkeypatch.setattr(config, "ALLOWED_MODELS",
+                        {"Systran/faster-whisper-large-v3"})
+    monkeypatch.setattr(config, "MODEL_OVERRIDES", {"my-Model": {}})
+    canon = config._canonical_env_model_id
+    assert canon("TINY") == "tiny"
+    assert canon("LARGE-V3") == "large-v3"
+    assert canon("SYSTRAN/FASTER-WHISPER-LARGE-V3") == \
+        "Systran/faster-whisper-large-v3"
+    assert canon("MY-MODEL") == "my-Model"
+    # An unknown repo id keeps its spelling: its case cannot be recovered.
+    assert canon("ORG/NAME") == "ORG/NAME"
+    monkeypatch.setattr(config, "os", types.SimpleNamespace(name="posix"))
+    assert canon("TINY") == "TINY"
+
+
 def test_env_json_bundles_migrate_renamed_keys_and_locks(monkeypatch):
     """WHISPER_OVERRIDE_PROFILES / WHISPER_MODEL_OVERRIDES bundles are
     extra="forbid": one pre-rename key used to drop the whole env value."""
