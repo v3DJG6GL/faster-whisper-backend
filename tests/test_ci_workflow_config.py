@@ -47,6 +47,20 @@ def test_windows_leg_fails_when_node_or_ffmpeg_is_missing():
     assert "::error::" in step and "exit 1" in step
 
 
+def test_windows_leg_runs_in_its_own_venv():
+    # The host-mode runner takes concurrent jobs: installing into the VM's
+    # system python let a Renovate PR swap av 18 for 19 under a running main
+    # job (run 1373). Every pip/pytest call goes through the job's .venv.
+    ci = _read(".forgejo", "workflows", "ci.yml")
+    leg = ci[ci.index("  test-windows:"):]
+    leg = leg[:leg.index("\n  all-ci:")]
+    code = "\n".join(_code_lines(leg))
+    assert "python -m venv .venv" in code
+    assert code.index("python -m venv .venv") < code.index("pip install -r")
+    calls = re.findall(r"^\s*(\S+) -m (?:pip|pytest)\b", code, re.M)
+    assert calls and set(calls) == {r".venv\Scripts\python"}, calls
+
+
 def test_checkout_steps_derive_the_instance_host():
     # One literal for the whole file (env.REGISTRY); the fetch URLs read it
     # through GIT_HOST, so an instance rename is a one-line edit instead of

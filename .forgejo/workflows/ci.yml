@@ -22,8 +22,9 @@
 #     actions/checkout's credential persistence breaks in host mode).
 #   * windows-latest runs on the self-hosted Windows VM runner (host mode,
 #     label windows-latest:host — see forgejo-runner-windows/
-#     windows-runner-setup.md). It uses the SYSTEM python, like the frontend
-#     uses the system node. VM prerequisite (one-time, admin PowerShell):
+#     windows-runner-setup.md). It builds a per-job venv from the SYSTEM
+#     python (see its install step). VM prerequisite (one-time, admin
+#     PowerShell):
 #         .\setup-runner.ps1 -ToolchainOnly   (forgejo-runner-windows repo)
 #     which choco-installs python, node and ffmpeg AND rewrites the nssm
 #     AppEnvironmentExtra PATH (the service PATH is explicit, so a bare
@@ -239,16 +240,25 @@ jobs:
           if ($LASTEXITCODE -ne 0) { Write-Output "::error::ffmpeg -version exited $LASTEXITCODE"; exit 1 }
           Write-Output $ffmpegVersion[0]
 
-      # Host mode: this installs into the VM's system python and doubles as
-      # a warm cache across runs (same trade-off as the frontend's persistent
-      # cargo cache). Renovate PRs keep the pins current, so drift converges.
+      # A venv per job, never the VM's system python: the runner takes
+      # several jobs at once and they all saw ONE site-packages, so a
+      # Renovate PR's install swapped packages under a concurrent main run
+      # (run 1373: PR #103 replaced av 18.1 with 19.0 mid-suite, 238
+      # failures on a green commit). Each job has its own workspace and the
+      # checkout's `git clean -x` drops the last run's .venv, so the install
+      # is fresh every time; pip's wheel cache in the SYSTEM profile keeps
+      # it fast. pwsh only reports the LAST native exit code, hence a check
+      # after each command.
       - name: Install dependencies (CPU base + test tools)
         run: |
-          python -m pip install --upgrade pip
-          python -m pip install -r requirements.txt -r requirements-dev.txt
+          python -m venv .venv
+          if ($LASTEXITCODE -ne 0) { Write-Output "::error::python -m venv exited $LASTEXITCODE"; exit 1 }
+          .venv\Scripts\python -m pip install --upgrade pip
+          if ($LASTEXITCODE -ne 0) { Write-Output "::error::pip upgrade exited $LASTEXITCODE"; exit 1 }
+          .venv\Scripts\python -m pip install -r requirements.txt -r requirements-dev.txt
 
       - name: Run tests (with coverage gate)
-        run: python -m pytest -q --cov-fail-under=84
+        run: .venv\Scripts\python -m pytest -q --cov-fail-under=84
 
   # Single, stable status check to require in the branch protection. Matrix
   # legs expand/rename over time; this gate aggregates them so the required
