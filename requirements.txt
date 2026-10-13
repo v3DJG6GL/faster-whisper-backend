@@ -24,7 +24,7 @@
 # `pip install -r requirements.txt` still does the whole job.
 -r requirements-heavy.txt
 
-fastapi>=0.142.2
+fastapi>=0.143.0
 uvicorn[standard]>=0.54.0
 python-multipart>=0.0.32
 
@@ -45,7 +45,7 @@ nvidia-ml-py>=13.615.71
 # on Linux/macOS, where zoneinfo reads the system database.
 tzdata>=2026.5
 psutil>=7.2.2
-pydantic>=2.13.5
+pydantic>=2.14.0
 
 # Transcribe-from-URL (URL_DOWNLOAD_ENABLED): the server-side downloader for
 # pasted media links. Pure Python; the ffmpeg it may call for merges comes
