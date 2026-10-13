@@ -349,14 +349,14 @@ def test_json_model_overrides_env(monkeypatch):
         _reload_with_env(
             monkeypatch,
             WHISPER_MODEL_OVERRIDES='{"large-v2": {"BEAM_SIZE": 4}}',
-            # Uppercase id on purpose: Windows normalises os.environ keys to
-            # uppercase, so a lowercase id in the var NAME wouldn't round-trip
-            # there (same reason as test_per_model_env_scanner_end_to_end).
-            WHISPER_MODEL_OVERRIDE__LARGE__DOT__V3__BEAM_SIZE="7",
+            # Windows upper-cases os.environ keys; _canonical_env_model_id
+            # maps a bare (short-name) id back to lower case, so a lowercase
+            # id in the var NAME lands under the same key on every OS.
+            WHISPER_MODEL_OVERRIDE__large__DOT__v3__BEAM_SIZE="7",
         )
         assert config.MODEL_OVERRIDES["large-v2"] == {"BEAM_SIZE": 4}
         assert isinstance(config.MODEL_OVERRIDES["large-v2"], dict)
-        assert config.MODEL_OVERRIDES["LARGE.V3"]["BEAM_SIZE"] == 7
+        assert config.MODEL_OVERRIDES["large.v3"]["BEAM_SIZE"] == 7
     finally:
         monkeypatch.undo()
         importlib.reload(config)
@@ -517,10 +517,10 @@ def test_per_model_env_override_coerces_newer_field_types(monkeypatch):
     try:
         _reload_with_env(
             monkeypatch,
-            WHISPER_MODEL_OVERRIDE__TINY__DIARIZE="false",
-            WHISPER_MODEL_OVERRIDE__TINY__DIARIZATION_NUM_SPEAKERS="3",
+            WHISPER_MODEL_OVERRIDE__tiny__DIARIZE="false",
+            WHISPER_MODEL_OVERRIDE__tiny__DIARIZATION_NUM_SPEAKERS="3",
         )
-        entry = config.MODEL_OVERRIDES.get("TINY", {})
+        entry = config.MODEL_OVERRIDES.get("tiny", {})
         assert entry.get("DIARIZE") is False
         assert entry.get("DIARIZATION_NUM_SPEAKERS") == 3
     finally:
@@ -535,10 +535,10 @@ def test_per_model_env_override_unparseable_bool_is_skipped(monkeypatch):
     try:
         _reload_with_env(
             monkeypatch,
-            WHISPER_MODEL_OVERRIDE__TINY__DIARIZE="maybe",
-            WHISPER_MODEL_OVERRIDE__TINY__BEAM_SIZE="3",
+            WHISPER_MODEL_OVERRIDE__tiny__DIARIZE="maybe",
+            WHISPER_MODEL_OVERRIDE__tiny__BEAM_SIZE="3",
         )
-        entry = config.MODEL_OVERRIDES.get("TINY", {})
+        entry = config.MODEL_OVERRIDES.get("tiny", {})
         assert "DIARIZE" not in entry
         assert entry.get("BEAM_SIZE") == 3
         assert any("DIARIZE" in w and "not a valid boolean" in w
@@ -552,10 +552,10 @@ def test_per_model_env_override_accepts_verbose_bool_spellings(monkeypatch):
     try:
         _reload_with_env(
             monkeypatch,
-            WHISPER_MODEL_OVERRIDE__TINY__DIARIZE="enabled",
-            WHISPER_MODEL_OVERRIDE__TINY__VAD_FILTER="n",
+            WHISPER_MODEL_OVERRIDE__tiny__DIARIZE="enabled",
+            WHISPER_MODEL_OVERRIDE__tiny__VAD_FILTER="n",
         )
-        entry = config.MODEL_OVERRIDES.get("TINY", {})
+        entry = config.MODEL_OVERRIDES.get("tiny", {})
         assert entry.get("DIARIZE") is True
         assert entry.get("VAD_FILTER") is False
     finally:
@@ -938,9 +938,9 @@ def test_per_model_env_override_invalid_unknown_field_keeps_stored_entry(monkeyp
 def test_per_model_env_override_invalid_without_stored_entry_is_dropped(monkeypatch):
     """An env-only bad entry still never goes live."""
     try:
-        _reload_with_env(monkeypatch, WHISPER_MODEL_OVERRIDE__TINY__BEAM_SIZE="9999")
-        assert "TINY" not in config.MODEL_OVERRIDES
-        assert any("TINY" in m for m in config._ENV_WARNINGS), config._ENV_WARNINGS
+        _reload_with_env(monkeypatch, WHISPER_MODEL_OVERRIDE__tiny__BEAM_SIZE="9999")
+        assert "tiny" not in config.MODEL_OVERRIDES
+        assert any("tiny" in m.lower() for m in config._ENV_WARNINGS), config._ENV_WARNINGS
     finally:
         monkeypatch.undo()
         importlib.reload(config)
@@ -1108,9 +1108,9 @@ def test_per_model_env_renamed_slug_keeps_the_whole_entry(monkeypatch):
     try:
         _reload_with_env(
             monkeypatch,
-            WHISPER_MODEL_OVERRIDE__TINY__PIPELINE_RULES_EXCLUDE="dictation-map",
-            WHISPER_MODEL_OVERRIDE__TINY__SEGMENT_MAX_WORDS_PER_SEC="4")
-        assert config.MODEL_OVERRIDES["TINY"] == {
+            WHISPER_MODEL_OVERRIDE__tiny__PIPELINE_RULES_EXCLUDE="dictation-map",
+            WHISPER_MODEL_OVERRIDE__tiny__SEGMENT_MAX_WORDS_PER_SEC="4")
+        assert config.MODEL_OVERRIDES["tiny"] == {
             "PIPELINE_RULES_EXCLUDE": ["de-dictation-map"],
             "SEGMENT_MAX_WORDS_PER_S": 4.0}
     finally:
@@ -1130,7 +1130,7 @@ def test_per_model_env_new_field_name_wins_over_the_old_one(monkeypatch, old_fir
             monkeypatch.setenv(k, v)
         importlib.reload(config)
         assert config.MODEL_OVERRIDES["tiny"]["SEGMENT_MAX_WORDS_PER_S"] == 6
-        assert any(m.startswith(old[0]) and "is ignored" in m
+        assert any(m.lower().startswith(old[0].lower()) and "is ignored" in m
                    for m in config._ENV_WARNINGS), config._ENV_WARNINGS
     finally:
         monkeypatch.undo()
@@ -1203,9 +1203,9 @@ def test_per_model_env_override_outside_a_stored_allowlist_is_dropped(monkeypatc
     monkeypatch.setattr(config_store, "load_overrides",
                         lambda path=None: {"ALLOWED_MODELS": {"large-v3"}})
     try:
-        _reload_with_env(monkeypatch, WHISPER_MODEL_OVERRIDE__TINY__BEAM_SIZE="3")
-        assert "TINY" not in config.MODEL_OVERRIDES
-        assert any("TINY" in m and "ALLOWED_MODELS" in m
+        _reload_with_env(monkeypatch, WHISPER_MODEL_OVERRIDE__tiny__BEAM_SIZE="3")
+        assert "tiny" not in config.MODEL_OVERRIDES
+        assert any("tiny" in m.lower() and "ALLOWED_MODELS" in m
                    for m in config._ENV_WARNINGS), config._ENV_WARNINGS
     finally:
         monkeypatch.undo()
@@ -1214,8 +1214,8 @@ def test_per_model_env_override_outside_a_stored_allowlist_is_dropped(monkeypatc
 
 def test_per_model_env_values_are_recorded_for_the_save_path(monkeypatch):
     try:
-        _reload_with_env(monkeypatch, WHISPER_MODEL_OVERRIDE__TINY__BEAM_SIZE="3")
-        assert config._ENV_OVERRIDE_VALUES == {"TINY": {"BEAM_SIZE": 3}}
+        _reload_with_env(monkeypatch, WHISPER_MODEL_OVERRIDE__tiny__BEAM_SIZE="3")
+        assert config._ENV_OVERRIDE_VALUES == {"tiny": {"BEAM_SIZE": 3}}
     finally:
         monkeypatch.undo()
         importlib.reload(config)
@@ -1531,7 +1531,7 @@ def test_per_model_env_guard_at_one_means_off(monkeypatch):
             monkeypatch,
             **{"WHISPER_MODEL_OVERRIDE__large-v3__SEGMENT_HEAD_ECHO_MIN_WORDS": "1"})
         assert config.MODEL_OVERRIDES["large-v3"]["SEGMENT_HEAD_ECHO_MIN_WORDS"] == 0
-        assert any("no longer accepted" in m and "large-v3" in m
+        assert any("no longer accepted" in m and "large-v3" in m.lower()
                    for m in config._ENV_WARNINGS), config._ENV_WARNINGS
     finally:
         monkeypatch.undo()
