@@ -45,7 +45,7 @@ nvidia-ml-py>=13.615.71
 # on Linux/macOS, where zoneinfo reads the system database.
 tzdata>=2026.5
 psutil>=7.2.2
-pydantic>=2.14.0
+pydantic>=2.14.1
 
 # Transcribe-from-URL (URL_DOWNLOAD_ENABLED): the server-side downloader for
 # pasted media links. Pure Python; the ffmpeg it may call for merges comes
@@ -57,4 +57,4 @@ yt-dlp>=2026.8.19
 # AES-128 HLS: without it yt-dlp hands an encrypted manifest to ffmpeg, which
 # fetches the key and segments itself; the SSRF guard refuses that hand-off, so
 # such streams would fail. With it yt-dlp decrypts natively, through the guard.
-pycryptodomex>=3.24.0
+pycryptodomex>=3.24.1
