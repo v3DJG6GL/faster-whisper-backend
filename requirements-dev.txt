@@ -12,4 +12,4 @@ pytest-cov>=7.1.0
 # here (Renovate keeps it current).
 httpx2>=2.13.1
 # Linter; config in ruff.toml, run by the Linux CI legs (`ruff check .`).
-ruff>=0.17.0
+ruff>=0.17.1
