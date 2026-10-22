@@ -1,6 +1,23 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "customManagers": [
+  "extends": [
+    "config:recommended",
+    "customManagers:githubActionsVersions",
+    ":semanticCommits",
+    ":dependencyDashboard"
+  ],
+  "timezone": "Etc/UTC",
+  "labels": [
+    "dependencies"
+  ],
+  "rangeStrategy": "bump",
+  "automerge": true,
+  "automergeStrategy": "squash",
+  "platformAutomerge": false,
+  "osvVulnerabilityAlerts": true,
+  "minimumReleaseAge": "3 days",
+  "internalChecksFilter": "strict",
+  "packageRules": [
     {
       "description": "Group all Actions bumps (the github-actions manager also covers .forgejo/workflows) into one PR.",
       "matchManagers": [
