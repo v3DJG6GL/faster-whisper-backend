@@ -3,7 +3,7 @@
   "description": "Merged from faster-whisper-backend and faster-whisper-frontend (docs/design/quality.md §4.4, ADR-0003).",
   "customManagers": [
     {
-      "description": "Grodup all Actions bumps (the github-actions manager also covers .forgejo/workflows) into one PR.",
+      "description": "Group all Actions bumps (the github-actions manager also covers .forgejo/workflows) into one PR.",
       "matchManagers": [
         "github-actions"
       ],
