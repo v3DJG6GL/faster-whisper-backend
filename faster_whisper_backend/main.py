@@ -875,8 +875,7 @@ async def _csrf_mw(request: Request, call_next):
                 # lock twice on the event loop).
                 request.state.session_record = sess
                 header_tok = request.headers.get("x-csrf-token", "")
-                _auth_header = request.headers.get("authorization", "")
-                if sess is None and _auth_header.lower().startswith("bearer "):
+                if sess is None and _auth.bearer_credentials(request) is not None:
                     # A cookie that no longer resolves (row expired, sessions
                     # DB wiped or moved, cookie outliving its 30 d row) riding
                     # along with a bearer credential: the bearer wins in

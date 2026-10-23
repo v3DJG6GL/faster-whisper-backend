@@ -322,6 +322,21 @@ def test_ws_authorization_header_admits(client, make_user_key):
         assert _handshake(ws)["type"] == "ready"
 
 
+def test_ws_basic_then_bearer_authorization_headers_admit(client, make_user_key):
+    # A basic-auth reverse proxy in front (Server URL user:pass@host): the
+    # client sends `Basic …` first and the API key's `Bearer` second.
+    # httpx.Headers, not a list: websocket_connect setdefault()s on it.
+    import httpx
+    make_user_key("root", is_admin=True)
+    _uid, raw = make_user_key("alice")
+    with client.websocket_connect(
+            "/v1/audio/transcriptions/stream", headers=httpx.Headers([
+                ("Authorization", "Basic dXNlcjpwYXNz"),
+                ("Authorization", f"Bearer {raw}"),
+            ])) as ws:
+        assert _handshake(ws)["type"] == "ready"
+
+
 def test_ws_bearer_subprotocol_admits(client, make_user_key):
     from faster_whisper_backend.streaming.routes import _WS_BEARER_SUBPROTOCOL
     make_user_key("root", is_admin=True)

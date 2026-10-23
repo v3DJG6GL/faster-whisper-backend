@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from typing import Any
 
 from fastapi import Depends, HTTPException, Request, status
@@ -40,8 +41,35 @@ from faster_whisper_backend.auth import hosts as auth_hosts
 
 logger = logging.getLogger("whisper-api")
 
+
+class _AnyBearer(HTTPBearer):
+    """HTTPBearer that finds the bearer among SEVERAL Authorization values.
+
+    Stock HTTPBearer reads only the first `Authorization` header. A client
+    whose Server URL carries `user:pass@` for a basic-auth reverse proxy sends
+    `Basic …` first and `Bearer <api_key>` second, so the key would be missed
+    and a keyed backend would 401 every request. Delegates to
+    `bearer_credentials` — the one parser every auth path shares.
+    """
+
+    async def __call__(self, request: Request) -> HTTPAuthorizationCredentials | None:
+        return bearer_credentials(request)
+
+
 # auto_error=False so we can return our own 401 body with WWW-Authenticate.
-_bearer = HTTPBearer(auto_error=False, description="API key as bearer token")
+# scheme_name pinned so the OpenAPI security scheme keeps its stock name.
+_bearer = _AnyBearer(
+    auto_error=False,
+    scheme_name="HTTPBearer",
+    description="API key as bearer token",
+)
+
+# A comma that starts another credential inside one merged Authorization value
+# ("Basic x, Bearer y" — a proxy folding the two headers into one): the comma
+# must be followed by an auth-scheme token and whitespace, so an auth-param
+# list (`realm="a", nonce="b"`) never splits. Minted keys are base64url and
+# carry no comma.
+_CREDENTIAL_SPLIT = re.compile(r",\s*(?=[A-Za-z][A-Za-z0-9!#$%&'*+.^_`|~-]*\s+\S)")
 
 _UNAUTH = HTTPException(
     status.HTTP_401_UNAUTHORIZED,
@@ -287,16 +315,25 @@ def bearer_credentials(
 ) -> HTTPAuthorizationCredentials | None:
     """Parse an `Authorization: Bearer <key>` header off any HTTPConnection.
 
-    The hand-rolled equivalent of what HTTPBearer does inside a Depends —
-    for the SSE/WS call sites that resolve auth outside FastAPI's dependency
-    machinery. Case-insensitive scheme match, None when absent/not bearer.
+    The one bearer parser: the Depends path (`_bearer`), the SSE/WS call
+    sites that resolve auth outside FastAPI's dependency machinery, and the
+    CSRF middleware all read the key through here. Case-insensitive scheme
+    match, None when absent/not bearer/empty.
+
+    Scans EVERY Authorization value, not just the first, and every credential
+    inside a comma-merged value, and takes the first Bearer one: a basic-auth
+    reverse proxy in front of the backend (Server URL `https://user:pass@host`)
+    makes the client send `Basic …` before `Bearer <api_key>`.
     """
-    header = conn.headers.get("authorization") or ""
-    if not header.lower().startswith("bearer "):
-        return None
-    return HTTPAuthorizationCredentials(
-        scheme="Bearer", credentials=header.split(" ", 1)[1].strip(),
-    )
+    for header in conn.headers.getlist("authorization"):
+        for part in _CREDENTIAL_SPLIT.split(header):
+            scheme, _, credentials = part.strip().partition(" ")
+            credentials = credentials.strip()
+            if scheme.lower() == "bearer" and credentials:
+                return HTTPAuthorizationCredentials(
+                    scheme="Bearer", credentials=credentials,
+                )
+    return None
 
 
 def resolve_user_for_page_sse(
