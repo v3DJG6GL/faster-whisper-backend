@@ -1,0 +1,302 @@
+<!doctype html>
+<!-- Template for scripts/time_ledger.py: the script swaps the DATA placeholder for its JSON. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Faster-Whisper time ledger</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --panel: #ffffff; --fg: #1b1f27; --muted: #5d6676; --line: #dde1e8; --grid: #eceff3;
+    --s0: #2f6fd6; --s1: #e08a2e; --s2: #2a9d74; --dim: #b4bac6;
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; --serif: Georgia, "Iowan Old Style", serif;
+    color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #14171c; --panel: #1c2027; --fg: #e7eaf0; --muted: #9aa3b2; --line: #2d333d; --grid: #252a32;
+      --s0: #6c9ef0; --s1: #f0a656; --s2: #4cc097; --dim: #4b525e; color-scheme: dark; }
+  }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.5 var(--sans); }
+  .tl { max-width: 72rem; margin: 0 auto; padding: 2rem max(16px, env(safe-area-inset-left, 0px)) 3rem max(16px, env(safe-area-inset-right, 0px)); display: flex; flex-direction: column; gap: 1.25rem; }
+  h1 { font: 400 2rem/1.2 var(--serif); margin: 0; }
+  .lede { margin: .4rem 0 0; color: var(--muted); max-width: 65ch; }
+  .lede b, .note b { color: var(--fg); font-weight: 600; }
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 11rem), 1fr)); gap: .75rem; }
+  .tile, .card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 1rem 1.1rem; min-width: 0; }
+  .tile .k, .tile .s { font-size: .8rem; color: var(--muted); }
+  .tile .v { font: 400 1.9rem/1.2 var(--serif); margin: .2rem 0; font-variant-numeric: tabular-nums; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 24rem), 1fr)); gap: .75rem; }
+  h2 { font-size: 1rem; font-weight: 600; margin: 0; }
+  .note { font-size: .8rem; color: var(--muted); margin: .2rem 0 .75rem; max-width: 70ch; }
+  .chart { position: relative; }
+  .chart svg { display: block; overflow: visible; }
+  .chart text { fill: var(--muted); font: 12px var(--sans); font-variant-numeric: tabular-nums; }
+  .chart .end { fill: var(--fg); }
+  .legend { display: flex; flex-wrap: wrap; gap: 1rem; font-size: .8rem; color: var(--muted); margin-bottom: .5rem; }
+  .legend i { width: .65rem; height: .65rem; border-radius: 2px; display: inline-block; margin-right: .35rem; vertical-align: -1px; }
+  .tip { position: absolute; pointer-events: none; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; box-shadow: 0 4px 14px rgb(0 0 0 / .15); padding: .3rem .55rem; font-size: .78rem; white-space: nowrap; z-index: 2; font-variant-numeric: tabular-nums; }
+  .tip .d { color: var(--muted); }
+  .tip i { width: .5rem; height: .5rem; border-radius: 2px; display: inline-block; margin-right: .35rem; }
+  .tablewrap { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: .82rem; font-variant-numeric: tabular-nums; }
+  th { text-align: left; font-weight: 600; color: var(--muted); }
+  th, td { padding: .3rem .5rem; border-bottom: 1px solid var(--line); }
+  .n { text-align: right; }
+  .method ul { margin: 0; padding-left: 1.2rem; color: var(--muted); max-width: 70ch; display: flex; flex-direction: column; gap: .3rem; }
+</style>
+</head>
+<body>
+<div class="tl">
+  <header>
+    <h1>Faster-Whisper time ledger</h1>
+    <p class="lede" id="lede"></p>
+  </header>
+  <section class="tiles" id="tiles"></section>
+  <section class="card">
+    <h2>Hours per week</h2>
+    <p class="note">Estimated hands-on hours, split by app. The thin strip below shows commits from review runs, which add no hours.</p>
+    <div class="legend" id="weekly-legend"></div>
+    <div class="chart" id="weekly"></div>
+  </section>
+  <div class="grid">
+    <section class="card">
+      <h2>Running total</h2>
+      <p class="note">Hours added up day by day since the first commit.</p>
+      <div class="chart" id="cumulative"></div>
+    </section>
+    <section class="card" id="calib-card">
+      <h2>Cross-check with Claude sessions</h2>
+      <p class="note" id="calib-note"></p>
+      <div class="legend"><span><i style="background:var(--s0)"></i>From commits</span><span><i style="background:var(--s2)"></i>From your prompts</span></div>
+      <div class="chart" id="calib"></div>
+    </section>
+  </div>
+  <section class="card">
+    <h2>When you work</h2>
+    <p class="note">Estimated hours by weekday and hour of day (Zurich time). Darker cells hold more hours.</p>
+    <div class="chart" id="heat"></div>
+  </section>
+  <div class="grid">
+    <section class="card">
+      <h2>What the commits were</h2>
+      <p class="note">Hands-on commits by the type in their message. "Other scoped work" is commits titled by area, such as stats( or screens(.</p>
+      <div class="legend" id="kinds-legend"></div>
+      <div class="chart" id="kinds"></div>
+    </section>
+    <section class="card">
+      <h2>Longest sessions</h2>
+      <p class="note">Runs of commits with no long gap. Very long ones likely include stretches where Claude worked on its own.</p>
+      <div class="tablewrap"><table id="longest"><thead></thead><tbody></tbody></table></div>
+    </section>
+  </div>
+  <section class="card method">
+    <h2>How the hours are estimated</h2>
+    <p class="note" id="generated"></p>
+    <ul id="method"></ul>
+  </section>
+</div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.9.0/d3.min.js"></script>
+<script>
+const DATA = /*DATA*/null;
+const C = ['var(--s0)', 'var(--s1)', 'var(--s2)'];
+const APPS = DATA.apps, label = a => a[0].toUpperCase() + a.slice(1);
+const fmt1 = d3.format(',.1f'), fmt0 = d3.format(','), day = d3.utcFormat('%b %-d'), dayLong = d3.utcFormat('%a %b %-d %Y, %H:%M');
+const parse = s => new Date(s.length > 10 ? s + ':00Z' : s + 'T00:00:00Z');
+const monday = s => { const d = parse(s); d.setUTCDate(d.getUTCDate() - (d.getUTCDay() + 6) % 7); return d.toISOString().slice(0, 10); };
+const appHours = r => d3.sum(APPS, a => r[a]);
+const el = (tag, text, cls) => { const e = document.createElement(tag); if (text != null) e.textContent = text; if (cls) e.className = cls; return e; };
+const legend = (id, extra = []) => {
+  const box = document.getElementById(id);
+  [...APPS.map((a, i) => [C[i], label(a)]), ...extra].forEach(([c, t]) => { const s = el('span'); const i = el('i'); i.style.background = c; s.append(i, t); box.append(s); });
+};
+
+// ---- totals ----
+const daily = DATA.daily, sessions = DATA.sessions;
+const total = d3.sum(daily, appHours);
+const active = daily.filter(r => appHours(r) > 0);
+const activeWeeks = new Set(active.map(r => monday(r.date))).size;
+const hrs = sessions.map(s => s.hours).sort(d3.ascending);
+const sum = k => d3.sum(daily, r => r[k]);
+document.getElementById('lede').append(
+  'Since ', el('b', d3.utcFormat('%-d %B %Y')(parse(daily[0].date))), ' you have put in an estimated ', el('b', fmt0(Math.round(total))),
+  ` hours of hands-on work across the ${APPS.join(' and ')}, spread over `, el('b', fmt0(active.length)),
+  ' active days. Code-review, security-review and simplify runs and bot commits are left out.');
+const tiles = [
+  ['Estimated hours', fmt0(Math.round(total)), APPS.map(a => `${fmt0(Math.round(sum(a)))} h ${a}`).join(' · ')],
+  ['Average per active week', fmt1(total / activeWeeks), `over ${activeWeeks} weeks with any work`],
+  ['Work sessions', fmt0(sessions.length), `median ${fmt1(d3.median(hrs))} h each`],
+  ['Hands-on commits', fmt0(sum('human')), `${fmt0(sum('review'))} review-run commits not counted`],
+];
+for (const [k, v, s] of tiles) { const t = el('div', null, 'tile'); t.append(el('div', k, 'k'), el('div', v, 'v'), el('div', s, 's')); document.getElementById('tiles').append(t); }
+legend('weekly-legend', [['var(--dim)', 'Review-run commits']]);
+legend('kinds-legend');
+document.getElementById('generated').textContent = `Generated ${DATA.generated} by scripts/time_ledger.py from the git history of the ${APPS.join(' and ')} repos.`;
+[`Commits from ${APPS.length > 1 ? 'both repos go on one timeline, so an evening spent on both apps counts once' : 'the repo go on one timeline'}.`,
+ `Commits less than ${DATA.gap_hours} hours apart belong to one session. A session lasts from its first to its last commit, plus ${DATA.ramp_minutes} minutes for the work before the first commit.`,
+ 'Commits titled code-review, security-review, simplify or release, and commits by Renovate or CI bots, are dropped first. They still show in the review-run strip.',
+ 'Claude Code transcripts (about the last 30 days) are the cross-check: the time between your own prompts, compared week by week. Single weeks differ when Claude kept committing on its own between prompts.',
+ 'Time spent thinking, testing or reading docs without committing is missing. Treat the total as a reasonable middle estimate, not a timesheet.',
+].forEach(t => document.getElementById('method').append(el('li', t)));
+
+// ---- chart helpers ----
+function textWidth(svg, labels) {
+  const g = svg.append('g'); let w = 0;
+  for (const l of labels) w = Math.max(w, g.append('text').text(l).node().getComputedTextLength());
+  g.remove(); return w;
+}
+function tip(box) {
+  const t = el('div', null, 'tip'); t.hidden = true; box.append(t);
+  return {
+    show(ev, head, lines) {
+      const [x, y] = d3.pointer(ev, box);
+      t.replaceChildren(el('div', head, 'd'));
+      for (const [color, name, value] of lines) {
+        const row = el('div'); if (color) { const i = el('i'); i.style.background = color; row.append(i); }
+        row.append(`${name}: ${value}`); t.append(row);
+      }
+      t.hidden = false;
+      t.style.left = Math.max(0, Math.min(box.clientWidth - t.offsetWidth, x + 12)) + 'px';
+      t.style.top = Math.max(0, y - t.offsetHeight - 8) + 'px';
+    },
+    hide() { t.hidden = true; },
+  };
+}
+function frame(id, H) {
+  const box = document.getElementById(id); box.replaceChildren();
+  const W = box.clientWidth;
+  return { box, W, H, svg: d3.select(box).append('svg').attr('width', '100%').attr('viewBox', `0 0 ${W} ${H}`) };
+}
+function yAxis(svg, y, left, width, ticks) {
+  const g = svg.append('g').attr('transform', `translate(${left},0)`).call(d3.axisLeft(y).ticks(ticks).tickSize(-width).tickFormat(v => fmt0(v) + ' h')).attr('font-size', null).attr('font-family', null);
+  g.select('.domain').remove(); g.selectAll('.tick line').attr('stroke', 'var(--grid)'); g.selectAll('.tick text').attr('x', -8);
+}
+
+function drawWeekly() {
+  const m = new Map();
+  for (const r of daily) {
+    const k = monday(r.date), w = m.get(k) || { week: k, review: 0, ...Object.fromEntries(APPS.map(a => [a, 0])) };
+    APPS.forEach(a => w[a] += r[a]); w.review += r.review; m.set(k, w);
+  }
+  const rows = [...m.values()].map(r => ({ ...r, d: parse(r.week) }));
+  const { box, W, H, svg } = frame('weekly', 250), strip = 36;
+  const y = d3.scaleLinear([0, d3.max(rows, appHours) || 1], [H - strip - 36, 8]).nice();
+  const left = textWidth(svg, y.ticks(5).map(v => fmt0(v) + ' h')) + 12;
+  const x = d3.scaleBand(rows.map(r => r.week), [left, W - 4]).padding(0.2);
+  yAxis(svg, y, left, W - left - 4, 5);
+  rows.forEach(r => {
+    let base = 0;
+    APPS.forEach((a, i) => {
+      svg.append('rect').attr('x', x(r.week)).attr('width', x.bandwidth()).attr('y', y(base + r[a])).attr('height', y(base) - y(base + r[a])).attr('fill', C[i]).attr('rx', Math.min(3, x.bandwidth() / 2));
+      base += r[a];
+    });
+  });
+  const sBase = H - 4, ys = d3.scaleLinear([0, d3.max(rows, r => r.review) || 1], [sBase, sBase - strip]);
+  svg.append('line').attr('x1', left).attr('x2', W - 4).attr('y1', sBase).attr('y2', sBase).attr('stroke', 'var(--line)');
+  rows.filter(r => r.review).forEach(r => svg.append('rect').attr('x', x(r.week)).attr('width', x.bandwidth()).attr('y', ys(r.review)).attr('height', sBase - ys(r.review)).attr('fill', 'var(--dim)').attr('rx', 2));
+  svg.append('text').attr('x', left - 8).attr('y', sBase - 4).attr('text-anchor', 'end').text('reviews');
+  d3.utcMonth.range(d3.utcMonth.ceil(rows[0].d), rows.at(-1).d).forEach(mo => {
+    const wk = rows.find(r => r.d >= mo); if (wk) svg.append('text').attr('x', x(wk.week)).attr('y', y(0) + 16).text(d3.utcFormat('%b')(mo));
+  });
+  const t = tip(box);
+  svg.append('g').selectAll('rect').data(rows).join('rect').attr('x', r => x(r.week) - x.step() * x.paddingInner() / 2).attr('width', x.step()).attr('height', H).attr('fill', 'transparent')
+    .on('mousemove', (ev, r) => t.show(ev, 'Week of ' + day(r.d), [...APPS.map((a, i) => [C[i], label(a), fmt1(r[a]) + ' h']), ['var(--dim)', 'Review-run commits', fmt0(r.review)]]))
+    .on('mouseleave', () => t.hide());
+}
+
+function drawCumulative() {
+  let acc = 0; const rows = daily.map(r => ({ d: parse(r.date), v: acc += appHours(r) }));
+  const { box, W, H, svg } = frame('cumulative', 180);
+  const y = d3.scaleLinear([0, rows.at(-1).v], [H - 22, 10]).nice();
+  const left = textWidth(svg, y.ticks(4).map(v => fmt0(v) + ' h')) + 12;
+  const endLabel = fmt0(Math.round(rows.at(-1).v)) + ' h', right = textWidth(svg, [endLabel]) + 10;
+  const x = d3.scaleUtc([rows[0].d, rows.at(-1).d], [left, W - right]);
+  yAxis(svg, y, left, W - left - right, 4);
+  const xa = svg.append('g').attr('transform', `translate(0,${H - 22})`).call(d3.axisBottom(x).ticks(d3.utcMonth.every(W < 420 ? 2 : 1)).tickFormat(d3.utcFormat('%b')).tickSize(0)).attr('font-size', null).attr('font-family', null);
+  xa.select('.domain').attr('stroke', 'var(--line)'); xa.selectAll('text').attr('dy', '1.2em');
+  const grad = svg.append('defs').append('linearGradient').attr('id', 'fade').attr('x1', 0).attr('x2', 0).attr('y1', 0).attr('y2', 1);
+  [[0, .26], [.25, .16], [.5, .08], [.75, .03], [1, 0]].forEach(([o, a]) => grad.append('stop').attr('offset', o).attr('style', `stop-color:${C[0]};stop-opacity:${a}`));
+  svg.append('path').datum(rows).attr('d', d3.area().x(r => x(r.d)).y0(y(0)).y1(r => y(r.v))).attr('fill', 'url(#fade)');
+  svg.append('path').datum(rows).attr('d', d3.line().x(r => x(r.d)).y(r => y(r.v))).attr('fill', 'none').attr('stroke', C[0]).attr('stroke-width', 2).attr('stroke-linejoin', 'round').attr('stroke-linecap', 'round');
+  const last = rows.at(-1);
+  svg.append('circle').attr('cx', x(last.d)).attr('cy', y(last.v)).attr('r', 3.5).attr('fill', C[0]);
+  svg.append('text').attr('class', 'end').attr('x', x(last.d) + 6).attr('y', y(last.v) + 4).text(endLabel);
+  const t = tip(box), dot = svg.append('circle').attr('r', 3.5).attr('fill', C[0]).attr('opacity', 0), bis = d3.bisector(r => r.d).center;
+  svg.append('rect').attr('x', left).attr('width', W - left - right).attr('height', H).attr('fill', 'transparent')
+    .on('mousemove', ev => { const r = rows[bis(rows, x.invert(d3.pointer(ev)[0]))]; dot.attr('cx', x(r.d)).attr('cy', y(r.v)).attr('opacity', 1); t.show(ev, day(r.d), [[null, 'Total', fmt1(r.v) + ' h']]); })
+    .on('mouseleave', () => { t.hide(); dot.attr('opacity', 0); });
+}
+
+function drawCalib() {
+  const rows = DATA.calib;
+  if (!rows.length) { document.getElementById('calib-card').hidden = true; return; }
+  const note = document.getElementById('calib-note'); note.replaceChildren();
+  note.append('Claude keeps transcripts for about 30 days. In that window, time between your own prompts gives ', el('b', fmt0(Math.round(d3.sum(rows, r => r.prompts)))),
+    ' h; the commit method gives ', el('b', fmt0(Math.round(d3.sum(rows, r => r.commits)))), ' h for the same days.');
+  const { box, W, H, svg } = frame('calib', 180);
+  const y = d3.scaleLinear([0, d3.max(rows, r => Math.max(r.commits, r.prompts)) || 1], [H - 22, 10]).nice();
+  const left = textWidth(svg, y.ticks(4).map(v => fmt0(v) + ' h')) + 12;
+  const x = d3.scaleBand(rows.map(r => r.week), [left, W - 4]).padding(0.28), xi = d3.scaleBand(['commits', 'prompts'], [0, x.bandwidth()]).padding(0.12);
+  yAxis(svg, y, left, W - left - 4, 4);
+  rows.forEach(r => {
+    [['commits', C[0]], ['prompts', C[2]]].forEach(([k, c]) => svg.append('rect').attr('x', x(r.week) + xi(k)).attr('width', xi.bandwidth()).attr('y', y(r[k])).attr('height', y(0) - y(r[k])).attr('fill', c).attr('rx', 3));
+    svg.append('text').attr('x', x(r.week) + x.bandwidth() / 2).attr('y', H - 4).attr('text-anchor', 'middle').text(day(parse(r.week)));
+  });
+  const t = tip(box);
+  svg.append('g').selectAll('rect').data(rows).join('rect').attr('x', r => x(r.week)).attr('width', x.bandwidth()).attr('height', H).attr('fill', 'transparent')
+    .on('mousemove', (ev, r) => t.show(ev, 'Week of ' + day(parse(r.week)), [[C[0], 'From commits', fmt1(r.commits) + ' h'], [C[2], 'From your prompts', fmt1(r.prompts) + ' h']]))
+    .on('mouseleave', () => t.hide());
+}
+
+function drawHeat() {
+  const rows = DATA.heat, cellH = 24, top = 4;
+  const { box, W, H, svg } = frame('heat', top + 7 * cellH + 24);
+  const names = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'], left = textWidth(svg, names) + 10;
+  const x = d3.scaleBand(d3.range(24), [left, W - 2]).padding(0.08), y = d3.scaleBand(d3.range(7), [top, top + 7 * cellH]).padding(0.08);
+  const op = d3.scaleSqrt([0, d3.max(rows, r => r.hours) || 1], [0.08, 1]);
+  const t = tip(box);
+  svg.append('g').selectAll('rect').data(rows).join('rect').attr('x', r => x(r.hour)).attr('y', r => y(r.wi)).attr('width', x.bandwidth()).attr('height', y.bandwidth()).attr('rx', 3)
+    .attr('fill', r => r.hours > 0 ? C[0] : 'var(--grid)').attr('fill-opacity', r => r.hours > 0 ? op(r.hours) : 1)
+    .on('mousemove', (ev, r) => t.show(ev, `${r.weekday} ${String(r.hour).padStart(2, '0')}:00–${String(r.hour + 1).padStart(2, '0')}:00`, [[null, 'Hours', fmt1(r.hours)]]))
+    .on('mouseleave', () => t.hide());
+  names.forEach((n, i) => svg.append('text').attr('x', left - 8).attr('y', y(i) + y.bandwidth() / 2 + 4).attr('text-anchor', 'end').text(n));
+  d3.range(0, 24, W < 480 ? 6 : 3).forEach(h => svg.append('text').attr('x', x(h)).attr('y', H - 6).text(String(h).padStart(2, '0') + ':00'));
+}
+
+function drawKinds() {
+  const raw = DATA.kinds, get = (k, a) => (raw.find(r => r.kind === k && r.app === a) || { commits: 0 }).commits;
+  const kinds = [...d3.rollup(raw, v => d3.sum(v, r => r.commits), r => r.kind)].sort((a, b) => b[1] - a[1]).map(d => d[0]);
+  const { box, W, H, svg } = frame('kinds', kinds.length * 28 + 4);
+  const totals = kinds.map(k => d3.sum(APPS, a => get(k, a)));
+  const left = textWidth(svg, kinds) + 12, right = textWidth(svg, totals.map(fmt0)) + 10;
+  const x = d3.scaleLinear([0, d3.max(totals)], [left, W - right]), y = d3.scaleBand(kinds, [0, H - 4]).padding(0.3);
+  const t = tip(box);
+  kinds.forEach((k, ki) => {
+    svg.append('text').attr('x', left - 8).attr('y', y(k) + y.bandwidth() / 2 + 4).attr('text-anchor', 'end').text(k);
+    let base = 0;
+    APPS.forEach((a, i) => { const v = get(k, a); svg.append('rect').attr('x', x(base)).attr('width', x(base + v) - x(base)).attr('y', y(k)).attr('height', y.bandwidth()).attr('fill', C[i]).attr('rx', 3); base += v; });
+    svg.append('text').attr('class', 'end').attr('x', x(base) + 6).attr('y', y(k) + y.bandwidth() / 2 + 4).text(fmt0(totals[ki]));
+    svg.append('rect').attr('width', W).attr('y', y(k) - y.step() * 0.15).attr('height', y.step()).attr('fill', 'transparent')
+      .on('mousemove', ev => t.show(ev, k, APPS.map((a, i) => [C[i], label(a), fmt0(get(k, a))]))).on('mouseleave', () => t.hide());
+  });
+}
+
+function drawLongest() {
+  const head = el('tr');
+  [['Started', ''], ['Hours', 'n'], ...APPS.map(a => [label(a) + ' commits', 'n'])].forEach(([n, c]) => head.append(el('th', n, c)));
+  document.querySelector('#longest thead').replaceChildren(head);
+  const tb = document.querySelector('#longest tbody'); tb.replaceChildren();
+  [...sessions].sort((a, b) => b.hours - a.hours).slice(0, 10).forEach(s => {
+    const tr = el('tr');
+    tr.append(el('td', dayLong(parse(s.start))), el('td', fmt1(s.hours), 'n'), ...APPS.map(a => el('td', fmt0(s[a]), 'n')));
+    tb.append(tr);
+  });
+}
+
+// drawCalib first: it may hide its card, which widens the running-total chart
+const drawAll = () => { drawCalib(); drawWeekly(); drawCumulative(); drawHeat(); drawKinds(); };
+drawAll(); drawLongest();
+let lastW = document.body.clientWidth;
+new ResizeObserver(() => { if (document.body.clientWidth !== lastW) { lastW = document.body.clientWidth; drawAll(); } }).observe(document.body);
+</script>
+</body>
+</html>
