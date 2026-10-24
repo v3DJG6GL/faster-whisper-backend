@@ -341,14 +341,16 @@ def test_package_filename_keeps_non_ascii_letters(client, package_enabled):
 @pytest.mark.parametrize("rng,status", [("bytes=999999999999-", 416), ("bytes=x-y", 400)])
 def test_package_range_refusal_still_removes_the_workdir(client, package_enabled,
                                                         rng, status):
-    """Starlette's FileResponse answers a bad Range (honoured on POST too)
-    without running `background`: the workdir — a full copy of the video —
-    must go anyway."""
+    """Starlette < 1.10 answers a bad Range on POST too, without running
+    `background`; 1.10+ ignores Range outside GET/HEAD and sends the whole
+    file. Either way the workdir — a full copy of the video — must go."""
     mid = _upload(client).json()["media_id"]
     before = {n for n in os.listdir(tempfile.gettempdir()) if n.startswith("fwb-pkg-")}
     r = client.post(f"/v1/audio/media/{mid}/package", headers={"Range": rng},
                     json={"container": "mkv", "subtitles": _tracks()})
-    assert r.status_code == status, r.text
+    assert r.status_code in (status, 200), r.text
+    if r.status_code == 200:
+        assert r.content.endswith(b"|muxed:mkv:2")
     after = {n for n in os.listdir(tempfile.gettempdir()) if n.startswith("fwb-pkg-")}
     assert after <= before
 

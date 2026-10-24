@@ -760,7 +760,7 @@ class _PackageResponse(FileResponse):
     """FileResponse that removes the package's fwb-pkg- workdir however the
     response ends. Starlette runs `background` only after a normal body
     send: its Range branches (400 malformed, 416 unsatisfiable — honoured on
-    POST too) return before it, and a client disconnect mid-stream raises
+    POST too before Starlette 1.10) return before it, and a client disconnect mid-stream raises
     past it, either way leaving a full copy of the video in TMPDIR until the
     next restart's sweep."""
 
