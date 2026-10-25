@@ -1,5 +1,6 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "rebaseWhen": "conflicted",
   "packageRules": [
     {
       "description": "Group all Actions bumps (the github-actions manager also covers .forgejo/workflows) into one PR.",
