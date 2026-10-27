@@ -3382,6 +3382,9 @@
   var _previewBlobUrl = null;      // current blob URL (revoked on stop)
   var _previewActivePanel = null;  // currently-active panel (or null)
   var _previewBound = null;        // teardown fn for active karaoke + scrubber wiring
+  // Bumped by every _stopAnyPreview: a ▶ load still in flight from before
+  // (card switch, batch advance / close) sees it moved and never binds.
+  var _previewGen = 0;
 
   function _getPreviewAudio() {
     if (_previewAudio) return _previewAudio;
@@ -3393,6 +3396,7 @@
   }
 
   function _stopAnyPreview() {
+    _previewGen++;
     if (_previewBound) {
       try { _previewBound(); } catch (_) {}
       _previewBound = null;
@@ -3982,6 +3986,7 @@
       }
       // Different card → tear down prior, fetch fresh.
       _stopAnyPreview();
+      var gen = _previewGen;
       var ids = memberIdsFn() || [];
       if (ids.length < 1) { toast('No members to preview', true); return; }
       toggleBtn.disabled = true;
@@ -4008,6 +4013,13 @@
         }
         var blob = await audioResp.blob();
         var wordsJ = await wordsResp.json();
+        if (gen !== _previewGen) {
+          // Superseded while loading: binding now would leak this blob and
+          // its listeners on the shared <audio> and play under another card.
+          toggleBtn.disabled = false;
+          toggleBtn._setIcon('play');
+          return;
+        }
         var wordsArr = wordsJ.words || [];
         var seededChips = wordsJ.corrections || [];
         var transcript = wordsJ.transcript || '';

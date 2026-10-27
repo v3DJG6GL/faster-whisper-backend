@@ -266,3 +266,55 @@ handlers.keydown({ key: 'ArrowRight', preventDefault: function() {} });
 console.log(JSON.stringify([first.cursorIdx, second.cursorIdx]));
 """)
     assert out == [0, 1]
+
+
+# ---- merge preview ▶ ------------------------------------------------------------
+
+def _preview_click_handler(page):
+    anchor = "toggleBtn.addEventListener('click', async function() {"
+    return _js_block(page, page.index(anchor) + len("toggleBtn.addEventListener('click', "))
+
+
+@needs_node
+def test_preview_load_superseded_while_in_flight_never_binds(page, tmp_path):
+    """A ▶ load still in flight when the preview was stopped (another card's
+    ▶, batch advance or close) bound and played anyway: its blob URL and
+    shared-<audio> listeners leaked and it played under the wrong card, or
+    with the batch modal already closed."""
+    out = _run_node(tmp_path, r"""
+var _previewAudio = null, _previewBlobUrl = null, _previewActivePanel = null,
+    _previewBound = null, _previewGen = 0;
+""" + _js_function(page, "_stopAnyPreview") + r"""
+var played = 0, bound = 0, blobs = 0, pending = [];
+var audio = { paused: true, play: async function() { played++; }, pause: function() {},
+  removeAttribute: function() {}, load: function() {} };
+function _getPreviewAudio() { return (_previewAudio = audio); }
+global.fetch = function() { return new Promise(function(r) { pending.push(r); }); };
+global.window = {};
+global.URL = { createObjectURL: function() { blobs++; return 'blob:x'; },
+  revokeObjectURL: function() {} };
+function _bindPanelToAudio() { bound++; return function() {}; }
+function _renderWordStrip() { return []; }
+function _bindStripKeyboard() {} function renderChips() {}
+function applyCorrectionsToGround() {} function toast() {}
+var toggleBtn = { _setIcon: function(i) { toggleBtn.icon = i; } };
+var panel = {}, stripEl = {}, chipBox = {}, gtArea = {};
+function memberIdsFn() { return ['m1', 'm2']; }
+var onToggle = """ + _preview_click_handler(page) + r""";
+function tick() { return new Promise(function(r) { setTimeout(r, 0); }); }
+(async function() {
+  onToggle();
+  await tick();
+  _stopAnyPreview();               // Esc / next batch card / other card
+  pending.forEach(function(r) {
+    r({ ok: true, blob: async function() { return {}; },
+        json: async function() { return { words: [] }; } });
+  });
+  await tick(); await tick();
+  console.log(JSON.stringify({ bound: bound, played: played, blobs: blobs,
+    active: _previewActivePanel === panel, icon: toggleBtn.icon,
+    disabled: toggleBtn.disabled }));
+})();
+""")
+    assert out == {"bound": 0, "played": 0, "blobs": 0, "active": False,
+                   "icon": "play", "disabled": False}
