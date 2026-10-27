@@ -381,6 +381,34 @@ def test_skip_partials_suppresses_partial_decode_but_keeps_finals():
     assert calls["final"] == 2
 
 
+def test_prompt_words_zero_carries_no_confirmed_words():
+    """prompt_words=0 means "no cross-utterance context". Python's [-0:] is
+    the whole list, so the rolling prompt used to become the entire document."""
+    cfg = StreamConfig(
+        min_chunk_ms=96, vad_min_silence_ms=96, commit_silence_ms=192,
+        min_speech_ms=64, forced_commit_sec=100, buffer_trim_sec=100,
+        rms_gate_dbfs=-60, preroll_keep_ms=100, prompt_words=0,
+    )
+    final_prompts: list[str] = []
+
+    async def decode_final(audio, prompt):
+        final_prompts.append(prompt)
+        return (" eins zwei drei.", [], False)
+
+    s, _msgs = _make_session(
+        postprocess=lambda raw: raw, decode_final=decode_final, cfg=cfg,
+        base_prompt="Glossar",
+    )
+
+    async def run():
+        for _ in range(2):
+            await s.feed_pcm(_pcm(8000, 500))
+            await s.feed_pcm(_pcm(0, 400))
+
+    asyncio.run(run())
+    assert final_prompts == ["Glossar", "Glossar"]
+
+
 # ---- anti-hallucination: all-dropped final vs empty-decode fallback --------
 
 def test_all_dropped_final_keeps_empty_and_does_not_resurrect_partials():

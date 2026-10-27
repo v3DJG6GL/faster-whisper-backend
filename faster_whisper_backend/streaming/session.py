@@ -522,8 +522,9 @@ class StreamSession:
                 {"word": w.text, "start": w.start, "end": w.end}
                 for w in cut_words)
             self._set_audio(buf[cut_samples:])
+            n = self.cfg.prompt_words
             self._prompt = " ".join(
-                (self._prompt + " " + cut_text).split()[-self.cfg.prompt_words:])
+                (self._prompt + " " + cut_text).split()[-n:] if n > 0 else [])
             self._buffer_offset = cut
             self.la.pop_committed(cut)
 
@@ -936,7 +937,10 @@ class StreamSession:
     # ---- utterance lifecycle ---------------------------------------------
 
     def _make_prompt(self) -> str:
-        tail = " ".join(self.raw_confirmed.split()[-self.cfg.prompt_words:])
+        # [-0:] is the whole list: prompt_words=0 must carry nothing, not the
+        # entire (ever-growing) document.
+        n = self.cfg.prompt_words
+        tail = " ".join(self.raw_confirmed.split()[-n:] if n > 0 else [])
         return (self.base_prompt + " " + tail).strip()
 
     def _reset_utterance(self) -> None:
