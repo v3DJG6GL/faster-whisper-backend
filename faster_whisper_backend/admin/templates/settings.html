@@ -5264,9 +5264,15 @@ function expandSectionContaining(el) {
 // can reach it.
 function jumpToGlobalRule(ruleName) {
   const fieldRow = document.querySelector('main .field[data-field="PIPELINE_RULES"]');
-  if (!fieldRow) return;
+  if (!fieldRow) {
+    // /settings has only a link to the rule editor: open its page at this
+    // rule, in a new tab so the unsaved edits here survive.
+    window.open('/settings/pipeline#rule=' + encodeURIComponent(ruleName),
+                '_blank', 'noopener');
+    return;
+  }
   expandSectionContaining(fieldRow);   // the Pipeline section may be collapsed
-  const ruleRow = fieldRow.querySelector('.rule-row[data-slug="' + ruleName + '"]');
+  const ruleRow = fieldRow.querySelector('.rule-row[data-slug="' + CSS.escape(ruleName) + '"]');
   const target = ruleRow || fieldRow;
   target.scrollIntoView({ behavior: 'smooth', block: ruleRow ? 'center' : 'start' });
   if (ruleRow && !ruleRow.classList.contains('expanded')) {
@@ -5712,6 +5718,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     return;
   }
   await loadState();
+  // "↑ view" on /settings opens this page at one rule.
+  const jump = PIPELINE_ONLY && /^#rule=(.+)$/.exec(location.hash);
+  if (jump) { try { jumpToGlobalRule(decodeURIComponent(jump[1])); } catch (_) {} }
 });
 
 {{NOT_ADMIN_LANDING_JS}}

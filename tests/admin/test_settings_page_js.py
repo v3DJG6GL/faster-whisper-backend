@@ -549,3 +549,28 @@ const i = find(wrap, e => e.tagName === 'INPUT');
 })();
 """)
     assert out == [[-1.0, False], -0.8, -0.8, -0.8]
+
+
+# ---- "↑ view" jump-link ---------------------------------------------------------
+
+@needs_node
+def test_view_link_on_settings_opens_the_pipeline_page(client):
+    """The per-model and captures checklists live on /settings, which has no
+    PIPELINE_RULES editor since it moved to /settings/pipeline: '↑ view'
+    found no row and did nothing."""
+    html = _html(client)
+    fn = _block(html, "function jumpToGlobalRule(ruleName) {", "\n}\n")
+    out = _node("""
+const document = { querySelector: () => null };   // /settings: no editor row
+const opened = [];
+const window = { open: (...a) => opened.push(a) };
+function expandSectionContaining() {}
+""" + fn + """
+jumpToGlobalRule('de-tidy');
+console.log(JSON.stringify(opened));
+""")
+    assert out == [["/settings/pipeline#rule=de-tidy", "_blank", "noopener"]]
+    # … and the pipeline page jumps to that rule once it has rendered.
+    boot = _block(html, "\n  await loadState();\n", "\n});\n")
+    assert "/^#rule=(.+)$/.exec(location.hash)" in boot
+    assert "jumpToGlobalRule(decodeURIComponent(jump[1]))" in boot
