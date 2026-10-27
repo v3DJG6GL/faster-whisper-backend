@@ -1647,6 +1647,33 @@ def test_download_video_never_reads_100_percent_while_a_leg_is_pending(tmp_path,
     assert seen[-1] == (1.0, 1300, 1300)
 
 
+_OFF_RUNG_LEGS_SCRIPT = """
+import os, sys
+print("dl:500 1000 NA 299", flush=True)
+print("dl:1000 1000 NA 299", flush=True)
+print("dl:100 200 NA 251", flush=True)
+print("dl:200 200 NA 251", flush=True)
+open(os.path.join(r"__DEST__", "media.mkv"), "wb").write(b"x" * 64)
+"""
+
+
+def test_download_video_fallback_legs_drop_the_rung_estimates(tmp_path, monkeypatch):
+    # The rung's 137/140 are gone and the selector's fallback fetched
+    # 299 + 251: the never-fetched rung legs' estimates must not stay in
+    # the denominator (the bar used to stop at 50 %).
+    _patch_video_argv(monkeypatch, _OFF_RUNG_LEGS_SCRIPT)
+    seen = []
+    _run(udl.download_video(
+        "https://example.com/v", dest_dir=str(tmp_path), max_bytes=10_000,
+        timeout=30, format_ids=("137", "140"),
+        leg_estimates={"137": 1000, "140": 200}, expected_total=1200,
+        progress_cb=lambda f, t, d: seen.append((f, t, d))))
+    fracs = [f for f, _t, _d in seen]
+    assert fracs == sorted(fracs), seen
+    assert all(f < 1.0 for f in fracs[:-1]), seen
+    assert seen[-1] == (1.0, 1200, 1200)
+
+
 _DROP_INSIDE_ONE_LEG_SCRIPT = """
 import os, sys
 print("dl:500 1000 NA 616", flush=True)

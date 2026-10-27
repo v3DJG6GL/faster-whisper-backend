@@ -1690,7 +1690,12 @@ async def _run_yt_dlp(
             if expected_total:
                 return max(int(expected_total), cum)
             return (completed + cur_total) if cur_total else None
-        ids = set(estimates) | set(leg_total) | set(leg_done)
+        seen = set(leg_done) | ({cur_leg} if cur_leg is not None else set())
+        # A leg yt-dlp named that the probe never priced: the rung's exact
+        # ids may be gone (the selector's fallback picked others), so the
+        # estimates of rung legs never seen must not pad the sum.
+        off_rung = bool(seen - set(estimates))
+        ids = seen if off_rung else set(estimates)
         total = 0
         for fid in ids:
             if fid in leg_done:
@@ -1699,17 +1704,18 @@ async def _run_yt_dlp(
                 total += leg_total[fid]
             elif fid in estimates:
                 total += int(estimates[fid])
-        # A leg yt-dlp named that the probe never priced: fall back to the
+        legs_pending = expected_legs is not None and len(seen) < expected_legs
+        # Off the rung with a leg unpriced or not started: fall back to the
         # merged estimate rather than a denominator that is too small.
-        if cur_leg is not None and cur_leg not in ids and expected_total:
-            den = max(int(expected_total), cum)
+        if off_rung and expected_total and (
+                legs_pending or cur_leg not in leg_total):
+            den = max(int(expected_total), total, cum)
         else:
             den = max(total, cum) if total else (
                 max(int(expected_total), cum) if expected_total else None)
         # A declared leg not seen yet, or the current one still unpriced:
         # more bytes are coming, so the fraction must not read 100 % yet.
-        seen = set(leg_done) | ({cur_leg} if cur_leg is not None else set())
-        pending = (expected_legs is not None and len(seen) < expected_legs) or (
+        pending = legs_pending or (
             cur_leg is not None and cur_leg not in leg_total
             and cur_leg not in estimates)
         if pending and den is not None and den <= cum:
