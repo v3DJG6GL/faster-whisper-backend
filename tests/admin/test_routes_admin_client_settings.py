@@ -365,7 +365,10 @@ def test_import_preview_uses_served_blob_cap(client):
     html = client.get("/settings/api-keys").text
     cap = client.get(f"{_API}/client-settings").json()["max_bytes"]
     assert cap == client_settings_store._CAP_BLOB
-    fns = "\n".join(
+    # showCsImportModal reads this page-level flag.
+    busy = "  var _csImportBusy = false;\n"
+    assert busy in html
+    fns = busy + "\n".join(
         _js_fn(html, n) for n in (
             "escapeHtml", "fmtBytes", "csMetaFor", "csContainsSummary",
             "showCsImportModal",
