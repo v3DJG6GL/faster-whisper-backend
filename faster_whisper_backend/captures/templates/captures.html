@@ -3584,7 +3584,11 @@
   }
   function _bindStripKeyboard(state) {
     var strip = state.stripEl;
-    if (!strip || strip._kbBound) return;
+    if (!strip) return;
+    // A merge-preview panel keeps its strip across activations, each with a
+    // fresh state; the handlers bound on the first one read the latest.
+    strip._kbState = state;
+    if (strip._kbBound) return;
     strip._kbBound = true;
     strip.setAttribute('tabindex', '0');
     // Hint line: visible only while the strip itself has focus.
@@ -3595,6 +3599,7 @@
       strip.parentNode.insertBefore(hint, strip.nextSibling);
     }
     strip.addEventListener('focus', function() {
+      var state = strip._kbState;
       strip.classList.add('has-focus');
       hint.classList.add('show');
       // Initialize cursor on first focus if not set.
@@ -3607,6 +3612,7 @@
       hint.classList.remove('show');
     });
     strip.addEventListener('keydown', function(e) {
+      var state = strip._kbState;
       if (e.isComposing) return;   // let IME handle dead keys / compositions
       // Ctrl/Cmd combos belong to the batch-popup handler (accept / dismiss /
       // replay / revert / Ctrl+Space play-pause) — don't consume them here as

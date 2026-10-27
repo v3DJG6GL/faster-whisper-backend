@@ -241,3 +241,28 @@ console.log(JSON.stringify({ removed: removed.sort(), chips: state.corrections }
 """)
     assert out["removed"] == [2, 4]
     assert out["chips"] == [{"wrong": "c d e f", "correct": "foo", "idx": 2, "idx_end": 5}]
+
+
+@needs_node
+def test_strip_keyboard_follows_the_latest_preview_activation(page, tmp_path):
+    """A merge-preview panel reuses its strip element, but each ▶ builds a
+    fresh state. The keyboard handlers bound once kept the first state, so
+    from the second activation on a typed chip saved activation 1's stale
+    list over the members' chips."""
+    fn = _js_function(page, "_bindStripKeyboard")
+    out = _run_node(tmp_path, fn + r"""
+var handlers = {};
+var strip = { parentNode: null, setAttribute: function() {},
+  classList: { add: function() {}, remove: function() {} },
+  addEventListener: function(t, h) { handlers[t] = h; } };
+global.document = { createElement: function() {
+  return { classList: { add: function() {}, remove: function() {} } }; } };
+function _moveCursor(s, i) { s.cursorIdx = i; }
+var first = { stripEl: strip, words: ['a', 'b', 'c'], cursorIdx: 0 };
+var second = { stripEl: strip, words: ['a', 'b', 'c'], cursorIdx: 0 };
+_bindStripKeyboard(first);
+_bindStripKeyboard(second);       // same panel, next activation
+handlers.keydown({ key: 'ArrowRight', preventDefault: function() {} });
+console.log(JSON.stringify([first.cursorIdx, second.cursorIdx]));
+""")
+    assert out == [0, 1]
