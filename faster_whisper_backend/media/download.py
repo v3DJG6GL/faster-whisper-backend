@@ -1662,6 +1662,10 @@ async def _run_yt_dlp(
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         env=env,
+        # Its own process group (POSIX), so core_proc's signals also reach
+        # the ffmpeg merge / fixup yt-dlp runs: killed alone, yt-dlp leaves
+        # it writing into the job dir being removed.
+        start_new_session=os.name != "nt",
     )
     stderr_tail = bytearray()
 
@@ -1810,13 +1814,10 @@ async def _run_yt_dlp(
     finally:
         # Reached with the child still alive only when the TASK was
         # cancelled (e.g. uvicorn shutdown) — the deliberate abort paths
-        # already reaped via _kill(). Kill synchronously: any await here
-        # would just re-raise the pending CancelledError.
+        # already reaped via _kill(). SIGKILL at once, no SIGTERM grace:
+        # shutdown is waiting on this task.
         if proc.returncode is None:
-            try:
-                proc.kill()
-            except ProcessLookupError:
-                pass
+            core_proc.kill(proc)
         try:
             await asyncio.wait_for(stderr_task, 5.0)
         except asyncio.TimeoutError:

@@ -770,6 +770,33 @@ time.sleep(60)
     _run(go())
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX process groups")
+def test_download_cancel_also_stops_what_yt_dlp_spawned(tmp_path, monkeypatch):
+    """yt-dlp dies on SIGTERM without stopping its ffmpeg merge: cancel
+    must take the whole process group down, not leave the merge writing
+    into the job dir being removed."""
+    marker = tmp_path / "orphan-ran"
+    _patch_argv(monkeypatch, f"""
+import subprocess, sys, time
+subprocess.Popen([sys.executable, "-c",
+                  "import time; time.sleep(2); open(r'{marker}', 'w')"])
+print("dl:1 NA NA", flush=True)
+time.sleep(60)
+""")
+    calls = {"n": 0}
+
+    def cancel_after_first_poll():
+        calls["n"] += 1
+        return calls["n"] > 2
+
+    with pytest.raises(udl.UrlCancelled):
+        _run(udl.download("https://example.com/v", dest_dir=str(tmp_path),
+                          max_bytes=10_000, timeout=60,
+                          cancel_check=cancel_after_first_poll))
+    time.sleep(3)
+    assert not marker.exists()
+
+
 def test_download_task_cancellation_reaps_child(tmp_path, monkeypatch):
     """Cancelling the download() TASK (uvicorn shutdown) must not orphan the
     yt-dlp child — the caller rmtree's the job dir right afterwards."""

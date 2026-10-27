@@ -4,6 +4,7 @@ import asyncio
 import os
 import signal
 import sys
+import time
 
 import pytest
 
@@ -45,3 +46,21 @@ def test_cancel_during_grace_still_kills_and_reaps_the_child():
     assert p.returncode == -signal.SIGKILL
     with pytest.raises(ProcessLookupError):
         os.kill(p.pid, 0)
+
+
+def test_kill_takes_the_childs_process_group_down(tmp_path):
+    """A start_new_session child is killed with its group: yt-dlp killed
+    alone leaves its ffmpeg merge running. The backgrounded subshell
+    outlives a per-PID kill of the `sleep 30` that sh exec'd into."""
+    marker = tmp_path / "orphan-ran"
+
+    async def run():
+        p = await asyncio.create_subprocess_exec(
+            "sh", "-c", f"(sleep 1.5; touch '{marker}') & exec sleep 30",
+            start_new_session=True)
+        await asyncio.sleep(0.3)          # let the subshell fork
+        core_proc.kill(p)
+        await asyncio.wait_for(p.wait(), 10)
+    asyncio.run(run())
+    time.sleep(2.5)
+    assert not marker.exists()
