@@ -116,7 +116,7 @@ def main() -> int:
         for app, n in share.items():
             daily[s["start"].date()][app] += s["hours"] * n / len(s["commits"])
         t = s["start"] - ramp
-        while t <= s["end"]:  # spread the session over the heatmap in 15-min steps
+        while t < s["end"]:  # spread the session over the heatmap in 15-min steps
             heat[t.weekday()][t.hour] += 0.25; t += timedelta(minutes=15)
     counts = collections.Counter((c["t"].date(), c["kind"]) for c in commits)
 

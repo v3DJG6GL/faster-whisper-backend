@@ -275,6 +275,34 @@ def test_env_example_lines_uncomment_to_their_documented_value():
     assert not bad
 
 
+# --- scripts/time_ledger.py --------------------------------------------------
+
+def test_time_ledger_heatmap_adds_up_to_the_session_hours(tmp_path, monkeypatch):
+    # The heatmap loop included its end point: every session got one extra
+    # 15-min step, so a lone commit (0.5 h with the default ramp) showed 0.75 h.
+    import importlib.util
+    import json
+    from datetime import datetime
+    spec = importlib.util.spec_from_file_location(
+        "time_ledger", os.path.join(REPO, "scripts", "time_ledger.py"))
+    tl = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(tl)
+    t0 = datetime(2026, 1, 5, 10, 0, tzinfo=tl.TZ)
+    commit = dict(app="backend", t=t0, kind="human", group="Fixes")
+    monkeypatch.setattr(tl, "read_commits", lambda app, repo: [commit])
+    monkeypatch.setattr(tl, "prompt_times", lambda repos: [])
+    template = tmp_path / "t.html"
+    template.write_text("/*DATA*/null", encoding="utf-8")
+    monkeypatch.setattr(tl, "TEMPLATE", template)
+    out = tmp_path / "out.json"
+    monkeypatch.setattr(sys, "argv", ["time_ledger", "--frontend", str(tmp_path),
+                                      "--out", str(out)])
+    assert tl.main() == 0
+    data = json.loads(out.read_text(encoding="utf-8"))
+    assert [s["hours"] for s in data["sessions"]] == [0.5]
+    assert sum(h["hours"] for h in data["heat"]) == 0.5
+
+
 # --- .dockerignore -----------------------------------------------------------
 
 def test_dockerignore_excludes_repo_local_ffmpeg_tree():
