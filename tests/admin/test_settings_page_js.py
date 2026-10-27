@@ -574,3 +574,26 @@ console.log(JSON.stringify(opened));
     boot = _block(html, "\n  await loadState();\n", "\n});\n")
     assert "/^#rule=(.+)$/.exec(location.hash)" in boot
     assert "jumpToGlobalRule(decodeURIComponent(jump[1]))" in boot
+
+
+# ---- restart --------------------------------------------------------------------
+
+@needs_node
+def test_restart_network_error_takes_the_progress_modal_down(client):
+    """A rejected POST /settings/restart escaped doRestart and left the
+    close-button-less 'Restarting…' modal up for good, with no toast."""
+    fn = _block(_html(client), "async function doRestart() {", "\n}\n")
+    out = _node(_FAKE_DOM + """
+const els = {};
+function $(id) { return els[id] || (els[id] = document.createElement('div')); }
+$('restart-progress').classList.add('show');
+async function fetch() { return { ok: false }; }
+async function api() { throw new TypeError('Failed to fetch'); }
+const toasts = [];
+function toast(msg, err) { toasts.push([msg, !!err]); }
+""" + fn + """
+doRestart().catch(e => toasts.push(['escaped: ' + e, true])).then(() => {
+  console.log(JSON.stringify([$('restart-progress').classList.contains('show'), toasts]));
+});
+""")
+    assert out == [False, [["restart request failed: TypeError: Failed to fetch", True]]]

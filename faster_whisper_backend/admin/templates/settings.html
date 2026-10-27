@@ -5579,15 +5579,24 @@ async function doRestart() {
     if (m0.ok) preBootId = (await m0.json()).boot_id || null;
   } catch {}
 
-  const r = await api('POST', '/settings/restart', {});
-  if (!r.ok) {
+  let result;
+  try {
+    const r = await api('POST', '/settings/restart', {});
+    if (!r.ok) {
+      $('restart-progress').classList.remove('show');
+      let detail = r.status;
+      try { detail = (await r.json()).detail || detail; } catch {}
+      toast('restart failed: ' + detail, true);
+      return;
+    }
+    result = await r.json();
+  } catch (e) {
+    // Dropped connection or cut-off reply: the progress modal has no close
+    // button, so take it down rather than leave it up for good.
     $('restart-progress').classList.remove('show');
-    let detail = r.status;
-    try { detail = (await r.json()).detail || detail; } catch {}
-    toast('restart failed: ' + detail, true);
+    toast('restart request failed: ' + e, true);
     return;
   }
-  const result = await r.json();
   $('restart-progress-msg').textContent =
     'Helper spawned (' + (result.method || 'unknown method') + '). '
     + 'Service will stop in ' + (result.delay_sec || 3) + ' s.';
