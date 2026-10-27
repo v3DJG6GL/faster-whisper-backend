@@ -67,3 +67,21 @@ def test_the_stale_sweep_spares_an_owner_stamped_run():
     assert tx_progress._progress_entry_for(
         _PID, {"user_id": "u1"})["stage"] == "analyzing"
     assert tx_progress._progress_entry_for(_PID, {"user_id": "mallory"}) is None
+
+
+def test_a_cap_evicted_run_still_holds_its_progress_id(monkeypatch):
+    """The cap eviction pops a live run's entry but keeps its owner stamp
+    (its next tick re-creates the entry). A second request posting the same
+    id in that gap must not claim it: its seed would re-stamp the owner and
+    both runs would share one entry and cancel flag."""
+    monkeypatch.setattr(tx_progress, "_BATCH_PROGRESS_MAX", 2)
+    tx_progress._progress_set(_PID, stage="transcribing", owner="alice")
+    tx_progress._progress_set("a1" * 16, stage="waiting", owner="u1")
+    tx_progress._progress_set("b2" * 16, stage="waiting", owner="u2")
+    assert _PID not in tx_progress._BATCH_PROGRESS
+    assert tx_progress._claim_progress_id(_PID) is None
+    tx_progress._progress_set(_PID, progress=0.5, last_text="x")
+    assert tx_progress._BATCH_PROGRESS[_PID]["owner"] == "alice"
+    # Once the run closes, the id is free again.
+    tx_progress._progress_close(_PID)
+    assert tx_progress._claim_progress_id(_PID) == _PID

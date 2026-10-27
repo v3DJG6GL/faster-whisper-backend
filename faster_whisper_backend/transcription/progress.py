@@ -99,10 +99,12 @@ def _claim_progress_id(progress_id) -> "str | None":
     malformed id is treated as absent — progress is a convenience, never a
     422. So is an id that is already in flight: the registries keyed on it
     are bare overwrites, and a colliding id would share one entry and one
-    cancel flag with (and let this caller cancel) another request."""
+    cancel flag with (and let this caller cancel) another request. The
+    owner stamp counts too: a cap eviction pops a live run's entry but keeps
+    its stamp until _progress_close, so the entry alone undercounts."""
     if not (isinstance(progress_id, str) and _PROGRESS_ID_RE.match(progress_id)):
         return None
-    if progress_id in _BATCH_PROGRESS:
+    if progress_id in _BATCH_PROGRESS or progress_id in _PROGRESS_OWNER:
         logger.info("[progress] id already in flight — progress/cancel "
                     "disabled for this request")
         return None
