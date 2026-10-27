@@ -72,6 +72,19 @@ def test_language_specific_rules_are_tagged():
             assert r.get("languages"), f"{name} has a language prefix but no tag"
 
 
+def test_hyphen_capitalization_is_german_only(app_module):
+    """It exists for the German ' Bindestrich ' compounds; untagged, it ran on
+    every language and turned 'well-known' into 'well-Known'."""
+    app_module.cfg.PIPELINE_RULES = [
+        copy.deepcopy(_by_name()["capitalize-letter-after-hyphen"]),
+        {"name": "trim-edges", "label": "Trim", "type": "terminal"}]
+    pl_engine.rebuild_caches()
+    run = lambda t, lang: pl_engine._postprocess_text(t, model_name="", language=lang)
+    assert run("A well-known x-ray", "en") == "A well-known x-ray"
+    assert run("Una niña franco-alemana", "es") == "Una niña franco-alemana"
+    assert run("Eisen-infusion", "de") == "Eisen-Infusion"
+
+
 def test_spanish_opening_marks(app_module):
     app_module.cfg.PIPELINE_RULES = [
         copy.deepcopy(_by_name()["es-punctuation"]),

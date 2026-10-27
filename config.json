@@ -662,6 +662,9 @@
       "name": "capitalize-letter-after-hyphen",
       "label": "Capitalize letter after hyphen",
       "enabled": true,
+      "languages": [
+        "de"
+      ],
       "locked": false,
       "seeded": true,
       "exposed": false,
