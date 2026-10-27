@@ -2724,23 +2724,13 @@
     // substitution preview.
     if (state.karaokeGround) { _renderGroundSpans(state); return; }
     // Substitute each chip's wrong text with its correct text in
-    // state.finalText. Walk corrections in `idx` order so multi-word spans get
-    // replaced as one unit. If a chip's `wrong` isn't found verbatim, leave it.
+    // state.finalText, through the same helper the export mirrors so this
+    // preview shows exactly the text the manifest will carry.
     //
     // The GT element is a read-only preview (textContent, not value) — markDirty
     // stays off here because the user changes GT only indirectly via a chip.
-    var ordered = state.corrections.slice().sort(function(a, b) {
-      var ai = typeof a.idx === 'number' ? a.idx : 1e9;
-      var bi = typeof b.idx === 'number' ? b.idx : 1e9;
-      return ai - bi;
-    });
-    var out = state.finalText;
-    ordered.forEach(function(c) {
-      if (!c.correct || !c.wrong) return;
-      var i = out.indexOf(c.wrong);
-      if (i >= 0) out = out.slice(0, i) + c.correct + out.slice(i + c.wrong.length);
-    });
-    state.gtArea.textContent = out;
+    state.gtArea.textContent =
+      _applyChipsToText(state.finalText, state.corrections);
   }
 
   function markDirty(state) {
@@ -3184,9 +3174,14 @@
     // Mirror of Python _apply_chips_to_text — walk chips in idx order
     // and substitute `wrong` → `correct` in the text. Used to layer
     // each member's chip corrections on top of post-processing before
-    // joining into the group's final-result preview.
+    // joining into the group's final-result preview. Same matching rules
+    // as the server: whole-word occurrences only, an anchored chip searches
+    // past the previous anchored replacement and takes the occurrence
+    // nearest its idx.
     if (!corrections || !corrections.length) return text || '';
     var out = text || '';
+    var W = /[\p{L}\p{N}_]/u;
+    function nWords(s) { return s.split(/\s+/).filter(Boolean).length; }
     var ordered = corrections.slice().filter(function(c) {
       return c && typeof c === 'object';
     });
@@ -3195,12 +3190,34 @@
       var bi = typeof b.idx === 'number' ? b.idx : 1e9;
       return ai - bi;
     });
+    var cursor = 0;
+    // Word-count change of the replacements so far, so a later chip's
+    // position is compared in the original text's word frame.
+    var shift = 0;
     ordered.forEach(function(c) {
       var wrong = c.wrong || '';
       var correct = c.correct || '';
       if (!wrong || !correct) return;
-      var i = out.indexOf(wrong);
-      if (i >= 0) out = out.slice(0, i) + correct + out.slice(i + wrong.length);
+      var anchored = typeof c.idx === 'number';
+      var best = -1, bestD = -1;
+      var i = out.indexOf(wrong, anchored ? cursor : 0);
+      while (i >= 0) {
+        var j = i + wrong.length;
+        if (!((W.test(wrong[0]) && i > 0 && W.test(out[i - 1]))
+              || (W.test(wrong[wrong.length - 1]) && j < out.length
+                  && W.test(out[j])))) {
+          if (!anchored) { best = i; break; }
+          var d = Math.abs(nWords(out.slice(0, i)) + shift - c.idx);
+          if (best < 0 || d < bestD) { best = i; bestD = d; }
+        }
+        i = out.indexOf(wrong, i + 1);
+      }
+      if (best < 0) return;
+      out = out.slice(0, best) + correct + out.slice(best + wrong.length);
+      if (anchored) {
+        cursor = best + correct.length;
+        shift += nWords(wrong) - nWords(correct);
+      }
     });
     return out;
   }

@@ -48,7 +48,15 @@ def _apply_chips_to_text(text: str, corrections: list[dict[str, Any]]) -> str:
     `text`. Walk in idx order so multi-word spans replace as a unit.
     If `wrong` isn't found verbatim (whitespace drift / regex specials),
     that chip is left alone. Mirrored byte-for-byte by the JS twin
-    `_applyChipsToText` so server- and client-derived transcripts agree."""
+    `_applyChipsToText` so server- and client-derived transcripts agree.
+
+    Only a whole-word occurrence counts: a chip on "cat" must not rewrite
+    the "cat" inside "scat". An anchored chip searches past the previous
+    anchored replacement (a `correct` that contains `wrong` is never hit
+    twice) and, of several occurrences, takes the one whose word position
+    is nearest its `idx` — a chip on the second "die" must not rewrite the
+    first. `idx` counts karaoke words, not text tokens, so the position is
+    a nearest match, not an exact one."""
     if not corrections:
         return text or ""
     out = text or ""
@@ -58,17 +66,41 @@ def _apply_chips_to_text(text: str, corrections: list[dict[str, Any]]) -> str:
             return (0, int(i))
         except (TypeError, ValueError):
             return (1, 0)
+    def _w(ch):
+        return ch.isalnum() or ch == "_"
     ordered = sorted(
         (c for c in corrections if isinstance(c, dict)), key=_sk,
     )
+    cursor = 0
+    # Word-count change of the replacements so far, so a later chip's
+    # position is compared in the original text's word frame.
+    shift = 0
     for c in ordered:
         wrong = c.get("wrong") or ""
         correct = c.get("correct") or ""
         if not wrong or not correct:
             continue
-        i = out.find(wrong)
-        if i >= 0:
-            out = out[:i] + correct + out[i + len(wrong):]
+        rank, idx = _sk(c)
+        anchored = rank == 0
+        best, best_d = -1, -1
+        i = out.find(wrong, cursor if anchored else 0)
+        while i >= 0:
+            j = i + len(wrong)
+            if not ((_w(wrong[0]) and i > 0 and _w(out[i - 1]))
+                    or (_w(wrong[-1]) and j < len(out) and _w(out[j]))):
+                if not anchored:
+                    best = i
+                    break
+                d = abs(len(out[:i].split()) + shift - idx)
+                if best < 0 or d < best_d:
+                    best, best_d = i, d
+            i = out.find(wrong, i + 1)
+        if best < 0:
+            continue
+        out = out[:best] + correct + out[best + len(wrong):]
+        if anchored:
+            cursor = best + len(correct)
+            shift += len(wrong.split()) - len(correct.split())
     return out
 
 
