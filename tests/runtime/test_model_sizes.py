@@ -378,6 +378,23 @@ def test_uvr_path_matches_the_separator_model_dir(tmp_path, monkeypatch):
             == bgm_separation.model_file_dir()
 
 
+def test_uvr_dir_expands_a_tilde_download_root(tmp_path, monkeypatch):
+    """A .env DOWNLOAD_ROOT=~/models reaches cfg unexpanded; Separator
+    makedirs model_file_dir as given, so the UVR models must land under the
+    home dir like the whisper/HF ones, not in a literal '<cwd>/~' tree."""
+    from faster_whisper_backend.audio import bgm_separation
+    from faster_whisper_backend.settings import config as cfg
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))  # expanduser on Windows
+    monkeypatch.setattr(cfg, "DOWNLOAD_ROOT", "~/models", raising=False)
+    want = str(tmp_path / "models" / "audio-separator")
+    norm = os.path.normpath  # "~/models" keeps its "/" on Windows
+
+    assert norm(bgm_separation.model_file_dir()) == want
+    assert norm(model_sizes._model_path("uvr:Foo")) \
+        == os.path.join(want, "Foo.onnx")
+
+
 def test_measurement_replaces_a_larger_disk_prior(ledger):
     """The disk walk over-counts (every revision, fp32 blobs); the first REAL
     measurement must win even when it is smaller, or the prior is unbeatable

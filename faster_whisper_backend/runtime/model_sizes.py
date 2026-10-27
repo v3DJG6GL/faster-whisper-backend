@@ -408,8 +408,8 @@ def _model_path(name: str) -> "str | None":
         # The directory bgm_separation.model_file_dir() loads from, tempdir
         # fallback included, so a default install (no DOWNLOAD_ROOT) is still
         # sizeable. tests/runtime/test_model_sizes.py pins the match.
-        return os.path.join(root or tempfile.gettempdir(), "audio-separator",
-                            model)
+        return os.path.join(os.path.expanduser(root) or tempfile.gettempdir(),
+                            "audio-separator", model)
     # Where translation / diarization downloads land (hf_cache owns the
     # precedence: HF_HUB_CACHE, else HF_HOME/hub, else <DOWNLOAD_ROOT>/hf,
     # else the hub default).
@@ -440,8 +440,8 @@ def _model_path(name: str) -> "str | None":
         repo = name
     leaf = "models--" + repo.replace("/", "--")
     # snapshot_download expands "~" in the cache_dir it is handed, so a .env
-    # DOWNLOAD_ROOT=~/models lands under the home dir. (UVR above is not
-    # expanded: bgm_separation.model_file_dir() passes the root verbatim.)
+    # DOWNLOAD_ROOT=~/models lands under the home dir (UVR above expands it
+    # the same way bgm_separation.model_file_dir() does).
     candidates = [os.path.join(os.path.expanduser(root), leaf)] if root else []
     candidates.append(os.path.join(hub, leaf))
     for c in candidates:

@@ -312,8 +312,13 @@ def _resolve_device() -> str:
 def model_file_dir() -> str:
     """Where audio-separator keeps (and downloads) the model files:
     <DOWNLOAD_ROOT>/audio-separator, else <tempdir>/audio-separator.
-    runtime.model_sizes sizes a never-loaded model from the same place."""
-    models_dir = getattr(cfg, "DOWNLOAD_ROOT", None) or tempfile.gettempdir()
+    runtime.model_sizes sizes a never-loaded model from the same place.
+    "~" is expanded here like every other DOWNLOAD_ROOT consumer (.env and
+    systemd Environment= leave it literal): Separator makedirs the path as
+    given, which would plant a "<cwd>/~" tree beside the other models."""
+    models_dir = (os.path.expanduser((getattr(cfg, "DOWNLOAD_ROOT", None)
+                                      or "").strip())
+                  or tempfile.gettempdir())
     return os.path.join(models_dir, "audio-separator")
 
 
