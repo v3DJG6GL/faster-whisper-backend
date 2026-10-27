@@ -3722,15 +3722,19 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
     // Membership in config.json — not the seeded flag — is authoritative
     // (as in _canReset/_canDelete): a rule promoted from here keeps
     // seeded:false locally, and re-slugging it would detach it from its
-    // config.json copy (local-only here, "missing" there).
-    const slugFixed = r => r.seeded || _factoryHas(r.name);
+    // config.json copy (local-only here, "missing" there). A rule already
+    // saved on this server is fixed too: the per-model, profile and captures
+    // checklists and per-identity bindings can name its slug, and a rename
+    // 422s the next save or silently un-excludes the rule for a user.
+    const savedSlugs = new Set((fieldDef(name).value || []).map(r => r && r.name));
+    const slugFixed = r => r.seeded || _factoryHas(r.name) || savedSlugs.has(r.name);
     if (rule.type !== 'terminal') {
       const labelWrap = document.createElement('div');
       labelWrap.className = 'rule-label-edit';
       const labelLbl = document.createElement('div');
       labelLbl.className = 'help';
       labelLbl.textContent = slugFixed(rule)
-        ? 'label: (slug stays fixed for rules in config.json)'
+        ? 'label: (slug stays fixed once saved or in config.json)'
         : 'label: (slug regenerates from label)';
       labelWrap.appendChild(labelLbl);
       const labelInp = document.createElement('input');

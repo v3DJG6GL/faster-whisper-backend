@@ -358,3 +358,48 @@ def test_rule_tag_commit_keeps_the_tag_picker(client):
                     "const picker = window._renderTagPicker({", "\n      });\n")
     assert "commitData();" in picker
     assert "commitFull();" not in picker
+
+
+def _label_editor_harness(html, body):
+    """A rule card's label editor (renderRow) with the real _slugify /
+    _ensureUniqueSlug, spliced into `body` at {editor}."""
+    editor = _block(html, "    // Membership in config.json — not the seeded flag",
+                    "      body.appendChild(labelWrap);\n    }\n")
+    helpers = (_block(html, "function _slugify(s) {", "\n}\n")
+               + _block(html, "function _ensureUniqueSlug(slug, existing) {", "\n}\n"))
+    return _FAKE_DOM + helpers + """
+const name = 'PIPELINE_RULES';
+const saved = [{ name: 'my-rule', label: 'My rule', type: 'regex' }];
+function fieldDef() { return { value: saved }; }
+const factoryRules = [];
+function _factoryHas() { return false; }
+const expandedNames = new Set();
+function _saveExpanded() {}
+function commitData() {}
+const lbl = document.createElement('span');
+const slug = document.createElement('span');
+const row = document.createElement('div');
+""" + body.replace("{editor}", editor)
+
+
+@needs_node
+def test_label_edit_keeps_a_saved_rules_slug(client):
+    """A saved server-only rule re-slugged on every keystroke, so a per-model,
+    profile or captures reference to it 422'd the next save."""
+    out = _node(_label_editor_harness(_html(client, "/settings/pipeline"), """
+function relabel(rule, rules, text) {
+  const body = document.createElement('div');
+{editor}
+  const labelInp = find(body, e => e.tagName === 'INPUT');
+  labelInp.value = text;
+  fire(labelInp, 'input');
+  return rule.name;
+}
+const savedRule = { name: 'my-rule', label: 'My rule', type: 'regex' };
+const fresh = { name: 'rule', label: '', type: 'regex' };
+console.log(JSON.stringify([
+  relabel(savedRule, [savedRule], 'Renamed rule'),
+  relabel(fresh, [savedRule, fresh], 'Brand new'),
+]));
+"""))
+    assert out == ["my-rule", "brand-new"]

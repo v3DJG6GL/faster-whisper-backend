@@ -355,7 +355,7 @@ def test_label_reslug_is_gated_on_config_json_membership(client):
     """A rule promoted from here keeps seeded:false locally; a label edit
     re-slugged it and detached it from its config.json copy."""
     html = _html(client)
-    assert "const slugFixed = r => r.seeded || _factoryHas(r.name);" in html
+    assert "const slugFixed = r => r.seeded || _factoryHas(r.name) ||" in html
     assert "if (!slugFixed(rule)) {" in html
     assert "labelLbl.textContent = slugFixed(rule)" in html
     assert "if (!rule.seeded) {" not in html
