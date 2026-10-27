@@ -167,3 +167,49 @@ fire(find(row, e => e.textContent === '+ override'), 'click').then(() => {
 });
 """)
     assert out == 3
+
+
+def _model_pipeline_harness(html, body):
+    """The MODEL_OVERRIDES per-model pipeline checklist with
+    makeRuleListEditor stubbed out: `editor.opts` is what the rows call."""
+    section = _block(html, "  function renderPipelineSection() {")
+    return _FAKE_DOM + """
+const state = {};
+function currentValue(n) { return state[n]; }
+let selectedId = 'm';
+let overrides = {};
+let editor = null;
+function makeRuleListEditor(name, rules, mode, opts) {
+  editor = { name, rules, mode, opts };
+  return document.createElement('div');
+}
+function persist() {}
+function refreshMarkers() {}
+function jumpToGlobalRule() {}
+""" + section + body
+
+
+@needs_node
+@pytest.mark.parametrize("enabled, start, want_active, expect", [
+    # Force-included while off, then switched on globally: unticking
+    # force-disables it and must drop the stale INCLUDE entry.
+    (True, {"PIPELINE_RULES_INCLUDE": ["x"]}, False,
+     {"PIPELINE_RULES_EXCLUDE": ["x"]}),
+    # Force-disabled while on, then switched off globally: ticking
+    # force-includes it and must drop the stale EXCLUDE entry.
+    (False, {"PIPELINE_RULES_EXCLUDE": ["x"]}, True,
+     {"PIPELINE_RULES_INCLUDE": ["x"]}),
+])
+def test_model_pipeline_toggle_never_puts_a_slug_in_both_lists(
+        client, enabled, start, want_active, expect):
+    """ModelOverride rejects a slug in EXCLUDE and INCLUDE (a 422 for the whole
+    save); a rule whose global state flipped after the override ended up in
+    both."""
+    out = _node(_model_pipeline_harness(_html(client), f"""
+state.PIPELINE_RULES = [{{ name: 'x', type: 'regex', enabled: {json.dumps(enabled)} }}];
+overrides = {{ m: {json.dumps(start)} }};
+renderPipelineSection();
+editor.opts.onToggle('x', {json.dumps(want_active)}, {json.dumps(enabled)});
+console.log(JSON.stringify(overrides.m));
+"""))
+    assert out == expect

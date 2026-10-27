@@ -1978,14 +1978,16 @@ function modelOverridesEditor(name, v) {
       // current global state; we mutate the appropriate list:
       //   globallyEnabled=true  → toggle EXCLUDE (uncheck adds to EXCLUDE)
       //   globallyEnabled=false → toggle INCLUDE (check adds to INCLUDE)
-      // The pydantic validator forbids same-slug overlap so we never
-      // need to worry about a slug ending up in both.
+      // The pydantic validator rejects a slug in both lists, and the global
+      // state can flip after an override was set (a still force-included rule
+      // that is now on globally), so each toggle also drops the slug from the
+      // other list.
       onToggle: (slug, wantActive, globallyEnabled) => {
         if (globallyEnabled) {
           if (wantActive) excludeSet.delete(slug);
-          else            excludeSet.add(slug);
+          else          { excludeSet.add(slug); includeSet.delete(slug); }
         } else {
-          if (wantActive) includeSet.add(slug);
+          if (wantActive) { includeSet.add(slug); excludeSet.delete(slug); }
           else            includeSet.delete(slug);
         }
         if (!overrides[selectedId]) overrides[selectedId] = {};
