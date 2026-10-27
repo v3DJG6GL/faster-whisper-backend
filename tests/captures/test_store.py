@@ -698,6 +698,32 @@ def test_bulk_update_status_chunks_past_the_bind_variable_limit(
     assert not conn.in_transaction
 
 
+def test_bulk_update_status_holds_the_samples_lock(captures_store_db):
+    """The BEGIN..COMMIT runs on the connection samples_store shares, so it
+    must hold samples_store._lock too: a sample patch from a rebuild thread
+    (samples lock only) would otherwise join the transaction and be lost if
+    it rolls back."""
+    import threading
+
+    from faster_whisper_backend.captures import samples_store as capture_samples_store
+
+    cs = captures_store_db
+    cs._require_conn().execute(
+        "INSERT INTO captures (id, created_ts, model, audio_relpath,"
+        " audio_format, raw_text, final_text, words, segments, corrections,"
+        " status, user_id) VALUES ('bulklock0000001',1.0,'m','x.wav','wav',"
+        "'r','f','[]','[]','[]','new','bob')")
+    done = threading.Event()
+    with capture_samples_store._lock:
+        t = threading.Thread(target=lambda: (
+            cs.bulk_update_status(["bulklock0000001"], "ready"), done.set()))
+        t.start()
+        assert not done.wait(0.3)
+    t.join(5)
+    assert done.is_set()
+    assert cs.get_capture("bulklock0000001")["status"] == "ready"
+
+
 def _seed_ready(cs, n, ts=1.0):
     cs._require_conn().executemany(
         "INSERT INTO captures (id, created_ts, model, audio_relpath,"

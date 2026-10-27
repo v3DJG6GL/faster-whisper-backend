@@ -1125,7 +1125,12 @@ def bulk_update_status(ids: list[str], new_status: str) -> list[dict[str, Any]]:
     # one transaction so the pass stays all-or-nothing, as the single
     # statement was.
     chunks = [ids[off:off + 500] for off in range(0, len(ids), 500)]
-    with _lock:
+    # Both store locks for the BEGIN..COMMIT span, samples-then-captures as in
+    # samples_store.dissolve_sample: the stores share one autocommit
+    # connection, so a samples_store.update_sample from a rebuild thread
+    # would otherwise join this transaction and be rolled back with it.
+    from faster_whisper_backend.captures import samples_store as capture_samples_store
+    with capture_samples_store._lock, _lock:
         prev: list[sqlite3.Row] = []
         for chunk in chunks:
             prev.extend(conn.execute(
