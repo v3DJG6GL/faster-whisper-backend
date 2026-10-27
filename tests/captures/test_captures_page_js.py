@@ -374,3 +374,77 @@ _loadProposals().then(function() {
 });
 """)
     assert out == {"urls": [url], "shown": shown}
+
+
+# ---- batch review -------------------------------------------------------------------
+
+_BATCH_STUBS = r"""
+var _batchActive = true, _batchAccepted = 0, _batchDismissed = 0,
+    _batchCurrentCard = null, _batchUndo = null, _batchBusy = false;
+var built = 0, posts = [], pendingPost = [];
+function fakeEl() {
+  return { classList: { add: function() {}, remove: function() {} }, style: {},
+    appendChild: function() {}, addEventListener: function() {},
+    setAttribute: function() {}, querySelector: function() { return null; } };
+}
+global.document = { createElement: fakeEl, getElementById: function() { return fakeEl(); } };
+function _buildProposalCard() { built++; return fakeEl(); }
+function _svgIcon() { return fakeEl(); }
+function _renderBatchDone() {}
+function _stopAnyPreview() {} function toast() {} function _loadUnlessDirty() {}
+function _onBatchTouchStart() {} function _onBatchTouchMove() {} function _onBatchTouchEnd() {}
+var _allCaptures = [{ id: 'a' }, { id: 'b' }, { id: 'c' }];
+async function api(m, u, body) {
+  posts.push(body.member_ids[0]);
+  return new Promise(function(r) { pendingPost.push(r); });
+}
+var _proposals = ['a', 'b', 'c'].map(function(id) { return { member_ids: [id] }; });
+function wait(ms) { return new Promise(function(r) { setTimeout(r, ms); }); }
+global.setInterval = function() { return 0; };   // the strip auto-focus poll
+global.clearInterval = function() {};
+"""
+
+
+def _batch_fns(page):
+    return (_js_function(page, "_renderBatchCard") + "\n"
+            + _js_function(page, "_advanceBatch") + "\n")
+
+
+@needs_node
+def test_batch_second_trigger_during_the_transition_is_ignored(page, tmp_path):
+    """Dismiss / Accept splice the queue before the 260 ms re-render, so a
+    double-click or a held Ctrl+arrow acted on the next, unseen proposal:
+    dismissed it, or POSTed a real sample for it."""
+    out = _run_node(tmp_path, _batch_fns(page) + _BATCH_STUBS + r"""
+(async function() {
+  _batchCurrentCard = fakeEl();
+  _advanceBatch('dismiss');
+  _advanceBatch('dismiss');            // double-click / key auto-repeat
+  _advanceBatch('accept');
+  var queued = _proposals.length;
+  await wait(300);                     // next card rendered
+  _advanceBatch('dismiss');
+  console.log(JSON.stringify({ queued: queued, after: _proposals.length,
+    dismissed: _batchDismissed, posts: posts }));
+})();
+""")
+    assert out == {"queued": 2, "after": 1, "dismissed": 2, "posts": []}
+
+
+@needs_node
+def test_batch_closed_during_accept_does_not_render_or_autoplay(page, tmp_path):
+    """Closing the batch while an Accept POST was in flight still rendered
+    the next card into the hidden modal and auto-clicked its ▶, playing
+    audio nobody could stop."""
+    out = _run_node(tmp_path, _batch_fns(page) + _BATCH_STUBS + r"""
+(async function() {
+  _batchCurrentCard = fakeEl();
+  _advanceBatch('accept');
+  await wait(0);
+  _batchActive = false;                // Esc / Close (_exitBatchMode)
+  pendingPost[0]({ sample_id: 's1' });
+  await wait(300);
+  console.log(JSON.stringify({ built: built, posts: posts }));
+})();
+""")
+    assert out == {"built": 0, "posts": ["a"]}

@@ -4369,6 +4369,10 @@
   // Holds a pre-mutation snapshot of _proposals plus, for accepts, the
   // created sample_id so revert can dissolve it. Null = nothing to revert.
   var _batchUndo = null;
+  // Set from an Accept / Dismiss / Revert until the next card renders: in
+  // that window _proposals[0] is already the next, unseen proposal while
+  // the old card's buttons and Ctrl+arrows are still live.
+  var _batchBusy = false;
 
   function _enterBatchMode() {
     if (_batchActive) return;
@@ -4401,6 +4405,10 @@
   }
 
   function _renderBatchCard() {
+    _batchBusy = false;
+    // A render queued behind an await or the card transition must not
+    // rebuild (and auto-play) a batch the user already closed.
+    if (!_batchActive) return;
     var host = document.getElementById('propose-batch');
     host.innerHTML = '';
     _batchCurrentCard = null;
@@ -4534,9 +4542,10 @@
   }
 
   async function _advanceBatch(action) {
-    if (!_batchActive || !_proposals.length) return;
+    if (!_batchActive || _batchBusy || !_proposals.length) return;
     var p = _proposals[0];
     var card = _batchCurrentCard;
+    _batchBusy = true;
 
     if (action === 'accept') {
       // Mirror _acceptProposal's behavior but adapted for batch — we
@@ -4547,6 +4556,7 @@
         var r = byId[id]; return !r || r.sample_id;
       });
       if (missing.length) {
+        _batchBusy = false;
         toast(missing.length + ' member(s) no longer eligible — try Refresh', true);
         return;
       }
@@ -4581,6 +4591,7 @@
         if (e && e.message !== 'unauthorized' && e.message !== 'not-admin') {
           toast(e.message || 'merge failed', true);
         }
+        _batchBusy = false;
         return;   // don't advance on failure; let user retry
       }
     } else if (action === 'dismiss') {
@@ -4609,7 +4620,7 @@
   // re-enqueue; Accept dissolves the server-side group it created and
   // restores the spliced queue. Tolerant of a 404 (group already gone).
   async function _revertBatch() {
-    if (!_batchActive) return;
+    if (!_batchActive || _batchBusy) return;
     var u = _batchUndo;
     if (!u) { toast('Nothing to revert'); return; }
     if (u.action === 'dismiss') {
@@ -4626,6 +4637,7 @@
       && _batchCurrentCard.parentNode
       && _batchCurrentCard.parentNode.querySelector('.batch-actions .revert');
     if (btn) btn.disabled = true;
+    _batchBusy = true;
     try {
       if (u.sid) {
         await api('DELETE', '/captures/api/samples/' + encodeURIComponent(u.sid));
@@ -4638,6 +4650,7 @@
           toast('Revert failed: ' + (e.message || 'error'), true);
         }
         if (btn) btn.disabled = false;
+        _batchBusy = false;
         return;
       }
     }
