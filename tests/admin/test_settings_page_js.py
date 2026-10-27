@@ -319,3 +319,33 @@ _testOneRule({ name: 'r' }).then(
   e => console.log(JSON.stringify({ threw: String(e) })));
 """)
     assert out == {"value": None}
+
+
+@needs_node
+def test_rule_drop_clears_the_drag_state(client):
+    """The drop repaints the list, which detaches the source row; dragend
+    (the only cleanup) does not reach a detached source, so a later
+    external drag over the list still moved rules[staleIdx]."""
+    drop = _block(_html(client, "/settings/pipeline"),
+                  "  list.addEventListener('drop', (e) => {", "\n  });\n")
+    out = _node(_FAKE_DOM + """
+const DRAG_AUTOSCROLL = { stop() {} };
+const list = document.createElement('div');
+const placeholder = document.createElement('div');
+let rules = [{ name: 'a' }, { name: 'b' }, { name: 'c' }];
+const rows = rules.map(() => {
+  const r = document.createElement('div'); r.className = 'rule-row'; return r;
+});
+list.append(rows[0], rows[1], rows[2], placeholder);   // drag 'a' to the end
+list.classList.add('dnd-active');
+let dragSrcEl = rows[0];
+let dragSrcIdx = 0;
+let committed = 0;
+function commitFull() { committed++; }
+""" + drop + """
+fire(list, 'drop', { preventDefault() {} }).then(() => {
+  console.log(JSON.stringify([rules.map(r => r.name), committed, dragSrcEl === null,
+                              dragSrcIdx, list.classList.contains('dnd-active')]));
+});
+""")
+    assert out == [["b", "c", "a"], 1, True, None, False]

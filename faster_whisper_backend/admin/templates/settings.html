@@ -2749,7 +2749,6 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
     }
     const oldIdx = dragSrcIdx;
     if (newIdx === oldIdx) return;     // dropped in place
-    const src = rules[oldIdx];
     // A locked rule can't be dragged (its grip is disabled while locked), and
     // moving other rules around a locked one is allowed — lock protects the
     // rule's content + its own position, not the whole list. No confirm needed.
@@ -2761,6 +2760,12 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
       const [tr] = rules.splice(tIdx, 1);
       rules.push(tr);
     }
+    // commitFull() repaints and detaches the source row, and a detached
+    // source gets no dragend: clear the drag state here, or the next
+    // external drag (dragged text) still counts as a reorder.
+    list.classList.remove('dnd-active');
+    dragSrcEl = null;
+    dragSrcIdx = null;
     commitFull();
   });
   }  // end if (!isChecklist) — drag handlers
