@@ -71,6 +71,40 @@ def test_linux_installer_unit_pins_yield_to_a_dotenv_pin():
                          sh), var
 
 
+@pytest.mark.skipif(shutil.which("bash") is None or os.name == "nt",
+                    reason="needs a POSIX bash")
+def test_linux_installer_unit_survives_a_checkout_path_with_space_and_percent(tmp_path):
+    # systemd splits ExecStart=/Environment= on whitespace and expands %
+    # specifiers: unquoted, "My Projects" handed python a truncated main.py
+    # path. Render the script's own heredoc for such a REPO_DIR and split the
+    # lines the way systemd does (shell-like quoting, %% -> %).
+    import shlex
+    sh = _read("install-service.sh")
+    helpers = "\n".join(re.search(rf"^{n}\(\) .*$", sh, re.M).group(0)
+                        for n in ("sd_q", "unit_env"))
+    heredoc = re.search(r'^cat > "\$UNIT" <<EOF\n.*?^EOF\n', sh, re.S | re.M).group(0)
+    repo = "/home/u/My Projects/fw%b"
+    unit = tmp_path / "unit"
+    script = (f"set -euo pipefail\n{helpers}\n"
+              "DATA_ENV_LINE=\"Environment=WHISPER_DATA_DIR=${REPO_DIR}/data\"\n"
+              "MODELS_ENV_LINE='' LOG_ENV_LINE='' NVIDIA_ENV_LINE=''\n" + heredoc)
+    out = subprocess.run(
+        [shutil.which("bash"), "-c", script], capture_output=True, text=True,
+        timeout=60, env={"PATH": "/usr/bin:/bin", "UNIT": str(unit),
+                         "REPO_DIR": repo, "PY": f"{repo}/venv/bin/python",
+                         "RUN_USER": "u"})
+    assert out.returncode == 0, out.stderr
+    lines = dict(ln.split("=", 1) for ln in unit.read_text().splitlines()
+                 if "=" in ln and not ln.startswith("#"))
+
+    def systemd_split(value):
+        return [w.replace("%%", "%") for w in shlex.split(value)]
+    assert systemd_split(lines["ExecStart"]) == [f"{repo}/venv/bin/python",
+                                                 f"{repo}/main.py"]
+    assert systemd_split(lines["Environment"]) == [f"WHISPER_DATA_DIR={repo}/data"]
+    assert lines["WorkingDirectory"] == repo.replace("%", "%%")   # %b = boot ID
+
+
 def test_linux_installer_env_sets_reads_dotenv_like_the_service(tmp_path):
     # Behavioural, not a grep: source the script's own env_value / env_sets
     # into bash against a tmp .env and ask about each spelling.

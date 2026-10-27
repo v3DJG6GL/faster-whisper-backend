@@ -211,6 +211,12 @@ if ! env_sets WHISPER_LOG_FILE && ! env_sets WHISPER_DATA_DIR; then
   STATE_DIRS+=("$REPO_DIR/logs")
 fi
 
+# systemd splits ExecStart=/Environment= values on whitespace and reads % as
+# a specifier: a checkout under "My Projects" must be quoted (and every %
+# doubled) or python gets a truncated path and the unit crash-loops.
+sd_q() { printf '"%s"' "${1//%/%%}"; }
+unit_env() { [ -z "$1" ] || printf 'Environment=%s' "$(sd_q "${1#Environment=}")"; }
+
 UNIT="/etc/systemd/system/${SERVICE_NAME}.service"
 echo "Writing $UNIT ..."
 cat > "$UNIT" <<EOF
@@ -222,15 +228,15 @@ Wants=network-online.target
 [Service]
 Type=simple
 User=${RUN_USER}
-WorkingDirectory=${REPO_DIR}
+WorkingDirectory=${REPO_DIR//%/%%}
 # In-checkout state paths (unless ${REPO_DIR}/.env pins them).
-${DATA_ENV_LINE}
-${MODELS_ENV_LINE}
-${LOG_ENV_LINE}
-${NVIDIA_ENV_LINE}
+$(unit_env "$DATA_ENV_LINE")
+$(unit_env "$MODELS_ENV_LINE")
+$(unit_env "$LOG_ENV_LINE")
+$(unit_env "$NVIDIA_ENV_LINE")
 # 'python main.py' is the shim over faster_whisper_backend/main.py; matches what the
 # cross-platform self-restart (os.execv) re-execs.
-ExecStart=${PY} ${REPO_DIR}/main.py
+ExecStart=$(sd_q "$PY") $(sd_q "${REPO_DIR}/main.py")
 Restart=always
 RestartSec=2
 
