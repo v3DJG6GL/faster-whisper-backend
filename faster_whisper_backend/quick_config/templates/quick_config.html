@@ -1391,6 +1391,15 @@ function _buildReportForm(entry) {
   // idx_end === idx so range-aware code doesn't need to special-case.
   form._entry = entry;
   _wordifyFinal(form, entry.final || '');
+  // The server stores idx_end only when it differs from idx
+  // (core/text_corrections.clean_corrections), so seeded single-word
+  // chips arrive without it — restore the invariant before any range
+  // helper reads it, and strike through the seeded words.
+  form._corrections.forEach((c) => {
+    if (typeof c.idx !== 'number') return;
+    if (typeof c.idx_end !== 'number') c.idx_end = c.idx;
+    for (let j = c.idx; j <= c.idx_end; j++) _selectWord(form, j, true);
+  });
   // Render chips + struck-through + inline replacements immediately so
   // the user sees what they previously submitted. Skipped when there
   // are no seeded chips — empty render is a no-op but a needless
