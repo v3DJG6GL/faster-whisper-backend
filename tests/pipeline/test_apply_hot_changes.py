@@ -116,3 +116,41 @@ def test_env_pinned_load_time_save_evicts_nothing(monkeypatch):
     monkeypatch.setattr(cfg, "DIARIZATION_DEVICE", cfg.DIARIZATION_DEVICE)
     asyncio.run(pl_apply.apply_hot_changes(written))
     assert calls == [None] and extras == ["diarization"]
+
+
+def test_overlapping_scalar_saves_end_on_the_newest_file(monkeypatch):
+    # Scalar admin saves take no rules_lock(). Save A (X=1) reads the file
+    # before save B (X=2) replaces it, but its offloaded read returns last:
+    # without serialising load + setattr, A's stale X=1 lands over B's X=2
+    # while disk holds 2.
+    import threading
+
+    disk = {"_TEST_APPLY_FIELD": 1}
+    a_read = threading.Event()
+    release_a = threading.Event()
+    first = {"done": False}
+
+    def fake_load():
+        if not first["done"]:
+            first["done"] = True
+            snap = dict(disk)
+            a_read.set()
+            release_a.wait(5)
+            return snap
+        return dict(disk)
+
+    monkeypatch.setattr(cfg, "_TEST_APPLY_FIELD", 0, raising=False)
+    monkeypatch.setattr(config_store, "env_pinned_fields", lambda: frozenset())
+    monkeypatch.setattr(config_store, "load_overrides", fake_load)
+
+    async def scenario():
+        a = asyncio.create_task(pl_apply.apply_hot_changes({"_TEST_APPLY_FIELD": 1}))
+        assert await asyncio.to_thread(a_read.wait, 5)
+        disk["_TEST_APPLY_FIELD"] = 2
+        b = asyncio.create_task(pl_apply.apply_hot_changes({"_TEST_APPLY_FIELD": 2}))
+        await asyncio.sleep(0.2)  # unserialised, B loads and applies X=2 here
+        release_a.set()
+        await asyncio.gather(a, b)
+
+    asyncio.run(scenario())
+    assert cfg._TEST_APPLY_FIELD == 2

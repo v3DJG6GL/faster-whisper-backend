@@ -49,6 +49,11 @@ logger = logging.getLogger("whisper-api")
 # = one lock.
 _RULES_LOCK = LoopLock()
 
+# Serializes apply_hot_changes' reload + setattr (see there). Not rules_lock():
+# the PIPELINE_RULES writers already hold that one around the call, and a
+# LoopLock is not re-entrant.
+_APPLY_LOCK = LoopLock()
+
 
 def rules_lock() -> LoopLock:
     """The loop-keyed lock that serializes every PIPELINE_RULES
@@ -182,43 +187,50 @@ async def apply_hot_changes(
     # /quick-config/state carries only require_user_webui_host +
     # require_page("quick_config") and awaits apply_rules_patch, which awaits
     # us. load_overrides is a blocking disk read + full Pydantic pass.
-    coerced = await asyncio.to_thread(config_store.load_overrides)
-    hot_changed: list[str] = []
-    cold_changed: list[str] = []
-    needs_cache_rebuild = False
-    env_pinned = config_store.env_pinned_fields()
-    # What the loaded models were built from: taken below with no await before
-    # the setattr, so a concurrent save cannot slip in between.
-    prev_model_overrides: "dict[str, Any] | None" = None
+    # Load + setattr under one lock: two saves that skip rules_lock() (scalar
+    # admin saves) could otherwise interleave — the older save's load reads
+    # the file before the newer save replaces it, returns last, and setattr()s
+    # its stale value over the newer one while disk holds the new value.
+    # Serialised, each load runs after the previous caller's, so the last
+    # setattr comes from the newest file.
+    async with _APPLY_LOCK:
+        coerced = await asyncio.to_thread(config_store.load_overrides)
+        hot_changed: list[str] = []
+        cold_changed: list[str] = []
+        needs_cache_rebuild = False
+        env_pinned = config_store.env_pinned_fields()
+        # What the loaded models were built from: taken below with no await before
+        # the setattr, so a concurrent save cannot slip in between.
+        prev_model_overrides: "dict[str, Any] | None" = None
 
-    for name in written:
-        if name in env_pinned:
-            # Save persists, but the running cfg won't change until the env
-            # var is unset. Don't include in `hot_changed` — nothing changed
-            # in memory.
-            continue
-        if name in coerced:
-            new_val = coerced[name]
-        else:
-            # The override was removed (reset to default): revert the running
-            # cfg to the in-repo baseline. getattr(cfg, name) would still hold
-            # the stale override value (set when it was first saved) until we
-            # overwrite it here, so it can't be the fallback. _BASELINE holds
-            # the native-typed default (matching load_overrides' coercions).
-            baseline = getattr(cfg, "_BASELINE", {}) or {}
-            new_val = baseline.get(name, getattr(cfg, name, None))
-        if name == "MODEL_OVERRIDES":
-            # save_overrides keeps WHISPER_MODEL_OVERRIDE__ env values out of
-            # the file; lay them back on the running cfg.
-            new_val = config_store.with_env_model_overrides(new_val)
-            prev_model_overrides = dict(getattr(cfg, "MODEL_OVERRIDES", None) or {})
-        setattr(cfg, name, new_val)
-        if name in settings_schema.CACHE_REBUILD_FIELDS:
-            needs_cache_rebuild = True
-        if name in settings_schema.RESTART_REQUIRED_FIELDS:
-            cold_changed.append(name)
-        else:
-            hot_changed.append(name)
+        for name in written:
+            if name in env_pinned:
+                # Save persists, but the running cfg won't change until the env
+                # var is unset. Don't include in `hot_changed` — nothing changed
+                # in memory.
+                continue
+            if name in coerced:
+                new_val = coerced[name]
+            else:
+                # The override was removed (reset to default): revert the running
+                # cfg to the in-repo baseline. getattr(cfg, name) would still hold
+                # the stale override value (set when it was first saved) until we
+                # overwrite it here, so it can't be the fallback. _BASELINE holds
+                # the native-typed default (matching load_overrides' coercions).
+                baseline = getattr(cfg, "_BASELINE", {}) or {}
+                new_val = baseline.get(name, getattr(cfg, name, None))
+            if name == "MODEL_OVERRIDES":
+                # save_overrides keeps WHISPER_MODEL_OVERRIDE__ env values out of
+                # the file; lay them back on the running cfg.
+                new_val = config_store.with_env_model_overrides(new_val)
+                prev_model_overrides = dict(getattr(cfg, "MODEL_OVERRIDES", None) or {})
+            setattr(cfg, name, new_val)
+            if name in settings_schema.CACHE_REBUILD_FIELDS:
+                needs_cache_rebuild = True
+            if name in settings_schema.RESTART_REQUIRED_FIELDS:
+                cold_changed.append(name)
+            else:
+                hot_changed.append(name)
 
     if needs_cache_rebuild:
         await rebuild_caches_off_loop("admin update")
