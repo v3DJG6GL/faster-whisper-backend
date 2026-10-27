@@ -310,14 +310,32 @@ def test_staging_job_is_inside_the_retention_dir_and_stale_jobs_are_reaped(
         f.write(b"v" * 10)
     mid = ums.register(src, user_id=None, kind="video")
     assert mid and not os.path.exists(src)
-    # A fresh job survives the sweep; one older than the video wall clock
-    # (+ margin) is a dead task's leftover and goes.
+    # A fresh job survives the sweep; one older than the download wall
+    # clocks (+ margin) is a dead task's leftover and goes.
     monkeypatch.setattr(ums.cfg, "URL_VIDEO_DOWNLOAD_TIMEOUT_S", 10, raising=False)
+    monkeypatch.setattr(ums.cfg, "URL_DOWNLOAD_TIMEOUT_S", 10, raising=False)
     old = ums.new_staging_job()
     stale = time.time() - 700
     os.utime(old, (stale, stale))
     ums.sweep()
     assert os.path.isdir(job) and not os.path.isdir(old)
+
+
+def test_a_live_audio_job_outlasting_the_video_clock_is_not_reaped(monkeypatch):
+    # A link's audio stages in `vid-*` too, under URL_DOWNLOAD_TIMEOUT_S; its
+    # dir mtime stays at creation while the one file downloads, so a bound
+    # from the video clock alone deleted it mid-download.
+    monkeypatch.setattr(ums.cfg, "URL_VIDEO_DOWNLOAD_TIMEOUT_S", 600, raising=False)
+    monkeypatch.setattr(ums.cfg, "URL_DOWNLOAD_TIMEOUT_S", 7200, raising=False)
+    job = ums.new_staging_job()
+    running = time.time() - 3600       # past 600 + margin, within 7200
+    os.utime(job, (running, running))
+    ums.sweep()
+    assert os.path.isdir(job)
+    dead = time.time() - (7200 + 700)
+    os.utime(job, (dead, dead))
+    ums.sweep()
+    assert not os.path.isdir(job)
 
 
 def test_startup_reset_wipes_staging(tmp_path):
@@ -359,6 +377,7 @@ def test_sweep_reaps_a_renamed_but_unregistered_upload():
 def test_staging_is_reaped_even_when_the_retention_dir_cannot_be_listed(monkeypatch):
     old = ums.new_staging_job()
     monkeypatch.setattr(ums.cfg, "URL_VIDEO_DOWNLOAD_TIMEOUT_S", 10, raising=False)
+    monkeypatch.setattr(ums.cfg, "URL_DOWNLOAD_TIMEOUT_S", 10, raising=False)
     stale = time.time() - 700
     os.utime(old, (stale, stale))
     real_listdir = os.listdir

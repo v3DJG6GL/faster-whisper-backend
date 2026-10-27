@@ -300,8 +300,9 @@ def sweep() -> None:
 
 
 def _reap_stale_staging(wall: float) -> None:
-    """A video download whose task died without its finally leaves a
-    `staging/vid-*` dir behind; anything older than the video wall clock
+    """A link download (video, or a link's audio — both stage in
+    `staging/vid-*`) whose task died without its finally leaves its job dir
+    behind; anything older than the longer of the two download wall clocks
     (plus a margin) can only be that. Upload spools (`upload-*`, with or
     without `.part`) go once idle past _UPLOAD_IDLE_MAX_SEC."""
     d = os.path.join(_dir(), _STAGING_NAME)
@@ -309,7 +310,10 @@ def _reap_stale_staging(wall: float) -> None:
         names = os.listdir(d)
     except OSError:
         return
-    max_age = float(getattr(cfg, "URL_VIDEO_DOWNLOAD_TIMEOUT_S", 3600)) + 600.0
+    # The dir's mtime does not move while one file downloads into it, so a
+    # bound below either clock reaps a live job.
+    max_age = max(float(getattr(cfg, "URL_VIDEO_DOWNLOAD_TIMEOUT_S", 3600)),
+                  float(getattr(cfg, "URL_DOWNLOAD_TIMEOUT_S", 900))) + 600.0
     for name in names:
         path = os.path.join(d, name)
         if name.startswith(_UPLOAD_PREFIX):
