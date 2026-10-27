@@ -1821,6 +1821,10 @@
     return parts.length ? parts.join(', ') : '(nothing recognisable)';
   }
 
+  // Cancel only hides the modal; the POST keeps running. Both imports are
+  // force-writes, so a second one sent meanwhile could land first and be
+  // overwritten by the cancelled file. Import stays off until it settles.
+  var _csImportBusy = false;
   function showCsImportModal(u, d) {
     var m = document.getElementById('cs-import-modal');
     document.getElementById('cs-import-user').textContent = u.username;
@@ -1856,8 +1860,9 @@
       warnEl.textContent = 'This file is ' + fmtBytes(bytes)
         + ' — over the ' + fmtBytes(cap) + ' server cap. It cannot be imported.';
     } else {
-      go.disabled = false;
-      warnEl.textContent =
+      go.disabled = _csImportBusy;
+      warnEl.textContent = (_csImportBusy
+          ? 'An earlier import is still running — wait for it to finish. ' : '') +
         (meta
           ? 'Replaces the synced settings stored for this account (currently v'
             + meta.version + '). '
@@ -1873,6 +1878,7 @@
     document.getElementById('cs-import-cancel').onclick = close;
     go.onclick = function () {
       go.disabled = true;
+      _csImportBusy = true;
       api('POST', csApiBase(u.id) + '/import', { blob: d.blob })
         .then(function (r) {
           if (r.status === 413) throw new Error('File too large for the server'
@@ -1897,7 +1903,8 @@
         .catch(function (e) {
           showToast(String(e.message || e), 'err');
           go.disabled = false;
-        });
+        })
+        .finally(function () { _csImportBusy = false; });
     };
     document.addEventListener('keydown', onKey);
     m.classList.add('show');

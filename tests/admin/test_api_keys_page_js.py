@@ -38,7 +38,8 @@ function mkEl() {
   return { textContent: '', value: '', style: {}, onclick: null,
     classList: { add: function (c) { s.add(c); }, remove: function (c) { s.delete(c); },
                  contains: function (c) { return s.has(c); } },
-    setAttribute: function () {}, select: function () {}, setSelectionRange: function () {} };
+    setAttribute: function () {}, select: function () {}, setSelectionRange: function () {},
+    appendChild: function () {} };
 }
 var els = {}, toasts = [], loads = 0, execOk = false, clip = null;
 var document = {
@@ -182,3 +183,39 @@ var document = { getElementById: function (id) {
     # load(), so a successful save does not prompt about itself.
     assert "var sentSig = _sig(b);" in html
     assert "_baseline = sentSig; showToast('Overrides saved', 'ok'); load();" in html
+
+
+def test_import_stays_off_while_a_cancelled_import_is_in_flight(client, tmp_path):
+    """Cancel only hides the import modal; the force-write POST keeps
+    running. Reopening it re-enabled Import, so a second file could be sent
+    and then be overwritten by the cancelled one landing last."""
+    html = client.get("/settings/api-keys").text
+    assert "var _csImportBusy = false;" in html
+    js = _FAKE_DOM + "var _csImportBusy = false;\n" + _fn(html, "showCsImportModal") + r"""
+function escapeHtml(s) { return String(s); }
+function fmtBytes(n) { return n + ' B'; }
+function csContainsSummary() { return '-'; }
+function csMetaFor() { return null; }
+function csApiBase(uid) { return '/u/' + uid; }
+var pending = [];
+function api(method, url, body) {
+  return new Promise(function (res) { pending.push({ body: body, res: res }); });
+}
+var u = { id: 'u1', username: 'alice' };
+(async function () {
+  var out = {};
+  showCsImportModal(u, { blob: { a: 1 }, source: 's', fileName: 'A.json' });
+  els['cs-import-go'].onclick();
+  els['cs-import-cancel'].onclick();
+  showCsImportModal(u, { blob: { b: 2 }, source: 's', fileName: 'B.json' });
+  out.reopened_go_disabled = els['cs-import-go'].disabled;
+  pending[0].res({ ok: false, status: 500, text: function () { return Promise.resolve('boom'); } });
+  await new Promise(function (r) { setTimeout(r, 0); });
+  showCsImportModal(u, { blob: { b: 2 }, source: 's', fileName: 'B.json' });
+  out.after_settle_go_disabled = els['cs-import-go'].disabled;
+  out.posts = pending.length;
+  console.log(JSON.stringify(out));
+})();
+"""
+    out = _run(js, tmp_path)
+    assert out == {"reopened_go_disabled": True, "after_settle_go_disabled": False, "posts": 1}
