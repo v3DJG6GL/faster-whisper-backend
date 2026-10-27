@@ -276,6 +276,21 @@ async def _jobs_retention_loop() -> None:
             logger.error("[jobs] retention loop error: %s", _je)
 
 
+async def _recent_tx_retention_loop() -> None:
+    """Hourly row-cap + TTL sweep for the recent-transcriptions store. The
+    lazy prune only fires every Nth insert, so without this a quiet server
+    kept dictation text past RECENT_TRANSCRIPTIONS_RETENTION_DAYS. Same
+    shape as the reports loop."""
+    while True:
+        try:
+            await asyncio.sleep(3600)
+            await asyncio.to_thread(recent_transcriptions_store.sweep_retention)
+        except asyncio.CancelledError:
+            raise
+        except Exception as _rte:
+            logger.error("[recent-tx] retention loop error: %s", _rte)
+
+
 async def _usage_retention_loop() -> None:
     """Hourly sweep for the usage-statistics store: closes out dictation
     sessions whose outcome never arrived and prunes the job/app rows past
@@ -381,12 +396,16 @@ async def lifespan(app: FastAPI):
     # translation GGUF, pyannote) persists its 'download' recent-jobs row
     # through this store, and with it still closed those rows were lost
     # with a "persist failed" warning. Needs only cfg + store_common.
+    # Its hourly sweep task starts after the fatal api-keys init, like usage's.
+    recent_tx_ready = False
     try:
         recent_transcriptions_store.init_db(cfg.RECENT_TRANSCRIPTIONS_DB)
+        recent_transcriptions_store.sweep_retention()
         logger.info(
             "Recent-transcriptions store initialized at %s",
             cfg.RECENT_TRANSCRIPTIONS_DB,
         )
+        recent_tx_ready = True
     except Exception as _te:
         logger.error("Failed to initialize recent-transcriptions store: %s", _te)
 
@@ -574,6 +593,8 @@ async def lifespan(app: FastAPI):
 
     usage_sweep_task = (asyncio.create_task(_usage_retention_loop())
                         if usage_store_ready else None)
+    recent_tx_sweep_task = (asyncio.create_task(_recent_tx_retention_loop())
+                            if recent_tx_ready else None)
     # 1 Hz machine sampler: the GPU-busy share and the /stats history charts.
     # Needs the system-metrics store.
     stats_sampler_task = asyncio.create_task(_stats_sampler.loop())
@@ -682,6 +703,7 @@ async def lifespan(app: FastAPI):
     await _cancel(captures_sweep_task)
     await _cancel(jobs_sweep_task)
     await _cancel(usage_sweep_task)
+    await _cancel(recent_tx_sweep_task)
     await _cancel(stats_sampler_task)
     # Whatever the sampler queued in its last minute.
     try:

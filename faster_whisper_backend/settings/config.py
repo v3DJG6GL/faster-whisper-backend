@@ -1037,8 +1037,8 @@ QUICK_CONFIG_WORD_SUGGESTIONS_MAX: int = _D("QUICK_CONFIG_WORD_SUGGESTIONS_MAX")
 
 # Lazy-prune cadence — every Nth insert runs a single DELETE that
 # enforces both the row cap and the TTL. 0 disables lazy pruning (rows
-# accumulate until a manual /clear or service restart sweep). 50 is the
-# documented default.
+# accumulate until a manual /clear or the startup / hourly sweep). 50 is
+# the documented default.
 RECENT_TRANSCRIPTIONS_PRUNE_EVERY = _D("RECENT_TRANSCRIPTIONS_PRUNE_EVERY")
 
 # /stats "Recent transcriptions" widget row count. The dashboard is

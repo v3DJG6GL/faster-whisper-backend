@@ -890,7 +890,8 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
     "RECENT_TRANSCRIPTIONS_PRUNE_EVERY":
         "Lazy-prune cadence — every Nth insert runs a single DELETE "
         "that enforces both the row cap and the TTL. 0 disables lazy "
-        "pruning entirely (rows accumulate until manual /clear).",
+        "pruning (rows accumulate until a manual /clear or the "
+        "startup / hourly sweep).",
     "STATS_RECENT_TRANSCRIPTIONS_COUNT":
         "/stats dashboard \"Recent transcriptions\" widget row count. "
         "The widget is intentionally a small ticker — bumping this "

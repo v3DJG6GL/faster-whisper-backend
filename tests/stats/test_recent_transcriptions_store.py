@@ -257,6 +257,22 @@ def test_prune_ttl_drops_old(tx_store):
     assert {r["request_id"] for r in ts.list_recent(limit=10)} == {"new"}
 
 
+def test_sweep_retention_applies_configured_cap_and_ttl(tx_store, monkeypatch):
+    # The startup / hourly sweep: no insert counter involved, so a quiet
+    # server still ages its rows out.
+    from faster_whisper_backend.settings import config as cfg
+    ts = tx_store
+    monkeypatch.setattr(cfg, "RECENT_TRANSCRIPTIONS_RETENTION_DAYS", 30, raising=False)
+    monkeypatch.setattr(cfg, "RECENT_TRANSCRIPTIONS_MAX", 2, raising=False)
+    ts.record_trace(request_id="old", model="m", raw="x", final="y",
+                    created_ts=time.time() - 40 * 86400)
+    for i in range(3):
+        ts.record_trace(request_id=f"n{i}", model="m", raw="x", final="y",
+                        created_ts=time.time() - 10 + i)
+    assert ts.sweep_retention() == 2
+    assert {r["request_id"] for r in ts.list_recent(limit=10)} == {"n1", "n2"}
+
+
 def test_clear_all(tx_store):
     ts = tx_store
     for i in range(3):

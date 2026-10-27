@@ -544,6 +544,18 @@ def prune(*, max_rows: int, ttl_days: float) -> int:
         return cur.rowcount or 0
 
 
+def sweep_retention() -> int:
+    """prune() with the configured cap + TTL, for the startup and hourly
+    sweeps in main. The lazy prune alone counts inserts in-process, so a
+    quiet server (or one restarted before PRUNE_EVERY inserts) never aged
+    its rows out. Reads cfg each call so /settings edits apply next tick."""
+    from faster_whisper_backend.settings import config as cfg
+    return prune(
+        max_rows=int(getattr(cfg, "RECENT_TRANSCRIPTIONS_MAX", 500) or 0),
+        ttl_days=float(getattr(cfg, "RECENT_TRANSCRIPTIONS_RETENTION_DAYS", 30) or 0),
+    )
+
+
 def clear_all() -> int:
     """Wipe every row. Returns the count deleted. Admin-triggered."""
     conn = _require_conn()
