@@ -588,3 +588,25 @@ def test_propose_session_gap_splits(captures_store_db, monkeypatch, trim_disable
     assert len(proposals) == 2
     for p in proposals:
         assert p["member_count"] == 1
+
+
+def test_propose_session_gap_is_per_user_in_all_users_view(
+        captures_store_db, monkeypatch, trim_disabled):
+    """Another user recording in between must not bridge one user's gap: the
+    all-users view keeps u1's far-apart clips apart, as u1's own view does."""
+    cs = captures_store_db
+    monkeypatch.setattr(P.cfg, "CAPTURES_PROPOSER_SESSION_GAP_S", 100, raising=False)
+    _insert_eligible(cs, "capbridge00u1a1", ts=1000.0,
+                     text="alpha bravo charlie", user_id="u1")
+    _insert_eligible(cs, "capbridge00u1a2", ts=1400.0,
+                     text="zulu yankee xray", user_id="u1")
+    # u2 records every 80 s across u1's 400 s gap (distinct texts, so the
+    # duplicate filter keeps them all).
+    u2_texts = ("delta echo", "foxtrot golf", "hotel india", "juliet kilo")
+    for i, ts in enumerate((1080.0, 1160.0, 1240.0, 1320.0)):
+        _insert_eligible(cs, f"capbridge00u2b{i}", ts=ts,
+                         text=u2_texts[i], user_id="u2")
+    proposals, _ = P.propose_merges(
+        user_id_filter=None, is_admin=True, caller_user_id="admin")
+    u1 = sorted(sorted(p["member_ids"]) for p in proposals if p["user_id"] == "u1")
+    assert u1 == [["capbridge00u1a1"], ["capbridge00u1a2"]]

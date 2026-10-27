@@ -478,20 +478,20 @@ def _propose_merges_locked(
     # Sort chronological ascending so session segmentation walks forward in time.
     eligible.sort(key=lambda r: float(r["created_ts"]))
 
-    # Session segmentation.
+    # Session segmentation, per user: in the all-users view another user's
+    # captures in between must not bridge one user's gap into one "session"
+    # (and propose what that user's own view keeps apart).
     sessions: list[list[dict[str, Any]]] = []
-    cur: list[dict[str, Any]] = []
-    prev_ts: float | None = None
+    cur: dict[str, list[dict[str, Any]]] = {}
+    prev_ts: dict[str, float] = {}
     for r in eligible:
         ts = float(r["created_ts"])
-        if prev_ts is not None and (ts - prev_ts) > session_gap_s:
-            if cur:
-                sessions.append(cur)
-            cur = []
-        cur.append(r)
-        prev_ts = ts
-    if cur:
-        sessions.append(cur)
+        uid = r.get("user_id") or ""
+        if uid in prev_ts and (ts - prev_ts[uid]) > session_gap_s:
+            sessions.append(cur.pop(uid))
+        cur.setdefault(uid, []).append(r)
+        prev_ts[uid] = ts
+    sessions.extend(cur.values())
 
     # Per session × user × language × task → candidates. user_id partition
     # matters because create_sample_api enforces same-user (captures/routes.py
