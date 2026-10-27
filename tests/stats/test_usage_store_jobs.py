@@ -79,6 +79,24 @@ def test_init_rebuilds_legacy_hourly_with_kind_and_sessions(tmp_path):
         usage_store._conn = None
 
 
+def test_failed_init_leaves_the_store_closed(tmp_path, monkeypatch):
+    """A migration step that raises (a lock held past the busy timeout, a
+    full disk) must not leave the half-migrated connection behind: main.py
+    logs the store as down and starts no sweep, so readers must get the
+    RuntimeError the routes turn into 503, not a partly live store."""
+    from faster_whisper_backend.stats import usage_store
+    monkeypatch.setattr(usage_store, "_conn", None)
+
+    def locked(conn):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(usage_store, "_fold_legacy_hourly", locked)
+    with pytest.raises(sqlite3.OperationalError):
+        usage_store.init_db(str(tmp_path / "usage.sqlite3"))
+    with pytest.raises(RuntimeError):
+        usage_store.totals_by_key()
+
+
 # --------------------------------------------------------------------------
 # Sessions, kinds, stages
 # --------------------------------------------------------------------------

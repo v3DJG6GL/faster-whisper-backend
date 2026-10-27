@@ -258,15 +258,24 @@ def init_db(path: str) -> None:
     once on service startup before any other function. Mirrors
     recent_transcriptions_store.init_db."""
     global _conn
-    _conn = store_common.open_wal_db(path)
-    _conn.execute("PRAGMA temp_store=MEMORY;")
-    _park_legacy_hourly(_conn)
-    _rename_columns(_conn)
-    _conn.executescript(_SCHEMA)
-    _migrate_columns(_conn)
-    _fold_legacy_hourly(_conn)
-    _reclassify_unknown_hourly(_conn)
-    store_common.secure_db_file(path)
+    # Published only once every migration step succeeded: main.py logs a
+    # failed init as "store down" and never starts the sweep, so a
+    # half-migrated handle left behind would keep taking writes (and fail
+    # reads with a bare OperationalError instead of the routes' 503).
+    conn = store_common.open_wal_db(path)
+    try:
+        conn.execute("PRAGMA temp_store=MEMORY;")
+        _park_legacy_hourly(conn)
+        _rename_columns(conn)
+        conn.executescript(_SCHEMA)
+        _migrate_columns(conn)
+        _fold_legacy_hourly(conn)
+        _reclassify_unknown_hourly(conn)
+        store_common.secure_db_file(path)
+    except BaseException:
+        conn.close()
+        raise
+    _conn = conn
 
 
 # Additive columns for DBs created before them. CREATE TABLE IF NOT EXISTS is
