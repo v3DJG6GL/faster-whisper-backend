@@ -370,6 +370,59 @@ def test_locked_diarize_ignores_client_param(client, app_module, make_user_key,
         app_module.cfg.DIARIZATION_ENABLED = False
 
 
+def _record_diarize(monkeypatch, calls):
+    from faster_whisper_backend.audio import diarization
+
+    async def _fake_diarize(path, *, num_speakers=None, min_speakers=None,
+                            max_speakers=None, **kw):
+        calls.append({"num": num_speakers, "min": min_speakers,
+                      "max": max_speakers})
+        return [(0.0, 1.0, "SPEAKER_00")]
+    monkeypatch.setattr(diarization, "diarize", _fake_diarize)
+
+
+def test_explicit_speaker_range_beats_inherited_num_speakers(
+        client, app_module, fake_model, monkeypatch):
+    # An unlocked DIARIZATION_NUM_SPEAKERS default must not erase the bounds
+    # the client sent: absent inherits, explicit wins.
+    calls = []
+    _record_diarize(monkeypatch, calls)
+    monkeypatch.setattr(app_module.cfg, "DIARIZATION_ENABLED", True)
+    monkeypatch.setattr(app_module.cfg, "DIARIZATION_NUM_SPEAKERS", 2)
+    r = client.post(
+        "/v1/audio/transcriptions", files=_FILE,
+        data={"model": "whisper-1", "response_format": "verbose_json",
+              "diarize": "true", "min_speakers": "3", "max_speakers": "6"},
+    )
+    assert r.status_code == 200, r.text
+    assert calls == [{"num": None, "min": 3, "max": 6}]
+
+
+def test_locked_num_speakers_reports_dropped_client_bounds(
+        client, app_module, make_user_key, fake_model, monkeypatch):
+    calls = []
+    _record_diarize(monkeypatch, calls)
+    monkeypatch.setattr(app_module.cfg, "DIARIZATION_ENABLED", True)
+    _, raw_admin = make_user_key("admin", is_admin=True)
+    admin_h = bearer(raw_admin)
+    _setup_profile(client, admin_h, "twospk", DIARIZATION_NUM_SPEAKERS=2,
+                   locks=["DIARIZATION_NUM_SPEAKERS"])
+    uid, raw_alice = make_user_key("alice", is_admin=False)
+    client.patch(f"{PERMS}/{uid}/permissions", headers=admin_h,
+                 json={"pages": {}, "config": {"overrides": {},
+                       "profiles": ["twospk"], "locks": []}})
+
+    r = client.post(
+        "/v1/audio/transcriptions", files=_FILE, headers=bearer(raw_alice),
+        data={"model": "whisper-1", "response_format": "verbose_json",
+              "diarize": "true", "min_speakers": "3", "max_speakers": "6"},
+    )
+    assert r.status_code == 200, r.text
+    assert calls == [{"num": 2, "min": None, "max": None}]
+    ignored = r.json()["overrides_ignored"]
+    assert "min_speakers" in ignored and "max_speakers" in ignored
+
+
 def test_echoing_a_pinned_translation_model_passes_the_allowlist_gate(
         client, app_module, make_user_key, monkeypatch):
     """A client that ECHOES (or is locked to) the identity-effective

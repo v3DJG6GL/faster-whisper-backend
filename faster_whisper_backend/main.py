@@ -1925,10 +1925,22 @@ async def transcribe(
                         ignored.append(_client_name)
                 elif _client_val is not None:
                     _spk[_client_name] = _client_val
+                # An explicit range outranks an INHERITED count: num wins over
+                # min/max below, so inheriting it would drop the caller's bounds.
+                elif (_client_name == "num_speakers"
+                      and (min_speakers is not None or max_speakers is not None)):
+                    _spk[_client_name] = None
                 else:
                     _spk[_client_name] = effective_config.cfg_for(resolved_model, _cfg_name, ident)
             # pyannote treats num alongside min/max as an error — num wins.
             if _spk.get("num_speakers"):
+                # A locked num discarding the client's bounds is a locked-out
+                # override like any other, so surface it.
+                if "DIARIZATION_NUM_SPEAKERS" in ident.locked:
+                    for _client_name, _client_val in (("min_speakers", min_speakers),
+                                                      ("max_speakers", max_speakers)):
+                        if _client_val is not None and _client_name not in ignored:
+                            ignored.append(_client_name)
                 _spk["min_speakers"] = _spk["max_speakers"] = None
             # pyannote also rejects an inverted range — clamp min down to max.
             elif (_spk.get("min_speakers") and _spk.get("max_speakers")
