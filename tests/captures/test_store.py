@@ -553,6 +553,54 @@ def test_clear_all_survives_a_reader_mid_statement(captures_store_db, groups_sto
     assert remaining == []
 
 
+def test_clear_all_wipes_the_audio_tree_under_the_lock(captures_store_db,
+                                                       groups_store_db,
+                                                       monkeypatch, tmp_path):
+    """create_capture inserts under _lock; a wipe after clear_all released it
+    deleted the audio of a row inserted after the DELETE."""
+    cs = captures_store_db
+    _make(cs, monkeypatch, tmp_path)
+    real_rmtree = cs.shutil.rmtree
+    held = []
+
+    def spy(path, *a, **k):
+        held.append(cs._lock.locked())
+        return real_rmtree(path, *a, **k)
+
+    monkeypatch.setattr(cs.shutil, "rmtree", spy)
+    cs.clear_all(reporter_host="127.0.0.1")
+    assert held and all(held)
+
+
+def test_create_capture_skips_the_row_when_a_clear_wiped_its_audio(
+        captures_store_db, monkeypatch, tmp_path):
+    """The WAV lands before the INSERT takes _lock. A clear_all that wipes it
+    in between must not leave a "new" row with no audio."""
+    import threading
+    import time
+
+    cs = captures_store_db
+    audio_dir = cs._require_audio_dir()
+
+    def wavs():
+        return [os.path.join(r, f) for r, _d, fs in os.walk(audio_dir)
+                for f in fs if f.endswith(".wav")]
+
+    out = []
+    with cs._lock:
+        t = threading.Thread(target=lambda: out.append(_make(cs, monkeypatch, tmp_path)))
+        t.start()
+        deadline = time.monotonic() + 5
+        while not wavs() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        # The wipe clear_all does while holding _lock.
+        for p in wavs():
+            os.unlink(p)
+    t.join(5)
+    assert out == [None]
+    assert cs.count() == 0
+
+
 # ---------------------------------------------------------------------------
 # _evict_to_cap
 # ---------------------------------------------------------------------------

@@ -447,6 +447,13 @@ def create_capture(
     try:
         conn = _require_conn()
         with _lock:
+            # clear_all wipes the audio tree under _lock: a WAV it removed
+            # after the os.replace above must not get a row (listed as "new"
+            # with no audio until the next restart's reconcile).
+            if not os.path.isfile(abs_path):
+                logger.info("[captures] not recorded: audio wiped by a"
+                            " concurrent clear")
+                return None
             conn.execute(
                 "INSERT INTO captures ("
                 " id, created_ts, request_id, model, language,"
@@ -1260,11 +1267,14 @@ def clear_all(reporter_host: str = "") -> int:
             conn.execute("VACUUM")
         except sqlite3.OperationalError as e:
             logger.info("[captures] vacuum skipped: %s", e)
-    if os.path.isdir(audio_dir):
-        for sub in os.listdir(audio_dir):
-            sub_path = os.path.join(audio_dir, sub)
-            if os.path.isdir(sub_path):
-                shutil.rmtree(sub_path, ignore_errors=True)
+        # Still under _lock: create_capture writes its WAV unlocked and
+        # inserts the row under _lock, so a wipe after the release could
+        # delete the audio of a row inserted after the DELETE above.
+        if os.path.isdir(audio_dir):
+            for sub in os.listdir(audio_dir):
+                sub_path = os.path.join(audio_dir, sub)
+                if os.path.isdir(sub_path):
+                    shutil.rmtree(sub_path, ignore_errors=True)
     try:
         from faster_whisper_backend.captures import merge_proposer as captures_merge_proposer
         captures_merge_proposer.invalidate(None)
