@@ -373,10 +373,19 @@ async def apply_rules_patch(
     for 400 (malformed patch / unknown or invisible slug / disallowed field),
     403 (terminal rule / rule locked by an admin / an admin naming a rule
     outside their view) or 500 (config write failure)."""
-    async with pl_apply.rules_lock():
-        return await _apply_rules_patch_locked(
-            user, rules_patch, fingerprints, client_host=client_host,
-        )
+    async def _locked() -> tuple[int, dict[str, Any]]:
+        async with pl_apply.rules_lock():
+            return await _apply_rules_patch_locked(
+                user, rules_patch, fingerprints, client_host=client_host,
+            )
+
+    # Shielded: a dropped connection unwinds the handler as a cancellation,
+    # but the offloaded save keeps writing config.local.json on its thread.
+    # Unshielded, the in-memory apply_hot_changes() was skipped and the lock
+    # released mid-write, so the next PIPELINE_RULES save copied the stale
+    # cfg list and reverted this edit on disk. The task finishes save +
+    # apply under the lock whether or not anyone still awaits it.
+    return await asyncio.shield(asyncio.ensure_future(_locked()))
 
 
 async def _apply_rules_patch_locked(

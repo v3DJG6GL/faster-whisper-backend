@@ -113,3 +113,38 @@ def test_scalar_admin_save_stays_off_the_rules_lock(monkeypatch):
             return list(entered)
 
     assert asyncio.run(scenario()) == ["save_overrides"]
+
+
+def test_cancelled_quick_config_save_still_finishes_under_the_lock(monkeypatch):
+    """A dropped connection cancels the handler mid-save, but the offloaded
+    write keeps going on its thread. The locked body must still run to the end
+    (apply_hot_changes after the save) with the lock held throughout — else
+    cfg keeps the old rules and the next save reverts the edit on disk."""
+    steps: list[str] = []
+    save_done = asyncio.Event()
+
+    async def _qc_locked(user, rules_patch, fingerprints=None, *, client_host="?"):
+        steps.append("save started")
+        await save_done.wait()
+        steps.append("applied")
+        return 200, {}
+
+    monkeypatch.setattr(quick_config_routes, "_apply_rules_patch_locked", _qc_locked)
+
+    async def scenario():
+        lock = pl_apply.rules_lock()
+        caller = asyncio.create_task(quick_config_routes.apply_rules_patch({}, {}))
+        for _ in range(5):
+            await asyncio.sleep(0)
+        caller.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await caller
+        held_after_cancel = lock.locked()
+        save_done.set()
+        # Bounded: a regression that leaves the body hanging fails, not hangs.
+        await asyncio.wait_for(lock.acquire(), timeout=5)
+        lock.release()
+        return held_after_cancel
+
+    assert asyncio.run(scenario()) is True
+    assert steps == ["save started", "applied"]
