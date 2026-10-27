@@ -280,7 +280,7 @@
       "type": "regex-list",
       "entries": [
         {
-          "pattern": "[\\\"#$%&'()*+;<=>@\\[\\\\\\]^_`{|}~„]",
+          "pattern": "[\\\"#$%&'()*+;<=>@\\[\\\\\\]^_`{|}~„“”‘’‹›«»]",
           "replacement": "",
           "label": "strip-stray-symbols",
           "note": ""

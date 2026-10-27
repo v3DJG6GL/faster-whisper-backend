@@ -108,6 +108,13 @@ UPGRADED_RULE_ENTRIES: dict[str, tuple[tuple[str, str], tuple[str, str]]] = {
         ('(?<!\\d)[.?!]|(?<!\\d),|,(?!\\d)', ''),
         ('(?<!\\d)[.?!]|¿(?![^?¿]*\\d\\?)|¡(?![^!¡]*\\d!)|(?<!\\d),|,(?!\\d)', ''),
     ),
+    # The old class took the German opening „ but not its closing “ (nor the
+    # other typographic quotes, while it did take the ASCII ' and "), so every
+    # quote Whisper wrote as „…“ was left with an orphaned closing mark.
+    "strip-stray-symbols": (
+        ('[\\"#$%&\'()*+;<=>@\\[\\\\\\]^_`{|}~„]', ''),
+        ('[\\"#$%&\'()*+;<=>@\\[\\\\\\]^_`{|}~„“”‘’‹›«»]', ''),
+    ),
 }
 
 # Keys holding a list of rule slugs, at the top level and inside each

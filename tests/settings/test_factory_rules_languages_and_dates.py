@@ -244,6 +244,26 @@ def test_stored_old_strip_entry_is_upgraded_once():
     assert re.sub(new_pat, new_rep, "¿Vienes a las 10?") == "¿Vienes a las 10?"
 
 
+def test_stray_symbols_strip_both_halves_of_a_typographic_quote(app_module):
+    """The strip took the German opening „ but not its closing “, so a quote
+    Whisper wrote as „…“ kept an orphaned closing mark; a stored copy of the
+    old entry is upgraded."""
+    app_module.cfg.PIPELINE_RULES = copy.deepcopy(_factory_rules())
+    pl_engine.rebuild_caches()
+    run = lambda t, lang: pl_engine._postprocess_text(t, model_name="", language=lang)
+    assert run(" Er sagte „Hallo“ zu mir.", "de") == "Er sagte Hallo zu mir"
+    assert run(" Il a dit «Bonjour» à moi.", "fr") == "Il a dit Bonjour à moi"
+    rules = copy.deepcopy(_factory_rules())
+    (old_pat, old_rep), _new = renames.UPGRADED_RULE_ENTRIES["strip-stray-symbols"]
+    e = next(e for r in rules for e in (r.get("entries") or [])
+             if e.get("label") == "strip-stray-symbols")
+    e["pattern"], e["replacement"] = old_pat, old_rep
+    raw = {"PIPELINE_RULES": rules}
+    assert renames.upgrade_rule_entries(raw) == ["strip-stray-symbols/strip-stray-symbols"]
+    assert raw["PIPELINE_RULES"] == _factory_rules()
+    assert re.sub(old_pat, old_rep, "„Hallo“") == "Hallo“"
+
+
 def test_edited_factory_entry_is_left_alone():
     rules = copy.deepcopy(_factory_rules())
     old_pat, _old_rep = renames.UPGRADED_RULE_ENTRIES["tighten-quote-spacing"][0]
