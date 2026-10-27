@@ -441,6 +441,26 @@ def test_pinned_extractors_follow_the_site_policy(monkeypatch):
     assert sorted(udl.pinned_extractors("Generic")) == ["generic", "youtube"]
 
 
+def test_match_extractor_skips_extractors_yt_dlp_disables_by_default(monkeypatch):
+    """yt-dlp's default extractor set leaves out _ENABLED=False IEs (DW,
+    R7, ...), so GenericIE scrapes those URLs: the offline match must call
+    them Generic or they skip the direct-media gate."""
+    import yt_dlp.extractor
+
+    def _ie(name, enabled, claims):
+        return type(name + "IE", (), {
+            "_ENABLED": enabled,
+            "ie_key": classmethod(lambda cls: name),
+            "suitable": classmethod(lambda cls, u: claims),
+        })
+    monkeypatch.setattr(yt_dlp.extractor, "gen_extractor_classes", lambda: [
+        _ie("DW", False, True), _ie("Generic", True, True)])
+    assert udl.match_extractor("https://www.dw.com/en/x/av-12345678") == "Generic"
+    monkeypatch.setattr(yt_dlp.extractor, "gen_extractor_classes", lambda: [
+        _ie("Youtube", True, True), _ie("Generic", True, True)])
+    assert udl.match_extractor("https://www.youtube.com/watch?v=x") == "Youtube"
+
+
 def test_download_argv_pins_the_extractors_and_ignores_config():
     for argv in (
             udl.build_download_argv("https://e.com/a", dest_dir="/tmp/x",
