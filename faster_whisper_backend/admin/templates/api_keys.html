@@ -1479,8 +1479,12 @@
     return grp;
   }
 
+  // Several key drawers can be open at once, so element ids a <label for=>
+  // points at must be unique per drawer.
+  var _bindingDrawerSeq = 0;
   function buildBindingDrawer(opts) {
     var b = opts.binding;
+    var npId = 'cfg-apply-no-profiles-' + (++_bindingDrawerSeq);
     var root = document.createElement('div'); root.className = 'cfg-drawer';
     function rerender() { root.innerHTML = ''; draw(); }
     // Dirty-gating: snapshot the binding on open and keep "Save overrides"
@@ -1647,11 +1651,11 @@
         var npRow = document.createElement('div'); npRow.className = 'cfg-noprof-row';
         var npCb = document.createElement('input');
         npCb.type = 'checkbox'; npCb.className = 'switch'; npCb.setAttribute('role', 'switch');
-        npCb.id = 'cfg-apply-no-profiles';
+        npCb.id = npId;
         npCb.checked = noProf;
         npCb.onchange = function () { b.apply_no_profiles = npCb.checked ? true : null; rerender(); };
         var npLbl = document.createElement('label');
-        npLbl.setAttribute('for', 'cfg-apply-no-profiles');
+        npLbl.setAttribute('for', npId);
         npLbl.textContent = 'Apply no profiles';
         npRow.appendChild(npCb); npRow.appendChild(npLbl);
         pcard.appendChild(npRow);

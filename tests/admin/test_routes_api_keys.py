@@ -270,3 +270,15 @@ def test_store_backed_handlers_run_off_the_event_loop():
         overrides_routes.resolve,
     ):
         assert not inspect.iscoroutinefunction(fn), fn.__name__
+
+
+def test_apply_no_profiles_switch_id_is_unique_per_drawer(client):
+    """Every key drawer gave its "Apply no profiles" switch the same fixed id,
+    and two drawers can be open at once, so the second drawer's label toggled
+    the FIRST key's switch."""
+    html = client.get("/settings/api-keys").text
+    assert "'cfg-apply-no-profiles'" not in html
+    d = html[html.index("function buildBindingDrawer(opts) {"):]
+    assert "var npId = 'cfg-apply-no-profiles-' + (++_bindingDrawerSeq);" in d[:200]
+    assert "npCb.id = npId;" in d
+    assert "npLbl.setAttribute('for', npId);" in d
