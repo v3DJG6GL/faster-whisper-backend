@@ -71,6 +71,7 @@ class El {
 }
 const document = {
   createElement: (t) => new El(t),
+  createTextNode: (t) => { const n = new El('#text'); n.textContent = t; return n; },
   getElementById: () => null,
   querySelector: () => null,
 };
@@ -465,3 +466,55 @@ def test_add_rule_label_input_is_capped(client):
     html = _html(client, "/settings/pipeline")
     i = html.index("labelInp.placeholder = 'Friendly label (e.g.")
     assert "labelInp.maxLength = 80;" in html[i:html.index("body.appendChild(", i)]
+
+
+def _test_panel_harness(html, body):
+    """The pipeline test panel's run() (plus the helpers declared beside it)
+    against a hand-driven api()."""
+    panel = _block(html, "  function testBadge(kind, text) {",
+                   "  runBtn.addEventListener('click', run);\n")
+    return _FAKE_DOM + """
+const out = document.createElement('div');
+const runBtn = document.createElement('button');
+const sample = { value: 'Hallo' };
+function currentValue() { return []; }
+function _typePill(t) { return t; }
+let api;
+""" + panel + body
+
+
+@needs_node
+def test_pipeline_test_panel_keeps_the_newest_run(client):
+    """A slow earlier run that finished last replaced the newer table."""
+    out = _node(_test_panel_harness(_html(client, "/settings/pipeline"), """
+const pending = [];
+api = () => new Promise(res => pending.push(res));
+const reply = final => ({ ok: true, json: async () => ({ steps: [], final }) });
+const tick = () => new Promise(r => setTimeout(r, 0));
+(async function () {
+  const a = run();   // slow run for the old sample
+  const b = run();   // re-run after editing the sample
+  pending[1](reply('NEW'));
+  await b;
+  pending[0](reply('OLD'));
+  await a;
+  await tick();
+  const cells = [];
+  (function walk(e) { if (e.className === 'out') cells.push(e); e.children.forEach(walk); })(out);
+  console.log(JSON.stringify(cells.map(c => c.textContent)));
+})();
+"""))
+    assert out == ["NEW"]
+
+
+@needs_node
+def test_pipeline_test_panel_reports_a_network_error(client):
+    """fetch's rejection escaped run(), leaving 'running…' up for good."""
+    out = _node(_test_panel_harness(_html(client, "/settings/pipeline"), """
+api = async () => { throw new TypeError('Failed to fetch'); };
+run().catch(() => {}).then(() => {
+  const em = out.children[0];
+  console.log(JSON.stringify(em ? [em.className, em.textContent] : out.innerHTML));
+});
+"""))
+    assert out == ["err", "test endpoint unreachable: TypeError: Failed to fetch"]

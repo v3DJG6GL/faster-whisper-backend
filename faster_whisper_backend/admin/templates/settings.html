@@ -4999,25 +4999,43 @@ function pipelineTestPanel() {
     return el;
   }
 
+  function showErr(text) {
+    out.textContent = '';
+    const em = document.createElement('em');
+    em.className = 'err';
+    em.textContent = text;
+    out.appendChild(em);
+  }
+
+  // Only the newest run may paint: a re-run after editing the sample or a
+  // rule can finish before an older, slower one (each rule may take its full
+  // 2 s guard), whose table would then describe text no longer there.
+  let runSeq = 0;
   async function run() {
+    const seq = ++runSeq;
     out.innerHTML = '<em>running…</em>';
-    const r = await api('POST', '/settings/test-pipeline', {
-      sample: sample.value,
-      rules: currentValue('PIPELINE_RULES') || [],
-    });
+    let r, j;
+    try {
+      r = await api('POST', '/settings/test-pipeline', {
+        sample: sample.value,
+        rules: currentValue('PIPELINE_RULES') || [],
+      });
+      if (r.ok) j = await r.json();
+    } catch (e) {
+      // fetch rejects on a network error: say so, not "running…" forever.
+      if (seq === runSeq) showErr('test endpoint unreachable: ' + e);
+      return;
+    }
+    if (seq !== runSeq) return;
     if (!r.ok) {
       // Surface the endpoint's reason (e.g. "sample too long (max 8192
       // chars)") instead of a blanket message that hides the fix.
-      let j = {};
-      try { j = await r.json(); } catch (_) {}
-      out.textContent = '';
-      const em = document.createElement('em');
-      em.className = 'err';
-      em.textContent = j.error || ('test endpoint error (' + r.status + ')');
-      out.appendChild(em);
+      let ej = {};
+      try { ej = await r.json(); } catch (_) {}
+      if (seq !== runSeq) return;
+      showErr(ej.error || ('test endpoint error (' + r.status + ')'));
       return;
     }
-    const j = await r.json();
     const tbl = document.createElement('table');
     tbl.className = 'pipeline-test-table';
     const thead = document.createElement('tr');
