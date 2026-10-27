@@ -1271,9 +1271,11 @@ function makeEditor(name) {
       terminalToggleable: true,
       onToggle: (slug, wantActive) => {
         const cur = currentValue(name) || [];
+        // Sorted like the server's value (a set), so excluding a rule again
+        // after re-enabling it compares equal and the field goes clean.
         const next = wantActive
           ? cur.filter(s => s !== slug)
-          : Array.from(new Set([...cur, slug]));
+          : Array.from(new Set([...cur, slug])).sort();
         setDirty(name, next);
       },
       // "↑ view" jumps to the matching rule in the global PIPELINE_RULES
