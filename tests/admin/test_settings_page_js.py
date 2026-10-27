@@ -349,3 +349,12 @@ fire(list, 'drop', { preventDefault() {} }).then(() => {
 });
 """)
     assert out == [["b", "c", "a"], 1, True, None, False]
+
+
+def test_rule_tag_commit_keeps_the_tag_picker(client):
+    """A committed tag ran commitFull(), whose repaint threw away the picker
+    and its focused input mid-typing: 'foo,bar' kept only 'foo'."""
+    picker = _block(_html(client, "/settings/pipeline"),
+                    "const picker = window._renderTagPicker({", "\n      });\n")
+    assert "commitData();" in picker
+    assert "commitFull();" not in picker

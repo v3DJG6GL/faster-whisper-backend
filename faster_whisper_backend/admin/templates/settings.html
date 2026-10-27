@@ -3632,7 +3632,10 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
         onChange: (newTags) => {
           rule.tags = newTags;
           _syncUntaggedBadge();
-          commitFull();
+          // commitData, not commitFull: a full repaint destroys this picker
+          // and its focused input, so the tag after a comma was lost. The
+          // other rows pick up the new tag on their next repaint.
+          commitData();
         },
       });
       tagWrap.appendChild(picker.el);
