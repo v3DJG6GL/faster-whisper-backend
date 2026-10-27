@@ -782,8 +782,10 @@ header .page-link.allowed { display: inline-flex; }
 @media (pointer: coarse) {
   /* iOS Safari zooms the page when a focused control's font-size < 16px.
      The 16px floor is a hard platform minimum (not decorative px); the
-     rem term still rides --fs-base above it. */
-  input, select, textarea { font-size: max(1rem, 16px); }
+     rem term still rides --fs-base above it. !important because every
+     component input (login key, toolbar filters, pickers) sets a smaller
+     font-size with a more specific selector, which would otherwise win. */
+  input, select, textarea { font-size: max(1rem, 16px) !important; }
   /* Comfortable hit areas — rem rides the scale picker and clears the
      WCAG 2.5.8 (AA) 24px floor at every scale step. */
   header button, header .navlink, header .icon-btn, header .scale-picker,

@@ -174,3 +174,19 @@ def test_header_pins_its_own_line_height():
     css = web_common.NAV_CSS
     hdr = re.search(r"\nheader \{[^}]*\}", css).group(0)
     assert re.search(r"line-height: 1\.5;", hdr), hdr
+
+
+# ---- touch: the iOS no-zoom font floor must beat component input rules ----
+
+def test_coarse_pointer_input_font_floor_beats_component_rules():
+    """The bare `input, select, textarea` selector lost to every more
+    specific component rule (#login-gate #lg-input, header .subbar input,
+    .tag-picker-input ...), so focusing them on an iPhone still zoomed."""
+    css = web_common.NAV_CSS
+    start = css.index("@media (pointer: coarse) {")
+    block = css[start:css.index("\n}\n", start)]
+    rule = re.search(r"\n  input, select, textarea \{([^}]*)\}", block).group(1)
+    assert "font-size: max(1rem, 16px) !important" in rule
+    # the overriding component rules this floor has to win against
+    assert re.search(r"#login-gate #lg-input \{[^}]*font-size: var\(--fs-md\)", css)
+    assert re.search(r'header \.subbar input\[type="text"\] \{[^}]*font-size: var\(--fs-sm\)', css)
