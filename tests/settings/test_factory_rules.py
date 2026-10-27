@@ -5,7 +5,8 @@ round-trip, the `note` field, the terminal-rule invariant, and the
 fail-fast behaviour on a missing/corrupt file. Also the behaviour of the
 shipped rules themselves: the dictation map (Neuenzeile at the end of an
 utterance, ß keys matching their ss spelling, dictated punctuation winning
-over Whisper's) and tighten-quote-spacing's left-to-right quote pairing.
+over Whisper's), tighten-quote-spacing's left-to-right quote pairing and the
+German „ “ tightening.
 
 Not the full app stack: config_store (pydantic) plus, for the shipped-rule
 tests, pipeline.dictation_map.
@@ -287,6 +288,28 @@ def test_quote_spacing_pairs_quotes_left_to_right():
     assert sub('" eins\nzwei "') == '"eins\nzwei"'
     # two quotations: each pair on its own
     assert sub('a " b " c " d "') == 'a "b" c "d"'
+
+
+def test_german_quotes_from_the_map_are_tightened():
+    """The map turns 'Anführungszeichen unten / oben' into „ / “ with the
+    dictated spaces still inside; only the ASCII quote was tightened, so the
+    factory's own output read „ hallo “. The closing “ is tightened only after
+    a „ on the same line, so an English opening “ keeps the space before it."""
+    import re
+    subs = [(re.compile(e["pattern"]), e["replacement"]) for e in (
+        _factory_entry("tighten-german-quote-open"),
+        _factory_entry("tighten-german-quote-close"))]
+
+    def sub(t):
+        for cre, rep in subs:
+            t = cre.sub(rep, t)
+        return t
+
+    assert sub("Er sagte „ hallo “ und ging") == "Er sagte „hallo“ und ging"
+    assert sub("„ eins “ und „ zwei  “") == "„eins“ und „zwei“"
+    # an open „ at the end is formatted the same as once it is closed
+    assert sub("Er sagte „ hallo") == "Er sagte „hallo"
+    assert sub("He said “hello” to me") == "He said “hello” to me"
 
 
 def test_eszett_keys_also_match_their_ss_spelling():
