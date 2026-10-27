@@ -130,3 +130,55 @@ function showToast() {}
     out = _run(js, tmp_path)
     assert out["sent"] == {"logs": "all", "stats": "own"}
     assert out["dirty"] is True
+
+
+def test_load_asks_before_discarding_dirty_override_drawers(client, tmp_path):
+    """Every successful action (key rename, revoke, another drawer's save)
+    calls load(), which rebuilt all cards and silently dropped the unsaved
+    edits of any other open overrides drawer."""
+    html = client.get("/settings/api-keys").text
+    start = html.index("  var _loadGen = 0;")
+    loadsrc = html[start:html.index("\n  }\n", start) + 4]
+    js = loadsrc + r"""
+function resp(body) { return { ok: true, status: 200, json: function () { return Promise.resolve(body); } }; }
+function api(method, url) {
+  if (url === '/settings/api-keys/api/users') return Promise.resolve(resp({ users: [{ id: 'u1' }], open_mode: false }));
+  return Promise.resolve(resp({ by_user: {}, by_key: {}, profiles: {} }));
+}
+function _check403() { return Promise.resolve(false); }
+function showToast() {}
+var rebuilt = 0, asked = 0, answer = false;
+function renderMatrix() {}
+function renderUser() { rebuilt++; return {}; }
+function renderOpenModeCsCard() {}
+function renderOrphanCsCards() {}
+function confirm() { asked++; return answer; }
+var drawers = [];
+var ct = { innerHTML: 'old', appendChild: function () {},
+  querySelectorAll: function () { return drawers; } };
+var window = {};
+var document = { getElementById: function (id) {
+  return id === 'users-container' ? ct : { style: {} }; } };
+(async function () {
+  var out = {};
+  drawers = [{ _ovDirty: function () { return false; } }, {}];   // clean + a sync drawer
+  await load();
+  out.clean = { asked: asked, rebuilt: rebuilt };
+  drawers = [{ _ovDirty: function () { return true; } }];
+  asked = 0; rebuilt = 0; answer = false; ct.innerHTML = 'old';
+  await load();
+  out.declined = { asked: asked, rebuilt: rebuilt, html: ct.innerHTML };
+  asked = 0; rebuilt = 0; answer = true;
+  await load();
+  out.accepted = { asked: asked, rebuilt: rebuilt };
+  console.log(JSON.stringify(out));
+})();
+"""
+    out = _run(js, tmp_path)
+    assert out["clean"] == {"asked": 0, "rebuilt": 1}
+    assert out["declined"] == {"asked": 1, "rebuilt": 0, "html": "old"}
+    assert out["accepted"] == {"asked": 1, "rebuilt": 1}
+    # The drawer's own save resets its baseline (to what it SENT) before
+    # load(), so a successful save does not prompt about itself.
+    assert "var sentSig = _sig(b);" in html
+    assert "_baseline = sentSig; showToast('Overrides saved', 'ok'); load();" in html

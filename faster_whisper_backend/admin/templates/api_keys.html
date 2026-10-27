@@ -1516,6 +1516,8 @@
     // string, so the drawer says so and never offers Save.
     function _ovUnavailable() { return !!ovState().unavailable; }
     function _syncSave() { if (_saveBtn) _saveBtn.disabled = _ovUnavailable() || (_sig(b) === _baseline); }
+    // load() rebuilds every card; it asks before discarding unsaved edits.
+    root._ovDirty = function () { return _sig(b) !== _baseline; };
     // UI intent: a freshly-chosen but still-empty "Restrict to…" allowlist has
     // the same data ([]) as "None". Without this sticky flag the dropdown would
     // snap back to "None" on rerender and the checkbox grid (the only way to add
@@ -1730,6 +1732,7 @@
       save.disabled = _ovUnavailable() || (_sig(b) === _baseline);   // nothing changed yet → off
       save.onclick = function () {
         save.disabled = true;
+        var sentSig = _sig(b);
         opts.save({
           overrides: b.overrides, profiles: b.profiles, locks: b.locks,
           allow_request_override_profile: b.allow_request_override_profile,
@@ -1737,7 +1740,7 @@
           allowed_override_profiles: b.allowed_override_profiles,
           apply_no_profiles: b.apply_no_profiles,
         })
-          .then(function () { showToast('Overrides saved', 'ok'); load(); })
+          .then(function () { _baseline = sentSig; showToast('Overrides saved', 'ok'); load(); })
           .catch(function (er) { showToast(String(er.message || er), 'err'); })
           // On success load() tears the drawer down; on failure the binding is
           // still dirty, so re-enable only if it genuinely differs.
@@ -2226,6 +2229,11 @@
       else ovstate = { profiles: {}, field_meta: {}, rules: [], unavailable: true };
     } catch (_) { ovstate = { profiles: {}, field_meta: {}, rules: [], unavailable: true }; }
     if (gen !== _loadGen) return;
+    // Any successful action (rename, revoke, another drawer's save) reloads;
+    // an open overrides drawer with unsaved edits would vanish silently.
+    var unsaved = Array.prototype.some.call(ct.querySelectorAll('.cfg-drawer'),
+      function (d) { return d._ovDirty && d._ovDirty(); });
+    if (unsaved && !confirm('Reloading the list discards unsaved override edits. Reload anyway?')) return;
     window.__usage = usage;
     window.__ovstate = ovstate;
     // Cleared only here, right before the synchronous rebuild.
