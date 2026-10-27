@@ -384,7 +384,9 @@
       const fd = new FormData();
       fd.append("file", blob, "dictation." + ext);
       fd.append("model", $("model").value.trim() || "whisper-1");
-      const lang = $("lang").value.trim(); if (lang) fd.append("language", lang);
+      // Always sent: a cleared box is "" (explicit auto-detect), which the
+      // server keeps apart from an absent field (inherit DEFAULT_LANGUAGE).
+      fd.append("language", $("lang").value.trim());
       fd.append("response_format", $("format").value || "json");
       // Same origin, so the session cookie authenticates this POST. The CSRF
       // middleware wants the double-submit header on a cookie-authenticated
@@ -448,7 +450,8 @@
     sock.onopen = () => {
       sock.send(JSON.stringify({
         type: "config", model: $("model").value.trim() || "whisper-1",
-        language: $("lang").value.trim() || null,
+        // "" (cleared box) = auto-detect; null would inherit DEFAULT_LANGUAGE.
+        language: $("lang").value.trim(),
         response_format: $("format").value || "json",
         audio: { format: "pcm_s16le", sample_rate: TARGET_SR },
       }));

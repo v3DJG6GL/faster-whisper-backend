@@ -7,6 +7,9 @@ Open mode (no API key) → the synthetic admin passes auth, from the admin host
 allowlist only (loopback here).
 """
 
+import json
+import shutil
+import subprocess
 import time
 
 import pytest
@@ -300,6 +303,36 @@ def test_dictate_page_carries_no_credential_field(app_module):
     assert 'id="key"' not in body
     assert "bearer." not in body
     assert "wsAuth" not in body
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node unavailable")
+def test_dictate_page_sends_a_cleared_language_as_auto_detect(app_module):
+    """The server reads `language` tri-state: absent / null inherits
+    DEFAULT_LANGUAGE, "" auto-detects. The page sent a cleared box as null
+    (streaming) or left the field out (batch), so on a server with a default
+    language set, clearing the box to get auto-detect still decoded in the
+    default. Runs the page's own handshake and form-building code."""
+    with TestClient(app_module.app, client=("127.0.0.1", 12345)) as client:
+        body = client.get("/dictate").text
+    onopen = body.split("sock.onopen = () => {", 1)[1]
+    handshake = onopen.split("sock.send(JSON.stringify(", 1)[1].split("));\n", 1)[0]
+    batch = body.split("const fd = new FormData();", 1)[1].split(
+        'fd.append("response_format"', 1)[0]
+    script = (
+        "const box = process.argv[1];\n"
+        "const $ = (id) => ({ value: id === 'lang' ? box : '' });\n"
+        "const TARGET_SR = 16000, blob = null, ext = 'webm';\n"
+        "const sent = {};\n"
+        "const fd = { append: (k, v) => { sent[k] = v; } };\n"
+        + batch
+        + "\nconst cfg = " + handshake + ";\n"
+        "console.log(JSON.stringify({ ws: cfg.language,"
+        " form: 'language' in sent ? sent.language : 'ABSENT' }));\n"
+    )
+    for box, want in (("  ", ""), (" de ", "de")):
+        out = subprocess.run(["node", "-e", script, box], capture_output=True,
+                             text=True, check=True).stdout
+        assert json.loads(out) == {"ws": want, "form": want}, box
 
 
 # --- handshake credential carriers -------------------------------------------
