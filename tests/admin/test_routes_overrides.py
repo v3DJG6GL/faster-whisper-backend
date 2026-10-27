@@ -372,6 +372,70 @@ def test_rename_profile_failed_cascade_keeps_the_old_name(
     assert "DEFAULT_LANGUAGE" in effective_config.resolve(None, user_id=uid).locked
 
 
+def test_profile_save_waits_for_an_in_flight_rename(client, make_user_key, monkeypatch):
+    """A /state save from a page still naming `old` landed between a rename's
+    save and its hot-apply (which re-reads disk): the cascade moved every
+    binding to `new` while cfg reloaded a library without it, so the bound
+    identity silently lost the profile layer and its locks. The two routes
+    are serialized now: the stale save runs after the rename and meets the
+    in-use guard."""
+    import asyncio
+    import threading
+
+    from fastapi import HTTPException
+
+    from faster_whisper_backend.admin import overrides_routes
+    from faster_whisper_backend.auth import api_keys_store
+    from faster_whisper_backend.settings import config_store
+    from faster_whisper_backend.settings import effective_config
+    from tests.conftest import fake_request
+    _, _, h = _admin(make_user_key)
+    _make_profile(client, h, "clinic-de", DEFAULT_LANGUAGE="de",
+                  locks=["DEFAULT_LANGUAGE"])
+    uid, _ = make_user_key("alice", is_admin=False)
+    r = client.patch(f"{PERMS}/{uid}/permissions", headers=h, json={
+        "pages": {}, "config": {"overrides": {}, "profiles": ["clinic-de"],
+                                "locks": []}})
+    assert r.status_code == 200, r.text
+
+    in_cascade, release, stale_saved = (threading.Event() for _ in range(3))
+    real_cascade = api_keys_store.rename_profile_refs
+    real_save = config_store.save_overrides
+
+    def _slow_cascade(old, new):
+        in_cascade.set()
+        release.wait(5)
+        return real_cascade(old, new)
+
+    def _save(payload):
+        out = real_save(payload)
+        if "clinic-de" in (payload.get("OVERRIDE_PROFILES") or {}):
+            stale_saved.set()
+        return out
+
+    monkeypatch.setattr(api_keys_store, "rename_profile_refs", _slow_cascade)
+    monkeypatch.setattr(config_store, "save_overrides", _save)
+    stale = {"OVERRIDE_PROFILES": {"clinic-de": {
+        "DEFAULT_LANGUAGE": "de", "BEAM_SIZE": 8, "locks": ["DEFAULT_LANGUAGE"]}}}
+
+    async def drive():
+        rename = asyncio.create_task(overrides_routes.rename_profile(
+            overrides_routes._RenameProfileIn(old="clinic-de", new="clinic-deutsch"),
+            fake_request()))
+        while not in_cascade.is_set():
+            await asyncio.sleep(0.01)
+        save = asyncio.create_task(overrides_routes.post_state(stale, fake_request()))
+        # Unserialized, the stale save completes inside the rename's window.
+        await asyncio.to_thread(stale_saved.wait, 1.0)
+        release.set()
+        return await asyncio.gather(rename, save, return_exceptions=True)
+
+    renamed, saved = asyncio.run(drive())
+    assert renamed.status_code == 200
+    assert isinstance(saved, HTTPException) and saved.status_code == 409
+    assert "DEFAULT_LANGUAGE" in effective_config.resolve(None, user_id=uid).locked
+
+
 def test_rename_profile_env_pinned_409(client, make_user_key, monkeypatch):
     """An env-pinned OVERRIDE_PROFILES comes back at the next restart with
     only `old`: a cascaded rename would strand every binding on a missing

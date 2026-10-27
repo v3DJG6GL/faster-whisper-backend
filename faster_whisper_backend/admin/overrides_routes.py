@@ -30,6 +30,7 @@ from faster_whisper_backend.settings import config_store
 from faster_whisper_backend.settings import schema as settings_schema
 from faster_whisper_backend.settings import effective_config
 from faster_whisper_backend.core import web_common
+from faster_whisper_backend.core.loop_lock import LoopLock
 from faster_whisper_backend.pipeline import apply as pl_apply
 from faster_whisper_backend.auth.dependencies import require_admin
 from faster_whisper_backend.core import templates
@@ -39,6 +40,14 @@ logger = logging.getLogger("whisper.overrides")
 require_admin_webui_host = web_common.require_admin_webui_host
 
 router = APIRouter(prefix="/settings/overrides")
+
+# Serializes the library's read-modify-write: post_state and rename_profile
+# each snapshot cfg.OVERRIDE_PROFILES, save, and hot-apply by RE-READING disk
+# (apply_hot_changes). Interleaved, a /state save still naming `old` landed
+# between a rename's save and its apply, so the cascade moved every binding to
+# `new` while cfg reloaded a library without it: the layer and its locks
+# dropped (fail-open). Single-worker assumption, like pl_apply.rules_lock().
+_PROFILES_LOCK = LoopLock()
 
 @functools.lru_cache(maxsize=1)
 def _build_field_meta() -> dict[str, dict[str, Any]]:
@@ -202,64 +211,65 @@ async def post_state(payload: dict[str, Any], request: Request) -> JSONResponse:
         raise HTTPException(status.HTTP_409_CONFLICT,
                             f"OVERRIDE_PROFILES is pinned by {pinned_by}; "
                             "edit the profiles there")
-    # The "profile is in use — unbind it first" rule existed ONLY in the page
-    # JS (startDelete), and _build_usage's own docstring already calls itself
-    # "the usage-aware delete guard". save_overrides performs no such check —
-    # validate_profile_refs enforces existence on the BINDING save path, the
-    # opposite direction — so a POST from curl, or from a tab whose usage map
-    # went stale against a concurrent binding change, deleted a referenced
-    # profile outright. That fails OPEN rather than merely dangling:
-    # effective_config resolves a missing name to None and silently DROPS the
-    # layer, so every `locks` entry it contributed disappears and fields the
-    # admin had pinned against per-request decode_override become
-    # client-overridable again, with no error anywhere.
-    # Presence-keyed, not isinstance-keyed: `{"OVERRIDE_PROFILES": null}` is
-    # the save_overrides remove-the-whole-key sentinel, which deletes EVERY
-    # profile — so a non-dict value must count all current profiles as removed
-    # rather than skip the guard.
-    if "OVERRIDE_PROFILES" in payload:
-        incoming = payload["OVERRIDE_PROFILES"]
-        keep = set(incoming) if isinstance(incoming, dict) else set()
-        current = getattr(cfg, "OVERRIDE_PROFILES", None) or {}
-        removed = set(current) - keep
-        if removed:
-            usage = await asyncio.to_thread(_build_usage)
-            in_use = sorted(
-                name for name in removed
-                if (usage.get(name, {}).get("users")
-                    or usage.get(name, {}).get("keys"))
-            )
-            if in_use:
-                raise HTTPException(
-                    status.HTTP_409_CONFLICT,
-                    "still bound to a user or key — unbind on the API keys "
-                    f"page first: {in_use}",
+    async with _PROFILES_LOCK:
+        # The "profile is in use — unbind it first" rule existed ONLY in the page
+        # JS (startDelete), and _build_usage's own docstring already calls itself
+        # "the usage-aware delete guard". save_overrides performs no such check —
+        # validate_profile_refs enforces existence on the BINDING save path, the
+        # opposite direction — so a POST from curl, or from a tab whose usage map
+        # went stale against a concurrent binding change, deleted a referenced
+        # profile outright. That fails OPEN rather than merely dangling:
+        # effective_config resolves a missing name to None and silently DROPS the
+        # layer, so every `locks` entry it contributed disappears and fields the
+        # admin had pinned against per-request decode_override become
+        # client-overridable again, with no error anywhere.
+        # Presence-keyed, not isinstance-keyed: `{"OVERRIDE_PROFILES": null}` is
+        # the save_overrides remove-the-whole-key sentinel, which deletes EVERY
+        # profile — so a non-dict value must count all current profiles as removed
+        # rather than skip the guard.
+        if "OVERRIDE_PROFILES" in payload:
+            incoming = payload["OVERRIDE_PROFILES"]
+            keep = set(incoming) if isinstance(incoming, dict) else set()
+            current = getattr(cfg, "OVERRIDE_PROFILES", None) or {}
+            removed = set(current) - keep
+            if removed:
+                usage = await asyncio.to_thread(_build_usage)
+                in_use = sorted(
+                    name for name in removed
+                    if (usage.get(name, {}).get("users")
+                        or usage.get(name, {}).get("keys"))
                 )
-    try:
-        # Off the loop: save_overrides re-validates the merged config, which
-        # re-runs regex_guard (a child process with a 2 s budget) and then
-        # rewrites config.local.json. Inline that froze every request, SSE
-        # stream and streaming WebSocket on the worker for its duration.
-        written = await asyncio.to_thread(config_store.save_overrides, payload)
-    except ValidationError as e:
-        return JSONResponse(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            content={"errors": settings_schema.format_validation_errors(e)},
-        )
-    except OSError as e:
-        logger.error("[overrides] save failed: %s", e)
-        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR,
-                            f"could not write config.local.json: {e}")
+                if in_use:
+                    raise HTTPException(
+                        status.HTTP_409_CONFLICT,
+                        "still bound to a user or key — unbind on the API keys "
+                        f"page first: {in_use}",
+                    )
+        try:
+            # Off the loop: save_overrides re-validates the merged config, which
+            # re-runs regex_guard (a child process with a 2 s budget) and then
+            # rewrites config.local.json. Inline that froze every request, SSE
+            # stream and streaming WebSocket on the worker for its duration.
+            written = await asyncio.to_thread(config_store.save_overrides, payload)
+        except ValidationError as e:
+            return JSONResponse(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                content={"errors": settings_schema.format_validation_errors(e)},
+            )
+        except OSError as e:
+            logger.error("[overrides] save failed: %s", e)
+            raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR,
+                                f"could not write config.local.json: {e}")
 
-    applied = await pl_apply.apply_hot_changes(written)
-    client_host = request.client.host if request.client else "?"
-    logger.info("[overrides] profiles update from=%s saved=%s",
-                client_host, sorted(written.keys()))
-    return JSONResponse({
-        "saved": sorted(written.keys()),
-        **applied,
-        "requires_restart": bool(applied["cold_pending"]),
-    })
+        applied = await pl_apply.apply_hot_changes(written)
+        client_host = request.client.host if request.client else "?"
+        logger.info("[overrides] profiles update from=%s saved=%s",
+                    client_host, sorted(written.keys()))
+        return JSONResponse({
+            "saved": sorted(written.keys()),
+            **applied,
+            "requires_restart": bool(applied["cold_pending"]),
+        })
 
 
 class _RenameProfileIn(BaseModel):
@@ -290,80 +300,81 @@ async def rename_profile(payload: _RenameProfileIn, request: Request) -> JSONRes
         raise HTTPException(status.HTTP_409_CONFLICT,
                             f"OVERRIDE_PROFILES is pinned by {pinned_by}; "
                             "rename the profile there")
-    profiles = dict(getattr(cfg, "OVERRIDE_PROFILES", None) or {})
-    old = payload.old.strip().lower()
-    new = payload.new.strip().lower()
-    if old not in profiles:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, f"unknown profile {old!r}")
-    if new == old:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST,
-                            "new name is the same as the current name")
-    if not settings_schema.TAG_RE.match(new):
-        raise HTTPException(status.HTTP_400_BAD_REQUEST,
-                            "invalid profile name (a-z 0-9 -, max 32, must start "
-                            "with a letter or digit)")
-    if new in profiles:
-        raise HTTPException(status.HTTP_409_CONFLICT,
-                            f"a profile named {new!r} already exists")
+    async with _PROFILES_LOCK:
+        profiles = dict(getattr(cfg, "OVERRIDE_PROFILES", None) or {})
+        old = payload.old.strip().lower()
+        new = payload.new.strip().lower()
+        if old not in profiles:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, f"unknown profile {old!r}")
+        if new == old:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST,
+                                "new name is the same as the current name")
+        if not settings_schema.TAG_RE.match(new):
+            raise HTTPException(status.HTTP_400_BAD_REQUEST,
+                                "invalid profile name (a-z 0-9 -, max 32, must start "
+                                "with a letter or digit)")
+        if new in profiles:
+            raise HTTPException(status.HTTP_409_CONFLICT,
+                                f"a profile named {new!r} already exists")
 
-    # 1) Rename the key in OVERRIDE_PROFILES (preserve insertion order), then
-    #    persist + hot-apply through the same path /state uses.
-    renamed = {(new if k == old else k): v for k, v in profiles.items()}
-    try:
-        # Off the loop, same reasoning as the /state save above.
-        written = await asyncio.to_thread(
-            config_store.save_overrides, {"OVERRIDE_PROFILES": renamed},
-        )
-    except ValidationError as e:
-        return JSONResponse(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            content={"errors": settings_schema.format_validation_errors(e)},
-        )
-    except OSError as e:
-        logger.error("[overrides] rename save failed: %s", e)
-        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR,
-                            f"could not write config.local.json: {e}")
-
-    # 2) Cascade the new name through all bindings (now that OVERRIDE_PROFILES
-    #    holds the new key, the binding set stays referentially consistent).
-    #    Off the loop like the save above: the cascade is a full users+keys
-    #    scan with per-row UPDATEs under the store lock.
-    #    The save above reached disk only: the running cfg still holds `old`
-    #    alone until apply_hot_changes, so a request resolving a binding the
-    #    cascade already moved to `new` would drop that profile layer and its
-    #    locks (fail-open). Alias both names to the same bundle meanwhile so a
-    #    binding resolves under either name; the hot-apply leaves only `new`.
-    aliased = dict(getattr(cfg, "OVERRIDE_PROFILES", None) or {})
-    if old in aliased:
-        aliased[new] = aliased[old]
-        setattr(cfg, "OVERRIDE_PROFILES", aliased)
-    #    A failed cascade must not hot-apply the rename: the bindings still
-    #    name `old` (the cascade is one transaction), so a cfg holding only
-    #    `new` would drop their profile layer and its locks. Write the
-    #    original profiles back and re-apply them instead; if even that
-    #    fails, the alias above keeps both names resolving in this process.
-    try:
-        affected = await asyncio.to_thread(api_keys_store.rename_profile_refs, old, new)
-    except Exception as e:
-        logger.error("[overrides] rename %r->%r cascade failed: %s", old, new, e)
+        # 1) Rename the key in OVERRIDE_PROFILES (preserve insertion order), then
+        #    persist + hot-apply through the same path /state uses.
+        renamed = {(new if k == old else k): v for k, v in profiles.items()}
         try:
-            restored = await asyncio.to_thread(
-                config_store.save_overrides, {"OVERRIDE_PROFILES": profiles},
+            # Off the loop, same reasoning as the /state save above.
+            written = await asyncio.to_thread(
+                config_store.save_overrides, {"OVERRIDE_PROFILES": renamed},
             )
-            await pl_apply.apply_hot_changes(restored)
-        except Exception as rb_err:  # noqa: BLE001 — the alias stays live
-            logger.error("[overrides] rename rollback failed: %s", rb_err)
-        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR,
-                            f"could not update the profile bindings: {e}")
-    applied = await pl_apply.apply_hot_changes(written)
-    client_host = request.client.host if request.client else "?"
-    logger.info("[overrides] profile renamed %r->%r from=%s bindings=%d",
-                old, new, client_host, affected)
-    return JSONResponse({
-        "ok": True, "old": old, "new": new, "bindings_updated": affected,
-        **applied,
-        "requires_restart": bool(applied["cold_pending"]),
-    })
+        except ValidationError as e:
+            return JSONResponse(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                content={"errors": settings_schema.format_validation_errors(e)},
+            )
+        except OSError as e:
+            logger.error("[overrides] rename save failed: %s", e)
+            raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR,
+                                f"could not write config.local.json: {e}")
+
+        # 2) Cascade the new name through all bindings (now that OVERRIDE_PROFILES
+        #    holds the new key, the binding set stays referentially consistent).
+        #    Off the loop like the save above: the cascade is a full users+keys
+        #    scan with per-row UPDATEs under the store lock.
+        #    The save above reached disk only: the running cfg still holds `old`
+        #    alone until apply_hot_changes, so a request resolving a binding the
+        #    cascade already moved to `new` would drop that profile layer and its
+        #    locks (fail-open). Alias both names to the same bundle meanwhile so a
+        #    binding resolves under either name; the hot-apply leaves only `new`.
+        aliased = dict(getattr(cfg, "OVERRIDE_PROFILES", None) or {})
+        if old in aliased:
+            aliased[new] = aliased[old]
+            setattr(cfg, "OVERRIDE_PROFILES", aliased)
+        #    A failed cascade must not hot-apply the rename: the bindings still
+        #    name `old` (the cascade is one transaction), so a cfg holding only
+        #    `new` would drop their profile layer and its locks. Write the
+        #    original profiles back and re-apply them instead; if even that
+        #    fails, the alias above keeps both names resolving in this process.
+        try:
+            affected = await asyncio.to_thread(api_keys_store.rename_profile_refs, old, new)
+        except Exception as e:
+            logger.error("[overrides] rename %r->%r cascade failed: %s", old, new, e)
+            try:
+                restored = await asyncio.to_thread(
+                    config_store.save_overrides, {"OVERRIDE_PROFILES": profiles},
+                )
+                await pl_apply.apply_hot_changes(restored)
+            except Exception as rb_err:  # noqa: BLE001 — the alias stays live
+                logger.error("[overrides] rename rollback failed: %s", rb_err)
+            raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR,
+                                f"could not update the profile bindings: {e}")
+        applied = await pl_apply.apply_hot_changes(written)
+        client_host = request.client.host if request.client else "?"
+        logger.info("[overrides] profile renamed %r->%r from=%s bindings=%d",
+                    old, new, client_host, affected)
+        return JSONResponse({
+            "ok": True, "old": old, "new": new, "bindings_updated": affected,
+            **applied,
+            "requires_restart": bool(applied["cold_pending"]),
+        })
 
 
 def _resolve_model(model: str | None) -> str | None:
