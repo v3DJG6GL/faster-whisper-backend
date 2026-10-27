@@ -344,3 +344,33 @@ console.log(JSON.stringify({
   modal: modal.hidden }));
 """)
     assert out == {"inline": [False, True, True], "modal": True}
+
+
+# ---- merge proposals --------------------------------------------------------------
+
+@needs_node
+@pytest.mark.parametrize("picked, url, shown", [
+    ([], "/captures/api/propose-merges", ["pa", "pb", "pc"]),
+    (["bob"], "/captures/api/propose-merges?user_id=bob", ["pb"]),
+    (["alice", "carol"], "/captures/api/propose-merges", ["pa", "pc"]),
+])
+def test_proposals_follow_the_speaker_filter(page, tmp_path, picked, url, shown):
+    """The proposals fetch ignored the speaker filter, so an admin saw every
+    user's proposals while the list (and Accept's eligibility check) held
+    only the picked speakers': Accept failed with a "try Refresh" toast
+    that Refresh could never fix."""
+    out = _run_node(tmp_path, _js_function(page, "_loadProposals") + r"""
+var _filtSpeakers = """ + json.dumps(picked) + r""";
+var urls = [], rendered = null;
+global.document = { getElementById: function() { return {}; } };
+async function api(m, u) {
+  urls.push(u);
+  return { proposals: [{ id: 'pa', user_id: 'alice' }, { id: 'pb', user_id: 'bob' },
+                       { id: 'pc', user_id: 'carol' }] };
+}
+function _renderProposals(ps) { rendered = ps.map(function(p) { return p.id; }); }
+_loadProposals().then(function() {
+  console.log(JSON.stringify({ urls: urls, shown: rendered }));
+});
+""")
+    assert out == {"urls": [url], "shown": shown}
