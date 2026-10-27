@@ -666,19 +666,23 @@ def _converted_root() -> str:
     )
 
 
-def _converted_dir_for(model_id: str, quantization: str) -> str:
+def _converted_dir_for(model_id: str, quantization: str,
+                       revision: "str | None" = None) -> str:
     """Compute the deterministic output directory for `model_id` at the given
     quantisation. Sanitisation: HF repo IDs only contain `[A-Za-z0-9_.-]` plus
     one `/`, so a single replace is enough. ":" is folded too: a local
     HF-format dir like `C:\\models\\x` would otherwise keep its drive
-    letter and make os.path.join() discard the converted root on Windows."""
-    sanitised = model_id
+    letter and make os.path.join() discard the converted root on Windows.
+    A pinned REVISION gets its own `<id>@<rev>` dir: keyed by id alone, the
+    first conversion (HEAD) answered the fast path for every later pin."""
+    sanitised = model_id if not revision else f"{model_id}@{revision}"
     for ch in ("/", os.sep, ":"):
         sanitised = sanitised.replace(ch, "__")
     return os.path.join(_converted_root(), sanitised, quantization)
 
 
-def _model_needs_conversion(model_id: str) -> bool:
+def _model_needs_conversion(model_id: str,
+                            revision: "str | None" = None) -> bool:
     """Return True if `model_id` is an HF transformers Whisper checkpoint
     (has model.safetensors / pytorch_model.bin but no model.bin in the repo).
     False for already-CT2 repos and for local paths.
@@ -694,7 +698,7 @@ def _model_needs_conversion(model_id: str) -> bool:
         return False
     try:
         from huggingface_hub import list_repo_files
-        files = set(list_repo_files(model_id))
+        files = set(list_repo_files(model_id, revision=revision))
     except Exception as e:
         logger.warning("auto-convert: could not probe %s file list (%s); "
                        "assuming no conversion needed", model_id, e)
@@ -707,7 +711,8 @@ def _model_needs_conversion(model_id: str) -> bool:
     return False
 
 
-def _convert_blocking(model_id: str, output_dir: str, quantization: str) -> None:
+def _convert_blocking(model_id: str, output_dir: str, quantization: str,
+                      revision: "str | None" = None) -> None:
     """Synchronous CT2 conversion. Runs in a thread executor so the event
     loop stays responsive. Lazy-imports torch / transformers / ctranslate2
     converter machinery; missing extras → RuntimeError with pip command.
@@ -746,6 +751,7 @@ def _convert_blocking(model_id: str, output_dir: str, quantization: str) -> None
         # loss. low_cpu_mem_usage avoids HF's duplicate-on-CPU intermediate.
         load_as_float16=(quantization in ("float16", "int8_float16")),
         low_cpu_mem_usage=True,
+        revision=revision,
     )
     converter.convert(tmp_dir, quantization=quantization, force=True)
     # Atomic publish. os.replace can't swap onto a non-empty dir on any OS (and
@@ -756,6 +762,14 @@ def _convert_blocking(model_id: str, output_dir: str, quantization: str) -> None
     os.replace(tmp_dir, output_dir)
     logger.info("auto-convert: %s completed in %.1fs",
                 model_id, time.perf_counter() - t0)
+
+
+def _pinned_revision(name: str) -> "str | None":
+    """The per-model REVISION pin. PM-only field (no global counterpart):
+    read directly from the override."""
+    _overrides = getattr(cfg, "MODEL_OVERRIDES", None) or {}
+    _m_over = _overrides.get(name) if isinstance(_overrides, dict) else None
+    return _m_over.get("REVISION") if isinstance(_m_over, dict) else None
 
 
 async def _ensure_ct2_model(name: str) -> str:
@@ -772,7 +786,8 @@ async def _ensure_ct2_model(name: str) -> str:
         logger.warning("auto-convert: invalid CONVERT_QUANTIZATION %r; "
                        "falling back to float16", quantization)
         quantization = "float16"
-    output_dir = _converted_dir_for(name, quantization)
+    revision = _pinned_revision(name)
+    output_dir = _converted_dir_for(name, quantization, revision)
     # Fast path: already converted (idempotent across restarts).
     if os.path.isfile(os.path.join(output_dir, "model.bin")):
         return output_dir
@@ -781,7 +796,7 @@ async def _ensure_ct2_model(name: str) -> str:
     # huggingface_hub.list_repo_files() HTTPS call (its own docstring says
     # "~1 s"), and this is an async def. Pure predicate, evaluated before the
     # per-model lock below, so nothing can reorder against it.
-    if not await asyncio.to_thread(_model_needs_conversion, name):
+    if not await asyncio.to_thread(_model_needs_conversion, name, revision):
         return name
 
     # Per-model asyncio lock (lazy create). Ensures only one conversion of
@@ -804,7 +819,7 @@ async def _ensure_ct2_model(name: str) -> str:
             with FileLock(lock_path, timeout=600):
                 if os.path.isfile(os.path.join(output_dir, "model.bin")):
                     return
-                _convert_blocking(name, output_dir, quantization)
+                _convert_blocking(name, output_dir, quantization, revision)
 
         try:
             await asyncio.get_running_loop().run_in_executor(
@@ -964,10 +979,7 @@ async def _get_or_load_model(name: str, *, lease: bool = False) -> "WhisperModel
     _auth_token = effective_config.cfg_for(name, "HF_TOKEN")
     if _auth_token:
         dl_kwargs["use_auth_token"] = _auth_token
-    # PM-only field (no global counterpart): read directly from override.
-    _overrides = getattr(cfg, "MODEL_OVERRIDES", None) or {}
-    _m_over = _overrides.get(name) if isinstance(_overrides, dict) else None
-    _revision = _m_over.get("REVISION") if isinstance(_m_over, dict) else None
+    _revision = _pinned_revision(name)
     if _revision:
         dl_kwargs["revision"] = _revision
 
