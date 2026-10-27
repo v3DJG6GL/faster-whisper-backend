@@ -483,3 +483,39 @@ function toast() {} function reloadCounts() {}
     banner = page[page.index("fixBtn.onclick = "):]
     banner = banner[:banner.index("fixBtn.disabled = true;")]
     assert "if (!(await okToRegenerate())) return;" in banner
+
+
+@needs_node
+def test_group_save_keeps_edits_made_while_it_ran(page, tmp_path):
+    """Only the Save button is disabled during the (slow, alignment-heavy)
+    group PATCH; its response went through applyServerSample, which
+    overwrote chips / notes typed meanwhile and cleared the dirty flag."""
+    anchor = "saveTBtn.onclick = "
+    handler = _js_block(page, page.index(anchor) + len(anchor))
+    out = _run_node(tmp_path, _js_function(page, "markDirty") + r"""
+var chip = { wrong: 'a', correct: 'A', idx: 1, idx_end: 1 };
+var sampleState = { dirty: true, adminNotes: 'n', corrections: [chip],
+  baselineCorrections: [] };
+var g = { id: 'g1' }, saveTBtn = {}, applied = 0, pending = [];
+function api() { return new Promise(function(r) { pending.push(r); }); }
+function applyServerSample() { applied++; sampleState.dirty = false; }
+function toast() {} function reloadCounts() {}
+var onSave = """ + handler + r""";
+function tick() { return new Promise(function(r) { setTimeout(r, 0); }); }
+(async function() {
+  onSave();
+  sampleState.adminNotes = 'n + typed meanwhile';
+  markDirty(sampleState);
+  pending[0]({ sample: {} });
+  await tick();
+  var raced = { applied: applied, dirty: sampleState.dirty,
+    notes: sampleState.adminNotes, baseline: sampleState.baselineCorrections };
+  onSave();                             // nothing edited during this one
+  pending[1]({ sample: {} });
+  await tick();
+  console.log(JSON.stringify({ raced: raced, applied: applied }));
+})();
+""")
+    assert out["raced"] == {"applied": 0, "dirty": True, "notes": "n + typed meanwhile",
+                            "baseline": [{"wrong": "a", "correct": "A", "idx": 1, "idx_end": 1}]}
+    assert out["applied"] == 1

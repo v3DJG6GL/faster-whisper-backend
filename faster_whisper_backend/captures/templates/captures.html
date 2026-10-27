@@ -2767,6 +2767,8 @@
 
   function markDirty(state) {
     state.dirty = true;
+    // Lets a Save tell whether the user edited while its request ran.
+    state.editGen = (state.editGen || 0) + 1;
     if (state.dirtyEl) state.dirtyEl.classList.remove('hidden');
     // Optional auto-save hook — proposal panels use this to debounce a
     // PATCH to the affected member captures whenever the chip set
@@ -5282,12 +5284,23 @@
             // landed in between.
             baseline_corrections: sampleState.baselineCorrections || [],
           };
+          var gen = sampleState.editGen;
           saveTBtn.disabled = true;
           api('PATCH', '/captures/api/samples/' + encodeURIComponent(g.id),
               payload)
             .then(function(j) {
-              applyServerSample(j.sample || {});
-              toast('Saved');
+              if (sampleState.editGen !== gen) {
+                // Edited while the save ran: applyServerSample would put the
+                // server copy over those edits and clear the dirty flag.
+                // Keep them (still dirty); what this save sent is the next
+                // one's baseline.
+                sampleState.baselineCorrections =
+                  JSON.parse(JSON.stringify(payload.corrections));
+                toast('Saved · newer edits not saved yet');
+              } else {
+                applyServerSample(j.sample || {});
+                toast('Saved');
+              }
               reloadCounts();
             })
             .catch(function(e) {
