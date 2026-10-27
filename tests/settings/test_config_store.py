@@ -1595,8 +1595,38 @@ def test_origins_uppercase_scheme_is_lowercased_not_refused():
     # The scheme was matched case-sensitively BEFORE the .lower() the
     # docstrings promise, so 'HTTPS://A.com' got a 422.
     assert _ok(TRUSTED_ORIGINS=["HTTPS://A.com"]).TRUSTED_ORIGINS == ["https://a.com"]
-    assert _ok(CORS_ALLOW_ORIGINS=["HTTP://B.com:80"]).CORS_ALLOW_ORIGINS == [
-        "http://b.com:80"]
+    assert _ok(CORS_ALLOW_ORIGINS=["HTTP://B.com:8080"]).CORS_ALLOW_ORIGINS == [
+        "http://b.com:8080"]
+
+
+def test_origins_default_port_dropped_on_save_and_load(tmp_path):
+    # The browser omits the scheme's default port from Origin, so a stored
+    # 'https://x:443' was an exact-match miss: every POST/WebSocket from the
+    # proxy origin the operator just trusted got the CSRF 403.
+    p = str(tmp_path / "config.local.json")
+    cs.save_overrides({"TRUSTED_ORIGINS": ["https://w.example.com:443",
+                                           "http://[::1]:80", "https://a.com:80",
+                                           "http://a.com:8443"]}, p)
+    with open(p, encoding="utf-8") as f:
+        assert json.load(f)["TRUSTED_ORIGINS"] == [
+            "https://w.example.com", "http://[::1]", "https://a.com:80",
+            "http://a.com:8443"]
+    # A hand-written stored entry is normalised at load too.
+    assert _ok(CORS_ALLOW_ORIGINS=["HTTPS://B.com:443"]).CORS_ALLOW_ORIGINS == [
+        "https://b.com"]
+
+
+@pytest.mark.parametrize("bad", ["http://a.com:99999", "http://a.com:080",
+                                 "http://a.com:0", "https://bücher.de"])
+def test_origins_impossible_port_or_non_ascii_host_refused_on_save(tmp_path, bad):
+    # A browser sends neither an out-of-range / zero-padded port nor a
+    # non-punycode host, so the entry would save and never match.
+    p = str(tmp_path / "config.local.json")
+    for key in ("TRUSTED_ORIGINS", "CORS_ALLOW_ORIGINS"):
+        with pytest.raises(ValidationError):
+            cs.save_overrides({key: [bad]}, p)
+        _ok(**{key: [bad]})
+    assert not os.path.exists(p)
 
 
 @pytest.mark.parametrize("bad", ["https://u@a.com", "https://a.com:1:2",

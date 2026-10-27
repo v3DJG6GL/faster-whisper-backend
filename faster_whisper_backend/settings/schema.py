@@ -581,20 +581,31 @@ def _suppress_tokens_csv(v: str | None) -> str | None:
 # nothing, but load keeps accepting it — a load failure drops every override.
 _ORIGIN_RE = re.compile(r"https?://[^/?#\s*]+")
 _STRICT_ORIGIN_RE = re.compile(
-    r"https?://(?:\[[0-9a-f:.]+\]|[^/?#\s*@:\[\]]+)(?::[0-9]{1,5})?")
+    r"https?://(?:\[[0-9a-f:.]+\]|[^/?#\s*@:\[\]]+)(?::(?P<port>[0-9]{1,5}))?")
+# The browser leaves the scheme's default port out of Origin, so a stored
+# 'https://x:443' could never match; it is normalised away like the case.
+_DEFAULT_PORT_RE = re.compile(r"(https://.*[^:]):443|(http://.*[^:]):80")
 
 
 def _origin_entry(entry: str, info: ValidationInfo) -> str | None:
     """`entry` lowercased (the browser's serialisation; lowercased BEFORE the
-    match, so 'HTTPS://A.com' is accepted as the docstrings promise), or None
-    when it is not an origin. The strict form applies when config_store sets
-    `strict_origins` (a save whose payload carries the origin lists)."""
+    match, so 'HTTPS://A.com' is accepted as the docstrings promise) with a
+    default port dropped, or None when it is not an origin. The strict form
+    applies when config_store sets `strict_origins` (a save whose payload
+    carries the origin lists); it also refuses a port the browser never sends
+    as written (0, > 65535, a leading zero) and a non-ASCII host (the Origin
+    header carries the punycode 'xn--' form)."""
     low = entry.lower()
     if not _ORIGIN_RE.fullmatch(low):
         return None
-    if (info.context or {}).get("strict_origins") and not _STRICT_ORIGIN_RE.fullmatch(low):
-        return None
-    return low
+    if (info.context or {}).get("strict_origins"):
+        m = _STRICT_ORIGIN_RE.fullmatch(low)
+        port = m and m.group("port")
+        if (not m or not low.isascii()
+                or (port and (port[0] == "0" or int(port) > 65535))):
+            return None
+    d = _DEFAULT_PORT_RE.fullmatch(low)
+    return (d.group(1) or d.group(2)) if d else low
 
 
 def _effective(model: BaseModel, name: str, fallback: Any = None,
