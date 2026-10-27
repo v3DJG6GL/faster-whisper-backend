@@ -248,6 +248,18 @@ def test_winsw_xml_here_string_is_well_formed():
         assert "--" not in body          # XML forbids "--" inside a comment
 
 
+def test_winsw_arguments_quote_the_main_py_path():
+    # WinSW v2 hands <arguments> to the child as a raw command line: an
+    # unquoted %BASE%\main.py under "C:\Users\John Doe" split into two argv
+    # entries and the service crash-looped.
+    import xml.etree.ElementTree as ET
+    s = _read("install-service.ps1")
+    x = re.search(r'\$xml = @"\n(.*?)\n"@', s, re.S).group(1)
+    x = re.sub(r"\$\([^)]*\)", "X", x)
+    x = re.sub(r"\$[A-Za-z_]\w*", "X", x)
+    assert ET.fromstring(x).findtext("arguments") == '"%BASE%\\main.py"'
+
+
 # --- .dockerignore -----------------------------------------------------------
 
 def test_dockerignore_excludes_repo_local_ffmpeg_tree():

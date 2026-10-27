@@ -592,7 +592,9 @@ $xml = @"
   <description>Self-hosted faster-whisper API (CH-DE dictation)</description>
 
   <executable>%BASE%\venv\Scripts\python.exe</executable>
-  <arguments>%BASE%\main.py</arguments>
+  <!-- Quoted: <arguments> is a raw command line, and C:\Users\John Doe\...
+       would otherwise reach python as two argv entries. -->
+  <arguments>"%BASE%\main.py"</arguments>
   <workingdirectory>%BASE%</workingdirectory>
   <startmode>Automatic</startmode>
 
