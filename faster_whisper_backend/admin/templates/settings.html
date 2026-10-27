@@ -2606,9 +2606,11 @@ function _slugify(s) {
 
 function _ensureUniqueSlug(slug, existing) {
   if (!existing.has(slug)) return slug;
+  // Trim the base so base + suffix stays within RuleSlug's 64 chars.
+  const at = n => `${slug.slice(0, 63 - String(n).length)}-${n}`;
   let n = 2;
-  while (existing.has(`${slug}-${n}`)) n++;
-  return `${slug}-${n}`;
+  while (existing.has(at(n))) n++;
+  return at(n);
 }
 
 // Live status check for one rule against the current test panel sample.
@@ -3740,10 +3742,11 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
       const labelInp = document.createElement('input');
       labelInp.type = 'text';
       labelInp.value = rule.label || '';
+      labelInp.maxLength = 80;   // RuleLabel: 1-80 chars, else the save 422s
       labelInp.spellcheck = false;
       labelInp.style.width = '100%';
       labelInp.addEventListener('input', () => {
-        rule.label = labelInp.value;
+        rule.label = labelInp.value || rule.name;
         lbl.textContent = labelInp.value || rule.name;
         if (!slugFixed(rule)) {
           // Unique against config.json too: a config.json rule this server's
@@ -4037,6 +4040,7 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
     const labelInp = document.createElement('input');
     labelInp.type = 'text';
     labelInp.placeholder = 'Friendly label (e.g. "Expand Uhr to :00")';
+    labelInp.maxLength = 80;   // RuleLabel: 1-80 chars
     labelInp.style.width = '100%'; labelInp.style.marginTop = '0.25rem';
 
     const ok = document.createElement('button');

@@ -427,3 +427,41 @@ fire(resetOrderBtn, 'click').then(() => {
 });
 """)
     assert out == ["b", "a", "trim"]
+
+
+@needs_node
+def test_unique_slug_suffix_stays_within_64_chars(client):
+    """_slugify caps at 64 chars, then the '-2' suffix pushed a second rule
+    with the same long label past RuleSlug's max_length (422 on save)."""
+    fn = _block(_html(client, "/settings/pipeline"),
+                "function _ensureUniqueSlug(slug, existing) {", "\n}\n")
+    out = _node(fn + """
+const base = 'a'.repeat(64);
+const two = _ensureUniqueSlug(base, new Set([base]));
+const three = _ensureUniqueSlug(base, new Set([base, two]));
+console.log(JSON.stringify([two, three, _ensureUniqueSlug('x', new Set(['x']))]));
+""")
+    assert out == ["a" * 62 + "-2", "a" * 62 + "-3", "x-2"]
+
+
+@needs_node
+def test_label_editor_respects_rule_label_bounds(client):
+    """RuleLabel is 1-80 chars: the card's label input took 81+ and stored a
+    cleared label as '', and either one failed the whole save."""
+    out = _node(_label_editor_harness(_html(client, "/settings/pipeline"), """
+const body = document.createElement('div');
+const rule = { name: 'de-tidy', label: 'Tidy', type: 'regex', seeded: true };
+const rules = [rule];
+{editor}
+const labelInp = find(body, e => e.tagName === 'INPUT');
+labelInp.value = '';
+fire(labelInp, 'input');
+console.log(JSON.stringify([labelInp.maxLength, rule.label]));
+"""))
+    assert out == [80, "de-tidy"]
+
+
+def test_add_rule_label_input_is_capped(client):
+    html = _html(client, "/settings/pipeline")
+    i = html.index("labelInp.placeholder = 'Friendly label (e.g.")
+    assert "labelInp.maxLength = 80;" in html[i:html.index("body.appendChild(", i)]
