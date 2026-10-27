@@ -2363,6 +2363,12 @@ async function _doSave(patch, fingerprints) {
     // merge two scalar edits), but the user reviews before re-saving.
     const conflictSlugs = conflicts.map(c => c.slug);
     const conflictSet = new Set(conflictSlugs);
+    // The non-conflicting rules ARE saved (the server only sends
+    // captures_count when `saved` is non-empty); re-apply them now rather
+    // than only after a follow-up Save the user may never make.
+    if (result.captures_count > 0) {
+      startReapplyJobSilent(result.captures_count);
+    }
 
     const j = await fetchState();
     if (!j) return;

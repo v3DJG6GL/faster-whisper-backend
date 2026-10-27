@@ -1,9 +1,10 @@
-"""Behaviour of the /quick-config report form's chip editor (client JS).
+"""Behaviour of /quick-config client JS: the report form's chip editor and
+the rule-save flow.
 
 The functions are pulled out of the served page and run under node against a
 tiny fake DOM — just enough element API (classList, children/nextSibling,
 querySelector on `.class` / `[data-idx="N"]` / descendant selectors) for the
-chip helpers. Anything the page's code touches beyond that is a bug in this
+chip helpers; anything else a test needs it stubs on globalThis. Anything the page's code touches beyond that is a bug in this
 harness, not in the page."""
 
 import json
@@ -291,3 +292,32 @@ def test_extending_a_chip_moves_its_inline_replacement(client, tmp_path):
     assert res["chips"] == [[1, 3, "B"]]
     assert res["after"] == ["B"]
     assert res["nextToDelta"] == "B"
+
+
+def test_partial_conflict_save_still_reapplies_saved_rules(client, tmp_path):
+    # A save with some rules saved and others conflicting returned before the
+    # only startReapplyJobSilent() call, so the saved rules never reached the
+    # historical captures unless the admin saved again.
+    res = _run_js(client, tmp_path, r"""
+      const calls = [];
+      globalThis.setStatus = () => {};
+      globalThis.liveRules = [];
+      globalThis.initialRules = [];
+      globalThis.api = async () => ({
+        ok: true, status: 200,
+        json: async () => ({
+          saved: ['dict'], conflicts: [{ slug: 'other' }], captures_count: 7,
+        }),
+      });
+      globalThis.fetchState = async () => ({ rules: [] });
+      globalThis._diffsSince = () => new Map();
+      globalThis.applyState = () => {};
+      globalThis._reapplyDiffs = () => false;
+      globalThis.renderCards = () => {};
+      globalThis.updateButtons = () => {};
+      globalThis.startReapplyJobSilent = (n) => { calls.push(n); };
+      await _doSave({ dict: {} }, {});
+      out({ calls, toasts: _toasts });
+    """, funcs=("_doSave",))
+    assert res["calls"] == [7]
+    assert res["toasts"][0][0] == "err" and "Saved 1." in res["toasts"][0][1]
