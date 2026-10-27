@@ -1541,11 +1541,16 @@ function _extendLastChip(form, idx) {
   if (!last) return;
   const newStart = Math.min(last.idx, idx);
   const newEnd   = Math.max(last.idx_end, idx);
+  // Inline replacements hang off each chip's idx_end, so drop them while
+  // the old ranges are still known; _renderCorrections re-adds the last
+  // chip's at its new end.
+  _clearReplacementInline(form, last);
   form._corrections = form._corrections.filter((c, i) => {
     if (i === lastI) return true;
     const overlaps = !(c.idx_end < newStart || c.idx > newEnd);
     if (overlaps) {
       for (let j = c.idx; j <= c.idx_end; j++) _selectWord(form, j, false);
+      _clearReplacementInline(form, c);
     }
     return !overlaps;
   });

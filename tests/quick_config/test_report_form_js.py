@@ -264,3 +264,30 @@ def test_first_submit_reveals_remove_button(client, tmp_path):
     assert res["before"] == "none"
     assert res["after"] == "inline-flex"
     assert res["toasts"] == [["ok", "Report sent — thank you."]]
+
+
+def test_extending_a_chip_moves_its_inline_replacement(client, tmp_path):
+    # Shift-extend re-anchored the last chip at its new idx_end but left the
+    # old green replacement (and any absorbed chip's) in the words strip.
+    res = _run_js(client, tmp_path, r"""
+      const entry = { request_id: 'rid1', final: 'Alpha Beta Gamma Delta Echo' };
+      const form = _buildReportForm(entry);
+      toggleCorrection(form, 3, 'Delta', false);
+      form._corrections[0].correct = 'D';
+      toggleCorrection(form, 1, 'Beta', false);
+      form._corrections[1].correct = 'B';
+      _renderCorrections(form);
+      const before = _replacements(form);
+      toggleCorrection(form, 3, 'Delta', true);  // Beta..Delta absorbs Delta's chip
+      out({
+        before,
+        chips: form._corrections.map((c) => [c.idx, c.idx_end, c.correct]),
+        after: _replacements(form),
+        nextToDelta: form.querySelector('.rep-final-words .word[data-idx="3"]')
+          .nextSibling.textContent,
+      });
+    """)
+    assert res["before"] == ["B", "D"]
+    assert res["chips"] == [[1, 3, "B"]]
+    assert res["after"] == ["B"]
+    assert res["nextToDelta"] == "B"
