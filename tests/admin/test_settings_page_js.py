@@ -518,3 +518,34 @@ run().catch(() => {}).then(() => {
 });
 """))
     assert out == ["err", "test endpoint unreachable: TypeError: Failed to fetch"]
+
+
+# ---- scalar editors -------------------------------------------------------------
+
+@needs_node
+def test_nullable_number_survives_a_partial_number(client):
+    """A number input reads '' while it holds '-' (LOG_PROB_THRESHOLD is
+    always negative) or is cleared to retype; that nulled the field and
+    disabled the input under the cursor."""
+    fn = _block(_html(client), "function nullableNumberEditor(name, v) {", "\n}\n")
+    out = _node(_FAKE_DOM + """
+const state = { LOG_PROB_THRESHOLD: -1.0 };
+function currentValue(n) { return state[n]; }
+function setDirty(n, v) { state[n] = v; }
+""" + fn + """
+const wrap = nullableNumberEditor('LOG_PROB_THRESHOLD', -1.0);
+const i = find(wrap, e => e.tagName === 'INPUT');
+(async function () {
+  i.value = '';                 // the admin typed '-' over the selection
+  await fire(i, 'input');
+  const typing = [state.LOG_PROB_THRESHOLD, i.disabled];
+  i.value = '-0.8';
+  await fire(i, 'input');
+  const typed = state.LOG_PROB_THRESHOLD;
+  i.value = '';                 // cleared, then left
+  await fire(i, 'input');
+  await fire(i, 'blur');
+  console.log(JSON.stringify([typing, typed, state.LOG_PROB_THRESHOLD, i.value]));
+})();
+""")
+    assert out == [[-1.0, False], -0.8, -0.8, -0.8]

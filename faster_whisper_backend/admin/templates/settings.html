@@ -5152,10 +5152,15 @@ function nullableNumberEditor(name, v) {
   }
 
   i.addEventListener('input', () => {
-    if (i.value === '') { setDirty(name, null); paint(); return; }
+    // A number input also reads '' mid-typing ('-', '1e') or cleared to
+    // retype: nulling here disabled the field under the cursor, so a
+    // negative LOG_PROB_THRESHOLD could not be typed. Null is the button's job.
+    if (i.value === '') return;
     const n = Number(i.value);
     if (!Number.isNaN(n)) { lastVal = n; setDirty(name, n); }
   });
+  // Left blank: the value did not change, so show it again.
+  i.addEventListener('blur', () => { if (i.value === '') paint(); });
   btn.addEventListener('click', () => {
     const cur = currentValue(name);
     if (cur == null) {
