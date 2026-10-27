@@ -192,6 +192,15 @@ def test_pip_cache_purge_runs_under_a_relaxed_error_preference():
                      ps1)
 
 
+def test_orphan_sweep_spares_sibling_checkouts():
+    # A bare StartsWith($RepoDir) also matched C:\svc\fwb-old\... and force-
+    # killed another install's python/WinSW; match the dir plus a separator.
+    ps1 = _read("install-service.ps1")
+    assert "$repoPrefix = $RepoDir.TrimEnd('\\') + '\\'" in ps1
+    assert "$_.Path.StartsWith($repoPrefix, [StringComparison]::OrdinalIgnoreCase)" in ps1
+    assert "StartsWith($RepoDir" not in ps1
+
+
 def test_winsw_xml_here_string_is_well_formed():
     # WinSW v2 loads WhisperAPI.xml with XmlDocument: a malformed document
     # (e.g. "--" inside a comment) fails the service install outright.

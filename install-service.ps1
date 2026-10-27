@@ -205,9 +205,12 @@ if ($svc) {
 # venv .pyd files the pip install below needs to replace), so it must die
 # before we touch dependencies. Without this cleanup the deploy is silently
 # broken: code on disk says version N, behavior says N-1.
+# The trailing separator keeps a sibling checkout (<repo>-old, <repo>2) and
+# its running service out of the sweep.
+$repoPrefix = $RepoDir.TrimEnd('\') + '\'
 $orphans = Get-Process -ErrorAction SilentlyContinue |
     Where-Object {
-        try { $_.Path -and $_.Path.StartsWith($RepoDir, [StringComparison]::OrdinalIgnoreCase) }
+        try { $_.Path -and $_.Path.StartsWith($repoPrefix, [StringComparison]::OrdinalIgnoreCase) }
         catch { $false }
     }
 if ($orphans) {
