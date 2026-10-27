@@ -4,6 +4,7 @@ The shell/PowerShell/compose files have no runtime under test, so these
 tests grep the scripts for the load-bearing lines instead: a regression
 that drops one of them reintroduces the reviewed bug.
 """
+import io
 import os
 import re
 import shutil
@@ -258,6 +259,20 @@ def test_winsw_arguments_quote_the_main_py_path():
     x = re.sub(r"\$\([^)]*\)", "X", x)
     x = re.sub(r"\$[A-Za-z_]\w*", "X", x)
     assert ET.fromstring(x).findtext("arguments") == '"%BASE%\\main.py"'
+
+
+# --- .env.example ------------------------------------------------------------
+
+def test_env_example_lines_uncomment_to_their_documented_value():
+    # The recipe is "uncomment the line"; python-dotenv only strips an inline
+    # comment that follows a value, so `#WHISPER_OUTPUT_PREFIX=   # ...`
+    # uncommented to the prefix "# prepended to final text".
+    from dotenv import dotenv_values
+    text = re.sub(r"^#([A-Z][A-Z0-9_]*=)", r"\1", _read(".env.example"), flags=re.M)
+    values = dotenv_values(stream=io.StringIO(text), interpolate=False)
+    assert len(values) > 100               # the lines really were uncommented
+    bad = {k: v for k, v in values.items() if (v or "").lstrip().startswith("#")}
+    assert not bad
 
 
 # --- .dockerignore -----------------------------------------------------------
