@@ -379,6 +379,19 @@ def test_linux_env_sets_reads_dotenv_like_the_server(tmp_path):
         assert not run(line), line
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="bash installer")
+def test_linux_env_sets_counts_the_vars_systemd_sets_for_the_unit(tmp_path):
+    # load_dotenv expands ${VAR} from the service's environment, and systemd
+    # sets HOME/USER/LOGNAME/SHELL for a User= unit: WHISPER_DATA_DIR=${HOME}/x
+    # is a real pin, which the unit's Environment= line used to override.
+    run = _env_sets_runner(tmp_path)
+    for line in ("X=${HOME}/whisper-data", "X=/srv/${USER}", "X=${LOGNAME}",
+                 "X=${HOME}/${USER}/db"):
+        assert run(line), line
+    for line in ("X=$HOME/data", "X=${HOME}/${PWD}", "X=${HOMEDIR}/data"):
+        assert not run(line), line
+
+
 def test_windows_installer_gates_the_log_file_env_on_the_dotenv():
     # WinSW <env> is the real environment and load_dotenv never overrides it:
     # a .env WHISPER_LOG_FILE pin was silently ignored on Windows.
