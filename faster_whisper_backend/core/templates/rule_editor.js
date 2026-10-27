@@ -83,6 +83,12 @@ function _makeMonoLabeledInput(label, val, onInput, onEnter) {
   return wrap;
 }
 
+function _markMapDup(inp, dup) {
+  inp.classList.toggle('map-dup', dup);
+  if (dup) inp.title = 'Duplicate spoken word: only the last row is saved';
+  else inp.removeAttribute('title');
+}
+
 function _makeMapRow(rule, key, val, commitData, datalistId, onEnter, ts, showDate) {
   const tr = document.createElement('tr');
   const td1 = document.createElement('td');
@@ -100,13 +106,18 @@ function _makeMapRow(rule, key, val, commitData, datalistId, onEnter, ts, showDa
   vi.type = 'text'; vi.value = _esc(val);
   // Map keys/values may contain \n etc.; <input> strips real newlines,
   // so we display \n as literal 2-char escape and decode on read.
+  // A repeated spoken word keeps only the LAST row's value, so every row
+  // sharing a key is flagged; otherwise Save silently drops the others.
   function _readMap(parent) {
-    const m = {};
+    const m = {}, byKey = {};
     parent.querySelectorAll('tr').forEach(r => {
-      const k = _unesc(r.querySelector('td:first-child input').value);
+      const kin = r.querySelector('td:first-child input');
+      const k = _unesc(kin.value);
       const v = _unesc(r.querySelector('td:nth-child(2) input').value);
-      if (k) m[k] = v;
+      if (k) { m[k] = v; (byKey[k] = byKey[k] || []).push(kin); }
+      else _markMapDup(kin, false);
     });
+    Object.values(byKey).forEach(ins => ins.forEach(i => _markMapDup(i, ins.length > 1)));
     return m;
   }
   function rebuild() {

@@ -1093,3 +1093,6 @@ input[type="checkbox"].switch:focus-visible {
 .rule-editor .rl-enote textarea::placeholder { color: var(--dim, #6e7681); font-style: italic; }
 .rule-editor .rl-enote textarea { min-height: 2.4rem; }
 .rule-editor textarea.rule-note { min-height: 3rem; }
+/* cb:map row whose spoken word repeats another row's (rule_editor _readMap). */
+.rule-editor .map-table input.map-dup { color: var(--red, #ff7b72);
+  outline: 1px solid var(--red, #ff7b72); }
