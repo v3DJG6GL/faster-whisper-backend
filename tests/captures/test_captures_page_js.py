@@ -186,3 +186,27 @@ var state = { cid: 'c1', corrections: [Y], baselineCorrections: [], adminNotes: 
         db = three_way_merge_corrections(body["baseline_corrections"], body["corrections"], db)
     assert x in db
     assert {"wrong": "b", "correct": "Bee", "idx": 2} in db
+
+
+@needs_node
+def test_capture_status_click_repaints_the_header_pill(page, tmp_path):
+    """The status buttons auto-save, but the collapsed header's pill
+    (painted once by renderCard) kept saying the old status."""
+    build = _js_function(page, "buildBody")
+    handler = _js_block(build, build.index("async function(v) {\n        // Auto-save on click."))
+    out = _run_node(tmp_path, r"""
+var pill = { className: 'pill status-new', textContent: 'new' }, asked = [];
+var body = { parentNode: { querySelector: function(s) { asked.push(s); return pill; } } };
+var r = { id: 'c1', status: 'new' };
+var state = { cid: 'c1', newStatus: 'new' };
+var statusGrp = { setValue: function() {} };
+async function api() { return { capture: { status: 'ready' } }; }
+function reloadCounts() {} function toast() {}
+var onStatus = """ + handler + r""";
+(async function() {
+  await onStatus('ready');
+  console.log(JSON.stringify({ pill: pill, asked: asked }));
+})();
+""")
+    assert out["pill"] == {"className": "pill status-ready", "textContent": "ready"}
+    assert out["asked"] == ['.cc-head .pill[class*="status-"]']

@@ -2336,6 +2336,13 @@
               state.newStatus = j.capture.status;
               statusGrp.setValue(j.capture.status);
             }
+            // renderCard paints the header pill once; keep it in step.
+            var pill = body.parentNode
+              && body.parentNode.querySelector('.cc-head .pill[class*="status-"]');
+            if (pill && r.status) {
+              pill.className = 'pill status-' + r.status;
+              pill.textContent = r.status;
+            }
           }
           reloadCounts();
           toast('Status: ' + v);
