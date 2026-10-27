@@ -90,6 +90,10 @@ def test_same_language():
     assert s("pt-BR", "pt") and s("de", "DE") and s("de-CH", "de_AT")
     assert not s("zh-Hant", "zh") and not s("zh", "zh-Hans")
     assert s("zh-Hant", "zh-hant-TW") and not s("zh-Hant", "zh-Hans")
+    # A Traditional-writing region implies the Hant script.
+    assert not s("zh", "zh-TW") and not s("zh-HK", "zh")
+    assert s("zh-Hant", "zh_TW") and s("zh-TW", "zh-MO")
+    assert s("zh-CN", "zh") and not s("zh-TW", "zh-Hans")
     assert not s("en", "de") and not s("", "en") and not s("en", None)
     # Withdrawn / standard / 639-3 spellings name the same language.
     assert s("iw", "he") and s("jv", "jw") and s("deu", "de") and s("in", "id")

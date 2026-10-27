@@ -160,11 +160,18 @@ def canonical_code(code: str) -> "str | None":
     return full if TRANSLATE_CODE_RE.match(full) else None
 
 
+# The Chinese regions that write Traditional characters: a "zh-TW" target is
+# Traditional Chinese, not the Simplified the bare "zh" name gets a model to
+# write. Lowercase, as same_language compares subtags.
+ZH_HANT_REGIONS = frozenset({"tw", "hk", "mo"})
+
+
 def same_language(a: "str | None", b: "str | None") -> bool:
     """Whether two codes name the same written language: the base subtag
     decides ("pt-BR" == "pt"), except that a script subtag on either side
     must match ("zh" != "zh-Hant": Whisper's Chinese is not Traditional
-    Chinese). False when either is empty."""
+    Chinese); a Traditional-writing Chinese region implies the Hant script
+    ("zh-TW" == "zh-Hant" != "zh"). False when either is empty."""
     if not a or not b:
         return False
     a_base, _, a_sub = a.strip().lower().replace("_", "-").partition("-")
@@ -176,7 +183,11 @@ def same_language(a: "str | None", b: "str | None") -> bool:
 
     def script(sub: str) -> str:
         head = sub.split("-", 1)[0]
-        return head if len(head) == 4 and head.isalpha() else ""
+        if len(head) == 4 and head.isalpha():
+            return head
+        if _fold_base(a_base) == "zh" and head in ZH_HANT_REGIONS:
+            return "hant"
+        return ""
     return script(a_sub) == script(b_sub)
 
 

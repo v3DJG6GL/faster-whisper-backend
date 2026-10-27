@@ -52,8 +52,8 @@ from faster_whisper_backend.runtime import hf_cache
 from faster_whisper_backend.runtime import model_registry
 from faster_whisper_backend.runtime import system_stats
 from faster_whisper_backend.core.languages import (
-    _NAMES, _normalise_code, canonical_code, language_codes, language_name,
-    lookup, same_language)
+    _NAMES, ZH_HANT_REGIONS, _normalise_code, canonical_code, language_codes,
+    language_label, language_name, lookup, same_language)
 from faster_whisper_backend.core.loop_lock import LoopLock
 
 logger = logging.getLogger("whisper-server")
@@ -436,12 +436,12 @@ def render_prompt(text: str, target: str, *, source: "str | None" = None,
         tpl = template if template is not None else \
             (getattr(cfg, "TRANSLATION_PROMPT_TEMPLATE", "") or "")
         prompt = [{"role": "user", "content": _render_custom_template(
-            tpl, text, language_name(source_code), language_name(target),
+            tpl, text, language_name(source_code), language_label(target),
             context, glossary)}]
     else:
         prompt = fam.build(
             text, source_code, language_name(source_code), target,
-            language_name(target), context, glossary)
+            language_label(target), context, glossary)
     out: dict = {
         "family": fam_name,
         "chat": fam.chat,
@@ -1285,11 +1285,16 @@ def _prompt_target(code: str) -> str:
     code-using builders (Gemma, Seed-X) and the language name match what the
     run sends. A script entry the table names wins over any region after it
     ("zh_Hant_TW" → "zh-Hant", Traditional Chinese, as canonical_code folds
-    it); otherwise _normalise_code: a script subtag the table does not list
-    ("sr-Latn") is still the target's script and must reach the prompt."""
+    it), and a Traditional-writing Chinese region is that script too ("zh-TW"
+    → "zh-Hant": the bare "zh" name gets Simplified); otherwise
+    _normalise_code: a script subtag the table does not list ("sr-Latn") is
+    still the target's script and must reach the prompt."""
     canon = canonical_code(code) if code else None
     if canon and "-" in canon and canon.lower() in _NAMES:
         return canon
+    base, _, region = (canon or "").lower().partition("-")
+    if base == "zh" and region in ZH_HANT_REGIONS:
+        return "zh-Hant"
     return _normalise_code(code) or code
 
 
@@ -1303,14 +1308,17 @@ async def _run_completion(llm, family: str, text: str, source_code: str,
     fam = _FAMILIES[family]
     source_code = _prompt_target(source_code or "")
     target_code = _prompt_target(target_code)
+    # The target's name keeps its region ("pt-BR" → "Portuguese (BR)"): a
+    # region is a target of its own (language_codes), so "pt-BR" and "pt-PT"
+    # must not get byte-identical prompts.
     if template_override is not None and family == "custom":
         prompt = [{"role": "user", "content": _render_custom_template(
             template_override, text, language_name(source_code),
-            language_name(target_code), context, glossary)}]
+            language_label(target_code), context, glossary)}]
     else:
         prompt = fam.build(
             text, source_code, language_name(source_code), target_code,
-            language_name(target_code), context, glossary)
+            language_label(target_code), context, glossary)
     # Context counts toward the budget: a context-echoing model (the guard
     # catches it) must not ALSO be truncated mid-sentence into a secondary
     # guard failure.

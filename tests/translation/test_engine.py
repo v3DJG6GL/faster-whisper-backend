@@ -559,6 +559,28 @@ def test_script_target_is_not_a_same_language_short_circuit(base_cfg,
     assert res[0]["zh-Hant"] == "我們昨天重複了測量。"
 
 
+def test_traditional_region_target_is_translated_as_traditional(base_cfg,
+                                                                monkeypatch):
+    """"zh-TW" is written in Traditional characters: from Whisper's "zh" it
+    must reach the model (not come back as a copy of the Simplified text),
+    and the prompt must ask for Traditional Chinese under the client's own
+    "zh-TW" key."""
+    prompts = []
+    _install_fake(monkeypatch, lambda t: "我們昨天重複了測量。")
+    fake = translation._complete
+
+    def recording(llm, family, prompt_or_msgs, max_tokens):
+        prompts.append(str(prompt_or_msgs))
+        return fake(llm, family, prompt_or_msgs, max_tokens)
+    monkeypatch.setattr(translation, "_complete", recording)
+    res, _, _ = _run(translation.translate_segments(
+        _segs("我们昨天重复了测量。"), ["zh-TW"], source_lang="zh",
+        mode="faithful"))
+    assert len(prompts) == 1
+    assert "Traditional Chinese" in prompts[0]
+    assert res[0]["zh-TW"] == "我們昨天重複了測量。"
+
+
 def test_faithful_batches_as_numbered_list(base_cfg, monkeypatch):
     calls = []
     _install_fake(monkeypatch, _xlate, calls)
@@ -1993,6 +2015,25 @@ class TestRenderPrompt:
         p = translation.render_prompt("Hallo", "zh-Hant-HK", source="de",
                                       family="chatml")
         assert "Traditional Chinese" in p["messages"][0]["content"]
+
+    def test_region_target_keeps_its_region_in_the_prompt(self):
+        """A region is a target of its own: "pt-BR" and "pt-PT" get
+        different prompts, and a Traditional-writing Chinese region
+        ("zh-TW", "zh-HK") is asked for as Traditional Chinese — in HY-MT's
+        Chinese instruction too, never the Simplified 中文."""
+        def content(target, **kw):
+            return translation.render_prompt(
+                "Hallo", target, source="de", **kw)["messages"][0]["content"]
+        br, pt = content("pt-BR", family="chatml"), \
+            content("pt-PT", family="chatml")
+        assert "into Portuguese (BR)." in br and br != pt
+        assert translation._prompt_target("zh-TW") == "zh-Hant"
+        assert translation._prompt_target("zh_hk") == "zh-Hant"
+        assert translation._prompt_target("zh-CN") == "zh-CN"
+        assert "into Traditional Chinese." in content("zh-TW",
+                                                     family="chatml")
+        hy = content("zh-TW", family="hunyuan", context="Vorher.")
+        assert "翻译成繁体中文" in hy
 
     def test_preview_and_run_fold_the_source_too(self, monkeypatch):
         """The lab's free-form SOURCE ("jpn") is folded like the target, in
