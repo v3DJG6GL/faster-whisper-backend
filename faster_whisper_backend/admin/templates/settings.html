@@ -3925,9 +3925,9 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
   ctrls.appendChild(addBtn);
 
   // Sync actions. "↓" (green) brings config.json to this server, "↑" (cyan)
-  // writes this server's rules into config.json; every one of them opens the
-  // review dialog before anything changes. Labels + counts are painted by
-  // refreshControlsVisibility.
+  // writes this server's rules into config.json; every one of them re-reads
+  // config.json, and all but Reset order open the review dialog before
+  // anything changes. Labels + counts are painted by refreshControlsVisibility.
   const resetAllBtn = document.createElement('button');
   resetAllBtn.type = 'button';
   resetAllBtn.className = 'sync-btn down';
@@ -3942,7 +3942,9 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
   resetOrderBtn.textContent = '↺ Reset order';
   resetOrderBtn.title = 'Restore the config.json rule order; rules that exist only on this server go before the last step';
   resetOrderBtn.style.display = 'none';
-  resetOrderBtn.addEventListener('click', () => {
+  resetOrderBtn.addEventListener('click', async () => {
+    // A stale cache would restore an order config.json has since left.
+    if (!(await _refreshFactory())) return;
     const baseOrder = factoryRules.map(b => b.name);
     const factory = [];
     const customs = [];

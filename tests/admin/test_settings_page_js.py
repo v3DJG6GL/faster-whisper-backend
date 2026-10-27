@@ -403,3 +403,27 @@ console.log(JSON.stringify([
 ]));
 """))
     assert out == ["my-rule", "brand-new"]
+
+
+@needs_node
+def test_reset_order_rereads_config_json(client):
+    """Reset order sorted by the order cached at page load, so after another
+    admin's promote (or a git pull) it restored the old order."""
+    handler = _block(_html(client, "/settings/pipeline"),
+                     "  resetOrderBtn.addEventListener('click', ", "\n  });\n")
+    out = _node(_FAKE_DOM + """
+const resetOrderBtn = document.createElement('button');
+let factoryRules = [{ name: 'a' }, { name: 'b' }];        // cached at load
+async function _refreshFactory() {
+  factoryRules = [{ name: 'b' }, { name: 'a' }];          // config.json now
+  return true;
+}
+function _factoryHas(n) { return factoryRules.some(b => b.name === n); }
+let rules = [{ name: 'a' }, { name: 'b' }, { name: 'trim', type: 'terminal' }];
+function commitFull() {}
+""" + handler + """
+fire(resetOrderBtn, 'click').then(() => {
+  console.log(JSON.stringify(rules.map(r => r.name)));
+});
+""")
+    assert out == ["b", "a", "trim"]
