@@ -19,6 +19,7 @@ merged WAV is still authoritative.
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
@@ -407,14 +408,30 @@ def expire_samples_older_than(cutoff_ts: float) -> list[str]:
 def clear_all_samples() -> int:
     """Drop every row from capture_samples. Caller is responsible for
     removing the merged WAV files (captures_store.clear_all handles
-    that as part of its filesystem wipe). Returns count deleted."""
+    that as part of its filesystem wipe). Returns count deleted.
+
+    Holds every sample's rebuild lock across the DELETE, as dissolve_sample
+    holds one: an in-flight regenerate / self-heal / VAD rebuild finishes
+    first (its WAV then goes with the caller's wipe), and a waiting one
+    re-reads, finds no row and stops instead of writing a merged WAV back
+    after the wipe."""
+    from faster_whisper_backend.captures import samples as capture_samples
     conn = _require_conn()
     with _lock:
-        row = conn.execute(
-            "SELECT COUNT(*) FROM capture_samples",
-        ).fetchone()
-        n = int(row[0]) if row else 0
-        conn.execute("DELETE FROM capture_samples")
+        sids = [r[0] for r in conn.execute(
+            "SELECT id FROM capture_samples",
+        ).fetchall()]
+    with contextlib.ExitStack() as held:
+        for sid in sids:
+            held.enter_context(capture_samples._rebuild_lock(sid))
+        with _lock:
+            row = conn.execute(
+                "SELECT COUNT(*) FROM capture_samples",
+            ).fetchone()
+            n = int(row[0]) if row else 0
+            conn.execute("DELETE FROM capture_samples")
+    for sid in sids:
+        capture_samples._release_rebuild_lock(sid)
     return n
 
 
