@@ -37,6 +37,52 @@ def _node(script):
     return json.loads(p.stdout.strip().splitlines()[-1])
 
 
+# Just enough DOM for the builders below: elements record children, classes,
+# dataset and listeners; fire(el, type) runs the listeners; find(el, pred)
+# walks the tree.
+_FAKE_DOM = r"""
+class El {
+  constructor(tag) {
+    this.tagName = String(tag).toUpperCase();
+    this.children = []; this.dataset = {}; this.style = {};
+    this.listeners = {}; this.attrs = {}; this.textContent = '';
+    this.disabled = false; this.parentElement = null;
+    const cls = new Set();
+    this._cls = cls;
+    this.classList = {
+      add: (...c) => c.forEach(x => cls.add(x)),
+      remove: (...c) => c.forEach(x => cls.delete(x)),
+      toggle: (c, f) => { if (f === undefined) f = !cls.has(c);
+                          if (f) cls.add(c); else cls.delete(c); return f; },
+      contains: (c) => cls.has(c),
+    };
+  }
+  set className(v) { this._cls.clear(); String(v).split(/\s+/).filter(Boolean).forEach(c => this._cls.add(c)); }
+  get className() { return [...this._cls].join(' '); }
+  appendChild(c) { this.children.push(c); c.parentElement = this; return c; }
+  append(...cs) { cs.forEach(c => this.appendChild(c)); }
+  replaceChildren(...cs) { this.children = []; this.append(...cs); }
+  addEventListener(t, f) { (this.listeners[t] = this.listeners[t] || []).push(f); }
+  setAttribute(k, v) { this.attrs[k] = String(v); }
+  removeAttribute(k) { delete this.attrs[k]; }
+  focus() {}
+}
+const document = {
+  createElement: (t) => new El(t),
+  getElementById: () => null,
+  querySelector: () => null,
+};
+async function fire(el, type, ev) {
+  for (const f of (el.listeners[type] || [])) await f(ev || { target: el });
+}
+function find(el, pred) {
+  if (pred(el)) return el;
+  for (const c of el.children) { const r = find(c, pred); if (r) return r; }
+  return null;
+}
+"""
+
+
 # ---- CAPTURES_PIPELINE_RULES_EXCLUDE checklist --------------------------------
 
 def _captures_harness(html, body):
@@ -91,3 +137,33 @@ def test_model_overrides_rerender_keeps_env_pinned_editor_disabled(client):
     for fn in ("function renderSidebar() {", "function renderMain() {",
                "function refreshPipelineSection() {"):
         assert "keepPinned();" in _block(mo, fn), fn
+
+
+@needs_node
+def test_model_override_seeds_from_the_current_global_value(client):
+    """'+ override' seeded the global value captured when the row was built;
+    an unsaved global edit later only refreshed the 'inherits' hint."""
+    row_fn = _block(_html(client), "  function renderFieldRow(field) {")
+    out = _node(_FAKE_DOM + """
+let selectedId = 'm';
+const FIELD_META = { BEAM_SIZE: { kind: 'int' } };
+const LOAD_TIME_FIELDS = new Set();
+const state = { BEAM_SIZE: 5 };
+function globalValue(f) { return state[f]; }
+function getOverrideValue(id, f) { return undefined; }
+let seeded = null;
+function setOverrideValue(id, f, v) { seeded = v; }
+function clearOverride() {}
+function fillInherits() {}
+function fmtValue(v) { return String(v); }
+function defaultForKind() { return 0; }
+function renderMain() {}
+function renderSidebar() {}
+""" + row_fn + """
+const row = renderFieldRow('BEAM_SIZE');
+state.BEAM_SIZE = 3;   // unsaved global edit after the row was painted
+fire(find(row, e => e.textContent === '+ override'), 'click').then(() => {
+  console.log(JSON.stringify(seeded));
+});
+""")
+    assert out == 3

@@ -1848,8 +1848,10 @@ function modelOverridesEditor(name, v) {
       add.addEventListener('click', () => {
         // Seed with the current global value so the admin starts from the
         // inherited value (not from a zero/empty default that overrides it).
-        const seed = (globalVal === null || globalVal === undefined)
-          ? defaultForKind(meta) : globalVal;
+        // Read it now: an unsaved global edit only refreshes this row's hint.
+        const cur = globalValue(field);
+        const seed = (cur === null || cur === undefined)
+          ? defaultForKind(meta) : cur;
         setOverrideValue(selectedId, field, seed);
         renderMain();
         renderSidebar();
