@@ -82,6 +82,14 @@ _infer_gate = LoopLock()   # as _lock below: a plain asyncio.Lock binds to one l
 # ref → count of jobs currently holding a lease on the cached model — an
 # in-use model is never evicted (see _drop_locked).
 _active: "dict[str, int]" = {}
+# id(llm) → completions handed to the executor for that model and not yet
+# finished. A cancelled job's lease is gone while its executor thread may
+# still be queued for or inside the decode (see _run_completion); this, not
+# the module-wide _infer_mutex (held by a decode on ANY model), is what
+# defers that one model's eviction. Written from the loop and from executor
+# threads, hence its own lock.
+_decoding: "dict[int, int]" = {}
+_decoding_mutex = threading.Lock()
 
 _lock = LoopLock()   # see core.loop_lock: survives a test suite's loop-per-lifespan
 # ref → loaded llama_cpp.Llama, insertion-ordered oldest-first (LRU: a cache
@@ -639,6 +647,13 @@ def _cached_gguf(repo: str, quant: "str | None") -> "str | None":
     return next(iter(matches.values()))
 
 
+def _draining(ref: str) -> bool:
+    """Whether a completion on ``ref``'s cached model is still in flight
+    (see _decoding)."""
+    llm = _models.get(ref)
+    return llm is not None and _decoding.get(id(llm), 0) > 0
+
+
 def _drop_locked(ref: str) -> bool:
     """Drop one cached model. Caller holds _lock. Declines (False) while a
     job holds a lease on it — closing llama.cpp's native context under a
@@ -648,24 +663,21 @@ def _drop_locked(ref: str) -> bool:
         return False
     # A cancelled job has already released its lease while its executor
     # thread may still be inside llm.create_chat_completion (see
-    # _run_completion): _infer_mutex is the one lock that tracks a running
-    # decode, so a busy mutex defers eviction exactly like a held lease.
-    if not _infer_mutex.acquire(blocking=False):
+    # _run_completion): a decode in flight on THIS model defers eviction
+    # exactly like a held lease. A decode on another model does not.
+    if _draining(ref):
         logger.info("[translate] a decode is still running — eviction of %s "
                     "deferred", ref)
         return False
+    llm = _models.pop(ref, None)
+    _last_used.pop(ref, None)
+    _params.pop(ref, None)
+    if llm is None:
+        return True
     try:
-        llm = _models.pop(ref, None)
-        _last_used.pop(ref, None)
-        _params.pop(ref, None)
-        if llm is None:
-            return True
-        try:
-            llm.close()
-        except Exception:  # noqa: BLE001 — best-effort teardown
-            pass
-    finally:
-        _infer_mutex.release()
+        llm.close()
+    except Exception:  # noqa: BLE001 — best-effort teardown
+        pass
     model_registry.unregister_loaded_model(_STATS_PREFIX + ref)
     import gc
     gc.collect()
@@ -686,7 +698,8 @@ def _trim_locked(cap: int) -> None:
     misses on different refs both see room and would both insert."""
     while len(_models) >= cap:
         victim = next(
-            (r for r in _models if not _active.get(r, 0)), None)
+            (r for r in _models
+             if not _active.get(r, 0) and not _draining(r)), None)
         if victim is None:
             # Every cached model is mid-job — overflow the cap rather
             # than free a context under a running decode; the idle
@@ -1324,10 +1337,34 @@ async def _run_completion(llm, family: str, text: str, source_code: str,
     # guard failure.
     max_tokens = (len(text) + len(context or "")) // 2 + 256
     loop = asyncio.get_running_loop()
-    async with _infer_gate:
+    # Count this completion against the model until its thread is done (see
+    # _decoding). Whoever takes ``claimed`` first settles the count: the
+    # thread when it starts, or this coroutine when the job was cancelled
+    # (or the submit failed) before the thread ever ran — that thread then
+    # skips the decode instead of running it on a model already evicted.
+    key, claimed = id(llm), threading.Lock()
+
+    def _settle() -> None:
+        with _decoding_mutex:
+            n = _decoding.get(key, 0) - 1
+            if n > 0:
+                _decoding[key] = n
+            else:
+                _decoding.pop(key, None)
+
+    def _decode() -> str:
+        if not claimed.acquire(blocking=False):
+            return ""
         try:
-            return await loop.run_in_executor(
-                None, _complete, llm, family, prompt, max_tokens)
+            return _complete(llm, family, prompt, max_tokens)
+        finally:
+            _settle()
+
+    async with _infer_gate:
+        with _decoding_mutex:
+            _decoding[key] = _decoding.get(key, 0) + 1
+        try:
+            return await loop.run_in_executor(None, _decode)
         except asyncio.CancelledError:
             logger.warning("translation cancelled — executor thread will "
                            "complete on its own (%s)", family)
@@ -1343,6 +1380,9 @@ async def _run_completion(llm, family: str, text: str, source_code: str,
                 "translation inference failed (input too long for the "
                 "model's context window, or a runtime error) — see the "
                 "server log") from None
+        finally:
+            if claimed.acquire(blocking=False):
+                _settle()
 
 
 async def translate_segments(
@@ -1720,12 +1760,14 @@ def _reset_for_tests() -> None:
     """Test-only: empty the loaded-model LRU (tests only ever put stubs in
     it) with its load params and per-ref load locks — a stale params tuple
     turns a later test's stub into a hit or a reload by test order — the
-    job leases — a leaked lease makes every later eviction test see a
-    refusal — and the model-card language lists a predownload test
-    records."""
+    job leases and in-flight decode counts — a leaked lease or count makes
+    every later eviction test see a refusal — and the model-card language
+    lists a predownload test records."""
     _models.clear()
     _last_used.clear()
     _params.clear()
     _loading.clear()
     _active.clear()
+    with _decoding_mutex:
+        _decoding.clear()
     _card_languages.clear()

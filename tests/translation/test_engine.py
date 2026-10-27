@@ -2227,34 +2227,75 @@ def _hold_infer_mutex():
     return t, held, release
 
 
-def test_draining_decode_blocks_eviction():
+def _decode_in_flight(monkeypatch, llm):
+    """Start one _run_completion on ``llm`` whose _complete parks until the
+    returned release Event is set, and cancel that job: like a cancelled
+    job in production, its executor thread is still inside the decode.
+    Returns (thread, release_event) once the cancel has landed."""
+    inside = threading.Event()
+    cancelled = threading.Event()
+    release = threading.Event()
+
+    def parked(llm_, family, prompt, max_tokens):
+        inside.set()
+        release.wait(5)
+        return "ok"
+    monkeypatch.setattr(translation, "_complete", parked)
+
+    async def job():
+        task = asyncio.ensure_future(translation._run_completion(
+            llm, "chatml", "Hallo", "de", "en", "", ""))
+        await asyncio.get_running_loop().run_in_executor(
+            None, inside.wait, 5)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        cancelled.set()
+    t = threading.Thread(target=lambda: asyncio.run(job()), daemon=True)
+    t.start()
+    assert cancelled.wait(5)
+    return t, release
+
+
+def test_draining_decode_blocks_eviction(monkeypatch):
     """A cancelled job has released its lease while its executor thread is
-    still inside create_chat_completion: the busy _infer_mutex must defer
-    eviction exactly like a held lease (closing under the decode is a
-    native use-after-free)."""
-    class _Closable:
-        closed = False
-        def close(self):
-            self.closed = True
-    llm = _Closable()
+    still inside create_chat_completion: the decode in flight on the model
+    must defer eviction exactly like a held lease (closing under the decode
+    is a native use-after-free)."""
+    llm = _FakeLlama("org/drain:Q4")
     translation._models["org/drain:Q4"] = llm
     translation._last_used["org/drain:Q4"] = 0.0
     translation._params["org/drain:Q4"] = ("cpu", 1)
-    translation._active.pop("org/drain:Q4", None)
-    t, _held, release = _hold_infer_mutex()
+    t, release = _decode_in_flight(monkeypatch, llm)
     try:
         assert translation._drop_locked("org/drain:Q4") is False
         assert "org/drain:Q4" in translation._models
         assert not llm.closed
-        release.set()
-        t.join(5)
-        assert translation._drop_locked("org/drain:Q4") is True
-        assert llm.closed
     finally:
         release.set()
+        t.join(5)
+    assert translation._decoding == {}
+    assert translation._drop_locked("org/drain:Q4") is True
+    assert llm.closed
 
 
-def test_trim_stops_on_draining_decode(lru_env):
+def test_a_decode_on_another_model_does_not_block_eviction():
+    """_infer_mutex is held by a decode on ANY model: an idle, unleased
+    model must still be evictable while another model decodes, or a cold
+    load stacks cap+1 models in VRAM."""
+    llm = _FakeLlama("org/idle:Q4")
+    translation._models["org/idle:Q4"] = llm
+    translation._last_used["org/idle:Q4"] = 0.0
+    t, _held, release = _hold_infer_mutex()
+    try:
+        assert translation._drop_locked("org/idle:Q4") is True
+        assert llm.closed and "org/idle:Q4" not in translation._models
+    finally:
+        release.set()
+        t.join(5)
+
+
+def test_trim_skips_a_draining_decode(lru_env, monkeypatch):
     made, _stats = lru_env
 
     async def load_both():
@@ -2264,18 +2305,52 @@ def test_trim_stops_on_draining_decode(lru_env):
     assert set(translation._models) == {"o/a", "o/b"}
 
     # _trim_locked(cap) frees room for ONE incoming load (evicts while
-    # len >= cap): cap 2 with two residents targets exactly the LRU one.
-    t, _held, release = _hold_infer_mutex()
+    # len >= cap): the LRU "o/a" is still draining, so the idle "o/b" goes.
+    t, release = _decode_in_flight(monkeypatch, made["o/a"])
     try:
         translation._trim_locked(2)          # must return, not spin
-        assert set(translation._models) == {"o/a", "o/b"}
-        assert not made["o/a"].closed and not made["o/b"].closed
+        assert set(translation._models) == {"o/a"}
+        assert not made["o/a"].closed and made["o/b"].closed
+        translation._trim_locked(1)          # only the draining one is left
+        assert set(translation._models) == {"o/a"}
     finally:
         release.set()
         t.join(5)
-    translation._trim_locked(2)
-    assert set(translation._models) == {"o/b"}
-    assert made["o/a"].closed
+    translation._trim_locked(1)
+    assert not translation._models and made["o/a"].closed
+
+
+def test_a_completion_cancelled_before_its_thread_starts_never_decodes(
+        monkeypatch):
+    """A job cancelled while its completion still waits for an executor
+    thread settles the in-flight count itself, and that completion never
+    decodes — the model may already be evicted when a thread frees up."""
+    from concurrent.futures import ThreadPoolExecutor
+    calls = []
+    monkeypatch.setattr(translation, "_complete",
+                        lambda *a: calls.append(a) or "ok")
+    llm = _FakeLlama("org/queued:Q4")
+    release = threading.Event()
+
+    async def run():
+        loop = asyncio.get_running_loop()
+        pool = ThreadPoolExecutor(1)     # one thread, occupied below
+        loop.set_default_executor(pool)
+        blocker = loop.run_in_executor(None, release.wait, 5)
+        task = asyncio.ensure_future(translation._run_completion(
+            llm, "chatml", "Hallo", "de", "en", "", ""))
+        await asyncio.sleep(0.05)        # queued behind the blocker
+        assert translation._decoding == {id(llm): 1}
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert translation._decoding == {}
+        release.set()
+        await blocker
+        pool.shutdown(wait=True)         # a queued call would have run now
+    asyncio.run(run())
+    assert calls == []
+    assert translation._decoding == {}
 
 
 def test_offline_load_raises_when_not_cached(monkeypatch):
