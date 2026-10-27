@@ -327,24 +327,28 @@ def test_submit_disabled_for_nonadmin_403(client, app_module, make_user_key,
 
 
 def test_correction_field_over_cap_422(client):
-    """`wrong`/`correct` are bounded at the edge (4096) purely as storage
+    """`wrong`/`correct` are bounded at the edge (64 KB) purely as storage
     hygiene — the store truncates both to text_corrections.CAP_CORRECTION_FIELD
     (200) anyway. This is NOT a memory guard: the body is json.loads'd before
     pydantic sees it."""
     r = client.post(_SUBMIT, json={
         "request_id": "req-cap",
-        "corrections": [{"wrong": "x" * 5000, "correct": "y", "idx": 0}],
+        "corrections": [{"wrong": "x" * 70_000, "correct": "y", "idx": 0}],
     })
     assert r.status_code == 422
 
 
 def test_correction_field_under_cap_still_accepted(client):
-    """The bound is ~20x the store's functional cap, so nothing that succeeds
-    today starts failing — including text far longer than the 200 chars the
-    store keeps."""
+    """A shift-click range on /quick-config makes `wrong` a slice of `final`
+    (up to 50 000 chars) with no span limit, so a selection of a few thousand
+    words must be stored (truncated to 200 chars), not 422'd with the chips
+    and comment lost."""
+    span = "word " * 9_000
     r = client.post(_SUBMIT, json={
         "request_id": "req-cap-ok",
-        "corrections": [{"wrong": "x" * 4000, "correct": "y", "idx": 0}],
+        "final": span,
+        "corrections": [{"wrong": span.strip(), "correct": "y", "idx": 0,
+                         "idx_end": 8_999}],
     })
     assert r.status_code == 200
 

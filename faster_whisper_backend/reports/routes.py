@@ -60,13 +60,14 @@ router = APIRouter()
 class CorrectionIn(BaseModel):
     model_config = {"extra": "forbid"}
     # Hygiene only: bounds what can be STORED per correction. The store
-    # truncates both to text_corrections.CAP_CORRECTION_FIELD (200) anyway,
-    # so 4096 (~20x that) is a generous edge bound that cannot reject any
-    # submission which succeeds today. It is NOT a memory guard — the whole
-    # body is json.loads'd before pydantic sees it; that ceiling lives in
-    # main.py's request-size handling.
-    wrong: str = Field(default="", max_length=4096)
-    correct: str = Field(default="", max_length=4096)
+    # truncates both to text_corrections.CAP_CORRECTION_FIELD (200) anyway.
+    # The bound must sit above `final`'s 50 000 cap: a shift-click range on
+    # /quick-config makes `wrong` a slice of `final` with no span limit, so
+    # anything tighter 422s a long selection the store would just truncate.
+    # It is NOT a memory guard — the whole body is json.loads'd before
+    # pydantic sees it; that ceiling lives in main.py's request-size handling.
+    wrong: str = Field(default="", max_length=65_536)
+    correct: str = Field(default="", max_length=65_536)
     idx: int | None = None
     # Inclusive end-of-range for multi-word selections. Omitted (or equal
     # to idx) for single-word corrections. Validation happens server-side
