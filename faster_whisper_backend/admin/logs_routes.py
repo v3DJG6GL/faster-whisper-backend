@@ -193,7 +193,19 @@ async def _stream_log_lines(request: Request):
             yield ": waiting-for-file\n\n"
             continue
         if size < pos:
-            pos = 0  # rotated
+            # Rotated: the file we were tailing is now LOG_FILE.1, and the
+            # lines logged into it since the last poll are only there.
+            def _read_rotated_rest(start: int) -> str:
+                try:
+                    with open(f"{cfg.LOG_FILE}.1", "rb") as f:
+                        f.seek(start)
+                        return f.read().decode("utf-8", errors="replace")
+                except OSError:
+                    return ""
+
+            for line in (await asyncio.to_thread(_read_rotated_rest, pos)).splitlines():
+                yield f"data: {line}\n\n"
+            pos = 0
         if size == pos:
             yield ": keepalive\n\n"
             continue

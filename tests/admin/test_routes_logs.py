@@ -200,6 +200,45 @@ def test_logs_stream_holds_back_a_half_written_line(app_module, monkeypatch, tmp
     assert asyncio.run(drive()) == ["data: half of a läng line\n\n"]
 
 
+def test_logs_stream_keeps_lines_logged_just_before_a_rotation(
+        app_module, monkeypatch, tmp_path):
+    """On rotation the tail restarted at offset 0 of the new file, so lines
+    written to the old one after the last poll (now only in LOG_FILE.1)
+    never reached the live viewer."""
+    import asyncio
+
+    from faster_whisper_backend.admin import logs_routes
+
+    log = tmp_path / "live.log"
+    log.write_text("first\n", encoding="utf-8")
+    monkeypatch.setattr(app_module.cfg, "LOG_FILE", str(log), raising=False)
+    real = logs_routes._read_chain_window
+
+    def _read_then_rotate(*a, **k):
+        out = real(*a, **k)
+        with open(log, "a", encoding="utf-8") as f:
+            f.write("before rollover\n")
+        log.rename(tmp_path / "live.log.1")
+        log.write_text("new\n", encoding="utf-8")   # shorter than the offset
+        return out
+
+    monkeypatch.setattr(logs_routes, "_read_chain_window", _read_then_rotate)
+    monkeypatch.setattr(logs_routes, "_logs_stream_reauth",
+                        lambda request, seen, resolved_at: (seen, resolved_at))
+
+    async def drive():
+        gen = logs_routes._stream_log_lines(None)
+        try:
+            assert await gen.__anext__() == "data: first\n\n"
+            assert await gen.__anext__() == "data: __LIVE_TAIL__\n\n"
+            return [await asyncio.wait_for(gen.__anext__(), timeout=5)
+                    for _ in range(2)]
+        finally:
+            await gen.aclose()
+
+    assert asyncio.run(drive()) == ["data: before rollover\n\n", "data: new\n\n"]
+
+
 def test_logs_stream_reauth_rechecks_an_expired_session_without_a_bump(
         client, make_user_key, monkeypatch):
     """Session expiry bumps no config version, so a version-only re-check
