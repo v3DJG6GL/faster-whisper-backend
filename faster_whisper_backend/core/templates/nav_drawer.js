@@ -54,4 +54,10 @@
   });
   if(bd)bd.addEventListener('click',close);
   nav.addEventListener('click',function(e){if(e.target.closest('.navlink'))close();});
+  // Widening past the drawer breakpoint (a phone rotated to landscape) hides
+  // the toggle and backdrop, so close() would be unreachable while the rest
+  // of the page stays inert. Keep the query in step with nav.css.
+  if(window.matchMedia){
+    window.matchMedia('(max-width: 40em)').addEventListener('change',function(e){if(!e.matches)close();});
+  }
 })();</script>
