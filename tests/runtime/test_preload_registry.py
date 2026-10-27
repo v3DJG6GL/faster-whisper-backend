@@ -397,6 +397,42 @@ def test_supplied_plan_id_cannot_adopt_another_users_plan(monkeypatch):
     assert r3["plan_id"] == "a" * 8
 
 
+def test_a_squatted_derived_id_does_not_merge_into_the_squatters_plan(
+        monkeypatch):
+    """The derived id is computable by anyone who knows the user id, so a
+    second user can register under it first. The caller's own POST must then
+    still land on a plan of its own — and keep landing on the same one."""
+    _enable(monkeypatch)
+    _fits(monkeypatch, (None, "size_unknown"))
+    victim = preload.derive_plan_id("alice", [("diarization", "p/a")])
+    preload.register_plan("mallory", [("diarization", "p/m")], plan_id=victim)
+    r = preload.register_plan("alice", [("diarization", "p/a")])
+    assert r["plan_id"] != victim
+    assert preload._plans[r["plan_id"]].user_id == "alice"
+    assert preload._plans[victim].user_id == "mallory"
+    assert preload._plans[victim].entries == [("diarization", "p/m")]
+    # Stable: a repeat POST restamps alice's plan instead of adding one.
+    r2 = preload.register_plan("alice", [("diarization", "p/a")])
+    assert r2["plan_id"] == r["plan_id"]
+    assert len(preload._plans) == 2
+
+
+def test_failure_cleanup_finds_a_plan_rekeyed_off_a_squatted_derived_id(
+        monkeypatch):
+    _enable(monkeypatch)
+    _fits(monkeypatch, (None, "size_unknown"))
+    victim = preload.derive_plan_id("alice", [("diarization", "p/a")])
+    preload.register_plan("mallory", [("diarization", "p/m")], plan_id=victim)
+
+    def _boom(*a, **k):
+        raise RuntimeError("ledger on fire")
+    monkeypatch.setattr(model_sizes, "fits", _boom)
+    preload.register_plan("alice", [("diarization", "p/a")])
+    assert [p for p in preload._plans.values() if p.user_id == "alice"] == []
+    assert preload.is_warm("pyannote:p/a") is False
+    assert preload._plans[victim].user_id == "mallory"
+
+
 def test_plan_cap_evicts_the_plan_closest_to_expiry(monkeypatch):
     _enable(monkeypatch)
     _fits(monkeypatch, (None, "size_unknown"))

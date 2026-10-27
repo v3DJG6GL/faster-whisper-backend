@@ -505,6 +505,26 @@ def derive_plan_id(user_id: str, entries: "list[tuple[str, str]]") -> str:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:32]
 
 
+def _owned_pid_locked(user_id: str, pid: str,
+                      id_kept: "list[tuple[str, str]]") -> str:
+    """`pid` if it is free or the caller's own plan, else the first free or
+    caller-owned id in a deterministic chain off the caller's derived id.
+
+    The derived id is not secret, so another user can register under it
+    first; a single re-derive would then merge into their plan anyway. The
+    chain is longer than the registry can hold, so it always ends on a free
+    or owned slot, and stays stable so a repeat POST restamps the same plan."""
+    uid = user_id or ""
+    cand = pid
+    for n in range(-1, _MAX_PLANS + 1):
+        if n >= 0:
+            cand = derive_plan_id(uid if n == 0 else f"{uid}|{n}", id_kept)
+        plan = _plans.get(cand)
+        if plan is None or plan.user_id == uid:
+            return cand
+    return cand
+
+
 def register_plan(user_id: "str | None",
                   entries: "list[tuple[str, str]]",
                   *,
@@ -547,7 +567,9 @@ def register_plan(user_id: "str | None",
             with _lock:
                 # _register_plan re-derives the id on a cross-user collision,
                 # so only a plan this caller owns may be dropped.
-                for cand in {resolved_pid, derived_pid}:
+                for cand in {resolved_pid, derived_pid,
+                             _owned_pid_locked(user_id, resolved_pid,
+                                               kept)}:
                     p = _plans.get(cand)
                     if p is not None and p.user_id == (user_id or ""):
                         _drop_plan_locked(cand, "register failed")
@@ -603,15 +625,13 @@ def _register_plan(user_id, entries, *, plan_id, denied, stage_ahead,
     results: "list[dict]" = []
     to_enqueue: "list[tuple[str, str, str]]" = []
     with _lock:
+        # A supplied id may only ever adopt the caller's OWN plan. Naming
+        # another user's id would merge into theirs, extend its TTL and
+        # let their stage advances warm this caller's entries — so the
+        # collision is treated as a miss and the id re-derived (from the
+        # unfiltered list, the id register_plan's cleanup looks under).
+        pid = _owned_pid_locked(user_id, pid, id_kept)
         plan = _plans.get(pid)
-        if plan is not None and plan.user_id != (user_id or ""):
-            # A supplied id may only ever adopt the caller's OWN plan. Naming
-            # another user's id would merge into theirs, extend its TTL and
-            # let their stage advances warm this caller's entries — so the
-            # collision is treated as a miss and the id re-derived (from the
-            # unfiltered list, the id register_plan's cleanup looks under).
-            pid = derive_plan_id(user_id or "", id_kept)
-            plan = _plans.get(pid)
         if plan is None:
             if len(_plans) >= _MAX_PLANS:
                 # Drop the plan closest to expiry rather than refusing: the
