@@ -32,3 +32,13 @@ def test_a_host_idna_cannot_encode_fails_closed_not_raises():
         assert net_policy.host_is_forbidden(host), host
         with pytest.raises(OSError):
             net_policy.resolve_pinned(host, 443)
+
+
+def test_nat64_is_judged_by_its_embedded_ipv4():
+    """A DNS64 resolver answers 64:ff9b::<ipv4> for every IPv4-only site;
+    the public ones must pass, the internal ones must not."""
+    for addr in ("64:ff9b::808:808", "64:ff9b::8.8.8.8"):
+        assert not net_policy.address_is_forbidden(addr), addr
+    for addr in ("64:ff9b::7f00:1", "64:ff9b::a00:1", "64:ff9b::a9fe:a9fe",
+                 "64:ff9b::6440:1"):
+        assert net_policy.address_is_forbidden(addr), addr

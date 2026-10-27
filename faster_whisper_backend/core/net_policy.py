@@ -28,6 +28,11 @@ import socket
 # exactly as internal as RFC1918 from a hosted backend's point of view.
 CGNAT_NET = ipaddress.ip_network("100.64.0.0/10")
 
+# NAT64 well-known prefix (RFC 6052). A DNS64 resolver (IPv6-only VPS,
+# 464XLAT ISPs) synthesizes these for every IPv4-only site; ipaddress counts
+# the whole prefix as reserved, which would condemn every such name.
+NAT64_NET = ipaddress.ip_network("64:ff9b::/96")
+
 
 def address_is_forbidden(addr: str) -> bool:
     """THE policy: True when this literal address is one we never fetch from.
@@ -39,6 +44,7 @@ def address_is_forbidden(addr: str) -> bool:
     unspecified address.
     An IPv4-mapped IPv6 literal (::ffff:127.0.0.1) is judged as its IPv4 half,
     so the mapping can't be used to smuggle an internal target past the gate.
+    A NAT64 literal (64:ff9b::/96) is likewise judged as the IPv4 it embeds.
     """
     try:
         ip = ipaddress.ip_address(addr.split("%", 1)[0])  # strip zone id
@@ -46,6 +52,8 @@ def address_is_forbidden(addr: str) -> bool:
         return True
     if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped:
         ip = ip.ipv4_mapped
+    elif ip in NAT64_NET:
+        ip = ipaddress.IPv4Address(int(ip) & 0xFFFFFFFF)
     if (ip.is_private or ip.is_loopback or ip.is_link_local
             or ip.is_multicast or ip.is_reserved or ip.is_unspecified
             or getattr(ip, "is_site_local", False)):
