@@ -164,6 +164,24 @@ def test_direct_media_probe_gates_generic(monkeypatch):
         _run(udl.check_url_policy("https://x/page.html"))
 
 
+def test_direct_media_probe_spends_from_the_probe_deadline(monkeypatch):
+    # A socket timeout above the preview timeout must not let the probe's
+    # pool thread outlive probe()'s budget against a dribbling host.
+    monkeypatch.setattr(udl, "match_extractor", lambda u: "Generic")
+    monkeypatch.setattr(udl.cfg, "URL_ALLOW_GENERIC", False, raising=False)
+    monkeypatch.setattr(udl.cfg, "URL_ALLOW_DIRECT_MEDIA", True, raising=False)
+    monkeypatch.setattr(udl.cfg, "URL_SOCKET_TIMEOUT_S", 600, raising=False)
+    budgets = []
+
+    def _probe(u, timeout):
+        budgets.append(timeout)
+        return False
+    monkeypatch.setattr(udl, "_direct_media_probe_sync", _probe)
+    with pytest.raises(udl.UrlDownloadError, match="direct"):
+        _run(udl.probe("https://x/page.html", timeout=5.0))
+    assert len(budgets) == 1 and budgets[0] <= 5.0, budgets
+
+
 def _stand_in_yt_dlp(monkeypatch, matched, info):
     """probe() with the offline match saying `matched` and a stand-in yt-dlp
     whose extract_info returns `info` (a dict, or a callable of the URL that
@@ -792,7 +810,7 @@ time.sleep(60)
 def test_probe_timeout_covers_policy_check(monkeypatch):
     """`timeout` is the budget for the WHOLE probe — a policy check that
     stalls (DNS, direct-media GET) must trip the same client-safe message."""
-    async def slow_policy(url):
+    async def slow_policy(url, deadline=None):
         await asyncio.sleep(30)
         return "Generic"
 

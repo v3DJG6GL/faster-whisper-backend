@@ -844,9 +844,11 @@ def guard_self_check(*, force: bool = False) -> None:
                     yt_dlp_version() or "?", module.RH_NAME)
 
 
-async def check_url_policy(url: str) -> str:
+async def check_url_policy(url: str, *, deadline: "float | None" = None) -> str:
     """Enforce the operator's site policy for `url` BEFORE any yt-dlp fetch.
-    Returns the matched extractor key. Raises UrlDownloadError on reject."""
+    Returns the matched extractor key. Raises UrlDownloadError on reject.
+    `deadline` (time.monotonic()) caps the direct-media GET: the caller's
+    wait_for abandons the await, never the pool thread."""
     loop = asyncio.get_running_loop()
     key = await loop.run_in_executor(_PROBE_POOL, match_extractor, url)
     if key == "Generic":
@@ -854,6 +856,9 @@ async def check_url_policy(url: str) -> str:
             return key
         if getattr(cfg, "URL_ALLOW_DIRECT_MEDIA", True):
             probe_timeout = float(getattr(cfg, "URL_SOCKET_TIMEOUT_S", 15))
+            if deadline is not None:
+                probe_timeout = max(1.0, min(probe_timeout,
+                                             deadline - time.monotonic()))
             ok = await loop.run_in_executor(
                 _PROBE_POOL,
                 lambda: _direct_media_probe_sync(url, timeout=probe_timeout))
@@ -1041,7 +1046,8 @@ async def probe(url: str, *, timeout: float) -> UrlMediaInfo:
     url = validate_url(url)
     deadline = time.monotonic() + timeout
     try:
-        key = await asyncio.wait_for(check_url_policy(url), timeout)
+        key = await asyncio.wait_for(
+            check_url_policy(url, deadline=deadline), timeout)
     except asyncio.TimeoutError:
         raise UrlTimeoutError("the site took too long to answer") from None
 

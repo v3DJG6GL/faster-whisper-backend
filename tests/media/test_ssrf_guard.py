@@ -518,7 +518,7 @@ def broken_guard(monkeypatch):
 
 def test_probe_refuses_when_the_guard_cannot_install(broken_guard, caplog,
                                                      monkeypatch):
-    async def _policy(url):
+    async def _policy(url, deadline=None):
         return "Generic"
 
     monkeypatch.setattr(udl, "check_url_policy", _policy)
