@@ -920,6 +920,9 @@
     var body = { pages: pages };
     // Tag picker is row-scoped; the controller was stashed at render.
     if (tr._tagPicker) body.quick_config_tags = tr._tagPicker.getTags();
+    // Only Save is disabled in flight; cells stay editable, so the baseline
+    // must be what was sent, not the row as it looks when the PATCH resolves.
+    var sent = permRowState(tr);
     btn.disabled = true;
     api('PATCH',
         '/settings/api-keys/api/users/' + encodeURIComponent(uid) + '/permissions',
@@ -930,7 +933,7 @@
       })
       .then(function() {
         // The just-saved state is the new baseline; recompute clears dirty.
-        tr._permBaseline = permRowState(tr);
+        tr._permBaseline = sent;
         recomputePermDirty(tr);
         showToast('Permissions saved', 'ok');
       })

@@ -89,3 +89,44 @@ async function scenario(secure, clipOk, fallbackOk) {
     assert out["secure_fail"] == {"open": True, "loads": 0}
     assert out["http_ok"] == {"open": False, "loads": 1}
     assert out["secure_ok"] == {"open": False, "loads": 1}
+
+
+def test_save_perms_baseline_is_the_sent_state(client, tmp_path):
+    """Only Save is disabled while the permissions PATCH runs, but the new
+    baseline was read from the row when the request resolved: a scope click
+    made in flight became "saved", the dirty tint cleared, and the edit was
+    lost on the next load()."""
+    html = client.get("/settings/api-keys").text
+    js = (_fn(html, "permRowState") + "\n" + _fn(html, "recomputePermDirty")
+          + "\n" + _fn(html, "savePerms") + r"""
+function group(page, val) {
+  var g = { dataset: { page: page }, val: val };
+  g.querySelector = function () { return { dataset: { val: g.val } }; };
+  return g;
+}
+var cls = new Set();
+var groups = [group('logs', 'none'), group('stats', 'own')];
+var tr = {
+  querySelectorAll: function () { return groups; },
+  _tagPicker: { getTags: function () { return ['a']; } },
+  classList: { toggle: function (c, on) { if (on) cls.add(c); else cls.delete(c); } },
+};
+tr._permBaseline = permRowState(tr);
+var resolve, sentBody;
+function api(method, url, body) {
+  sentBody = body;
+  return new Promise(function (r) { resolve = r; });
+}
+function showToast() {}
+(async function () {
+  groups[0].val = 'all';          // the edit being saved
+  savePerms('u1', tr, { disabled: false });
+  groups[1].val = 'all';          // a further click while the PATCH runs
+  resolve({ ok: true, json: function () { return Promise.resolve({}); } });
+  await new Promise(function (r) { setTimeout(r, 0); });
+  console.log(JSON.stringify({ sent: sentBody.pages, dirty: cls.has('dirty') }));
+})();
+""")
+    out = _run(js, tmp_path)
+    assert out["sent"] == {"logs": "all", "stats": "own"}
+    assert out["dirty"] is True
