@@ -103,6 +103,52 @@ def test_cancel_during_register_keeps_the_model_cached_and_frees_the_lease(
         model_registry._loaded_models.clear()
 
 
+def test_cancel_while_register_is_queued_still_registers(monkeypatch):
+    """The default executor is shared with every other to_thread call: with
+    its workers busy the registry write is still queued when the cancel
+    lands, and a plain cancelled to_thread future drops the queued item. The
+    cached model must still be registered (the idle evictor and /stats walk
+    the registry, never the cache)."""
+    import concurrent.futures
+    import threading
+    _stub_load(monkeypatch)
+    monkeypatch.setattr(tx_models, "_model_load_lock", asyncio.Lock())
+    gate, queued = threading.Event(), []
+
+    def _record_then_busy_the_pool(name, secs):
+        # Runs on the loop right before the register is submitted: occupy
+        # the only worker so the register lands in the executor's queue.
+        asyncio.get_running_loop().run_in_executor(None, gate.wait, 5)
+        queued.append(name)
+    monkeypatch.setattr(tx_models.metrics, "record_model_load",
+                        _record_then_busy_the_pool)
+
+    async def run():
+        loop = asyncio.get_running_loop()
+        loop.set_default_executor(
+            concurrent.futures.ThreadPoolExecutor(max_workers=1))
+        task = asyncio.create_task(tx_models._get_or_load_model("x"))
+        while not queued:
+            await asyncio.sleep(0.01)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        gate.set()
+        # One worker, FIFO: once this runs, anything queued before it has.
+        await loop.run_in_executor(None, lambda: None)
+
+    try:
+        asyncio.run(run())
+        assert "x" in tx_models._loaded_models
+        assert "x" in model_registry._loaded_models
+    finally:
+        gate.set()
+        tx_models._loaded_models.clear()
+        model_registry._loaded_models.clear()
+
+
 def test_cancel_during_construction_finishes_the_build_under_the_lock(
         monkeypatch):
     """A cancelled load must not release the load lock while its constructor

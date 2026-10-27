@@ -1165,7 +1165,7 @@ async def _get_or_load_model(name: str, *, lease: bool = False) -> "WhisperModel
             vram_delta = 0
         # Cached BEFORE the register await: a cancellation landing on it
         # (a client disconnect, preload cancelling load_unleased) cannot
-        # stop the registry write already on the thread, and a registry
+        # stop the (shielded) registry write, and a registry
         # entry with no cached model is a phantom nothing ever unregisters.
         _loaded_models[name] = new_model
         # A cancelled caller never receives the model: it stays unleased.
@@ -1175,15 +1175,19 @@ async def _get_or_load_model(name: str, *, lease: bool = False) -> "WhisperModel
         # Off the loop: register_loaded_model persists the measurement
         # (model_sizes.record -> atomic_json.save_lock + fsync), which can
         # block for the lock timeout when a peer worker holds the file.
+        # Shielded: the shared default executor can still hold the write in
+        # its queue, and a cancelled to_thread future drops a queued item,
+        # leaving a cached model the registry (idle evictor, /stats) never
+        # learns about.
         try:
-            await asyncio.to_thread(
+            await asyncio.shield(asyncio.to_thread(
                 model_registry.register_loaded_model,
                 name,
                 vram_bytes=vram_delta,
                 device=loaded_device,
                 compute_type=loaded_compute,
                 load_secs=load_secs,
-            )
+            ))
         except BaseException as e:
             # The caller never receives the model, so never releases.
             if leased:
