@@ -571,6 +571,32 @@ def test_test_pipeline_regex_list_skips_bad_entry(client):
     assert r.json()["final"] == "X Z"
 
 
+def test_test_pipeline_regex_list_skips_bad_replacement_template(client):
+    # The engine runs pattern.sub(replacement_str), and re parses that template
+    # up front: a backref to a missing group fails with or without a match.
+    # The dry run must flag it on a non-matching sample too, and skip only that
+    # entry on a matching one instead of discarding the valid entries' output.
+    def run(sample):
+        r = client.post("/settings/test-pipeline", json={
+            "sample": sample,
+            "rules": [{"name": "rl", "type": "regex-list", "enabled": True, "entries": [
+                {"pattern": "abc", "replacement": "Q"},
+                {"pattern": "(b)", "replacement": "\\2"},   # no group 2
+            ]}],
+        })
+        assert r.status_code == 200
+        return r.json()["steps"][0]
+
+    step = run("xyz")
+    assert step["after"] == "xyz"
+    assert "invalid group reference" in (step["error"] or "")
+
+    step = run("abc b")
+    assert step["after"] == "Q b"
+    assert step["matches"] == 1
+    assert "invalid group reference" in (step["error"] or "")
+
+
 def test_test_pipeline_map_preview_matches_the_engine(client, app_module):
     """The dry run compiles a callback:map with the engine's own compile
     (pipeline/dictation_map.py): the ß/ss variants and the dictated-punctuation

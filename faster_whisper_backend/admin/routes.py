@@ -772,9 +772,8 @@ async def test_pipeline(payload: dict[str, Any]) -> JSONResponse:
             return {**common, "after": text, "skipped": True}
 
         # regex-list: apply each entry in order to a running buffer (entry N's
-        # output feeds N+1), all inside ONE 2 s guard. Same mt.expand backref
-        # idiom as the single-pattern path → parity with the engine / the streaming
-        # equivalence guard. Reports one card-level step (summed matches).
+        # output feeds N+1), all inside ONE 2 s guard. Reports one card-level
+        # step (summed matches).
         if rtype == "regex-list":
             entries = rule.get("entries", []) or []
             if not entries:
@@ -806,9 +805,17 @@ async def test_pipeline(payload: dict[str, Any]) -> JSONResponse:
                                 bad = str(e)
                             continue
                         er = entry.get("replacement", "") or ""
-                        erep = (lambda mt, _r=er: mt.expand(_r) if "\\" in _r else _r)
-                        total += sum(1 for _ in ecre.finditer(cur))
-                        cur = ecre.sub(erep, cur)
+                        try:
+                            n = sum(1 for _ in ecre.finditer(cur))
+                            # The plain template string, as the engine's
+                            # pattern.sub(payload) runs it: re parses it up
+                            # front, so a bad backref fails even with no match.
+                            cur = ecre.sub(er, cur)
+                        except re.error as e:
+                            if bad is None:
+                                bad = str(e)
+                            continue
+                        total += n
                         # Engine parity: each entry is its own engine row and
                         # the walk stops once the text passes the output bound.
                         if len(cur) > pl_engine._POSTPROCESS_MAX_CHARS:
