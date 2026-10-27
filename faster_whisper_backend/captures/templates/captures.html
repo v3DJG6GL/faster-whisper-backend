@@ -705,6 +705,8 @@
     display: flex; flex-direction: column; gap: 0.3rem;
     margin: 0.4rem 0 0.2rem; width: 100%;
   }
+  /* The author `display` above beats the UA [hidden] rule. */
+  .merge-preview-panel[hidden] { display: none; }
   /* Compact audio player — reused for the merge preview AND for the
      single-capture / group-expand audio rows on /captures. */
   .compact-player {
@@ -3402,7 +3404,14 @@
       _previewBound = null;
     }
     if (_previewActivePanel) {
-      _previewActivePanel.hidden = true;
+      if (_previewActivePanel._inline) {
+        // The inline player's ▶ lives in the panel: fold back to the
+        // player row only, as before the first play.
+        if (_previewActivePanel._corrSec) _previewActivePanel._corrSec.hidden = true;
+        if (_previewActivePanel._gtSec) _previewActivePanel._gtSec.hidden = true;
+      } else {
+        _previewActivePanel.hidden = true;
+      }
       var t = _previewActivePanel._toggleBtn;
       if (t) { t._setIcon('play'); t.disabled = false; }
       _previewActivePanel = null;
@@ -3960,6 +3969,7 @@
       corrSec.hidden = true;
       if (!externalGround) gtSec.hidden = true;
     }
+    panel._inline = !!opts.inlinePlayer;
     panel._corrSec = corrSec;
     panel._gtSec = externalGround ? null : gtSec;
 

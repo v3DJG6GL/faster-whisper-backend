@@ -318,3 +318,29 @@ function tick() { return new Promise(function(r) { setTimeout(r, 0); }); }
 """)
     assert out == {"bound": 0, "played": 0, "blobs": 0, "active": False,
                    "icon": "play", "disabled": False}
+
+
+@needs_node
+def test_preview_panel_hidden_really_hides_and_keeps_the_inline_play(page, tmp_path):
+    """`.merge-preview-panel { display: flex }` beat the UA [hidden] rule, so
+    the manual merge modal showed an empty Corrections box before ▶. With
+    hiding effective, stopping an inline-player card must fold only its
+    editing sections: its ▶ lives inside the panel."""
+    assert ".merge-preview-panel[hidden] { display: none; }" in page
+    out = _run_node(tmp_path, r"""
+var _previewAudio = null, _previewBlobUrl = null, _previewBound = null,
+    _previewGen = 0, _previewActivePanel = null;
+""" + _js_function(page, "_stopAnyPreview") + r"""
+function mk(inline) {
+  return { hidden: false, _inline: inline, _corrSec: { hidden: false },
+    _gtSec: { hidden: false },
+    _toggleBtn: { _setIcon: function() {}, disabled: true } };
+}
+var inline = mk(true), modal = mk(false);
+_previewActivePanel = inline; _stopAnyPreview();
+_previewActivePanel = modal; _stopAnyPreview();
+console.log(JSON.stringify({
+  inline: [inline.hidden, inline._corrSec.hidden, inline._gtSec.hidden],
+  modal: modal.hidden }));
+""")
+    assert out == {"inline": [False, True, True], "modal": True}
