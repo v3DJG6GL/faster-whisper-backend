@@ -93,6 +93,7 @@ _NOT_RESET = {
         "_RULES_LOCK": "a LoopLock keeps one asyncio.Lock per running loop and "
                        "prunes closed loops, so a dead TestClient loop's lock "
                        "is never waited on — nothing to rebind",
+        "_APPLY_LOCK": "a LoopLock, like _RULES_LOCK — nothing to rebind",
     },
 }
 
