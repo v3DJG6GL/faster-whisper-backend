@@ -200,11 +200,20 @@ async def _stream_log_lines(request: Request):
         # Also off the loop — this runs every 0.5 s for the lifetime of every
         # subscriber, and the delta after a burst can be megabytes.
         def _read_delta(start: int) -> "tuple[str, int]":
-            with open(cfg.LOG_FILE, "r", encoding="utf-8", errors="replace") as f:
+            with open(cfg.LOG_FILE, "rb") as f:
                 f.seek(start)
-                return f.read(), f.tell()
+                data = f.read()
+            # Whole lines only: a poll can land while a record is still being
+            # written, and a half line (or a multibyte char cut in two, which
+            # decodes to U+FFFD on both sides) would show as two broken lines.
+            # The unterminated tail stays for the next poll.
+            cut = data.rfind(b"\n") + 1
+            return data[:cut].decode("utf-8", errors="replace"), start + cut
 
         chunk, pos = await asyncio.to_thread(_read_delta, pos)
+        if not chunk:
+            yield ": keepalive\n\n"
+            continue
         for line in chunk.splitlines():
             yield f"data: {line}\n\n"
 

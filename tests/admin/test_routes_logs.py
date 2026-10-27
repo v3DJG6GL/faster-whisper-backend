@@ -150,6 +150,56 @@ def test_logs_stream_delivers_a_line_logged_during_the_backlog(
     asyncio.run(drive())
 
 
+def test_logs_stream_holds_back_a_half_written_line(app_module, monkeypatch, tmp_path):
+    """A poll landing mid-record sent the half line on its own and moved the
+    offset past it, so the rest arrived as a second line; an umlaut cut at
+    the boundary decoded to U+FFFD on both sides."""
+    import asyncio
+
+    from faster_whisper_backend.admin import logs_routes
+
+    log = tmp_path / "live.log"
+    log.write_text("first\n", encoding="utf-8")
+    monkeypatch.setattr(app_module.cfg, "LOG_FILE", str(log), raising=False)
+    real = logs_routes._read_chain_window
+    whole = "half of a läng line".encode("utf-8")
+    cut = whole.index(b"\xc3") + 1          # inside the two-byte "ä"
+
+    def _read_then_log_half(*a, **k):
+        out = real(*a, **k)
+        with open(log, "ab") as f:
+            f.write(whole[:cut])
+        return out
+
+    monkeypatch.setattr(logs_routes, "_read_chain_window", _read_then_log_half)
+    monkeypatch.setattr(logs_routes, "_logs_stream_reauth",
+                        lambda request, seen, resolved_at: (seen, resolved_at))
+
+    async def drive():
+        gen = logs_routes._stream_log_lines(None)
+        got = []
+        try:
+            assert await gen.__anext__() == "data: first\n\n"
+            assert await gen.__anext__() == "data: __LIVE_TAIL__\n\n"
+            # First poll sees only the unterminated half.
+            msg = await asyncio.wait_for(gen.__anext__(), timeout=5)
+            if msg.startswith("data: "):
+                got.append(msg)
+            with open(log, "ab") as f:
+                f.write(whole[cut:] + b"\n")
+            for _ in range(20):             # bounded: keepalives never end
+                if got and got[-1].endswith("line\n\n"):
+                    break
+                msg = await asyncio.wait_for(gen.__anext__(), timeout=5)
+                if msg.startswith("data: "):
+                    got.append(msg)
+        finally:
+            await gen.aclose()
+        return got
+
+    assert asyncio.run(drive()) == ["data: half of a läng line\n\n"]
+
+
 def test_logs_stream_reauth_rechecks_an_expired_session_without_a_bump(
         client, make_user_key, monkeypatch):
     """Session expiry bumps no config version, so a version-only re-check
