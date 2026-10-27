@@ -13,7 +13,10 @@ fi
 
 UNIT="/etc/systemd/system/${SERVICE_NAME}.service"
 
-if systemctl list-unit-files | grep -q "^${SERVICE_NAME}.service"; then
+# A here-string, not `systemctl list-unit-files | grep -q`: grep -q exits on
+# the first match and systemctl, still writing, dies of SIGPIPE — under
+# pipefail an installed unit reads as "not installed" and stays running.
+if grep -q "^${SERVICE_NAME}\.service" <<< "$(systemctl list-unit-files)"; then
   echo "Stopping + disabling ${SERVICE_NAME} ..."
   systemctl disable --now "${SERVICE_NAME}" || true
 else

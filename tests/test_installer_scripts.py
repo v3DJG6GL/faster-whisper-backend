@@ -113,6 +113,34 @@ def test_linux_installer_env_sets_reads_dotenv_like_the_service(tmp_path):
     assert set(_run(empty).values()) == {"0"}
 
 
+# --- uninstall-service.sh ----------------------------------------------------
+
+@pytest.mark.skipif(shutil.which("bash") is None or os.name == "nt",
+                    reason="needs a POSIX bash")
+def test_linux_uninstaller_sees_an_installed_unit_in_a_long_listing(tmp_path):
+    # `systemctl list-unit-files | grep -q` under pipefail: grep exits on the
+    # match, systemctl dies of SIGPIPE, and the installed unit was reported
+    # "not installed" — left running while its unit file was deleted. Run the
+    # script's own condition against a fake systemctl with a >64 KB listing.
+    sh = _read("uninstall-service.sh")
+    cond = re.search(r"^if .*list-unit-files.*; then$", sh, re.M).group(0)
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    fake = bindir / "systemctl"
+    fake.write_text("#!/bin/sh\n"
+                    "echo 'whisper-api.service enabled enabled'\n"
+                    "yes 'zz-other.service static -' | head -c 2000000\n",
+                    encoding="utf-8")
+    fake.chmod(0o755)
+    script = ("set -euo pipefail\nSERVICE_NAME=whisper-api\n"
+              f"{cond}\n  echo installed\nelse\n  echo missing\nfi\n")
+    out = subprocess.run(
+        [shutil.which("bash"), "-c", script], capture_output=True, text=True,
+        timeout=60, env={"PATH": f"{bindir}:/usr/bin:/bin"})
+    assert out.returncode == 0, out.stderr
+    assert out.stdout.strip() == "installed"
+
+
 # --- uninstall-service.ps1 ---------------------------------------------------
 
 def test_uninstall_never_executes_legacy_nssm():
