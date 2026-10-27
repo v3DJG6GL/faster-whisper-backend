@@ -105,3 +105,46 @@ function enter() { handlers[0]({ key: 'Enter', preventDefault: function() {} });
 })();
 """)
     assert out == [False, True]
+
+
+# ---- bulk status / undo -------------------------------------------------------
+
+@needs_node
+def test_bulk_status_ignores_a_second_click_while_in_flight(page, tmp_path):
+    """A second bulk PATCH sent while the first was in flight reported the
+    first's freshly written status as prev_status, and its toast replaced
+    the first's Undo: the original status was unrecoverable."""
+    fns = _js_function(page, "_bulkStatus") + "\n" + _js_function(page, "_undoBulk")
+    out = _run_node(tmp_path, "var _bulkBusy = false;\n" + fns + r"""
+var calls = [], pending = [], toasts = [];
+function api(m, u, body) {
+  calls.push(body.status);
+  return new Promise(function(res) { pending.push(res); });
+}
+function _selectedRows() { return [{ id: 'a' }]; }
+async function _okToDropOpenEdits() { return true; }
+var _allCaptures = [{ id: 'a', status: 'new' }];
+function _clearSelection() {} function render() {} function reloadCounts() {}
+function toast(msg, err, action) { toasts.push({ msg: msg, action: !!action }); }
+function tick() { return new Promise(function(r) { setTimeout(r, 0); }); }
+(async function() {
+  _bulkStatus('reviewed');
+  await tick();
+  _bulkStatus('dismissed');                 // double-click / second button
+  await tick();
+  var during = calls.slice();
+  _undoBulk([{ id: 'a', prev_status: 'new' }]);   // Undo pressed mid-flight
+  await tick();
+  var afterUndo = calls.slice();
+  pending[0]({ updated: [{ id: 'a', prev_status: 'new' }], skipped: [] });
+  await tick();
+  _bulkStatus('ready');                     // guard released afterwards
+  await tick();
+  console.log(JSON.stringify({ during: during, afterUndo: afterUndo,
+    after: calls, undoReoffered: toasts[0].action }));
+})();
+""")
+    assert out["during"] == ["reviewed"]
+    assert out["afterUndo"] == ["reviewed"]
+    assert out["undoReoffered"] is True
+    assert out["after"] == ["reviewed", "ready"]

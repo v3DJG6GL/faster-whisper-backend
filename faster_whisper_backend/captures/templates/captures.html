@@ -1412,12 +1412,17 @@
       + 'List not refreshed: an open card has unsaved edits. Refresh after saving.', err);
   }
 
+  // One bulk PATCH at a time: a second one in flight reports the first's
+  // freshly written status as prev_status, and its toast replaces the
+  // first's Undo, so the original status could never be restored.
+  var _bulkBusy = false;
   async function _bulkStatus(status) {
     var rows = _selectedRows();
-    if (!rows.length) return;
+    if (!rows.length || _bulkBusy) return;
     if (!(await _okToDropOpenEdits('Mark ' + rows.length + ' ' + status + '?', 'Continue')))
       return;
     var ids = rows.map(function(r) { return r.id; });
+    _bulkBusy = true;
     try {
       var j = await api('PATCH', '/captures/api/bulk', { ids: ids, status: status });
       var updated = j.updated || [], skipped = j.skipped || [];
@@ -1433,6 +1438,8 @@
       toast(msg, false, updated.length ? { label: 'Undo', fn: function() { _undoBulk(updated); } } : null);
     } catch (e) {
       if (e.message !== 'unauthorized') toast('Bulk update failed: ' + e.message, true);
+    } finally {
+      _bulkBusy = false;
     }
   }
   // Inverse of _bulkStatus: one request per previous status (≤ 4). A row
@@ -1440,11 +1447,18 @@
   // sample was locked meanwhile, or whose audio vanished, as locked /
   // audio_missing — so the toast names each reason, like _bulkStatus.
   async function _undoBulk(updated) {
+    if (_bulkBusy) {
+      // Clicking Undo hid the toast: offer it again rather than lose it.
+      toast('A bulk change is still running — try again', true,
+        { label: 'Undo', fn: function() { _undoBulk(updated); } });
+      return;
+    }
     if (!(await _okToDropOpenEdits('Undo the bulk change?', 'Undo')))
       return;
     var groups = {};
     updated.forEach(function(u) { (groups[u.prev_status] = groups[u.prev_status] || []).push(u.id); });
     var restored = 0, why = {};
+    _bulkBusy = true;
     try {
       for (var st in groups) {
         if (!Object.prototype.hasOwnProperty.call(groups, st)) continue;
@@ -1464,6 +1478,8 @@
       toast('Undid ' + restored + (note ? ' · ' + note : ''));
     } catch (e) {
       if (e.message !== 'unauthorized') toast('Undo failed: ' + e.message, true);
+    } finally {
+      _bulkBusy = false;
     }
   }
   async function _bulkDelete() {
