@@ -270,6 +270,30 @@ def test_a_locked_stage_model_admits_only_the_effective_value(
     assert row.get("reason") != "not_allowed"
 
 
+def test_a_refused_whisper_id_does_not_unlock_a_locked_stage_model(
+        client, app_module, monkeypatch):
+    # A refused whisper id only drops the per-model layer; the caller's
+    # ident locks still hold, or one bogus id in the body would admit any
+    # allowlisted model in place of the locked one.
+    from faster_whisper_backend.settings import effective_config
+    cfg = _enable(app_module, monkeypatch)
+    monkeypatch.setattr(cfg, "DIARIZATION_ALLOWED_MODELS", ["p/A", "p/B"],
+                        raising=False)
+    monkeypatch.setattr(cfg, "DIARIZATION_MODEL", "p/A", raising=False)
+    monkeypatch.setattr(
+        effective_config, "build_ident",
+        lambda *a, **k: effective_config.Resolved(
+            values={"DIARIZATION_MODEL": "p/A"},
+            locked={"DIARIZATION_MODEL"}))
+    r = client.post(_URL, json={"models": [
+        {"family": "whisper", "id": "../../x"},
+        {"family": "diarization", "id": "p/B"}]})
+    assert r.status_code == 202, r.text
+    rows = {(m["family"], m["id"]): m for m in r.json()["models"]}
+    assert rows[("diarization", "p/B")]["state"] == "deferred"
+    assert rows[("diarization", "p/B")]["reason"] == "not_allowed"
+
+
 def test_a_locked_empty_translation_model_admits_the_default(monkeypatch):
     # A locked TRANSLATION_MODEL with no value (config.json ships "", and an
     # identity binding fault locks every field) still runs the server default
