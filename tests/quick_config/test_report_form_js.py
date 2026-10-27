@@ -110,6 +110,16 @@ const document = {
   createElement: (t) => new El(t),
   createTextNode: (t) => ({ textContent: t, parentNode: null }),
 };
+const _body = new El('body');
+document.querySelectorAll = (sel) => _body.querySelectorAll(sel);
+function _traceItem(entry, form) {
+  // A rendered trace row as syncReportedBadges / submitReport see it.
+  const item = new El('div'); item.className = 'trace-item';
+  item.dataset.entry = JSON.stringify(entry);
+  const badge = new El('span'); badge.className = 'trace-reported-badge';
+  item.appendChild(badge); item.appendChild(form); _body.appendChild(item);
+  return { item, badge };
+}
 const _ls = {};
 const localStorage = {
   getItem: (k) => (k in _ls ? _ls[k] : null),
@@ -156,10 +166,13 @@ def _run_js(client, tmp_path, body, funcs=_REPORT_FUNCS):
     """Run `body` after the extracted page functions; it must print one JSON
     value via `out(...)`. Returns that value."""
     page = client.get("/quick-config").text
-    word_re = re.search(r"^const _WORD_RE = .*$", page, re.M)
-    assert word_re
+    consts = []
+    for name in ("_WORD_RE", "_REPORTED_KEY", "_REPORTED_MAX"):
+        m = re.search(r"^const " + name + r" = .*$", page, re.M)
+        assert m, f"const {name} not found in /quick-config"
+        consts.append(m.group(0))
     src = "\n".join(
-        [_FAKE_DOM, word_re.group(0)]
+        [_FAKE_DOM, *consts]
         + [_extract_function(page, n) for n in funcs]
         + ["const out = (v) => console.log(JSON.stringify(v));",
            "(async () => {", body, "})().catch((e) => { console.error(e); process.exit(1); });"]
@@ -198,3 +211,34 @@ def test_seeded_single_word_chip_is_normalised_and_struck_through(client, tmp_pa
     assert res["extended"] == [
         {"wrong": "Beta Gamma", "correct": "Bet", "idx": 1, "idx_end": 2},
     ]
+
+
+def test_remove_report_404_clears_stale_local_hint(client, tmp_path):
+    # The localStorage hint outlives a report deleted elsewhere; the DELETE
+    # then 404s, and treating that as a failure left the badge (and the
+    # Remove button) up with no way to clear them.
+    res = _run_js(client, tmp_path, r"""
+      globalThis.confirm = () => true;
+      globalThis._detailText = (j, d) => (j && j.detail) || d;
+      globalThis.api = async () => ({
+        ok: false, status: 404, json: async () => ({ detail: 'no report to delete' }),
+      });
+      markReported('rid1');
+      const entry = { request_id: 'rid1', final: 'Alpha Beta' };
+      const form = _buildReportForm(entry);
+      const { badge } = _traceItem(entry, form);
+      badge.style.display = 'inline-flex';
+      await removeReport(form);
+      out({
+        reported: isReported('rid1'),
+        badge: badge.style.display,
+        removeBtn: form.querySelector('.rep-remove').style.display,
+        toasts: _toasts,
+      });
+    """, funcs=_REPORT_FUNCS + (
+        "markReported", "unmarkReported", "syncReportedBadges", "removeReport",
+    ))
+    assert res["reported"] is False
+    assert res["badge"] == "none"
+    assert res["removeBtn"] == "none"
+    assert not [t for t in res["toasts"] if t[0] == "err"]

@@ -1728,7 +1728,11 @@ async function removeReport(form) {
       'DELETE',
       '/quick-config/reports/api/by-request/' + encodeURIComponent(rid),
     );
-    if (!r.ok) {
+    // 404 = the server holds no report for this trace (deleted on
+    // /reports or from another device); only the localStorage hint kept
+    // the badge up, so fall through and clear it — an error here would
+    // leave a badge that can never be removed.
+    if (!r.ok && r.status !== 404) {
       let msg = 'Remove failed (' + r.status + ')';
       try { const j = await r.json(); msg = _detailText(j, msg); } catch (_) {}
       showToast(msg, 'err');
