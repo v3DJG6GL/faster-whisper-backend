@@ -225,7 +225,18 @@ def _prune_defaults_to_removal(payload: dict[str, Any]) -> dict[str, Any]:
     """
     cleaned: dict[str, Any] = {}
     for k, v in payload.items():
-        if k not in _PRUNE_EXEMPT and v is not None and _values_equal(v, _baseline_value(k)):
+        base = _baseline_value(k)
+        # Set-valued fields load back as sets, and _baseline_value hands them
+        # out sorted; the client sends its own order (checklist toggle order,
+        # editor line order), so a reordered default must still count as one.
+        if k in settings_schema._POST_LOAD_COERCERS and isinstance(v, list):
+            try:
+                v_cmp, base = set(v), set(base or ())
+            except TypeError:
+                v_cmp = v  # unhashable items: not the default; validation 422s it
+        else:
+            v_cmp = v
+        if k not in _PRUNE_EXEMPT and v is not None and _values_equal(v_cmp, base):
             cleaned[k] = None
         else:
             cleaned[k] = v

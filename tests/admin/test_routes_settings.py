@@ -176,6 +176,23 @@ def test_every_field_reset_to_default_is_pruned(client):
     assert checked >= 10                          # sanity: the sweep ran broadly
 
 
+def test_set_field_default_in_other_order_is_pruned(client):
+    """Set-valued fields (ALLOWED_MODELS, CAPTURES_PIPELINE_RULES_EXCLUDE, ...)
+    come back sorted as default_value, but the client sends them in its own
+    order: unchecking and re-checking a default-excluded capture rule appends
+    it at the end. The same members in another order are still the default and
+    must not pin an override the Reset link can no longer clear."""
+    from faster_whisper_backend.settings import config_store
+
+    fields = client.get("/settings/state").json()["fields"]
+    for name in ("ALLOWED_MODELS", "CAPTURES_PIPELINE_RULES_EXCLUDE"):
+        dv = fields[name]["default_value"]
+        assert len(dv) >= 2, name   # reversal must actually reorder
+        body = client.post("/settings/state", json={name: list(reversed(dv))}).json()
+        assert name not in body["saved"], name
+    assert config_store.load_overrides() == {}
+
+
 def test_pipeline_rules_not_auto_pruned(client):
     """PIPELINE_RULES is intentionally exempt from prune-on-default: a local copy
     equal to the factory rules SHADOWS config.json (managed by the pipeline
