@@ -2436,6 +2436,11 @@ async def patch_sample_api(
                         json.dumps(chips, sort_keys=True):
                     continue
                 captures_store.update_capture(member_id, {"corrections": chips})
+            # The re-derive below reads the cached members, which still hold
+            # the pre-edit chips; the stored transcript would lag one edit.
+            for m in members_now:
+                if m["id"] in by_member:
+                    m["corrections"] = by_member[m["id"]]
 
         # Re-derive `transcript` from current members + chips ONLY when the
         # corrections changed. The common status/admin_notes/is_locked auto-save

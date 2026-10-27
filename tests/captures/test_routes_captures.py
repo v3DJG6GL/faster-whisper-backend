@@ -1812,6 +1812,29 @@ def test_group_chip_save_keeps_a_members_anchorless_chip(
     assert [c["correct"] for c in m2] == ["Q"]
 
 
+def test_group_chip_save_stores_the_transcript_with_the_new_chips(
+        client, make_user_key):
+    """The re-derive after the chip fan-out read the cached members, which
+    still held the pre-edit chips, so the stored transcript lagged one edit
+    (and the next bulk reapply saw a spurious diff)."""
+    from faster_whisper_backend.captures import samples_store as gs
+    from faster_whisper_backend.captures import store as captures_store
+
+    uid, raw_key = make_user_key("root", is_admin=True)
+    sid = "chiptrans0001"
+    conn = captures_store._require_conn()
+    _insert_sample(conn, gs, sid, locked=False, user_id=uid)
+    for order, cid in enumerate(("chiptransmem1", "chiptransmem2")):
+        _two_word_member(conn, cid, sid, uid, order, [])
+        conn.execute("UPDATE captures SET final_text = 'x y' WHERE id = ?",
+                     (cid,))
+    chip = {"wrong": "x", "correct": "Z", "idx": 0}
+    r = client.patch(f"/captures/api/samples/{sid}", headers=bearer(raw_key),
+                     json={"corrections": [chip], "baseline_corrections": []})
+    assert r.status_code == 200, r.text
+    assert gs.get_sample(sid)["transcript"] == "Z y x y"
+
+
 def test_preview_save_chips_keeps_a_members_anchorless_chip(
         client, make_user_key):
     """Same REPLACE fan-out on a not-yet-merged proposal: the anchorless chip
