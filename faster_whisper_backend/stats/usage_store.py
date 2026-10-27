@@ -464,12 +464,21 @@ def _date_of(ts: float, tz: zoneinfo.ZoneInfo | None) -> datetime.date:
     return datetime.datetime.fromtimestamp(ts, tz).date()
 
 
-def _midnight_hour(day: datetime.date, tz: zoneinfo.ZoneInfo | None) -> int:
-    """UTC epoch-hour of local midnight on `day` in `tz`. A naive datetime
+def _midnight_ts(day: datetime.date, tz: zoneinfo.ZoneInfo | None) -> float:
+    """UTC timestamp of local midnight on `day` in `tz`. A naive datetime
     resolves in the server's local zone, an aware one in its own — both are
-    calendar arithmetic, so DST transitions land where the zone says."""
-    midnight = datetime.datetime(day.year, day.month, day.day, tzinfo=tz)
-    return int(midnight.timestamp() // 3600)
+    calendar arithmetic, so DST transitions land where the zone says. The
+    window bound for the per-job rows, which carry an exact timestamp."""
+    return datetime.datetime(day.year, day.month, day.day, tzinfo=tz).timestamp()
+
+
+def _midnight_hour(day: datetime.date, tz: zoneinfo.ZoneInfo | None) -> int:
+    """First UTC epoch-hour that starts at or after local midnight on `day`.
+    Rounded UP because every reader dates an hour bucket by its start
+    (_date_of(hour * 3600)): in a half-hour zone (IST +5:30) the hour that
+    straddles midnight starts on the day before, and a floored bound would
+    count it in the window while filing it under a day outside it."""
+    return -(-int(_midnight_ts(day, tz)) // 3600)
 
 
 # --- write path -----------------------------------------------------------
@@ -1505,8 +1514,11 @@ def document(
     today_end = _midnight_hour(today + datetime.timedelta(days=1), tz)
     if with_stages:
         _fill_from_jobs(conn, doc, user_id, tz, today, with_stages,
-                        start_hour * 3600, end_hour * 3600,
-                        today_start * 3600, today_end * 3600, key_id, kinds)
+                        _midnight_ts(_from_epoch_day(f), tz),
+                        _midnight_ts(_from_epoch_day(t) + datetime.timedelta(days=1), tz),
+                        _midnight_ts(today, tz),
+                        _midnight_ts(today + datetime.timedelta(days=1), tz),
+                        key_id, kinds)
     else:
         _fill_from_rollups(conn, doc, user_id, tz, today,
                            start_hour, end_hour, today_start, today_end, key_id, kinds)
@@ -1646,6 +1658,8 @@ def overview(
     conn = _require_conn()
     start_hour = _midnight_hour(_from_epoch_day(f), tz)
     end_hour = _midnight_hour(_from_epoch_day(t) + datetime.timedelta(days=1), tz)
+    start_ts = _midnight_ts(_from_epoch_day(f), tz)
+    end_ts = _midnight_ts(_from_epoch_day(t) + datetime.timedelta(days=1), tz)
 
     # entity id → {"label", "user_id"?, "values": [...], "totals": cell}
     ents: dict[str, dict[str, Any]] = {}
@@ -1697,8 +1711,7 @@ def overview(
                         " processing_s, utterances FROM usage_jobs" + where
                         + _with_clause(with_stages)
                         + " AND created_ts >= ? AND created_ts < ?",
-                        (*params, *with_stages, float(start_hour * 3600),
-                         float(end_hour * 3600)))]
+                        (*params, *with_stages, start_ts, end_ts))]
         else:
             rows = [(_epoch_day(_date_of(int(r["hour"]) * 3600, tz)), r,
                      {"sessions": int(r["sessions"] or 0),
@@ -1723,8 +1736,6 @@ def overview(
                         key_id=r["key_id"]), day, cell)
     elif by == "model":
         where, params = _scope_where(user_id, key_id, kinds=kinds, kind_col="kind")
-        start_ts = start_hour * 3600
-        end_ts = end_hour * 3600
         for job in conn.execute(
             "SELECT model, created_ts, status, audio_s, words, processing_s, utterances"
             " FROM usage_jobs" + where + _with_clause(with_stages)
@@ -1744,7 +1755,7 @@ def overview(
             " FROM usage_job_stages s JOIN usage_jobs ON usage_jobs.job_id = s.job_id"
             + where + _with_clause(with_stages)
             + " AND usage_jobs.created_ts >= ? AND usage_jobs.created_ts < ?",
-            (*params, *with_stages, float(start_hour * 3600), float(end_hour * 3600)),
+            (*params, *with_stages, start_ts, end_ts),
         ):
             cell = {"sessions": 1, "requests": 1, "errors": 0, "words": 0,
                     "audio_s": float(r["audio_s"] or 0.0),
@@ -1796,7 +1807,7 @@ def overview(
     ]
 
     models = _models_in_window(conn, user_id, key_id, with_stages,
-                               start_hour * 3600, end_hour * 3600, kinds)
+                               start_ts, end_ts, kinds)
 
     out: dict[str, Any] = {
         "v": 2,
@@ -2153,8 +2164,8 @@ def tail(
     span = t - f + 1
 
     def bounds(fd: int, td: int) -> tuple[float, float]:
-        return (_midnight_hour(_from_epoch_day(fd), tz) * 3600.0,
-                _midnight_hour(_from_epoch_day(td) + datetime.timedelta(days=1), tz) * 3600.0)
+        return (_midnight_ts(_from_epoch_day(fd), tz),
+                _midnight_ts(_from_epoch_day(td) + datetime.timedelta(days=1), tz))
 
     start_ts, end_ts = bounds(f, t)
     pstart, pend = bounds(f - span, f - 1)

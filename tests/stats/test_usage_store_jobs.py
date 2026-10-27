@@ -538,6 +538,31 @@ def test_days_reckoned_in_caller_zone_across_dst_end(usage_store_db):
     assert utc["streak"]["all"] == {"current": 2, "best": 2}
 
 
+
+def test_half_hour_zone_files_the_boundary_hour_inside_the_window(usage_store_db):
+    """Asia/Kolkata is +5:30, so one UTC hour straddles each local midnight
+    and is filed under the day it starts in. The hour from 23:30 on the 9th
+    is the 9th's and stays out of a 10..11 window; the one from 23:30 on the
+    11th is the 11th's and counts. A floored bound did the reverse: the
+    series carried a day before range.from and dropped the last day's
+    evening. Same on the per-job (with=) path, and 'today' agrees."""
+    us = usage_store_db
+    ist = zoneinfo.ZoneInfo("Asia/Kolkata")
+    for d, words in ((9, 10), (11, 5)):
+        us.record_usage(key_id="k", user_id="u", audio_s=1.0, words=words,
+                        status="ok", kind="file", job_id=f"j{d}",
+                        hour=_hour(2025, 3, d, 23, 30, ist),
+                        stages=[{"name": "diarizing", "secs": 1.0}])
+    now = _ts(2025, 3, 11, 12, 0, _UTC)
+    for with_stages in ((), ("diarizing",)):
+        doc = us.document("u", from_day=_D("2025-03-10"), to_day=_D("2025-03-11"),
+                          tz=ist, tz_name="Asia/Kolkata", now=now,
+                          with_stages=with_stages)
+        assert [(p["day"], p["all"]["words"]) for p in doc["series"]] == [
+            (_D("2025-03-11"), 5)], with_stages
+        assert doc["total"]["all"]["words"] == 5
+        assert doc["today"]["all"]["words"] == 5
+
 def test_server_local_fallback_matches_tz_none(usage_store_db, set_tz):
     set_tz("America/New_York")
     us = usage_store_db

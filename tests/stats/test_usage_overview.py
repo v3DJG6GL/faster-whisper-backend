@@ -131,6 +131,23 @@ def test_overview_by_model_from_jobs(usage_store_db):
                                    "processing_s": 30.0, "rtf": 0.25}]
 
 
+
+def test_overview_by_model_half_hour_zone_lines_match_the_board(usage_store_db):
+    """In Asia/Kolkata (+5:30) a job at 23:30 the night before the window
+    used to reach the leaderboard while its day had no slot on the axis, and
+    one at 23:30 on the last day was left out of both."""
+    us = usage_store_db
+    ist = zoneinfo.ZoneInfo("Asia/Kolkata")
+    for iso, words in (("2025-06-01", 10), ("2025-06-03", 5)):
+        us.record_usage(key_id="k", user_id="u", audio_s=1.0, words=words,
+                        status="ok", kind="file", job_id=f"j{iso}", model="m",
+                        hour=_hour(iso, 18))   # 18:00 UTC = 23:30 IST
+    o = _ov(us, by="model", metric="words", tz=ist, tz_name="Asia/Kolkata",
+            from_day=_D("2025-06-02"), to_day=_D("2025-06-03"))
+    assert [(ln["id"], sum(ln["values"])) for ln in o["lines"]] == [("m", 5.0)]
+    assert [(r["id"], r["totals"]["words"]) for r in o["leaderboard"]] == [("m", 5)]
+    assert [m["words"] for m in o["models"]] == [5]
+
 def test_overview_by_stage_from_stage_hourly(usage_store_db):
     us = usage_store_db
     _seed(us)

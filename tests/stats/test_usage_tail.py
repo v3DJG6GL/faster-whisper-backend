@@ -125,6 +125,22 @@ def test_tail_document_and_compare(usage_store_db):
     assert us.truncated_to_days(NOW - 40 * 86400, 0, now=NOW) is None
 
 
+
+def test_tail_half_hour_zone_keeps_wait_days_inside_the_range(usage_store_db):
+    """In Asia/Kolkata (+5:30) the window used to start at 23:30 the night
+    before: wait.by_day carried a day before `from`, and the previous
+    window lost that same job."""
+    us = usage_store_db
+    ist = zoneinfo.ZoneInfo("Asia/Kolkata")
+    for iso, w in (("2025-06-01", 1.0), ("2025-06-03", 2.0)):
+        us.record_usage(key_id="k", user_id="u", audio_s=1.0, words=1, status="ok",
+                        kind="file", job_id=f"j{iso}", hour=_hour(iso, 18),  # 23:30 IST
+                        wait_s=w)
+    doc = us.tail(user_id=None, tz=ist, tz_name="Asia/Kolkata",
+                  from_day=_D("2025-06-02"), to_day=_D("2025-06-03"), now=NOW)
+    assert [(p["day"], p["n"]) for p in doc["wait"]["by_day"]] == [(_D("2025-06-03"), 1)]
+    assert doc["compare"]["runs"] == {"cur": 1, "prev": 1, "delta": 0}
+
 def test_outcome_stubs_stay_out_of_the_tail_distributions(usage_store_db):
     """record_outcome's stub (a hands-free session that ended without an
     utterance) is a session, not a decode: it used to count as a 0 s job of
