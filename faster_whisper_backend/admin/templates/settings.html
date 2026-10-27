@@ -1541,6 +1541,7 @@ function modelOverridesEditor(name, v) {
     const fresh = renderPipelineSection();
     pipelineSectionEl.replaceWith(fresh);
     pipelineSectionEl = fresh;
+    keepPinned();
   }
 
   // -------- DOM scaffolding ----------------------------------------------
@@ -1552,6 +1553,11 @@ function modelOverridesEditor(name, v) {
   mainpane.className = 'mo-mainpane';
   wrap.appendChild(sidebar);
   wrap.appendChild(mainpane);
+  // Every re-render builds fresh, enabled controls, and fieldRow() disables
+  // an env-pinned editor only once: re-apply it, or edits show but never save.
+  function keepPinned() {
+    if (isEnvPinned(name)) disableEnvPinnedEditor(wrap);
+  }
 
   // -------- sidebar -------------------------------------------------------
   function renderSidebar() {
@@ -1685,6 +1691,7 @@ function modelOverridesEditor(name, v) {
       });
       sidebar.appendChild(rmBtn);
     }
+    keepPinned();
   }
 
   // -------- collapse state ------------------------------------------------
@@ -1710,6 +1717,7 @@ function modelOverridesEditor(name, v) {
       renderModelEditView();
     }
     applyCollapseState();
+    keepPinned();
   }
 
   // -------- main pane: empty state (no allowed models) -------------------

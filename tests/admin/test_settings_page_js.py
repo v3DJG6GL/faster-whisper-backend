@@ -77,3 +77,17 @@ editor.opts.onToggle('a', false, false);
 console.log(JSON.stringify(state.CAPTURES_PIPELINE_RULES_EXCLUDE));
 """))
     assert out == ["a", "c"]
+
+
+# ---- MODEL_OVERRIDES editor -----------------------------------------------------
+
+def test_model_overrides_rerender_keeps_env_pinned_editor_disabled(client):
+    """fieldRow() disabled an env-pinned MODEL_OVERRIDES editor once; a sidebar
+    click, a model-list change or a PIPELINE_RULES edit rebuilt enabled
+    controls whose edits setDirty() then dropped without a word."""
+    html = _html(client)
+    mo = _block(html, "function modelOverridesEditor(name, v) {", "\n}\n")
+    assert "if (isEnvPinned(name)) disableEnvPinnedEditor(wrap);" in mo
+    for fn in ("function renderSidebar() {", "function renderMain() {",
+               "function refreshPipelineSection() {"):
+        assert "keepPinned();" in _block(mo, fn), fn
