@@ -519,3 +519,34 @@ function tick() { return new Promise(function(r) { setTimeout(r, 0); }); }
     assert out["raced"] == {"applied": 0, "dirty": True, "notes": "n + typed meanwhile",
                             "baseline": [{"wrong": "a", "correct": "A", "idx": 1, "idx_end": 1}]}
     assert out["applied"] == 1
+
+
+@needs_node
+def test_group_audio_fetch_superseded_or_after_collapse_is_dropped(page, tmp_path):
+    """refreshAudio revoked only the src present when it started: a fetch
+    overtaken by a newer refresh, or landing after the card collapsed, set
+    a blob URL nothing would revoke, and an older WAV could win the race
+    against the regenerated one."""
+    out = _run_node(tmp_path, "var audioSeq = 0;\n" + _js_function(page, "refreshAudio") + r"""
+var made = [], pending = [];
+var audioPlayerWrap = {}, audioSlot = { firstChild: audioPlayerWrap };
+var audio = { src: '', removeAttribute: function() { this.src = ''; } };
+var g = { id: 'g1' }, _openSamples = { g1: { audio: audio } };
+global.fetch = function() { return new Promise(function(r) { pending.push(r); }); };
+global.URL = { createObjectURL: function(b) { made.push(b.n); return 'blob:' + b.n; },
+  revokeObjectURL: function() {} };
+function reply(i, n) { pending[i]({ ok: true, blob: function() { return { n: n }; } }); }
+function tick() { return new Promise(function(r) { setTimeout(r, 0); }); }
+(async function() {
+  refreshAudio();                 // expand
+  refreshAudio();                 // Regenerate before the first landed
+  reply(1, 'new'); await tick();
+  reply(0, 'old'); await tick();
+  var raced = { made: made.slice(), src: audio.src };
+  refreshAudio();
+  delete _openSamples.g1;         // collapsed while fetching
+  reply(2, 'late'); await tick();
+  console.log(JSON.stringify({ raced: raced, made: made }));
+})();
+""")
+    assert out == {"raced": {"made": ["new"], "src": "blob:new"}, "made": ["new"]}

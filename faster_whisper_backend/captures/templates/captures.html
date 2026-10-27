@@ -5071,7 +5071,17 @@
         // missing-audio banner in place of the <audio> element. The
         // banner's button hits applyServerSample so success heals the
         // open card without a load() wipe. ---
+        var audioSeq = 0;
         function refreshAudio() {
+          // A fetch that a newer refresh superseded (Save / Regenerate /
+          // Lock right after expand), or that lands after a collapse or
+          // render() wipe, must not touch the player: its blob URL would
+          // never be revoked, and an older WAV could win the race.
+          var seq = ++audioSeq;
+          function stale() {
+            var st = _openSamples[g.id];
+            return seq !== audioSeq || !st || st.audio !== audio;
+          }
           // Reclaim the <audio> element if the banner replaced it.
           if (audio.src && audio.src.indexOf('blob:') === 0) {
             try { URL.revokeObjectURL(audio.src); } catch (_) {}
@@ -5087,8 +5097,9 @@
               if (!r.ok) throw new Error('HTTP ' + r.status);
               return r.blob();
             })
-            .then(function(b) { audio.src = URL.createObjectURL(b); })
+            .then(function(b) { if (!stale()) audio.src = URL.createObjectURL(b); })
             .catch(function(err) {
+              if (stale()) return;
               audioSlot.innerHTML = '';
               var banner = document.createElement('div');
               banner.className = 'cc-section';
