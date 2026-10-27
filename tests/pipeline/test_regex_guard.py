@@ -704,3 +704,29 @@ def test_possessive_atom_inside_a_repeated_group_passes():
     assert not g._nested_repetition(r"(?:(?>\w+) ?)+#")
     assert g._nested_repetition(r"(?:\w+ ?)+#")
     g.validate([("r", r"(?:\w++ ?)+#", "")])
+
+
+@pytest.mark.parametrize("pat", [
+    r"m(?:n?n)+#",
+    r"m(?:nn?)+#",
+    r"x*(n?n)+#",
+    r"Komma(?: ? )+#",
+    r"\b(?:\s?\s)+#",
+    r"m(?:[mn]?n)+#",
+    r"m(?:n{0,1}n)+#",
+])
+def test_optional_atom_beside_a_same_character_atom_is_rejected(pat):
+    """`(?:n?n)+` is `(?:n{1,2})+` spelled with `?`, which is not a variable
+    quantifier — so the screen never saw it, and the synthetic run (built
+    from the leading `m` / `x`) never reached the group: `re.sub` on
+    "m" + "n"*36 + "!" took over a second, growing ~1.6x per character."""
+    assert g._nested_repetition(pat)
+    with pytest.raises(ValueError, match="nested repetition"):
+        g.validate([("r", pat, "")])
+
+
+def test_optional_atom_with_a_disjoint_neighbour_passes():
+    for pat in (r"(?:n?m)+#", r"(?:,\s?)+", r"(?:\d\.?)+", r"(?:Mr\.?\s)+",
+                r"(?:n?+n)+#", r"(?>n?n)+#", r"(?:n?n)#"):
+        assert not g._nested_repetition(pat), pat
+    g.validate([("r", r"(?:Mr\.?\s)+", "")])

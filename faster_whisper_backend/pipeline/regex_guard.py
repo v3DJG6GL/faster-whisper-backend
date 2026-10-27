@@ -554,6 +554,11 @@ def _nested_repetition(pat: str) -> bool:
                 spans = list(zip(cuts, frame["alts"] + [close]))
             else:
                 spans = frame.get("inner")
+            # `(?:n?n)+` is `(?:n{1,2})+` spelled with an optional atom: each
+            # repetition takes one or two of a run's characters, so it splits
+            # the run as many ways as `(n|nn)+` (see _optional_overlap).
+            if _optional_overlap(pat[frame["start"]:close], icase):
+                frame["rep"] = True
             if variable and not frame["atomic"] and not possessive:
                 if frame["rep"]:
                     return True
@@ -612,6 +617,48 @@ def _nested_repetition(pat: str) -> bool:
             i = j
             continue
         i += 1
+    return False
+
+
+def _optional_overlap(body: str, icase: bool = False) -> bool:
+    """True if two ADJACENT single-character atoms of the group body ``body``
+    can match the same character while one of them is an optional ``?`` /
+    ``{0,1}`` that can give it back: `n?n`, `nn?`, `\\s?\\s`, `[mn]?n`.
+
+    ``?`` is not a variable quantifier (``_read_quantifier``), so such a pair
+    never marked its group as repeating — yet it consumes one OR two of a
+    run's characters exactly like ``n{1,2}``, and repeated it splits the run
+    as many ways as `(n|nn)+`. A possessive optional (`n?+n`) never gives its
+    character back and does not count. Only atoms at the body's top level and
+    in the same branch are compared; groups are left to the rest of the
+    screen. The match is one compiled atom against one character, so it is
+    safe in-process; DOTALL over-approximates, as in _follower_fixes_split.
+    """
+    import re
+    flags = re.DOTALL | (re.IGNORECASE if icase else 0)
+    prev = None  # (atom text, witness character, optional) of the last atom
+    i = 0
+    n = len(body)
+    while i < n:
+        if body[i] == "|":
+            prev, i = None, i + 1
+            continue
+        char, group, j = _next_atom(body, i)
+        _repeats, possessive, k, variable = _read_quantifier(body, j)
+        q = body[j:k]
+        optional = not possessive and (
+            q[:1] == "?" or re.fullmatch(r"\{0*,0*1\}\??", q) is not None)
+        cur = (body[i:j], char, optional) if (
+            group is None and char is not None and not variable) else None
+        if cur and prev and (cur[2] or prev[2]):
+            try:
+                if (re.fullmatch(prev[0], cur[1], flags)
+                        or re.fullmatch(cur[0], prev[1], flags)):
+                    return True
+            except re.error:
+                pass
+        prev = cur
+        i = max(k, j)
     return False
 
 
