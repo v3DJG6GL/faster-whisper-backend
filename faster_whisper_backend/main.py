@@ -1839,15 +1839,17 @@ async def transcribe(
                     # create_capture records nothing — skip the forced DTW
                     # too. Any other full store rotates its oldest rows out
                     # (dismissed → … → ready) and still records.
-                    def _ready_fills_cap() -> bool:
+                    async def _ready_fills_cap() -> bool:
                         try:
-                            return captures_store.ready_fills_cap()
+                            # Off the loop: clear_all holds the shared captures
+                            # connection across a full VACUUM.
+                            return await asyncio.to_thread(captures_store.ready_fills_cap)
                         except Exception:  # noqa: BLE001
                             # Store unavailable: let create_capture surface it.
                             return False
                     if (audio_bytes < hard_lim
                             and random.random() < sample_rate
-                            and not _ready_fills_cap()):
+                            and not await _ready_fills_cap()):
                         will_capture = True
                         want_word_ts = True  # force DTW for capture
                 except Exception as _ce:

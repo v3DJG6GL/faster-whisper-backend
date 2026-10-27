@@ -917,6 +917,34 @@ def test_a_store_full_of_ready_captures_skips_the_batch_capture(
     assert not fake_model.last_kwargs.get("word_timestamps")
 
 
+def test_batch_capture_gate_reads_the_store_off_the_event_loop(
+        client, app_module, fake_model, monkeypatch):
+    """ready_fills_cap queries the shared captures connection, which clear_all
+    holds across a full VACUUM: called on the loop, that VACUUM would freeze
+    every request and stream. It must run in a worker thread."""
+    import asyncio
+    from faster_whisper_backend.captures import store as captures_store
+
+    monkeypatch.setattr(app_module.cfg, "CAPTURES_RECORDING_ENABLED", True,
+                        raising=False)
+    monkeypatch.setattr(app_module.cfg, "CAPTURES_RECORDING_SAMPLE_RATE", 1.0,
+                        raising=False)
+    on_loop = []
+
+    def _probe():
+        try:
+            asyncio.get_running_loop()
+            on_loop.append(True)
+        except RuntimeError:
+            on_loop.append(False)
+        return True
+    monkeypatch.setattr(captures_store, "ready_fills_cap", _probe)
+
+    r = _post(client)
+    assert r.status_code == 200, r.text
+    assert on_loop == [False]
+
+
 def _retain_on(app_module, monkeypatch, tmp_path):
     monkeypatch.setattr(app_module.cfg, "MEDIA_PACKAGE_ENABLED", True,
                         raising=False)
