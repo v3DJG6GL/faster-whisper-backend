@@ -2617,11 +2617,16 @@ function _ensureUniqueSlug(slug, existing) {
 async function _testOneRule(rule) {
   const panelSample = document.getElementById('pipeline-test-sample');
   const sample = panelSample ? panelSample.value : TEST_PRESETS['default'];
-  const r = await api('POST', '/settings/test-pipeline', {
-    sample, rules: [rule],
-  });
-  if (!r.ok) return null;
-  const j = await r.json();
+  let j;
+  try {
+    const r = await api('POST', '/settings/test-pipeline', {
+      sample, rules: [rule],
+    });
+    if (!r.ok) return null;
+    j = await r.json();
+  } catch (_) {
+    return null;   // fetch rejects on a network error / cut-off reply
+  }
   return (j.steps && j.steps[0]) || null;
 }
 
@@ -3762,10 +3767,16 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
       body.appendChild(status);
 
       let timer = null;
+      // The debounce only drops calls not yet sent: a slow reply (a pattern
+      // that backtracks for its full 2 s guard) can land after the reply for
+      // the fixed pattern. Only the newest request may paint.
+      let seq = 0;
       refresh = async function () {
         if (timer) clearTimeout(timer);
         timer = setTimeout(async () => {
+          const my = ++seq;
           const step = await _testOneRule(rule);
+          if (my !== seq) return;
           if (!step) {
             status.className = 'regex-status err';
             status.textContent = '✗ test endpoint error';

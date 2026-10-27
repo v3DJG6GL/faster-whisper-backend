@@ -269,3 +269,53 @@ editor.opts.onToggle('x', {json.dumps(want_active)}, {json.dumps(enabled)});
 console.log(JSON.stringify(overrides.m));
 """))
     assert out == expect
+
+
+# ---- PIPELINE_RULES editor (/settings/pipeline) ---------------------------------
+
+@needs_node
+def test_rule_status_badge_ignores_a_stale_reply(client):
+    """The 250 ms debounce only cancels calls not yet sent: a slow reply for
+    the old pattern landed after the fresh one and repainted the badge."""
+    block = _block(_html(client, "/settings/pipeline"),
+                   "      let timer = null;\n", "        }, 250);\n      };\n")
+    out = _node(_FAKE_DOM + """
+const tick = () => new Promise(r => setTimeout(r, 0));
+(async function () {
+  // The debounce fires at once here; the replies resolve by hand.
+  function setTimeout(f) { f(); return 1; }
+  function clearTimeout() {}
+  const status = document.createElement('div');
+  const rule = { name: 'r', type: 'regex', enabled: true };
+  const pending = [];
+  function _testOneRule() { return new Promise(res => pending.push(res)); }
+  let refresh;
+""" + block + """
+  refresh();   // backtracking pattern: its reply takes the full 2 s
+  refresh();   // the fixed pattern
+  pending[1]({ type: 'regex', matches: 1 });
+  await tick();
+  pending[0]({ type: 'regex', slow: true });
+  await tick();
+  console.log(JSON.stringify(status.textContent));
+})();
+""")
+    assert out == "✓ valid · 1 match in sample"
+
+
+@needs_node
+def test_rule_status_badge_reports_a_network_error(client):
+    """api() lets fetch's rejection through; _testOneRule promised null on a
+    transport error, and the badge kept its old verdict instead."""
+    fn = _block(_html(client, "/settings/pipeline"),
+                "async function _testOneRule(rule) {", "\n}\n")
+    out = _node("""
+const document = { getElementById: () => null };
+const TEST_PRESETS = { 'default': 'x' };
+async function api() { throw new TypeError('Failed to fetch'); }
+""" + fn + """
+_testOneRule({ name: 'r' }).then(
+  v => console.log(JSON.stringify({ value: v })),
+  e => console.log(JSON.stringify({ threw: String(e) })));
+""")
+    assert out == {"value": None}
