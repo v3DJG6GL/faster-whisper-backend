@@ -946,6 +946,46 @@ def test_per_model_env_override_invalid_without_stored_entry_is_dropped(monkeypa
         importlib.reload(config)
 
 
+def test_per_model_env_bad_field_keeps_the_valid_env_siblings(monkeypatch):
+    """A blank or out-of-range per-model var reverts that field only: the
+    model's other env values stay live (and stay env values), and the warning
+    names only the bad field."""
+    from faster_whisper_backend.settings import config_store
+    monkeypatch.setattr(config_store, "load_overrides",
+                        lambda path=None: {"MODEL_OVERRIDES": {"tiny": {"BEAM_SIZE": 2}}})
+    try:
+        _reload_with_env(monkeypatch,
+                         WHISPER_MODEL_OVERRIDE__tiny__BEAM_SIZE="",
+                         WHISPER_MODEL_OVERRIDE__tiny__BEST_OF="4",
+                         WHISPER_MODEL_OVERRIDE__tiny__VAD_FILTER="true")
+        assert config.MODEL_OVERRIDES["tiny"] == {
+            "BEAM_SIZE": 2, "BEST_OF": 4, "VAD_FILTER": True}
+        assert config._ENV_OVERRIDE_VALUES["tiny"] == {
+            "BEST_OF": 4, "VAD_FILTER": True}
+        assert any("for 'tiny' (BEAM_SIZE) are invalid" in m
+                   for m in config._ENV_WARNINGS), config._ENV_WARNINGS
+    finally:
+        monkeypatch.undo()
+        importlib.reload(config)
+
+
+def test_per_model_env_unknown_slug_keeps_the_valid_env_siblings(monkeypatch):
+    """The slug check is a model validator (no field in its error loc): the
+    exclude whose single revert clears it is the one reverted, not every env
+    field of the model along with it."""
+    try:
+        _reload_with_env(monkeypatch,
+                         WHISPER_MODEL_OVERRIDE__tiny__PIPELINE_RULES_EXCLUDE="no-such-rule",
+                         WHISPER_MODEL_OVERRIDE__tiny__BEAM_SIZE="4")
+        assert config.MODEL_OVERRIDES["tiny"] == {"BEAM_SIZE": 4}
+        assert config._ENV_OVERRIDE_VALUES["tiny"] == {"BEAM_SIZE": 4}
+        assert any("for 'tiny' (PIPELINE_RULES_EXCLUDE) are invalid" in m
+                   for m in config._ENV_WARNINGS), config._ENV_WARNINGS
+    finally:
+        monkeypatch.undo()
+        importlib.reload(config)
+
+
 def _point_overrides_at(monkeypatch, path):
     """Repoint config_store.load_overrides at `path` the way tests/conftest.py
     does: the module constant AND the def-time-bound default argument."""

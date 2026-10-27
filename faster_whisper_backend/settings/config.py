@@ -2338,76 +2338,102 @@ try:
         # not be the one blamed (and reverted) for that slug.
         _stored_slug_ctx: "dict[str, object]" = (
             _env_slug_ctx() if _env_json_models else {})
+        _slug_lists = {"PIPELINE_RULES_EXCLUDE", "PIPELINE_RULES_INCLUDE"}
+
+        def _check_entry(_mid, _entry, _standing):
+            """The validated dump of one entry with the `_standing` env fields
+            still in it; raises when it is invalid. With every env field gone
+            the rest is the stored entry, and the env allowlist and the slug
+            set do not apply to it (see the comments above _env_json_models
+            and _stored_slug_ctx)."""
+            # Keep the VALIDATED dump, not the raw entry: pydantic's lax
+            # mode coerces string leftovers ("false", "3") that the
+            # frozenset lookup above missed, so a field newly added to
+            # ModelOverride can never stay live as a raw string.
+            _ctx = (_allowed_ctx if (_standing or _env_json_models)
+                    else _stored_allowed_ctx)
+            _valid = _AdminConfig.model_validate(
+                {**_ctx, "MODEL_OVERRIDES": {_mid: _entry}},
+                context=_stored_slug_ctx
+            ).model_dump(exclude_none=True)["MODEL_OVERRIDES"][_mid]
+            _env_slug_fields = sorted(set(_standing) & _slug_lists)
+            if _env_slug_fields:
+                _AdminConfig.model_validate(
+                    {"MODEL_OVERRIDES": {_mid: {
+                        _ef: _entry[_ef] for _ef in _env_slug_fields
+                        if _ef in _entry}}},
+                    context=_env_slug_ctx())
+            return _valid
+
         for _mid, _entry in MODEL_OVERRIDES.items():
-            _entry_ctx = (
-                _allowed_ctx if (_mid in _ENV_OVERRIDE_FIELDS
-                                 or _env_json_models)
-                else _stored_allowed_ctx)
-            _env_slug_fields = sorted(
-                (_ENV_OVERRIDE_FIELDS.get(_mid) or set()) & {
-                    "PIPELINE_RULES_EXCLUDE", "PIPELINE_RULES_INCLUDE"})
+            _env_fields = _ENV_OVERRIDE_FIELDS.get(_mid) or set()
+            _standing = set(_env_fields)
             try:
-                # Keep the VALIDATED dump, not the raw entry: pydantic's lax
-                # mode coerces string leftovers ("false", "3") that the
-                # frozenset lookup above missed, so a field newly added to
-                # ModelOverride can never stay live as a raw string.
-                _valid_entry = _AdminConfig.model_validate(
-                    {**_entry_ctx, "MODEL_OVERRIDES": {_mid: _entry}},
-                    context=_stored_slug_ctx
-                ).model_dump(exclude_none=True)["MODEL_OVERRIDES"][_mid]
-                if _env_slug_fields:
-                    _AdminConfig.model_validate(
-                        {"MODEL_OVERRIDES": {_mid: {
-                            _ef: _entry[_ef] for _ef in _env_slug_fields
-                            if _ef in _entry}}},
-                        context=_env_slug_ctx())
-                _clean_overrides[_mid] = _valid_entry
-                _env_vals = {_ef: _clean_overrides[_mid][_ef]
-                             for _ef in (_ENV_OVERRIDE_FIELDS.get(_mid) or ())
-                             if _ef in _clean_overrides[_mid]}
-                if _env_vals:
-                    _ENV_OVERRIDE_VALUES[_mid] = _env_vals
+                _clean_overrides[_mid] = _check_entry(_mid, _entry, _standing)
             except Exception as _verr:  # noqa: BLE001
-                _env_fields = _ENV_OVERRIDE_FIELDS.get(_mid) or set()
                 _pre_entry = (_ENV_PRE.get("MODEL_OVERRIDES") or {}).get(_mid)
-                _kept_entry = False
-                if _env_fields:
-                    _reverted = {k: v for k, v in _entry.items()
-                                 if k not in _env_fields}
-                    if isinstance(_pre_entry, dict):
-                        for _ef in _env_fields:
-                            if _ef in _pre_entry:
-                                _reverted[_ef] = _pre_entry[_ef]
-                    # The env fields are gone, so the rest is the stored
-                    # entry: the env allowlist and the slug set do not apply
-                    # to it (see the comments above _env_json_models and
-                    # _stored_slug_ctx).
-                    _revert_ctx = (
-                        _allowed_ctx if _env_json_models
-                        else _stored_allowed_ctx)
+                if not isinstance(_pre_entry, dict):
+                    _pre_entry = {}
+                _bad: "set[str]" = set()
+                _reverted = None
+                _err: BaseException = _verr
+                # Revert only the env fields the errors name, a round at a
+                # time: reverting every env field of the model together threw
+                # the valid ones out (and blamed them) with the bad one, which
+                # _revert_env_field never does to a scalar. An error that names
+                # none (the slug and allowlist model validators) reverts the
+                # fields whose single revert clears it, and all of them only
+                # when no single revert helps, as the scalar backstop does.
+                while _standing:
+                    _named = {
+                        str(_loc[2]) for _loc, _ in _error_sigs(_err)
+                        if len(_loc) >= 3
+                        and _loc[:2] == ("MODEL_OVERRIDES", _mid)
+                        and str(_loc[2]) in _standing}
+                    if not _named:
+                        _cur = _error_sigs(_err)
+                        for _f in sorted(_standing):
+                            _try = {k: v for k, v in _entry.items() if k != _f}
+                            if _f in _pre_entry:
+                                _try[_f] = _pre_entry[_f]
+                            try:
+                                _check_entry(_mid, _try, _standing - {_f})
+                            except Exception as _serr:  # noqa: BLE001
+                                if not _cur or _cur & _error_sigs(_serr):
+                                    continue   # this revert alone does not clear it
+                            _named.add(_f)
+                    _named = _named or set(_standing)
+                    _entry = {k: v for k, v in _entry.items() if k not in _named}
+                    for _ef in _named:
+                        if _ef in _pre_entry:
+                            _entry[_ef] = _pre_entry[_ef]
+                    _standing -= _named
+                    _bad |= _named
                     try:
-                        _reverted = _AdminConfig.model_validate(
-                            {**_revert_ctx, "MODEL_OVERRIDES": {_mid: _reverted}},
-                            context=_stored_slug_ctx
-                        ).model_dump(exclude_none=True)["MODEL_OVERRIDES"][_mid]
-                    except Exception:  # noqa: BLE001
-                        _reverted = None
-                    if _reverted is not None:
-                        _kept_entry = True
-                        if _reverted:
-                            _clean_overrides[_mid] = _reverted
-                        _ENV_WARNINGS.append(
-                            f"WHISPER_MODEL_OVERRIDE__ value(s) for {_mid!r} "
-                            f"({', '.join(sorted(_env_fields))}) are invalid "
-                            f"and were ignored: {_env_validation_reason(_verr)}"
-                            + ("; keeping the stored entry" if _reverted
-                               else "; no stored entry to keep")
-                        )
-                if not _kept_entry:
+                        _reverted = _check_entry(_mid, _entry, _standing)
+                        break
+                    except Exception as _rerr:  # noqa: BLE001
+                        _err = _rerr
+                if _reverted is None:
                     _ENV_WARNINGS.append(
                         f"MODEL_OVERRIDES[{_mid!r}] is invalid and was dropped: "
                         f"{_env_validation_reason(_verr)}"
                     )
+                    continue
+                if _reverted:
+                    _clean_overrides[_mid] = _reverted
+                _ENV_WARNINGS.append(
+                    f"WHISPER_MODEL_OVERRIDE__ value(s) for {_mid!r} "
+                    f"({', '.join(sorted(_bad))}) are invalid "
+                    f"and were ignored: {_env_validation_reason(_verr)}"
+                    + ("; keeping the other values" if _standing
+                       else "; keeping the stored entry" if _reverted
+                       else "; no stored entry to keep")
+                )
+            _env_vals = {_ef: _clean_overrides[_mid][_ef] for _ef in _standing
+                         if _ef in _clean_overrides.get(_mid, {})}
+            if _env_vals:
+                _ENV_OVERRIDE_VALUES[_mid] = _env_vals
         MODEL_OVERRIDES = _clean_overrides
 except NameError:
     # schema was unavailable above (the ImportError fallback) — there is
