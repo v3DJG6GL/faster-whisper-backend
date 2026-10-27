@@ -148,3 +148,41 @@ function tick() { return new Promise(function(r) { setTimeout(r, 0); }); }
     assert out["afterUndo"] == ["reviewed"]
     assert out["undoReoffered"] is True
     assert out["after"] == ["reviewed", "ready"]
+
+
+# ---- single-capture Save ------------------------------------------------------
+
+@needs_node
+def test_capture_resave_keeps_a_concurrent_chip(page, tmp_path):
+    """After a Save the baseline was set to the server's merged chips while
+    the on-screen chips stayed as they were, so a chip another tab added
+    (kept by the first merge) read as "user removed it" on the next Save and
+    was deleted. Runs two Saves of one open card through the real merge."""
+    from faster_whisper_backend.core.text_corrections import three_way_merge_corrections
+
+    x = {"wrong": "a", "correct": "A", "idx": 5}       # tab B's chip
+    y = {"wrong": "b", "correct": "B", "idx": 2}
+    fn = _js_function(page, "onSave")
+    bodies = _run_node(tmp_path, fn + r"""
+var bodies = [], replies = [];
+async function api(m, u, body) {
+  bodies.push(JSON.parse(JSON.stringify(body)));
+  return replies.shift();
+}
+function clearDirty() {} function toast() {} function reloadCounts() {}
+var X = """ + json.dumps(x) + ", Y = " + json.dumps(y) + r""";
+var state = { cid: 'c1', corrections: [Y], baselineCorrections: [], adminNotes: '' };
+(async function() {
+  replies.push({ capture: { corrections: [X, Y] } });   // merge kept X
+  await onSave(state, {});
+  state.corrections[0] = { wrong: 'b', correct: 'Bee', idx: 2 };
+  replies.push({ capture: { corrections: [] } });
+  await onSave(state, {});
+  console.log(JSON.stringify(bodies));
+})();
+""")
+    db = [x]
+    for body in bodies:
+        db = three_way_merge_corrections(body["baseline_corrections"], body["corrections"], db)
+    assert x in db
+    assert {"wrong": "b", "correct": "Bee", "idx": 2} in db

@@ -2802,10 +2802,11 @@
       var j = await api('PATCH',
         '/captures/api/' + encodeURIComponent(state.cid), body);
       Object.assign(r, j.capture);
-      // Refresh baseline from server's authoritative response so the
-      // next save measures deltas from this new ground truth.
-      state.baselineCorrections =
-        JSON.parse(JSON.stringify(j.capture.corrections || []));
+      // The next save's baseline is what we sent, not the server's merged
+      // list: the chips on screen are not resynced, so a concurrent chip
+      // the merge kept would sit in the baseline but not in the next
+      // `edited` and read as "user removed it".
+      state.baselineCorrections = JSON.parse(JSON.stringify(corrections));
       clearDirty(state);
       toast('Saved.');
       reloadCounts();
