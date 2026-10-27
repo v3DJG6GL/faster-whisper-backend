@@ -5101,7 +5101,8 @@
               var fixBtn = document.createElement('button');
               fixBtn.textContent = 'Regenerate audio';
               fixBtn.className = 'primary';
-              fixBtn.onclick = function() {
+              fixBtn.onclick = async function() {
+                if (!(await okToRegenerate())) return;
                 fixBtn.disabled = true;
                 api('POST', '/captures/api/samples/'
                     + encodeURIComponent(g.id) + '/regenerate')
@@ -5298,7 +5299,18 @@
         // --- Regenerate handler: rebuild the merged WAV from current members
         // using the CURRENT global silence (the dedicated /regenerate
         // endpoint). In-place refresh via applyServerSample. ---
-        regenBtn.onclick = function() {
+        // That refresh replaces the card's chips and notes with the server
+        // copy, so ask before dropping unsaved ones (the lock toggle below
+        // sidesteps it the same way).
+        async function okToRegenerate() {
+          if (!sampleState.dirty) return true;
+          return !!(await _confirm({
+            title: 'Regenerate audio?',
+            body: 'This group has unsaved edits that regenerating will discard.',
+            confirmLabel: 'Regenerate', danger: true }));
+        }
+        regenBtn.onclick = async function() {
+          if (!(await okToRegenerate())) return;
           regenBtn.disabled = true;
           api('POST', '/captures/api/samples/' + encodeURIComponent(g.id) + '/regenerate')
             .then(function(j) {

@@ -448,3 +448,38 @@ def test_batch_closed_during_accept_does_not_render_or_autoplay(page, tmp_path):
 })();
 """)
     assert out == {"built": 0, "posts": ["a"]}
+
+
+# ---- group card ---------------------------------------------------------------------
+
+@needs_node
+def test_group_regenerate_asks_before_dropping_unsaved_edits(page, tmp_path):
+    """Regenerate (and the missing-audio banner's button) ends in
+    applyServerSample, which replaced unsaved chips and notes with the
+    server copy and cleared the dirty marker, with no prompt."""
+    anchor = "regenBtn.onclick = "
+    handler = _js_block(page, page.index(anchor) + len(anchor))
+    out = _run_node(tmp_path, r"""
+var sampleState = { dirty: true }, answers = [], asked = 0, posts = 0, applied = 0;
+var g = { id: 'g1' }, regenBtn = {};
+async function _confirm() { asked++; return answers.shift(); }
+async function api() { posts++; return { sample: {} }; }
+function applyServerSample() { applied++; }
+function toast() {} function reloadCounts() {}
+""" + _js_function(page, "okToRegenerate") + "\nvar onRegen = " + handler + r""";
+(async function() {
+  answers.push(false);
+  await onRegen();                      // dirty + Cancel → nothing happens
+  var cancelled = [posts, applied];
+  answers.push(true);
+  await onRegen();                      // dirty + confirm → regenerates
+  sampleState.dirty = false;
+  await onRegen();                      // clean → no prompt
+  console.log(JSON.stringify({ cancelled: cancelled, asked: asked,
+    posts: posts, applied: applied }));
+})();
+""")
+    assert out == {"cancelled": [0, 0], "asked": 2, "posts": 2, "applied": 2}
+    banner = page[page.index("fixBtn.onclick = "):]
+    banner = banner[:banner.index("fixBtn.disabled = true;")]
+    assert "if (!(await okToRegenerate())) return;" in banner
