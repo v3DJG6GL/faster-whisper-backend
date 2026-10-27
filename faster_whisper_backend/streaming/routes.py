@@ -593,6 +593,10 @@ async def transcribe_stream(ws: WebSocket) -> None:
         auth_hosts._log_origin_rejected(ws)
         await _refuse(ws, _WS_BAD_ORIGIN, "handshake rejected (origin)")
         return
+    # Snapshot BEFORE authenticating (see _refresh_ident): the config message
+    # and a cold model load come next, and a revocation landing in that window
+    # must still force the first decode to re-check the credential.
+    _ident_version = settings_version.config_version()
     user = authenticate_ws(ws)
     if user is None:
         await _refuse(ws, _WS_UNAUTH, "no valid credential")
@@ -885,10 +889,9 @@ async def transcribe_stream(ws: WebSocket) -> None:
         # ident is resolved ONCE here, then re-resolved on the next decode
         # (partial or final) ONLY when the config version changes (see
         # _refresh_ident) — so admin edits to a binding/profile/setting apply
-        # mid-session without a reconnect. Snapshot
-        # the version and the client's ORIGINAL (pre-lock) handshake values so the
-        # lock re-application stays idempotent across refreshes.
-        _ident_version = settings_version.config_version()
+        # mid-session without a reconnect. The version was snapshotted at
+        # authentication; snapshot the client's ORIGINAL (pre-lock) handshake
+        # values here so the lock re-application stays idempotent across refreshes.
         _client_language = req_language
         _client_prompt = req_prompt
         _client_prompt_provided = prompt_provided

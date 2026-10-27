@@ -607,6 +607,52 @@ def test_revoked_session_closes_without_a_further_client_frame(
     assert any(m.get("code") == "unauthorized" for m in msgs), msgs
 
 
+def test_revocation_during_the_handshake_still_closes_with_4401(
+        client, make_user_key, app_module, monkeypatch):
+    """A revocation landing between authentication and the end of the handshake
+    (the config message, a cold model load) used to be folded into the version
+    snapshot taken after the load, so _refresh_ident never re-checked the
+    credential and the revoked identity kept decoding. The snapshot now
+    predates authentication, so the first decode re-auths and closes."""
+    from faster_whisper_backend.auth import api_keys_store
+    from faster_whisper_backend.streaming import routes as streaming_routes
+    from faster_whisper_backend.streaming.routes import _WS_UNAUTH
+
+    monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
+    make_user_key("admin", is_admin=True)      # lock down, so open mode is off
+    uid, raw_alice = make_user_key("alice")
+
+    real = streaming_routes.authenticate_ws
+    calls = []
+
+    def _auth_then_revoke(ws):
+        user = real(ws)
+        if not calls:
+            api_keys_store.revoke_user(uid)    # bumps the config version
+        calls.append(1)
+        return user
+    monkeypatch.setattr(streaming_routes, "authenticate_ws", _auth_then_revoke)
+
+    with client.websocket_connect(
+            "/v1/audio/transcriptions/stream", headers=bearer(raw_alice)) as ws:
+        ws.send_json({"type": "config", "model": "whisper-1",
+                      "audio": {"format": "pcm_s16le", "sample_rate": 16000}})
+        assert ws.receive_json()["type"] == "ready"
+        ws.send_bytes(_pcm(8000, 2500))        # first decode re-auths → revoked
+        time.sleep(0.5)
+        try:
+            # Safety net only: without the fix the session stays live, and the
+            # stop lets the drain finish and fail the assertions, not hang.
+            ws.send_bytes(_pcm(0, 1500))
+            ws.send_json({"type": "stop"})
+        except Exception:  # noqa: BLE001 — already closed, as expected
+            pass
+        msgs, code = _drain_with_code(ws)
+
+    assert code == _WS_UNAUTH, f"expected a 4401 close, got {code!r} ({msgs!r})"
+    assert any(m.get("code") == "unauthorized" for m in msgs), msgs
+
+
 def test_stream_survives_an_unrelated_config_bump(
         client, make_user_key, fake_model, app_module, monkeypatch):
     """The other direction: a settings save bumps the same config version, and
