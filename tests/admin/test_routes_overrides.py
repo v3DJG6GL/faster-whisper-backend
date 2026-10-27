@@ -3,6 +3,10 @@ per-key binding endpoints on /settings/api-keys. Driven through the real app
 via the conftest TestClient; no faster-whisper needed."""
 
 import json
+import shutil
+import subprocess
+
+import pytest
 
 from faster_whisper_backend.pipeline import apply as pl_apply
 from tests.conftest import bearer
@@ -607,3 +611,43 @@ def test_page_explorer_drops_stale_answers(client):
     dr = dr[:dr.index("\n  }\n")]
     assert "var seq = ++_resolveSeq;" in dr
     assert dr.count("if (seq !== _resolveSeq) return;") == dr.count("await ")
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node unavailable")
+def test_page_commit_rename_rechecks_dirty(client, tmp_path):
+    """startRename refused a dirty working copy, but the main pane stays
+    editable while the rename input is open; confirming then ran the server
+    rename, whose reload dropped those later edits without a warning."""
+    html = client.get(OV).text
+
+    def fn(name):
+        start = html.index("  function " + name + "(")
+        return html[start:html.index("\n  }\n", start) + 4]
+
+    dirty = html[html.index("  function dirty() {"):]
+    js = dirty[:dirty.index("\n") + 1] + fn("commitRename") + r"""
+var NAME_RE = /^[a-z0-9][a-z0-9-]{0,31}$/;
+var S = { profiles: { clinic: {} } };
+var profiles = { clinic: {} };
+var snapshot = JSON.stringify(profiles);
+var sel = 'clinic', uiRenaming = true, renamed = [], status = null;
+function setStatus(m, k) { status = k || null; }
+function render() {}
+function refreshButtons() {}
+function doRename(a, b) { renamed.push([a, b]); }
+profiles.clinic.LANGUAGE = 'de';     // edited after the rename input opened
+commitRename('clinic', 'clinic-de');
+var out = { dirty_renamed: renamed.length, dirty_status: status, still_open: uiRenaming };
+snapshot = JSON.stringify(profiles);  // saved
+commitRename('clinic', 'clinic-de');
+out.clean_renamed = renamed.length;
+console.log(JSON.stringify(out));
+"""
+    f = tmp_path / "probe.js"
+    f.write_text(js, encoding="utf-8")
+    p = subprocess.run([shutil.which("node"), str(f)], capture_output=True,
+                       text=True, encoding="utf-8", timeout=30)
+    assert p.returncode == 0, p.stderr
+    out = json.loads(p.stdout.strip().splitlines()[-1])
+    assert out == {"dirty_renamed": 0, "dirty_status": "err", "still_open": True,
+                   "clean_renamed": 1}
