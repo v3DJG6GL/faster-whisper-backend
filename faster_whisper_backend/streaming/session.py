@@ -522,9 +522,10 @@ class StreamSession:
                 {"word": w.text, "start": w.start, "end": w.end}
                 for w in cut_words)
             self._set_audio(buf[cut_samples:])
-            n = self.cfg.prompt_words
-            self._prompt = " ".join(
-                (self._prompt + " " + cut_text).split()[-n:] if n > 0 else [])
+            # Rebuilt like _make_prompt (_trimmed_text already holds cut_text):
+            # capping the whole prompt string instead dropped base_prompt (the
+            # client's glossary) for the rest of a long utterance.
+            self._prompt = self._make_prompt(self._trimmed_text)
             self._buffer_offset = cut
             self.la.pop_committed(cut)
 
@@ -936,11 +937,15 @@ class StreamSession:
 
     # ---- utterance lifecycle ---------------------------------------------
 
-    def _make_prompt(self) -> str:
+    def _make_prompt(self, in_flight: str = "") -> str:
+        """base_prompt in full + the last prompt_words confirmed words;
+        ``in_flight`` is the current utterance's trim-banked text, not yet in
+        raw_confirmed."""
         # [-0:] is the whole list: prompt_words=0 must carry nothing, not the
         # entire (ever-growing) document.
         n = self.cfg.prompt_words
-        tail = " ".join(self.raw_confirmed.split()[-n:] if n > 0 else [])
+        words = (self.raw_confirmed + " " + in_flight).split()
+        tail = " ".join(words[-n:] if n > 0 else [])
         return (self.base_prompt + " " + tail).strip()
 
     def _reset_utterance(self) -> None:

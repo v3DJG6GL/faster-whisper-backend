@@ -172,6 +172,50 @@ def test_trim_folds_cut_words_into_rolling_prompt():
         f"trimmed words missing from decode prompt: {final_prompts[-1]!r}")
 
 
+def test_trim_keeps_base_prompt_when_capping_the_rolling_prompt():
+    """prompt_words caps only the carried words, as _make_prompt does: the trim
+    used to cap the whole prompt string, silently dropping the client's glossary
+    (base_prompt) for the rest of a long utterance."""
+    cfg = StreamConfig(
+        min_chunk_ms=96, vad_min_silence_ms=96, commit_silence_ms=192,
+        min_speech_ms=64, forced_commit_sec=100,
+        buffer_trim_sec=2.0, buffer_trim_keep_sec=1.0,
+        rms_gate_dbfs=-60, preroll_keep_ms=100, prompt_words=3,
+    )
+    final_prompts: list[str] = []
+    banked: list[str] = []
+    session_box: list[StreamSession] = []
+
+    async def decode_partial(audio, prompt):
+        off = session_box[0]._buffer_offset
+        dur = audio.shape[0] / SR
+        return [(a - off, b - off, t) for a, b, t in _grid_words(off, off + dur)]
+
+    async def decode_final(audio, prompt):
+        final_prompts.append(prompt)
+        banked[:] = session_box[0]._trimmed_text.split()
+        return (" tail.", [], False)
+
+    async def emit(m):
+        pass
+
+    s = StreamSession(
+        config=cfg, endpointer=EnergyEndpointer(),
+        decode_partial=decode_partial, decode_final=decode_final,
+        postprocess=lambda raw: raw, emit=emit,
+        base_prompt="Ibuprofen Metoprolol",
+    )
+    session_box.append(s)
+
+    async def run():
+        await s.feed_pcm(_pcm(8000, 3500))
+        await s.feed_pcm(_pcm(0, 400))
+
+    asyncio.run(run())
+    assert len(banked) > 3, "setup failed: the cap never bit"
+    assert final_prompts[-1] == "Ibuprofen Metoprolol " + " ".join(banked[-3:])
+
+
 def test_short_utterance_unchanged_no_trim():
     """Below buffer_trim_sec nothing is banked: the final decode's text stands
     alone, no trim is reported, and the payload audio is the plain buffer
