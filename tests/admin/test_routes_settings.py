@@ -1026,7 +1026,7 @@ def test_per_model_override_seed_honours_the_field_min(client):
     """+ override on a field whose global is null seeded 0, below e.g.
     DIARIZATION_NUM_SPEAKERS' ge=1, so the next Save 422'd the whole payload."""
     text = client.get("/settings").text
-    assert "defaultForKind(meta) : globalVal" in text
+    assert "defaultForKind(meta) : cur" in text
     f = text[text.index("function defaultForKind(meta)"):]
     f = f[:f.index("\n  }\n")]
     assert "meta.min > 0" in f
