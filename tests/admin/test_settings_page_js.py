@@ -157,6 +157,30 @@ console.log(JSON.stringify([cb('on').disabled, cb('off').disabled]));
     assert out == [False, True]
 
 
+@needs_node
+def test_captures_checklist_footer_follows_a_toggle(client):
+    """The footer counted from a Set that the captures onToggle never
+    touched, so 'N active' stayed at its first-paint value."""
+    out = _node(_captures_harness(_html(client), """
+state.PIPELINE_RULES = [
+  { name: 'a', type: 'regex', enabled: true },
+  { name: 'b', type: 'regex', enabled: true },
+];
+state.CAPTURES_PIPELINE_RULES_EXCLUDE = [];
+const wrap = makeEditor('CAPTURES_PIPELINE_RULES_EXCLUDE');
+const footer = find(wrap, e => e.classList.contains('rule-checklist-footer'));
+const cb = find(find(wrap, e => e.dataset.slug === 'a'), e => e.tagName === 'INPUT');
+const before = footer.textContent;
+cb.checked = false;
+fire(cb, 'change').then(() => {
+  console.log(JSON.stringify([before, footer.textContent,
+                              state.CAPTURES_PIPELINE_RULES_EXCLUDE]));
+});
+""", real_list=True))
+    assert out == ["2 rules total · 2 active for this model",
+                   "2 rules total · 1 active for this model", ["a"]]
+
+
 # ---- MODEL_OVERRIDES editor -----------------------------------------------------
 
 def test_model_overrides_rerender_keeps_env_pinned_editor_disabled(client):

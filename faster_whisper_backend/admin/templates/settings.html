@@ -1267,10 +1267,13 @@ function makeEditor(name) {
   // leaves globally-disabled rules un-tickable.
   if (name === 'CAPTURES_PIPELINE_RULES_EXCLUDE') {
     const allRules = currentValue('PIPELINE_RULES') || [];
+    const excludeSet = new Set(v || []);
     return makeRuleListEditor(name, allRules, 'checklist', {
-      excludeSet: new Set(v || []),
+      excludeSet,
       terminalToggleable: true,
       onToggle: (slug, wantActive) => {
+        // The checklist footer counts from excludeSet: keep it in step.
+        if (wantActive) excludeSet.delete(slug); else excludeSet.add(slug);
         const cur = currentValue(name) || [];
         // Sorted like the server's value (a set), so excluding a rule again
         // after re-enabling it compares equal and the field goes clean.
