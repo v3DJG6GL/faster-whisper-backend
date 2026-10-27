@@ -608,7 +608,7 @@
     state.textContent = 'not copied yet';
     state.classList.remove('done');
 
-    function doCopy() {
+    function doCopy(onCopied) {
       // navigator.clipboard needs a secure context (https / localhost). Over
       // LAN HTTP it's undefined, so fall back to a hidden textarea +
       // execCommand('copy'); if both fail, select the .raw-key span for Ctrl+C.
@@ -632,6 +632,7 @@
         state.textContent = '✓ copied to clipboard';
         state.classList.add('done');
         showToast('Copied to clipboard', 'ok');
+        if (onCopied) onCopied();
       }
       function onFailure() {
         var span = document.getElementById('key-modal-raw');
@@ -662,9 +663,11 @@
     }
     function onKey(e) { if (e.key === 'Escape') tryClose(); }
 
-    document.getElementById('key-modal-copyicon').onclick = doCopy;
+    document.getElementById('key-modal-copyicon').onclick = function () { doCopy(); };
+    // Close only once the (possibly async) copy succeeded: on failure the
+    // modal must stay open with the key selected for a manual Ctrl+C.
     document.getElementById('key-modal-copyclose').onclick = function () {
-      doCopy(); doClose();
+      doCopy(doClose);
     };
     document.getElementById('key-modal-close').onclick = tryClose;
     document.addEventListener('keydown', onKey);
