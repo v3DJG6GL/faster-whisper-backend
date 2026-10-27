@@ -1,5 +1,11 @@
 """Integration tests for /reports + the /quick-config submission endpoint."""
 
+import json
+import shutil
+import subprocess
+
+import pytest
+
 from tests.conftest import bearer
 
 _SUBMIT = "/quick-config/reports/api/submit"
@@ -66,6 +72,46 @@ def test_reports_page(client):
     r = client.get("/reports")
     assert r.status_code == 200
     assert "text/html" in r.headers["content-type"]
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
+def test_reports_page_403_landing_keys_on_reports_scope(client):
+    """A 403 on a status/notes save can come from the CSRF/Origin middleware
+    or the host gate, not only require_page("reports"). Keying the landing
+    on is_admin===false wiped <main> for a non-admin who DOES have the
+    reports page; it must render only when whoami shows no reports scope."""
+    html = client.get("/reports").text
+    fn = html[html.index("async function _renderAdminOnlyIfNonAdmin()"):]
+    fn = fn[:fn.index("\n  }\n") + 4]
+    script = fn + """
+const window = {};
+let landed = 0;
+function _renderNoAccessLanding() { landed++; }
+async function probe(who) {
+  landed = 0;
+  globalThis.fetch = async () => ({ ok: true, json: async () => who });
+  const r = await _renderAdminOnlyIfNonAdmin();
+  return [r, landed];
+}
+(async () => {
+  console.log(JSON.stringify([
+    await probe({ is_admin: false, permissions: { pages: { reports: 'own' } } }),
+    await probe({ is_admin: false, permissions: { pages: { reports: 'none' } } }),
+    await probe({ is_admin: false, permissions: { pages: { logs: 'own' } } }),
+    await probe({ is_admin: false, permissions: { pages: {} } }),
+    await probe({ is_admin: true, permissions: { pages: {} } }),
+  ]));
+})();
+"""
+    out = subprocess.run(["node", "-e", script], capture_output=True,
+                         text=True, timeout=30, check=True).stdout
+    assert json.loads(out) == [
+        [False, 0],  # has the page: a CSRF/host-gate 403 keeps <main>
+        [True, 1],
+        [True, 1],
+        [True, 1],   # empty map = permissions absent -> is_admin fallback
+        [False, 0],
+    ]
 
 
 def test_reports_page_model_filter_keeps_colliding_ids_apart(client):

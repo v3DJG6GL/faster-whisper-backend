@@ -336,17 +336,27 @@
   {{NOT_ADMIN_LANDING_JS}}
 
   async function _renderAdminOnlyIfNonAdmin() {
-    // Renamed-but-kept-for-compat: every 403 on this page means the
-    // caller is a non-admin (the API gate is require_page("reports")
-    // — a 403 means "valid bearer, no scope on /reports"). Render the
-    // shared no-access landing slugged with the current page.
+    // A 403 here does NOT prove the caller lacks the reports page: the
+    // CSRF/Origin middleware and the host gate answer 403 too (e.g. a
+    // stale csrf_token after the session was re-issued in another tab).
+    // Keying the landing on is_admin===false wiped <main> for a
+    // legitimate non-admin reports user on a status/notes save. Render it
+    // only when whoami actually shows no reports scope; fall back to the
+    // old test only if permissions are absent (an EMPTY map — what admins
+    // get — means absent, not "no scope"). Same gate as captures.html.
     try {
       var r = await fetch('/auth/whoami');
       if (r.ok) {
         var j = await r.json();
         // Cache whoami so _renderNoAccessLanding can list reachable pages.
         try { window.__whoami = j; } catch(_) {}
-        if (j && j.is_admin === false) {
+        if (j && j.is_admin) return false;
+        var pages = (j && j.permissions && j.permissions.pages) || null;
+        if (pages && !Object.keys(pages).length) pages = null;
+        var noScope = pages
+          ? (!pages.reports || pages.reports === 'none')
+          : (j && j.is_admin === false);
+        if (noScope) {
           _renderNoAccessLanding({ page: 'reports' });
           return true;
         }
