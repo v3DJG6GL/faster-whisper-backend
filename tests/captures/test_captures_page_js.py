@@ -210,3 +210,34 @@ var onStatus = """ + handler + r""";
 """)
     assert out["pill"] == {"className": "pill status-ready", "textContent": "ready"}
     assert out["asked"] == ['.cc-head .pill[class*="status-"]']
+
+
+# ---- chip strip -----------------------------------------------------------------
+
+@needs_node
+def test_shift_extend_clears_stale_inline_replacements(page, tmp_path):
+    """Shift-click extending the last chip left the green `.word-replacement`
+    at its old end word (and at any absorbed chip's end) in the strip, so the
+    correction showed twice until the card was rebuilt."""
+    fns = (_js_function(page, "extendLastChip") + "\n"
+           + _js_function(page, "clearReplacementInline"))
+    out = _run_node(tmp_path, fns + r"""
+var removed = [];
+var strip = { removeChild: function(n) { removed.push(n.at); } };
+function repl(at) { return { at: at, parentNode: strip,
+  classList: { contains: function(c) { return c === 'word-replacement'; } } }; }
+var wordEls = [0, 1, 2, 3, 4, 5].map(function(i) { return { nextSibling: null }; });
+wordEls[2].nextSibling = repl(2);   // last chip's sibling (word 2)
+wordEls[4].nextSibling = repl(4);   // earlier chip at word 4, absorbed
+var state = { wordEls: wordEls, corrections: [
+  { wrong: 'e', correct: 'E', idx: 4, idx_end: 4 },
+  { wrong: 'c', correct: 'foo', idx: 2, idx_end: 2 },
+] };
+function selectWord() {} function renderChips() {} function focusLastInput() {}
+function markDirty() {} function applyCorrectionsToGround() {}
+function spanText() { return 'c d e f'; }
+extendLastChip(state, 5);
+console.log(JSON.stringify({ removed: removed.sort(), chips: state.corrections }));
+""")
+    assert out["removed"] == [2, 4]
+    assert out["chips"] == [{"wrong": "c d e f", "correct": "foo", "idx": 2, "idx_end": 5}]

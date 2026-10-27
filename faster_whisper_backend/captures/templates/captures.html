@@ -2567,9 +2567,13 @@
       var overlaps = !(cEnd < newStart || c.idx > newEnd);
       if (overlaps) {
         for (var j = c.idx; j <= cEnd; j++) selectWord(state, j, false);
+        clearReplacementInline(state, c);
       }
       return !overlaps;
     });
+    // renderChips only rebuilds the sibling at each chip's CURRENT end, so
+    // the one at the old end would linger in the strip.
+    clearReplacementInline(state, last);
     last.idx = newStart;
     last.idx_end = newEnd;
     last.wrong = spanText(state, newStart, newEnd);
