@@ -296,6 +296,27 @@ def test_revoke_last_admin_user_blocked(api_keys_db):
         ak.revoke_user(uid)
 
 
+def test_revoke_keyless_admin_user_allowed_in_open_mode(api_keys_db):
+    # Regression: with no admin key anywhere (open mode), the guard refused
+    # every admin-user revoke although a keyless revoke can't flip lockdown.
+    ak = api_keys_db
+    alice = ak.create_user("alice", is_admin=True)
+    ak.create_user("bob", is_admin=True)
+    assert ak.is_locked_down() is False
+    ak.revoke_user(alice)
+    assert ak.get_user(alice)["revoked_ts"] is not None
+    assert ak.is_locked_down() is False
+
+
+def test_revoke_last_keyed_admin_user_blocked_despite_keyless_admin(api_keys_db):
+    ak = api_keys_db
+    root = ak.create_user("root", is_admin=True)
+    ak.create_key(root)
+    ak.create_user("spare", is_admin=True)   # keyless: can't keep lockdown
+    with pytest.raises(ak.LastAdminError):
+        ak.revoke_user(root)
+
+
 def test_revoke_nonadmin_unguarded(api_keys_db):
     ak = api_keys_db
     admin = ak.create_user("root", is_admin=True)

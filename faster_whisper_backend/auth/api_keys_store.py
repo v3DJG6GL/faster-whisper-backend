@@ -506,17 +506,22 @@ def get_usernames(user_ids: "list[str | None]") -> "dict[str, str | None]":
 
 def revoke_user(user_id: str) -> None:
     """Soft-delete a user and revoke all their keys. Raises
-    LastAdminError if the target is an active admin and revoking would
-    leave zero active admins — checked atomically under _lock so a
-    concurrent second revoke can't slip through."""
+    LastAdminError if the target is an active admin holding active keys
+    and revoking would leave zero active admin keys — checked atomically
+    under _lock so a concurrent second revoke can't slip through."""
     now = time.time()
     conn = _require_conn()
     with _lock:
         row = conn.execute(
-            "SELECT is_admin FROM users WHERE id = ? AND revoked_ts IS NULL",
-            (user_id,),
+            "SELECT is_admin, EXISTS(SELECT 1 FROM api_keys"
+            " WHERE user_id = ? AND revoked_ts IS NULL) AS has_key"
+            " FROM users WHERE id = ? AND revoked_ts IS NULL",
+            (user_id, user_id),
         ).fetchone()
-        if row and int(row["is_admin"]) == 1:
+        # A keyless admin's revoke cascades no keys, so it can't change
+        # is_locked_down — guarding it would block every admin-user revoke
+        # in open mode, even with a second admin user present.
+        if row and int(row["is_admin"]) == 1 and int(row["has_key"]) == 1:
             # Count remaining active admin KEYS (not users) — is_locked_down
             # is driven by active admin keys, so revoking an admin user with
             # the only admin keys flips the server to OPEN mode even if
