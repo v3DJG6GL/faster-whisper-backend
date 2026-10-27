@@ -295,6 +295,40 @@ def test_failed_final_decode_does_not_lose_the_rest_of_the_chunk():
     assert s._in_utterance
 
 
+def test_failed_partial_decode_does_not_lose_the_rest_of_the_chunk():
+    """Same hole on the partial path: a raising preview aborted feed_pcm's frame
+    loop, so the frames after it never reached the buffer or the endpointer.
+    A failed preview is a skipped one — the chunk plays out in full."""
+    calls = []
+
+    async def _dp(audio, prompt):
+        calls.append(audio.shape[0])
+        raise RuntimeError("CUDA out of memory")
+
+    s, msgs = _session(decode_partial=_dp)
+
+    async def run():
+        await s.feed_pcm(_pcm(8000, 512) + _pcm(0, 384) + _pcm(8000, 512))
+
+    asyncio.run(run())                        # does not raise
+    assert len(calls) > 1, "partials stopped after the first failure"
+    assert _lifecycle(msgs) == [("open", 0), ("decoding", 0), ("final", 0), ("open", 1)]
+    assert s._in_utterance
+
+
+def test_close_abort_from_a_partial_decode_still_propagates():
+    async def _dp(audio, prompt):
+        raise CloseAbort("credential revoked mid-session")
+
+    s, _msgs = _session(decode_partial=_dp)
+
+    async def run():
+        with pytest.raises(CloseAbort):
+            await s.feed_pcm(_pcm(8000, 500))
+
+    asyncio.run(run())
+
+
 def test_on_final_failure_still_spends_the_ordinal_and_sends_no_second_terminal():
     """final(0) is already on the wire when on_final raises. The ordinal used
     to stay at 0, so the next utterance reused it; and the error path must not

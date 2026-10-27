@@ -474,7 +474,18 @@ class StreamSession:
             return
         if rms_dbfs(self.audio) < self.cfg.rms_gate_dbfs:
             return
-        words = await self.decode_partial(self.audio.copy(), self._prompt)
+        try:
+            words = await self.decode_partial(self.audio.copy(), self._prompt)
+        except CloseAbort:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            # A raise here aborted feed_pcm's frame loop and lost the rest of
+            # the chunk (a hole in the utterance's audio) — the bug the final
+            # decode had. A failed preview is just a skipped one; the next
+            # partial or the final decode catches up. Type-only log, as there.
+            logger.warning("[stream %s] partial decode failed (%s) — skipped",
+                           self.session_id[:8], type(exc).__name__)
+            return
         self.la.insert_hypothesis(words or [], self._buffer_offset)
         self.la.commit()
         await self.emit({
