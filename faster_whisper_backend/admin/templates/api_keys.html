@@ -1833,12 +1833,15 @@
     var warnEl = document.getElementById('cs-import-warn');
     var go = document.getElementById('cs-import-go');
     var meta = csMetaFor(u.id);
-    // 512000 mirrors the server's blob cap — reject early with the reason
-    // instead of a bare 413 after the upload.
-    if (bytes > 512000) {
+    // The server's blob cap, served by the meta fetch so it cannot drift
+    // from the store — reject early with the reason instead of a bare 413
+    // after the upload. Absent (meta fetch failed) → no pre-check; the
+    // server's 413 still guards.
+    var cap = window.__csMeta && window.__csMeta.max_bytes;
+    if (cap && bytes > cap) {
       go.disabled = true;
       warnEl.textContent = 'This file is ' + fmtBytes(bytes)
-        + ' — over the 500 KB server cap. It cannot be imported.';
+        + ' — over the ' + fmtBytes(cap) + ' server cap. It cannot be imported.';
     } else {
       go.disabled = false;
       warnEl.textContent =
@@ -1859,7 +1862,8 @@
       go.disabled = true;
       api('POST', csApiBase(u.id) + '/import', { blob: d.blob })
         .then(function (r) {
-          if (r.status === 413) throw new Error('File too large for the server (over 500 KB)');
+          if (r.status === 413) throw new Error('File too large for the server'
+            + (cap ? ' (over ' + fmtBytes(cap) + ')' : ''));
           if (r.status === 401) {
             close();
             if (window._showLoginGate) window._showLoginGate();

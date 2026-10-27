@@ -2,6 +2,10 @@
 per-account synced client settings (metadata map, export, import, delete)."""
 
 import json
+import shutil
+import subprocess
+
+import pytest
 
 from tests.conftest import bearer
 
@@ -85,11 +89,16 @@ def test_page_delete_handles_401_and_detail(client):
 
 
 def test_meta_map_empty(client):
+    from faster_whisper_backend.client_settings import store as client_settings_store
+
     r = client.get(f"{_API}/client-settings")
     assert r.status_code == 200
     # `unavailable` False keeps "healthy but empty" distinguishable from a
     # store outage (which also serves an empty map).
-    assert r.json() == {"by_user": {}, "unavailable": False}
+    assert r.json() == {
+        "by_user": {}, "unavailable": False,
+        "max_bytes": client_settings_store._CAP_BLOB,
+    }
 
 
 def test_meta_map_after_open_mode_push(client):
@@ -315,7 +324,10 @@ def test_admin_endpoints_when_store_unavailable(client, make_user_key, monkeypat
 
     r = client.get(f"{_API}/client-settings", headers=h)
     assert r.status_code == 200
-    assert r.json() == {"by_user": {}, "unavailable": True}
+    assert r.json() == {
+        "by_user": {}, "unavailable": True,
+        "max_bytes": client_settings_store._CAP_BLOB,
+    }
 
     assert (
         client.get(f"{_API}/users/{uid}/client-settings/export", headers=h).status_code
@@ -333,3 +345,57 @@ def test_admin_endpoints_when_store_unavailable(client, make_user_key, monkeypat
         client.delete(f"{_API}/users/{uid}/client-settings", headers=h).status_code
         == 503
     )
+
+
+def _js_fn(html, name):
+    """Source of a top-level `function <name>(` in the page script (it ends at
+    the first two-space-indented closing brace)."""
+    src = html[html.index(f"  function {name}("):]
+    return src[:src.index("\n  }\n") + 4]
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
+def test_import_preview_uses_served_blob_cap(client):
+    """The import preview gated on a hard-coded 500 KB long after the store
+    cap rose to ~4 MiB, so a 1 MB file the server accepts (one this page's own
+    Export produces) was refused in the browser. It must gate on the
+    `max_bytes` the meta map serves."""
+    from faster_whisper_backend.client_settings import store as client_settings_store
+
+    html = client.get("/settings/api-keys").text
+    cap = client.get(f"{_API}/client-settings").json()["max_bytes"]
+    assert cap == client_settings_store._CAP_BLOB
+    fns = "\n".join(
+        _js_fn(html, n) for n in (
+            "escapeHtml", "fmtBytes", "csMetaFor", "csContainsSummary",
+            "showCsImportModal",
+        )
+    )
+    script = fns + """
+const els = {};
+function el(id) {
+  return els[id] || (els[id] = {
+    id, textContent: '', innerHTML: '', disabled: null,
+    classList: { add() {}, remove() {} }, appendChild() {},
+  });
+}
+globalThis.document = {
+  getElementById: el, createElement: () => el('x' + Math.random()),
+  addEventListener() {}, removeEventListener() {},
+};
+globalThis.window = { __csMeta: { by_user: {}, unavailable: false, max_bytes: %d } };
+function preview(n) {
+  showCsImportModal({ id: 'u1', username: 'alice' },
+    { blob: { pad: 'a'.repeat(n) }, fileName: 'f.json', source: 'export' });
+  return { disabled: el('cs-import-go').disabled, warn: el('cs-import-warn').textContent };
+}
+console.log(JSON.stringify([preview(1024 * 1024), preview(%d)]));
+""" % (cap, cap)
+    out = subprocess.run(
+        ["node", "-e", script], capture_output=True, text=True, timeout=30,
+    )
+    assert out.returncode == 0, out.stderr
+    ok, over = json.loads(out.stdout)
+    assert ok["disabled"] is False, ok["warn"]
+    assert over["disabled"] is True
+    assert "over the 4.0 MB server cap" in over["warn"]

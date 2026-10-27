@@ -453,7 +453,10 @@ async def client_settings_meta_api() -> JSONResponse:
     Store never initialized (init_db failed at boot) → empty map rather than
     a 503 (the page must still render its users), with `unavailable: true`
     so the drawers say "store down" instead of the falsehood "nothing
-    stored" — the flag, not the drawer endpoints, is what tells the admin."""
+    stored" — the flag, not the drawer endpoints, is what tells the admin.
+    `max_bytes` is the store's blob cap, so the import preview rejects an
+    oversized file with the real limit instead of a hard-coded copy that
+    drifts when the cap moves."""
     unavailable = False
     try:
         # Off the loop like the /v1 siblings (client_settings/routes.py).
@@ -471,7 +474,11 @@ async def client_settings_meta_api() -> JSONResponse:
         for r in rows
         if r["profile"] == ""
     }
-    return JSONResponse({"by_user": by_user, "unavailable": unavailable})
+    return JSONResponse({
+        "by_user": by_user,
+        "unavailable": unavailable,
+        "max_bytes": client_settings_store._CAP_BLOB,
+    })
 
 
 @router.get(
