@@ -1698,6 +1698,10 @@ async function submitReport(form) {
       const badge = item.querySelector('.trace-reported-badge');
       if (badge) badge.style.display = 'inline-flex';
     }
+    // The Remove button's visibility was set from isReported() when the
+    // form was built — before this (possibly first) report existed.
+    form.querySelector('.rep-remove').style.display =
+      isReported(entry.request_id) ? 'inline-flex' : 'none';
     form.classList.remove('open');
     let body = {};
     try { body = await r.json(); } catch (_) {}

@@ -242,3 +242,25 @@ def test_remove_report_404_clears_stale_local_hint(client, tmp_path):
     assert res["badge"] == "none"
     assert res["removeBtn"] == "none"
     assert not [t for t in res["toasts"] if t[0] == "err"]
+
+
+def test_first_submit_reveals_remove_button(client, tmp_path):
+    # The button was only ever sized at form build or by a /state sync, so a
+    # trace reported for the first time could not be withdrawn on reopen.
+    res = _run_js(client, tmp_path, r"""
+      globalThis._detailText = (j, d) => d;
+      globalThis.api = async () => ({
+        ok: true, status: 200, json: async () => ({ was_updated: false }),
+      });
+      const entry = { request_id: 'rid1', final: 'Alpha Beta' };
+      const form = _buildReportForm(entry);
+      _traceItem(entry, form);
+      const removeBtn = form.querySelector('.rep-remove');
+      const before = removeBtn.style.display;
+      form.querySelector('.rep-comment').value = 'wrong name';
+      await submitReport(form);
+      out({ before, after: removeBtn.style.display, toasts: _toasts });
+    """, funcs=_REPORT_FUNCS + ("markReported", "submitReport"))
+    assert res["before"] == "none"
+    assert res["after"] == "inline-flex"
+    assert res["toasts"] == [["ok", "Report sent — thank you."]]
