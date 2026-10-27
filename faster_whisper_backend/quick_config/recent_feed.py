@@ -30,13 +30,16 @@ from typing import Any
 
 logger = logging.getLogger("whisper-api")
 
-# Token shape: at least one letter, then word-chars (letters/digits/-),
+# Token shape: a leading letter, then word-chars (letters/digits/-),
 # 2 to 64 chars. Drops single-char punctuation noise without aggressively
 # splitting compound words (which is the whole point — the user's
-# mis-recognition target IS the compound).
+# mis-recognition target IS the compound). The leading class is any
+# Unicode letter, not just ASCII + umlauts: the tail is \w anyway, so a
+# narrower start would cut "Éric" to "ric" — a key the word-bounded
+# cb:map regex can never match.
 _TOKEN_MIN_LEN = 2
 _TOKEN_MAX_LEN = 64
-_TOKEN_RE = re.compile(r"[A-Za-zÄÖÜäöüß][\w\-äöüÄÖÜß]*")
+_TOKEN_RE = re.compile(r"[^\W\d_][\w\-]*")
 
 # Small German stopword set — never useful as autocomplete candidates
 # for cb:map keys. Lowercase compare; preserve original casing on display.

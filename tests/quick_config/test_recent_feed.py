@@ -37,6 +37,22 @@ def test_tokenize_german_umlauts_preserved():
     assert q._tokenize("Müller Ärztin Größe") == ["Müller", "Ärztin", "Größe"]
 
 
+def test_tokenize_non_german_leading_letter_not_truncated():
+    # The tail was always \w; a start class of ASCII + umlauts only made
+    # the match begin at the second letter ("Éric" -> "ric").
+    text = "Éric Dupont und Łukasz Øberg trafen Ärzte"
+    assert q._tokenize(text) == [
+        "Éric", "Dupont", "Łukasz", "Øberg", "trafen", "Ärzte",
+    ]
+    assert q._extract_bigrams(text) == [
+        "Éric Dupont", "Łukasz Øberg", "Øberg trafen", "trafen Ärzte",
+    ]
+
+
+def test_tokenize_still_rejects_digit_and_underscore_start():
+    assert q._tokenize("123 5mg _intern") == ["mg", "intern"]
+
+
 def test_tokenize_drops_stopwords():
     assert q._tokenize("der die das Patient") == ["Patient"]
 
