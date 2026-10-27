@@ -1113,7 +1113,8 @@
 
   // Themed yes/no confirm dialog (replaces the browser-native confirm()).
   // Returns a Promise<bool>. opts: {title, body, confirmLabel, danger}.
-  // Enter confirms, Esc / Cancel / backdrop-click reject.
+  // Enter confirms (unless Cancel has focus), Esc / Cancel / backdrop-click
+  // reject.
   function _confirm(opts) {
     opts = opts || {};
     return new Promise(function(resolve) {
@@ -1132,7 +1133,9 @@
       }
       function onKey(e) {
         if (e.key === 'Escape') { e.preventDefault(); close(false); }
-        else if (e.key === 'Enter') { e.preventDefault(); close(true); }
+        // preventDefault also swallows the focused button's own activation,
+        // so a tabbed-to Cancel must still cancel.
+        else if (e.key === 'Enter') { e.preventDefault(); close(document.activeElement !== cancel); }
       }
       ok.onclick = function() { close(true); };
       cancel.onclick = function() { close(false); };
