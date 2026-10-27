@@ -59,6 +59,8 @@ class El {
   }
   set className(v) { this._cls.clear(); String(v).split(/\s+/).filter(Boolean).forEach(c => this._cls.add(c)); }
   get className() { return [...this._cls].join(' '); }
+  set innerHTML(v) { this.children = []; this._html = v; }
+  get innerHTML() { return this._html || ''; }
   appendChild(c) { this.children.push(c); c.parentElement = this; return c; }
   append(...cs) { cs.forEach(c => this.appendChild(c)); }
   replaceChildren(...cs) { this.children = []; this.append(...cs); }
@@ -85,20 +87,32 @@ function find(el, pred) {
 
 # ---- CAPTURES_PIPELINE_RULES_EXCLUDE checklist --------------------------------
 
-def _captures_harness(html, body):
-    """makeEditor()'s captures branch with makeRuleListEditor stubbed out:
-    `editor` holds the opts the checklist was built with."""
+def _captures_harness(html, body, real_list=False):
+    """makeEditor()'s captures branch. By default makeRuleListEditor is
+    stubbed out and `editor` holds the opts the checklist was built with;
+    `real_list` runs the page's own makeRuleListEditor on the fake DOM."""
     branch = _block(html, "  if (name === 'CAPTURES_PIPELINE_RULES_EXCLUDE') {")
-    return f"""
+    if real_list:
+        rle = _block(html, "function makeRuleListEditor(", "\n}\n")
+        rle += """
+function fieldDef(n) { return { value: state[n], default_value: [] }; }
+function _lsGet() { return null; }
+function _typePill(t) { return t; }
+"""
+    else:
+        rle = """
+function makeRuleListEditor(name, rules, mode, opts) {
+  editor = { name, rules, mode, opts };
+  return editor;
+}
+"""
+    return _FAKE_DOM + f"""
 const state = {{}};
 const listeners = {{}};
 let editor = null;
 function currentValue(n) {{ return state[n]; }}
 function setDirty(n, v) {{ state[n] = v; }}
-function makeRuleListEditor(name, rules, mode, opts) {{
-  editor = {{ name, rules, mode, opts }};
-  return editor;
-}}
+{rle}
 function jumpToGlobalRule(slug) {{}}
 function _registerAdminListener(ev, key, fn) {{ listeners[ev + '|' + key] = fn; }}
 function makeEditor(name) {{
@@ -123,6 +137,24 @@ editor.opts.onToggle('a', false, false);
 console.log(JSON.stringify(state.CAPTURES_PIPELINE_RULES_EXCLUDE));
 """))
     assert out == ["a", "c"]
+
+
+@needs_node
+def test_captures_checklist_offers_no_force_include(client):
+    """Captures have no include list: ticking a globally-disabled rule showed
+    'force-included' while nothing was saved and the rule stayed off."""
+    out = _node(_captures_harness(_html(client), """
+state.PIPELINE_RULES = [
+  { name: 'on', type: 'regex', enabled: true },
+  { name: 'off', type: 'regex', enabled: false },
+];
+state.CAPTURES_PIPELINE_RULES_EXCLUDE = [];
+const wrap = makeEditor('CAPTURES_PIPELINE_RULES_EXCLUDE');
+const cb = slug => find(find(wrap, e => e.dataset.slug === slug),
+                        e => e.tagName === 'INPUT');
+console.log(JSON.stringify([cb('on').disabled, cb('off').disabled]));
+""", real_list=True))
+    assert out == [False, True]
 
 
 # ---- MODEL_OVERRIDES editor -----------------------------------------------------

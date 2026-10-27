@@ -1262,12 +1262,13 @@ function makeEditor(name) {
   // semantic here is inverted from the field name: checked → REMOVE from
   // EXCLUDE, unchecked → ADD to EXCLUDE. `terminalToggleable: true` lets
   // the trainer drop "Trim edges" too — captures may want to preserve
-  // trailing whitespace that the live /transcribe path strips.
+  // trailing whitespace that the live /transcribe path strips. No
+  // includeSet: captures have no force-include list, so the checklist
+  // leaves globally-disabled rules un-tickable.
   if (name === 'CAPTURES_PIPELINE_RULES_EXCLUDE') {
     const allRules = currentValue('PIPELINE_RULES') || [];
     return makeRuleListEditor(name, allRules, 'checklist', {
       excludeSet: new Set(v || []),
-      includeSet: new Set(),
       terminalToggleable: true,
       onToggle: (slug, wantActive) => {
         const cur = currentValue(name) || [];
@@ -3078,6 +3079,11 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
           status.textContent = newForcedOut ? 'EXCLUDED' : '';
           if (footer) footer.textContent = _footerText();
         });
+      } else if (!globallyEnabled && !opts.includeSet) {
+        // No include list to write to (captures): ticking would only paint a
+        // force-include that is never saved.
+        cb.disabled = true;
+        cb.title = 'Globally disabled — enable it on the Pipeline page to use it here.';
       } else {
         // Tooltip combines all the state so the admin sees WHY the box is
         // checked or not at a glance.
