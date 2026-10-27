@@ -1325,8 +1325,10 @@ async def transcribe(
         raise HTTPException(
             status_code=422,
             detail="translation_mode must be 'fluent' or 'faithful'")
-    # Speaker-count hints: clamp like the other schemaless numeric knobs.
-    _spk_clamp = lambda v: min(32, max(1, v)) if v is not None else None  # noqa: E731
+    # Speaker-count hints: clamp like the other schemaless numeric knobs. 0 (or
+    # below) is the conventional "no hint", the same falsy value diarization
+    # reads as unset — clamping it up to 1 would force a one-speaker run.
+    _spk_clamp = lambda v: min(32, v) if v is not None and v > 0 else None  # noqa: E731
     num_speakers = _spk_clamp(num_speakers)
     min_speakers = _spk_clamp(min_speakers)
     max_speakers = _spk_clamp(max_speakers)

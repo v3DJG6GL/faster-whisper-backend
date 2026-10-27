@@ -215,6 +215,27 @@ def test_min_speakers_above_max_is_clamped_down(client, app_module,
     assert "diarization failed" not in r.text
 
 
+def test_zero_speaker_hint_means_auto_not_one_speaker(client, app_module,
+                                                      monkeypatch):
+    app_module.cfg.DIARIZATION_ENABLED = True
+    calls = []
+
+    async def _fake(path, *, num_speakers=None, min_speakers=None,
+                    max_speakers=None, model_id=None, progress_cb=None,
+                    cancel_check=None):
+        calls.append({"num": num_speakers, "min": min_speakers,
+                      "max": max_speakers})
+        return [(0.0, 1.0, "SPEAKER_00")]
+    monkeypatch.setattr(diarization, "diarize", _fake)
+    try:
+        r = _post(client, diarize="true", num_speakers="0",
+                  min_speakers="0", max_speakers="0")
+        assert r.status_code == 200, r.text
+    finally:
+        app_module.cfg.DIARIZATION_ENABLED = False
+    assert calls == [{"num": None, "min": None, "max": None}]
+
+
 # --- translation reports why it did not run -----------------------------------
 
 def test_translation_skipped_warning_without_speech_segments(
