@@ -889,6 +889,22 @@ def test_load_overrides_hand_edited_unhashable_rule_fields_never_raise(tmp_path,
     assert cs.load_overrides(str(p)) == {}
 
 
+@pytest.mark.parametrize("rule", [
+    _regex("big", pattern="a{4294967296}"),
+    {"name": "dd", "label": "dd", "type": "callback:dedup", "pattern": "a{1,99999999999}"},
+])
+def test_overflowing_repeat_count_is_a_validation_error(tmp_path, rule):
+    # re.compile raises OverflowError (not re.error) past MAXREPEAT. It escaped
+    # pydantic raw: a 500 instead of a 422 on save, and a hand-edited file
+    # broke load_overrides' never-raises promise, so the server could not boot.
+    with pytest.raises(ValidationError) as ei:
+        _ok_on_save(PIPELINE_RULES=[rule, _terminal()])
+    assert "invalid regex" in str(ei.value)
+    p = tmp_path / "o.json"
+    p.write_text(json.dumps({"PIPELINE_RULES": [rule, _terminal()]}), encoding="utf-8")
+    assert cs.load_overrides(str(p)) == {}
+
+
 def test_override_models_apply_the_global_value_rules():
     for model in (settings_schema.ModelOverride, settings_schema.OverrideProfile):
         for bad in ({"TEMPERATURE": "banana"}, {"SUPPRESS_TOKENS": "x,y"},

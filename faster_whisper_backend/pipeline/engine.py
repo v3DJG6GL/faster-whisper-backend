@@ -209,7 +209,7 @@ def _rebuild_caches_locked() -> None:
                     continue
                 try:
                     ecre = re.compile(epat)
-                except re.error as e:
+                except (re.error, OverflowError) as e:
                     logger.warning("[pipeline] rule %r entry has invalid regex "
                                    "(%s) — skipping entry", rname, e)
                     continue
@@ -253,7 +253,7 @@ def _rebuild_caches_locked() -> None:
                 else:
                     logger.warning("[pipeline] unknown rule type %r — skipping", rtype)
                     continue
-        except re.error as e:
+        except (re.error, OverflowError) as e:
             logger.warning("[pipeline] rule %r has invalid regex (%s) — skipping",
                            rule.get("name"), e)
             continue

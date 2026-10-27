@@ -66,3 +66,15 @@ def test_seam_culprit_stops_at_the_output_bound(app_module, monkeypatch):
     got = pl_engine.seam_culprit("ab", "abc", model_name="")
     assert got.startswith("#1.") and got.endswith("(output bound hit)")
     assert max(inputs) <= bound
+
+
+def test_overflowing_repeat_count_skips_the_entry_not_the_rebuild(app_module):
+    # re.compile raises OverflowError, not re.error, for a repeat count past
+    # MAXREPEAT; it escaped the skip-bad-entry handler and aborted the rebuild.
+    _set(app_module, {"name": "rl", "label": "RL", "type": "regex-list", "enabled": True,
+                      "entries": [{"pattern": "a{4294967296}", "replacement": "z"},
+                                  {"pattern": "a", "replacement": "b"}]})
+    assert pl_engine._postprocess_text("a", model_name="") == "b"
+    _set(app_module, {"name": "dd", "label": "DD", "type": "callback:dedup",
+                      "enabled": True, "pattern": "a{4294967296}"})
+    assert pl_engine._postprocess_text("a", model_name="") == "a"

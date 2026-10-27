@@ -1759,7 +1759,7 @@ class AdminConfig(BaseModel):
                         continue
                     try:
                         re.compile(epat)
-                    except re.error as e:
+                    except (re.error, OverflowError) as e:
                         raise ValueError(
                             f"rule {idx} ({slug!r}) entry {eidx}: invalid regex: {e}")
                     erepl = getattr(entry, "replacement", "") or ""
@@ -1774,7 +1774,7 @@ class AdminConfig(BaseModel):
                 continue
             try:
                 re.compile(pattern)
-            except re.error as e:
+            except (re.error, OverflowError) as e:
                 raise ValueError(f"rule {idx} ({slug!r}): invalid regex: {e}")
             checks.append((f"rule {idx} ({slug!r})", pattern, "", str(slug or "")))
         if terminal_idx is not None and terminal_idx != len(v) - 1:
