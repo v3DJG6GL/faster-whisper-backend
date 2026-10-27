@@ -963,44 +963,53 @@ def set_user_permissions(user_id: str, perms: dict[str, Any]) -> dict[str, Any]:
 
     # Config binding: present → validate; absent → preserve; empty → clear.
     incoming_config = perms.get("config")
-    # The stored binding lets a rule slug it already names pass (see
-    # set_key_config).
-    existing_perms = get_user_permissions(user_id)
-    clean_config = (config_store.validate_binding(
-                        incoming_config,
-                        previous=_parse_binding(existing_perms.get("config")))
-                    if incoming_config is not None else None)
-
-    # Merge: incoming wins, otherwise keep what's stored, otherwise "none".
-    existing_pages = existing_perms.get("pages") or {}
-    merged_pages: dict[str, str] = {}
-    for page in PAGES:
-        if page in incoming_pages:
-            merged_pages[page] = incoming_pages[page]
-        elif page in existing_pages and existing_pages[page] in _ALLOWED_SCOPES[page]:
-            merged_pages[page] = existing_pages[page]
-        else:
-            merged_pages[page] = "none"
-
-    if clean_tags is not None:
-        merged_tags = clean_tags
-    else:
-        existing_tags = existing_perms.get("quick_config_tags") or []
-        merged_tags = list(existing_tags) if isinstance(existing_tags, list) else []
-
-    clean = {"pages": merged_pages, "quick_config_tags": merged_tags}
-    # Config: incoming wins (empty → clear); absent → preserve stored. Only
-    # persisted when non-empty so the common no-config user stays clean.
-    if clean_config is not None:
-        if not config_store.binding_is_empty(clean_config):
-            clean["config"] = clean_config
-    else:
-        existing_config = existing_perms.get("config")
-        if isinstance(existing_config, dict) and not config_store.binding_is_empty(existing_config):
-            clean["config"] = existing_config
-
     conn = _require_conn()
+    # Read, merge and write in ONE critical section: a rename_profile_refs
+    # cascade (or a second Save) landing in between would be overwritten with
+    # this stale snapshot — a matrix Save (no config) would write a renamed
+    # profile's old name back, and the resolver drops the dangling layer and
+    # its locks. _lock isn't reentrant, so read the row directly rather than
+    # via get_user_permissions; the validators below never take it.
     with _lock:
+        row = conn.execute(
+            "SELECT permissions FROM users WHERE id = ?", (user_id,),
+        ).fetchone()
+        existing_perms = _parse_permissions(row["permissions"]) if row else {}
+        # The stored binding lets a rule slug it already names pass (see
+        # set_key_config).
+        clean_config = (config_store.validate_binding(
+                            incoming_config,
+                            previous=_parse_binding(existing_perms.get("config")))
+                        if incoming_config is not None else None)
+
+        # Merge: incoming wins, otherwise keep what's stored, otherwise "none".
+        existing_pages = existing_perms.get("pages") or {}
+        merged_pages: dict[str, str] = {}
+        for page in PAGES:
+            if page in incoming_pages:
+                merged_pages[page] = incoming_pages[page]
+            elif page in existing_pages and existing_pages[page] in _ALLOWED_SCOPES[page]:
+                merged_pages[page] = existing_pages[page]
+            else:
+                merged_pages[page] = "none"
+
+        if clean_tags is not None:
+            merged_tags = clean_tags
+        else:
+            existing_tags = existing_perms.get("quick_config_tags") or []
+            merged_tags = list(existing_tags) if isinstance(existing_tags, list) else []
+
+        clean = {"pages": merged_pages, "quick_config_tags": merged_tags}
+        # Config: incoming wins (empty → clear); absent → preserve stored. Only
+        # persisted when non-empty so the common no-config user stays clean.
+        if clean_config is not None:
+            if not config_store.binding_is_empty(clean_config):
+                clean["config"] = clean_config
+        else:
+            existing_config = existing_perms.get("config")
+            if isinstance(existing_config, dict) and not config_store.binding_is_empty(existing_config):
+                clean["config"] = existing_config
+
         cur = conn.execute(
             "UPDATE users SET permissions = ? WHERE id = ? AND revoked_ts IS NULL",
             (json.dumps(clean), user_id),

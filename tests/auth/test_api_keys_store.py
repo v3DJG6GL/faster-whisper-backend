@@ -242,6 +242,38 @@ def test_rename_profile_refs_keeps_the_real_error_after_sqlite_rolled_back(
     assert ak.get_user_config(u)["profiles"] == ["clinic-de"]
 
 
+def test_set_user_permissions_does_not_undo_a_concurrent_profile_rename(
+        api_keys_db, monkeypatch):
+    """A matrix Save (pages only) read the stored binding, released _lock,
+    and wrote it back later — a rename_profile_refs landing in between was
+    overwritten, so the binding pointed at the old, now-missing profile
+    name. The rename is fired from inside the Save's read of the row."""
+    import json
+    ak = api_keys_db
+    conn = ak._require_conn()
+    u = ak.create_user("u", is_admin=False)
+    conn.execute("UPDATE users SET permissions=? WHERE id=?", (json.dumps({
+        "pages": {}, "config": {"direct": {}, "profiles": ["clinic-de"]}}), u))
+    real = ak._parse_permissions
+    renamer: list[threading.Thread] = []
+
+    def _parse_then_rename(raw):
+        out = real(raw)
+        if not renamer:
+            t = threading.Thread(
+                target=ak.rename_profile_refs, args=("clinic-de", "clinic-deutsch"))
+            renamer.append(t)
+            t.start()
+            t.join(timeout=0.5)    # pre-fix it completes; post-fix it waits on _lock
+        return out
+    monkeypatch.setattr(ak, "_parse_permissions", _parse_then_rename)
+    ak.set_user_permissions(u, {"pages": {"logs": "all"}})
+    renamer[0].join()
+    monkeypatch.setattr(ak, "_parse_permissions", real)
+    assert ak.get_user_config(u)["profiles"] == ["clinic-deutsch"]
+    assert ak.get_user_permissions(u)["pages"]["logs"] == "all"
+
+
 # ---------------------------------------------------------------------------
 # create_key validation
 # ---------------------------------------------------------------------------
