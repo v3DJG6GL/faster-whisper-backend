@@ -132,8 +132,15 @@ if (-not (Test-Path $Python)) {
     # cache entries in a format the upgraded pip can't deserialize, producing
     # a "Cache entry deserialization failed" warning per package -- harmless
     # (pip re-downloads) but very noisy. Ignore failures: a clean cache is
-    # not load-bearing.
-    & $Python -m pip cache purge 2>&1 | Out-Null
+    # not load-bearing. That includes stderr output (cache disabled, nothing
+    # to purge), which $ErrorActionPreference=Stop would make terminating.
+    $oldPref = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        & $Python -m pip cache purge 2>&1 | Out-Null
+    } finally {
+        $ErrorActionPreference = $oldPref
+    }
 
     Write-Host "venv ready." -ForegroundColor Green
 }

@@ -181,6 +181,17 @@ def test_install_never_executes_unverified_wrapper():
     assert "Remove-Item -Force $LegacyNssm" in ps1
 
 
+def test_pip_cache_purge_runs_under_a_relaxed_error_preference():
+    # Under $ErrorActionPreference=Stop (and the UAC relaunch's Windows
+    # PowerShell 5.1) a native command's redirected stderr line terminates
+    # the script: a disabled or empty pip cache aborted the venv bootstrap.
+    ps1 = _read("install-service.ps1")
+    assert re.search(r'\$ErrorActionPreference = "Continue"\n\s*try \{\n'
+                     r'\s*& \$Python -m pip cache purge 2>&1 \| Out-Null\n'
+                     r'\s*\} finally \{\n\s*\$ErrorActionPreference = \$oldPref',
+                     ps1)
+
+
 def test_winsw_xml_here_string_is_well_formed():
     # WinSW v2 loads WhisperAPI.xml with XmlDocument: a malformed document
     # (e.g. "--" inside a comment) fails the service install outright.
