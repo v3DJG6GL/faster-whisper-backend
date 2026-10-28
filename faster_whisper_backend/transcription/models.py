@@ -13,6 +13,7 @@ fake loader) reaches every caller. Must not import main, runtime.preload or
 the request-progress registry (preload imports this module eagerly).
 """
 import asyncio
+import json
 import logging
 import math
 import os
@@ -791,7 +792,14 @@ def _convert_blocking(model_id: str, output_dir: str, quantization: str,
         load_as_float16=(quantization in ("float16", "int8_float16")),
         low_cpu_mem_usage=True,
     )
+    # Fingerprint a local source dir BEFORE the converter reads it, so a write
+    # landing mid-conversion also differs from the stamp and reconverts.
+    stamp = _source_fingerprint(model_id) if os.path.isdir(model_id) else None
     converter.convert(tmp_dir, quantization=quantization, force=True)
+    if stamp is not None:
+        with open(os.path.join(tmp_dir, _SOURCE_STAMP), "w",
+                  encoding="utf-8") as f:
+            json.dump(stamp, f)
     # Atomic publish. os.replace can't swap onto a non-empty dir on any OS (and
     # os.rename also fails onto an existing dir on Windows), so clear any stale
     # publish first, then replace.
@@ -802,12 +810,32 @@ def _convert_blocking(model_id: str, output_dir: str, quantization: str,
                 model_id, time.perf_counter() - t0)
 
 
+# Written next to a local dir's conversion: the source files as they were
+# when the converter read them.
+_SOURCE_STAMP = "source_fingerprint.json"
+
+
+def _source_fingerprint(name: str) -> "list[list]":
+    """Sorted [name, size, mtime_ns] of a local dir's top-level
+    weight/config/tokenizer files."""
+    with os.scandir(name) as it:
+        return sorted(
+            [e.name, st.st_size, st.st_mtime_ns]
+            for e in it
+            if e.is_file() and e.name.endswith(
+                (".safetensors", ".bin", ".json", ".txt"))
+            for st in (e.stat(),))
+
+
 def _converted_is_current(name: str, output_dir: str) -> bool:
     """True when `output_dir` holds a conversion that can be served. For a
-    local HF-format dir the conversion is also stale once any of its
-    weight/config/tokenizer files is newer than the converted model.bin: a
-    retrain into the same dir has no revision to key a fresh cache dir on.
-    Hub ids keep the plain exists check (loaded directly on later starts)."""
+    local HF-format dir the conversion is also stale once its weight/config/
+    tokenizer files differ from the fingerprint stamped at conversion time:
+    a retrain into the same dir has no revision to key a fresh cache dir on,
+    and a copy that keeps older mtimes (rsync -a, tar) is a change too. A
+    conversion without a stamp (older release) falls back to "no source file
+    newer than model.bin". Hub ids keep the plain exists check (loaded
+    directly on later starts)."""
     bin_path = os.path.join(output_dir, "model.bin")
     try:
         built = os.path.getmtime(bin_path)
@@ -815,6 +843,17 @@ def _converted_is_current(name: str, output_dir: str) -> bool:
         return False
     if not os.path.isdir(name):
         return True
+    try:
+        with open(os.path.join(output_dir, _SOURCE_STAMP),
+                  encoding="utf-8") as f:
+            stamp = json.load(f)
+    except (OSError, ValueError):
+        stamp = None
+    if stamp is not None:
+        try:
+            return stamp == _source_fingerprint(name)
+        except OSError:
+            return True
     try:
         with os.scandir(name) as it:
             newest = max(

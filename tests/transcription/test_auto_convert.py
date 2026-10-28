@@ -159,3 +159,109 @@ def test_local_dir_is_reconverted_once_its_weights_change(
     assert converted == [str(src)]
     with open(cached) as f:
         assert f.read() == "new"
+
+
+def _stub_local_conversion(monkeypatch, tmp_path, during_convert=None):
+    """Stub the converter + filelock for a local-dir auto-convert; returns
+    the list of sources converted. `during_convert` runs after the converter
+    has read the weights, before model.bin is written."""
+    monkeypatch.setattr(tx_models.cfg, "AUTO_CONVERT_HF_MODELS", True,
+                        raising=False)
+    monkeypatch.setattr(tx_models.cfg, "CONVERT_QUANTIZATION", "float16",
+                        raising=False)
+    monkeypatch.setattr(tx_models.cfg, "CONVERTED_MODELS_DIR",
+                        str(tmp_path / "ct2"), raising=False)
+    monkeypatch.setattr(tx_models.cfg, "MODEL_OVERRIDES", {}, raising=False)
+    monkeypatch.setattr(tx_models, "_convert_locks", {})
+    converted = []
+
+    class _Converter:
+        def __init__(self, model_name_or_path, **kw):
+            converted.append(model_name_or_path)
+            self._src = model_name_or_path
+
+        def convert(self, out, quantization, force):
+            data = open(os.path.join(self._src, "model.safetensors")).read()
+            if during_convert is not None:
+                during_convert()
+            os.makedirs(out)
+            with open(os.path.join(out, "model.bin"), "w") as f:
+                f.write(data)
+
+    class _FileLock:
+        def __init__(self, path, timeout=None):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    fl = types.ModuleType("filelock")
+    fl.FileLock = _FileLock
+    fl.Timeout = type("Timeout", (Exception,), {})
+    conv = types.ModuleType("ctranslate2.converters")
+    conv.TransformersConverter = _Converter
+    monkeypatch.setitem(sys.modules, "filelock", fl)
+    monkeypatch.setitem(sys.modules, "ctranslate2.converters", conv)
+    for mod in ("ctranslate2", "transformers", "torch"):
+        monkeypatch.setitem(sys.modules, mod, types.ModuleType(mod))
+    return converted
+
+
+def test_local_dir_swapped_in_with_older_mtimes_is_reconverted(
+        monkeypatch, tmp_path):
+    """rsync -a / tar keep the source mtime: new weights older than the
+    conversion's model.bin are still a change, not the cached fine-tune."""
+    converted = _stub_local_conversion(monkeypatch, tmp_path)
+    src = tmp_path / "my-ft"
+    src.mkdir()
+    (src / "config.json").write_text("{}")
+    weights = src / "model.safetensors"
+    weights.write_bytes(b"v1")
+    out_dir = tx_models._converted_dir_for(str(src), "float16")
+    cached = os.path.join(out_dir, "model.bin")
+
+    assert asyncio.run(tx_models._ensure_ct2_model(str(src))) == out_dir
+    assert asyncio.run(tx_models._ensure_ct2_model(str(src))) == out_dir
+    assert converted == [str(src)]
+
+    os.utime(src / "config.json", (1_000, 1_000))
+    os.utime(cached, (2_000, 2_000))
+    weights.write_bytes(b"v2")
+    os.utime(weights, (1_500, 1_500))
+    assert asyncio.run(tx_models._ensure_ct2_model(str(src))) == out_dir
+    assert converted == [str(src), str(src)]
+    with open(cached) as f:
+        assert f.read() == "v2"
+
+
+def test_local_dir_written_during_conversion_is_reconverted(
+        monkeypatch, tmp_path):
+    """Weights saved while a conversion runs are older than the model.bin it
+    writes at the end; the conversion of the earlier weights must not count
+    as current."""
+    src = tmp_path / "my-ft"
+    src.mkdir()
+    (src / "config.json").write_text("{}")
+    weights = src / "model.safetensors"
+    weights.write_bytes(b"mid")
+    os.utime(weights, (1_000, 1_000))
+    first = []
+
+    def _final_save_lands():
+        if not first:
+            first.append(True)
+            weights.write_bytes(b"final")
+            os.utime(weights, (1_100, 1_100))
+
+    converted = _stub_local_conversion(monkeypatch, tmp_path,
+                                       during_convert=_final_save_lands)
+    out_dir = tx_models._converted_dir_for(str(src), "float16")
+
+    assert asyncio.run(tx_models._ensure_ct2_model(str(src))) == out_dir
+    assert asyncio.run(tx_models._ensure_ct2_model(str(src))) == out_dir
+    assert converted == [str(src), str(src)]
+    with open(os.path.join(out_dir, "model.bin")) as f:
+        assert f.read() == "final"
