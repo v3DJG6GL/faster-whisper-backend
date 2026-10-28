@@ -526,3 +526,83 @@ def test_run_leaves_a_sample_locked_mid_pass_alone(
     assert row["final"] == "old"
     assert not row["text_for_training"]
     assert gs.get_sample("reapplymidlock01")["transcript"] == "old"
+
+
+def test_run_leaves_a_capture_merged_into_a_locked_sample_mid_pass_alone(
+        captures_store_db, groups_store_db, fake_pipeline, monkeypatch):
+    """The write-time lock re-check keyed on the snapshot's sample_id: a
+    capture ungrouped when the pass started, then merged into a sample that
+    was locked while the pass ran, still had its final / training text
+    rewritten."""
+    from faster_whisper_backend.settings import config as cfg
+
+    monkeypatch.setattr(cfg, "CAPTURES_PIPELINE_RULES_EXCLUDE", None,
+                        raising=False)
+    conn = captures_store_db._require_conn()
+    gs = groups_store_db
+    _insert(conn, "reapplymrg01", language="de", final="old")
+    real = pl_engine._postprocess_text
+
+    def merge_lock_then_run(text, **kw):
+        # The admin merges this capture into a sample and locks it while the
+        # pass is on it.
+        conn.execute(
+            "INSERT OR IGNORE INTO capture_samples (id, user_id, created_ts,"
+            " merged_wav_relpath, merged_duration_ms, transcript,"
+            " transcript_join_strategy, member_hashes,"
+            " inter_segment_silence_ms, is_stale, is_locked, status,"
+            " admin_notes, language, member_trims)"
+            " VALUES (?,'alice',1.0,?,5000,'old','space','{}',300,0,1,'new',"
+            "'','de','{}')",
+            ("reapplymrglock1", gs._relpath_for("reapplymrglock1")))
+        conn.execute("UPDATE captures SET sample_id = 'reapplymrglock1',"
+                     " sample_order = 0 WHERE id = 'reapplymrg01'")
+        return real(text, **kw)
+
+    monkeypatch.setattr(pl_engine, "_postprocess_text", merge_lock_then_run)
+
+    captures_reapply._run()
+
+    st = captures_reapply.status()
+    assert st["processed"] == 1 and st["captures_updated"] == 0
+    row = captures_store_db.get_capture("reapplymrg01")
+    assert row["final"] == "old"
+    assert not row["text_for_training"]
+
+
+def test_run_rebuilds_a_sample_a_capture_joined_mid_pass(
+        captures_store_db, groups_store_db, fake_pipeline, monkeypatch):
+    """The group rebuild keyed on the snapshot's sample_id: a capture merged
+    into an unlocked sample while the pass ran got the new text, but the
+    sample's stored transcript kept the old member text."""
+    from faster_whisper_backend.settings import config as cfg
+
+    monkeypatch.setattr(cfg, "CAPTURES_PIPELINE_RULES_EXCLUDE", None,
+                        raising=False)
+    conn = captures_store_db._require_conn()
+    gs = groups_store_db
+    _insert(conn, "reapplyjoin1", language="de", final="old")
+    real = pl_engine._postprocess_text
+
+    def merge_then_run(text, **kw):
+        conn.execute(
+            "INSERT OR IGNORE INTO capture_samples (id, user_id, created_ts,"
+            " merged_wav_relpath, merged_duration_ms, transcript,"
+            " transcript_join_strategy, member_hashes,"
+            " inter_segment_silence_ms, is_stale, is_locked, status,"
+            " admin_notes, language, member_trims)"
+            " VALUES (?,'alice',1.0,?,5000,'old','space','{}',300,0,0,'new',"
+            "'','de','{}')",
+            ("reapplyjoinsid1", gs._relpath_for("reapplyjoinsid1")))
+        conn.execute("UPDATE captures SET sample_id = 'reapplyjoinsid1',"
+                     " sample_order = 0 WHERE id = 'reapplyjoin1'")
+        return real(text, **kw)
+
+    monkeypatch.setattr(pl_engine, "_postprocess_text", merge_then_run)
+
+    captures_reapply._run()
+
+    assert captures_store_db.get_capture("reapplyjoin1")["final"] == \
+        "HELLO [final]"
+    assert gs.get_sample("reapplyjoinsid1")["transcript"] == \
+        "HELLO [final]"

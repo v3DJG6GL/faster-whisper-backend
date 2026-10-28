@@ -229,8 +229,6 @@ def _run_pass() -> None:
             continue
         if new_final != (r["final"] or ""):
             patch["final"] = new_final
-            if r["sample_id"]:
-                affected_sample_ids.add(r["sample_id"])
         # Training-form text reflects PIPELINE_RULES minus the
         # captures-specific excludes (the excludes snapshotted for the run).
         try:
@@ -246,28 +244,32 @@ def _run_pass() -> None:
             new_training = None
         if new_training is not None and new_training != (r["text_for_training"] or ""):
             patch["text_for_training"] = new_training
-            # _build_default_transcript reads text_for_training before
-            # falling back to final/raw, so a training-form change must
-            # also trigger a group rebuild — final may be unchanged when
-            # captures_excludes drops a rule from the training pipeline.
-            if r["sample_id"]:
-                affected_sample_ids.add(r["sample_id"])
-        if patch and r["sample_id"]:
-            # Re-read the lock at the write, holding the samples lock its
-            # is_locked writes take: a sample locked after the snapshot above
-            # (the pass can run for minutes) keeps its members' text too.
+        if patch:
+            # Re-read the capture's CURRENT sample and its lock at the write,
+            # holding the samples lock its merge / is_locked writes take: the
+            # pass can run for minutes, and a capture merged into a sample
+            # (or a sample locked) after the snapshot above keeps its text.
             with capture_samples_store._lock:
                 with captures_store._lock:
+                    cur = conn.execute(
+                        "SELECT sample_id FROM captures WHERE id = ?", (cid,),
+                    ).fetchone()
+                    sid = cur["sample_id"] if cur is not None else None
+                    # No member, no samples table needed (as the snapshot).
                     g = conn.execute(
                         "SELECT is_locked FROM capture_samples WHERE id = ?",
-                        (r["sample_id"],),
-                    ).fetchone()
+                        (sid,),
+                    ).fetchone() if sid else None
                 if g is not None and g["is_locked"]:
                     patch = {}
                 else:
                     captures_store.update_capture(cid, patch)
-        elif patch:
-            captures_store.update_capture(cid, patch)
+                    # Either change rebuilds the group: _build_default_transcript
+                    # reads text_for_training before falling back to final/raw,
+                    # and final may be unchanged when captures_excludes drops a
+                    # rule from the training pipeline.
+                    if sid:
+                        affected_sample_ids.add(sid)
         if patch:
             with _state_lock:
                 _updated_cids.add(cid)
