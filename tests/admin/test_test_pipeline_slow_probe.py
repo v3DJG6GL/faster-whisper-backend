@@ -178,20 +178,24 @@ def _count_probe_timeouts(monkeypatch):
 
 def test_a_pattern_found_slow_is_not_timed_again_by_each_later_walk(client, monkeypatch):
     # Every map changes the text, so the next pattern rule walks again; the
-    # slow tail must cost one kill, not one per walk.
+    # list after it writes the text back, so the slow tail is handed the
+    # same text in every walk and must cost one kill, not one per walk.
     monkeypatch.setattr(admin_routes, "_TEST_PIPELINE_PROBE_TIMEOUT", 0.2)
     killed = _count_probe_timeouts(monkeypatch)
     rules = []
     for n in "123":
-        rules += [{"name": "m" + n, "type": "callback:map", "enabled": True,
-                   "map": {n: "a"}},
-                  {"name": "up" + n, "type": "callback:upper", "enabled": True,
-                   "pattern": "q"}]
+        rules += [{"name": "up" + n, "type": "callback:upper", "enabled": True,
+                   "pattern": "q"},
+                  {"name": "m" + n, "type": "callback:map", "enabled": True,
+                   "map": {"1": "a"}},
+                  {"name": "rl" + n, "type": "regex-list", "enabled": True,
+                   "entries": [{"pattern": "a", "replacement": "1"}]}]
     rules.append({"name": "slow", "type": "callback:upper", "enabled": True,
                   "pattern": _EMPTY_BACKTRACK})
-    r = client.post("/settings/test-pipeline", json={"sample": "1 2 3 4", "rules": rules})
+    r = client.post("/settings/test-pipeline", json={"sample": "1 1 1 1", "rules": rules})
     assert r.status_code == 200, r.text
     steps = r.json()["steps"]
+    assert [s["after"] for s in steps[1:3]] == ["a a a a", "1 1 1 1"]
     assert steps[-1].get("not_run") is True
     assert len(killed) == 1
 
@@ -214,3 +218,63 @@ def test_probe_time_across_walks_is_capped(client, monkeypatch):
     steps = r.json()["steps"]
     assert all(s.get("not_run") is True for s in steps[1::2])
     assert sum(killed) <= 0.2 * admin_routes._TEST_PIPELINE_PROBE_ROUNDS + 1e-6
+
+
+def test_a_pattern_slow_on_other_text_is_timed_again_on_the_text_it_is_handed(client, monkeypatch):
+    # Walk 1 times the entry on the c-run (the child cannot replay the map);
+    # the map turns the real text into "ok", where the entry is instant, so
+    # the walk from there must time it again instead of skipping it as slow.
+    monkeypatch.setattr(admin_routes, "_TEST_PIPELINE_PROBE_TIMEOUT", 0.2)
+    r = client.post("/settings/test-pipeline", json={
+        "sample": "c" * 100,
+        "rules": [{"name": "up", "type": "callback:upper", "enabled": True,
+                   "pattern": "q"},
+                  {"name": "m", "type": "callback:map", "enabled": True,
+                   "map": {"c" * 100: "ok"}},
+                  {"name": "rl", "type": "regex-list", "enabled": True, "entries": [
+                      {"pattern": _GROWN_BACKTRACK.replace("|)", "|c)") + "|ok",
+                       "replacement": "DONE"}]}],
+    })
+    assert r.status_code == 200, r.text
+    steps = r.json()["steps"]
+    assert steps[1]["after"] == "ok"
+    assert steps[2].get("not_run") is not True
+    assert steps[2]["after"] == "DONE"
+
+
+def test_healthy_walks_do_not_spend_the_probe_time(client, monkeypatch):
+    # Every upper rule changes the text, so each pattern rule walks again;
+    # walks that time nothing out must not use up the request's probe time
+    # and leave the tail reported as too slow.
+    monkeypatch.setattr(admin_routes, "_TEST_PIPELINE_PROBE_TIMEOUT", 0.2)
+    words = ["w%d" % n for n in range(60)]
+    rules = [{"name": w, "type": "callback:upper", "enabled": True,
+              "pattern": r"\b%s\b" % w} for w in words]
+    rules.append({"name": "rl", "type": "regex-list", "enabled": True,
+                  "entries": [{"pattern": "W59", "replacement": "end"}]})
+    r = client.post("/settings/test-pipeline",
+                    json={"sample": " ".join(words), "rules": rules})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert not [s["ordinal"] for s in body["steps"] if s.get("not_run")]
+    assert body["final"] == " ".join(w.upper() for w in words[:-1]) + " end"
+
+
+def test_probe_budget_is_charged_only_by_killed_rounds(monkeypatch):
+    monkeypatch.setattr(admin_routes, "_TEST_PIPELINE_PROBE_TIMEOUT", 0.2)
+    budget = {"left": 0.6}
+    assert admin_routes._probe_chain("aaaa", _units(["a"]), None, budget)[1:] == (set(), None)
+    assert budget["left"] == 0.6
+    _marks, slow, stop = admin_routes._probe_chain(
+        "aaaa", _units([_EMPTY_BACKTRACK, "a"]), None, budget)
+    assert (slow, stop) == ({1}, None)
+    assert abs(budget["left"] - 0.4) < 1e-9
+
+
+def test_a_round_cut_short_by_the_budget_blames_no_unit(monkeypatch):
+    monkeypatch.setattr(admin_routes, "_TEST_PIPELINE_PROBE_TIMEOUT", 2.0)
+    budget = {"left": 0.2}
+    _marks, slow, stop = admin_routes._probe_chain(
+        "aaaa", _units(["a", "(?:|){24}(?!)"]), None, budget)
+    assert slow == set()
+    assert stop == 2

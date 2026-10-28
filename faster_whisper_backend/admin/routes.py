@@ -744,7 +744,8 @@ _TEST_PIPELINE_PROBE_ROUNDS = 3
 _PROBE_SRC = (
     "import hashlib, json, re, sys\n"
     "text, units, skip, cap = json.load(sys.stdin)\n"
-    "skip = set(skip)\n"
+    "skip = dict(skip)\n"
+    "h = None\n"
     "for i, u in enumerate(units):\n"
     "    if u[0] == 'mark':\n"
     "        h = hashlib.sha1(text.encode('utf-8', 'surrogatepass')).hexdigest()\n"
@@ -754,7 +755,7 @@ _PROBE_SRC = (
     "    if u[0] == 'trim':\n"
     "        text = text.lstrip(' \\t\\r').rstrip(' \\t\\r')\n"
     "        continue\n"
-    "    if i in skip:\n"
+    "    if i in skip and (skip[i] is None or h in skip[i]):\n"
     "        continue\n"
     "    sys.stderr.write('%d\\n' % i)\n"
     "    sys.stderr.flush()\n"
@@ -782,8 +783,9 @@ def _text_sha(text: str) -> str:
     return hashlib.sha1(text.encode("utf-8", "surrogatepass")).hexdigest()
 
 
-def _probe_chain(text: str, units: list[list[Any]], skip: set[int] | None = None,
-                 budget: float | None = None
+def _probe_chain(text: str, units: list[list[Any]],
+                 skip: dict[int, set[str]] | None = None,
+                 budget: dict[str, Any] | None = None
                  ) -> tuple[dict[int, str], set[int], int | None] | None:
     """Walk `units` (see _PROBE_SRC) from `text` in a child process killed
     after _TEST_PIPELINE_PROBE_TIMEOUT, so every pattern is timed on the text
@@ -796,9 +798,13 @@ def _probe_chain(text: str, units: list[list[Any]], skip: set[int] | None = None
     the walk finished). None when the child cannot run at all — fails open
     like regex_guard.validate.
 
-    `skip`: unit indices already known slow (reported slow, never re-timed).
-    `budget`: seconds this walk may spend in all; a round is cut at what is
-    left, and once it is gone the walk stops where it got to."""
+    `skip`: unit index -> the digests of its rule's input it is already known
+    slow on; on that input it is reported slow and not timed again, on any
+    other it is timed afresh.
+    `budget`: its "left" holds the seconds killed rounds may still spend,
+    shared across walks (a round that finishes costs nothing). A round is cut
+    at what is left; a cut round's kill blames no unit (the walk stops there,
+    unprobed), and once it is gone the walk stops where it got to."""
     import subprocess
     import sys
 
@@ -812,33 +818,46 @@ def _probe_chain(text: str, units: list[list[Any]], skip: set[int] | None = None
                 found[int(ri)] = h
         return found
 
-    slow: set[int] = set(skip or ())
-    end = None if budget is None else time.monotonic() + budget
+    known = skip or {}
+    slow: set[int] = set()
+
+    def _done(marks: dict[int, str], stop: int | None
+              ) -> tuple[dict[int, str], set[int], int | None]:
+        # Known-slow units the child skipped: their rule's input matched.
+        return marks, slow | {i for i, hs in known.items()
+                              if marks.get(units[i][1]) in hs}, stop
+
     last: tuple[dict[int, str], int] = ({}, 0)
     for _ in range(_TEST_PIPELINE_PROBE_ROUNDS):
         timeout = _TEST_PIPELINE_PROBE_TIMEOUT
-        if end is not None:
-            timeout = min(timeout, end - time.monotonic())
+        if budget is not None:
+            timeout = min(timeout, budget["left"])
             if timeout <= 0:
                 break
         try:
             p = subprocess.run(
                 [sys.executable, "-I", "-c", _PROBE_SRC],
-                input=json.dumps([text, units, sorted(slow),
+                input=json.dumps([text, units,
+                                  [*((i, sorted(hs)) for i, hs in known.items()),
+                                   *((i, None) for i in slow)],
                                   pl_engine._POSTPROCESS_MAX_CHARS]),
                 capture_output=True, text=True,
                 timeout=timeout)
-            return _marks(p.stdout), slow, None
+            return _done(_marks(p.stdout), None)
         except subprocess.TimeoutExpired as exc:
+            if budget is not None:
+                budget["left"] -= timeout
             idx = regex_guard._last_index(getattr(exc, "stderr", None))
             if not isinstance(idx, int) or not 0 <= idx < len(units):
-                return _marks(getattr(exc, "stdout", None)), slow, 0
+                return _done(_marks(getattr(exc, "stdout", None)), 0)
+            if timeout < _TEST_PIPELINE_PROBE_TIMEOUT:
+                return _done(_marks(getattr(exc, "stdout", None)), idx)
             slow.add(idx)
             last = (_marks(getattr(exc, "stdout", None)), idx + 1)
         except Exception as exc:  # noqa: BLE001 - probe infra failure -> fail open
             logger.warning("test-pipeline probe skipped: %s", exc)
             return None
-    return last[0], slow, last[1]
+    return _done(*last)
 
 
 @router.post("/test-pipeline",
@@ -992,15 +1011,17 @@ async def test_pipeline(payload: dict[str, Any]) -> JSONResponse:
     # on the real text (an earlier callback or map changed it in a way the
     # child cannot replay).
     cleared: dict[int, tuple[str, set[int]]] = {}
-    # "left": the request's probe time across every walk — rounds x timeout,
-    # the bound one walk always had; whatever is unprobed once it is spent is
+    # "left": the request's time for killed probe rounds across every walk —
+    # rounds x timeout, the bound one walk always had (a walk that times
+    # nothing out costs none of it); whatever is unprobed once it is spent is
     # reported as not run.
     probe: dict[str, Any] = {
         "on": True, "exhausted": False,
         "left": _TEST_PIPELINE_PROBE_TIMEOUT * _TEST_PIPELINE_PROBE_ROUNDS}
-    # (rule, entry) units an earlier walk found slow: later walks skip them
-    # (not run) instead of timing each one out again.
-    known_slow: set[tuple[int, int]] = set()
+    # (rule, entry) -> the digests of the rule's input an earlier walk found
+    # the unit slow on: a later walk handing it that input skips it (not run)
+    # instead of timing it out again; on other text it is timed afresh.
+    known_slow: dict[tuple[int, int], set[str]] = {}
 
     def _probe_from(start: int, text: str) -> None:
         units: list[list[Any]] = []
@@ -1017,11 +1038,10 @@ async def test_pipeline(payload: dict[str, Any]) -> JSONResponse:
                 owner[len(units)] = (ri, ei)
                 units.append(["match", ri, pat] if rep is None
                              else ["sub", ri, pat, rep])
-        t0 = time.monotonic()
         res = _probe_chain(text, units,
-                           {ui for ui, u in owner.items() if u in known_slow},
-                           probe["left"])
-        probe["left"] -= time.monotonic() - t0
+                           {ui: known_slow[u] for ui, u in owner.items()
+                            if u in known_slow},
+                           probe)
         if res is None:
             probe["on"] = False
             return
@@ -1029,8 +1049,8 @@ async def test_pipeline(payload: dict[str, Any]) -> JSONResponse:
         for ri, h in marks.items():
             cleared[ri] = (h, set())
         for ui, (ri, ei) in owner.items():
-            if ui in slow:
-                known_slow.add((ri, ei))
+            if ui in slow and ri in marks:
+                known_slow.setdefault((ri, ei), set()).add(marks[ri])
             if ri in cleared and (ui in slow or (stop is not None and ui >= stop)):
                 cleared[ri][1].add(ei)
         if stop is not None or probe["left"] <= 0:
