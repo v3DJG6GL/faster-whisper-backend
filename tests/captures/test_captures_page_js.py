@@ -116,8 +116,9 @@ def test_bulk_status_ignores_a_second_click_while_in_flight(page, tmp_path):
     first's freshly written status as prev_status, and its toast replaced
     the first's Undo: the original status was unrecoverable."""
     fns = "\n".join(_js_function(page, f) for f in (
-        "_bulkStatus", "_undoBulk", "_renderUnlessKeptOpenEdits"))
-    out = _run_node(tmp_path, "var _bulkBusy = false;\n" + fns + r"""
+        "_bulkStatus", "_undoBulk", "_renderUnlessKeptOpenEdits", "_dirtyOpenEdits"))
+    out = _run_node(tmp_path, "var _bulkBusy = false, _openRows = {}, _openSamples = {};\n"
+                    + fns + r"""
 var calls = [], pending = [], toasts = [];
 function api(m, u, body) {
   calls.push(body.status);
@@ -895,7 +896,7 @@ def test_bulk_action_asks_again_before_rendering_over_edits_made_meanwhile(
     lost its chips / notes to the render() after it, with no prompt."""
     fns = "\n".join(_js_function(page, f) for f in (
         "_bulkStatus", "_undoBulk", "_bulkDelete", "_renderUnlessKeptOpenEdits",
-        "_okToDropOpenEdits", "_anyOpenDirty"))
+        "_okToDropOpenEdits", "_anyOpenDirty", "_dirtyOpenEdits"))
     out = _run_node(tmp_path, fns + _BULK_DIRTY_STUBS + r"""
 var reply = """ + json.dumps(reply) + r""";
 async function run(keep) {
@@ -1014,3 +1015,44 @@ var onStatus = """ + handler + r""";
 """)
     assert out == {"kept": True, "status": "reviewed",
                    "preview": "Die Katze die Maus", "merge": "Die Katze die Maus"}
+
+
+@needs_node
+@pytest.mark.parametrize("action, reply, confirms", [
+    ("_bulkStatus('reviewed')", {"updated": [{"id": "a", "prev_status": "new"}], "skipped": []},
+     ["Mark 1 reviewed?"]),
+    ("_undoBulk([{ id: 'a', prev_status: 'reviewed' }])", {"updated": [{"id": "a"}], "skipped": []},
+     ["Undo the bulk change?"]),
+    ("_bulkDelete()", {"deleted": [], "skipped": []}, ["Delete 1 selected?", "Delete 1 capture?"]),
+])
+def test_bulk_action_asks_once_about_edits_already_agreed_to_drop(
+        page, tmp_path, action, reply, confirms):
+    """The re-ask after the request fired for any dirty card, including the
+    one the user had just agreed to drop: a second (for delete a third)
+    prompt about the same edits, and a Cancel there left a stale list."""
+    fns = "\n".join(_js_function(page, f) for f in (
+        "_bulkStatus", "_undoBulk", "_bulkDelete", "_renderUnlessKeptOpenEdits",
+        "_okToDropOpenEdits", "_anyOpenDirty", "_dirtyOpenEdits", "markDirty"))
+    out = _run_node(tmp_path, fns + _BULK_DIRTY_STUBS + r"""
+var reply = """ + json.dumps(reply) + r""";
+async function run(editMeanwhile) {
+  var st = { dirty: false };
+  markDirty(st);
+  _openRows = { c1: st };               // dirty before the action
+  answers = [true, true, true];
+  var p = """ + action + r""";
+  await tick();
+  if (editMeanwhile) markDirty(st);     // edited again mid-request
+  pending.shift()(reply);
+  await p; await tick();
+}
+(async function() {
+  await run(false);
+  var same = { renders: renders, asked: asked.slice() };
+  asked = []; renders = 0;
+  await run(true);
+  console.log(JSON.stringify({ same: same, newer: { renders: renders, asked: asked } }));
+})();
+""")
+    assert out["same"] == {"renders": 1, "asked": confirms}
+    assert out["newer"] == {"renders": 1, "asked": confirms + ["Show the updated list?"]}

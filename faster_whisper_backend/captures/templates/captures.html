@@ -1417,12 +1417,30 @@
       + 'List not refreshed: an open card has unsaved edits. Refresh after saving.', err);
   }
 
+  // The open cards holding unsaved edits, each with its edit generation:
+  // taken once the user agreed to drop them.
+  function _dirtyOpenEdits() {
+    var out = [];
+    Object.keys(_openRows).forEach(function(id) {
+      var st = _openRows[id];
+      if (st && st.dirty) out.push({ st: st, gen: st.editGen });
+    });
+    Object.keys(_openSamples).forEach(function(id) {
+      var st = _openSamples[id] && _openSamples[id].state;
+      if (st && st.dirty) out.push({ st: st, gen: st.editGen });
+    });
+    return out;
+  }
   // The bulk actions ask before their request, but the list stays usable
   // while it runs: a card opened and edited meanwhile would be dropped by
-  // the render() after it, so ask again. On a cancel the updated rows stay
-  // in _allCaptures and show on the next render.
-  async function _renderUnlessKeptOpenEdits() {
-    if (await _okToDropOpenEdits('Show the updated list?', 'Show')) render();
+  // the render() after it, so ask again, but only about edits not in
+  // `agreed` (the _dirtyOpenEdits() the user already agreed to drop). On a
+  // cancel the updated rows stay in _allCaptures and show on the next render.
+  async function _renderUnlessKeptOpenEdits(agreed) {
+    var fresh = _dirtyOpenEdits().some(function(d) {
+      return !agreed.some(function(a) { return a.st === d.st && a.gen === d.gen; });
+    });
+    if (!fresh || await _okToDropOpenEdits('Show the updated list?', 'Show')) render();
   }
 
   // One bulk PATCH at a time: a second one in flight reports the first's
@@ -1434,6 +1452,7 @@
     if (!rows.length || _bulkBusy) return;
     if (!(await _okToDropOpenEdits('Mark ' + rows.length + ' ' + status + '?', 'Continue')))
       return;
+    var agreed = _dirtyOpenEdits();
     var ids = rows.map(function(r) { return r.id; });
     _bulkBusy = true;
     try {
@@ -1442,7 +1461,7 @@
       var byId = {}; updated.forEach(function(u) { byId[u.id] = u; });
       _allCaptures.forEach(function(r) { if (byId[r.id]) r.status = status; });
       _clearSelection();
-      await _renderUnlessKeptOpenEdits();
+      await _renderUnlessKeptOpenEdits(agreed);
       reloadCounts();
       var why = {};
       skipped.forEach(function(s) { why[s.reason] = (why[s.reason] || 0) + 1; });
@@ -1468,6 +1487,7 @@
     }
     if (!(await _okToDropOpenEdits('Undo the bulk change?', 'Undo')))
       return;
+    var agreed = _dirtyOpenEdits();
     var groups = {};
     updated.forEach(function(u) { (groups[u.prev_status] = groups[u.prev_status] || []).push(u.id); });
     var restored = 0, why = {};
@@ -1482,7 +1502,7 @@
         var set = {}; (j.updated || []).forEach(function(u) { set[u.id] = true; });
         _allCaptures.forEach(function(r) { if (set[r.id]) r.status = st; });
       }
-      await _renderUnlessKeptOpenEdits();
+      await _renderUnlessKeptOpenEdits(agreed);
       reloadCounts();
       var label = { not_found: 'no longer exist', locked: 'locked', audio_missing: 'audio missing' };
       var note = Object.keys(why).map(function(k) {
@@ -1507,6 +1527,7 @@
         + ' of audio and their files. This cannot be undone.',
       confirmLabel: 'Delete', danger: true });
     if (!ok) return;
+    var agreed = _dirtyOpenEdits();
     try {
       var j = await api('POST', '/captures/api/bulk-delete', { ids: rows.map(function(r) { return r.id; }) });
       var gone = {}; (j.deleted || []).forEach(function(id) { gone[id] = true; });
@@ -1516,7 +1537,7 @@
         if (card) { collapse(card, id); card.remove(); }
       });
       _clearSelection();
-      await _renderUnlessKeptOpenEdits();
+      await _renderUnlessKeptOpenEdits(agreed);
       reloadCounts();
       var sk = (j.skipped || []).length;
       toast('Deleted ' + (j.deleted || []).length + (sk ? ' · ' + sk + ' skipped' : ''));
