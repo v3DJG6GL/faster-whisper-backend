@@ -15,9 +15,11 @@ endpoints are admin-only (host allowlist + admin key).
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import functools
 import json
 import logging
+import threading
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -48,6 +50,27 @@ router = APIRouter(prefix="/settings/overrides")
 # `new` while cfg reloaded a library without it: the layer and its locks
 # dropped (fail-open). Single-worker assumption, like pl_apply.rules_lock().
 _PROFILES_LOCK = LoopLock()
+
+# The third writer of profile names: the per-user / per-key binding PATCH
+# routes (api_keys_routes, plain-def threadpool handlers) validate names
+# against the running cfg and then write. Inside the window above, cfg still
+# holds the profile a /state save is deleting, or a rename's `old` alias, so a
+# binding save naming it passed and landed after the in-use guard or the
+# cascade: dangling, and fail-open as above. A threading lock, so the sync
+# routes can hold it; the async writers poll for it (_hold_profile_refs) rather
+# than block the event loop behind a threadpool holder.
+PROFILE_REFS_LOCK = threading.Lock()
+
+
+@contextlib.asynccontextmanager
+async def _hold_profile_refs():
+    while not PROFILE_REFS_LOCK.acquire(blocking=False):
+        await asyncio.sleep(0.01)
+    try:
+        yield
+    finally:
+        PROFILE_REFS_LOCK.release()
+
 
 @functools.lru_cache(maxsize=1)
 def _build_field_meta() -> dict[str, dict[str, Any]]:
@@ -211,7 +234,7 @@ async def post_state(payload: dict[str, Any], request: Request) -> JSONResponse:
         raise HTTPException(status.HTTP_409_CONFLICT,
                             f"OVERRIDE_PROFILES is pinned by {pinned_by}; "
                             "edit the profiles there")
-    async with _PROFILES_LOCK:
+    async with _PROFILES_LOCK, _hold_profile_refs():
         # The "profile is in use — unbind it first" rule existed ONLY in the page
         # JS (startDelete), and _build_usage's own docstring already calls itself
         # "the usage-aware delete guard". save_overrides performs no such check —
@@ -300,7 +323,7 @@ async def rename_profile(payload: _RenameProfileIn, request: Request) -> JSONRes
         raise HTTPException(status.HTTP_409_CONFLICT,
                             f"OVERRIDE_PROFILES is pinned by {pinned_by}; "
                             "rename the profile there")
-    async with _PROFILES_LOCK:
+    async with _PROFILES_LOCK, _hold_profile_refs():
         profiles = dict(getattr(cfg, "OVERRIDE_PROFILES", None) or {})
         old = payload.old.strip().lower()
         new = payload.new.strip().lower()

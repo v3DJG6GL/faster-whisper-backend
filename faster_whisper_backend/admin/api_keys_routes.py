@@ -24,6 +24,7 @@ the raw key is copied to the clipboard, then never retrievable.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import re
@@ -33,6 +34,7 @@ from fastapi import APIRouter, Depends, HTTPException, Response, status
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel, Field
 
+from faster_whisper_backend.admin import overrides_routes
 from faster_whisper_backend.auth import api_keys_store
 from faster_whisper_backend.core import web_common
 from faster_whisper_backend.core.web_common import require_admin_webui_host
@@ -360,7 +362,11 @@ def patch_user_permissions_api(
             merge_payload["quick_config_tags"] = payload.quick_config_tags
         if payload.config is not None:
             merge_payload["config"] = payload.config.model_dump()
-        merged = api_keys_store.set_user_permissions(uid, merge_payload)
+        # A binding names profiles: validate + write it outside a profile
+        # save's or rename's window (overrides_routes.PROFILE_REFS_LOCK).
+        with (overrides_routes.PROFILE_REFS_LOCK if payload.config is not None
+              else contextlib.nullcontext()):
+            merged = api_keys_store.set_user_permissions(uid, merge_payload)
     except ValueError as e:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e))
     return JSONResponse({"ok": True, "permissions": merged})
@@ -406,7 +412,8 @@ def patch_key_config_api(
     if key["revoked_ts"] is not None:
         raise HTTPException(status.HTTP_409_CONFLICT, "key is revoked")
     try:
-        binding = api_keys_store.set_key_config(uid, kid, payload.model_dump())
+        with overrides_routes.PROFILE_REFS_LOCK:   # as in patch_user_permissions_api
+            binding = api_keys_store.set_key_config(uid, kid, payload.model_dump())
     except ValueError as e:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e))
     return JSONResponse({"ok": True, "config": binding})
