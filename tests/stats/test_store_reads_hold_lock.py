@@ -1,6 +1,7 @@
-"""Reads on the shared store connections run under the store lock: two threads
-running the same SELECT text share pysqlite's cached statement, and each can
-read the other's rows (another user's, under an own-scope filter)."""
+"""Reads on the shared store connections run under the store lock (usage_store:
+on a connection of their own): two threads running the same SELECT text share
+pysqlite's cached statement, and each can read the other's rows (another
+user's, under an own-scope filter)."""
 import threading
 import time
 
@@ -85,22 +86,37 @@ def test_jobs_store_reads_hold_the_lock(tmp_path, monkeypatch):
         js._reset_for_tests()
 
 
-def test_usage_store_reads_hold_the_lock(usage_store_db, monkeypatch):
+class _RecordingConn:
+    def __init__(self, real):
+        self._real = real
+        self.sql: list[str] = []
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+    def execute(self, sql, *a):
+        self.sql.append(sql)
+        return self._real.execute(sql, *a)
+
+
+def test_usage_store_reads_skip_the_shared_connection(usage_store_db, monkeypatch):
+    """usage_store readers run on a connection of their own instead of the
+    lock: nothing a reader runs reaches the shared connection."""
     us = usage_store_db
     us.record_usage(user_id="u1", key_id="k1", model="m", audio_s=1.0,
                     processing_s=0.5, words=2, status="ok", kind="transcribe",
                     job_id="j1")
-    conn = _LockCheckingConn(us._conn, us._lock)
+    conn = _RecordingConn(us._conn)
     monkeypatch.setattr(us, "_conn", conn)
     now = time.time()
     win = dict(start_ts=0.0, end_ts=now + 1)
 
-    us.totals_by_key()
+    assert us.totals_by_key()[0]["words"] == 2
     us.totals_by_user()
     us.totals_for_user("u1")
     us.series()
     us.leaderboard()
-    us.distinct_ids("user_id")
+    assert us.distinct_ids("user_id") == ["u1"]
     us.wait_quantiles(**win, user_id="u1")
     us.wait_series_by_day(**win, tz=None, user_id="u1")
     us.turnaround_histogram(**win, user_id="u1")
@@ -109,4 +125,29 @@ def test_usage_store_reads_hold_the_lock(usage_store_db, monkeypatch):
     us.overview(user_id="u1", tz=None, tz_name="UTC", days=7)
     us.document("u1", tz=None, tz_name="UTC", days=7)
     us.tail(user_id="u1", tz=None, tz_name="UTC", days=7)
-    assert conn.unlocked == []
+    assert conn.sql == []
+
+
+def test_usage_store_write_does_not_wait_for_a_whole_read(usage_store_db, monkeypatch):
+    """record_usage runs on the event loop: a /stats document being built in
+    a worker thread must not hold it off until the document is done."""
+    us = usage_store_db
+    real_first_day = us._first_day
+    waited, writers = [], []
+
+    def first_day_then_write(*a, **kw):
+        w = threading.Thread(target=us.record_usage, kwargs=dict(
+            user_id="u2", key_id="k2", model="m", audio_s=1.0, words=1,
+            status="ok", kind="transcribe", job_id="j2"))
+        writers.append(w)
+        w.start()
+        w.join(timeout=5)
+        waited.append(w.is_alive())
+        return real_first_day(*a, **kw)
+
+    monkeypatch.setattr(us, "_first_day", first_day_then_write)
+    us.tail(user_id="u1", tz=None, tz_name="UTC", all_time=True)
+    for w in writers:
+        w.join()
+    assert waited == [False]
+    assert "u2" in us.distinct_ids("user_id")

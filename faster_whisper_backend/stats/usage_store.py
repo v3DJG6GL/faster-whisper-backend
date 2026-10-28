@@ -60,8 +60,11 @@ a user or key never drops their historical usage, and aggregation needs no
 join to the api-keys DB.
 
 Module-level connection: WAL mode lets us share one connection across
-threads (check_same_thread=False); _lock serialises writers and readers alike
-(concurrent identical SELECTs share a cached statement). The connection
+threads (check_same_thread=False); _lock serialises the writers. Each public
+reader opens its own short-lived connection instead (see _reads_own_conn):
+concurrent identical SELECTs on the shared one share a cached statement, and
+holding _lock for a whole /stats document would stall the writers, which run
+on the event loop. The shared connection
 is in autocommit mode, so the multi-table writes below open an explicit
 transaction — a job row without its rollup (or vice versa) would make the
 session and utterance counts disagree forever.
@@ -92,6 +95,9 @@ _EPOCH = datetime.date(1970, 1, 1)
 
 _lock = threading.RLock()
 _conn: sqlite3.Connection | None = None
+_path: str | None = None
+# The calling thread's reader connection while a public reader runs.
+_reader = threading.local()
 
 # Sentinel for rows we can't attribute to a real key/user. Kept as a literal
 # id string so the NOT NULL columns stay satisfied and aggregation treats it
@@ -259,7 +265,7 @@ def init_db(path: str) -> None:
     """Open (or create) the DB at `path` in WAL mode. Idempotent — call
     once on service startup before any other function. Mirrors
     recent_transcriptions_store.init_db."""
-    global _conn
+    global _conn, _path
     # Published only once every migration step succeeded: main.py logs a
     # failed init as "store down" and never starts the sweep, so a
     # half-migrated handle left behind would keep taking writes (and fail
@@ -277,6 +283,7 @@ def init_db(path: str) -> None:
     except BaseException:
         conn.close()
         raise
+    _path = path
     _conn = conn
 
 
@@ -419,19 +426,36 @@ def _reclassify_unknown_hourly(conn: sqlite3.Connection) -> None:
 def _require_conn() -> sqlite3.Connection:
     if _conn is None:
         raise RuntimeError("usage_store.init_db() was not called before use.")
-    return _conn
+    return getattr(_reader, "conn", None) or _conn
 
 
-def _read_under_lock(fn):
-    """Run a public reader under `_lock`, like the writers: two threads that
-    run the same SELECT text on the shared connection share one cached
-    statement and can read each other's rows (another user's, under an
-    own-scope filter), and a read must not see a writer's open BEGIN."""
+def _reads_own_conn(fn):
+    """Run a public reader on a connection of its own. On the shared one, two
+    threads running the same SELECT text share one cached statement and can
+    read each other's rows (another user's, under an own-scope filter); and
+    taking `_lock` instead would block record_usage, which runs on the event
+    loop, for the whole multi-query document. A WAL reader never blocks the
+    writer, and its read transaction gives the document one snapshot that a
+    writer's open BEGIN cannot show through. Nested readers reuse it."""
     @functools.wraps(fn)
-    def locked(*args, **kwargs):
-        with _lock:
+    def wrapper(*args, **kwargs):
+        if getattr(_reader, "conn", None) is not None:
             return fn(*args, **kwargs)
-    return locked
+        _require_conn()
+        assert _path is not None
+        conn = sqlite3.connect(_path, isolation_level=None,
+                               timeout=store_common.BUSY_TIMEOUT_S)
+        try:
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA query_only=ON;")
+            conn.execute("PRAGMA temp_store=MEMORY;")
+            conn.execute("BEGIN")
+            _reader.conn = conn
+            return fn(*args, **kwargs)
+        finally:
+            _reader.conn = None
+            conn.close()
+    return wrapper
 
 
 # --- time helpers ---------------------------------------------------------
@@ -1028,7 +1052,7 @@ def _window_clause(start_hour: int | None, end_hour: int | None,
     return (" WHERE " + " AND ".join(clauses)) if clauses else "", params
 
 
-@_read_under_lock
+@_reads_own_conn
 def totals_by_key(
     *,
     start_hour: int | None = None,
@@ -1054,7 +1078,7 @@ def totals_by_key(
     return [dict(r) for r in cur.fetchall()]
 
 
-@_read_under_lock
+@_reads_own_conn
 def totals_by_user(
     *,
     start_hour: int | None = None,
@@ -1074,7 +1098,7 @@ def totals_by_user(
     return {r["user_id"]: dict(r) for r in cur.fetchall()}
 
 
-@_read_under_lock
+@_reads_own_conn
 def totals_for_user(
     user_id: str,
     *,
@@ -1104,7 +1128,7 @@ def totals_for_user(
     }
 
 
-@_read_under_lock
+@_reads_own_conn
 def series(
     *,
     start_hour: int | None = None,
@@ -1151,7 +1175,7 @@ def series(
     return [agg[d] for d in sorted(agg)]
 
 
-@_read_under_lock
+@_reads_own_conn
 def leaderboard(
     *,
     start_hour: int | None = None,
@@ -1448,7 +1472,7 @@ def _scope_where(user_id: Ids, key_id: Ids = None, *,
     return " WHERE " + " AND ".join(clauses), params
 
 
-@_read_under_lock
+@_reads_own_conn
 def distinct_ids(col: str) -> list[str]:
     """Every distinct user_id / key_id the hourly rollups have seen; the
     /stats route maps a non-admin viewer's opaque labels back to ids with
@@ -1490,7 +1514,7 @@ def _with_clause(with_stages: tuple[str, ...]) -> str:
         " usage_jobs.job_id AND s.stage = ?)" for _ in with_stages)
 
 
-@_read_under_lock
+@_reads_own_conn
 def document(
     user_id: str | None,
     *,
@@ -1638,7 +1662,7 @@ def _year_back(day: int) -> int:
         return _epoch_day(d.replace(year=d.year - 1, day=28))
 
 
-@_read_under_lock
+@_reads_own_conn
 def overview(
     *,
     user_id: str | None,
@@ -2024,7 +2048,7 @@ def truncated_to_days(start_ts: float, retention_days: int,
     return days if float(start_ts) < now - days * 86400 else None
 
 
-@_read_under_lock
+@_reads_own_conn
 def wait_quantiles(*, start_ts: float, end_ts: float, user_id: str | None = None,
                    key_id: str | None = None, kind: str | None = None,
                    model: str | None = None) -> dict[str, Any]:
@@ -2053,7 +2077,7 @@ def wait_quantiles(*, start_ts: float, end_ts: float, user_id: str | None = None
             "max": round(float(row["mx"] or 0.0), 3)}
 
 
-@_read_under_lock
+@_reads_own_conn
 def wait_series_by_day(*, start_ts: float, end_ts: float,
                        tz: zoneinfo.ZoneInfo | None, user_id: str | None = None,
                        key_id: str | None = None, kind: str | None = None
@@ -2073,7 +2097,7 @@ def wait_series_by_day(*, start_ts: float, end_ts: float,
     return out
 
 
-@_read_under_lock
+@_reads_own_conn
 def turnaround_histogram(*, start_ts: float, end_ts: float,
                          user_id: str | None = None, key_id: str | None = None,
                          kind: str | None = None,
@@ -2115,7 +2139,7 @@ def turnaround_histogram(*, start_ts: float, end_ts: float,
     }
 
 
-@_read_under_lock
+@_reads_own_conn
 def failures(*, start_ts: float, end_ts: float, user_id: str | None = None,
              key_id: str | None = None, kind: str | None = None) -> dict[str, Any]:
     """Failures grouped by stage and class: the terminal ones from the job
@@ -2156,7 +2180,7 @@ def failures(*, start_ts: float, end_ts: float, user_id: str | None = None,
     }
 
 
-@_read_under_lock
+@_reads_own_conn
 def by_model(*, start_ts: float, end_ts: float, user_id: str | None = None,
              key_id: str | None = None, kind: str | None = None,
              top: int = 8) -> list[dict[str, Any]]:
@@ -2188,7 +2212,7 @@ def by_model(*, start_ts: float, end_ts: float, user_id: str | None = None,
     return out
 
 
-@_read_under_lock
+@_reads_own_conn
 def tail(
     *,
     user_id: str | None,
