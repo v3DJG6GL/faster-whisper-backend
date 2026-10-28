@@ -165,7 +165,11 @@ def _origin_is_allowed(request) -> bool:
         return True
     host = request.headers.get("host", "")
     from urllib.parse import urlsplit
-    return bool(host) and urlsplit(origin).netloc == host
+    try:
+        netloc = urlsplit(origin).netloc
+    except ValueError:  # e.g. "http://[x" — unbalanced IPv6 bracket
+        return False
+    return bool(host) and netloc == host
 
 
 def _log_origin_rejected(request) -> None:
