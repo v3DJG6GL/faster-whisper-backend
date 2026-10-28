@@ -14,9 +14,11 @@ counts and report-id prefixes for forensics.
 
 Module-level connection: SQLite's WAL mode lets us share one connection
 across threads (with `check_same_thread=False`). All public functions
-acquire `_lock` for writes. The multi-row list reads take it too: fetchall()
-releases the GIL between steps, so a write on the same connection could
-otherwise move a row (a resubmit re-stamps created_ts) past the scan.
+acquire `_lock` for writes. The reads take it too: fetchall() releases the
+GIL between steps, so a write on the same connection could otherwise move a
+row (a resubmit re-stamps created_ts) past the scan, and two threads running
+the same SELECT text share one cached statement and can read each other's
+rows (another user's report, under a user_id filter).
 """
 from __future__ import annotations
 
@@ -266,6 +268,14 @@ def find_by_request_user(
     reports_routes.delete_my_report_api to target the caller's own row."""
     if not request_id or not user_id:
         return None
+    with _lock:
+        return _find_by_request_user_locked(request_id, user_id)
+
+
+def _find_by_request_user_locked(
+    request_id: str, user_id: str,
+) -> "dict[str, Any] | None":
+    """find_by_request_user's lookup; the caller holds `_lock`."""
     conn = _require_conn()
     row = conn.execute(
         "SELECT * FROM reports WHERE request_id = ? AND user_id = ?"
@@ -351,9 +361,10 @@ def upsert_report(
     # Lookup and write share one lock span: with the lookup outside, two
     # concurrent submits of the same (user_id, request_id) could both see "no
     # existing row" and both INSERT — the index is not UNIQUE, so nothing else
-    # deduplicates. find_by_request_user does not take _lock itself.
+    # deduplicates.
     with _lock:
-        existing = find_by_request_user(request_id, user_id)
+        existing = (_find_by_request_user_locked(request_id, user_id)
+                    if request_id and user_id else None)
         if existing is not None:
             # Re-clean the union: three_way_merge_corrections returns current +
             # edited with no cap, so without this a caller resubmitting the same
@@ -503,7 +514,8 @@ def list_reports(user_id: str | None = None, *,
 
 def get_report(rid: str) -> dict[str, Any] | None:
     conn = _require_conn()
-    row = conn.execute("SELECT * FROM reports WHERE id = ?", (rid,)).fetchone()
+    with _lock:
+        row = conn.execute("SELECT * FROM reports WHERE id = ?", (rid,)).fetchone()
     return _row_to_dict(row) if row else None
 
 
@@ -540,16 +552,17 @@ def counts_by_status(user_id: str | None = None) -> dict[str, int]:
     don't leak the global cross-user breakdown)."""
     conn = _require_conn()
     out = {"open": 0, "resolved": 0, "dismissed": 0}
-    if user_id is None:
-        cur = conn.execute(
-            "SELECT status, COUNT(*) AS n FROM reports GROUP BY status"
-        )
-    else:
-        cur = conn.execute(
-            "SELECT status, COUNT(*) AS n FROM reports WHERE user_id = ?"
-            " GROUP BY status", (user_id,),
-        )
-    for row in cur:
+    with _lock:
+        if user_id is None:
+            rows = conn.execute(
+                "SELECT status, COUNT(*) AS n FROM reports GROUP BY status"
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT status, COUNT(*) AS n FROM reports WHERE user_id = ?"
+                " GROUP BY status", (user_id,),
+            ).fetchall()
+    for row in rows:
         if row["status"] in out:
             out[row["status"]] = int(row["n"])
     return out

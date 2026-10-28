@@ -99,12 +99,12 @@ def test_concurrent_upsert_same_key_single_row(reports_store_db, monkeypatch):
     # Deterministic pin (the two-thread race alone rarely reproduces the
     # regression): the lookup must run while _lock is held.
     lock_held = []
-    real_find = rs.find_by_request_user
+    real_find = rs._find_by_request_user_locked
 
     def _recording_find(*a, **kw):
         lock_held.append(rs._lock.locked())
         return real_find(*a, **kw)
-    monkeypatch.setattr(rs, "find_by_request_user", _recording_find)
+    monkeypatch.setattr(rs, "_find_by_request_user_locked", _recording_find)
 
     def worker(n):
         try:
@@ -142,6 +142,23 @@ def test_list_reads_wait_for_the_store_lock(reports_store_db, read):
         assert t.is_alive()
     t.join(timeout=5)
     assert len(out[0]) == 1
+
+
+def test_point_reads_hold_the_lock(reports_store_db, monkeypatch):
+    # Two threads running the same SELECT text on the shared connection
+    # share one cached statement and can read each other's rows (another
+    # user's report under a user_id filter).
+    from tests.stats.test_store_reads_hold_lock import _LockCheckingConn
+    rs = reports_store_db
+    rid, _ = _submit(rs)
+    conn = _LockCheckingConn(rs._conn, rs._lock)
+    monkeypatch.setattr(rs, "_conn", conn)
+
+    assert rs.find_by_request_user("req1", "u1")["id"] == rid
+    assert rs.get_report(rid)["id"] == rid
+    assert rs.counts_by_status(user_id="u1")["open"] == 1
+    assert rs.counts_by_status()["open"] == 1
+    assert conn.unlocked == []
 
 
 def test_list_reports_limit_and_uncapped_export_path(reports_store_db):
