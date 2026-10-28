@@ -329,3 +329,43 @@ function state() {
     assert f["toasts"] == [["The earlier import of A.json failed: boom", "err"]]
     c = out["failed_over_cap"]
     assert (c["open"], c["go_disabled"]) == (True, True)
+
+
+def test_label_edit_keeps_generate_off_while_the_post_runs(client, tmp_path):
+    """Generate disabled its button for the POST, but every keystroke in the
+    label re-enabled it, so fixing a typo and pressing Enter sent a second
+    POST: two keys were created and the second modal overwrote the first
+    key's one-time secret."""
+    html = client.get("/settings/api-keys").text
+    src = _between(html, "    addBtn.title = 'Enter a label first';",
+                   "e.key === 'Enter' && !addBtn.disabled) addBtn.onclick();\n    };\n")
+    js = r"""
+var labelInp = { value: 'laptpo' }, addBtn = { disabled: false, title: '' };
+var u = { id: 'u1', username: 'alice' };
+var posts = [], modals = [];
+function api(method, url, body) {
+  return new Promise(function (res) { posts.push(res); });
+}
+function showToast() {}
+function showKeyModal(raw) { modals.push(raw); }
+""" + src + r"""
+(async function () {
+  var out = {};
+  addBtn.onclick();
+  labelInp.value = 'laptop';
+  labelInp.oninput();
+  out.in_flight_disabled = addBtn.disabled;
+  labelInp.onkeydown({ key: 'Enter' });
+  addBtn.onclick();
+  out.posts_in_flight = posts.length;
+  posts[0]({ ok: false, text: function () { return Promise.resolve('boom'); } });
+  await new Promise(function (r) { setTimeout(r, 0); });
+  out.after_fail_disabled = addBtn.disabled;
+  labelInp.onkeydown({ key: 'Enter' });
+  out.posts_after_fail = posts.length;
+  console.log(JSON.stringify(out));
+})();
+"""
+    out = _run(js, tmp_path)
+    assert out == {"in_flight_disabled": True, "posts_in_flight": 1,
+                   "after_fail_disabled": False, "posts_after_fail": 2}
