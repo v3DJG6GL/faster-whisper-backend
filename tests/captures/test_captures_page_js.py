@@ -1056,3 +1056,52 @@ async function run(editMeanwhile) {
 """)
     assert out["same"] == {"renders": 1, "asked": confirms}
     assert out["newer"] == {"renders": 1, "asked": confirms + ["Show the updated list?"]}
+
+
+# ---- header-click collapse vs unsaved edits -------------------------------------------------
+
+@needs_node
+def test_header_collapse_asks_before_dropping_a_cards_unsaved_edits(page, tmp_path):
+    """A header click collapsed an open capture or group card holding
+    unsaved chips / notes with no prompt; the edits were gone."""
+    fns = "\n".join(_js_function(page, f) for f in (
+        "_okToCollapse", "toggleExpand", "collapse", "_toggleSampleExpand"))
+    out = _run_node(tmp_path, fns + r"""
+var asked = 0, answers = [];
+async function _confirm() { asked++; return answers.shift(); }
+function mkCard() {
+  var open = true, body = { dataset: { built: '1' }, innerHTML: 'x' };
+  return { classList: { contains: function(c) { return c === 'open' && open; },
+                        remove: function() { open = false; }, add: function() { open = true; } },
+           querySelector: function() { return body; }, isOpen: function() { return open; } };
+}
+var _openRows = {}, _openSamples = {};
+(async function() {
+  var res = {};
+  var c = mkCard();
+  _openRows.c1 = { dirty: true };
+  answers = [false];
+  await toggleExpand(c, { id: 'c1' });
+  res.capKept = [c.isOpen(), !!_openRows.c1];
+  answers = [true];
+  await toggleExpand(c, { id: 'c1' });
+  res.capDropped = [c.isOpen(), !!_openRows.c1];
+  var c2 = mkCard();
+  _openRows.c2 = { dirty: false };
+  await toggleExpand(c2, { id: 'c2' });
+  res.cleanClosed = c2.isOpen();
+  var s = mkCard();
+  _openSamples.g1 = { audio: null, state: { dirty: true } };
+  answers = [false];
+  await _toggleSampleExpand(s, { id: 'g1' });
+  res.grpKept = [s.isOpen(), !!_openSamples.g1];
+  answers = [true];
+  await _toggleSampleExpand(s, { id: 'g1' });
+  res.grpDropped = [s.isOpen(), !!_openSamples.g1];
+  res.asked = asked;
+  console.log(JSON.stringify(res));
+})();
+""")
+    assert out == {"capKept": [True, True], "capDropped": [False, False],
+                   "cleanClosed": False, "grpKept": [True, True],
+                   "grpDropped": [False, False], "asked": 4}

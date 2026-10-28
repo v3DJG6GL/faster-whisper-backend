@@ -2038,8 +2038,21 @@
   // -------------------------------------------------------------------
   // Expanded body (lazy: built on first open)
   // -------------------------------------------------------------------
+  // A header click collapses an open card, which wipes its body and state:
+  // ask first when that card (`st`) holds unsaved edits.
+  async function _okToCollapse(st) {
+    if (!st || !st.dirty) return true;
+    return !!(await _confirm({
+      title: 'Collapse the card?',
+      body: 'It has unsaved edits that will be lost.',
+      confirmLabel: 'Collapse', danger: true }));
+  }
+
   async function toggleExpand(card, r) {
     if (card.classList.contains('open')) {
+      var st = _openRows[r.id];
+      // A render() during the prompt rebuilt the card: leave the new one.
+      if (!(await _okToCollapse(st)) || _openRows[r.id] !== st) return;
       collapse(card, r.id);
       return;
     }
@@ -4949,8 +4962,11 @@
       });
   }
 
-  function _toggleSampleExpand(card, g) {
+  async function _toggleSampleExpand(card, g) {
     if (card.classList.contains('open')) {
+      var open = _openSamples[g.id];
+      if (!(await _okToCollapse(open && open.state)) || _openSamples[g.id] !== open)
+        return;
       card.classList.remove('open');
       // Mirror singleton collapse(): pause + revoke the blob URL and
       // wipe the body so the next expand re-fetches and re-binds —
