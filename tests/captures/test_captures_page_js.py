@@ -962,3 +962,17 @@ function tick() { return new Promise(function(r) { setTimeout(r, 0); }); }
     assert out == {"raced": {"shown": "ready", "state": "ready", "list": "ready",
                              "head": "ready"},
                    "plain": "dismissed"}
+
+
+# ---- sticky action bar ------------------------------------------------------------------
+
+def test_action_bar_sticks_below_the_sticky_header(page):
+    """The selection bar stuck at top: 0 like the shared header (z-index
+    10), so once scrolled it slid under the header and hid the bulk actions
+    and the duration meter."""
+    bar = re.search(r"\n  #action-bar \{[^}]*\}", page).group(0)
+    assert "top: var(--header-h, 0px);" in bar
+    assert _z_index(page, "#action-bar") < 10
+    assert ("document.documentElement.style.setProperty('--header-h', "
+            "_hdr.offsetHeight + 'px');") in page
+    assert "new ResizeObserver(_setHeaderH).observe(_hdr);" in page

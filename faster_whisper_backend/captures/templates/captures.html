@@ -520,8 +520,10 @@
     background: #11151b;
   }
 
+  /* Sticks just below the sticky shared header (z-index 10), whose height
+     varies with wrapping: --header-h is measured in JS. */
   #action-bar {
-    position: sticky; top: 0; z-index: 8;
+    position: sticky; top: var(--header-h, 0px); z-index: 8;
     background: #1d293d; border: 1px solid #30538a; border-radius: 6px;
     padding: 0.5rem 0.75rem; margin-bottom: 0.75rem;
     display: none; align-items: center; gap: 0.75rem;
@@ -5781,6 +5783,17 @@
       }
     });
   });
+
+  // The shared header is sticky and variable-height (it wraps on narrow
+  // widths); measure it so the sticky action bar pins below it, not under it.
+  var _hdr = document.querySelector('header');
+  if (_hdr && typeof ResizeObserver !== 'undefined') {
+    var _setHeaderH = function() {
+      document.documentElement.style.setProperty('--header-h', _hdr.offsetHeight + 'px');
+    };
+    new ResizeObserver(_setHeaderH).observe(_hdr);
+    _setHeaderH();
+  }
 
   load();
   timeTick();
