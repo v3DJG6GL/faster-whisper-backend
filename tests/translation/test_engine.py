@@ -629,6 +629,35 @@ def test_faithful_mismatch_halves_batch_down_to_success(base_cfg, monkeypatch):
     assert "4. Sieben acht." in calls[0]
 
 
+@pytest.mark.parametrize("texts", [
+    ("Eins zwei.", "Drei vier."),               # short tail, batch size 8
+    ("Eins zwei.", "Drei vier.", "", ""),       # blank members pad the batch
+])
+def test_faithful_mismatch_never_resends_the_same_batch(base_cfg, monkeypatch,
+                                                        texts):
+    """Halving k when the batch sent was already shorter than k leaves the
+    batch unchanged: the identical numbered prompt must not go out again."""
+    calls = []
+
+    def fake(llm, family, prompt_or_msgs, max_tokens):
+        payload = _payload_of(prompt_or_msgs)
+        calls.append(payload)
+        if payload.startswith(translation._NUMBERED_INSTRUCTION):
+            return "one line only"                  # always a count mismatch
+        return _xlate(payload)
+    monkeypatch.setattr(translation, "_complete", fake)
+    _stub_get_model(monkeypatch)
+
+    res, warns, _ = _run(translation.translate_segments(
+        _segs(*texts), ["en"], source_lang="de", mode="faithful"))
+    assert warns == []
+    assert [r["en"] for r in res][:2] == ["eINS ZWEI.", "dREI VIER."]
+    numbered = [c for c in calls
+                if c.startswith(translation._NUMBERED_INSTRUCTION)]
+    assert len(numbered) == 1
+    assert len(calls) == 3
+
+
 def test_faithful_copy_guard_sees_through_collapsed_whitespace(base_cfg,
                                                                monkeypatch):
     """The numbered batch prompt folds a segment's newlines and runs of

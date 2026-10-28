@@ -1674,8 +1674,11 @@ async def translate_segments(
                     parsed = _parse_numbered(reply, len(live_idx))
                     if parsed is None:
                         # Line-count mismatch → halve the batch and retry the
-                        # same position (down to per-segment prompts).
-                        k = max(1, k // 2)
+                        # same position (down to per-segment prompts). Halve
+                        # the span up to the last live member actually sent,
+                        # not k: a short tail would otherwise resend the
+                        # identical prompt.
+                        k = max(1, min(k, live_idx[-1] - i + 1) // 2)
                         n_batches = max(1, -(-(len(segments) - i) // k)) + batch_no
                         continue
                     for j, out in zip(live_idx, parsed):
