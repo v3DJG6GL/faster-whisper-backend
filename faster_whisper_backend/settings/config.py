@@ -1994,6 +1994,12 @@ _ENV_OVERRIDE_FIELDS: "dict[str, set[str]]" = {}
 # the merged dict, and with_env_model_overrides() puts them back on top of a
 # reloaded file — env values stay env values, never become stored ones.
 _ENV_OVERRIDE_VALUES: "dict[str, dict[str, object]]" = {}
+# MODEL_OVERRIDES as it stands before the per-model vars below land (stored,
+# or replaced by the WHISPER_MODEL_OVERRIDES JSON var): the value a rejected
+# per-model field reverts to. _ENV_PRE predates the JSON layer, so reverting to
+# it dropped the JSON value for that field. One level deep, as _ENV_PRE.
+_MODEL_OVERRIDES_PRE_FIELDS: "dict[str, dict[str, object]]" = {
+    _k2: dict(_e2) for _k2, _e2 in MODEL_OVERRIDES.items() if isinstance(_e2, dict)}
 for _k, _v in os.environ.items():
     if not _k.startswith(_OVERRIDE_PREFIX):
         continue
@@ -2371,7 +2377,7 @@ try:
             try:
                 _clean_overrides[_mid] = _check_entry(_mid, _entry, _standing)
             except Exception as _verr:  # noqa: BLE001
-                _pre_entry = (_ENV_PRE.get("MODEL_OVERRIDES") or {}).get(_mid)
+                _pre_entry = _MODEL_OVERRIDES_PRE_FIELDS.get(_mid)
                 if not isinstance(_pre_entry, dict):
                     _pre_entry = {}
                 _bad: "set[str]" = set()
@@ -2422,13 +2428,15 @@ try:
                     continue
                 if _reverted:
                     _clean_overrides[_mid] = _reverted
+                _kept_src = (f"{_ENV_VAR_MAPPING['MODEL_OVERRIDES']} entry"
+                             if _env_json_models else "stored entry")
                 _ENV_WARNINGS.append(
                     f"WHISPER_MODEL_OVERRIDE__ value(s) for {_mid!r} "
                     f"({', '.join(sorted(_bad))}) are invalid "
                     f"and were ignored: {_env_validation_reason(_verr)}"
                     + ("; keeping the other values" if _standing
-                       else "; keeping the stored entry" if _reverted
-                       else "; no stored entry to keep")
+                       else f"; keeping the {_kept_src}" if _reverted
+                       else f"; no {_kept_src} to keep")
                 )
             _env_vals = {_ef: _clean_overrides[_mid][_ef] for _ef in _standing
                          if _ef in _clean_overrides.get(_mid, {})}

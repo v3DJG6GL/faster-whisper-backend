@@ -935,6 +935,28 @@ def test_per_model_env_override_invalid_unknown_field_keeps_stored_entry(monkeyp
         importlib.reload(config)
 
 
+def test_per_model_env_override_invalid_reverts_to_the_json_env_value(monkeypatch):
+    """A bad per-model var for a field the WHISPER_MODEL_OVERRIDES JSON var
+    also sets falls back to the JSON value, not to the pre-env stored one
+    (or to nothing), and the warning names the JSON entry it kept."""
+    from faster_whisper_backend.settings import config_store
+    monkeypatch.setattr(config_store, "load_overrides",
+                        lambda path=None: {"MODEL_OVERRIDES": {"tiny": {"BEAM_SIZE": 2}}})
+    try:
+        _reload_with_env(
+            monkeypatch,
+            WHISPER_MODEL_OVERRIDES='{"tiny": {"BEAM_SIZE": 3, "BEST_OF": 2}}',
+            WHISPER_MODEL_OVERRIDE__tiny__BEAM_SIZE="999",
+        )
+        assert config.MODEL_OVERRIDES["tiny"] == {"BEAM_SIZE": 3, "BEST_OF": 2}
+        assert "tiny" not in config._ENV_OVERRIDE_VALUES
+        assert any("'tiny'" in m and "keeping the WHISPER_MODEL_OVERRIDES entry" in m
+                   for m in config._ENV_WARNINGS), config._ENV_WARNINGS
+    finally:
+        monkeypatch.undo()
+        importlib.reload(config)
+
+
 def test_per_model_env_override_invalid_without_stored_entry_is_dropped(monkeypatch):
     """An env-only bad entry still never goes live."""
     try:
