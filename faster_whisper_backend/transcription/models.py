@@ -714,10 +714,10 @@ def _conversion_repo_files(model_id: str,
     return None
 
 
-_SHARD_RE = {
-    "model.safetensors": re.compile(r"model-\d+-of-\d+\.safetensors"),
-    "pytorch_model.bin": re.compile(r"pytorch_model-\d+-of-\d+\.bin"),
-}
+_SHARD_RE = (
+    ("model.safetensors", re.compile(r"model-\d+-of-\d+\.safetensors")),
+    ("pytorch_model.bin", re.compile(r"pytorch_model-\d+-of-\d+\.bin")),
+)
 
 
 def _pinned_snapshot_files(files: "list[str]") -> "list[str]":
@@ -728,7 +728,7 @@ def _pinned_snapshot_files(files: "list[str]") -> "list[str]":
     and fp32 too; "*.safetensors" + "*.bin" fetched ~18 GB to use ~3 GB."""
     top = [f for f in files if "/" not in f]
     keep = [f for f in top if f.endswith((".json", ".txt"))]
-    for single, shard in _SHARD_RE.items():
+    for single, shard in _SHARD_RE:
         if single in top:
             return keep + [single]
         if single + ".index.json" in top:
