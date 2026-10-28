@@ -54,6 +54,16 @@ _RULES_LOCK = LoopLock()
 # LoopLock is not re-entrant.
 _APPLY_LOCK = LoopLock()
 
+# The HF_TOKEN the service environment set (systemd Environment=, a shell
+# export), which clearing the config field restores instead of removing.
+# main.py promotes cfg.HF_TOKEN over it before this module is imported, so a
+# value equal to cfg.HF_TOKEN is the promoted one, not the environment's.
+_ENV_HF_TOKEN: "str | None" = (
+    os.environ.get("HF_TOKEN")
+    if os.environ.get("HF_TOKEN") != (getattr(cfg, "HF_TOKEN", None) or None)
+    else None
+)
+
 
 def rules_lock() -> LoopLock:
     """The loop-keyed lock that serializes every PIPELINE_RULES
@@ -311,6 +321,9 @@ async def apply_hot_changes(
         if new_token:
             os.environ["HF_TOKEN"] = new_token
             logger.info("[config] HF_TOKEN env updated from admin edit")
+        elif _ENV_HF_TOKEN:
+            os.environ["HF_TOKEN"] = _ENV_HF_TOKEN
+            logger.info("[config] HF_TOKEN env restored to the service environment's")
         else:
             os.environ.pop("HF_TOKEN", None)
             logger.info("[config] HF_TOKEN env cleared (config field unset)")
