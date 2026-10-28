@@ -2641,6 +2641,13 @@
     var lastEnd = (typeof last.idx_end === 'number') ? last.idx_end : last.idx;
     var newStart = Math.min(last.idx, idx);
     var newEnd = Math.max(lastEnd, idx);
+    // Group strips: each chip is stored on one member's capture, so one
+    // that crossed into the next member would save but never apply.
+    var ws = state.words[newStart], we = state.words[newEnd];
+    if (ws && we && ws.member_idx !== we.member_idx) {
+      toast('A correction cannot span two members', true);
+      return;
+    }
     // Absorb any earlier chip that overlaps the new range.
     state.corrections = state.corrections.filter(function(c, i) {
       if (i === lastI) return true;

@@ -290,7 +290,7 @@ function repl(at) { return { at: at, parentNode: strip,
 var wordEls = [0, 1, 2, 3, 4, 5].map(function(i) { return { nextSibling: null }; });
 wordEls[2].nextSibling = repl(2);   // last chip's sibling (word 2)
 wordEls[4].nextSibling = repl(4);   // earlier chip at word 4, absorbed
-var state = { wordEls: wordEls, corrections: [
+var state = { wordEls: wordEls, words: [], corrections: [
   { wrong: 'e', correct: 'E', idx: 4, idx_end: 4 },
   { wrong: 'c', correct: 'foo', idx: 2, idx_end: 2 },
 ] };
@@ -302,6 +302,32 @@ console.log(JSON.stringify({ removed: removed.sort(), chips: state.corrections }
 """)
     assert out["removed"] == [2, 4]
     assert out["chips"] == [{"wrong": "c d e f", "correct": "foo", "idx": 2, "idx_end": 5}]
+
+
+@needs_node
+def test_shift_extend_stops_at_a_member_boundary(page, tmp_path):
+    """On a group strip, shift-click extended a chip into the next member.
+    The server files a chip under the member owning its first word and
+    clips its end, keeping both members' text as `wrong`, so the save
+    succeeded but the correction never applied. Within a member (and on a
+    single capture's strip, which has no member_idx) it still extends."""
+    fn = _js_function(page, "extendLastChip")
+    out = _run_node(tmp_path, fn + r"""
+var toasts = [];
+function toast(m) { toasts.push(m); }
+function selectWord() {} function renderChips() {} function focusLastInput() {}
+function markDirty() {} function applyCorrectionsToGround() {} function clearReplacementInline() {}
+function spanText() { return 'span'; }
+function run(words, to) {
+  var state = { words: words, corrections: [{ wrong: 'foo', correct: 'x', idx: 1, idx_end: 1 }] };
+  extendLastChip(state, to);
+  return state.corrections[0].idx_end;
+}
+var grp = [{ member_idx: 0 }, { member_idx: 0 }, { member_idx: 1 }, { member_idx: 1 }];
+console.log(JSON.stringify({ across: run(grp, 2), within: run(grp, 0),
+  single: run([{}, {}, {}], 2), toasts: toasts.length }));
+""")
+    assert out == {"across": 1, "within": 1, "single": 2, "toasts": 1}
 
 
 @needs_node
