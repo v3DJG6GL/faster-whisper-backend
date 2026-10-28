@@ -255,6 +255,9 @@
         if (r.status === 401 || r.status === 403) return null;
         return window.__whoami || undefined;
       })
+      // A failed fetch is the same non-verdict as a 5xx: another whoami
+      // (each page runs its own) may have filled the cache meanwhile.
+      .catch(function(){ return window.__whoami || undefined; })
       .then(function(j){
         if (j === undefined) { _whoamiUnavailable(); return; }
         _whoamiAnswered();
@@ -335,7 +338,7 @@
           _renderNoAccessLanding({ page: current });
         }
       })
-      .catch(_whoamiUnavailable);
+      .catch(function(){});
   };
 
   // Refresh on every login/logout. Each login/logout site dispatches
