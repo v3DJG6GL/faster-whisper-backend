@@ -64,7 +64,7 @@ import uuid
 import wave
 
 import numpy as np
-from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 from fastapi.security import HTTPAuthorizationCredentials
 
@@ -873,8 +873,15 @@ async def transcribe_stream(ws: WebSocket) -> None:
                 pass
             # Generic client message — the raw exception text can carry model
             # dir/filesystem paths; the detail is already in the server log above.
+            # A 4xx refusal (not on ALLOWED_MODELS, malformed id) is the
+            # exception: its detail names only the client's own model string
+            # and the allowlist batch already returns, and without it the
+            # client reads the refusal as a server fault.
+            message = "model could not be loaded"
+            if isinstance(exc, HTTPException) and 400 <= exc.status_code < 500:
+                message = store_common.log_safe(str(exc.detail))
             await _safe_ws_send(ws, {"type": "error", "code": "model_load_failed",
-                                    "message": "model could not be loaded"}, close=True)
+                                    "message": message}, close=True)
             return
 
         # Resolve the caller's effective per-identity config ONCE for this
