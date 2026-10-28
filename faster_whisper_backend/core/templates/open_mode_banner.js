@@ -273,6 +273,9 @@
         // Cache the whoami payload so pages that want to consult
         // permissions later (e.g. for inline scope hints) don't re-fetch.
         try { window.__whoami = j; } catch(_) {}
+        // Lets a page's own whoami pass that is still backing off (the hub)
+        // paint from this answer instead of waiting for its next retry.
+        try { window.dispatchEvent(new Event('whisper:whoami')); } catch(_) {}
         // Authenticated (or open mode): make sure the login gate is gone.
         try { window._hideLoginGate(); } catch(_) {}
         // Logout-button visibility tracks login state; the HttpOnly cookie

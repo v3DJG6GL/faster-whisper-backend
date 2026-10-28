@@ -323,14 +323,25 @@
         if (r.status === 401 || r.status === 403) return null;
         return window.__whoami || undefined;
       })
+      // A failed fetch is the same non-verdict as a 5xx: the chrome's own
+      // whoami may have filled the cache meanwhile.
+      .catch(function () { return window.__whoami || undefined; })
       .then(function (j) {
         if (j === undefined) { unavailable(); return; }
-        painted = true;
-        clearTimeout(retryTimer);
-        apply(j);
+        paint(j);
       })
-      .catch(unavailable);
+      .catch(function () {});
   }
+  function paint(j) {
+    painted = true;
+    clearTimeout(retryTimer);
+    apply(j);
+  }
+  // The chrome's whoami can answer while this pass is still backing off
+  // (up to 30 s): paint from it at once instead of waiting for our retry.
+  window.addEventListener('whisper:whoami', function () {
+    if (!painted && window.__whoami) paint(window.__whoami);
+  });
 
   // Boot-menu keys: 1-9 open the n-th visible tile, arrows move focus,
   // Enter is the anchors' native activation. Inert while the login gate is

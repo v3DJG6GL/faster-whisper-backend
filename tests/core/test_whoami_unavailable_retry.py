@@ -168,3 +168,76 @@ def test_hub_retries_until_whoami_answers_on_load(first):
     assert json.loads(out.stdout) == {
         "body_hidden": False, "tile_on": True, "delays": [2000], "calls": 2,
     }
+
+
+def _run_hub(statuses: list, extra: str, drive: str) -> dict:
+    given = f"const STATUSES = {json.dumps(statuses)};\n"
+    stub = _HUB_STUB.replace(
+        "window.addEventListener = () => {};",
+        "const handlers = {};\n"
+        "window.addEventListener = (ev, fn) => { handlers[ev] = fn; };")
+    # getElementById so a hub that never painted reads as hidden, not a crash.
+    drive = drive.replace(
+        "els['hub-body'].hidden", "document.getElementById('hub-body').hidden")
+    out = subprocess.run(
+        ["node", "-"],
+        input=given + stub + _CLOCK + extra + _hub_script() + drive,
+        capture_output=True, text=True, timeout=30, check=True)
+    return json.loads(out.stdout)
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
+def test_hub_rejected_fetch_paints_the_cached_whoami():
+    # The chrome's whoami filled the cache before the hub's fetch was
+    # rejected: the hub paints from it instead of backing off again.
+    res = _run_hub(
+        ["reject"], "window.__whoami = { open_mode: false, is_admin: true };\n",
+        _HUB_DRIVE)
+    assert (res["body_hidden"], res["tile_on"], res["calls"]) == (
+        False, True, 1)
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
+def test_hub_paints_when_the_chrome_answers_during_its_backoff():
+    # The hub's retry was rejected with an empty cache; the chrome's whoami
+    # answers right after. The hub paints at once and stops retrying.
+    hold_retries = r"""
+const fastSetTimeout = global.setTimeout;
+let held = false;
+global.setTimeout = (fn, ms) => {
+  if (ms >= 1000) { delays.push(ms); held = true; return 0; }
+  return fastSetTimeout(fn, ms);
+};
+"""
+    drive = r"""
+realSetTimeout(() => {
+  window.__whoami = { open_mode: false, is_admin: true };
+  if (handlers['whisper:whoami']) handlers['whisper:whoami']();
+  realSetTimeout(() => {
+    console.log(JSON.stringify({
+      body_hidden: els['hub-body'].hidden, tile_on: tile.classList.has('on'),
+      held, calls,
+    }));
+    process.exit(0);
+  }, 50);
+}, 50);
+"""
+    res = _run_hub(["reject"], hold_retries, drive)
+    assert res == {
+        "body_hidden": False, "tile_on": True, "held": True, "calls": 1}
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
+def test_chrome_announces_a_fresh_whoami():
+    js = web_common.OPEN_MODE_BANNER_JS.strip()
+    js = js[len("<script>"):-len("</script>")]
+    events = (
+        "const events = [];\n"
+        "window.dispatchEvent = (e) => { events.push(e.type); };\n")
+    drive = _CHROME_DRIVE.replace("gate, admin:", "events, gate, admin:")
+    out = subprocess.run(
+        ["node", "-"],
+        input="const STATUSES = [200];\n" + _CHROME_STUB + _CLOCK + events
+        + js + drive,
+        capture_output=True, text=True, timeout=30, check=True)
+    assert json.loads(out.stdout)["events"] == ["whisper:whoami"]
