@@ -537,7 +537,8 @@ async function _confirm() { asked++; return answers.shift(); }
 async function api() { posts++; return { sample: {} }; }
 function applyServerSample() { applied++; }
 function toast() {} function reloadCounts() {}
-""" + _js_function(page, "okToRegenerate") + "\nvar onRegen = " + handler + r""";
+""" + _js_function(page, "okToRegenerate") + "\n" + _js_function(page, "applyRegenerated")
+        + "\nvar onRegen = " + handler + r""";
 (async function() {
   answers.push(false);
   await onRegen();                      // dirty + Cancel → nothing happens
@@ -1191,3 +1192,42 @@ _saveProposalChips(state, ['m1']).then(function() {
 });
 """)
     assert out == {"rows": [[chip], []], "previews": [["m1", "Die Katze die Maus"]]}
+
+
+@needs_node
+def test_group_regenerate_asks_before_dropping_edits_made_while_it_ran(page, tmp_path):
+    """Regenerate checked for unsaved edits only before its POST; a chip or
+    note typed during the slow rebuild was replaced by the server copy and
+    marked clean, with no prompt."""
+    anchor = "regenBtn.onclick = "
+    handler = _js_block(page, page.index(anchor) + len(anchor))
+    out = _run_node(tmp_path, _js_function(page, "markDirty") + r"""
+var sampleState = { dirty: false }, answers = [], asked = [], applied = 0, pending = [];
+var g = { id: 'g1' }, regenBtn = {}, toasts = [];
+async function _confirm(o) { asked.push(o.title); return answers.shift(); }
+function api() { return new Promise(function(r) { pending.push(r); }); }
+function applyServerSample() { applied++; sampleState.dirty = false; }
+function toast(m) { toasts.push(m); } function reloadCounts() {}
+""" + _js_function(page, "okToRegenerate") + "\n" + _js_function(page, "applyRegenerated")
+        + "\nvar onRegen = " + handler + r""";
+function tick() { return new Promise(function(r) { setTimeout(r, 0); }); }
+async function run(answer) {
+  sampleState.dirty = false;
+  await onRegen();
+  markDirty(sampleState);               // chip typed during the rebuild
+  answers = [answer];
+  pending.shift()({ sample: {} });
+  await tick(); await tick();
+}
+(async function() {
+  await run(false);
+  var kept = { applied: applied, dirty: sampleState.dirty };
+  await run(true);
+  console.log(JSON.stringify({ kept: kept, applied: applied, asked: asked,
+    toasts: toasts }));
+})();
+""")
+    assert out["kept"] == {"applied": 0, "dirty": True}
+    assert out["applied"] == 1
+    assert out["asked"] == ["Show the regenerated sample?"] * 2
+    assert out["toasts"][-1] == "Regenerated"

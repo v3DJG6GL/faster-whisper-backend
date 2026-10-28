@@ -5286,12 +5286,12 @@
               fixBtn.onclick = async function() {
                 if (!(await okToRegenerate())) return;
                 fixBtn.disabled = true;
+                var gen = sampleState.editGen;
                 var sgen = sampleState.statusGen || 0;
                 api('POST', '/captures/api/samples/'
                     + encodeURIComponent(g.id) + '/regenerate')
-                  .then(function(j) {
-                    toast('Regenerated');
-                    applyServerSample(j.sample || {}, sgen);
+                  .then(async function(j) {
+                    if (await applyRegenerated(j.sample || {}, gen, sgen)) toast('Regenerated');
                   })
                   .catch(function(e) {
                     fixBtn.disabled = false;
@@ -5520,14 +5520,30 @@
             body: 'This group has unsaved edits that regenerating will discard.',
             confirmLabel: 'Regenerate', danger: true }));
         }
+        // The strip, chips and notes stay editable during the (slow) rebuild,
+        // so ask again about edits made while it ran (`gen` is
+        // sampleState.editGen when it was sent). On a cancel they stay, still
+        // dirty, and the server copy is not applied. True when applied.
+        async function applyRegenerated(d, gen, sgen) {
+          if (sampleState.dirty && sampleState.editGen !== gen
+              && !(await _confirm({
+                title: 'Show the regenerated sample?',
+                body: 'Edits made while it ran will be lost.',
+                confirmLabel: 'Show', danger: true }))) {
+            toast('Regenerated · newer edits kept: save them, then reopen the group');
+            return false;
+          }
+          applyServerSample(d, sgen);
+          return true;
+        }
         regenBtn.onclick = async function() {
           if (!(await okToRegenerate())) return;
           regenBtn.disabled = true;
+          var gen = sampleState.editGen;
           var sgen = sampleState.statusGen || 0;
           api('POST', '/captures/api/samples/' + encodeURIComponent(g.id) + '/regenerate')
-            .then(function(j) {
-              applyServerSample(j.sample || {}, sgen);
-              toast('Regenerated');
+            .then(async function(j) {
+              if (await applyRegenerated(j.sample || {}, gen, sgen)) toast('Regenerated');
               reloadCounts();
             })
             .catch(function(e) {
