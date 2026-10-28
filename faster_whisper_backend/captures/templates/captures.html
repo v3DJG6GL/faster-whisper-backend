@@ -2361,6 +2361,7 @@
             { status: v });
           if (j && j.capture) {
             Object.assign(r, j.capture);
+            _syncCapturePreview(state, r);
             // Defensive resync in case server normalized the value.
             if (j.capture.status) {
               state.newStatus = j.capture.status;

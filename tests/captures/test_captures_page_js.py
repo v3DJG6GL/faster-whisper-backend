@@ -236,7 +236,7 @@ var r = { id: 'c1', status: 'new' };
 var state = { cid: 'c1', newStatus: 'new' };
 var statusGrp = { setValue: function() {} };
 async function api() { return { capture: { status: 'ready' } }; }
-function reloadCounts() {} function toast() {}
+function reloadCounts() {} function toast() {} function _syncCapturePreview() {}
 var onStatus = """ + handler + r""";
 (async function() {
   await onStatus('ready');
@@ -976,3 +976,41 @@ def test_action_bar_sticks_below_the_sticky_header(page):
     assert ("document.documentElement.style.setProperty('--header-h', "
             "_hdr.offsetHeight + 'px');") in page
     assert "new ResizeObserver(_setHeaderH).observe(_hdr);" in page
+
+
+# ---- capture status click vs aligned words -----------------------------------------------
+
+@needs_node
+def test_capture_status_click_keeps_the_aligned_words(page, tmp_path):
+    """The status auto-save copied the PATCH reply's raw words onto the row,
+    so the next collapsed preview and the merge modal put a chip after
+    removed fillers on another copy of its word."""
+    build = _js_function(page, "buildBody")
+    handler = _js_block(build, build.index("async function(v) {\n        // Auto-save on click."))
+    fns = "\n".join(_js_function(page, f) for f in (
+        "_syncCapturePreview", "_capturePreviewText", "_applyChipsToText"))
+    out = _run_node(tmp_path, fns + r"""
+var preview = { textContent: '' };
+global.document = { querySelector: function() { return preview; } };
+var body = { parentNode: null };
+var chip = """ + json.dumps(_KATZE_CHIP) + r""";
+var aligned = """ + json.dumps(_KATZE_ALIGNED) + r""";
+var r = { id: 'c1', status: 'new', text_for_training: """ + json.dumps(_KATZE_TEXT) + r""",
+  corrections: [chip], words: aligned };
+var state = { cid: 'c1', newStatus: 'new', words: aligned };
+var statusGrp = { setValue: function() {} };
+async function api() {
+  return { capture: { status: 'reviewed', corrections: [chip],
+                      words: """ + json.dumps(_KATZE_RAW) + r""" } };
+}
+function reloadCounts() {} function toast() {}
+var onStatus = """ + handler + r""";
+(async function() {
+  await onStatus('reviewed');
+  console.log(JSON.stringify({ kept: r.words === aligned, status: r.status,
+    preview: preview.textContent,
+    merge: _applyChipsToText(r.text_for_training, r.corrections, r.words) }));
+})();
+""")
+    assert out == {"kept": True, "status": "reviewed",
+                   "preview": "Die Katze die Maus", "merge": "Die Katze die Maus"}
