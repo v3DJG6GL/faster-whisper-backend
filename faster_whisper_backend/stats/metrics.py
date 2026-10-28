@@ -561,15 +561,19 @@ def metrics_snapshot(*, include_identity: bool = False,
             "last5_avg": round(sum(tail) / len(tail), 2),
             "count": len(v),
         }
-    try:
-        from faster_whisper_backend.settings import config as cfg
-        from faster_whisper_backend.stats import recent_transcriptions_store
-        limit = int(getattr(cfg, "STATS_RECENT_TRANSCRIPTIONS_COUNT", 20))
-        rows = recent_transcriptions_store.list_recent(limit=max(1, limit),
-                                                user_id_filter=user_id)
-    except Exception as e:
-        logger.warning("[metrics] list_recent failed: %s", e)
-        rows = []
+    from faster_whisper_backend.stats import recent_transcriptions_store
+    rows = []
+    # A store that failed at startup already logged its ERROR once; warning
+    # here on every 1 Hz /stats frame would push that line out of the log ring.
+    if recent_transcriptions_store.is_open():
+        try:
+            from faster_whisper_backend.settings import config as cfg
+            limit = int(getattr(cfg, "STATS_RECENT_TRANSCRIPTIONS_COUNT", 20))
+            rows = recent_transcriptions_store.list_recent(limit=max(1, limit),
+                                                    user_id_filter=user_id)
+        except Exception as e:
+            logger.warning("[metrics] list_recent failed: %s", e)
+            rows = []
     recent = [project_recent_row(r, include_identity=include_identity)
               for r in rows]
     return {

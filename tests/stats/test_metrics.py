@@ -166,8 +166,17 @@ def test_snapshot_shape_without_stores():
     assert set(snap["errors_window"]) == {"1m", "5m", "15m"}
     assert snap["model_loads"]["large-v2"]["first"] == 4.0
     assert snap["model_loads"]["large-v2"]["count"] == 1
-    # recent_transcriptions_store not init -> list_recent raises -> recent=[]
+    # recent_transcriptions_store not init -> recent=[]
     assert snap["recent_transcriptions"] == []
+
+
+def test_snapshot_does_not_warn_every_frame_when_the_store_never_opened(caplog):
+    """A store that failed init_db already logged one ERROR; a warning per
+    1 Hz /stats frame would flood the log ring and evict it."""
+    with caplog.at_level("WARNING"):
+        for _ in range(3):
+            assert metrics.metrics_snapshot()["recent_transcriptions"] == []
+    assert not [r for r in caplog.records if "list_recent failed" in r.getMessage()]
 
 
 def test_snapshot_in_flight_reflected():

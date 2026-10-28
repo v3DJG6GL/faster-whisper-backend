@@ -150,6 +150,12 @@ def init_db(path: str) -> None:
             _conn.execute(f"ALTER TABLE recent_transcriptions {ddl}")
 
 
+def is_open() -> bool:
+    """True once init_db() opened the DB. metrics_snapshot checks it so a
+    store that failed at startup is not re-reported on every /stats frame."""
+    return _conn is not None
+
+
 def _require_conn() -> sqlite3.Connection:
     if _conn is None:
         raise RuntimeError(
