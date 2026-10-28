@@ -919,3 +919,46 @@ async function run(keep) {
     assert out["kept"]["renders"] == 0
     assert out["kept"]["asked"][-1] == "Show the updated list?"
     assert out["dropped"]["renders"] == 1
+
+
+# ---- group status vs a Save in flight ------------------------------------------------------
+
+@needs_node
+def test_group_status_click_during_save_survives_the_save_reply(page, tmp_path):
+    """The group Save reply carried the status from before a status click
+    made while it ran, and applyServerSample painted it back over the
+    buttons, the header pill and the list entry while the server held the
+    clicked status."""
+    anchor = "async function(v) {\n            var prev = sampleState.newStatus;"
+    on_status = _js_block(page, page.index(anchor))
+    save_anchor = "saveTBtn.onclick = "
+    on_save = _js_block(page, page.index(save_anchor) + len(save_anchor))
+    fns = "\n".join(_js_function(page, f) for f in (
+        "applyServerSample", "_applyChipsToText"))
+    out = _run_node(tmp_path, _SAMPLE_CARD_STUBS + fns + r"""
+var g = { id: 'g1' }, _allSamples = [{ id: 'g1', status: 'new' }];
+var sampleState = { newStatus: 'new', corrections: [], adminNotes: '' };
+var saves = [];
+function api(m, u, body) {
+  if (body && body.status) return Promise.resolve({});
+  return new Promise(function(r) { saves.push(r); });
+}
+var onStatus = """ + on_status + r""";
+var onSave = """ + on_save + r""";
+function tick() { return new Promise(function(r) { setTimeout(r, 0); }); }
+(async function() {
+  onSave();
+  await onStatus('ready');              // clicked while the Save runs
+  saves[0]({ sample: { id: 'g1', status: 'new' } });
+  await tick();
+  var raced = { shown: statusShown[statusShown.length - 1], state: sampleState.newStatus,
+    list: _allSamples[0].status, head: headSynced[headSynced.length - 1] };
+  onSave();                             // no click this time: server wins
+  saves[1]({ sample: { id: 'g1', status: 'dismissed' } });
+  await tick();
+  console.log(JSON.stringify({ raced: raced, plain: sampleState.newStatus }));
+})();
+""")
+    assert out == {"raced": {"shown": "ready", "state": "ready", "list": "ready",
+                             "head": "ready"},
+                   "plain": "dismissed"}

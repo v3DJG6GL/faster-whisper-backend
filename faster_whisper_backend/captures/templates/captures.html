@@ -5112,6 +5112,9 @@
           async function(v) {
             var prev = sampleState.newStatus;
             sampleState.newStatus = v;
+            // Lets a Save / Regenerate / Lock reply sent before this click
+            // keep it instead of painting its older status back.
+            sampleState.statusGen = (sampleState.statusGen || 0) + 1;
             try {
               // Narrow PATCH — status only. Concurrent transcript or
               // chip edits in this view stay dirty and persist only on
@@ -5217,11 +5220,12 @@
               fixBtn.onclick = async function() {
                 if (!(await okToRegenerate())) return;
                 fixBtn.disabled = true;
+                var sgen = sampleState.statusGen || 0;
                 api('POST', '/captures/api/samples/'
                     + encodeURIComponent(g.id) + '/regenerate')
                   .then(function(j) {
                     toast('Regenerated');
-                    applyServerSample(j.sample || {});
+                    applyServerSample(j.sample || {}, sgen);
                   })
                   .catch(function(e) {
                     fixBtn.disabled = false;
@@ -5238,7 +5242,14 @@
         // open card." Called once on initial expand and again after
         // every Save / Regenerate. Replaces the previous load()-wipe
         // pattern. ---
-        function applyServerSample(d) {
+        // `statusGen` is sampleState.statusGen when the request was sent:
+        // a status click made since auto-saved on its own, so d.status is
+        // older than what the buttons show.
+        function applyServerSample(d, statusGen) {
+          if (statusGen !== undefined
+              && statusGen !== (sampleState.statusGen || 0)) {
+            d = Object.assign({}, d, { status: sampleState.newStatus });
+          }
           // 1. sampleState data.
           sampleState.words = d.merged_words || [];
           sampleState.corrections = (d.corrections || []).map(function(c) {
@@ -5405,6 +5416,7 @@
             baseline_corrections: sampleState.baselineCorrections || [],
           };
           var gen = sampleState.editGen;
+          var sgen = sampleState.statusGen || 0;
           saveTBtn.disabled = true;
           api('PATCH', '/captures/api/samples/' + encodeURIComponent(g.id),
               payload)
@@ -5418,7 +5430,7 @@
                   JSON.parse(JSON.stringify(payload.corrections));
                 toast('Saved · newer edits not saved yet');
               } else {
-                applyServerSample(j.sample || {});
+                applyServerSample(j.sample || {}, sgen);
                 toast('Saved');
               }
               reloadCounts();
@@ -5445,9 +5457,10 @@
         regenBtn.onclick = async function() {
           if (!(await okToRegenerate())) return;
           regenBtn.disabled = true;
+          var sgen = sampleState.statusGen || 0;
           api('POST', '/captures/api/samples/' + encodeURIComponent(g.id) + '/regenerate')
             .then(function(j) {
-              applyServerSample(j.sample || {});
+              applyServerSample(j.sample || {}, sgen);
               toast('Regenerated');
               reloadCounts();
             })
@@ -5459,6 +5472,7 @@
 
         // --- Lock toggle ---
         lockBtn.onclick = function() {
+          var sgen = sampleState.statusGen || 0;
           api('PATCH', '/captures/api/samples/' + encodeURIComponent(g.id),
               { is_locked: !(lockBtn.textContent === 'Unlock') })
             .then(function(j) {
@@ -5466,7 +5480,7 @@
               // applyServerSample would clobber unsaved chip/notes/settings
               // edits. When dirty, apply only the lock-related visuals.
               if (!sampleState.dirty) {
-                applyServerSample(d);
+                applyServerSample(d, sgen);
               } else {
                 var isLocked = !!d.is_locked;
                 lockBtn.textContent = isLocked ? 'Unlock' : 'Lock';
