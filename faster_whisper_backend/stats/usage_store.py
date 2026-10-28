@@ -940,6 +940,12 @@ def sweep(
     conn = _require_conn()
     now = time.time()
     marked = pruned_jobs = pruned_apps = 0
+    stale_cutoff = now - max(1, int(unreported_after_h)) * 3600
+    if jobs_retention_days > 0:
+        # A retention shorter than the grace period would delete the job
+        # below before it is ever marked, leaving its session counted in
+        # usage_hourly but missing from the dictation buckets.
+        stale_cutoff = max(stale_cutoff, now - int(jobs_retention_days) * 86400)
     with _lock:
         conn.execute("BEGIN")
         try:
@@ -948,7 +954,7 @@ def sweep(
                 " FROM usage_jobs"
                 " WHERE kind = 'dictation' AND reported_ts IS NULL"
                 "   AND created_ts < ?",
-                (now - max(1, int(unreported_after_h)) * 3600,),
+                (stale_cutoff,),
             ).fetchall()
             for job in stale:
                 conn.execute(
