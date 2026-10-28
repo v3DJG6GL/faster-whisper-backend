@@ -29,8 +29,13 @@
   function fits(){return navFits()&&rowFits();}
   function reset(){STEPS.forEach(function(c){hdr.classList.remove(c);});}
   function ladder(ok,max){var n=max||STEPS.length;for(var i=0;i<n&&!ok();i++)hdr.classList.add(STEPS[i]);}
+  /* nav holds only items, in order: re-insert just the ones tuck() moved,
+     since moving a node blurs it when it holds focus */
   function restore(){
-    items.forEach(function(el){el.hidden=false;nav.appendChild(el);});
+    items.forEach(function(el,i){
+      el.hidden=false;
+      if(nav.children[i]!==el)nav.insertBefore(el,nav.children[i]||null);
+    });
     list.replaceChildren();
   }
   function setOpen(o){btn.setAttribute('aria-expanded',o?'true':'false');list.hidden=!o;}
@@ -55,7 +60,7 @@
      so it can never re-enter itself: no re-entrancy flag (a throw would
      have left one stuck, turning every later relayout into a no-op) */
   function layout(){
-    var wasOpen=!list.hidden;
+    var wasOpen=!list.hidden,focused=document.activeElement;
     hdr.classList.remove('nav-row2');reset();restore();more.hidden=true;
     var drawer=toggle&&getComputedStyle(toggle).display!=='none';
     if(drawer){
@@ -67,6 +72,9 @@
     }
     /* a relayout (resize, poller tick, gate change) must not slam an open menu shut */
     setOpen(wasOpen&&!more.hidden);
+    /* a link that moved between bar and list still lost focus on the way */
+    if(focused&&focused!==document.activeElement&&focused.isConnected&&focused.getClientRects().length)
+      focused.focus({preventScroll:true});
   }
   var ro=new ResizeObserver(function(){requestAnimationFrame(layout);});
   ro.observe(inner);ro.observe(nav);if(title)ro.observe(title);if(status)ro.observe(status);
