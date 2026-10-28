@@ -180,12 +180,15 @@ def _rebuild_index_locked() -> None:
     now = time.time()
     # Snapshot the version BEFORE the SELECT: a sibling commit landing between
     # the two would otherwise be marked as already seen without being read.
-    _DATA_VERSION = _data_version_locked()
+    # Recorded only once the SELECT succeeded: a failed read must leave the
+    # sibling commit unseen so the next lookup retries the rebuild.
+    version = _data_version_locked()
     rows = conn.execute(
         "SELECT token_hash, user_id, key_id, csrf_token, created_ts, expires_ts"
         " FROM sessions WHERE revoked_ts IS NULL AND expires_ts > ?",
         (now,),
     ).fetchall()
+    _DATA_VERSION = version
     _SESSION_INDEX = {
         r["token_hash"]: {
             "user_id": r["user_id"],
