@@ -596,6 +596,16 @@ def test_installers_leave_a_store_with_its_own_pin_alone():
     assert "if (Test-EnvSets $storeEnv) { continue }" in ps1
 
 
+def test_windows_legacy_store_recipe_creates_the_db_dir_before_the_move():
+    # Move-Item onto a missing folder renames the store to a FILE named db and
+    # the -shm/-wal matches overwrite it: the recipe creates the folder first,
+    # like the Linux recipe's mkdir -p.
+    ps1 = _read("install-service.ps1")
+    mkdir = ps1.index("\"New-Item -ItemType Directory -Force '$dbDir' | Out-Null; \"")
+    move = ps1.index("\"Move-Item '$($legacy.FullName)*' '$dbDir' -Force;")
+    assert mkdir < move
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="bash installer")
 def test_linux_installer_legacy_checks_expand_a_unit_set_var(tmp_path):
     # .env WHISPER_DB_DIR=${WHISPER_DATA_DIR}/stores resolves through the

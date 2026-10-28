@@ -673,6 +673,8 @@ if (-not (Test-EnvSets "WHISPER_DB_DIR") -and -not (Test-EnvSets "WHISPER_DATA_D
     # which would silence every later run while the old keys sit ignored. The
     # stores are WAL databases: the -wal/-shm sidecars move with the file, the
     # fresh store's own sidecars go first, and -Force replaces the empty file.
+    # <dbDir> is created first: Move-Item onto a missing folder would rename
+    # the store to a FILE named db and the sidecars would overwrite it.
     # A store with its own .env pin (WHISPER_API_KEYS_DB=...) is read from
     # there, not <dbDir> -- moving it would strand the live store.
     $legacyStores = @(Get-ChildItem -Path $RepoDir, $dataDir -Filter "*.local.sqlite3" `
@@ -686,6 +688,7 @@ if (-not (Test-EnvSets "WHISPER_DB_DIR") -and -not (Test-EnvSets "WHISPER_DATA_D
         Write-Warning ("legacy store $($legacy.FullName) is IGNORED by the service " +
             "(it reads $dbDir). Move it: Stop-Service $ServiceName; " +
             "Remove-Item '$target-wal','$target-shm' -ErrorAction SilentlyContinue; " +
+            "New-Item -ItemType Directory -Force '$dbDir' | Out-Null; " +
             "Move-Item '$($legacy.FullName)*' '$dbDir' -Force; Start-Service $ServiceName " +
             "(-Force replaces the EMPTY store a start without it created -- skip it if " +
             "$target holds keys you issued since) -- or set WHISPER_DB_DIR=" +
