@@ -106,8 +106,9 @@ def three_way_merge_corrections(
     identity — keying them by position collapses every (None, None) entry
     into one and silently drops chips — so they are keyed by
     `(wrong, correct)` instead, under the same delta rule: one the user
-    removed (in baseline, not in edited) is dropped, and edited ones are
-    added. With an empty baseline (the reports resubmit path) this is the
+    removed (in baseline, not in edited) is dropped, an added or changed
+    one wins, and an untouched one keeps whatever `current` has (absent
+    stays absent). With an empty baseline (the reports resubmit path) this is the
     union of `current` and `edited`. An edit of an anchorless chip's
     `correct` is a remove of the old key plus an add of the new one."""
     def key(c: dict[str, Any]) -> "tuple[int, int] | None":
@@ -160,10 +161,12 @@ def three_way_merge_corrections(
 
     # Anchorless chips: the same delta keyed by (wrong, correct). Without the
     # baseline a removed (or re-worded) chip came straight back from
-    # `current`. Edited entries win on collision.
+    # `current`. Edited entries win on collision; untouched ones (equal to
+    # baseline) are not written back, so a concurrent removal stays removed.
     merged_free = {k: v for k, v in cur_free.items()
                    if not (k in base_free and k not in edit_free)}
-    merged_free.update(edit_free)
+    merged_free.update({k: v for k, v in edit_free.items()
+                        if base_free.get(k) != v})
     return sorted(out.values(), key=_sort_key) + sorted(
         merged_free.values(), key=_sort_key,
     )

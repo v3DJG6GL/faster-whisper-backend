@@ -213,6 +213,21 @@ def test_merge_anchorless_concurrent_add_survives():
         ("foo", "bar"), ("x", "y")}
 
 
+def test_merge_anchorless_untouched_concurrent_remove_stays_removed():
+    # Another tab deleted `a`; this tab left it untouched (in baseline and
+    # edited, same payload). Like an anchored chip, it must stay deleted.
+    a = _chip("foo", "bar")
+    b = _chip("x", "y")
+    assert tc.three_way_merge_corrections([a, b], [a, b], [b]) == [b]
+
+
+def test_merge_anchorless_changed_payload_wins_over_concurrent_remove():
+    # A real edit of an anchorless chip's extra fields is the user's delta.
+    a = {"wrong": "foo", "correct": "bar", "note": "old"}
+    a2 = {"wrong": "foo", "correct": "bar", "note": "new"}
+    assert tc.three_way_merge_corrections([a], [a2], []) == [a2]
+
+
 def test_merge_ordering_anchored_before_anchorless():
     cur = [_chip("z", "free"), _chip("a", "anchored", idx=3)]
     out = tc.three_way_merge_corrections([], [], cur)
