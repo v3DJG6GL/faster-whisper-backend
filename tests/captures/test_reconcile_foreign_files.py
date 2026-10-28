@@ -32,3 +32,23 @@ def test_reconcile_leaves_files_outside_the_fanout_alone(captures_store_db):
     assert not os.path.isfile(orphan)
     assert not os.path.isfile(partial)
     assert unlinked == 2
+
+
+def test_clear_all_leaves_dirs_outside_the_fanout_alone(captures_store_db):
+    cs = captures_store_db
+    audio = cs._require_audio_dir()
+    foreign = [
+        _touch(os.path.join(audio, "db", "api_keys.local.sqlite3")),
+        _touch(os.path.join(audio, "logs", "whisper.log")),
+        _touch(os.path.join(audio, "models", "cache.bin")),
+    ]
+    ours = [
+        _touch(os.path.join(audio, "ab", "cd", "abcd0123.wav")),
+        _touch(os.path.join(audio, "groups", "g1.wav")),
+    ]
+
+    cs.clear_all()
+
+    assert [p for p in foreign if not os.path.isfile(p)] == []
+    assert [p for p in ours if os.path.exists(p)] == []
+    assert sorted(os.listdir(audio)) == ["db", "logs", "models"]

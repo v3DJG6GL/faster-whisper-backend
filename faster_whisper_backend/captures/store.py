@@ -1279,11 +1279,26 @@ def clear_all(reporter_host: str = "") -> int:
         # Still under _lock: create_capture writes its WAV unlocked and
         # inserts the row under _lock, so a wipe after the release could
         # delete the audio of a row inserted after the DELETE above.
+        # Only groups/ and the two-level `<xx>/<yy>/` fanout are ours (same
+        # rule as reconcile_on_startup): a CAPTURES_DIR mis-set to the data
+        # dir must not take db/ ("db" is two hex chars), logs/ or a model
+        # cache with it.
         if os.path.isdir(audio_dir):
             for sub in os.listdir(audio_dir):
                 sub_path = os.path.join(audio_dir, sub)
-                if os.path.isdir(sub_path):
+                if sub == "groups" and os.path.isdir(sub_path):
                     shutil.rmtree(sub_path, ignore_errors=True)
+                    continue
+                if len(sub) != 2 or not os.path.isdir(sub_path):
+                    continue
+                for leaf in os.listdir(sub_path):
+                    leaf_path = os.path.join(sub_path, leaf)
+                    if len(leaf) == 2 and os.path.isdir(leaf_path):
+                        shutil.rmtree(leaf_path, ignore_errors=True)
+                try:
+                    os.rmdir(sub_path)
+                except OSError:
+                    pass
     try:
         from faster_whisper_backend.captures import merge_proposer as captures_merge_proposer
         captures_merge_proposer.invalidate(None)
