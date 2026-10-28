@@ -83,6 +83,11 @@ _model_load_lock = asyncio.Lock()
 # already lets the cache-hit fast path in _get_or_load_model run lock-free.
 _model_leases: "dict[str, int]" = {}
 
+# Cache misses past the fast path, from the check to the cached model: the CT2
+# conversion and Hub pre-download run OUTSIDE _model_load_lock, so the lock
+# alone cannot tell load_in_progress() a cold load is under way.
+_loads_in_flight = 0
+
 
 # =============================================================================
 # SUPPRESS_CHARS resolution cache
@@ -1057,10 +1062,6 @@ async def _get_or_load_model(name: str, *, lease: bool = False) -> "WhisperModel
     name to :func:`_release_model_lease` (a `finally:` — see the transcribe
     handler). A leased model survives LRU and idle eviction. The startup
     preload deliberately does NOT lease: it wants plain LRU/idle semantics."""
-    # Lazy import (see the TYPE_CHECKING note up top): only when a model is
-    # actually loaded do we need the native faster_whisper stack.
-    from faster_whisper import WhisperModel  # noqa: F401  (used in executor lambdas below)
-
     # The allowlist is read live per request and is in neither
     # settings_schema.RESTART_REQUIRED_FIELDS nor LOAD_TIME_FIELDS, so narrowing it
     # is reported to the admin as hot-applied and evicts nothing. Gate BEFORE the
@@ -1083,6 +1084,21 @@ async def _get_or_load_model(name: str, *, lease: bool = False) -> "WhisperModel
         if lease:
             _model_leases[name] = _model_leases.get(name, 0) + 1
         return cached
+
+    global _loads_in_flight
+    _loads_in_flight += 1
+    try:
+        return await _load_on_miss(name, lease=lease)
+    finally:
+        _loads_in_flight -= 1
+
+
+async def _load_on_miss(name: str, *, lease: bool) -> "WhisperModel":
+    """_get_or_load_model past its cache-hit fast path (counted in
+    _loads_in_flight there)."""
+    # Lazy import (see the TYPE_CHECKING note up top): only when a model is
+    # actually loaded do we need the native faster_whisper stack.
+    from faster_whisper import WhisperModel  # noqa: F401  (used in executor lambdas below)
 
     _check_model_shape(name)
 
@@ -1369,10 +1385,11 @@ def is_resident(name: str) -> bool:
 
 
 def load_in_progress() -> bool:
-    """True while a whisper load holds _model_load_lock. The lock is held
-    across the load itself, so a speculative warm-up that waited on it would
-    be the reason a real job's load queues behind it."""
-    return _model_load_lock.locked()
+    """True while a whisper load is under way: a speculative warm-up started
+    then would be the reason a real job's load queues behind it. The lock is
+    held only across the constructor; a cold load spends its conversion and
+    Hub pre-download outside it, counted in _loads_in_flight."""
+    return _loads_in_flight > 0 or _model_load_lock.locked()
 
 
 def cache_full() -> bool:

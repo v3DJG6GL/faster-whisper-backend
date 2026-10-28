@@ -11,6 +11,8 @@ import sys
 import time
 import types
 
+import pytest
+
 from faster_whisper_backend.runtime import model_registry
 from tests.conftest import FakeModel
 from faster_whisper_backend.transcription import models as tx_models
@@ -54,6 +56,37 @@ def test_lock_wait_is_not_billed_as_load_time(monkeypatch):
         assert "x" in recorded
         assert recorded["x"] < 0.1
         assert model_registry._loaded_models["x"]["load_secs"] < 0.1
+    finally:
+        tx_models._loaded_models.clear()
+        model_registry._loaded_models.clear()
+
+
+def test_load_in_progress_covers_the_conversion_outside_the_lock(monkeypatch):
+    """A cold load spends its CT2 conversion / Hub pre-download with
+    _model_load_lock free; load_in_progress() must still report it, or a
+    preload is admitted and the job's constructor queues behind the warm-up."""
+    _stub_load(monkeypatch)
+    monkeypatch.setattr(tx_models, "_model_load_lock", asyncio.Lock())
+    seen = []
+
+    async def _converting(name):
+        seen.append((tx_models._model_load_lock.locked(),
+                     tx_models.load_in_progress()))
+        return name
+    monkeypatch.setattr(tx_models, "_ensure_ct2_model", _converting)
+
+    try:
+        assert tx_models.load_in_progress() is False
+        asyncio.run(tx_models._get_or_load_model("x"))
+        assert seen == [(False, True)]
+        assert tx_models.load_in_progress() is False
+        # A failed load releases the count too.
+        async def _boom(name):
+            raise RuntimeError("convert failed")
+        monkeypatch.setattr(tx_models, "_ensure_ct2_model", _boom)
+        with pytest.raises(RuntimeError):
+            asyncio.run(tx_models._get_or_load_model("y"))
+        assert tx_models._loads_in_flight == 0
     finally:
         tx_models._loaded_models.clear()
         model_registry._loaded_models.clear()
