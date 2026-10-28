@@ -1424,6 +1424,24 @@ def test_stored_model_override_survives_an_env_only_allowlist(monkeypatch):
 
 
 
+def test_blank_model_overrides_var_does_not_drop_a_stored_entry(monkeypatch):
+    """A blank WHISPER_MODEL_OVERRIDES (compose `${X:-}` passthrough) leaves
+    the stored dict in place, so its entries must keep the stored checks."""
+    from faster_whisper_backend.settings import config_store
+    monkeypatch.setattr(config_store, "load_overrides",
+                        lambda path=None: {"MODEL_OVERRIDES": {"medium": {"BEAM_SIZE": 3}}})
+    try:
+        _reload_with_env(monkeypatch, WHISPER_ALLOWED_MODELS="large-v3",
+                         WHISPER_MODEL_OVERRIDES="  ")
+        assert config.MODEL_OVERRIDES.get("medium") == {"BEAM_SIZE": 3}
+        assert not any("was dropped" in m for m in config._ENV_WARNINGS), \
+            config._ENV_WARNINGS
+    finally:
+        monkeypatch.undo()
+        importlib.reload(config)
+
+
+
 def test_stored_model_override_survives_an_env_field_outside_env_allowlist(
         monkeypatch):
     """Same as above, but the model also has a WHISPER_MODEL_OVERRIDE__ var:

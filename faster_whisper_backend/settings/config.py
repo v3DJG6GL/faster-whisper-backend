@@ -2321,8 +2321,10 @@ try:
         # a save never sees the env one, and dropping it here would let the
         # next per-model save erase it from config.local.json for good — so
         # stored entries are checked against the stored allowlist instead.
-        _env_json_models = (
-            _ENV_VAR_MAPPING["MODEL_OVERRIDES"] in os.environ
+        # A blank WHISPER_MODEL_OVERRIDES is skipped by the JSON loop above
+        # (the stored dict stays), so it must not count as the env layer.
+        _env_json_models = bool(
+            (os.environ.get(_ENV_VAR_MAPPING["MODEL_OVERRIDES"]) or "").strip()
             and _ENV_VAR_MAPPING["MODEL_OVERRIDES"] not in _ENV_UNPARSED)
         _allowed_ctx = (
             {"ALLOWED_MODELS": sorted(ALLOWED_MODELS)}
