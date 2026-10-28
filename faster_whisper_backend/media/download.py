@@ -1389,7 +1389,9 @@ _STDERR_TAIL_MAX = 4096
 _FILTERED_NEEDLE = b"does not pass filter"
 # The stdout line yt-dlp's HTTP downloader prints when --max-filesize skips a
 # file (exit 0): in a merge the OTHER leg is left behind as an intermediate.
-_OVER_CAP_NEEDLE = b"larger than max-filesize"
+# Matched as the line's START: other lines carry site-controlled text (the
+# generic extractor's id is the URL's last path segment, a redirect target).
+_OVER_CAP_NEEDLE = b"[download] File is larger than max-filesize"
 # What _read_line keeps of a line longer than the stream's 64 KiB limit.
 _LONG_LINE_KEEP = 4096
 
@@ -1824,7 +1826,7 @@ async def _run_yt_dlp(
                 break
             if _FILTERED_NEEDLE in raw:
                 filtered_out = True
-            if _OVER_CAP_NEEDLE in raw:
+            if raw.lstrip(b"\r").startswith(_OVER_CAP_NEEDLE):
                 over_cap = True
             fields = _parse_progress_fields(raw.decode("utf-8", "replace").strip())
             parsed = _cumulative(fields) if fields is not None else None

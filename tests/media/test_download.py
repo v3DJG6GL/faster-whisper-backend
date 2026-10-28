@@ -1818,6 +1818,24 @@ def test_download_video_merge_leg_over_max_filesize_is_the_size_limit(tmp_path, 
                                 max_bytes=10_000, timeout=30))
 
 
+_OVER_CAP_PHRASE_IN_ID_SCRIPT = """
+import os
+print("[generic] larger than max-filesize: Downloading webpage", flush=True)
+print("[info] larger than max-filesize: Downloading 1 format(s): mp4", flush=True)
+open(os.path.join(r"__DEST__", "media.mp4"), "wb").write(b"x" * 64)
+"""
+
+
+def test_download_video_over_cap_phrase_in_the_site_id_is_not_the_size_limit(tmp_path,
+                                                                            monkeypatch):
+    """The generic extractor prints the URL's last path segment as the id:
+    a finished download of …/larger%20than%20max-filesize.mp4 is not refused."""
+    _patch_video_argv(monkeypatch, _OVER_CAP_PHRASE_IN_ID_SCRIPT)
+    out = _run(udl.download_video("https://example.com/larger%20than%20max-filesize.mp4",
+                                  dest_dir=str(tmp_path), max_bytes=10_000, timeout=30))
+    assert os.path.basename(out) == "media.mp4"
+
+
 _SINGLE_MUXED_SCRIPT = """
 import os
 open(os.path.join(r"__DEST__", "media.mp4"), "wb").write(b"x" * 64)
