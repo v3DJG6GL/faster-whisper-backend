@@ -410,6 +410,40 @@ _loadProposals().then(function() {
 
 # ---- batch review -------------------------------------------------------------------
 
+@needs_node
+def test_batch_open_closed_while_loading_never_enters_batch_mode(page, tmp_path):
+    """Closing "Batch review merges" before its proposals GET returned still
+    entered batch mode in the hidden modal, where Ctrl+ArrowRight anywhere
+    on the page accepted (POSTed) a proposal the user never saw."""
+    fns = _js_function(page, "_openProposeModal") + "\n" + _js_function(page, "_closePropose")
+    out = _run_node(tmp_path, fns + r"""
+var shown = false, entered = 0, pending = [];
+var modal = { classList: {
+  add: function() { shown = true; }, remove: function() { shown = false; },
+  contains: function(c) { return c === 'show' && shown; } } };
+global.document = { getElementById: function() { return modal; } };
+var _batchActive = false, _proposals = [];
+function _loadProposals() { return new Promise(function(r) { pending.push(r); }); }
+function _enterBatchMode() { entered++; _batchActive = true; }
+function _exitBatchMode() { _batchActive = false; }
+function _stopAnyPreview() {}
+function tick() { return new Promise(function(r) { setTimeout(r, 0); }); }
+(async function() {
+  _openProposeModal({ startInBatch: true });
+  _closePropose();                       // Close before the GET returned
+  _proposals = [{ member_ids: ['a'] }];
+  pending[0]();
+  await tick();
+  var closed = entered;
+  _openProposeModal({ startInBatch: true });
+  pending[1]();
+  await tick();
+  console.log(JSON.stringify({ closed: closed, open: entered }));
+})();
+""")
+    assert out == {"closed": 0, "open": 1}
+
+
 _BATCH_STUBS = r"""
 var _batchActive = true, _batchAccepted = 0, _batchDismissed = 0,
     _batchCurrentCard = null, _batchUndo = null, _batchBusy = false;

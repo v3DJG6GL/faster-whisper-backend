@@ -4778,6 +4778,9 @@
     modal.classList.add('show');
     var startInBatch = opts && opts.startInBatch;
     _loadProposals().then(function() {
+      // Closed while loading: a batch session in the hidden modal would
+      // still take Ctrl+arrows on the page and accept unseen proposals.
+      if (!modal.classList.contains('show')) return;
       if (startInBatch && _proposals.length > 0 && !_batchActive) {
         _enterBatchMode();
       }
