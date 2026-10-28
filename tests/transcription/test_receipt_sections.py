@@ -482,3 +482,25 @@ def test_identity_names_an_unreadable_binding_instead_of_every_field(app_module)
     block = _block(app_module, ident=ident, user_id="u1")
     assert any(l.lstrip().startswith("locked") and l.rstrip().endswith("BEAM_SIZE")
                for l in block.splitlines())
+
+
+def test_undecoded_utterance_is_not_diagnosed_as_empty_output(app_module):
+    """A live utterance with no final decode (failed / gate-skipped) reaches
+    the receipt with an empty seg_diag. That is not "empty output" and the
+    thresholds are not the cause — the receipt must name what happened."""
+    block = _block(app_module, seg_diag=[], info=None, kwargs={},
+                   raw="hallo welt", final="Hallo Welt.",
+                   no_decode="final decode failed")
+    title = block.splitlines()[2]
+    assert "[!] no final decode" in title
+    assert "empty output" not in block
+    assert "thresholds suppressed" not in block
+    assert "no output produced" not in block
+    assert "final decode failed" in block
+
+
+def test_decoded_empty_output_keeps_its_diagnosis(app_module):
+    block = _block(app_module, seg_diag=[], info=FakeInfo(duration=15.8),
+                   kwargs={})
+    assert "[!] empty output" in block.splitlines()[2]
+    assert "thresholds suppressed all segments" in block

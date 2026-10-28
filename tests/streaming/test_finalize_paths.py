@@ -285,6 +285,29 @@ def test_gate_skipped_utterance_carries_no_previous_decode_diagnostics(
     assert not any("final decode heard" in ln for ln in skipped)
 
 
+def test_gate_skipped_utterance_receipt_says_no_final_decode(
+        client, app_module, monkeypatch, caplog):
+    """The receipt for the skipped utterance used to read "[!] empty output"
+    and blame the decode thresholds, though its RAW line held text."""
+    monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
+    with caplog.at_level(logging.INFO, logger="faster_whisper_backend.streaming.routes"):
+        with client.websocket_connect(_STREAM_URL) as ws:
+            assert _config(ws)["type"] == "ready"
+            _gate_second_utterance(monkeypatch, ws)
+            ws.send_json({"type": "stop"})
+            _drain(ws)
+    receipts = [r.getMessage() for r in caplog.records
+                if "/v1/audio/transcriptions/stream" in r.getMessage()
+                and "═" in r.getMessage()]
+    assert len(receipts) >= 2, receipts
+    skipped = receipts[-1]
+    assert "[!] no final decode" in skipped
+    assert "near-silence gate skipped the final decode" in skipped
+    assert "empty output" not in skipped
+    assert "thresholds suppressed" not in skipped
+    assert "no final decode" not in receipts[0]
+
+
 def test_revoked_identity_gets_no_rows_through_the_gate_path(
         client, make_user_key, app_module, monkeypatch):
     """decode_final's pre-model raise used to be the only revocation guard;

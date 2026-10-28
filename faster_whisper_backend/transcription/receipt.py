@@ -406,15 +406,24 @@ def _format_decode_trace_section(trace: "dict | None") -> list[str]:
 
 
 def _format_segments_section(seg_diag: list[dict], info, kwargs: dict,
-                             speakers: "list | None" = None) -> list[str]:
+                             speakers: "list | None" = None,
+                             no_decode: "str | None" = None) -> list[str]:
     """Either a fixed-width segments table OR an empty-output diagnostic
     banner whose hint depends on `info.duration_after_vad` and `kwargs`.
 
     `speakers` (per-segment labels, when diarization ran) adds a `spk`
     column. It costs 5 of the text budget, so it is only ever added for runs
     that actually diarized — a decode-only receipt keeps the shape it has
-    always had, and no existing log looks different."""
+    always had, and no existing log looks different.
+
+    `no_decode` says why NO decode produced these (empty) segments — a live
+    utterance whose final decode failed or was skipped by the near-silence
+    gate. The empty-output diagnosis would blame the thresholds for a
+    decode that never ran, so the section names the actual cause instead."""
     n = len(seg_diag)
+    if n == 0 and no_decode:
+        return [_section_rule(f"Segments  (n=0)  {no_decode}"),
+                "    the text above is the partial-committed transcript"]
     if n == 0:
         out = [_section_rule("Segments  (n=0)  [!] no output produced")]
         duration = float(getattr(info, "duration", 0.0) or 0.0)
@@ -692,6 +701,7 @@ def _format_request_block(
     warnings: "list | None" = None,
     skipped: "list | None" = None,
     decode_trace: "dict | None" = None,
+    no_decode: "str | None" = None,
 ) -> str:
     """Full per-request log block. `steps` is the per-pipeline trace; passed
     in only when cfg.TRACE_ENABLED so the block stays a single message.
@@ -721,11 +731,19 @@ def _format_request_block(
     appends a translating stage — a change to those sections shows in
     dictation receipts too. A stage section is emitted only when
     that stage actually ran, so a decode-only receipt is unchanged and a
-    four-stage one finally says what it did."""
+    four-stage one finally says what it did.
+
+    `no_decode` (live dictation only) names why the utterance had no final
+    decode — failed, or skipped by the near-silence gate. The title and the
+    Segments section then say that instead of "empty output" and a
+    threshold diagnosis for a decode that never ran."""
     title_rule = "═" * _LOG_WIDTH
     rule = "─" * _LOG_WIDTH
 
-    status = "[!] empty output" if len(seg_diag) == 0 else "✓ ok"
+    if len(seg_diag) == 0:
+        status = "[!] no final decode" if no_decode else "[!] empty output"
+    else:
+        status = "✓ ok"
     if request_id:
         status = f"req={request_id[:8]}  {status}"
     if captured_id:
@@ -820,7 +838,8 @@ def _format_request_block(
     # whole temperature ladder and was then skipped leaves no segment at all.
     lines.extend(_format_decode_trace_section(decode_trace))
 
-    lines.extend(_format_segments_section(seg_diag, info, kwargs, speakers))
+    lines.extend(_format_segments_section(seg_diag, info, kwargs, speakers,
+                                          no_decode=no_decode))
 
     lines.extend(_format_notes_section(warnings, skipped))
 

@@ -42,6 +42,38 @@ def test_failed_final_decode_is_recorded_as_a_classified_error(
     assert row["error_stage"] == "transcribing"
 
 
+def test_failed_final_decode_receipt_says_the_decode_failed(
+        client, app_module, monkeypatch, caplog):
+    """The receipt used to call the fallback utterance "[!] empty output" and
+    advise loosening the thresholds for a decode that never ran."""
+    import logging
+
+    from faster_whisper_backend.streaming import routes as s_routes
+
+    monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
+
+    def _oom(*a, **kw):
+        raise RuntimeError("CUDA failed with error out of memory")
+
+    monkeypatch.setattr(s_routes, "_trim_trailing_nonspeech", _oom)
+    with caplog.at_level(logging.INFO, logger="faster_whisper_backend.streaming.routes"):
+        with client.websocket_connect(_STREAM_URL) as ws:
+            ws.send_json({"type": "config", "model": "whisper-1",
+                          "audio": {"format": "pcm_s16le", "sample_rate": 16000}})
+            assert ws.receive_json()["type"] == "ready"
+            ws.send_bytes(_pcm(8000, 2500))
+            ws.send_bytes(_pcm(0, 1500))
+            ws.send_json({"type": "stop"})
+            _drain(ws)
+    receipts = [r.getMessage() for r in caplog.records
+                if _STREAM_URL in r.getMessage() and "═" in r.getMessage()]
+    assert receipts, "no receipt was logged"
+    assert "[!] no final decode" in receipts[0]
+    assert "final decode failed" in receipts[0]
+    assert "empty output" not in receipts[0]
+    assert "thresholds suppressed" not in receipts[0]
+
+
 def test_decoded_utterance_stays_an_ok_row(client, app_module, monkeypatch):
     monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
     with client.websocket_connect(_STREAM_URL) as ws:

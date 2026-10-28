@@ -1496,7 +1496,12 @@ async def transcribe_stream(ws: WebSocket) -> None:
                     username=user.get("username"), key_label=user.get("key_label"),
                     guards=dec.get("guards"),
                     decode_trace=dec.get("trace"),
-                    stages=stages)
+                    stages=stages,
+                    # Without this the receipt reads an undecoded utterance's
+                    # empty seg_diag as "empty output" and blames thresholds.
+                    no_decode=(None if decoded else
+                               "final decode failed" if info.get("decode_failed")
+                               else "near-silence gate skipped the final decode"))
                 # Hold only when the client said a per-utterance translation
                 # is coming AND there is a capture id to key it on — that id is
                 # the only handle the separate translate request can name us
