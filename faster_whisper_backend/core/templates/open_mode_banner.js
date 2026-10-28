@@ -23,10 +23,13 @@
                                    // refreshes (post-login) don't re-render.
 
   // CSRF token for cookie-authenticated mutations (double-submit). Prefer the
-  // cached whoami payload; fall back to the readable CSRF cookie (available
-  // synchronously on load), named by whoami's csrf_cookie once it is cached
-  // (SESSION_CSRF_COOKIE_NAME may rename it) and whisper_csrf before that.
-  // The HttpOnly session cookie itself is sent automatically by the browser.
+  // readable CSRF cookie: it is set together with the session cookie, so it
+  // stays paired with the session the browser sends even after another tab
+  // signed in again (the cached whoami token then belongs to the dead
+  // session and every write 403'd). It is named by whoami's csrf_cookie once
+  // that is cached (SESSION_CSRF_COOKIE_NAME may rename it) and whisper_csrf
+  // before that; the cached whoami token is the fallback when no cookie is
+  // readable. The HttpOnly session cookie is sent automatically.
   function _cookieCsrf() {
     try {
       var name = (window.__whoami && window.__whoami.csrf_cookie)
@@ -41,11 +44,13 @@
     return '';
   }
   window._csrfToken = function() {
+    var live = _cookieCsrf();
+    if (live) return live;
     try {
       if (window.__whoami && window.__whoami.csrf_token)
         return window.__whoami.csrf_token;
     } catch(_) {}
-    return _cookieCsrf();
+    return '';
   };
 
   // Global sign-out: revoke the server session (CSRF-protected), announce the
@@ -76,8 +81,8 @@
         cache: 'no-store',
       }).then(function(r) {
         if (r.ok || r.status === 401) { done(); return; }
-        // The cached whoami token is stale when another tab signed in again
-        // (new session, new cookie): retry once with the live cookie's token.
+        // Another tab signed in again while this POST was in flight (new
+        // session, new cookie): retry once with the live cookie's token.
         var live = _cookieCsrf();
         if (r.status === 403 && !retried && live && live !== token)
           return send(live, true);
