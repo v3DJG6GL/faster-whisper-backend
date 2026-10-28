@@ -1240,8 +1240,11 @@ def _install_fake_hub(monkeypatch, record, files=("m.Q4.gguf",),
         siblings = [_Sib(f) for f in files]
         card_data = types.SimpleNamespace(language=card_languages)
 
+    info_timeouts = []
+
     class HfApi:
-        def model_info(self, repo):
+        def model_info(self, repo, timeout=None):
+            info_timeouts.append(timeout)
             return _Info()
 
     def hf_hub_download(**kw):
@@ -1250,6 +1253,8 @@ def _install_fake_hub(monkeypatch, record, files=("m.Q4.gguf",),
 
     mod = types.ModuleType("huggingface_hub")
     mod.HfApi = HfApi
+    mod.constants = types.SimpleNamespace(HF_HUB_ETAG_TIMEOUT=7)
+    mod.info_timeouts = info_timeouts
     mod.hf_hub_download = hf_hub_download
     monkeypatch.setitem(sys.modules, "huggingface_hub", mod)
 
@@ -1261,6 +1266,16 @@ def test_predownload_logs_the_card_languages(monkeypatch, caplog):
     assert translation._card_languages["org/card"] == ("en", "de", "zh-Hant")
     assert ("[translate] model card of org/card: 3 language(s) kept of 4 listed "
             "(2 renamed, 1 dropped)") in caplog.text
+
+
+def test_predownload_bounds_the_model_listing_with_the_hub_timeout(
+        monkeypatch, tmp_path):
+    # model_info defaults to no deadline: a stalled hub would pin the loader
+    # thread and the model's load lock forever instead of falling back.
+    _install_fake_hub(monkeypatch, [])
+    monkeypatch.setattr(cfg, "DOWNLOAD_ROOT", str(tmp_path), raising=False)
+    translation._predownload_gguf("org/repo", "Q4")
+    assert sys.modules["huggingface_hub"].info_timeouts == [7]
 
 
 def test_predownload_passes_download_root_cache_dir(monkeypatch, tmp_path):

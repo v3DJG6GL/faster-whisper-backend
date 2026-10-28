@@ -593,13 +593,16 @@ def _predownload_gguf(repo: str, quant: "str | None",
     back. Runs in the executor (blocking network I/O)."""
     import fnmatch
 
-    from huggingface_hub import HfApi, hf_hub_download
+    from huggingface_hub import HfApi, constants as hf_constants, hf_hub_download
 
     from faster_whisper_backend.runtime import download_progress
     from faster_whisper_backend.core import jobs
 
     pattern = (f"*{quant}.gguf" if quant else "*.gguf").lower()
-    info = HfApi().model_info(repo)
+    # model_info has no deadline by default: a stalled hub would pin the
+    # loader thread (and the model's load lock) forever. Bound it like the
+    # hub bounds its own metadata calls, so a stall falls back instead.
+    info = HfApi().model_info(repo, timeout=hf_constants.HF_HUB_ETAG_TIMEOUT)
     _card = getattr(info, "card_data", None)
     _kept, _renamed, _dropped = _card_codes(_card)
     _card_languages[repo] = _kept
