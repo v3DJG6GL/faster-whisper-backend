@@ -172,6 +172,7 @@ async function api(m, u, body) {
   return replies.shift();
 }
 function clearDirty() {} function toast() {} function reloadCounts() {}
+function _syncCapturePreview() {}
 var X = """ + json.dumps(x) + ", Y = " + json.dumps(y) + r""";
 var state = { cid: 'c1', corrections: [Y], baselineCorrections: [], adminNotes: '' };
 (async function() {
@@ -200,6 +201,7 @@ def test_capture_save_keeps_edits_made_while_it_ran(page, tmp_path):
 var pending = [], toasts = [];
 function api() { return new Promise(function(r) { pending.push(r); }); }
 function toast(m) { toasts.push(m); } function reloadCounts() {}
+function _syncCapturePreview() {}
 var state = { cid: 'c1', corrections: [{ wrong: 'a', correct: 'A', idx: 1 }],
   baselineCorrections: [], adminNotes: '', dirty: false };
 function tick() { return new Promise(function(r) { setTimeout(r, 0); }); }
@@ -794,6 +796,46 @@ console.log(JSON.stringify({ aligned: full, trimmed: memberLines[0] }));
 """)
     assert out == {"aligned": "[1] 1.0s · Die Katze die Maus",
                    "trimmed": "[1] 1.0s · die Katze Die Maus"}
+
+
+# ---- capture card preview -------------------------------------------------------------
+
+@needs_node
+def test_capture_save_and_reprocess_redraw_the_card_preview(page, tmp_path):
+    """The collapsed card's one-line preview was painted once by renderCard:
+    after a chip Save or a Reprocess it kept the old text until the next
+    full render(). The PATCH reply's raw words also replaced the row's
+    aligned ones, which mis-placed the chip in the next preview."""
+    fns = "\n".join(_js_function(page, f) for f in (
+        "onSave", "onReprocess", "_syncCapturePreview", "_capturePreviewText",
+        "_applyChipsToText"))
+    out = _run_node(tmp_path, fns + r"""
+var preview = { textContent: 'die Katze die Maus' }, asked = [];
+global.document = { querySelector: function(s) { asked.push(s); return preview; } };
+var replies = [];
+async function api() { return replies.shift(); }
+function clearDirty() {} function toast() {} function reloadCounts() {}
+function applyCorrectionsToGround() {}
+var chip = """ + json.dumps(_KATZE_CHIP) + r""";
+var aligned = """ + json.dumps(_KATZE_ALIGNED) + r""";
+var r = { id: 'c1', text_for_training: """ + json.dumps(_KATZE_TEXT) + r""",
+  corrections: [], words: aligned };
+var state = { cid: 'c1', corrections: [chip], baselineCorrections: [],
+  adminNotes: '', words: aligned };
+(async function() {
+  replies.push({ capture: { corrections: [chip], words: """ + json.dumps(_KATZE_RAW) + r""" } });
+  await onSave(state, r);
+  var saved = preview.textContent, kept = r.words === aligned;
+  replies.push({ capture: { text_for_training: 'die Hund die Maus' }, changed: [] });
+  await onReprocess(state, r, { textContent: 'Reprocess' });
+  console.log(JSON.stringify({ saved: saved, kept: kept,
+    reprocessed: preview.textContent, asked: asked[0] }));
+})();
+""")
+    assert out == {"saved": "Die Katze die Maus", "kept": True,
+                   "reprocessed": "Die Hund die Maus",
+                   "asked": '.capture-card[data-id="c1"] .cc-preview'}
+    assert "preview.className = 'cc-preview';" in _js_function(page, "renderCard")
 
 
 # ---- proposals Refresh ------------------------------------------------------------------
