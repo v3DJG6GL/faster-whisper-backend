@@ -53,3 +53,18 @@ def test_client_sent_stages_win_over_the_trace_row(client, make_user_key):
                                    "stages": sent}, headers=bearer(raw))
     assert r.status_code == 200
     assert _stored(r.json()["id"])["stages"] == sent
+
+
+def test_trace_lookup_holds_the_store_lock(client, make_user_key, monkeypatch):
+    # Same SELECT text on the shared connection from two threads shares one
+    # cached statement: one user's report could take another user's stages.
+    from faster_whisper_backend.reports.routes import _trace_provenance
+    from faster_whisper_backend.stats import recent_transcriptions_store as rts
+    from tests.stats.test_store_reads_hold_lock import _LockCheckingConn
+    uid, _raw = make_user_key("alice", pages={"quick_config": "own"})
+    _seed_trace("live-3", uid)
+    conn = _LockCheckingConn(rts._require_conn(), rts._lock)
+    monkeypatch.setattr(rts, "_conn", conn)
+
+    assert _trace_provenance("live-3", uid, False) == ("de", _STAGES)
+    assert conn.unlocked == []

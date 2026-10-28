@@ -182,7 +182,11 @@ def _trace_provenance(request_id: str, user_id: "str | None",
         sql += " AND user_id = ?"
         params.append(user_id)
     try:
-        row = _rts._require_conn().execute(sql, params).fetchone()
+        # Under the store lock: two threads running this same SELECT on the
+        # shared connection share one cached statement and can read each
+        # other's row (another user's stages).
+        with _rts._lock:
+            row = _rts._require_conn().execute(sql, params).fetchone()
     except Exception:  # noqa: BLE001 — provenance is best-effort
         return "", []
     if row is None:
