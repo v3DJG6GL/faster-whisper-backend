@@ -4476,6 +4476,11 @@
     _stopAnyPreview();
     var listEl = document.getElementById('propose-list');
     listEl.innerHTML = '<div class="empty">Loading proposals…</div>';
+    // In batch mode the card on screen belongs to the queue this replaces:
+    // an Accept meanwhile would come back as the next card, its Revert gone.
+    // _renderBatchCard below releases it.
+    var hold = _batchActive && !_batchBusy;
+    if (hold) _batchBusy = true;
     try {
       // Accept checks members against _allCaptures, which holds only the
       // picked speakers: another speaker's proposal could never pass. The
@@ -4496,6 +4501,7 @@
         _renderBatchCard();
       }
     } catch (e) {
+      if (hold) _batchBusy = false;   // the old queue stays: keep it usable
       if (e && e.message !== 'unauthorized' && e.message !== 'not-admin') {
         listEl.innerHTML = '';
         var err = document.createElement('div');

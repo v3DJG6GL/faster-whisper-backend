@@ -663,6 +663,35 @@ def test_batch_closed_during_accept_does_not_render_or_autoplay(page, tmp_path):
     assert out == {"built": 0, "posts": ["a"]}
 
 
+@needs_node
+def test_batch_refresh_blocks_the_card_until_the_queue_reloads(page, tmp_path):
+    """A batch-mode Refresh left the current card live during its GET: an
+    Accept meanwhile POSTed a sample, then the reloaded queue (swept before
+    that create) showed the merged proposal again with its Revert gone."""
+    out = _run_node(tmp_path, _batch_fns(page) + _js_function(page, "_loadProposals")
+                    + _BATCH_STUBS + r"""
+var _filtSpeakers = [], gets = [];
+function _renderProposals(ps) { _proposals = ps; }
+api = function(m, u, body) {
+  if (m === 'GET') return new Promise(function(r, j) { gets.push({ r: r, j: j }); });
+  posts.push(body.member_ids[0]);
+  return new Promise(function(r) { pendingPost.push(r); });
+};
+(async function() {
+  var p = _loadProposals();               // Refresh
+  _advanceBatch('accept');                // Ctrl+Right before the GET returns
+  gets[0].r({ proposals: [{ member_ids: ['a'] }] });
+  await p;
+  var afterOk = _batchBusy;
+  p = _loadProposals();
+  gets[1].j(new Error('HTTP 502'));       // a failed Refresh keeps the old card usable
+  await p;
+  console.log(JSON.stringify({ posts: posts, afterOk: afterOk, afterFail: _batchBusy }));
+})();
+""")
+    assert out == {"posts": [], "afterOk": False, "afterFail": False}
+
+
 # ---- group card ---------------------------------------------------------------------
 
 @needs_node
@@ -993,7 +1022,7 @@ def test_proposals_refresh_stops_the_preview_and_redraws_the_batch_card(page, tm
     detached played on with no control left to stop it."""
     out = _run_node(tmp_path, _js_function(page, "_loadProposals") + r"""
 var _filtSpeakers = [], _batchActive = """ + json.dumps(batch) + r""";
-var _batchUndo = { action: 'dismiss', proposals: [] };
+var _batchUndo = { action: 'dismiss', proposals: [] }, _batchBusy = false;
 var events = [], _proposals = [];
 global.document = { getElementById: function() { return {}; } };
 async function api() { events.push('get'); return { proposals: [{ id: 'pa' }, { id: 'pb' }] }; }
