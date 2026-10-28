@@ -917,6 +917,32 @@ function _loadUnlessDirty() {} function toast() {}
     assert out == ["stop", "post", "play", "stop", "redraw"]
 
 
+@needs_node
+def test_manual_merge_create_stops_a_preview_started_during_the_post(page, tmp_path):
+    """The merge modal's Create stopped the preview only before its POST:
+    a ▶ clicked while the sample was built played on after the modal hid,
+    with no control left to pause it."""
+    start = page.index("async function()", page.index("getElementById('merge-commit').onclick"))
+    out = _run_node(tmp_path, "var commit = " + _js_block(page, start) + r""";
+var events = [], pending = [];
+var rows = [{ id: 'a' }, { id: 'b' }];
+var modal = { classList: { remove: function() { events.push('hide'); } } };
+async function _okToDropOpenEdits() { return true; }
+function api() { events.push('post'); return new Promise(function(r) { pending.push(r); }); }
+function _stopAnyPreview() { events.push('stop'); }
+function load() { events.push('load'); } function toast() {}
+function tick() { return new Promise(function(r) { setTimeout(r, 0); }); }
+(async function() {
+  await commit();
+  events.push('play');                 // ▶ while "Creating" is in flight
+  pending.shift()({});
+  await tick();
+  console.log(JSON.stringify(events));
+})();
+""")
+    assert out == ["stop", "post", "play", "stop", "hide", "load"]
+
+
 # ---- bulk actions vs edits made during the request ---------------------------------------
 
 _BULK_DIRTY_STUBS = r"""

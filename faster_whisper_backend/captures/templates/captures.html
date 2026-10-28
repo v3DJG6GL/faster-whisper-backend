@@ -3479,6 +3479,9 @@
       };
       api('POST', '/captures/api/samples', payload)
         .then(function() {
+          // A ▶ clicked while the POST ran would play on behind the
+          // hidden modal with no control left to pause it.
+          _stopAnyPreview();
           modal.classList.remove('show');
           toast('Sample created');
           return load();
