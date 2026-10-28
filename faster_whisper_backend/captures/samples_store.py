@@ -33,6 +33,12 @@ logger = logging.getLogger("whisper-api")
 
 _lock = threading.Lock()
 _conn: sqlite3.Connection | None = None
+
+
+class SampleLockedError(Exception):
+    """dissolve_sample(refuse_locked=True) found the sample locked under the
+    rebuild lock."""
+
 _groups_audio_dir: str | None = None    # e.g. CAPTURES_DIR/groups
 
 _SCHEMA_CORE = """
@@ -296,9 +302,12 @@ def update_sample(
     return get_sample(sid)
 
 
-def dissolve_sample(sid: str) -> None:
+def dissolve_sample(sid: str, *, refuse_locked: bool = False) -> None:
     """Delete the row, unlink the merged WAV, NULL out members'
     (sample_id, sample_order).
+
+    refuse_locked: raise SampleLockedError instead when the row read under the
+    rebuild lock is locked (a non-admin caller's pre-check may be stale).
 
     Holds the per-sid rebuild lock (captures/samples.py _rebuild_lock) for the
     whole dissolve, so it waits out an in-flight regenerate / self-heal / VAD
@@ -318,6 +327,8 @@ def dissolve_sample(sid: str) -> None:
     conn = _require_conn()
     with capture_samples._rebuild_lock(sid):
         g = get_sample(sid)
+        if g is not None and refuse_locked and g["is_locked"]:
+            raise SampleLockedError(sid)
         if g is not None:
             with _lock, captures_store._lock:
                 conn.execute("BEGIN IMMEDIATE")

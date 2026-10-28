@@ -2545,8 +2545,12 @@ async def regenerate_sample_api(
             # Re-read under the lock dissolve_sample also takes: a sample
             # dissolved while this request waited must not get its merged WAV
             # rebuilt onto disk with no row (nor a 500 from _enrich_sample).
-            if capture_samples_store.get_sample(sid) is None:
+            fresh = capture_samples_store.get_sample(sid)
+            if fresh is None:
                 raise HTTPException(status.HTTP_404_NOT_FOUND, "sample not found")
+            # Locked while we waited: the pre-check above saw a stale row.
+            if fresh["is_locked"] and not user.get("is_admin"):
+                raise HTTPException(status.HTTP_409_CONFLICT, "sample is locked")
             members = capture_samples_store.get_members(sid)
             duration_ms, hashes, member_trims = capture_samples._build_merged_wav(
                 sid=sid,
@@ -2588,8 +2592,14 @@ async def dissolve_sample_api(
     if g["is_locked"] and not user.get("is_admin"):
         raise HTTPException(status.HTTP_409_CONFLICT, "sample is locked")
     # Off the loop: dissolve waits on the per-sid rebuild lock, which an
-    # in-flight regenerate / VAD rebuild holds for seconds.
-    await asyncio.to_thread(capture_samples_store.dissolve_sample, sid)
+    # in-flight regenerate / VAD rebuild holds for seconds. The lock check is
+    # repeated under that lock: the sample may have been locked meanwhile.
+    try:
+        await asyncio.to_thread(
+            capture_samples_store.dissolve_sample, sid,
+            refuse_locked=not user.get("is_admin"))
+    except capture_samples_store.SampleLockedError:
+        raise HTTPException(status.HTTP_409_CONFLICT, "sample is locked")
     return JSONResponse({"ok": True})
 
 def _ensure_sample_wav(g: dict[str, Any]) -> str:
