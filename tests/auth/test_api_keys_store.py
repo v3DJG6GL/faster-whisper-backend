@@ -834,3 +834,37 @@ def test_binding_saves_keep_a_stored_profile_name_that_vanished(
             ak.set_key_config(uid, rec["id"], added)
         with pytest.raises(ValueError, match="typo"):
             ak.set_user_permissions(uid, {"config": added})
+
+
+def test_sibling_revoke_still_seen_after_a_failed_rebuild(api_keys_db,
+                                                          monkeypatch):
+    """A rebuild SELECT that fails must leave the sibling commit unseen: the
+    version used to be recorded first, so the next lookup skipped the rebuild
+    and kept authenticating the revoked key from the stale index."""
+    ak = api_keys_db
+    uid = ak.create_user("root", is_admin=True)
+    raw, rec = ak.create_key(uid)
+    ak.create_key(uid)
+    db_path = ak._require_conn().execute(
+        "PRAGMA database_list").fetchone()["file"]
+    sibling = sqlite3.connect(db_path)
+    try:
+        with sibling:
+            sibling.execute("UPDATE api_keys SET revoked_ts = 1 WHERE id = ?",
+                            (rec["id"],))
+    finally:
+        sibling.close()
+
+    real = ak._require_conn()
+
+    class _FailingRebuild:
+        def execute(self, sql, *args):
+            if sql.startswith("SELECT k.key_hash"):
+                raise sqlite3.OperationalError("database is locked")
+            return real.execute(sql, *args)
+
+    monkeypatch.setattr(ak, "_require_conn", _FailingRebuild)
+    with pytest.raises(sqlite3.OperationalError):
+        ak.lookup_by_raw_key(raw)
+    monkeypatch.undo()
+    assert ak.lookup_by_raw_key(raw) is None

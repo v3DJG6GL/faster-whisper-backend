@@ -347,13 +347,16 @@ def _rebuild_index_locked() -> None:
     conn = _require_conn()
     # Snapshot the version BEFORE the SELECT: a sibling commit landing between
     # the two would otherwise be marked as already seen without being read.
-    _DATA_VERSION = _data_version_locked()
+    # Recorded only once the SELECT succeeded: a failed read must leave the
+    # sibling commit unseen so the next lookup retries the rebuild.
+    version = _data_version_locked()
     rows = conn.execute(
         "SELECT k.key_hash, k.id AS key_id, k.label, u.id AS user_id, u.username,"
         " u.is_admin, u.permissions"
         " FROM api_keys k JOIN users u ON u.id = k.user_id"
         " WHERE k.revoked_ts IS NULL AND u.revoked_ts IS NULL"
     ).fetchall()
+    _DATA_VERSION = version
     idx: dict[str, dict[str, Any]] = {}
     for r in rows:
         idx[r["key_hash"]] = {
