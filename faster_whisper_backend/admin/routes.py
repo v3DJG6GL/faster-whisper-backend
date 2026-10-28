@@ -672,8 +672,35 @@ def _pipeline_rules_max() -> int:
     return found if found is not None else 200
 
 
+def _str_max_length(annotation: Any) -> int | None:
+    """The max_length on an `Annotated[str, Field(max_length=...)]`, or None."""
+    for fi in getattr(annotation, "__metadata__", ()):
+        for m in (*getattr(fi, "metadata", ()), fi):
+            ml = getattr(m, "max_length", None)
+            if isinstance(ml, int):
+                return ml
+    return None
+
+
+def _field_max_length(field: Any) -> int | None:
+    """max_length of a model field whose constraint landed in `.metadata`."""
+    for m in field.metadata:
+        ml = getattr(m, "max_length", None)
+        if isinstance(ml, int):
+            return ml
+    return None
+
+
 _TEST_PIPELINE_MAX_RULES = _pipeline_rules_max()
 _TEST_PIPELINE_MAX_SAMPLE = 8192
+# A saved rule cannot carry a longer regex-list replacement or map value than
+# these, so the dry run refuses them too: one re.sub of an 8192-char sample
+# with a multi-MB replacement allocates sample x replacement before the output
+# bound is ever checked. Fallbacks equal today's schema bounds.
+_TEST_PIPELINE_MAX_REPLACEMENT = _field_max_length(
+    settings_schema.RegexListEntry.model_fields["replacement"]) or 512
+_TEST_PIPELINE_MAX_MAP_VALUE = _str_max_length(
+    get_args(settings_schema.MapRule.model_fields["map"].annotation)[1]) or 64
 
 
 @router.post("/test-pipeline",
@@ -754,6 +781,26 @@ async def test_pipeline(payload: dict[str, Any]) -> JSONResponse:
             status_code=status.HTTP_400_BAD_REQUEST,
             content={"error": f"sample too long (max {_TEST_PIPELINE_MAX_SAMPLE} chars)"},
         )
+    for idx, rule in enumerate(rules):
+        if not isinstance(rule, dict):
+            continue
+        entries = rule.get("entries") if rule.get("type") == "regex-list" else None
+        for entry in entries if isinstance(entries, list) else ():
+            er = entry.get("replacement") if isinstance(entry, dict) else None
+            if isinstance(er, str) and len(er) > _TEST_PIPELINE_MAX_REPLACEMENT:
+                return JSONResponse(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    content={"error": f"rule {idx + 1}: replacement too long "
+                                      f"(max {_TEST_PIPELINE_MAX_REPLACEMENT} chars)"},
+                )
+        m = rule.get("map") if rule.get("type") == "callback:map" else None
+        for v in m.values() if isinstance(m, dict) else ():
+            if isinstance(v, str) and len(v) > _TEST_PIPELINE_MAX_MAP_VALUE:
+                return JSONResponse(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    content={"error": f"rule {idx + 1}: map value too long "
+                                      f"(max {_TEST_PIPELINE_MAX_MAP_VALUE} chars)"},
+                )
 
     def _run_rule(text: str, rule: dict) -> dict[str, Any]:
         """Apply one rule to `text`. Returns the step dict for the response."""
