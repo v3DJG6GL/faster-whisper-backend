@@ -46,3 +46,22 @@ def test_server_side_http_failure_keeps_the_generic_message(
     errors = _handshake_errors(client, raw_alice)
     assert errors, "expected a model_load_failed frame"
     assert errors[0]["message"] == "model could not be loaded"
+
+
+def test_long_refusal_detail_reaches_the_client_whole(client, make_user_key, monkeypatch):
+    """A long allowlist used to be cut at the 120-char log-field cap, leaving
+    the client a broken model name and a missing entry."""
+    _, raw_alice = make_user_key("alice")
+    detail = ("Model 'large-v3' is not in the allowed list. Allowed: "
+              "['Systran/faster-whisper-large-v3', "
+              "'deepdml/faster-whisper-large-v3-turbo-ct2', 'small']")
+    assert len(detail) > 120
+
+    async def _refuse(name, *, lease=False):
+        raise HTTPException(status_code=400, detail=detail)
+
+    monkeypatch.setattr(tx_models, "_get_or_load_model", _refuse)
+
+    errors = _handshake_errors(client, raw_alice)
+    assert errors, "expected a model_load_failed frame"
+    assert errors[0]["message"] == detail

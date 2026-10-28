@@ -876,10 +876,12 @@ async def transcribe_stream(ws: WebSocket) -> None:
             # A 4xx refusal (not on ALLOWED_MODELS, malformed id) is the
             # exception: its detail names only the client's own model string
             # and the allowlist batch already returns, and without it the
-            # client reads the refusal as a server fault.
+            # client reads the refusal as a server fault. Sent whole, as batch
+            # does: log_safe's log-field cap cut the allowlist mid-name, and a
+            # JSON frame escapes control characters on its own.
             message = "model could not be loaded"
             if isinstance(exc, HTTPException) and 400 <= exc.status_code < 500:
-                message = store_common.log_safe(str(exc.detail))
+                message = str(exc.detail)
             await _safe_ws_send(ws, {"type": "error", "code": "model_load_failed",
                                     "message": message}, close=True)
             return
