@@ -6,6 +6,7 @@ style: tests/quick_config/test_pipeline_popover_color.py). Where the logic is
 too DOM-bound to isolate, the test pins the served source instead."""
 
 import json
+import re
 import shutil
 import subprocess
 
@@ -550,3 +551,21 @@ function tick() { return new Promise(function(r) { setTimeout(r, 0); }); }
 })();
 """)
     assert out == {"raced": {"made": ["new"], "src": "blob:new"}, "made": ["new"]}
+
+
+# ---- stacking -------------------------------------------------------------------------
+
+def _z_index(page, selector):
+    """The z-index set by the page's `  <selector> {` rules."""
+    found = re.findall(r"\n  " + re.escape(selector) + r" \{[^}]*?z-index: (\d+);", page)
+    assert len(found) == 1, (selector, found)
+    return int(found[0])
+
+
+def test_confirm_dialog_and_toast_stack_above_the_merge_modals(page):
+    """The merge modal's Create asks _confirm while the modal is open, but
+    the dialog (and the toast) sat under its full-screen overlay: invisible,
+    yet a blind Enter still confirmed and dropped the open card's edits."""
+    overlay = max(_z_index(page, "#merge-modal"), _z_index(page, "#propose-modal"))
+    assert _z_index(page, ".modal") > overlay
+    assert _z_index(page, "#toast") > _z_index(page, ".modal")

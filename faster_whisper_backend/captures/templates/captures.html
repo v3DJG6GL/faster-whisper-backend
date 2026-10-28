@@ -451,10 +451,11 @@
   .cc-actions .dirty { color: var(--yellow); font-size: var(--fs-sm); }
   .cc-actions .dirty.hidden { display: none; }
 
-  /* Clear-all confirm modal */
+  /* Clear-all confirm modal. Also the themed _confirm dialog, which opens
+     over the merge and propose modals (z-index 1000), so it sits above them. */
   .modal {
     position: fixed; inset: 0; background: rgba(0,0,0,0.65);
-    display: none; align-items: center; justify-content: center; z-index: 30;
+    display: none; align-items: center; justify-content: center; z-index: 1100;
   }
   .modal.show { display: flex; }
   .modal .box {
@@ -482,7 +483,7 @@
     padding: 0.5rem 0.875rem; font-size: var(--fs-md);
     box-shadow: 0 0.25rem 0.75rem rgba(0,0,0,0.4);
     opacity: 0; transition: opacity 0.2s ease;
-    pointer-events: none; z-index: 40;
+    pointer-events: none; z-index: 1200;
   }
   #toast.show { opacity: 1; }
   #toast.err { border-color: var(--red); color: var(--red); }
