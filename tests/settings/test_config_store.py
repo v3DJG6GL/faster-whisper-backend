@@ -1236,11 +1236,29 @@ def test_sample_sizing_absent_field_uses_baseline_not_live_override(monkeypatch)
     _bad(CAPTURES_SAMPLE_MIN_DURATION_S=1.0, CAPTURES_SAMPLE_MAX_DURATION_S=6.0)
 
 
-def test_save_overrides_corrupt_existing_rewrites(tmp_path):
-    p = str(tmp_path / "config.local.json")
-    open(p, "w", encoding="utf-8").write("{ corrupt")
-    cs.save_overrides({"BEAM_SIZE": 7}, p)
-    assert json.loads(open(p, encoding="utf-8").read())["BEAM_SIZE"] == 7
+@pytest.mark.parametrize("content", [
+    b'{"BEAM_SIZE": 7, "DEFAULT_LANGUAGE": "de",}',   # trailing comma
+    b'{"DEFAULT_LANGUAGE": "de", "DEFAULT_PROMPT": "Gr\xfc\xdfe"}',  # cp1252
+    b'["DEFAULT_LANGUAGE", "de"]',                    # valid JSON, not an object
+], ids=["malformed", "not-utf8", "not-object"])
+def test_save_overrides_refuses_unreadable_existing_file(tmp_path, content):
+    """Boot ignores an unreadable file, so the WebUI shows defaults; a save
+    merged onto {} then replaced it, wiping every hand-edited override. It
+    must 422 like a schema-invalid file and leave the bytes alone."""
+    p = tmp_path / "config.local.json"
+    p.write_bytes(content)
+    with pytest.raises(ValidationError) as ei:
+        cs.save_overrides({"BEAM_SIZE": 5}, str(p))
+    assert p.read_bytes() == content
+    [err] = settings_schema.format_validation_errors(ei.value)
+    assert "config.local.json cannot be read" in err["msg"]
+
+
+def test_save_overrides_empty_existing_file_is_the_empty_case(tmp_path):
+    p = tmp_path / "config.local.json"
+    p.write_text("\n", encoding="utf-8")
+    cs.save_overrides({"BEAM_SIZE": 7}, str(p))
+    assert json.loads(p.read_text(encoding="utf-8")) == {"BEAM_SIZE": 7}
 
 
 def test_load_overrides_non_utf8_file_is_ignored_not_raised(tmp_path):
@@ -1250,9 +1268,6 @@ def test_load_overrides_non_utf8_file_is_ignored_not_raised(tmp_path):
     p = tmp_path / "config.local.json"
     p.write_bytes(b'{"DEFAULT_PROMPT": "Gr\xfc\xdfe"}')
     assert cs.load_overrides(str(p)) == {}
-    # The save path takes its corrupt-file branch instead of a 500.
-    cs.save_overrides({"BEAM_SIZE": 7}, str(p))
-    assert json.loads(p.read_text(encoding="utf-8"))["BEAM_SIZE"] == 7
 
 
 def test_save_overrides_checks_cross_field_pairs_against_env_pins(tmp_path,

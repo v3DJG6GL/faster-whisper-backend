@@ -26,6 +26,7 @@ from faster_whisper_backend.core import atomic_json
 from faster_whisper_backend.paths import REPO_ROOT
 
 from pydantic import ValidationError
+from pydantic_core import PydanticCustomError
 
 
 _REPO_DIR = REPO_ROOT  # the checkout, not this package — see paths.py
@@ -351,6 +352,19 @@ _COOKIE_PREFIX_KEYS = ("SESSION_COOKIE_NAME", "SESSION_CSRF_COOKIE_NAME",
                        "SESSION_COOKIE_SECURE")
 
 
+def _unreadable_overrides_error(path: str, why: str) -> ValidationError:
+    """The 422 a save over an unparseable overrides file fails with. Boot
+    (load_overrides) ignores such a file, so the WebUI shows defaults; merging
+    onto {} and rewriting would silently wipe every hand-edited override that
+    fixing the encoding or a stray comma would have recovered."""
+    return ValidationError.from_exception_data("AdminConfig", [{
+        "type": PydanticCustomError(
+            "config_file_unreadable",
+            "{file} cannot be read ({why}); fix or remove it, then save again",
+            {"file": os.path.basename(path), "why": why}),
+        "loc": (), "input": None}])
+
+
 def save_overrides(
     payload: dict[str, Any],
     path: str = OVERRIDES_PATH,
@@ -383,7 +397,8 @@ def save_overrides(
     as "restart required."
 
     Raises ValidationError on bad input — the route handler converts to a 422
-    JSON response.
+    JSON response. An existing file that is not a readable JSON object fails
+    the same way and is left untouched; a missing file is the empty case.
 
     Atomicity: write to a tempfile in the same directory, then os.replace. On
     Windows AV scanners can briefly hold the destination open; we retry the
@@ -403,11 +418,15 @@ def save_overrides(
         if os.path.exists(path):
             with open(path, "r", encoding="utf-8") as f:
                 try:
-                    raw = json.load(f)
-                except ValueError:   # malformed JSON or not UTF-8
-                    raw = None
-            if isinstance(raw, dict):
-                existing = _migrate_legacy_keys(raw)
+                    text = f.read()
+                    # An empty (touched) file holds nothing a rewrite could lose.
+                    raw = json.loads(text) if text.strip() else {}
+                except ValueError as e:   # malformed JSON or not UTF-8
+                    raise _unreadable_overrides_error(path, str(e)) from e
+            if not isinstance(raw, dict):
+                raise _unreadable_overrides_error(
+                    path, f"top level is {type(raw).__name__}, not an object")
+            existing = _migrate_legacy_keys(raw)
 
         if isinstance(payload.get("MODEL_OVERRIDES"), dict):
             payload = {**payload, "MODEL_OVERRIDES": _strip_env_model_overrides(
