@@ -173,6 +173,16 @@ def test_assign_speakers_largest_overlap():
     assert labels == ["A", "B"]
 
 
+def test_assign_speakers_sums_a_speakers_split_turns():
+    """A speaker whose speech in the segment is split around an interjection
+    still wins on the total: A 3 s + 3.5 s beats B's single 3.5 s turn."""
+    segs = [_seg(0.0, 10.0)]
+    turns = [(0.0, 3.0, "A"), (3.0, 6.5, "B"), (6.5, 10.0, "A")]
+    labels = diarization.assign_speakers(segs, turns)
+    assert segs[0]["speaker"] == "A"
+    assert labels == ["A"]
+
+
 def test_assign_speakers_gap_falls_back_to_nearest():
     segs = [_seg(10.0, 11.0)]              # inside a diarization gap
     turns = [(0.0, 2.0, "A"), (11.5, 20.0, "B")]

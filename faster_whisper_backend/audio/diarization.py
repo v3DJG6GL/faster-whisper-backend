@@ -676,13 +676,14 @@ def assign_speakers(segments_list: "list[dict]",
         return labels
     for seg in segments_list:
         s, e = float(seg["start"]), float(seg["end"])
-        best_label = None
-        best_overlap = 0.0
+        # Summed per speaker: a segment often spans several turns, and one
+        # speaker's speech split around an interjection still counts whole.
+        overlaps: "dict[str, float]" = {}
         for ts, te, label in turns:
             overlap = min(e, te) - max(s, ts)
-            if overlap > best_overlap:
-                best_overlap = overlap
-                best_label = label
+            if overlap > 0:
+                overlaps[label] = overlaps.get(label, 0.0) + overlap
+        best_label = max(overlaps, key=overlaps.get) if overlaps else None
         if best_label is None:
             mid = (s + e) / 2.0
             best_label = min(
