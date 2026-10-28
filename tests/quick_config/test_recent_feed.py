@@ -50,7 +50,11 @@ def test_tokenize_non_german_leading_letter_not_truncated():
 
 
 def test_tokenize_still_rejects_digit_and_underscore_start():
-    assert q._tokenize("123 5mg _intern") == ["mg", "intern"]
+    # No word-tail fragments either: "mg" / "intern" are keys the
+    # word-bounded cb:map regex can never match in "5mg" / "_intern".
+    assert q._tokenize("123 5mg _intern") == []
+    assert q._tokenize("5mg Dosis 3D-Druck x_y") == ["Dosis", "Druck", "x_y"]
+    assert q._extract_bigrams("Dosis 5mg täglich") == []
 
 
 def test_tokenize_drops_stopwords():

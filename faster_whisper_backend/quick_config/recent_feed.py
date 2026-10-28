@@ -36,10 +36,12 @@ logger = logging.getLogger("whisper-api")
 # mis-recognition target IS the compound). The leading class is any
 # Unicode letter, not just ASCII + umlauts: the tail is \w anyway, so a
 # narrower start would cut "Éric" to "ric" — a key the word-bounded
-# cb:map regex can never match.
+# cb:map regex can never match. For the same reason the match may not
+# start right after a word char: "5mg" / "_intern" must not yield the
+# fragments "mg" / "intern".
 _TOKEN_MIN_LEN = 2
 _TOKEN_MAX_LEN = 64
-_TOKEN_RE = re.compile(r"[^\W\d_][\w\-]*")
+_TOKEN_RE = re.compile(r"(?<!\w)[^\W\d_][\w\-]*")
 
 # Small German stopword set — never useful as autocomplete candidates
 # for cb:map keys. Lowercase compare; preserve original casing on display.
