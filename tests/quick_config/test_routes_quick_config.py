@@ -564,7 +564,7 @@ def test_quick_config_page_save_and_recent_guards(client):
     html = client.get("/quick-config").text
     for s in ("if (_saving) return;",
               "const inflight = _diffsSince(sent);",
-              "if (_reapplyDiffs(inflight)) {",
+              "if (_reapplyDiffs(inflight, clashed)) {",
               "const gen = ++_recentGen;",
               "if (gen !== _recentGen) return;   // a newer reload owns the list now",
               "if (gen !== _recentGen) return;   // a reload replaced the list meanwhile",
@@ -588,7 +588,7 @@ def test_quick_config_page_save_and_recent_guards(client):
             "_diffsSince(sent)")
         assert fetch < tail.index("_diffsSince(sent)")
         window = tail[tail.index("_diffsSince(sent)"):
-                      tail.index("_reapplyDiffs(inflight)")]
+                      tail.index("_reapplyDiffs(inflight, clashed)")]
         assert "await" not in window, window
         assert "applyState(j);" in window
     assert "await load()" not in save

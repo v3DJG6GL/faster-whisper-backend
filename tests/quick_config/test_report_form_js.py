@@ -565,7 +565,8 @@ def test_conflict_toast_names_the_rule_that_could_not_be_merged(client, tmp_path
       globalThis.fetchState = async () => ({ rules: [] });
       globalThis._diffsSince = () => new Map();
       globalThis.applyState = () => {};
-      globalThis._reapplyDiffs = (d, clashed) => { if (clashed) clashed.push('rx'); return 1; };
+      let calls = 0;  // the conflicted rules' re-apply, then the in-flight one
+      globalThis._reapplyDiffs = (d, clashed) => { if (!calls++) clashed.push('rx'); return 1; };
       globalThis.renderCards = () => {};
       globalThis.updateButtons = () => {};
       await _doSave({ rx: {}, ok: {} }, {});
@@ -575,3 +576,25 @@ def test_conflict_toast_names_the_rule_that_could_not_be_merged(client, tmp_path
     assert "Auto-merged your changes for ok on top" in msg
     assert "Conflict on rx: another writer also edited an entry you edited; your version is kept." in msg
     assert "Review and Save again." in msg
+
+
+def test_save_toasts_a_clash_on_an_edit_typed_while_the_post_was_in_flight(client, tmp_path):
+    # The in-flight re-apply passed no `clashed` array, so an edit typed
+    # during the POST that another writer had also made went unreported.
+    res = _run_js(client, tmp_path, r"""
+      globalThis.setStatus = () => {};
+      globalThis.liveRules = [];
+      globalThis.api = async () => ({
+        ok: true, status: 200, json: async () => ({ saved: ['r1'], conflicts: [] }),
+      });
+      globalThis.fetchState = async () => ({ rules: [] });
+      globalThis._diffsSince = () => new Map();
+      globalThis.applyState = () => {};
+      globalThis._reapplyDiffs = (d, clashed) => { clashed.push('rx'); return 1; };
+      globalThis.renderCards = () => {};
+      globalThis.updateButtons = () => {};
+      await _doSave({ r1: {} }, {});
+      out(_toasts);
+    """, funcs=("_doSave",))
+    assert res[-1][0] == "err"
+    assert "Conflict on rx: another writer also edited an entry you edited" in res[-1][1]

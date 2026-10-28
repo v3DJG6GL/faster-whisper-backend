@@ -2491,7 +2491,7 @@ async function _doSave(patch, fingerprints) {
     // user's intent overlaid.
     const clashed = [];
     const merged = _reapplyDiffs(diffsBySlug, clashed);
-    if (_reapplyDiffs(inflight) && !merged) {
+    if (_reapplyDiffs(inflight, clashed) && !merged) {
       renderCards();
       updateButtons();
     }
@@ -2512,7 +2512,9 @@ async function _doSave(patch, fingerprints) {
       // The conflicted rule was deleted server-side or no diff survived.
       const prefix = saved.length ? 'Saved ' + saved.length + '. ' : '';
       showToast(prefix + 'Conflict on ' + conflictSlugs.join(', ')
-                + ' could not be auto-merged (rule changed or removed).',
+                + ' could not be auto-merged (rule changed or removed).'
+                + (clashed.length ? ' On ' + clashed.join(', ') + ' another writer also'
+                   + ' edited an entry you edited; your version is kept.' : ''),
                 'err');
     }
     return;
@@ -2530,9 +2532,16 @@ async function _doSave(patch, fingerprints) {
   if (!j) return;
   const inflight = _diffsSince(sent);
   applyState(j);
-  if (_reapplyDiffs(inflight)) {
+  // Edits typed while the POST was in flight can clash with another writer.
+  const clashed = [];
+  if (_reapplyDiffs(inflight, clashed)) {
     renderCards();
     updateButtons();
+  }
+  if (clashed.length) {
+    showToast('Saved. Conflict on ' + clashed.join(', ') + ': another writer also'
+              + ' edited an entry you edited; your version is kept. Review and Save again.',
+              'err');
   }
 }
 
