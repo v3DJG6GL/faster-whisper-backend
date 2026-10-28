@@ -4491,6 +4491,9 @@
         if (other === p) return false;
         return !(other.member_ids || []).some(function(id) { return consumed[id]; });
       });
+      // A ▶ clicked while the merge ran plays from a card the redraw
+      // detaches, with no control left to pause it: stop it again.
+      _stopAnyPreview();
       _redrawProposalList();
       // Refresh the main captures list so the new group appears outside
       // the modal. We do NOT re-fetch the proposals (per the user's

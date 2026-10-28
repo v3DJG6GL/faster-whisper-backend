@@ -893,6 +893,30 @@ _loadProposals().then(function() {
         assert out == {"events": ["stop", "get"], "undo": {"action": "dismiss", "proposals": []}}
 
 
+@needs_node
+def test_list_accept_stops_a_preview_started_during_the_merge(page, tmp_path):
+    """Accept stopped the preview before its merge POST but not before the
+    redraw after it: a ▶ clicked on another card meanwhile played on from a
+    detached card with no control left to pause it."""
+    out = _run_node(tmp_path, _js_function(page, "_acceptProposal") + r"""
+var events = [], pending = [];
+var _allCaptures = [{ id: 'a' }, { id: 'b' }];
+var p = { member_ids: ['a'] }, _proposals = [p, { member_ids: ['b'] }];
+function api() { events.push('post'); return new Promise(function(r) { pending.push(r); }); }
+function _stopAnyPreview() { events.push('stop'); }
+function _redrawProposalList() { events.push('redraw'); }
+function _loadUnlessDirty() {} function toast() {}
+(async function() {
+  var done = _acceptProposal(p, null);
+  events.push('play');                 // ▶ on the other card mid-merge
+  pending.shift()({});
+  await done;
+  console.log(JSON.stringify(events));
+})();
+""")
+    assert out == ["stop", "post", "play", "stop", "redraw"]
+
+
 # ---- bulk actions vs edits made during the request ---------------------------------------
 
 _BULK_DIRTY_STUBS = r"""
