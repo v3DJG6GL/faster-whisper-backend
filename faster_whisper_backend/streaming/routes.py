@@ -1241,6 +1241,19 @@ async def transcribe_stream(ws: WebSocket) -> None:
             })
             return raw, words_out, dropped_all
 
+        # The exception the last final decode raised. The session swallows it
+        # and falls back to the partial text, so on_final reads it here to
+        # record the utterance as the error it is (classified, like batch).
+        _final_exc: list = [None]
+
+        async def decode_final_noting_errors(audio, prompt):
+            _final_exc[0] = None
+            try:
+                return await decode_final(audio, prompt)
+            except Exception as exc:  # noqa: BLE001 — re-raised for the session
+                _final_exc[0] = exc
+                raise
+
         def postprocess(raw_text):
             return pl_engine._postprocess_text(raw_text, model_name=final_model, ident=ident, language=_fmt_lang())
 
@@ -1520,9 +1533,14 @@ async def transcribe_stream(ws: WebSocket) -> None:
             # timings recorded" and fell back to the synthetic pipeline glyph.
             # A live utterance has exactly one stage, but saying so beats
             # saying nothing and makes dictation rows comparable with batch.
+            # A failed final decode is an error row (its text is only the
+            # partial-committed fallback), classified like the batch failure.
+            _status = "error" if info.get("decode_failed") else "ok"
+            _ec, _es = metrics.classify_error(_final_exc[0], status=_status,
+                                              stage="transcribing")
             metrics.record_transcription(
                 model=final_model, audio_dur=info["audio_dur"],
-                proc_dur=info["proc_dur"], status="ok",
+                proc_dur=info["proc_dur"], status=_status,
                 words=len(final_text.split()), kind="dictate",
                 stages=([{**stages[0], "detail": f"utt#{info['utterance']}"}]
                         if stages else None),
@@ -1530,7 +1548,7 @@ async def transcribe_stream(ws: WebSocket) -> None:
                 username=user.get("username"), key_label=user.get("key_label"),
                 job_id=usage_job_id,
                 language=(getattr(fw_info, "language", None) or req_language or None),
-                wait_s=metrics.take_wait())
+                wait_s=metrics.take_wait(), error_class=_ec, error_stage=_es)
 
         # The client's own live-dictation knobs (decode_overrides), fixed for
         # the connection like the rest of the session shape.
@@ -1550,7 +1568,7 @@ async def transcribe_stream(ws: WebSocket) -> None:
                 energy_dbfs=float(effective_config.cfg_for(final_model, "STREAMING_GATE_RMS_DBFS", ident)),
             ),
             decode_partial=decode_partial,
-            decode_final=decode_final,
+            decode_final=decode_final_noting_errors,
             postprocess=postprocess,
             emit=emit,
             base_prompt=(req_prompt if prompt_provided
