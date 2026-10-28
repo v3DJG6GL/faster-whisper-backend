@@ -167,6 +167,36 @@ def test_non_utf8_riff_info_tag_decodes(tmp_path):
     assert len(audio_transcode.decode_pieces_16k(src, [0.0], 0.25)[0]) > 0
 
 
+def test_transcode_close_failure_raises_and_unlinks_dst(tmp_path, monkeypatch):
+    """Closing the output writes the WAV trailer and flushes the buffered
+    data (all of it for a short clip); a write error there (ENOSPC) must fail
+    the transcode and unlink dst, not return a truncated file as success."""
+    import av
+    src = _write_src_wav(str(tmp_path / "in.wav"), rate=RATE, nchannels=1)
+    dst = str(tmp_path / "out.wav")
+    real_open = av.open
+
+    class _FailingClose:
+        def __init__(self, container):
+            self._c = container
+
+        def __getattr__(self, name):
+            return getattr(self._c, name)
+
+        def close(self):
+            self._c.close()
+            raise OSError(28, "No space left on device")
+
+    def spy_open(file, *args, **kwargs):
+        c = real_open(file, *args, **kwargs)
+        return _FailingClose(c) if kwargs.get("mode") == "w" else c
+    monkeypatch.setattr(av, "open", spy_open)
+
+    with pytest.raises(OSError, match="No space left"):
+        audio_transcode.transcode_to_wav_16k_mono(src, dst)
+    assert not os.path.exists(dst)
+
+
 # ---------------------------------------------------------------------------
 # The input open pins protocol_whitelist=file (concat/HLS/SDP SSRF guard)
 # ---------------------------------------------------------------------------

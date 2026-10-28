@@ -230,6 +230,11 @@ def transcode_to_wav(src_path: str, dst_path: str, *,
         # Flush the encoder.
         for packet in out_stream.encode(None):
             out_container.mux(packet)
+        # Close inside the try: close writes the trailer and flushes the
+        # buffered data (all of it for a short clip), so a write error there
+        # (ENOSPC) must fail the transcode, not return a truncated WAV.
+        out_container.close()
+        out_container = None
 
     except Exception:
         # Release the output handle before unlink (Windows holds the
