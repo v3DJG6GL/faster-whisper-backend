@@ -684,8 +684,8 @@ def _converted_dir_for(model_id: str, quantization: str,
 def _conversion_repo_files(model_id: str,
                            revision: "str | None" = None) -> "list[str] | None":
     """Return the repo's file list if `model_id` is an HF transformers Whisper
-    checkpoint (has model.safetensors / pytorch_model.bin but no model.bin in
-    the repo); [] for a local HF-format dir. None when no conversion is
+    checkpoint (has model.safetensors / pytorch_model.bin, or their sharded
+    .index.json, but no model.bin in the repo); [] for a local HF-format dir. None when no conversion is
     needed: already-CT2 repos and local CT2 dirs.
 
     Implementation: probe the HF Hub file list. Network call (~1 s) but only
@@ -708,7 +708,10 @@ def _conversion_repo_files(model_id: str,
         return None
     if "model.bin" in files:
         return None  # already CT2
-    if "model.safetensors" in files or "pytorch_model.bin" in files:
+    # A sharded checkpoint (save_pretrained above max_shard_size, e.g. an
+    # fp32 large-v3 fine-tune) ships only the index plus its shards.
+    if any(w in files or w + ".index.json" in files
+           for w in ("model.safetensors", "pytorch_model.bin")):
         return files
     # Unknown layout — let WhisperModel try and fail naturally.
     return None

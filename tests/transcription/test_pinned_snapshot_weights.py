@@ -109,3 +109,22 @@ def test_pinned_snapshot_takes_shards_or_falls_back_to_pytorch_bin():
     legacy = ["config.json", "pytorch_model.bin", "training_args.bin"]
     assert set(tx_models._pinned_snapshot_files(legacy)) == {
         "config.json", "pytorch_model.bin"}
+
+
+def test_shard_only_checkpoint_is_converted(monkeypatch):
+    # save_pretrained shards anything above max_shard_size: no single-file
+    # weight is listed, only the index and its shards.
+    for single, shards in (
+            ("model.safetensors", ["model-00001-of-00002.safetensors",
+                                   "model-00002-of-00002.safetensors"]),
+            ("pytorch_model.bin", ["pytorch_model-00001-of-00002.bin",
+                                   "pytorch_model-00002-of-00002.bin"])):
+        listing = ["config.json", "tokenizer.json", single + ".index.json",
+                   *shards]
+        hub = types.ModuleType("huggingface_hub")
+        hub.list_repo_files = (
+            lambda repo_id, revision=None, _l=listing: list(_l))
+        monkeypatch.setitem(sys.modules, "huggingface_hub", hub)
+        files = tx_models._conversion_repo_files("org/ft-large-v3", "abc")
+        assert files == listing
+        assert set(tx_models._pinned_snapshot_files(files)) == set(listing)
