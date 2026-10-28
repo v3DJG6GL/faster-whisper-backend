@@ -391,6 +391,19 @@ async def url_media_video(request: Request,
         if rung is None:
             raise HTTPException(status_code=400,
                                 detail="this link has no video track")
+        capped = max_height is not None
+        if (rung.get("over_cap")
+                and not (format_id and rung.get("format_id") == format_id)):
+            # No rung was named: the best one that fits the size cap (and
+            # the height cap), in the ladder's rank order — capped to its
+            # height so a rung without a format id fetches that size.
+            fits = next((r for r in info.video_ladder
+                         if r.get("kind") == "video" and not r.get("over_cap")
+                         and (max_height is None
+                              or (isinstance(r.get("height"), int)
+                                  and r["height"] <= max_height))), None)
+            if fits is not None:
+                rung, capped = fits, capped or isinstance(fits.get("height"), int)
         if rung.get("over_cap"):
             raise HTTPException(status_code=400,
                                 detail="the video exceeds the server's size limit")
@@ -398,7 +411,7 @@ async def url_media_video(request: Request,
                       total_bytes=rung.get("approx_bytes"),
                       step=(info.extractor_key or None))
         state = await media_video._download_video_for_run(
-            pid, url, rung, capped=max_height is not None,
+            pid, url, rung, capped=capped,
             user_id=user.get("user_id"), protect=None, run_finished=[False],
             mirror_stage=True)
         if state.get("state") == "done":

@@ -641,6 +641,31 @@ def test_on_demand_video_route(client, video_enabled):
                        content=b"nope").status_code == 422
 
 
+
+def test_on_demand_video_falls_back_to_the_best_rung_under_the_size_cap(
+        client, video_enabled, monkeypatch):
+    # "Best" (no format_id, no max_height) is over the retention cap but
+    # 720p fits: fetch 720p instead of refusing the link as too large. A
+    # format_id the client named explicitly is still refused.
+    ladder = [dict(_LADDER[0], over_cap=True, format_id="137+140"),
+              dict(_LADDER[1]), dict(_LADDER[2])]
+
+    async def _probe(url, *, timeout):
+        return _info(url=url, video_ladder=[dict(r) for r in ladder])
+    monkeypatch.setattr(url_download, "probe", _probe)
+    r = client.post("/v1/audio/url-media/video", json={"url": _URL})
+    assert r.status_code == 200, r.text
+    assert r.json()["height"] == 720
+    assert video_enabled._video_calls[-1]["max_height"] == 720
+    r = client.post("/v1/audio/url-media/video",
+                    json={"url": _URL, "format_id": "137+140"})
+    assert r.status_code == 400
+    assert "size limit" in r.json()["detail"]
+    ladder[1]["over_cap"] = True
+    r = client.post("/v1/audio/url-media/video", json={"url": _URL})
+    assert r.status_code == 400
+    assert "size limit" in r.json()["detail"]
+
 @pytest.mark.parametrize("value", [float("inf"), float("-inf"), float("nan")])
 def test_clamp_video_height_non_finite_is_best(value):
     assert media_video._clamp_video_height(value) is None
