@@ -462,9 +462,12 @@ def test_use_auth_token_env_alias(monkeypatch):
     aliased onto WHISPER_HF_TOKEN at config import, and a set new-name value
     wins over the alias."""
     try:
-        # A host-supplied token would win over the alias; delenv also records
-        # it, so undo() restores it after the alias wrote over it below.
-        monkeypatch.delenv("WHISPER_HF_TOKEN", raising=False)
+        # A host-supplied token would win over the alias. setenv first so the
+        # original is recorded even when absent (delenv alone records
+        # nothing then) and undo() clears what the alias writes below; an
+        # empty WHISPER_HF_TOKEN would block the alias, hence the delenv.
+        monkeypatch.setenv("WHISPER_HF_TOKEN", "x")
+        monkeypatch.delenv("WHISPER_HF_TOKEN")
         monkeypatch.delenv("WHISPER_HF_TOKEN_FILE", raising=False)
         _reload_with_env(monkeypatch, WHISPER_USE_AUTH_TOKEN="hf_old")
         assert config.HF_TOKEN == "hf_old"
@@ -477,6 +480,21 @@ def test_use_auth_token_env_alias(monkeypatch):
     finally:
         monkeypatch.undo()
         importlib.reload(config)
+
+
+def test_use_auth_token_alias_test_leaves_no_token_behind():
+    before = os.environ.get("WHISPER_HF_TOKEN")
+    with pytest.MonkeyPatch.context() as mp:
+        mp.delenv("WHISPER_HF_TOKEN", raising=False)
+        mp.delenv("WHISPER_USE_AUTH_TOKEN", raising=False)
+        try:
+            with pytest.MonkeyPatch.context() as inner:
+                test_use_auth_token_env_alias(inner)
+            assert "WHISPER_HF_TOKEN" not in os.environ
+            assert config.HF_TOKEN != "hf_old"
+        finally:
+            importlib.reload(config)
+    assert os.environ.get("WHISPER_HF_TOKEN") == before
 
 
 def test_local_overrides_migrate_use_auth_token(tmp_path):
