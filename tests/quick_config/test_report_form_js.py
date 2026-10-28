@@ -459,13 +459,14 @@ def test_conflict_merge_keeps_the_other_writers_regex_list_entries(client, tmp_p
       const merged2 = _applyFieldDiff([e('b'), e('c'), e('z')], d);
       out({ merged: merged.map(x => x.pattern), merged2: merged2.map(x => x.pattern),
             noop: _fieldDiff(base, base.map(x => ({ ...x })), _diffKindFor('entries')) });
-    """, funcs=("_stringify", "_olistKeyed", "_fieldDiff", "_applyFieldDiff", "_diffKindFor"))
+    """, funcs=("_stringify", "_olistKeyed", "_olistAlign", "_fieldDiff", "_applyFieldDiff",
+                "_diffKindFor"))
     assert res["merged"] == ["c", "a", "x", "y"]
     assert res["merged2"] == ["c", "z", "y"]
     assert res["noop"] is None
 
 
-_OLIST_FUNCS = ("_stringify", "_olistKeyed", "_fieldDiff", "_applyFieldDiff",
+_OLIST_FUNCS = ("_stringify", "_olistKeyed", "_olistAlign", "_fieldDiff", "_applyFieldDiff",
                 "_diffKindFor", "_reapplyDiffs")
 
 
@@ -518,6 +519,48 @@ def test_conflict_merge_keeps_an_entry_edited_in_place_as_one_entry(client, tmp_
     assert res["same"] == ["foo>baz"]
     assert res["deleted"] == ["a>A", "c>C"]
     assert res["kept"] == ["a>A", "b>MINE", "c>C"]
+
+
+def test_conflict_merge_pairs_a_pattern_edited_in_place_with_its_entry(client, tmp_path):
+    # Entries were keyed by pattern alone, so editing an entry's pattern
+    # looked like delete + add: the entry came back twice, the other writer's
+    # new entry was spliced in front of it, or the other writer's edit to the
+    # same entry was dropped, all under an "Auto-merged" toast.
+    page = client.get("/quick-config").text
+    res = _run_js(client, tmp_path, _olist_consts(page) + r"""
+      const e = (p, r) => ({ pattern: p, replacement: r || p.toUpperCase() });
+      const merge = (base, mine, theirs) => {
+        const clashes = [];
+        const m = _applyFieldDiff(theirs, _fieldDiff(base, mine, _diffKindFor('entries')), clashes);
+        const v = m.map(x => x.pattern + '>' + x.replacement);
+        return clashes.length ? ['CONFLICT', v] : v;
+      };
+      out({
+        // the other writer fixed the pattern, the user changed the replacement.
+        theirsPattern: merge([e('a'), e('colour', 'color')], [e('a'), e('colour', 'COLOR')],
+                             [e('a'), e('colou?r', 'color')]),
+        // the user fixed the pattern, the other writer changed the replacement.
+        minePattern: merge([e('a'), e('teh', 'the'), e('y')], [e('a'), e('teh+', 'the'), e('y')],
+                           [e('a'), e('teh', 'THE'), e('y')]),
+        // both made the same pattern fix: one entry.
+        samePattern: merge([e('x')], [e('x2', 'X')], [e('x2', 'X')]),
+        // the user fixed x's pattern, the other writer inserted n after x.
+        anchor: merge([e('a'), e('x'), e('y')], [e('a'), e('x2', 'X'), e('y')],
+                      [e('a'), e('x'), e('n'), e('y')]),
+        // two adjacent pattern fixes, the other writer edits the second entry.
+        two: merge([e('a'), e('x'), e('y')], [e('a'), e('x2', 'X'), e('y2', 'Y')],
+                   [e('a'), e('x'), e('y', 'Y9')]),
+        // the user's pattern fix while the other writer edits a different entry.
+        clean: merge([e('a'), e('x'), e('y')], [e('a'), e('x2', 'X'), e('y')],
+                     [e('a'), e('x'), e('y', 'Y2')]),
+      });
+    """, funcs=_OLIST_FUNCS)
+    assert res["theirsPattern"] == ["CONFLICT", ["a>A", "colour>COLOR"]]
+    assert res["minePattern"] == ["CONFLICT", ["a>A", "teh+>the", "y>Y"]]
+    assert res["samePattern"] == ["x2>X"]
+    assert res["anchor"] == ["a>A", "x2>X", "n>N", "y>Y"]
+    assert res["clean"] == ["a>A", "x2>X", "y>Y2"]
+    assert res["two"] == ["CONFLICT", ["a>A", "x2>X", "y2>Y"]]
 
 
 def test_reapply_keeps_the_users_edits_on_a_rule_whose_entry_both_writers_edited(client, tmp_path):

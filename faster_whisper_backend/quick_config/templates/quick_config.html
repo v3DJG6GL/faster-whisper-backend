@@ -2081,6 +2081,32 @@ function _olistKeyed(list) {
   });
 }
 
+// An entry whose PATTERN one side edited keys as a new entry, so the merge
+// saw a delete plus an add (a duplicate, or the other writer's edit to it
+// lost with no clash). Where a side has as many new entries in a gap
+// between surviving entries as it dropped base entries from that same gap,
+// those are entries edited in place: each takes the dropped id, in order.
+function _olistAlign(base, side) {
+  const baseIdx = new Map(base.map(([k], i) => [k, i]));
+  const sideKeys = new Set(side.map(([k]) => k));
+  const out = side.slice();
+  let prev = -1;   // base index of the last surviving entry
+  let start = 0;   // where the current run of new entries began
+  for (let i = 0; i <= out.length; i++) {
+    const at = i < out.length ? baseIdx.get(out[i][0]) : base.length;
+    if (at === undefined) continue;
+    if (i > start && at > prev) {
+      const dropped = base.slice(prev + 1, at).filter(([k]) => !sideKeys.has(k));
+      if (dropped.length === i - start) {
+        dropped.forEach(([k], j) => { out[start + j] = [k, out[start + j][1]]; });
+      }
+    }
+    prev = at;
+    start = i + 1;
+  }
+  return out;
+}
+
 function _fieldDiff(baseline, edited, kind) {
   if (kind === 'dict') {
     const base = baseline || {};
@@ -2152,11 +2178,12 @@ function _applyFieldDiff(serverValue, diff, clashes) {
     // it, as for dict keys. The other writer's new entries go in after
     // their nearest server-side predecessor still present (or at the top),
     // so the user's apply order holds.
-    const base = new Map(_olistKeyed(diff.base).map(([k, x]) => [k, _stringify(x)]));
-    const server = _olistKeyed(serverValue);
+    const baseKeyed = _olistKeyed(diff.base);
+    const base = new Map(baseKeyed.map(([k, x]) => [k, _stringify(x)]));
+    const server = _olistAlign(baseKeyed, _olistKeyed(serverValue));
     const theirs = new Map(server);
     const out = [];
-    for (const [k, x] of _olistKeyed(diff.value)) {
+    for (const [k, x] of _olistAlign(baseKeyed, _olistKeyed(diff.value))) {
       const mine = _stringify(x);
       const t = theirs.has(k) ? _stringify(theirs.get(k)) : null;
       if (mine === base.get(k)) {
