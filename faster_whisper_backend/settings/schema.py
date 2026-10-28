@@ -1783,24 +1783,28 @@ class AdminConfig(BaseModel):
                 f"terminal rule must be the last entry "
                 f"(found at index {terminal_idx}, list has {len(v)} rules)"
             )
-        # Replacement-template sanity runs IN-PROCESS on every path: CPython
-        # parses the template eagerly (before any matching), so a bad backref
-        # (`\3` with two groups) is caught cheaply with zero backtracking
-        # risk. This must not be save-only — a bad backref in a hand-edited
-        # config.local.json has to keep failing validation at LOAD (the
-        # documented fail-safe whole-file drop) instead of loading cleanly
-        # and raising re.error on every request at match time.
+        # Replacement-template sanity runs IN-PROCESS on every path, parse
+        # only: re._compile_template raises the same re.error/IndexError as
+        # .sub for a bad backref (`\3` with two groups) or unknown group but
+        # never runs the matcher, so a pattern that backtracks exponentially
+        # even on "" (`(?:|){40}(?!)`) cannot hang the validator before the
+        # killable out-of-process guard below. This must not be save-only —
+        # a bad backref in a hand-edited config.local.json has to keep
+        # failing validation at LOAD (the documented fail-safe whole-file
+        # drop) instead of loading cleanly and raising re.error on every
+        # request at match time.
         from faster_whisper_backend.pipeline import regex_guard
         for where, pat, repl, _slug in checks:
             # `(?:(?:a{0}){N}){N}` loops N*N times even on "" — refuse on the
             # counts alone (match-free) for EVERY entry, an empty replacement
-            # and a callback pattern row included, before the in-process .sub
-            # below (also at LOAD, where the out-of-process guard never runs).
+            # and a callback pattern row included, before the in-process
+            # template parse below (also at LOAD, where the out-of-process
+            # guard never runs).
             regex_guard.check_fixed_counts(where, pat)
             if not repl:
                 continue
             try:
-                re.compile(pat).sub(repl, "")
+                re._compile_template(re.compile(pat), repl)
             except (re.error, IndexError) as e:
                 raise ValueError(f"{where}: regex test failed: {e}")
         # Out-of-process catastrophic-backtracking guard (a real .sub run
