@@ -384,7 +384,7 @@ console.log(JSON.stringify({
 @pytest.mark.parametrize("picked, url, shown", [
     ([], "/captures/api/propose-merges", ["pa", "pb", "pc"]),
     (["bob"], "/captures/api/propose-merges?user_id=bob", ["pb"]),
-    (["alice", "carol"], "/captures/api/propose-merges", ["pa", "pc"]),
+    (["alice", "carol"], "/captures/api/propose-merges?user_id=alice%2Ccarol", ["pa", "pc"]),
 ])
 def test_proposals_follow_the_speaker_filter(page, tmp_path, picked, url, shown):
     """The proposals fetch ignored the speaker filter, so an admin saw every

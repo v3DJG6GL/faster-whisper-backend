@@ -380,12 +380,23 @@ async def propose_merges_api(
     Scope-aware: `scope=own` users see proposals built from their own
     captures only (the `user_id` query is ignored — that's an admin-
     only override). `scope=all` users (incl. admins) see cross-user
-    proposals; admins may further narrow via `?user_id=...`. Results
-    are cached per scope with a TTL (cfg.CAPTURES_PROPOSER_CACHE_TTL_S),
-    invalidated on any capture/group write."""
+    proposals and may further narrow via `?user_id=a,b` (comma-separated,
+    the speaker picker, like /api/list). The proposer narrows its sweep
+    itself, so the picked speakers' proposals are not cut by the global
+    cap first. Results are cached per scope with a TTL
+    (cfg.CAPTURES_PROPOSER_CACHE_TTL_S), invalidated on any capture/group
+    write."""
     perms = user["permissions"]
     caller_uid = str(user.get("user_id") or "")
     sees_all = perms.scope("captures") == "all"
+    owners: "str | list[str] | None" = None
+    if sees_all and user_filter:
+        ids = [u.strip() for u in user_filter.split(",") if u.strip()]
+        if len(ids) > _MAX_OWNER_FILTER_IDS:
+            raise HTTPException(
+                422, f"user_id: at most {_MAX_OWNER_FILTER_IDS} ids")
+        if ids:
+            owners = ids[0] if len(ids) == 1 else ids
     # Off the event loop AND off the default executor. On a cold
     # _TRIM_DUR_CACHE (every restart) this walks up to
     # the hardcoded 500-row proposer window
@@ -404,7 +415,7 @@ async def propose_merges_api(
             # Only scope=all callers can narrow via ?user_id=; the proposer
             # ignores user_id_filter when is_admin=False (caller scoped to
             # caller_user_id partition).
-            user_id_filter=user_filter if sees_all else None,
+            user_id_filter=owners,
             is_admin=sees_all,
             caller_user_id=caller_uid,
         ),

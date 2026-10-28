@@ -4303,10 +4303,12 @@
     try {
       // Accept checks members against _allCaptures, which holds only the
       // picked speakers: another speaker's proposal could never pass. The
-      // route narrows by one user_id; more picks are filtered here.
+      // route narrows its sweep to the picks (before its proposal cap, so
+      // a busy other speaker cannot crowd them out); the filter below is
+      // only a guard.
       var sp = _filtSpeakers.slice();
       var j = await api('GET', '/captures/api/propose-merges'
-        + (sp.length === 1 ? '?user_id=' + encodeURIComponent(sp[0]) : ''));
+        + (sp.length ? '?user_id=' + encodeURIComponent(sp.join(',')) : ''));
       _renderProposals((j.proposals || []).filter(function(p) {
         return !sp.length || sp.indexOf(p.user_id) !== -1;
       }));

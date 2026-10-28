@@ -356,9 +356,38 @@ def _user_cache_key(user_id: str) -> str:
     return f"u:{user_id}"
 
 
+# Prefix of the cache keys for a several-speaker view (the speaker picker).
+_MULTI_PREFIX = "m:"
+
+
+def _multi_cache_key(user_ids: list[str]) -> str:
+    """Cache key for a several-speaker view: the sorted ids, namespaced apart
+    from the single-user keys and the _ALL_USERS sentinel."""
+    return _MULTI_PREFIX + "\x1f".join(user_ids)
+
+
+def _known_owner(user_id: str) -> bool:
+    """Whether `user_id` can own captures, so an unknown id never mints a
+    cache key: the sweep for a nonexistent user returns nothing anyway, so
+    this costs a caller nothing real and keeps _CACHE to one entry per actual
+    user. Best effort on purpose — this module must not start failing because
+    the key store is uninitialised (it is not a dependency of a sweep), and
+    _CACHE_MAX bounds the dict either way. Open-mode captures carry the
+    "(open-mode)" sentinel id, which has no users row but is a real owner of
+    rows here."""
+    from faster_whisper_backend.auth import api_keys_store
+    try:
+        return (
+            user_id == api_keys_store.OPEN_MODE_USER["user_id"]
+            or api_keys_store.get_user(user_id) is not None
+        )
+    except Exception:  # noqa: BLE001 - store not ready / unavailable
+        return True
+
+
 def propose_merges(
     *,
-    user_id_filter: str | None,
+    user_id_filter: "str | list[str] | None",
     is_admin: bool,
     caller_user_id: str,
 ) -> tuple[list[dict[str, Any]], bool]:
@@ -383,7 +412,7 @@ def propose_merges(
 
 def _propose_merges_locked(
     *,
-    user_id_filter: str | None,
+    user_id_filter: "str | list[str] | None",
     is_admin: bool,
     caller_user_id: str,
 ) -> tuple[list[dict[str, Any]], bool]:
@@ -393,7 +422,10 @@ def _propose_merges_locked(
 
     Non-admin callers always see their own captures only (user_id_filter
     is ignored). Admin callers may pass user_id_filter=None to see proposals
-    across all users (sentinel cache key '__all__').
+    across all users (sentinel cache key '__all__'), or one id / a list of
+    ids to narrow the sweep to those owners. The narrowing happens before
+    the 500-row window and the max-proposals cap, so a busy third speaker
+    cannot crowd the picked ones out.
     """
     # Resolve effective filter + cache key.
     if not is_admin:
@@ -402,24 +434,18 @@ def _propose_merges_locked(
         # to the cross-user _ALL_USERS sentinel (it would both serve and
         # poison the admin entry with a scoped sweep).
         cache_key = _user_cache_key(caller_user_id)
-    elif user_id_filter:
-        # Reject an unknown id before it can mint a cache key: the sweep for a
-        # nonexistent user returns nothing anyway, so this costs a caller
-        # nothing real and keeps _CACHE to one entry per actual user. Best
-        # effort on purpose — this module must not start failing because the
-        # key store is uninitialised (it is not a dependency of a sweep), and
-        # _CACHE_MAX bounds the dict either way.
-        # Open-mode captures carry the "(open-mode)" sentinel id, which has
-        # no users row but is a real owner of rows here.
-        from faster_whisper_backend.auth import api_keys_store
-        try:
-            _known = (
-                user_id_filter == api_keys_store.OPEN_MODE_USER["user_id"]
-                or api_keys_store.get_user(user_id_filter) is not None
-            )
-        except Exception:  # noqa: BLE001 - store not ready / unavailable
-            _known = True
-        if not _known:
+    elif isinstance(user_id_filter, list):
+        # Unknown ids are dropped (see _known_owner); one left is the
+        # single-user view, so it shares that cache entry. An empty owner
+        # set matches nothing, never every user (like the store's filter).
+        ids = sorted({u for u in user_id_filter if u and _known_owner(u)})
+        if not ids:
+            return [], False
+        effective_user_id = ids[0] if len(ids) == 1 else ids
+        cache_key = (_user_cache_key(ids[0]) if len(ids) == 1
+                     else _multi_cache_key(ids))
+    elif user_id_filter and isinstance(user_id_filter, str):
+        if not _known_owner(user_id_filter):
             return [], False
         effective_user_id = user_id_filter
         cache_key = _user_cache_key(user_id_filter)
@@ -555,10 +581,10 @@ def _propose_merges_locked(
 
 
 def invalidate(user_id: str | None) -> None:
-    """Drop cached proposals for a user (and the all-users entry, which any
-    write may affect). Called from captures_store + capture_samples_store
-    write paths. ``user_id=None`` clears the entire cache (used by
-    ``clear_all``). Safe to call with no current cache entry."""
+    """Drop cached proposals for a user (and the all-users and several-speaker
+    entries, which any write may affect). Called from captures_store +
+    capture_samples_store write paths. ``user_id=None`` clears the entire
+    cache (used by ``clear_all``). Safe to call with no current cache entry."""
     global _GEN
     _GEN += 1
     if user_id is None:
@@ -566,6 +592,9 @@ def invalidate(user_id: str | None) -> None:
         return
     _CACHE.pop(_user_cache_key(user_id), None)
     _CACHE.pop(_ALL_USERS, None)
+    # Snapshot: a sweep may write _CACHE concurrently (no _SWEEP_LOCK here).
+    for k in [k for k in list(_CACHE) if k.startswith(_MULTI_PREFIX)]:
+        _CACHE.pop(k, None)
 
 
 def _reset_for_tests() -> None:

@@ -393,6 +393,42 @@ def test_propose_admin_open_mode_sentinel_is_a_known_user(
     assert proposals == []
 
 
+def test_propose_admin_several_users_sweep_only_those(
+        captures_store_db, monkeypatch, trim_disabled):
+    """A pick of several speakers narrows the sweep itself (before the
+    max-proposals cap), drops unknown ids, caches under its own key, and
+    any write by one of them drops that entry."""
+    from faster_whisper_backend.auth import api_keys_store
+    cs = captures_store_db
+    for i, uid in enumerate(("u1", "u2", "u3")):
+        _insert_eligible(cs, f"cap000000000{i}a", ts=1000.0 + i * 10, user_id=uid,
+                         text="alpha text one")
+        _insert_eligible(cs, f"cap000000000{i}b", ts=1001.0 + i * 10, user_id=uid,
+                         text="beta text two")
+    monkeypatch.setattr(api_keys_store, "get_user",
+                        lambda uid: {"id": uid} if uid != "ghost" else None)
+    monkeypatch.setattr(P.cfg, "CAPTURES_PROPOSER_MAX_PROPOSALS", 2)
+
+    proposals, _ = P.propose_merges(
+        user_id_filter=["u3", "ghost", "u1"], is_admin=True,
+        caller_user_id="admin")
+    assert sorted(p["user_id"] for p in proposals) == ["u1", "u3"]
+    key = P._multi_cache_key(["u1", "u3"])
+    assert list(P._CACHE) == [key]
+
+    P.invalidate("u3")
+    assert key not in P._CACHE
+
+    proposals, _ = P.propose_merges(
+        user_id_filter=["ghost", "u2"], is_admin=True, caller_user_id="admin")
+    assert [p["user_id"] for p in proposals] == ["u2"]
+    assert P._user_cache_key("u2") in P._CACHE
+
+    proposals, was_cached = P.propose_merges(
+        user_id_filter=[], is_admin=True, caller_user_id="admin")
+    assert proposals == [] and was_cached is False
+
+
 def test_propose_cache_is_capped_at_cache_max(
         captures_store_db, monkeypatch, trim_disabled):
     """_CACHE_MAX evicts the oldest entry before a new one is stored."""

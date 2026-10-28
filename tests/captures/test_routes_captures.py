@@ -598,6 +598,35 @@ def test_propose_merges_audits_cross_user_read(client, make_user_key,
     assert audit and "merge-proposal" in audit[0]
 
 
+def test_propose_merges_narrows_to_several_picked_speakers(client, make_user_key,
+                                                          monkeypatch):
+    """With two or more speakers picked the page fetched the all-users sweep
+    and filtered it itself, but that sweep is already cut to the global top
+    proposals: a busy third speaker left the picked ones with none. The
+    route now hands the whole pick list to the proposer."""
+    from faster_whisper_backend.captures import routes as captures_routes
+
+    _uid, raw_admin = make_user_key("root", is_admin=True)
+    _uid_o, raw_own = make_user_key("solo", pages={"captures": "own"})
+    seen = []
+    monkeypatch.setattr(
+        captures_routes.captures_merge_proposer, "propose_merges",
+        lambda **kw: (seen.append(kw["user_id_filter"]) or [], False))
+
+    for q in ("?user_id=alice,%20carol", "?user_id=bob", "?user_id=,", ""):
+        r = client.get("/captures/api/propose-merges" + q,
+                       headers=bearer(raw_admin))
+        assert r.status_code == 200
+    client.get("/captures/api/propose-merges?user_id=alice,carol",
+               headers=bearer(raw_own))
+    assert seen == [["alice", "carol"], "bob", None, None, None]
+
+    too_many = ",".join(f"u{i}" for i in range(captures_routes._MAX_OWNER_FILTER_IDS + 1))
+    r = client.get("/captures/api/propose-merges?user_id=" + too_many,
+                   headers=bearer(raw_admin))
+    assert r.status_code == 422
+
+
 def test_preview_merge_audio_is_not_cacheable(client, make_user_key,
                                               monkeypatch, tmp_path):
     """The merged preview WAV is PHI behind a per-row owner check. FileResponse
