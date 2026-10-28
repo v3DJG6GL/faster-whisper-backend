@@ -485,3 +485,44 @@ def test_run_reads_the_shared_connection_under_the_store_locks(
                   or "is_locked = 1" in sql]
     assert len(pass_reads) == 3
     assert all(held for _, held in pass_reads)
+
+
+def test_run_leaves_a_sample_locked_mid_pass_alone(
+        captures_store_db, groups_store_db, fake_pipeline, monkeypatch):
+    """The locked-sample set was read once before the walk: a sample locked
+    while the pass ran (it can take minutes) still had its members' final /
+    training text rewritten."""
+    from faster_whisper_backend.settings import config as cfg
+
+    monkeypatch.setattr(cfg, "CAPTURES_PIPELINE_RULES_EXCLUDE", None,
+                        raising=False)
+    conn = captures_store_db._require_conn()
+    gs = groups_store_db
+    conn.execute(
+        "INSERT INTO capture_samples (id, user_id, created_ts,"
+        " merged_wav_relpath, merged_duration_ms, transcript,"
+        " transcript_join_strategy, member_hashes,"
+        " inter_segment_silence_ms, is_stale, is_locked, status,"
+        " admin_notes, language, member_trims)"
+        " VALUES (?,'alice',1.0,?,5000,'old','space','{}',300,0,0,'new','',"
+        "'de','{}')", ("reapplymidlock01", gs._relpath_for("reapplymidlock01")))
+    _insert(conn, "reapplymid01", language="de", final="old")
+    conn.execute("UPDATE captures SET sample_id = 'reapplymidlock01',"
+                 " sample_order = 0 WHERE id = 'reapplymid01'")
+    real = pl_engine._postprocess_text
+
+    def lock_then_run(text, **kw):
+        # The owner clicks Lock while the pass is on this member.
+        gs.update_sample("reapplymidlock01", {"is_locked": 1})
+        return real(text, **kw)
+
+    monkeypatch.setattr(pl_engine, "_postprocess_text", lock_then_run)
+
+    captures_reapply._run()
+
+    st = captures_reapply.status()
+    assert st["processed"] == 1 and st["captures_updated"] == 0
+    row = captures_store_db.get_capture("reapplymid01")
+    assert row["final"] == "old"
+    assert not row["text_for_training"]
+    assert gs.get_sample("reapplymidlock01")["transcript"] == "old"

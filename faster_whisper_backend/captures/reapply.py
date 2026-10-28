@@ -252,8 +252,23 @@ def _run_pass() -> None:
             # captures_excludes drops a rule from the training pipeline.
             if r["sample_id"]:
                 affected_sample_ids.add(r["sample_id"])
-        if patch:
+        if patch and r["sample_id"]:
+            # Re-read the lock at the write, holding the samples lock its
+            # is_locked writes take: a sample locked after the snapshot above
+            # (the pass can run for minutes) keeps its members' text too.
+            with capture_samples_store._lock:
+                with captures_store._lock:
+                    g = conn.execute(
+                        "SELECT is_locked FROM capture_samples WHERE id = ?",
+                        (r["sample_id"],),
+                    ).fetchone()
+                if g is not None and g["is_locked"]:
+                    patch = {}
+                else:
+                    captures_store.update_capture(cid, patch)
+        elif patch:
             captures_store.update_capture(cid, patch)
+        if patch:
             with _state_lock:
                 _updated_cids.add(cid)
                 _state["captures_updated"] = len(_updated_cids)
