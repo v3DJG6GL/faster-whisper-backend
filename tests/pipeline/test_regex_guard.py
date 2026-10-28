@@ -773,3 +773,25 @@ def test_optional_overlap_between_pins_still_splits_ambiguously():
     stretch of n's two ways, 2**k on k repetitions."""
     assert g._nested_repetition(r"m(?:n?n?nx)+#")
     assert g._nested_repetition(r"m(?:n?nxn?n)+#")
+
+
+@pytest.mark.parametrize("pat", [
+    r"(?:[,.]?(?:\.|x))+#",
+    r"(?:[ ,]?(?:,|;))+\.",
+    r"\s(?:-?(?:-|=))+>",
+    r"m(?:n?(?:n|m))+#",
+    r"m(?:n?(?:n|m)n?x)+#",
+])
+def test_optional_atom_before_an_overlapping_alternation_is_rejected(pat):
+    """`(?:\\.|x)` is the class `[.x]`, yet an alternation group stood as a
+    pin, so `[,.]?(?:\\.|x)` passed where `[,.]?[.x]` is refused — and
+    re.sub on a hallucinated run of 40 dots or dashes hung the worker."""
+    assert g._nested_repetition(pat)
+    with pytest.raises(ValueError, match="nested repetition"):
+        g.validate([("r", pat, "")])
+
+
+@pytest.mark.parametrize("pat", [r"(?:a?(?:b|c))+", r"(?:\d?\d(?:\.|,))+x"])
+def test_optional_atom_before_a_disjoint_alternation_passes(pat):
+    assert not g._nested_repetition(pat)
+    g.validate([("r", pat, "")])

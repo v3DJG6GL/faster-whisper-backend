@@ -642,7 +642,8 @@ def _optional_overlap(body: str, icase: bool = False) -> bool:
     Single-character atoms are compared on every character either can match
     (``_atom_chars``), not on one witness each: `[ab]?[cb]` overlaps on `b`.
     A zero-width assertion is transparent, a group of plain atoms is read as
-    its atoms; any other group, a possessive or variable quantifier or an atom
+    its atoms and an alternation of single atoms (`(?:,|;)`) as one class-like
+    atom; any other group, a possessive or variable quantifier or an atom
     that cannot be read stands as a pin — those are left to the rest of the
     screen. The match is one compiled atom against one character, so it is
     safe in-process; DOTALL over-approximates, as in _follower_fixes_split.
@@ -685,9 +686,15 @@ def _branch_atoms(body: str, depth: int = 0) -> "list[list[tuple[str, bool] | No
         elif group is not None:
             inner = (None if text.startswith("(?>") or depth >= 4
                      else _branch_atoms(group, depth + 1))
-            if (inner is None or len(inner) != 1 or None in inner[0]
-                    or (q and not optional)):
+            if inner is None or None in (a for b in inner for a in b) or (q and not optional):
                 branches[-1].append(None)
+            elif len(inner) > 1:
+                # `(?:,|;)` is the class `[,;]`: an alternation of single
+                # mandatory atoms is one atom, matched as the whole group.
+                if all(len(b) == 1 and not b[0][1] for b in inner):
+                    branches[-1].append((text, optional))
+                else:
+                    branches[-1].append(None)
             else:
                 branches[-1].extend((t, o or optional) for t, o in inner[0])
         elif char is None:
