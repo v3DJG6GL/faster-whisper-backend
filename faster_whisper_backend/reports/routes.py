@@ -169,6 +169,34 @@ _rate = rate_limit.FixedWindow(
 )
 
 
+def _trace_provenance(request_id: str, user_id: "str | None",
+                      any_user: bool) -> tuple[str, list[Any]]:
+    """(language, stages) of the recent-transcriptions row for request_id,
+    or ("", []) when there is none. A row pushed live over SSE leaves the
+    page before record_timing writes its stages, so a report filed on it
+    sends none. Only the caller's own row unless `any_user` (admin)."""
+    from faster_whisper_backend.stats import recent_transcriptions_store as _rts
+    sql = "SELECT language, stages FROM recent_transcriptions WHERE request_id = ?"
+    params: list[Any] = [request_id]
+    if not any_user:
+        sql += " AND user_id = ?"
+        params.append(user_id)
+    try:
+        row = _rts._require_conn().execute(sql, params).fetchone()
+    except Exception:  # noqa: BLE001 — provenance is best-effort
+        return "", []
+    if row is None:
+        return "", []
+    try:
+        stages = json.loads(row["stages"] or "[]")
+    except (TypeError, ValueError):
+        stages = []
+    if not isinstance(stages, list):
+        stages = []
+    # Same item ceiling as ReportSubmitIn.stages.
+    return (row["language"] or "")[:32], stages[:32]
+
+
 # ---------------------------------------------------------------------
 # Submission endpoint (under /quick-config)
 # ---------------------------------------------------------------------
@@ -206,6 +234,14 @@ async def submit_report(
             "Mark a wrong word, write what you meant to say, or leave a comment.",
         )
 
+    language = payload.language or ""
+    stages = list(payload.stages or [])
+    if not stages and payload.request_id:
+        row_lang, stages = await asyncio.to_thread(
+            _trace_provenance, payload.request_id, user.get("user_id"), is_admin,
+        )
+        language = language or row_lang
+
     host = request.client.host if request.client else ""
     # Off the loop: upsert_report runs _evict_to_cap (COUNT(*) + DELETE) on
     # every call, which measured a median 71.5 ms with the table at REPORTS_MAX
@@ -225,8 +261,8 @@ async def submit_report(
         user_comment=comment,
         reporter_role="admin" if is_admin else "user",
         reporter_host=host,
-        language=payload.language or None,
-        stages=list(payload.stages or []),
+        language=language or None,
+        stages=stages,
         baseline_corrections=[c.model_dump() for c in payload.baseline_corrections],
     )
     return JSONResponse({

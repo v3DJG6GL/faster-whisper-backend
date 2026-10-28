@@ -1041,7 +1041,8 @@ function renderTrace(entry) {
   // stages has been on the row since the preload work and reaches the
   // browser already decoded; the viewer just never looked at it. Placed
   // above `raw` so "how this run executed" precedes "what it produced".
-  // Live rows carry one stage (the utterance's decode) and get it too.
+  // Rows pushed live over SSE carry no stages until a reload (the push
+  // precedes record_timing); a report on one gets them server-side.
   {
     const stages = (Array.isArray(entry.stages) ? entry.stages : [])
       .filter(st => st && st.name);
