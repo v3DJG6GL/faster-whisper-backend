@@ -81,7 +81,7 @@ def test_rules_scoped_to_german_in_c4fefe2_upgrade_a_stored_copy(tmp_path):
         del r["languages"]
         if name == "de-dictation-map":
             r["name"] = "dictation-map"  # its slug before c4fefe2
-            r["map"] = {" plus ": "+"}  # an older factory map
+            del r["map"]["Neuenzeile"]  # the factory map of 518ee09..923d171
     p = tmp_path / "config.local.json"
     p.write_text(json.dumps({"PIPELINE_RULES": rules}), encoding="utf-8")
     out = cs.load_overrides(str(p))
@@ -97,3 +97,33 @@ def test_edited_wordlist_rule_pattern_keeps_every_language():
     assert "de-strip-and-lowercase-non-noun/languages" not in renames.upgrade_rule_entries(
         {"PIPELINE_RULES": rules})
     assert r["languages"] == []
+
+
+@pytest.mark.parametrize("name", ["de-split-punctuation-keywords",
+                                  "ch-symbol-cleanup", "de-dictation-map"])
+def test_edited_entries_or_map_keep_the_admins_language_scope(name):
+    """These rules have no rule-level pattern, so only their content tells a
+    pre-c4fefe2 factory copy from one the admin rewrote (an English-extended
+    dictation map, own symbol entries) and set to every language."""
+    rules = copy.deepcopy(_factory_rules())
+    r = _rule(rules, name)
+    r["languages"] = []
+    if name == "de-dictation-map":
+        r["map"][" new line "] = "\n"
+    else:
+        r["entries"].append({"pattern": "mine", "replacement": "", "label": "mine"})
+    assert f"{name}/languages" not in renames.upgrade_rule_entries(
+        {"PIPELINE_RULES": rules})
+    assert r["languages"] == []
+
+
+def test_relabelled_factory_entries_still_count_as_the_factory_copy():
+    """Labels and notes changed across releases; only what the rule does is
+    compared."""
+    rules = copy.deepcopy(_factory_rules())
+    r = _rule(rules, "ch-symbol-cleanup")
+    r["languages"] = []
+    for e in r["entries"]:
+        e["label"], e["note"] = "renamed", ""
+    assert renames.upgrade_rule_entries({"PIPELINE_RULES": rules}) == [
+        "ch-symbol-cleanup/languages"]

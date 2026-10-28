@@ -16,6 +16,8 @@ Dependency-free on purpose: config.py imports it before pydantic exists.
 """
 from __future__ import annotations
 
+import hashlib
+import json
 from typing import Any, MutableMapping
 
 RENAMED_KEYS: dict[str, str] = {
@@ -138,9 +140,8 @@ UPGRADED_RULE_ENTRIES: dict[str, tuple[tuple[str, str], tuple[str, str]]] = {
 # so the fix never reached it. upgrade_rule_entries sets the scope ONLY while
 # the stored rule still has no languages and its type and pattern still equal
 # the factory ones. A rule the admin rewrote is theirs and stays untouched.
-# A regex-list / callback:map rule has no rule-level pattern (None), so only
-# its type is checked: its entries / map moved on since, and a stored copy
-# of these German-named rules is the factory one.
+# A regex-list / callback:map rule has no rule-level pattern (None): its
+# content is checked instead (_FACTORY_CONTENT_DIGESTS).
 UPGRADED_RULE_LANGUAGES: dict[
         str, tuple[tuple[str, str | None], tuple[str, ...]]] = {
     # The callback capitalised every letter after a hyphen, which is German
@@ -161,6 +162,42 @@ UPGRADED_RULE_LANGUAGES: dict[
     # Keyed by its new name: migrate_rule_slugs renames "dictation-map" first.
     "de-dictation-map": (("callback:map", None), ("de",)),
 }
+
+# The entries / map a stored copy of a pattern-less rule in
+# UPGRADED_RULE_LANGUAGES must still hold to get the scope: digests
+# (_content_digest) of every factory version shipped before the scope
+# (config.json history up to c4fefe2). A copy whose entries / map the admin
+# edited — an English-extended dictation map, quick-config additions — is
+# theirs, and so is the scope they gave it.
+_FACTORY_CONTENT_DIGESTS: dict[str, frozenset[str]] = {
+    "de-split-punctuation-keywords": frozenset({"8b5d190b1c246cfe"}),
+    "ch-symbol-cleanup": frozenset({"131306ff3fa0263e"}),
+    "de-dictation-map": frozenset({
+        "739164619c7e6555", "1310eb806204e418", "b4e47254f687bfe5",
+        "754fe6dc9d9f0c21",
+    }),
+}
+
+
+def _content_digest(rule: dict[str, Any]) -> str | None:
+    """Digest of what a regex-list / callback:map rule does: its (pattern,
+    replacement) pairs in order, or its map. Labels, notes and map_meta are
+    left out (a relabel changes nothing). None for a malformed rule."""
+    if rule.get("type") == "callback:map":
+        content: Any = rule.get("map")
+    else:
+        entries = rule.get("entries")
+        if not isinstance(entries, list) or not all(
+                isinstance(e, dict) for e in entries):
+            return None
+        content = [[e.get("pattern"), e.get("replacement") or ""]
+                   for e in entries]
+    try:
+        blob = json.dumps(content, sort_keys=True, ensure_ascii=False)
+    except (TypeError, ValueError):
+        return None
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
+
 
 # Keys holding a list of rule slugs, at the top level and inside each
 # MODEL_OVERRIDES / OVERRIDE_PROFILES bundle.
@@ -226,7 +263,10 @@ def upgrade_rule_entries(raw: dict[str, Any]) -> list[str]:
         scope = (UPGRADED_RULE_LANGUAGES.get(r["name"])
                  if isinstance(r.get("name"), str) else None)
         if (scope is not None and not r.get("languages")
-                and (r.get("type"), r.get("pattern")) == scope[0]):
+                and (r.get("type"), r.get("pattern")) == scope[0]
+                and (r["name"] not in _FACTORY_CONTENT_DIGESTS
+                     or _content_digest(r)
+                     in _FACTORY_CONTENT_DIGESTS[r["name"]])):
             r["languages"] = list(scope[1])
             done.append(f"{r['name']}/languages")
         if r.get("type") != "regex-list":
