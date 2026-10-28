@@ -563,20 +563,24 @@ def register_plan(user_id: "str | None",
         # _register_plan may have inserted the Plan (and its warm lease)
         # before the failure; a "deferred" answer must not leave models
         # pinned against the evictors for the TTL.
+        # The echoed id fails closed: a job binds whatever id comes back, so
+        # another user's live plan id must never be handed out here.
+        fallback_pid = ""
         try:
             with _lock:
                 # _register_plan re-derives the id on a cross-user collision,
                 # so only a plan this caller owns may be dropped.
-                for cand in {resolved_pid, derived_pid,
-                             _owned_pid_locked(user_id, resolved_pid,
-                                               kept)}:
+                owned_pid = _owned_pid_locked(user_id, resolved_pid, kept)
+                if owned_pid == resolved_pid:
+                    fallback_pid = plan_id or ""
+                for cand in {resolved_pid, derived_pid, owned_pid}:
                     p = _plans.get(cand)
                     if p is not None and p.user_id == (user_id or ""):
                         _drop_plan_locked(cand, "register failed")
         except Exception:  # noqa: BLE001 — cleanup must not mask the fallback
             pass
         return {
-            "plan_id": plan_id or "",
+            "plan_id": fallback_pid,
             "expires_in_s": 0,
             "models": [{"family": f, "id": m, "state": "deferred",
                         "reason": (denied or {}).get((f, m), "disabled")}
@@ -591,6 +595,11 @@ def _register_plan(user_id, entries, *, plan_id, denied, stage_ahead,
     kept = [(f, m) for f, m in entries if (f, m) not in denied]
     kept.sort(key=lambda e: _FAMILY_STAGE.get(e[0], 99))
     pid = (plan_id or "").strip() or derive_plan_id(user_id or "", kept)
+    # The early returns below echo this id too, and a job binds whatever id
+    # comes back and drives that plan's stage advances: another user's id
+    # must be re-keyed here already, not only on the Plan-building path.
+    with _lock:
+        pid = _owned_pid_locked(user_id, pid, kept)
 
     if not _enabled():
         # The master switch: no Plan, no warm lease, no /stats row. Anything
