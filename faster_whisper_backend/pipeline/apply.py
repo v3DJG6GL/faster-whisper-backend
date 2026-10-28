@@ -17,7 +17,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-from typing import Any
+from collections.abc import Coroutine
+from typing import Any, TypeVar
 
 from pydantic import TypeAdapter
 
@@ -34,6 +35,8 @@ from faster_whisper_backend.transcription import models as tx_models
 from faster_whisper_backend.translation import engine as translation
 
 logger = logging.getLogger("whisper-api")
+
+_T = TypeVar("_T")
 
 # Serializes quick_config_routes.apply_rules_patch (and, via rules_lock(), the
 # admin PIPELINE_RULES writers): it snapshots cfg.PIPELINE_RULES, awaits the
@@ -77,6 +80,18 @@ def rules_lock() -> LoopLock:
     closes the cross-endpoint half of that lost update as well as the
     intra-endpoint half."""
     return _RULES_LOCK
+
+
+async def run_to_end(coro: Coroutine[Any, Any, _T]) -> _T:
+    """Await `coro` as a task a cancelled caller does not stop.
+
+    For a config writer's lock + save + apply: a dropped connection unwinds
+    the handler as a cancellation, but the offloaded save keeps writing
+    config.local.json on its thread. Cancelled inside the body, the hot-apply
+    was skipped (disk new, running cfg old) and the lock was released before
+    the apply landed, so a queued /quick-config patch snapshotted the stale
+    cfg list and wrote it back over the edit."""
+    return await asyncio.shield(asyncio.ensure_future(coro))
 
 
 # Async dropper per settings_schema.EXTRAS_EVICTION bucket: when a save touches
@@ -196,7 +211,7 @@ async def apply_hot_changes(
     # re-sync and the log-level push after the cancelled await were skipped,
     # so the running cfg kept the old values while disk held the new ones.
     # The task runs to the end whether or not anyone still awaits it.
-    return await asyncio.shield(asyncio.ensure_future(_apply_hot_changes(written)))
+    return await run_to_end(_apply_hot_changes(written))
 
 
 async def _apply_hot_changes(written: dict[str, Any]) -> dict[str, Any]:

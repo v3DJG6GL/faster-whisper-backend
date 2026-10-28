@@ -148,3 +148,65 @@ def test_cancelled_quick_config_save_still_finishes_under_the_lock(monkeypatch):
 
     assert asyncio.run(scenario()) is True
     assert steps == ["save started", "applied"]
+
+
+@pytest.mark.parametrize("writer", ["post_state", "post_factory_rules",
+                                    "clear_local_pipeline_override"])
+def test_cancelled_admin_rules_save_still_finishes_under_the_lock(monkeypatch, writer):
+    """Same as above for the admin PIPELINE_RULES writers: cancelled inside
+    the offloaded save, the save + apply still runs to the end and the lock
+    stays held until it has, so a queued quick-config patch cannot snapshot
+    the old cfg list."""
+    import threading
+
+    from tests.conftest import fake_request
+
+    in_save, release = threading.Event(), threading.Event()
+    steps: list[str] = []
+
+    def _save(*_a):
+        in_save.set()
+        release.wait(5)
+        steps.append("saved")
+        return {"PIPELINE_RULES": []} if writer == "post_state" else []
+
+    async def _apply(written):
+        steps.append("applied")
+        return {"hot_applied": [], "cold_pending": [], "env_pinned_ignored": [],
+                "evicted": []}
+
+    async def _rebuild(reason):
+        steps.append("applied")
+
+    monkeypatch.setattr(config_store, "save_overrides", _save)
+    monkeypatch.setattr(config_store, "save_factory_rules", _save)
+    monkeypatch.setattr(config_store, "load_factory_rules", lambda: [])
+    monkeypatch.setattr(config_store, "load_overrides", lambda: {})
+    monkeypatch.setattr(pl_apply, "apply_hot_changes", _apply)
+    monkeypatch.setattr(pl_apply, "rebuild_caches_off_loop", _rebuild)
+    monkeypatch.setattr(admin_routes.cfg, "PIPELINE_RULES", [], raising=False)
+    call = {
+        "post_state": lambda: admin_routes.post_state(
+            {"PIPELINE_RULES": [{"name": "x"}]}, fake_request()),
+        "post_factory_rules": lambda: admin_routes.post_factory_rules(
+            {"PIPELINE_RULES": [{"name": "x"}]}, fake_request()),
+        "clear_local_pipeline_override": lambda: (
+            admin_routes.clear_local_pipeline_override(fake_request())),
+    }[writer]
+
+    async def scenario():
+        lock = pl_apply.rules_lock()
+        caller = asyncio.create_task(call())
+        await asyncio.to_thread(in_save.wait, 5)
+        caller.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await caller
+        held_after_cancel = lock.locked()
+        release.set()
+        # Bounded: a regression that leaves the body hanging fails, not hangs.
+        await asyncio.wait_for(lock.acquire(), timeout=5)
+        lock.release()
+        return held_after_cancel
+
+    assert asyncio.run(scenario()) is True
+    assert steps == ["saved", "applied"]

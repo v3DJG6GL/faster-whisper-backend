@@ -460,37 +460,43 @@ async def post_state(payload: dict[str, Any], request: Request) -> JSONResponse:
     # scalar saves stay off the shared lock.
     _lock = (pl_apply.rules_lock() if "PIPELINE_RULES" in payload
              else contextlib.nullcontext())
-    async with _lock:
-        try:
-            # Off the loop: save_overrides validates PIPELINE_RULES through
-            # regex_guard, which spawns a child interpreter and waits up to
-            # _GUARD_TIMEOUT (2.0 s). test_pipeline next door already uses this
-            # idiom for the same reason; the save path was left behind.
-            written = await asyncio.to_thread(config_store.save_overrides, payload)
-        except ValidationError as e:
-            return JSONResponse(
-                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-                content={"errors": settings_schema.format_validation_errors(e)},
-            )
-        except OSError as e:
-            logger.error("[config] save failed: %s", e)
-            raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR,
-                                f"could not write config.local.json: {e}")
 
-        applied = await pl_apply.apply_hot_changes(written)
+    async def _locked() -> JSONResponse:
+        async with _lock:
+            try:
+                # Off the loop: save_overrides validates PIPELINE_RULES through
+                # regex_guard, which spawns a child interpreter and waits up to
+                # _GUARD_TIMEOUT (2.0 s). test_pipeline next door already uses this
+                # idiom for the same reason; the save path was left behind.
+                written = await asyncio.to_thread(config_store.save_overrides, payload)
+            except ValidationError as e:
+                return JSONResponse(
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                    content={"errors": settings_schema.format_validation_errors(e)},
+                )
+            except OSError as e:
+                logger.error("[config] save failed: %s", e)
+                raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR,
+                                    f"could not write config.local.json: {e}")
 
-    client_host = request.client.host if request.client else "?"
-    logger.info(
-        "[config] admin update from=%s saved=%d hot=%s cold=%s pinned=%s evicted=%s",
-        client_host, len(written), applied["hot_applied"], applied["cold_pending"],
-        applied["env_pinned_ignored"], applied["evicted"],
-    )
+            applied = await pl_apply.apply_hot_changes(written)
 
-    return JSONResponse({
-        "saved": sorted(written.keys()),
-        **applied,
-        "requires_restart": bool(applied["cold_pending"]),
-    })
+        client_host = request.client.host if request.client else "?"
+        logger.info(
+            "[config] admin update from=%s saved=%d hot=%s cold=%s pinned=%s evicted=%s",
+            client_host, len(written), applied["hot_applied"], applied["cold_pending"],
+            applied["env_pinned_ignored"], applied["evicted"],
+        )
+
+        return JSONResponse({
+            "saved": sorted(written.keys()),
+            **applied,
+            "requires_restart": bool(applied["cold_pending"]),
+        })
+
+    # Lock + save + apply as one task a dropped connection cannot cut short
+    # (see pl_apply.run_to_end).
+    return await pl_apply.run_to_end(_locked())
 
 
 @router.get("/factory-rules",
@@ -539,49 +545,55 @@ async def post_factory_rules(payload: dict[str, Any], request: Request) -> JSONR
         )
     # Under the shared pipeline lock: this write races /quick-config's
     # read-modify-write patches the same way post_state's does.
-    async with pl_apply.rules_lock():
-        try:
-            saved = await asyncio.to_thread(config_store.save_factory_rules, rules)
-        except ValidationError as e:
-            return JSONResponse(
-                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-                content={"errors": settings_schema.format_validation_errors(e)},
-            )
-        except OSError as e:
-            logger.error("[config] factory-rules save failed: %s", e)
-            raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR,
-                                f"could not write config.json: {e}")
 
-        # config.json IS the factory baseline — refresh the in-memory snapshot the
-        # WebUI's "↺ reset to default" and /settings/state `default_value` rely on.
-        if isinstance(getattr(cfg, "_BASELINE", None), dict):
-            cfg._BASELINE["PIPELINE_RULES"] = [dict(r) for r in saved]
+    async def _locked() -> JSONResponse:
+        async with pl_apply.rules_lock():
+            try:
+                saved = await asyncio.to_thread(config_store.save_factory_rules, rules)
+            except ValidationError as e:
+                return JSONResponse(
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                    content={"errors": settings_schema.format_validation_errors(e)},
+                )
+            except OSError as e:
+                logger.error("[config] factory-rules save failed: %s", e)
+                raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR,
+                                    f"could not write config.json: {e}")
 
-        # Recompute the EFFECTIVE rule list. config.local.json's PIPELINE_RULES
-        # still wins if present (per-deployment local override — unchanged); only
-        # when there is no local override does the factory list run directly.
-        overrides = await asyncio.to_thread(config_store.load_overrides)
-        local_rules = overrides.get("PIPELINE_RULES")
-        shadowed = isinstance(local_rules, list)
-        # An env-pinned PIPELINE_RULES (WHISPER_PIPELINE_RULES) keeps its
-        # running value, as on post_state (pl_apply.apply_hot_changes skips
-        # pinned names): the file write above still lands for the next
-        # deployment without the var.
-        env_pinned = "PIPELINE_RULES" in config_store.env_pinned_fields()
-        if not env_pinned:
-            cfg.PIPELINE_RULES = local_rules if shadowed else [dict(r) for r in saved]
-            await pl_apply.rebuild_caches_off_loop("factory-rules save")
+            # config.json IS the factory baseline — refresh the in-memory snapshot the
+            # WebUI's "↺ reset to default" and /settings/state `default_value` rely on.
+            if isinstance(getattr(cfg, "_BASELINE", None), dict):
+                cfg._BASELINE["PIPELINE_RULES"] = [dict(r) for r in saved]
 
-    client_host = request.client.host if request.client else "?"
-    logger.info("[config] factory-rules update from=%s rules=%d shadowed_by_local=%s",
-                client_host, len(saved), shadowed)
+            # Recompute the EFFECTIVE rule list. config.local.json's PIPELINE_RULES
+            # still wins if present (per-deployment local override — unchanged); only
+            # when there is no local override does the factory list run directly.
+            overrides = await asyncio.to_thread(config_store.load_overrides)
+            local_rules = overrides.get("PIPELINE_RULES")
+            shadowed = isinstance(local_rules, list)
+            # An env-pinned PIPELINE_RULES (WHISPER_PIPELINE_RULES) keeps its
+            # running value, as on post_state (pl_apply.apply_hot_changes skips
+            # pinned names): the file write above still lands for the next
+            # deployment without the var.
+            env_pinned = "PIPELINE_RULES" in config_store.env_pinned_fields()
+            if not env_pinned:
+                cfg.PIPELINE_RULES = local_rules if shadowed else [dict(r) for r in saved]
+                await pl_apply.rebuild_caches_off_loop("factory-rules save")
 
-    return JSONResponse({
-        "saved": len(saved),
-        "shadowed_by_local": shadowed,
-        "env_pinned": env_pinned,
-        "rules": pl_apply.canon_rules(saved),
-    })
+        client_host = request.client.host if request.client else "?"
+        logger.info("[config] factory-rules update from=%s rules=%d shadowed_by_local=%s",
+                    client_host, len(saved), shadowed)
+
+        return JSONResponse({
+            "saved": len(saved),
+            "shadowed_by_local": shadowed,
+            "env_pinned": env_pinned,
+            "rules": pl_apply.canon_rules(saved),
+        })
+
+    # Lock + save + apply as one task a dropped connection cannot cut short
+    # (see pl_apply.run_to_end).
+    return await pl_apply.run_to_end(_locked())
 
 
 @router.post("/factory-rules/clear-local-override",
@@ -602,41 +614,47 @@ async def clear_local_pipeline_override(request: Request) -> JSONResponse:
     cfg._BASELINE), so this route is a convenience + freshness guarantee,
     not a workaround.
     """
-    # Shared pipeline lock: same whole-key write race as post_state.
-    async with pl_apply.rules_lock():
-        try:
-            # Read config.json FIRST: a broken factory file must fail the
-            # clear before the local override is removed from disk, or disk
-            # and the running pipeline would disagree.
-            factory = await asyncio.to_thread(config_store.load_factory_rules)
-            await asyncio.to_thread(
-                config_store.save_overrides, {"PIPELINE_RULES": None})
-        except ValidationError as e:
-            # A stored per-model / profile / captures exclude still names a
-            # rule only the local copy has; the factory list would strand it.
-            logger.warning("[config] clear-local-override refused: %s", e)
-            return JSONResponse(
-                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-                content={"errors": settings_schema.format_validation_errors(e)},
-            )
-        except (RuntimeError, OSError) as e:
-            logger.error("[config] clear-local-override failed: %s", e)
-            raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR,
-                                f"could not clear local override: {e}")
 
-        # Env-pinned PIPELINE_RULES keeps its running value (see
-        # post_factory_rules); only the file write lands.
-        env_pinned = "PIPELINE_RULES" in config_store.env_pinned_fields()
-        if not env_pinned:
-            cfg.PIPELINE_RULES = factory
-            await pl_apply.rebuild_caches_off_loop("clearing local override")
+    async def _locked() -> JSONResponse:
+        # Shared pipeline lock: same whole-key write race as post_state.
+        async with pl_apply.rules_lock():
+            try:
+                # Read config.json FIRST: a broken factory file must fail the
+                # clear before the local override is removed from disk, or disk
+                # and the running pipeline would disagree.
+                factory = await asyncio.to_thread(config_store.load_factory_rules)
+                await asyncio.to_thread(
+                    config_store.save_overrides, {"PIPELINE_RULES": None})
+            except ValidationError as e:
+                # A stored per-model / profile / captures exclude still names a
+                # rule only the local copy has; the factory list would strand it.
+                logger.warning("[config] clear-local-override refused: %s", e)
+                return JSONResponse(
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                    content={"errors": settings_schema.format_validation_errors(e)},
+                )
+            except (RuntimeError, OSError) as e:
+                logger.error("[config] clear-local-override failed: %s", e)
+                raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR,
+                                    f"could not clear local override: {e}")
 
-    client_host = request.client.host if request.client else "?"
-    logger.info("[config] local PIPELINE_RULES override cleared from=%s — "
-                "config.json (%d rules) is %s", client_host, len(factory),
-                "on disk (env-pinned, not live)" if env_pinned else "now live")
-    return JSONResponse({"ok": True, "rules": len(factory),
-                         "env_pinned": env_pinned})
+            # Env-pinned PIPELINE_RULES keeps its running value (see
+            # post_factory_rules); only the file write lands.
+            env_pinned = "PIPELINE_RULES" in config_store.env_pinned_fields()
+            if not env_pinned:
+                cfg.PIPELINE_RULES = factory
+                await pl_apply.rebuild_caches_off_loop("clearing local override")
+
+        client_host = request.client.host if request.client else "?"
+        logger.info("[config] local PIPELINE_RULES override cleared from=%s — "
+                    "config.json (%d rules) is %s", client_host, len(factory),
+                    "on disk (env-pinned, not live)" if env_pinned else "now live")
+        return JSONResponse({"ok": True, "rules": len(factory),
+                             "env_pinned": env_pinned})
+
+    # Lock + save + apply as one task a dropped connection cannot cut short
+    # (see pl_apply.run_to_end).
+    return await pl_apply.run_to_end(_locked())
 
 
 # Dry-run input bounds. Every rule can burn a full 2 s of a worker thread, so

@@ -651,3 +651,61 @@ console.log(JSON.stringify(out));
     out = json.loads(p.stdout.strip().splitlines()[-1])
     assert out == {"dirty_renamed": 0, "dirty_status": "err", "still_open": True,
                    "clean_renamed": 1}
+
+
+@pytest.mark.parametrize("writer", ["post_state", "rename_profile"])
+def test_cancelled_profiles_save_still_finishes_under_the_lock(monkeypatch, writer):
+    """A dropped connection cancels the handler inside the offloaded save,
+    but the save keeps writing config.local.json on its thread: the hot-apply
+    must still run, with the profiles lock held until it has."""
+    import asyncio
+    import threading
+
+    from faster_whisper_backend.admin import overrides_routes
+    from faster_whisper_backend.auth import api_keys_store
+    from faster_whisper_backend.settings import config as cfg
+    from faster_whisper_backend.settings import config_store
+    from tests.conftest import fake_request
+
+    in_save, release = threading.Event(), threading.Event()
+    steps = []
+
+    def _save(payload):
+        in_save.set()
+        release.wait(5)
+        steps.append("saved")
+        return dict(payload)
+
+    async def _apply(written):
+        steps.append("applied")
+        return {"hot_applied": [], "cold_pending": [], "env_pinned_ignored": [],
+                "evicted": []}
+
+    monkeypatch.setattr(config_store, "save_overrides", _save)
+    monkeypatch.setattr(pl_apply, "apply_hot_changes", _apply)
+    monkeypatch.setattr(api_keys_store, "rename_profile_refs", lambda old, new: 0)
+    monkeypatch.setattr(cfg, "OVERRIDE_PROFILES", {"clinic-de": {}}, raising=False)
+    call = {
+        "post_state": lambda: overrides_routes.post_state(
+            {"OVERRIDE_PROFILES": {"clinic-de": {"BEAM_SIZE": 8}}}, fake_request()),
+        "rename_profile": lambda: overrides_routes.rename_profile(
+            overrides_routes._RenameProfileIn(old="clinic-de", new="clinic-x"),
+            fake_request()),
+    }[writer]
+
+    async def scenario():
+        lock = overrides_routes._PROFILES_LOCK
+        caller = asyncio.create_task(call())
+        await asyncio.to_thread(in_save.wait, 5)
+        caller.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await caller
+        held_after_cancel = lock.locked()
+        release.set()
+        # Bounded: a regression that leaves the body hanging fails, not hangs.
+        await asyncio.wait_for(lock.acquire(), timeout=5)
+        lock.release()
+        return held_after_cancel
+
+    assert asyncio.run(scenario()) is True
+    assert steps == ["saved", "applied"]
