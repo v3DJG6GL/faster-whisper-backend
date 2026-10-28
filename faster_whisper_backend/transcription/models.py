@@ -681,45 +681,72 @@ def _converted_dir_for(model_id: str, quantization: str,
     return os.path.join(_converted_root(), sanitised, quantization)
 
 
-def _model_needs_conversion(model_id: str,
-                            revision: "str | None" = None) -> bool:
-    """Return True if `model_id` is an HF transformers Whisper checkpoint
-    (has model.safetensors / pytorch_model.bin but no model.bin in the repo).
-    False for already-CT2 repos and for local paths.
+def _conversion_repo_files(model_id: str,
+                           revision: "str | None" = None) -> "list[str] | None":
+    """Return the repo's file list if `model_id` is an HF transformers Whisper
+    checkpoint (has model.safetensors / pytorch_model.bin but no model.bin in
+    the repo); [] for a local HF-format dir. None when no conversion is
+    needed: already-CT2 repos and local CT2 dirs.
 
     Implementation: probe the HF Hub file list. Network call (~1 s) but only
     runs when AUTO_CONVERT_HF_MODELS is on AND the converted-output cache
     misses, so it's at worst once per model per process lifetime."""
     # Local path that exists → never convert.
     if os.path.isdir(model_id):
-        return not os.path.isfile(os.path.join(model_id, "model.bin"))
+        if os.path.isfile(os.path.join(model_id, "model.bin")):
+            return None
+        return []
     # Heuristic: HF repo id always contains a single "/".
     if "/" not in model_id or model_id.count("/") != 1:
-        return False
+        return None
     try:
         from huggingface_hub import list_repo_files
-        files = set(list_repo_files(model_id, revision=revision))
+        files = list(list_repo_files(model_id, revision=revision))
     except Exception as e:
         logger.warning("auto-convert: could not probe %s file list (%s); "
                        "assuming no conversion needed", model_id, e)
-        return False
+        return None
     if "model.bin" in files:
-        return False  # already CT2
+        return None  # already CT2
     if "model.safetensors" in files or "pytorch_model.bin" in files:
-        return True
+        return files
     # Unknown layout — let WhisperModel try and fail naturally.
-    return False
+    return None
+
+
+_SHARD_RE = {
+    "model.safetensors": re.compile(r"model-\d+-of-\d+\.safetensors"),
+    "pytorch_model.bin": re.compile(r"pytorch_model-\d+-of-\d+\.bin"),
+}
+
+
+def _pinned_snapshot_files(files: "list[str]") -> "list[str]":
+    """The files of a pinned-revision snapshot the converter actually reads:
+    top-level json/txt plus ONE weight set, in from_pretrained's order
+    (model.safetensors or its shards, else pytorch_model.bin or its shards).
+    Repos like openai/whisper-large-v3 ship the same weights in both formats
+    and fp32 too; "*.safetensors" + "*.bin" fetched ~18 GB to use ~3 GB."""
+    top = [f for f in files if "/" not in f]
+    keep = [f for f in top if f.endswith((".json", ".txt"))]
+    for single, shard in _SHARD_RE.items():
+        if single in top:
+            return keep + [single]
+        if single + ".index.json" in top:
+            return keep + [f for f in top if shard.fullmatch(f)]
+    return keep
 
 
 def _convert_blocking(model_id: str, output_dir: str, quantization: str,
-                      revision: "str | None" = None) -> None:
+                      revision: "str | None" = None,
+                      files: "list[str] | None" = None) -> None:
     """Synchronous CT2 conversion. Runs in a thread executor so the event
     loop stays responsive. Lazy-imports torch / transformers / ctranslate2
     converter machinery; missing extras → RuntimeError with pip command.
 
     Atomic publish: writes to `<output_dir>.tmp` then renames to `output_dir`
     so a crash mid-write leaves no false-positive (next start re-detects the
-    missing model.bin and retries cleanly)."""
+    missing model.bin and retries cleanly). `files` is the repo listing at
+    `revision`, from the conversion probe."""
     try:
         from ctranslate2.converters import TransformersConverter
         import transformers  # noqa: F401  ensure dep present
@@ -747,7 +774,7 @@ def _convert_blocking(model_id: str, output_dir: str, quantization: str,
         from huggingface_hub import snapshot_download
         source = snapshot_download(
             model_id, revision=revision,
-            allow_patterns=["*.json", "*.txt", "*.safetensors", "*.bin"])
+            allow_patterns=_pinned_snapshot_files(files or []))
     converter = TransformersConverter(
         model_name_or_path=source,
         # tokenizer.json + preprocessor_config.json are required by faster-
@@ -804,7 +831,8 @@ async def _ensure_ct2_model(name: str) -> str:
     # huggingface_hub.list_repo_files() HTTPS call (its own docstring says
     # "~1 s"), and this is an async def. Pure predicate, evaluated before the
     # per-model lock below, so nothing can reorder against it.
-    if not await asyncio.to_thread(_model_needs_conversion, name, revision):
+    files = await asyncio.to_thread(_conversion_repo_files, name, revision)
+    if files is None:
         return name
 
     # Per-model asyncio lock (lazy create). Ensures only one conversion of
@@ -827,7 +855,8 @@ async def _ensure_ct2_model(name: str) -> str:
             with FileLock(lock_path, timeout=600):
                 if os.path.isfile(os.path.join(output_dir, "model.bin")):
                     return
-                _convert_blocking(name, output_dir, quantization, revision)
+                _convert_blocking(name, output_dir, quantization, revision,
+                                  files)
 
         try:
             await asyncio.get_running_loop().run_in_executor(
