@@ -393,7 +393,8 @@ def test_proposals_follow_the_speaker_filter(page, tmp_path, picked, url, shown)
     that Refresh could never fix."""
     out = _run_node(tmp_path, _js_function(page, "_loadProposals") + r"""
 var _filtSpeakers = """ + json.dumps(picked) + r""";
-var urls = [], rendered = null;
+var urls = [], rendered = null, _batchActive = false;
+function _stopAnyPreview() {}
 global.document = { getElementById: function() { return {}; } };
 async function api(m, u) {
   urls.push(u);
@@ -792,3 +793,31 @@ console.log(JSON.stringify({ aligned: full, trimmed: memberLines[0] }));
 """)
     assert out == {"aligned": "[1] 1.0s · Die Katze die Maus",
                    "trimmed": "[1] 1.0s · die Katze Die Maus"}
+
+
+# ---- proposals Refresh ------------------------------------------------------------------
+
+@needs_node
+@pytest.mark.parametrize("batch", [True, False])
+def test_proposals_refresh_stops_the_preview_and_redraws_the_batch_card(page, tmp_path, batch):
+    """Refresh replaced _proposals but left the batch card on the proposal
+    shown before, so Accept (which takes _proposals[0]) merged one nobody
+    saw, often one just dismissed; and the ▶ audio of a card the redraw
+    detached played on with no control left to stop it."""
+    out = _run_node(tmp_path, _js_function(page, "_loadProposals") + r"""
+var _filtSpeakers = [], _batchActive = """ + json.dumps(batch) + r""";
+var _batchUndo = { action: 'dismiss', proposals: [] };
+var events = [], _proposals = [];
+global.document = { getElementById: function() { return {}; } };
+async function api() { events.push('get'); return { proposals: [{ id: 'pa' }, { id: 'pb' }] }; }
+function _stopAnyPreview() { events.push('stop'); }
+function _renderProposals(ps) { _proposals = ps; }
+function _renderBatchCard() { events.push('card:' + _proposals[0].id); }
+_loadProposals().then(function() {
+  console.log(JSON.stringify({ events: events, undo: _batchUndo }));
+});
+""")
+    if batch:
+        assert out == {"events": ["stop", "get", "card:pa"], "undo": None}
+    else:
+        assert out == {"events": ["stop", "get"], "undo": {"action": "dismiss", "proposals": []}}

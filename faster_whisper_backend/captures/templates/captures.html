@@ -4324,6 +4324,9 @@
   }
 
   async function _loadProposals() {
+    // The redraw below detaches every card, ▶ player included: stop the
+    // shared audio first, or it plays on with no control left to pause it.
+    _stopAnyPreview();
     var listEl = document.getElementById('propose-list');
     listEl.innerHTML = '<div class="empty">Loading proposals…</div>';
     try {
@@ -4338,6 +4341,13 @@
       _renderProposals((j.proposals || []).filter(function(p) {
         return !sp.length || sp.indexOf(p.user_id) !== -1;
       }));
+      // Batch mode acts on _proposals[0]: show that one, or Accept would
+      // merge a proposal nobody saw (a locally dismissed one comes back
+      // first). The undo snapshot belongs to the replaced queue.
+      if (_batchActive) {
+        _batchUndo = null;
+        _renderBatchCard();
+      }
     } catch (e) {
       if (e && e.message !== 'unauthorized' && e.message !== 'not-admin') {
         listEl.innerHTML = '';
@@ -4564,10 +4574,10 @@
     var refreshBtn = document.createElement('button');
     refreshBtn.type = 'button'; refreshBtn.className = 'primary';
     refreshBtn.textContent = 'Refresh batch';
-    refreshBtn.addEventListener('click', async function() {
-      await _loadProposals();
+    refreshBtn.addEventListener('click', function() {
+      // _loadProposals renders the next card itself.
       _batchAccepted = 0; _batchDismissed = 0;
-      _renderBatchCard();
+      _loadProposals();
     });
     var closeBtn = document.createElement('button');
     closeBtn.type = 'button';
