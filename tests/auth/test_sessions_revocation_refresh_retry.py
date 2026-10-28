@@ -93,3 +93,28 @@ def test_config_version_bumps_only_once_the_index_is_fresh(worker, monkeypatch):
     monkeypatch.setattr(w, "_require_conn", require_conn)
     assert settings_version.config_version() == v0 + 1
     assert w.lookup_session(raw) is None
+
+
+def test_failed_data_version_read_still_rebuilds_on_a_moved_counter(
+        worker, monkeypatch):
+    """A failing `PRAGMA data_version` answers with the cached value, so the
+    refresh gated on it saw no sibling commit, skipped the rebuild, and the
+    counter was recorded as seen: the re-auth then accepted the signed-out
+    cookie from the stale index and nothing bumped again."""
+    w = worker
+    raw, _csrf = w.create_session("victim", 3600.0)
+    assert w.revocation_generation() == 0
+    assert w.lookup_session(raw) is not None
+    _sibling_logout(w)
+    real = w._require_conn()
+
+    class _FailingDataVersion:
+        def execute(self, sql, *args):
+            if sql == "PRAGMA data_version":
+                raise sqlite3.OperationalError("disk I/O error")
+            return real.execute(sql, *args)
+
+    monkeypatch.setattr(w, "_require_conn", _FailingDataVersion)
+    assert w.revocation_generation() == 1
+    monkeypatch.undo()
+    assert w.lookup_session(raw) is None

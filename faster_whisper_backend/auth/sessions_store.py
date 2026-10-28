@@ -211,7 +211,7 @@ def _data_version_locked() -> int:
         return _DATA_VERSION
 
 
-def _refresh_if_sibling_committed(force: bool = False) -> None:
+def _refresh_if_sibling_committed() -> None:
     """Rebuild _SESSION_INDEX when another PROCESS committed since the last
     check — one header read on the connection we already hold. Mirrors
     api_keys_store._refresh_if_sibling_committed(); without it a logout in one
@@ -219,15 +219,13 @@ def _refresh_if_sibling_committed(force: bool = False) -> None:
 
     Throttled to one check per _REFRESH_MIN_INTERVAL_S (see the constant's
     comment): sibling login/logout commits can be frequent, and each detected one
-    costs a full O(live sessions) rebuild under _lock. `force=True` skips the
-    interval (revocation_generation: a moved revocations counter must not
-    meet a stale index); the PRAGMA header read is cheap and a rebuild still
-    happens only when data_version actually moved. The miss path of
-    lookup_session uses _fetch_on_miss instead of forcing this."""
+    costs a full O(live sessions) rebuild under _lock. revocation_generation
+    rebuilds on its own when the revocations counter moved, and the miss path
+    of lookup_session uses _fetch_on_miss instead of bypassing the throttle."""
     global _LAST_REFRESH_TS
     if _conn is None or not _DB_READY:
         return
-    if not force and time.monotonic() - _LAST_REFRESH_TS < _REFRESH_MIN_INTERVAL_S:
+    if time.monotonic() - _LAST_REFRESH_TS < _REFRESH_MIN_INTERVAL_S:
         return
     with _lock:
         _LAST_REFRESH_TS = time.monotonic()
@@ -459,11 +457,15 @@ def revocation_generation() -> int:
     never moves for it. Not `PRAGMA data_version`: every sibling login moves
     that, and every live stream would re-resolve auth on each one.
 
-    When the counter moved, the index is refreshed with force=True before
-    returning: the caller bumps the config version, a live stream then
-    re-authenticates through lookup_session, and a throttled HIT on the
-    stale index would let the revoked cookie through and spend the bump."""
-    global _LAST_REV_GEN
+    When the counter moved, the index is rebuilt before returning: the caller
+    bumps the config version, a live stream then re-authenticates through
+    lookup_session, and a throttled HIT on the stale index would let the
+    revoked cookie through and spend the bump. The rebuild is unconditional,
+    not gated on `PRAGMA data_version`: _data_version_locked() answers a
+    failed header read with the cached value, which would read as "no
+    sibling commit" and skip the rebuild. The counter moves once per logout,
+    so the O(live sessions) cost stays bounded."""
+    global _LAST_REV_GEN, _LAST_REFRESH_TS
     if not _DB_READY:
         return -1
     try:
@@ -479,7 +481,9 @@ def revocation_generation() -> int:
         # returns -1 like a failed SELECT so the caller adopts nothing and
         # does not bump onto the stale index.
         try:
-            _refresh_if_sibling_committed(force=True)
+            with _lock:
+                _LAST_REFRESH_TS = time.monotonic()
+                _rebuild_index_locked()
         except (sqlite3.Error, RuntimeError):
             return -1
         _LAST_REV_GEN = gen
