@@ -1178,16 +1178,26 @@ async def _get_or_load_model(name: str, *, lease: bool = False) -> "WhisperModel
         # Shielded: the shared default executor can still hold the write in
         # its queue, and a cancelled to_thread future drops a queued item,
         # leaving a cached model the registry (idle evictor, /stats) never
-        # learns about.
+        # learns about. Awaited to the end under the lock even when cancelled
+        # (like _construct): an eviction slipped in before the queued write
+        # lands would unregister nothing and leave that write a phantom.
+        reg_fut = asyncio.ensure_future(asyncio.to_thread(
+            model_registry.register_loaded_model,
+            name,
+            vram_bytes=vram_delta,
+            device=loaded_device,
+            compute_type=loaded_compute,
+            load_secs=load_secs,
+        ))
         try:
-            await asyncio.shield(asyncio.to_thread(
-                model_registry.register_loaded_model,
-                name,
-                vram_bytes=vram_delta,
-                device=loaded_device,
-                compute_type=loaded_compute,
-                load_secs=load_secs,
-            ))
+            while True:
+                try:
+                    await asyncio.shield(reg_fut)
+                    break
+                except asyncio.CancelledError as c:
+                    if reg_fut.cancelled():
+                        raise
+                    _cancelled = _cancelled or c
         except BaseException as e:
             # The caller never receives the model, so never releases.
             if leased:
@@ -1195,8 +1205,13 @@ async def _get_or_load_model(name: str, *, lease: bool = False) -> "WhisperModel
             if not isinstance(e, asyncio.CancelledError):
                 # A failed register leaves nothing cached, as before.
                 _loaded_models.pop(name, None)
+                if _cancelled is not None:
+                    raise _cancelled from e
             raise
         if _cancelled is not None:
+            if leased:
+                # Cancelled during the register: the lease is never released.
+                _release_model_lease(name)
             raise _cancelled
         return new_model
 

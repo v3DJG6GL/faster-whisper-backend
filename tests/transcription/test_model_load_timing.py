@@ -83,11 +83,12 @@ def test_cancel_during_register_keeps_the_model_cached_and_frees_the_lease(
         while not entered.is_set():
             await asyncio.sleep(0.01)
         task.cancel()
+        await asyncio.sleep(0.05)
+        go.set()
         try:
             await task
         except asyncio.CancelledError:
             pass
-        go.set()
         while "x" not in model_registry._loaded_models:
             await asyncio.sleep(0.01)
 
@@ -131,11 +132,12 @@ def test_cancel_while_register_is_queued_still_registers(monkeypatch):
         while not queued:
             await asyncio.sleep(0.01)
         task.cancel()
+        await asyncio.sleep(0.05)
+        gate.set()
         try:
             await task
         except asyncio.CancelledError:
             pass
-        gate.set()
         # One worker, FIFO: once this runs, anything queued before it has.
         await loop.run_in_executor(None, lambda: None)
 
@@ -143,6 +145,56 @@ def test_cancel_while_register_is_queued_still_registers(monkeypatch):
         asyncio.run(run())
         assert "x" in tx_models._loaded_models
         assert "x" in model_registry._loaded_models
+    finally:
+        gate.set()
+        tx_models._loaded_models.clear()
+        model_registry._loaded_models.clear()
+
+
+def test_cancelled_load_holds_the_lock_until_its_queued_register_lands(
+        monkeypatch):
+    """A cancelled load must not free the load lock while its registry write
+    is still queued: an eviction in that window pops the cached model and
+    unregisters nothing, then the late write leaves a registry entry with no
+    model behind it (/stats and the admin page list it as loaded)."""
+    import concurrent.futures
+    import threading
+    _stub_load(monkeypatch)
+    monkeypatch.setattr(tx_models, "_model_load_lock", asyncio.Lock())
+    gate, queued = threading.Event(), []
+
+    def _record_then_busy_the_pool(name, secs):
+        asyncio.get_running_loop().run_in_executor(None, gate.wait, 5)
+        queued.append(name)
+    monkeypatch.setattr(tx_models.metrics, "record_model_load",
+                        _record_then_busy_the_pool)
+
+    async def run():
+        loop = asyncio.get_running_loop()
+        loop.set_default_executor(
+            concurrent.futures.ThreadPoolExecutor(max_workers=1))
+        task = asyncio.create_task(tx_models._get_or_load_model("x"))
+        while not queued:
+            await asyncio.sleep(0.01)
+        task.cancel()
+        await asyncio.sleep(0.05)
+        evicting = asyncio.create_task(tx_models.evict("x"))
+        await asyncio.sleep(0.05)
+        assert not evicting.done()      # the cancelled load still holds it
+        gate.set()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        else:
+            raise AssertionError("the cancelled load must re-raise")
+        assert await evicting is True
+        await loop.run_in_executor(None, lambda: None)
+
+    try:
+        asyncio.run(run())
+        assert "x" not in tx_models._loaded_models
+        assert "x" not in model_registry._loaded_models
     finally:
         gate.set()
         tx_models._loaded_models.clear()
