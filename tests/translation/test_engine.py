@@ -773,18 +773,74 @@ def test_guards_keep_original_without_retry_for_greedy_family(
 
 def test_inference_error_surfaces_as_a_client_safe_translation_error(
         base_cfg, monkeypatch):
-    """llama.cpp raises ValueError for a prompt past n_ctx (and anything can
-    raise on a CUDA OOM): the failure contract still holds — a
+    """A runtime error (a CUDA OOM, …): the failure contract still holds — a
     TranslationError with our own wording, never the raw text."""
     def boom(llm, family, prompt_or_msgs, max_tokens):
-        raise ValueError("Requested tokens (9000) exceed context window of 2048")
+        raise RuntimeError("CUDA error: out of memory at 0xdeadbeef")
     monkeypatch.setattr(translation, "_complete", boom)
     _stub_get_model(monkeypatch)
     with pytest.raises(translation.TranslationError) as ei:
         _run(translation.translate_segments(
             _segs("Hallo Welt"), ["en"], source_lang="de", mode="faithful"))
-    assert "context window" in str(ei.value)
-    assert "9000" not in str(ei.value)
+    assert "see the server log" in str(ei.value)
+    assert "deadbeef" not in str(ei.value)
+
+
+def _overflow_past(limit):
+    """A _complete fake: llama.cpp's ValueError for a payload longer than
+    ``limit`` chars, else the _xlate translation (numbered lines kept)."""
+    calls = []
+
+    def fake(llm, family, prompt_or_msgs, max_tokens):
+        payload = _payload_of(prompt_or_msgs)
+        calls.append(payload)
+        if len(payload) > limit:
+            raise ValueError(
+                "Requested tokens (9000) exceed context window of 2048")
+        if payload.startswith(translation._NUMBERED_INSTRUCTION):
+            lines = payload.split("\n\n", 1)[1].splitlines()
+            return "\n".join(
+                f"{m.group(1)}. {_xlate(m.group(2))}"
+                for m in (re.match(r"(\d+)\.\s(.*)", ln) for ln in lines))
+        return _xlate(payload)
+    return fake, calls
+
+
+def test_faithful_batch_past_the_context_window_is_halved(base_cfg,
+                                                          monkeypatch):
+    """A numbered batch whose prompt is longer than n_ctx is halved like a
+    count mismatch instead of failing the whole run."""
+    monkeypatch.setattr(cfg, "TRANSLATION_BATCH_SEGMENTS", 4, raising=False)
+    texts = [f"Das ist der lange Satz nummer {n} hier." for n in range(4)]
+    two = len(translation._NUMBERED_INSTRUCTION) + 2 * 50
+    fake, calls = _overflow_past(two)
+    monkeypatch.setattr(translation, "_complete", fake)
+    _stub_get_model(monkeypatch)
+    res, warns, meta = _run(translation.translate_segments(
+        _segs(*texts), ["en"], source_lang="de", mode="faithful"))
+    assert warns == [] and meta["kept"] == {}
+    assert [r["en"] for r in res] == [_xlate(t) for t in texts]
+    assert len(calls) == 3                       # 4 (too long) → 2 + 2
+
+
+@pytest.mark.parametrize("mode", ["faithful", "fluent"])
+def test_segment_past_the_context_window_is_kept_original(base_cfg,
+                                                          monkeypatch, mode):
+    """One segment longer than n_ctx keeps its original text with a warning;
+    the other segments and targets still translate."""
+    huge = "Wort " * 400 + "Ende."
+    fake, _ = _overflow_past(1000)
+    monkeypatch.setattr(translation, "_complete", fake)
+    _stub_get_model(monkeypatch)
+    res, warns, meta = _run(translation.translate_segments(
+        _segs("Guten Morgen.", huge), ["en", "fr"], source_lang="de",
+        mode=mode))
+    for t in ("en", "fr"):
+        assert res[0][t] == _xlate("Guten Morgen.")
+        assert res[1][t] == huge
+    assert meta["kept"] == {1: ["en", "fr"]}
+    assert len(warns) == 2
+    assert all("segment 2" in w and "context window" in w for w in warns)
 
 
 def _install_hunyuan_model(monkeypatch):

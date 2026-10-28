@@ -70,6 +70,13 @@ class TranslationError(RuntimeError):
     """Translation could not run; str(exc) is CLIENT-SAFE (our own wording)."""
 
 
+class _ContextOverflow(TranslationError):
+    """The prompt alone is longer than the model's n_ctx (llama.cpp's
+    "Requested tokens … exceed context window" ValueError). translate_segments
+    handles it per batch — halve, or keep the original — instead of failing
+    the whole run."""
+
+
 # Serializes actual llama.cpp inference across threads — llama.cpp contexts
 # are NOT thread-safe (same hazard class as diarization._infer_mutex).
 _infer_mutex = threading.Lock()
@@ -1344,6 +1351,9 @@ def _prompt_target(code: str) -> str:
     return _normalise_code(code) or code
 
 
+_CONTEXT_OVERFLOW = "input too long for the model's context window"
+
+
 async def _run_completion(llm, family: str, text: str, source_code: str,
                           target_code: str, context: str, glossary: str,
                           template_override: "str | None" = None) -> str:
@@ -1408,6 +1418,11 @@ async def _run_completion(llm, family: str, text: str, source_code: str,
             # llama.cpp raises ValueError for a prompt past n_ctx; a CUDA
             # OOM or any other runtime error lands here too. Raw text stays
             # in the log (module docstring: failure contract).
+            if isinstance(e, ValueError) and \
+                    "exceed context window" in str(e):
+                logger.warning("[translate] prompt too long (%s): %s",
+                               family, e)
+                raise _ContextOverflow(_CONTEXT_OVERFLOW) from None
             logger.error("[translate] inference failed (%s): %s", family, e)
             raise TranslationError(
                 "translation inference failed (input too long for the "
@@ -1601,13 +1616,22 @@ async def translate_segments(
     def _mark_kept(idx: int, target: str) -> None:
         kept.setdefault(idx, []).append(target)
 
+    async def _translate_fit(text: str, target: str,
+                             context: str) -> "tuple[str, str | None]":
+        """_translate_one, with a prompt past the model's context window
+        turned into a failure reason for this batch alone: ("", reason)."""
+        try:
+            return await _translate_one(text, target, context), None
+        except _ContextOverflow:
+            return "", _CONTEXT_OVERFLOW
+
     async def _retry_context_free(src: str,
                                   target: str) -> "tuple[str, str | None]":
         """The ONE guard-failure retry WITHOUT context (context echo is the
         dominant failure mode — a context-free prompt is the highest-value
         second attempt). Returns (output, guard_reason)."""
-        out = await _translate_one(src, target, "")
-        return out, _guard(src, out, target)
+        out, reason = await _translate_fit(src, target, "")
+        return out, reason or _guard(src, out, target)
 
     def _keep_original(span: str, indices: "list[int]", target: str,
                        reason: str) -> None:
@@ -1627,8 +1651,8 @@ async def translate_segments(
         change the prompt (identical prompt at temperature 0 = guaranteed
         same output)."""
         nonlocal last_ok
-        out = await _translate_one(text, target, context)
-        reason = _guard(text, out, target)
+        out, reason = await _translate_fit(text, target, context)
+        reason = reason or _guard(text, out, target)
         if reason is None:
             last_ok = out
             return out
@@ -1691,10 +1715,13 @@ async def translate_segments(
                 else:
                     payload = (f"{_NUMBERED_INSTRUCTION}\n\n"
                                f"{_build_numbered(texts)}")
-                    reply = await _translate_one(payload, target, context)
-                    parsed = _parse_numbered(reply, len(live_idx))
+                    reply, too_long = await _translate_fit(
+                        payload, target, context)
+                    parsed = (None if too_long else
+                              _parse_numbered(reply, len(live_idx)))
                     if parsed is None:
-                        # Line-count mismatch → halve the batch and retry the
+                        # Line-count mismatch (or a prompt past the model's
+                        # context window) → halve the batch and retry the
                         # same position (down to per-segment prompts). Halve
                         # the span from the first to the last live member
                         # actually sent, not k: a short tail or leading
@@ -1751,8 +1778,9 @@ async def translate_segments(
                     _blank_progress(f"{target} {g_no}/{len(groups)}")
                     continue
                 context = _context_lines(segments, group[0], ctx_n)
-                translated = await _translate_one(joined, target, context)
-                reason = _guard(joined, translated, target)
+                translated, reason = await _translate_fit(
+                    joined, target, context)
+                reason = reason or _guard(joined, translated, target)
                 if reason is not None and \
                         ((context and ctx_changes) or not greedy):
                     # ONE retry WITHOUT context (see _guarded_single); greedy
