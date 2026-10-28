@@ -1954,3 +1954,60 @@ def test_patch_refuses_a_merge_that_grows_past_the_chip_cap(
     assert r.status_code == 422
     assert str(cap) in r.json()["detail"]
     assert len(captures_store.get_capture("chipcap00002")["corrections"]) == cap
+
+
+def _two_member_sample(gs, sid):
+    """A 'space'-joined sample with two one-word members (raw 'r', final 'f':
+    the read path refreshes final from raw, the stored snapshot does not)."""
+    from faster_whisper_backend.captures import store as captures_store
+
+    conn = captures_store._require_conn()
+    _insert_sample(conn, gs, sid, locked=False)
+    for i, cid in enumerate((sid[:-1] + "1", sid[:-1] + "2")):
+        _insert_member(conn, cid, sid)
+        conn.execute("UPDATE captures SET sample_order = ? WHERE id = ?", (i, cid))
+
+
+def test_regenerate_adopts_the_global_join_strategy(client, make_user_key,
+                                                    monkeypatch):
+    """The join strategy is a global setting that "applies to every new or
+    regenerated sample": regenerate must restamp it (and the stored
+    transcript), or every read and the export keep the old separator."""
+    from faster_whisper_backend.captures import samples as capture_samples
+    from faster_whisper_backend.captures import samples_store as gs
+    from faster_whisper_backend.settings import config as cfg
+
+    _uid, raw = make_user_key("root", is_admin=True)
+    sid = "regenjoin00000"
+    _two_member_sample(gs, sid)
+    monkeypatch.setattr(cfg, "CAPTURES_SAMPLE_JOIN_STRATEGY", "period_space",
+                        raising=False)
+    monkeypatch.setattr(capture_samples, "_build_merged_wav",
+                        lambda **kw: (1000, {}, {}))
+    r = client.post(f"/captures/api/samples/{sid}/regenerate", headers=bearer(raw))
+    assert r.status_code == 200, r.text
+    assert r.json()["sample"]["transcript"] == "r. r"  # read path: refreshed
+    row = gs.get_sample(sid)
+    assert row["transcript_join_strategy"] == "period_space"
+    assert row["transcript"] == "f. f"
+
+
+def test_reprocess_vad_adopts_the_global_join_strategy(client, monkeypatch):
+    """The bulk reprocess is the all-samples regenerate: it restamps the
+    global join strategy too."""
+    from faster_whisper_backend.captures import samples as capture_samples
+    from faster_whisper_backend.captures import samples_store as gs
+    from faster_whisper_backend.captures import vad_reprocess as vr
+    from faster_whisper_backend.settings import config as cfg
+
+    sid = "vadjoin0000000"
+    _two_member_sample(gs, sid)
+    monkeypatch.setattr(cfg, "CAPTURES_SAMPLE_JOIN_STRATEGY", "period_space",
+                        raising=False)
+    monkeypatch.setattr(capture_samples, "_build_merged_wav",
+                        lambda **kw: (1000, {}, {}))
+    vr._run()
+    assert vr.status()["rebuilt"] == 1
+    row = gs.get_sample(sid)
+    assert row["transcript_join_strategy"] == "period_space"
+    assert row["transcript"] == "f. f"

@@ -8,14 +8,16 @@ them — the per-sample "Regenerate" button does one sample; this does all.
 Scope:
   - Re-runs samples._build_merged_wav (per-member VAD trim + uniform-silence layout)
     for each sample, rebuilding the merged WAV + member_trims + duration, and
-    stamping the sample's inter_segment_silence_ms with the new global value.
+    stamping the sample's inter_segment_silence_ms and transcript_join_strategy
+    with the new global values (the stored transcript is re-derived under that
+    join, as regenerate does).
   - SKIPS locked samples (admin-frozen exported training data) — mirrors the
     pipeline-reapply skip.
   - If a sample no longer fits the cap under the new settings, it is marked
     `is_stale=true` (export already skips stale) — never truncated.
   - Member capture rows are NEVER touched (only the derived merged artifacts),
     so ungroup/dissolve still restores raw captures + timestamps.
-  - Transcript / chips / status / admin_notes are untouched (audio-only job).
+  - Chips / status / admin_notes are untouched.
 
 Single-worker model (mirrors captures_reapply): at most one job at a time;
 state in process memory; a restart wipes it (just click again).
@@ -78,6 +80,10 @@ def start() -> dict[str, Any]:
 def _run() -> None:
     try:
         from faster_whisper_backend.captures import samples_store as capture_samples_store
+        # Lazy: routes imports this module.
+        from faster_whisper_backend.captures.routes import (
+            _chip_words_lookup, _global_join_strategy,
+        )
 
         samples = capture_samples_store.list_samples(user_id=None)
         with _state_lock:
@@ -98,6 +104,7 @@ def _run() -> None:
                         _state["skipped"] += 1
                     continue
                 silence_ms = capture_samples._global_silence_ms()
+                join_strategy = _global_join_strategy()
                 # Hold the per-sid lock across the lock re-check, the rebuild,
                 # and the DB write (success OR stale), as regenerate_sample_api
                 # does. This keeps a concurrent regenerate from rewriting the
@@ -119,6 +126,9 @@ def _run() -> None:
                         )
                         patch = capture_samples._merged_wav_patch(duration_ms, hashes, member_trims)
                         patch["inter_segment_silence_ms"] = silence_ms
+                        patch["transcript_join_strategy"] = join_strategy
+                        patch["transcript"] = capture_samples._build_default_transcript(
+                            members, join_strategy, words_for=_chip_words_lookup())
                         capture_samples_store.update_sample(sid, patch)
                     except Exception as e:
                         # Over-cap under the new settings (merge_wavs raises) or

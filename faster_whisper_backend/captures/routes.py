@@ -2585,9 +2585,10 @@ async def regenerate_sample_api(
     user: dict[str, Any] = Depends(get_current_user),
 ) -> JSONResponse:
     """Rebuild the merged WAV from current member content using the CURRENT
-    global silence setting (so regenerate is how an existing sample adopts a
-    changed global), refresh hashes, clear `is_stale`. Transcript is preserved
-    (admin's edits stay)."""
+    global silence and join settings (so regenerate is how an existing sample
+    adopts a changed global), refresh hashes, clear `is_stale`. The stored
+    transcript is re-derived from the members' chips under that join, so the
+    admin's edits stay."""
     # Off the loop: the samples store shares the captures connection, which
     # clear_all holds across a full VACUUM.
     g = await asyncio.to_thread(capture_samples_store.get_sample, sid)
@@ -2601,6 +2602,7 @@ async def regenerate_sample_api(
     if g["is_locked"] and not user.get("is_admin"):
         raise HTTPException(status.HTTP_409_CONFLICT, "sample is locked")
     silence_ms = capture_samples._global_silence_ms()
+    join_strategy = _global_join_strategy()
 
     def _regenerate() -> dict[str, Any]:
         with capture_samples._rebuild_lock(sid):
@@ -2621,6 +2623,9 @@ async def regenerate_sample_api(
             )
             regen_patch = capture_samples._merged_wav_patch(duration_ms, hashes, member_trims)
             regen_patch["inter_segment_silence_ms"] = silence_ms
+            regen_patch["transcript_join_strategy"] = join_strategy
+            regen_patch["transcript"] = capture_samples._build_default_transcript(
+                members, join_strategy, words_for=_chip_words_lookup())
             return capture_samples_store.update_sample(sid, regen_patch)
 
     # Off the loop for the same reason as the sample-audio route: the lock is
