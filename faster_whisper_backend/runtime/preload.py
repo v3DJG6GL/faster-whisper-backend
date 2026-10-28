@@ -689,6 +689,15 @@ def _register_plan(user_id, entries, *, plan_id, denied, stage_ahead,
     # otherwise leave a /stats row that _drop_plan_locked never gets to end.
     for fam, mid in kept:
         key = stats_key(fam, mid)
+        with _lock:
+            plan = _plans.get(pid)
+            already_inflight = plan is not None and key in plan.inflight
+        if already_inflight:
+            # Queued or loading for this plan already: the ladder would see
+            # the worker's own load as family_busy and answer `deferred`
+            # while the model finishes loading moments later.
+            results.append({"family": fam, "id": mid, "state": "queued"})
+            continue
         state, reason = _admit(fam, mid)
         if state == "resident":
             with _lock:
