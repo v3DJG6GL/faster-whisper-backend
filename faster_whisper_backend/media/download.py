@@ -1387,6 +1387,9 @@ _PROGRESS_PREFIX = "dl:"
 _STDERR_TAIL_MAX = 4096
 # The stdout line yt-dlp prints for a result --match-filters rejected.
 _FILTERED_NEEDLE = b"does not pass filter"
+# The stdout line yt-dlp's HTTP downloader prints when --max-filesize skips a
+# file (exit 0): in a merge the OTHER leg is left behind as an intermediate.
+_OVER_CAP_NEEDLE = b"larger than max-filesize"
 # What _read_line keeps of a line longer than the stream's 64 KiB limit.
 _LONG_LINE_KEEP = 4096
 
@@ -1802,6 +1805,7 @@ async def _run_yt_dlp(
     last_cb = 0.0
     last_parsed: "tuple[int, int | None] | None" = None
     filtered_out = False
+    over_cap = False
     last_emitted: "tuple[int, int | None] | None" = None
     try:
         assert proc.stdout is not None
@@ -1820,6 +1824,8 @@ async def _run_yt_dlp(
                 break
             if _FILTERED_NEEDLE in raw:
                 filtered_out = True
+            if _OVER_CAP_NEEDLE in raw:
+                over_cap = True
             fields = _parse_progress_fields(raw.decode("utf-8", "replace").strip())
             parsed = _cumulative(fields) if fields is not None else None
             # Belt and braces over --max-filesize, which only fires when the
@@ -1872,6 +1878,10 @@ async def _run_yt_dlp(
                        log_safe(tail, keep_end=True))
         raise classified_error(tail)
 
+    if over_cap:
+        # Before find_result: a merge with one leg skipped would otherwise
+        # read as "could not be merged" — a server fault, not the cap.
+        raise UrlPolicyError("this media exceeds the server's size limit")
     result = find_result(dest_dir)
     if result is None and filtered_out:
         # handoff_match_filters at work: the run re-extracted to a result

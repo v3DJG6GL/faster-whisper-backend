@@ -1801,6 +1801,23 @@ def test_download_video_rejects_intermediate_only(tmp_path, monkeypatch):
                                 max_bytes=10_000, timeout=30))
 
 
+_MERGE_LEG_OVER_CAP_SCRIPT = """
+import os
+open(os.path.join(r"__DEST__", "media.f251.webm"), "wb").write(b"x" * 64)
+print("\\r[download] File is larger than max-filesize (90000 bytes > 10000 bytes). Aborting.",
+      flush=True)
+"""
+
+
+def test_download_video_merge_leg_over_max_filesize_is_the_size_limit(tmp_path, monkeypatch):
+    """--max-filesize skips one leg (exit 0, the other leg left behind):
+    that is the size cap, not a failed merge on the server."""
+    _patch_video_argv(monkeypatch, _MERGE_LEG_OVER_CAP_SCRIPT)
+    with pytest.raises(udl.UrlPolicyError, match="size limit"):
+        _run(udl.download_video("https://example.com/v", dest_dir=str(tmp_path),
+                                max_bytes=10_000, timeout=30))
+
+
 _SINGLE_MUXED_SCRIPT = """
 import os
 open(os.path.join(r"__DEST__", "media.mp4"), "wb").write(b"x" * 64)
