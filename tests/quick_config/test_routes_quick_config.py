@@ -614,7 +614,12 @@ def test_quick_config_page_refetches_only_on_a_refused_slug(client):
     # _detailText; none copies a raw (possibly list-shaped) detail.
     assert "msg = _detailText(j, msg);" in save
     assert html.count("j.detail) msg = j.detail;") == 0
-    assert '<textarea class="rep-comment" rows="3" maxlength="65536"' in html
+    # Bounded at the store's comment cap, not the route's 64 KB ceiling:
+    # the store keeps only the first _CAP_COMMENT chars, so a longer
+    # comment would be cut silently after "Report sent".
+    from faster_whisper_backend.reports import store as reports_store
+    assert (f'<textarea class="rep-comment" rows="3" '
+            f'maxlength="{reports_store._CAP_COMMENT}"') in html
 
 
 def test_quick_config_page_reload_failure_and_reapply_guards(client):

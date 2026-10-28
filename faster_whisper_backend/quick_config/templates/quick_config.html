@@ -1380,7 +1380,9 @@ function _buildReportForm(entry) {
     + '<label class="form-label">Comment'
     + ' <span class="help">(optional)</span>'
     + '</label>'
-    + '<textarea class="rep-comment" rows="3" maxlength="65536"'
+    // 4000 = the report store's comment cap: past it the store silently
+    // drops the tail, so stop the typing here instead.
+    + '<textarea class="rep-comment" rows="3" maxlength="4000"'
     + ' placeholder="What went wrong? Anything else the admin should know?"></textarea>'
     + '<div class="rep-actions">'
     + '  <button type="button" class="rep-cancel">Cancel</button>'

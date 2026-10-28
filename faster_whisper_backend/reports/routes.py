@@ -106,9 +106,9 @@ class ReportSubmitIn(BaseModel):
     # ceiling is MAX_REQUEST_BYTES (256 MB) — a submit carrying two 100 MB
     # strings parsed fine and peaked at 627 MB of RSS to store 6 KB. A ceiling
     # 16x above the store's functional cap kills that while staying far above
-    # anything a human types: the report textarea carries no maxlength, so
-    # bounding at 4 000 would turn a long comment that succeeds today (silently
-    # truncated) into a 422 with the text lost.
+    # anything a human types. The page's textarea is capped at the store's
+    # 4 000; a longer comment from an API client is truncated by the store
+    # rather than refused with a 422 that loses the text.
     intended_text: str = Field(default="", max_length=65_536)
     user_comment: str = Field(default="", max_length=65_536)
     # Job provenance. extra="forbid" above means the client cannot send
