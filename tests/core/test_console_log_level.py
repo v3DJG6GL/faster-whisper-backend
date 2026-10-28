@@ -7,6 +7,7 @@ import logging
 import pytest
 
 from faster_whisper_backend.core import log_setup
+from faster_whisper_backend.settings.schema import AdminConfig
 
 
 @pytest.fixture
@@ -65,3 +66,8 @@ def test_settings_save_applies_live(levels, client):
     r = client.post("/settings/state", json={"CONSOLE_LOG_LEVEL": "info"})
     assert r.status_code == 200
     assert m._console_handler.level == logging.INFO
+
+
+@pytest.mark.parametrize("field", ["CONSOLE_LOG_LEVEL", "SERVER_LOG_LEVEL"])
+def test_uppercase_log_level_is_stored_lowercase(field):
+    assert getattr(AdminConfig.model_validate({field: " WARNING "}), field) == "warning"

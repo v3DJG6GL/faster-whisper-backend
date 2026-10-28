@@ -1936,11 +1936,11 @@ class AdminConfig(BaseModel):
             )
         return self
 
-    @field_validator("CONSOLE_LOG_LEVEL", mode="before")
+    @field_validator("CONSOLE_LOG_LEVEL", "SERVER_LOG_LEVEL", mode="before")
     @classmethod
-    def _lowercase_console_log_level(cls, v: Any) -> Any:
+    def _lowercase_log_level(cls, v: Any) -> Any:
         """Accept Python's own spelling (WHISPER_CONSOLE_LOG_LEVEL=WARNING);
-        the stored value is the lowercase LogLevel literal."""
+        the stored value is the lowercase LogLevel literal (uvicorn needs it)."""
         if isinstance(v, str):
             return v.strip().lower()
         return v
