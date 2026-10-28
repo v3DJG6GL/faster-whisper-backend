@@ -204,6 +204,23 @@ _TEMPERATURE_BOUNDS = (0.0, 1.0)
 _TEMPERATURE_RUNGS_MAX = 16
 
 
+def _client_bool(v):
+    """A client bool decode key: a JSON bool, 0/1, or a true/false spelling
+    (a multipart form field is a JSON string, so ``"false"`` is easy to send).
+    None for anything else — never ``bool(v)``, which reads "false" as True."""
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, int) and v in (0, 1):
+        return bool(v)
+    if isinstance(v, str):
+        t = v.strip().lower()
+        if t in ("1", "true", "yes", "on"):
+            return True
+        if t in ("0", "false", "no", "off"):
+            return False
+    return None
+
+
 def _clamp_int(v, lo, hi):
     try:
         return max(lo, min(hi, int(v)))
@@ -264,8 +281,9 @@ def _apply_decode_overrides(kwargs, resolved_model, overrides, ident=None):
             kwargs["temperature"] = tv
     # A JSON null on a bool override means "inherit", not False.
     for key in ("condition_on_previous_text", "multilingual"):
-        if overrides.get(key) is not None:
-            kwargs[key] = bool(overrides[key])
+        bv = _client_bool(overrides.get(key))
+        if bv is not None:
+            kwargs[key] = bv
     for key, cap in _DECODE_STR_CAPS.items():
         if key in overrides and isinstance(overrides[key], str):
             kwargs[key] = overrides[key][:cap]
@@ -309,8 +327,8 @@ def _apply_decode_overrides(kwargs, resolved_model, overrides, ident=None):
                 # caller didn't really make.
                 kwargs["suppress_tokens"] = None
     # VAD: toggle + sub-params (sub-params rebuilt from config defaults when on).
-    if overrides.get("vad_filter") is not None:
-        vf = bool(overrides["vad_filter"])
+    vf = _client_bool(overrides.get("vad_filter"))
+    if vf is not None:
         kwargs["vad_filter"] = vf
         if not vf:
             kwargs["vad_parameters"] = None
@@ -545,7 +563,7 @@ def _note_auto_detect_only(overrides: dict, language: "str | None",
         if overrides.get(key) is not None and key not in ignored:
             # multilingual=false is honoured as sent: a set language never
             # decodes multilingual either.
-            if key == "multilingual" and not overrides[key]:
+            if key == "multilingual" and _client_bool(overrides[key]) is False:
                 continue
             ignored.append(key)
 

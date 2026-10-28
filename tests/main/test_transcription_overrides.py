@@ -134,6 +134,31 @@ def test_client_temperature_can_be_a_retry_ladder():
         assert t(junk) == 0.3, junk
 
 
+def test_decode_overrides_parse_bool_strings_instead_of_truthiness():
+    """A bool decode key sent as a string ("false" from a shell/form client)
+    means what it says; bool("false") is True. Unparseable values are dropped
+    (the configured value stands), like the clamp paths."""
+    base = {"vad_filter": True, "vad_parameters": {"threshold": 0.5},
+            "condition_on_previous_text": True}
+    kw = tx_models._apply_decode_overrides(dict(base), "whisper-1", {
+        "vad_filter": "false", "condition_on_previous_text": "False",
+        "multilingual": " off "})
+    assert kw["vad_filter"] is False and kw["vad_parameters"] is None
+    assert kw["condition_on_previous_text"] is False
+    assert kw["multilingual"] is False
+    kw = tx_models._apply_decode_overrides({"vad_filter": False}, "whisper-1", {
+        "vad_filter": "true", "multilingual": 1})
+    assert kw["vad_filter"] is True and kw["multilingual"] is True
+    for junk in ("maybe", "", 2, [], {}):
+        kw = tx_models._apply_decode_overrides(dict(base), "whisper-1", {
+            "vad_filter": junk, "condition_on_previous_text": junk})
+        assert kw["vad_filter"] is True and kw["condition_on_previous_text"] is True, junk
+    # "false" multilingual with a language set is honoured, not reported ignored
+    ignored = []
+    tx_models._note_auto_detect_only({"multilingual": "false"}, "de", ignored)
+    assert ignored == []
+
+
 def test_decode_overrides_drop_overflowing_suppress_tokens():
     """A suppress_tokens override whose member overflows int() is dropped, not
     500'd: a JSON 1e999 / Infinity literal parses to float('inf') and int(inf)
