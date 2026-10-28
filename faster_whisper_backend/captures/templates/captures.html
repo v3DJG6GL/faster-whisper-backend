@@ -2146,6 +2146,9 @@
       // concurrent writes that landed between this load and the save.
       baselineCorrections: JSON.parse(JSON.stringify(r.corrections || [])),
       adminNotes: r.admin_notes || '',
+      // The notes as of the GET (then as last sent): Save only sends them
+      // when changed, so it cannot erase a note another tab saved since.
+      notesBaseline: r.admin_notes || '',
       newStatus: r.status || 'new',
       wordEls: [],
       activeWordIdx: -1,
@@ -2908,8 +2911,9 @@
         // writes (another admin in another tab, or a group save touching
         // this member) so those changes survive.
         baseline_corrections: state.baselineCorrections || [],
-        admin_notes: state.adminNotes,
       };
+      var notes = state.adminNotes;
+      if (notes !== state.notesBaseline) body.admin_notes = notes;
       var gen = state.editGen;
       var sgen = state.statusGen || 0;
       var j = await api('PATCH',
@@ -2926,6 +2930,7 @@
       // the merge kept would sit in the baseline but not in the next
       // `edited` and read as "user removed it".
       state.baselineCorrections = JSON.parse(JSON.stringify(corrections));
+      state.notesBaseline = notes;
       if (state.editGen !== gen) {
         // Edited while the save ran: those edits were not sent, so the
         // card stays dirty and the drop-edits prompts still guard it.
@@ -5152,6 +5157,9 @@
           gtArea: ta,
           karaokeGround: true,
           adminNotes: '',
+          // Notes as of the last GET / Save: sent only when changed (see
+          // the capture card's notesBaseline).
+          notesBaseline: '',
           newStatus: 'new',
           dirty: false,
           dirtyEl: null,
@@ -5414,6 +5422,7 @@
             JSON.parse(JSON.stringify(d.corrections || []));
           sampleState.finalText = d.transcript || '';
           sampleState.adminNotes = d.admin_notes || '';
+          sampleState.notesBaseline = sampleState.adminNotes;
           sampleState.newStatus = d.status || 'new';
           sampleState.wordEls = [];
           sampleState._activeWordIdx = -1;
@@ -5545,7 +5554,6 @@
           // auto-save their own narrow PATCH, and resending it here would
           // revert a change another tab made since this view loaded.
           var payload = {
-            admin_notes:   sampleState.adminNotes,
             corrections:   sampleState.corrections.map(function(c) {
               return {
                 wrong:   c.wrong   || '',
@@ -5560,6 +5568,10 @@
             // landed in between.
             baseline_corrections: sampleState.baselineCorrections || [],
           };
+          // Unchanged notes stay out: resending the GET's copy would erase
+          // a note another tab saved since.
+          if (sampleState.adminNotes !== sampleState.notesBaseline)
+            payload.admin_notes = sampleState.adminNotes;
           var gen = sampleState.editGen;
           var sgen = sampleState.statusGen || 0;
           saveTBtn.disabled = true;
@@ -5573,6 +5585,8 @@
                 // one's baseline.
                 sampleState.baselineCorrections =
                   JSON.parse(JSON.stringify(payload.corrections));
+                if ('admin_notes' in payload)
+                  sampleState.notesBaseline = payload.admin_notes;
                 toast('Saved · newer edits not saved yet');
               } else {
                 applyServerSample(j.sample || {}, sgen);

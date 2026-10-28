@@ -264,7 +264,7 @@ function clearDirty() {} function toast() {} function reloadCounts() {}
 function _syncCapturePreview() {}
 var btn = { disabled: false };
 var state = { cid: 'c1', corrections: [{ wrong: 'foo', correct: 'bar', idx: 3 }],
-  baselineCorrections: [], adminNotes: '' };
+  baselineCorrections: [], adminNotes: '', notesBaseline: '' };
 (async function() {
   var p = onSave(state, {}, btn);
   var during = btn.disabled;
@@ -281,8 +281,30 @@ var state = { cid: 'c1', corrections: [{ wrong: 'foo', correct: 'bar', idx: 3 }]
 """)
     chip = {"wrong": "foo", "correct": "bar", "idx": 3}
     assert out == {"during": True, "after": False, "bodies": [
-        {"corrections": [chip], "baseline_corrections": [], "admin_notes": ""},
-        {"corrections": [], "baseline_corrections": [chip], "admin_notes": ""}]}
+        {"corrections": [chip], "baseline_corrections": []},
+        {"corrections": [], "baseline_corrections": [chip]}]}
+
+
+@needs_node
+def test_capture_save_sends_the_notes_only_when_changed(page, tmp_path):
+    """The capture Save resent the notes from the card's GET on every Save:
+    a chip-only Save erased a note another tab had saved since."""
+    out = _run_node(tmp_path, _js_function(page, "onSave") + r"""
+var bodies = [];
+async function api(m, u, body) { bodies.push(JSON.parse(JSON.stringify(body))); return { capture: {} }; }
+function clearDirty() {} function toast() {} function reloadCounts() {}
+function _syncCapturePreview() {}
+var state = { cid: 'c1', corrections: [], baselineCorrections: [],
+  adminNotes: 'old', notesBaseline: 'old' };
+(async function() {
+  await onSave(state, {});              // chips only: the notes stay out
+  state.adminNotes = 'new';
+  await onSave(state, {});
+  await onSave(state, {});              // sent once, unchanged since
+  console.log(JSON.stringify(bodies.map(function(b) { return b.admin_notes === undefined ? null : b.admin_notes; })));
+})();
+""")
+    assert out == [None, "new", None]
 
 
 @needs_node
@@ -762,6 +784,31 @@ function tick() { return new Promise(function(r) { setTimeout(r, 0); }); }
     assert out["raced"] == {"applied": 0, "dirty": True, "notes": "n + typed meanwhile",
                             "baseline": [{"wrong": "a", "correct": "A", "idx": 1, "idx_end": 1}]}
     assert out["applied"] == 1
+
+
+@needs_node
+def test_group_save_sends_the_notes_only_when_changed(page, tmp_path):
+    """The group Save resent the notes from the card's GET on every Save:
+    a chip-only Save erased a note another tab had saved since."""
+    anchor = "saveTBtn.onclick = "
+    handler = _js_block(page, page.index(anchor) + len(anchor))
+    out = _run_node(tmp_path, r"""
+var sampleState = { adminNotes: 'old', notesBaseline: 'old', corrections: [],
+  baselineCorrections: [], editGen: 0 };
+var g = { id: 'g1' }, saveTBtn = {}, bodies = [];
+function api(m, u, body) { bodies.push(body); return Promise.resolve({ sample: {} }); }
+function applyServerSample() { sampleState.notesBaseline = sampleState.adminNotes; }
+function toast() {} function reloadCounts() {}
+var onSave = """ + handler + r""";
+function tick() { return new Promise(function(r) { setTimeout(r, 0); }); }
+(async function() {
+  onSave(); await tick();               // chips only: the notes stay out
+  sampleState.adminNotes = 'new';
+  onSave(); await tick();
+  console.log(JSON.stringify(bodies.map(function(b) { return 'admin_notes' in b ? b.admin_notes : null; })));
+})();
+""")
+    assert out == [None, "new"]
 
 
 @needs_node
