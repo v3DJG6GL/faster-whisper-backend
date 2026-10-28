@@ -83,9 +83,11 @@ function _makeMonoLabeledInput(label, val, onInput, onEnter) {
   return wrap;
 }
 
-function _markMapDup(inp, dup) {
+function _markMapDup(inp, dup, caseOnly) {
   inp.classList.toggle('map-dup', dup);
-  if (dup) inp.title = 'Duplicate spoken word: only the last row is saved';
+  if (dup) inp.title = caseOnly
+    ? 'Duplicate spoken word (case is ignored): keep only one of these rows, or Save is rejected'
+    : 'Duplicate spoken word: only the last row is saved';
   else inp.removeAttribute('title');
 }
 
@@ -108,16 +110,27 @@ function _makeMapRow(rule, key, val, commitData, datalistId, onEnter, ts, showDa
   // so we display \n as literal 2-char escape and decode on read.
   // A repeated spoken word keeps only the LAST row's value, so every row
   // sharing a key is flagged; otherwise Save silently drops the others.
+  // The server lowercases keys (and 422s keys differing only by case), so
+  // rows are grouped case-insensitively. Null-prototype m and a Map keep
+  // words like "constructor" or "__proto__" from hitting Object.prototype.
   function _readMap(parent) {
-    const m = {}, byKey = {};
+    const m = Object.create(null), byKey = new Map();
     parent.querySelectorAll('tr').forEach(r => {
       const kin = r.querySelector('td:first-child input');
       const k = _unesc(kin.value);
       const v = _unesc(r.querySelector('td:nth-child(2) input').value);
-      if (k) { m[k] = v; (byKey[k] = byKey[k] || []).push(kin); }
+      if (k) {
+        m[k] = v;
+        const lk = k.toLowerCase();
+        if (!byKey.has(lk)) byKey.set(lk, []);
+        byKey.get(lk).push([kin, k]);
+      }
       else _markMapDup(kin, false);
     });
-    Object.values(byKey).forEach(ins => ins.forEach(i => _markMapDup(i, ins.length > 1)));
+    byKey.forEach(rows => {
+      const caseOnly = rows.some(([, k]) => k !== rows[0][1]);
+      rows.forEach(([i]) => _markMapDup(i, rows.length > 1, caseOnly));
+    });
     return m;
   }
   function rebuild() {

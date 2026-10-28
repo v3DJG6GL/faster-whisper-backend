@@ -100,3 +100,29 @@ console.log(JSON.stringify({ before, map: rule.map, d1: dup(r1) }));
 
 def test_duplicate_flag_is_styled():
     assert ".rule-editor .map-table input.map-dup {" in web_common.NAV_CSS
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
+def test_spoken_words_differing_only_in_case_are_flagged():
+    # compile_map lowercases keys and the save validator rejects case
+    # collisions, so "Komma" next to "foo" -> "komma" is a clash.
+    res = _run(_SETUP + r"""
+key(r1).value = 'Komma'; key(r1).fire('input');
+key(r2).value = 'komma'; key(r2).fire('input');
+console.log(JSON.stringify({ map: rule.map, d1: dup(r1), d2: dup(r2), title: key(r2).title }));
+""")
+    assert res["map"] == {"Komma": "A", "komma": "B"}
+    assert res["d1"] is True and res["d2"] is True
+    assert "case is ignored" in res["title"]
+
+
+@pytest.mark.parametrize("word", ["constructor", "toString", "__proto__"])
+@pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
+def test_object_prototype_names_are_ordinary_spoken_words(word):
+    res = _run(_SETUP + f"""
+key(r2).value = {json.dumps(word)}; key(r2).fire('input');
+console.log(JSON.stringify({{ map: rule.map, keys: Object.keys(rule.map), commits, d2: dup(r2) }}));
+""")
+    assert res["keys"] == ["foo", word]
+    assert res["map"][word] == "B"
+    assert res["commits"] == 1 and res["d2"] is False
