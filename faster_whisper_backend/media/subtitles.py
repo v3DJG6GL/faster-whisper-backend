@@ -16,7 +16,7 @@ Rules:
   - one format per track, vtt over srt; never an HLS playlist (SRF lists a
     248-byte m3u8 stub beside the real vtt — fetching its segments would
     be a fan-out of server requests the caps never saw);
-  - at most MAX_TRACKS, ids `^[A-Za-z0-9_-]{1,32}$` minted from kind + the
+  - at most MAX_TRACKS, the spoken language's tracks first; ids `^[A-Za-z0-9_-]{1,32}$` minted from kind + the
     site's language key so the same link yields the same ids on every probe;
   - `lang` (and `language_of`) in the server's own spelling (`_code`), so
     the code a track carries is one the packaging route accepts.
@@ -95,8 +95,6 @@ def list_tracks(info: dict) -> "tuple[list[dict], dict[str, dict]]":
     public: "list[dict]" = []
     sources: "dict[str, dict]" = {}
     for lang, kind, fmts in picked + orig:
-        if len(public) >= MAX_TRACKS:
-            break
         if not isinstance(lang, str) or not _LANG_RE.match(lang):
             continue  # "live_chat", odd keys
         f = _best_format(fmts)
@@ -110,6 +108,15 @@ def list_tracks(info: dict) -> "tuple[list[dict], dict[str, dict]]":
             "hoh": bool(_HOH_RE.search(f"{lang} {name or ''}")),
         })
         sources[tid] = {"url": str(f["url"]), "ext": _ext_of(f)}
+    if len(public) > MAX_TRACKS:
+        # The cap keeps the spoken language's tracks first, so a link with
+        # dozens of manual translations still offers its own; the kept
+        # ones stay in the site's order.
+        spoken = language_of(info)
+        keep = sorted(range(len(public)),
+                      key=lambda i: public[i]["lang"] != spoken)[:MAX_TRACKS]
+        public = [public[i] for i in sorted(keep)]
+        sources = {t["id"]: sources[t["id"]] for t in public}
     return public, sources
 
 

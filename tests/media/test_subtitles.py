@@ -211,3 +211,19 @@ def test_fetch_blames_the_budget_not_a_small_track_over_the_rest(served):
     assert asked[-1] < subs.TRACK_MAX_BYTES
     assert "budget" in failed[0]["error"]
     assert "size limit" not in failed[0]["error"]
+
+
+def test_cap_keeps_the_spoken_languages_tracks_past_many_translations():
+    """33 manual translations sort ahead of the site's own Russian tracks;
+    the cap must still keep m-ru and a-ru (the preview names "ru")."""
+    langs = [f"{a}{b}" for a in "abcdefghijklmnopqrst" for b in "fg"][:33]
+    manual = {lang: [{"url": f"https://e.test/{lang}.vtt"}] for lang in langs}
+    manual["ru"] = [{"url": "https://e.test/ru.vtt"}]
+    info = {"language": "ru", "subtitles": manual,
+            "automatic_captions": {"ru-orig": [{"url": "https://e.test/a-ru.vtt"}]}}
+    public, sources = subs.list_tracks(info)
+    assert len(public) == subs.MAX_TRACKS == len(sources)
+    ids = [t["id"] for t in public]
+    assert ids[-2:] == ["m-ru", "a-ru"]  # kept, in the site's order
+    assert ids[:-2] == [f"m-{lang}" for lang in langs[:subs.MAX_TRACKS - 2]]
+    assert set(sources) == set(ids)
