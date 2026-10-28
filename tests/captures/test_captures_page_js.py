@@ -1231,3 +1231,19 @@ async function run(answer) {
     assert out["applied"] == 1
     assert out["asked"] == ["Show the regenerated sample?"] * 2
     assert out["toasts"][-1] == "Regenerated"
+
+
+# ---- chip position after a bracket or quote ---------------------------------------------------
+
+@needs_node
+def test_chip_on_a_word_after_a_bracket_rewrites_that_word(page, tmp_path):
+    """A word glued to a "(" or „ counted as the next token, so a chip on
+    it was placed on an earlier copy of the word (the server twin in
+    captures/samples.py had the same miscount)."""
+    out = _run_node(tmp_path, _js_function(page, "_applyChipsToText") + r"""
+console.log(JSON.stringify([
+  _applyChipsToText('ja die (die Sache', [{ wrong: 'die', correct: 'DER', idx: 2 }]),
+  _applyChipsToText('ja die \u201edie Sache', [{ wrong: 'die', correct: 'DER', idx: 2 }]),
+  _applyChipsToText('ja die (die Sache', [{ wrong: 'die', correct: 'DER', idx: 1 }])]));
+""")
+    assert out == ["ja die (DER Sache", "ja die \u201eDER Sache", "ja DER (die Sache"]

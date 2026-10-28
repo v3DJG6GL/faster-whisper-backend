@@ -3347,7 +3347,10 @@
               || (W.test(wrong[wrong.length - 1]) && j < out.length
                   && W.test(out[j])))) {
           if (!anchored) { best = i; break; }
-          var d = Math.abs(nWords(out.slice(0, i)) + shift - pos);
+          // A word glued to a "(" or „ before it is that token, not the next.
+          var k = nWords(out.slice(0, i));
+          if (i > 0 && !/\s/.test(out[i - 1])) k -= 1;
+          var d = Math.abs(k + shift - pos);
           if (best < 0 || d < bestD) { best = i; bestD = d; }
         }
         i = out.indexOf(wrong, i + 1);
