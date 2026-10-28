@@ -764,7 +764,8 @@ def _text_sha(text: str) -> str:
     return hashlib.sha1(text.encode("utf-8", "surrogatepass")).hexdigest()
 
 
-def _probe_chain(text: str, units: list[list[Any]]
+def _probe_chain(text: str, units: list[list[Any]], skip: set[int] | None = None,
+                 budget: float | None = None
                  ) -> tuple[dict[int, str], set[int], int | None] | None:
     """Walk `units` (see _PROBE_SRC) from `text` in a child process killed
     after _TEST_PIPELINE_PROBE_TIMEOUT, so every pattern is timed on the text
@@ -775,7 +776,11 @@ def _probe_chain(text: str, units: list[list[Any]]
     the walk; slow holds the unit indices that timed out (each round skips the
     culprit and walks again); units from `stop` on were never probed (None =
     the walk finished). None when the child cannot run at all — fails open
-    like regex_guard.validate."""
+    like regex_guard.validate.
+
+    `skip`: unit indices already known slow (reported slow, never re-timed).
+    `budget`: seconds this walk may spend in all; a round is cut at what is
+    left, and once it is gone the walk stops where it got to."""
     import subprocess
     import sys
 
@@ -789,15 +794,22 @@ def _probe_chain(text: str, units: list[list[Any]]
                 found[int(ri)] = h
         return found
 
-    slow: set[int] = set()
+    slow: set[int] = set(skip or ())
+    end = None if budget is None else time.monotonic() + budget
+    last: tuple[dict[int, str], int] = ({}, 0)
     for _ in range(_TEST_PIPELINE_PROBE_ROUNDS):
+        timeout = _TEST_PIPELINE_PROBE_TIMEOUT
+        if end is not None:
+            timeout = min(timeout, end - time.monotonic())
+            if timeout <= 0:
+                break
         try:
             p = subprocess.run(
                 [sys.executable, "-I", "-c", _PROBE_SRC],
                 input=json.dumps([text, units, sorted(slow),
                                   pl_engine._POSTPROCESS_MAX_CHARS]),
                 capture_output=True, text=True,
-                timeout=_TEST_PIPELINE_PROBE_TIMEOUT)
+                timeout=timeout)
             return _marks(p.stdout), slow, None
         except subprocess.TimeoutExpired as exc:
             idx = regex_guard._last_index(getattr(exc, "stderr", None))
@@ -962,7 +974,15 @@ async def test_pipeline(payload: dict[str, Any]) -> JSONResponse:
     # on the real text (an earlier callback or map changed it in a way the
     # child cannot replay).
     cleared: dict[int, tuple[str, set[int]]] = {}
-    probe = {"on": True, "exhausted": False}
+    # "left": the request's probe time across every walk — rounds x timeout,
+    # the bound one walk always had; whatever is unprobed once it is spent is
+    # reported as not run.
+    probe: dict[str, Any] = {
+        "on": True, "exhausted": False,
+        "left": _TEST_PIPELINE_PROBE_TIMEOUT * _TEST_PIPELINE_PROBE_ROUNDS}
+    # (rule, entry) units an earlier walk found slow: later walks skip them
+    # (not run) instead of timing each one out again.
+    known_slow: set[tuple[int, int]] = set()
 
     def _probe_from(start: int, text: str) -> None:
         units: list[list[Any]] = []
@@ -979,7 +999,11 @@ async def test_pipeline(payload: dict[str, Any]) -> JSONResponse:
                 owner[len(units)] = (ri, ei)
                 units.append(["match", ri, pat] if rep is None
                              else ["sub", ri, pat, rep])
-        res = _probe_chain(text, units)
+        t0 = time.monotonic()
+        res = _probe_chain(text, units,
+                           {ui for ui, u in owner.items() if u in known_slow},
+                           probe["left"])
+        probe["left"] -= time.monotonic() - t0
         if res is None:
             probe["on"] = False
             return
@@ -987,9 +1011,11 @@ async def test_pipeline(payload: dict[str, Any]) -> JSONResponse:
         for ri, h in marks.items():
             cleared[ri] = (h, set())
         for ui, (ri, ei) in owner.items():
+            if ui in slow:
+                known_slow.add((ri, ei))
             if ri in cleared and (ui in slow or (stop is not None and ui >= stop)):
                 cleared[ri][1].add(ei)
-        if stop is not None:
+        if stop is not None or probe["left"] <= 0:
             probe["exhausted"] = True
 
     def _run_rule(text: str, rule: dict, slow: set[int]) -> dict[str, Any]:

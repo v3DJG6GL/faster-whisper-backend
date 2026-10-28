@@ -108,7 +108,7 @@ def test_ordinary_chain_runs_with_one_probe(client, monkeypatch):
     calls = []
     real = admin_routes._probe_chain
     monkeypatch.setattr(admin_routes, "_probe_chain",
-                        lambda text, units: calls.append(text) or real(text, units))
+                        lambda text, *a: calls.append(text) or real(text, *a))
     r = client.post("/settings/test-pipeline", json={
         "sample": " x foo ",
         "rules": [_grow(3),
@@ -160,3 +160,57 @@ def test_probe_fails_open_when_the_child_cannot_start(monkeypatch):
         raise OSError("no fork")
     monkeypatch.setattr(subprocess, "run", _no_spawn)
     assert admin_routes._probe_chain("aaaa", _units([_EMPTY_BACKTRACK])) is None
+
+
+def _count_probe_timeouts(monkeypatch):
+    killed = []
+    real = subprocess.run
+
+    def _run(*a, **k):
+        try:
+            return real(*a, **k)
+        except subprocess.TimeoutExpired:
+            killed.append(k.get("timeout"))
+            raise
+    monkeypatch.setattr(subprocess, "run", _run)
+    return killed
+
+
+def test_a_pattern_found_slow_is_not_timed_again_by_each_later_walk(client, monkeypatch):
+    # Every map changes the text, so the next pattern rule walks again; the
+    # slow tail must cost one kill, not one per walk.
+    monkeypatch.setattr(admin_routes, "_TEST_PIPELINE_PROBE_TIMEOUT", 0.2)
+    killed = _count_probe_timeouts(monkeypatch)
+    rules = []
+    for n in "123":
+        rules += [{"name": "m" + n, "type": "callback:map", "enabled": True,
+                   "map": {n: "a"}},
+                  {"name": "up" + n, "type": "callback:upper", "enabled": True,
+                   "pattern": "q"}]
+    rules.append({"name": "slow", "type": "callback:upper", "enabled": True,
+                  "pattern": _EMPTY_BACKTRACK})
+    r = client.post("/settings/test-pipeline", json={"sample": "1 2 3 4", "rules": rules})
+    assert r.status_code == 200, r.text
+    steps = r.json()["steps"]
+    assert steps[-1].get("not_run") is True
+    assert len(killed) == 1
+
+
+def test_probe_time_across_walks_is_capped(client, monkeypatch):
+    # Each `(?:|c){18}(?!)` is slow only on the c-runs its own map writes, so
+    # every walk kills a NEW unit: the request's probe time still stops at
+    # rounds x timeout, and what was not probed is not run.
+    monkeypatch.setattr(admin_routes, "_TEST_PIPELINE_PROBE_TIMEOUT", 0.2)
+    killed = _count_probe_timeouts(monkeypatch)
+    rules = []
+    for n, c in zip("123456", "bcdefg"):
+        rules += [{"name": "m" + n, "type": "callback:map", "enabled": True,
+                   "map": {n: c * 60}},
+                  {"name": "up" + n, "type": "callback:upper", "enabled": True,
+                   "pattern": "(?:|%s){18}(?!)" % c}]
+    r = client.post("/settings/test-pipeline",
+                    json={"sample": "1 1 2 2 3 3 4 4 5 5 6 6", "rules": rules})
+    assert r.status_code == 200, r.text
+    steps = r.json()["steps"]
+    assert all(s.get("not_run") is True for s in steps[1::2])
+    assert sum(killed) <= 0.2 * admin_routes._TEST_PIPELINE_PROBE_ROUNDS + 1e-6
