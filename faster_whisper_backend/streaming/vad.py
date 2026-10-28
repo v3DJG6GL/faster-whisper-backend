@@ -109,7 +109,10 @@ class SileroEndpointer:
 
     def _prob(self, frame: np.ndarray) -> float:
         self._buf = np.concatenate([self._buf[FRAME_SAMPLES:], frame])
-        out = self._model(self._buf)               # (_CTX_FRAMES + 1) window probs
+        # A copy: faster-whisper's SileroVADModel zeroes the last 64 samples
+        # of its input in place, which would punch a 4 ms hole into the
+        # newest frame of the lookback.
+        out = self._model(self._buf.copy())        # (_CTX_FRAMES + 1) window probs
         return float(np.asarray(out).reshape(-1)[-1])
 
     def is_speech(self, frame: np.ndarray) -> bool:
