@@ -1704,6 +1704,21 @@ def test_alias_env_empty_plain_hf_token_does_not_block_the_old_file_var():
     assert env["WHISPER_HF_TOKEN_FILE"] == "/y"
 
 
+def test_alias_env_rerun_on_its_own_output_does_not_call_the_old_name_ignored():
+    """A spawned uvicorn worker (SERVER_WORKERS > 1) inherits the parent's
+    aliased environ and imports config again: the old name's value is the
+    one in force, so it must not be reported as ignored per worker."""
+    from faster_whisper_backend.settings import config_renames
+    env = {"WHISPER_SESSION_TTL_SECONDS": "3600", "WHISPER_USE_AUTH_TOKEN": "hf_x",
+           "WHISPER_USE_AUTH_TOKEN_FILE": "/old"}
+    config_renames.alias_env(env)
+    aliased = dict(env)
+    warns = config_renames.alias_env(env)
+    assert env == aliased
+    assert not any("is ignored" in w for w in warns), warns
+    assert sum("was renamed" in w for w in warns) == 3
+
+
 def test_prefixed_cookie_name_without_secure_warns_at_load(monkeypatch):
     """/settings refuses a __Host-/__Secure- name without Secure, but the env
     and file load paths skip that check (a load failure would drop every

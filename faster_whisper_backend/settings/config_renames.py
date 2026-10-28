@@ -320,7 +320,10 @@ def alias_env(environ: MutableMapping[str, str]) -> list[str]:
             if not environ.get(o):
                 continue
             blocking = new_set if sfx == "" else set_nonempty
-            if blocking:
+            # The new name already holding the old value is this alias
+            # applied upstream (a spawned uvicorn worker inherits the
+            # parent's environ): the old value is in force, not ignored.
+            if blocking and environ.get(n) != environ[o]:
                 warnings.append(f"{o} is ignored: {blocking[0]} (its new name) "
                                 f"is set.")
                 continue
