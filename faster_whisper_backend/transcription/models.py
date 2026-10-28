@@ -802,6 +802,31 @@ def _convert_blocking(model_id: str, output_dir: str, quantization: str,
                 model_id, time.perf_counter() - t0)
 
 
+def _converted_is_current(name: str, output_dir: str) -> bool:
+    """True when `output_dir` holds a conversion that can be served. For a
+    local HF-format dir the conversion is also stale once any of its
+    weight/config/tokenizer files is newer than the converted model.bin: a
+    retrain into the same dir has no revision to key a fresh cache dir on.
+    Hub ids keep the plain exists check (loaded directly on later starts)."""
+    bin_path = os.path.join(output_dir, "model.bin")
+    try:
+        built = os.path.getmtime(bin_path)
+    except OSError:
+        return False
+    if not os.path.isdir(name):
+        return True
+    try:
+        with os.scandir(name) as it:
+            newest = max(
+                (e.stat().st_mtime for e in it
+                 if e.is_file() and e.name.endswith(
+                     (".safetensors", ".bin", ".json", ".txt"))),
+                default=0.0)
+    except OSError:
+        return True
+    return newest <= built
+
+
 def _pinned_revision(name: str) -> "str | None":
     """The per-model REVISION pin. PM-only field (no global counterpart):
     read directly from the override."""
@@ -827,8 +852,11 @@ async def _ensure_ct2_model(name: str) -> str:
     revision = _pinned_revision(name)
     output_dir = _converted_dir_for(name, quantization, revision)
     # Fast path: already converted (idempotent across restarts).
-    if os.path.isfile(os.path.join(output_dir, "model.bin")):
+    if _converted_is_current(name, output_dir):
         return output_dir
+    if os.path.isfile(os.path.join(output_dir, "model.bin")):
+        logger.info("auto-convert: %s changed since its conversion; "
+                    "reconverting", name)
     # Skip the file-list probe + conversion for already-CT2 repos and
     # local paths. OFF the loop: the probe makes a synchronous
     # huggingface_hub.list_repo_files() HTTPS call (its own docstring says
@@ -845,7 +873,7 @@ async def _ensure_ct2_model(name: str) -> str:
         lk = _convert_locks.setdefault(name, asyncio.Lock())
     async with lk:
         # Re-check inside the lock — another coroutine may have just finished.
-        if os.path.isfile(os.path.join(output_dir, "model.bin")):
+        if _converted_is_current(name, output_dir):
             return output_dir
         # Cross-process file-lock so multi-worker uvicorn doesn't double-convert.
         # Both the lock acquisition (polling, up to 600 s) and the conversion
@@ -856,7 +884,7 @@ async def _ensure_ct2_model(name: str) -> str:
 
         def _locked_convert() -> None:
             with FileLock(lock_path, timeout=600):
-                if os.path.isfile(os.path.join(output_dir, "model.bin")):
+                if _converted_is_current(name, output_dir):
                     return
                 _convert_blocking(name, output_dir, quantization, revision,
                                   files)
