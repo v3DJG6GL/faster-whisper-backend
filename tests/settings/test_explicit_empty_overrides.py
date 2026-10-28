@@ -70,6 +70,20 @@ def _assemble(values, language="", overrides=None):
         overrides=overrides, ident=ec.Resolved(values=values))
 
 
+def test_whitespace_only_initial_prompt_is_no_prompt():
+    """A blank prompt (batch form prompt="  ", a blank DEFAULT_PROMPT) is
+    forwarded as None, like a blank hotwords: faster-whisper emits
+    <|startofprev|> for any non-empty string, which drops opening words. The
+    streaming handshake already strips it, so batch must decode the same."""
+    def prompt(p):
+        return tx_models.assemble_transcribe_kwargs(
+            None, None, language="", temperature=0.0, vad_filter=False,
+            vad_parameters=None, want_word_ts=False, initial_prompt=p,
+            ident=ec.Resolved(values={}))["initial_prompt"]
+    assert prompt("  ") is None and prompt("\n\t") is None and prompt("") is None
+    assert prompt(" Hallo ") == " Hallo "
+
+
 def test_multilingual_applies_to_auto_detect_only():
     assert _assemble({}, overrides={"multilingual": True})["multilingual"] is True
     assert _assemble({"MULTILINGUAL": True})["multilingual"] is True

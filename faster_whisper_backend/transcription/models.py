@@ -419,7 +419,10 @@ def assemble_transcribe_kwargs(resolved_model, model, *, language, temperature,
         vad_parameters=vad_parameters,
         word_timestamps=want_word_ts,
         condition_on_previous_text=cf("CONDITION_ON_PREVIOUS_TEXT"),
-        initial_prompt=initial_prompt,
+        # Whitespace-only is no prompt, as for hotwords below: faster-whisper
+        # would still emit <|startofprev|> for it.
+        initial_prompt=(None if isinstance(initial_prompt, str)
+                        and not initial_prompt.strip() else initial_prompt),
         no_speech_threshold=cf("NO_SPEECH_THRESHOLD"),
         log_prob_threshold=cf("LOG_PROB_THRESHOLD"),
         compression_ratio_threshold=cf("COMPRESSION_RATIO_THRESHOLD"),
