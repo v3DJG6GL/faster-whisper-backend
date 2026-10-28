@@ -949,6 +949,25 @@ def test_language_check_votes_and_keeps_the_audio(client, url_enabled, lang_chec
     assert _PID not in tx_progress._BATCH_PROGRESS
 
 
+
+def test_language_check_places_pieces_by_the_downloaded_files_length(
+        client, url_enabled, lang_check, monkeypatch):
+    # A direct .mp3 link probes without a duration: once the full download
+    # is on disk its real length (90 s) places the 20/50/80 % pieces, not
+    # one piece at 0 s.
+    from faster_whisper_backend.media import subtitle_mux
+
+    async def _probe(url, *, timeout):
+        return _info(url=url, duration=None)
+    monkeypatch.setattr(url_download, "probe", _probe)
+    monkeypatch.setattr(subtitle_mux, "probe_streams", lambda path: subtitle_mux.MediaStreams(
+        video_codec=None, audio_codec="mp3", width=None, height=None,
+        duration=90.0, mp4_ok=True, mp4_reason=None))
+    lang_check.heard = [("de", 0.9)] * 3
+    r = client.post("/v1/audio/url-language", json={"url": _URL})
+    assert r.status_code == 200, r.text
+    assert [p["at"] for p in r.json()["pieces"]] == [18.0, 45.0, 70.0]
+
 def test_language_check_cancel_between_pieces(client, url_enabled, lang_check,
                                               monkeypatch):
     real = type(lang_check).detect_language

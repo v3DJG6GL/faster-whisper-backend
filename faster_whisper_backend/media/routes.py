@@ -514,10 +514,16 @@ async def url_language(request: Request,
             entry = url_media_store.resolve_entry(mid, user_id=_user_id)
             if entry is None:
                 raise _udl.UrlDownloadError("the server could not retain the audio")
+            def _decode_pieces(starts):
+                if not info.duration:
+                    # The probe had no length (a direct .mp3 link): place
+                    # the pieces by the downloaded file's, not one at 0 s.
+                    starts = _lc.piece_starts(
+                        _pk.probe_streams(entry["path"]).duration)
+                return starts, _transcode.decode_pieces_16k(
+                    entry["path"], starts, _lc.PIECE_SECONDS)
             try:
-                audio = await asyncio.to_thread(
-                    _transcode.decode_pieces_16k, entry["path"], starts,
-                    _lc.PIECE_SECONDS)
+                starts, audio = await asyncio.to_thread(_decode_pieces, starts)
             except Exception as e:  # noqa: BLE001 — PyAV's text names the path
                 logger.info("[url-dl] language check could not decode the audio "
                             "(host %s): %s", media_video._url_host_for_log(url),
