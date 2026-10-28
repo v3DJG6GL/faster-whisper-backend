@@ -24,7 +24,8 @@ single DELETE statement enforces both the row cap and the TTL. A cap of
 0 disables the count clause; a TTL of 0 disables the age clause.
 
 Module-level connection: SQLite's WAL mode lets us share one connection
-across threads (`check_same_thread=False`). `_lock` serialises writers.
+across threads (`check_same_thread=False`). `_lock` serialises writers and
+readers alike (concurrent identical SELECTs share a cached statement).
 
 Do not log row content — entries carry literal dictation text, which
 can be sensitive. Module log lines carry only counts and request_id
@@ -510,13 +511,18 @@ def list_recent(
         sql += " WHERE " + " AND ".join(where)
     sql += " ORDER BY created_ts DESC LIMIT ?"
     params.append(max(1, int(limit)))
-    cur = conn.execute(sql, params)
-    return [_row_to_dict(r) for r in cur.fetchall()]
+    # Readers take the lock too: two threads running the same SQL text on
+    # the shared connection share one cached statement, and each can read
+    # the other's rows (another user's, under an own-scope filter).
+    with _lock:
+        rows = conn.execute(sql, params).fetchall()
+    return [_row_to_dict(r) for r in rows]
 
 
 def count() -> int:
     conn = _require_conn()
-    row = conn.execute("SELECT COUNT(*) AS n FROM recent_transcriptions").fetchone()
+    with _lock:
+        row = conn.execute("SELECT COUNT(*) AS n FROM recent_transcriptions").fetchone()
     return int(row["n"]) if row else 0
 
 

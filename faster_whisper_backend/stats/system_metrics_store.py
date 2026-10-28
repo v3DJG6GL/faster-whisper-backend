@@ -137,16 +137,19 @@ def list_series(*, metric: str, from_ts: float, to_ts: float,
         raise ValueError(f"unknown metric: {metric!r}")
     step = max(1, int(step_s))
     conn = _require_conn()
-    cur = conn.execute(
-        f"SELECT (ts / ?) * ? AS t, AVG({metric}) AS a, MAX({metric}) AS m"
-        f" FROM system_metrics WHERE ts >= ? AND ts < ? AND {metric} IS NOT NULL"
-        " GROUP BY t ORDER BY t",
-        (step, step, int(from_ts), int(to_ts)),
-    )
+    # Under the lock like the writers: two /stats/history fetches of one
+    # metric share a cached statement on the shared connection.
+    with _lock:
+        rows = conn.execute(
+            f"SELECT (ts / ?) * ? AS t, AVG({metric}) AS a, MAX({metric}) AS m"
+            f" FROM system_metrics WHERE ts >= ? AND ts < ? AND {metric} IS NOT NULL"
+            " GROUP BY t ORDER BY t",
+            (step, step, int(from_ts), int(to_ts)),
+        ).fetchall()
     t: list[int] = []
     avg: list[float] = []
     mx: list[float] = []
-    for r in cur.fetchall():
+    for r in rows:
         t.append(int(r["t"]))
         avg.append(round(float(r["a"]), 2))
         mx.append(round(float(r["m"]), 2))
