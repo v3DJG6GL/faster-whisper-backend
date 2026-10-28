@@ -208,9 +208,9 @@ def build_package_argv(src: str, srt_paths: "list[str]", tracks: "list[SubtitleT
     (ffmpeg's `original` disposition, FlagOriginal since 4.4) — the track
     NAME stays the plain language name. MP4 has no such flag (movenc drops it
     silently), so the argv leaves it out there; `default` and
-    `hearing_impaired` survive in MP4. MP4 tracks also get `handler_name` =
-    the title: players such as Jellyfin read the hdlr name as the track
-    title, and movenc writes no `title` for mov_text. `audio_lang`
+    `hearing_impaired` survive in MP4. MP4 tracks (subtitle and audio) also
+    get `handler_name` = the title: players such as Jellyfin read the hdlr
+    name as the track title, and movenc writes no `title` there. `audio_lang`
     tags every audio stream with the spoken language (the source file usually
     carries the uploader's default, "en" for a German video).
     `strip_empty_captions` drops the H.264 SEI units, which takes broadcast
@@ -241,8 +241,11 @@ def build_package_argv(src: str, srt_paths: "list[str]", tracks: "list[SubtitleT
             argv += [f"-metadata:s:s:{i}", f"handler_name={t.label}"]
         argv += [f"-disposition:s:{i}", "+".join(flags) if flags else "0"]
     if audio_lang:
+        a_title = audio_label or language_label(audio_lang)
         argv += ["-metadata:s:a", f"language={iso639_2t(audio_lang)}",
-                 "-metadata:s:a", f"title={audio_label or language_label(audio_lang)}"]
+                 "-metadata:s:a", f"title={a_title}"]
+        if container == "mp4":
+            argv += ["-metadata:s:a", f"handler_name={a_title}"]
     argv += ["-max_muxing_queue_size", "4096"]
     if container == "mp4":
         argv += ["-movflags", "+faststart", "-f", "mp4", out_path]
