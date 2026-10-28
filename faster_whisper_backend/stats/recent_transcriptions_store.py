@@ -24,8 +24,11 @@ single DELETE statement enforces both the row cap and the TTL. A cap of
 0 disables the count clause; a TTL of 0 disables the age clause.
 
 Module-level connection: SQLite's WAL mode lets us share one connection
-across threads (`check_same_thread=False`). `_lock` serialises writers and
-readers alike (concurrent identical SELECTs share a cached statement).
+across threads (`check_same_thread=False`). `_lock` serialises the writers.
+list_recent and count open a short-lived connection of their own instead (see
+_reader_conn): concurrent identical SELECTs on the shared one share a cached
+statement, and holding `_lock` for a whole search would stall the writers,
+which run on the event loop.
 
 Do not log row content — entries carry literal dictation text, which
 can be sensitive. Module log lines carry only counts and request_id
@@ -33,12 +36,13 @@ prefixes.
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import sqlite3
 import threading
 import time
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from typing import Any
 
 from faster_whisper_backend.core import store_common
@@ -47,6 +51,7 @@ logger = logging.getLogger("whisper-api")
 
 _lock = threading.RLock()  # reentrant: record_trace/record_timing hold the lock and may call prune() which re-acquires it
 _conn: sqlite3.Connection | None = None
+_path: str | None = None
 _insert_counter = 0
 
 # Generous field caps — raw/final are audio-driven and can be long
@@ -105,7 +110,7 @@ def init_db(path: str) -> None:
     """Open (or create) the DB at `path` in WAL mode. Idempotent — call
     once on service startup before any other function in this module.
     Mirrors reports_store.init_db / captures_store.init_db."""
-    global _conn
+    global _conn, _path
     conn = store_common.open_wal_db(path)
     # Publish the connection only once schema + migrations succeeded: a
     # half-initialised store must read as not open (is_open() gates the 1 Hz
@@ -155,6 +160,7 @@ def init_db(path: str) -> None:
     except BaseException:
         conn.close()
         raise
+    _path = path
     _conn = conn
 
 
@@ -170,6 +176,27 @@ def _require_conn() -> sqlite3.Connection:
             "recent_transcriptions_store.init_db() was not called before use."
         )
     return _conn
+
+
+@contextlib.contextmanager
+def _reader_conn() -> Iterator[sqlite3.Connection]:
+    """A read-only connection of the caller's own, closed on exit. On the
+    shared one, two threads running the same SELECT text share one cached
+    statement and can read each other's rows (another user's, under an
+    own-scope filter); taking `_lock` instead would hold off record_timing,
+    which runs on the event loop, for a whole unindexed text search. A WAL
+    reader never blocks the writer."""
+    _require_conn()
+    assert _path is not None
+    conn = sqlite3.connect(_path, isolation_level=None,
+                           timeout=store_common.BUSY_TIMEOUT_S)
+    try:
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA query_only=ON;")
+        conn.execute("PRAGMA temp_store=MEMORY;")
+        yield conn
+    finally:
+        conn.close()
 
 
 def _truncate_steps(steps: list) -> list:
@@ -475,7 +502,7 @@ def list_recent(
     their audio: RTF = proc / audio > slow_rtf). All compose with the
     cursor and the user filter. user_id_filter may also be a sequence of
     ids (an IN clause) — the /stats jobs who-filter."""
-    conn = _require_conn()
+    _require_conn()
     where: list[str] = []
     params: list[Any] = []
     if before_ts and before_ts > 0:
@@ -525,17 +552,13 @@ def list_recent(
         sql += " WHERE " + " AND ".join(where)
     sql += " ORDER BY created_ts DESC LIMIT ?"
     params.append(max(1, int(limit)))
-    # Readers take the lock too: two threads running the same SQL text on
-    # the shared connection share one cached statement, and each can read
-    # the other's rows (another user's, under an own-scope filter).
-    with _lock:
+    with _reader_conn() as conn:
         rows = conn.execute(sql, params).fetchall()
     return [_row_to_dict(r) for r in rows]
 
 
 def count() -> int:
-    conn = _require_conn()
-    with _lock:
+    with _reader_conn() as conn:
         row = conn.execute("SELECT COUNT(*) AS n FROM recent_transcriptions").fetchone()
     return int(row["n"]) if row else 0
 

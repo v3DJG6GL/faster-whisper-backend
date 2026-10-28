@@ -1,5 +1,5 @@
-"""Reads on the shared store connections run under the store lock (usage_store:
-on a connection of their own): two threads running the same SELECT text share
+"""Reads on the shared store connections run under the store lock (usage_store
+and recent_transcriptions_store: on a connection of their own): two threads running the same SELECT text share
 pysqlite's cached statement, and each can read the other's rows (another
 user's, under an own-scope filter)."""
 import threading
@@ -38,15 +38,54 @@ class _LockCheckingConn:
         return self._real.execute(sql, *a)
 
 
-def test_recent_transcriptions_reads_hold_the_lock(tx_store, monkeypatch):
+def test_recent_transcriptions_reads_skip_the_shared_connection(tx_store, monkeypatch):
+    """recent_transcriptions_store readers run on a connection of their own
+    instead of the lock: nothing a reader runs reaches the shared connection."""
     tx_store.record_timing(request_id="r1", model="m", audio_s=1.0,
                            processing_s=0.5, status="ok", words=2)
-    conn = _LockCheckingConn(tx_store._conn, tx_store._lock)
+    conn = _RecordingConn(tx_store._conn)
     monkeypatch.setattr(tx_store, "_conn", conn)
 
     assert len(tx_store.list_recent(limit=5, user_id_filter=None)) == 1
     assert tx_store.count() == 1
-    assert conn.unlocked == []
+    assert conn.sql == []
+
+
+def test_recent_transcriptions_write_does_not_wait_for_a_search(tx_store, monkeypatch):
+    """record_timing runs on the event loop: a /quick-config text search
+    scanning the table in a worker thread must not hold it off until done."""
+    import sqlite3
+
+    tx_store.record_timing(request_id="r1", model="m", audio_s=1.0,
+                           processing_s=0.5, status="ok", words=2)
+    waited, writers = [], []
+
+    def like_then_write(*_a):
+        # SQLite's LIKE, overridden: fires mid-scan, once.
+        if not writers:
+            w = threading.Thread(target=tx_store.record_timing, kwargs=dict(
+                request_id="r2", model="m", audio_s=1.0, processing_s=0.5,
+                status="ok", words=1))
+            writers.append(w)
+            w.start()
+            w.join(timeout=5)
+            waited.append(w.is_alive())
+        return False
+
+    real_connect = sqlite3.connect
+
+    def connect(*a, **kw):
+        c = real_connect(*a, **kw)
+        c.create_function("like", 3, like_then_write)
+        return c
+
+    tx_store._conn.create_function("like", 3, like_then_write)
+    monkeypatch.setattr(sqlite3, "connect", connect)
+    assert tx_store.list_recent(limit=5, query="needle") == []
+    for w in writers:
+        w.join()
+    assert waited == [False]
+    assert tx_store.count() == 2
 
 
 def test_system_metrics_list_series_holds_the_lock(sm_store, monkeypatch):
