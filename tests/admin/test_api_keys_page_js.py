@@ -268,3 +268,64 @@ function api() { return Promise.resolve({ ok: true,
     assert out["seen"] == [{}, {"beam_size": 3}]
     assert out["pages"] == {"logs": "all"}
 
+
+def test_cancelled_import_settling_leaves_the_next_preview_alone(client, tmp_path):
+    """Cancel hides the import modal while the POST keeps running, and the
+    modal is one shared element. When the cancelled import A settled while
+    file B's preview was open, A's success closed B's preview with a plain
+    "Settings imported" toast (reading as if B was imported), and A's failure
+    re-enabled B's Import button even when B is over the server cap."""
+    html = client.get("/settings/api-keys").text
+    js = _FAKE_DOM + "var _csImportBusy = false;\n" + _fn(html, "showCsImportModal") + r"""
+function escapeHtml(s) { return String(s); }
+function fmtBytes(n) { return n + ' B'; }
+function csContainsSummary() { return '-'; }
+function csMetaFor() { return null; }
+function csApiBase(uid) { return '/u/' + uid; }
+var pending = [];
+function api(method, url, body) {
+  return new Promise(function (res) { pending.push({ body: body, res: res }); });
+}
+var tick = function () { return new Promise(function (r) { setTimeout(r, 0); }); };
+var u = { id: 'u1', username: 'alice' };
+var ok = { ok: true, status: 200, json: function () { return Promise.resolve({}); } };
+var fail = { ok: false, status: 500, text: function () { return Promise.resolve('boom'); } };
+function sendCancelThenOpen(bBlob) {
+  els = {}; toasts = []; loads = 0; pending = [];
+  showCsImportModal(u, { blob: { a: 1 }, source: 's', fileName: 'A.json' });
+  els['cs-import-go'].onclick();
+  els['cs-import-cancel'].onclick();
+  showCsImportModal(u, { blob: bBlob, source: 's', fileName: 'B.json' });
+}
+function state() {
+  return { open: els['cs-import-modal'].classList.contains('show'),
+           go_disabled: els['cs-import-go'].disabled,
+           busy_warn: els['cs-import-warn'].textContent.indexOf('still running') >= 0,
+           toasts: toasts };
+}
+(async function () {
+  var out = {};
+  window.__csMeta = null;
+  sendCancelThenOpen({ b: 2 });
+  pending[0].res(ok); await tick();
+  out.succeeded = state();
+  sendCancelThenOpen({ b: 2 });
+  pending[0].res(fail); await tick();
+  out.failed = state();
+  window.__csMeta = { max_bytes: 20 };
+  sendCancelThenOpen({ pad: 'x'.repeat(40) });
+  pending[0].res(fail); await tick();
+  out.failed_over_cap = state();
+  console.log(JSON.stringify(out));
+})();
+"""
+    out = _run(js, tmp_path)
+    s = out["succeeded"]
+    assert (s["open"], s["go_disabled"], s["busy_warn"]) == (True, False, False)
+    assert s["toasts"] == [["The earlier import of A.json finished — devices apply"
+                            " them on their next sync", "ok"]]
+    f = out["failed"]
+    assert (f["open"], f["go_disabled"], f["busy_warn"]) == (True, False, False)
+    assert f["toasts"] == [["The earlier import of A.json failed: boom", "err"]]
+    c = out["failed_over_cap"]
+    assert (c["open"], c["go_disabled"]) == (True, True)

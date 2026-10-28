@@ -1834,6 +1834,10 @@
   var _csImportBusy = false;
   function showCsImportModal(u, d) {
     var m = document.getElementById('cs-import-modal');
+    // The modal is one shared element: a cancelled import settling later
+    // must not close, re-enable or speak for the preview opened after it.
+    var seq = m._importSeq = (m._importSeq || 0) + 1;
+    function mine() { return m._importSeq === seq; }
     document.getElementById('cs-import-user').textContent = u.username;
     var rows = document.getElementById('cs-import-rows');
     rows.innerHTML = '';
@@ -1862,11 +1866,13 @@
     // after the upload. Absent (meta fetch failed) → no pre-check; the
     // server's 413 still guards.
     var cap = window.__csMeta && window.__csMeta.max_bytes;
-    if (cap && bytes > cap) {
-      go.disabled = true;
-      warnEl.textContent = 'This file is ' + fmtBytes(bytes)
-        + ' — over the ' + fmtBytes(cap) + ' server cap. It cannot be imported.';
-    } else {
+    function refresh() {
+      if (cap && bytes > cap) {
+        go.disabled = true;
+        warnEl.textContent = 'This file is ' + fmtBytes(bytes)
+          + ' — over the ' + fmtBytes(cap) + ' server cap. It cannot be imported.';
+        return;
+      }
       go.disabled = _csImportBusy;
       warnEl.textContent = (_csImportBusy
           ? 'An earlier import is still running — wait for it to finish. ' : '') +
@@ -1877,8 +1883,10 @@
         + 'Every device signed in with this account’s keys applies it on '
         + 'its next sync.';
     }
+    refresh();
+    m._importRefresh = refresh;
     function close() {
-      m.classList.remove('show');
+      if (mine()) m.classList.remove('show');
       document.removeEventListener('keydown', onKey);
     }
     function onKey(e) { if (e.key === 'Escape') close(); }
@@ -1903,15 +1911,23 @@
           return r.json();
         })
         .then(function () {
+          var own = mine();
           close();
-          showToast('Settings imported — devices apply them on their next sync', 'ok');
+          showToast((own ? 'Settings imported'
+            : 'The earlier import of ' + d.fileName + ' finished')
+            + ' — devices apply them on their next sync', 'ok');
           load();
         })
         .catch(function (e) {
-          showToast(String(e.message || e), 'err');
-          go.disabled = false;
+          showToast((mine() ? '' : 'The earlier import of ' + d.fileName + ' failed: ')
+            + String(e.message || e), 'err');
         })
-        .finally(function () { _csImportBusy = false; });
+        .finally(function () {
+          _csImportBusy = false;
+          // Whichever preview is open now (this one after a failure, or a
+          // later one waiting on this import) re-checks its Import button.
+          if (m.classList.contains('show')) m._importRefresh();
+        });
     };
     document.addEventListener('keydown', onKey);
     m.classList.add('show');
