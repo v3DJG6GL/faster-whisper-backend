@@ -805,14 +805,31 @@ def test_renamed_keys_env_alias_is_table_driven(monkeypatch):
     old, new = "RECENT_TRANSCRIPTIONS_TTL_DAYS", "RECENT_TRANSCRIPTIONS_RETENTION_DAYS"
     assert config_renames.RENAMED_KEYS[old] == new
     try:
-        # Recorded first, so undo() also clears what the alias writes.
-        monkeypatch.delenv("WHISPER_" + new, raising=False)
+        # setenv (not delenv: that records nothing for an absent var) so
+        # undo() also clears what the alias writes; "" counts as unset, so
+        # the alias still applies.
+        monkeypatch.setenv("WHISPER_" + new, "")
         _reload_with_env(monkeypatch, WHISPER_RECENT_TRANSCRIPTIONS_TTL_DAYS="7")
         assert config.RECENT_TRANSCRIPTIONS_RETENTION_DAYS == 7
         assert any(old in w and new in w for w in config._ENV_WARNINGS)
     finally:
         monkeypatch.undo()
         importlib.reload(config)
+
+
+def test_renamed_keys_alias_test_leaves_no_alias_behind():
+    var = "WHISPER_RECENT_TRANSCRIPTIONS_RETENTION_DAYS"
+    before = os.environ.get(var)
+    with pytest.MonkeyPatch.context() as mp:
+        mp.delenv(var, raising=False)
+        mp.delenv("WHISPER_RECENT_TRANSCRIPTIONS_TTL_DAYS", raising=False)
+        try:
+            with pytest.MonkeyPatch.context() as inner:
+                test_renamed_keys_env_alias_is_table_driven(inner)
+            assert var not in os.environ
+        finally:
+            importlib.reload(config)
+    assert os.environ.get(var) == before
 
 
 def test_local_overrides_migrate_renamed_keys(tmp_path):
