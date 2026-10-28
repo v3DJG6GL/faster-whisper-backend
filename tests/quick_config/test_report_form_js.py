@@ -459,7 +459,111 @@ def test_conflict_merge_keeps_the_other_writers_regex_list_entries(client, tmp_p
       const merged2 = _applyFieldDiff([e('b'), e('c'), e('z')], d);
       out({ merged: merged.map(x => x.pattern), merged2: merged2.map(x => x.pattern),
             noop: _fieldDiff(base, base.map(x => ({ ...x })), _diffKindFor('entries')) });
-    """, funcs=("_stringify", "_fieldDiff", "_applyFieldDiff", "_diffKindFor"))
+    """, funcs=("_stringify", "_olistKeyed", "_fieldDiff", "_applyFieldDiff", "_diffKindFor"))
     assert res["merged"] == ["c", "a", "x", "y"]
     assert res["merged2"] == ["c", "z", "y"]
     assert res["noop"] is None
+
+
+_OLIST_FUNCS = ("_stringify", "_olistKeyed", "_fieldDiff", "_applyFieldDiff",
+                "_diffKindFor", "_reapplyDiffs")
+
+
+def _olist_consts(page):
+    return "\n".join(
+        "globalThis." + m.group(1) + " = " + m.group(2)
+        for m in re.finditer(r"^const (_\w+_FIELDS|_MERGE_CONFLICT) = (.*)$", page, re.M))
+
+
+def test_conflict_merge_keeps_an_entry_edited_in_place_as_one_entry(client, tmp_path):
+    # The regex-list merge keyed entries by their whole content, so an edit in
+    # place looked like delete + add: an entry the user edited could not
+    # anchor the other writer's new entries (they were spliced in front of it,
+    # changing the apply order), and an entry both writers edited came back
+    # twice, the other writer's copy first, shadowing the user's.
+    page = client.get("/quick-config").text
+    res = _run_js(client, tmp_path, _olist_consts(page) + r"""
+      const e = (p, r, extra) => ({ pattern: p, replacement: r || p.toUpperCase(), ...(extra || {}) });
+      const merge = (base, mine, theirs) => {
+        const m = _applyFieldDiff(theirs, _fieldDiff(base, mine, _diffKindFor('entries')));
+        return m === _MERGE_CONFLICT ? 'CONFLICT' : m.map(x => x.pattern + '>' + x.replacement);
+      };
+      out({
+        // user edits x, other writer edits y (the next entry): order holds.
+        order: merge([e('a'), e('x'), e('y')], [e('a'), e('x', 'X2'), e('y')],
+                     [e('a'), e('x'), e('y', 'Y2')]),
+        // user edits x, other writer inserts n right after x.
+        anchor: merge([e('a'), e('x'), e('y')], [e('a'), e('x', 'X2'), e('y')],
+                      [e('a'), e('x'), e('n'), e('y')]),
+        // both edit the same entry differently: a real conflict.
+        both: merge([e('foo', 'bar'), e('x')], [e('foo', 'baz'), e('x')],
+                    [e('foo', 'qux'), e('x')]),
+        bothNote: merge([e('foo', 'X')], [e('foo', 'X', { note: 'n' })], [e('foo', 'Y')]),
+        // both made the same edit: one entry.
+        same: merge([e('foo', 'bar')], [e('foo', 'baz')], [e('foo', 'baz')]),
+        // the user deleted b, the other writer edited it: the deletion wins.
+        deleted: merge([e('a'), e('b'), e('c')], [e('a'), e('c')],
+                       [e('a'), e('b', 'THEIRS'), e('c')]),
+        // the other writer deleted b, the user edited it: the edit survives.
+        kept: merge([e('a'), e('b'), e('c')], [e('a'), e('b', 'MINE'), e('c')],
+                    [e('a'), e('c')]),
+      });
+    """, funcs=_OLIST_FUNCS)
+    assert res["order"] == ["a>A", "x>X2", "y>Y2"]
+    assert res["anchor"] == ["a>A", "x>X2", "n>N", "y>Y"]
+    assert res["both"] == "CONFLICT"
+    assert res["bothNote"] == "CONFLICT"
+    assert res["same"] == ["foo>baz"]
+    assert res["deleted"] == ["a>A", "c>C"]
+    assert res["kept"] == ["a>A", "b>MINE", "c>C"]
+
+
+def test_reapply_leaves_a_rule_whose_entry_both_writers_edited_unmerged(client, tmp_path):
+    # A clash must not be auto-merged: the rule keeps the server's version,
+    # stays clean, and its slug is reported so the toast can name it.
+    page = client.get("/quick-config").text
+    res = _run_js(client, tmp_path, _olist_consts(page) + r"""
+      const e = (p, r) => ({ pattern: p, replacement: r });
+      globalThis.dirty = new Set();
+      globalThis.liveRules = [
+        { name: 'rx', enabled: true, entries: [e('foo', 'qux')] },
+        { name: 'ok', enabled: true, entries: [e('a', 'A')] },
+      ];
+      const diffs = new Map([
+        ['rx', { enabled: _fieldDiff(true, false, 'scalar'),
+                 entries: _fieldDiff([e('foo', 'bar')], [e('foo', 'baz')], 'olist') }],
+        ['ok', { entries: _fieldDiff([e('a', 'A')], [e('a', 'A2')], 'olist') }],
+      ]);
+      const clashed = [];
+      const merged = _reapplyDiffs(diffs, clashed);
+      out({ merged, clashed, dirty: [...dirty], rules: liveRules });
+    """, funcs=_OLIST_FUNCS)
+    assert res["merged"] == 1
+    assert res["clashed"] == ["rx"]
+    assert res["dirty"] == ["ok"]
+    assert res["rules"][0] == {"name": "rx", "enabled": True,
+                               "entries": [{"pattern": "foo", "replacement": "qux"}]}
+    assert res["rules"][1]["entries"] == [{"pattern": "a", "replacement": "A2"}]
+
+
+def test_conflict_toast_names_the_rule_that_could_not_be_merged(client, tmp_path):
+    res = _run_js(client, tmp_path, r"""
+      globalThis.setStatus = () => {};
+      globalThis.liveRules = [];
+      globalThis.initialRules = [];
+      globalThis.api = async () => ({
+        ok: true, status: 200,
+        json: async () => ({ saved: [], conflicts: [{ slug: 'rx' }, { slug: 'ok' }] }),
+      });
+      globalThis.fetchState = async () => ({ rules: [] });
+      globalThis._diffsSince = () => new Map();
+      globalThis.applyState = () => {};
+      globalThis._reapplyDiffs = (d, clashed) => { if (clashed) clashed.push('rx'); return 1; };
+      globalThis.renderCards = () => {};
+      globalThis.updateButtons = () => {};
+      await _doSave({ rx: {}, ok: {} }, {});
+      out(_toasts);
+    """, funcs=("_doSave",))
+    msg = res[0][1]
+    assert "Auto-merged your changes for ok on top" in msg
+    assert "Conflict on rx could not be auto-merged" in msg

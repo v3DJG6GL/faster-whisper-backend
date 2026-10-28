@@ -2057,6 +2057,9 @@ const _LIST_FIELDS = new Set(['wordlist']);
 // Ordered lists: entry order is the apply order, so the merge keeps the
 // user's order and slots the other writer's new entries in by position.
 const _OLIST_FIELDS = new Set(['entries']);
+// _applyFieldDiff's answer when both writers changed the same thing in ways
+// that cannot be combined: the rule is left at the server's version.
+const _MERGE_CONFLICT = Symbol('merge-conflict');
 
 function _stringify(x) {
   // Stable order for objects so two equal-content objects compare equal.
@@ -2066,6 +2069,19 @@ function _stringify(x) {
     return JSON.stringify(out);
   }
   return JSON.stringify(x);
+}
+
+// A regex-list entry's identity is its pattern (the k-th entry with that
+// pattern, since patterns may repeat), so an entry edited in place is still
+// the same entry. Returns [id, entry] pairs.
+function _olistKeyed(list) {
+  const seen = new Map();
+  return (list || []).map(x => {
+    const p = String(x !== null && typeof x === 'object' ? x.pattern : x);
+    const n = seen.get(p) || 0;
+    seen.set(p, n + 1);
+    return [JSON.stringify([p, n]), x];
+  });
 }
 
 function _fieldDiff(baseline, edited, kind) {
@@ -2097,7 +2113,7 @@ function _fieldDiff(baseline, edited, kind) {
   }
   if (kind === 'olist') {
     if (_stringify(baseline || []) === _stringify(edited || [])) return null;
-    return { kind: 'olist', base: (baseline || []).map(_stringify), value: edited || [] };
+    return { kind: 'olist', base: (baseline || []).slice(), value: edited || [] };
   }
   // scalar
   if (_stringify(baseline) === _stringify(edited)) return null;
@@ -2128,29 +2144,42 @@ function _applyFieldDiff(serverValue, diff) {
     return out;
   }
   if (diff.kind === 'olist') {
-    // Three-way merge keyed by entry content: start from the user's edited
-    // list, drop the baseline entries the other writer deleted, then insert
-    // the other writer's new entries after their nearest server-side
-    // predecessor that is still present (or at the top).
-    const baseKeys = new Set(diff.base);
-    const server = serverValue || [];
-    const serverKeys = new Set(server.map(_stringify));
-    const out = diff.value.filter(x => {
-      const key = _stringify(x);
-      return serverKeys.has(key) || !baseKeys.has(key);
-    });
-    const have = new Set(out.map(_stringify));
-    let prev = null;
-    for (const item of server) {
-      const key = _stringify(item);
-      if (!baseKeys.has(key) && !have.has(key)) {
-        const at = prev === null ? 0 : out.findIndex(x => _stringify(x) === prev) + 1;
-        out.splice(at, 0, item);
-        have.add(key);
+    // Three-way merge keyed by entry identity (_olistKeyed): an entry only
+    // one side changed takes that side's version in place, and one both
+    // sides changed differently is a real conflict. The user's deletions
+    // win and an entry the user edited survives the other writer deleting
+    // it, as for dict keys. The other writer's new entries go in after
+    // their nearest server-side predecessor still present (or at the top),
+    // so the user's apply order holds.
+    const base = new Map(_olistKeyed(diff.base).map(([k, x]) => [k, _stringify(x)]));
+    const server = _olistKeyed(serverValue);
+    const theirs = new Map(server);
+    const out = [];
+    for (const [k, x] of _olistKeyed(diff.value)) {
+      const mine = _stringify(x);
+      const t = theirs.has(k) ? _stringify(theirs.get(k)) : null;
+      if (!base.has(k)) {
+        if (t !== null && t !== mine) return _MERGE_CONFLICT;  // both added it
+        out.push([k, x]);
+      } else if (mine === base.get(k)) {
+        if (t !== null) out.push([k, theirs.get(k)]);  // else they deleted it
+      } else if (t === null || t === base.get(k) || t === mine) {
+        out.push([k, x]);
+      } else {
+        return _MERGE_CONFLICT;
       }
-      if (have.has(key)) prev = key;
     }
-    return out;
+    const have = new Set(out.map(([k]) => k));
+    let prev = null;
+    for (const [k, x] of server) {
+      if (!base.has(k) && !have.has(k)) {
+        const at = prev === null ? 0 : out.findIndex(([q]) => q === prev) + 1;
+        out.splice(at, 0, [k, x]);
+        have.add(k);
+      }
+      if (have.has(k)) prev = k;
+    }
+    return out.map(([, x]) => x);
   }
   return diff.value;
 }
@@ -2322,15 +2351,23 @@ function _diffsSince(base, slugs) {
   return out;
 }
 // Re-apply diffs from _diffsSince onto the (freshly loaded) liveRules and
-// mark those rules dirty. Returns how many rules took a diff.
-function _reapplyDiffs(diffsBySlug) {
+// mark those rules dirty. Returns how many rules took a diff; a rule whose
+// diff clashes with the other writer's edit (_MERGE_CONFLICT) keeps the
+// server's version and its slug is pushed onto `clashed`.
+function _reapplyDiffs(diffsBySlug, clashed) {
   let merged = 0;
   for (const [slug, fieldDiffs] of diffsBySlug) {
     const idx = liveRules.findIndex(r => r.name === slug);
     if (idx < 0) continue;  // rule was deleted / un-exposed server-side
+    const next = {};
     for (const [field, diff] of Object.entries(fieldDiffs)) {
-      liveRules[idx][field] = _applyFieldDiff(liveRules[idx][field], diff);
+      next[field] = _applyFieldDiff(liveRules[idx][field], diff);
     }
+    if (Object.values(next).includes(_MERGE_CONFLICT)) {
+      if (clashed) clashed.push(slug);
+      continue;
+    }
+    Object.assign(liveRules[idx], next);
     dirty.add(slug);
     merged++;
   }
@@ -2410,10 +2447,14 @@ async function _doSave(patch, fingerprints) {
     for (const rule of liveRules) {
       if (rule.locked && !_isAdmin()) diffs.delete(rule.name);
     }
-    _reapplyDiffs(diffs);   // skips rules that no longer exist
+    const clashed = [];
+    _reapplyDiffs(diffs, clashed);   // skips rules that no longer exist
     renderCards();
     updateButtons();
-    showToast(msg + ' — rules reloaded; your other edits were kept, review and Save again.', 'err');
+    showToast(msg + ' — rules reloaded; your other edits were kept'
+              + (clashed.length ? ' except on ' + clashed.join(', ')
+                 + ' (another writer edited the same entry)' : '')
+              + ', review and Save again.', 'err');
     return;
   }
   const result = await r.json();
@@ -2425,9 +2466,11 @@ async function _doSave(patch, fingerprints) {
     // against the baseline they saw at load time, refetching the fresh
     // server state, and re-applying that diff on top. For cb:map this
     // means only the keys the user added/changed/removed get overlaid —
-    // the other user's keys survive. For scalars (regex pattern,
-    // replacement, enabled) the user's new value still wins (no way to
-    // merge two scalar edits), but the user reviews before re-saving.
+    // the other user's keys survive; regex-list entries merge per entry
+    // (by pattern), and a rule where both writers edited the same entry is
+    // left at the server's version. For scalars (enabled, …) the user's new
+    // value still wins (no way to merge two scalar edits), but the user
+    // reviews before re-saving.
     const conflictSlugs = conflicts.map(c => c.slug);
     const conflictSet = new Set(conflictSlugs);
     // The non-conflicting rules ARE saved (the server only sends
@@ -2451,7 +2494,8 @@ async function _doSave(patch, fingerprints) {
     // re-populated so the next Save sends an updated patch with the
     // FRESH fingerprint (which now matches the server) plus the
     // user's intent overlaid.
-    const merged = _reapplyDiffs(diffsBySlug);
+    const clashed = [];
+    const merged = _reapplyDiffs(diffsBySlug, clashed);
     if (_reapplyDiffs(inflight) && !merged) {
       renderCards();
       updateButtons();
@@ -2462,8 +2506,10 @@ async function _doSave(patch, fingerprints) {
       updateButtons();
       const prefix = saved.length ? 'Saved ' + saved.length + '. ' : '';
       showToast(prefix + 'Auto-merged your changes for '
-                + conflictSlugs.join(', ')
-                + ' on top of the latest version — review and Save again.',
+                + conflictSlugs.filter(s => !clashed.includes(s)).join(', ')
+                + ' on top of the latest version — review and Save again.'
+                + (clashed.length ? ' Conflict on ' + clashed.join(', ')
+                   + ' could not be auto-merged (both edited the same entry).' : ''),
                 'err');
     } else {
       // The conflicted rule was deleted server-side or no diff survived.

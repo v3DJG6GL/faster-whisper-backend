@@ -673,7 +673,7 @@ def test_quick_config_page_failure_paths_recover(client):
     fetch = refused.index("const j = await fetchState();")
     assert fetch < refused.index("_diffsSince(initialRules)") < refused.index(
         "applyState(j);") < refused.index("rule.locked && !_isAdmin()") < refused.index(
-        "_reapplyDiffs(diffs);")
+        "_reapplyDiffs(diffs, clashed);")
     do_save = html[html.index("async function doSave()"):
                    html.index("async function _doSave(")]
     catch = do_save[do_save.index("} catch (e) {"):do_save.index("} finally {")]
