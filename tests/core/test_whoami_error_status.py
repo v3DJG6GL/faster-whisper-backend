@@ -38,9 +38,13 @@ _DRIVE = r"""
 let gate = 0;
 window._showLoginGate = () => { gate++; };
 window._hideLoginGate = () => {};
-setTimeout(() => console.log(JSON.stringify({
-  gate, admin: roles.has('role-admin'), whoami: window.__whoami || null,
-})), 50);
+// exit explicitly: an uncached 5xx leaves a backoff retry pending
+setTimeout(() => {
+  console.log(JSON.stringify({
+    gate, admin: roles.has('role-admin'), whoami: window.__whoami || null,
+  }));
+  process.exit(0);
+}, 50);
 """
 
 

@@ -183,6 +183,42 @@
       + ', started ' + (build.started || '') + ')');
   }
 
+  // A 5xx/429 or a failed fetch before any whoami has been painted would
+  // otherwise leave the page blank (no gate, no nav, no tiles) until a
+  // manual reload. Show a short notice and retry with a capped backoff;
+  // any 200/401/403 answer clears it. One pending retry at a time.
+  var RETRY_NOTE_ID = 'whoami-retry-note';
+  var _whoamiRetryDelay = 0;
+  var _whoamiRetryTimer = null;
+  function _whoamiUnavailable() {
+    if (window.__whoami) return;
+    try {
+      if (!document.getElementById(RETRY_NOTE_ID)) {
+        var n = document.createElement('div');
+        n.id = RETRY_NOTE_ID;
+        n.setAttribute('role', 'status');
+        n.style.cssText = 'background:#3a3320;color:#fff;padding:0.5rem 1rem;'
+          + 'text-align:center;font-size:0.95rem;';
+        n.textContent = 'Server unavailable — retrying…';
+        document.body.insertBefore(n, document.body.firstChild);
+      }
+    } catch(_) {}
+    clearTimeout(_whoamiRetryTimer);
+    _whoamiRetryDelay = Math.min(
+      _whoamiRetryDelay ? _whoamiRetryDelay * 2 : 2000, 30000);
+    _whoamiRetryTimer = setTimeout(function(){
+      window._refreshAuthChrome();
+    }, _whoamiRetryDelay);
+  }
+  function _whoamiAnswered() {
+    clearTimeout(_whoamiRetryTimer);
+    _whoamiRetryDelay = 0;
+    try {
+      var n = document.getElementById(RETRY_NOTE_ID);
+      if (n && n.parentNode) n.parentNode.removeChild(n);
+    } catch(_) {}
+  }
+
   // Single source of truth for "what does the current bearer let me see?".
   // Idempotent: clears nav chrome first, then re-applies based on a fresh
   // /auth/whoami. Called once on page load AND on every `whisper:auth-changed`
@@ -220,7 +256,8 @@
         return window.__whoami || undefined;
       })
       .then(function(j){
-        if (j === undefined) return;
+        if (j === undefined) { _whoamiUnavailable(); return; }
+        _whoamiAnswered();
         if (!j) {
           // 401 (locked-down + no/invalid session). Leave chrome cleared
           // and drop the cached whoami so stale permissions don't linger,
@@ -298,7 +335,7 @@
           _renderNoAccessLanding({ page: current });
         }
       })
-      .catch(function(){});
+      .catch(_whoamiUnavailable);
   };
 
   // Refresh on every login/logout. Each login/logout site dispatches

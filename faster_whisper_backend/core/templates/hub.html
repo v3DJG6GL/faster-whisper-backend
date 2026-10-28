@@ -300,6 +300,17 @@
     loadModels();
   }
 
+  // A 5xx/429 or a failed fetch before the hub has painted retries with a
+  // capped backoff instead of leaving #hub-body hidden for good; the shared
+  // chrome shows the "server unavailable" notice meanwhile.
+  var painted = false, retryDelay = 0, retryTimer = null;
+  function unavailable() {
+    if (painted) return;
+    clearTimeout(retryTimer);
+    retryDelay = Math.min(retryDelay ? retryDelay * 2 : 2000, 30000);
+    retryTimer = setTimeout(refresh, retryDelay);
+  }
+
   function refresh() {
     fetch('/auth/whoami', {
       headers: { Accept: 'application/json' }, cache: 'no-store',
@@ -312,8 +323,13 @@
         if (r.status === 401 || r.status === 403) return null;
         return window.__whoami || undefined;
       })
-      .then(function (j) { if (j !== undefined) apply(j); })
-      .catch(function () {});
+      .then(function (j) {
+        if (j === undefined) { unavailable(); return; }
+        painted = true;
+        clearTimeout(retryTimer);
+        apply(j);
+      })
+      .catch(unavailable);
   }
 
   // Boot-menu keys: 1-9 open the n-th visible tile, arrows move focus,
