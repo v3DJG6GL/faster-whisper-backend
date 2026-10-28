@@ -830,14 +830,31 @@ async def _get_model(ref: str, *, lease: bool = False, download_cb=None):
             leased = lease and _cancelled is None
             if leased:
                 _active[ref] = _active.get(ref, 0) + 1
+        # Shielded and awaited to the end under the per-ref lock even when
+        # cancelled: a cancelled to_thread future drops a write still queued
+        # on the default executor (a cached model /stats never lists), and
+        # the phantom check below must run after the write has landed.
+        reg_fut = asyncio.ensure_future(asyncio.to_thread(
+            model_registry.register_loaded_model,
+            _STATS_PREFIX + ref, vram, device, "gguf", load_secs))
         try:
-            await asyncio.to_thread(
-                model_registry.register_loaded_model,
-                _STATS_PREFIX + ref, vram, device, "gguf", load_secs)
-        except BaseException:
+            while True:
+                try:
+                    await asyncio.shield(reg_fut)
+                    break
+                except asyncio.CancelledError as c:
+                    if reg_fut.cancelled():
+                        raise
+                    _cancelled = _cancelled or c
+        except BaseException as e:
             if leased:
                 _release_model(ref)   # the caller never receives the model
+            if _cancelled is not None and \
+                    not isinstance(e, asyncio.CancelledError):
+                raise _cancelled from e
             raise
+        if _cancelled is not None and leased:
+            _release_model(ref)   # cancelled during the register
         if _models.get(ref) is not llm:
             # An unleased load (preload / load_unleased) was trimmed or
             # evicted while its register ran on the thread: _drop_locked's

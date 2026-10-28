@@ -404,10 +404,24 @@ async def _get_pipeline(model_id: "str | None" = None, *, lease: bool = False,
         _last_used_monotonic = time.monotonic()
         if lease:
             _leases[model_id] = _leases.get(model_id, 0) + 1
+        # Shielded and awaited to the end under _lock even when cancelled: a
+        # cancelled to_thread future drops a write still queued on the
+        # default executor (a cached pipeline /stats never lists), and a
+        # drop slipped in before a running write lands would leave that
+        # write a phantom row.
+        _cancelled: "asyncio.CancelledError | None" = None
+        reg_fut = asyncio.ensure_future(asyncio.to_thread(
+            model_registry.register_loaded_model,
+            _STATS_PREFIX + model_id, vram, device, "torch", load_secs))
         try:
-            await asyncio.to_thread(
-                model_registry.register_loaded_model,
-                _STATS_PREFIX + model_id, vram, device, "torch", load_secs)
+            while True:
+                try:
+                    await asyncio.shield(reg_fut)
+                    break
+                except asyncio.CancelledError as c:
+                    if reg_fut.cancelled():
+                        raise
+                    _cancelled = _cancelled or c
         except BaseException as e:
             # The caller never receives the pipeline, so never releases.
             if lease:
@@ -416,7 +430,15 @@ async def _get_pipeline(model_id: "str | None" = None, *, lease: bool = False,
                 # A failed register leaves nothing cached, as before.
                 _pipeline = None
                 _pipeline_key = None
+                if _cancelled is not None:
+                    raise _cancelled from e
             raise
+        if _cancelled is not None:
+            # Cancelled during the register: the caller never receives the
+            # pipeline, so never releases; it stays cached and registered.
+            if lease:
+                _release_locked(model_id, pipe)
+            raise _cancelled
         logger.info("[diarize] pipeline %s loaded on %s in %.1fs",
                     model_id, device, load_secs)
         try:

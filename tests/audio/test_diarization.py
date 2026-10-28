@@ -609,10 +609,64 @@ def test_cancel_during_register_keeps_the_pipeline_its_row_describes(monkeypatch
         while not entered.is_set():
             await asyncio.sleep(0.01)
         task.cancel()
+        await asyncio.sleep(0.05)
+        assert not task.done()     # held until the register write lands
+        gate.set()
         with pytest.raises(asyncio.CancelledError):
             await task
+    asyncio.run(_main())
+    assert diarization._pipeline is pipe
+    assert diarization._leases == {}   # the cancelled caller never releases
+    assert "pyannote:A" in model_registry._loaded_models
+    assert diarization._drop_locked() is True
+    assert "pyannote:A" not in model_registry._loaded_models
+
+
+def test_cancel_while_register_is_queued_still_lists_the_pipeline(monkeypatch):
+    """The default executor is shared with every other to_thread call: with
+    its workers busy the register write is still queued when the cancel
+    lands, and a plain cancelled to_thread future drops the queued item.
+    The cached pipeline must still get its "pyannote:<id>" row."""
+    import asyncio
+    import concurrent.futures
+    import threading
+    from faster_whisper_backend.runtime import model_registry
+    _model_a(monkeypatch)
+    pipe = object()
+    loaded, queued, gate = [], [], threading.Event()
+
+    def _load(m, d, b):
+        loaded.append(m)
+        return pipe
+
+    def _vram(*a):
+        # The post-load sample runs on the loop right before the register
+        # is submitted: occupy the only worker so the register is queued.
+        if loaded and not queued:
+            asyncio.get_running_loop().run_in_executor(None, gate.wait, 5)
+            queued.append(True)
+        return None
+    monkeypatch.setattr(diarization, "_load_blocking", _load)
+    monkeypatch.setattr(diarization.system_stats, "gpu_mem_used_bytes", _vram)
+
+    async def _main():
+        loop = asyncio.get_running_loop()
+        loop.set_default_executor(
+            concurrent.futures.ThreadPoolExecutor(max_workers=1))
+        task = asyncio.create_task(diarization._get_pipeline(lease=True))
+        while not queued:
+            await asyncio.sleep(0.01)
+        task.cancel()
+        await asyncio.sleep(0.05)
         gate.set()
-    asyncio.run(_main())   # joins the register thread on exit
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        # One worker, FIFO: once this runs, anything queued before it has.
+        await loop.run_in_executor(None, lambda: None)
+    try:
+        asyncio.run(_main())
+    finally:
+        gate.set()
     assert diarization._pipeline is pipe
     assert diarization._leases == {}   # the cancelled caller never releases
     assert "pyannote:A" in model_registry._loaded_models

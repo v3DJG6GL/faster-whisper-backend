@@ -524,10 +524,66 @@ def test_cancel_during_register_keeps_the_separator_its_row_describes(monkeypatc
         while not entered.is_set():
             await asyncio.sleep(0.01)
         task.cancel()
+        await asyncio.sleep(0.05)
+        assert not task.done()     # held until the register write lands
+        gate.set()
         with pytest.raises(asyncio.CancelledError):
             await task
+    asyncio.run(_main())
+    assert bgm_separation._separator is sep
+    assert bgm_separation._leases == {}   # the cancelled caller never releases
+    assert "uvr:Foo.onnx" in model_registry._loaded_models
+    assert bgm_separation._drop_locked() is True
+    assert "uvr:Foo.onnx" not in model_registry._loaded_models
+
+
+def test_cancel_while_register_is_queued_still_lists_the_separator(monkeypatch):
+    """With the shared default executor's workers busy the register write is
+    still queued when the cancel lands, and a plain cancelled to_thread
+    future drops the queued item. The cached separator must still get its
+    stats row."""
+    import asyncio
+    import concurrent.futures
+    import threading
+    from faster_whisper_backend.runtime import model_registry
+    _foo_model(monkeypatch)
+    sep = object()
+    loaded, queued, gate = [], [], threading.Event()
+
+    def _load(m, d):
+        loaded.append(m)
+        return sep
+
+    def _vram(*a):
+        # The post-load sample runs on the loop right before the register
+        # is submitted: occupy the only worker so the register is queued.
+        if loaded and not queued:
+            asyncio.get_running_loop().run_in_executor(None, gate.wait, 5)
+            queued.append(True)
+        return None
+    monkeypatch.setattr(bgm_separation, "_load_blocking", _load)
+    monkeypatch.setattr(bgm_separation.system_stats, "gpu_mem_used_bytes",
+                        _vram)
+
+    async def _main():
+        loop = asyncio.get_running_loop()
+        loop.set_default_executor(
+            concurrent.futures.ThreadPoolExecutor(max_workers=1))
+        task = asyncio.create_task(
+            bgm_separation._get_separator("Foo", lease=True))
+        while not queued:
+            await asyncio.sleep(0.01)
+        task.cancel()
+        await asyncio.sleep(0.05)
         gate.set()
-    asyncio.run(_main())   # joins the register thread on exit
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        # One worker, FIFO: once this runs, anything queued before it has.
+        await loop.run_in_executor(None, lambda: None)
+    try:
+        asyncio.run(_main())
+    finally:
+        gate.set()
     assert bgm_separation._separator is sep
     assert bgm_separation._leases == {}   # the cancelled caller never releases
     assert "uvr:Foo.onnx" in model_registry._loaded_models

@@ -648,10 +648,24 @@ async def _get_separator(model_filename: "str | None" = None, *,
             _last_used_monotonic = time.monotonic()
             if lease:
                 _leases[model] = _leases.get(model, 0) + 1
+            # Shielded and awaited to the end under _lock even when
+            # cancelled: a cancelled to_thread future drops a write still
+            # queued on the default executor (a cached separator /stats never
+            # lists), and a drop slipped in before a running write lands
+            # would leave that write a phantom row.
+            _cancelled: "asyncio.CancelledError | None" = None
+            reg_fut = asyncio.ensure_future(asyncio.to_thread(
+                model_registry.register_loaded_model,
+                _STATS_PREFIX + model, vram, actual, "onnx", load_secs))
             try:
-                await asyncio.to_thread(
-                    model_registry.register_loaded_model,
-                    _STATS_PREFIX + model, vram, actual, "onnx", load_secs)
+                while True:
+                    try:
+                        await asyncio.shield(reg_fut)
+                        break
+                    except asyncio.CancelledError as c:
+                        if reg_fut.cancelled():
+                            raise
+                        _cancelled = _cancelled or c
             except BaseException as e:
                 # The caller never receives the separator, so never releases.
                 if lease:
@@ -660,7 +674,16 @@ async def _get_separator(model_filename: "str | None" = None, *,
                     # A failed register leaves nothing cached, as before.
                     _separator = None
                     _separator_key = None
+                    if _cancelled is not None:
+                        raise _cancelled from e
                 raise
+            if _cancelled is not None:
+                # Cancelled during the register: the caller never receives
+                # the separator, so never releases; it stays cached and
+                # registered.
+                if lease:
+                    _release_locked(model, sep)
+                raise _cancelled
             logger.info("[bgm] separation model %s loaded on %s in %.1fs",
                         model, actual, load_secs)
             try:
