@@ -396,3 +396,37 @@ def test_run_rebuilds_a_group_transcript_with_chips_on_their_aligned_word(
 
     assert gs.get_sample("reapplysid000001")["transcript"] == \
         "DER KATZE DIE [final]"
+
+
+def test_run_leaves_the_members_of_a_locked_sample_alone(
+        captures_store_db, groups_store_db, fake_pipeline, monkeypatch):
+    """A locked sample's views derive its text from the members on every
+    read, so rewriting a member's final / training text changed the locked
+    sample anyway (the self-heal on a page view already skips them)."""
+    from faster_whisper_backend.settings import config as cfg
+
+    monkeypatch.setattr(cfg, "CAPTURES_PIPELINE_RULES_EXCLUDE", None,
+                        raising=False)
+    conn = captures_store_db._require_conn()
+    gs = groups_store_db
+    conn.execute(
+        "INSERT INTO capture_samples (id, user_id, created_ts,"
+        " merged_wav_relpath, merged_duration_ms, transcript,"
+        " transcript_join_strategy, member_hashes,"
+        " inter_segment_silence_ms, is_stale, is_locked, status,"
+        " admin_notes, language, member_trims)"
+        " VALUES (?,'alice',1.0,?,5000,'old','space','{}',300,0,1,'new','',"
+        "'de','{}')", ("reapplylocked001", gs._relpath_for("reapplylocked001")))
+    _insert(conn, "reapplylock1", language="de", final="old")
+    conn.execute("UPDATE captures SET sample_id = 'reapplylocked001',"
+                 " sample_order = 0 WHERE id = 'reapplylock1'")
+    _insert(conn, "reapplyfree1", language="de")
+
+    captures_reapply._run()
+
+    st = captures_reapply.status()
+    assert st["processed"] == 2 and st["captures_updated"] == 1
+    row = captures_store_db.get_capture("reapplylock1")
+    assert row["final"] == "old"
+    assert not row["text_for_training"]
+    assert captures_store_db.get_capture("reapplyfree1")["final"] == "HELLO [final]"

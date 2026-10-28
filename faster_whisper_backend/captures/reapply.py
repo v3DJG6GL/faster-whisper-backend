@@ -183,6 +183,14 @@ def _run_pass() -> None:
     # (user_id, model) so a bulk reapply does one resolve per distinct pair,
     # not one per row. Config is snapshotted for the run's duration.
     ident_cache: dict = {}
+    # Members of a locked sample keep their text: the sample's views derive
+    # it from them on every read, and the lock freezes exactly that (the
+    # self-heal in routes._refresh_final_if_stale skips them too).
+    # Read only when some row has a sample: no member, no samples table needed.
+    locked_sids = {
+        row[0] for row in conn.execute(
+            "SELECT id FROM capture_samples WHERE is_locked = 1")
+    } if any(r["sample_id"] for r in rows) else set()
 
     def _ident_for(uid, model_id):
         key = (uid, model_id)
@@ -192,6 +200,10 @@ def _run_pass() -> None:
 
     for r in rows:
         cid = r["id"]
+        if r["sample_id"] in locked_sids:
+            with _state_lock:
+                _state["processed"] += 1
+            continue
         raw_text = r["raw"] or ""
         patch: dict[str, str] = {}
         # Scope by the TEXT language ("en" for task=translate), as the
