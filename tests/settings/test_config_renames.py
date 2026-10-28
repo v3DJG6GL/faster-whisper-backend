@@ -1,0 +1,68 @@
+"""config_renames.UPGRADED_RULE_LANGUAGES: a factory rule that gained a
+rule-level language scope in config.json carries it into a saved
+PIPELINE_RULES copy (config.local.json / WHISPER_PIPELINE_RULES), which
+otherwise replaces the factory list and keeps the rule on every language.
+"""
+import copy
+import json
+import os
+
+import pytest
+
+from faster_whisper_backend import paths
+from faster_whisper_backend.settings import config_renames as renames
+
+
+def _factory_rules():
+    with open(os.path.join(paths.REPO_ROOT, "config.json"), encoding="utf-8") as fh:
+        return json.load(fh)["PIPELINE_RULES"]
+
+
+def _rule(rules, name):
+    return next(r for r in rules if r.get("name") == name)
+
+
+def test_every_language_upgrade_matches_its_factory_rule():
+    for name, ((typ, pattern), langs) in renames.UPGRADED_RULE_LANGUAGES.items():
+        r = _rule(_factory_rules(), name)
+        assert (r["type"], r["pattern"], r["languages"]) == (typ, pattern, list(langs))
+
+
+@pytest.mark.parametrize("stored_languages", [[], None, "absent"])
+def test_stored_hyphen_rule_without_languages_becomes_german_only(stored_languages):
+    rules = copy.deepcopy(_factory_rules())
+    r = _rule(rules, "capitalize-letter-after-hyphen")
+    if stored_languages == "absent":
+        del r["languages"]
+    else:
+        r["languages"] = stored_languages
+    raw = {"PIPELINE_RULES": rules}
+    assert renames.upgrade_rule_entries(raw) == ["capitalize-letter-after-hyphen/languages"]
+    assert raw["PIPELINE_RULES"] == _factory_rules()
+    assert renames.upgrade_rule_entries(raw) == []
+
+
+def test_edited_hyphen_rule_keeps_its_own_scope_and_pattern():
+    rules = copy.deepcopy(_factory_rules())
+    scoped = _rule(rules, "capitalize-letter-after-hyphen")
+    scoped["languages"] = ["de", "en"]
+    raw = {"PIPELINE_RULES": rules}
+    assert renames.upgrade_rule_entries(raw) == []
+    assert scoped["languages"] == ["de", "en"]
+    rules = copy.deepcopy(_factory_rules())
+    edited = _rule(rules, "capitalize-letter-after-hyphen")
+    edited["languages"] = []
+    edited["pattern"] = "(-)([a-z])"
+    raw = {"PIPELINE_RULES": rules}
+    assert renames.upgrade_rule_entries(raw) == []
+    assert edited["languages"] == []
+
+
+def test_load_overrides_scopes_a_stored_hyphen_rule_to_german(tmp_path):
+    from faster_whisper_backend.settings import config_store as cs
+    rules = copy.deepcopy(_factory_rules())
+    _rule(rules, "capitalize-letter-after-hyphen")["languages"] = []
+    p = tmp_path / "config.local.json"
+    p.write_text(json.dumps({"PIPELINE_RULES": rules}), encoding="utf-8")
+    out = cs.load_overrides(str(p))
+    assert _rule(out["PIPELINE_RULES"], "capitalize-letter-after-hyphen")["languages"] == ["de"]

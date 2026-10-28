@@ -117,6 +117,21 @@ UPGRADED_RULE_ENTRIES: dict[str, tuple[tuple[str, str], tuple[str, str]]] = {
     ),
 }
 
+# Factory rules that GAINED a rule-level language scope in config.json, keyed
+# by rule name: (type, pattern) of the factory rule -> the languages it runs
+# on now. A stored copy of the rule has no languages (or []: every language),
+# so the fix never reached it. upgrade_rule_entries sets the scope ONLY while
+# the stored rule still has no languages and its type and pattern still equal
+# the factory ones. A rule the admin rewrote is theirs and stays untouched.
+UPGRADED_RULE_LANGUAGES: dict[str, tuple[tuple[str, str], tuple[str, ...]]] = {
+    # The callback capitalised every letter after a hyphen, which is German
+    # noun casing: English "well-known" became "well-Known".
+    "capitalize-letter-after-hyphen": (
+        ("callback:upper", "(-)([a-zäöüß])"),
+        ("de",),
+    ),
+}
+
 # Keys holding a list of rule slugs, at the top level and inside each
 # MODEL_OVERRIDES / OVERRIDE_PROFILES bundle.
 _SLUG_LIST_KEYS = ("PIPELINE_RULES_EXCLUDE", "PIPELINE_RULES_INCLUDE",
@@ -166,16 +181,25 @@ def migrate_rule_slugs(raw: dict[str, Any]) -> dict[str, Any]:
 
 
 def upgrade_rule_entries(raw: dict[str, Any]) -> list[str]:
-    """Apply UPGRADED_RULE_ENTRIES to the stored PIPELINE_RULES of an
-    overrides dict (in place). Returns the labels of the entries rewritten,
-    for the caller's log line; empty when nothing matched. Idempotent: an
-    upgraded entry no longer equals the old text."""
+    """Apply UPGRADED_RULE_ENTRIES and UPGRADED_RULE_LANGUAGES to the stored
+    PIPELINE_RULES of an overrides dict (in place). Returns the labels of the
+    entries (and "<rule>/languages" for the scopes) rewritten, for the
+    caller's log line; empty when nothing matched. Idempotent: an upgraded
+    entry no longer equals the old text, an upgraded rule has languages."""
     rules = raw.get("PIPELINE_RULES")
     done: list[str] = []
     if not isinstance(rules, list):
         return done
     for r in rules:
-        if not isinstance(r, dict) or r.get("type") != "regex-list":
+        if not isinstance(r, dict):
+            continue
+        scope = (UPGRADED_RULE_LANGUAGES.get(r["name"])
+                 if isinstance(r.get("name"), str) else None)
+        if (scope is not None and not r.get("languages")
+                and (r.get("type"), r.get("pattern")) == scope[0]):
+            r["languages"] = list(scope[1])
+            done.append(f"{r['name']}/languages")
+        if r.get("type") != "regex-list":
             continue
         entries = r.get("entries")
         if not isinstance(entries, list):
