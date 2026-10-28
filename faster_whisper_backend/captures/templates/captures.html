@@ -1485,8 +1485,12 @@
         { label: 'Undo', fn: function() { _undoBulk(updated); } });
       return;
     }
-    if (!(await _okToDropOpenEdits('Undo the bulk change?', 'Undo')))
+    if (!(await _okToDropOpenEdits('Undo the bulk change?', 'Undo'))) {
+      // Kept the edits to save them first: the Undo stays on offer.
+      toast('Bulk change not undone', false,
+        { label: 'Undo', fn: function() { _undoBulk(updated); } });
       return;
+    }
     var agreed = _dirtyOpenEdits();
     var groups = {};
     updated.forEach(function(u) { (groups[u.prev_status] = groups[u.prev_status] || []).push(u.id); });

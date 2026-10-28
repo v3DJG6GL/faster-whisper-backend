@@ -153,6 +153,31 @@ function tick() { return new Promise(function(r) { setTimeout(r, 0); }); }
     assert out["after"] == ["reviewed", "ready"]
 
 
+@needs_node
+def test_undo_cancelled_at_the_open_edits_prompt_stays_on_offer(page, tmp_path):
+    """Clicking Undo hides its toast, and the previous statuses live only in
+    that closure: cancelling the "Undo the bulk change?" prompt (to save the
+    open edits first) lost the bulk Undo for good."""
+    fns = "\n".join(_js_function(page, f) for f in (
+        "_undoBulk", "_renderUnlessKeptOpenEdits", "_dirtyOpenEdits"))
+    out = _run_node(tmp_path, "var _bulkBusy = false, _openRows = {}, _openSamples = {};\n"
+                    + fns + r"""
+var calls = [], toasts = [], answers = [false, true];
+function api(m, u, body) { calls.push(body.status); return Promise.resolve({ updated: [] }); }
+async function _okToDropOpenEdits() { return answers.shift(); }
+var _allCaptures = [];
+function render() {} function reloadCounts() {}
+function toast(msg, err, action) { toasts.push(action || null); }
+(async function() {
+  await _undoBulk([{ id: 'a', prev_status: 'new' }]);
+  var sent = calls.slice();
+  await toasts[0].fn();
+  console.log(JSON.stringify({ sent: sent, label: toasts[0].label, after: calls }));
+})();
+""")
+    assert out == {"sent": [], "label": "Undo", "after": ["new"]}
+
+
 # ---- single-capture Save ------------------------------------------------------
 
 @needs_node
