@@ -632,11 +632,15 @@ def test_faithful_mismatch_halves_batch_down_to_success(base_cfg, monkeypatch):
 @pytest.mark.parametrize("texts", [
     ("Eins zwei.", "Drei vier."),               # short tail, batch size 8
     ("Eins zwei.", "Drei vier.", "", ""),       # blank members pad the batch
+    ("", "", "Eins zwei.", "Drei vier."),       # leading blanks
+    ("",) * 6 + ("Eins zwei.", "Drei vier."),   # leading blanks, full batch
 ])
 def test_faithful_mismatch_never_resends_the_same_batch(base_cfg, monkeypatch,
                                                         texts):
     """Halving k when the batch sent was already shorter than k leaves the
-    batch unchanged: the identical numbered prompt must not go out again."""
+    batch unchanged: the identical numbered prompt must not go out again.
+    Blank members on either side of the live ones are skipped, so they
+    must not count towards the span that gets halved."""
     calls = []
 
     def fake(llm, family, prompt_or_msgs, max_tokens):
@@ -651,7 +655,7 @@ def test_faithful_mismatch_never_resends_the_same_batch(base_cfg, monkeypatch,
     res, warns, _ = _run(translation.translate_segments(
         _segs(*texts), ["en"], source_lang="de", mode="faithful"))
     assert warns == []
-    assert [r["en"] for r in res][:2] == ["eINS ZWEI.", "dREI VIER."]
+    assert [r["en"] for r in res if r["en"]] == ["eINS ZWEI.", "dREI VIER."]
     numbered = [c for c in calls
                 if c.startswith(translation._NUMBERED_INSTRUCTION)]
     assert len(numbered) == 1
