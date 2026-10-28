@@ -3518,6 +3518,11 @@
   // Bumped by every _stopAnyPreview: a ▶ load still in flight from before
   // (card switch, batch advance / close) sees it moved and never binds.
   var _previewGen = 0;
+  // Proposal chip saves, page-wide: a save REPLACES its members' chips, and
+  // members can sit in several proposals, so a ▶ load (any card) flushes
+  // the pending save and waits for the chain before it reads the chips.
+  var _proposalSaveChain = Promise.resolve();
+  var _proposalSaveFlush = null;
 
   function _getPreviewAudio() {
     if (_previewAudio) return _previewAudio;
@@ -4133,6 +4138,8 @@
       toggleBtn.disabled = true;
       toggleBtn._setIcon('loading');
       try {
+        if (_proposalSaveFlush) _proposalSaveFlush();
+        await _proposalSaveChain;
         var headers = {
           'Content-Type': 'application/json',
           'X-CSRF-Token': window._csrfToken ? window._csrfToken() : '',
@@ -4203,16 +4210,21 @@
         // Each save REPLACES the members' chips with the full set, and two
         // in flight can land in either order: chain them, so one runs at a
         // time and each sends the chips as they are when it starts.
-        var saveTimer = null, saveChain = Promise.resolve();
+        var saveTimer = null;
+        var runSave = function() {
+          saveTimer = null;
+          _proposalSaveChain = _proposalSaveChain.then(function() {
+            return _saveProposalChips(state, ids);
+          }).catch(function(e) {
+            if (e && e.message) toast(e.message, true);
+          });
+        };
         state.onMarkDirty = function() {
           if (saveTimer) clearTimeout(saveTimer);
-          saveTimer = setTimeout(function() {
-            saveChain = saveChain.then(function() {
-              return _saveProposalChips(state, ids);
-            }).catch(function(e) {
-              if (e && e.message) toast(e.message, true);
-            });
-          }, 250);
+          saveTimer = setTimeout(runSave, 250);
+          _proposalSaveFlush = function() {
+            if (saveTimer) { clearTimeout(saveTimer); runSave(); }
+          };
         };
         renderChips(state);
         applyCorrectionsToGround(state);

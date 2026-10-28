@@ -345,6 +345,7 @@ def test_preview_load_superseded_while_in_flight_never_binds(page, tmp_path):
     out = _run_node(tmp_path, r"""
 var _previewAudio = null, _previewBlobUrl = null, _previewActivePanel = null,
     _previewBound = null, _previewGen = 0;
+var _proposalSaveChain = Promise.resolve(), _proposalSaveFlush = null;
 """ + _js_function(page, "_stopAnyPreview") + r"""
 var played = 0, bound = 0, blobs = 0, pending = [];
 var audio = { paused: true, play: async function() { played++; }, pause: function() {},
@@ -379,6 +380,60 @@ function tick() { return new Promise(function(r) { setTimeout(r, 0); }); }
 """)
     assert out == {"bound": 0, "played": 0, "blobs": 0, "active": False,
                    "icon": "play", "disabled": False}
+
+
+@needs_node
+def test_preview_load_waits_for_another_cards_pending_chip_save(page, tmp_path):
+    """Chip saves were chained per ▶ activation only: a ▶ on another card
+    (or the batch advance's auto-play) within the 250 ms debounce or while
+    the save ran read the members' chips first. An overlapping member then
+    showed the old chips, and the next edit wrote them back over the save."""
+    out = _run_node(tmp_path, r"""
+var _previewAudio = null, _previewBlobUrl = null, _previewActivePanel = null,
+    _previewBound = null, _previewGen = 0;
+var _proposalSaveChain = Promise.resolve(), _proposalSaveFlush = null;
+""" + _js_function(page, "_stopAnyPreview") + r"""
+var log = [], saves = [];
+var audio = { paused: true, play: async function() {}, pause: function() {},
+  removeAttribute: function() {}, load: function() {} };
+function _getPreviewAudio() { return (_previewAudio = audio); }
+global.fetch = async function(u) {
+  log.push(u.split('/').pop());
+  return { ok: true, blob: async function() { return {}; },
+           json: async function() { return { words: [] }; } };
+};
+global.window = {};
+global.URL = { createObjectURL: function() { return 'blob:x'; }, revokeObjectURL: function() {} };
+function _saveProposalChips() {
+  log.push('save');
+  return new Promise(function(r) { saves.push(r); });
+}
+function _bindPanelToAudio() { return function() {}; }
+function _renderWordStrip() { return []; }
+function _bindStripKeyboard() {} function renderChips() {}
+function applyCorrectionsToGround() {} function toast() {}
+function mk(ids) {
+  var toggleBtn = { _setIcon: function() {} }, panel = { _toggleBtn: toggleBtn };
+  var stripEl = {}, chipBox = {}, gtArea = {};
+  function memberIdsFn() { return ids; }
+  return { panel: panel, click: """ + _preview_click_handler(page) + r""" };
+}
+function tick() { return new Promise(function(r) { setTimeout(r, 0); }); }
+(async function() {
+  var a = mk(['x', 'y']), b = mk(['x', 'z']);
+  await a.click();
+  log = [];
+  a.panel._state.onMarkDirty();            // chip typed on A ...
+  var pb = b.click();                      // ... and B's ▶ at once
+  await tick();
+  var during = log.slice();
+  saves.shift()();
+  await pb;
+  console.log(JSON.stringify({ during: during, after: log }));
+})();
+""")
+    assert out == {"during": ["save"],
+                   "after": ["save", "preview-audio", "preview-words"]}
 
 
 @needs_node
@@ -1435,8 +1490,10 @@ def test_proposal_chip_saves_run_one_at_a_time_with_the_latest_chips(page, tmp_p
     flight raced it, and the older set could land last: the latest edit
     was lost."""
     start = page.index("var saveTimer = null")
-    block = _js_block(page, start)
+    block = _js_block(page, page.index("state.onMarkDirty = ", start))
+    block = page[start:page.index(block, start) + len(block)]
     out = _run_node(tmp_path, r"""
+var _proposalSaveChain = Promise.resolve(), _proposalSaveFlush = null;
 var state = { corrections: ['foo'] }, ids = ['m1'], sent = [], pending = [];
 function _saveProposalChips(st) {
   sent.push(st.corrections.slice());
