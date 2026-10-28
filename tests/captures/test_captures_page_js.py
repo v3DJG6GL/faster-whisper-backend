@@ -250,6 +250,42 @@ function tick() { return new Promise(function(r) { setTimeout(r, 0); }); }
 
 
 @needs_node
+def test_capture_save_ignores_a_second_save_while_in_flight(page, tmp_path):
+    """The capture Save had no in-flight guard: a second Save before the
+    first reply sent the stale baseline, so the server's three-way merge
+    kept a chip removed in between and the DB resurrected it."""
+    out = _run_node(tmp_path, _js_function(page, "onSave") + r"""
+var pending = [], bodies = [];
+function api(m, u, body) {
+  bodies.push(JSON.parse(JSON.stringify(body)));
+  return new Promise(function(r) { pending.push(r); });
+}
+function clearDirty() {} function toast() {} function reloadCounts() {}
+function _syncCapturePreview() {}
+var btn = { disabled: false };
+var state = { cid: 'c1', corrections: [{ wrong: 'foo', correct: 'bar', idx: 3 }],
+  baselineCorrections: [], adminNotes: '' };
+(async function() {
+  var p = onSave(state, {}, btn);
+  var during = btn.disabled;
+  state.corrections = [];               // chip removed, Save clicked again
+  onSave(state, {}, btn);
+  pending[0]({ capture: {} });
+  await p;
+  var after = btn.disabled;
+  var p2 = onSave(state, {}, btn);      // the retry after the reply goes out
+  pending[pending.length - 1]({ capture: {} });
+  await p2;
+  console.log(JSON.stringify({ during: during, after: after, bodies: bodies }));
+})();
+""")
+    chip = {"wrong": "foo", "correct": "bar", "idx": 3}
+    assert out == {"during": True, "after": False, "bodies": [
+        {"corrections": [chip], "baseline_corrections": [], "admin_notes": ""},
+        {"corrections": [], "baseline_corrections": [chip], "admin_notes": ""}]}
+
+
+@needs_node
 def test_capture_status_click_repaints_the_header_pill(page, tmp_path):
     """The status buttons auto-save, but the collapsed header's pill
     (painted once by renderCard) kept saying the old status."""

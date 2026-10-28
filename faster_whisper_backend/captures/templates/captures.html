@@ -2469,7 +2469,7 @@
     var saveBtn = document.createElement('button');
     saveBtn.className = 'primary';
     saveBtn.textContent = 'Save';
-    saveBtn.addEventListener('click', function() { onSave(state, r); });
+    saveBtn.addEventListener('click', function() { onSave(state, r, saveBtn); });
     actions.appendChild(saveBtn);
 
     var delBtn = document.createElement('button');
@@ -2873,7 +2873,13 @@
   // -------------------------------------------------------------------
   // Save / Delete
   // -------------------------------------------------------------------
-  async function onSave(state, r) {
+  async function onSave(state, r, btn) {
+    // One Save at a time, as on the group card: a second one sent before
+    // the first reply carries the stale baseline, and the server's merge
+    // then keeps a chip removed in between as a "concurrent add".
+    if (state.saving) return;
+    state.saving = true;
+    if (btn) btn.disabled = true;
     try {
       // Strip idx_end when equal to idx — the server tolerates either,
       // but this keeps payloads compact for inspection.
@@ -2928,6 +2934,9 @@
       reloadCounts();
     } catch (e) {
       if (e.message !== 'unauthorized') toast('Save failed: ' + e.message, true);
+    } finally {
+      state.saving = false;
+      if (btn) btn.disabled = false;
     }
   }
 
