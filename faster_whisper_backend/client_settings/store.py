@@ -178,9 +178,18 @@ def _row_to_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:
 
 def get(user_id: str, profile: str = "") -> dict[str, Any] | None:
     """Return the row dict {user_id, profile, blob(parsed), version,
-    updated_ts, device} or None when nothing is stored."""
-    conn = _require_conn()
-    row = conn.execute(
+    updated_ts, device} or None when nothing is stored.
+
+    Under `_lock`, like the writers: two threads running the same SELECT text
+    on the shared connection share one cached statement and can read each
+    other's rows (another user's blob, which may hold their API keys)."""
+    with _lock:
+        return _get_locked(user_id, profile)
+
+
+def _get_locked(user_id: str, profile: str) -> dict[str, Any] | None:
+    """get()'s lookup; the caller holds `_lock`."""
+    row = _require_conn().execute(
         "SELECT * FROM client_settings WHERE user_id = ? AND profile = ?",
         (user_id, profile),
     ).fetchone()
@@ -195,10 +204,11 @@ def list_meta() -> list[dict[str, Any]]:
     `bytes` is the stored UTF-8 size (CAST to BLOB: TEXT length() would
     count characters)."""
     conn = _require_conn()
-    rows = conn.execute(
-        "SELECT user_id, profile, version, updated_ts, device,"
-        " length(CAST(blob AS BLOB)) AS bytes FROM client_settings"
-    ).fetchall()
+    with _lock:
+        rows = conn.execute(
+            "SELECT user_id, profile, version, updated_ts, device,"
+            " length(CAST(blob AS BLOB)) AS bytes FROM client_settings"
+        ).fetchall()
     return [dict(r) for r in rows]
 
 
@@ -266,7 +276,7 @@ def put(
                     (user_id, profile, blob_json, now, dev),
                 ).fetchall()
             except sqlite3.IntegrityError:
-                return False, get(user_id, profile)
+                return False, _get_locked(user_id, profile)
             logger.info(
                 "[client-settings] created user=%s profile=%r v=1 bytes=%d device=%r",
                 _uid_tag(user_id), profile, blob_bytes, dev,
@@ -285,7 +295,7 @@ def put(
             # Stale base_version, or the row was deleted (then the caller's
             # next look shows blob=None via GET / the 409 body's state=None
             # is normalized by the route).
-            return False, get(user_id, profile)
+            return False, _get_locked(user_id, profile)
         new_row = _row_to_dict(rows[0])
         logger.info(
             "[client-settings] updated user=%s profile=%r v=%s bytes=%d device=%r",

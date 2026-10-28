@@ -305,21 +305,21 @@ def test_put_returns_own_write_despite_concurrent_writer(client_settings_store_d
     """SERVER_WORKERS>1: another worker's write landing between our UPDATE
     and a separate read-back must not be echoed as OUR 200 body (the device
     would adopt a foreign base_version). RETURNING hands back the row this
-    statement produced; the success path must not call get() at all."""
+    statement produced; the success path must not read the row back at all."""
     store = client_settings_store_db
     store.put("u1", {"a": 1}, 0)
     other = _second_connection(store)
-    real_get = store.get
+    real_get = store._get_locked
     fired = []
 
-    def racing_get(user_id, profile=""):
+    def racing_get(user_id, profile):
         if not fired:
             fired.append(True)
             other.execute("UPDATE client_settings SET blob='{\"b\":2}',"
                           " version=version+1 WHERE user_id='u1'")
         return real_get(user_id, profile)
 
-    monkeypatch.setattr(store, "get", racing_get)
+    monkeypatch.setattr(store, "_get_locked", racing_get)
     try:
         ok, state = store.put("u1", {"a": 2}, 1)
         assert ok is True
@@ -335,17 +335,17 @@ def test_force_put_returns_own_write_despite_concurrent_writer(client_settings_s
     store = client_settings_store_db
     store.put("u1", {"a": 1}, 0)
     other = _second_connection(store)
-    real_get = store.get
+    real_get = store._get_locked
     fired = []
 
-    def racing_get(user_id, profile=""):
+    def racing_get(user_id, profile):
         if not fired:
             fired.append(True)
             other.execute("UPDATE client_settings SET blob='{\"b\":2}',"
                           " version=version+1 WHERE user_id='u1'")
         return real_get(user_id, profile)
 
-    monkeypatch.setattr(store, "get", racing_get)
+    monkeypatch.setattr(store, "_get_locked", racing_get)
     try:
         state = store.force_put("u1", {"imported": True})
         assert state["version"] == 2
@@ -391,3 +391,20 @@ def test_init_db_renames_the_legacy_updated_at_column(client_settings_store_db, 
     # Idempotent: a second start finds updated_ts and leaves it alone.
     store.init_db(str(path))
     assert store.get("u1")["blob"] == {"a": 2}
+
+
+def test_reads_hold_the_lock(client_settings_store_db, monkeypatch):
+    """Two threads running the same SELECT text on the shared connection
+    share one cached statement and can read each other's rows (another
+    user's blob): the reads take _lock, and a put conflict still answers."""
+    from tests.stats.test_store_reads_hold_lock import _LockCheckingConn
+    s = client_settings_store_db
+    assert s.put("u1", {"a": 1}, 0)[0]
+    conn = _LockCheckingConn(s._conn, s._lock)
+    monkeypatch.setattr(s, "_conn", conn)
+
+    assert s.get("u1")["blob"] == {"a": 1}
+    assert [m["user_id"] for m in s.list_meta()] == ["u1"]
+    ok, state = s.put("u1", {"a": 2}, 0)
+    assert not ok and state["version"] == 1
+    assert conn.unlocked == []
