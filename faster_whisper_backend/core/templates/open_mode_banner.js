@@ -26,33 +26,51 @@
   // cached whoami payload (correct even if the cookie was renamed); fall back
   // to the readable whisper_csrf cookie (available synchronously on load).
   // The HttpOnly session cookie itself is sent automatically by the browser.
-  window._csrfToken = function() {
-    try {
-      if (window.__whoami && window.__whoami.csrf_token)
-        return window.__whoami.csrf_token;
-    } catch(_) {}
+  function _cookieCsrf() {
     try {
       var m = document.cookie.match(/(?:^|;\s*)whisper_csrf=([^;]+)/);
       if (m) return decodeURIComponent(m[1]);
     } catch(_) {}
     return '';
+  }
+  window._csrfToken = function() {
+    try {
+      if (window.__whoami && window.__whoami.csrf_token)
+        return window.__whoami.csrf_token;
+    } catch(_) {}
+    return _cookieCsrf();
   };
 
   // Global sign-out: revoke the server session (CSRF-protected), announce the
   // change, then reload (re-shows the login card / no-access landing). Shared
   // by the header logout button and the no-access landing's Sign-out button.
+  // Reloads only once the server ended the session (a 401: there was none);
+  // a refused or failed logout used to reload into the same signed-in page.
   window._signOut = function() {
     var done = function() {
       window.dispatchEvent(new Event('whisper:auth-changed'));
       location.reload();
     };
-    try {
-      fetch('/auth/logout', {
+    var failed = function() {
+      try { window.alert('Sign-out failed. You may still be signed in; try again.'); }
+      catch(_) {}
+    };
+    var send = function(token, retried) {
+      return fetch('/auth/logout', {
         method: 'POST',
-        headers: { 'X-CSRF-Token': window._csrfToken() },
+        headers: { 'X-CSRF-Token': token },
         cache: 'no-store',
-      }).then(done, done);
-    } catch(_) { done(); }
+      }).then(function(r) {
+        if (r.ok || r.status === 401) { done(); return; }
+        // The cached whoami token is stale when another tab signed in again
+        // (new session, new cookie): retry once with the live cookie's token.
+        var live = _cookieCsrf();
+        if (r.status === 403 && !retried && live && live !== token)
+          return send(live, true);
+        failed();
+      }, failed);
+    };
+    try { send(window._csrfToken(), false); } catch(_) { failed(); }
   };
 
   // ---- Unified login gate ----
