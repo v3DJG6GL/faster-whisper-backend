@@ -115,7 +115,8 @@ def test_bulk_status_ignores_a_second_click_while_in_flight(page, tmp_path):
     """A second bulk PATCH sent while the first was in flight reported the
     first's freshly written status as prev_status, and its toast replaced
     the first's Undo: the original status was unrecoverable."""
-    fns = _js_function(page, "_bulkStatus") + "\n" + _js_function(page, "_undoBulk")
+    fns = "\n".join(_js_function(page, f) for f in (
+        "_bulkStatus", "_undoBulk", "_renderUnlessKeptOpenEdits"))
     out = _run_node(tmp_path, "var _bulkBusy = false;\n" + fns + r"""
 var calls = [], pending = [], toasts = [];
 function api(m, u, body) {
@@ -821,3 +822,58 @@ _loadProposals().then(function() {
         assert out == {"events": ["stop", "get", "card:pa"], "undo": None}
     else:
         assert out == {"events": ["stop", "get"], "undo": {"action": "dismiss", "proposals": []}}
+
+
+# ---- bulk actions vs edits made during the request ---------------------------------------
+
+_BULK_DIRTY_STUBS = r"""
+var _openRows = {}, _openSamples = {}, _bulkBusy = false, renders = 0, asked = [];
+var answers = [], pending = [];
+async function _confirm(o) { asked.push(o.title); return answers.shift(); }
+function api() { return new Promise(function(r) { pending.push(r); }); }
+var _allCaptures = [{ id: 'a', status: 'new', audio_s: 1 }];
+function _selectedRows() { return _allCaptures.slice(); }
+function _clearSelection() {} function render() { renders++; } function reloadCounts() {}
+function toast() {} function fmtHours() { return '1s'; } function collapse() {}
+global.document = { querySelector: function() { return null; } };
+function tick() { return new Promise(function(r) { setTimeout(r, 0); }); }
+"""
+
+
+@needs_node
+@pytest.mark.parametrize("action, reply", [
+    ("_bulkStatus('reviewed')", {"updated": [{"id": "a", "prev_status": "new"}], "skipped": []}),
+    ("_undoBulk([{ id: 'a', prev_status: 'reviewed' }])", {"updated": [{"id": "a"}], "skipped": []}),
+    ("_bulkDelete()", {"deleted": [], "skipped": []}),
+])
+def test_bulk_action_asks_again_before_rendering_over_edits_made_meanwhile(
+        page, tmp_path, action, reply):
+    """The bulk status change, its Undo and bulk delete asked about open
+    edits only before their request. A card opened and edited while it ran
+    lost its chips / notes to the render() after it, with no prompt."""
+    fns = "\n".join(_js_function(page, f) for f in (
+        "_bulkStatus", "_undoBulk", "_bulkDelete", "_renderUnlessKeptOpenEdits",
+        "_okToDropOpenEdits", "_anyOpenDirty"))
+    out = _run_node(tmp_path, fns + _BULK_DIRTY_STUBS + r"""
+var reply = """ + json.dumps(reply) + r""";
+async function run(keep) {
+  _openRows = {};
+  answers = [true];                     // bulk delete's own confirm
+  var p = """ + action + r""";
+  await tick();
+  _openRows.c1 = { dirty: true };       // opened + edited mid-request
+  answers = [!keep];
+  pending.shift()(reply);
+  await p; await tick();
+}
+(async function() {
+  await run(true);
+  var kept = { renders: renders, asked: asked.slice() };
+  asked = [];
+  await run(false);
+  console.log(JSON.stringify({ kept: kept, dropped: { renders: renders, asked: asked } }));
+})();
+""")
+    assert out["kept"]["renders"] == 0
+    assert out["kept"]["asked"][-1] == "Show the updated list?"
+    assert out["dropped"]["renders"] == 1

@@ -1415,6 +1415,14 @@
       + 'List not refreshed: an open card has unsaved edits. Refresh after saving.', err);
   }
 
+  // The bulk actions ask before their request, but the list stays usable
+  // while it runs: a card opened and edited meanwhile would be dropped by
+  // the render() after it, so ask again. On a cancel the updated rows stay
+  // in _allCaptures and show on the next render.
+  async function _renderUnlessKeptOpenEdits() {
+    if (await _okToDropOpenEdits('Show the updated list?', 'Show')) render();
+  }
+
   // One bulk PATCH at a time: a second one in flight reports the first's
   // freshly written status as prev_status, and its toast replaces the
   // first's Undo, so the original status could never be restored.
@@ -1432,7 +1440,7 @@
       var byId = {}; updated.forEach(function(u) { byId[u.id] = u; });
       _allCaptures.forEach(function(r) { if (byId[r.id]) r.status = status; });
       _clearSelection();
-      render();
+      await _renderUnlessKeptOpenEdits();
       reloadCounts();
       var why = {};
       skipped.forEach(function(s) { why[s.reason] = (why[s.reason] || 0) + 1; });
@@ -1472,7 +1480,7 @@
         var set = {}; (j.updated || []).forEach(function(u) { set[u.id] = true; });
         _allCaptures.forEach(function(r) { if (set[r.id]) r.status = st; });
       }
-      render();
+      await _renderUnlessKeptOpenEdits();
       reloadCounts();
       var label = { not_found: 'no longer exist', locked: 'locked', audio_missing: 'audio missing' };
       var note = Object.keys(why).map(function(k) {
@@ -1506,7 +1514,7 @@
         if (card) { collapse(card, id); card.remove(); }
       });
       _clearSelection();
-      render();
+      await _renderUnlessKeptOpenEdits();
       reloadCounts();
       var sk = (j.skipped || []).length;
       toast('Deleted ' + (j.deleted || []).length + (sk ? ' · ' + sk + ' skipped' : ''));
