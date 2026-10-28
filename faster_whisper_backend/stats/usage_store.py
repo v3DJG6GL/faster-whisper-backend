@@ -941,11 +941,6 @@ def sweep(
     now = time.time()
     marked = pruned_jobs = pruned_apps = 0
     stale_cutoff = now - max(1, int(unreported_after_h)) * 3600
-    if jobs_retention_days > 0:
-        # A retention shorter than the grace period would delete the job
-        # below before it is ever marked, leaving its session counted in
-        # usage_hourly but missing from the dictation buckets.
-        stale_cutoff = max(stale_cutoff, now - int(jobs_retention_days) * 86400)
     with _lock:
         conn.execute("BEGIN")
         try:
@@ -966,13 +961,21 @@ def sweep(
                 marked += 1
             if jobs_retention_days > 0:
                 cutoff = now - int(jobs_retention_days) * 86400
+                # A dictation still waiting for its outcome outlives a
+                # retention shorter than the grace period: deleted early, a
+                # late report would find no job and roll the session a
+                # second time. The sweep that marks it above, once the grace
+                # ends, deletes it here in the same pass.
+                keep = " AND NOT (kind = 'dictation' AND reported_ts IS NULL)"
                 conn.execute(
                     "DELETE FROM usage_job_stages WHERE job_id IN"
-                    " (SELECT job_id FROM usage_jobs WHERE created_ts < ?)",
+                    " (SELECT job_id FROM usage_jobs WHERE created_ts < ?"
+                    + keep + ")",
                     (cutoff,),
                 )
                 pruned_jobs = conn.execute(
-                    "DELETE FROM usage_jobs WHERE created_ts < ?", (cutoff,)
+                    "DELETE FROM usage_jobs WHERE created_ts < ?" + keep,
+                    (cutoff,),
                 ).rowcount or 0
             if app_retention_days > 0:
                 pruned_apps = conn.execute(
