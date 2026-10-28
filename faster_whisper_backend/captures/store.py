@@ -1351,10 +1351,19 @@ def reconcile_on_startup() -> tuple[int, int]:
     # own reconcile pass — prune it here so we never see a merged-group
     # WAV as an orphan and delete it on every restart. Hex-fanout dirs
     # are "00".."ff", none of which equal "groups", so this is safe.
+    # Only files inside a two-level fanout dir (`<xx>/<yy>/`) are ours: a
+    # CAPTURES_DIR mis-set to the data dir or a parent of it must not take
+    # config.local.json, the *.sqlite3 stores or the logs with it.
     if os.path.isdir(audio_dir):
         for root, dirs, files in os.walk(audio_dir):
             if root == audio_dir and "groups" in dirs:
                 dirs.remove("groups")
+            parts = os.path.relpath(root, audio_dir).split(os.sep)
+            if root == audio_dir:
+                parts = []
+            dirs[:] = [d for d in dirs if len(d) == 2 and len(parts) < 2]
+            if len(parts) != 2:
+                continue
             for name in files:
                 if name.endswith(".tmp"):
                     # Crash mid-write — delete the partial.
