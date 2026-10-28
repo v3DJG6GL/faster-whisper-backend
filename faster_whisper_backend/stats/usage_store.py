@@ -200,6 +200,10 @@ CREATE TABLE IF NOT EXISTS usage_jobs (
 );
 CREATE INDEX IF NOT EXISTS idx_usage_jobs_created ON usage_jobs(created_ts);
 CREATE INDEX IF NOT EXISTS idx_usage_jobs_user_created ON usage_jobs(user_id, created_ts);
+-- sweep()'s stale-unreported scan runs under _lock; without this it walks
+-- every job past the grace period (nearly the whole retained table).
+CREATE INDEX IF NOT EXISTS idx_usage_jobs_unreported ON usage_jobs(created_ts)
+  WHERE kind = 'dictation' AND reported_ts IS NULL;
 
 CREATE TABLE IF NOT EXISTS usage_job_stages (
   job_id   TEXT NOT NULL,
@@ -966,6 +970,15 @@ def record_outcome(
     return "accepted"
 
 
+# Matches the partial index idx_usage_jobs_unreported (WHERE clause verbatim).
+_STALE_UNREPORTED_SQL = (
+    "SELECT job_id, user_id, created_ts, words, audio_s"
+    " FROM usage_jobs"
+    " WHERE kind = 'dictation' AND reported_ts IS NULL"
+    "   AND created_ts < ?"
+)
+
+
 def sweep(
     *,
     unreported_after_h: int,
@@ -989,13 +1002,7 @@ def sweep(
     with _lock:
         conn.execute("BEGIN")
         try:
-            stale = conn.execute(
-                "SELECT job_id, user_id, created_ts, words, audio_s"
-                " FROM usage_jobs"
-                " WHERE kind = 'dictation' AND reported_ts IS NULL"
-                "   AND created_ts < ?",
-                (stale_cutoff,),
-            ).fetchall()
+            stale = conn.execute(_STALE_UNREPORTED_SQL, (stale_cutoff,)).fetchall()
             for job in stale:
                 conn.execute(
                     "UPDATE usage_jobs SET activation = ?, delivery = ?,"

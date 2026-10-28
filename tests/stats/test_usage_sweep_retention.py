@@ -53,3 +53,10 @@ def test_retention_still_prunes_reported_and_non_dictation_jobs(usage_store_db):
                       app_retention_days=0, hourly_retention_days=0)
 
     assert counts["jobs"] == 2
+
+
+def test_stale_unreported_scan_uses_the_partial_index(usage_store_db):
+    us = usage_store_db
+    plan = us._require_conn().execute(
+        "EXPLAIN QUERY PLAN " + us._STALE_UNREPORTED_SQL, (0.0,)).fetchall()
+    assert any("idx_usage_jobs_unreported" in row[-1] for row in plan), plan
