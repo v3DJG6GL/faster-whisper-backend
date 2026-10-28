@@ -1596,10 +1596,17 @@ _ENV_WARNINGS.extend(_renames.alias_env(os.environ))
 for _secret in ("WHISPER_" + _f for _f in _SECRET_FIELDS):
     _path = os.environ.get(_secret + "_FILE")
     if _path and not os.environ.get(_secret):
+        # Windows PowerShell 5.1 writes `>` as UTF-16 with a BOM and
+        # `Set-Content -Encoding UTF8` with a UTF-8 BOM (which .strip() keeps,
+        # so the secret never matches). An undecodable file or a NUL byte is a
+        # warning like an unreadable one, never an import crash.
         try:
-            with open(_path, encoding="utf-8") as _fh:
-                os.environ[_secret] = _fh.read().strip()
-        except OSError as _exc:
+            with open(_path, "rb") as _fh:
+                _buf = _fh.read()
+            _enc = ("utf-16" if _buf[:2] in (b"\xff\xfe", b"\xfe\xff")
+                    else "utf-8-sig")
+            os.environ[_secret] = _buf.decode(_enc).strip()
+        except (OSError, ValueError) as _exc:
             _ENV_WARNINGS.append(f"{_secret}_FILE={_path!r} could not be read: {_exc}")
 
 
