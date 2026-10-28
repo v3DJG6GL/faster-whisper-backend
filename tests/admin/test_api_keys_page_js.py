@@ -219,3 +219,52 @@ var u = { id: 'u1', username: 'alice' };
 """
     out = _run(js, tmp_path)
     assert out == {"reopened_go_disabled": True, "after_settle_go_disabled": False, "posts": 1}
+
+
+def _between(html, start, end):
+    """Source from `start` up to and including `end`."""
+    i = html.index(start)
+    return html[i:html.index(end, i) + len(end)]
+
+
+@pytest.mark.parametrize("scope", ["user", "key"])
+def test_reopened_overrides_drawer_shows_the_save_after_a_declined_reload(
+        client, tmp_path, scope):
+    """The drawers were seeded from the user/key objects captured at render
+    time, and only the load() after a save refreshed them. When that reload
+    was declined (another drawer dirty), closing and reopening the drawer
+    showed the pre-save binding, and its next Save reverted the overrides."""
+    html = client.get("/settings/api-keys").text
+    if scope == "user":
+        src = _between(html, "    ovrBtn.onclick = function () {", "\n    };\n")
+        btn, wrap = "ovrBtn", "ovrWrap"
+        reply = {"ok": True, "permissions": {"pages": {}, "config": {"direct": {"beam_size": 3}}}}
+    else:
+        src = _between(html, "      kcfgBtn.onclick = function () {", "\n      };\n")
+        btn, wrap = "kcfgBtn", "kdraw"
+        reply = {"ok": True, "config": {"direct": {"beam_size": 3}}}
+    js = r"""
+function mkBtn() { return { classList: { add: function () {}, remove: function () {} } }; }
+var %(btn)s = mkBtn();
+var %(wrap)s = { firstChild: null, set innerHTML(v) { this.firstChild = null; },
+  appendChild: function (c) { this.firstChild = c; } };
+var u = { id: 'u1', permissions: { pages: { logs: 'all' } } };
+var k = { id: 'k1', config: null };
+var seen = [], last;
+function bindingFromConfig(cfg) { return (cfg && cfg.direct) || {}; }
+function buildBindingDrawer(opts) { seen.push(opts.binding); last = opts; return {}; }
+function api() { return Promise.resolve({ ok: true,
+  json: function () { return Promise.resolve(%(reply)s); } }); }
+""" % {"btn": btn, "wrap": wrap, "reply": json.dumps(reply)} + src + r"""
+(async function () {
+  %(btn)s.onclick();                       // open
+  await last.save({ overrides: { beam_size: 3 } });
+  %(btn)s.onclick();                       // close (the reload was declined)
+  %(btn)s.onclick();                       // reopen
+  console.log(JSON.stringify({ seen: seen, pages: (u.permissions || {}).pages }));
+})();
+""" % {"btn": btn}
+    out = _run(js, tmp_path)
+    assert out["seen"] == [{}, {"beam_size": 3}]
+    assert out["pages"] == {"logs": "all"}
+

@@ -1103,7 +1103,13 @@
         save: function (body) {
           return api('PATCH', '/settings/api-keys/api/users/' + encodeURIComponent(u.id) + '/permissions',
                      { config: body })
-            .then(function (r) { if (!r.ok) return r.text().then(function (t) { throw new Error(t); }); return r.json(); });
+            .then(function (r) { if (!r.ok) return r.text().then(function (t) { throw new Error(t); }); return r.json(); })
+            // The reload after a save can be declined (another drawer is
+            // dirty); a reopened drawer must start from what was saved.
+            .then(function (j) {
+              u.permissions = Object.assign({}, u.permissions, { config: (j.permissions || {}).config });
+              return j;
+            });
         },
       }));
     };
@@ -1273,7 +1279,8 @@
           save: function (body2) {
             return api('PATCH', '/settings/api-keys/api/users/' + encodeURIComponent(u.id) +
                        '/keys/' + encodeURIComponent(k.id) + '/config', body2)
-              .then(function (r) { if (!r.ok) return r.text().then(function (t) { throw new Error(t); }); return r.json(); });
+              .then(function (r) { if (!r.ok) return r.text().then(function (t) { throw new Error(t); }); return r.json(); })
+              .then(function (j) { k.config = j.config; return j; });   // as in the user drawer
           },
         }));
       };
