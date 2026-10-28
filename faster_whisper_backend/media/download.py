@@ -1014,19 +1014,19 @@ def _generic_handoff_target(key: str, info: dict, url: str) -> "str | None":
 
 async def _handoff_serves_media(target: str, deadline: float) -> bool:
     """check_url_policy's direct-media verdict (the same guarded capped
-    GET) for a GenericIE hand-off target, within the probe's deadline."""
+    GET) for a GenericIE hand-off target, within the probe's deadline.
+    A target that could not be asked raises UrlTimeoutError /
+    UrlDownloadError like check_url_policy: probe() fails closed either
+    way, and the user hears the timeout, not a policy refusal."""
     try:
         target = validate_url(target)
     except UrlDownloadError:
         return False
     budget = max(1.0, min(float(getattr(cfg, "URL_SOCKET_TIMEOUT_S", 15)),
                           deadline - time.monotonic()))
-    try:
-        return await asyncio.get_running_loop().run_in_executor(
-            _PROBE_POOL,
-            lambda: _direct_media_probe_sync(target, timeout=budget, accept_hls=True))
-    except UrlDownloadError:  # unreachable is no proof of media: fail closed
-        return False
+    return await asyncio.get_running_loop().run_in_executor(
+        _PROBE_POOL,
+        lambda: _direct_media_probe_sync(target, timeout=budget, accept_hls=True))
 
 
 def _policy_check_extractor(key: str, info: dict, *,

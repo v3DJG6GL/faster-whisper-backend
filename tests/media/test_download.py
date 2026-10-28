@@ -202,12 +202,30 @@ def test_direct_media_probe_keeps_a_forbidden_host_not_media(monkeypatch):
                                         timeout=1) is False
 
 
-def test_unreachable_hand_off_target_is_not_admitted_as_media(monkeypatch):
-    """The hand-off re-check fails closed: a target that could not be asked
-    is no proof that it serves media."""
-    _probe_opener_raising(monkeypatch, urllib.error.URLError(ConnectionRefusedError()))
-    assert _run(udl._handoff_serves_media(
-        "https://cdn.example.com/ep1.mp3", time.monotonic() + 5)) is False
+@pytest.mark.parametrize("exc, error, message", [
+    (urllib.error.URLError(socket.timeout("timed out")), udl.UrlTimeoutError,
+     "the site took too long to answer"),
+    (urllib.error.URLError(ConnectionRefusedError(111, "refused")),
+     udl.UrlDownloadError, "the site could not be reached from the server"),
+    (urllib.error.HTTPError("https://cdn.example/live.m3u8", 503, "busy", {}, None),
+     udl.UrlDownloadError, "the site refused the request (HTTP 503)"),
+])
+def test_unreachable_hand_off_target_is_not_called_a_policy_refusal(
+        monkeypatch, exc, error, message):
+    """The hand-off re-check fails closed — nothing is admitted — but a CDN
+    that is slow, down or answering 5xx is reported as that, not as "the
+    server's URL policy doesn't allow" (a refusal nobody retries)."""
+    real_probe = udl._direct_media_probe_sync
+    _probe_opener_raising(monkeypatch, exc)  # the real GET, its opener failing
+    _handoff_policy(monkeypatch)
+    _stand_in_yt_dlp(monkeypatch, "Youtube", {
+        "title": "t", "extractor_key": "Generic",
+        "webpage_url": "https://cdn.example/live.m3u8",
+        "protocol": "m3u8_native"})
+    monkeypatch.setattr(udl, "_direct_media_probe_sync", real_probe)
+    with pytest.raises(error) as ei:
+        _run(udl.probe("https://x/watch", timeout=5.0))
+    assert str(ei.value) == message
 
 
 def test_direct_media_probe_spends_from_the_probe_deadline(monkeypatch):
