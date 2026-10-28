@@ -40,7 +40,9 @@ async def whoami(
     the user can't reach and to render scope hints. `csrf_token` is
     present only for cookie-authenticated callers (set by
     user_from_session_cookie on request.state) so the client can attach
-    X-CSRF-Token without parsing the cookie. A 401 means no valid
+    X-CSRF-Token without parsing the cookie; `csrf_cookie` rides with it
+    (SESSION_CSRF_COOKIE_NAME) so the client's live-cookie fallback reads a
+    renamed cookie too. A 401 means no valid
     credential AND no synthetic admin for this caller: the server is locked
     down, or it is in open mode but the host is outside
     ADMIN_WEBUI_ALLOWED_HOSTS (open_mode_host_ok) — either way the WebUI
@@ -66,6 +68,7 @@ async def whoami(
     csrf = getattr(request.state, "session_csrf", None)
     if csrf:
         out["csrf_token"] = csrf
+        out["csrf_cookie"] = cfg.SESSION_CSRF_COOKIE_NAME
     # Per-identity, and it carries the session's CSRF token. A 200 GET with no
     # Cache-Control and no Vary is heuristically cacheable under RFC 9111, and
     # this deployment expects a reverse proxy in front (TRUSTED_ORIGINS exists

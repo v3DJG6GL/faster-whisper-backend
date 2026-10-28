@@ -23,13 +23,20 @@
                                    // refreshes (post-login) don't re-render.
 
   // CSRF token for cookie-authenticated mutations (double-submit). Prefer the
-  // cached whoami payload (correct even if the cookie was renamed); fall back
-  // to the readable whisper_csrf cookie (available synchronously on load).
+  // cached whoami payload; fall back to the readable CSRF cookie (available
+  // synchronously on load), named by whoami's csrf_cookie once it is cached
+  // (SESSION_CSRF_COOKIE_NAME may rename it) and whisper_csrf before that.
   // The HttpOnly session cookie itself is sent automatically by the browser.
   function _cookieCsrf() {
     try {
-      var m = document.cookie.match(/(?:^|;\s*)whisper_csrf=([^;]+)/);
-      if (m) return decodeURIComponent(m[1]);
+      var name = (window.__whoami && window.__whoami.csrf_cookie)
+        || 'whisper_csrf';
+      var parts = document.cookie.split(';');
+      for (var i = 0; i < parts.length; i++) {
+        var kv = parts[i].replace(/^\s+/, '');
+        if (kv.indexOf(name + '=') === 0 && kv.length > name.length + 1)
+          return decodeURIComponent(kv.slice(name.length + 1));
+      }
     } catch(_) {}
     return '';
   }

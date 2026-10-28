@@ -19,7 +19,7 @@ from tests.core.test_whoami_unavailable_retry import _CHROME_STUB
 
 
 _FETCH = r"""
-document.cookie = 'whisper_csrf=S2';
+document.cookie = 'other=x; ' + CSRF_COOKIE + '=S2';
 const tokens = [];
 let reloads = 0, alerts = 0;
 global.location = { reload() { reloads++; } };
@@ -27,7 +27,8 @@ window.alert = () => { alerts++; };
 window.dispatchEvent = () => {};
 global.fetch = (url, opts) => {
   if (url === '/auth/whoami') return Promise.resolve({ ok: true, status: 200,
-    json: () => Promise.resolve({ open_mode: false, csrf_token: 'S1' }) });
+    json: () => Promise.resolve(Object.assign({ open_mode: false,
+      csrf_token: 'S1' }, WHOAMI_EXTRA)) });
   if (url !== '/auth/logout') return Promise.resolve({ ok: false, status: 404 });
   tokens.push(opts.headers['X-CSRF-Token']);
   const s = LOGOUT[Math.min(tokens.length - 1, LOGOUT.length - 1)];
@@ -49,11 +50,15 @@ setTimeout(() => {
 """
 
 
-def _sign_out(logout: list, clicks: int = 1, gap_ms: int = 0) -> dict:
+def _sign_out(logout: list, clicks: int = 1, gap_ms: int = 0,
+              csrf_cookie: str = "whisper_csrf",
+              whoami_extra: dict | None = None) -> dict:
     js = web_common.OPEN_MODE_BANNER_JS.strip()
     js = js[len("<script>"):-len("</script>")]
     given = (f"const LOGOUT = {json.dumps(logout)};\n"
-             f"const CLICKS = {clicks}, GAP_MS = {gap_ms};\n")
+             f"const CLICKS = {clicks}, GAP_MS = {gap_ms};\n"
+             f"const CSRF_COOKIE = {json.dumps(csrf_cookie)};\n"
+             f"const WHOAMI_EXTRA = {json.dumps(whoami_extra or {})};\n")
     out = subprocess.run(
         ["node", "-"], input=given + _CHROME_STUB + _FETCH + js + _DRIVE,
         capture_output=True, text=True, timeout=30, check=True)
@@ -86,3 +91,14 @@ def test_double_click_sends_one_sign_out():
 def test_a_failed_sign_out_can_be_retried():
     assert _sign_out([500, 200], clicks=2, gap_ms=20) == {
         "tokens": ["S1", "S1"], "reloads": 1, "alerts": 1}
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
+def test_retry_reads_a_renamed_csrf_cookie():
+    # SESSION_CSRF_COOKIE_NAME renamed the cookie (e.g. __Host- behind
+    # HTTPS): the live-cookie lookup matched only "whisper_csrf", found
+    # nothing and skipped the retry. whoami now names the cookie.
+    name = "__Host-whisper_csrf"
+    assert _sign_out([403, 200], csrf_cookie=name,
+                     whoami_extra={"csrf_cookie": name}) == {
+        "tokens": ["S1", "S2"], "reloads": 1, "alerts": 0}

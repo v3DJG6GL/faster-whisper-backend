@@ -73,6 +73,17 @@ def test_login_good_key_sets_cookies(client, make_user_key):
     assert "httponly" in lines  # the session cookie is HttpOnly
 
 
+def test_whoami_names_the_csrf_cookie(client, make_user_key, monkeypatch):
+    # The page's live-cookie CSRF fallback hard-coded "whisper_csrf", so a
+    # renamed SESSION_CSRF_COOKIE_NAME left it reading nothing.
+    from faster_whisper_backend.settings import config as cfg
+    monkeypatch.setattr(cfg, "SESSION_CSRF_COOKIE_NAME", "fw_csrf")
+    _uid, raw = make_user_key("root", is_admin=True)
+    client.post("/auth/login", json={"key": raw})
+    body = client.get("/auth/whoami").json()
+    assert body["csrf_token"] and body["csrf_cookie"] == "fw_csrf"
+
+
 def test_login_bad_key_is_401_no_cookie(client, make_user_key):
     make_user_key("root", is_admin=True)
     r = client.post("/auth/login", json={"key": "wk_not_real"})
