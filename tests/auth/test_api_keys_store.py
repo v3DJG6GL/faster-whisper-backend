@@ -718,7 +718,9 @@ def test_parse_binding_migrates_tightened_direct_values():
     b = api_keys_store._parse_binding(
         {"direct": {"DEFAULT_LANGUAGE": "jp", "SEGMENT_HEAD_ECHO_MIN_WORDS": 1,
                     "locks": ["DEFAULT_LANGUAGE"]}, "profiles": []})
-    assert b["direct"] == {"SEGMENT_HEAD_ECHO_MIN_WORDS": 0, "locks": []}
+    # The lock survives the dropped value (it pins the inherited language).
+    assert b["direct"] == {"SEGMENT_HEAD_ECHO_MIN_WORDS": 0,
+                           "locks": ["DEFAULT_LANGUAGE"]}
     direct = dict(b["direct"])
     locks = direct.pop("locks")
     config_store.validate_binding({"overrides": direct, "locks": locks})

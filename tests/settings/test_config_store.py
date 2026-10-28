@@ -382,10 +382,6 @@ def test_server_host_loose_charset():
     _bad(SERVER_HOST="has/slash")
 
 
-# ---------------------------------------------------------------------------
-# LOG_FILE path safety
-# ---------------------------------------------------------------------------
-
 def test_log_file_rejects_unc_and_traversal():
     _ok(LOG_FILE="logs/whisper.log")
     _bad(LOG_FILE="\\\\server\\share\\x.log")  # UNC
@@ -1742,7 +1738,9 @@ def test_stored_bundle_values_refused_since_are_migrated_not_fatal(tmp_path, cap
     assert out["OVERRIDE_PROFILES"]["p"]["SEGMENT_HEAD_ECHO_MIN_WORDS"] == 0
     assert out["OVERRIDE_PROFILES"]["p"]["SEGMENT_ZERO_LENGTH_TAIL_MIN_WORDS"] == 0
     prof = out["OVERRIDE_PROFILES"]["p"]
-    assert "TEMPERATURE" not in prof and prof["locks"] == ["BEAM_SIZE"]
+    # The lock outlives the dropped value: it pins the inherited one.
+    assert "TEMPERATURE" not in prof
+    assert sorted(prof["locks"]) == ["BEAM_SIZE", "TEMPERATURE"]
     mo = out["MODEL_OVERRIDES"]["large-v3"]
     assert "TEMPERATURE" not in mo and "SUPPRESS_TOKENS" not in mo
     assert "DEFAULT_LANGUAGE" not in mo

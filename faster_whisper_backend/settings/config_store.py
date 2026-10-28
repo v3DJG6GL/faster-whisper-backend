@@ -77,10 +77,9 @@ def migrate_tightened_bundle(bundle: dict[str, Any], label: str) -> list[str]:
         try:
             check(val)
         except ValueError as e:
+            # A lock stays: a value-less lock pins the inherited value, so
+            # the admin's "the client may not change this" still holds.
             del bundle[key]
-            locks = bundle.get("locks")
-            if isinstance(locks, list):
-                bundle["locks"] = [lk for lk in locks if lk != key]
             notes.append(f"dropped {label}.{key} {val!r}: {e}")
     return notes
 
