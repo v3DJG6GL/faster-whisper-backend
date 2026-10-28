@@ -8,10 +8,13 @@ factory strip rule keeps `…` and `:` runs, so such a run reaches the map on
 /transcribe, every streaming final and every captures reapply.
 """
 
+import json
+import os
 import time
 
 import pytest
 
+from faster_whisper_backend import paths
 from faster_whisper_backend.pipeline import dictation_map
 
 
@@ -49,3 +52,24 @@ def test_word_bounded_key_still_needs_whole_word():
     pattern, replace, _ = dictation_map.compile_map({"Komma": ",", "Punkt": "."})
     assert pattern.sub(replace, "Kommando Punkt Punktzahl xKomma") == "Kommando . Punktzahl xKomma"
     assert pattern.sub(replace, "12... Komma 5") == "12, 5"
+
+
+def _factory_de_map():
+    with open(os.path.join(paths.REPO_ROOT, "config.json"), encoding="utf-8") as fh:
+        rules = json.load(fh)["PIPELINE_RULES"]
+    return next(r["map"] for r in rules if r["name"] == "de-dictation-map")
+
+
+@pytest.mark.parametrize("text, expected", [
+    ("Eisen Bindestrich Infusion", "Eisen-Infusion"),
+    ("Eisen Binde Strich Infusion", "Eisen-Infusion"),
+    ("Das sind 50 Prozent mehr.", "Das sind 50% mehr."),
+    ("5 Prozentzeichen", "5 %"),
+    ("das Prozentual", "das Prozentual"),
+])
+def test_factory_keys_with_a_space_edge_match_in_running_text(text, expected):
+    """The factory " Prozent" / " Bindestrich " keys sit right against the
+    neighbouring word; a blanket `(?<!\\w)` / `(?!\\w)` around every key
+    refused them, so every German transcript lost the dictated % and -."""
+    pattern, replace, _ = dictation_map.compile_map(_factory_de_map())
+    assert pattern.sub(replace, text) == expected

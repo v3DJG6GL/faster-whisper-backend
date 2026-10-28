@@ -50,14 +50,31 @@ def _ss_variant(key: str) -> str:
     return key.replace("ß", "ss").replace("ẞ", "SS")
 
 
+def _bounded(key: str) -> str:
+    """``key`` escaped, word-bounded only on an edge that is a word character.
+
+    Not ``\\b``, and not one lookaround around the whole alternation: after a
+    key's own trailing ``.`` ("z.B.") ``\\b`` needs a word character next, and
+    a key that starts or ends with a space (" Prozent", " Bindestrich ") sits
+    right against the neighbouring word, which a blanket ``(?<!\\w)`` /
+    ``(?!\\w)`` refuses."""
+    out = re.escape(key)
+    if re.match(r"\w", key[:1]):
+        out = r"(?<!\w)" + out
+    if re.match(r"\w", key[-1:]):
+        out += r"(?!\w)"
+    return out
+
+
 def compile_map(m: dict) -> tuple["re.Pattern[str]", Callable[["re.Match[str]"], str], dict[str, str]]:
     """Compile a map into ``(pattern, replacer, lookup)``.
 
     ``lookup`` is keyed by the lower-cased key and holds the derived ss
     variants too, so a caller can reason about the effective key set (the
     streaming hold-back does). ``pattern.sub(replacer, text)`` applies the
-    map. Keys are matched as whole tokens (no word character directly before
-    or after, so "z.B." matches too), case-insensitively, longest first —
+    map. Keys are matched as whole tokens (no word character directly outside
+    an edge that is itself a word character, so "z.B." and " Prozent" match
+    too), case-insensitively, longest first —
     the historic behaviour; the optional punctuation prefix only ever
     precedes a key whose value is punctuation."""
     lookup: dict[str, str] = {k.lower(): v for k, v in m.items()}
@@ -67,16 +84,14 @@ def compile_map(m: dict) -> tuple["re.Pattern[str]", Callable[["re.Match[str]"],
         if derived != k and derived.lower() not in lookup:
             lookup[derived.lower()] = m[k]
             keys.append(derived)
-    alternation = "|".join(re.escape(k) for k in sorted(keys, key=len, reverse=True))
+    alternation = "|".join(_bounded(k) for k in sorted(keys, key=len, reverse=True))
     punct_keys = [k for k in keys if _is_punct_value(lookup.get(k.lower(), ""))]
     if punct_keys:
-        punct_alt = "|".join(re.escape(k) for k in sorted(punct_keys, key=len, reverse=True))
-        prefix = r"(?:" + _WHISPER_PUNCT + r"(?=(?:" + punct_alt + r")(?!\w)))?"
+        punct_alt = "|".join(_bounded(k) for k in sorted(punct_keys, key=len, reverse=True))
+        prefix = r"(?:" + _WHISPER_PUNCT + r"(?=(?:" + punct_alt + r")))?"
     else:
         prefix = ""
-    # Not `\b`: after a key's own trailing `.` ("z.B.") `\b` needs a word
-    # character next, so such a key never matched before a space or the end.
-    pattern = re.compile(prefix + r"(?<!\w)(" + alternation + r")(?!\w)", re.IGNORECASE)
+    pattern = re.compile(prefix + r"(" + alternation + r")", re.IGNORECASE)
 
     def replace(mt: "re.Match[str]") -> str:
         key = mt.group(1)
