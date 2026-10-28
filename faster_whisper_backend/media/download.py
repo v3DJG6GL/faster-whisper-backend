@@ -321,8 +321,12 @@ def _video_candidates(formats: list) -> "tuple[list[dict], dict | None]":
         if vcodec == "none" or (
                 vcodec is None and not (isinstance(h, (int, float)) and h > 0)):
             # YouTube's "DRC" twins are loudness-normalised duplicates of
-            # the same track — never the leg a merge should carry.
-            if acodec and acodec != "none" and \
+            # the same track — never the leg a merge should carry. An HLS
+            # audio rendition with no CODECS is explicitly not video and
+            # carries acodec None: still audio, as yt-dlp's own `ba` says.
+            audio_ok = (acodec and acodec != "none") or (
+                vcodec == "none" and acodec is None)
+            if audio_ok and \
                     "drc" not in str(f.get("format_note") or "").lower():
                 # yt-dlp's own `ba` ranks the track's language ahead of its
                 # bitrate (the extractor marks the original track 10, a dub
@@ -465,7 +469,8 @@ def _rung(f: dict, *, audio_f: "dict | None", duration: "float | None",
     tbr = v_tbr + a_tbr
     vcodec = str(f["vcodec"]) if f.get("vcodec") else None
     acodec = str(f.get("acodec")) if has_audio else (
-        str(audio_f.get("acodec")) if audio_f is not None else None)
+        str(audio_f["acodec"]) if audio_f is not None and audio_f.get("acodec")
+        else None)
     fps = float(f.get("fps") or 0)
     fps_i = int(round(fps)) if fps else None
     hdr = str(f.get("dynamic_range") or "SDR").upper() != "SDR"
@@ -474,8 +479,8 @@ def _rung(f: dict, *, audio_f: "dict | None", duration: "float | None",
     note = _rung_note(f)
     spec = _rung_spec(f)
     label = " ".join(x for x in (spec, note) if x) or "Best available"
-    # An explicitly video-only format with no usable audio candidate (an HLS
-    # audio rendition carries no acodec and is dropped) still needs a merge:
+    # An explicitly video-only format with no usable audio candidate (the
+    # site lists no separate audio format at all) still needs a merge:
     # "ba" keeps the exact video id and lets yt-dlp pick the audio, instead
     # of retaining a soundless file. acodec None (unknown, possibly muxed)
     # stays a single-file rung.

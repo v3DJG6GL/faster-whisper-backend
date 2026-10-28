@@ -1528,11 +1528,9 @@ def test_video_ladder_generic_hls_and_direct_file():
 
 def test_video_ladder_video_only_rung_without_an_audio_candidate_still_merges():
     """An HLS master playlist: the video variants are explicitly video-only
-    and the audio rendition carries no acodec, so it never becomes a
-    candidate. The rung must still ask for a merge ("ba"), or the exact id
-    alone downloads a soundless file."""
+    and the site lists no separate audio format. The rung must still ask for
+    a merge ("ba"), or the exact id alone downloads a soundless file."""
     ladder = udl.build_video_ladder({"duration": 600.0, "formats": [
-        _fmt(format_id="hls-audio", vcodec="none", protocol="m3u8_native", ext="mp4"),
         _fmt(format_id="hls-3000", height=1080, tbr=3000, vcodec="avc1.64", acodec="none",
              protocol="m3u8_native"),
     ]}, max_bytes=10**10)
