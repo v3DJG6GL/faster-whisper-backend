@@ -289,6 +289,7 @@ warn_legacy() { printf '\033[33mWARNING: %s\033[0m\n' "$*" >&2; }
 # store's own sidecars must go first (or they replay onto the moved file).
 # A store with its own .env pin (WHISPER_API_KEYS_DB=...) is read from there,
 # not data/db — moving it would strand the live store, so it is left be.
+# Each check passes UNIT_NAMES: a .env ${WHISPER_DATA_DIR}/... pins as above.
 store_env() {
   case "$1" in
     system_metrics.local.sqlite3) echo WHISPER_STATS_SYSTEM_METRICS_DB ;;
@@ -296,10 +297,10 @@ store_env() {
       echo "WHISPER_${stem^^}_DB" ;;
   esac
 }
-if ! env_sets WHISPER_DB_DIR && ! env_sets WHISPER_DATA_DIR; then
+if ! env_sets WHISPER_DB_DIR "$UNIT_NAMES" && ! env_sets WHISPER_DATA_DIR; then
   for legacy in "$REPO_DIR"/*.local.sqlite3 "$REPO_DIR"/data/*.local.sqlite3; do
     [ -e "$legacy" ] || continue
-    env_sets "$(store_env "$(basename "$legacy")")" && continue
+    env_sets "$(store_env "$(basename "$legacy")")" "$UNIT_NAMES" && continue
     target="$REPO_DIR/data/db/$(basename "$legacy")"
     warn_legacy "legacy store $legacy is IGNORED by the service (it reads $REPO_DIR/data/db/)." \
       "Move it: systemctl stop ${SERVICE_NAME} && sudo -u $RUN_USER mkdir -p $REPO_DIR/data/db" \
@@ -310,7 +311,7 @@ if ! env_sets WHISPER_DB_DIR && ! env_sets WHISPER_DATA_DIR; then
       "Delete the leftover $legacy."
   done
 fi
-if ! env_sets WHISPER_CONFIG_LOCAL && ! env_sets WHISPER_DATA_DIR \
+if ! env_sets WHISPER_CONFIG_LOCAL "$UNIT_NAMES" && ! env_sets WHISPER_DATA_DIR \
     && [ -e "$REPO_DIR/config.local.json" ] && [ ! -e "$REPO_DIR/data/config.local.json" ]; then
   warn_legacy "legacy $REPO_DIR/config.local.json is IGNORED by the service (it reads $REPO_DIR/data/config.local.json)." \
     "Move it: mv '$REPO_DIR/config.local.json' $REPO_DIR/data/ — then restart."

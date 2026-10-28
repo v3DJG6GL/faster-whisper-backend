@@ -591,6 +591,39 @@ def test_installers_leave_a_store_with_its_own_pin_alone():
     # A store pinned by WHISPER_<NAME>_DB is read from there: the legacy
     # "move it to data/db" recipe would strand the live store.
     sh = _read("install-service.sh")
-    assert 'env_sets "$(store_env "$(basename "$legacy")")" && continue' in sh
+    assert 'env_sets "$(store_env "$(basename "$legacy")")" "$UNIT_NAMES" && continue' in sh
     ps1 = _read("install-service.ps1")
     assert "if (Test-EnvSets $storeEnv) { continue }" in ps1
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="bash installer")
+def test_linux_installer_legacy_checks_expand_a_unit_set_var(tmp_path):
+    # .env WHISPER_DB_DIR=${WHISPER_DATA_DIR}/stores resolves through the
+    # unit's own WHISPER_DATA_DIR, so the service never reads data/db: the
+    # legacy checks warned "IGNORED ... Move it" into the wrong place (and for
+    # a per-store pin, told the operator to move the live store).
+    sh = _read("install-service.sh")
+    funcs = "\n".join(re.search(rf"^{n}\(\) \{{\n.*?^\}}\n", sh, re.S | re.M).group(0)
+                      for n in ("env_value", "env_sets"))
+    units = sh[sh.index("\n}\n", sh.index("env_sets() {")) + 3:
+               sh.index("\n# systemd splits")]
+    legacy = sh[sh.index("\nwarn_legacy() {"):sh.index('\necho "Enabling')]
+    (tmp_path / "api_keys.local.sqlite3").write_text("", encoding="utf-8")
+    (tmp_path / "config.local.json").write_text("{}", encoding="utf-8")
+
+    def run(dotenv: str) -> str:
+        (tmp_path / ".env").write_text(dotenv, encoding="utf-8")
+        out = subprocess.run(
+            ["bash", "-c", funcs + units + legacy], capture_output=True,
+            text=True, timeout=60,
+            env={"REPO_DIR": str(tmp_path), "PY": sys.executable,
+                 "SERVICE_NAME": "w", "RUN_USER": "u", "PATH": "/usr/bin:/bin"})
+        assert out.returncode == 0, out.stderr
+        return out.stderr
+    for dotenv in ("WHISPER_DB_DIR=${WHISPER_DATA_DIR}/stores\n"
+                   "WHISPER_CONFIG_LOCAL=${WHISPER_DATA_DIR}/c.json\n",
+                   "WHISPER_API_KEYS_DB=${WHISPER_DATA_DIR}/../api_keys.local.sqlite3\n"
+                   "WHISPER_CONFIG_LOCAL=${WHISPER_DATA_DIR}/c.json\n"):
+        assert "IGNORED" not in run(dotenv), dotenv
+    # Unpinned: both legacy files still warn.
+    assert run("").count("IGNORED") == 2
