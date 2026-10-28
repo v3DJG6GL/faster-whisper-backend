@@ -1918,26 +1918,44 @@ async def transcribe(
                 resolved_model, ident, ignored,
                 "DIARIZE", "diarize", _form_bool(diarize), default=False))
             _spk = {}
-            _spk_from_client = set()
+            # Who set each hint: 2 = a lock, 1 = the client, 0 = inherited.
+            _spk_rank = {}
             for _cfg_name, _client_name, _client_val in (
                 ("DIARIZATION_NUM_SPEAKERS", "num_speakers", num_speakers),
                 ("DIARIZATION_MIN_SPEAKERS", "min_speakers", min_speakers),
                 ("DIARIZATION_MAX_SPEAKERS", "max_speakers", max_speakers),
             ):
+                _spk_rank[_client_name] = 0
                 if _cfg_name in ident.locked:
+                    _spk_rank[_client_name] = 2
                     _spk[_client_name] = effective_config.cfg_for(resolved_model, _cfg_name, ident)
                     if (_client_val is not None
                             and (_client_val or None) != (_spk[_client_name] or None)):
                         ignored.append(_client_name)
                 elif _client_val is not None:
                     _spk[_client_name] = _client_val or None
-                    _spk_from_client.add(_client_name)
+                    _spk_rank[_client_name] = 1
                 # An explicit range outranks an INHERITED count: num wins over
                 # min/max below, so inheriting it would drop the caller's bounds.
-                elif _client_name == "num_speakers" and (min_speakers or max_speakers):
+                # A bound a lock refuses is no range of the caller's, though.
+                elif _client_name == "num_speakers" and any(
+                        _v and _c not in ident.locked for _c, _v in (
+                            ("DIARIZATION_MIN_SPEAKERS", min_speakers),
+                            ("DIARIZATION_MAX_SPEAKERS", max_speakers))):
                     _spk[_client_name] = None
                 else:
                     _spk[_client_name] = effective_config.cfg_for(resolved_model, _cfg_name, ident)
+            # An unlocked num outside a LOCKED bound would override that lock
+            # (num wins below), so the lock wins and the num is dropped.
+            _num = _spk.get("num_speakers")
+            if _num and _spk_rank["num_speakers"] < 2 and (
+                    (_spk_rank["min_speakers"] == 2 and _spk.get("min_speakers")
+                     and _num < _spk["min_speakers"])
+                    or (_spk_rank["max_speakers"] == 2 and _spk.get("max_speakers")
+                        and _num > _spk["max_speakers"])):
+                if _spk_rank["num_speakers"] == 1:
+                    ignored.append("num_speakers")
+                _spk["num_speakers"] = None
             # pyannote treats num alongside min/max as an error — num wins.
             if _spk.get("num_speakers"):
                 # A locked num discarding the client's bounds is a locked-out
@@ -1948,14 +1966,17 @@ async def transcribe(
                         if _client_val and _client_name not in ignored:
                             ignored.append(_client_name)
                 _spk["min_speakers"] = _spk["max_speakers"] = None
-            # pyannote also rejects an inverted range. A bound the client sent
-            # outranks an inherited one, so the inherited side gives way;
-            # otherwise clamp min down to max.
+            # pyannote also rejects an inverted range. The lower-ranked side
+            # gives way (a refused client bound is a locked-out override);
+            # on a tie clamp min down to max.
             elif (_spk.get("min_speakers") and _spk.get("max_speakers")
                   and _spk["min_speakers"] > _spk["max_speakers"]):
-                _client_min = "min_speakers" in _spk_from_client
-                if _client_min != ("max_speakers" in _spk_from_client):
-                    _spk["max_speakers" if _client_min else "min_speakers"] = None
+                _lo, _hi = _spk_rank["min_speakers"], _spk_rank["max_speakers"]
+                if _lo != _hi:
+                    _loser = "max_speakers" if _lo > _hi else "min_speakers"
+                    if _spk_rank[_loser] == 1:
+                        ignored.append(_loser)
+                    _spk[_loser] = None
                 else:
                     _spk["min_speakers"] = _spk["max_speakers"]
             # Music separation: same shape again. Soft-failed optional stages
