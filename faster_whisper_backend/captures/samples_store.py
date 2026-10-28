@@ -20,6 +20,7 @@ merged WAV is still authoritative.
 from __future__ import annotations
 
 import contextlib
+import functools
 import json
 import logging
 import os
@@ -107,6 +108,19 @@ def _require_conn() -> sqlite3.Connection:
     return _conn
 
 
+def _read_under_lock(fn):
+    """Run a public reader under `_lock`, like the writers: two threads that
+    run the same SELECT text on the shared connection share one cached
+    statement and can read each other's rows (another user's samples) or
+    raise IndexError. Callers must not hold `_lock` (nor captures_store's,
+    which is taken after this one)."""
+    @functools.wraps(fn)
+    def locked(*args, **kwargs):
+        with _lock:
+            return fn(*args, **kwargs)
+    return locked
+
+
 def _require_audio_root() -> str:
     if _groups_audio_dir is None:
         raise RuntimeError("capture_samples_store.init_db() was not called before use.")
@@ -173,6 +187,7 @@ def _row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
 # Create / read / mutate / dissolve
 # ---------------------------------------------------------------------
 
+@_read_under_lock
 def get_sample(sid: str) -> dict[str, Any] | None:
     conn = _require_conn()
     row = conn.execute(
@@ -181,6 +196,7 @@ def get_sample(sid: str) -> dict[str, Any] | None:
     return _row_to_dict(row) if row else None
 
 
+@_read_under_lock
 def list_samples(
     *, user_id: "str | list[str] | None" = None, status: str | None = None,
     limit: int | None = None,
@@ -225,6 +241,7 @@ def list_samples(
     return [_row_to_dict(r) for r in rows]
 
 
+@_read_under_lock
 def get_members(sid: str) -> list[dict[str, Any]]:
     """Return member captures in their declared sample_order, decoded
     enough for the UI (transcript + duration; no heavy words/segments).

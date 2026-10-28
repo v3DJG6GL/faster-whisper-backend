@@ -522,3 +522,20 @@ def test_get_members_carries_word_count(captures_store_db, groups_store_db):
     conn.execute("UPDATE captures SET words = ? WHERE id = ?",
                  ("[1,", "capwc00000000002"))
     assert [m["word_count"] for m in gs.get_members(sid)] == [3, 0]
+
+
+def test_reads_hold_the_lock(captures_store_db, groups_store_db, monkeypatch):
+    """Two threads running the same SELECT text on the shared connection can
+    read each other's rows (another user's samples): reads take _lock."""
+    from tests.stats.test_store_reads_hold_lock import _LockCheckingConn
+
+    gs = groups_store_db
+    _insert_group(gs, "s1")
+    _insert_capture(captures_store_db, "aabbccdd01", sample_id="s1", sample_order=0)
+    conn = _LockCheckingConn(gs._conn, gs._lock)
+    monkeypatch.setattr(gs, "_conn", conn)
+
+    assert gs.get_sample("s1")["id"] == "s1"
+    assert [g["id"] for g in gs.list_samples(user_id="u1")] == ["s1"]
+    assert [m["id"] for m in gs.get_members("s1")] == ["aabbccdd01"]
+    assert conn.unlocked == []
