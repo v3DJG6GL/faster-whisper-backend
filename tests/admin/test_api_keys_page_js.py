@@ -406,3 +406,42 @@ function showKeyModal(raw) { modals.push(raw); }
 """
     out = _run(js, tmp_path)
     assert out == {"disabled": True, "posts": 1, "modals": ["fwb_A"]}
+
+
+def test_generate_comes_back_when_the_key_modal_closes_without_a_rebuild(
+        client, tmp_path):
+    """addBusy stayed set after the key modal closed, trusting load() to
+    rebuild the card. load() returns early (Cancel on its discard-confirm, a
+    failed GET), so the card stayed and its Generate button was dead for good."""
+    html = client.get("/settings/api-keys").text
+    src = _between(html, "    addBtn.title = 'Enter a label first';",
+                   "e.key === 'Enter' && !addBtn.disabled) addBtn.onclick();\n    };\n")
+    js = _FAKE_DOM + _fn(html, "showKeyModal") + r"""
+var labelInp = { value: 'desktop' }, addBtn = { disabled: false, title: '' };
+var u = { id: 'u1', username: 'alice' };
+var posts = [];
+function api(method, url, body) {
+  return new Promise(function (res) { posts.push(res); });
+}
+""" + src + r"""
+(async function () {
+  var out = {};
+  labelInp.onkeydown({ key: 'Enter' });
+  posts[0]({ ok: true, json: function () { return Promise.resolve({ key: 'fwb_A' }); } });
+  await new Promise(function (r) { setTimeout(r, 0); });
+  labelInp.value = 'desktop2';
+  labelInp.oninput();
+  out.open_disabled = addBtn.disabled;
+  els['key-modal-close'].onclick();   // arm
+  els['key-modal-close'].onclick();   // close; the fake load() rebuilds nothing
+  out.loads = loads;
+  labelInp.oninput();
+  out.closed_disabled = addBtn.disabled;
+  labelInp.onkeydown({ key: 'Enter' });
+  out.posts = posts.length;
+  console.log(JSON.stringify(out));
+})();
+"""
+    out = _run(js, tmp_path)
+    assert out == {"open_disabled": True, "loads": 1, "closed_disabled": False,
+                   "posts": 2}

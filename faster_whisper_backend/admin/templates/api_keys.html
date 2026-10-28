@@ -589,7 +589,7 @@
   }
 
 
-  function showKeyModal(rawKey, username, label) {
+  function showKeyModal(rawKey, username, label, onClosed) {
     var m = document.getElementById('key-modal');
     document.getElementById('key-modal-user').textContent = username;
     var lp = document.getElementById('key-modal-label');
@@ -654,6 +654,9 @@
     function doClose() {
       m.classList.remove('show');
       document.removeEventListener('keydown', onKey);
+      // load() may return early (declined discard-confirm, failed GET) and
+      // leave the card in place: let it re-arm its Generate button first.
+      if (onClosed) onClosed();
       load();  // rebuilds the user cards, so the label input also resets
     }
     function tryClose() {
@@ -1062,10 +1065,10 @@
     addBtn.textContent = '+ generate key';
     addBtn.disabled = true;                 // labels are mandatory
     addBtn.title = 'Enter a label first';
-    // Set while the POST runs and kept after it succeeds (the key modal's
-    // close calls load(), which rebuilds this card): editing the label must
-    // not re-enable the button, or a second click/Enter creates a second key
-    // whose modal overwrites the first key's one-time secret.
+    // Set while the POST runs and kept until the key modal closes: editing
+    // the label must not re-enable the button, or a second click/Enter
+    // creates a second key whose modal overwrites the first key's one-time
+    // secret.
     var addBusy = false;
     labelInp.oninput = function () {
       var has = !!labelInp.value.trim();
@@ -1084,7 +1087,12 @@
           if (!r.ok) return r.text().then(function (t) { throw new Error(t); });
           return r.json();
         })
-        .then(function (j) { showKeyModal(j.key, u.username, label); })
+        .then(function (j) {
+          showKeyModal(j.key, u.username, label, function () {
+            addBusy = false;
+            addBtn.disabled = !labelInp.value.trim();
+          });
+        })
         .catch(function (e) {
           showToast(String(e.message || e), 'err');
           addBusy = false;
