@@ -479,3 +479,22 @@ def test_append_stage_folds_a_later_stage_into_the_row(tx_store):
     assert row["processing_s"] == 13.4
     assert row["kind"] == "dictate"
     assert tx_store.append_stage("nope", {"name": "translating", "secs": 1}) is False
+
+
+def test_failed_init_leaves_the_store_closed(tmp_path, monkeypatch):
+    """A schema step that raises after the DB opened (here: an index on a
+    column an old table lacks) must leave is_open() False, so metrics_snapshot
+    does not re-read and re-log the broken store on every /stats frame."""
+    import pytest
+
+    from faster_whisper_backend.stats import recent_transcriptions_store as mod
+
+    monkeypatch.setattr(mod, "_conn", None)
+    path = str(tmp_path / "broken.sqlite3")
+    conn = sqlite3.connect(path)
+    conn.execute("CREATE TABLE recent_transcriptions (id INTEGER PRIMARY KEY, request_id TEXT)")
+    conn.commit()
+    conn.close()
+    with pytest.raises(sqlite3.OperationalError):
+        mod.init_db(path)
+    assert mod.is_open() is False

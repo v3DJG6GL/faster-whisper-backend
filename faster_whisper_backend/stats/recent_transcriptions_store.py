@@ -106,48 +106,56 @@ def init_db(path: str) -> None:
     once on service startup before any other function in this module.
     Mirrors reports_store.init_db / captures_store.init_db."""
     global _conn
-    _conn = store_common.open_wal_db(path)
-    _conn.execute("PRAGMA temp_store=MEMORY;")
-    _conn.executescript(_SCHEMA)
-    store_common.secure_db_file(path)
-    # Migrate pre-existing DBs (created before the `source` column): add it with
-    # the 'file' default so old rows read as batch/file-upload transcriptions.
-    # Column renames (2026-09): the same measurements now carry the same
-    # names in every store (audio_s / processing_s / words, as usage_jobs
-    # already said). RENAME COLUMN keeps the data and rewrites the indexes.
-    cols = {r["name"] for r in _conn.execute("PRAGMA table_info(recent_transcriptions)")}
-    # The JSON-bearing columns dropped their `_json` suffix (the wire has
-    # always emitted the bare names); a pre-existing DB is renamed in place.
-    for old, new in (("audio_dur_s", "audio_s"), ("proc_dur_s", "processing_s"),
-                     ("words_count", "words"),
-                     ("steps_json", "steps"), ("tokens_json", "tokens"),
-                     ("bigrams_json", "bigrams"), ("stages_json", "stages")):
-        if old in cols and new not in cols:
-            _conn.execute(f"ALTER TABLE recent_transcriptions RENAME COLUMN {old} TO {new}")
-    _conn.commit()
-    cols = {r["name"] for r in _conn.execute("PRAGMA table_info(recent_transcriptions)")}
-    if "source" not in cols:
-        _conn.execute(
-            "ALTER TABLE recent_transcriptions ADD COLUMN source TEXT NOT NULL DEFAULT 'file'")
-    # "Recent jobs" columns (nullable, additive): `kind` distinguishes
-    # transcribe/translate/download rows (NULL reads as a transcription and
-    # resolves via `source`), `stages` carries the per-stage timing list
-    # ([{name, secs, model?, detail?}, …]) and `key_label` snapshots the API
-    # key's display label at record time (labels are mutable/deletable in
-    # api_keys, so resolving at read time would lie about history).
-    # v2 stats columns (nullable, additive): `wait_s` = seconds the request
-    # queued for a GPU slot, `error_class` / `error_stage` = why and where
-    # a failed job failed (metrics.ERROR_CLASSES).
-    for col, ddl in (
-        ("kind", "ADD COLUMN kind TEXT"),
-        ("stages", "ADD COLUMN stages TEXT"),
-        ("key_label", "ADD COLUMN key_label TEXT"),
-        ("wait_s", "ADD COLUMN wait_s REAL"),
-        ("error_class", "ADD COLUMN error_class TEXT"),
-        ("error_stage", "ADD COLUMN error_stage TEXT"),
-    ):
-        if col not in cols:
-            _conn.execute(f"ALTER TABLE recent_transcriptions {ddl}")
+    conn = store_common.open_wal_db(path)
+    # Publish the connection only once schema + migrations succeeded: a
+    # half-initialised store must read as not open (is_open() gates the 1 Hz
+    # /stats re-reads and the /stats/history 503 on it).
+    try:
+        conn.execute("PRAGMA temp_store=MEMORY;")
+        conn.executescript(_SCHEMA)
+        store_common.secure_db_file(path)
+        # Migrate pre-existing DBs (created before the `source` column): add it with
+        # the 'file' default so old rows read as batch/file-upload transcriptions.
+        # Column renames (2026-09): the same measurements now carry the same
+        # names in every store (audio_s / processing_s / words, as usage_jobs
+        # already said). RENAME COLUMN keeps the data and rewrites the indexes.
+        cols = {r["name"] for r in conn.execute("PRAGMA table_info(recent_transcriptions)")}
+        # The JSON-bearing columns dropped their `_json` suffix (the wire has
+        # always emitted the bare names); a pre-existing DB is renamed in place.
+        for old, new in (("audio_dur_s", "audio_s"), ("proc_dur_s", "processing_s"),
+                         ("words_count", "words"),
+                         ("steps_json", "steps"), ("tokens_json", "tokens"),
+                         ("bigrams_json", "bigrams"), ("stages_json", "stages")):
+            if old in cols and new not in cols:
+                conn.execute(f"ALTER TABLE recent_transcriptions RENAME COLUMN {old} TO {new}")
+        conn.commit()
+        cols = {r["name"] for r in conn.execute("PRAGMA table_info(recent_transcriptions)")}
+        if "source" not in cols:
+            conn.execute(
+                "ALTER TABLE recent_transcriptions ADD COLUMN source TEXT NOT NULL DEFAULT 'file'")
+        # "Recent jobs" columns (nullable, additive): `kind` distinguishes
+        # transcribe/translate/download rows (NULL reads as a transcription and
+        # resolves via `source`), `stages` carries the per-stage timing list
+        # ([{name, secs, model?, detail?}, …]) and `key_label` snapshots the API
+        # key's display label at record time (labels are mutable/deletable in
+        # api_keys, so resolving at read time would lie about history).
+        # v2 stats columns (nullable, additive): `wait_s` = seconds the request
+        # queued for a GPU slot, `error_class` / `error_stage` = why and where
+        # a failed job failed (metrics.ERROR_CLASSES).
+        for col, ddl in (
+            ("kind", "ADD COLUMN kind TEXT"),
+            ("stages", "ADD COLUMN stages TEXT"),
+            ("key_label", "ADD COLUMN key_label TEXT"),
+            ("wait_s", "ADD COLUMN wait_s REAL"),
+            ("error_class", "ADD COLUMN error_class TEXT"),
+            ("error_stage", "ADD COLUMN error_stage TEXT"),
+        ):
+            if col not in cols:
+                conn.execute(f"ALTER TABLE recent_transcriptions {ddl}")
+    except BaseException:
+        conn.close()
+        raise
+    _conn = conn
 
 
 def is_open() -> bool:

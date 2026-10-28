@@ -75,3 +75,20 @@ def test_record_keeps_the_real_error_when_sqlite_rolled_back(sm_store, monkeypat
     monkeypatch.setattr(sm_store, "_conn", _AutoRolledBackConn(sm_store._conn))
     with pytest.raises(sqlite3.OperationalError, match="database or disk is full"):
         sm_store.record([{"ts": 1000, "gpu_util": 1.0}])
+
+
+def test_failed_init_leaves_the_store_closed(tmp_path, monkeypatch):
+    """A schema/chmod step that raises after the DB opened must not leave a
+    half-initialised connection behind: is_open() gates the sampler's flush
+    and the /stats/history 503 on it."""
+    from faster_whisper_backend.stats import system_metrics_store as mod
+
+    monkeypatch.setattr(mod, "_conn", None)
+
+    def boom(path):
+        raise PermissionError("read-only volume")
+
+    monkeypatch.setattr(mod.store_common, "secure_db_file", boom)
+    with pytest.raises(PermissionError):
+        mod.init_db(str(tmp_path / "system_metrics.sqlite3"))
+    assert mod.is_open() is False

@@ -49,9 +49,16 @@ def init_db(path: str) -> None:
     """Open (or create) the DB at `path` in WAL mode. Idempotent — call once
     on service startup before any other function in this module."""
     global _conn
-    _conn = store_common.open_wal_db(path)
-    _conn.executescript(_SCHEMA)
-    store_common.secure_db_file(path)
+    conn = store_common.open_wal_db(path)
+    # Publish the connection only once the schema is in: a half-initialised
+    # store must read as not open (the sampler and /stats/history gate on it).
+    try:
+        conn.executescript(_SCHEMA)
+        store_common.secure_db_file(path)
+    except BaseException:
+        conn.close()
+        raise
+    _conn = conn
 
 
 def is_open() -> bool:
