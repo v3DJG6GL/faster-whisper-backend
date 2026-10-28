@@ -2320,6 +2320,26 @@ def test_trim_skips_a_draining_decode(lru_env, monkeypatch):
     assert not translation._models and made["o/a"].closed
 
 
+def test_idle_peer_skips_a_draining_decode(lru_env, monkeypatch):
+    """A draining model is no idle peer: preload's evict() would decline it
+    and the load's trim would then drop the warm peer instead."""
+    made, _stats = lru_env
+
+    async def load_both():
+        await translation._get_model("o/a")
+        await translation._get_model("o/b")
+    _run(load_both())
+    warm = {"o/b"}.__contains__
+    t, release = _decode_in_flight(monkeypatch, made["o/a"])
+    try:
+        assert translation.idle_peer("o/c", warm) is None
+        assert translation.idle_peer("o/c", lambda r: False) == "o/b"
+    finally:
+        release.set()
+        t.join(5)
+    assert translation.idle_peer("o/c", warm) == "o/a"
+
+
 def test_a_completion_cancelled_before_its_thread_starts_never_decodes(
         monkeypatch):
     """A job cancelled while its completion still waits for an executor

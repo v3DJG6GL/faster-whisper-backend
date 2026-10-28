@@ -902,10 +902,12 @@ def cache_full() -> bool:
 def idle_peer(exclude: str,
               is_warm: "Callable[[str], bool]") -> "str | None":
     """The first cached ref, in LRU order, other than ``exclude`` that no job
-    holds a lease on and for which ``is_warm(ref)`` is false — a model that
-    could be dropped to make room — or None."""
+    holds a lease on, that no cancelled job still decodes on (_draining —
+    _drop_locked declines it, and _trim_locked would drop the NEXT, maybe
+    warm, peer instead) and for which ``is_warm(ref)`` is false — a model
+    that could be dropped to make room — or None."""
     for ref in _models:
-        if ref == exclude or _active.get(ref, 0):
+        if ref == exclude or _active.get(ref, 0) or _draining(ref):
             continue
         if not is_warm(ref):
             return ref
