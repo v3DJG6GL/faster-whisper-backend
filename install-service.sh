@@ -170,6 +170,8 @@ fi
 # ${NAME:-default} (dotenv's grammar) falls back to its literal default only
 # when no earlier .env line names NAME at all, so it pins exactly as far as that
 # default would; an earlier empty, bare or unpinned NAME wins, as in dotenv.
+# Names the unit itself sets (the optional second argument) are in the real
+# environment, which load_dotenv expands ahead of any .env line, so they pin.
 # env_value prints the value with each expandable ${VAR} replaced by "x".
 env_value() {
   [ -f "$REPO_DIR/.env" ] || return 0
@@ -178,7 +180,8 @@ try:
     from dotenv import dotenv_values
 except ImportError:
     sys.exit(0)
-known, seen = {"HOME", "USER", "LOGNAME", "SHELL"}, set()
+known = {"HOME", "USER", "LOGNAME", "SHELL", *sys.argv[3].split()}
+seen = set()
 for key, raw in dotenv_values(sys.argv[1], interpolate=False).items():
     v = re.sub(r"\$\{([^}:]*)(?::-([^}]*))?\}",
                lambda m: "x" if m.group(1) in known else
@@ -191,41 +194,45 @@ for key, raw in dotenv_values(sys.argv[1], interpolate=False).items():
     seen.add(key)
     if v and "$" not in v:
         known.add(key)' \
-    "$REPO_DIR/.env" "$1" 2>/dev/null || true
+    "$REPO_DIR/.env" "$1" "${2-}" 2>/dev/null || true
 }
 env_sets() {
   local v
-  v="$(env_value "$1")"
+  v="$(env_value "$1" "${2-}")"
   [ -n "$v" ] || return 1
   [ "${v#*\$}" = "$v" ]
 }
+# Bare-metal Linux: root the container-first default paths (/data, /models)
+# in the checkout instead, mirroring the Windows in-checkout layout — without
+# these the service user cannot create /data/db and startup crash-loops.
+# Each only when .env does not pin it already. A later .env value may use
+# ${WHISPER_DATA_DIR} the unit sets: UNIT_NAMES lets env_sets expand it.
+DATA_ENV_LINE="" MODELS_ENV_LINE="" LOG_ENV_LINE="" STATE_DIRS=() UNIT_NAMES=""
+if ! env_sets WHISPER_DATA_DIR; then
+  DATA_ENV_LINE="Environment=WHISPER_DATA_DIR=${REPO_DIR}/data"
+  STATE_DIRS+=("$REPO_DIR/data")
+  UNIT_NAMES="WHISPER_DATA_DIR"
+fi
+if ! env_sets WHISPER_MODELS_DIR "$UNIT_NAMES"; then
+  MODELS_ENV_LINE="Environment=WHISPER_MODELS_DIR=${REPO_DIR}/models"
+  STATE_DIRS+=("$REPO_DIR/models")
+  UNIT_NAMES+=" WHISPER_MODELS_DIR"
+fi
+# LOG_FILE defaults to {DATA_DIR}/logs/whisper.log: a pinned data root keeps
+# the log with it (the service can write there — its stores live below it).
+if ! env_sets WHISPER_LOG_FILE "$UNIT_NAMES" && ! env_sets WHISPER_DATA_DIR; then
+  LOG_ENV_LINE="Environment=WHISPER_LOG_FILE=${REPO_DIR}/logs/whisper.log"
+  STATE_DIRS+=("$REPO_DIR/logs")
+  UNIT_NAMES+=" WHISPER_LOG_FILE"
+fi
 for name in WHISPER_DATA_DIR WHISPER_DB_DIR WHISPER_MODELS_DIR WHISPER_LOG_FILE; do
-  case "$(env_value "$name")" in
-    *'$'*) env_sets "$name" || printf '\033[33mWARNING: %s\033[0m\n' \
+  case "$(env_value "$name" "$UNIT_NAMES")" in
+    *'$'*) env_sets "$name" "$UNIT_NAMES" || printf '\033[33mWARNING: %s\033[0m\n' \
       "$REPO_DIR/.env sets $name to a value with a \$ the service cannot expand" \
       "(dotenv leaves \$PWD as is; systemd sets no PWD) — ignored by this installer;" \
       "use an absolute path." >&2 ;;
   esac
 done
-# Bare-metal Linux: root the container-first default paths (/data, /models)
-# in the checkout instead, mirroring the Windows in-checkout layout — without
-# these the service user cannot create /data/db and startup crash-loops.
-# Each only when .env does not pin it already.
-DATA_ENV_LINE="" MODELS_ENV_LINE="" LOG_ENV_LINE="" STATE_DIRS=()
-if ! env_sets WHISPER_DATA_DIR; then
-  DATA_ENV_LINE="Environment=WHISPER_DATA_DIR=${REPO_DIR}/data"
-  STATE_DIRS+=("$REPO_DIR/data")
-fi
-if ! env_sets WHISPER_MODELS_DIR; then
-  MODELS_ENV_LINE="Environment=WHISPER_MODELS_DIR=${REPO_DIR}/models"
-  STATE_DIRS+=("$REPO_DIR/models")
-fi
-# LOG_FILE defaults to {DATA_DIR}/logs/whisper.log: a pinned data root keeps
-# the log with it (the service can write there — its stores live below it).
-if ! env_sets WHISPER_LOG_FILE && ! env_sets WHISPER_DATA_DIR; then
-  LOG_ENV_LINE="Environment=WHISPER_LOG_FILE=${REPO_DIR}/logs/whisper.log"
-  STATE_DIRS+=("$REPO_DIR/logs")
-fi
 
 # systemd splits ExecStart=/Environment= values on whitespace and reads % as
 # a specifier: a checkout under "My Projects" must be quoted (and every %

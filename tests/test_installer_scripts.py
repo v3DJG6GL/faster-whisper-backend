@@ -533,6 +533,48 @@ def test_linux_env_sets_lets_an_earlier_unpinned_key_beat_its_default(tmp_path):
     # A NAME no earlier line names still takes the default.
     assert run("X=${R:-/srv}\nR=")
 
+@pytest.mark.skipif(sys.platform == "win32", reason="bash installer")
+def test_linux_installer_expands_a_dotenv_reference_to_a_unit_set_var(tmp_path):
+    # The unit's own WHISPER_DATA_DIR (written when .env leaves it unpinned) is
+    # in the service's real environment, which load_dotenv expands ahead of the
+    # .env: WHISPER_MODELS_DIR=${WHISPER_DATA_DIR}/models resolves to
+    # <repo>/data/models. The installer warned it "cannot expand" and wrote a
+    # WHISPER_MODELS_DIR=<repo>/models line that overrode it.
+    sh = _read("install-service.sh")
+    funcs = "\n".join(re.search(rf"^{n}\(\) \{{\n.*?^\}}\n", sh, re.S | re.M).group(0)
+                      for n in ("env_value", "env_sets"))
+    # The unit-line decisions and the "cannot expand" warning loop.
+    block = sh[sh.index("\n}\n", sh.index("env_sets() {")) + 3:
+               sh.index("\n# systemd splits")]
+    script = (funcs + block + 'echo "D=$DATA_ENV_LINE"; echo "M=$MODELS_ENV_LINE";'
+              ' echo "L=$LOG_ENV_LINE"\n')
+
+    def run(dotenv: str) -> tuple[dict, str]:
+        (tmp_path / ".env").write_text(dotenv, encoding="utf-8")
+        out = subprocess.run(
+            ["bash", "-c", script], capture_output=True, text=True, timeout=60,
+            env={"REPO_DIR": str(tmp_path), "PY": sys.executable,
+                 "PATH": "/usr/bin:/bin"})
+        assert out.returncode == 0, out.stderr
+        return dict(ln.split("=", 1) for ln in out.stdout.splitlines()), out.stderr
+    data_line = f"Environment=WHISPER_DATA_DIR={tmp_path}/data"
+    for dotenv in ("WHISPER_MODELS_DIR=${WHISPER_DATA_DIR}/models\n"
+                   "WHISPER_LOG_FILE=${WHISPER_DATA_DIR}/l.log\n",
+                   "WHISPER_DATA_DIR=\n"
+                   "WHISPER_MODELS_DIR=${WHISPER_DATA_DIR:-/srv/w}/models\n"
+                   "WHISPER_LOG_FILE=${WHISPER_DATA_DIR:-/srv/w}/l.log\n"):
+        lines, err = run(dotenv)
+        assert lines == {"D": data_line, "M": "", "L": ""}, dotenv
+        assert "cannot expand" not in err, dotenv
+    # A .env-pinned data root puts nothing in the environment: a reference to
+    # it from an earlier line still does not expand, and the unit keeps its pin.
+    lines, err = run("WHISPER_MODELS_DIR=${WHISPER_DATA_DIR}/models\n"
+                     "WHISPER_DATA_DIR=/srv/w\n")
+    assert lines == {"D": "", "M": f"Environment=WHISPER_MODELS_DIR={tmp_path}/models",
+                     "L": ""}
+    assert "WHISPER_MODELS_DIR to a value with a $ the service cannot expand" in err
+
+
 def test_windows_installer_gates_the_log_file_env_on_the_dotenv():
     # WinSW <env> is the real environment and load_dotenv never overrides it:
     # a .env WHISPER_LOG_FILE pin was silently ignored on Windows.
