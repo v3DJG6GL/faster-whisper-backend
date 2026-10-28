@@ -1327,8 +1327,10 @@ async def transcribe(
             detail="translation_mode must be 'fluent' or 'faithful'")
     # Speaker-count hints: clamp like the other schemaless numeric knobs. 0 (or
     # below) is the conventional "no hint", the same falsy value diarization
-    # reads as unset — clamping it up to 1 would force a one-speaker run.
-    _spk_clamp = lambda v: min(32, v) if v is not None and v > 0 else None  # noqa: E731
+    # reads as unset — clamping it up to 1 would force a one-speaker run. It
+    # stays 0, not None: a sent 0 is an explicit "auto-detect" that must not
+    # inherit the configured count (only an ABSENT field inherits).
+    _spk_clamp = lambda v: None if v is None else min(32, max(0, v))  # noqa: E731
     num_speakers = _spk_clamp(num_speakers)
     min_speakers = _spk_clamp(min_speakers)
     max_speakers = _spk_clamp(max_speakers)
@@ -1923,14 +1925,14 @@ async def transcribe(
             ):
                 if _cfg_name in ident.locked:
                     _spk[_client_name] = effective_config.cfg_for(resolved_model, _cfg_name, ident)
-                    if _client_val is not None and _client_val != _spk[_client_name]:
+                    if (_client_val is not None
+                            and (_client_val or None) != (_spk[_client_name] or None)):
                         ignored.append(_client_name)
                 elif _client_val is not None:
-                    _spk[_client_name] = _client_val
+                    _spk[_client_name] = _client_val or None
                 # An explicit range outranks an INHERITED count: num wins over
                 # min/max below, so inheriting it would drop the caller's bounds.
-                elif (_client_name == "num_speakers"
-                      and (min_speakers is not None or max_speakers is not None)):
+                elif _client_name == "num_speakers" and (min_speakers or max_speakers):
                     _spk[_client_name] = None
                 else:
                     _spk[_client_name] = effective_config.cfg_for(resolved_model, _cfg_name, ident)
@@ -1941,7 +1943,7 @@ async def transcribe(
                 if "DIARIZATION_NUM_SPEAKERS" in ident.locked:
                     for _client_name, _client_val in (("min_speakers", min_speakers),
                                                       ("max_speakers", max_speakers)):
-                        if _client_val is not None and _client_name not in ignored:
+                        if _client_val and _client_name not in ignored:
                             ignored.append(_client_name)
                 _spk["min_speakers"] = _spk["max_speakers"] = None
             # pyannote also rejects an inverted range — clamp min down to max.
