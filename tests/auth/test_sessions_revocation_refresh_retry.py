@@ -118,3 +118,41 @@ def test_failed_data_version_read_still_rebuilds_on_a_moved_counter(
     assert w.revocation_generation() == 1
     monkeypatch.undo()
     assert w.lookup_session(raw) is None
+
+
+def test_own_logout_skips_the_forced_rebuild(worker, monkeypatch):
+    """The worker that served a logout already popped the token, yet its next
+    probe saw the counter it bumped itself and redid the full O(live
+    sessions) rebuild on the event loop for every local logout. A sibling's
+    revocation interleaved before ours must still force that rebuild."""
+    w = worker
+    mine, _ = w.create_session("me", 3600.0)
+    victim, _ = w.create_session("victim", 3600.0)
+    other, _ = w.create_session("other", 3600.0)
+    assert w.revocation_generation() == 0
+    rebuilds = []
+    real_rebuild = w._rebuild_index_locked
+    monkeypatch.setattr(w, "_rebuild_index_locked",
+                        lambda: (rebuilds.append(1), real_rebuild())[1])
+    w.revoke_session(mine)
+    assert w.revocation_generation() == 1
+    assert rebuilds == []
+    assert w.lookup_session(mine) is None
+    # A sibling revokes `victim` (gap of two once ours lands on top).
+    db_path = w._require_conn().execute(
+        "PRAGMA database_list").fetchone()["file"]
+    sibling = sqlite3.connect(db_path)
+    try:
+        with sibling:
+            sibling.execute(
+                "UPDATE sessions SET revoked_ts = 1 WHERE user_id = 'victim'")
+            sibling.execute(
+                "UPDATE meta SET v = v + 1 WHERE k = 'revocations'")
+    finally:
+        sibling.close()
+    monkeypatch.setattr(w, "_data_version_locked", lambda: w._DATA_VERSION)
+    w.revoke_session(other)
+    assert rebuilds == []
+    assert w.revocation_generation() == 3
+    assert rebuilds == [1]
+    assert w.lookup_session(victim) is None

@@ -395,6 +395,7 @@ def revoke_session(raw_token: str) -> None:
     No-op while the store is not ready (init_db failed, which main treats as
     non-fatal), like lookup_session: logout then still clears the cookies
     instead of failing with a 500."""
+    global _LAST_REV_GEN
     if not raw_token or not _DB_READY:
         return
     th = hash_token(raw_token)
@@ -421,11 +422,23 @@ def revoke_session(raw_token: str) -> None:
                     (now, th),
                 )
                 revoked = cur.rowcount > 0
+                gen = None
                 if revoked:
                     conn.execute(
                         "INSERT INTO meta (k, v) VALUES ('revocations', 1)"
                         " ON CONFLICT(k) DO UPDATE SET v = v + 1")
+                    gen = int(conn.execute(
+                        "SELECT v FROM meta WHERE k = 'revocations'"
+                        ).fetchone()[0])
                 conn.execute("COMMIT")
+                # Our own revocation is already reflected in the index (the
+                # pop below), so mark its counter step seen: otherwise the
+                # next revocation_generation() redid the full O(live
+                # sessions) rebuild on the event loop for every local logout.
+                # Only when no sibling revocation interleaved (gap of exactly
+                # one); a larger gap still forces that rebuild.
+                if gen is not None and _LAST_REV_GEN == gen - 1:
+                    _LAST_REV_GEN = gen
             except BaseException:
                 try:
                     conn.execute("ROLLBACK")
