@@ -382,6 +382,19 @@ def test_server_host_loose_charset():
     _bad(SERVER_HOST="has/slash")
 
 
+def test_server_host_bracketed_ipv6_saves_bindable():
+    # "[::]" is the URL spelling; uvicorn/getaddrinfo refuse it, so a save
+    # would leave a server that cannot start after the offered restart.
+    assert _ok(SERVER_HOST="[::]").SERVER_HOST == "::"
+    assert _ok(SERVER_HOST="[::1]").SERVER_HOST == "::1"
+    _bad(SERVER_HOST="[::")
+    _bad(SERVER_HOST="[[::]]")
+
+
+# ---------------------------------------------------------------------------
+# LOG_FILE path safety
+# ---------------------------------------------------------------------------
+
 def test_log_file_rejects_unc_and_traversal():
     _ok(LOG_FILE="logs/whisper.log")
     _bad(LOG_FILE="\\\\server\\share\\x.log")  # UNC

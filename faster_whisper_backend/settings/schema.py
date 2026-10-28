@@ -1660,8 +1660,11 @@ class AdminConfig(BaseModel):
         if v is None:
             return v
         # IPv4 / IPv6 / hostname / 0.0.0.0 / ::. Loose check — the actual bind
-        # error will surface on restart if the address is invalid.
-        if not re.fullmatch(r"[A-Za-z0-9._:\-\[\]]+", v):
+        # error will surface on restart if the address is invalid. "[::]" (the
+        # URL spelling) can never bind, so one bracket pair is stripped.
+        if v.startswith("[") and v.endswith("]"):
+            v = v[1:-1]
+        if not re.fullmatch(r"[A-Za-z0-9._:\-]+", v):
             raise ValueError("invalid host string")
         return v
 
