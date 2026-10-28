@@ -1436,11 +1436,13 @@
   // the render() after it, so ask again, but only about edits not in
   // `agreed` (the _dirtyOpenEdits() the user already agreed to drop). On a
   // cancel the updated rows stay in _allCaptures and show on the next render.
-  async function _renderUnlessKeptOpenEdits(agreed) {
+  // `title` overrides the prompt; `current()` false skips a superseded render.
+  async function _renderUnlessKeptOpenEdits(agreed, title, current) {
     var fresh = _dirtyOpenEdits().some(function(d) {
       return !agreed.some(function(a) { return a.st === d.st && a.gen === d.gen; });
     });
-    if (!fresh || await _okToDropOpenEdits('Show the updated list?', 'Show')) render();
+    if (fresh && !(await _okToDropOpenEdits(title || 'Show the updated list?', 'Show'))) return;
+    if (!current || current()) render();
   }
 
   // One bulk PATCH at a time: a second one in flight reports the first's
@@ -3233,6 +3235,7 @@
     // a card can be opened and edited while the page is in flight).
     if (!(await _okToDropOpenEdits('Load more groups?', 'Load more')))
       return;
+    var agreed = _dirtyOpenEdits();
     if (!_samplesNext || _samplesLoading) return;
     _samplesLoading = true;
     var seq = _loadSeq;
@@ -3273,9 +3276,8 @@
     if (!loaded) return;
     // On a cancel the merged groups stay in _allSamples and show on the
     // next render.
-    if (!(await _okToDropOpenEdits('Show the loaded groups?', 'Show')))
-      return;
-    if (seq === _loadSeq) render();
+    await _renderUnlessKeptOpenEdits(agreed, 'Show the loaded groups?',
+      function() { return seq === _loadSeq; });
   }
 
   // Counts + strip together: every status change on a row moves both.

@@ -1320,8 +1320,7 @@ def test_page_filters_and_background_reloads_ask_before_dropping_edits(client):
     fin = more[more.index("} finally {"):more.index("if (!loaded) return;")]
     assert "render();" not in fin
     tail = more[more.index("if (!loaded) return;"):]
-    assert (tail.index("await _okToDropOpenEdits('Show the loaded groups?'")
-            < tail.index("render();"))
+    assert "await _renderUnlessKeptOpenEdits(agreed, 'Show the loaded groups?'" in tail
 
 
 def test_page_render_drops_hidden_rows_from_the_selection(client):
@@ -1379,7 +1378,8 @@ def test_page_group_autoload_skips_open_capture_cards(client):
     more = html[html.index("async function loadMoreSamples()"):]
     more = more[:more.index("async function reloadCounts()")]
     assert (more.index("await _okToDropOpenEdits('Load more groups?'")
-            < more.index("render();"))
+            < more.index("var agreed = _dirtyOpenEdits();")
+            < more.index("await _renderUnlessKeptOpenEdits(agreed"))
 
 
 def test_sample_save_does_not_resend_status(client):

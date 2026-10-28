@@ -1084,6 +1084,46 @@ async function run(editMeanwhile) {
     assert out["newer"] == {"renders": 1, "asked": confirms + ["Show the updated list?"]}
 
 
+@needs_node
+def test_load_more_groups_asks_once_about_edits_already_agreed_to_drop(page, tmp_path):
+    """loadMoreSamples re-asked "Show the loaded groups?" about the very
+    edits "Load more groups?" had covered; a Cancel there hid the groups the
+    user asked for. Edits made while the page loaded still get the re-ask,
+    and a page superseded by a filter change still never renders."""
+    fns = "\n".join(_js_function(page, f) for f in (
+        "loadMoreSamples", "_renderUnlessKeptOpenEdits",
+        "_okToDropOpenEdits", "_anyOpenDirty", "_dirtyOpenEdits", "markDirty"))
+    out = _run_node(tmp_path, fns + _BULK_DIRTY_STUBS + r"""
+var _samplesNext, _samplesLoading = false, _loadSeq = 0, _allSamples = [];
+function _speakerQs() { return ''; }
+global.document.getElementById = function() { return null; };
+async function run(editMeanwhile, newFilter) {
+  _samplesNext = { before_ts: 1, before_id: 'x' };
+  var st = { dirty: false };
+  markDirty(st);
+  _openRows = { c1: st };
+  answers = [true, true];
+  var p = loadMoreSamples();
+  await tick();
+  if (editMeanwhile) markDirty(st);
+  if (newFilter) _loadSeq++;
+  pending.shift()({ samples: [], next: null });
+  await p; await tick();
+  var res = { renders: renders, asked: asked };
+  renders = 0; asked = [];
+  return res;
+}
+(async function() {
+  console.log(JSON.stringify([await run(false, false), await run(true, false),
+                              await run(true, true)]));
+})();
+""")
+    first = "Load more groups?"
+    assert out == [{"renders": 1, "asked": [first]},
+                   {"renders": 1, "asked": [first, "Show the loaded groups?"]},
+                   {"renders": 0, "asked": [first]}]
+
+
 # ---- header-click collapse vs unsaved edits -------------------------------------------------
 
 @needs_node
