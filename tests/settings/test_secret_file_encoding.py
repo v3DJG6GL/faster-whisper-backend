@@ -7,6 +7,7 @@ so the bootstrap admin key never matched what the operator typed.
 """
 
 import importlib
+import os
 
 import pytest
 
@@ -16,9 +17,10 @@ _VAR = "WHISPER_BOOTSTRAP_ADMIN_KEY"
 
 
 def _reload_with_secret_file(monkeypatch, path):
-    # delenv records the var, so undo() also clears the value the prepass
-    # writes straight into os.environ.
-    monkeypatch.delenv(_VAR, raising=False)
+    # setenv (not delenv: that records nothing for an absent var) so undo()
+    # also clears the value the prepass writes straight into os.environ; ""
+    # is falsy, so the prepass still reads the file.
+    monkeypatch.setenv(_VAR, "")
     monkeypatch.setenv(_VAR + "_FILE", str(path))
     importlib.reload(config)
 
@@ -54,3 +56,19 @@ def test_unusable_file_warns_instead_of_failing_import(monkeypatch, tmp_path, da
     finally:
         monkeypatch.undo()
         importlib.reload(config)
+
+
+def test_helper_leaves_no_secret_behind(tmp_path):
+    secret = tmp_path / "key"
+    secret.write_bytes(b"sk-from-file\n")
+    before = os.environ.get(_VAR)
+    with pytest.MonkeyPatch.context() as mp:
+        mp.delenv(_VAR, raising=False)
+        try:
+            with pytest.MonkeyPatch.context() as inner:
+                _reload_with_secret_file(inner, secret)
+                assert config.BOOTSTRAP_ADMIN_KEY == "sk-from-file"
+            assert _VAR not in os.environ
+        finally:
+            importlib.reload(config)
+    assert os.environ.get(_VAR) == before
