@@ -304,8 +304,15 @@
     fetch('/auth/whoami', {
       headers: { Accept: 'application/json' }, cache: 'no-store',
     })
-      .then(function (r) { return r.ok ? r.json() : null; })
-      .then(apply)
+      .then(function (r) {
+        if (r.ok) return r.json();
+        // Only a 401/403 is a verdict on the session (same rule as the
+        // shared chrome). A 5xx or 429 keeps the tiles as they are, or
+        // renders the last known whoami if the hub has not painted yet.
+        if (r.status === 401 || r.status === 403) return null;
+        return window.__whoami || undefined;
+      })
+      .then(function (j) { if (j !== undefined) apply(j); })
       .catch(function () {});
   }
 
