@@ -814,7 +814,10 @@ async def test_pipeline(payload: dict[str, Any]) -> JSONResponse:
                             # pattern.sub(payload) runs it: re parses it up
                             # front, so a bad backref fails even with no match.
                             cur = ecre.sub(er, cur)
-                        except re.error as e:
+                        # IndexError: an unknown group name (`\g<nope>`);
+                        # TypeError: a non-string replacement in a hand-rolled
+                        # body. The engine skips those entries too.
+                        except (re.error, IndexError, TypeError) as e:
                             if bad is None:
                                 bad = str(e)
                             continue
