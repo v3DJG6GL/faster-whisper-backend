@@ -662,6 +662,40 @@ def test_faithful_mismatch_never_resends_the_same_batch(base_cfg, monkeypatch,
     assert len(calls) == 3
 
 
+def test_faithful_mismatch_after_leading_blanks_keeps_the_batch_size(
+        base_cfg, monkeypatch):
+    """One count mismatch on a batch that opens with blank cues halves the
+    LIVE span only: the next batch starts at the blanks again, so k keeps
+    them on top — otherwise every later batch of the target stays tiny."""
+    monkeypatch.setattr(cfg, "TRANSLATION_BATCH_SEGMENTS", 8, raising=False)
+    calls = []
+
+    def fake(llm, family, prompt_or_msgs, max_tokens):
+        payload = _payload_of(prompt_or_msgs)
+        calls.append(payload)
+        if payload.startswith(translation._NUMBERED_INSTRUCTION):
+            if len(calls) == 1:
+                return "one line only"              # first batch mismatches
+            lines = payload.split("\n\n", 1)[1].splitlines()
+            return "\n".join(
+                f"{m.group(1)}. {_xlate(m.group(2))}"
+                for m in (re.match(r"(\d+)\.\s(.*)", ln) for ln in lines))
+        return _xlate(payload)
+    monkeypatch.setattr(translation, "_complete", fake)
+    _stub_get_model(monkeypatch)
+
+    live = [f"Satz nummer {n}." for n in range(28)]
+    res, warns, _ = _run(translation.translate_segments(
+        _segs(*([""] * 4 + live)), ["en"], source_lang="de",
+        mode="faithful"))
+    assert warns == []
+    assert [r["en"] for r in res[4:]] == [_xlate(t) for t in live]
+    # 8 (mismatch) → 6: [4 blanks + 2 live], then 6-cue batches over the
+    # rest (6, 6, 6, 6, 2) — not 14 pairs at k = 2.
+    sizes = [len(c.split("\n\n", 1)[1].splitlines()) for c in calls]
+    assert sizes == [4, 2, 6, 6, 6, 6, 2]
+
+
 def test_faithful_copy_guard_sees_through_collapsed_whitespace(base_cfg,
                                                                monkeypatch):
     """The numbered batch prompt folds a segment's newlines and runs of
