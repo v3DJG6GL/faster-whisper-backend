@@ -208,10 +208,10 @@ def test_install_never_executes_unverified_wrapper():
     # it must gate WinSW on Test-WinSWTrusted and never exec repo-local nssm.exe.
     ps1 = _read("install-service.ps1")
     assert "& $LegacyNssm" not in ps1
-    assert "if (Test-WinSWTrusted) {\n        & $WinSWExe uninstall" in ps1
+    assert "if (Test-WinSWTrusted) {\n        Invoke-WinSW uninstall" in ps1
     assert "sc.exe delete $ServiceName" in ps1
     # The hash table must be defined before the removal block uses it.
-    assert ps1.index("$WinSWHashes = @{") < ps1.index("& $WinSWExe uninstall")
+    assert ps1.index("$WinSWHashes = @{") < ps1.index("Invoke-WinSW uninstall")
     # nssm.exe is still cleaned up as a file.
     assert "Remove-Item -Force $LegacyNssm" in ps1
 
@@ -225,6 +225,16 @@ def test_pip_cache_purge_runs_under_a_relaxed_error_preference():
                      r'\s*& \$Python -m pip cache purge 2>&1 \| Out-Null\n'
                      r'\s*\} finally \{\n\s*\$ErrorActionPreference = \$oldPref',
                      ps1)
+
+
+def test_preflight_winsw_uninstall_runs_under_a_relaxed_error_preference():
+    # WinSW writes status to stderr, which Windows PowerShell 5.1 turns into a
+    # terminating error under Stop: a re-install aborted after stopping the
+    # old service, before reinstalling it. Every WinSW call must go through
+    # Invoke-WinSW, defined before the pre-flight removal that calls it.
+    ps1 = _read("install-service.ps1")
+    assert re.findall(r"& \$WinSWExe\b.*", ps1) == ["& $WinSWExe @args"]
+    assert ps1.index("function Invoke-WinSW") < ps1.index("Invoke-WinSW uninstall")
 
 
 def test_orphan_sweep_spares_sibling_checkouts():

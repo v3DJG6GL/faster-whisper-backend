@@ -93,6 +93,24 @@ function Test-WinSWTrusted {
     return $false
 }
 
+# WinSW writes UTF-16 console output; PowerShell's default decode produces
+# garbled "W h i s p e r A P I" text. Scope a UTF-16 OutputEncoding only
+# around the WinSW calls. WinSW also writes informational status to stderr
+# ("Service is starting..."), which PowerShell turns into NativeCommandError
+# under $ErrorActionPreference=Stop -- relax that too.
+function Invoke-WinSW {
+    $oldEncoding = [Console]::OutputEncoding
+    $oldPref     = $ErrorActionPreference
+    [Console]::OutputEncoding = [System.Text.Encoding]::Unicode
+    $ErrorActionPreference    = "Continue"
+    try {
+        & $WinSWExe @args
+    } finally {
+        [Console]::OutputEncoding = $oldEncoding
+        $ErrorActionPreference    = $oldPref
+    }
+}
+
 if (-not (Test-Path $MainPy))  { throw "main.py not found: $MainPy" }
 New-Item -ItemType Directory -Force -Path $LogsDir | Out-Null
 
@@ -185,7 +203,7 @@ if ($svc) {
     # (missing, mismatched, or a legacy nssm install) goes through sc.exe delete,
     # which removes the registration without executing a repo-local binary elevated.
     if (Test-WinSWTrusted) {
-        & $WinSWExe uninstall 2>&1 | Out-Null
+        Invoke-WinSW uninstall 2>&1 | Out-Null
     } else {
         & sc.exe delete $ServiceName | Out-Null
     }
@@ -638,24 +656,6 @@ Set-Content -Path $WinSWXml -Value $xml -Encoding UTF8
 Write-Host "WhisperAPI.xml written: $WinSWXml" -ForegroundColor DarkGray
 
 # --- install + start --------------------------------------------------------
-# WinSW writes UTF-16 console output; PowerShell's default decode produces
-# garbled "W h i s p e r A P I" text. Scope a UTF-16 OutputEncoding only
-# around the WinSW calls. WinSW also writes informational status to stderr
-# ("Service is starting..."), which PowerShell turns into NativeCommandError
-# under $ErrorActionPreference=Stop -- relax that too.
-function Invoke-WinSW {
-    $oldEncoding = [Console]::OutputEncoding
-    $oldPref     = $ErrorActionPreference
-    [Console]::OutputEncoding = [System.Text.Encoding]::Unicode
-    $ErrorActionPreference    = "Continue"
-    try {
-        & $WinSWExe @args
-    } finally {
-        [Console]::OutputEncoding = $oldEncoding
-        $ErrorActionPreference    = $oldPref
-    }
-}
-
 Write-Host "Installing $ServiceName service via WinSW..."
 Invoke-WinSW install
 
