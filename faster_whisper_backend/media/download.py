@@ -1372,6 +1372,25 @@ _PROGRESS_PREFIX = "dl:"
 _STDERR_TAIL_MAX = 4096
 # The stdout line yt-dlp prints for a result --match-filters rejected.
 _FILTERED_NEEDLE = b"does not pass filter"
+# What _read_line keeps of a line longer than the stream's 64 KiB limit.
+_LONG_LINE_KEEP = 4096
+
+
+async def _read_line(stream: asyncio.StreamReader) -> bytes:
+    """readline() that survives a line over the stream limit (a site's
+    untrusted title in "<title> does not pass filter ..." can be longer
+    than 64 KiB, and readline raises ValueError on it): the line comes back
+    as its last _LONG_LINE_KEEP bytes, so the needle at its end still
+    matches. b"" at EOF, like readline."""
+    head = b""
+    while True:
+        try:
+            return head + await stream.readuntil(b"\n")
+        except asyncio.IncompleteReadError as e:
+            return head + e.partial
+        except asyncio.LimitOverrunError as e:
+            # The overrun bytes stay buffered: consume them and read on.
+            head = (head + await stream.readexactly(e.consumed))[-_LONG_LINE_KEEP:]
 
 
 def _parse_progress_fields(line: str) -> "tuple[int, int | None, str | None] | None":
@@ -1779,7 +1798,7 @@ async def _run_yt_dlp(
                 await _kill()
                 raise UrlCancelled()
             try:
-                raw = await asyncio.wait_for(proc.stdout.readline(), 0.5)
+                raw = await asyncio.wait_for(_read_line(proc.stdout), 0.5)
             except asyncio.TimeoutError:
                 continue
             if not raw:
