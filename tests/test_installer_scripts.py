@@ -506,6 +506,20 @@ def test_linux_env_sets_counts_keys_an_earlier_dotenv_line_pins(tmp_path):
         assert not run(line), line
 
 
+
+@pytest.mark.skipif(sys.platform == "win32", reason="bash installer")
+def test_linux_env_sets_counts_a_dotenv_default_reference(tmp_path):
+    # load_dotenv also expands ${NAME:-default}: to NAME's value, else to the
+    # literal default. WHISPER_DATA_DIR=${XDG_DATA_HOME:-/srv/whisper} is a
+    # real pin, which the unit's Environment= line used to override.
+    run = _env_sets_runner(tmp_path)
+    for line in ("X=${XDG_DATA_HOME:-/srv/whisper}", "X=${HOME:-/home/u}/w",
+                 "R=/srv\nX=${R:-/x}/m", "X=${HOME:-}/w", "X=${NOPE:-}/srv"):
+        assert run(line), line
+    # An empty default, or one dotenv keeps literally with its `$`, does not.
+    for line in ("X=${NOPE:-}", "X=${NOPE:-$PWD}/data", "X=${PWD:-$HOME}"):
+        assert not run(line), line
+
 def test_windows_installer_gates_the_log_file_env_on_the_dotenv():
     # WinSW <env> is the real environment and load_dotenv never overrides it:
     # a .env WHISPER_LOG_FILE pin was silently ignored on Windows.
