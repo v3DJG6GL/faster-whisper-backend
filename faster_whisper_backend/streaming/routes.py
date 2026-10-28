@@ -1531,7 +1531,8 @@ async def transcribe_stream(ws: WebSocket) -> None:
             # source='stream' tags the row so /quick-config can chip it as live
             # dictation vs a file-upload (batch) transcription.
             # A failed final decode is an error row (its text is only the
-            # partial-committed fallback), classified like the batch failure.
+            # partial-committed fallback), classified like the batch failure —
+            # and the live entry says so too, or it disagrees with the reload.
             _status = "error" if info.get("decode_failed") else "ok"
             # No trace for a failed decode that left no text at all (the
             # session dropped it): there is nothing to show or autocomplete,
@@ -1543,7 +1544,7 @@ async def transcribe_stream(ws: WebSocket) -> None:
                         request_id=rid, model=final_model, raw=raw_text,
                         steps=steps if steps is not None else [], final=final_text,
                         language=(_stored_lang(fw_info) or None),
-                        source="stream", user_id=user.get("user_id"))
+                        source="stream", user_id=user.get("user_id"), status=_status)
                 except Exception as _qe:  # noqa: BLE001
                     logger.error("[stream %s] record_trace failed: %s", session_id[:8], _qe)
 

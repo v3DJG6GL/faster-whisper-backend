@@ -102,3 +102,36 @@ def test_failed_final_decode_with_no_fallback_text_still_records_the_error(
     assert row["error_class"] == "cuda_oom"
     assert row["error_stage"] == "transcribing"
 
+
+def test_failed_final_decode_broadcasts_an_error_entry(client, app_module, monkeypatch):
+    """The live /quick-config entry must carry the same status as the row a
+    reload reads, not a hard-coded "ok"."""
+    from faster_whisper_backend.quick_config import recent_feed
+    from faster_whisper_backend.streaming import routes as s_routes
+
+    monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
+
+    def _oom(*a, **kw):
+        raise RuntimeError("CUDA failed with error out of memory")
+
+    monkeypatch.setattr(s_routes, "_trim_trailing_nonspeech", _oom)
+    q = recent_feed.subscribe()
+    try:
+        with client.websocket_connect(_STREAM_URL) as ws:
+            ws.send_json({"type": "config", "model": "whisper-1",
+                          "audio": {"format": "pcm_s16le", "sample_rate": 16000}})
+            assert ws.receive_json()["type"] == "ready"
+            ws.send_bytes(_pcm(8000, 2500))
+            ws.send_bytes(_pcm(0, 1500))
+            ws.send_json({"type": "stop"})
+            _drain(ws)
+        entries = []
+        while not q.empty():
+            item = q.get_nowait()
+            if item.get("event") == "trace" and item["data"].get("source") == "stream":
+                entries.append(item["data"])
+    finally:
+        recent_feed.unsubscribe(q)
+    assert entries, "no live entry was broadcast"
+    assert entries[0]["status"] == "error"
+    assert _stream_rows()[0]["status"] == "error"

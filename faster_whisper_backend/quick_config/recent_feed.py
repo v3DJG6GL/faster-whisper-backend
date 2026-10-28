@@ -135,6 +135,7 @@ def record_trace(
     language: str | None = None,
     source: str = "file",
     user_id: str | None = None,
+    status: str = "ok",
 ) -> None:
     """Persist a finished trace to the durable store and broadcast it to
     every live SSE subscriber. Called from main.py's transcribe handler
@@ -149,7 +150,12 @@ def record_trace(
     `steps` is a list of (label, before, after) tuples — same shape
     main.py builds when cfg.TRACE_ENABLED. Pass [] when tracing is off
     so the autocomplete feature still works (raw + final + tokens are
-    the only fields the autocomplete needs)."""
+    the only fields the autocomplete needs).
+
+    `status` only labels the live entry: the durable row's status is the
+    one the later record_transcription() UPSERT writes, so a caller that
+    will record an error passes it here too, or the live list disagrees
+    with a reload."""
     if not request_id:
         # No request_id means we cannot key the UPSERT and the entry
         # cannot be jumped-to from /reports. Skip silently — the live
@@ -183,7 +189,7 @@ def record_trace(
         "bigrams": bigrams,
         "user_id": user_id,
         "username": username,
-        "status": "ok",
+        "status": status,
     }
     if request_id:
         try:
