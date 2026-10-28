@@ -4238,6 +4238,18 @@
       throw new Error(msg);
     }
     state.baselineCorrections = JSON.parse(JSON.stringify(state.corrections));
+    // The route REPLACED each member's chips: put them on the list rows and
+    // redraw those cards' previews, so the list and the merge modal's
+    // member lines show them without a Refresh.
+    var saved = {};
+    try { saved = (await resp.json()).members_corrections || {}; } catch (_) {}
+    _allCaptures.forEach(function(r) {
+      if (!Object.prototype.hasOwnProperty.call(saved, r.id)) return;
+      r.corrections = saved[r.id];
+      var el = document.querySelector(
+        '.capture-card[data-id="' + r.id + '"] .cc-preview');
+      if (el) el.textContent = _capturePreviewText(r, r.words);
+    });
   }
 
   // -------------------------------------------------------------------

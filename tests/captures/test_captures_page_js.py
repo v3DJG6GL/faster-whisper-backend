@@ -1155,3 +1155,39 @@ function tick() { return new Promise(function(res) { setTimeout(res, 0); }); }
     assert out == {"saved": {"status": "ready", "corrections": 1},
                    "reproc": {"status": "reviewed", "corrections": 1, "text": "t"},
                    "plain": "dismissed"}
+
+
+# ---- proposal chip auto-save -------------------------------------------------------------------
+
+@needs_node
+def test_proposal_chip_save_updates_the_list_rows(page, tmp_path):
+    """A chip typed in a proposal / merge preview auto-saved to the member
+    captures, but their list rows kept the old chips: the collapsed cards
+    and a reopened merge modal showed the uncorrected text until Refresh."""
+    fns = "\n".join(_js_function(page, f) for f in (
+        "_saveProposalChips", "_capturePreviewText", "_applyChipsToText"))
+    chip = {"wrong": "die", "correct": "Die", "idx": 4}
+    out = _run_node(tmp_path, fns + r"""
+var previews = {};
+global.window = {};
+global.document = { querySelector: function(s) {
+  var id = /data-id="([^"]+)"/.exec(s)[1];
+  return previews[id] || (previews[id] = { textContent: '' });
+} };
+global.fetch = async function() {
+  return { ok: true, json: async function() {
+    return { saved: { m1: 1 }, members_corrections: { m1: [""" + json.dumps(chip) + r"""] } };
+  } };
+};
+var aligned = """ + json.dumps(_KATZE_ALIGNED) + r""";
+var _allCaptures = [
+  { id: 'm1', text_for_training: """ + json.dumps(_KATZE_TEXT) + r""", corrections: [],
+    words: aligned },
+  { id: 'x', text_for_training: 'other', corrections: [] }];
+var state = { corrections: [""" + json.dumps(chip) + r"""] };
+_saveProposalChips(state, ['m1']).then(function() {
+  console.log(JSON.stringify({ rows: _allCaptures.map(function(r) { return r.corrections; }),
+    previews: Object.keys(previews).map(function(k) { return [k, previews[k].textContent]; }) }));
+});
+""")
+    assert out == {"rows": [[chip], []], "previews": [["m1", "Die Katze die Maus"]]}
