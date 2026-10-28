@@ -2035,6 +2035,18 @@ class TestRenderPrompt:
         hy = content("zh-TW", family="hunyuan", context="Vorher.")
         assert "翻译成繁体中文" in hy
 
+    def test_region_survives_hunyuan_context_template(self):
+        """HY-MT's contextual (Chinese) instruction keeps the region a
+        table entry does not cover, like its English branch does."""
+        def content(target):
+            return translation.render_prompt(
+                "Hallo", target, source="de", family="hunyuan",
+                context="Vorher.")["messages"][0]["content"]
+        br, pt = content("pt-BR"), content("pt-PT")
+        assert "翻译成葡萄牙语（BR），" in br and br != pt
+        assert "翻译成葡萄牙语，" in content("pt")
+        assert "翻译成繁体中文，" in content("zh-TW")
+
     def test_preview_and_run_fold_the_source_too(self, monkeypatch):
         """The lab's free-form SOURCE ("jpn") is folded like the target, in
         the preview and the run alike — a real request never sends "jpn"."""

@@ -189,8 +189,18 @@ def _build_hunyuan(text, source_code, source_name, target_code, target_name,
             parts.append("")
         parts.append(context)
         # Fallback: the English target name — the mixed-language instruction
-        # still works for targets outside the mapped set.
-        zh_target = lookup(_ZH_LANG_NAMES, target_code) or target_name
+        # still works for targets outside the mapped set. A subtag the table
+        # has no entry for keeps its region after the base's Chinese name
+        # ("pt-BR" → 葡萄牙语（BR）), as target_name keeps it.
+        zh_target = _ZH_LANG_NAMES.get((target_code or "").lower())
+        if zh_target is None:
+            base, _, sub = (target_code or "").partition("-")
+            zh_target = lookup(_ZH_LANG_NAMES, base)
+            if zh_target and sub:
+                sub = sub.title() if len(sub) == 4 and sub.isalpha() \
+                    else sub.upper()
+                zh_target = f"{zh_target}（{sub}）"
+            zh_target = zh_target or target_name
         parts.append(
             f"参考上面的信息，把下面的文本翻译成{zh_target}，"
             f"注意不需要翻译上文，也不要额外解释：")
