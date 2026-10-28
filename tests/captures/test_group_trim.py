@@ -381,3 +381,23 @@ def test_build_merged_words_keeps_index_parity_with_the_raw_words(monkeypatch):
     split = cr._split_corrections_to_members(
         [{"idx": idx, "wrong": "three", "correct": "3"}], members)
     assert split == {"a": [], "b": [{"idx": 0, "wrong": "three", "correct": "3"}]}
+
+
+def test_trimmed_capture_keeps_one_word_per_raw_word():
+    """The singleton card indexes chips into capture.words; a word in the cut
+    lead (or past the trimmed end) dropped from that list moved every later
+    chip one raw word early. Words stay, zero-length at the edge; segments in
+    cut audio still go."""
+    cr = _routes()
+    row = {"audio_s": 3.0, "audio_trim_lead_ms": 500, "audio_trim_trail_ms": 500,
+           "words": [{"word": "hm", "start": 0.0, "end": 0.2},
+                     {"word": " one", "start": 0.6, "end": 0.9},
+                     {"word": " two", "start": 1.0, "end": 1.5},
+                     {"word": " uh", "start": 2.6, "end": 2.9}],
+           "segments": [{"start": 0.0, "end": 0.3, "text": "hm"},
+                        {"start": 0.6, "end": 1.5, "text": "one two"}]}
+    cr._apply_trim_to_capture_row(row)
+    assert [w["word"] for w in row["words"]] == ["hm", " one", " two", " uh"]
+    assert [(w["start"], w["end"]) for w in row["words"]] == [
+        (0.0, 0.0), pytest.approx((0.1, 0.4)), pytest.approx((0.5, 1.0)), (2.0, 2.0)]
+    assert [s["text"] for s in row["segments"]] == ["one two"]

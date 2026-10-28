@@ -1214,6 +1214,8 @@ def _shift_word_times(
     items: list[dict[str, Any]] | None,
     lead_ms: int,
     eff_duration_s: float | None,
+    *,
+    keep_all: bool = False,
 ) -> list[dict[str, Any]]:
     """Return a NEW list with each item's start/end shifted by -lead_ms/1000
     and clamped to [0, eff_duration_s] (when given).
@@ -1224,7 +1226,9 @@ def _shift_word_times(
     audio's timeline so audio.currentTime alignment is correct.
 
     Items whose interval lies entirely outside [0, eff_duration_s] are
-    dropped — they map to audio that was cut away. All other fields
+    dropped — they map to audio that was cut away — unless `keep_all`, which
+    keeps them as zero-length entries clamped to the nearest edge (words: chip
+    idx counts raw words, see _emit_member_words). All other fields
     (word, raw_word, removed, member_idx, …) are preserved verbatim.
     Returns a deep-enough copy (dicts re-built so the originals are
     untouched).
@@ -1238,22 +1242,28 @@ def _shift_word_times(
     if shift_s <= 0 and eff_duration_s is None:
         return list(items)
     out: list[dict[str, Any]] = []
+    last_s = 0.0
     for it in items:
         try:
             s_old = float(it.get("start") or 0.0)
             e_old = float(it.get("end", s_old) or 0.0)
         except (TypeError, ValueError):
-            continue
+            if not keep_all:
+                continue
+            s_old = e_old = last_s + shift_s
         s_new = s_old - shift_s
         e_new = e_old - shift_s
-        if e_new <= 0:
-            continue
-        if eff_duration_s is not None and s_new >= eff_duration_s:
-            continue
+        if not keep_all:
+            if e_new <= 0:
+                continue
+            if eff_duration_s is not None and s_new >= eff_duration_s:
+                continue
         s_clamped = max(0.0, s_new)
-        e_clamped = e_new
+        e_clamped = max(0.0, e_new)
         if eff_duration_s is not None:
+            s_clamped = min(eff_duration_s, s_clamped)
             e_clamped = min(eff_duration_s, e_clamped)
+        last_s = max(s_clamped, e_clamped)
         new_it = dict(it)
         new_it["start"] = s_clamped
         new_it["end"] = max(s_clamped, e_clamped)
@@ -1282,7 +1292,7 @@ def _apply_trim_to_capture_row(row: dict[str, Any]) -> None:
     eff = max(0.0, orig_s - (lead_ms + trail_ms) / 1000.0)
     row["effective_audio_s"] = eff
     if "words" in row:
-        row["words"] = _shift_word_times(row.get("words"), lead_ms, eff)
+        row["words"] = _shift_word_times(row.get("words"), lead_ms, eff, keep_all=True)
     if "segments" in row:
         row["segments"] = _shift_word_times(row.get("segments"), lead_ms, eff)
 
