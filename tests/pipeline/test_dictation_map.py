@@ -73,3 +73,15 @@ def test_factory_keys_with_a_space_edge_match_in_running_text(text, expected):
     refused them, so every German transcript lost the dictated % and -."""
     pattern, replace, _ = dictation_map.compile_map(_factory_de_map())
     assert pattern.sub(replace, text) == expected
+
+
+@pytest.mark.parametrize("key, text, expected", [
+    ("-", "E-Mail und 5 - 6", "E-Mail und 5 – 6"),
+    ("...", "Ende... und x...y", "Ende... und x...y"),
+    ("...", "Ende ... und", "Ende – und"),
+])
+def test_punctuation_edge_keeps_its_word_bound(key, text, expected):
+    """Only a space edge may sit against the neighbouring word: a "-" key
+    must not rewrite the hyphen inside a compound."""
+    pattern, replace, _ = dictation_map.compile_map({key: "–"})
+    assert pattern.sub(replace, text) == expected

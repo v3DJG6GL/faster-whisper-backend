@@ -51,17 +51,18 @@ def _ss_variant(key: str) -> str:
 
 
 def _bounded(key: str) -> str:
-    """``key`` escaped, word-bounded only on an edge that is a word character.
+    """``key`` escaped, word-bounded on every edge that is not whitespace.
 
     Not ``\\b``, and not one lookaround around the whole alternation: after a
     key's own trailing ``.`` ("z.B.") ``\\b`` needs a word character next, and
     a key that starts or ends with a space (" Prozent", " Bindestrich ") sits
     right against the neighbouring word, which a blanket ``(?<!\\w)`` /
-    ``(?!\\w)`` refuses."""
+    ``(?!\\w)`` refuses. A punctuation edge keeps the bound: a "-" key must
+    not rewrite the hyphen inside "E-Mail"."""
     out = re.escape(key)
-    if re.match(r"\w", key[:1]):
+    if key[:1] and not key[:1].isspace():
         out = r"(?<!\w)" + out
-    if re.match(r"\w", key[-1:]):
+    if key[-1:] and not key[-1:].isspace():
         out += r"(?!\w)"
     return out
 
