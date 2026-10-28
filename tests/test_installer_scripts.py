@@ -520,6 +520,19 @@ def test_linux_env_sets_counts_a_dotenv_default_reference(tmp_path):
     for line in ("X=${NOPE:-}", "X=${NOPE:-$PWD}/data", "X=${PWD:-$HOME}"):
         assert not run(line), line
 
+
+@pytest.mark.skipif(sys.platform == "win32", reason="bash installer")
+def test_linux_env_sets_lets_an_earlier_unpinned_key_beat_its_default(tmp_path):
+    # dotenv takes ${R:-default}'s default only when R is absent: an earlier
+    # empty, bare or unexpandable R wins, so load_dotenv yields "" or "/m"
+    # (crash-loop on /data) — the unit's Environment= line has to stay.
+    run = _env_sets_runner(tmp_path)
+    for line in ("R=\nX=${R:-/srv}", 'R=""\nX=${R:-/srv}', "R\nX=${R:-/srv}",
+                 "R=${PWD}\nX=${R:-/srv}/m", "R=$PWD\nX=${R:-/srv}"):
+        assert not run(line), line
+    # A NAME no earlier line names still takes the default.
+    assert run("X=${R:-/srv}\nR=")
+
 def test_windows_installer_gates_the_log_file_env_on_the_dotenv():
     # WinSW <env> is the real environment and load_dotenv never overrides it:
     # a .env WHISPER_LOG_FILE pin was silently ignored on Windows.

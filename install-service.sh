@@ -167,8 +167,9 @@ fi
 # ${HOME} ${USER} ${LOGNAME} ${SHELL} are the exception: systemd sets them for
 # a User= unit and the service's load_dotenv expands ${VAR}, so they pin. So
 # does ${K} for a key K an earlier .env line pins: load_dotenv expands it too.
-# ${NAME:-default} (dotenv's grammar) falls back to its literal default when
-# NAME is none of those, so it pins exactly as far as that default would.
+# ${NAME:-default} (dotenv's grammar) falls back to its literal default only
+# when no earlier .env line names NAME at all, so it pins exactly as far as that
+# default would; an earlier empty, bare or unpinned NAME wins, as in dotenv.
 # env_value prints the value with each expandable ${VAR} replaced by "x".
 env_value() {
   [ -f "$REPO_DIR/.env" ] || return 0
@@ -177,15 +178,17 @@ try:
     from dotenv import dotenv_values
 except ImportError:
     sys.exit(0)
-known = {"HOME", "USER", "LOGNAME", "SHELL"}
+known, seen = {"HOME", "USER", "LOGNAME", "SHELL"}, set()
 for key, raw in dotenv_values(sys.argv[1], interpolate=False).items():
     v = re.sub(r"\$\{([^}:]*)(?::-([^}]*))?\}",
                lambda m: "x" if m.group(1) in known else
-               m.group(0) if m.group(2) is None else m.group(2),
+               m.group(0) if m.group(2) is None or m.group(1) in seen
+               else m.group(2),
                (raw or "").strip())
     if key == sys.argv[2]:
         print(v)
         break
+    seen.add(key)
     if v and "$" not in v:
         known.add(key)' \
     "$REPO_DIR/.env" "$1" 2>/dev/null || true
