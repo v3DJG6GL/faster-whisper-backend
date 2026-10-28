@@ -610,3 +610,70 @@ def test_plain_checkbox_in_input_col_keeps_its_themed_width(client):
     rule = _block(html, ".input-col input[type=checkbox] {", "}")
     assert "width: 1rem" in rule
     assert "auto" not in rule
+
+
+# ---- "↑ view" on the pipeline page expands the rule -----------------------------
+
+# Minimal querySelector for the `:scope > a > b .c` selectors jumpToGlobalRule
+# uses: compound class selectors joined by '>' (child) or ' ' (descendant).
+_SELECTOR_DOM = r"""
+class Node {
+  constructor(cls, kids) {
+    this.cls = new Set(cls.split('.').filter(Boolean)); this.kids = kids || [];
+    this.clicked = 0;
+    this.classList = { contains: (c) => this.cls.has(c) };
+  }
+  click() { this.clicked++; }
+  querySelector(sel) {
+    const toks = sel.replace(/\s*>\s*/g, ' > ').trim().split(/\s+/);
+    if (toks[0] !== ':scope') throw new Error('unsupported: ' + sel);
+    let cur = [this];
+    for (let i = 1; i < toks.length; i++) {
+      const child = toks[i] === '>';
+      if (child) i++;
+      const want = toks[i].split('.').filter(Boolean);
+      const next = [];
+      const walk = (n) => n.kids.forEach(k => {
+        if (want.every(c => k.cls.has(c))) next.push(k);
+        if (!child) walk(k);
+      });
+      cur.forEach(walk);
+      cur = next;
+    }
+    return cur[0] || null;
+  }
+}
+"""
+
+
+@needs_node
+def test_view_link_expands_the_rule_card_on_the_pipeline_page(client):
+    """renderRow nests the header in the card's .rule-main column (beside the
+    rail), so `:scope > .row-header .expand-btn` matched nothing and the
+    jumped-to rule stayed collapsed."""
+    html = _html(client, "/settings/pipeline")
+    # The fake card below mirrors renderRow's nesting.
+    assert "cardMain.className = 'rule-main';" in html
+    assert "cardMain.appendChild(head);" in html
+    assert "row.appendChild(cardMain);" in html
+    assert "head.appendChild(headLine1);" in html
+    assert "headLine1.appendChild(headActions);" in html
+    assert "headActions.appendChild(expandBtn);" in html
+    fn = _block(html, "function jumpToGlobalRule(ruleName) {", "\n}\n")
+    out = _node(_SELECTOR_DOM + """
+const btn = new Node('.expand-btn');
+const row = new Node('.rule-row.rule-card', [
+  new Node('.rule-rail'),
+  new Node('.rule-main', [new Node('.row-header', [
+    new Node('.row-header-line1', [new Node('.head-actions', [btn])])])]),
+]);
+row.scrollIntoView = () => {};
+const fieldRow = { querySelector: () => row };
+const document = { querySelector: () => fieldRow };
+const CSS = { escape: (s) => s };
+function expandSectionContaining() {}
+""" + fn + """
+jumpToGlobalRule('de-tidy');
+console.log(JSON.stringify(btn.clicked));
+""")
+    assert out == 1

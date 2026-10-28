@@ -5280,9 +5280,10 @@ function jumpToGlobalRule(ruleName) {
   const target = ruleRow || fieldRow;
   target.scrollIntoView({ behavior: 'smooth', block: ruleRow ? 'center' : 'start' });
   if (ruleRow && !ruleRow.classList.contains('expanded')) {
-    // The expand button is a GRANDCHILD of .row-header (via .row-header-line1),
-    // so a descendant combinator is required — a direct-child selector misses.
-    const btn = ruleRow.querySelector(':scope > .row-header .expand-btn');
+    // The card's .row-header sits in its .rule-main column (beside the rail),
+    // and the expand button is nested below it (.row-header-line1 >
+    // .head-actions), hence the descendant combinator after .row-header.
+    const btn = ruleRow.querySelector(':scope > .rule-main > .row-header .expand-btn');
     if (btn) btn.click();
   }
 }
