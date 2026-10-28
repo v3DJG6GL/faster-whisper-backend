@@ -180,7 +180,7 @@ jobs:
       # variance and the Windows leg's POSIX-only skips don't false-fail.
       # Raise this number as coverage grows — never lower it.
       - name: Run tests (with coverage gate)
-        run: pytest -q --cov-fail-under=84
+        run: pytest -n auto -q --cov-fail-under=84
 
   # Windows portability parity guard — a single leg on the self-hosted VM
   # runner (host mode), using the system python (VM prerequisite in the
@@ -258,7 +258,7 @@ jobs:
           .venv\Scripts\python -m pip install -r requirements.txt -r requirements-dev.txt
 
       - name: Run tests (with coverage gate)
-        run: .venv\Scripts\python -m pytest -q --cov-fail-under=84
+        run: .venv\Scripts\python -m pytest -n auto -q --cov-fail-under=84
 
   # Single, stable status check to require in the branch protection. Matrix
   # legs expand/rename over time; this gate aggregates them so the required

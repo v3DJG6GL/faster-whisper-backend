@@ -169,8 +169,11 @@ download/warm fewer models at startup.
 
 ```bash
 pip install -r requirements-dev.txt
-pytest -q
+pytest -n auto -q
 ```
+
+`-n auto` (pytest-xdist) spreads the suite over every core; drop it to run
+serially, e.g. when debugging a single test.
 
 CI runs the suite on Linux (Python 3.12/3.13/3.14) and Windows for every pull
 request and every push to `main`, and fails the run if coverage drops below the
