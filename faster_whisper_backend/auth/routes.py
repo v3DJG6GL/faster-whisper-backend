@@ -176,20 +176,20 @@ async def logout(request: Request, response: Response):
     like any other cookie-authenticated mutation (the WebUI sends the
     X-CSRF-Token header)."""
     raw = request.cookies.get(cfg.SESSION_COOKIE_NAME, "")
-    failed = False
     if raw:
         try:
             sessions_store.revoke_session(raw)
         except Exception:
-            # A raise used to escape as a bare 500 that dropped the clearing
-            # Set-Cookies below (they ride `response` only when it is the one
-            # returned), so the browser kept a cookie whose row was rolled back.
+            # The revoke rolled back, so the row is still live. Keep both
+            # cookies: clearing them made the client's retry a cookie-less
+            # no-op "success" while the session stayed valid for its TTL;
+            # with them, the retry runs the revoke again. (The middleware
+            # lets a logout through when this worker no longer resolves the
+            # cookie, which revoke_session's index pop causes.)
             logger.exception("logout: revoking the session failed")
-            failed = True
-    if failed:
-        response = _JSONResponse(
-            {"ok": False, "detail": "sign-out could not be recorded"},
-            status_code=500)
+            return _JSONResponse(
+                {"ok": False, "detail": "sign-out could not be recorded"},
+                status_code=500)
     # Same attributes as login set them: a browser refuses the clearing
     # Set-Cookie of a __Host- / __Secure- name that lacks Secure.
     secure = bool(cfg.SESSION_COOKIE_SECURE)
@@ -197,4 +197,4 @@ async def logout(request: Request, response: Response):
                            httponly=True, samesite="lax")
     response.delete_cookie(cfg.SESSION_CSRF_COOKIE_NAME, path="/",
                            secure=secure, samesite="lax")
-    return response if failed else {"ok": True}
+    return {"ok": True}

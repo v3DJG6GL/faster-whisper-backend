@@ -129,28 +129,39 @@ def test_logout_clears_session(client, make_user_key):
     assert client.get("/settings/state").status_code == 401
 
 
-def test_logout_clears_cookies_when_the_revoke_fails(client, make_user_key,
-                                                      monkeypatch):
-    """A failed revoke (SQLITE_BUSY on COMMIT, disk full) escaped as a bare
-    500 that lost both clearing Set-Cookies, so the browser kept a session
-    cookie whose rolled-back row would authenticate again."""
+def test_logout_keeps_cookies_when_the_revoke_fails(client, make_user_key,
+                                                    monkeypatch):
+    """A failed revoke (SQLITE_BUSY on COMMIT, disk full) rolls back, so the
+    row stays live. Clearing both cookies then made the client's retry a
+    cookie-less no-op 200 while the session stayed valid for its TTL; the
+    cookies now stay so the retry actually revokes it."""
     import sqlite3
     from faster_whisper_backend.auth import sessions_store
-    from faster_whisper_backend.settings import config as cfg
     _uid, raw = make_user_key("root", is_admin=True)
     tok = client.post("/auth/login", json={"key": raw}).json()["csrf_token"]
+    cookie = client.cookies.get("whisper_session")
+    real = sessions_store.revoke_session
 
-    def _locked(_raw):
+    def _locked(raw_token):
+        # The real revoke's finally pops this worker's index entry even when
+        # its write fails; mirror that so the retry meets a dead lookup.
+        sessions_store._SESSION_INDEX.pop(
+            sessions_store.hash_token(raw_token), None)
         raise sqlite3.OperationalError("database is locked")
 
     monkeypatch.setattr(sessions_store, "revoke_session", _locked)
     r = client.post("/auth/logout", headers={"X-CSRF-Token": tok})
     assert r.status_code == 500
     assert r.json()["ok"] is False
-    lines = _set_cookie_lines(r)
-    for name in (cfg.SESSION_COOKIE_NAME, cfg.SESSION_CSRF_COOKIE_NAME):
-        assert any(l.startswith(name + '=""') or l.startswith(name + "=;")
-                   for l in lines), (name, lines)
+    assert not _set_cookie_lines(r)
+    monkeypatch.setattr(sessions_store, "revoke_session", real)
+    r = client.post("/auth/logout", headers={"X-CSRF-Token": tok})
+    assert r.status_code == 200
+    # Revoked for real: a rebuilt index (which re-adds every live row) no
+    # longer honours the cookie.
+    with sessions_store._lock:
+        sessions_store._rebuild_index_locked()
+    assert sessions_store.lookup_session(cookie) is None
 
 
 # --- absolute TTL / expiry -------------------------------------------------
