@@ -190,6 +190,16 @@ async def apply_hot_changes(
     awaited save, so two overlapping saves both diffed against the same stale
     value and could leave a model loaded under the settings in between.
     """
+    # Shielded: every caller awaits this after its save already wrote
+    # config.local.json, and a dropped connection unwinds the handler as a
+    # cancellation. Unshielded, the setattr loop, the evictions, the HF_TOKEN
+    # re-sync and the log-level push after the cancelled await were skipped,
+    # so the running cfg kept the old values while disk held the new ones.
+    # The task runs to the end whether or not anyone still awaits it.
+    return await asyncio.shield(asyncio.ensure_future(_apply_hot_changes(written)))
+
+
+async def _apply_hot_changes(written: dict[str, Any]) -> dict[str, Any]:
     # Apply hot edits to the running cfg module so the next request sees them.
     # We re-load from disk so the in-memory values get the same coercions
     # (set/frozenset/tuple) load_overrides applies.

@@ -8,6 +8,7 @@ MODEL_DEVICE" are ordinary UI flows — the first must evict, the second
 must not."""
 
 import asyncio
+import os
 
 from faster_whisper_backend.settings import config as cfg
 from faster_whisper_backend.settings import config_store
@@ -154,3 +155,44 @@ def test_overlapping_scalar_saves_end_on_the_newest_file(monkeypatch):
 
     asyncio.run(scenario())
     assert cfg._TEST_APPLY_FIELD == 2
+
+
+def test_cancelled_caller_still_finishes_the_apply(monkeypatch):
+    # The caller already wrote config.local.json; a dropped connection cancels
+    # it while the eviction waits on the model-load lock. The rest of the
+    # apply (HF_TOKEN re-sync here) must still run, else the process keeps the
+    # old token while disk and cfg hold the new one.
+    release = asyncio.Event()
+    started = asyncio.Event()
+
+    async def slow_evict(model_id=None):
+        started.set()
+        await release.wait()
+        return []
+
+    monkeypatch.setattr(cfg, "HF_TOKEN", "hf_old", raising=False)
+    monkeypatch.setenv("HF_TOKEN", "hf_old")
+    monkeypatch.setattr(config_store, "env_pinned_fields", lambda: frozenset())
+    monkeypatch.setattr(config_store, "load_overrides",
+                        lambda: {"MODEL_DEVICE": "cpu", "HF_TOKEN": "hf_new"})
+    monkeypatch.setattr(cfg, "MODEL_DEVICE", "cuda", raising=False)
+    monkeypatch.setattr(tx_models, "drain_then_evict", slow_evict)
+
+    async def scenario():
+        caller = asyncio.create_task(pl_apply.apply_hot_changes(
+            {"MODEL_DEVICE": "cpu", "HF_TOKEN": "hf_new"}))
+        await asyncio.wait_for(started.wait(), timeout=5)
+        caller.cancel()
+        try:
+            await caller
+        except asyncio.CancelledError:
+            pass
+        release.set()
+        # Bounded: a regression leaves the env on the old token, not a hang.
+        for _ in range(200):
+            if os.environ.get("HF_TOKEN") == "hf_new":
+                break
+            await asyncio.sleep(0.01)
+
+    asyncio.run(scenario())
+    assert os.environ.get("HF_TOKEN") == "hf_new"
