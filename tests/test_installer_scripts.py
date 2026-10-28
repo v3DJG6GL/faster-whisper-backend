@@ -491,6 +491,21 @@ def test_linux_env_sets_counts_the_vars_systemd_sets_for_the_unit(tmp_path):
         assert not run(line), line
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="bash installer")
+def test_linux_env_sets_counts_keys_an_earlier_dotenv_line_pins(tmp_path):
+    # load_dotenv also expands ${K} from a key K set earlier in the same .env:
+    # WHISPER_MODELS_DIR=${WHISPER_DATA_DIR}/models is a real pin, which the
+    # unit's Environment= line used to override.
+    run = _env_sets_runner(tmp_path)
+    for line in ("R=/srv/w\nX=${R}/models", "R=${HOME}/w\nX=${R}/models",
+                 "R=/srv\nS=${R}/w\nX=${S}/${USER}"):
+        assert run(line), line
+    # A later line, or an earlier one that does not resolve itself, does not.
+    for line in ("X=${R}/models\nR=/srv/w", "R=$PWD\nX=${R}/models",
+                 "R=${PWD}\nX=${R}/models", "R=\nX=${R}/models"):
+        assert not run(line), line
+
+
 def test_windows_installer_gates_the_log_file_env_on_the_dotenv():
     # WinSW <env> is the real environment and load_dotenv never overrides it:
     # a .env WHISPER_LOG_FILE pin was silently ignored on Windows.

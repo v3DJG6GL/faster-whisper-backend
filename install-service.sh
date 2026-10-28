@@ -165,22 +165,31 @@ fi
 # create). A value still holding a `$` does not count either: dotenv leaves a
 # bare $PWD as is, and systemd sets no PWD for ${PWD} — the unit pin stays.
 # ${HOME} ${USER} ${LOGNAME} ${SHELL} are the exception: systemd sets them for
-# a User= unit and the service's load_dotenv expands ${VAR}, so they pin.
+# a User= unit and the service's load_dotenv expands ${VAR}, so they pin. So
+# does ${K} for a key K an earlier .env line pins: load_dotenv expands it too.
+# env_value prints the value with those expandable ${VAR}s already removed.
 env_value() {
   [ -f "$REPO_DIR/.env" ] || return 0
-  "$PY" -I -c 'import sys
+  "$PY" -I -c 'import re, sys
 try:
     from dotenv import dotenv_values
 except ImportError:
     sys.exit(0)
-print((dotenv_values(sys.argv[1], interpolate=False).get(sys.argv[2]) or "").strip())' \
+known = {"HOME", "USER", "LOGNAME", "SHELL"}
+for key, raw in dotenv_values(sys.argv[1], interpolate=False).items():
+    v = re.sub(r"\$\{([^}]*)\}", lambda m: "" if m.group(1) in known else m.group(0),
+               (raw or "").strip())
+    if key == sys.argv[2]:
+        print(v)
+        break
+    if v and "$" not in v:
+        known.add(key)' \
     "$REPO_DIR/.env" "$1" 2>/dev/null || true
 }
 env_sets() {
-  local v k
+  local v
   v="$(env_value "$1")"
   [ -n "$v" ] || return 1
-  for k in HOME USER LOGNAME SHELL; do v="${v//"\${$k}"/}"; done
   [ "${v#*\$}" = "$v" ]
 }
 for name in WHISPER_DATA_DIR WHISPER_DB_DIR WHISPER_MODELS_DIR WHISPER_LOG_FILE; do
