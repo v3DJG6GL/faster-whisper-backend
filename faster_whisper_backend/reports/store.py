@@ -273,9 +273,11 @@ def find_by_request_user(
     return _row_to_dict(row) if row else None
 
 
-# Resubmit merge reuses text_corrections.three_way_merge_corrections with an
-# empty baseline — start from existing, overlay incoming on key match, dedupe
-# anchorless on (wrong, correct). That helper is the single source of truth
+# Resubmit merge reuses text_corrections.three_way_merge_corrections with the
+# chips the client's form was seeded from as the baseline — start from
+# existing, apply the user's removals / edits / additions as deltas, dedupe
+# anchorless on (wrong, correct). An empty baseline (a caller that sends none)
+# degrades to a union of existing and incoming. That helper is the single source of truth
 # for chip-merge keying (anchored on (idx, idx_end), anchorless on
 # (wrong, correct)) and the captures-routes group-PATCH path already uses it
 # — keep the two stores in lockstep so future chip-merge tweaks land once.
@@ -297,6 +299,7 @@ def upsert_report(
     reporter_host: str,
     language: "str | None" = None,
     stages: "list | None" = None,
+    baseline_corrections: "list | None" = None,
 ) -> "tuple[str, bool]":
     """Insert a new report or update the existing one keyed on
     (user_id, request_id). Returns (report_id, was_updated). The
@@ -305,7 +308,10 @@ def upsert_report(
 
     On update: corrections go through three_way_merge_corrections —
     keyed on (idx, idx_end) for anchored chips and on (wrong, correct)
-    for anchorless ones — intended_text and user_comment overwrite
+    for anchorless ones, with `baseline_corrections` (the stored chips the
+    client's form was seeded from) as the baseline, so a chip the user
+    removed or re-ranged is dropped instead of surviving the merge —
+    intended_text and user_comment overwrite
     (latest submission supersedes), and created_ts bumps to "now" so
     the row re-floats to the top of /reports.
     """
@@ -314,6 +320,7 @@ def upsert_report(
     final_t = (final or "")[:_CAP_FINAL]
     steps_t = _truncate_steps(steps or [])
     corr_in = _clean_corrections(corrections or [])
+    baseline_in = _clean_corrections(baseline_corrections or [])
     intended_t = (intended_text or "")[:_CAP_INTENDED]
     comment_t = (user_comment or "")[:_CAP_COMMENT]
     role_t = "admin" if reporter_role == "admin" else "user"
@@ -351,7 +358,7 @@ def upsert_report(
             # request_id with fresh keys grows one row without bound. The captures
             # path already re-cleans via captures_store.update_capture.
             merged = _clean_corrections(text_corrections.three_way_merge_corrections(
-                baseline=[], edited=corr_in, current=existing.get("corrections") or [],
+                baseline=baseline_in, edited=corr_in, current=existing.get("corrections") or [],
             ))
             rid = existing["id"]
             conn.execute(

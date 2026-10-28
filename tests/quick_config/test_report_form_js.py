@@ -321,3 +321,32 @@ def test_partial_conflict_save_still_reapplies_saved_rules(client, tmp_path):
     """, funcs=("_doSave",))
     assert res["calls"] == [7]
     assert res["toasts"][0][0] == "err" and "Saved 1." in res["toasts"][0][1]
+
+
+def test_resubmit_sends_seeded_chips_as_baseline(client, tmp_path):
+    # The form posts its whole edited chip list; without the seed it came from
+    # the server unioned it with the stored chips, so a chip removed with x
+    # (or re-ranged by shift-click) came back on the next /state load.
+    res = _run_js(client, tmp_path, r"""
+      globalThis._detailText = (j, d) => d;
+      const sent = [];
+      globalThis.api = async (_m, _u, body) => {
+        sent.push(JSON.parse(JSON.stringify(body)));
+        return { ok: true, status: 200, json: async () => ({ was_updated: true }) };
+      };
+      _serverReportedChips = { rid1: { corrections: [
+        { wrong: 'Beta', correct: 'Bet', idx: 1 },
+        { wrong: 'Delta', correct: 'Del', idx: 3 },
+      ] } };
+      const entry = { request_id: 'rid1', final: 'Alpha Beta Gamma Delta' };
+      const form = _buildReportForm(entry);
+      _traceItem(entry, form);
+      _removeChip(form, 1);
+      await submitReport(form);
+      await submitReport(form);
+      out(sent.map((b) => [b.corrections, b.baseline_corrections]));
+    """, funcs=_REPORT_FUNCS + ("markReported", "submitReport"))
+    bet = {"wrong": "Beta", "correct": "Bet", "idx": 1}
+    assert res[0] == [[bet], [bet, {"wrong": "Delta", "correct": "Del", "idx": 3}]]
+    # The still-open form's second submit diffs against what it just sent.
+    assert res[1] == [[bet], [bet]]

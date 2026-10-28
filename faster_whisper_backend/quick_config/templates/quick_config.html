@@ -1387,6 +1387,9 @@ function _buildReportForm(entry) {
   form._corrections = (_seed && Array.isArray(_seed.corrections))
     ? JSON.parse(JSON.stringify(_seed.corrections))
     : [];
+  // What the server held when the form was seeded: sent as the merge
+  // baseline so a chip the user removes or re-ranges is dropped on resubmit.
+  form._baseline = JSON.parse(JSON.stringify(form._corrections));
   // idx_end is the inclusive range end; single-word chips set
   // idx_end === idx so range-aware code doesn't need to special-case.
   form._entry = entry;
@@ -1645,7 +1648,7 @@ function _renderCorrections(form) {
 async function submitReport(form) {
   const entry = form._entry || {};
   const comment = form.querySelector('.rep-comment').value.trim();
-  const corrections = form._corrections
+  const toWire = (list) => (list || [])
     .map(c => {
       const out = {
         wrong: c.wrong,
@@ -1658,6 +1661,7 @@ async function submitReport(form) {
       return out;
     })
     .filter(c => c.correct.length > 0);
+  const corrections = toWire(form._corrections);
   if (!corrections.length && !comment) {
     showToast('Mark a wrong word or leave a comment.', 'err');
     return;
@@ -1673,6 +1677,7 @@ async function submitReport(form) {
       final: entry.final || '',
       steps: entry.steps || [],
       corrections: corrections,
+      baseline_corrections: toWire(form._baseline),
       user_comment: comment,
       // Provenance the trace row already carries. Sending it is what lets a
       // triager see which translation a report is actually about.
@@ -1690,12 +1695,15 @@ async function submitReport(form) {
       _serverReportedSet.add(entry.request_id);
       // Snapshot the user's just-submitted chips so any re-render that
       // calls _buildReportForm(entry) again (e.g. a future SSE-driven
-      // refresh) re-seeds correctly. Slight skew if the server merged
-      // with pre-existing chips; the next /state load reconciles.
+      // refresh) re-seeds correctly. Slight skew if a concurrent submit
+      // from another tab landed in between; the next /state load reconciles.
       _serverReportedChips[entry.request_id] = {
         corrections: JSON.parse(JSON.stringify(form._corrections || [])),
       };
     }
+    // The server now holds what was just sent: a second submit from this
+    // still-open form must diff against that, not the original seed.
+    form._baseline = JSON.parse(JSON.stringify(corrections));
     // Update the badge + collapse the form. Keep the form's filled-in
     // values intact so the user can re-open it if they want to add more.
     const item = form.closest('.trace-item');

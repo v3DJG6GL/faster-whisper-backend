@@ -97,6 +97,10 @@ class ReportSubmitIn(BaseModel):
     final: str = Field(default="", max_length=50_000)
     steps: list[Any] = Field(default=[], max_length=500)
     corrections: list[CorrectionIn] = Field(default=[], max_length=500)
+    # The stored chips the form was seeded from (on a resubmit). The client
+    # sends its whole edited list in `corrections`, so the store needs this
+    # baseline to tell a chip the user removed from one it never saw.
+    baseline_corrections: list[CorrectionIn] = Field(default=[], max_length=500)
     # 64 KB, deliberately NOT the store's own 2 000 / 4 000 caps. The store
     # slices these AFTER pydantic has parsed the whole body, and the only other
     # ceiling is MAX_REQUEST_BYTES (256 MB) — a submit carrying two 100 MB
@@ -223,6 +227,7 @@ async def submit_report(
         reporter_host=host,
         language=payload.language or None,
         stages=list(payload.stages or []),
+        baseline_corrections=[c.model_dump() for c in payload.baseline_corrections],
     )
     return JSONResponse({
         "ok": True,
