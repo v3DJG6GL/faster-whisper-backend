@@ -89,6 +89,9 @@ def test_undecodable_upload_is_a_400_not_a_server_fault(client, fake_model,
     assert seen["status"] == "error" and seen["error_class"] == "decode_failed"
     row = client.get(f"/v1/jobs/{_PID}").json()
     assert row["state"] == "failed"
+    # The row is what a client that lost the connection reads back: it must
+    # say what the response said, not the generic server-fault text.
+    assert row["error"] == "the file could not be decoded as audio"
 
 
 def test_validation_4xx_after_the_seed_stores_the_curated_detail(
