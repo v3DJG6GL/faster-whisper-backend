@@ -572,6 +572,36 @@ def test_clear_all_wipes_the_audio_tree_under_the_lock(captures_store_db,
     assert held and all(held)
 
 
+def test_clear_all_drops_a_sample_merged_after_the_samples_wipe(
+        captures_store_db, groups_store_db, monkeypatch, tmp_path):
+    """A Merge waiting on the samples lock inserts its row once
+    clear_all_samples releases it, before the captures DELETE. The rmtree then
+    took its merged WAV, leaving a memberless sample with no audio."""
+    cs = captures_store_db
+    gs = groups_store_db
+    cid = _make(cs, monkeypatch, tmp_path)
+    sid = "g0123456789abcdef"
+    real_clear = gs.clear_all_samples
+
+    def clear_then_merge():
+        n = real_clear()
+        conn = cs._require_conn()
+        conn.execute(
+            "INSERT INTO capture_samples (id, user_id, created_ts,"
+            " merged_wav_relpath, merged_duration_ms, transcript,"
+            " member_hashes) VALUES (?,?,?,?,?,?,?)",
+            (sid, "u1", 1.0, gs._relpath_for(sid), 1000, "t", "{}"),
+        )
+        conn.execute(
+            "UPDATE captures SET sample_id=?, sample_order=0 WHERE id=?", (sid, cid),
+        )
+        return n
+
+    monkeypatch.setattr(gs, "clear_all_samples", clear_then_merge)
+    assert cs.clear_all(reporter_host="127.0.0.1") == 1
+    assert gs.get_sample(sid) is None
+
+
 def test_create_capture_skips_the_row_when_a_clear_wiped_its_audio(
         captures_store_db, monkeypatch, tmp_path):
     """The WAV lands before the INSERT takes _lock. A clear_all that wipes it

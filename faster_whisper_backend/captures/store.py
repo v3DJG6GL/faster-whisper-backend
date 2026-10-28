@@ -1248,14 +1248,23 @@ def clear_all(reporter_host: str = "") -> int:
     conn = _require_conn()
     audio_dir = _require_audio_dir()
     n_groups = 0
+    from faster_whisper_backend.captures import samples_store as capture_samples_store
     try:
-        from faster_whisper_backend.captures import samples_store as capture_samples_store
         n_groups = capture_samples_store.clear_all_samples()
     except Exception as _e:
         logger.warning(
             "[captures] clear_all_samples failed (continuing): %s", _e,
         )
-    with _lock:
+    # Both store locks, samples-then-captures like dissolve_sample: a Merge
+    # waiting on the samples lock during clear_all_samples could otherwise
+    # insert its row and bind members before the captures DELETE, and the
+    # rmtree below would then wipe that sample's merged WAV under a live row.
+    with capture_samples_store._lock, _lock:
+        try:
+            cur = conn.execute("DELETE FROM capture_samples")
+            n_groups += max(cur.rowcount, 0)
+        except sqlite3.Error as _e:
+            logger.warning("[captures] capture_samples wipe failed (continuing): %s", _e)
         row = conn.execute("SELECT COUNT(*) FROM captures").fetchone()
         n = int(row[0]) if row else 0
         conn.execute("DELETE FROM captures")
