@@ -211,8 +211,16 @@
     fetch('/auth/whoami', {
       headers: { Accept: 'application/json' }, cache: 'no-store',
     })
-      .then(function(r){ return r.ok ? r.json() : null; })
+      .then(function(r){
+        if (r.ok) return r.json();
+        // Only a 401/403 is a verdict on the session. A 5xx or 429 says
+        // nothing about it: re-apply the last known whoami (if any) to undo
+        // the clear above, and never show the login gate for it.
+        if (r.status === 401 || r.status === 403) return null;
+        return window.__whoami || undefined;
+      })
       .then(function(j){
+        if (j === undefined) return;
         if (!j) {
           // 401 (locked-down + no/invalid session). Leave chrome cleared
           // and drop the cached whoami so stale permissions don't linger,
