@@ -379,6 +379,19 @@ def test_merge_sentences_closes_on_a_speaker_change():
         [[0, 1]]
 
 
+def test_merge_sentences_unlabelled_cue_does_not_hide_a_speaker_change():
+    segs = [{"text": "So I think", "speaker": "A"},
+            {"text": "uh", "speaker": None},
+            {"text": "we should go.", "speaker": "B"}]
+    assert translation._merge_sentences(segs) == [[0, 1], [2]]
+    # The known speaker resets with the group: a sentence end, then an
+    # unlabelled cue, then B is no change against the closed group's A.
+    segs = [{"text": "Done.", "speaker": "A"},
+            {"text": "uh", "speaker": None},
+            {"text": "we should go.", "speaker": "B"}]
+    assert translation._merge_sentences(segs) == [[0], [1, 2]]
+
+
 def test_merge_sentences_sees_full_width_and_quoted_sentence_ends():
     groups = translation._merge_sentences(
         _segs("你好！", "真的吗？", 'He said "go."', "Er fragte »wann?«",

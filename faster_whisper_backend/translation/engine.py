@@ -1088,19 +1088,22 @@ def _merge_sentences(segments: "list[dict]") -> "list[list[int]]":
     other's cue. Returns groups of segment indices."""
     groups: "list[list[int]]" = []
     current: "list[int]" = []
+    # The group's last KNOWN speaker: an unlabelled cue between A and B must
+    # not hide the change.
+    prev = None
     for i, seg in enumerate(segments):
-        if current:
-            prev = segments[current[-1]].get("speaker")
-            spk = seg.get("speaker")
-            if prev and spk and prev != spk:
-                groups.append(current)
-                current = []
+        spk = seg.get("speaker")
+        if current and prev and spk and prev != spk:
+            groups.append(current)
+            current = []
         current.append(i)
+        prev = spk or prev
         text = (seg.get("text") or "").rstrip().rstrip(_CLOSERS)
         if (text and text[-1] in _SENTENCE_FINAL) or \
                 len(current) >= _MAX_GROUP_SEGMENTS:
             groups.append(current)
             current = []
+            prev = None
     if current:
         groups.append(current)
     return groups
