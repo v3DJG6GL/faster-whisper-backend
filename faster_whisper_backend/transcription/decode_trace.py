@@ -84,6 +84,7 @@ from __future__ import annotations
 import contextlib
 import threading
 import time
+import weakref
 from typing import Any
 
 _tls = threading.local()
@@ -393,14 +394,31 @@ def _describe_rung(results, kwargs: dict, secs: float, tr: DecodeTrace) -> dict:
     return rung
 
 
+def _unbound(orig, model, model_ref):
+    """``orig`` without a strong reference back to ``model``: a method bound
+    to it is called as its class function on ``model_ref()``. A hook stored on
+    the model that held the bound method would form a cycle, and dropping the
+    model would keep its CT2 weights (and VRAM) until the cyclic GC ran."""
+    func = getattr(orig, "__func__", None)
+    if func is None or getattr(orig, "__self__", None) is not model:
+        return orig
+    return lambda *args, **kwargs: func(model_ref(), *args, **kwargs)
+
+
 def install(model):
     """Hook a loaded ``WhisperModel`` in place (idempotent). Returns ``model``.
 
     Objects that are not a faster-whisper model (test fakes) come back
-    untouched: every hook is attached only where its target exists."""
+    untouched: every hook is attached only where its target exists. The hooks
+    hold the model only weakly, so it is still freed by refcount alone."""
     if model is None or getattr(model, _INSTALLED_FLAG, False):
         return model
     installed_any = False
+    try:
+        model_ref = weakref.ref(model)
+    except TypeError:  # not weak-referenceable: only ever a test fake
+        def model_ref():
+            return model
 
     inner = getattr(model, "model", None)
     if inner is not None and hasattr(inner, "generate") and not isinstance(inner, _GenerateProxy):
@@ -412,7 +430,7 @@ def install(model):
 
     orig_encode = getattr(model, "encode", None)
     if callable(orig_encode):
-        def encode(features, _orig=orig_encode):
+        def encode(features, _orig=_unbound(orig_encode, model, model_ref)):
             tr = _current()
             if tr is None:
                 return _orig(features)
@@ -428,7 +446,8 @@ def install(model):
 
     orig_fb = getattr(model, "generate_with_fallback", None)
     if callable(orig_fb):
-        def generate_with_fallback(*args, _orig=orig_fb, **kwargs):
+        def generate_with_fallback(*args, _orig=_unbound(orig_fb, model, model_ref),
+                                   **kwargs):
             tr = _current()
             if tr is None:
                 return _orig(*args, **kwargs)
@@ -436,7 +455,7 @@ def install(model):
             # lets the rung hook compute the compression ratio it retried on.
             tokenizer = args[2] if len(args) > 2 else kwargs.get("tokenizer")
             _tls.tokenizer = tokenizer
-            tr.n_frames = _window_frames(model)
+            tr.n_frames = _window_frames(model_ref())
             w = tr.open_window()
             try:
                 result = _orig(*args, **kwargs)

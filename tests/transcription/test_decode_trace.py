@@ -10,7 +10,9 @@ Pins the three halves of faster_whisper_backend.transcription.decode_trace:
     trace keeps exactly the block it had.
 """
 
+import gc
 import threading
+import weakref
 
 import pytest
 
@@ -174,6 +176,20 @@ def test_hooks_are_passthrough_without_a_capture():
     segs, info = m.transcribe(None)
     assert len(list(segs)) == 1
     assert dt._current() is None
+
+
+def test_installed_model_is_freed_by_refcount_alone():
+    # The model cache drops a model and builds the next one at once; a
+    # hook <-> model cycle would keep the old weights (VRAM) until a GC run.
+    gc.disable()
+    try:
+        m = dt.install(_incident_model())
+        assert len(list(m.transcribe(None)[0])) == 1
+        ref = weakref.ref(m)
+        del m
+        assert ref() is None
+    finally:
+        gc.enable()
 
 
 # ---------------------------------------------------------------------------
