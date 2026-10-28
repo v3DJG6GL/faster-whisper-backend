@@ -708,6 +708,57 @@ _TEST_PIPELINE_MAX_PATTERN = _field_max_length(
     settings_schema.RegexListEntry.model_fields["pattern"]) or 512
 
 
+# Killable pre-run of the dry run's patterns (see _probe_slow_patterns). sre
+# holds the GIL for a whole match, so the 2 s guard thread's join cannot return
+# while `(?:|){40}(?!)` backtracks 2**40 times per position: the process
+# freezes, not one core. The child runs each pattern over the sample first and
+# is killed when a round passes this budget.
+_TEST_PIPELINE_PROBE_TIMEOUT = 2.0
+# Rounds after a kill (each names one culprit); patterns still unprobed after
+# that are reported as not run rather than risked in-process.
+_TEST_PIPELINE_PROBE_ROUNDS = 3
+_PROBE_SRC = (
+    "import json, re, sys\n"
+    "sample, pats = json.load(sys.stdin)\n"
+    "for i, p in enumerate(pats):\n"
+    "    sys.stderr.write('%d\\n' % i)\n"
+    "    sys.stderr.flush()\n"
+    "    try:\n"
+    "        sum(1 for _ in re.compile(p).finditer(sample))\n"
+    "    except Exception:\n"
+    "        pass\n"
+)
+
+
+def _probe_slow_patterns(sample: str, patterns: list[str]) -> set[str]:
+    """The patterns that do not finish matching `sample` within
+    _TEST_PIPELINE_PROBE_TIMEOUT in a child process killed on timeout (the
+    save path's regex_guard.validate idea, at dry-run scale). Fails open like
+    validate when the child cannot run."""
+    import subprocess
+    import sys
+    slow: set[str] = set()
+    todo = list(dict.fromkeys(patterns))
+    for _ in range(_TEST_PIPELINE_PROBE_ROUNDS):
+        if not todo:
+            return slow
+        try:
+            subprocess.run([sys.executable, "-I", "-c", _PROBE_SRC],
+                           input=json.dumps([sample, todo]), capture_output=True,
+                           text=True, timeout=_TEST_PIPELINE_PROBE_TIMEOUT)
+            return slow
+        except subprocess.TimeoutExpired as exc:
+            idx = regex_guard._last_index(getattr(exc, "stderr", None))
+            if not isinstance(idx, int) or not 0 <= idx < len(todo):
+                return slow | set(todo)
+            slow.add(todo[idx])
+            todo = todo[idx + 1:]
+        except Exception as exc:  # noqa: BLE001 - probe infra failure -> fail open
+            logger.warning("test-pipeline probe skipped: %s", exc)
+            return slow
+    return slow | set(todo)
+
+
 @router.post("/test-pipeline",
              dependencies=[Depends(require_admin_webui_host), Depends(require_admin)])
 async def test_pipeline(payload: dict[str, Any]) -> JSONResponse:
@@ -754,6 +805,13 @@ async def test_pipeline(payload: dict[str, Any]) -> JSONResponse:
         "of this pattern would be rejected; if the rule is already saved it "
         "IS still running in the live pipeline, so this step is not what "
         "production produces"
+    )
+
+    _SLOW_PROBE_MSG = (
+        f"did not finish on this sample within "
+        f"{_TEST_PIPELINE_PROBE_TIMEOUT:g} s in a killable probe (catastrophic "
+        "backtracking risk) — not executed here: sre holds the GIL for the "
+        "whole match, so a dry-run thread would freeze the server"
     )
 
     def _fixed_count_msg(pat: str) -> str | None:
@@ -816,6 +874,26 @@ async def test_pipeline(payload: dict[str, Any]) -> JSONResponse:
                                       f"(max {_TEST_PIPELINE_MAX_MAP_VALUE} chars)"},
                 )
 
+    # Every pattern that would reach an in-process match: enabled, a string,
+    # and past both structural screens (those are refused as not_run anyway).
+    to_probe: list[str] = []
+    for rule in rules:
+        if not isinstance(rule, dict) or not rule.get("enabled", True):
+            continue
+        if rule.get("type") == "regex-list":
+            entries = rule.get("entries")
+            pats = [e.get("pattern") for e in (entries if isinstance(entries, list) else ())
+                    if isinstance(e, dict)]
+        elif rule.get("type") in ("callback:map", "terminal"):
+            continue
+        else:
+            pats = [rule.get("pattern")]
+        to_probe += [p for p in pats if isinstance(p, str) and p
+                     and _fixed_count_msg(p) is None
+                     and not regex_guard._nested_repetition(p)]
+    slow_patterns = (await asyncio.to_thread(_probe_slow_patterns, sample, to_probe)
+                     if to_probe else set())
+
     def _run_rule(text: str, rule: dict) -> dict[str, Any]:
         """Apply one rule to `text`. Returns the step dict for the response."""
         # Dry-run contract is parity with the pipeline engine — use its replacer
@@ -854,6 +932,10 @@ async def test_pipeline(payload: dict[str, Any]) -> JSONResponse:
                             # Wins over an earlier compile error: `not_run`
                             # needs its "not executed here" caveat shown.
                             bad = fc_msg or _NESTED_REP_MSG
+                            lout["not_run"] = True
+                            continue
+                        if isinstance(ep, str) and ep in slow_patterns:
+                            bad = _SLOW_PROBE_MSG
                             lout["not_run"] = True
                             continue
                         try:
@@ -948,6 +1030,9 @@ async def test_pipeline(payload: dict[str, Any]) -> JSONResponse:
                             "not_run": True}
                 if regex_guard._nested_repetition(str(pattern)):
                     return {**common, "after": text, "error": _NESTED_REP_MSG,
+                            "not_run": True}
+                if isinstance(pattern, str) and pattern in slow_patterns:
+                    return {**common, "after": text, "error": _SLOW_PROBE_MSG,
                             "not_run": True}
                 cre = re.compile(pattern)
                 if rtype == "callback:lowercase-wordlist":
