@@ -31,3 +31,21 @@ def test_dictated_punctuation_still_replaces_whispers_marks():
     assert pattern.sub(replace, " Dosis 1, Komma, 5 mg") == " Dosis 1,, 5 mg"
     assert pattern.sub(replace, "12.5 und 12,5") == "12.5 und 12,5"
     assert pattern.sub(replace, "Ende…… Punkt") == "Ende."
+
+
+@pytest.mark.parametrize("text, expected", [
+    ("das z.B. hier", "das zB hier"),
+    ("das z.B.", "das zB"),
+    ("Z.B. so", "zB so"),
+])
+def test_key_ending_in_punctuation_matches(text, expected):
+    """`\\b` after a key's trailing `.` needs a word character next, so a
+    "z.B." key was saved and shown but never matched."""
+    pattern, replace, _ = dictation_map.compile_map({"z.B.": "zB"})
+    assert pattern.sub(replace, text) == expected
+
+
+def test_word_bounded_key_still_needs_whole_word():
+    pattern, replace, _ = dictation_map.compile_map({"Komma": ",", "Punkt": "."})
+    assert pattern.sub(replace, "Kommando Punkt Punktzahl xKomma") == "Kommando . Punktzahl xKomma"
+    assert pattern.sub(replace, "12... Komma 5") == "12, 5"
