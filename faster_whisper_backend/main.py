@@ -935,6 +935,12 @@ async def _csrf_mw(request: Request, call_next):
                     # to the synthetic admin behind nothing but the Origin
                     # check above.
                     pass
+                elif sess is None and request.url.path == "/auth/logout":
+                    # Signing out a session that no longer exists ends nothing
+                    # a cross-site caller could want ended, and only the
+                    # handler clears the dead cookies: a 403 here left a
+                    # browser holding one unable to sign out at all.
+                    pass
                 elif (
                     sess is None
                     or not header_tok

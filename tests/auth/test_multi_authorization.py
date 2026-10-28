@@ -109,5 +109,8 @@ def test_csrf_stale_cookie_with_basic_then_bearer_passes(client, make_user_key):
 def test_csrf_stale_cookie_with_only_basic_is_403(client, make_user_key):
     make_user_key("root", is_admin=True)
     client.cookies.set("whisper_session", "stale-token-with-no-row")
-    r = client.post("/auth/logout", headers={"Authorization": _BASIC})
+    # Not /auth/logout: the guard lets a dead cookie sign out (nothing to
+    # protect), so the fail-closed contract is pinned on another mutation.
+    r = client.post("/v1/audio/transcriptions",
+                    headers={"Authorization": _BASIC})
     assert r.status_code == 403

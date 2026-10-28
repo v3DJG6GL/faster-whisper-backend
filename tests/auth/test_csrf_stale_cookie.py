@@ -23,9 +23,23 @@ def test_bearer_with_stale_cookie_passes_the_csrf_guard(client, make_user_key):
 def test_stale_cookie_without_bearer_is_still_403(client, make_user_key):
     make_user_key("root", is_admin=True)
     client.cookies.set("whisper_session", "stale-token-with-no-row")
-    r = client.post("/auth/logout")
+    r = client.post("/v1/audio/transcriptions")
     assert r.status_code == 403
     assert r.json() == {"detail": "CSRF token missing or invalid"}
+
+
+def test_stale_cookie_can_still_sign_out(client, make_user_key):
+    """/auth/logout with a dead cookie and no bearer used to get the same
+    403, so the browser could never clear the cookie: every Sign-out click
+    alerted "Sign-out failed" over a session that was already gone."""
+    from faster_whisper_backend.settings import config as cfg
+    make_user_key("root", is_admin=True)
+    client.cookies.set("whisper_session", "stale-token-with-no-row")
+    r = client.post("/auth/logout", headers={"X-CSRF-Token": "whatever"})
+    assert r.status_code == 200
+    lines = r.headers.get_list("set-cookie")
+    for name in (cfg.SESSION_COOKIE_NAME, cfg.SESSION_CSRF_COOKIE_NAME):
+        assert any(l.startswith(name + "=") for l in lines), (name, lines)
 
 
 def test_live_cookie_with_bearer_still_requires_the_token(client, make_user_key):
