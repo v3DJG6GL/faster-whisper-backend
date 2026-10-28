@@ -148,3 +148,41 @@ def test_pattern_at_the_cap_still_runs(client):
     })
     assert r.status_code == 200, r.text
     assert r.json()["steps"][0]["after"] == "b"
+
+
+def _no_screen(monkeypatch):
+    def _screen(*args):
+        raise AssertionError("structural screen ran on a non-string pattern")
+    monkeypatch.setattr(admin_routes.regex_guard, "_nested_repetition", _screen)
+    monkeypatch.setattr(admin_routes.regex_guard, "check_fixed_counts", _screen)
+
+
+# A list skips the str-only length cap, and its repr is a valid alternation.
+_LIST_PATTERN = ["](?:" + "|".join(f"w{i:06d}" for i in range(800)) + ")+["]
+
+
+def test_non_string_callback_pattern_is_refused_before_the_screens(client, monkeypatch):
+    _no_screen(monkeypatch)
+    r = client.post("/settings/test-pipeline", json={
+        "sample": "w000001",
+        "rules": [{"name": "d", "type": "callback:dedup", "enabled": True,
+                   "pattern": _LIST_PATTERN}],
+    })
+    assert r.status_code == 200, r.text
+    step = r.json()["steps"][0]
+    assert step["error"] == "pattern must be a string"
+    assert step["after"] == "w000001"
+
+
+def test_non_string_regex_list_pattern_is_skipped_before_the_screens(client, monkeypatch):
+    _no_screen(monkeypatch)
+    r = client.post("/settings/test-pipeline", json={
+        "sample": "w000001",
+        "rules": [{"name": "rl", "type": "regex-list", "enabled": True, "entries": [
+            {"pattern": _LIST_PATTERN, "replacement": "x"},
+        ]}],
+    })
+    assert r.status_code == 200, r.text
+    step = r.json()["steps"][0]
+    assert step["error"] == "pattern must be a string"
+    assert step["after"] == "w000001"

@@ -1027,8 +1027,15 @@ async def test_pipeline(payload: dict[str, Any]) -> JSONResponse:
                         ep = entry.get("pattern", "") or ""
                         if not ep:
                             continue
-                        fc_msg = _fixed_count_msg(str(ep))
-                        if fc_msg is not None or regex_guard._nested_repetition(str(ep)):
+                        # Before the screens: the length cap only bounds a
+                        # str, and the screens' cost is quadratic in what
+                        # they are handed — a list's repr is unbounded.
+                        if not isinstance(ep, str):
+                            if bad is None:
+                                bad = "pattern must be a string"
+                            continue
+                        fc_msg = _fixed_count_msg(ep)
+                        if fc_msg is not None or regex_guard._nested_repetition(ep):
                             # Wins over an earlier compile error: `not_run`
                             # needs its "not executed here" caveat shown.
                             bad = fc_msg or _NESTED_REP_MSG
@@ -1124,11 +1131,15 @@ async def test_pipeline(payload: dict[str, Any]) -> JSONResponse:
                 pattern = rule.get("pattern", "") or ""
                 if not pattern:
                     return {**common, "after": text, "skipped": True}
-                fc_msg = _fixed_count_msg(str(pattern))
+                # As in the regex-list branch: never screen an uncapped repr.
+                if not isinstance(pattern, str):
+                    return {**common, "after": text,
+                            "error": "pattern must be a string"}
+                fc_msg = _fixed_count_msg(pattern)
                 if fc_msg is not None:
                     return {**common, "after": text, "error": fc_msg,
                             "not_run": True}
-                if regex_guard._nested_repetition(str(pattern)):
+                if regex_guard._nested_repetition(pattern):
                     return {**common, "after": text, "error": _NESTED_REP_MSG,
                             "not_run": True}
                 if -1 in slow:
