@@ -632,7 +632,10 @@ def _predownload_gguf(repo: str, quant: "str | None",
 def _cached_gguf(repo: str, quant: "str | None") -> "str | None":
     """Resolve the .gguf for repo[:quant] from the local HF cache without
     any network (LOCAL_FILES_ONLY path). Returns the path when exactly one
-    cached file matches the same glob from_pretrained applies, else None."""
+    cached file matches the same glob from_pretrained applies, else None.
+    Revisions are tried like the online path resolves them: the one "main"
+    points at first, then newest first; the first revision holding a match
+    decides, so a stale snapshot of a re-uploaded file never wins."""
     import fnmatch
 
     from huggingface_hub import scan_cache_dir
@@ -643,18 +646,19 @@ def _cached_gguf(repo: str, quant: "str | None") -> "str | None":
         info = scan_cache_dir(cache_dir=hf_cache.hub_cache_dir())
     except CacheNotFound:
         return None
-    # Keyed by file name so the same file across revisions counts once.
-    matches: "dict[str, str]" = {}
-    for r in info.repos:
-        if r.repo_type != "model" or r.repo_id != repo:
-            continue
-        for rev in r.revisions:
-            for f in rev.files:
-                if fnmatch.fnmatch(f.file_name.lower(), pattern):
-                    matches[f.file_name] = str(f.file_path)
-    if len(matches) != 1:
-        return None
-    return next(iter(matches.values()))
+    revisions = [rev for r in info.repos
+                 if r.repo_type == "model" and r.repo_id == repo
+                 for rev in r.revisions]
+    # scan_cache_dir hands revisions over as a frozenset: sort for a pick
+    # that does not change with the hash seed of each process start.
+    revisions.sort(key=lambda rev: ("main" in rev.refs, rev.last_modified,
+                                    rev.commit_hash), reverse=True)
+    for rev in revisions:
+        matches = [str(f.file_path) for f in rev.files
+                   if fnmatch.fnmatch(f.file_name.lower(), pattern)]
+        if matches:
+            return matches[0] if len(matches) == 1 else None
+    return None
 
 
 def _draining(ref: str) -> bool:

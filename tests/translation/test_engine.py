@@ -2476,12 +2476,22 @@ def test_offline_load_raises_when_not_cached(monkeypatch):
     assert record == []
 
 
+def _fake_rev(commit, files, refs=(), last_modified=0.0):
+    from types import SimpleNamespace as NS
+    return NS(commit_hash=commit, refs=frozenset(refs),
+              last_modified=last_modified,
+              files=[NS(file_name=f, file_path=f"/c/{commit}/{f}"
+                        if commit else f"/c/{f}") for f in files])
+
+
 def _fake_cache(files_by_repo):
     from types import SimpleNamespace as NS
     repos = []
     for repo_id, files in files_by_repo.items():
-        repos.append(NS(repo_type="model", repo_id=repo_id, revisions=[
-            NS(files=[NS(file_name=f, file_path=f"/c/{f}") for f in files])]))
+        revisions = files if files and not isinstance(files[0], str) \
+            else [_fake_rev("", files, refs=("main",))]
+        repos.append(NS(repo_type="model", repo_id=repo_id,
+                        revisions=revisions))
     return NS(repos=repos)
 
 
@@ -2517,6 +2527,37 @@ def test_cached_gguf_none_on_ambiguous_or_missing(monkeypatch):
         raise CacheNotFound("x", cache_dir="/nope")
     monkeypatch.setattr(huggingface_hub, "scan_cache_dir", _boom)
     assert translation._cached_gguf("org/repo", "Q4") is None
+
+
+@pytest.mark.parametrize("order", [1, -1])
+@pytest.mark.parametrize("new_name", ["m.Q4.gguf", "m-v2.Q4.gguf"])
+def test_cached_gguf_prefers_the_revision_main_points_at(monkeypatch, order,
+                                                         new_name):
+    """A re-uploaded (or renamed) quant leaves a stale snapshot next to the
+    current one: the offline load takes the snapshot "main" points at, in
+    whatever order the cache scan lists the revisions."""
+    import huggingface_hub
+    revs = [_fake_rev("old", ["m.Q4.gguf"], last_modified=2.0),
+            _fake_rev("new", [new_name], refs=("main",), last_modified=1.0)]
+    monkeypatch.setattr(huggingface_hub, "scan_cache_dir",
+                        lambda cache_dir=None: _fake_cache(
+                            {"org/repo": revs[::order]}))
+    assert translation._cached_gguf("org/repo", "Q4") == f"/c/new/{new_name}"
+
+
+@pytest.mark.parametrize("order", [1, -1])
+def test_cached_gguf_falls_back_to_the_newest_revision(monkeypatch,
+                                                         order):
+    import huggingface_hub
+    revs = [_fake_rev("old", ["m.Q4.gguf"], last_modified=1.0),
+            _fake_rev("new", ["m.Q4.gguf", "README.md"], last_modified=2.0),
+            _fake_rev("doc", ["README.md"], refs=("main",),
+                      last_modified=3.0)]
+    monkeypatch.setattr(huggingface_hub, "scan_cache_dir",
+                        lambda cache_dir=None: _fake_cache(
+                            {"org/repo": revs[::order]}))
+    # "main" holds no quant at all: the newest snapshot that does wins.
+    assert translation._cached_gguf("org/repo", "Q4") == "/c/new/m.Q4.gguf"
 
 
 def test_translation_logs_buckets_per_target(base_cfg, monkeypatch, caplog):
