@@ -708,55 +708,107 @@ _TEST_PIPELINE_MAX_PATTERN = _field_max_length(
     settings_schema.RegexListEntry.model_fields["pattern"]) or 512
 
 
-# Killable pre-run of the dry run's patterns (see _probe_slow_patterns). sre
-# holds the GIL for a whole match, so the 2 s guard thread's join cannot return
-# while `(?:|){40}(?!)` backtracks 2**40 times per position: the process
-# freezes, not one core. The child runs each pattern over the sample first and
-# is killed when a round passes this budget.
+# Killable pre-run of the dry run's patterns (see _probe_chain). sre holds the
+# GIL for a whole match, so the 2 s guard thread's join cannot return while
+# `(?:|){40}(?!)` backtracks 2**40 times per position: the process freezes, not
+# one core. The child walks the rules first and is killed when a round passes
+# this budget.
 _TEST_PIPELINE_PROBE_TIMEOUT = 2.0
-# Rounds after a kill (each names one culprit); patterns still unprobed after
+# Rounds after a kill (each names one culprit); units still unprobed after
 # that are reported as not run rather than risked in-process.
 _TEST_PIPELINE_PROBE_ROUNDS = 3
+# Units: ["mark", rule] prints the sha1 of the text that rule is handed;
+# ["sub", rule, pattern, replacement] is a regex-list entry, applied exactly as
+# the dry run applies it (output bound counted first, a failing entry leaves
+# the text alone); ["match", rule, pattern] is a callback pattern, matched only
+# (its callback's output is unknown here, so the next mark tells the parent
+# whether the walk still sees the real text); ["trim", rule] is the terminal.
 _PROBE_SRC = (
-    "import json, re, sys\n"
-    "sample, pats = json.load(sys.stdin)\n"
-    "for i, p in enumerate(pats):\n"
+    "import hashlib, json, re, sys\n"
+    "text, units, skip, cap = json.load(sys.stdin)\n"
+    "skip = set(skip)\n"
+    "for i, u in enumerate(units):\n"
+    "    if u[0] == 'mark':\n"
+    "        h = hashlib.sha1(text.encode('utf-8', 'surrogatepass')).hexdigest()\n"
+    "        sys.stdout.write('%d %s\\n' % (u[1], h))\n"
+    "        sys.stdout.flush()\n"
+    "        continue\n"
+    "    if u[0] == 'trim':\n"
+    "        text = text.lstrip(' \\t\\r').rstrip(' \\t\\r')\n"
+    "        continue\n"
+    "    if i in skip:\n"
+    "        continue\n"
     "    sys.stderr.write('%d\\n' % i)\n"
     "    sys.stderr.flush()\n"
     "    try:\n"
-    "        sum(1 for _ in re.compile(p).finditer(sample))\n"
+    "        c = re.compile(u[2])\n"
+    "        if u[0] == 'match':\n"
+    "            sum(1 for _ in c.finditer(text))\n"
+    "            continue\n"
+    "        size = len(text)\n"
+    "        for m in c.finditer(text):\n"
+    "            size += len(m.expand(u[3])) - (m.end() - m.start())\n"
+    "            if size > cap:\n"
+    "                break\n"
+    "        if size > cap:\n"
+    "            break\n"
+    "        text = c.sub(u[3], text)\n"
     "    except Exception:\n"
     "        pass\n"
 )
 
 
-def _probe_slow_patterns(sample: str, patterns: list[str]) -> set[str]:
-    """The patterns that do not finish matching `sample` within
-    _TEST_PIPELINE_PROBE_TIMEOUT in a child process killed on timeout (the
-    save path's regex_guard.validate idea, at dry-run scale). Fails open like
-    validate when the child cannot run."""
+def _text_sha(text: str) -> str:
+    """The digest _PROBE_SRC prints for a `mark` unit."""
+    import hashlib
+    return hashlib.sha1(text.encode("utf-8", "surrogatepass")).hexdigest()
+
+
+def _probe_chain(text: str, units: list[list[Any]]
+                 ) -> tuple[dict[int, str], set[int], int | None] | None:
+    """Walk `units` (see _PROBE_SRC) from `text` in a child process killed
+    after _TEST_PIPELINE_PROBE_TIMEOUT, so every pattern is timed on the text
+    it is really handed: the output of the rules and regex-list entries before
+    it, as regex_guard._probe's CHAINED fixture does at save time.
+
+    Returns (marks, slow, stop): marks maps a rule to the sha1 of its input in
+    the walk; slow holds the unit indices that timed out (each round skips the
+    culprit and walks again); units from `stop` on were never probed (None =
+    the walk finished). None when the child cannot run at all — fails open
+    like regex_guard.validate."""
     import subprocess
     import sys
-    slow: set[str] = set()
-    todo = list(dict.fromkeys(patterns))
+
+    def _marks(out: str | bytes | None) -> dict[int, str]:
+        if isinstance(out, bytes):
+            out = out.decode("utf-8", "replace")
+        found: dict[int, str] = {}
+        for line in (out or "").splitlines():
+            ri, _, h = line.partition(" ")
+            if ri.isdigit() and len(h) == 40:
+                found[int(ri)] = h
+        return found
+
+    slow: set[int] = set()
     for _ in range(_TEST_PIPELINE_PROBE_ROUNDS):
-        if not todo:
-            return slow
         try:
-            subprocess.run([sys.executable, "-I", "-c", _PROBE_SRC],
-                           input=json.dumps([sample, todo]), capture_output=True,
-                           text=True, timeout=_TEST_PIPELINE_PROBE_TIMEOUT)
-            return slow
+            p = subprocess.run(
+                [sys.executable, "-I", "-c", _PROBE_SRC],
+                input=json.dumps([text, units, sorted(slow),
+                                  pl_engine._POSTPROCESS_MAX_CHARS]),
+                capture_output=True, text=True,
+                timeout=_TEST_PIPELINE_PROBE_TIMEOUT)
+            return _marks(p.stdout), slow, None
         except subprocess.TimeoutExpired as exc:
             idx = regex_guard._last_index(getattr(exc, "stderr", None))
-            if not isinstance(idx, int) or not 0 <= idx < len(todo):
-                return slow | set(todo)
-            slow.add(todo[idx])
-            todo = todo[idx + 1:]
+            if not isinstance(idx, int) or not 0 <= idx < len(units):
+                return _marks(getattr(exc, "stdout", None)), slow, 0
+            slow.add(idx)
+            last = (_marks(getattr(exc, "stdout", None)), idx + 1)
         except Exception as exc:  # noqa: BLE001 - probe infra failure -> fail open
             logger.warning("test-pipeline probe skipped: %s", exc)
-            return slow
-    return slow | set(todo)
+            return None
+    return last[0], slow, last[1]
 
 
 @router.post("/test-pipeline",
@@ -808,7 +860,7 @@ async def test_pipeline(payload: dict[str, Any]) -> JSONResponse:
     )
 
     _SLOW_PROBE_MSG = (
-        f"did not finish on this sample within "
+        f"did not finish on the text this step is handed within "
         f"{_TEST_PIPELINE_PROBE_TIMEOUT:g} s in a killable probe (catastrophic "
         "backtracking risk) — not executed here: sre holds the GIL for the "
         "whole match, so a dry-run thread would freeze the server"
@@ -874,28 +926,76 @@ async def test_pipeline(payload: dict[str, Any]) -> JSONResponse:
                                       f"(max {_TEST_PIPELINE_MAX_MAP_VALUE} chars)"},
                 )
 
-    # Every pattern that would reach an in-process match: enabled, a string,
-    # and past both structural screens (those are refused as not_run anyway).
-    to_probe: list[str] = []
-    for rule in rules:
-        if not isinstance(rule, dict) or not rule.get("enabled", True):
-            continue
-        if rule.get("type") == "regex-list":
-            entries = rule.get("entries")
-            pats = [e.get("pattern") for e in (entries if isinstance(entries, list) else ())
-                    if isinstance(e, dict)]
-        elif rule.get("type") in ("callback:map", "terminal"):
-            continue
-        else:
-            pats = [rule.get("pattern")]
-        to_probe += [p for p in pats if isinstance(p, str) and p
-                     and _fixed_count_msg(p) is None
-                     and not regex_guard._nested_repetition(p)]
-    slow_patterns = (await asyncio.to_thread(_probe_slow_patterns, sample, to_probe)
-                     if to_probe else set())
+    _screened: dict[str, bool] = {}
 
-    def _run_rule(text: str, rule: dict) -> dict[str, Any]:
-        """Apply one rule to `text`. Returns the step dict for the response."""
+    def _probe_items(rule: Any) -> list[tuple[int, str, Any]]:
+        """(entry index, pattern, replacement) for every match `rule` would run
+        in-process: enabled, a non-empty string, past both structural screens
+        (those are refused as not_run anyway). Entry index -1 = the rule's own
+        pattern; replacement None = a callback (matched, not substituted)."""
+        if not isinstance(rule, dict) or not rule.get("enabled", True):
+            return []
+        rtype = rule.get("type")
+        if rtype in ("callback:map", "terminal"):
+            return []
+        if rtype == "regex-list":
+            entries = rule.get("entries")
+            items = [(ei, e.get("pattern"), e.get("replacement") or "")
+                     for ei, e in enumerate(entries if isinstance(entries, list) else ())
+                     if isinstance(e, dict)]
+        else:
+            items = [(-1, rule.get("pattern"), None)]
+        out = []
+        for ei, pat, rep in items:
+            if not isinstance(pat, str) or not pat:
+                continue
+            if pat not in _screened:
+                _screened[pat] = (_fixed_count_msg(pat) is None
+                                  and not regex_guard._nested_repetition(pat))
+            if _screened[pat]:
+                out.append((ei, pat, rep))
+        return out
+
+    # Per rule: (sha1 of the input the probe walked it on, the entry indices
+    # it found slow or never reached). A rule runs in-process only when its
+    # real input has that digest; otherwise the walk is redone from that rule
+    # on the real text (an earlier callback or map changed it in a way the
+    # child cannot replay).
+    cleared: dict[int, tuple[str, set[int]]] = {}
+    probe = {"on": True, "exhausted": False}
+
+    def _probe_from(start: int, text: str) -> None:
+        units: list[list[Any]] = []
+        owner: dict[int, tuple[int, int]] = {}
+        for ri in range(start, len(rules)):
+            rule = rules[ri]
+            if not isinstance(rule, dict):
+                continue
+            if rule.get("type") == "terminal":
+                units.append(["trim", ri])
+                continue
+            units.append(["mark", ri])
+            for ei, pat, rep in _probe_items(rule):
+                owner[len(units)] = (ri, ei)
+                units.append(["match", ri, pat] if rep is None
+                             else ["sub", ri, pat, rep])
+        res = _probe_chain(text, units)
+        if res is None:
+            probe["on"] = False
+            return
+        marks, slow, stop = res
+        for ri, h in marks.items():
+            cleared[ri] = (h, set())
+        for ui, (ri, ei) in owner.items():
+            if ri in cleared and (ui in slow or (stop is not None and ui >= stop)):
+                cleared[ri][1].add(ei)
+        if stop is not None:
+            probe["exhausted"] = True
+
+    def _run_rule(text: str, rule: dict, slow: set[int]) -> dict[str, Any]:
+        """Apply one rule to `text`. Returns the step dict for the response.
+        `slow`: the entry indices (-1 = the rule's own pattern) the killable
+        probe did not clear on this very text."""
         # Dry-run contract is parity with the pipeline engine — use its replacer
         # factories rather than a second copy that could drift.
         rtype = rule.get("type", "?")
@@ -923,7 +1023,7 @@ async def test_pipeline(payload: dict[str, Any]) -> JSONResponse:
                     cur = text
                     total = 0
                     bad: str | None = None
-                    for entry in entries:
+                    for ei, entry in enumerate(entries):
                         ep = entry.get("pattern", "") or ""
                         if not ep:
                             continue
@@ -934,7 +1034,7 @@ async def test_pipeline(payload: dict[str, Any]) -> JSONResponse:
                             bad = fc_msg or _NESTED_REP_MSG
                             lout["not_run"] = True
                             continue
-                        if isinstance(ep, str) and ep in slow_patterns:
+                        if ei in slow:
                             bad = _SLOW_PROBE_MSG
                             lout["not_run"] = True
                             continue
@@ -1031,7 +1131,7 @@ async def test_pipeline(payload: dict[str, Any]) -> JSONResponse:
                 if regex_guard._nested_repetition(str(pattern)):
                     return {**common, "after": text, "error": _NESTED_REP_MSG,
                             "not_run": True}
-                if isinstance(pattern, str) and pattern in slow_patterns:
+                if -1 in slow:
                     return {**common, "after": text, "error": _SLOW_PROBE_MSG,
                             "not_run": True}
                 cre = re.compile(pattern)
@@ -1127,9 +1227,24 @@ async def test_pipeline(payload: dict[str, Any]) -> JSONResponse:
             step["ordinal"] = idx + 1
             steps.append(step)
             continue
+        # Every match this rule runs in-process must have been timed by the
+        # killable probe on exactly this text, or it is not run.
+        slow: set[int] = set()
+        items = _probe_items(rule)
+        if items and probe["on"]:
+            h = _text_sha(text)
+            if cleared.get(idx, ("",))[0] != h and not probe["exhausted"]:
+                t0 = time.monotonic()
+                await asyncio.to_thread(_probe_from, idx, text)
+                # The probe strands no thread: its time is not the budget's.
+                deadline += time.monotonic() - t0
+            if probe["on"]:
+                got = cleared.get(idx)
+                slow = (got[1] if got is not None and got[0] == h
+                        else {ei for ei, _p, _r in items})
         # _run_rule blocks for up to 2 s on its guard thread's join — run it on
         # a worker so one pathological pattern cannot stall unrelated requests.
-        step = await asyncio.to_thread(_run_rule, text, rule)
+        step = await asyncio.to_thread(_run_rule, text, rule, slow)
         step["ordinal"] = idx + 1
         steps.append(step)
         text = step["after"]
