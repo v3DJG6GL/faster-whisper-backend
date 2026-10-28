@@ -435,3 +435,31 @@ def test_trace_row_stashes_only_the_fields_its_readers_need(client, tmp_path):
       out(JSON.parse(made[0].dataset.entry));
     """, funcs=("renderTrace",))
     assert res == {"request_id": "r1", "ts": 5, "tokens": ["a"], "bigrams": ["a b"]}
+
+
+def test_conflict_merge_keeps_the_other_writers_regex_list_entries(client, tmp_path):
+    # A regex-list rule's `entries` diffed as a scalar, so a conflict re-merge
+    # put back the user's whole load-time list plus their edit and the other
+    # writer's new entry was dropped by the next save, under an "Auto-merged"
+    # toast.
+    page = client.get("/quick-config").text
+    field_sets = "\n".join(
+        "globalThis." + m.group(1) + " = " + m.group(2)
+        for m in re.finditer(r"^const (_\w+_FIELDS) = (.*)$", page, re.M))
+    res = _run_js(client, tmp_path, field_sets + r"""
+      const e = (p) => ({ pattern: p, replacement: p.toUpperCase() });
+      const base = [e('a'), e('b'), e('c')];
+      // The user moved c to the top, dropped b and appended y; meanwhile the
+      // other writer inserted x after a.
+      const mine = [e('c'), e('a'), e('y')];
+      const theirs = [e('a'), e('x'), e('b'), e('c')];
+      const d = _fieldDiff(base, mine, _diffKindFor('entries'));
+      const merged = _applyFieldDiff(theirs, d);
+      // The other writer deleted a and appended z after c: a goes, z follows c.
+      const merged2 = _applyFieldDiff([e('b'), e('c'), e('z')], d);
+      out({ merged: merged.map(x => x.pattern), merged2: merged2.map(x => x.pattern),
+            noop: _fieldDiff(base, base.map(x => ({ ...x })), _diffKindFor('entries')) });
+    """, funcs=("_stringify", "_fieldDiff", "_applyFieldDiff", "_diffKindFor"))
+    assert res["merged"] == ["c", "a", "x", "y"]
+    assert res["merged2"] == ["c", "z", "y"]
+    assert res["noop"] is None

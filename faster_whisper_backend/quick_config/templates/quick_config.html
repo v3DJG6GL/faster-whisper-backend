@@ -2047,12 +2047,16 @@ function startStream() {
 // vs. their original baseline (initialRules at load time):
 //   dict   (cb:map.map)                    → {kind:'dict', added, changed, removed[]}
 //   list   (cb:lowercase-wordlist.wordlist)→ {kind:'list', added[], removed[]}
+//   olist  (regex-list.entries)            → {kind:'olist', base[], value[]}
 //   scalar (everything else)               → {kind:'scalar', value}
 // On a conflict we re-apply the diff to the FRESH server state, so the
 // other user's entries survive — only the cells the user actually
 // touched get overlaid.
 const _DICT_FIELDS = new Set(['map']);
 const _LIST_FIELDS = new Set(['wordlist']);
+// Ordered lists: entry order is the apply order, so the merge keeps the
+// user's order and slots the other writer's new entries in by position.
+const _OLIST_FIELDS = new Set(['entries']);
 
 function _stringify(x) {
   // Stable order for objects so two equal-content objects compare equal.
@@ -2091,6 +2095,10 @@ function _fieldDiff(baseline, edited, kind) {
     if (!added.length && !removed.length) return null;
     return { kind: 'list', added, removed };
   }
+  if (kind === 'olist') {
+    if (_stringify(baseline || []) === _stringify(edited || [])) return null;
+    return { kind: 'olist', base: (baseline || []).map(_stringify), value: edited || [] };
+  }
   // scalar
   if (_stringify(baseline) === _stringify(edited)) return null;
   return { kind: 'scalar', value: edited };
@@ -2119,12 +2127,38 @@ function _applyFieldDiff(serverValue, diff) {
     }
     return out;
   }
+  if (diff.kind === 'olist') {
+    // Three-way merge keyed by entry content: start from the user's edited
+    // list, drop the baseline entries the other writer deleted, then insert
+    // the other writer's new entries after their nearest server-side
+    // predecessor that is still present (or at the top).
+    const baseKeys = new Set(diff.base);
+    const server = serverValue || [];
+    const serverKeys = new Set(server.map(_stringify));
+    const out = diff.value.filter(x => {
+      const key = _stringify(x);
+      return serverKeys.has(key) || !baseKeys.has(key);
+    });
+    const have = new Set(out.map(_stringify));
+    let prev = null;
+    for (const item of server) {
+      const key = _stringify(item);
+      if (!baseKeys.has(key) && !have.has(key)) {
+        const at = prev === null ? 0 : out.findIndex(x => _stringify(x) === prev) + 1;
+        out.splice(at, 0, item);
+        have.add(key);
+      }
+      if (have.has(key)) prev = key;
+    }
+    return out;
+  }
   return diff.value;
 }
 
 function _diffKindFor(field) {
   if (_DICT_FIELDS.has(field)) return 'dict';
   if (_LIST_FIELDS.has(field)) return 'list';
+  if (_OLIST_FIELDS.has(field)) return 'olist';
   return 'scalar';
 }
 
