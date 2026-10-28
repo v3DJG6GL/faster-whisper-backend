@@ -400,7 +400,6 @@ async def lifespan(app: FastAPI):
     recent_tx_ready = False
     try:
         recent_transcriptions_store.init_db(cfg.RECENT_TRANSCRIPTIONS_DB)
-        recent_transcriptions_store.sweep_retention()
         logger.info(
             "Recent-transcriptions store initialized at %s",
             cfg.RECENT_TRANSCRIPTIONS_DB,
@@ -408,6 +407,13 @@ async def lifespan(app: FastAPI):
         recent_tx_ready = True
     except Exception as _te:
         logger.error("Failed to initialize recent-transcriptions store: %s", _te)
+    # The startup sweep is its own best-effort step: the store is open, so a
+    # failing first sweep must not keep the hourly loop from starting.
+    if recent_tx_ready:
+        try:
+            recent_transcriptions_store.sweep_retention()
+        except Exception as _te:
+            logger.warning("Startup recent-transcriptions sweep failed: %s", _te)
 
     # Open the system-metrics store (the /stats history charts and the
     # GPU-busy share). Rolling telemetry, its own file. Adopts the
@@ -606,13 +612,17 @@ async def lifespan(app: FastAPI):
     reports_sweep_task = None
     try:
         reports_store.init_db(cfg.REPORTS_DB)
-        reports_store.sweep_retention()
         logger.info("Reports store initialized at %s", cfg.REPORTS_DB)
         reports_sweep_task = asyncio.create_task(
             _reports_retention_loop()
         )
     except Exception as _re:
         logger.error("Failed to initialize reports store: %s", _re)
+    else:
+        try:
+            reports_store.sweep_retention()
+        except Exception as _re:
+            logger.warning("Startup reports sweep failed: %s", _re)
 
     # Open the desktop-client settings-sync store (one opaque blob per
     # account, served at /v1/synced-client-settings). Non-fatal: sync
@@ -642,9 +652,6 @@ async def lifespan(app: FastAPI):
         # SQLite file holds both tables. Init it before the first
         # sweep_retention(): the sweep's sample-expiry pass needs it.
         capture_samples_store.init_db(captures_store._require_conn(), cfg.CAPTURES_DIR)
-        captures_store.reconcile_on_startup()
-        capture_samples_store.reconcile_on_startup()
-        captures_store.sweep_retention()
         logger.info(
             "Captures store initialized at %s (audio dir: %s, enabled=%s)",
             cfg.CAPTURES_DB, cfg.CAPTURES_DIR,
@@ -655,6 +662,17 @@ async def lifespan(app: FastAPI):
         )
     except Exception as _ce:
         logger.error("Failed to initialize captures store: %s", _ce)
+    else:
+        # Best-effort each: a failing reconcile or first sweep must not keep
+        # the other steps or the hourly loop from running.
+        for _step in (captures_store.reconcile_on_startup,
+                      capture_samples_store.reconcile_on_startup,
+                      captures_store.sweep_retention):
+            try:
+                _step()
+            except Exception as _ce:
+                logger.warning("Startup captures step %s failed: %s",
+                               _step.__qualname__, _ce)
 
     # Server jobs: the durable job resource. A row still `running` now was
     # interrupted by the previous process's death — flip it, or it reads as
@@ -662,13 +680,21 @@ async def lifespan(app: FastAPI):
     jobs_sweep_task = None
     try:
         _jobs_store.init_db(cfg.JOBS_DB)
-        _n_interrupted = _jobs_store.mark_running_as_failed("server restarted")
-        _jobs_store.sweep_retention()
-        logger.info("Jobs store initialized at %s (%d interrupted run(s) marked failed)",
-                    cfg.JOBS_DB, _n_interrupted)
+        logger.info("Jobs store initialized at %s", cfg.JOBS_DB)
         jobs_sweep_task = asyncio.create_task(_jobs_retention_loop())
     except Exception as _je:
         logger.error("Failed to initialize jobs store: %s", _je)
+    else:
+        try:
+            _n_interrupted = _jobs_store.mark_running_as_failed("server restarted")
+            logger.info("Jobs store: %d interrupted run(s) marked failed",
+                        _n_interrupted)
+        except Exception as _je:
+            logger.warning("Startup jobs reconcile failed: %s", _je)
+        try:
+            _jobs_store.sweep_retention()
+        except Exception as _je:
+            logger.warning("Startup jobs sweep failed: %s", _je)
 
     yield
 

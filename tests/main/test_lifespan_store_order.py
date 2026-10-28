@@ -34,3 +34,40 @@ def test_recent_store_is_open_when_the_preload_loop_runs(app_module,
     with TestClient(app_module.app, client=("127.0.0.1", 12345)):
         pass
     assert seen == {"recent_open": True, "usage_open": True}
+
+
+def test_failing_startup_sweeps_still_start_the_hourly_loops(app_module,
+                                                             monkeypatch):
+    # A transient "database is locked" in a store's one-time startup sweep or
+    # reconcile used to skip that store's hourly retention loop for the whole
+    # process lifetime, while the open store kept taking writes.
+    from faster_whisper_backend.captures import samples_store
+    from faster_whisper_backend.captures import store as captures_store
+    from faster_whisper_backend.reports import store as reports_store
+    from faster_whisper_backend.stats import recent_transcriptions_store
+    from faster_whisper_backend.transcription import jobs_store
+
+    def _boom(*_a, **_k):
+        raise RuntimeError("database is locked")
+    for mod, name in ((recent_transcriptions_store, "sweep_retention"),
+                      (reports_store, "sweep_retention"),
+                      (captures_store, "reconcile_on_startup"),
+                      (samples_store, "reconcile_on_startup"),
+                      (captures_store, "sweep_retention"),
+                      (jobs_store, "mark_running_as_failed"),
+                      (jobs_store, "sweep_retention")):
+        monkeypatch.setattr(mod, name, _boom)
+
+    started = []
+    for loop in ("_recent_tx_retention_loop", "_reports_retention_loop",
+                 "_captures_retention_loop", "_jobs_retention_loop"):
+        async def _stub(_loop=loop):
+            started.append(_loop)
+        monkeypatch.setattr(app_module, loop, _stub)
+
+    with TestClient(app_module.app, client=("127.0.0.1", 12345)):
+        pass
+    assert sorted(started) == ["_captures_retention_loop",
+                               "_jobs_retention_loop",
+                               "_recent_tx_retention_loop",
+                               "_reports_retention_loop"]
