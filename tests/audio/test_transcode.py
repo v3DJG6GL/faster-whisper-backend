@@ -370,3 +370,51 @@ def test_decode_pieces_skip_a_damaged_frame(tmp_path):
     src = _damaged_mp3(str(tmp_path / "damaged.mp3"))
     pieces = audio_transcode.decode_pieces_16k(src, [0.0, 3.5, 6.0], 1.0)
     assert [len(p) for p in pieces] == [RATE] * 3
+
+
+# ---------------------------------------------------------------------------
+# Sample rate / channel layout changing mid-stream
+# ---------------------------------------------------------------------------
+
+def _concat_mp3(tmp_path):
+    """2 s of 44.1 kHz stereo mp3 followed by 2 s of 22.05 kHz mono, as
+    `cat a.mp3 b.mp3` makes it: the decoder's frames change rate and layout
+    halfway, which one AudioResampler refuses with a plain ValueError."""
+    import av
+    parts = []
+    for rate, layout in ((44100, "stereo"), (22050, "mono")):
+        path = str(tmp_path / f"{rate}.mp3")
+        with av.open(path, "w", format="mp3") as out:
+            st = out.add_stream("libmp3lame", rate=rate)
+            st.layout = layout
+            ch = 2 if layout == "stereo" else 1
+            t = np.arange(rate * 2) / rate
+            x = (0.3 * np.sin(2 * np.pi * 440 * t)).astype(np.float32)
+            for i in range(0, len(x), 1152):
+                fr = av.AudioFrame.from_ndarray(
+                    np.tile(x[i:i + 1152], (ch, 1)), format="fltp",
+                    layout=layout)
+                fr.sample_rate = rate
+                for pkt in st.encode(fr):
+                    out.mux(pkt)
+            for pkt in st.encode(None):
+                out.mux(pkt)
+        parts.append(open(path, "rb").read())
+    src = tmp_path / "ab.mp3"
+    src.write_bytes(b"".join(parts))
+    return str(src)
+
+
+def test_transcode_survives_a_mid_stream_format_change(tmp_path):
+    src = _concat_mp3(tmp_path)
+    dst = str(tmp_path / "out.wav")
+    audio_transcode.transcode_to_wav(src, dst, rate=44100, layout="stereo")
+    with wave.open(dst, "rb") as w:
+        assert w.getnchannels() == 2
+        # Both halves, not just the first one.
+        assert w.getnframes() > 3.5 * 44100
+
+
+def test_decode_span_survives_a_mid_stream_format_change(tmp_path):
+    src = _concat_mp3(tmp_path)
+    assert len(audio_transcode.decode_span_16k(src, 1.0, 2.0)) == 2 * RATE

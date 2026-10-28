@@ -102,6 +102,42 @@ def _decoded_frames(container, stream):
         yield from frames
 
 
+def _resampled(frames, *, format: str, layout: str, rate: int):
+    """`frames` resampled to `format`/`layout`/`rate`, flush included. A
+    resampler is built for the first frame's input format and raises a plain
+    ValueError on a frame that differs (a concatenated mp3, a TS recording
+    switching 5.1 and stereo) — read as a refused input upstream — so a new
+    one replaces it, after flushing, whenever the input changes. Output pts
+    count samples across resamplers: each new one would restart at 0 and the
+    muxer refuses timestamps that go backwards."""
+    from fractions import Fraction
+
+    av = _av()
+    resampler, setup, done = None, None, 0
+
+    def _out(resampled):
+        nonlocal done
+        for out in resampled:
+            out.pts, out.time_base = done, Fraction(1, rate)
+            done += out.samples
+            yield out
+
+    for frame in frames:
+        frame_setup = (frame.format.name, frame.layout.name, frame.sample_rate)
+        if frame_setup != setup:
+            if resampler is not None:
+                yield from _out(resampler.resample(None))
+            resampler = av.AudioResampler(format=format, layout=layout,
+                                          rate=rate)
+            setup = frame_setup
+        # PyAV recomputes pts when None; the input frame's pts is on the
+        # input timebase and would corrupt the output otherwise.
+        frame.pts = None
+        yield from _out(resampler.resample(frame))
+    if resampler is not None:
+        yield from _out(resampler.resample(None))
+
+
 def _read_16k(container, stream, want: int, *, skip: int = 0,
               after: "float | None" = None):
     """Decode `stream` from where the container stands into 16 kHz mono
@@ -110,19 +146,16 @@ def _read_16k(container, stream, want: int, *, skip: int = 0,
     samples, return the next `want` (fewer at EOF)."""
     import numpy as np
 
-    # Fresh per call: a resampler keeps samples buffered across a seek.
-    resampler = _av().AudioResampler(format="flt", layout="mono", rate=16000)
+    # A seek lands on the keyframe at or before `after`.
+    frames = (f for f in _decoded_frames(container, stream)
+              if after is None or f.time is None
+              or f.time + f.samples / f.sample_rate >= after)
     chunks, have = [], 0
-    for frame in _decoded_frames(container, stream):
-        # A seek lands on the keyframe at or before `after`.
-        if (after is not None and frame.time is not None
-                and frame.time + frame.samples / frame.sample_rate < after):
-            continue
-        frame.pts = None
-        for out in resampler.resample(frame):
-            chunk = out.to_ndarray().reshape(-1)
-            chunks.append(chunk)
-            have += chunk.size
+    # Fresh resampler per call: it keeps samples buffered across a seek.
+    for out in _resampled(frames, format="flt", layout="mono", rate=16000):
+        chunk = out.to_ndarray().reshape(-1)
+        chunks.append(chunk)
+        have += chunk.size
         if have >= skip + want:
             break
     if not chunks:
@@ -188,22 +221,13 @@ def transcode_to_wav(src_path: str, dst_path: str, *,
         out_stream.layout = layout
         out_stream.format = _OUT_FORMAT
 
-        resampler = av.AudioResampler(
-            format=_OUT_FORMAT, layout=layout, rate=rate,
-        )
-
-        for frame in _decoded_frames(in_container, in_stream):
-            # PyAV recomputes pts when None; the input frame's pts is on
-            # the input timebase and would corrupt the output otherwise.
-            frame.pts = None
-            for resampled in resampler.resample(frame):
-                for packet in out_stream.encode(resampled):
-                    out_container.mux(packet)
-
-        # Flush resampler and encoder.
-        for resampled in resampler.resample(None):
+        for resampled in _resampled(
+                _decoded_frames(in_container, in_stream),
+                format=_OUT_FORMAT, layout=layout, rate=rate):
             for packet in out_stream.encode(resampled):
                 out_container.mux(packet)
+
+        # Flush the encoder.
         for packet in out_stream.encode(None):
             out_container.mux(packet)
 
