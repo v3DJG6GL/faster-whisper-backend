@@ -570,7 +570,8 @@ def record_usage(
     `wait_s` is the time this request spent queued for a GPU slot (summed
     per job like processing_s); `error_class` / `error_stage` classify a failed
     job (metrics.ERROR_CLASSES) and are kept once set — a later utterance
-    of the same session never blanks them.
+    of the same session never blanks them, nor flips a failed session's
+    status back to ok.
 
     `job_id` groups utterances into a session: the first record under an id
     creates the job row and counts the session; later ones only add to its
@@ -659,7 +660,13 @@ def record_usage(
                             "  audio_s     = audio_s + excluded.audio_s,"
                             "  words       = words + excluded.words,"
                             "  processing_s      = processing_s + excluded.processing_s,"
-                            "  status      = excluded.status,"
+                            # A dictation session's utterances share this
+                            # row: one failed utterance marks the session
+                            # failed (as error_class below is kept), a later
+                            # good one must not flip it back. A batch id is
+                            # re-posted whole, so its last run's status wins.
+                            "  status      = CASE WHEN kind = 'dictation' AND status <> 'ok'"
+                            "                THEN status ELSE excluded.status END,"
                             "  model       = COALESCE(excluded.model, model),"
                             "  language    = COALESCE(excluded.language, language),"
                             "  wait_s      = wait_s + excluded.wait_s,"

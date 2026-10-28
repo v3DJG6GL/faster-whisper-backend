@@ -1105,6 +1105,33 @@ def test_wait_s_accumulates_and_error_class_is_kept(usage_store_db):
     assert (row["wait_s"], row["error_class"]) == (0.0, None)
 
 
+def test_a_failed_utterance_keeps_the_dictation_session_failed(usage_store_db):
+    """One failed utterance mid-session must not be flipped back to ok by the
+    next good one: failures() and by_model count status, and the row kept
+    the error class."""
+    us = usage_store_db
+    h = _hour(2025, 6, 10, 9, 0, _UTC)
+    for status, ecls in (("ok", None), ("error", "cuda_oom"), ("ok", None)):
+        us.record_usage(key_id="k", user_id="u", audio_s=1.0, words=1,
+                        status=status, kind="dictation", job_id="s1", hour=h,
+                        error_class=ecls,
+                        error_stage="transcribing" if ecls else None)
+    row = us._require_conn().execute(
+        "SELECT status, error_class, utterances FROM usage_jobs"
+        " WHERE job_id = 's1'").fetchone()
+    assert (row["status"], row["error_class"], row["utterances"]) == (
+        "error", "cuda_oom", 3)
+    out = us.failures(start_ts=h * 3600 - 1, end_ts=h * 3600 + 3600)
+    assert (out["jobs"], out["failed"]) == (1, 1)
+    # A batch id re-posted after a failure: the run that finished last wins.
+    us.record_usage(key_id="k", user_id="u", audio_s=1.0, words=1, status="error",
+                    kind="file", job_id="f1", hour=h, error_class="timeout")
+    us.record_usage(key_id="k", user_id="u", audio_s=1.0, words=1, status="ok",
+                    kind="file", job_id="f1", hour=h)
+    assert us._require_conn().execute(
+        "SELECT status FROM usage_jobs WHERE job_id = 'f1'").fetchone()[0] == "ok"
+
+
 def test_stage_error_lands_on_the_stage_row_and_bumps_hourly_errors(usage_store_db):
     """A soft-failed stage (the job went on without it) carries `error` on
     the per-job stage row and counts in usage_stage_hourly.errors while
