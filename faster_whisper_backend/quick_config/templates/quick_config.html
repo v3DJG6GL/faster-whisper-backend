@@ -1706,12 +1706,14 @@ async function submitReport(form) {
     if (entry.request_id) {
       markReported(entry.request_id);
       _serverReportedSet.add(entry.request_id);
-      // Snapshot the user's just-submitted chips so any re-render that
-      // calls _buildReportForm(entry) again (e.g. a future SSE-driven
-      // refresh) re-seeds correctly. Slight skew if a concurrent submit
-      // from another tab landed in between; the next /state load reconciles.
+      // Snapshot the just-submitted chips so any re-render that calls
+      // _buildReportForm(entry) again (e.g. a future SSE-driven refresh)
+      // re-seeds correctly. What was SENT, not the live form: edits made
+      // while the POST ran never reached the server. Slight skew if a
+      // concurrent submit from another tab landed in between; the next
+      // /state load reconciles.
       _serverReportedChips[entry.request_id] = {
-        corrections: JSON.parse(JSON.stringify(form._corrections || [])),
+        corrections: JSON.parse(JSON.stringify(corrections)),
         user_comment: comment,
       };
     }
@@ -1729,6 +1731,15 @@ async function submitReport(form) {
     // form was built — before this (possibly first) report existed.
     form.querySelector('.rep-remove').style.display =
       isReported(entry.request_id) ? 'inline-flex' : 'none';
+    // The form stays editable while the POST runs. A chip or comment edit
+    // made meanwhile was not sent: keep the form open and say so, instead
+    // of collapsing it under a "sent" toast that reads as if it was.
+    const changed = form.querySelector('.rep-comment').value.trim() !== comment
+      || JSON.stringify(toWire(form._corrections)) !== JSON.stringify(corrections);
+    if (changed) {
+      showToast('Report sent, but changes made while it was sending were not — submit again to include them.', 'err');
+      return;
+    }
     form.classList.remove('open');
     let body = {};
     try { body = await r.json(); } catch (_) {}

@@ -376,6 +376,42 @@ def test_reopened_form_keeps_the_stored_comment(client, tmp_path):
     assert res["snapshot"] == "speaker said Y"
 
 
+def test_edit_made_while_the_report_posts_keeps_the_form_open(client, tmp_path):
+    # Only Submit was disabled while the POST ran. A chip or comment edit made
+    # meanwhile was never sent, yet the form collapsed under "Report sent" and
+    # the client snapshot (later rebuild seed + merge baseline) took the
+    # unsent live chips, so a chip removed in flight came back on resubmit.
+    res = _run_js(client, tmp_path, r"""
+      globalThis._detailText = (j, d) => d;
+      let release;
+      globalThis.api = (_m, _u, body) => new Promise((res) => {
+        release = () => res({ ok: true, status: 200, json: async () => ({ was_updated: false }) });
+      });
+      const entry = { request_id: 'rid1', final: 'Alpha Beta Gamma' };
+      const form = _buildReportForm(entry);
+      _traceItem(entry, form);
+      form.classList.add('open');
+      toggleCorrection(form, 1, 'Beta', false);
+      form._corrections[0].correct = 'Bet';
+      const p = submitReport(form);
+      form._corrections[0].correct = 'Bed';          // typo fix while in flight
+      release();
+      await p;
+      out({
+        open: form.classList.contains('open'),
+        snapshot: _serverReportedChips.rid1.corrections,
+        baseline: form._baseline,
+        toasts: _toasts,
+      });
+    """, funcs=_REPORT_FUNCS + ("markReported", "submitReport"))
+    sent = [{"wrong": "Beta", "correct": "Bet", "idx": 1}]
+    assert res["open"] is True
+    assert res["snapshot"] == sent
+    assert res["baseline"] == sent
+    assert [t[0] for t in res["toasts"]] == ["err"]
+    assert "not" in res["toasts"][0][1] and "submit again" in res["toasts"][0][1]
+
+
 def test_trace_row_stashes_only_the_fields_its_readers_need(client, tmp_path):
     # The whole entry (raw/final twice plus steps, up to ~400k chars) was kept
     # as a row attribute and re-parsed on every save to read request_id.
