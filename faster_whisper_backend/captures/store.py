@@ -28,6 +28,7 @@ if they escape it (path traversal defense).
 from __future__ import annotations
 
 import contextlib
+import functools
 import json
 import logging
 import os
@@ -165,6 +166,18 @@ def _require_conn() -> sqlite3.Connection:
     if _conn is None:
         raise RuntimeError("captures_store.init_db() was not called before use.")
     return _conn
+
+
+def _read_under_lock(fn):
+    """Run a public reader under `_lock`, like the writers: two threads that
+    run the same SELECT text on the shared connection share one cached
+    statement and can read each other's rows (another user's captures, under
+    an owner filter) or raise IndexError. Callers must not hold `_lock`."""
+    @functools.wraps(fn)
+    def locked(*args, **kwargs):
+        with _lock:
+            return fn(*args, **kwargs)
+    return locked
 
 
 def _require_audio_dir() -> str:
@@ -306,6 +319,7 @@ def _user_clause(user_id: "str | list[str] | None") -> tuple[str, list[Any]]:
     return f"user_id IN ({','.join('?' * len(ids))})", ids
 
 
+@_read_under_lock
 def count(user_id: "str | list[str] | None" = None) -> int:
     """Total row count (any status), unfiltered or owner-scoped. Cheap;
     used by /quick-config to decide whether to surface the reapply-rules
@@ -324,6 +338,7 @@ def count(user_id: "str | list[str] | None" = None) -> int:
     return int(row[0]) if row else 0
 
 
+@_read_under_lock
 def count_evictable() -> int:
     """Row count _evict_to_cap holds against CAPTURES_MAX. (No ingest gate
     compares it to the cap any more: a full store rotates its oldest rows out
@@ -341,6 +356,7 @@ def count_evictable() -> int:
     return int(row[0]) if row else 0
 
 
+@_read_under_lock
 def ready_fills_cap() -> bool:
     """True when ungrouped "ready" rows alone reach CAPTURES_MAX.
 
@@ -810,6 +826,7 @@ _LIST_COLUMNS = (
 )
 
 
+@_read_under_lock
 def list_captures(
     *,
     status: str | None = None,
@@ -873,13 +890,22 @@ def iter_captures_for_export(
         clauses.append("user_id = ?")
         params.append(user_id)
     where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
-    cur = conn.execute(
-        f"SELECT * FROM captures{where} ORDER BY created_ts ASC", params,
-    )
-    for row in cur:
-        yield _row_to_dict(row, include_words=True)
+    # Locked per batch, not across the yields: the caller writes each row to
+    # the tarball between them, and every other store call would wait on it.
+    with _lock:
+        cur = conn.execute(
+            f"SELECT * FROM captures{where} ORDER BY created_ts ASC", params,
+        )
+    while True:
+        with _lock:
+            rows = cur.fetchmany(64)
+        if not rows:
+            return
+        for row in rows:
+            yield _row_to_dict(row, include_words=True)
 
 
+@_read_under_lock
 def get_capture(cid: str) -> dict[str, Any] | None:
     conn = _require_conn()
     row = conn.execute(
@@ -888,6 +914,7 @@ def get_capture(cid: str) -> dict[str, Any] | None:
     return _row_to_dict(row, include_words=True) if row else None
 
 
+@_read_under_lock
 def get_captures_light(ids: list[str]) -> dict[str, dict[str, Any]]:
     """{id: {id, user_id, status, sample_id, audio_relpath}} for the ids that
     exist — the columns the bulk endpoints' admission checks read (the
@@ -913,6 +940,7 @@ def get_captures_light(ids: list[str]) -> dict[str, dict[str, Any]]:
     return out
 
 
+@_read_under_lock
 def find_by_request_id(request_id: str) -> list[dict[str, Any]]:
     """Cross-link from /reports → captures matching a request_id. Used
     by the /captures `by-request` jump endpoint to surface every capture
@@ -926,6 +954,7 @@ def find_by_request_id(request_id: str) -> list[dict[str, Any]]:
     return [_row_to_dict(r, include_words=False) for r in cur.fetchall()]
 
 
+@_read_under_lock
 def counts_by_status(user_id: "str | list[str] | None" = None) -> dict[str, int]:
     """Status breakdown for the page toolbar. `user_id=None` → all users
     (admin / scope=all); a string narrows to a single owner so a scope=own
@@ -945,6 +974,7 @@ def counts_by_status(user_id: "str | list[str] | None" = None) -> dict[str, int]
     return out
 
 
+@_read_under_lock
 def stats(user_id: "str | list[str] | None" = None,
           week_s: float = 7 * 86400.0) -> dict[str, Any]:
     """Queue totals for the /captures summary strip, in one grouped pass

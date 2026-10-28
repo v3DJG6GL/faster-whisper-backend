@@ -611,6 +611,9 @@ def test_create_capture_skips_the_row_when_a_clear_wiped_its_audio(
 
     cs = captures_store_db
     audio_dir = cs._require_audio_dir()
+    # The cap probe up front reads under _lock too; this test is about the
+    # INSERT's window only.
+    monkeypatch.setattr(cs, "ready_fills_cap", lambda: False)
 
     def wavs():
         return [os.path.join(r, f) for r, _d, fs in os.walk(audio_dir)
@@ -1096,3 +1099,41 @@ def test_update_translations_rejects_non_dict_and_caps_dict(
     assert 0 < len(row["translations"]["en"]) < cs._CAP_FINAL
     row = cs.update_capture(cid, {"translations": None})
     assert row["translations"] == {}
+
+
+# ---------------------------------------------------------------------------
+# Public reads hold _lock (two threads running the same SELECT text on the
+# shared connection can read each other's rows — another user's captures)
+# ---------------------------------------------------------------------------
+
+def test_reads_hold_the_lock(captures_store_db, monkeypatch, tmp_path):
+    from tests.stats.test_store_reads_hold_lock import _LockCheckingConn
+
+    cs = captures_store_db
+    cid = _make(cs, monkeypatch, tmp_path)
+    conn = _LockCheckingConn(cs._conn, cs._lock)
+    monkeypatch.setattr(cs, "_conn", conn)
+
+    assert cs.count(user_id="u1") == 1
+    assert cs.count_evictable() == 1
+    assert cs.ready_fills_cap() is False
+    assert [r["id"] for r in cs.list_captures(user_id="u1")] == [cid]
+    assert cs.get_capture(cid)["id"] == cid
+    assert list(cs.get_captures_light([cid])) == [cid]
+    assert [r["id"] for r in cs.find_by_request_id("req-1")] == [cid]
+    assert cs.counts_by_status(user_id="u1")["new"] == 1
+    assert cs.stats(user_id="u1")["total"]["n"] == 1
+    assert [r["id"] for r in cs.iter_captures_for_export(user_id="u1")] == [cid]
+    assert conn.unlocked == []
+
+
+def test_export_iterator_releases_the_lock_between_rows(captures_store_db, monkeypatch, tmp_path):
+    cs = captures_store_db
+    _make(cs, monkeypatch, tmp_path)
+    it = cs.iter_captures_for_export()
+    next(it)
+    # The export writes each row to the tarball between yields: other store
+    # calls must not wait on it.
+    assert cs._lock.acquire(blocking=False)
+    cs._lock.release()
+    assert list(it) == []
