@@ -606,6 +606,16 @@ def test_windows_legacy_store_recipe_creates_the_db_dir_before_the_move():
     assert mkdir < move
 
 
+def test_windows_legacy_config_recipe_creates_the_data_dir_before_the_move():
+    # data/ is gitignored and the installer never creates it: Move-Item onto a
+    # missing folder renames config.local.json to a FILE named data, and the
+    # next start cannot create data\db under it.
+    ps1 = _read("install-service.ps1")
+    mkdir = ps1.index("\"New-Item -ItemType Directory -Force '$dataDir' | Out-Null; \"")
+    move = ps1.index("\"Move-Item '$legacyConfig' '$dataDir', \"")
+    assert mkdir < move
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="bash installer")
 def test_linux_installer_legacy_checks_expand_a_unit_set_var(tmp_path):
     # .env WHISPER_DB_DIR=${WHISPER_DATA_DIR}/stores resolves through the

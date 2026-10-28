@@ -697,10 +697,14 @@ if (-not (Test-EnvSets "WHISPER_DB_DIR") -and -not (Test-EnvSets "WHISPER_DATA_D
     }
 }
 $legacyConfig = Join-Path $RepoDir "config.local.json"
+# <dataDir> is created first, as for the stores: Move-Item onto a missing
+# folder would rename the overrides to a FILE named data.
 if (-not (Test-EnvSets "WHISPER_CONFIG_LOCAL") -and -not (Test-EnvSets "WHISPER_DATA_DIR") `
         -and (Test-Path $legacyConfig) -and -not (Test-Path (Join-Path $dataDir "config.local.json"))) {
     Write-Warning ("legacy $legacyConfig is IGNORED by the service (it reads " +
-        "$dataDir\config.local.json). Move it with Move-Item '$legacyConfig' '$dataDir', " +
+        "$dataDir\config.local.json). Move it with " +
+        "New-Item -ItemType Directory -Force '$dataDir' | Out-Null; " +
+        "Move-Item '$legacyConfig' '$dataDir', " +
         "then restart the service.")
 }
 
