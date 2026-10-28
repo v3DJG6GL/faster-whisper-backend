@@ -141,7 +141,8 @@ UPGRADED_RULE_ENTRIES: dict[str, tuple[tuple[str, str], tuple[str, str]]] = {
 # the stored rule still has no languages and its type and pattern still equal
 # the factory ones. A rule the admin rewrote is theirs and stays untouched.
 # A regex-list / callback:map rule has no rule-level pattern (None): its
-# content is checked instead (_FACTORY_CONTENT_DIGESTS).
+# content is checked instead (_FACTORY_CONTENT_DIGESTS), and so is the
+# wordlist of a callback:lowercase-wordlist rule on top of its pattern.
 UPGRADED_RULE_LANGUAGES: dict[
         str, tuple[tuple[str, str | None], tuple[str, ...]]] = {
     # The callback capitalised every letter after a hyphen, which is German
@@ -166,10 +167,13 @@ UPGRADED_RULE_LANGUAGES: dict[
 # The entries / map a stored copy of a pattern-less rule in
 # UPGRADED_RULE_LANGUAGES must still hold to get the scope: digests
 # (_content_digest) of every factory version shipped before the scope
-# (config.json history up to c4fefe2). A copy whose entries / map the admin
-# edited — an English-extended dictation map, quick-config additions — is
-# theirs, and so is the scope they gave it.
+# (config.json history up to c4fefe2). A copy whose entries / map / wordlist
+# the admin edited — an English-extended dictation map, quick-config
+# additions, own function words — is theirs, and so is the scope they gave it.
 _FACTORY_CONTENT_DIGESTS: dict[str, frozenset[str]] = {
+    # One wordlist in every config.json version (also as
+    # "strip-and-lowercase-non-noun").
+    "de-strip-and-lowercase-non-noun": frozenset({"f5f38b0624ea7aa5"}),
     "de-split-punctuation-keywords": frozenset({"8b5d190b1c246cfe"}),
     "ch-symbol-cleanup": frozenset({"131306ff3fa0263e"}),
     "de-dictation-map": frozenset({
@@ -180,11 +184,14 @@ _FACTORY_CONTENT_DIGESTS: dict[str, frozenset[str]] = {
 
 
 def _content_digest(rule: dict[str, Any]) -> str | None:
-    """Digest of what a regex-list / callback:map rule does: its (pattern,
-    replacement) pairs in order, or its map. Labels, notes and map_meta are
-    left out (a relabel changes nothing). None for a malformed rule."""
+    """Digest of what a regex-list / callback:map / callback:lowercase-wordlist
+    rule does: its (pattern, replacement) pairs in order, its map, or its
+    wordlist. Labels, notes and map_meta are left out (a relabel changes
+    nothing). None for a malformed rule."""
     if rule.get("type") == "callback:map":
         content: Any = rule.get("map")
+    elif rule.get("type") == "callback:lowercase-wordlist":
+        content = rule.get("wordlist")
     else:
         entries = rule.get("entries")
         if not isinstance(entries, list) or not all(

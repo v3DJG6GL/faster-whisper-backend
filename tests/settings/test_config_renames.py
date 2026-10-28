@@ -100,16 +100,19 @@ def test_edited_wordlist_rule_pattern_keeps_every_language():
 
 
 @pytest.mark.parametrize("name", ["de-split-punctuation-keywords",
-                                  "ch-symbol-cleanup", "de-dictation-map"])
+                                  "ch-symbol-cleanup", "de-dictation-map",
+                                  "de-strip-and-lowercase-non-noun"])
 def test_edited_entries_or_map_keep_the_admins_language_scope(name):
-    """These rules have no rule-level pattern, so only their content tells a
-    pre-c4fefe2 factory copy from one the admin rewrote (an English-extended
-    dictation map, own symbol entries) and set to every language."""
+    """Only their content tells a pre-c4fefe2 factory copy from one the admin
+    rewrote (an English-extended dictation map, own symbol entries, own
+    function words under the factory pattern) and set to every language."""
     rules = copy.deepcopy(_factory_rules())
     r = _rule(rules, name)
     r["languages"] = []
     if name == "de-dictation-map":
         r["map"][" new line "] = "\n"
+    elif name == "de-strip-and-lowercase-non-noun":
+        r["wordlist"].append("Sowieso")
     else:
         r["entries"].append({"pattern": "mine", "replacement": "", "label": "mine"})
     assert f"{name}/languages" not in renames.upgrade_rule_entries(
