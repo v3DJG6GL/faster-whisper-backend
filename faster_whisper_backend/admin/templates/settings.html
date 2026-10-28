@@ -1200,6 +1200,10 @@ function fieldRow(name) {
   // the in-repo baseline (cfg._BASELINE). Clicking sets the field to the
   // baseline value, marking it dirty so the save button enables. Recovery
   // path for "I broke a regex / typed the wrong number".
+  // PIPELINE_RULES has none: its editor brings its own reset flows, and this
+  // one would save a pinned local copy of the rev-less config.json list,
+  // losing the record of which config.json version each rule matched.
+  if (name === 'PIPELINE_RULES') { row.appendChild(inputCol); return row; }
   const resetWrap = document.createElement('div');
   resetWrap.className = 'reset-wrap';
   const resetBtn = document.createElement('button');
