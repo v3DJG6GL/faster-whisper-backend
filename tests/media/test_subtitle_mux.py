@@ -522,3 +522,35 @@ def test_package_forwards_a_non_zero_video_index(monkeypatch):
                           timeout=10, video_index=1))
     shutil.rmtree(os.path.dirname(out), ignore_errors=True)
     assert seen["video_index"] == 1
+
+
+def test_write_srts_clamps_an_inverted_cue_end_to_its_start(tmp_path):
+    """MP4 timed text refuses a cue that ends before it starts (movenc fails
+    the whole mux with a bare 500); the written SRT makes it zero-length and
+    leaves well-formed, zero-length and CRLF cues alone."""
+    srt = ("1\r\n00:00:05,000 --> 00:00:01,000\r\nBad\r\n\r\n"
+           "2\r\n00:00:06,000 --> 00:00:07,500 X1:0\r\nOk\r\n\r\n"
+           "3\r\n00:00:08,000 --> 00:00:08,000\r\nZero\r\n")
+    (p,) = pk._write_srts(str(tmp_path), [pk.SubtitleTrack("en", "English", srt)])
+    with open(p, encoding="utf-8") as f:
+        assert f.read() == ("1\n00:00:05,000 --> 00:00:05,000\nBad\n\n"
+                            "2\n00:00:06,000 --> 00:00:07,500 X1:0\nOk\n\n"
+                            "3\n00:00:08,000 --> 00:00:08,000\nZero\n")
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="needs a system ffmpeg")
+def test_package_real_ffmpeg_mp4_accepts_a_cue_that_ends_before_it_starts(tmp_path):
+    av = pytest.importorskip("av")
+    src = str(tmp_path / "src.mp4")
+    subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+                    "-f", "lavfi", "-i", "testsrc=size=64x64:rate=10:duration=1",
+                    "-c:v", "libx264", "-pix_fmt", "yuv420p", src], check=True, timeout=60)
+    tracks = [pk.SubtitleTrack("en", "English",
+                               "1\n00:00:00,000 --> 00:00:00,500\nHi\n\n"
+                               "2\n00:00:00,900 --> 00:00:00,600\nThere\n")]
+    out = _run(pk.package(src, tracks, container="mp4", default_track=0, timeout=60))
+    try:
+        with av.open(out) as c:
+            assert [s.type for s in c.streams].count("subtitle") == 1
+    finally:
+        shutil.rmtree(os.path.dirname(out), ignore_errors=True)

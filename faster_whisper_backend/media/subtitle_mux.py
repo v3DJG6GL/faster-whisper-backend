@@ -259,16 +259,33 @@ def build_package_argv(src: str, srt_paths: "list[str]", tracks: "list[SubtitleT
 
 
 _SRT_HINT_RE = re.compile(r"sub_(\d+)\.srt")
+_TS = r"(\d+):(\d{1,2}):(\d{1,2})[,.](\d{1,3})"
+_CUE_TIMING_RE = re.compile(rf"^([ \t]*)({_TS})([ \t]*-->[ \t]*)({_TS})",
+                            re.MULTILINE)
+
+
+def _ts_ms(h: str, m: str, s: str, ms: str) -> int:
+    return ((int(h) * 60 + int(m)) * 60 + int(s)) * 1000 + int(ms.ljust(3, "0"))
+
+
+def _clamp_inverted_cue(m: "re.Match[str]") -> str:
+    # MP4's timed text refuses a negative duration (movenc fails the whole
+    # mux); a cue that ends before it starts becomes a zero-length one.
+    if _ts_ms(*m.group(9, 10, 11, 12)) >= _ts_ms(*m.group(3, 4, 5, 6)):
+        return m.group(0)
+    return m.group(1) + m.group(2) + m.group(7) + m.group(2)
 
 
 def _write_srts(workdir: str, tracks: "list[SubtitleTrack]") -> "list[str]":
-    """The tracks as `sub_N.srt` under fixed names, line endings normalised.
+    """The tracks as `sub_N.srt` under fixed names, line endings normalised
+    and an inverted cue's end clamped to its start.
     Up to MAX_TRACKS × MAX_SRT_BYTES of rewriting + I/O — run off the loop."""
     srt_paths: "list[str]" = []
     for i, t in enumerate(tracks):
         p = os.path.join(workdir, f"sub_{i}.srt")
+        text = t.srt.replace("\r\n", "\n").replace("\r", "\n")
         with open(p, "w", encoding="utf-8", newline="\n") as f:
-            f.write(t.srt.replace("\r\n", "\n").replace("\r", "\n"))
+            f.write(_CUE_TIMING_RE.sub(_clamp_inverted_cue, text))
         srt_paths.append(p)
     return srt_paths
 
