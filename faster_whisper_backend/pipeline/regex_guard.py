@@ -690,9 +690,11 @@ def _branch_atoms(body: str, depth: int = 0) -> "list[list[tuple[str, bool] | No
                 branches[-1].append(None)
             elif len(inner) > 1:
                 # `(?:,|;)` is the class `[,;]`: an alternation of single
-                # mandatory atoms is one atom, matched as the whole group.
+                # mandatory atoms is one atom, rebuilt from the branch atoms
+                # so a lookaround inside a branch stays transparent.
                 if all(len(b) == 1 and not b[0][1] for b in inner):
-                    branches[-1].append((text, optional))
+                    branches[-1].append(
+                        ("(?:" + "|".join(b[0][0] for b in inner) + ")", optional))
                 else:
                     branches[-1].append(None)
             else:

@@ -795,3 +795,17 @@ def test_optional_atom_before_an_overlapping_alternation_is_rejected(pat):
 def test_optional_atom_before_a_disjoint_alternation_passes(pat):
     assert not g._nested_repetition(pat)
     g.validate([("r", pat, "")])
+
+
+@pytest.mark.parametrize("pat", [
+    r"(?:[,.]?(?:\.(?=\.)|x))+#",
+    r"\b(?:\.?(?:\.(?=\.)|;))+#",
+    r"m(?:x?(?:x(?=x)|y))+#",
+])
+def test_lookaround_inside_an_overlapping_alternation_is_still_rejected(pat):
+    """The class-like atom was the raw group text, lookahead included, and a
+    trailing `(?=\\.)` never matches one character alone — the overlap
+    vanished and a 40-dot run took about 15 s in re.sub."""
+    assert g._nested_repetition(pat)
+    with pytest.raises(ValueError, match="nested repetition"):
+        g.validate([("r", pat, "")])
