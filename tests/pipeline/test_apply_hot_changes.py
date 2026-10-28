@@ -196,3 +196,22 @@ def test_cancelled_caller_still_finishes_the_apply(monkeypatch):
 
     asyncio.run(scenario())
     assert os.environ.get("HF_TOKEN") == "hf_new"
+
+
+def test_lowering_max_loaded_models_trims_the_resident_cache(monkeypatch):
+    # The cap is enforced on a load miss only; clients hitting resident models
+    # never trigger one, so a lowered cap must trim LRU unleased models now.
+    from collections import OrderedDict
+    monkeypatch.setattr(tx_models, "_loaded_models",
+                        OrderedDict((n, object()) for n in ("a", "b", "c", "d")))
+    monkeypatch.setattr(tx_models, "_model_leases", {"a": 1})
+    monkeypatch.setattr(tx_models, "_model_load_lock", asyncio.Lock())
+    monkeypatch.setattr(cfg, "MAX_LOADED_MODELS", 4, raising=False)
+    monkeypatch.setattr(config_store, "env_pinned_fields", lambda: frozenset())
+    monkeypatch.setattr(config_store, "load_overrides",
+                        lambda: {"MAX_LOADED_MODELS": 2})
+    out = asyncio.run(pl_apply.apply_hot_changes({"MAX_LOADED_MODELS": 2}))
+    # "a" is leased (mid-request) and stays; the LRU unleased b, c go.
+    assert list(tx_models._loaded_models) == ["a", "d"]
+    assert out["evicted"] == ["b", "c"]
+    assert "MAX_LOADED_MODELS" in out["hot_applied"]

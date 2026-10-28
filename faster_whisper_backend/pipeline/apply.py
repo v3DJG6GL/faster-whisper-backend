@@ -318,6 +318,11 @@ async def _apply_hot_changes(written: dict[str, Any]) -> dict[str, Any]:
                 if keys and any(o.get(k) != n.get(k) for k in keys):
                     ev = await tx_models.drain_then_evict(model_id)
                     evicted.extend(ev)
+        if "MAX_LOADED_MODELS" in effective:
+            # The cap is enforced on a load miss only: a lowered cap must trim
+            # the resident models now, or cache hits keep them all in VRAM.
+            evicted.extend(n for n in await tx_models.trim_to_cap()
+                           if n not in evicted)
     except Exception as e:
         # Never let eviction failure break the save response. The user's
         # change still persisted; worst case they restart manually.

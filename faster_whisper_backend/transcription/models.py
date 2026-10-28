@@ -1471,6 +1471,26 @@ async def drain_then_evict(model_id: "str | None" = None) -> list[str]:
     return evicted
 
 
+async def trim_to_cap() -> list[str]:
+    """Evict LRU UNLEASED models until the cache is within MAX_LOADED_MODELS,
+    as _get_or_load_model's cap loop does on a miss. Called when the cap is
+    lowered: that loop runs on misses only, so a server whose clients keep
+    hitting resident models never shrank. Leased models stay (the excess is
+    reclaimed later, as there). Returns the evicted ids."""
+    evicted: list[str] = []
+    async with _model_load_lock:
+        while len(_loaded_models) > cfg.MAX_LOADED_MODELS:
+            name = next(
+                (n for n in _loaded_models if not _model_leases.get(n, 0)), None)
+            if name is None:
+                break
+            logger.info("Evicting model from VRAM (MAX_LOADED_MODELS lowered "
+                        "to %d): %s", cfg.MAX_LOADED_MODELS, name)
+            _drop_loaded_model(name)
+            evicted.append(name)
+    return evicted
+
+
 async def _idle_evictor() -> None:
     """Periodically unload models that haven't been touched for
     cfg.MODEL_IDLE_TIMEOUT_S seconds. Wakes every 30 s; cheap when
