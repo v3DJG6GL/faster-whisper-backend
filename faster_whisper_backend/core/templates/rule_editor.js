@@ -340,17 +340,19 @@ function _makeEntryRow(rule, entry, commitData, onEnter) {
   const ord = document.createElement('span');
   ord.className = 'rl-ord'; ord.textContent = '0';
   // ↑/↓ move this entry one position. The DOM is the source of truth, so a move
-  // is just "reinsert the row, then _readEntries + renumber + commit" — exactly
-  // what a drop does. nextElementSibling.nextElementSibling → null appends (last).
+  // is just "reinsert, then _readEntries + renumber + commit" — exactly what a
+  // drop does. The NEIGHBOUR is moved, not this row: reinserting the row would
+  // blur the ↑/↓ button the keyboard user just pressed, dropping focus to
+  // <body> after one step. insertBefore(x, null) appends (last).
   function _rlMove(delta) {
     const parent = row.parentNode;
     if (!parent) return;
     if (delta < 0) {
       const prev = row.previousElementSibling;
-      if (prev) parent.insertBefore(row, prev);
+      if (prev) parent.insertBefore(prev, row.nextElementSibling);
     } else {
       const next = row.nextElementSibling;
-      if (next) parent.insertBefore(row, next.nextElementSibling);
+      if (next) parent.insertBefore(next, row);
     }
     rule.entries = _readEntries(parent);
     _renumberEntries(parent);
