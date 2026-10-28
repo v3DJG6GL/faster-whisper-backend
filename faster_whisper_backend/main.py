@@ -1777,6 +1777,11 @@ async def transcribe(
                 if _keep_video:
                     _rung = url_download.pick_rung(_uinfo.video_ladder, _video_max_height,
                                            _video_format)
+                    _video_capped = _video_max_height is not None
+                    if _rung is not None:
+                        _rung, _video_capped = url_download.fit_rung_to_size_cap(
+                            _uinfo.video_ladder, _rung, _video_max_height,
+                            _video_format)
                     if _rung is None:
                         _video_result = media_video._video_state(
                             state="failed", error="this link has no video track")
@@ -1795,7 +1800,7 @@ async def transcribe(
                         _video_task = asyncio.create_task(
                             media_video._download_video_for_run(
                                 _pid, _url, _rung,
-                                capped=_video_max_height is not None,
+                                capped=_video_capped,
                                 user_id=_user_id, protect=_source_media_id,
                                 run_finished=_run_finished,
                                 finish_landed=_finish_landed,

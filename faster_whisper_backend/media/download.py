@@ -553,6 +553,28 @@ def pick_rung(ladder: "list[dict]", max_height: "int | None",
     return rungs[0]
 
 
+def fit_rung_to_size_cap(ladder: "list[dict]", rung: dict,
+                         max_height: "int | None",
+                         format_id: "str | None" = None) -> "tuple[dict, bool]":
+    """(rung, capped) for a pick_rung result: when it is over the size cap
+    and the client did not name it, the best rung that fits the size cap
+    (and the height cap), in the ladder's rank order — capped to its height
+    so a rung without a format id fetches that size. Otherwise the rung
+    unchanged (still over_cap when nothing fits). `capped` is what
+    _download_video_for_run takes."""
+    capped = max_height is not None
+    if (rung.get("over_cap")
+            and not (format_id and rung.get("format_id") == format_id)):
+        fits = next((r for r in ladder
+                     if r.get("kind") == "video" and not r.get("over_cap")
+                     and (max_height is None
+                          or (isinstance(r.get("height"), int)
+                              and r["height"] <= max_height))), None)
+        if fits is not None:
+            rung, capped = fits, capped or isinstance(fits.get("height"), int)
+    return rung, capped
+
+
 def validate_url(url: str) -> str:
     """Normalise + gate a client-supplied URL. Raises UrlDownloadError."""
     u = (url or "").strip()

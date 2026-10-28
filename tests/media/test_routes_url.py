@@ -625,6 +625,29 @@ def test_keep_video_no_video_track_is_a_soft_error(client, url_enabled, monkeypa
     assert "source_video_media_id" not in r.json()
 
 
+def test_keep_video_falls_back_to_the_best_rung_under_the_size_cap(
+        client, video_enabled, monkeypatch):
+    # Same fallback as the on-demand route: "best" is over the retention
+    # cap but 720p fits, so the run keeps 720p instead of reporting the
+    # video as too large.
+    import time as _time
+
+    ladder = [dict(_LADDER[0], over_cap=True), dict(_LADDER[1]), dict(_LADDER[2])]
+
+    async def _probe(url, *, timeout):
+        return _info(url=url, video_ladder=[dict(r) for r in ladder])
+    monkeypatch.setattr(url_download, "probe", _probe)
+    r = _post_url(client, keep_video="true", progress_id=_PID)
+    assert r.status_code == 200, r.text
+    assert "source_video_error" not in r.json()
+    for _ in range(300):
+        if video_enabled._video_calls:
+            break
+        _time.sleep(0.01)
+    assert video_enabled._video_calls[-1]["max_height"] == 720
+    assert video_enabled._video_calls[-1]["container"] == "mp4"
+
+
 def test_on_demand_video_route(client, video_enabled):
     r = client.post("/v1/audio/url-media/video",
                     json={"url": _URL, "max_height": 720, "progress_id": _PID})
