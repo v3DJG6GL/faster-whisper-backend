@@ -856,11 +856,25 @@ async def test_pipeline(payload: dict[str, Any]) -> JSONResponse:
                             continue
                         er = entry.get("replacement", "") or ""
                         try:
-                            n = sum(1 for _ in ecre.finditer(cur))
-                            # The plain template string, as the engine's
-                            # pattern.sub(payload) runs it: re parses it up
-                            # front, so a bad backref fails even with no match.
-                            cur = ecre.sub(er, cur)
+                            # Parsed up front, as the engine's
+                            # pattern.sub(payload) does, so a bad backref fails
+                            # even with no match: [literal, group, literal, …].
+                            tmpl = re._parser.parse_template(er, ecre)
+                            lit = sum(len(s) for s in tmpl[0::2])
+                            # The exact output length, counted BEFORE the sub:
+                            # chained entries (or `\g<0>` x 100) can multiply a
+                            # text just under the bound into gigabytes in one
+                            # sub, so the bound cannot wait for the result.
+                            n = 0
+                            size = len(cur)
+                            for m in ecre.finditer(cur):
+                                n += 1
+                                size += lit - (m.end() - m.start()) + sum(
+                                    m.end(g) - m.start(g) for g in tmpl[1::2])
+                                if size > pl_engine._POSTPROCESS_MAX_CHARS:
+                                    break
+                            if size <= pl_engine._POSTPROCESS_MAX_CHARS:
+                                cur = ecre.sub(er, cur)
                         # IndexError: an unknown group name (`\g<nope>`);
                         # TypeError: a non-string replacement in a hand-rolled
                         # body. The engine skips those entries too.
@@ -868,12 +882,14 @@ async def test_pipeline(payload: dict[str, Any]) -> JSONResponse:
                             if bad is None:
                                 bad = str(e)
                             continue
-                        total += n
                         # Engine parity: each entry is its own engine row and
-                        # the walk stops once the text passes the output bound.
-                        if len(cur) > pl_engine._POSTPROCESS_MAX_CHARS:
+                        # the walk stops once the text passes the output bound
+                        # (the step shows the text before the entry that would
+                        # pass it).
+                        if size > pl_engine._POSTPROCESS_MAX_CHARS:
                             lout["capped"] = True
                             break
+                        total += n
                     lout["after"] = cur
                     lout["matches"] = total
                     if bad is not None:
@@ -941,10 +957,28 @@ async def test_pipeline(payload: dict[str, Any]) -> JSONResponse:
             return {**common, "after": text, "error": str(e)}
 
         out: dict[str, Any] = {"done": False, "after": text, "matches": 0}
+        size = [len(text)]
+
+        class _PastBound(Exception):
+            pass
+
+        def _bounded(m: re.Match[str]) -> str:
+            # The output bound, checked per match as the sub goes: a text just
+            # under it times a 64-char map value would otherwise be built in
+            # full before the step's length is ever looked at.
+            r = replacer(m)
+            size[0] += len(r) - (m.end() - m.start())
+            if size[0] > pl_engine._POSTPROCESS_MAX_CHARS:
+                raise _PastBound
+            return r
+
         def _do() -> None:
             try:
                 out["matches"] = sum(1 for _ in cre.finditer(text))
-                out["after"] = cre.sub(replacer, text)
+                out["after"] = cre.sub(_bounded, text)
+                out["done"] = True
+            except _PastBound:
+                out["capped"] = True
                 out["done"] = True
             except Exception as e:  # noqa: BLE001
                 out["err"] = str(e)
@@ -956,6 +990,9 @@ async def test_pipeline(payload: dict[str, Any]) -> JSONResponse:
             return {**common, "after": text, "slow": True}
         if "err" in out:
             return {**common, "after": text, "error": out["err"]}
+        if out.get("capped"):
+            return {**common, "after": text, "matches": out["matches"],
+                    "capped": True}
         return {**common, "after": out["after"], "matches": out["matches"]}
 
     text = sample
@@ -997,7 +1034,9 @@ async def test_pipeline(payload: dict[str, Any]) -> JSONResponse:
         step["ordinal"] = idx + 1
         steps.append(step)
         text = step["after"]
-        if len(text) > pl_engine._POSTPROCESS_MAX_CHARS:
+        # A rule stops itself before its output passes the bound (and keeps
+        # the text it was handed), so its own `capped` flag counts too.
+        if step.get("capped") or len(text) > pl_engine._POSTPROCESS_MAX_CHARS:
             step["capped"] = True
             capped = True
         if rule.get("type") == "terminal":

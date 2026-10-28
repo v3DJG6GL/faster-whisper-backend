@@ -517,7 +517,9 @@ def test_test_pipeline_stops_at_the_engine_output_bound(client):
     # Engine parity: pl_engine._postprocess_text stops the rule walk once the
     # text passes _POSTPROCESS_MAX_CHARS. The dry run used to keep doubling,
     # reporting a `final` production never produces and echoing every
-    # multi-MB step twice.
+    # multi-MB step twice. The rule that would pass the bound is stopped
+    # BEFORE its sub and keeps the text it was handed, so nothing the dry run
+    # builds ever passes the bound.
     bound = pl_engine._POSTPROCESS_MAX_CHARS
     dbl = {"pattern": ".+", "replacement": "\\g<0>\\g<0>"}
     rules = [{"name": f"r{i}", "type": "regex-list", "enabled": True,
@@ -526,7 +528,7 @@ def test_test_pipeline_stops_at_the_engine_output_bound(client):
                     json={"sample": "a" * 8192, "rules": rules})
     assert r.status_code == 200, r.text[:200]
     body = r.json()
-    assert bound < len(body["final"]) <= 2 * bound
+    assert bound // 2 < len(body["final"]) <= bound
     steps = body["steps"]
     hit = next(i for i, s in enumerate(steps) if s.get("capped"))
     assert not steps[hit]["skipped"]
@@ -542,7 +544,7 @@ def test_test_pipeline_stops_at_the_engine_output_bound(client):
     assert r.status_code == 200
     step = r.json()["steps"][0]
     assert step["capped"] is True
-    assert bound < len(step["after"]) <= 2 * bound
+    assert bound // 2 < len(step["after"]) <= bound
 
 
 def test_test_pipeline_regex_list_skips_bad_entry(client):
