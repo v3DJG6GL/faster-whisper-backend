@@ -162,35 +162,39 @@ def _run_pass() -> None:
     captures_excludes = getattr(cfg, "CAPTURES_PIPELINE_RULES_EXCLUDE", None)
 
     conn = captures_store._require_conn()
-    total_row = conn.execute("SELECT COUNT(*) FROM captures").fetchone()
+    # Both store locks for the reads, samples-then-captures: two threads
+    # running the same SELECT text on the shared connection share one cached
+    # statement and can read each other's rows (count() runs this COUNT).
+    with capture_samples_store._lock, captures_store._lock:
+        total_row = conn.execute("SELECT COUNT(*) FROM captures").fetchone()
+        # Materialise the small projection up front — captures_store.update_capture
+        # writes back to the same connection inside the loop, and an open
+        # cursor on the same connection can skip/revisit rows when the
+        # underlying table is mutated mid-walk. Payload is just ids +
+        # short text columns (no words / segments), so memory
+        # stays bounded even at tens of thousands of rows.
+        rows = conn.execute(
+            "SELECT id, raw_text AS raw, final_text AS final, text_for_training, model, sample_id, user_id, language, task"
+            " FROM captures ORDER BY created_ts DESC"
+        ).fetchall()
+        # Members of a locked sample keep their text: the sample's views derive
+        # it from them on every read, and the lock freezes exactly that (the
+        # self-heal in routes._refresh_final_if_stale skips them too).
+        # Read only when some row has a sample: no member, no samples table needed.
+        locked_sids = {
+            row[0] for row in conn.execute(
+                "SELECT id FROM capture_samples WHERE is_locked = 1")
+        } if any(r["sample_id"] for r in rows) else set()
     with _state_lock:
         _state["total"] = int(total_row[0]) if total_row else 0
 
     affected_sample_ids: set[str] = set()
-    # Materialise the small projection up front — captures_store.update_capture
-    # writes back to the same connection inside the loop, and an open
-    # cursor on the same connection can skip/revisit rows when the
-    # underlying table is mutated mid-walk. Payload is just ids +
-    # short text columns (no words / segments), so memory
-    # stays bounded even at tens of thousands of rows.
-    rows = conn.execute(
-        "SELECT id, raw_text AS raw, final_text AS final, text_for_training, model, sample_id, user_id, language, task"
-        " FROM captures ORDER BY created_ts DESC"
-    ).fetchall()
     # Reprocess re-runs ONLY the pipeline (no model re-decode), so it
     # resolves the owning USER's effective pipeline rules (no key — captures
     # store no key_id — and no per-request layer). Memoised per
     # (user_id, model) so a bulk reapply does one resolve per distinct pair,
     # not one per row. Config is snapshotted for the run's duration.
     ident_cache: dict = {}
-    # Members of a locked sample keep their text: the sample's views derive
-    # it from them on every read, and the lock freezes exactly that (the
-    # self-heal in routes._refresh_final_if_stale skips them too).
-    # Read only when some row has a sample: no member, no samples table needed.
-    locked_sids = {
-        row[0] for row in conn.execute(
-            "SELECT id FROM capture_samples WHERE is_locked = 1")
-    } if any(r["sample_id"] for r in rows) else set()
 
     def _ident_for(uid, model_id):
         key = (uid, model_id)

@@ -430,3 +430,58 @@ def test_run_leaves_the_members_of_a_locked_sample_alone(
     assert row["final"] == "old"
     assert not row["text_for_training"]
     assert captures_store_db.get_capture("reapplyfree1")["final"] == "HELLO [final]"
+
+
+class _LockCheckingConn:
+    """The shared connection, recording for each SELECT whether both store
+    locks were held when it ran."""
+
+    def __init__(self, conn, cs, gs):
+        self._conn, self._cs, self._gs = conn, cs, gs
+        self.selects: list[tuple[str, bool]] = []
+
+    def execute(self, sql, *args):
+        if sql.lstrip().upper().startswith("SELECT"):
+            held = self._cs._lock.locked() and self._gs._lock.locked()
+            self.selects.append((sql, held))
+        return self._conn.execute(sql, *args)
+
+    def __getattr__(self, name):
+        return getattr(self._conn, name)
+
+
+def test_run_reads_the_shared_connection_under_the_store_locks(
+        captures_store_db, groups_store_db, fake_pipeline, monkeypatch):
+    """Two threads running the same SELECT text on the shared connection
+    share one cached statement: the pass's COUNT(*) is the text count() runs
+    for the captures page, so an unlocked read could get the other caller's
+    result or raise and fail the whole job."""
+    from faster_whisper_backend.settings import config as cfg
+
+    monkeypatch.setattr(cfg, "CAPTURES_PIPELINE_RULES_EXCLUDE", None,
+                        raising=False)
+    cs, gs = captures_store_db, groups_store_db
+    conn = cs._require_conn()
+    gs._require_conn().execute(
+        "INSERT INTO capture_samples (id, user_id, created_ts,"
+        " merged_wav_relpath, merged_duration_ms, transcript,"
+        " transcript_join_strategy, member_hashes,"
+        " inter_segment_silence_ms, is_stale, is_locked, status,"
+        " admin_notes, language, member_trims)"
+        " VALUES (?,'alice',1.0,?,5000,'old','space','{}',300,0,0,'new','',"
+        "'de','{}')", ("reapplysidlock01", gs._relpath_for("reapplysidlock01")))
+    _insert(conn, "reapplyread1", language="de")
+    conn.execute("UPDATE captures SET sample_id = 'reapplysidlock01',"
+                 " sample_order = 0 WHERE id = 'reapplyread1'")
+    checking = _LockCheckingConn(conn, cs, gs)
+    monkeypatch.setattr(cs, "_require_conn", lambda: checking)
+
+    captures_reapply._run()
+
+    assert captures_reapply.status()["status"] == "done"
+    pass_reads = [(sql, held) for sql, held in checking.selects
+                  if "COUNT(*) FROM captures" in sql
+                  or "ORDER BY created_ts DESC" in sql
+                  or "is_locked = 1" in sql]
+    assert len(pass_reads) == 3
+    assert all(held for _, held in pass_reads)
