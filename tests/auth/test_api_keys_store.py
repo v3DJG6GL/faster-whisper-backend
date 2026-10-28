@@ -242,6 +242,36 @@ def test_rename_profile_refs_keeps_the_real_error_after_sqlite_rolled_back(
     assert ak.get_user_config(u)["profiles"] == ["clinic-de"]
 
 
+def test_revoke_user_failing_key_cascade_leaves_the_user_active(
+        api_keys_db, monkeypatch):
+    """revoke_user ran two autocommit UPDATEs: when the api_keys one failed,
+    the user stayed revoked (gone from list_users, so no retry from the UI)
+    while their keys kept authenticating. Both now roll back together."""
+    ak = api_keys_db
+    real_conn = ak._require_conn()
+    ak.create_user("admin", is_admin=True)
+    bob = ak.create_user("bob", is_admin=False)
+    raw, _ = ak.create_key(bob)
+
+    class _FailKeyCascade:
+        in_transaction = property(lambda self: real_conn.in_transaction)
+
+        def execute(self, sql, *args):
+            if sql.startswith("UPDATE api_keys SET revoked_ts"):
+                raise sqlite3.OperationalError("database or disk is full")
+            return real_conn.execute(sql, *args)
+    monkeypatch.setattr(ak, "_conn", _FailKeyCascade())
+    with pytest.raises(sqlite3.OperationalError, match="disk is full"):
+        ak.revoke_user(bob)
+    monkeypatch.setattr(ak, "_conn", real_conn)
+    assert not real_conn.in_transaction
+    assert bob in {u["id"] for u in ak.list_users()}
+    assert ak.lookup_by_raw_key(raw) is not None
+    # Retrying works once the store is healthy again.
+    ak.revoke_user(bob)
+    assert ak.lookup_by_raw_key(raw) is None
+
+
 def test_set_user_permissions_does_not_undo_a_concurrent_profile_rename(
         api_keys_db, monkeypatch):
     """A matrix Save (pages only) read the stored binding, released _lock,

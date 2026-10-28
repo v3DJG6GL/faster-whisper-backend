@@ -541,15 +541,26 @@ def revoke_user(user_id: str) -> None:
                 raise LastAdminError(
                     "refusing to revoke the last admin user"
                 )
-        conn.execute(
-            "UPDATE users SET revoked_ts = ? WHERE id = ? AND revoked_ts IS NULL",
-            (now, user_id),
-        )
-        conn.execute(
-            "UPDATE api_keys SET revoked_ts = ?"
-            " WHERE user_id = ? AND revoked_ts IS NULL",
-            (now, user_id),
-        )
+        # One transaction (the connection is autocommit): a failing second
+        # UPDATE left the user revoked — hidden from list_users, so no retry
+        # from the UI — while their keys stayed active and kept authenticating.
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            conn.execute(
+                "UPDATE users SET revoked_ts = ? WHERE id = ? AND revoked_ts IS NULL",
+                (now, user_id),
+            )
+            conn.execute(
+                "UPDATE api_keys SET revoked_ts = ?"
+                " WHERE user_id = ? AND revoked_ts IS NULL",
+                (now, user_id),
+            )
+            conn.execute("COMMIT")
+        except BaseException:
+            # SQLite may already have rolled back on its own (see rename_profile_refs).
+            if conn.in_transaction:
+                conn.execute("ROLLBACK")
+            raise
         _rebuild_index_locked()
     settings_version.bump_config_version()   # revoked identity's live idents re-resolve
     logger.info("[auth] user revoked id=%s", user_id[:8])
