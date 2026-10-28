@@ -403,6 +403,25 @@ def test_422_lone_surrogate_in_text_or_id(client, app_module, monkeypatch):
     assert calls == []
 
 
+@pytest.mark.parametrize("literal", ["NaN", "Infinity", "-Infinity"])
+def test_422_non_finite_number_in_body(client, app_module, monkeypatch,
+                                       literal):
+    """json.loads accepts NaN/Infinity, the JSON response refuses them: an
+    echoed id would fail the response only after the run was recorded as
+    ok. Refused up front instead, without a translation call."""
+    _enable(app_module, monkeypatch)
+    calls = []
+    _stub_translate(monkeypatch, calls=calls)
+    r = client.post(
+        URL,
+        content='{"segments": [{"id": %s, "text": "eins"}], '
+                '"targets": ["en"]}' % literal,
+        headers={"Content-Type": "application/json"})
+    assert r.status_code == 422, r.text
+    assert "non-finite" in r.json()["detail"]
+    assert calls == []
+
+
 def test_targets_cap_fires_before_the_whole_list_is_walked(client, app_module,
                                                           monkeypatch):
     """De-dup is a set and the cap is checked inside the loop: a body of

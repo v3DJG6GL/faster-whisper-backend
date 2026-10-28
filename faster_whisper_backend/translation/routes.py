@@ -150,12 +150,19 @@ async def translate_text(request: Request,
         # A JSON "\ud800" escape parses into a str UTF-8 cannot encode: an
         # echoed id or a text copied through unchanged would then fail the
         # response (and the job row's result) only after the run is recorded.
+        # Same for a NaN/Infinity literal (json.loads accepts them, the
+        # JSONResponse renders with allow_nan=False).
         try:
-            json.dumps(body, ensure_ascii=False).encode("utf-8")
-        except ValueError:          # UnicodeEncodeError is a ValueError
+            json.dumps(body, ensure_ascii=False,
+                       allow_nan=False).encode("utf-8")
+        except UnicodeEncodeError:
             raise HTTPException(
                 status_code=422,
                 detail="body contains invalid Unicode (lone surrogate)")
+        except ValueError:
+            raise HTTPException(
+                status_code=422,
+                detail="body contains a non-finite number (NaN/Infinity)")
         segments = body.get("segments")
         if not isinstance(segments, list) or not segments:
             raise HTTPException(status_code=422,
