@@ -1468,7 +1468,8 @@ class AdminConfig(BaseModel):
         "CAPTURES_DB", scope="server", group="Captures", subgroup="Storage",
         restart=True)
     CAPTURES_DIR: Annotated[str, Field(min_length=1, max_length=512)] | None = _F(
-        "CAPTURES_DIR", scope="server", group="Captures", subgroup="Storage")
+        "CAPTURES_DIR", scope="server", group="Captures", subgroup="Storage",
+        restart=True)
     CAPTURES_MAX: Annotated[int, Field(ge=10, le=1_000_000)] | None = _F(
         "CAPTURES_MAX", scope="server", group="Captures", subgroup="Storage")
     CAPTURES_MAX_MB: Annotated[int, Field(ge=1, le=10_000_000)] | None = _F(
