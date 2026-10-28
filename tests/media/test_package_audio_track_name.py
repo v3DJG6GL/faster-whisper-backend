@@ -11,7 +11,8 @@ from faster_whisper_backend.media import subtitle_mux as pk
 
 
 def _audio_meta(argv):
-    return [argv[i + 1] for i, x in enumerate(argv) if x == "-metadata:s:a"]
+    return [argv[i + 1] for i, x in enumerate(argv)
+            if x in ("-metadata:s:a", "-metadata:s:a:0")]
 
 
 def test_mp4_export_names_the_audio_track_through_handler_name():
@@ -32,3 +33,13 @@ def test_mkv_export_keeps_the_audio_title_only():
                                  out_path="/w/out.mkv", default_track=None,
                                  audio_lang="de", audio_label="Deutsch")
     assert _audio_meta(argv) == ["language=deu", "title=Deutsch"]
+
+
+def test_mp4_handler_name_names_only_the_first_audio_track():
+    """A second audio track (a commentary, a dub) keeps its own hdlr name —
+    the one name an MP4 player lists — instead of the transcript's label."""
+    argv = pk.build_package_argv("/m/src.mp4", [], [], container="mp4",
+                                 out_path="/w/out.mp4", default_track=None,
+                                 audio_lang="de", audio_label="Deutsch (Original)")
+    h = [(argv[i - 1], a) for i, a in enumerate(argv) if a.startswith("handler_name=")]
+    assert h == [("-metadata:s:a:0", "handler_name=Deutsch (Original)")]
