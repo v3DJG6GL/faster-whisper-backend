@@ -322,11 +322,13 @@ def _video_candidates(formats: list) -> "tuple[list[dict], dict | None]":
                 vcodec is None and not (isinstance(h, (int, float)) and h > 0)):
             # YouTube's "DRC" twins are loudness-normalised duplicates of
             # the same track — never the leg a merge should carry. An HLS
-            # audio rendition with no CODECS is explicitly not video and
-            # carries acodec None: still audio, as yt-dlp's own `ba` says.
-            audio_ok = (acodec and acodec != "none") or (
-                vcodec == "none" and acodec is None)
-            if audio_ok and \
+            # audio rendition (vcodec "none", acodec None — yt-dlp never
+            # names its codec) is no candidate: beside a video-only variant
+            # the rung asks for "ba", whose ranking (source_preference)
+            # picks the best group; beside a codec-less variant (acodec
+            # None) yt-dlp drops the second leg of any merge, so naming it
+            # would price and count a leg that is never fetched.
+            if acodec and acodec != "none" and \
                     "drc" not in str(f.get("format_note") or "").lower():
                 # yt-dlp's own `ba` ranks the track's language ahead of its
                 # bitrate (the extractor marks the original track 10, a dub
@@ -451,7 +453,12 @@ def _rung(f: dict, *, audio_f: "dict | None", duration: "float | None",
     ab_raw: "int | None" = None
     a_approx = False
     a_tbr = 0.0
-    if audio_f is not None and not has_audio:
+    # Only an explicitly video-only format takes the audio leg: yt-dlp
+    # counts acodec None (unknown) as audio and, without
+    # --audio-multistreams, drops the second audio leg of the merge — the
+    # rung would price and count a leg that is never fetched.
+    merges = audio_f is not None and f.get("acodec") == "none"
+    if merges:
         ab, a_approx = _fmt_bytes(audio_f, duration)
         ab_raw = ab
         a_tbr = float(audio_f.get("abr") or audio_f.get("tbr") or 0)
@@ -469,8 +476,7 @@ def _rung(f: dict, *, audio_f: "dict | None", duration: "float | None",
     tbr = v_tbr + a_tbr
     vcodec = str(f["vcodec"]) if f.get("vcodec") else None
     acodec = str(f.get("acodec")) if has_audio else (
-        str(audio_f["acodec"]) if audio_f is not None and audio_f.get("acodec")
-        else None)
+        str(audio_f["acodec"]) if merges and audio_f.get("acodec") else None)
     fps = float(f.get("fps") or 0)
     fps_i = int(round(fps)) if fps else None
     hdr = str(f.get("dynamic_range") or "SDR").upper() != "SDR"
@@ -484,7 +490,7 @@ def _rung(f: dict, *, audio_f: "dict | None", duration: "float | None",
     # "ba" keeps the exact video id and lets yt-dlp pick the audio, instead
     # of retaining a soundless file. acodec None (unknown, possibly muxed)
     # stays a single-file rung.
-    if audio_f is not None and not has_audio:
+    if merges:
         audio_id: "str | None" = str(audio_f["format_id"])
     elif audio_f is None and f.get("acodec") == "none":
         audio_id = "ba"
