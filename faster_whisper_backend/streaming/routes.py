@@ -1422,8 +1422,9 @@ async def transcribe_stream(ws: WebSocket) -> None:
                 # what the text IS, so the row below isn't read as a decode.
                 logger.info(
                     "[stream %s] utt#%s: the final decode failed — the text is "
-                    "the partial-committed transcript",
-                    session_id[:8], info["utterance"])
+                    "the partial-committed transcript%s",
+                    session_id[:8], info["utterance"],
+                    "" if raw_text.strip() else " (empty: the utterance was dropped)")
             elif not decoded:
                 _trimmed = info.get("trimmed_sec") or 0.0
                 logger.info(
@@ -1529,15 +1530,22 @@ async def transcribe_stream(ws: WebSocket) -> None:
             # Durable trace → /quick-config recent-transcriptions + autocomplete + SSE.
             # source='stream' tags the row so /quick-config can chip it as live
             # dictation vs a file-upload (batch) transcription.
-            try:
-                from faster_whisper_backend.quick_config import recent_feed as qc_recent_feed
-                qc_recent_feed.record_trace(
-                    request_id=rid, model=final_model, raw=raw_text,
-                    steps=steps if steps is not None else [], final=final_text,
-                    language=(_stored_lang(fw_info) or None),
-                    source="stream", user_id=user.get("user_id"))
-            except Exception as _qe:  # noqa: BLE001
-                logger.error("[stream %s] record_trace failed: %s", session_id[:8], _qe)
+            # A failed final decode is an error row (its text is only the
+            # partial-committed fallback), classified like the batch failure.
+            _status = "error" if info.get("decode_failed") else "ok"
+            # No trace for a failed decode that left no text at all (the
+            # session dropped it): there is nothing to show or autocomplete,
+            # only the error row below.
+            if raw_text.strip() or _status == "ok":
+                try:
+                    from faster_whisper_backend.quick_config import recent_feed as qc_recent_feed
+                    qc_recent_feed.record_trace(
+                        request_id=rid, model=final_model, raw=raw_text,
+                        steps=steps if steps is not None else [], final=final_text,
+                        language=(_stored_lang(fw_info) or None),
+                        source="stream", user_id=user.get("user_id"))
+                except Exception as _qe:  # noqa: BLE001
+                    logger.error("[stream %s] record_trace failed: %s", session_id[:8], _qe)
 
             # Timing/usage half — UPSERTs onto the same request_id row as record_trace.
             # kind + stages are both supported here and were both omitted,
@@ -1545,9 +1553,6 @@ async def transcribe_stream(ws: WebSocket) -> None:
             # timings recorded" and fell back to the synthetic pipeline glyph.
             # A live utterance has exactly one stage, but saying so beats
             # saying nothing and makes dictation rows comparable with batch.
-            # A failed final decode is an error row (its text is only the
-            # partial-committed fallback), classified like the batch failure.
-            _status = "error" if info.get("decode_failed") else "ok"
             _ec, _es = metrics.classify_error(_final_exc[0], status=_status,
                                               stage="transcribing")
             metrics.record_transcription(

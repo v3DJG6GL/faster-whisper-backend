@@ -278,6 +278,32 @@ def test_failed_final_decode_without_text_drops_and_is_not_retried():
     assert [m for m in msgs if m["type"] == "utterance"][-1]["reason"] == "error"
 
 
+def test_failed_final_decode_without_text_still_reaches_on_final():
+    """on_final is the route's only hook: a dropped failed decode must still
+    reach it (empty text, decode_failed) so the failure is recorded."""
+    infos = []
+
+    async def _df(audio, prompt):
+        raise RuntimeError("CUDA out of memory")
+
+    async def _on_final(info):
+        infos.append(info)
+
+    s, msgs = _session(decode_final=_df, on_final=_on_final)
+
+    async def run():
+        await s.feed_pcm(_pcm(8000, 500))
+        await s.feed_pcm(_pcm(0, 400))
+
+    asyncio.run(run())
+    assert _utt(msgs) == [("open", 0), ("decoding", 0), ("dropped", 0)]
+    assert not any(m["type"] == "final" for m in msgs)
+    assert len(infos) == 1
+    assert infos[0]["decode_failed"] is True and infos[0]["decoded"] is False
+    assert infos[0]["raw_text"] == "" and infos[0]["words"] == []
+    assert infos[0]["audio_dur"] > 0
+
+
 def test_failed_final_decode_does_not_lose_the_rest_of_the_chunk():
     """The raise used to abort feed_pcm's frame loop, so whatever followed the
     failing frame in the same chunk — here the start of the next utterance —

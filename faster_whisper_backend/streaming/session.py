@@ -644,6 +644,12 @@ class StreamSession:
             if decode_failed:
                 if not raw.strip():
                     await self._emit_utterance("dropped", "error")
+                    # Nothing to send, but the failure itself is still news:
+                    # on_final is the route's only hook, and without it the
+                    # failed decode left no /stats row at all.
+                    await self._report_final(
+                        self._whole_audio(audio), forced=forced, decoded=False,
+                        decode_failed=True, proc_dur=proc_dur, raw="", words=[])
                     return
             elif not (raw and raw.strip()) and not dropped_all:
                 # The final decode produced nothing at all (e.g. its VAD filter trimmed
@@ -678,15 +684,12 @@ class StreamSession:
         # already utterance-absolute and already include the banked prefix
         # (see above), so only a real decode's buffer-relative words are
         # re-based here.
-        if self._trimmed_audio:
-            full_audio = np.concatenate([*self._trimmed_audio, audio])
-            if decoded and not words_absolute:
-                off = self._buffer_offset
-                words = self._trimmed_words + [
-                    {**w, "start": w["start"] + off, "end": w["end"] + off}
-                    for w in words]
-        else:
-            full_audio = audio
+        full_audio = self._whole_audio(audio)
+        if self._trimmed_audio and decoded and not words_absolute:
+            off = self._buffer_offset
+            words = self._trimmed_words + [
+                {**w, "start": w["start"] + off, "end": w["end"] + off}
+                for w in words]
         self.raw_confirmed += raw
         self._prompt = self._make_prompt()
         if await self._emit_update(flush_hold=flush_hold, forced=forced, words=words):
@@ -698,6 +701,18 @@ class StreamSession:
             # goes out, so close the cycle explicitly. Only here — close() calls
             # _emit_document too, and its closing document is not an utterance.
             await self._emit_utterance("dropped", "empty")
+        await self._report_final(
+            full_audio, forced=forced, decoded=decoded,
+            decode_failed=decode_failed, proc_dur=proc_dur, raw=raw, words=words)
+
+    def _whole_audio(self, audio: np.ndarray) -> np.ndarray:
+        """The banked trim slices + the remaining buffer: the whole utterance."""
+        if self._trimmed_audio:
+            return np.concatenate([*self._trimmed_audio, audio])
+        return audio
+
+    async def _report_final(self, full_audio, *, forced, decoded, decode_failed,
+                            proc_dur, raw, words) -> None:
         if self.on_final is not None:
             await self.on_final({
                 "utterance": self._utterance_index,
