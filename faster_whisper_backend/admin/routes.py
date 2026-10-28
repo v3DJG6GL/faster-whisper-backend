@@ -701,6 +701,11 @@ _TEST_PIPELINE_MAX_REPLACEMENT = _field_max_length(
     settings_schema.RegexListEntry.model_fields["replacement"]) or 512
 _TEST_PIPELINE_MAX_MAP_VALUE = _str_max_length(
     get_args(settings_schema.MapRule.model_fields["map"].annotation)[1]) or 64
+# Same for a pattern (every rule type shares the regex-list entry's cap): the
+# structural screen compares every pair of alternatives, so a 16 KB alternation
+# pins a worker thread for minutes before any guard applies.
+_TEST_PIPELINE_MAX_PATTERN = _field_max_length(
+    settings_schema.RegexListEntry.model_fields["pattern"]) or 512
 
 
 @router.post("/test-pipeline",
@@ -785,6 +790,15 @@ async def test_pipeline(payload: dict[str, Any]) -> JSONResponse:
         if not isinstance(rule, dict):
             continue
         entries = rule.get("entries") if rule.get("type") == "regex-list" else None
+        for pat in (rule.get("pattern"), *(
+                e.get("pattern") for e in (entries if isinstance(entries, list) else ())
+                if isinstance(e, dict))):
+            if isinstance(pat, str) and len(pat) > _TEST_PIPELINE_MAX_PATTERN:
+                return JSONResponse(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    content={"error": f"rule {idx + 1}: pattern too long "
+                                      f"(max {_TEST_PIPELINE_MAX_PATTERN} chars)"},
+                )
         for entry in entries if isinstance(entries, list) else ():
             er = entry.get("replacement") if isinstance(entry, dict) else None
             if isinstance(er, str) and len(er) > _TEST_PIPELINE_MAX_REPLACEMENT:

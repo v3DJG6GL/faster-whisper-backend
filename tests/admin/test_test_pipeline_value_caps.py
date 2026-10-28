@@ -106,3 +106,45 @@ def test_map_rule_stops_before_passing_the_output_bound(client, monkeypatch):
     # Engine parity: every later rule is skipped once the bound is hit.
     assert steps[2]["skipped"] is True and steps[2]["capped"] is True
     assert len(r.json()["final"]) <= 40_000
+
+
+def test_pattern_cap_is_read_off_the_schema():
+    assert admin_routes._field_max_length(
+        settings_schema.RegexListEntry.model_fields["pattern"]) == 512
+
+
+def test_oversized_callback_pattern_is_rejected_before_the_screen(client, monkeypatch):
+    def _screen(pat):
+        raise AssertionError("structural screen ran on an over-long pattern")
+    monkeypatch.setattr(admin_routes.regex_guard, "_nested_repetition", _screen)
+    alternation = "(?:" + "|".join(f"w{i:06d}" for i in range(700)) + ")+"
+    r = client.post("/settings/test-pipeline", json={
+        "sample": "w000001",
+        "rules": [{"name": "d", "type": "callback:dedup", "enabled": True,
+                   "pattern": alternation}],
+    })
+    assert r.status_code == 400, r.status_code
+    assert r.json()["error"] == "rule 1: pattern too long (max 512 chars)"
+
+
+def test_oversized_regex_list_pattern_is_rejected(client):
+    r = client.post("/settings/test-pipeline", json={
+        "sample": "a",
+        "rules": [{"name": "rl", "type": "regex-list", "enabled": True, "entries": [
+            {"pattern": "a", "replacement": "b"},
+            {"pattern": "a" * 513, "replacement": "b"},
+        ]}],
+    })
+    assert r.status_code == 400, r.status_code
+    assert "pattern too long" in r.json()["error"]
+
+
+def test_pattern_at_the_cap_still_runs(client):
+    r = client.post("/settings/test-pipeline", json={
+        "sample": "a" * 512,
+        "rules": [{"name": "rl", "type": "regex-list", "enabled": True, "entries": [
+            {"pattern": "a" * 512, "replacement": "b"},
+        ]}],
+    })
+    assert r.status_code == 200, r.text
+    assert r.json()["steps"][0]["after"] == "b"
