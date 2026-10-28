@@ -245,6 +245,10 @@ def _run_pass() -> None:
             _state["processed"] += 1
 
     if affected_sample_ids:
+        # Lazy: routes imports this module. Chips are placed by the member's
+        # aligned words (as the export does), under the run's rules snapshot.
+        from faster_whisper_backend.captures.routes import _chip_words_lookup
+        chip_words = _chip_words_lookup(ident_cache)
         for sid in affected_sample_ids:
             g = capture_samples_store.get_sample(sid)
             if g is None or g.get("is_locked"):
@@ -252,6 +256,7 @@ def _run_pass() -> None:
             members = capture_samples_store.get_members(sid)
             new_t = capture_samples._build_default_transcript(
                 members, g.get("transcript_join_strategy") or "space",
+                words_for=chip_words,
             )
             if new_t != (g.get("transcript") or ""):
                 capture_samples_store.update_sample(

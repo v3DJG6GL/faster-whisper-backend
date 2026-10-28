@@ -561,11 +561,13 @@ async def list_samples_api(
             [g.get("user_id") for g in groups])
         for g in groups:
             # Re-derive transcript + corrections per group so the collapsed
-            # card preview reflects chip-applied final text (matches the
-            # expanded card + export). Members fetched once per group via the
-            # light get_members projection (word_count instead of the words
-            # blob) — no per-member get_capture and no merged_words on the
-            # list path; both are expand-only.
+            # card preview reflects chip-applied final text. Members fetched
+            # once per group via the light get_members projection (word_count
+            # instead of the words blob) — no per-member get_capture and no
+            # merged_words on the list path; both are expand-only. Without the
+            # aligned words a chip falls back to the nearest match, so where
+            # removed words (fillers, dictated punctuation) precede a repeated
+            # word this preview can differ from the expanded card + export.
             members = capture_samples_store.get_members(g["id"])
             g["transcript"] = capture_samples._build_default_transcript(
                 members, g.get("transcript_join_strategy") or "space",
@@ -1472,7 +1474,11 @@ async def create_sample_api(
     # Build merged WAV — sid generated upfront so the build path is
     # known before the DB insert (mirrors captures_store).
     sid = _uuid.uuid4().hex
-    transcript = capture_samples._build_default_transcript(captures, _global_join_strategy())
+    # Off the loop: placing chips aligns each chip-carrying member's words.
+    transcript = await asyncio.to_thread(
+        capture_samples._build_default_transcript,
+        captures, _global_join_strategy(), _chip_words_lookup(),
+    )
     duration_ms, hashes, member_trims = await asyncio.to_thread(
         functools.partial(
             capture_samples._build_merged_wav,
@@ -1624,18 +1630,22 @@ async def preview_merge_words_api(
     # audio, and _validate_merge_payload's cap is on the TRIMMED total so
     # silence-heavy members are not bounded by it. The sibling
     # preview_merge_audio_api already does its VAD inside merge_wavs.
-    def _build() -> list[dict[str, Any]]:
-        return _build_merged_words(
+    # The transcript too: placing chips aligns each chip-carrying member.
+    def _build() -> tuple[list[dict[str, Any]], str]:
+        words = _build_merged_words(
             captures, capture_samples._global_silence_ms(),
             member_trims=_preview_member_trims(
                 payload.member_ids, member_paths),
         )
+        transcript = capture_samples._build_default_transcript(
+            captures, _global_join_strategy(), words_for=_chip_words_lookup())
+        return words, transcript
 
-    words = await asyncio.to_thread(_build)
+    words, transcript = await asyncio.to_thread(_build)
     return JSONResponse({
         "words": words,
         "corrections": _project_member_corrections(captures),
-        "transcript": capture_samples._build_default_transcript(captures, _global_join_strategy()),
+        "transcript": transcript,
     })
 
 
@@ -2023,6 +2033,7 @@ def _enrich_sample(g: dict[str, Any]) -> dict[str, Any]:
     g["username"] = usernames.get(g.get("user_id"))
     g["transcript"] = capture_samples._build_default_transcript(
         members, g.get("transcript_join_strategy") or "space",
+        words_for=_chip_words_lookup(),
     )
     g["corrections"] = _project_member_corrections(members)
     g["merged_words"] = _build_merged_words(
@@ -2239,6 +2250,24 @@ def _align_member_words(
             if tw.get("removed"):
                 w["train_removed"] = True
     return ws
+
+
+def _chip_words_lookup(ident_cache: dict | None = None):
+    """The `words_for` callback for `_build_default_transcript`: a chip's idx
+    counts aligned karaoke words, so applying it needs the member's aligned
+    words (see `_apply_chips_to_text`). A light member (no words blob) is
+    hydrated with one get_capture; it is only called for a member that has
+    chips. An alignment failure falls back to the unaligned nearest match."""
+    cache: dict = {} if ident_cache is None else ident_cache
+
+    def _chip_words(m: dict[str, Any]) -> list[dict[str, Any]] | None:
+        try:
+            cap = m if m.get("words") is not None else captures_store.get_capture(m["id"])
+            return _align_member_words(cap, cache) if cap else None
+        except Exception:
+            return None
+
+    return _chip_words
 
 
 def _build_merged_words(
@@ -2460,7 +2489,8 @@ async def patch_sample_api(
         # (the global only re-applies on regenerate / bulk reprocess).
         if payload.corrections is not None:
             join_for_derive = g["transcript_join_strategy"] or "space"
-            patch["transcript"] = capture_samples._build_default_transcript(_members(), join_for_derive)
+            patch["transcript"] = capture_samples._build_default_transcript(
+                _members(), join_for_derive, words_for=_chip_words_lookup())
 
         return capture_samples_store.update_sample(sid, patch)
 
@@ -2762,18 +2792,8 @@ def _build_export_stream(only_status: str | None, include_audio: bool):
     # Closed even if the client disconnects mid-stream and the
     # generator is abandoned — otherwise every aborted export leaks
     # a spooled temp file.
-    # A chip's idx counts aligned karaoke words, so applying it needs the
-    # row's aligned words (see _apply_chips_to_text). Sample members come
-    # without the words blob; only a member that has chips is hydrated. An
-    # alignment failure falls back to the unaligned nearest match.
-    ident_cache: dict = {}
-
-    def _chip_words(m: dict[str, Any]) -> list[dict[str, Any]] | None:
-        try:
-            cap = m if m.get("words") is not None else captures_store.get_capture(m["id"])
-            return _align_member_words(cap, ident_cache) if cap else None
-        except Exception:
-            return None
+    # Chips land on the word their idx marks (see _chip_words_lookup).
+    _chip_words = _chip_words_lookup()
 
     try:
 

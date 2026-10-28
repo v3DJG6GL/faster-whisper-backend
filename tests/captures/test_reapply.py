@@ -356,3 +356,43 @@ def test_rerun_keeps_the_job_totals_of_the_earlier_pass(
     assert st["status"] == "done" and st["error"] is None
     assert st["processed"] == 1 and st["captures_updated"] == 1
     assert cs.get_capture("reapplyrt001")["final"] == "hello [A]"
+
+
+def test_run_rebuilds_a_group_transcript_with_chips_on_their_aligned_word(
+        captures_store_db, groups_store_db, fake_pipeline, monkeypatch):
+    """The group rebuild placed a chip by the nearest text-token match, so
+    with removed fillers before the first of two "DIE"s the stored transcript
+    corrected the second one while the export corrected the first."""
+    import json
+
+    from faster_whisper_backend.captures import routes as captures_routes
+    from faster_whisper_backend.settings import config as cfg
+
+    monkeypatch.setattr(cfg, "CAPTURES_PIPELINE_RULES_EXCLUDE", None,
+                        raising=False)
+    aligned = [{"word": "äh", "removed": True}] * 3 + [
+        {"word": "DIE"}, {"word": "KATZE"}, {"word": "DIE"}]
+    monkeypatch.setattr(captures_routes, "_align_member_words",
+                        lambda m, ident_cache=None: aligned)
+    conn = captures_store_db._require_conn()
+    gs = groups_store_db
+    conn.execute(
+        "INSERT INTO capture_samples (id, user_id, created_ts,"
+        " merged_wav_relpath, merged_duration_ms, transcript,"
+        " transcript_join_strategy, member_hashes,"
+        " inter_segment_silence_ms, is_stale, is_locked, status,"
+        " admin_notes, language, member_trims)"
+        " VALUES (?,'alice',1.0,?,5000,'old','space','{}',300,0,0,'new','',"
+        "'de','{}')", ("reapplysid000001", gs._relpath_for("reapplysid000001")))
+    _insert(conn, "reapplychip1", language="de", raw="die katze die",
+            final="old")
+    conn.execute(
+        "UPDATE captures SET sample_id = ?, sample_order = 0, corrections = ?"
+        " WHERE id = 'reapplychip1'",
+        ("reapplysid000001",
+         json.dumps([{"idx": 3, "wrong": "DIE", "correct": "DER"}])))
+
+    captures_reapply._run()
+
+    assert gs.get_sample("reapplysid000001")["transcript"] == \
+        "DER KATZE DIE [final]"
