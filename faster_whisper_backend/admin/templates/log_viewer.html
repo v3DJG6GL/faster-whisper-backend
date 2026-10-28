@@ -602,26 +602,31 @@
     }
     appendLine(log, line, _liveDim);
     _logsSkip++;
-    while (log.childElementCount > _LOG_DOM_MAX + _olderInDom) {
-      // Trimming away a fold control would strand its hidden rows with no
-      // way to reveal them, so unfold them on the way out.
-      const first = log.firstChild;
-      if (first && first.classList && first.classList.contains('fold-ctl')) {
-        // The live block this control folds may still be arriving: drop its
-        // fold state too, or decorate() keeps folding the block's later rows
-        // behind a control that is no longer in the DOM.
-        if (first === _liveDim.ctl) {
-          _liveDim.ctl = null; _liveDim.inSeg = false; _liveDim.pipe = false;
-          _liveDim.segRows = 0; _liveDim.pipeRows = 0;
+    // No trim while a "Load older" fetch runs: its batch starts at the
+    // cursor read when it was sent, so lines trimmed meanwhile would leave a
+    // silent gap above it and the rewound cursor would refetch its top.
+    if (!_logsOlderBusy) {
+      while (log.childElementCount > _LOG_DOM_MAX + _olderInDom) {
+        // Trimming away a fold control would strand its hidden rows with no
+        // way to reveal them, so unfold them on the way out.
+        const first = log.firstChild;
+        if (first && first.classList && first.classList.contains('fold-ctl')) {
+          // The live block this control folds may still be arriving: drop its
+          // fold state too, or decorate() keeps folding the block's later rows
+          // behind a control that is no longer in the DOM.
+          if (first === _liveDim.ctl) {
+            _liveDim.ctl = null; _liveDim.inSeg = false; _liveDim.pipe = false;
+            _liveDim.segRows = 0; _liveDim.pipeRows = 0;
+          }
+          _unfold(first, 1e9);
+          if (first.parentNode) first.remove();
+        } else {
+          // The trimmed line is no longer in the DOM, so the "Load older"
+          // cursor must step back too — else the first click skips past the
+          // trimmed window and it vanishes from the scrollback with no gap.
+          if (first && first.classList && first.classList.contains('line')) _logsSkip--;
+          log.firstChild.remove();
         }
-        _unfold(first, 1e9);
-        if (first.parentNode) first.remove();
-      } else {
-        // The trimmed line is no longer in the DOM, so the "Load older"
-        // cursor must step back too — else the first click skips past the
-        // trimmed window and it vanishes from the scrollback with no gap.
-        if (first && first.classList && first.classList.contains('line')) _logsSkip--;
-        log.firstChild.remove();
       }
     }
     if (filterText) queueNav();
