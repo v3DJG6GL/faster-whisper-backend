@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import contextlib
 import functools
 import io
 import json
@@ -37,7 +38,7 @@ import time
 from datetime import datetime
 from typing import Any, Literal
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import (
     FileResponse, HTMLResponse, JSONResponse, Response, StreamingResponse,
 )
@@ -1554,6 +1555,21 @@ async def create_sample_api(
     return JSONResponse({"sample_id": sid})
 
 
+class _TempFileResponse(FileResponse):
+    """FileResponse that unlinks its file however the response ends.
+    Starlette runs `background` only after a normal body send: its Range
+    branches (400 malformed, 416 unsatisfiable) return before it, and a
+    client disconnect mid-stream raises past it — each left a merged PHI WAV
+    in the temp dir for good."""
+
+    async def __call__(self, scope, receive, send):
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            with contextlib.suppress(OSError):
+                os.unlink(self.path)
+
+
 @router.post(
     "/api/samples/preview-audio",
     dependencies=[Depends(require_page("captures"))],
@@ -1561,7 +1577,6 @@ async def create_sample_api(
 async def preview_merge_audio_api(
     payload: PreviewMergeIn,
     request: Request,
-    background: BackgroundTasks,
     user: dict[str, Any] = Depends(get_current_user),
 ) -> FileResponse:
     """Build the merged WAV exactly as create_sample_api would, stream it
@@ -1580,7 +1595,7 @@ async def preview_merge_audio_api(
     )
 
     # tempfile.NamedTemporaryFile(delete=False) so FileResponse can stream
-    # the closed file; background unlink fires after the response finishes.
+    # the closed file; _TempFileResponse unlinks it however the response ends.
     fd, tmp_path = tempfile.mkstemp(prefix="preview_merge_", suffix=".wav")
     os.close(fd)
     try:
@@ -1609,13 +1624,7 @@ async def preview_merge_audio_api(
         except OSError: pass
         raise
 
-    def _cleanup():
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
-    background.add_task(_cleanup)
-    return FileResponse(
+    return _TempFileResponse(
         path=tmp_path,
         media_type="audio/wav",
         filename="preview.wav",

@@ -662,6 +662,43 @@ def test_preview_merge_audio_is_not_cacheable(client, make_user_key,
     assert r.headers["cache-control"] == "no-store"
 
 
+@pytest.mark.parametrize("range_header, code", [
+    (None, 200), ("bytes=0-3", 206), ("bytes=99999-", 416), ("bytes=abc", 400)])
+def test_preview_merge_audio_removes_its_temp_file_on_every_path(
+        client, make_user_key, monkeypatch, range_header, code):
+    """Starlette runs a FileResponse's background task only after a normal
+    body send; on its 400/416 Range answers the merged WAV stayed in the temp
+    dir for good."""
+    import wave
+    from faster_whisper_backend.captures import merge as audio_merge
+    from faster_whisper_backend.captures import routes as captures_routes
+
+    _uid, raw = make_user_key("root", is_admin=True)
+    monkeypatch.setattr(
+        captures_routes, "_validate_merge_payload",
+        lambda ids, silence_ms, user: ([], "root", ["/nonexistent.wav"], 0))
+    written = []
+
+    def _fake_merge(paths, dst, **kw):
+        written.append(dst)
+        with wave.open(dst, "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(16000)
+            w.writeframes(b"\x00\x00" * 16)
+        return {"duration_ms": 1}
+
+    monkeypatch.setattr(audio_merge, "merge_wavs", _fake_merge)
+    headers = bearer(raw)
+    if range_header:
+        headers["Range"] = range_header
+    r = client.post("/captures/api/samples/preview-audio",
+                    json={"member_ids": ["prevcap00001"]}, headers=headers)
+    assert r.status_code == code
+    assert len(written) == 1
+    assert not os.path.exists(written[0])
+
+
 def test_audio_rate_limit_is_hot_and_per_identity(client, app_module,
                                                   monkeypatch, make_user_key):
     """The cap is read from config on every call, so a test can lower it to 2
