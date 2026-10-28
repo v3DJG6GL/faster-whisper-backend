@@ -2,6 +2,7 @@
 running the same SELECT text share pysqlite's cached statement, and each can
 read the other's rows (another user's, under an own-scope filter)."""
 import threading
+import time
 
 
 def _held_elsewhere(lock) -> bool:
@@ -54,4 +55,58 @@ def test_system_metrics_list_series_holds_the_lock(sm_store, monkeypatch):
 
     out = sm_store.list_series(metric="gpu_util", from_ts=0, to_ts=2000, step_s=10)
     assert out["avg"] == [1.0]
+    assert conn.unlocked == []
+
+
+def test_jobs_store_reads_hold_the_lock(tmp_path, monkeypatch):
+    from faster_whisper_backend.transcription import jobs_store as js
+
+    js._reset_for_tests()
+    js.init_db(str(tmp_path / "jobs.sqlite3"))
+    try:
+        js.start(job_id="a" * 32, request_id="r", kind="transcribe",
+                 user_id="u1", key_id="k1", model="m", source_kind="file",
+                 source_name="a.wav", ttl_s=3600.0, max_rows=100, max_bytes=0,
+                 prune_every=0)
+        js.finish(job_id="a" * 32, state="done", result={"text": "hi"},
+                  ttl_s=3600.0)
+        conn = _LockCheckingConn(js._conn, js._lock)
+        monkeypatch.setattr(js, "_conn", conn)
+
+        assert len(js.list_jobs(user_id="u1", key_id="k1")) == 1
+        assert js.get("a" * 32)["state"] == "done"
+        assert js.get_result("a" * 32) == {"text": "hi"}
+        assert js.count() == 1
+        assert js.total_result_bytes() > 0
+        assert js.patch_result("a" * 32, lambda p: p.update(x=1) or True)
+        assert conn.unlocked == []
+    finally:
+        monkeypatch.undo()
+        js._reset_for_tests()
+
+
+def test_usage_store_reads_hold_the_lock(usage_store_db, monkeypatch):
+    us = usage_store_db
+    us.record_usage(user_id="u1", key_id="k1", model="m", audio_s=1.0,
+                    processing_s=0.5, words=2, status="ok", kind="transcribe",
+                    job_id="j1")
+    conn = _LockCheckingConn(us._conn, us._lock)
+    monkeypatch.setattr(us, "_conn", conn)
+    now = time.time()
+    win = dict(start_ts=0.0, end_ts=now + 1)
+
+    us.totals_by_key()
+    us.totals_by_user()
+    us.totals_for_user("u1")
+    us.series()
+    us.leaderboard()
+    us.distinct_ids("user_id")
+    us.wait_quantiles(**win, user_id="u1")
+    us.wait_series_by_day(**win, tz=None, user_id="u1")
+    us.turnaround_histogram(**win, user_id="u1")
+    us.failures(**win, user_id="u1")
+    us.by_model(**win, user_id="u1")
+    us.overview(user_id="u1", tz=None, tz_name="UTC", days=7)
+    us.document("u1", tz=None, tz_name="UTC", days=7)
+    us.tail(user_id="u1", tz=None, tz_name="UTC", days=7)
     assert conn.unlocked == []

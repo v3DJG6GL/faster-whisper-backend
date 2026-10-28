@@ -60,7 +60,8 @@ a user or key never drops their historical usage, and aggregation needs no
 join to the api-keys DB.
 
 Module-level connection: WAL mode lets us share one connection across
-threads (check_same_thread=False); _lock serialises writers. The connection
+threads (check_same_thread=False); _lock serialises writers and readers alike
+(concurrent identical SELECTs share a cached statement). The connection
 is in autocommit mode, so the multi-table writes below open an explicit
 transaction — a job row without its rollup (or vice versa) would make the
 session and utterance counts disagree forever.
@@ -73,6 +74,7 @@ from __future__ import annotations
 
 import dataclasses
 import datetime
+import functools
 from collections.abc import Sequence
 import logging
 import sqlite3
@@ -418,6 +420,18 @@ def _require_conn() -> sqlite3.Connection:
     if _conn is None:
         raise RuntimeError("usage_store.init_db() was not called before use.")
     return _conn
+
+
+def _read_under_lock(fn):
+    """Run a public reader under `_lock`, like the writers: two threads that
+    run the same SELECT text on the shared connection share one cached
+    statement and can read each other's rows (another user's, under an
+    own-scope filter), and a read must not see a writer's open BEGIN."""
+    @functools.wraps(fn)
+    def locked(*args, **kwargs):
+        with _lock:
+            return fn(*args, **kwargs)
+    return locked
 
 
 # --- time helpers ---------------------------------------------------------
@@ -1007,6 +1021,7 @@ def _window_clause(start_hour: int | None, end_hour: int | None,
     return (" WHERE " + " AND ".join(clauses)) if clauses else "", params
 
 
+@_read_under_lock
 def totals_by_key(
     *,
     start_hour: int | None = None,
@@ -1032,6 +1047,7 @@ def totals_by_key(
     return [dict(r) for r in cur.fetchall()]
 
 
+@_read_under_lock
 def totals_by_user(
     *,
     start_hour: int | None = None,
@@ -1051,6 +1067,7 @@ def totals_by_user(
     return {r["user_id"]: dict(r) for r in cur.fetchall()}
 
 
+@_read_under_lock
 def totals_for_user(
     user_id: str,
     *,
@@ -1080,6 +1097,7 @@ def totals_for_user(
     }
 
 
+@_read_under_lock
 def series(
     *,
     start_hour: int | None = None,
@@ -1126,6 +1144,7 @@ def series(
     return [agg[d] for d in sorted(agg)]
 
 
+@_read_under_lock
 def leaderboard(
     *,
     start_hour: int | None = None,
@@ -1422,6 +1441,7 @@ def _scope_where(user_id: Ids, key_id: Ids = None, *,
     return " WHERE " + " AND ".join(clauses), params
 
 
+@_read_under_lock
 def distinct_ids(col: str) -> list[str]:
     """Every distinct user_id / key_id the hourly rollups have seen; the
     /stats route maps a non-admin viewer's opaque labels back to ids with
@@ -1463,6 +1483,7 @@ def _with_clause(with_stages: tuple[str, ...]) -> str:
         " usage_jobs.job_id AND s.stage = ?)" for _ in with_stages)
 
 
+@_read_under_lock
 def document(
     user_id: str | None,
     *,
@@ -1610,6 +1631,7 @@ def _year_back(day: int) -> int:
         return _epoch_day(d.replace(year=d.year - 1, day=28))
 
 
+@_read_under_lock
 def overview(
     *,
     user_id: str | None,
@@ -1995,6 +2017,7 @@ def truncated_to_days(start_ts: float, retention_days: int,
     return days if float(start_ts) < now - days * 86400 else None
 
 
+@_read_under_lock
 def wait_quantiles(*, start_ts: float, end_ts: float, user_id: str | None = None,
                    key_id: str | None = None, kind: str | None = None,
                    model: str | None = None) -> dict[str, Any]:
@@ -2023,6 +2046,7 @@ def wait_quantiles(*, start_ts: float, end_ts: float, user_id: str | None = None
             "max": round(float(row["mx"] or 0.0), 3)}
 
 
+@_read_under_lock
 def wait_series_by_day(*, start_ts: float, end_ts: float,
                        tz: zoneinfo.ZoneInfo | None, user_id: str | None = None,
                        key_id: str | None = None, kind: str | None = None
@@ -2042,6 +2066,7 @@ def wait_series_by_day(*, start_ts: float, end_ts: float,
     return out
 
 
+@_read_under_lock
 def turnaround_histogram(*, start_ts: float, end_ts: float,
                          user_id: str | None = None, key_id: str | None = None,
                          kind: str | None = None,
@@ -2083,6 +2108,7 @@ def turnaround_histogram(*, start_ts: float, end_ts: float,
     }
 
 
+@_read_under_lock
 def failures(*, start_ts: float, end_ts: float, user_id: str | None = None,
              key_id: str | None = None, kind: str | None = None) -> dict[str, Any]:
     """Failures grouped by stage and class: the terminal ones from the job
@@ -2123,6 +2149,7 @@ def failures(*, start_ts: float, end_ts: float, user_id: str | None = None,
     }
 
 
+@_read_under_lock
 def by_model(*, start_ts: float, end_ts: float, user_id: str | None = None,
              key_id: str | None = None, kind: str | None = None,
              top: int = 8) -> list[dict[str, Any]]:
@@ -2154,6 +2181,7 @@ def by_model(*, start_ts: float, end_ts: float, user_id: str | None = None,
     return out
 
 
+@_read_under_lock
 def tail(
     *,
     user_id: str | None,

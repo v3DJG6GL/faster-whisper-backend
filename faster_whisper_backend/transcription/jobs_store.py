@@ -29,7 +29,9 @@ Lifecycle per run:
      stored result bytes fit).
 
 Module-level connection: SQLite's WAL mode lets one connection be shared
-across threads (`check_same_thread=False`); `_lock` serialises writers. The
+across threads (`check_same_thread=False`); `_lock` serialises writers and
+readers alike (concurrent identical SELECTs share a cached statement, and each
+can read the other's rows — another user's, under an owner filter). The
 handler writes `finish` off the loop thread (asyncio.to_thread) because a
 result_json can be megabytes.
 
@@ -347,9 +349,10 @@ def patch_result(job_id: str, patch: Callable[[dict], bool]) -> bool:
     re-reads and patches again."""
     conn = _require_conn()
     for _ in range(3):
-        row = conn.execute(
-            "SELECT state, result_json FROM jobs WHERE job_id = ?",
-            (job_id,)).fetchone()
+        with _lock:
+            row = conn.execute(
+                "SELECT state, result_json FROM jobs WHERE job_id = ?",
+                (job_id,)).fetchone()
         if row is None or row["state"] != "done" or not row["result_json"]:
             return False
         old_blob = row["result_json"]
@@ -374,20 +377,22 @@ def get(job_id: str, *, side_blobs: bool = False) -> dict[str, Any] | None:
     """Every column except the result blob (polls must not load MBs); the
     stages / plan side blobs only with `side_blobs`."""
     conn = _require_conn()
-    row = conn.execute(
-        f"SELECT {_META_COLS if side_blobs else _LIST_COLS} FROM jobs "
-        "WHERE job_id = ?", (job_id,)
-    ).fetchone()
+    with _lock:
+        row = conn.execute(
+            f"SELECT {_META_COLS if side_blobs else _LIST_COLS} FROM jobs "
+            "WHERE job_id = ?", (job_id,)
+        ).fetchone()
     return _row_to_dict(row) if row else None
 
 
 def get_result(job_id: str) -> Any:
     """The decoded result payload (dict or str), or None when absent."""
     conn = _require_conn()
-    row = conn.execute(
-        "SELECT result_json FROM jobs WHERE job_id = ? AND state = 'done'",
-        (job_id,),
-    ).fetchone()
+    with _lock:
+        row = conn.execute(
+            "SELECT result_json FROM jobs WHERE job_id = ? AND state = 'done'",
+            (job_id,),
+        ).fetchone()
     if not row or row["result_json"] is None:
         return None
     try:
@@ -443,11 +448,12 @@ def list_jobs(
         clauses.append("state = ?")
         params.append(state)
     params.append(max(1, int(limit)))
-    rows = conn.execute(
-        f"SELECT {_LIST_COLS} FROM jobs WHERE " + " AND ".join(clauses)
-        + " ORDER BY created_ts DESC LIMIT ?",
-        params,
-    ).fetchall()
+    with _lock:
+        rows = conn.execute(
+            f"SELECT {_LIST_COLS} FROM jobs WHERE " + " AND ".join(clauses)
+            + " ORDER BY created_ts DESC LIMIT ?",
+            params,
+        ).fetchall()
     return [_row_to_dict(r) for r in rows]
 
 
@@ -494,14 +500,16 @@ def mark_running_as_failed(error: str) -> int:
 
 def count() -> int:
     conn = _require_conn()
-    row = conn.execute("SELECT COUNT(*) AS n FROM jobs").fetchone()
+    with _lock:
+        row = conn.execute("SELECT COUNT(*) AS n FROM jobs").fetchone()
     return int(row["n"]) if row else 0
 
 
 def total_result_bytes() -> int:
     conn = _require_conn()
-    row = conn.execute(
-        "SELECT COALESCE(SUM(result_bytes), 0) AS n FROM jobs").fetchone()
+    with _lock:
+        row = conn.execute(
+            "SELECT COALESCE(SUM(result_bytes), 0) AS n FROM jobs").fetchone()
     return int(row["n"]) if row else 0
 
 
