@@ -679,10 +679,13 @@ _convert_locks_meta = asyncio.Lock()
 
 def _converted_root() -> str:
     """Resolve the output root for converted models. Honours
-    cfg.CONVERTED_MODELS_DIR when set, else ~/.cache/whisper-ct2."""
-    return getattr(cfg, "CONVERTED_MODELS_DIR", None) or os.path.join(
-        os.path.expanduser("~"), ".cache", "whisper-ct2"
-    )
+    cfg.CONVERTED_MODELS_DIR when set, else ~/.cache/whisper-ct2. A "~" /
+    $VAR in the configured value is expanded like DOWNLOAD_ROOT (dotenv does
+    not): verbatim, the weights landed in a literal "./~" dir under the cwd."""
+    configured = getattr(cfg, "CONVERTED_MODELS_DIR", None)
+    if configured:
+        return os.path.expandvars(os.path.expanduser(configured))
+    return os.path.join(os.path.expanduser("~"), ".cache", "whisper-ct2")
 
 
 def _converted_dir_for(model_id: str, quantization: str,

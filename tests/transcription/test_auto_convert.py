@@ -265,3 +265,14 @@ def test_local_dir_written_during_conversion_is_reconverted(
     assert converted == [str(src), str(src)]
     with open(os.path.join(out_dir, "model.bin")) as f:
         assert f.read() == "final"
+
+
+def test_converted_models_dir_tilde_is_expanded(monkeypatch, tmp_path):
+    """A "~/..." CONVERTED_MODELS_DIR (the form its own default is written in;
+    dotenv does not expand it) resolves under the home dir like DOWNLOAD_ROOT,
+    not to a relative literal "~" dir under the cwd."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(tx_models.cfg, "CONVERTED_MODELS_DIR", "~/models/ct2",
+                        raising=False)
+    out = tx_models._converted_dir_for("org/ft", "float16")
+    assert out == os.path.join(str(tmp_path), "models", "ct2", "org__ft", "float16")
