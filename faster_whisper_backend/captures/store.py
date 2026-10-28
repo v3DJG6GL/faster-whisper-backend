@@ -27,6 +27,7 @@ if they escape it (path traversal defense).
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
@@ -1185,14 +1186,21 @@ def bulk_update_status(ids: list[str], new_status: str) -> list[dict[str, Any]]:
 # Delete
 # ---------------------------------------------------------------------
 
-def delete_capture(cid: str) -> bool:
+def delete_capture(cid: str, *, refuse_locked: bool = False) -> bool:
     """Drop a single capture row + its audio file. If the capture was
     a member of a group, the group is auto-dissolved — a merged
     sample is reconstructable only from its complete member set, so
     losing a member makes the group's WAV a frozen artifact of a
-    state that can never be rebuilt. Returns True if the row existed."""
+    state that can never be rebuilt. Returns True if the row existed.
+
+    refuse_locked: raise SampleLockedError instead when the parent sample
+    is locked, read under the samples lock its is_locked writes take (a
+    non-admin caller's pre-check may be stale)."""
+    from faster_whisper_backend.captures import samples_store as capture_samples_store
     conn = _require_conn()
-    with _lock:
+    # Samples-then-captures, the order clear_all / dissolve_sample use.
+    with (capture_samples_store._lock if refuse_locked
+          else contextlib.nullcontext()), _lock:
         row = conn.execute(
             "SELECT audio_relpath, audio_trimmed_relpath, sample_id, user_id"
             " FROM captures WHERE id = ?",
@@ -1202,6 +1210,12 @@ def delete_capture(cid: str) -> bool:
             return False
         sid = row["sample_id"]
         uid = row["user_id"]
+        if refuse_locked and sid:
+            g = conn.execute(
+                "SELECT is_locked FROM capture_samples WHERE id = ?", (sid,),
+            ).fetchone()
+            if g is not None and g["is_locked"]:
+                raise capture_samples_store.SampleLockedError(sid)
         conn.execute("DELETE FROM captures WHERE id = ?", (cid,))
     try:
         _safe_unlink(abs_audio_path(row["audio_relpath"]))

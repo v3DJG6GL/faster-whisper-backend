@@ -101,3 +101,48 @@ def test_group_chip_save_refuses_a_sample_locked_while_waiting(
                      json={"corrections": [], "status": "reviewed"})
     assert r.status_code == 409
     assert gs.get_sample(sid)["status"] == "new"
+
+
+def _member_locked_after_guard(client, make_user_key, monkeypatch, sid, cid):
+    """A member of an unlocked sample whose sample gets locked right after the
+    route's lock guard passed — the hop in which an admin locks it."""
+    from faster_whisper_backend.captures import routes
+    from faster_whisper_backend.captures import samples_store as gs
+    from faster_whisper_backend.captures import store as captures_store
+    from tests.captures.test_routes_captures import _insert_member
+
+    make_user_key("root", is_admin=True)
+    uid, raw = make_user_key("alice", pages={"captures": "own"})
+    conn = captures_store._require_conn()
+    _insert_sample(conn, gs, sid, locked=False, user_id=uid)
+    _insert_member(conn, cid, sid, user_id=uid)
+    real = routes._assert_member_sample_not_locked
+
+    def _guard_then_lock(row, user):
+        real(row, user)
+        conn.execute("UPDATE capture_samples SET is_locked = 1 WHERE id = ?", (sid,))
+
+    monkeypatch.setattr(routes, "_assert_member_sample_not_locked", _guard_then_lock)
+    return gs, captures_store, bearer(raw)
+
+
+def test_member_delete_refuses_a_sample_locked_since_the_guard(
+        client, make_user_key, monkeypatch):
+    sid, cid = "relock05sid", "aa05member0001"
+    gs, cs, h = _member_locked_after_guard(client, make_user_key, monkeypatch, sid, cid)
+    r = client.delete(f"/captures/api/{cid}", headers=h)
+    assert r.status_code == 409
+    assert cs.get_capture(cid) is not None
+    assert gs.get_sample(sid) is not None
+
+
+def test_bulk_delete_skips_a_member_whose_sample_was_locked_since_the_guard(
+        client, make_user_key, monkeypatch):
+    sid, cid = "relock06sid", "aa06member0001"
+    gs, cs, h = _member_locked_after_guard(client, make_user_key, monkeypatch, sid, cid)
+    r = client.post("/captures/api/bulk-delete", headers=h, json={"ids": [cid]})
+    assert r.status_code == 200
+    assert r.json()["deleted"] == []
+    assert r.json()["skipped"] == [{"id": cid, "reason": "locked"}]
+    assert cs.get_capture(cid) is not None
+    assert gs.get_sample(sid) is not None

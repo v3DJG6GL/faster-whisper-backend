@@ -865,7 +865,15 @@ async def bulk_delete_api(
         rows, skipped = _bulk_guard(payload.ids, user, "capture-bulk-delete")
         deleted: list[str] = []
         for r in rows:
-            if captures_store.delete_capture(r["id"]):
+            # The guard above ran before every earlier delete in this loop
+            # (each may wait on a rebuild lock): re-check the lock per row.
+            try:
+                ok = captures_store.delete_capture(
+                    r["id"], refuse_locked=not user.get("is_admin"))
+            except capture_samples_store.SampleLockedError:
+                skipped.append({"id": r["id"], "reason": "locked"})
+                continue
+            if ok:
                 deleted.append(r["id"])
             else:
                 skipped.append({"id": r["id"], "reason": "not_found"})
@@ -980,8 +988,16 @@ async def delete_capture_api(
 
     await asyncio.to_thread(_read_and_guard)
     # Off the loop: deleting a member auto-dissolves its sample, which waits
-    # on that sample's rebuild lock (see samples_store.dissolve_sample).
-    if not await asyncio.to_thread(captures_store.delete_capture, cid):
+    # on that sample's rebuild lock (see samples_store.dissolve_sample). The
+    # lock check is repeated at delete time: the sample may have been locked
+    # since the guard above.
+    try:
+        found = await asyncio.to_thread(
+            captures_store.delete_capture, cid,
+            refuse_locked=not user.get("is_admin"))
+    except capture_samples_store.SampleLockedError:
+        raise HTTPException(status.HTTP_409_CONFLICT, "sample is locked")
+    if not found:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "capture not found")
     return JSONResponse({"ok": True})
 
