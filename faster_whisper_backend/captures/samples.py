@@ -116,7 +116,12 @@ def _apply_chips_to_text(
                 if not anchored:
                     best = i
                     break
-                d = abs(len(out[:i].split()) + shift - pos)
+                # Whole tokens before the occurrence: a "(" or „ it starts
+                # inside belongs to its own word, not the one before.
+                k = len(out[:i].split())
+                if i > 0 and not out[i - 1].isspace():
+                    k -= 1
+                d = abs(k + shift - pos)
                 if best < 0 or d < best_d:
                     best, best_d = i, d
             i = out.find(wrong, i + 1)
