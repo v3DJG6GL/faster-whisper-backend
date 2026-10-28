@@ -4483,16 +4483,22 @@
   }
 
   async function _loadProposals() {
+    // An Accept / Dismiss / Revert in flight renders its own next card: a
+    // reload landing first would release _batchBusy under it, so the card
+    // showed the proposal still being POSTed (Accept sent it twice).
+    if (_batchActive && _batchBusy && !_batchLoadHold) return;
     // The redraw below detaches every card, ▶ player included: stop the
     // shared audio first, or it plays on with no control left to pause it.
     _stopAnyPreview();
     var listEl = document.getElementById('propose-list');
     listEl.innerHTML = '<div class="empty">Loading proposals…</div>';
+    // Only the latest Refresh renders: an older reply (a double click, out
+    // of order) would put back a queue swept before an Accept since.
+    var seq = ++_proposalsSeq;
     // In batch mode the card on screen belongs to the queue this replaces:
     // an Accept meanwhile would come back as the next card, its Revert gone.
-    // _renderBatchCard below releases it.
-    var hold = _batchActive && !_batchBusy;
-    if (hold) _batchBusy = true;
+    // The latest reload releases it (_renderBatchCard on success).
+    if (_batchActive) { _batchBusy = true; _batchLoadHold = true; }
     try {
       // Accept checks members against _allCaptures, which holds only the
       // picked speakers: another speaker's proposal could never pass. The
@@ -4502,6 +4508,8 @@
       var sp = _filtSpeakers.slice();
       var j = await api('GET', '/captures/api/propose-merges'
         + (sp.length ? '?user_id=' + encodeURIComponent(sp.join(',')) : ''));
+      if (seq !== _proposalsSeq) return;
+      _batchLoadHold = false;
       _renderProposals((j.proposals || []).filter(function(p) {
         return !sp.length || sp.indexOf(p.user_id) !== -1;
       }));
@@ -4513,7 +4521,9 @@
         _renderBatchCard();
       }
     } catch (e) {
-      if (hold) _batchBusy = false;   // the old queue stays: keep it usable
+      if (seq !== _proposalsSeq) return;
+      // The old queue stays: keep it usable.
+      if (_batchLoadHold) { _batchLoadHold = false; _batchBusy = false; }
       if (e && e.message !== 'unauthorized' && e.message !== 'not-admin') {
         listEl.innerHTML = '';
         var err = document.createElement('div');
@@ -4589,6 +4599,10 @@
   // that window _proposals[0] is already the next, unseen proposal while
   // the old card's buttons and Ctrl+arrows are still live.
   var _batchBusy = false;
+  // _batchBusy is held by a proposals reload (not an action), and the
+  // sequence number of the latest reload.
+  var _batchLoadHold = false;
+  var _proposalsSeq = 0;
 
   function _enterBatchMode() {
     if (_batchActive) return;

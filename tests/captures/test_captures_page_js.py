@@ -561,7 +561,7 @@ def test_proposals_follow_the_speaker_filter(page, tmp_path, picked, url, shown)
     that Refresh could never fix."""
     out = _run_node(tmp_path, _js_function(page, "_loadProposals") + r"""
 var _filtSpeakers = """ + json.dumps(picked) + r""";
-var urls = [], rendered = null, _batchActive = false;
+var urls = [], rendered = null, _batchActive = false, _proposalsSeq = 0;
 function _stopAnyPreview() {}
 global.document = { getElementById: function() { return {}; } };
 async function api(m, u) {
@@ -615,7 +615,8 @@ function tick() { return new Promise(function(r) { setTimeout(r, 0); }); }
 
 _BATCH_STUBS = r"""
 var _batchActive = true, _batchAccepted = 0, _batchDismissed = 0,
-    _batchCurrentCard = null, _batchUndo = null, _batchBusy = false;
+    _batchCurrentCard = null, _batchUndo = null, _batchBusy = false,
+    _batchLoadHold = false, _proposalsSeq = 0;
 var built = 0, posts = [], pendingPost = [];
 function fakeEl() {
   return { classList: { add: function() {}, remove: function() {} }, style: {},
@@ -712,6 +713,69 @@ api = function(m, u, body) {
 })();
 """)
     assert out == {"posts": [], "afterOk": False, "afterFail": False}
+
+
+@needs_node
+def test_batch_refresh_during_an_accept_leaves_the_card_held(page, tmp_path):
+    """A Refresh while an Accept POST was in flight released the batch hold
+    when its GET landed: the card showed the proposal still being POSTed,
+    and the next Accept sent the same members a second time."""
+    out = _run_node(tmp_path, _batch_fns(page) + _js_function(page, "_loadProposals")
+                    + _BATCH_STUBS + r"""
+var _filtSpeakers = [], gets = [];
+function _renderProposals(ps) { _proposals = ps; }
+api = function(m, u, body) {
+  if (m === 'GET') return new Promise(function(r) { gets.push(r); });
+  posts.push(body.member_ids[0]);
+  return new Promise(function(r) { pendingPost.push(r); });
+};
+(async function() {
+  _batchCurrentCard = fakeEl();
+  _advanceBatch('accept');                // POST 'a' in flight
+  _loadProposals();                       // Refresh
+  if (gets.length) gets[0]({ proposals: [{ member_ids: ['b'] }, { member_ids: ['c'] }] });
+  await wait(0);
+  _advanceBatch('accept');
+  var busy = _batchBusy;
+  pendingPost[0]({ sample_id: 's1' });
+  await wait(300);
+  console.log(JSON.stringify({ gets: gets.length, busy: busy, posts: posts,
+    next: _proposals[0].member_ids[0] }));
+})();
+""")
+    assert out == {"gets": 0, "busy": True, "posts": ["a"], "next": "b"}
+
+
+@needs_node
+@pytest.mark.parametrize("first", ["ok", "fail"])
+def test_batch_double_refresh_holds_the_card_until_the_latest_reload(page, tmp_path, first):
+    """The batch hold had no sequence token: with two Refreshes in flight the
+    first reply (or failure) released it, an Accept then went through, and
+    the second reply put back the queue swept before that Accept."""
+    out = _run_node(tmp_path, _batch_fns(page) + _js_function(page, "_loadProposals")
+                    + _BATCH_STUBS + r"""
+var _filtSpeakers = [], gets = [];
+function _renderProposals(ps) { _proposals = ps; }
+api = function(m, u, body) {
+  if (m === 'GET') return new Promise(function(r, j) { gets.push({ r: r, j: j }); });
+  posts.push(body.member_ids[0]);
+  return Promise.resolve({ sample_id: 's1' });
+};
+var FIRST = """ + json.dumps(first) + r""";
+(async function() {
+  var p1 = _loadProposals(), p2 = _loadProposals();   // double-click Refresh
+  if (FIRST === 'ok') gets[0].r({ proposals: [{ member_ids: ['old'] }] });
+  else gets[0].j(new Error('HTTP 502'));
+  await p1;
+  var held = _batchBusy;
+  _advanceBatch('accept');
+  gets[1].r({ proposals: [{ member_ids: ['a'] }, { member_ids: ['b'] }] });
+  await p2;
+  console.log(JSON.stringify({ held: held, posts: posts, busy: _batchBusy,
+    queue: _proposals.map(function(p) { return p.member_ids[0]; }) }));
+})();
+""")
+    assert out == {"held": True, "posts": [], "busy": False, "queue": ["a", "b"]}
 
 
 # ---- group card ---------------------------------------------------------------------
@@ -1070,6 +1134,7 @@ def test_proposals_refresh_stops_the_preview_and_redraws_the_batch_card(page, tm
     out = _run_node(tmp_path, _js_function(page, "_loadProposals") + r"""
 var _filtSpeakers = [], _batchActive = """ + json.dumps(batch) + r""";
 var _batchUndo = { action: 'dismiss', proposals: [] }, _batchBusy = false;
+var _batchLoadHold = false, _proposalsSeq = 0;
 var events = [], _proposals = [];
 global.document = { getElementById: function() { return {}; } };
 async function api() { events.push('get'); return { proposals: [{ id: 'pa' }, { id: 'pb' }] }; }
