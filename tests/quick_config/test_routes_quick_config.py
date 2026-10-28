@@ -714,7 +714,7 @@ def test_quick_config_page_probe_stops_on_401_and_merge_skips_held_words(client)
     assert "_setRecentLabel(r.status === 401 ? 'signed out' : 'no access');" in gone
     assert "if (r.status === 401 && window._showLoginGate) window._showLoginGate();" in gone
     assert "return;" in gone
-    merge = html[html.index("function _applyFieldDiff(serverValue, diff) {"):
+    merge = html[html.index("function _applyFieldDiff(serverValue, diff, clashes) {"):
                  html.index("function _diffKindFor(field) {")]
     lst = merge[merge.index("if (diff.kind === 'list') {"):]
     assert "const have = new Set(out.map(_stringify));" in lst
