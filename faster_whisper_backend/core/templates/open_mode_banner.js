@@ -44,14 +44,21 @@
   // Global sign-out: revoke the server session (CSRF-protected), announce the
   // change, then reload (re-shows the login card / no-access landing). Shared
   // by the header logout button and the no-access landing's Sign-out button.
-  // Reloads only once the server ended the session (a 401: there was none);
-  // a refused or failed logout used to reload into the same signed-in page.
+  // Reloads only once the server ended the session (a dead session's cookie
+  // is cleared with a 200 too); a refused or failed logout used to reload
+  // into the same signed-in page. One sign-out at a time: a double-click's
+  // second POST lands after the first revoked the session and its 403 popped
+  // "Sign-out failed" over a sign-out that had succeeded.
+  var signingOut = false;
   window._signOut = function() {
+    if (signingOut) return;
+    signingOut = true;
     var done = function() {
       window.dispatchEvent(new Event('whisper:auth-changed'));
       location.reload();
     };
     var failed = function() {
+      signingOut = false;
       try { window.alert('Sign-out failed. You may still be signed in; try again.'); }
       catch(_) {}
     };
