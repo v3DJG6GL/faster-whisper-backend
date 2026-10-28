@@ -811,6 +811,31 @@ def test_ffconcat_upload_is_refused_before_any_decoder(client, app_module,
     assert decoded == []
 
 
+def test_upload_with_no_audio_stream_is_a_400_not_a_server_fault(
+        client, fake_model, tmp_path):
+    # A video-only clip opens fine, but faster-whisper's decode_audio then
+    # raises a bare IndexError: a 500 a client reads as a retryable fault.
+    import av
+    import numpy as np
+    clip = tmp_path / "v.mp4"
+    with av.open(str(clip), "w") as c:
+        s = c.add_stream("mpeg4", rate=5)
+        s.width = s.height = 16
+        s.pix_fmt = "yuv420p"
+        for _ in range(3):
+            frame = av.VideoFrame.from_ndarray(
+                np.zeros((16, 16, 3), np.uint8), format="rgb24")
+            for pk in s.encode(frame):
+                c.mux(pk)
+        for pk in s.encode():
+            c.mux(pk)
+    r = client.post("/v1/audio/transcriptions", data={"model": "whisper-1"},
+                    files={"file": ("v.mp4", clip.read_bytes(), "video/mp4")})
+    assert r.status_code == 400, r.text
+    assert r.json()["detail"] == "source has no audio stream"
+    assert fake_model.last_audio is None
+
+
 def test_a_refused_bgm_transcode_never_hands_the_original_to_the_separator(
         client, app_module, monkeypatch):
     from faster_whisper_backend.audio import bgm_separation

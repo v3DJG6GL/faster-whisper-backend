@@ -1291,6 +1291,20 @@ def _safe_tmp_suffix(filename: "str | None") -> str:
     return ext if _TMP_SUFFIX_RE.match(ext) else ""
 
 
+def _refuse_input(path: str) -> None:
+    """ValueError when `path` opens but is no input for faster-whisper: a
+    playlist container, or one with no audio stream (a video-only clip, a
+    text file the tty demuxer opens) — decode_audio raises a bare IndexError
+    on that, a 500. A file that does not open at all is not refused here:
+    the real decoder raises the av error, answered as undecodable."""
+    import av
+    try:
+        container, _stream = _transcode._open_audio(path)
+    except av.FFmpegError:  # a ValueError too: checked first
+        return
+    container.close()
+
+
 def _form_bool(value: "str | None") -> "bool | None":
     """Tri-state multipart boolean: multipart values arrive as strings, and
     FastAPI's bool coercion can't keep "absent" (inherit the config default)
@@ -1833,9 +1847,10 @@ async def transcribe(
             # and model.transcribe) opens the path with no protocol whitelist
             # or format check, so an ffconcat / HLS / SDP playlist upload (an
             # extensionless one included) would read a sibling local file.
-            # One refusal here, before any stage, covers every later consumer.
+            # One refusal here, before any stage, covers every later consumer
+            # (and a file with no audio stream, which they cannot decode).
             try:
-                await asyncio.to_thread(_transcode.refuse_multi_input, tmp_path)
+                await asyncio.to_thread(_refuse_input, tmp_path)
             except ValueError as _ce:
                 raise HTTPException(status_code=400, detail=str(_ce))
 
