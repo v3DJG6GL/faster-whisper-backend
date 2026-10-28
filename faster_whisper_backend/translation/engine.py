@@ -553,6 +553,15 @@ def _load_blocking_inner(ref: str, device: str, family: str,
         try:
             local_path = _predownload_gguf(repo, quant, download_cb)
         except Exception as e:  # noqa: BLE001 — pre-download is best-effort
+            if _is_hub_timeout(e):
+                # The fallback below lists the same repo on the same hub
+                # with NO deadline (HfFileSystem.ls): it would pin the
+                # loader thread and the load lock forever — fail instead.
+                logger.error("[translate] pre-download of %s timed out: %s",
+                             ref, e)
+                raise TranslationError(
+                    f"the Hugging Face hub did not answer while fetching "
+                    f"translation model {ref} — try again later") from e
             logger.warning(
                 "[translate] pre-download of %s failed (%s) — falling back "
                 "to llama.cpp's own downloader", ref, e)
@@ -583,6 +592,20 @@ def _load_blocking_inner(ref: str, device: str, family: str,
         ) from e
 
 
+def _is_hub_timeout(exc: BaseException) -> bool:
+    """True when ``exc`` or its cause chain is an httpx timeout —
+    hf_hub_download re-raises a HEAD timeout as LocalEntryNotFoundError."""
+    import httpx  # the hub's own HTTP client — always installed with it
+
+    seen = set()
+    while exc is not None and id(exc) not in seen:
+        if isinstance(exc, httpx.TimeoutException):
+            return True
+        seen.add(id(exc))
+        exc = exc.__cause__ or exc.__context__
+    return False
+
+
 def _predownload_gguf(repo: str, quant: "str | None",
                       download_cb=None) -> "str | None":
     """Resolve the concrete .gguf filename (the same glob
@@ -601,7 +624,7 @@ def _predownload_gguf(repo: str, quant: "str | None",
     pattern = (f"*{quant}.gguf" if quant else "*.gguf").lower()
     # model_info has no deadline by default: a stalled hub would pin the
     # loader thread (and the model's load lock) forever. Bound it like the
-    # hub bounds its own metadata calls, so a stall falls back instead.
+    # hub bounds its own metadata calls, so a stall fails the load instead.
     info = HfApi().model_info(repo, timeout=hf_constants.HF_HUB_ETAG_TIMEOUT)
     _card = getattr(info, "card_data", None)
     _kept, _renamed, _dropped = _card_codes(_card)

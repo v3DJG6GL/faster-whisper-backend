@@ -1153,6 +1153,35 @@ def test_load_falls_back_when_predownload_raises(monkeypatch, caplog):
     assert any("falling back" in r.getMessage() for r in caplog.records)
 
 
+def test_load_fails_instead_of_falling_back_when_the_hub_times_out(
+        monkeypatch):
+    """A hub timeout must not fall back to from_pretrained: its listing
+    hits the same hub with no deadline and would hang the load forever."""
+    import httpx
+    record = []
+    _install_fake_llama(monkeypatch, record)
+    monkeypatch.setattr(cfg, "LOCAL_FILES_ONLY", False, raising=False)
+
+    def stall(repo, quant, cb=None):
+        raise httpx.ReadTimeout("hub stalled")
+    monkeypatch.setattr(translation, "_predownload_gguf", stall)
+    with pytest.raises(translation.TranslationError, match="did not answer"):
+        translation._load_blocking_inner("org/repo:Q4", "cpu", "chatml")
+    assert record == []
+
+    # hf_hub_download wraps a HEAD timeout — the cause chain still counts.
+    def wrapped(repo, quant, cb=None):
+        from huggingface_hub.errors import LocalEntryNotFoundError
+        try:
+            raise httpx.ConnectTimeout("hub stalled")
+        except httpx.ConnectTimeout as e:
+            raise LocalEntryNotFoundError("cannot locate") from e
+    monkeypatch.setattr(translation, "_predownload_gguf", wrapped)
+    with pytest.raises(translation.TranslationError, match="did not answer"):
+        translation._load_blocking_inner("org/repo:Q4", "cpu", "chatml")
+    assert record == []
+
+
 def test_load_n_ctx_follows_family(monkeypatch):
     """n_ctx is the FAMILY's window, not one module constant."""
     record = []
