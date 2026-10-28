@@ -1270,6 +1270,17 @@ def test_load_overrides_non_utf8_file_is_ignored_not_raised(tmp_path):
     assert cs.load_overrides(str(p)) == {}
 
 
+def test_overrides_file_with_utf8_bom_is_read_and_saved_onto(tmp_path):
+    """Notepad / PowerShell 5.1 `Set-Content -Encoding UTF8` write a BOM:
+    the file must still load and a save must merge onto it, not 422."""
+    p = tmp_path / "config.local.json"
+    p.write_bytes(b"\xef\xbb\xbf" + json.dumps({"DEFAULT_PROMPT": "x"}).encode())
+    assert cs.load_overrides(str(p)) == {"DEFAULT_PROMPT": "x"}
+    cs.save_overrides({"BEAM_SIZE": 7}, str(p))
+    assert json.loads(p.read_text(encoding="utf-8")) == {
+        "DEFAULT_PROMPT": "x", "BEAM_SIZE": 7}
+
+
 def test_save_overrides_checks_cross_field_pairs_against_env_pins(tmp_path,
                                                                   monkeypatch):
     """A save must see the env-pinned sibling that will be in force: with env

@@ -180,7 +180,9 @@ def load_overrides(path: str = OVERRIDES_PATH) -> dict[str, Any]:
     if not os.path.exists(path):
         return {}
     try:
-        with open(path, "r", encoding="utf-8") as f:
+        # utf-8-sig: a file saved "UTF-8 with BOM" (Notepad, PowerShell 5.1
+        # Set-Content -Encoding UTF8) is still readable; BOM-less reads the same.
+        with open(path, "r", encoding="utf-8-sig") as f:
             raw = json.load(f)
     except (OSError, ValueError) as e:
         # ValueError covers json.JSONDecodeError AND UnicodeDecodeError — a
@@ -416,7 +418,7 @@ def save_overrides(
     with atomic_json.save_lock(path):
         existing: dict[str, Any] = {}
         if os.path.exists(path):
-            with open(path, "r", encoding="utf-8") as f:
+            with open(path, "r", encoding="utf-8-sig") as f:   # as load_overrides
                 try:
                     text = f.read()
                     # An empty (touched) file holds nothing a rewrite could lose.
