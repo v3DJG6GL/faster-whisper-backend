@@ -374,3 +374,28 @@ def test_reopened_form_keeps_the_stored_comment(client, tmp_path):
     assert res["seeded"] == "speaker said X"
     assert res["sent"] == ["speaker said Y"]
     assert res["snapshot"] == "speaker said Y"
+
+
+def test_trace_row_stashes_only_the_fields_its_readers_need(client, tmp_path):
+    # The whole entry (raw/final twice plus steps, up to ~400k chars) was kept
+    # as a row attribute and re-parsed on every save to read request_id.
+    res = _run_js(client, tmp_path, r"""
+      const made = [];
+      const orig = document.createElement;
+      // Stop renderTrace right after the row element is stashed: the rest of
+      // the row's markup is not under test here.
+      document.createElement = (t) => {
+        if (made.length) throw new Error('stop');
+        const e = orig(t); made.push(e); return e;
+      };
+      try {
+        renderTrace({
+          request_id: 'r1', ts: 5, tokens: ['a'], bigrams: ['a b'],
+          raw: 'x'.repeat(1000), raw_text: 'x'.repeat(1000), final: 'y',
+          final_text: 'y', steps: [{ name: 's' }], status: 'ok',
+        });
+      } catch (e) { if (e.message !== 'stop') throw e; }
+      document.createElement = orig;
+      out(JSON.parse(made[0].dataset.entry));
+    """, funcs=("renderTrace",))
+    assert res == {"request_id": "r1", "ts": 5, "tokens": ["a"], "bigrams": ["a b"]}
