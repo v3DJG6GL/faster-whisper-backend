@@ -315,7 +315,11 @@ def _video_candidates(formats: list) -> "tuple[list[dict], dict | None]":
             continue
         vcodec = f.get("vcodec")
         acodec = f.get("acodec")
-        if vcodec in (None, "none"):
+        h = f.get("height")
+        # vcodec None is yt-dlp's "unknown" (an HLS master with no CODECS
+        # attribute): with a height it is video, as yt-dlp's own `bv*` says.
+        if vcodec == "none" or (
+                vcodec is None and not (isinstance(h, (int, float)) and h > 0)):
             # YouTube's "DRC" twins are loudness-normalised duplicates of
             # the same track — never the leg a merge should carry.
             if acodec and acodec != "none" and \
@@ -459,7 +463,7 @@ def _rung(f: dict, *, audio_f: "dict | None", duration: "float | None",
     if v_tbr and v_approx and ratio:
         v_tbr *= ratio
     tbr = v_tbr + a_tbr
-    vcodec = str(f.get("vcodec"))
+    vcodec = str(f["vcodec"]) if f.get("vcodec") else None
     acodec = str(f.get("acodec")) if has_audio else (
         str(audio_f.get("acodec")) if audio_f is not None else None)
     fps = float(f.get("fps") or 0)
