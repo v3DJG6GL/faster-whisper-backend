@@ -167,7 +167,7 @@ fi
 # ${HOME} ${USER} ${LOGNAME} ${SHELL} are the exception: systemd sets them for
 # a User= unit and the service's load_dotenv expands ${VAR}, so they pin. So
 # does ${K} for a key K an earlier .env line pins: load_dotenv expands it too.
-# env_value prints the value with those expandable ${VAR}s already removed.
+# env_value prints the value with each expandable ${VAR} replaced by "x".
 env_value() {
   [ -f "$REPO_DIR/.env" ] || return 0
   "$PY" -I -c 'import re, sys
@@ -177,7 +177,7 @@ except ImportError:
     sys.exit(0)
 known = {"HOME", "USER", "LOGNAME", "SHELL"}
 for key, raw in dotenv_values(sys.argv[1], interpolate=False).items():
-    v = re.sub(r"\$\{([^}]*)\}", lambda m: "" if m.group(1) in known else m.group(0),
+    v = re.sub(r"\$\{([^}]*)\}", lambda m: "x" if m.group(1) in known else m.group(0),
                (raw or "").strip())
     if key == sys.argv[2]:
         print(v)
