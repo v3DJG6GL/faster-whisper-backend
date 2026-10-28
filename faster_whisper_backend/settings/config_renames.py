@@ -115,6 +115,21 @@ UPGRADED_RULE_ENTRIES: dict[str, tuple[tuple[str, str], tuple[str, str]]] = {
         ('[\\"#$%&\'()*+;<=>@\\[\\\\\\]^_`{|}~„]', ''),
         ('[\\"#$%&\'()*+;<=>@\\[\\\\\\]^_`{|}~„“”‘’‹›«»]', ''),
     ),
+    # The old sentence-start group `[.!?…]\s*` consumed the previous
+    # sentence's terminator, so every second sentence got no opening mark
+    # ("Qué hora es? Dónde estás?" → "¿Qué hora es? Dónde estás?"); shipped
+    # c4fefe2..00fd42f. The new one looks behind instead (and keeps a decimal
+    # point inside the sentence).
+    "es-opening-question-mark": (
+        ('(^\\s*|[.!?…]\\s*|\\n\\s*)(?!¿)([^.!?…¿\\n]+\\?)', '\\1¿\\2'),
+        ('(^\\s*|(?<=[.!?…])(?!(?<=\\d\\.)\\d)\\s*|(?<=\\n)\\s*)(?!¿)'
+         '((?:[^.!?…¿\\n]|(?<=\\d)\\.(?=\\d))+\\?)', '\\1¿\\2'),
+    ),
+    "es-opening-exclamation-mark": (
+        ('(^\\s*|[.!?…]\\s*|\\n\\s*)(?!¡)([^.!?…¡\\n]+!)', '\\1¡\\2'),
+        ('(^\\s*|(?<=[.!?…])(?!(?<=\\d\\.)\\d)\\s*|(?<=\\n)\\s*)(?!¡)'
+         '((?:[^.!?…¡\\n]|(?<=\\d)\\.(?=\\d))+!)', '\\1¡\\2'),
+    ),
 }
 
 # Factory rules that GAINED a rule-level language scope in config.json, keyed
