@@ -474,8 +474,15 @@ def revocation_generation() -> int:
         return -1
     gen = int(row[0]) if row else 0
     if gen != _LAST_REV_GEN:
+        # Recorded only once the refresh succeeded: a failed rebuild must
+        # leave the counter unseen so the next probe forces it again, and it
+        # returns -1 like a failed SELECT so the caller adopts nothing and
+        # does not bump onto the stale index.
+        try:
+            _refresh_if_sibling_committed(force=True)
+        except (sqlite3.Error, RuntimeError):
+            return -1
         _LAST_REV_GEN = gen
-        _refresh_if_sibling_committed(force=True)
     return gen
 
 
