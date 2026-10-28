@@ -1301,6 +1301,48 @@ function tick() { return new Promise(function(r) { setTimeout(r, 0); }); }
                    "samples": ["g1"], "next": {"before_ts": 500, "before_id": "g1"}}
 
 
+@needs_node
+def test_failed_load_keeps_the_old_lists_load_more_working(page, tmp_path):
+    """load() dropped the group cursor before its GETs and only set it
+    again on success: after a failed refresh the old list's "Load more
+    groups" button silently did nothing (and a Load more that finished
+    meanwhile left it hidden)."""
+    fns = "\n".join(_js_function(page, f) for f in ("load", "loadMoreSamples"))
+    out = _run_node(tmp_path, fns + r"""
+var cursor = { before_ts: 100, before_id: 'a1' };
+var _samplesNext = cursor, _samplesLoading = false;
+var _loadSeq = 0, _allSamples = [{ id: 'old0' }], _allCaptures = [], _counts = {};
+var _totalCount = 0, _me = null, _isAdmin = true, _filtSpeakers = [];
+var _pendingModel = null, _speakerPicker = null;
+var urls = [], toasts = [];
+function api(m, u) {
+  urls.push(u);
+  return u === '/captures/api/list' ? Promise.reject(new Error('HTTP 502'))
+                                    : Promise.resolve({ samples: [{ id: 'g2' }], next: null });
+}
+function _listUrl() { return '/captures/api/list'; }
+function _speakerQs() { return ''; }
+function toast(m) { toasts.push(m); }
+async function _okToDropOpenEdits() { return true; }
+function _dirtyOpenEdits() { return []; }
+async function _renderUnlessKeptOpenEdits() {}
+var footer = { hidden: true };
+global.document = { getElementById: function() { return footer; } };
+(async function() {
+  await load();
+  var shown = !footer.hidden;
+  await loadMoreSamples();
+  console.log(JSON.stringify({ shown: shown, urls: urls, toasts: toasts,
+                               samples: _allSamples.map(function(g) { return g.id; }) }));
+})();
+""")
+    assert out == {"shown": True,
+                   "urls": ["/captures/api/list",
+                            "/captures/api/samples?limit=200&before_ts=100&before_id=a1"],
+                   "toasts": ["Failed to load captures: HTTP 502"],
+                   "samples": ["old0", "g2"]}
+
+
 # ---- header-click collapse vs unsaved edits -------------------------------------------------
 
 @needs_node

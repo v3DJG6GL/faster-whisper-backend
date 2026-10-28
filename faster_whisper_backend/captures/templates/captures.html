@@ -3197,10 +3197,12 @@
     var seq = ++_loadSeq;
     // The old list's cursor: a Load more while this runs would page it
     // under the new seq and splice the old filter's groups into this list.
+    var prevNext = _samplesNext;
     _samplesNext = null;
     try {
       var j = await api('GET', _listUrl(500));
       if (seq !== _loadSeq) return;  // superseded by a newer filter
+      prevNext = null;               // the old list is being replaced
       _allCaptures = j.captures || [];
       _counts = j.counts || {};
       _totalCount = j.total_count || _allCaptures.length;
@@ -3233,6 +3235,11 @@
       reloadStats();
     } catch (e) {
       if (seq !== _loadSeq) return;
+      // The old list stays on screen: give it its cursor back, and the
+      // footer button a Load more that finished meanwhile hid.
+      _samplesNext = prevNext;
+      var fb = document.getElementById('btn-load-more-samples');
+      if (fb) fb.hidden = !_samplesNext;
       if (e.message === 'unauthorized' || e.message === 'not-admin') return;
       toast('Failed to load captures: ' + e.message, true);
     }
