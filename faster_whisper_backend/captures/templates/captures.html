@@ -2070,6 +2070,9 @@
       try {
         var resp = await api('GET', '/captures/api/' + encodeURIComponent(r.id));
         var full = resp.capture;
+        // A newer render() replaced this card, or it was collapsed, while
+        // the GET ran: building now would take _openRows from the live card.
+        if (!card.isConnected || !card.classList.contains('open')) return;
         // Merge full row into our list-state so the toolbar counts stay
         // current when we change status, etc.
         Object.assign(r, full);

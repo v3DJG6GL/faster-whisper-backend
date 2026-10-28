@@ -1229,6 +1229,47 @@ var _openRows = { c1: { dirty: true, blobUrl: 'blob:1',
     assert out == {"open": [False, False], "rows": [], "revoked": ["blob:1"], "paused": 1}
 
 
+@needs_node
+def test_superseded_reopen_leaves_the_live_cards_state(page, tmp_path):
+    """Two quick renders re-open the same card twice. When the first
+    (now detached) card's GET landed last, its buildBody replaced the live
+    card's dirty state in _openRows with a clean one, so the unsaved-edits
+    prompt no longer fired. A card collapsed while its GET ran stays shut."""
+    fns = "\n".join(_js_function(page, f) for f in ("toggleExpand", "collapse"))
+    out = _run_node(tmp_path, fns + r"""
+var pending = [];
+function api() { return new Promise(function(res) { pending.push(res); }); }
+function toast() {}
+function buildBody(body, r) { _openRows[r.id] = { card: body.card, dirty: false }; }
+function mkCard(name) {
+  var open = false, body = { dataset: { built: '0' }, innerHTML: '', card: name };
+  return { isConnected: true,
+           classList: { contains: function(c) { return c === 'open' && open; },
+                        remove: function() { open = false; }, add: function() { open = true; } },
+           querySelector: function() { return body; } };
+}
+var _openRows = {};
+(async function() {
+  var a1 = mkCard('a1'), a2 = mkCard('a2');
+  var p1 = toggleExpand(a1, { id: 'c1' });
+  a1.isConnected = false;                 // render 2 rebuilt the list
+  var p2 = toggleExpand(a2, { id: 'c1' });
+  pending[1]({ capture: { id: 'c1' } });
+  await p2;
+  _openRows.c1.dirty = true;              // user edits the live card
+  pending[0]({ capture: { id: 'c1' } });
+  await p1;
+  var b = mkCard('b');
+  var p3 = toggleExpand(b, { id: 'c2' });
+  b.classList.remove('open');             // collapsed while loading
+  pending[2]({ capture: { id: 'c2' } });
+  await p3;
+  console.log(JSON.stringify({ c1: _openRows.c1, c2: !!_openRows.c2 }));
+})();
+""")
+    assert out == {"c1": {"card": "a2", "dirty": True}, "c2": False}
+
+
 # ---- capture Save / Reprocess vs a status click made meanwhile ---------------------------------
 
 @needs_node
