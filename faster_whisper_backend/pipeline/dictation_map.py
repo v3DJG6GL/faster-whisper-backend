@@ -34,11 +34,12 @@ from typing import Callable
 # Values that count as punctuation for the "dictated punctuation wins" prefix.
 _PUNCT_VALUE_CHARS = frozenset(".,:;!?")
 # What Whisper puts before a dictated punctuation word: its own marks
-# (the ellipsis as three periods or as one character), then spaces. Starts
-# only at the beginning of a run and is possessive: a plain greedy run was
+# (the ellipsis as three periods or as one character); compile_map adds the
+# spaces after them. Starts only at the beginning of a run and is
+# possessive: a plain greedy run was
 # retried from every position inside a long hallucinated "……" / "::::" run,
 # each attempt backtracking char by char into the failed lookahead — O(n²).
-_WHISPER_PUNCT = r"(?<![.,:;!?…])[.,:;!?…]++[ \t]*+"
+_WHISPER_PUNCT = r"(?<![.,:;!?…])[.,:;!?…]++"
 
 
 def _is_punct_value(value: str) -> bool:
@@ -89,7 +90,10 @@ def compile_map(m: dict) -> tuple["re.Pattern[str]", Callable[["re.Match[str]"],
     punct_keys = [k for k in keys if _is_punct_value(lookup.get(k.lower(), ""))]
     if punct_keys:
         punct_alt = "|".join(_bounded(k) for k in sorted(punct_keys, key=len, reverse=True))
-        prefix = r"(?:" + _WHISPER_PUNCT + r"(?=(?:" + punct_alt + r")))?"
+        # The spaces are possessive too, so a key that itself starts with a
+        # space (" Komma") needs the second branch: the marks alone.
+        ahead = r"(?=(?:" + punct_alt + r"))"
+        prefix = r"(?:" + _WHISPER_PUNCT + r"(?:[ \t]*+" + ahead + r"|" + ahead + r"))?"
     else:
         prefix = ""
     pattern = re.compile(prefix + r"(" + alternation + r")", re.IGNORECASE)

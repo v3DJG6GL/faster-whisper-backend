@@ -85,3 +85,15 @@ def test_punctuation_edge_keeps_its_word_bound(key, text, expected):
     must not rewrite the hyphen inside a compound."""
     pattern, replace, _ = dictation_map.compile_map({key: "–"})
     assert pattern.sub(replace, text) == expected
+
+
+@pytest.mark.parametrize("key, value, text, expected", [
+    (" Komma", ",", "12... Komma 5", "12, 5"),
+    (" Punkt", ".", "Hallo, Punkt", "Hallo."),
+    (" Punkt", ".", "Hallo. Punkt", "Hallo."),
+])
+def test_dictated_punctuation_wins_for_a_space_led_key(key, value, text, expected):
+    """The possessive spaces after Whisper's marks ate the key's own leading
+    space, so the prefix never applied and Whisper's mark stayed in front."""
+    pattern, replace, _ = dictation_map.compile_map({key: value})
+    assert pattern.sub(replace, text) == expected
