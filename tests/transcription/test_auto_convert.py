@@ -17,7 +17,10 @@ def test_pinned_revision_is_converted_not_answered_by_the_head_cache(
         monkeypatch, tmp_path):
     """A REVISION pin on an HF transformers repo must reach the file-list
     probe and the converter, and must not be served the HEAD conversion an
-    earlier, unpinned load left under the same id."""
+    earlier, unpinned load left under the same id. The converter is handed a
+    local snapshot of the pinned revision: it forwards its own `revision` to
+    the weights only, so config, tokenizer and preprocessor files would
+    otherwise come from HEAD."""
     monkeypatch.setattr(tx_models.cfg, "AUTO_CONVERT_HF_MODELS", True,
                         raising=False)
     monkeypatch.setattr(tx_models.cfg, "CONVERT_QUANTIZATION", "float16",
@@ -31,21 +34,27 @@ def test_pinned_revision_is_converted_not_answered_by_the_head_cache(
     head.mkdir(parents=True)
     (head / "model.bin").write_bytes(b"HEAD")
 
-    probed, converted = [], []
+    probed, snapshots, converted = [], [], []
 
     def _list_repo_files(repo_id, revision=None):
         probed.append(revision)
         return ["config.json", "model.safetensors"]
 
+    def _snapshot_download(repo_id, revision=None, **kw):
+        snapshots.append((repo_id, revision))
+        snap = tmp_path / "snapshots" / (revision or "HEAD")
+        snap.mkdir(parents=True)
+        return str(snap)
+
     class _Converter:
         def __init__(self, model_name_or_path, revision=None, **kw):
-            converted.append(revision)
-            self._rev = revision
+            converted.append((model_name_or_path, revision))
+            self._src = model_name_or_path
 
         def convert(self, out, quantization, force):
             os.makedirs(out)
             with open(os.path.join(out, "model.bin"), "w") as f:
-                f.write(self._rev or "HEAD")
+                f.write(os.path.basename(self._src))
 
     class _FileLock:
         def __init__(self, path, timeout=None):
@@ -59,6 +68,7 @@ def test_pinned_revision_is_converted_not_answered_by_the_head_cache(
 
     hub = types.ModuleType("huggingface_hub")
     hub.list_repo_files = _list_repo_files
+    hub.snapshot_download = _snapshot_download
     fl = types.ModuleType("filelock")
     fl.FileLock = _FileLock
     fl.Timeout = type("Timeout", (Exception,), {})
@@ -73,7 +83,8 @@ def test_pinned_revision_is_converted_not_answered_by_the_head_cache(
     out = asyncio.run(tx_models._ensure_ct2_model("org/ft"))
 
     assert probed == ["v2"]
-    assert converted == ["v2"]
+    assert snapshots == [("org/ft", "v2")]
+    assert converted == [(str(tmp_path / "snapshots" / "v2"), None)]
     with open(os.path.join(out, "model.bin")) as f:
         assert f.read() == "v2"
     assert (head / "model.bin").read_bytes() == b"HEAD"
