@@ -1148,6 +1148,52 @@ async function run(editMeanwhile, newFilter) {
                    {"renders": 0, "asked": [first]}]
 
 
+@needs_node
+def test_load_more_groups_during_a_load_never_pages_the_old_cursor(page, tmp_path):
+    """load() bumps _loadSeq at once but replaced _samplesNext only after
+    both its GETs: a Load more meanwhile paged the OLD filter's cursor under
+    the NEW seq, spliced those groups into the new list and overwrote its
+    cursor, so every group between the two cursors went missing."""
+    fns = "\n".join(_js_function(page, f) for f in ("load", "loadMoreSamples"))
+    out = _run_node(tmp_path, fns + r"""
+var _samplesNext = { before_ts: 100, before_id: 'a1' }, _samplesLoading = false;
+var _loadSeq = 0, _allSamples = [{ id: 'old0' }], _allCaptures = [], _counts = {};
+var _totalCount = 0, _me = null, _isAdmin = true, _filtSpeakers = [];
+var _pendingModel = null, _speakerPicker = null;
+var urls = [], pending = {};
+function api(m, u) { urls.push(u); return new Promise(function(res) { pending[u] = res; }); }
+function _listUrl() { return '/captures/api/list'; }
+function _speakerQs() { return ''; }
+function updateCaptureBadge() {} function rebuildModelFilter() {} function updateCounts() {}
+function _clearSelection() {} function render() {} function _syncUrl() {} function reloadStats() {}
+function toast() {}
+async function _okToDropOpenEdits() { return true; }
+function _dirtyOpenEdits() { return []; }
+async function _renderUnlessKeptOpenEdits() {}
+global.document = { getElementById: function() { return null; },
+                    body: { classList: { add: function() {} } } };
+function tick() { return new Promise(function(r) { setTimeout(r, 0); }); }
+(async function() {
+  var pl = load();
+  await tick();
+  var pm = loadMoreSamples();             // footer click while load() runs
+  await tick();
+  pending['/captures/api/list']({ captures: [], is_admin: true });
+  await tick();
+  pending['/captures/api/samples?limit=200']({ samples: [{ id: 'g1' }],
+                                              next: { before_ts: 500, before_id: 'g1' } });
+  await pl;
+  var stale = pending['/captures/api/samples?limit=200&before_ts=100&before_id=a1'];
+  if (stale) stale({ samples: [{ id: 'old' }], next: { before_ts: 50 } });
+  await pm;
+  console.log(JSON.stringify({ urls: urls, samples: _allSamples.map(function(g) { return g.id; }),
+                               next: _samplesNext }));
+})();
+""")
+    assert out == {"urls": ["/captures/api/list", "/captures/api/samples?limit=200"],
+                   "samples": ["g1"], "next": {"before_ts": 500, "before_id": "g1"}}
+
+
 # ---- header-click collapse vs unsaved edits -------------------------------------------------
 
 @needs_node

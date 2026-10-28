@@ -3188,6 +3188,9 @@
   // -------------------------------------------------------------------
   async function load() {
     var seq = ++_loadSeq;
+    // The old list's cursor: a Load more while this runs would page it
+    // under the new seq and splice the old filter's groups into this list.
+    _samplesNext = null;
     try {
       var j = await api('GET', _listUrl(500));
       if (seq !== _loadSeq) return;  // superseded by a newer filter
