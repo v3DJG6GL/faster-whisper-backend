@@ -43,3 +43,16 @@ def test_mp4_handler_name_names_only_the_first_audio_track():
                                  audio_lang="de", audio_label="Deutsch (Original)")
     h = [(argv[i - 1], a) for i, a in enumerate(argv) if a.startswith("handler_name=")]
     assert h == [("-metadata:s:a:0", "handler_name=Deutsch (Original)")]
+
+
+def test_mkv_title_and_language_tag_only_the_first_audio_track():
+    """MKV shows `title` as the track name: a second audio track (a French
+    dub, a commentary) keeps its own name and language, not the transcript's."""
+    for container in ("mkv", "mp4"):
+        argv = pk.build_package_argv("/m/src." + container, [], [], container=container,
+                                     out_path="/w/out." + container, default_track=None,
+                                     audio_lang="de", audio_label="Deutsch")
+        assert "-metadata:s:a" not in argv
+        tags = [(argv[i - 1], a) for i, a in enumerate(argv)
+                if a.startswith(("language=", "title=")) and argv[i - 1].startswith("-metadata:s:a")]
+        assert tags == [("-metadata:s:a:0", "language=deu"), ("-metadata:s:a:0", "title=Deutsch")]

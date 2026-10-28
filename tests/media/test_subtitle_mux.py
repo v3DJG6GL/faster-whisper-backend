@@ -53,13 +53,13 @@ def test_build_package_argv_mkv():
 
 def test_build_package_argv_original_flag_and_audio_language():
     # The original-language track carries the flag, NOT a "· original" name;
-    # both flags combine with "+"; every audio stream gets the spoken language.
+    # both flags combine with "+"; the first audio stream gets the spoken language.
     argv = pk.build_package_argv("/m/src.mkv", ["/w/sub_0.srt", "/w/sub_1.srt"], _tracks(),
                                  container="mkv", out_path="/w/out.mkv", default_track=0,
                                  original_track=0, audio_lang="de", audio_label="German")
     d = [argv[i + 1] for i, a in enumerate(argv) if a.startswith("-disposition:s:")]
     assert d == ["default+original", "0"]
-    a = [argv[i + 1] for i, x in enumerate(argv) if x == "-metadata:s:a"]
+    a = [argv[i + 1] for i, x in enumerate(argv) if x == "-metadata:s:a:0"]
     assert a == ["language=deu", "title=German"]
     # original without default; audio label defaults to the language name.
     argv = pk.build_package_argv("/m/src.mkv", ["/w/sub_0.srt", "/w/sub_1.srt"], _tracks(),
@@ -67,12 +67,12 @@ def test_build_package_argv_original_flag_and_audio_language():
                                  original_track=0, audio_lang="pt-BR")
     d = [argv[i + 1] for i, a in enumerate(argv) if a.startswith("-disposition:s:")]
     assert d == ["original", "default"]
-    a = [argv[i + 1] for i, x in enumerate(argv) if x == "-metadata:s:a"]
+    a = [argv[i + 1] for i, x in enumerate(argv) if x == "-metadata:s:a:0"]
     assert a == ["language=por", "title=Portuguese (BR)"]
     # No audio language → no audio metadata at all.
     argv = pk.build_package_argv("/m/src.mkv", [], [], container="mkv",
                                  out_path="/w/out.mkv", default_track=None)
-    assert "-metadata:s:a" not in argv
+    assert not any(x.startswith("-metadata:s:a") for x in argv)
 
 
 def test_build_package_argv_mp4_mov_text_faststart_and_no_default():

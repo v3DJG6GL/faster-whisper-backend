@@ -209,11 +209,11 @@ def build_package_argv(src: str, srt_paths: "list[str]", tracks: "list[SubtitleT
     NAME stays the plain language name. MP4 has no such flag (movenc drops it
     silently), so the argv leaves it out there; `default` and
     `hearing_impaired` survive in MP4. MP4 tracks (subtitle and audio) also
-    get `handler_name` = the title (audio: the first track only): players
-    such as Jellyfin read the hdlr name as the track title, and movenc
-    writes no `title` there. `audio_lang`
-    tags every audio stream with the spoken language (the source file usually
-    carries the uploader's default, "en" for a German video).
+    get `handler_name` = the title: players such as Jellyfin read the hdlr
+    name as the track title, and movenc writes no `title` there. `audio_lang`
+    tags the first (transcribed) audio stream with the spoken language and
+    its name (the source file usually carries the uploader's default, "en"
+    for a German video); any further audio track keeps its own tags.
     `strip_empty_captions` drops the H.264 SEI units, which takes broadcast
     captions that never carry text (media/captions.py) out of the picture —
     players otherwise list them as empty "Closed captions 1–4" tracks."""
@@ -243,12 +243,12 @@ def build_package_argv(src: str, srt_paths: "list[str]", tracks: "list[SubtitleT
         argv += [f"-disposition:s:{i}", "+".join(flags) if flags else "0"]
     if audio_lang:
         a_title = audio_label or language_label(audio_lang)
-        argv += ["-metadata:s:a", f"language={iso639_2t(audio_lang)}",
-                 "-metadata:s:a", f"title={a_title}"]
+        # Only the transcribed (first) track: a second track (a commentary,
+        # a dub) keeps its own name and language instead of this label's.
+        argv += ["-metadata:s:a:0", f"language={iso639_2t(audio_lang)}",
+                 "-metadata:s:a:0", f"title={a_title}"]
         if container == "mp4":
-            # Only the transcribed (first) track: the hdlr name is the one
-            # name an MP4 player shows, and a second track (a commentary,
-            # a dub) keeps its own instead of a copy of this label.
+            # The hdlr name is the one name an MP4 player shows.
             argv += ["-metadata:s:a:0", f"handler_name={a_title}"]
     argv += ["-max_muxing_queue_size", "4096"]
     if container == "mp4":
