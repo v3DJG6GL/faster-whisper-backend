@@ -797,7 +797,10 @@ async def test_pipeline(payload: dict[str, Any]) -> JSONResponse:
                             continue
                         try:
                             ecre = re.compile(ep)
-                        except re.error as e:
+                        # OverflowError: a repeat count past MAXREPEAT in a
+                        # range (`a{1,4294967296}`), which the fixed-count
+                        # screen does not cover.
+                        except (re.error, OverflowError) as e:
                             # Engine parity (pl_engine.rebuild_caches): a bad entry is
                             # SKIPPED, not the whole card — the valid entries still
                             # apply. Surface the first bad pattern as an advisory.
@@ -882,8 +885,9 @@ async def test_pipeline(payload: dict[str, Any]) -> JSONResponse:
         # `pattern` (a half-typed row, or a hand-rolled request body) reaches
         # re.compile as e.g. an int and raises TypeError — which re.error does not
         # cover, turning a dry run into an unhandled 500 instead of a per-step
-        # error the panel already knows how to render.
-        except (re.error, AttributeError, TypeError, ValueError) as e:
+        # error the panel already knows how to render. OverflowError: an
+        # over-large range repeat count, as in the regex-list branch above.
+        except (re.error, AttributeError, TypeError, ValueError, OverflowError) as e:
             return {**common, "after": text, "error": str(e)}
 
         out: dict[str, Any] = {"done": False, "after": text, "matches": 0}
