@@ -1375,7 +1375,7 @@ def test_failed_load_keeps_the_old_lists_load_more_working(page, tmp_path):
     fns = "\n".join(_js_function(page, f) for f in ("load", "loadMoreSamples"))
     out = _run_node(tmp_path, fns + r"""
 var cursor = { before_ts: 100, before_id: 'a1' };
-var _samplesNext = cursor, _samplesLoading = false;
+var _samplesNext = cursor, _samplesNextQs = '', _samplesLoading = false;
 var _loadSeq = 0, _allSamples = [{ id: 'old0' }], _allCaptures = [], _counts = {};
 var _totalCount = 0, _me = null, _isAdmin = true, _filtSpeakers = [];
 var _pendingModel = null, _speakerPicker = null;
@@ -1406,6 +1406,43 @@ global.document = { getElementById: function() { return footer; } };
                             "/captures/api/samples?limit=200&before_ts=100&before_id=a1"],
                    "toasts": ["Failed to load captures: HTTP 502"],
                    "samples": ["old0", "g2"]}
+
+
+@needs_node
+def test_failed_load_after_a_speaker_switch_drops_the_old_lists_cursor(page, tmp_path):
+    """The picker sets the new speakers before load() runs: a failed load()
+    gave the old list its cursor back, and Load more then paged Bob's
+    cursor under the new filter, splicing everyone's older groups onto
+    Bob's list."""
+    fns = "\n".join(_js_function(page, f) for f in ("load", "loadMoreSamples"))
+    out = _run_node(tmp_path, fns + r"""
+var _samplesNext = { before_ts: 100, before_id: 'a1' }, _samplesLoading = false;
+var _samplesNextQs = '&user_id=bob';
+var _loadSeq = 0, _allSamples = [{ id: 'bob0' }], _allCaptures = [], _counts = {};
+var _totalCount = 0, _me = null, _isAdmin = true, _filtSpeakers = [];
+var _pendingModel = null, _speakerPicker = null;
+var urls = [];
+function api(m, u) {
+  urls.push(u);
+  return u === '/captures/api/list' ? Promise.reject(new Error('HTTP 502'))
+                                    : Promise.resolve({ samples: [{ id: 'x' }], next: null });
+}
+function _listUrl() { return '/captures/api/list'; }
+function _speakerQs() { return ''; }   // the picker switched Bob -> anyone
+function toast() {}
+async function _okToDropOpenEdits() { return true; }
+function _dirtyOpenEdits() { return []; }
+async function _renderUnlessKeptOpenEdits() {}
+var footer = { hidden: false };
+global.document = { getElementById: function() { return footer; } };
+(async function() {
+  await load();
+  await loadMoreSamples();
+  console.log(JSON.stringify({ hidden: footer.hidden, urls: urls,
+                               samples: _allSamples.map(function(g) { return g.id; }) }));
+})();
+""")
+    assert out == {"hidden": True, "urls": ["/captures/api/list"], "samples": ["bob0"]}
 
 
 # ---- header-click collapse vs unsaved edits -------------------------------------------------

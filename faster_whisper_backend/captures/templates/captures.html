@@ -1292,6 +1292,9 @@
   var _allSamples = [];
   // Cursor for the next page of groups, or null when they are all loaded.
   var _samplesNext = null;
+  // The speaker query that cursor pages: a failed load() after a picker
+  // change must not hand the old list's cursor to the new filter.
+  var _samplesNextQs = '';
   var _samplesLoading = false;
   // Bumped by every load(): a speaker-picker tick fires one per click, and
   // an older filter's list / samples / load-more page that resolves last
@@ -3220,10 +3223,12 @@
       if (!_isAdmin && _filtSpeakers.length) { _filtSpeakers = []; }
       // Pull groups in parallel-shape; failure is non-fatal (admin sees no groups).
       try {
-        var jg = await api('GET', '/captures/api/samples?limit=200' + _speakerQs());
+        var qs = _speakerQs();
+        var jg = await api('GET', '/captures/api/samples?limit=200' + qs);
         if (seq !== _loadSeq) return;
         _allSamples = jg.samples || [];
         _samplesNext = jg.next || null;
+        _samplesNextQs = qs;
       } catch (_) {
         if (seq !== _loadSeq) return;
         _allSamples = []; _samplesNext = null;
@@ -3245,8 +3250,10 @@
     } catch (e) {
       if (seq !== _loadSeq) return;
       // The old list stays on screen: give it its cursor back, and the
-      // footer button a Load more that finished meanwhile hid.
-      _samplesNext = prevNext;
+      // footer button a Load more that finished meanwhile hid. Not when the
+      // speaker filter already switched: Load more would page the old list's
+      // cursor under the new speakers and splice the two lists.
+      _samplesNext = _speakerQs() === _samplesNextQs ? prevNext : null;
       var fb = document.getElementById('btn-load-more-samples');
       if (fb) fb.hidden = !_samplesNext;
       if (e.message === 'unauthorized' || e.message === 'not-admin') return;
