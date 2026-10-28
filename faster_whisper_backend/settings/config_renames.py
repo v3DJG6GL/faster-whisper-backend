@@ -138,13 +138,28 @@ UPGRADED_RULE_ENTRIES: dict[str, tuple[tuple[str, str], tuple[str, str]]] = {
 # so the fix never reached it. upgrade_rule_entries sets the scope ONLY while
 # the stored rule still has no languages and its type and pattern still equal
 # the factory ones. A rule the admin rewrote is theirs and stays untouched.
-UPGRADED_RULE_LANGUAGES: dict[str, tuple[tuple[str, str], tuple[str, ...]]] = {
+# A regex-list / callback:map rule has no rule-level pattern (None), so only
+# its type is checked: its entries / map moved on since, and a stored copy
+# of these German-named rules is the factory one.
+UPGRADED_RULE_LANGUAGES: dict[
+        str, tuple[tuple[str, str | None], tuple[str, ...]]] = {
     # The callback capitalised every letter after a hyphen, which is German
     # noun casing: English "well-known" became "well-Known".
     "capitalize-letter-after-hyphen": (
         ("callback:upper", "(-)([a-zäöüß])"),
         ("de",),
     ),
+    # c4fefe2 scoped these to German; before that the dictation map turned
+    # English "plus" / "minus" into symbols and the function-word list
+    # lowercased "In" / "Was" / "Will" after a sentence end on every language.
+    "de-strip-and-lowercase-non-noun": (
+        ("callback:lowercase-wordlist", "(?<!\\d)[.?!](\\s*)([A-ZÄÖÜ])(\\w*)"),
+        ("de",),
+    ),
+    "de-split-punctuation-keywords": (("regex-list", None), ("de",)),
+    "ch-symbol-cleanup": (("regex-list", None), ("de",)),
+    # Keyed by its new name: migrate_rule_slugs renames "dictation-map" first.
+    "de-dictation-map": (("callback:map", None), ("de",)),
 }
 
 # Keys holding a list of rule slugs, at the top level and inside each

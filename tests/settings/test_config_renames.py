@@ -25,7 +25,7 @@ def _rule(rules, name):
 def test_every_language_upgrade_matches_its_factory_rule():
     for name, ((typ, pattern), langs) in renames.UPGRADED_RULE_LANGUAGES.items():
         r = _rule(_factory_rules(), name)
-        assert (r["type"], r["pattern"], r["languages"]) == (typ, pattern, list(langs))
+        assert (r["type"], r.get("pattern"), r["languages"]) == (typ, pattern, list(langs))
 
 
 @pytest.mark.parametrize("stored_languages", [[], None, "absent"])
@@ -66,3 +66,34 @@ def test_load_overrides_scopes_a_stored_hyphen_rule_to_german(tmp_path):
     p.write_text(json.dumps({"PIPELINE_RULES": rules}), encoding="utf-8")
     out = cs.load_overrides(str(p))
     assert _rule(out["PIPELINE_RULES"], "capitalize-letter-after-hyphen")["languages"] == ["de"]
+
+
+_DE_SCOPED_IN_C4FEFE2 = ("de-strip-and-lowercase-non-noun",
+                         "de-split-punctuation-keywords", "ch-symbol-cleanup",
+                         "de-dictation-map")
+
+
+def test_rules_scoped_to_german_in_c4fefe2_upgrade_a_stored_copy(tmp_path):
+    from faster_whisper_backend.settings import config_store as cs
+    rules = copy.deepcopy(_factory_rules())
+    for name in _DE_SCOPED_IN_C4FEFE2:
+        r = _rule(rules, name)
+        del r["languages"]
+        if name == "de-dictation-map":
+            r["name"] = "dictation-map"  # its slug before c4fefe2
+            r["map"] = {" plus ": "+"}  # an older factory map
+    p = tmp_path / "config.local.json"
+    p.write_text(json.dumps({"PIPELINE_RULES": rules}), encoding="utf-8")
+    out = cs.load_overrides(str(p))
+    for name in _DE_SCOPED_IN_C4FEFE2:
+        assert _rule(out["PIPELINE_RULES"], name)["languages"] == ["de"], name
+
+
+def test_edited_wordlist_rule_pattern_keeps_every_language():
+    rules = copy.deepcopy(_factory_rules())
+    r = _rule(rules, "de-strip-and-lowercase-non-noun")
+    r["languages"] = []
+    r["pattern"] = "[.?!](\\s*)([A-Z])(\\w*)"
+    assert "de-strip-and-lowercase-non-noun/languages" not in renames.upgrade_rule_entries(
+        {"PIPELINE_RULES": rules})
+    assert r["languages"] == []
