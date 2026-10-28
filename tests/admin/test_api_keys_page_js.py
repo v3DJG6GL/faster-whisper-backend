@@ -369,3 +369,40 @@ function showKeyModal(raw) { modals.push(raw); }
     out = _run(js, tmp_path)
     assert out == {"in_flight_disabled": True, "posts_in_flight": 1,
                    "after_fail_disabled": False, "posts_after_fail": 2}
+
+
+def test_label_edit_keeps_generate_off_while_the_key_modal_is_open(client, tmp_path):
+    """addBusy was cleared as soon as the POST resolved, but the card (and
+    its label input, which keeps focus behind the key modal) is only rebuilt
+    when the modal closes. A keystroke re-enabled Generate, and the next Enter
+    created a second key whose modal overwrote the first key's secret."""
+    html = client.get("/settings/api-keys").text
+    src = _between(html, "    addBtn.title = 'Enter a label first';",
+                   "e.key === 'Enter' && !addBtn.disabled) addBtn.onclick();\n    };\n")
+    js = r"""
+var labelInp = { value: 'desktop' }, addBtn = { disabled: false, title: '' };
+var u = { id: 'u1', username: 'alice' };
+var posts = [], modals = [];
+function api(method, url, body) {
+  return new Promise(function (res) { posts.push(res); });
+}
+function showToast() {}
+function showKeyModal(raw) { modals.push(raw); }
+""" + src + r"""
+(async function () {
+  var out = {};
+  labelInp.onkeydown({ key: 'Enter' });
+  posts[0]({ ok: true, json: function () { return Promise.resolve({ key: 'fwb_A' }); } });
+  await new Promise(function (r) { setTimeout(r, 0); });
+  labelInp.value = 'desktop2';
+  labelInp.oninput();
+  out.disabled = addBtn.disabled;
+  labelInp.onkeydown({ key: 'Enter' });
+  addBtn.onclick();
+  out.posts = posts.length;
+  out.modals = modals;
+  console.log(JSON.stringify(out));
+})();
+"""
+    out = _run(js, tmp_path)
+    assert out == {"disabled": True, "posts": 1, "modals": ["fwb_A"]}
