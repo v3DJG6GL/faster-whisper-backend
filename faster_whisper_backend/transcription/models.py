@@ -558,6 +558,17 @@ _AUTO_DETECT_ONLY_KEYS = ("multilingual", "language_detection_threshold",
                           "language_detection_segments")
 
 
+def whisper_language_code(value: str) -> "str | None":
+    """``value`` as the Whisper code faster-whisper's tokenizer accepts: the
+    lower-cased value, or a locale tag's primary subtag (``DE`` → ``de``,
+    ``pt-BR`` → ``pt``). None when neither is one of Whisper's codes."""
+    value = value.strip().lower()
+    for cand in (value, value.split("-", 1)[0]):
+        if cand in settings_schema.WHISPER_LANGUAGE_CODES:
+            return cand
+    return None
+
+
 def _note_auto_detect_only(overrides: dict, language: "str | None",
                            ignored: list) -> None:
     """multilingual and the language-detection knobs apply to auto-detect

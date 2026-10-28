@@ -1632,7 +1632,12 @@ async def transcribe(
         # is the client's "cleared — overrides inherited" state (auto-detect
         # language / no translation targets / no glossary), absent inherits.
         _lang_field = form_data.get("language")
-        language = _lang_field if isinstance(_lang_field, str) else None
+        language = _lang_field.strip() if isinstance(_lang_field, str) else None
+        # "DE" / "de-DE" as the Whisper code, as the streaming handshake does
+        # (/dictate sends one box to both); faster-whisper's tokenizer raises
+        # on either. A value that reduces to no code is passed on unchanged.
+        if language:
+            language = tx_models.whisper_language_code(language) or language
         _tt_field = form_data.get("translate_to")
         translate_to = _tt_field if isinstance(_tt_field, str) else None
         _tg_field = form_data.get("translation_glossary")

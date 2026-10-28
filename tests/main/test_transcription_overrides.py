@@ -60,6 +60,21 @@ def test_locked_language_ignores_client_param(client, make_user_key, fake_model)
     assert "language" in r.json()["overrides_ignored"]
 
 
+def test_batch_language_reduces_to_a_whisper_code(client, make_user_key, fake_model):
+    # /dictate sends one language box to both modes; the streaming handshake
+    # folds "DE" / "de-DE" to "de", so batch must too (faster-whisper's
+    # tokenizer raises on either, a 500). Blank is auto-detect; a value that
+    # reduces to no code reaches the model unchanged, as before.
+    _, raw = make_user_key("alice", is_admin=False)
+    for sent, expected in (("DE", "de"), ("de-DE", "de"), (" pt-BR ", "pt"),
+                           ("haw", "haw"), ("  ", None), ("xx", "xx")):
+        r = client.post(
+            "/v1/audio/transcriptions", files=_FILE, headers=bearer(raw),
+            data={"model": "whisper-1", "language": sent})
+        assert r.status_code == 200, (sent, r.text)
+        assert fake_model.last_kwargs["language"] == expected, sent
+
+
 def test_no_identity_config_is_unchanged(client, make_user_key, fake_model):
     # A user with no binding decodes with the global defaults + the client
     # override applied (no lock) and no overrides_ignored field.
