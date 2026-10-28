@@ -14,7 +14,9 @@ counts and report-id prefixes for forensics.
 
 Module-level connection: SQLite's WAL mode lets us share one connection
 across threads (with `check_same_thread=False`). All public functions
-acquire `_lock` for writes; reads are concurrent and safe.
+acquire `_lock` for writes. The multi-row list reads take it too: fetchall()
+releases the GIL between steps, so a write on the same connection could
+otherwise move a row (a resubmit re-stamps created_ts) past the scan.
 """
 from __future__ import annotations
 
@@ -484,18 +486,19 @@ def list_reports(user_id: str | None = None, *,
     # store at or under its own cap returns exactly what it returns today.
     # SQLite treats a negative LIMIT as "no limit".
     lim = -1 if limit is None else limit
-    if user_id is None:
-        cur = conn.execute(
-            "SELECT * FROM reports ORDER BY created_ts DESC LIMIT ?",
-            (lim,),
-        )
-    else:
-        cur = conn.execute(
-            "SELECT * FROM reports WHERE user_id = ?"
-            " ORDER BY created_ts DESC LIMIT ?",
-            (user_id, lim),
-        )
-    return [_row_to_dict(r) for r in cur.fetchall()]
+    with _lock:
+        if user_id is None:
+            rows = conn.execute(
+                "SELECT * FROM reports ORDER BY created_ts DESC LIMIT ?",
+                (lim,),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM reports WHERE user_id = ?"
+                " ORDER BY created_ts DESC LIMIT ?",
+                (user_id, lim),
+            ).fetchall()
+    return [_row_to_dict(r) for r in rows]
 
 
 def get_report(rid: str) -> dict[str, Any] | None:
@@ -519,14 +522,15 @@ def recent_reports_for_user(
     if not user_id:
         return []
     conn = _require_conn()
-    cur = conn.execute(
-        "SELECT * FROM reports"
-        " WHERE user_id = ? AND status = 'open' AND request_id IS NOT NULL"
-        " ORDER BY created_ts DESC"
-        " LIMIT ?",
-        (user_id, int(limit)),
-    )
-    return [_row_to_dict(r) for r in cur.fetchall()]
+    with _lock:
+        rows = conn.execute(
+            "SELECT * FROM reports"
+            " WHERE user_id = ? AND status = 'open' AND request_id IS NOT NULL"
+            " ORDER BY created_ts DESC"
+            " LIMIT ?",
+            (user_id, int(limit)),
+        ).fetchall()
+    return [_row_to_dict(r) for r in rows]
 
 
 def counts_by_status(user_id: str | None = None) -> dict[str, int]:
@@ -619,9 +623,8 @@ def clear_all(reporter_host: str = "") -> int:
     # arriving during the wipe) aren't stalled. Connection is autocommit,
     # no transaction needed. Skip when nothing was deleted — VACUUM on an
     # already-empty table is pure I/O for zero space recovery.
-    # Best-effort: readers on this shared connection (list/export in
-    # to_thread) do not take _lock, and SQLite refuses VACUUM while any of
-    # their statements is open. The rows are already gone, so that must not
+    # Best-effort: single-row readers on this shared connection do not take
+    # _lock, and SQLite refuses VACUUM while any of their statements is open. The rows are already gone, so that must not
     # 500 the route or skip the audit line below.
     if n > 0:
         try:

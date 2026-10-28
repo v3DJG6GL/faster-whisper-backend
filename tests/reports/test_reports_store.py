@@ -123,6 +123,27 @@ def test_concurrent_upsert_same_key_single_row(reports_store_db, monkeypatch):
     assert lock_held and all(lock_held)
 
 
+@pytest.mark.parametrize("read", [
+    lambda rs: rs.list_reports(limit=None),
+    lambda rs: rs.recent_reports_for_user("u1"),
+], ids=["list_reports", "recent_reports_for_user"])
+def test_list_reads_wait_for_the_store_lock(reports_store_db, read):
+    # fetchall() releases the GIL between steps, so a write on the shared
+    # connection (a resubmit re-stamping created_ts) could move a row past
+    # an unlocked scan and drop it from the export.
+    import threading
+    rs = reports_store_db
+    _submit(rs)
+    out = []
+    with rs._lock:
+        t = threading.Thread(target=lambda: out.append(read(rs)))
+        t.start()
+        t.join(timeout=0.3)
+        assert t.is_alive()
+    t.join(timeout=5)
+    assert len(out[0]) == 1
+
+
 def test_list_reports_limit_and_uncapped_export_path(reports_store_db):
     # The read ceiling bounds the browser list, but limit=None (the export
     # path) must return every row — a raised REPORTS_MAX otherwise silently
