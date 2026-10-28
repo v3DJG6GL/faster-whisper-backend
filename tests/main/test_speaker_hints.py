@@ -48,3 +48,32 @@ def test_explicit_zero_against_a_locked_count_is_reported_ignored(
     ignored = _post(client, h, num_speakers=0)
     assert calls == [{"num": 3, "min": None, "max": None}]
     assert "num_speakers" in ignored
+
+
+def test_client_min_beats_an_inherited_lower_max(
+        client, app_module, fake_model, monkeypatch):
+    calls = []
+    _record_diarize(monkeypatch, calls)
+    monkeypatch.setattr(app_module.cfg, "DIARIZATION_ENABLED", True)
+    monkeypatch.setattr(app_module.cfg, "DIARIZATION_MAX_SPEAKERS", 4)
+    _post(client, min_speakers=6)
+    assert calls == [{"num": None, "min": 6, "max": None}]
+
+
+def test_client_max_beats_an_inherited_higher_min(
+        client, app_module, fake_model, monkeypatch):
+    calls = []
+    _record_diarize(monkeypatch, calls)
+    monkeypatch.setattr(app_module.cfg, "DIARIZATION_ENABLED", True)
+    monkeypatch.setattr(app_module.cfg, "DIARIZATION_MIN_SPEAKERS", 5)
+    _post(client, max_speakers=2)
+    assert calls == [{"num": None, "min": None, "max": 2}]
+
+
+def test_inverted_client_range_still_clamps_min_down_to_max(
+        client, app_module, fake_model, monkeypatch):
+    calls = []
+    _record_diarize(monkeypatch, calls)
+    monkeypatch.setattr(app_module.cfg, "DIARIZATION_ENABLED", True)
+    _post(client, min_speakers=6, max_speakers=3)
+    assert calls == [{"num": None, "min": 3, "max": 3}]

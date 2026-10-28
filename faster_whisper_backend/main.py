@@ -1918,6 +1918,7 @@ async def transcribe(
                 resolved_model, ident, ignored,
                 "DIARIZE", "diarize", _form_bool(diarize), default=False))
             _spk = {}
+            _spk_from_client = set()
             for _cfg_name, _client_name, _client_val in (
                 ("DIARIZATION_NUM_SPEAKERS", "num_speakers", num_speakers),
                 ("DIARIZATION_MIN_SPEAKERS", "min_speakers", min_speakers),
@@ -1930,6 +1931,7 @@ async def transcribe(
                         ignored.append(_client_name)
                 elif _client_val is not None:
                     _spk[_client_name] = _client_val or None
+                    _spk_from_client.add(_client_name)
                 # An explicit range outranks an INHERITED count: num wins over
                 # min/max below, so inheriting it would drop the caller's bounds.
                 elif _client_name == "num_speakers" and (min_speakers or max_speakers):
@@ -1946,10 +1948,16 @@ async def transcribe(
                         if _client_val and _client_name not in ignored:
                             ignored.append(_client_name)
                 _spk["min_speakers"] = _spk["max_speakers"] = None
-            # pyannote also rejects an inverted range — clamp min down to max.
+            # pyannote also rejects an inverted range. A bound the client sent
+            # outranks an inherited one, so the inherited side gives way;
+            # otherwise clamp min down to max.
             elif (_spk.get("min_speakers") and _spk.get("max_speakers")
                   and _spk["min_speakers"] > _spk["max_speakers"]):
-                _spk["min_speakers"] = _spk["max_speakers"]
+                _client_min = "min_speakers" in _spk_from_client
+                if _client_min != ("max_speakers" in _spk_from_client):
+                    _spk["max_speakers" if _client_min else "min_speakers"] = None
+                else:
+                    _spk["min_speakers"] = _spk["max_speakers"]
             # Music separation: same shape again. Soft-failed optional stages
             # (this and diarization) collect their explanations in _warnings.
             _warnings: "list[str]" = []
