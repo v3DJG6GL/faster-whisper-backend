@@ -272,7 +272,8 @@ def save_factory_rules(rules: list[Any], path: str = FACTORY_PATH, *,
     every later save of that key 422, as save_overrides refuses it too.
 
     Returns the validated, coerced rule list. Raises ValidationError on bad
-    input — the route handler converts that to a 422 response.
+    input or an unreadable config.json — the route handler converts that to
+    a 422 response.
     """
     rules = [{**{k: v for k, v in r.items() if k != "config_rev"}, "seeded": True}
              for r in rules]
@@ -299,13 +300,20 @@ def save_factory_rules(rules: list[Any], path: str = FACTORY_PATH, *,
     with atomic_json.save_lock(path):
         merged: dict[str, Any] = {}
         if os.path.exists(path):
+            # An unreadable config.json (a conflicted git pull, a half-saved
+            # hand edit) is refused, not replaced: rewriting it with only the
+            # rules would drop every scalar default and fail the next boot.
             with open(path, "r", encoding="utf-8") as f:
                 try:
                     raw = json.load(f)
-                except ValueError:   # malformed JSON or not UTF-8
-                    raw = None
-            if isinstance(raw, dict):
-                merged = raw
+                except ValueError as e:   # malformed JSON or not UTF-8
+                    raise _unreadable_overrides_error(
+                        path, str(e), "fix it (git checkout config.json)") from e
+            if not isinstance(raw, dict):
+                raise _unreadable_overrides_error(
+                    path, f"top level is {type(raw).__name__}, not an object",
+                    "fix it (git checkout config.json)")
+            merged = raw
         merged.setdefault("schema_version", 1)
         merged["PIPELINE_RULES"] = out_rules
         atomic_json.atomic_write_json(merged, path, sort_keys=False, tmp_prefix=".config.")
@@ -369,7 +377,8 @@ _COOKIE_PREFIX_KEYS = ("SESSION_COOKIE_NAME", "SESSION_CSRF_COOKIE_NAME",
                        "SESSION_COOKIE_SECURE")
 
 
-def _unreadable_overrides_error(path: str, why: str) -> ValidationError:
+def _unreadable_overrides_error(path: str, why: str,
+                                remedy: str = "fix or remove it") -> ValidationError:
     """The 422 a save over an unparseable overrides file fails with. Boot
     (load_overrides) ignores such a file, so the WebUI shows defaults; merging
     onto {} and rewriting would silently wipe every hand-edited override that
@@ -377,8 +386,8 @@ def _unreadable_overrides_error(path: str, why: str) -> ValidationError:
     return ValidationError.from_exception_data("AdminConfig", [{
         "type": PydanticCustomError(
             "config_file_unreadable",
-            "{file} cannot be read ({why}); fix or remove it, then save again",
-            {"file": os.path.basename(path), "why": why}),
+            "{file} cannot be read ({why}); {remedy}, then save again",
+            {"file": os.path.basename(path), "why": why, "remedy": remedy}),
         "loc": (), "input": None}])
 
 

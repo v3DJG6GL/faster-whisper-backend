@@ -238,6 +238,17 @@ def test_corrupt_json_raises(tmp_path):
         cs.load_factory_rules(path=str(path))
 
 
+@pytest.mark.parametrize("body", [b'<<<<<<< HEAD\n{"BEAM_SIZE": 5}', b"[]"])
+def test_save_refuses_an_unreadable_config_json(tmp_path, body):
+    """A promote over a broken config.json is refused, not written as a file
+    holding only the rules (every scalar default gone, next boot fails)."""
+    path = tmp_path / "config.json"
+    path.write_bytes(body)
+    with pytest.raises(ValidationError, match="config.json cannot be read"):
+        cs.save_factory_rules([_regex_rule("alpha"), _terminal()], path=str(path))
+    assert path.read_bytes() == body
+
+
 def test_missing_pipeline_rules_key_raises(tmp_path):
     """A JSON object without a PIPELINE_RULES key is rejected."""
     path = tmp_path / "config.json"
