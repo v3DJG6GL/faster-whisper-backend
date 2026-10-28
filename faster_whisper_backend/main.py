@@ -1920,6 +1920,21 @@ async def transcribe(
             _spk = {}
             # Who set each hint: 2 = a lock, 1 = the client, 0 = inherited.
             _spk_rank = {}
+
+            def _locked_bound(cfg_name):
+                if cfg_name not in ident.locked:
+                    return 0
+                return effective_config.cfg_for(resolved_model, cfg_name, ident) or 0
+
+            # A client bound on the wrong side of the opposite LOCKED bound
+            # would lose the inversion below; refuse it up front so it is
+            # reported even when an inherited num clears the range anyway.
+            _spk_refused = {_name for _name, _cfg_name, _inverted in (
+                ("min_speakers", "DIARIZATION_MIN_SPEAKERS",
+                 min_speakers and 0 < _locked_bound("DIARIZATION_MAX_SPEAKERS") < min_speakers),
+                ("max_speakers", "DIARIZATION_MAX_SPEAKERS",
+                 max_speakers and max_speakers < _locked_bound("DIARIZATION_MIN_SPEAKERS")),
+            ) if _inverted and _cfg_name not in ident.locked}
             for _cfg_name, _client_name, _client_val in (
                 ("DIARIZATION_NUM_SPEAKERS", "num_speakers", num_speakers),
                 ("DIARIZATION_MIN_SPEAKERS", "min_speakers", min_speakers),
@@ -1932,6 +1947,9 @@ async def transcribe(
                     if (_client_val is not None
                             and (_client_val or None) != (_spk[_client_name] or None)):
                         ignored.append(_client_name)
+                elif _client_name in _spk_refused:
+                    ignored.append(_client_name)
+                    _spk[_client_name] = None
                 elif _client_val is not None:
                     _spk[_client_name] = _client_val or None
                     _spk_rank[_client_name] = 1
@@ -1939,9 +1957,10 @@ async def transcribe(
                 # min/max below, so inheriting it would drop the caller's bounds.
                 # A bound a lock refuses is no range of the caller's, though.
                 elif _client_name == "num_speakers" and any(
-                        _v and _c not in ident.locked for _c, _v in (
-                            ("DIARIZATION_MIN_SPEAKERS", min_speakers),
-                            ("DIARIZATION_MAX_SPEAKERS", max_speakers))):
+                        _v and _c not in ident.locked and _n not in _spk_refused
+                        for _c, _n, _v in (
+                            ("DIARIZATION_MIN_SPEAKERS", "min_speakers", min_speakers),
+                            ("DIARIZATION_MAX_SPEAKERS", "max_speakers", max_speakers))):
                     _spk[_client_name] = None
                 else:
                     _spk[_client_name] = effective_config.cfg_for(resolved_model, _cfg_name, ident)

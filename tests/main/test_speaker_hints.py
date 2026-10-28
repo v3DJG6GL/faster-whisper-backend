@@ -114,3 +114,29 @@ def test_client_max_below_a_locked_min_is_refused(
     ignored = _post(client, h, max_speakers=1)
     assert calls == [{"num": None, "min": 3, "max": None}]
     assert "max_speakers" in ignored
+
+
+def test_client_min_above_a_locked_max_keeps_the_inherited_count(
+        client, app_module, make_user_key, fake_model, monkeypatch):
+    calls = []
+    _record_diarize(monkeypatch, calls)
+    monkeypatch.setattr(app_module.cfg, "DIARIZATION_ENABLED", True)
+    h = _as_profile_user(client, make_user_key, DIARIZATION_NUM_SPEAKERS=3,
+                         DIARIZATION_MAX_SPEAKERS=4,
+                         locks=["DIARIZATION_MAX_SPEAKERS"])
+    ignored = _post(client, h, min_speakers=6)
+    assert calls == [{"num": 3, "min": None, "max": None}]
+    assert "min_speakers" in ignored
+
+
+def test_client_max_below_a_locked_min_keeps_the_inherited_count(
+        client, app_module, make_user_key, fake_model, monkeypatch):
+    calls = []
+    _record_diarize(monkeypatch, calls)
+    monkeypatch.setattr(app_module.cfg, "DIARIZATION_ENABLED", True)
+    h = _as_profile_user(client, make_user_key, DIARIZATION_NUM_SPEAKERS=4,
+                         DIARIZATION_MIN_SPEAKERS=3,
+                         locks=["DIARIZATION_MIN_SPEAKERS"])
+    ignored = _post(client, h, max_speakers=1)
+    assert calls == [{"num": 4, "min": None, "max": None}]
+    assert "max_speakers" in ignored
