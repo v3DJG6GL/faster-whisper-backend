@@ -621,44 +621,148 @@ def _nested_repetition(pat: str) -> bool:
 
 
 def _optional_overlap(body: str, icase: bool = False) -> bool:
-    """True if two ADJACENT single-character atoms of the group body ``body``
-    can match the same character while one of them is an optional ``?`` /
-    ``{0,1}`` that can give it back: `n?n`, `nn?`, `\\s?\\s`, `[mn]?n`.
+    """True if a branch of the group body ``body``, repeated, can split a run
+    of input more than one way because of an optional ``?`` / ``{0,1}`` atom
+    that can give a character back: `n?n`, `nn?`, `\\s?\\s`, `[ab]?[cb]`,
+    `n?x?n`, `(?:n)?n`.
 
-    ``?`` is not a variable quantifier (``_read_quantifier``), so such a pair
-    never marked its group as repeating — yet it consumes one OR two of a
+    ``?`` is not a variable quantifier (``_read_quantifier``), so such a body
+    never marked its group as repeating — yet `n?n` consumes one OR two of a
     run's characters exactly like ``n{1,2}``, and repeated it splits the run
-    as many ways as `(n|nn)+`. A possessive optional (`n?+n`) never gives its
-    character back and does not count. Only atoms at the body's top level and
-    in the same branch are compared; groups are left to the rest of the
+    as many ways as `(n|nn)+`. For each character ``c`` an optional atom can
+    match, the branch's mandatory atoms that can NOT match ``c`` pin every
+    repetition to the input: `(?:\\d?\\d\\.)+` must end each repetition on a
+    `.`, so on a dotted number it matches one way and is linear. The branch
+    splits a run of ``c`` ambiguously when nothing pins it (every mandatory
+    atom matches ``c`` too) and two of its atoms can take ``c``; or when the
+    stretch between two pins — wrapping round from one repetition into the
+    next — holds two optional atoms beside an atom they overlap with:
+    `(?:n?n?nx)+` and `(?:n?nxn?n)+` stay refused.
+
+    Single-character atoms are compared on every character either can match
+    (``_atom_chars``), not on one witness each: `[ab]?[cb]` overlaps on `b`.
+    A zero-width assertion is transparent, a group of plain atoms is read as
+    its atoms; any other group, a possessive or variable quantifier or an atom
+    that cannot be read stands as a pin — those are left to the rest of the
     screen. The match is one compiled atom against one character, so it is
     safe in-process; DOTALL over-approximates, as in _follower_fixes_split.
     """
     import re
     flags = re.DOTALL | (re.IGNORECASE if icase else 0)
-    prev = None  # (atom text, witness character, optional) of the last atom
+    for atoms in _branch_atoms(body):
+        if _splits_ambiguously(atoms, flags):
+            return True
+    return False
+
+
+# Zero-width items consume nothing, so they sit between two atoms without
+# separating them: `n?\bn` is `n?n`.
+_ZERO_WIDTH = ("^", "$", "\\b", "\\B", "\\A", "\\Z", "(?=", "(?!", "(?<=", "(?<!")
+
+
+def _branch_atoms(body: str, depth: int = 0) -> "list[list[tuple[str, bool] | None]]":
+    """The top-level branches of ``body``, each as a list of its consuming
+    single-character atoms ``(atom text, optional)`` with ``None`` for an
+    item that is not one (a pin, see ``_optional_overlap``)."""
+    import re
+    branches: "list[list[tuple[str, bool] | None]]" = [[]]
     i = 0
     n = len(body)
     while i < n:
         if body[i] == "|":
-            prev, i = None, i + 1
+            branches.append([])
+            i += 1
             continue
         char, group, j = _next_atom(body, i)
         _repeats, possessive, k, variable = _read_quantifier(body, j)
-        q = body[j:k]
-        optional = not possessive and (
-            q[:1] == "?" or re.fullmatch(r"\{0*,0*1\}\??", q) is not None)
-        cur = (body[i:j], char, optional) if (
-            group is None and char is not None and not variable) else None
-        if cur and prev and (cur[2] or prev[2]):
-            try:
-                if (re.fullmatch(prev[0], cur[1], flags)
-                        or re.fullmatch(cur[0], prev[1], flags)):
-                    return True
-            except re.error:
-                pass
-        prev = cur
+        text, q = body[i:j], body[j:k]
         i = max(k, j)
+        optional = q[:1] == "?" or re.fullmatch(r"\{0*,0*1\}\??", q) is not None
+        if possessive or variable:
+            branches[-1].append(None)
+        elif re.fullmatch(r"\{0*(?:,0*)?\}\??", q):
+            continue  # `{0}` matches nothing at all
+        elif group is not None:
+            inner = (None if text.startswith("(?>") or depth >= 4
+                     else _branch_atoms(group, depth + 1))
+            if (inner is None or len(inner) != 1 or None in inner[0]
+                    or (q and not optional)):
+                branches[-1].append(None)
+            else:
+                branches[-1].extend((t, o or optional) for t, o in inner[0])
+        elif char is None:
+            if not (text.startswith(_ZERO_WIDTH)
+                    or re.fullmatch(r"\(\?[aiLmsux-]*\)", text)):
+                branches[-1].append(None)
+        else:
+            branches[-1].append((text, optional))
+    return branches
+
+
+def _atom_chars(text: str) -> "set[str]":
+    """Characters worth testing a single atom ``text`` against: each one it
+    names — literals, range ends, decoded escapes — with its case variants.
+    Two classes (or ranges) that share a character share one of these, since
+    a range overlap starts at one of the ranges' ends."""
+    out: "set[str]" = set()
+    p = 0
+    while p < len(text):
+        if text[p] == "\\":
+            char, end = _escape_char(text, p, in_class=text.startswith("["))
+            if char is not None:
+                out.add(char)
+            p = max(end, p + 1)
+        else:
+            out.add(text[p])
+            p += 1
+    return out | {v for c in out for v in (c.lower(), c.upper()) if len(v) == 1}
+
+
+# Shorthands and negated classes name no member of their own, so every atom
+# is also tried on these: ASCII and Latin-1, plus the Unicode dashes, spaces
+# and digits a transcript or a `\d` / `\s` class can hold.
+_POOL_CHARS = frozenset(
+    [chr(x) for x in range(256)]
+    + list("‐‑‒–—―    "
+           "   　  ٠۰०０"))
+
+
+def _splits_ambiguously(atoms: "list[tuple[str, bool] | None]", flags: int) -> bool:
+    """The test ``_optional_overlap`` describes, for one branch's ``atoms``."""
+    import re
+    if not any(a and a[1] for a in atoms):
+        return False
+    pool = set(_POOL_CHARS)
+    for a in atoms:
+        if a:
+            pool |= _atom_chars(a[0])
+    sets: "list[set[str] | None]" = []
+    for a in atoms:
+        if a is None:
+            sets.append(None)
+            continue
+        try:
+            rx = re.compile(a[0], flags)
+        except re.error:
+            sets.append(None)
+            continue
+        sets.append({c for c in pool if rx.fullmatch(c)})
+    m = len(atoms)
+    optional = [x for x in range(m) if sets[x] is not None and atoms[x][1]]
+    for c in set().union(*(sets[x] for x in optional)):
+        cuts = [x for x in range(m) if sets[x] is None
+                or (not atoms[x][1] and c not in sets[x])]
+        if not cuts:
+            if sum(c in s for s in sets) >= 2:
+                return True
+            continue
+        for s, e in zip(cuts, cuts[1:] + [cuts[0] + m]):
+            seg = [x % m for x in range(s + 1, e)]
+            if sum(atoms[x][1] for x in seg) < 2:
+                continue
+            if any((atoms[x][1] or atoms[y][1]) and sets[x] & sets[y]
+                   for p, x in enumerate(seg) for y in seg[p + 1:]):
+                return True
     return False
 
 

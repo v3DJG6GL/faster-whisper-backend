@@ -730,3 +730,46 @@ def test_optional_atom_with_a_disjoint_neighbour_passes():
                 r"(?:n?+n)+#", r"(?>n?n)+#", r"(?:n?n)#"):
         assert not g._nested_repetition(pat), pat
     g.validate([("r", r"(?:Mr\.?\s)+", "")])
+
+
+@pytest.mark.parametrize("pat", [
+    r"m(?:[ab]?[cb])+#",
+    r"(?:[-–]?[ –])+#",
+    r"m(?:[ay]?[xy])+#",
+    r"m(?:n?x?n)+#",
+    r"m(?:(?:n)?n)+#",
+    r"m(?:n?(?:n))+#",
+    r"(?:\s?-?\s)+#",
+])
+def test_optional_overlap_on_a_shared_class_member_or_across_atoms_is_rejected(pat):
+    """Each atom was tested against the OTHER atom's first member only, and
+    only beside its direct neighbour: `[ab]?[cb]` (both take `b`), an en dash
+    shared by `[-–]` and `[ –]`, `n?x?n` (x absent is `n?n`) and a wrapped
+    `(?:n)?` all passed, and `re.sub` on "m" + 38 shared characters + "!"
+    took seconds."""
+    assert g._nested_repetition(pat)
+    with pytest.raises(ValueError, match="nested repetition"):
+        g.validate([("r", pat, "")])
+
+
+@pytest.mark.parametrize("pat", [
+    r"(?:\d?\d\.)+",
+    r"(?:\d?\d\.)+\d{4}",
+    r"\b(?:\d?\d[.:])+\d\d\b",
+    r"(?:a?ab)+",
+    r"(?:\d\d?\.)+",
+])
+def test_optional_overlap_pinned_by_a_disjoint_mandatory_atom_passes(pat):
+    """A date or time rule like `(?:\\d?\\d\\.)+` must end every repetition on
+    its `.`, so each one matches a single way and the pattern is linear —
+    yet it was refused as a nested repetition."""
+    assert not g._nested_repetition(pat)
+    g.validate([("r", pat, "")])
+
+
+def test_optional_overlap_between_pins_still_splits_ambiguously():
+    """A pin only helps when the stretch it bounds holds one optional atom:
+    `n?n?nx` and `n?nxn?n` (the tail and the next head) still split each
+    stretch of n's two ways, 2**k on k repetitions."""
+    assert g._nested_repetition(r"m(?:n?n?nx)+#")
+    assert g._nested_repetition(r"m(?:n?nxn?n)+#")
