@@ -4191,11 +4191,16 @@
         // Debounced save — fires whenever markDirty is invoked (chip
         // input, chip removal, chip extend). 250 ms matches the cadence
         // the rest of /captures uses informally.
-        var saveTimer = null;
+        // Each save REPLACES the members' chips with the full set, and two
+        // in flight can land in either order: chain them, so one runs at a
+        // time and each sends the chips as they are when it starts.
+        var saveTimer = null, saveChain = Promise.resolve();
         state.onMarkDirty = function() {
           if (saveTimer) clearTimeout(saveTimer);
           saveTimer = setTimeout(function() {
-            _saveProposalChips(state, ids).catch(function(e) {
+            saveChain = saveChain.then(function() {
+              return _saveProposalChips(state, ids);
+            }).catch(function(e) {
               if (e && e.message) toast(e.message, true);
             });
           }, 250);

@@ -1292,6 +1292,38 @@ _saveProposalChips(state, ['m1']).then(function() {
 
 
 @needs_node
+def test_proposal_chip_saves_run_one_at_a_time_with_the_latest_chips(page, tmp_path):
+    """Each debounced save sends the full chip set and the server replaces
+    the members' chips with it. A save fired while the previous one was in
+    flight raced it, and the older set could land last: the latest edit
+    was lost."""
+    start = page.index("var saveTimer = null")
+    block = _js_block(page, start)
+    out = _run_node(tmp_path, r"""
+var state = { corrections: ['foo'] }, ids = ['m1'], sent = [], pending = [];
+function _saveProposalChips(st) {
+  sent.push(st.corrections.slice());
+  return new Promise(function(r) { pending.push(r); });
+}
+function toast() {}
+function wait(ms) { return new Promise(function(r) { setTimeout(r, ms); }); }
+""" + block + r""";
+(async function() {
+  state.onMarkDirty();
+  await wait(300);
+  state.corrections = ['food'];
+  state.onMarkDirty();
+  await wait(300);
+  var during = sent.length;
+  pending.shift()();
+  await wait(0);
+  console.log(JSON.stringify({ during: during, sent: sent }));
+})();
+""")
+    assert out == {"during": 1, "sent": [["foo"], ["food"]]}
+
+
+@needs_node
 def test_group_regenerate_asks_before_dropping_edits_made_while_it_ran(page, tmp_path):
     """Regenerate checked for unsaved edits only before its POST; a chip or
     note typed during the slow rebuild was replaced by the server copy and
