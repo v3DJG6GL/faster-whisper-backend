@@ -66,6 +66,31 @@ def test_failed_run_stores_the_error_and_no_result(client, fake_model):
     assert client.get(f"/v1/jobs/{_PID}/result").status_code == 404
 
 
+def test_undecodable_upload_is_a_400_not_a_server_fault(client, fake_model,
+                                                       app_module, monkeypatch):
+    """Bytes that are not audio raise av's InvalidDataError out of
+    model.transcribe; that fell into the generic arm as a 500 "transcription
+    failed" logged at ERROR, which a client reads as a retryable server
+    fault. The ledger still files it as a decode failure."""
+    import av
+    def _not_audio(path, **kw):
+        raise av.error.InvalidDataError(
+            1094995529, "Invalid data found when processing input", path)
+    fake_model.transcribe = _not_audio
+    seen = {}
+    real = app_module.metrics.record_transcription
+    def _record(**kw):
+        seen.update(kw)
+        return real(**kw)
+    monkeypatch.setattr(app_module.metrics, "record_transcription", _record)
+    r = _post(client, progress_id=_PID)
+    assert r.status_code == 400
+    assert r.json()["detail"] == "the file could not be decoded as audio"
+    assert seen["status"] == "error" and seen["error_class"] == "decode_failed"
+    row = client.get(f"/v1/jobs/{_PID}").json()
+    assert row["state"] == "failed"
+
+
 def test_validation_4xx_after_the_seed_stores_the_curated_detail(
         client, app_module, monkeypatch):
     # The upload ceiling is checked AFTER the progress seed (the seed sits

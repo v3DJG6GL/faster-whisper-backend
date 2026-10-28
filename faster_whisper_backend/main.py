@@ -3507,6 +3507,17 @@ async def transcribe(
         except Exception as e:
             _status = "error"
             _exc = e
+            import av as _av
+            if isinstance(e, _av.error.InvalidDataError):
+                # The upload (or the linked media) is not decodable audio:
+                # the caller's input, not a server fault, so a 400 a client
+                # will not retry and no ERROR line. _exc keeps the av error,
+                # so classify_error still files it as decode_failed.
+                logger.warning("Transcription input not decodable: %s",
+                               _log_safe(str(e)))
+                raise HTTPException(
+                    status_code=400,
+                    detail="the file could not be decoded as audio")
             # Log the raw exception server-side, but return a GENERIC detail to
             # the client: str(e) here can carry model-dir / filesystem (temp)
             # paths (av/ffmpeg decode + model-load errors). Mirrors the
