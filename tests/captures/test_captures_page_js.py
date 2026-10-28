@@ -1105,3 +1105,53 @@ var _openRows = {}, _openSamples = {};
     assert out == {"capKept": [True, True], "capDropped": [False, False],
                    "cleanClosed": False, "grpKept": [True, True],
                    "grpDropped": [False, False], "asked": 4}
+
+
+# ---- capture Save / Reprocess vs a status click made meanwhile ---------------------------------
+
+@needs_node
+def test_capture_status_click_during_save_or_reprocess_survives_the_reply(page, tmp_path):
+    """The capture Save and Reprocess replies carry the row read before a
+    status click (or chip Save) made while they ran, and copying it whole
+    put the older status / chips back on the list entry, so the next
+    render filed the card under the wrong status."""
+    build = _js_function(page, "buildBody")
+    handler = _js_block(build, build.index("async function(v) {\n        // Auto-save on click."))
+    fns = "\n".join(_js_function(page, f) for f in ("onSave", "onReprocess"))
+    out = _run_node(tmp_path, fns + r"""
+var body = { parentNode: null }, slow = [];
+var statusGrp = { setValue: function() {} };
+function api(m, u, b) {
+  if (b && b.status) return Promise.resolve({ capture: { status: b.status } });
+  return new Promise(function(res) { slow.push(res); });
+}
+function clearDirty() {} function toast() {} function reloadCounts() {}
+function _syncCapturePreview() {} function applyCorrectionsToGround() {}
+var chip = { wrong: 'a', correct: 'A', idx: 1 };
+var r = { id: 'c1', status: 'new', corrections: [] };
+var state = { cid: 'c1', newStatus: 'new', corrections: [chip],
+  baselineCorrections: [], adminNotes: '' };
+var onStatus = """ + handler + r""";
+function tick() { return new Promise(function(res) { setTimeout(res, 0); }); }
+(async function() {
+  var p = onSave(state, r);
+  await onStatus('ready');               // clicked while the Save runs
+  slow.shift()({ capture: { status: 'new', corrections: [chip] } });
+  await p;
+  var saved = { status: r.status, corrections: r.corrections.length };
+  p = onReprocess(state, r, { textContent: 'Reprocess' });
+  await onStatus('reviewed');            // clicked while Reprocess runs
+  slow.shift()({ capture: { status: 'new', corrections: [], final: 'f',
+                            text_for_training: 't' }, changed: [] });
+  await p;
+  var reproc = { status: r.status, corrections: r.corrections.length,
+    text: r.text_for_training };
+  p = onSave(state, r);                  // no click this time: server wins
+  slow.shift()({ capture: { status: 'dismissed', corrections: [chip] } });
+  await p;
+  console.log(JSON.stringify({ saved: saved, reproc: reproc, plain: r.status }));
+})();
+""")
+    assert out == {"saved": {"status": "ready", "corrections": 1},
+                   "reproc": {"status": "reviewed", "corrections": 1, "text": "t"},
+                   "plain": "dismissed"}
