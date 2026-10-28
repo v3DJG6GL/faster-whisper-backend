@@ -597,3 +597,16 @@ doRestart().catch(e => toasts.push(['escaped: ' + e, true])).then(() => {
 });
 """)
     assert out == [False, [["restart request failed: TypeError: Failed to fetch", True]]]
+
+
+# ---- plain checkboxes in a field's input column -------------------------------
+
+def test_plain_checkbox_in_input_col_keeps_its_themed_width(client):
+    """`.input-col input[type=checkbox] { width: auto }` out-ranks the themed
+    `input[type="checkbox"] { appearance: none; width: 1rem }`, and an
+    appearance:none box has no intrinsic width: every plain checkbox in a
+    field (the model allowlist checklist) drew as a 2px sliver."""
+    html = _html(client)
+    rule = _block(html, ".input-col input[type=checkbox] {", "}")
+    assert "width: 1rem" in rule
+    assert "auto" not in rule
