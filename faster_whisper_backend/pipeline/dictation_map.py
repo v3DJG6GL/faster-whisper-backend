@@ -79,6 +79,10 @@ def compile_map(m: dict) -> tuple["re.Pattern[str]", Callable[["re.Match[str]"],
     too), case-insensitively, longest first —
     the historic behaviour; the optional punctuation prefix only ever
     precedes a key whose value is punctuation."""
+    # A whitespace-only key has no word edge to bound it, so it would match
+    # every space in every transcript; the schema refuses it, but a config
+    # stored before that check may still carry one.
+    m = {k: v for k, v in m.items() if k.strip()}
     lookup: dict[str, str] = {k.lower(): v for k, v in m.items()}
     keys: list[str] = list(m)
     for k in m:

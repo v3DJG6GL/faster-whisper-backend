@@ -134,6 +134,20 @@ def test_map_meta_defaults_empty():
     assert rule.map_meta == {}
 
 
+@pytest.mark.parametrize("key", [" ", "   "])
+def test_map_rejects_a_whitespace_only_key(key):
+    """A whitespace-only key has no word edge to bound it: compiled, it would
+    match every space in every transcript."""
+    with pytest.raises(ValidationError, match="string_pattern_mismatch"):
+        settings_schema.MapRule(**_map_rule("words", mapping={key: ""}))
+
+
+@pytest.mark.parametrize("key", [" Komma", "Punkt ", "z.B.", "a"])
+def test_map_still_accepts_a_space_edged_key(key):
+    rule = settings_schema.MapRule(**_map_rule("words", mapping={key: ","}))
+    assert key in rule.map
+
+
 def test_bad_regex_rejected(tmp_path):
     """An uncompilable pattern is rejected before anything is written."""
     path = str(tmp_path / "config.json")

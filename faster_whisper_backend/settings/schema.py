@@ -392,7 +392,7 @@ class MapRule(_RuleBase):
     type: Literal["callback:map"]
     map: dict[
         Annotated[str, Field(min_length=1, max_length=64,
-                             pattern=r"^[\w \-.,!?ßẞÄÖÜäöü]{1,64}$")],
+                             pattern=r"^ *[\w\-.,!?ßẞÄÖÜäöü][\w \-.,!?ßẞÄÖÜäöü]*$")],
         Annotated[str, Field(max_length=64)],
     ] = Field(default_factory=dict, max_length=10_000)
     # Server-owned: epoch seconds per `map` key, set when an entry is added or

@@ -97,3 +97,12 @@ def test_dictated_punctuation_wins_for_a_space_led_key(key, value, text, expecte
     space, so the prefix never applied and Whisper's mark stayed in front."""
     pattern, replace, _ = dictation_map.compile_map({key: value})
     assert pattern.sub(replace, text) == expected
+
+
+@pytest.mark.parametrize("key", [" ", "  "])
+def test_whitespace_only_key_is_ignored(key):
+    """A stored config from before the schema refused it must not turn every
+    space of every transcript into the key's value."""
+    pattern, replace, lookup = dictation_map.compile_map({key: "x", "Komma": ","})
+    assert pattern.sub(replace, "hallo Welt  Komma zwei") == "hallo Welt  , zwei"
+    assert key not in lookup
