@@ -350,3 +350,27 @@ def test_resubmit_sends_seeded_chips_as_baseline(client, tmp_path):
     assert res[0] == [[bet], [bet, {"wrong": "Delta", "correct": "Del", "idx": 3}]]
     # The still-open form's second submit diffs against what it just sent.
     assert res[1] == [[bet], [bet]]
+
+
+def test_reopened_form_keeps_the_stored_comment(client, tmp_path):
+    # A resubmit overwrites the stored comment with the textarea, which was
+    # always built empty, so adding one chip to a reported trace erased it.
+    res = _run_js(client, tmp_path, r"""
+      globalThis._detailText = (j, d) => d;
+      const sent = [];
+      globalThis.api = async (_m, _u, body) => {
+        sent.push(body.user_comment);
+        return { ok: true, status: 200, json: async () => ({ was_updated: true }) };
+      };
+      _serverReportedChips = { rid1: { corrections: [], user_comment: 'speaker said X' } };
+      const entry = { request_id: 'rid1', final: 'Alpha Beta' };
+      const form = _buildReportForm(entry);
+      _traceItem(entry, form);
+      const seeded = form.querySelector('.rep-comment').value;
+      form.querySelector('.rep-comment').value = 'speaker said Y';
+      await submitReport(form);
+      out({ seeded, sent, snapshot: _serverReportedChips.rid1.user_comment });
+    """, funcs=_REPORT_FUNCS + ("markReported", "submitReport"))
+    assert res["seeded"] == "speaker said X"
+    assert res["sent"] == ["speaker said Y"]
+    assert res["snapshot"] == "speaker said Y"

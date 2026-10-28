@@ -885,8 +885,12 @@ async def get_state(
                 # duplicate request_id (the upsert keeps a single row
                 # per (request_id, user_id), so duplicates are rare).
                 if rid not in reported_chips:
+                    # The comment rides along so a re-opened form shows it:
+                    # a resubmit overwrites the stored comment with whatever
+                    # the textarea holds.
                     reported_chips[rid] = {
                         "corrections": rep.get("corrections") or [],
+                        "user_comment": rep.get("user_comment") or "",
                     }
         # No fallback when uid is empty: reports are per-user; open-mode
         # callers see no reported-badge state at all.

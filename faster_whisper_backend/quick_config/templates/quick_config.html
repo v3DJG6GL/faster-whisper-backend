@@ -1387,6 +1387,10 @@ function _buildReportForm(entry) {
   form._corrections = (_seed && Array.isArray(_seed.corrections))
     ? JSON.parse(JSON.stringify(_seed.corrections))
     : [];
+  // The stored comment too: a resubmit overwrites it with the textarea.
+  if (_seed && typeof _seed.user_comment === 'string') {
+    form.querySelector('.rep-comment').value = _seed.user_comment;
+  }
   // What the server held when the form was seeded: sent as the merge
   // baseline so a chip the user removes or re-ranges is dropped on resubmit.
   form._baseline = JSON.parse(JSON.stringify(form._corrections));
@@ -1699,6 +1703,7 @@ async function submitReport(form) {
       // from another tab landed in between; the next /state load reconciles.
       _serverReportedChips[entry.request_id] = {
         corrections: JSON.parse(JSON.stringify(form._corrections || [])),
+        user_comment: comment,
       };
     }
     // The server now holds what was just sent: a second submit from this

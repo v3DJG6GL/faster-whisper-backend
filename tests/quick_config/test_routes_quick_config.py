@@ -935,3 +935,18 @@ def test_concurrent_patches_do_not_lose_an_update(client, app_module,
         by_name[d.get("name")] = d
     assert by_name[slug_a].get("enabled") is False
     assert by_name[slug_b].get("enabled") is False
+
+
+def test_state_reported_chips_carry_the_stored_comment(client, make_user_key):
+    """The page seeds the report form from reported_chips; without the comment
+    a resubmit from the re-opened form overwrote it with an empty textarea."""
+    from tests.conftest import bearer
+
+    _uid, raw = make_user_key("alice", is_admin=True)
+    h = bearer(raw)
+    r = client.post("/quick-config/reports/api/submit",
+                    json={"request_id": "r1", "user_comment": "speaker said X"},
+                    headers=h)
+    assert r.status_code == 200
+    body = client.get("/quick-config/state", headers=h).json()
+    assert body["reported_chips"]["r1"]["user_comment"] == "speaker said X"
