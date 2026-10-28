@@ -10,8 +10,10 @@ from __future__ import annotations
 
 import asyncio
 import os
+import socket
 import sys
 import time
+import urllib.error
 
 import pytest
 
@@ -162,6 +164,50 @@ def test_direct_media_probe_gates_generic(monkeypatch):
                         lambda u, timeout: False)
     with pytest.raises(udl.UrlDownloadError, match="direct"):
         _run(udl.check_url_policy("https://x/page.html"))
+
+
+def _probe_opener_raising(monkeypatch, exc):
+    class _Opener:
+        def open(self, req, timeout=None):
+            raise exc
+    monkeypatch.setattr(udl, "match_extractor", lambda u: "Generic")
+    monkeypatch.setattr(udl.cfg, "URL_ALLOW_GENERIC", False, raising=False)
+    monkeypatch.setattr(udl.cfg, "URL_ALLOW_DIRECT_MEDIA", True, raising=False)
+    monkeypatch.setattr(udl, "_host_is_forbidden", lambda h: False)
+    monkeypatch.setattr(udl.urllib.request, "build_opener",
+                        lambda *handlers: _Opener())
+
+
+@pytest.mark.parametrize("exc, error, message", [
+    (urllib.error.URLError(socket.timeout("timed out")), udl.UrlTimeoutError,
+     "the site took too long to answer"),
+    (urllib.error.URLError(ConnectionRefusedError(111, "refused")),
+     udl.UrlDownloadError, "the site could not be reached from the server"),
+    (urllib.error.HTTPError("https://cdn.example.com/ep1.mp3", 503, "busy", {}, None),
+     udl.UrlDownloadError, "the site refused the request (HTTP 503)"),
+])
+def test_unreachable_direct_media_link_is_not_called_not_media(monkeypatch, exc,
+                                                               error, message):
+    """A real podcast file on a CDN that is down, slow or answering 5xx is not
+    "neither a supported site nor a direct audio/video file"."""
+    _probe_opener_raising(monkeypatch, exc)
+    with pytest.raises(error) as ei:
+        _run(udl.check_url_policy("https://cdn.example.com/ep1.mp3"))
+    assert str(ei.value) == message
+
+
+def test_direct_media_probe_keeps_a_forbidden_host_not_media(monkeypatch):
+    monkeypatch.setattr(udl, "_host_is_forbidden", lambda h: True)
+    assert udl._direct_media_probe_sync("https://intra.example/a.mp3",
+                                        timeout=1) is False
+
+
+def test_unreachable_hand_off_target_is_not_admitted_as_media(monkeypatch):
+    """The hand-off re-check fails closed: a target that could not be asked
+    is no proof that it serves media."""
+    _probe_opener_raising(monkeypatch, urllib.error.URLError(ConnectionRefusedError()))
+    assert _run(udl._handoff_serves_media(
+        "https://cdn.example.com/ep1.mp3", time.monotonic() + 5)) is False
 
 
 def test_direct_media_probe_spends_from_the_probe_deadline(monkeypatch):
@@ -909,8 +955,9 @@ def test_thumbnail_dribble_bounded_by_deadline(monkeypatch):
 
 def test_direct_media_probe_bounded_by_deadline(monkeypatch):
     """A host that answers slowly (under the per-op socket timeout, over the
-    probe budget) must be judged 'not direct media' once the deadline has
-    passed, whatever its Content-Type says."""
+    probe budget) must not be judged direct media once the deadline has
+    passed, whatever its Content-Type says: it took too long, it is not
+    "not media"."""
     import time as _t
 
     class _Resp:
@@ -933,8 +980,8 @@ def test_direct_media_probe_bounded_by_deadline(monkeypatch):
     monkeypatch.setattr(udl, "_host_is_forbidden", lambda h: False)
     monkeypatch.setattr(udl.urllib.request, "build_opener",
                         lambda *handlers: _Opener())
-    assert udl._direct_media_probe_sync("https://example.com/a.mp3",
-                                        timeout=0.2) is False
+    with pytest.raises(udl.UrlTimeoutError, match="too long"):
+        udl._direct_media_probe_sync("https://example.com/a.mp3", timeout=0.2)
 
 
 def test_download_wall_clock_timeout(tmp_path, monkeypatch):
@@ -1189,8 +1236,8 @@ def test_thumbnail_fetch_pins_dns_against_rebinding(monkeypatch):
 def test_direct_media_probe_pins_dns_against_rebinding(monkeypatch):
     srv, port, hits = _rebinding_server(monkeypatch, "audio/mpeg")
     try:
-        assert udl._direct_media_probe_sync(
-            f"http://rebind.test:{port}/a.mp3", timeout=3) is False
+        with pytest.raises(udl.UrlDownloadError, match="could not be reached"):
+            udl._direct_media_probe_sync(f"http://rebind.test:{port}/a.mp3", timeout=3)
     finally:
         srv.shutdown()
         srv.server_close()
@@ -1253,9 +1300,8 @@ def test_direct_media_probe_cuts_a_dribbled_header(monkeypatch):
     try:
         port = srv.getsockname()[1]
         t0 = _t.monotonic()
-        out = udl._direct_media_probe_sync(
-            f"http://127.0.0.1:{port}/a.mp3", timeout=0.5)
-        assert out is False
+        with pytest.raises(udl.UrlTimeoutError, match="too long"):
+            udl._direct_media_probe_sync(f"http://127.0.0.1:{port}/a.mp3", timeout=0.5)
         assert accepted.is_set()
         # The dribble alone takes ~7 s. 4 s, not 2: a loaded CI runner needed
         # 2.5 s for the 0.5 s deadline (run 1078) and the cut is still proven.

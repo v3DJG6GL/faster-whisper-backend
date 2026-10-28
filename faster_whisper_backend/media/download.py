@@ -32,6 +32,7 @@ import asyncio
 import base64
 import concurrent.futures
 import dataclasses
+import http.client
 import importlib.util
 import logging
 import math
@@ -740,7 +741,9 @@ def _direct_media_probe_sync(url: str, *, timeout: float,
                              accept_hls: bool = False) -> bool:
     """Capped GET (first byte only) that answers: does this URL serve
     audio/video directly? Host gate + redirect gate + pinned DNS keep it
-    off internal ranges. Never raises for 'no' — only returns False.
+    off internal ranges. Returns False for 'no' (incl. a forbidden or
+    unresolvable host); raises UrlTimeoutError / UrlDownloadError when the
+    server could not be asked — that is not a verdict on the link.
     `accept_hls` also counts an HLS manifest (_HLS_MANIFEST_TYPES)."""
     # `timeout` is a wall-clock budget: the opener's timeout is per-socket-
     # op, so a host dribbling one header byte per op could otherwise hold
@@ -756,14 +759,29 @@ def _direct_media_probe_sync(url: str, *, timeout: float,
     req = urllib.request.Request(
         url, headers={"Range": "bytes=0-0", "User-Agent": "faster-whisper-backend"},
         method="GET")
+    cutoff = _WallClockCutoff(timeout)
     try:
-        with _WallClockCutoff(timeout) as cutoff, \
-                _guarded_opener(cutoff).open(req, timeout=op_timeout) as resp:
+        with cutoff, _guarded_opener(cutoff).open(req, timeout=op_timeout) as resp:
             ctype = (resp.headers.get("Content-Type") or "").split(";")[0].strip().lower()
             if time.monotonic() > deadline:
-                return False
+                raise TimeoutError("past the probe deadline")
             resp.read(1)  # some servers ignore Range; never read more
-    except Exception:  # noqa: BLE001 — unreachable/odd server ⇒ not direct media
+    except (OSError, http.client.HTTPException) as e:
+        # Logged, never quoted: the text can name the address a redirect
+        # or a rebinding name resolved to. A refused hop (redirect gate,
+        # pinned connect) reads as unreachable — the guard's own wording.
+        logger.info("[url-dl] direct-media probe failed for host %s: %s: %s",
+                    host_for_log(url), type(e).__name__, log_safe(str(e)))
+        if cutoff.fired or isinstance(e, (TimeoutError, socket.timeout)) or (
+                isinstance(e, urllib.error.URLError)
+                and isinstance(e.reason, (TimeoutError, socket.timeout))):
+            raise UrlTimeoutError("the site took too long to answer") from None
+        if isinstance(e, urllib.error.HTTPError) and e.code >= 400:
+            raise UrlDownloadError(
+                f"the site refused the request (HTTP {e.code})") from None
+        raise UrlDownloadError(
+            "the site could not be reached from the server") from None
+    except Exception:  # noqa: BLE001 — an odd answer ⇒ not direct media
         return False
     return ctype.startswith(_DIRECT_MEDIA_TYPES) or (
         accept_hls and ctype in _HLS_MANIFEST_TYPES)
@@ -1003,9 +1021,12 @@ async def _handoff_serves_media(target: str, deadline: float) -> bool:
         return False
     budget = max(1.0, min(float(getattr(cfg, "URL_SOCKET_TIMEOUT_S", 15)),
                           deadline - time.monotonic()))
-    return await asyncio.get_running_loop().run_in_executor(
-        _PROBE_POOL,
-        lambda: _direct_media_probe_sync(target, timeout=budget, accept_hls=True))
+    try:
+        return await asyncio.get_running_loop().run_in_executor(
+            _PROBE_POOL,
+            lambda: _direct_media_probe_sync(target, timeout=budget, accept_hls=True))
+    except UrlDownloadError:  # unreachable is no proof of media: fail closed
+        return False
 
 
 def _policy_check_extractor(key: str, info: dict, *,
