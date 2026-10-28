@@ -983,6 +983,18 @@ async def transcribe_stream(ws: WebSocket) -> None:
             running them all."""
             return _detected_lang[0] or _partial_lang[0] or req_language or "und"
 
+        def _stored_lang(fw_info) -> str:
+            """The language a capture / trace / usage row stores: the final
+            decode's, else (no decode ran: gate skip, failed decode) the one
+            the session already knows — detected, guessed, requested, or the
+            inherited DEFAULT_LANGUAGE. "" only when none is known; a blank
+            row language runs every language-tagged rule on a re-apply."""
+            return (getattr(fw_info, "language", None) or _detected_lang[0]
+                    or _partial_lang[0] or req_language
+                    or (effective_config.cfg_for(final_model, "DEFAULT_LANGUAGE", ident)
+                        if req_language is None else "")
+                    or "")
+
         async def decode_partial(audio, prompt):
             _refresh_ident()
             if _auth_revoked:
@@ -1353,7 +1365,7 @@ async def transcribe_stream(ws: WebSocket) -> None:
                 try:
                     return captures_store.create_capture(
                         audio_src_path=wav_path, request_id=rid, model=final_model,
-                        language=(getattr(fw_info, "language", None) or req_language or ""),
+                        language=_stored_lang(fw_info),
                         audio_s=dur, raw=raw_text, final=final_text,
                         text_for_training=training_text, words=words,
                         segments=list(segments),
@@ -1522,7 +1534,7 @@ async def transcribe_stream(ws: WebSocket) -> None:
                 qc_recent_feed.record_trace(
                     request_id=rid, model=final_model, raw=raw_text,
                     steps=steps if steps is not None else [], final=final_text,
-                    language=(getattr(fw_info, "language", None) or req_language or None),
+                    language=(_stored_lang(fw_info) or None),
                     source="stream", user_id=user.get("user_id"))
             except Exception as _qe:  # noqa: BLE001
                 logger.error("[stream %s] record_trace failed: %s", session_id[:8], _qe)
@@ -1547,7 +1559,7 @@ async def transcribe_stream(ws: WebSocket) -> None:
                 request_id=rid, user_id=user.get("user_id"), key_id=user.get("key_id"),
                 username=user.get("username"), key_label=user.get("key_label"),
                 job_id=usage_job_id,
-                language=(getattr(fw_info, "language", None) or req_language or None),
+                language=(_stored_lang(fw_info) or None),
                 wait_s=metrics.take_wait(), error_class=_ec, error_stage=_es)
 
         # The client's own live-dictation knobs (decode_overrides), fixed for

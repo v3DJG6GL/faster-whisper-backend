@@ -272,10 +272,11 @@ def test_gate_skipped_utterance_carries_no_previous_decode_diagnostics(
     assert len(rows) >= 2, rows
     first, second = rows[0], rows[-1]
     # The first utterance decoded with the fake model (language "de") and got
-    # its transcribing stage; the gate-skipped one must not inherit either.
+    # its transcribing stage; the gate-skipped one must not inherit the stage.
+    # Its language is the session's detected one, not a blank.
     assert first["language"] == "de"
     assert any(st.get("name") == "transcribing" for st in (first.get("stages") or []))
-    assert second["language"] == ""
+    assert second["language"] == "de"
     assert not (second.get("stages") or []), second.get("stages")
     lines = [r.getMessage() for r in caplog.records]
     assert any("near-silence gate skipped the final decode" in ln for ln in lines), lines
