@@ -2063,6 +2063,8 @@
     card.classList.add('open');
     var body = card.querySelector('.cc-body');
     if (body.dataset.built !== '1') {
+      // Set only when render() re-opens a rebuilt card: the old card's state.
+      var prior = _openRows[r.id];
       try {
         var resp = await api('GET', '/captures/api/' + encodeURIComponent(r.id));
         var full = resp.capture;
@@ -2075,7 +2077,10 @@
         if (e.message !== 'unauthorized') {
           toast('Failed to load capture: ' + e.message, true);
         }
-        card.classList.remove('open');
+        // A failed re-open would leave that old state behind, still dirty
+        // with no open card to save it from, blocking every refresh.
+        if (prior && _openRows[r.id] === prior) collapse(card, r.id);
+        else card.classList.remove('open');
       }
     }
   }

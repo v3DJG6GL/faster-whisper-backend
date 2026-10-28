@@ -1133,6 +1133,38 @@ var _openRows = {}, _openSamples = {};
                    "grpDropped": [False, False], "asked": 4}
 
 
+@needs_node
+def test_failed_reopen_after_render_drops_the_old_cards_state(page, tmp_path):
+    """render() re-opens a rebuilt card while the old card's state is still
+    in _openRows. When that GET failed the stale (dirty) state stayed:
+    every refresh was skipped for "unsaved edits" no card showed, and its
+    blob URL was never revoked. A first open that fails has no state."""
+    fns = "\n".join(_js_function(page, f) for f in ("toggleExpand", "collapse"))
+    out = _run_node(tmp_path, fns + r"""
+var revoked = [], paused = 0;
+global.URL = { revokeObjectURL: function(u) { revoked.push(u); } };
+function api() { return Promise.reject(new Error('HTTP 503')); }
+function toast() {}
+function mkCard() {
+  var open = false, body = { dataset: { built: '0' }, innerHTML: '' };
+  return { classList: { contains: function(c) { return c === 'open' && open; },
+                        remove: function() { open = false; }, add: function() { open = true; } },
+           querySelector: function() { return body; }, isOpen: function() { return open; } };
+}
+var _openRows = { c1: { dirty: true, blobUrl: 'blob:1',
+                        audio: { pause: function() { paused++; } } } };
+(async function() {
+  var c = mkCard();
+  await toggleExpand(c, { id: 'c1' });
+  var c2 = mkCard();
+  await toggleExpand(c2, { id: 'c2' });
+  console.log(JSON.stringify({ open: [c.isOpen(), c2.isOpen()], rows: Object.keys(_openRows),
+    revoked: revoked, paused: paused }));
+})();
+""")
+    assert out == {"open": [False, False], "rows": [], "revoked": ["blob:1"], "paused": 1}
+
+
 # ---- capture Save / Reprocess vs a status click made meanwhile ---------------------------------
 
 @needs_node
