@@ -1904,6 +1904,16 @@
   // -------------------------------------------------------------------
   // List card (collapsed)
   // -------------------------------------------------------------------
+  // The card's one-line text preview. `words` are the aligned karaoke words
+  // (from the detail GET, so only once the card was expanded); without them
+  // an anchored chip falls back to the unaligned nearest match.
+  function _capturePreviewText(r, words) {
+    return _applyChipsToText(
+      r.text_for_training || r.final || r.raw || '', r.corrections || [], words)
+      || r.raw
+      || '(empty)';
+  }
+
   function renderCard(r) {
     var card = document.createElement('div');
     card.className = 'capture-card';
@@ -1971,11 +1981,7 @@
     preview.style.whiteSpace = 'nowrap';
     preview.style.overflow = 'hidden';
     preview.style.textOverflow = 'ellipsis';
-    preview.textContent =
-      _applyChipsToText(
-        r.text_for_training || r.final || r.raw || '', r.corrections || [])
-      || r.raw
-      || '(empty)';
+    preview.textContent = _capturePreviewText(r, r.words);
     card.appendChild(preview);
 
     var body = document.createElement('div');
@@ -3288,11 +3294,12 @@
     // Chips-applied join. Source from `text_for_training` so the preview
     // matches the word-form training text the export will actually emit
     // (falls back to `final` then `raw` for legacy captures predating
-    // text_for_training).
+    // text_for_training). A row expanded once carries its aligned words,
+    // which place anchored chips the way the export does.
     var sep = JOIN_STR[strategy] || ' ';
     return rows.map(function(r) {
       var base = r.text_for_training || r.final || r.raw || '';
-      return _applyChipsToText(base, r.corrections || []).trim();
+      return _applyChipsToText(base, r.corrections || [], r.words).trim();
     }).filter(Boolean).join(sep);
   }
 
@@ -3303,7 +3310,7 @@
       var line = document.createElement('div');
       line.className = 'seg-line';
       var base = r.text_for_training || r.final || r.raw || '';
-      var memberText = _applyChipsToText(base, r.corrections || []);
+      var memberText = _applyChipsToText(base, r.corrections || [], r.words);
       line.innerHTML = '<span class="seg-time">[' + (i + 1) + '] '
         + (r.audio_s || 0).toFixed(1) + 's</span>'
         + escapeHtml(memberText.slice(0, 200));
@@ -5311,11 +5318,20 @@
           membersDiv.innerHTML = '<p style="font-size:var(--fs-sm);'
             + 'color:var(--help);margin:0.4rem 0;">Members ('
             + (d.members || []).length + ')</p>';
-          (d.members || []).forEach(function(m) {
+          // A member's aligned words are its slice of merged_words (the
+          // members carry only their raw words); they place anchored chips
+          // the way the export does. A slice that lost words to the trim
+          // no longer lines up with chip idx: unaligned fallback then.
+          (d.members || []).forEach(function(m, mi) {
             var line = document.createElement('div');
             line.style.cssText = 'font-size:var(--fs-sm);color:var(--dim);padding:0.2rem 0;';
             var base = m.text_for_training || m.final || m.raw || '';
-            var memberText = _applyChipsToText(base, m.corrections || []);
+            var memberWords = (d.merged_words || []).filter(function(w) {
+              return w && w.member_idx === mi;
+            });
+            if (memberWords.length !== (m.words || []).length) memberWords = null;
+            var memberText = _applyChipsToText(
+              base, m.corrections || [], memberWords);
             var memDur = (m.effective_audio_s !== undefined
               ? m.effective_audio_s
               : (m.audio_s || 0));

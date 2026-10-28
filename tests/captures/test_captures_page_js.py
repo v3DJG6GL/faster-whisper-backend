@@ -688,3 +688,107 @@ def test_confirm_dialog_and_toast_stack_above_the_merge_modals(page):
     overlay = max(_z_index(page, "#merge-modal"), _z_index(page, "#propose-modal"))
     assert _z_index(page, ".modal") > overlay
     assert _z_index(page, "#toast") > _z_index(page, ".modal")
+
+
+# ---- chip placement by aligned words ------------------------------------------------
+
+# "die Katze die Maus" after four fillers the pipeline removed: the chip on the
+# FIRST "die" sits at karaoke idx 4, which is text token 2 (the second "die")
+# when the removed words are not mapped out.
+_KATZE_TEXT = "die Katze die Maus"
+_KATZE_CHIP = {"wrong": "die", "correct": "Die", "idx": 4}
+_KATZE_RAW = [{"word": w} for w in ("äh", " äh", " äh", " äh", " die", " Katze", " die", " Maus")]
+_KATZE_ALIGNED = ([{"word": "äh", "removed": True}] * 4
+                  + [{"word": w} for w in (" die", " Katze", " die", " Maus")])
+
+
+@needs_node
+def test_merge_modal_preview_places_chips_by_aligned_words(page, tmp_path):
+    """The merge modal's transcript and member lines, and the collapsed
+    capture card's preview, applied chips without the aligned words, so a
+    chip on a repeated word after removed fillers landed on the wrong copy:
+    the reviewer approved a text the export would not emit."""
+    fns = "\n".join(_js_function(page, f) for f in (
+        "_applyChipsToText", "_buildDefaultTranscript", "_renderMergePreview",
+        "_capturePreviewText"))
+    out = _run_node(tmp_path, "var JOIN_STR = { space: ' ', period_space: '. ' };\n" + fns + r"""
+function escapeHtml(s) { return String(s); }
+var lines = [];
+var host = { set innerHTML(v) {}, appendChild: function(l) { lines.push(l.innerHTML); } };
+global.document = { getElementById: function() { return host; },
+  createElement: function() { return {}; } };
+var row = { text_for_training: """ + json.dumps(_KATZE_TEXT) + r""",
+  corrections: [""" + json.dumps(_KATZE_CHIP) + r"""],
+  words: """ + json.dumps(_KATZE_ALIGNED) + r""", audio_s: 1 };
+var bare = Object.assign({}, row, { words: undefined });
+_renderMergePreview([row]);
+console.log(JSON.stringify({
+  transcript: _buildDefaultTranscript([row, row], 'space'),
+  member: lines[0].replace(/^<span[^>]*>[^<]*<\/span>/, ''),
+  card: _capturePreviewText(row, row.words),
+  unaligned: _capturePreviewText(bare, bare.words) }));
+""")
+    assert out == {"transcript": "Die Katze die Maus Die Katze die Maus",
+                   "member": "Die Katze die Maus",
+                   "card": "Die Katze die Maus",
+                   "unaligned": "die Katze Die Maus"}
+
+
+# The open group card's applyServerSample under node: every DOM handle it
+# touches is a catch-all stand-in except the members list and status buttons.
+_SAMPLE_CARD_STUBS = r"""
+function fake() {
+  var store = {};
+  return new Proxy(function() {}, {
+    get: function(t, k) {
+      if (k === Symbol.toPrimitive) return function() { return ''; };
+      if (k === 'then') return undefined;
+      if (!(k in store)) store[k] = fake();
+      return store[k];
+    },
+    set: function(t, k, v) { store[k] = v; return true; },
+    apply: function() { return fake(); },
+  });
+}
+global.document = { createElement: function() { return fake(); } };
+var memberLines = [], statusShown = [], headSynced = [];
+var membersDiv = { set innerHTML(v) {}, appendChild: function(l) { memberLines.push(l.innerHTML); } };
+var statusGrp = { setValue: function(v) { statusShown.push(v); }, root: fake() };
+var refsWrap = fake(), notesArea = fake(), staleHint = fake(), regenBtn = fake(),
+    lockBtn = fake(), dissolveBtn = fake(), strip = fake(), card = fake(),
+    saveTBtn = fake(), detail = {};
+function _textLine() { return fake(); }
+function applyCorrectionsToGround() {} function clearDirty() {}
+function refreshSettingsHint() {} function renderChips() {} function selectWord() {}
+function refreshAudio() {} function onWordClick() {}
+function _dispWord(w) { return w.word; } function _dispRemoved(w) { return !!w.removed; }
+function _syncSampleHead(c, d) { headSynced.push(d.status); }
+function reloadCounts() {} function toast() {}
+function escapeHtml(s) { return String(s); }   // the page's /"/ regex trips _js_block
+"""
+
+
+@needs_node
+def test_group_members_list_places_chips_by_aligned_words(page, tmp_path):
+    """The open group card's members list applied each member's chips
+    without its aligned words (only raw words come with the members), so a
+    chip after removed fillers moved to another copy of its word."""
+    fns = "\n".join(_js_function(page, f) for f in (
+        "applyServerSample", "_applyChipsToText"))
+    member = {"id": "m1", "text_for_training": _KATZE_TEXT, "corrections": [_KATZE_CHIP],
+              "words": _KATZE_RAW, "sample_order": 0, "audio_s": 1.0}
+    merged = [dict(w, start=i * 0.1, end=i * 0.1 + 0.05, member_idx=0)
+              for i, w in enumerate(_KATZE_ALIGNED)]
+    out = _run_node(tmp_path, _SAMPLE_CARD_STUBS + fns + r"""
+var g = { id: 'g1' }, _allSamples = [], sampleState = {};
+var d = { id: 'g1', members: [""" + json.dumps(member) + r"""],
+  merged_words: """ + json.dumps(merged) + r""" };
+applyServerSample(d);
+var full = memberLines[0];
+d.merged_words = d.merged_words.slice(1);        // a word lost to the trim
+memberLines = [];
+applyServerSample(d);
+console.log(JSON.stringify({ aligned: full, trimmed: memberLines[0] }));
+""")
+    assert out == {"aligned": "[1] 1.0s · Die Katze die Maus",
+                   "trimmed": "[1] 1.0s · die Katze Die Maus"}
