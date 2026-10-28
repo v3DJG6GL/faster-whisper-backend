@@ -66,3 +66,38 @@ def test_dissolve_sample_by_default_still_deletes_a_locked_sample(
     _insert_sample(captures_store_db._require_conn(), gs, "relock03sid", locked=True)
     gs.dissolve_sample("relock03sid")
     assert gs.get_sample("relock03sid") is None
+
+
+class _LocksOnEnter:
+    """Stand-in for routes._corrections_write_lock that locks the sample as
+    the save acquires it — the window in which another save held the lock."""
+
+    def __init__(self, conn, sid):
+        import threading
+        self._conn, self._sid, self._real = conn, sid, threading.Lock()
+
+    def __enter__(self):
+        self._conn.execute(
+            "UPDATE capture_samples SET is_locked = 1 WHERE id = ?", (self._sid,))
+        return self._real.__enter__()
+
+    def __exit__(self, *exc):
+        return self._real.__exit__(*exc)
+
+
+def test_group_chip_save_refuses_a_sample_locked_while_waiting(
+        client, make_user_key, monkeypatch):
+    from faster_whisper_backend.captures import routes
+    from faster_whisper_backend.captures import samples_store as gs
+    from faster_whisper_backend.captures import store as captures_store
+
+    make_user_key("root", is_admin=True)
+    uid, raw = make_user_key("alice", pages={"captures": "own"})
+    conn = captures_store._require_conn()
+    sid = "relock04sid"
+    _insert_sample(conn, gs, sid, locked=False, user_id=uid)
+    monkeypatch.setattr(routes, "_corrections_write_lock", _LocksOnEnter(conn, sid))
+    r = client.patch(f"/captures/api/samples/{sid}", headers=bearer(raw),
+                     json={"corrections": [], "status": "reviewed"})
+    assert r.status_code == 409
+    assert gs.get_sample(sid)["status"] == "new"

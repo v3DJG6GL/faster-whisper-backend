@@ -2500,6 +2500,11 @@ async def patch_sample_api(
         # The member read, three-way merge and per-member writes must not
         # interleave with a member's own PATCH or another group save.
         with _corrections_write_lock:
+            # Locked while we waited on the lock: the pre-check above saw a
+            # stale row. A corrections save is never the unlock-only patch.
+            fresh = capture_samples_store.get_sample(sid)
+            if fresh is not None and fresh["is_locked"] and not user.get("is_admin"):
+                raise HTTPException(status.HTTP_409_CONFLICT, "sample is locked")
             return _apply()
 
     updated = await asyncio.to_thread(_apply_serialised)
