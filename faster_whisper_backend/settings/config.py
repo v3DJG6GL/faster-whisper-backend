@@ -1662,6 +1662,8 @@ _ENV_READER_OVERRIDES = {
     "PREPEND_PUNCTUATIONS": "passthrough", "APPEND_PUNCTUATIONS": "passthrough",
     "OUTPUT_PREFIX": "passthrough", "OUTPUT_SUFFIX": "passthrough",
     "DEFAULT_LANGUAGE": "passthrough",
+    # every documented non-empty value is whitespace (' ' / '\n')
+    "STREAMING_HARD_BREAK_SEPARATOR": "passthrough",
     # Optional thresholds where an empty string disables the check (→ None)
     "NO_SPEECH_THRESHOLD": "float_or_none", "LOG_PROB_THRESHOLD": "float_or_none",
     "COMPRESSION_RATIO_THRESHOLD": "float_or_none",
