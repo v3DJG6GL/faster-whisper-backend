@@ -190,6 +190,37 @@ var state = { cid: 'c1', corrections: [Y], baselineCorrections: [], adminNotes: 
 
 
 @needs_node
+def test_capture_save_keeps_edits_made_while_it_ran(page, tmp_path):
+    """The capture Save cleared the dirty flag whatever happened during its
+    PATCH, so a chip or note typed meanwhile (never sent) read as saved and
+    the next filter change or refresh dropped it without a prompt."""
+    fns = "\n".join(_js_function(page, f) for f in ("onSave", "markDirty", "clearDirty"))
+    out = _run_node(tmp_path, fns + r"""
+var pending = [], toasts = [];
+function api() { return new Promise(function(r) { pending.push(r); }); }
+function toast(m) { toasts.push(m); } function reloadCounts() {}
+var state = { cid: 'c1', corrections: [{ wrong: 'a', correct: 'A', idx: 1 }],
+  baselineCorrections: [], adminNotes: '', dirty: false };
+function tick() { return new Promise(function(r) { setTimeout(r, 0); }); }
+(async function() {
+  markDirty(state);
+  var p = onSave(state, {});
+  state.adminNotes = 'typed meanwhile';
+  markDirty(state);
+  pending[0]({ capture: {} });
+  await p;
+  var raced = state.dirty;
+  p = onSave(state, {});                // nothing edited during this one
+  pending[1]({ capture: {} });
+  await p;
+  console.log(JSON.stringify({ raced: raced, dirty: state.dirty, toasts: toasts }));
+})();
+""")
+    assert out == {"raced": True, "dirty": False,
+                   "toasts": ["Saved · newer edits not saved yet", "Saved."]}
+
+
+@needs_node
 def test_capture_status_click_repaints_the_header_pill(page, tmp_path):
     """The status buttons auto-save, but the collapsed header's pill
     (painted once by renderCard) kept saying the old status."""

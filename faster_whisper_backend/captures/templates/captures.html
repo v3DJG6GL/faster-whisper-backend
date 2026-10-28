@@ -2815,6 +2815,7 @@
         baseline_corrections: state.baselineCorrections || [],
         admin_notes: state.adminNotes,
       };
+      var gen = state.editGen;
       var j = await api('PATCH',
         '/captures/api/' + encodeURIComponent(state.cid), body);
       Object.assign(r, j.capture);
@@ -2823,8 +2824,14 @@
       // the merge kept would sit in the baseline but not in the next
       // `edited` and read as "user removed it".
       state.baselineCorrections = JSON.parse(JSON.stringify(corrections));
-      clearDirty(state);
-      toast('Saved.');
+      if (state.editGen !== gen) {
+        // Edited while the save ran: those edits were not sent, so the
+        // card stays dirty and the drop-edits prompts still guard it.
+        toast('Saved · newer edits not saved yet');
+      } else {
+        clearDirty(state);
+        toast('Saved.');
+      }
       reloadCounts();
     } catch (e) {
       if (e.message !== 'unauthorized') toast('Save failed: ' + e.message, true);
