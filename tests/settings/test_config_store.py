@@ -1714,6 +1714,22 @@ def test_load_overrides_strips_wildcard_origins_keeps_rest(tmp_path):
     assert out["CORS_ALLOW_ORIGINS"] == ["*", "https://app.example.com"]
 
 
+def test_load_overrides_drops_blank_map_key_keeps_rest(tmp_path):
+    # The old map-key pattern accepted " "; a file stored then must lose only
+    # that key, not every override — and must stay saveable.
+    p = str(tmp_path / "config.local.json")
+    rule = {"name": "m", "label": "m", "type": "callback:map",
+            "map": {" ": "x", "Komma": ","}, "map_meta": {" ": 1, "Komma": 2}}
+    with open(p, "w", encoding="utf-8") as f:
+        json.dump({"PIPELINE_RULES": [rule, _terminal()], "BEAM_SIZE": 7}, f)
+    out = cs.load_overrides(p)
+    assert out["BEAM_SIZE"] == 7
+    assert out["PIPELINE_RULES"][0]["map"] == {"Komma": ","}
+    assert out["PIPELINE_RULES"][0]["map_meta"] == {"Komma": 2}
+    cs.save_overrides({"BEAM_SIZE": 5}, path=p)
+    assert cs.load_overrides(p)["BEAM_SIZE"] == 5
+
+
 # ---------------------------------------------------------------------------
 # _F(evict=...) is a closed set
 # ---------------------------------------------------------------------------

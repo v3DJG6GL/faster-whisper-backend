@@ -80,8 +80,8 @@ def compile_map(m: dict) -> tuple["re.Pattern[str]", Callable[["re.Match[str]"],
     the historic behaviour; the optional punctuation prefix only ever
     precedes a key whose value is punctuation."""
     # A whitespace-only key has no word edge to bound it, so it would match
-    # every space in every transcript; the schema refuses it, but a config
-    # stored before that check may still carry one.
+    # every space in every transcript; the schema refuses it and the stored-
+    # config migration (config_store) drops it — this is the backstop.
     m = {k: v for k, v in m.items() if k.strip()}
     lookup: dict[str, str] = {k.lower(): v for k, v in m.items()}
     keys: list[str] = list(m)

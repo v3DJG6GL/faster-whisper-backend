@@ -99,7 +99,8 @@ def _migrate_tightened_bundle_values(raw: dict[str, Any]) -> list[str]:
     a Whisper-code membership check: an unknown code failed every decode
     that relied on it, so it is dropped (inherit). SUPPRESS_TOKENS (top
     level too) gained a token-id range: an id far past the vocab crashed
-    every decode, so it is dropped the same way. Per-identity bindings
+    every decode, so it is dropped the same way. A PIPELINE_RULES
+    callback:map key that is whitespace-only is dropped. Per-identity bindings
     (api_keys_store._parse_binding) and the env JSON bundles (config.py) run
     the same per-bundle rules via migrate_tightened_bundle."""
     notes = _migrate_segment_guards(raw, "")
@@ -120,6 +121,21 @@ def _migrate_tightened_bundle_values(raw: dict[str, Any]) -> list[str]:
             if isinstance(bundle, dict):
                 notes.extend(migrate_tightened_bundle(
                     bundle, f"{group_key}[{name!r}]"))
+    # A callback:map key gained a non-blank rule: a whitespace-only key has
+    # no word edge, so it matched every space. Drop it (and its map_meta).
+    rules = raw.get("PIPELINE_RULES")
+    for r in rules if isinstance(rules, list) else ():
+        if not (isinstance(r, dict) and r.get("type") == "callback:map"
+                and isinstance(r.get("map"), dict)):
+            continue
+        blank = [k for k in r["map"] if isinstance(k, str) and not k.strip()]
+        for k in blank:
+            del r["map"][k]
+            if isinstance(r.get("map_meta"), dict):
+                r["map_meta"].pop(k, None)
+        if blank:
+            notes.append(f"dropped whitespace-only map keys {blank!r} from "
+                         f"PIPELINE_RULES[{r.get('name')!r}]")
     return notes
 
 
