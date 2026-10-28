@@ -349,3 +349,35 @@ def test_build_proposal_uses_trimmed_durations():
     assert prop["member_previews"][1]["duration_s"] == 1.0
     # total = trimmed sum (2.2) + one 0.3s gap.
     assert abs(prop["total_duration_s"] - 2.5) < 1e-6
+
+
+def test_build_merged_words_keeps_index_parity_with_the_raw_words(monkeypatch):
+    # A filler stamped inside member a's trimmed lead used to be dropped, so
+    # every later merged index sat one word off the raw-word frame the server
+    # splits chips by: a chip on " three" landed on member a's " two".
+    cr = _routes()
+    monkeypatch.setattr(
+        capture_samples, "_align_words_to_final",
+        lambda words, final, model_name=None, ident=None, language=None: [dict(w) for w in words],
+    )
+    members = [
+        {"id": "a", "final": "x", "audio_s": 2.0, "words": [
+            {"word": "hm", "start": 0.0, "end": 0.2},
+            {"word": " one", "start": 0.6, "end": 0.9},
+            {"word": " two", "start": 1.0, "end": 1.5}]},
+        {"id": "b", "final": "y", "audio_s": 2.0, "words": [
+            {"word": " three", "start": 0.5, "end": 0.9},
+            {"word": " four", "start": 1.0, "end": 9.0},
+            {"word": " five", "start": 9.0, "end": 9.5}]},
+    ]
+    trims = {"a": {"segments": [[500, 1600, 0]], "new_duration_ms": 1100},
+             "b": {"segments": [[400, 1600, 0]], "new_duration_ms": 1200}}
+    out = cr._build_merged_words(members, 300, member_trims=trims,
+                                 merged_duration_ms=2200)
+    assert [w["word"] for w in out] == ["hm", " one", " two", " three", " four", " five"]
+    assert out[0]["start"] == out[0]["end"] == 0.0
+    assert out[-1]["start"] == out[-1]["end"] == pytest.approx(2.2)
+    idx = [w["word"] for w in out].index(" three")
+    split = cr._split_corrections_to_members(
+        [{"idx": idx, "wrong": "three", "correct": "3"}], members)
+    assert split == {"a": [], "b": [{"idx": 0, "wrong": "three", "correct": "3"}]}

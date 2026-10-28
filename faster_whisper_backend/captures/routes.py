@@ -2175,14 +2175,22 @@ def _emit_member_words(
     """Append member i's aligned words to `merged`, placed on the merged
     timeline. When `segments` is given, each word's original time is remapped
     through the per-member trim map first (per-member trimming); otherwise the
-    legacy flat offset is used."""
+    legacy flat offset is used.
+
+    Exactly one entry per aligned word: chip idx counts the members' raw
+    words (_project_member_corrections / _split_corrections_to_members) and
+    the client indexes chips into this list, so a word that maps to cut audio
+    (trimmed lead, past the merged end) or has no timestamps is kept as a
+    zero-length entry — skipping it moved every later chip onto the next
+    word, or into the next member."""
+    last_s = max(0.0, member_offset_s)
     for w in ws:
         start = w.get("start")
         end = w.get("end", start)
         word = w.get("word", "")
         if start is None or end is None:
-            continue
-        if segments is None:
+            s_new = e_new = last_s
+        elif segments is None:
             s_new = float(start) + member_offset_s
             e_new = float(end) + member_offset_s
         else:
@@ -2190,14 +2198,12 @@ def _emit_member_words(
                 + member_offset_s
             e_new = _remap_time_ms(float(end) * 1000.0, segments) / 1000.0 \
                 + member_offset_s
-        if e_new <= 0:
-            continue
-        if eff_dur_s is not None and s_new >= eff_dur_s:
-            continue
         s_clamped = max(0.0, s_new)
-        e_clamped = e_new
+        e_clamped = max(0.0, e_new)
         if eff_dur_s is not None:
+            s_clamped = min(eff_dur_s, s_clamped)
             e_clamped = min(eff_dur_s, e_clamped)
+        last_s = max(s_clamped, e_clamped)
         entry = {
             "word":       word,
             "start":      s_clamped,
