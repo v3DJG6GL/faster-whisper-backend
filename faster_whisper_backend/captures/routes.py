@@ -2516,9 +2516,18 @@ async def patch_sample_api(
 
         return capture_samples_store.update_sample(sid, patch)
 
+    def _apply_lock_aware() -> dict[str, Any] | None:
+        if payload.is_locked is None:
+            return _apply()
+        # A lock toggle waits out an in-flight rebuild: regenerate, the VAD
+        # reprocess and dissolve re-check is_locked under this lock, and a
+        # sample locked mid-rebuild would get the new WAV written onto it.
+        with capture_samples._rebuild_lock(sid):
+            return _apply()
+
     def _apply_serialised() -> dict[str, Any] | None:
         if payload.corrections is None:
-            return _apply()
+            return _apply_lock_aware()
         # The member read, three-way merge and per-member writes must not
         # interleave with a member's own PATCH or another group save.
         with _corrections_write_lock:
@@ -2527,7 +2536,7 @@ async def patch_sample_api(
             fresh = capture_samples_store.get_sample(sid)
             if fresh is not None and fresh["is_locked"] and not user.get("is_admin"):
                 raise HTTPException(status.HTTP_409_CONFLICT, "sample is locked")
-            return _apply()
+            return _apply_lock_aware()
 
     updated = await asyncio.to_thread(_apply_serialised)
     if updated is None:

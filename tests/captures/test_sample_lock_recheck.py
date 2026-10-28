@@ -146,3 +146,39 @@ def test_bulk_delete_skips_a_member_whose_sample_was_locked_since_the_guard(
     assert r.json()["skipped"] == [{"id": cid, "reason": "locked"}]
     assert cs.get_capture(cid) is not None
     assert gs.get_sample(sid) is not None
+
+
+def test_lock_toggle_waits_out_an_in_flight_rebuild(
+        client, make_user_key, monkeypatch):
+    """The is_locked write runs under the per-sid rebuild lock, so the
+    rebuilders' re-check under that lock is authoritative: a sample cannot be
+    locked between a VAD rebuild's check and its update_sample."""
+    from faster_whisper_backend.captures import samples as capture_samples
+    from faster_whisper_backend.captures import samples_store as gs
+    from faster_whisper_backend.captures import store as captures_store
+
+    make_user_key("root", is_admin=True)
+    uid, raw = make_user_key("alice", pages={"captures": "own"})
+    sid = "relock07sid"
+    _insert_sample(captures_store._require_conn(), gs, sid, locked=False, user_id=uid)
+    held = []
+    real_lock, real_update = capture_samples._rebuild_lock, gs.update_sample
+
+    @contextlib.contextmanager
+    def _tracking(s):
+        with real_lock(s):
+            held.append(s)
+            try:
+                yield
+            finally:
+                held.remove(s)
+
+    seen = []
+    monkeypatch.setattr(capture_samples, "_rebuild_lock", _tracking)
+    monkeypatch.setattr(gs, "update_sample",
+                        lambda s, patch: seen.append(list(held)) or real_update(s, patch))
+    r = client.patch(f"/captures/api/samples/{sid}", headers=bearer(raw),
+                     json={"is_locked": True})
+    assert r.status_code == 200
+    assert seen == [[sid]]
+    assert gs.get_sample(sid)["is_locked"]
