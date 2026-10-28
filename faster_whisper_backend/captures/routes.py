@@ -1964,8 +1964,10 @@ def _split_corrections_to_members(
     chips after the split) so the caller can fan out via
     `update_capture(member_id, {"corrections": chips})` and reliably
     REPLACE each member's chip list. Chips whose `idx` is out of range
-    are silently dropped; `idx_end` is clipped to the same member's
-    last word. Anchorless chips (no integer `idx`) are dropped too, so a
+    are silently dropped. A chip whose `idx_end` lies past its member's
+    last word is refused with a 422: filed under one member, its `wrong`
+    still holds the next member's words, so it would never apply while
+    the save reported success. Anchorless chips (no integer `idx`) are dropped too, so a
     caller that REPLACES re-adds each member's stored ones
     (`_keep_anchorless`)."""
     word_counts: list[int] = []
@@ -1996,10 +1998,15 @@ def _split_corrections_to_members(
         if c.get("idx_end") is not None:
             try:
                 end_local = int(c["idx_end"]) - offsets[target]
-                max_local = word_counts[target] - 1
-                c2["idx_end"] = min(max(end_local, c2["idx"]), max_local)
             except (TypeError, ValueError):
                 c2.pop("idx_end", None)
+            else:
+                if end_local > word_counts[target] - 1:
+                    raise HTTPException(
+                        status.HTTP_422_UNPROCESSABLE_CONTENT,
+                        "a correction cannot span two member captures",
+                    )
+                c2["idx_end"] = max(end_local, c2["idx"])
         out[members[target]["id"]].append(c2)
     return out
 

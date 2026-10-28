@@ -401,3 +401,22 @@ def test_trimmed_capture_keeps_one_word_per_raw_word():
     assert [(w["start"], w["end"]) for w in row["words"]] == [
         (0.0, 0.0), pytest.approx((0.1, 0.4)), pytest.approx((0.5, 1.0)), (2.0, 2.0)]
     assert [s["text"] for s in row["segments"]] == ["one two"]
+
+
+def test_split_refuses_a_chip_spanning_two_members():
+    """Filed under member a with idx_end clipped, a chip whose `wrong` holds
+    member b's word too never applied, behind a successful save."""
+    from fastapi import HTTPException
+
+    cr = _routes()
+    members = [{"id": "a", "words": [{"word": "hello"}, {"word": " foo"}]},
+               {"id": "b", "words": [{"word": "bar"}, {"word": " baz"}]}]
+    with pytest.raises(HTTPException) as exc:
+        cr._split_corrections_to_members(
+            [{"idx": 1, "idx_end": 2, "wrong": "foo bar", "correct": "foobar"}],
+            members)
+    assert exc.value.status_code == 422
+    split = cr._split_corrections_to_members(
+        [{"idx": 2, "idx_end": 3, "wrong": "bar baz", "correct": "barbaz"}], members)
+    assert split == {"a": [], "b": [
+        {"idx": 0, "idx_end": 1, "wrong": "bar baz", "correct": "barbaz"}]}
