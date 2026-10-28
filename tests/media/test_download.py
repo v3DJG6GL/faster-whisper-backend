@@ -479,6 +479,26 @@ def test_match_extractor_skips_extractors_yt_dlp_disables_by_default(monkeypatch
     assert udl.match_extractor("https://www.youtube.com/watch?v=x") == "Youtube"
 
 
+def test_match_extractor_keeps_a_disabled_by_default_extractor_the_allowlist_names(
+        monkeypatch):
+    """An explicit allowed_extractors pin turns an _ENABLED=False IE back on
+    in yt-dlp, so an operator who allowlists DW must get DW, not Generic."""
+    import yt_dlp.extractor
+
+    def _ie(name, enabled):
+        return type(name + "IE", (), {
+            "_ENABLED": enabled,
+            "ie_key": classmethod(lambda cls: name),
+            "suitable": classmethod(lambda cls, u: True),
+        })
+    monkeypatch.setattr(yt_dlp.extractor, "gen_extractor_classes", lambda: [
+        _ie("DW", False), _ie("Generic", True)])
+    monkeypatch.setattr(udl.cfg, "URL_ALLOWED_EXTRACTORS", ["DW"], raising=False)
+    assert udl.match_extractor("https://www.dw.com/en/x/av-12345678") == "DW"
+    monkeypatch.setattr(udl.cfg, "URL_ALLOWED_EXTRACTORS", ["Youtube"], raising=False)
+    assert udl.match_extractor("https://www.dw.com/en/x/av-12345678") == "Generic"
+
+
 def test_download_argv_pins_the_extractors_and_ignores_config():
     for argv in (
             udl.build_download_argv("https://e.com/a", dest_dir="/tmp/x",

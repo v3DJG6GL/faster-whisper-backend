@@ -574,11 +574,14 @@ def match_extractor(url: str) -> str:
     "Generic" means no dedicated extractor claims the URL."""
     import yt_dlp.extractor  # lazy: optional dependency
 
+    allowed = set(_allowed_extractor_keys())
     for ie in yt_dlp.extractor.gen_extractor_classes():
         key = ie.ie_key()
         # _ENABLED=False extractors are outside yt-dlp's default set: with
         # no allowlist pin GenericIE scrapes those URLs, so they are Generic.
-        if key == "Generic" or not getattr(ie, "_ENABLED", True):
+        # An explicit URL_ALLOWED_EXTRACTORS entry pins (and so enables) one.
+        if key == "Generic" or (not getattr(ie, "_ENABLED", True)
+                                and key.lower() not in allowed):
             continue
         try:
             # No working() filter: yt-dlp still USES a _WORKING=False
