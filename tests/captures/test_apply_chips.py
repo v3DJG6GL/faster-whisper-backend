@@ -53,9 +53,55 @@ _CASES = [
 ]
 
 
+
+def _w(word, removed=False):
+    return {"word": word, "removed": True} if removed else {"word": word}
+
+
+# A chip's idx counts aligned karaoke words, and a removed raw word (a filler,
+# a dictated "Komma" or "neue Zeile") owns no text token. With the aligned
+# words passed in, the chip still rewrites the word it marks.
+_WORD_CASES = [
+    # Two removed fillers before the chip must not drag it onto the later
+    # "der".
+    ("der Patient der Arzt",
+     [{"idx": 2, "wrong": "der", "correct": "den"}],
+     [_w("äh", True), _w("äh", True), _w("der"), _w("Patient"), _w("der"),
+      _w("Arzt")],
+     "den Patient der Arzt"),
+    # Dictated punctuation and line break: the first chip stays on the first
+    # "die" and the second chip still finds its own.
+    ("Hallo,\ndie Katze und die Maus",
+     [{"idx": 4, "wrong": "die", "correct": "der"},
+      {"idx": 7, "wrong": "die", "correct": "das"}],
+     [_w("Hallo,"), _w("", True), _w("", True), _w("", True), _w("die"),
+      _w("Katze"), _w("und"), _w("die"), _w("Maus")],
+     "Hallo,\nder Katze und das Maus"),
+    # The training token wins over the runtime one when it is attached.
+    ("der Patient der Arzt",
+     [{"idx": 2, "wrong": "der", "correct": "den"}],
+     [{"word": "äh", "train_word": "", "train_removed": True},
+      {"word": "äh", "train_word": "", "train_removed": True},
+      _w("der"), _w("Patient"), _w("der"), _w("Arzt")],
+     "den Patient der Arzt"),
+]
+
+
 @pytest.mark.parametrize("text, chips, expected", _CASES)
 def test_apply_chips_rewrites_only_the_marked_word(text, chips, expected):
     assert capture_samples._apply_chips_to_text(text, chips) == expected
+
+
+@pytest.mark.parametrize("text, chips, words, expected", _WORD_CASES)
+def test_apply_chips_maps_idx_past_removed_words(text, chips, words, expected):
+    assert capture_samples._apply_chips_to_text(text, chips, words) == expected
+
+
+def test_default_transcript_aligns_chips_with_the_members_words():
+    text, chips, words, expected = _WORD_CASES[0]
+    member = {"text_for_training": text, "corrections": chips}
+    assert capture_samples._build_default_transcript(
+        [member], "space", words_for=lambda m: words) == expected
 
 
 def _js_function(src, name):
@@ -79,18 +125,21 @@ def test_js_twin_matches_server_chip_application():
     src = (pathlib.Path(REPO_ROOT) / "faster_whisper_backend" / "captures"
            / "templates" / "captures.html").read_text(encoding="utf-8")
     fn = _js_function(src, "_applyChipsToText")
-    cases = [[t, c] for t, c, _ in _CASES]
+    cases = ([[t, c, None] for t, c, _ in _CASES]
+             + [[t, c, w] for t, c, w, _ in _WORD_CASES])
     script = (fn + "\nprocess.stdout.write(JSON.stringify("
               + json.dumps(cases, ensure_ascii=False)
-              + ".map(function(c) { return _applyChipsToText(c[0], c[1]); })));")
+              + ".map(function(c) { return _applyChipsToText(c[0], c[1], c[2]); })));")
     p = subprocess.run([_NODE, "-e", script], capture_output=True,
                        text=True, encoding="utf-8")
     assert p.returncode == 0, p.stderr
-    assert json.loads(p.stdout) == [e for _, _, e in _CASES]
+    assert json.loads(p.stdout) == ([e for _, _, e in _CASES]
+                                    + [e for *_, e in _WORD_CASES])
 
 
 def test_single_capture_ground_preview_uses_the_shared_helper(client):
     # The single-capture card's ground-truth preview used its own copy of the
     # first-occurrence substitution; it must go through the mirrored helper.
     t = client.get("/captures").text
-    assert "_applyChipsToText(state.finalText, state.corrections)" in t
+    assert ("_applyChipsToText(state.finalText, state.corrections, state.words)"
+            in t)

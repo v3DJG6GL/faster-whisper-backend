@@ -2763,7 +2763,7 @@
     // The GT element is a read-only preview (textContent, not value) — markDirty
     // stays off here because the user changes GT only indirectly via a chip.
     state.gtArea.textContent =
-      _applyChipsToText(state.finalText, state.corrections);
+      _applyChipsToText(state.finalText, state.corrections, state.words);
   }
 
   function markDirty(state) {
@@ -3213,18 +3213,33 @@
   // -------------------------------------------------------------------
   var JOIN_STR = { space: ' ', period_space: '. ' };
 
-  function _applyChipsToText(text, corrections) {
+  function _applyChipsToText(text, corrections, words) {
     // Mirror of Python _apply_chips_to_text — walk chips in idx order
     // and substitute `wrong` → `correct` in the text. Used to layer
     // each member's chip corrections on top of post-processing before
     // joining into the group's final-result preview. Same matching rules
     // as the server: whole-word occurrences only, an anchored chip searches
     // past the previous anchored replacement and takes the occurrence
-    // nearest its idx.
+    // nearest its idx. `words` (the aligned karaoke words the chips were
+    // made on) maps idx onto the text's token position, past removed words.
     if (!corrections || !corrections.length) return text || '';
     var out = text || '';
     var W = /[\p{L}\p{N}_]/u;
     function nWords(s) { return s.split(/\s+/).filter(Boolean).length; }
+    var starts = null;
+    if (words && words.length) {
+      starts = [0];
+      words.forEach(function(w) {
+        var n = 0;
+        if (w && typeof w === 'object') {
+          var hasTrain = w.train_word !== undefined && w.train_word !== null;
+          var tok = hasTrain ? (w.train_word || '') : (w.word || '');
+          var gone = hasTrain ? w.train_removed : w.removed;
+          if (!gone) n = nWords(tok);
+        }
+        starts.push(starts[starts.length - 1] + n);
+      });
+    }
     var ordered = corrections.slice().filter(function(c) {
       return c && typeof c === 'object';
     });
@@ -3242,6 +3257,10 @@
       var correct = c.correct || '';
       if (!wrong || !correct) return;
       var anchored = typeof c.idx === 'number';
+      var pos = c.idx;
+      if (anchored && starts) {
+        pos = starts[Math.max(0, Math.min(c.idx, starts.length - 1))];
+      }
       var best = -1, bestD = -1;
       var i = out.indexOf(wrong, anchored ? cursor : 0);
       while (i >= 0) {
@@ -3250,7 +3269,7 @@
               || (W.test(wrong[wrong.length - 1]) && j < out.length
                   && W.test(out[j])))) {
           if (!anchored) { best = i; break; }
-          var d = Math.abs(nWords(out.slice(0, i)) + shift - c.idx);
+          var d = Math.abs(nWords(out.slice(0, i)) + shift - pos);
           if (best < 0 || d < bestD) { best = i; bestD = d; }
         }
         i = out.indexOf(wrong, i + 1);

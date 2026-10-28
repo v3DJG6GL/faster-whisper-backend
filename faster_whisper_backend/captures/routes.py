@@ -2762,6 +2762,19 @@ def _build_export_stream(only_status: str | None, include_audio: bool):
     # Closed even if the client disconnects mid-stream and the
     # generator is abandoned — otherwise every aborted export leaks
     # a spooled temp file.
+    # A chip's idx counts aligned karaoke words, so applying it needs the
+    # row's aligned words (see _apply_chips_to_text). Sample members come
+    # without the words blob; only a member that has chips is hydrated. An
+    # alignment failure falls back to the unaligned nearest match.
+    ident_cache: dict = {}
+
+    def _chip_words(m: dict[str, Any]) -> list[dict[str, Any]] | None:
+        try:
+            cap = m if m.get("words") is not None else captures_store.get_capture(m["id"])
+            return _align_member_words(cap, ident_cache) if cap else None
+        except Exception:
+            return None
+
     try:
 
         # 1. Capture groups (the packed-for-fine-tune training samples).
@@ -2787,6 +2800,7 @@ def _build_export_stream(only_status: str | None, include_audio: bool):
             members = capture_samples_store.get_members(sid)
             text = capture_samples._build_default_transcript(
                 members, g.get("transcript_join_strategy") or "space",
+                words_for=_chip_words,
             ).strip()
             if not text:
                 continue
@@ -2847,7 +2861,9 @@ def _build_export_stream(only_status: str | None, include_audio: bool):
             base = (row.get("text_for_training")
                     or row.get("final")
                     or row.get("raw") or "")
-            text = capture_samples._apply_chips_to_text(base, row.get("corrections") or [])
+            chips = row.get("corrections") or []
+            text = capture_samples._apply_chips_to_text(
+                base, chips, _chip_words(row) if chips else None)
             if not text.strip():
                 continue
             # Audio path: prefer the trimmed companion if one was produced and

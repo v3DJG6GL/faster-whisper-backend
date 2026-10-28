@@ -43,7 +43,11 @@ def _global_edge_ms() -> int:
         return 300
 
 
-def _apply_chips_to_text(text: str, corrections: list[dict[str, Any]]) -> str:
+def _apply_chips_to_text(
+    text: str,
+    corrections: list[dict[str, Any]],
+    words: list[dict[str, Any]] | None = None,
+) -> str:
     """Substitute each chip's `wrong` text with its `correct` text in
     `text`. Walk in idx order so multi-word spans replace as a unit.
     If `wrong` isn't found verbatim (whitespace drift / regex specials),
@@ -55,8 +59,11 @@ def _apply_chips_to_text(text: str, corrections: list[dict[str, Any]]) -> str:
     anchored replacement (a `correct` that contains `wrong` is never hit
     twice) and, of several occurrences, takes the one whose word position
     is nearest its `idx` — a chip on the second "die" must not rewrite the
-    first. `idx` counts karaoke words, not text tokens, so the position is
-    a nearest match, not an exact one."""
+    first. `idx` counts karaoke words (one per raw word, removed ones
+    included), not text tokens. `words` — the aligned karaoke items the
+    chips were made on — maps idx onto the text's token position: a filler
+    or a dictated "Komma" owns no token, so without it the position is only
+    a nearest match and drifts past such words."""
     if not corrections:
         return text or ""
     out = text or ""
@@ -71,6 +78,21 @@ def _apply_chips_to_text(text: str, corrections: list[dict[str, Any]]) -> str:
     ordered = sorted(
         (c for c in corrections if isinstance(c, dict)), key=_sk,
     )
+    # Text-token position of each karaoke word: the tokens owned by the
+    # non-removed words before it (the training token when one is attached).
+    starts: list[int] | None = None
+    if words:
+        starts = [0]
+        for w in words:
+            n = 0
+            if isinstance(w, dict):
+                if w.get("train_word") is not None:
+                    tok, gone = w.get("train_word") or "", w.get("train_removed")
+                else:
+                    tok, gone = w.get("word") or "", w.get("removed")
+                if not gone:
+                    n = len(tok.split())
+            starts.append(starts[-1] + n)
     cursor = 0
     # Word-count change of the replacements so far, so a later chip's
     # position is compared in the original text's word frame.
@@ -82,6 +104,9 @@ def _apply_chips_to_text(text: str, corrections: list[dict[str, Any]]) -> str:
             continue
         rank, idx = _sk(c)
         anchored = rank == 0
+        pos = idx
+        if anchored and starts is not None:
+            pos = starts[max(0, min(idx, len(starts) - 1))]
         best, best_d = -1, -1
         i = out.find(wrong, cursor if anchored else 0)
         while i >= 0:
@@ -91,7 +116,7 @@ def _apply_chips_to_text(text: str, corrections: list[dict[str, Any]]) -> str:
                 if not anchored:
                     best = i
                     break
-                d = abs(len(out[:i].split()) + shift - idx)
+                d = abs(len(out[:i].split()) + shift - pos)
                 if best < 0 or d < best_d:
                     best, best_d = i, d
             i = out.find(wrong, i + 1)
@@ -104,17 +129,27 @@ def _apply_chips_to_text(text: str, corrections: list[dict[str, Any]]) -> str:
     return out
 
 
-def _build_default_transcript(members: list[dict[str, Any]], strategy: str) -> str:
+def _build_default_transcript(
+    members: list[dict[str, Any]],
+    strategy: str,
+    words_for=None,
+) -> str:
     """Concatenate member transcripts with chips applied. Each member's
     training-form text (`text_for_training`) gets its chip corrections
     layered on top before the join, so the merged result reflects what
     the export pipeline will actually produce. Falls back through `final`
     then `raw` for legacy members predating the `text_for_training`
-    column."""
+    column.
+
+    `words_for(member)` (optional) returns that member's aligned karaoke
+    words, so each chip lands on the word its idx marks; it is only called
+    for a member that has corrections."""
     parts: list[str] = []
     for m in members:
         base = m.get("text_for_training") or m.get("final") or m.get("raw") or ""
-        t = _apply_chips_to_text(base, m.get("corrections") or []).strip()
+        chips = m.get("corrections") or []
+        words = words_for(m) if (words_for is not None and chips) else None
+        t = _apply_chips_to_text(base, chips, words).strip()
         if t:
             parts.append(t)
     return _JOIN_STR.get(strategy, " ").join(parts)
