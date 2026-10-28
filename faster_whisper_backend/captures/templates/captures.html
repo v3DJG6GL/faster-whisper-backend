@@ -4837,6 +4837,35 @@
     return card;
   }
 
+  // _renderSampleCard paints the header pills once; an in-place status,
+  // lock or save change repaints them. Fields absent from `s` stay as-is.
+  function _syncSampleHead(card, s) {
+    var head = card.querySelector('.cc-head');
+    if (!head) return;
+    var st = head.querySelector('.pill[class*="status-"]');
+    if (st && s.status) {
+      st.className = 'pill status-' + s.status;
+      st.textContent = s.status;
+    }
+    // Lock first, so a new stale pill can go before it (render order).
+    [['is_locked', 'lock-pill', 'locked — protect from edits', 'locked'],
+     ['is_stale', 'stale-pill', 'member changed since merge', 'stale']]
+      .forEach(function(p) {
+        if (typeof s[p[0]] === 'undefined') return;
+        var el = head.querySelector('.' + p[1]);
+        if (s[p[0]] && !el) {
+          el = document.createElement('span');
+          el.className = 'pill ' + p[1];
+          el.title = p[2];
+          el.textContent = p[3];
+          head.insertBefore(el, head.querySelector('.lock-pill')
+            || head.querySelector('.spacer'));
+        } else if (!s[p[0]] && el) {
+          head.removeChild(el);
+        }
+      });
+  }
+
   function _toggleSampleExpand(card, g) {
     if (card.classList.contains('open')) {
       card.classList.remove('open');
@@ -5038,6 +5067,7 @@
               // chips, audio, etc. for a single-pill change.
               var idx = _allSamples.findIndex(function(x) { return x.id === g.id; });
               if (idx >= 0) _allSamples[idx].status = v;
+              _syncSampleHead(card, { status: v });
               reloadCounts();
               toast('Status: ' + v);
             } catch (e) {
@@ -5277,12 +5307,12 @@
           // 8. Audio (re-fetch; merged WAV may have been rebuilt).
           refreshAudio();
 
-          // 9. Keep the collapsed-list in-memory entry in sync without
-          // triggering a full render — this way the group's "stale"
-          // pill, created_ts, etc. on the closed card header stays
-          // truthful after a save.
+          // 9. Keep the in-memory list entry (read by the next render())
+          // and this card's header pills (status, stale, locked) in sync
+          // without a full render.
           var idx = _allSamples.findIndex(function(x) { return x.id === d.id; });
           if (idx >= 0) Object.assign(_allSamples[idx], d);
+          _syncSampleHead(card, d);
         }
 
         // --- Save handler: PATCH everything; mutate the card in place. ---
@@ -5374,10 +5404,10 @@
                 lockBtn.textContent = isLocked ? 'Unlock' : 'Lock';
                 dissolveBtn.style.display = isLocked ? 'none' : '';
                 regenBtn.style.display = isLocked ? 'none' : '';
-                // Sync the collapsed-list header so the lock-pill in
-                // _renderSampleCard reflects the new state on next render().
+                // Sync the list entry (next render()) and the header pill.
                 var idx = _allSamples.findIndex(function(x) { return x.id === g.id; });
                 if (idx >= 0) _allSamples[idx].is_locked = d.is_locked;
+                _syncSampleHead(card, { is_locked: d.is_locked });
               }
               toast('Updated');
             })

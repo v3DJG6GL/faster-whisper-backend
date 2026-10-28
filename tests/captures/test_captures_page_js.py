@@ -588,6 +588,60 @@ function tick() { return new Promise(function(r) { setTimeout(r, 0); }); }
 
 
 @needs_node
+def test_group_status_lock_and_save_repaint_the_header_pills(page, tmp_path):
+    """The group card's header pills were painted once: Ready left "new" in
+    the header, Lock added no "locked" pill, and a Regenerate that cleared
+    is_stale kept the "stale" pill, until the next full render()."""
+    anchor = "async function(v) {\n            var prev = sampleState.newStatus;"
+    on_status = _js_block(page, page.index(anchor))
+    out = _run_node(tmp_path, _js_function(page, "_syncSampleHead") + r"""
+function mk(cls, text) { return { className: cls, textContent: text }; }
+var kids = [mk('expand-arrow'), mk('pill group-pill', 'sample'),
+  mk('pill status-new', 'new'), mk('pill stale-pill', 'stale'), mk('spacer')];
+function has(el, c) { return (' ' + el.className + ' ').indexOf(' ' + c + ' ') !== -1; }
+var head = {
+  querySelector: function(sel) {
+    return kids.find(function(k) {
+      return sel === '.pill[class*="status-"]' ? /status-/.test(k.className)
+        : has(k, sel.slice(1));
+    }) || null;
+  },
+  insertBefore: function(el, ref) { kids.splice(kids.indexOf(ref), 0, el); },
+  removeChild: function(el) { kids.splice(kids.indexOf(el), 1); },
+};
+var card = { querySelector: function(sel) { return sel === '.cc-head' ? head : null; } };
+global.document = { createElement: function() { return {}; } };
+var g = { id: 'g1' }, _allSamples = [{ id: 'g1', status: 'new' }];
+var sampleState = { newStatus: 'new' }, statusGrp = { setValue: function() {} };
+async function api() { return {}; }
+function reloadCounts() {} function toast() {}
+var onStatus = """ + on_status + r""";
+function pills() { return kids.map(function(k) { return k.textContent || k.className; }); }
+(async function() {
+  await onStatus('ready');
+  var afterStatus = pills();
+  _syncSampleHead(card, { is_locked: true });          // Lock
+  var afterLock = pills();
+  _syncSampleHead(card, { status: 'ready', is_stale: false, is_locked: true });
+  var afterRegen = pills();
+  _syncSampleHead(card, { is_stale: true, is_locked: false });
+  console.log(JSON.stringify({ afterStatus: afterStatus, afterLock: afterLock,
+    afterRegen: afterRegen, end: pills() }));
+})();
+""")
+    assert out == {
+        "afterStatus": ["expand-arrow", "sample", "ready", "stale", "spacer"],
+        "afterLock": ["expand-arrow", "sample", "ready", "stale", "locked", "spacer"],
+        "afterRegen": ["expand-arrow", "sample", "ready", "locked", "spacer"],
+        "end": ["expand-arrow", "sample", "ready", "stale", "spacer"],
+    }
+    apply_fn = _js_function(page, "applyServerSample")
+    assert "_syncSampleHead(card, d);" in apply_fn
+    lock = page[page.index("lockBtn.onclick = "):]
+    assert "_syncSampleHead(card, { is_locked: d.is_locked });" in lock[:lock.index("toast('Updated');")]
+
+
+@needs_node
 def test_group_audio_fetch_superseded_or_after_collapse_is_dropped(page, tmp_path):
     """refreshAudio revoked only the src present when it started: a fetch
     overtaken by a newer refresh, or landing after the card collapsed, set
