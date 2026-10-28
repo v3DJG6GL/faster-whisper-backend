@@ -1389,9 +1389,12 @@ _STDERR_TAIL_MAX = 4096
 _FILTERED_NEEDLE = b"does not pass filter"
 # The stdout line yt-dlp's HTTP downloader prints when --max-filesize skips a
 # file (exit 0): in a merge the OTHER leg is left behind as an intermediate.
-# Matched as the line's START: other lines carry site-controlled text (the
-# generic extractor's id is the URL's last path segment, a redirect target).
-_OVER_CAP_NEEDLE = b"[download] File is larger than max-filesize"
+# Matched as the WHOLE line: other lines carry site-controlled text that can
+# hold a newline (the generic extractor's id is the URL-decoded last path
+# segment, %0A included), and it is only trusted when no result was found.
+_OVER_CAP_LINE_RE = re.compile(
+    rb"\[download\] File is larger than max-filesize "
+    rb"\(\d+ bytes > \d+ bytes\)\. Aborting\.")
 # What _read_line keeps of a line longer than the stream's 64 KiB limit.
 _LONG_LINE_KEEP = 4096
 
@@ -1826,7 +1829,7 @@ async def _run_yt_dlp(
                 break
             if _FILTERED_NEEDLE in raw:
                 filtered_out = True
-            if raw.lstrip(b"\r").startswith(_OVER_CAP_NEEDLE):
+            if _OVER_CAP_LINE_RE.fullmatch(raw.strip(b"\r\n")):
                 over_cap = True
             fields = _parse_progress_fields(raw.decode("utf-8", "replace").strip())
             parsed = _cumulative(fields) if fields is not None else None
@@ -1880,11 +1883,15 @@ async def _run_yt_dlp(
                        log_safe(tail, keep_end=True))
         raise classified_error(tail)
 
-    if over_cap:
-        # Before find_result: a merge with one leg skipped would otherwise
-        # read as "could not be merged" — a server fault, not the cap.
-        raise UrlPolicyError("this media exceeds the server's size limit")
-    result = find_result(dest_dir)
+    try:
+        result = find_result(dest_dir)
+    except UrlDownloadError:
+        # A merge with one leg skipped would otherwise read as "could not be
+        # merged" — a server fault, not the cap. A FOUND result wins over the
+        # over-cap line: that line can still be forged by site text.
+        if over_cap:
+            raise UrlPolicyError("this media exceeds the server's size limit") from None
+        raise
     if result is None and filtered_out:
         # handoff_match_filters at work: the run re-extracted to a result
         # the site policy does not admit (exit 0, nothing fetched).

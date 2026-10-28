@@ -1836,6 +1836,43 @@ def test_download_video_over_cap_phrase_in_the_site_id_is_not_the_size_limit(tmp
     assert os.path.basename(out) == "media.mp4"
 
 
+_OVER_CAP_LINE_FORGED_BY_ID_SCRIPT = """
+import os
+print("[generic] a", flush=True)
+print("[download] File is larger than max-filesize (1 bytes > 2 bytes). Aborting.", flush=True)
+print("b: Downloading webpage", flush=True)
+open(os.path.join(r"__DEST__", "media.mp4"), "wb").write(b"x" * 64)
+"""
+
+
+def test_download_video_forged_over_cap_line_does_not_refuse_a_finished_download(
+        tmp_path, monkeypatch):
+    """%0A in the URL's last path segment puts a newline into the generic id,
+    so site text can print a whole over-cap line: a found result wins."""
+    _patch_video_argv(monkeypatch, _OVER_CAP_LINE_FORGED_BY_ID_SCRIPT)
+    out = _run(udl.download_video(
+        "https://example.com/a%0A%5Bdownload%5D%20File%20is%20larger.mp4",
+        dest_dir=str(tmp_path), max_bytes=10_000, timeout=30))
+    assert os.path.basename(out) == "media.mp4"
+
+
+_OVER_CAP_PHRASE_IN_FILTERED_TITLE_SCRIPT = """
+print("[download] File is larger than max-filesize does not pass filter (x), skipping ..",
+      flush=True)
+"""
+
+
+def test_download_video_over_cap_phrase_in_a_filtered_title_is_the_handoff_refusal(
+        tmp_path, monkeypatch):
+    """The filter line echoes the title after "[download] ": a title that
+    starts with the over-cap phrase is still the policy refusal."""
+    _patch_video_argv(monkeypatch, _OVER_CAP_PHRASE_IN_FILTERED_TITLE_SCRIPT)
+    with pytest.raises(udl.UrlPolicyError) as ei:
+        _run(udl.download_video("https://example.com/v", dest_dir=str(tmp_path),
+                                max_bytes=10_000, timeout=30))
+    assert str(ei.value) == udl._HANDOFF_REFUSED
+
+
 _SINGLE_MUXED_SCRIPT = """
 import os
 open(os.path.join(r"__DEST__", "media.mp4"), "wb").write(b"x" * 64)
