@@ -440,6 +440,20 @@ def test_merge_sentences_sees_urdu_armenian_and_amharic_ends():
               "ሰላም ነው።", "እንዴት ነህ።")) == [[0], [1], [2], [3], [4], [5]]
 
 
+def test_merge_sentences_strips_a_long_closer_run_in_linear_time():
+    """The trailing-closer strip re-sliced the text once per closer, O(n²):
+    one 200k-char cue of closers held the event loop for ~0.5 s per
+    target."""
+    for tail in ("»" * 199_000, " »" * 99_000):
+        t0 = time.perf_counter()
+        assert translation._merge_sentences(
+            _segs("Oui." + tail, "x" + tail, "fin.")) == [[0], [1, 2]]
+        assert time.perf_counter() - t0 < 0.25
+    # Closers and spaces still strip together, then the mark is tested.
+    assert translation._merge_sentences(
+        _segs("Oui. » ”  ", " » ", "", "offen")) == [[0], [1, 2, 3]]
+
+
 def test_redistribute_proportional_word_boundaries():
     # Equal source shares → cut at the space nearest the middle.
     assert translation._redistribute(["aaaa", "bbbb"],

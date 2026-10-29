@@ -1167,10 +1167,12 @@ def _merge_sentences(segments: "list[dict]") -> "list[list[int]]":
         current.append(i)
         prev = spk or prev
         # Spaces too: French typography puts one before the » ('Oui. »').
-        text = (seg.get("text") or "").rstrip()
-        while text and text[-1] in _CLOSERS:
-            text = text[:-1].rstrip()
-        if (text and text[-1] in _SENTENCE_FINAL) or \
+        # One index scan: re-slicing per closer was O(n²) on a long run.
+        text = seg.get("text") or ""
+        end = len(text)
+        while end and (text[end - 1] in _CLOSERS or text[end - 1].isspace()):
+            end -= 1
+        if (end and text[end - 1] in _SENTENCE_FINAL) or \
                 len(current) >= _MAX_GROUP_SEGMENTS:
             groups.append(current)
             current = []
