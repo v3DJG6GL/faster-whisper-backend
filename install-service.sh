@@ -82,8 +82,16 @@ if [ ! -x "$PY" ]; then
     exit 1
   fi
   echo "Creating venv at $VENV with $SYS_PY ..."
-  # Create the venv as the invoking user so they own it.
-  as_user "$SYS_PY" -m venv "$VENV"
+  # Create the venv as the invoking user so they own it. A failed build (on
+  # Debian/Ubuntu ensurepip ships apart, as python3.X-venv) leaves bin/python
+  # behind, which the check above would keep on the next run: remove it.
+  had_venv_dir=0
+  [ -e "$VENV" ] && had_venv_dir=1
+  if ! as_user "$SYS_PY" -m venv "$VENV"; then
+    [ "$had_venv_dir" -eq 1 ] || rm -rf "$VENV"
+    echo "Could not create the venv with $SYS_PY. On Debian/Ubuntu install its venv package (e.g. apt install python3.14-venv), then re-run $0" >&2
+    exit 1
+  fi
 fi
 
 # Stop a running service before pip touches the venv — otherwise wheels whose

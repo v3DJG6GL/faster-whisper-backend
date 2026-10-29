@@ -507,6 +507,40 @@ def test_linux_installer_finds_a_python314_beside_an_older_python3(tmp_path):
     assert f"ran: {bindir}/python3 -m venv" in stdout
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="bash installer")
+def test_linux_installer_removes_a_venv_whose_build_failed(tmp_path):
+    # Without python3.14-venv, `python3.14 -m venv` writes bin/python and then
+    # fails in ensurepip. A re-run after installing the package must build the
+    # venv again, not keep the pip-less one because bin/python is executable.
+    sh = _read("install-service.sh")
+    block = sh[sh.index('VENV="$REPO_DIR/venv"'):sh.index("\n# Stop a running service")]
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    py314 = bindir / "python3.14"
+    py314.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    py314.chmod(0o755)
+    venv = tmp_path / "venv"
+    no_ensurepip = ('as_user() { mkdir -p "$VENV/bin"; printf "#!/bin/sh\\n" > "$PY"; '
+                    'chmod +x "$PY"; echo "ensurepip is not available" >&2; return 1; }')
+
+    def run(as_user):
+        out = subprocess.run(
+            [shutil.which("bash"), "-c", f"set -euo pipefail\n{as_user}\n{block}"],
+            capture_output=True, text=True, timeout=60,
+            env={"PATH": f"{bindir}:/usr/bin:/bin", "REPO_DIR": str(tmp_path)})
+        return out.returncode, out.stdout, out.stderr
+    rc, _, stderr = run(no_ensurepip)
+    assert rc == 1 and not venv.exists()
+    assert "python3.14-venv" in stderr
+    rc, stdout, stderr = run('as_user() { echo "ran: $*"; }')
+    assert rc == 0, stderr
+    assert f"ran: {py314} -m venv {venv}" in stdout
+    # A venv dir that was there before the failed build is not ours to delete.
+    (venv / "keep").mkdir(parents=True)
+    rc, _, _ = run(no_ensurepip)
+    assert rc == 1 and (venv / "keep").is_dir()
+
+
 def test_installers_warn_about_legacy_repo_root_state_before_the_start():
     # Since the data-dir move the service reads data/db/ and
     # data/config.local.json; stores and config left in the repo root are
