@@ -1,7 +1,8 @@
 """Engine tests for the callback:upper rule: it uppercases group(2) in place
 and keeps every other part of the match. The pattern is editable from
 /settings/pipeline and /quick-config, so it is not limited to the two seeded
-shapes whose match happens to be exactly group(1) + group(2)."""
+shapes whose match happens to be exactly group(1) + group(2). The last test
+covers the same lookaround shape for its callback:lowercase-wordlist sibling."""
 
 import re
 
@@ -35,3 +36,12 @@ def test_group_2_outside_the_match_keeps_the_text():
     assert _sub(r"([.?!]\s+)(?=([a-zäöüß]))", "Gut. danke") == "Gut. danke"
     assert _sub(r"(?=([.?!]\s+([a-z])))\.", "Gut. danke") == "Gut. danke"
     assert _sub(r"(?<=([.?!])(\s))([a-z])", "end. foo") == "end. foo"
+
+
+def test_lowercase_wordlist_group_outside_the_match_keeps_the_text():
+    # same lookahead shape for callback:lowercase-wordlist: no word is duplicated
+    replace = pl_engine._make_lowercase_wordlist_replacer(frozenset({"und"}))
+    text = "Ende. Und Haus. Baum"
+    assert re.sub(r"(?<!\d)[.?!](\s*)([A-ZÄÖÜ])(\w*)", replace, text) == "Ende und Haus Baum"
+    assert re.sub(r"(?<!\d)[.?!](?=(\s*)([A-ZÄÖÜ])(\w*))", replace, text) == text
+    assert re.sub(r"(?<!\d)[.?!](\s*)([A-ZÄÖÜ])(?=(\w*))", replace, text) == text

@@ -140,6 +140,8 @@ def _make_lowercase_wordlist_replacer(wordlist: frozenset):
       group(2) = first letter of the next word
       group(3) = rest of the next word
     If the user's pattern has fewer than 3 groups we degrade to plain strip.
+    A group captured in a lookaround lies outside the match, which a sub
+    keeps anyway: the match is kept as is instead of inserting a copy.
     """
     def replace(m: "re.Match[str]") -> str:
         try:
@@ -147,6 +149,8 @@ def _make_lowercase_wordlist_replacer(wordlist: frozenset):
         except IndexError:
             return ""
         if ws is None or first is None or rest is None:
+            return m.group(0)
+        if any(m.start(g) < m.start(0) or m.end(g) > m.end(0) for g in (1, 2, 3)):
             return m.group(0)
         if (first + rest).lower() in wordlist:
             return ws + first.lower() + rest
