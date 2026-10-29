@@ -354,8 +354,12 @@ def _per_model_rule_layer(model_id: str | None) -> dict[str, Any] | None:
     m = mo.get(model_id) if (model_id and isinstance(mo, dict)) else None
     if not isinstance(m, dict):
         return None
-    exclude = {s for s in (m.get("PIPELINE_RULES_EXCLUDE") or [])}
-    include = {s for s in (m.get("PIPELINE_RULES_INCLUDE") or [])}
+    # Load mapped these slugs against the file's own PIPELINE_RULES copy, but
+    # WHISPER_PIPELINE_RULES may have replaced it since; re-map against the
+    # rules in force, as _blob_to_layer does for every other layer.
+    known = cfg.rule_slugs_in_force()
+    exclude = set(_renames.rename_slugs(m.get("PIPELINE_RULES_EXCLUDE") or [], known))
+    include = set(_renames.rename_slugs(m.get("PIPELINE_RULES_INCLUDE") or [], known))
     if not (exclude or include):
         return None
     return {

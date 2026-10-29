@@ -290,6 +290,24 @@ def test_blob_to_layer_keeps_a_split_card_the_rules_in_force_still_hold(monkeypa
     assert _layer("key", PIPELINE_RULES_EXCLUDE=old)["exclude"] == set(old)
 
 
+def test_per_model_rules_map_a_split_card_against_the_rules_in_force(monkeypatch):
+    """A per-model exclude of strip-whisper-punctuation kept unmapped at load
+    (the file's local rule copy still held it) excludes its successors once
+    WHISPER_PIPELINE_RULES puts the post-split list in force, like any binding."""
+    old = ["strip-whisper-punctuation"]
+    monkeypatch.setattr(cfg, "MODEL_OVERRIDES", {"m1": {
+        "PIPELINE_RULES_EXCLUDE": old, "PIPELINE_RULES_INCLUDE": old}},
+        raising=False)
+    monkeypatch.setattr(cfg, "PIPELINE_RULES", [
+        {"name": "strip-trailing-period"}, {"name": "strip-auto-punctuation"}])
+    layer = ec._per_model_rule_layer("m1")
+    successors = {"strip-trailing-period", "strip-auto-punctuation"}
+    assert layer["exclude"] == successors and layer["include"] == successors
+    monkeypatch.setattr(cfg, "PIPELINE_RULES", [
+        {"name": "strip-whisper-punctuation"}, {"name": "trim-edges"}])
+    assert ec._per_model_rule_layer("m1")["exclude"] == set(old)
+
+
 # --- request-named override profile (P10) ---------------------------------
 
 def _set_profiles(monkeypatch, profiles, allow=True):
