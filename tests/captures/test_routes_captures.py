@@ -662,13 +662,9 @@ def test_preview_merge_audio_is_not_cacheable(client, make_user_key,
     assert r.headers["cache-control"] == "no-store"
 
 
-@pytest.mark.parametrize("range_header, code", [
-    (None, 200), ("bytes=0-3", 206), ("bytes=99999-", 416), ("bytes=abc", 400)])
-def test_preview_merge_audio_removes_its_temp_file_on_every_path(
-        client, make_user_key, monkeypatch, range_header, code):
-    """Starlette runs a FileResponse's background task only after a normal
-    body send; on its 400/416 Range answers the merged WAV stayed in the temp
-    dir for good."""
+def test_preview_merge_audio_removes_its_temp_file(
+        client, make_user_key, monkeypatch):
+    """The merged WAV is gone once the preview answer is sent."""
     import wave
     from faster_whisper_backend.captures import merge as audio_merge
     from faster_whisper_backend.captures import routes as captures_routes
@@ -689,14 +685,34 @@ def test_preview_merge_audio_removes_its_temp_file_on_every_path(
         return {"duration_ms": 1}
 
     monkeypatch.setattr(audio_merge, "merge_wavs", _fake_merge)
-    headers = bearer(raw)
-    if range_header:
-        headers["Range"] = range_header
     r = client.post("/captures/api/samples/preview-audio",
-                    json={"member_ids": ["prevcap00001"]}, headers=headers)
-    assert r.status_code == code
+                    json={"member_ids": ["prevcap00001"]}, headers=bearer(raw))
+    assert r.status_code == 200
     assert len(written) == 1
     assert not os.path.exists(written[0])
+
+
+@pytest.mark.parametrize("range_header, code", [
+    (None, 200), ("bytes=0-3", 206), ("bytes=99999-", 416), ("bytes=abc", 400)])
+def test_temp_file_response_unlinks_on_every_range_answer(
+        tmp_path, range_header, code):
+    """Starlette runs a FileResponse's background task only after a normal
+    body send; on its 400/416 Range answers the merged WAV stayed in the temp
+    dir for good. Driven through a GET: Starlette >= 1.10 ignores Range on
+    a POST like preview-audio, but an older one (fastapi allows it) does not."""
+    from starlette.applications import Starlette
+    from starlette.routing import Route
+    from faster_whisper_backend.captures.routes import _TempFileResponse
+
+    path = tmp_path / "merged.wav"
+    path.write_bytes(b"RIFF" + b"\x00" * 60)
+    app = Starlette(routes=[Route(
+        "/f", lambda request: _TempFileResponse(path=str(path),
+                                                media_type="audio/wav"))])
+    headers = {"Range": range_header} if range_header else {}
+    r = TestClient(app).get("/f", headers=headers)
+    assert r.status_code == code
+    assert not path.exists()
 
 
 def test_audio_rate_limit_is_hot_and_per_identity(client, app_module,
