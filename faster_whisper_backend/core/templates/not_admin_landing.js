@@ -3,12 +3,17 @@
 // buttons. `href` is what the button navigates to. The button label
 // reuses `href` directly (no "Open " verb prefix — stacked verbs read
 // like the redundant menu) so the buttons look + behave like links.
+// `free` marks a page with no per-page permission key: /dictate is
+// reachable by every signed-in identity (an ungated navlink in _NAV_SPEC,
+// tier "any" on the hub), so a key with every page scope at 'none' still
+// gets it.
 var _PAGE_LINK_INFO = {
   quick_config: { href: '/quick-config' },
   captures:     { href: '/captures' },
   reports:      { href: '/reports' },
   stats:        { href: '/stats' },
-  logs:         { href: '/logs' }
+  logs:         { href: '/logs' },
+  dictate:      { href: '/dictate', free: true }
 };
 
 function _renderNoAccessLanding(opts) {
@@ -27,7 +32,7 @@ function _renderNoAccessLanding(opts) {
   // page we can't reach — listing it would be confusing).
   var allowed = Object.keys(_PAGE_LINK_INFO).filter(function(p) {
     if (p === current) return false;
-    if (isAdmin) return true;
+    if (isAdmin || _PAGE_LINK_INFO[p].free) return true;
     return perms[p] && perms[p] !== 'none';
   });
 

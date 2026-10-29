@@ -1,0 +1,58 @@
+"""The no-access landing built its "Pages you can access" list only from the
+per-scope pages, so it left out /dictate, which every signed-in identity can
+reach (an ungated navlink, tier "any" on the hub). A key with every page
+scope at 'none' was told "no other pages are available either" while the nav
+bar on the same page still linked /dictate.
+
+The landing script runs under node against a minimal DOM stub; the test
+reads back the action buttons it rendered into <main>."""
+
+import json
+import re
+import shutil
+import subprocess
+
+import pytest
+
+from faster_whisper_backend.core import web_common
+
+
+_DOM_STUB = r"""
+global.window = globalThis;
+const main = { innerHTML: '' };
+global.document = {
+  body: { classList: { remove() {} } },
+  getElementsByTagName(tag) { return tag === 'main' ? [main] : []; },
+};
+"""
+
+
+def _landing(whoami: dict, page: str) -> str:
+    js = (f"{_DOM_STUB}window.__whoami = {json.dumps(whoami)};\n"
+          f"{web_common.NOT_ADMIN_LANDING_JS}\n"
+          f"_renderNoAccessLanding({{ page: {json.dumps(page)} }});\n"
+          "console.log(main.innerHTML);\n")
+    out = subprocess.run(["node", "-"], input=js, capture_output=True,
+                         text=True, encoding="utf-8", timeout=30, check=True)
+    return out.stdout
+
+
+def _buttons(html: str) -> list[str]:
+    return re.findall(r'<a href="([^"]+)" class="landing-btn">', html)
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
+def test_a_key_with_no_page_scope_is_offered_dictate():
+    pages = {p: "none" for p in
+             ("quick_config", "captures", "reports", "stats", "logs")}
+    html = _landing({"permissions": {"pages": pages}}, "stats")
+    assert _buttons(html) == ["/dictate"]
+    assert "no other pages are available" not in html
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
+def test_dictate_joins_the_scoped_pages_a_key_can_reach():
+    pages = {"quick_config": "none", "captures": "none", "reports": "read",
+             "stats": "none", "logs": "read"}
+    html = _landing({"permissions": {"pages": pages}}, "stats")
+    assert _buttons(html) == ["/reports", "/logs", "/dictate"]
