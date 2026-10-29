@@ -458,9 +458,23 @@ def test_an_unprobed_entry_does_not_hide_an_earlier_entrys_compile_error(client,
                                    (_mark(0), "1 0.0010\n2 0.3950\n")])
     step = _list_step(client, [{"pattern": "(", "replacement": "x"},
                                {"pattern": "a", "replacement": "b"}])
-    assert step["not_run"] is True
-    assert "may be harmless" not in step["error"]
-    assert "missing )" in step["error"]
+    # The engine would give "bbbb": the card names the compile error AND says
+    # the valid entry did not run here, not "0 matches" alone.
+    assert (step["not_run"], step["after"]) == (True, "aaaa")
+    assert step["error"].startswith("missing )")
+    assert "another entry is not executed here" in step["error"]
+
+
+def test_a_rank_one_error_after_an_unprobed_entry_keeps_the_not_executed_caveat(client, monkeypatch):
+    # No probe time at all: entry 0 is held as unprobed; entry 1 is never
+    # probed (not a string) and its rank-1 error outranks the hold — the
+    # not_run step still says why.
+    monkeypatch.setattr(admin_routes, "_TEST_PIPELINE_PROBE_WALL", 0.0)
+    step = _list_step(client, [{"pattern": "a", "replacement": "b"},
+                               {"pattern": ["("], "replacement": "x"}])
+    assert (step["not_run"], step["after"]) == (True, "aaaa")
+    assert step["error"].startswith("pattern must be a string")
+    assert "another entry is not executed here" in step["error"]
 
 
 def test_a_slow_entry_after_a_screened_one_does_not_hide_the_screen_verdict(client, monkeypatch):

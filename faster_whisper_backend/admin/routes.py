@@ -1237,6 +1237,11 @@ async def test_pipeline(payload: dict[str, Any]) -> JSONResponse:
                         total += n
                     lout["after"] = cur
                     lout["matches"] = total
+                    # Only an unprobed entry (rank 0) can be not_run under a
+                    # rank-1 error; unlike ranks 2-3, that error has no "not
+                    # executed here" caveat of its own, so it gets both.
+                    if rank == 1 and lout.get("not_run"):
+                        bad = f"{bad}; another entry is {_UNPROBED_MSG}"
                     if bad is not None:
                         lout["err"] = bad
                     lout["done"] = True
