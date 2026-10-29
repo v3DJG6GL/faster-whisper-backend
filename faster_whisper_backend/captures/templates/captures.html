@@ -4556,12 +4556,14 @@
   }
 
   async function _acceptProposal(p, btn) {
-    // Validate members are still present in current data.
+    // Refuse members the loaded list knows are grouped. An id it doesn't
+    // know is a clip recorded since the last load (the proposer is fresh):
+    // let the server judge it, it 404s a deleted one.
     var byId = {};
     _allCaptures.forEach(function(r) { byId[r.id] = r; });
     var missing = (p.member_ids || []).filter(function(id) {
       var r = byId[id];
-      return !r || r.sample_id;
+      return r && r.sample_id;
     });
     if (missing.length) {
       toast(missing.length + ' member(s) no longer eligible — try Refresh', true);
@@ -4803,7 +4805,7 @@
       var byId = {};
       _allCaptures.forEach(function(r) { byId[r.id] = r; });
       var missing = (p.member_ids || []).filter(function(id) {
-        var r = byId[id]; return !r || r.sample_id;
+        var r = byId[id]; return r && r.sample_id;
       });
       if (missing.length) {
         _batchBusy = false;

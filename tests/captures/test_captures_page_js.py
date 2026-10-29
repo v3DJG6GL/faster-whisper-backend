@@ -804,6 +804,37 @@ var FIRST = """ + json.dumps(first) + r""";
 
 
 @needs_node
+@pytest.mark.parametrize("mode", ["list", "batch"])
+def test_accept_lets_the_server_judge_a_clip_newer_than_the_list(page, tmp_path, mode):
+    """Accept refused any member missing from the loaded captures list, but
+    the proposer is fresh: a clip recorded since the page loaded made its
+    proposal fail with "no longer eligible" on every try, and the modal's
+    Refresh re-ran only the proposer. A member the list knows is grouped is
+    still refused without a POST."""
+    out = _run_node(tmp_path, _batch_fns(page) + _js_function(page, "_acceptProposal")
+                    + _BATCH_STUBS + r"""
+var MODE = """ + json.dumps(mode) + r""", toasts = [];
+toast = function(m) { toasts.push(m); };
+function _redrawProposalList() {}
+_allCaptures = [{ id: 'a' }, { id: 'g', sample_id: 's0' }];
+_proposals = [{ member_ids: ['g', 'a'] }, { member_ids: ['a', 'new'] }];
+(async function() {
+  _batchCurrentCard = fakeEl();
+  if (MODE === 'list') {
+    _proposals.slice().forEach(function(p) { _acceptProposal(p, null); });
+  } else {
+    _advanceBatch('accept');
+    _proposals.shift();                  // skip the refused card
+    _advanceBatch('accept');
+  }
+  await wait(0);
+  console.log(JSON.stringify({ posts: posts, toasts: toasts.length }));
+})();
+""")
+    assert out == {"posts": ["a"], "toasts": 1}
+
+
+@needs_node
 @pytest.mark.parametrize("second, active, cards", [
     ("refresh", False, []),
     ("open", True, ["b"]),
