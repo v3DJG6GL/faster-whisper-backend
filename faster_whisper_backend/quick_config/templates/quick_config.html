@@ -2114,7 +2114,7 @@ function _fieldDiff(baseline, edited, kind) {
     const cur = edited || {};
     const added = {};
     const changed = {};
-    const prior = {};   // base value of each changed key, to spot a clash
+    const prior = {};   // base value of each changed or removed key, to spot a clash
     const removed = [];
     for (const k of Object.keys(cur)) {
       if (!(k in base)) added[k] = cur[k];
@@ -2123,7 +2123,12 @@ function _fieldDiff(baseline, edited, kind) {
         prior[k] = base[k];
       }
     }
-    for (const k of Object.keys(base)) if (!(k in cur)) removed.push(k);
+    for (const k of Object.keys(base)) {
+      if (!(k in cur)) {
+        removed.push(k);
+        prior[k] = base[k];
+      }
+    }
     if (!Object.keys(added).length && !Object.keys(changed).length && !removed.length) {
       return null;
     }
@@ -2152,14 +2157,24 @@ function _fieldDiff(baseline, edited, kind) {
 // user's version (their unsaved work is never dropped) and its pattern (or
 // key) is pushed onto `clashes`, so the caller can tell the user to review
 // it before saving.
-// An entry the user deleted but the other writer fixed the pattern of comes
-// back in their version: a clash too, its pattern also pushed onto
-// `restored`, as the user's version (the deletion) is not what was kept.
+// An entry the user deleted but the other writer fixed the pattern of (a
+// dict key the other writer changed the value of) comes back in their
+// version: a clash too, its pattern (or key) also pushed onto `restored`, as
+// the user's version (the deletion) is not what was kept.
 function _applyFieldDiff(serverValue, diff, clashes, restored) {
   if (!diff) return serverValue;
   if (diff.kind === 'dict') {
     const out = { ...(serverValue || {}) };
-    for (const k of diff.removed) delete out[k];
+    for (const k of diff.removed) {
+      // A key the other writer changed the value of (a rename is a remove
+      // plus an add) is back in their version rather than lost unseen.
+      if (!Object.hasOwn(out, k) || _stringify(out[k]) === _stringify(diff.prior[k])) {
+        delete out[k];
+        continue;
+      }
+      if (clashes) clashes.push(k);
+      if (restored) restored.push(k);
+    }
     // A key the other writer also added, or also changed, to another value
     // keeps the user's value but is a clash, as for a regex-list entry.
     for (const [k, v] of Object.entries({ ...diff.added, ...diff.changed })) {
@@ -2537,7 +2552,7 @@ async function _doSave(patch, fingerprints) {
               + (clashed.length ? ' (on ' + clashed.join(', ') + ' another writer'
                  + ' also edited an entry you edited; your version is kept)' : '')
               + (restored.length ? ' (on ' + restored.join(', ') + ' another writer'
-                 + ' fixed the pattern of an entry you deleted; their entry is back,'
+                 + ' changed an entry you deleted; their entry is back,'
                  + ' delete it again if you still want it gone)' : '')
               + ', review and Save again.', 'err');
     return;
@@ -2598,7 +2613,7 @@ async function _doSave(patch, fingerprints) {
                 + (clashed.length ? 'Conflict on ' + clashed.join(', ') + ': another'
                    + ' writer also edited an entry you edited; your version is kept. ' : '')
                 + (restored.length ? 'Conflict on ' + restored.join(', ') + ': another'
-                   + ' writer fixed the pattern of an entry you deleted; their entry is'
+                   + ' writer changed an entry you deleted; their entry is'
                    + ' back, delete it again if you still want it gone. ' : '')
                 + 'Review and Save again.',
                 'err');
@@ -2609,8 +2624,8 @@ async function _doSave(patch, fingerprints) {
                 + ' could not be auto-merged (rule changed or removed).'
                 + (clashed.length ? ' On ' + clashed.join(', ') + ' another writer also'
                    + ' edited an entry you edited; your version is kept.' : '')
-                + (restored.length ? ' On ' + restored.join(', ') + ' another writer fixed'
-                   + ' the pattern of an entry you deleted; their entry is back, delete it'
+                + (restored.length ? ' On ' + restored.join(', ') + ' another writer changed'
+                   + ' an entry you deleted; their entry is back, delete it'
                    + ' again if you still want it gone.' : ''),
                 'err');
     }
@@ -2641,7 +2656,7 @@ async function _doSave(patch, fingerprints) {
               + (clashed.length ? 'Conflict on ' + clashed.join(', ') + ': another writer'
                  + ' also edited an entry you edited; your version is kept. ' : '')
               + (restored.length ? 'Conflict on ' + restored.join(', ') + ': another writer'
-                 + ' fixed the pattern of an entry you deleted; their entry is back, delete'
+                 + ' changed an entry you deleted; their entry is back, delete'
                  + ' it again if you still want it gone. ' : '')
               + 'Review and Save again.',
               'err');
