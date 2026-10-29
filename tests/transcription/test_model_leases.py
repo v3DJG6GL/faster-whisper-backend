@@ -154,6 +154,7 @@ def test_unknown_short_name_fails_the_shared_gate(monkeypatch):
     ("ALLOWED_MODELS", {"my-model"}),
     ("PRELOAD_MODELS", ["my-model"]),
     ("STREAMING_PARTIAL_MODEL", "my-model"),
+    ("MODEL_OVERRIDES", {"my-model": {"BEAM_SIZE": 1}}),
 ])
 def test_short_name_of_a_local_dir_still_loads(monkeypatch, tmp_path,
                                                field, value):

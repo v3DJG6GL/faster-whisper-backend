@@ -1113,7 +1113,10 @@ def _check_model_known(name: str) -> None:
     operator_named = (name == cfg.DEFAULT_MODEL
                       or name in (cfg.ALLOWED_MODELS or ())
                       or name in (cfg.PRELOAD_MODELS or ())
-                      or name == cfg.STREAMING_PARTIAL_MODEL)
+                      or name == cfg.STREAMING_PARTIAL_MODEL
+                      # A per-model override names the model too (config's
+                      # _canonical_env_model_id counts it as a known id).
+                      or name in (getattr(cfg, "MODEL_OVERRIDES", None) or {}))
     if (not operator_named if os.path.isdir(name)
             else "/" not in name and name not in available_models()):
         raise HTTPException(
