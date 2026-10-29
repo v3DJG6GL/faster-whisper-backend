@@ -304,3 +304,19 @@ def test_slug_list_beside_a_stored_copy_of_the_split_card_keeps_naming_it():
     assert raw["CAPTURES_PIPELINE_RULES_EXCLUDE"] == [
         "strip-whisper-punctuation", *_SPLIT_IN_JUNE["german-symbol-cleanup"]]
     assert raw["MODEL_OVERRIDES"]["m"]["PIPELINE_RULES_EXCLUDE"] == ["strip-whisper-punctuation"]
+
+
+@pytest.mark.parametrize("old,new", sorted(_RENAMED_IN_097C9B4.items()))
+def test_old_copy_running_beside_its_switched_off_renamed_rule_keeps_running(tmp_path, old, new):
+    """An admin who saw the duplicate and switched off the NEW card kept the
+    old one running: dropping the old copy would stop the rule silently."""
+    from faster_whisper_backend.settings import config_store as cs
+    rules = copy.deepcopy(_factory_rules())
+    _rule(rules, new)["enabled"] = False
+    rules.insert(-1, dict(copy.deepcopy(_rule(rules, new)), name=old,
+                          languages=[], enabled=True))
+    p = tmp_path / "config.local.json"
+    p.write_text(json.dumps({"PIPELINE_RULES": rules}), encoding="utf-8")
+    out = cs.load_overrides(str(p))["PIPELINE_RULES"]
+    kept = [r for r in out if r["name"] in (old, new)]
+    assert [(r["name"], r["enabled"], r["languages"]) for r in kept] == [(new, True, ["de"])]

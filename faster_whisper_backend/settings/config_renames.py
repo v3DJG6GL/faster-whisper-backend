@@ -292,7 +292,9 @@ def migrate_rule_slugs(raw: dict[str, Any]) -> dict[str, Any]:
     which every caller also runs). A stored rule already using the new name
     wins over the old one, and an old-named copy that is still the unscoped
     factory rule is dropped beside it: every slug list now names the new
-    rule, so the duplicate would run on every language, excluded nowhere."""
+    rule, so the duplicate would run on every language, excluded nowhere.
+    When only the old copy is enabled, the disabled new-named one is dropped
+    instead, so whether the rule runs does not change."""
     rules = raw.get("PIPELINE_RULES")
     # str only: a hand-edited non-string name must reach the schema's
     # error, not crash the dict lookups here (load_overrides never raises).
@@ -307,7 +309,18 @@ def migrate_rule_slugs(raw: dict[str, Any]) -> dict[str, Any]:
                     r["name"] = new
                     names.add(new)
                 elif _unscoped_factory_copy(r, new):
-                    dropped.append(r)
+                    kept = next((k for k in rules if k is not r
+                                and isinstance(k, dict) and k.get("name") == new
+                                and all(k is not d for d in dropped)), None)
+                    if (kept is not None and r.get("enabled", True)
+                            and not kept.get("enabled", True)):
+                        # The admin switched the new-named duplicate off and
+                        # kept this one running: it takes the slot instead
+                        # (upgrade_rule_entries then scopes it).
+                        dropped.append(kept)
+                        r["name"] = new
+                    else:
+                        dropped.append(r)
         if dropped:
             rules[:] = [r for r in rules if all(r is not d for d in dropped)]
     for key in _SLUG_LIST_KEYS:
