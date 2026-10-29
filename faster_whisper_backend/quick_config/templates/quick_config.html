@@ -2180,7 +2180,8 @@ function _applyFieldDiff(serverValue, diff, clashes) {
     // so the user's apply order holds.
     const baseKeyed = _olistKeyed(diff.base);
     const base = new Map(baseKeyed.map(([k, x]) => [k, _stringify(x)]));
-    const server = _olistAlign(baseKeyed, _olistKeyed(serverValue));
+    const serverOwn = _olistKeyed(serverValue);
+    const server = _olistAlign(baseKeyed, serverOwn);
     const theirs = new Map(server);
     const out = [];
     for (const [k, x] of _olistAlign(baseKeyed, _olistKeyed(diff.value))) {
@@ -2196,8 +2197,14 @@ function _applyFieldDiff(serverValue, diff, clashes) {
       out.push([k, x]);
     }
     const have = new Set(out.map(([k]) => k));
+    const kept = new Map(out);
     let prev = null;
-    for (const [k, x] of server) {
+    for (let [i, [k, x]] of server.entries()) {
+      // A pattern edit _olistAlign paired with a base entry may as well be
+      // the other writer's delete + add: unless the merge already holds it
+      // as is, it goes in under its own id rather than be lost to the user's
+      // deletion of, or edit to, that entry.
+      if (k !== serverOwn[i][0] && _stringify(kept.get(k)) !== _stringify(x)) k = serverOwn[i][0];
       if (!base.has(k) && !have.has(k)) {
         const at = prev === null ? 0 : out.findIndex(([q]) => q === prev) + 1;
         out.splice(at, 0, [k, x]);

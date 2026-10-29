@@ -555,12 +555,46 @@ def test_conflict_merge_pairs_a_pattern_edited_in_place_with_its_entry(client, t
                      [e('a'), e('x'), e('y', 'Y2')]),
       });
     """, funcs=_OLIST_FUNCS)
-    assert res["theirsPattern"] == ["CONFLICT", ["a>A", "colour>COLOR"]]
+    # The other writer's pattern fix may as well be a delete + add, so it is
+    # kept next to the user's version for review rather than dropped.
+    assert res["theirsPattern"] == ["CONFLICT", ["a>A", "colou?r>color", "colour>COLOR"]]
     assert res["minePattern"] == ["CONFLICT", ["a>A", "teh+>the", "y>Y"]]
     assert res["samePattern"] == ["x2>X"]
     assert res["anchor"] == ["a>A", "x2>X", "n>N", "y>Y"]
     assert res["clean"] == ["a>A", "x2>X", "y>Y2"]
     assert res["two"] == ["CONFLICT", ["a>A", "x2>X", "y2>Y"]]
+
+
+def test_conflict_merge_keeps_the_other_writers_entry_added_where_they_deleted_one(client, tmp_path):
+    # The pattern-edit pairing ran on the other writer's list too, so their
+    # new entry added where they deleted one took the deleted entry's id: when
+    # the user had deleted that entry as well it vanished with no clash, and
+    # when the user had edited it only the user's version came back.
+    page = client.get("/quick-config").text
+    res = _run_js(client, tmp_path, _olist_consts(page) + r"""
+      const e = (p, r) => ({ pattern: p, replacement: r || p.toUpperCase() });
+      const merge = (base, mine, theirs) => {
+        const clashes = [];
+        const m = _applyFieldDiff(theirs, _fieldDiff(base, mine, _diffKindFor('entries')), clashes);
+        const v = m.map(x => x.pattern + '>' + x.replacement);
+        return clashes.length ? ['CONFLICT', v] : v;
+      };
+      out({
+        // both deleted b; the other writer appended c.
+        tail: merge([e('a'), e('b')], [e('a')], [e('a'), e('c')]),
+        // both deleted b; the other writer added c in its place.
+        mid: merge([e('x'), e('b'), e('y')], [e('x'), e('y')], [e('x'), e('c'), e('y')]),
+        // the user edited b; the other writer replaced it with c.
+        edited: merge([e('x'), e('b')], [e('x'), e('b', 'B2')], [e('x'), e('c')]),
+        // the user left b alone; the other writer fixed its pattern: in place.
+        inPlace: merge([e('x'), e('b'), e('y')], [e('x'), e('b'), e('y', 'Y2')],
+                       [e('x'), e('b2', 'B'), e('y')]),
+      });
+    """, funcs=_OLIST_FUNCS)
+    assert res["tail"] == ["a>A", "c>C"]
+    assert res["mid"] == ["x>X", "c>C", "y>Y"]
+    assert res["edited"] == ["CONFLICT", ["x>X", "c>C", "b>B2"]]
+    assert res["inPlace"] == ["x>X", "b2>B", "y>Y2"]
 
 
 def test_reapply_keeps_the_users_edits_on_a_rule_whose_entry_both_writers_edited(client, tmp_path):
