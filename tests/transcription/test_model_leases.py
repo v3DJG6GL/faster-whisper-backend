@@ -232,6 +232,36 @@ def test_release_in_an_all_leased_overflow_keeps_the_released_model(
     assert list(tx_models._loaded_models) == ["a", "b"]
 
 
+def test_release_during_an_unleased_over_cap_load_trims_after_it(monkeypatch):
+    # "a" is leased, so the preload of "b" overflows the cap; "a"'s lease goes
+    # while "b" is still being built (nothing over the cap yet to trim), and
+    # the unleased "b" never releases a lease. The load itself must reclaim.
+    _stub_load(monkeypatch)
+    entered, gate = threading.Event(), threading.Event()
+
+    def _slow_model(path, **kw):
+        entered.set()
+        gate.wait(5)
+        return FakeModel()
+    sys.modules["faster_whisper"].WhisperModel = _slow_model
+    monkeypatch.setattr(tx_models.cfg, "MAX_LOADED_MODELS", 1, raising=False)
+    _register("a")
+    tx_models._model_leases["a"] = 1
+
+    async def scenario():
+        load = asyncio.ensure_future(tx_models.load_unleased("b"))
+        await asyncio.to_thread(entered.wait, 5)
+        tx_models._release_model_lease("a")
+        gate.set()
+        await load
+        if tx_models._trim_task is not None:
+            await tx_models._trim_task
+        await tx_models._get_or_load_model("b")        # a hit, not a miss
+
+    asyncio.run(scenario())
+    assert list(tx_models._loaded_models) == ["b"]
+
+
 # --- idle evictor ------------------------------------------------------------
 
 def test_idle_evictor_defers_then_evicts(monkeypatch):

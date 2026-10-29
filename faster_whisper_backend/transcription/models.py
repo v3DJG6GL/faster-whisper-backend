@@ -1260,7 +1260,8 @@ async def _load_on_miss(name: str, *, lease: bool) -> "WhisperModel":
             if evicted_name is None:
                 # Every cached model is mid-request — overflow the cap rather
                 # than free a model under a running decode. The excess is
-                # reclaimed once a lease is released (_schedule_trim_to_cap).
+                # reclaimed once a lease is released (_schedule_trim_to_cap),
+                # or right after this load if one is released mid-build.
                 logger.warning(
                     "All %d cached models are in use — temporarily exceeding "
                     "MAX_LOADED_MODELS", len(_loaded_models))
@@ -1357,6 +1358,10 @@ async def _load_on_miss(name: str, *, lease: bool) -> "WhisperModel":
         # stop the (shielded) registry write, and a registry
         # entry with no cached model is a phantom nothing ever unregisters.
         _loaded_models[name] = new_model
+        # A lease released while this was building scheduled no trim (the
+        # cache was not over the cap yet), and an unleased load (preload, a
+        # cancelled caller) has no release of its own to reclaim the excess.
+        _schedule_trim_to_cap(keep=name)
         # A cancelled caller never receives the model: it stays unleased.
         leased = lease and _cancelled is None
         if leased:
