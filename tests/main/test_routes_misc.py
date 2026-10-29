@@ -1,5 +1,9 @@
 """Misc app-level routes: /v1/models, /logs, /sev, /auth/whoami."""
 
+import json
+
+import pytest
+
 from tests.conftest import bearer
 from faster_whisper_backend.admin import logs_routes
 from faster_whisper_backend.transcription import catalog_routes as tx_catalog_routes
@@ -223,3 +227,17 @@ def test_validation_error_echoing_a_lone_surrogate_stays_a_422(client):
     err = r.json()["detail"][0]
     assert err["loc"] == ["body", "trace_ts"] and err["input"] == "fünf"
     assert "fünf" in r.text
+
+
+def test_validation_error_echoing_a_non_finite_float_stays_a_422(client):
+    # json.loads accepts the NaN / Infinity literals; pydantic echoes the
+    # refused float as error.input and JSONResponse's allow_nan=False raised
+    # ValueError -> a 500. The fallback sends each back as the literal it was.
+    for literal in ("NaN", "Infinity", "-Infinity"):
+        r = client.post("/quick-config/reports/api/submit",
+                        content='{"user_comment": "x", "trace_ts": %s}' % literal,
+                        headers={"content-type": "application/json"})
+        assert r.status_code == 422
+        strict = json.loads(r.text, parse_constant=pytest.fail)   # no bare NaN
+        err = strict["detail"][0]
+        assert err["loc"] == ["body", "trace_ts"] and err["input"] == literal

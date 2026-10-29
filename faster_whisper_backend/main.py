@@ -8,6 +8,7 @@ includes for every sub-package. Launched via the root main.py shim or
 import asyncio
 import os
 import json
+import math
 import random
 import sys
 import ctypes
@@ -1246,24 +1247,40 @@ async def _rate_limited_handler(request: Request, exc: _rl.RateLimited):
                         headers={"Retry-After": str(exc.retry_after)})
 
 
+def _encodable_json_response(content, status_code: int, headers=None):
+    """JSONResponse, or the same JSON in a form that encodes when the caller's
+    echoed input does not.
+
+    JSONResponse encodes with ensure_ascii=False and allow_nan=False, so a lone
+    UTF-16 surrogate (a JSON "\\ud800" escape) or a NaN / Infinity literal
+    (json.loads accepts both) makes it raise and the client gets a 500 instead
+    of the 4xx. Only that case falls back to an ASCII-escaped body with each
+    non-finite float as a string — both sent back as the literal they arrived as.
+    """
+    from fastapi.responses import JSONResponse, Response
+    try:
+        return JSONResponse(content, status_code=status_code, headers=headers)
+    except ValueError:   # UnicodeEncodeError is one
+        def _finite(v):
+            if isinstance(v, float) and not math.isfinite(v):
+                return json.dumps(v)          # "NaN" / "Infinity" / "-Infinity"
+            if isinstance(v, dict):
+                return {k: _finite(x) for k, x in v.items()}
+            if isinstance(v, (list, tuple)):
+                return [_finite(x) for x in v]
+            return v
+        return Response(json.dumps(_finite(content), separators=(",", ":"),
+                                   allow_nan=False),
+                        status_code=status_code, headers=headers,
+                        media_type="application/json")
+
+
 @app.exception_handler(RequestValidationError)
 async def _request_validation_handler(request: Request, exc: RequestValidationError):
-    """FastAPI's own 422 body, kept encodable.
-
-    The default handler echoes each offending value back as error.input and
-    encodes with ensure_ascii=False, so a lone UTF-16 surrogate (a JSON
-    "\\ud800" escape) makes the UTF-8 encode raise and the client gets a 500
-    instead of the 422. Only that case falls back to an ASCII-escaped body —
-    the same JSON, the surrogate sent back as the escape it arrived as.
-    """
+    """FastAPI's own 422 body, kept encodable: it echoes each offending value
+    back as error.input (see _encodable_json_response)."""
     from fastapi.encoders import jsonable_encoder
-    from fastapi.responses import JSONResponse, Response
-    content = {"detail": jsonable_encoder(exc.errors())}
-    try:
-        return JSONResponse(content, status_code=422)
-    except UnicodeEncodeError:
-        return Response(json.dumps(content, separators=(",", ":")),
-                        status_code=422, media_type="application/json")
+    return _encodable_json_response({"detail": jsonable_encoder(exc.errors())}, 422)
 
 
 def _shift_to_original_timeline(segments, info, pad_s: float):
