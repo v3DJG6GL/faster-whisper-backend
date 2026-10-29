@@ -445,12 +445,14 @@ def test_powershell_scripts_are_pure_ascii():
         assert not bad, f"{name}: non-ASCII byte at offset {bad[0]}"
 
 
-def test_installers_require_python_312():
-    # CI tests 3.12-3.14; both installers refuse older interpreters before
+def test_installers_require_python_314():
+    # CI tests 3.14 only; both installers refuse older interpreters before
     # building a venv on them, and say so.
-    assert "sys.version_info >= (3, 12)" in _read("install-service.sh")
+    sh = _read("install-service.sh")
+    assert "sys.version_info >= (3, 14)" in sh
     ps1 = _read("install-service.ps1")
-    assert "sys.version_info >= (3, 12)" in ps1
+    assert "sys.version_info >= (3, 14)" in ps1
+    assert "3.12" not in sh and "3.12" not in ps1
     assert "Python 3.10" not in ps1
 
 

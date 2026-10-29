@@ -56,9 +56,45 @@ def test_windows_leg_runs_in_its_own_venv():
     leg = leg[:leg.index("\n  all-ci:")]
     code = "\n".join(_code_lines(leg))
     assert "python -m venv .venv" in code
-    assert code.index("python -m venv .venv") < code.index("pip install -r")
-    calls = re.findall(r"^\s*(\S+) -m (?:pip|pytest)\b", code, re.M)
+    assert code.index("python -m venv .venv") < code.index("-r requirements.txt")
+    calls = re.findall(r"^\s*(\S+) -m (?:pip|pytest|uv)\b", code, re.M)
     assert calls and set(calls) == {r".venv\Scripts\python"}, calls
+    # uv installs into the interpreter it is told to, not the one it runs
+    # from: the requirements install must name the venv's.
+    for line in re.findall(r"^.* -m uv pip install .*$", code, re.M):
+        assert r"--python .venv\Scripts\python.exe" in line, line
+
+
+def test_suite_filter_skips_the_suite_only_for_dockerfile_only_prs():
+    # The deny-list's one skip arm: widening it lets a PR skip the suite for
+    # files the tests read. Push/tag/dispatch runs, an undiffable PR and a
+    # workflow change run every job.
+    ci = _read(".forgejo", "workflows", "ci.yml")
+    step = ci[ci.index("- name: Select the jobs"):ci.index("\n  test:")]
+    assert re.findall(r"^\s*(.+)\) ;;$", step, re.M) == ["Dockerfile | Dockerfile.gpu"]
+    assert 'if [ "$EVENT" != pull_request ]; then\n            every' in step
+    assert '.forgejo/*) every "$f changed"; exit 0 ;;' in step
+    assert 'every "no diff"' in step
+
+
+def test_all_ci_rejects_a_failed_filter_and_unfiltered_windows_skips():
+    # A failed `changes` job leaves its outputs empty; the gate must not
+    # read that as "nothing to test", and Windows may only be skipped when
+    # the filter said so.
+    ci = _read(".forgejo", "workflows", "ci.yml")
+    gate = ci[ci.index("  all-ci:"):ci.index("\n  build:")]
+    assert "needs: [changes, test, test-windows]" in gate
+    assert 'test "${{ needs.changes.result }}" = "success"' in gate
+    assert ('if [ "${{ needs.changes.outputs.suite }}" = "false" ]; then\n'
+            '              test "${{ needs.test-windows.result }}" = "skipped"') in gate
+
+
+def test_test_legs_use_a_fixed_worker_count():
+    # -n auto took all 80 CPUs of the shared runner host per leg and starved
+    # the wall-clock tests (runs 1642-1646).
+    ci = _read(".forgejo", "workflows", "ci.yml")
+    runs = re.findall(r"pytest -n (\S+)", "\n".join(_code_lines(ci)))
+    assert runs and all(n.isdigit() for n in runs), runs
 
 
 def test_checkout_steps_derive_the_instance_host():

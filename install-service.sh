@@ -54,12 +54,13 @@ PY="$VENV/bin/python"
 
 if [ ! -x "$PY" ]; then
   if ! command -v python3 >/dev/null 2>&1; then
-    echo "python3 not found on PATH; install Python 3.12+ and re-run." >&2
+    echo "python3 not found on PATH; install Python 3.14+ and re-run." >&2
     exit 1
   fi
-  # CI tests 3.12-3.14; refuse older interpreters before building a venv on them.
-  if ! python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 12) else 1)'; then
-    echo "python3 is older than 3.12 ($(python3 --version 2>&1)); install Python 3.12+ and re-run." >&2
+  # CI tests 3.14 only (the images' interpreter); refuse older ones before
+  # building a venv on them. An existing venv is kept whatever it runs.
+  if ! python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 14) else 1)'; then
+    echo "python3 is older than 3.14 ($(python3 --version 2>&1)); install Python 3.14+ as python3 and re-run." >&2
     exit 1
   fi
   echo "Creating venv at $VENV ..."

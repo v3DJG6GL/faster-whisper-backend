@@ -89,8 +89,69 @@ env:
   PIP_ROOT_USER_ACTION: ignore
 
 jobs:
+  # What a pull request needs (interlinea's ci.yml pattern). Outputs 'true'
+  # or 'false'; push, tag and dispatch runs, a diff that cannot be computed
+  # and any change under .forgejo/ set both 'true'.
+  #   suite — false only when EVERY changed file is a Dockerfile (Renovate's
+  #           python base-digest PRs): the Linux leg then runs only the
+  #           CI-config tests (they read the Dockerfiles), Windows is
+  #           skipped. A deny-list, so a new path runs the whole suite.
+  #   image — the PR builds the images only when something they are built
+  #           from by name changed (Dockerfiles, requirements, .dockerignore).
+  #           A code-only PR's build is the tag run after it merges.
+  changes:
+    name: changes
+    runs-on: ubuntu-latest
+    outputs:
+      suite: ${{ steps.filter.outputs.suite }}
+      image: ${{ steps.filter.outputs.image }}
+    steps:
+      - name: Checkout
+        if: github.event_name == 'pull_request'
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Select the jobs
+        id: filter
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          every() { # <reason>
+            echo "every job runs: $1"
+            { echo "suite=true"; echo "image=true"; } | tee -a "$GITHUB_OUTPUT"
+          }
+          if [ "$EVENT" != pull_request ]; then
+            every "$EVENT event"
+            exit 0
+          fi
+          if [ -z "$BASE" ] || [ -z "$HEAD" ] || ! files=$(git diff --no-renames --name-only "$BASE...$HEAD"); then
+            echo "::warning::cannot diff $BASE...$HEAD"
+            every "no diff"
+            exit 0
+          fi
+          suite=false image=false
+          while IFS= read -r f; do
+            [ -n "$f" ] || continue
+            case $f in
+              .forgejo/*) every "$f changed"; exit 0 ;;
+            esac
+            case $f in
+              Dockerfile | Dockerfile.gpu) ;;
+              *) suite=true ;;
+            esac
+            case $f in
+              Dockerfile | Dockerfile.gpu | .dockerignore | requirements*.txt) image=true ;;
+            esac
+          done <<< "$files"
+          { echo "suite=$suite"; echo "image=$image"; } | tee -a "$GITHUB_OUTPUT"
+
   test:
-    name: tests (ubuntu-latest py${{ matrix.python-version }})
+    name: tests (ubuntu-latest py3.14)
+    needs: [changes]
     # Skipped on v* tag runs — tag-first flow (2026-08-27): a tag is only
     # ever minted for a commit that already tested green (release.yml
     # enforces it on both its paths), so the tag run goes straight to the
@@ -98,20 +159,31 @@ jobs:
     # is safe since Forgejo v16 (16.0.3 here): the server evaluates job
     # `if` itself (PR #13030); on v15 this would have hung the run
     # (forgejo#12937).
-    if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+    if: ${{ !cancelled() && !startsWith(github.ref, 'refs/tags/') }}
     runs-on: ubuntu-latest
     # Exact interpreter via the official image — replaces setup-python (see
-    # header). The matrix value is interpolated into the tag, so Renovate's
-    # github-actions manager skips it; bump the list by hand when a new
-    # Python minor lands (the Docker tag floats on patch releases by itself).
+    # header). One leg, on the interpreter the images ship (python:3.14-slim)
+    # and the installers require; windows (below) is a portability parity
+    # guard. 3.12 and 3.13 legs dropped 2026-10-29 (owner decision).
+    #
+    # /persistent/uv is the runner's shared download cache (interlinea's
+    # docs/ops/ci.md "Download cache"; listed in the runner config's
+    # container.valid_volumes): every wheel came from PyPI on every run
+    # before. A runner without it drops the mount with a warning and the
+    # job runs uncached. The cache is writable by every repo on this runner;
+    # requirements*.txt carry no hashes, so a wheel planted there would be
+    # installed — accepted, all of them are the owner's repos.
     container:
-      image: python:${{ matrix.python-version }}-trixie
-    strategy:
-      fail-fast: false
-      matrix:
-        # ubuntu is the primary target and is exercised across the supported
-        # Python range; windows (below) is a portability parity guard.
-        python-version: ["3.12", "3.13", "3.14"]
+      image: python:3.14-trixie
+      volumes:
+        - /persistent/uv:/cache/uv
+    env:
+      UV_CACHE_DIR: /cache/uv
+      # Another filesystem than the checkout: copy instead of hard-linking.
+      UV_LINK_MODE: copy
+      # The image's interpreter (/usr/local, not externally managed): the
+      # container is the environment, there is no venv to build.
+      UV_SYSTEM_PYTHON: "1"
     steps:
       # Manual checkout — no node in the python image, so actions/checkout
       # (a JS action) cannot run. The run-scoped actions token authenticates
@@ -164,7 +236,9 @@ jobs:
       # blocks of /settings/pipeline, /quick-config and /settings) and the
       # WebM/Opus transport tests (the only ones decoding MediaRecorder-shaped
       # input). A silently skipped guard is not coverage, so install both.
+      # Not for a Dockerfile-only PR: the CI-config tests need neither.
       - name: Install system test tools (node, ffmpeg)
+        if: needs.changes.outputs.suite == 'true'
         run: |
           apt-get update -qq
           apt-get install -y --no-install-recommends nodejs ffmpeg
@@ -172,13 +246,14 @@ jobs:
           node --version
           ffmpeg -version | head -1
 
-      # No pip cache: the job container is ephemeral and actions/cache is a
-      # JS action (no node here). The deps are modest CPU wheels; PyPI is
-      # not rate-limited the way Docker Hub is.
+      # uv instead of pip: parallel downloads, and the wheels come from the
+      # /persistent/uv cache (job header). Same minor as interlinea's jobs,
+      # which share the cache.
       - name: Install dependencies (CPU base + test tools)
         run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt -r requirements-dev.txt
+          python -m pip install --no-cache-dir "uv>=0.12,<0.13"
+          uv --version
+          uv pip install -r requirements.txt -r requirements-dev.txt
 
       # Lint (config in ruff.toml): unused / undefined names and syntax-level
       # errors. Cheap, so every Linux leg runs it.
@@ -192,13 +267,20 @@ jobs:
       # both Linux and Windows (run 1226); set 3 points lower so per-version
       # variance and the Windows leg's POSIX-only skips don't false-fail.
       # Raise this number as coverage grows — never lower it.
-      # -n 6, not -n auto: the three Linux legs and the Windows VM share one
-      # 22-core box, and -n auto gave each leg a worker per core (100+ in
-      # all), which starved the wall-clock tests — probe deadlines, the GPU
-      # gate's wait, node subprocess timeouts (runs 1642-1646). 3 x 6 plus
-      # the Windows leg's 6 is about one worker per core.
+      # A fixed worker count, never -n auto: auto took all 80 CPUs of the
+      # runner host per leg (shared with the Windows VM and other repos'
+      # runs) and starved the wall-clock tests — probe deadlines, the GPU
+      # gate's wait (runs 1642-1646). 24 here and 16 on Windows leave the
+      # host half free; lower them if timing tests start failing.
+      # A Dockerfile-only PR (changes.suite false) runs only the tests that
+      # read the Dockerfiles.
       - name: Run tests (with coverage gate)
-        run: pytest -n 6 -q --cov-fail-under=84
+        if: needs.changes.outputs.suite == 'true'
+        run: pytest -n 24 -q --cov-fail-under=84
+
+      - name: Run the CI-config tests (Dockerfile-only change)
+        if: needs.changes.outputs.suite != 'true'
+        run: pytest -q --no-cov -p no:cacheprovider tests/test_ci_workflow_config.py
 
   # Windows portability parity guard — a single leg on the self-hosted VM
   # runner (host mode), using the system python (VM prerequisite in the
@@ -206,9 +288,15 @@ jobs:
   # `python -m` invocations (Scripts\ shims may lag the service PATH).
   test-windows:
     name: tests (windows-latest)
-    # Skipped on tag runs — see the `test` job.
-    if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+    needs: [changes]
+    # Skipped on tag runs — see the `test` job — and on a Dockerfile-only PR
+    # (the Linux leg runs the tests that read the Dockerfiles).
+    if: ${{ !cancelled() && !startsWith(github.ref, 'refs/tags/') && needs.changes.outputs.suite == 'true' }}
     runs-on: windows-latest
+    env:
+      # The SYSTEM profile's uv cache (default location) persists on the VM;
+      # copy, not hard links, so nothing a job does to its .venv can reach it.
+      UV_LINK_MODE: copy
     steps:
       # Same env indirection as the Linux legs above, in PowerShell spelling:
       # host-mode `run:` steps default to pwsh (no `shell: bash` here), so the
@@ -275,21 +363,22 @@ jobs:
       # (run 1373: PR #103 replaced av 18.1 with 19.0 mid-suite, 238
       # failures on a green commit). Each job has its own workspace and the
       # checkout's `git clean -x` drops the last run's .venv, so the install
-      # is fresh every time; pip's wheel cache in the SYSTEM profile keeps
-      # it fast. pwsh only reports the LAST native exit code, hence a check
-      # after each command.
+      # is fresh every time; uv's wheel cache in the SYSTEM profile keeps it
+      # fast. uv runs from the venv and installs into it (--python). pwsh
+      # only reports the LAST native exit code, hence a check after each
+      # command.
       - name: Install dependencies (CPU base + test tools)
         run: |
           python -m venv .venv
           if ($LASTEXITCODE -ne 0) { Write-Output "::error::python -m venv exited $LASTEXITCODE"; exit 1 }
-          .venv\Scripts\python -m pip install --upgrade pip
-          if ($LASTEXITCODE -ne 0) { Write-Output "::error::pip upgrade exited $LASTEXITCODE"; exit 1 }
-          .venv\Scripts\python -m pip install -r requirements.txt -r requirements-dev.txt
+          .venv\Scripts\python -m pip install --disable-pip-version-check "uv>=0.12,<0.13"
+          if ($LASTEXITCODE -ne 0) { Write-Output "::error::uv install exited $LASTEXITCODE"; exit 1 }
+          .venv\Scripts\python -m uv pip install --python .venv\Scripts\python.exe -r requirements.txt -r requirements-dev.txt
 
-      # -n 6, not -n auto: this VM shares its host with the Linux legs (see
-      # their test step).
+      # 16 workers, never -n auto: this VM shares its host with the Linux leg
+      # (see its test step).
       - name: Run tests (with coverage gate)
-        run: .venv\Scripts\python -m pytest -n 6 -q --cov-fail-under=84
+        run: .venv\Scripts\python -m pytest -n 16 -q --cov-fail-under=84
 
   # Single, stable status check to require in the branch protection. Matrix
   # legs expand/rename over time; this gate aggregates them so the required
@@ -301,12 +390,15 @@ jobs:
   all-ci:
     name: all-ci
     if: always()
-    needs: [test, test-windows]
+    needs: [changes, test, test-windows]
     runs-on: ubuntu-latest
     steps:
       - name: Require all test legs to succeed
         run: |
-          echo "test=${{ needs.test.result }} test-windows=${{ needs.test-windows.result }}"
+          echo "changes=${{ needs.changes.result }} suite=${{ needs.changes.outputs.suite }} test=${{ needs.test.result }} test-windows=${{ needs.test-windows.result }}"
+          # A failed filter leaves its outputs empty: never read that as
+          # "nothing to test".
+          test "${{ needs.changes.result }}" = "success"
           if [[ "$GITHUB_REF" == refs/tags/* ]]; then
             # Tag runs skip the suites (the tagged commit already tested
             # green — see the test job); "skipped" is the expected verdict
@@ -315,7 +407,12 @@ jobs:
             test "${{ needs.test-windows.result }}" = "skipped"
           else
             test "${{ needs.test.result }}" = "success"
-            test "${{ needs.test-windows.result }}" = "success"
+            # Windows may only be skipped by the Dockerfile-only filter.
+            if [ "${{ needs.changes.outputs.suite }}" = "false" ]; then
+              test "${{ needs.test-windows.result }}" = "skipped"
+            else
+              test "${{ needs.test-windows.result }}" = "success"
+            fi
           fi
 
   # Build (and, off PRs, publish) the container images — tag-first flow
@@ -325,7 +422,8 @@ jobs:
   # release, baking the clean vX.Y.Z. Main-push runs skip this job
   # entirely: no double builds, and no interim :latest carrying a
   # describe-suffixed version. PRs still build to validate the Dockerfiles
-  # without pushing; a workflow_dispatch run builds and publishes sha tags
+  # without pushing, when they touch the Dockerfiles, requirements or
+  # .dockerignore (changes.image); a workflow_dispatch run builds and publishes sha tags
   # (manual rebuild escape hatch). Dispatched on a v* tag it republishes
   # that tag's vX/sha tags, and :latest only when it is the newest v* tag
   # (the "newest" step) — an old release never takes latest back. The all-ci gate still fronts every
@@ -346,8 +444,9 @@ jobs:
   # The suffix is applied to every tag via metadata-action's flavor.suffix.
   build:
     name: build image (${{ matrix.variant }})
-    needs: [all-ci]
-    if: ${{ needs.all-ci.result == 'success' && (github.event_name != 'push' || startsWith(github.ref, 'refs/tags/')) }}
+    needs: [changes, all-ci]
+    # A PR builds only when the images' named inputs changed (changes.image).
+    if: ${{ !cancelled() && needs.all-ci.result == 'success' && (github.event_name != 'push' || startsWith(github.ref, 'refs/tags/')) && (github.event_name != 'pull_request' || needs.changes.outputs.image == 'true') }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false

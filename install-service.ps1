@@ -128,13 +128,13 @@ if (-not (Test-Path $Python)) {
         if ($cmd) { $sysPy = $cmd.Source; break }
     }
     if (-not $sysPy) {
-        throw "No Python found on PATH. Install Python 3.12+ from https://www.python.org/downloads/ (check 'Add to PATH'), then re-run this script."
+        throw "No Python found on PATH. Install Python 3.14+ from https://www.python.org/downloads/ (check 'Add to PATH'), then re-run this script."
     }
-    # CI tests 3.12-3.14; older interpreters are untested and refused here,
+    # CI tests 3.14 only (the images' interpreter); older interpreters are untested and refused here,
     # before a venv is built on them.
-    & $sysPy -c "import sys; sys.exit(0 if sys.version_info >= (3, 12) else 1)"
+    & $sysPy -c "import sys; sys.exit(0 if sys.version_info >= (3, 14) else 1)"
     if ($LASTEXITCODE -ne 0) {
-        throw "$sysPy is older than Python 3.12. Install Python 3.12+ from https://www.python.org/downloads/ (check 'Add to PATH'), then re-run this script."
+        throw "$sysPy is older than Python 3.14. Install Python 3.14+ from https://www.python.org/downloads/ (check 'Add to PATH'), then re-run this script."
     }
 
     Write-Host "Creating venv with: $sysPy" -ForegroundColor Cyan

@@ -58,7 +58,7 @@ Self-hosted [faster-whisper](https://github.com/SYSTRAN/faster-whisper) transcri
 
 ## Requirements
 
-- Python 3.14 (the Docker image ships `python:3.14-slim`; 3.12+ works for bare installs)
+- Python 3.14 (the Docker image ships `python:3.14-slim`; the install scripts require 3.14+ too)
 - Linux, macOS, or Windows 10/11
 - **GPU (optional)**: NVIDIA GPU + driver supporting CUDA 12.x (WSL2 driver works).
 
@@ -175,8 +175,9 @@ pytest -n auto -q
 `-n auto` (pytest-xdist) spreads the suite over every core; drop it to run
 serially, e.g. when debugging a single test.
 
-CI runs the suite on Linux (Python 3.12/3.13/3.14) and Windows for every pull
-request and every push to `main`, and fails the run if coverage drops below the
+CI runs the suite on Linux (Python 3.14) and Windows for every pull request
+and every push to `main` (a pull request that changes only the Dockerfiles runs
+just the tests that read them), and fails the run if coverage drops below the
 gate set on the pytest command line in `.forgejo/workflows/ci.yml`
 (`--cov-fail-under`; coverage measurement itself is configured in
 `.coveragerc`). A `v*` tag run
