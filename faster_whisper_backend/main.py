@@ -1339,7 +1339,7 @@ _TMP_SUFFIX_RE = re.compile(r"\A\.[A-Za-z0-9_-]{1,15}\Z")
 
 # A lone UTF-16 surrogate, dropped from decode_overrides' string values (see
 # the batch route).
-_SURROGATE_RE = re.compile(r"[\ud800-\udfff]")
+_LONE_SURROGATE_RE = re.compile(r"[\ud800-\udfff]")
 
 
 def _safe_tmp_suffix(filename: "str | None") -> str:
@@ -2331,7 +2331,7 @@ async def transcribe(
                 try:
                     _parsed = json.loads(decode_overrides)
                     if isinstance(_parsed, dict):
-                        _overrides = {k: (_SURROGATE_RE.sub("", v) if isinstance(v, str) else v)
+                        _overrides = {k: (_LONE_SURROGATE_RE.sub("", v) if isinstance(v, str) else v)
                                       for k, v in _parsed.items()}
                 except (ValueError, TypeError, RecursionError):
                     # RecursionError (a RuntimeError, NOT a ValueError) is what
