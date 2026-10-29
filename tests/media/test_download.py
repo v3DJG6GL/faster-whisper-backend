@@ -211,6 +211,25 @@ def test_userinfo_link_still_reaches_yt_dlp(monkeypatch):
     assert _run(udl.check_url_policy(url)) == "SoundCloud"
 
 
+def test_allowed_host_in_userinfo_does_not_pass_the_allowlist(monkeypatch):
+    """SenateGov's pattern ends at the host: on the raw string the userinfo
+    `help.senate.gov@` matched it, and evil.example got fetched as an
+    allowed site."""
+    monkeypatch.setattr(udl.cfg, "URL_ALLOWED_EXTRACTORS", ["SenateGov"],
+                        raising=False)
+    monkeypatch.setattr(udl.cfg, "URL_ALLOW_GENERIC", False, raising=False)
+    monkeypatch.setattr(udl, "_direct_media_probe_sync",
+                        lambda *a, **k: pytest.fail("probe ran"))
+    url = udl.validate_url("https://help.senate.gov@evil.example/hearings/x")
+    with pytest.raises(udl.UrlPolicyError):
+        _run(udl.check_url_policy(url))
+    # Credentials on the allowed host itself still pass.
+    monkeypatch.setattr(udl.cfg, "URL_ALLOWED_EXTRACTORS",
+                        ["SimplecastEpisode"], raising=False)
+    url = "https://user:pw@x.simplecast.com/episodes/y"
+    assert _run(udl.check_url_policy(url)) == "SimplecastEpisode"
+
+
 def test_handoff_target_with_userinfo_is_not_direct_media(monkeypatch):
     monkeypatch.setattr(udl, "_direct_media_probe_sync",
                         lambda *a, **k: pytest.fail("probe ran"))

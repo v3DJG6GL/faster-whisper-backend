@@ -977,6 +977,16 @@ async def check_url_policy(url: str, *, deadline: "float | None" = None) -> str:
                 "audio/video file")
         raise UrlPolicyError(
             "this site isn't allowed by the server's URL policy")
+    # Some _VALID_URL patterns end at the host, so `https://help.senate.gov@
+    # evil.example/` (real host evil.example) matches SenateGov on the raw
+    # string. The key must still match with the userinfo gone.
+    if _has_userinfo(url):
+        parts = urllib.parse.urlsplit(url)
+        bare = urllib.parse.urlunsplit(
+            parts._replace(netloc=parts.netloc.rpartition("@")[2]))
+        if await loop.run_in_executor(_PROBE_POOL, match_extractor, bare) != key:
+            raise UrlPolicyError(
+                "this link's host isn't the site it names")
     allowed = _allowed_extractor_keys()
     if allowed and key.lower() not in allowed:
         raise UrlPolicyError("this site isn't on the server's allowed list")
