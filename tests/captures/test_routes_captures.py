@@ -1114,6 +1114,34 @@ def _grouped_capture(captures_store, monkeypatch, tmp_path, sid):
     return cid
 
 
+def test_sample_wav_self_heal_keeps_the_stale_flag(
+        captures_store_db, groups_store_db, monkeypatch, tmp_path):
+    """The VAD reprocess flags a sample stale when it no longer fits the
+    current globals, and the export skips it. The missing-WAV self-heal
+    rebuilds with the sample's stored silence, so it proves nothing about
+    that, yet it wrote back is_stale=0: opening the audio of a stale sample
+    whose WAV had gone re-admitted it to the next export."""
+    from faster_whisper_backend.captures import routes as cr
+    from faster_whisper_backend.captures import samples as capture_samples
+    from faster_whisper_backend.captures import samples_store as gs
+
+    sid = "d" * 32
+    _grouped_capture(captures_store_db, monkeypatch, tmp_path, sid)
+    gs.update_sample(sid, {"is_stale": 1})
+
+    def _build(*, sid, member_ids, silence_ms):
+        _write_merged_wav(gs, sid, b"rebuilt")
+        return 1500, {m: "h2" for m in member_ids}, {}
+
+    monkeypatch.setattr(capture_samples, "_build_merged_wav", _build)
+    abs_p = cr._ensure_sample_wav(gs.get_sample(sid))
+    with open(abs_p, "rb") as f:
+        assert f.read() == b"rebuilt"
+    g = gs.get_sample(sid)
+    assert g["merged_duration_ms"] == 1500
+    assert g["is_stale"] is True
+
+
 def test_reprocess_vad_worker_uses_pinned_rebuild_lock(
         captures_store_db, groups_store_db, monkeypatch, tmp_path):
     """The worker holds its per-sid lock across build + DB write for many

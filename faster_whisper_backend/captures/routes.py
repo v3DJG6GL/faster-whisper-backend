@@ -2748,9 +2748,13 @@ def _ensure_sample_wav(g: dict[str, Any]) -> str:
             member_ids=member_ids,
             silence_ms=int(g["inter_segment_silence_ms"]),
         )
-        capture_samples_store.update_sample(
-            g["id"], capture_samples._merged_wav_patch(duration_ms, hashes, member_trims),
-        )
+        patch = capture_samples._merged_wav_patch(duration_ms, hashes, member_trims)
+        # The stale flag records that the sample no longer fits the CURRENT
+        # globals (VAD reprocess); this rebuild uses the stored silence and
+        # proves nothing about that, so a review click must not re-admit the
+        # sample to the export. Only regenerate (current globals) clears it.
+        patch.pop("is_stale", None)
+        capture_samples_store.update_sample(g["id"], patch)
     return abs_p
 
 
