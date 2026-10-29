@@ -1098,12 +1098,15 @@ def _check_model_shape(name: str) -> None:
 
 
 def _check_model_known(name: str) -> None:
-    """400 for a short name that is neither a local dir nor a faster-whisper size.
+    """400 for a local dir the operator did not configure, and for a short
+    name that is not a faster-whisper size.
 
-    It can only end in the constructor's ValueError ("Invalid model size"). (No
-    "/" never auto-converts, so ``name`` is already the constructor's path.)
-    The local-dir pass is only for a name the operator configured: from a
-    client, "static" or "docs" is a directory under the server's cwd too."""
+    The short name can only end in the constructor's ValueError ("Invalid
+    model size"). (No "/" never auto-converts, so ``name`` is already the
+    constructor's path.) The local-dir pass is only for a name the operator
+    configured: from a client, "static" or "docs/brand" is a directory under
+    the server's cwd too — with a "/" it skips the Hub pre-download and loads
+    (or, with AUTO_CONVERT_HF_MODELS, converts) that directory."""
     # Lazy import (see the TYPE_CHECKING note up top).
     from faster_whisper import available_models
 
@@ -1111,9 +1114,8 @@ def _check_model_known(name: str) -> None:
                       or name in (cfg.ALLOWED_MODELS or ())
                       or name in (cfg.PRELOAD_MODELS or ())
                       or name == cfg.STREAMING_PARTIAL_MODEL)
-    if ("/" not in name
-            and not (operator_named and os.path.isdir(name))
-            and name not in available_models()):
+    if (not operator_named if os.path.isdir(name)
+            else "/" not in name and name not in available_models()):
         raise HTTPException(
             status_code=400,
             detail=f"Model '{name}' is not a faster-whisper model name or a "

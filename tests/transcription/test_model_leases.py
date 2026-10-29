@@ -168,26 +168,42 @@ def test_short_name_of_a_local_dir_still_loads(monkeypatch, tmp_path,
     assert "my-model" in tx_models._loaded_models
 
 
-def test_short_name_of_an_unconfigured_dir_fails_the_shared_gate(
-        monkeypatch, tmp_path):
-    """With no allowlist, a client's "static" or "docs" is a directory under
-    the server's cwd too: refused up front (preload included), not loaded
-    after the LRU loop evicted the hot model for it."""
+def test_an_operator_named_two_level_dir_still_loads(monkeypatch, tmp_path):
+    _stub_load(monkeypatch)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "models" / "my-ft").mkdir(parents=True)
+    monkeypatch.setattr(tx_models.cfg, "MAX_LOADED_MODELS", 4, raising=False)
+    monkeypatch.setattr(tx_models.cfg, "PRELOAD_MODELS", ["models/my-ft"],
+                        raising=False)
+
+    tx_models._check_model_name("models/my-ft")
+    asyncio.run(tx_models._get_or_load_model("models/my-ft"))
+
+    assert "models/my-ft" in tx_models._loaded_models
+
+
+@pytest.mark.parametrize("name", ["static", "docs/brand"])
+def test_an_unconfigured_dir_fails_the_shared_gate(monkeypatch, tmp_path,
+                                                   name):
+    """With no allowlist, a client's "static" or "docs/brand" is a directory
+    under the server's cwd too: refused up front (preload included), not
+    loaded after the LRU loop evicted the hot model for it. The two-level one
+    has the org/repo shape and would skip the Hub pre-download."""
     _stub_load(monkeypatch)
     built = []
     _stub_doomed_constructor(monkeypatch, built)
     monkeypatch.chdir(tmp_path)
-    (tmp_path / "static").mkdir()
+    (tmp_path / name).mkdir(parents=True)
     monkeypatch.setattr(tx_models.cfg, "DEFAULT_MODEL", "a", raising=False)
     monkeypatch.setattr(tx_models.cfg, "PRELOAD_MODELS", [], raising=False)
     monkeypatch.setattr(tx_models.cfg, "MAX_LOADED_MODELS", 1, raising=False)
     _register("a")
 
     with pytest.raises(HTTPException) as exc:
-        tx_models._check_model_name("static")
+        tx_models._check_model_name(name)
     assert exc.value.status_code == 400
     with pytest.raises(HTTPException) as exc:
-        asyncio.run(tx_models._get_or_load_model("static", lease=True))
+        asyncio.run(tx_models._get_or_load_model(name, lease=True))
 
     assert exc.value.status_code == 400
     assert set(tx_models._loaded_models) == {"a"}
