@@ -38,7 +38,9 @@ def test_overrides_page_renders(client):
                    "ov-wrap", "tab-explorer", "/settings/overrides",
                    # save() surfaces the server 409 in-use guard's detail
                    # instead of a bare "save failed (409)"
-                   "setStatus(jc.detail || 'profile still in use'"):
+                   "setStatus(jc.detail || 'profile still in use'",
+                   # the What-if row names the decode path's own outcomes
+                   "ignored_invalid: '⊘ ignored — invalid value'"):
         assert marker in body, marker
 
 
@@ -209,6 +211,32 @@ def test_resolve_decode_master_gate_off_reports_ignored(client, make_user_key):
     assert bs["locked"] is False                       # no field-level lock
     assert bs["client_sim"]["value"] == 12
     assert bs["client_sim"]["outcome"] == "ignored_locked"  # gate, not field-lock
+
+
+def test_resolve_sim_reports_the_value_the_decode_path_uses(client, make_user_key):
+    # The What-if row labelled every unlocked client value "applied" with the
+    # raw value, while the live decode path (_apply_decode_overrides) clamps to
+    # the client bounds and drops what it cannot parse: beam_size 500 runs as
+    # 20, "abc" is ignored. Report what production would do.
+    _, _, h = _admin(make_user_key)
+    uid, _ = make_user_key("dora", is_admin=False)
+    sim = {"beam_size": 500, "temperature": "abc", "best_of": "3",
+           "vad_threshold": 7, "patience": 1.5, "vad_filter": "false",
+           "hotwords": "x" * 3000}
+    f = client.get(f"{OV}/resolve", headers=h, params={
+        "user_id": uid, "model": "whisper-1", "sim": json.dumps(sim)}).json()["fields"]
+
+    def cs(name):
+        return f[name]["client_sim"]
+
+    assert cs("BEAM_SIZE") == {"value": 20, "sent": 500, "outcome": "clamped"}
+    assert cs("TEMPERATURE")["outcome"] == "ignored_invalid"
+    assert cs("BEST_OF") == {"value": 3, "sent": "3", "outcome": "applied"}
+    assert cs("VAD_THRESHOLD") == {"value": 1.0, "sent": 7, "outcome": "clamped"}
+    assert cs("PATIENCE") == {"value": 1.5, "sent": 1.5, "outcome": "applied"}
+    assert cs("VAD_FILTER") == {"value": False, "sent": "false", "outcome": "applied"}
+    assert cs("DEFAULT_HOTWORDS")["outcome"] == "clamped"
+    assert cs("DEFAULT_HOTWORDS")["value"] == "x" * 2048
 
 
 def test_resolve_reports_a_binding_store_fault(client, make_user_key, monkeypatch):

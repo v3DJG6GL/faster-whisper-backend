@@ -36,6 +36,7 @@ from faster_whisper_backend.core.loop_lock import LoopLock
 from faster_whisper_backend.pipeline import apply as pl_apply
 from faster_whisper_backend.auth.dependencies import require_admin
 from faster_whisper_backend.core import templates
+from faster_whisper_backend.transcription import models as tx_models
 
 logger = logging.getLogger("whisper.overrides")
 
@@ -412,6 +413,54 @@ async def rename_profile(payload: _RenameProfileIn, request: Request) -> JSONRes
     return await pl_apply.run_to_end(_locked())
 
 
+# Client keys the live decode path (tx_models._apply_decode_overrides) parses;
+# the VAD sub-params land inside its vad_parameters dict. The rest
+# (suppress_chars, output_prefix/suffix, streaming_*) are read elsewhere and
+# stay reported as sent.
+_VAD_SUB_KEYS = {"vad_min_silence_duration_ms": "min_silence_duration_ms",
+                 "vad_speech_pad_ms": "speech_pad_ms",
+                 "vad_threshold": "threshold"}
+_DECODE_KEYS = frozenset({*tx_models._DECODE_INT_BOUNDS, *tx_models._DECODE_FLOAT_BOUNDS,
+                          *tx_models._DECODE_STR_CAPS, "temperature", "suppress_tokens",
+                          "condition_on_previous_text", "multilingual", "vad_filter"})
+
+
+def _sim_client_value(ck: str, raw: Any, model_id: str | None,
+                      ident: Any) -> tuple[Any, str]:
+    """(value, outcome) for one unlocked simulated client key, as the live
+    decode path would use it: "applied" (as sent, or merely parsed — "5",
+    "true", "0.2,0.4"), "clamped" (bounded / capped to `value`) or
+    "ignored_invalid" (unparsable, dropped)."""
+    if ck in _VAD_SUB_KEYS:
+        # VAD seeded on with a non-empty params dict, so the sub-param is
+        # judged on its own value rather than on the config's VAD toggle.
+        out = tx_models._apply_decode_overrides(
+            {"vad_filter": True, "vad_parameters": {"_": None}}, model_id,
+            {ck: raw}, ident=ident)["vad_parameters"]
+        key = _VAD_SUB_KEYS[ck]
+    elif ck in _DECODE_KEYS:
+        out, key = tx_models._apply_decode_overrides({}, model_id, {ck: raw}, ident=ident), ck
+    else:
+        return raw, "applied"
+    if key not in out:
+        # A blank hotwords is the client's "clear DEFAULT_HOTWORDS".
+        if ck == "hotwords" and isinstance(raw, str):
+            return "", "applied"
+        return raw, "ignored_invalid"
+    value = out[key]
+    if isinstance(value, tuple):
+        value = list(value)
+    # None = an explicit suppress_tokens clear.
+    if value is None or value == raw:
+        return value, "applied"
+    if isinstance(raw, str) and not isinstance(value, str):
+        for text in (raw.strip().lower(), f"[{raw}]"):
+            with contextlib.suppress(ValueError):
+                if json.loads(text) == value:
+                    return value, "applied"
+    return value, "clamped"
+
+
 def _resolve_model(model: str | None) -> str | None:
     model = (model or "").strip()
     if not model or model == "whisper-1":
@@ -441,8 +490,9 @@ def resolve(user_id: str = "", key_id: str = "", model: str = "",
             raise HTTPException(status.HTTP_400_BAD_REQUEST,
                                 f"sim is not valid JSON: {e}")
 
+    model_id = _resolve_model(model)
     r = effective_config.resolve(
-        _resolve_model(model),
+        model_id,
         user_id=user_id or None, key_id=key_id or None,
         request_overrides=sim_dict, with_provenance=True,
     )
@@ -459,12 +509,13 @@ def resolve(user_id: str = "", key_id: str = "", model: str = "",
             # master gate being off (which locks every client key) → ignored.
             # Checking only r.locked would report "applied" for a key the server
             # actually drops whenever the master gate is off.
-            client_sim = {
-                "value": sim_dict[ck],
-                "outcome": ("ignored_locked"
-                            if (fname in r.locked or ck in r.locked_client_keys)
-                            else "applied"),
-            }
+            # An unlocked value is reported as production would use it:
+            # clamped to the client bounds, or dropped when unparsable.
+            if fname in r.locked or ck in r.locked_client_keys:
+                value, outcome = sim_dict[ck], "ignored_locked"
+            else:
+                value, outcome = _sim_client_value(ck, sim_dict[ck], model_id, r)
+            client_sim = {"value": value, "sent": sim_dict[ck], "outcome": outcome}
         fields[fname] = {
             "winner_value": winner["value"] if winner else None,
             "winner_layer": winner["layer_id"] if winner else None,

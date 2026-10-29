@@ -347,12 +347,19 @@ window._renderWaterfall = (function () {
         + flag + '</li>';
     });
     if (fr.client_sim) {
-      var ig = fr.client_sim.outcome === 'ignored_locked';
+      // value = what the server would use; sent = what the client sent.
+      var cs = fr.client_sim;
+      var ig = cs.outcome === 'ignored_locked' || cs.outcome === 'ignored_invalid';
+      var simFlag = {
+        ignored_locked: '⊘ ignored — locked',
+        ignored_invalid: '⊘ ignored — invalid value',
+        clamped: 'clamped (sent ' + esc(fmt(cs.sent)) + ')'
+      }[cs.outcome] || 'applied';
       rows.push('<li class="ov-wf-layer sim' + (ig ? ' ignored' : '') + '">'
         + '<span class="ov-wf-tick"></span>'
         + '<span class="lbl">client (sim)</span>'
-        + '<span class="val">' + esc(fmt(fr.client_sim.value)) + '</span>'
-        + '<span class="flag">' + (ig ? '⊘ ignored — locked' : 'applied') + '</span></li>');
+        + '<span class="val">' + esc(fmt(cs.value)) + '</span>'
+        + '<span class="flag">' + simFlag + '</span></li>');
     }
     el.innerHTML =
       '<div class="ov-wf-head"><span class="ov-wf-name">' + esc(name) + '</span>'
