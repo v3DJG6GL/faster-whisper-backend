@@ -414,6 +414,37 @@ console.log(JSON.stringify({ span: span,
 
 
 @needs_node
+def test_range_chip_on_served_words_keeps_the_spaces(page, tmp_path, monkeypatch):
+    """When the training text equals `final`, the served words carry no
+    train_word, and their `word` lost Whisper's leading space. A shift-click
+    range over "Hallo Welt" then got wrong="HalloWelt", which the Final
+    result preview and the export never found, so the correction vanished."""
+    from faster_whisper_backend.captures import routes as cr
+    from faster_whisper_backend.pipeline import engine as pl_engine
+    monkeypatch.setattr(pl_engine, "_postprocess_text",
+                        lambda text, **kw: text)
+    words = cr._align_member_words({
+        "words": [{"word": w, "start": i, "end": i + 1}
+                  for i, w in enumerate((" Hallo", " Welt", " heute"))],
+        "final": "Hallo Welt heute", "text_for_training": "Hallo Welt heute",
+        "model": None,
+    })
+    fns = "\n".join(_js_function(page, f) for f in (
+        "_dispWord", "_dispRemoved", "spanText", "recomputeWrong",
+        "_applyChipsToText"))
+    out = _run_node(tmp_path, fns + r"""
+var words = """ + json.dumps(words) + r""";
+var chip = { wrong: 'HalloWelt', correct: 'Servus', idx: 0, idx_end: 1 };
+var span = spanText({ words: words }, 0, 1);
+chip.wrong = recomputeWrong({ words: words }, chip);
+console.log(JSON.stringify({ span: span, heal: chip.wrong,
+  text: _applyChipsToText('Hallo Welt heute', [chip], words) }));
+""")
+    assert out == {"span": "Hallo Welt", "heal": "Hallo Welt",
+                   "text": "Servus heute"}
+
+
+@needs_node
 def test_chip_healed_on_render_marks_the_card_unsaved(page, tmp_path):
     """A chip stored with a filler inside `wrong` (made before the range fix)
     got its `wrong` rewritten on expand, so the Final result showed the

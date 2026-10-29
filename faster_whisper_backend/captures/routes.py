@@ -2289,23 +2289,29 @@ def _align_member_words(
     # Pipeline scope = the TEXT language ("en" for task=translate).
     _lang = captures_store.text_language(m)
     ws = capture_samples._align_words_to_final(words, final, model_name=m.get("model"), ident=ident, language=_lang)
+    # Preserve each raw word's leading whitespace in front of its aligned
+    # token, on `word` and on `train_word` alike. `_align_words_to_final`
+    # strips the lead off MATCHED tokens, and the page joins a multi-word
+    # Corrections range with join(''), so without this the chip's `wrong`
+    # becomes a run with no inter-word spaces ("HalloWelt",
+    # "134Schrägstrich92") that the export never finds in the text. The
+    # Corrections strip's `.replace(/^\s+/,' ')` normalizes the display lead,
+    # and `_renderGroundSpans` .trim()s, so neither is affected.
+    leads = []
+    for i in range(len(ws)):
+        raw_w = (words[i].get("word") if i < len(words) else "") or ""
+        leads.append(raw_w[: len(raw_w) - len(raw_w.lstrip())])
+    for i, w in enumerate(ws):
+        core = (w.get("word") or "").lstrip()
+        w["word"] = (leads[i] + core) if core else ""
     if training != final:
         wt = capture_samples._align_words_to_final(words, training, model_name=m.get("model"), ident=ident, language=_lang)
         for i, w in enumerate(ws):
             tw = wt[i] if i < len(wt) else None
             if tw is None:
                 continue
-            # Preserve the raw word's leading whitespace in front of the
-            # training token. `_align_words_to_final` strips the lead off
-            # MATCHED tokens, so without this a multi-word Corrections range
-            # would join into a run with no inter-word spaces ("134Schrägstrich92")
-            # and fail to match the training text. The Corrections strip's
-            # `.replace(/^\s+/,' ')` normalizes the display lead, and
-            # `_renderGroundSpans` .trim()s, so neither is affected.
-            raw_w = (words[i].get("word") if i < len(words) else "") or ""
-            lead = raw_w[: len(raw_w) - len(raw_w.lstrip())]
             core = (tw.get("word") or "").lstrip()
-            w["train_word"] = (lead + core) if core else ""
+            w["train_word"] = (leads[i] + core) if core else ""
             if tw.get("removed"):
                 w["train_removed"] = True
     return ws

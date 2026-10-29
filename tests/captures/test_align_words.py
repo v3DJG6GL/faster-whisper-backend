@@ -203,7 +203,7 @@ def test_align_member_words_attaches_training_tokens(monkeypatch):
     }
     out = cr._align_member_words(m)
     # Runtime `word`: the de-dictation-map form; "Schrägstrich"/"92" merged away.
-    assert out[3]["word"] == "134/92"
+    assert out[3]["word"] == " 134/92"
     assert out[4].get("removed") is True
     assert out[5].get("removed") is True
     # Training tokens are index-parallel, carry the raw leading space, and are
@@ -232,6 +232,26 @@ def test_align_member_words_no_train_when_equal(monkeypatch):
     }
     out = cr._align_member_words(m)
     assert all("train_word" not in w for w in out)
+
+
+def test_align_member_words_keeps_the_lead_on_word_when_equal(monkeypatch):
+    # With no train_word the page builds a range chip's `wrong` from `word`
+    # with join(''). Matched tokens came back without the raw lead, so a
+    # chip over "Hallo Welt" got wrong="HalloWelt" and the export dropped it.
+    _install_word_map(monkeypatch, {})
+    m = {
+        "words": _words(" Hallo", " Welt", " heute"),
+        "final": "Hallo Welt heute",
+        "text_for_training": "Hallo Welt heute",
+        "model": None,
+    }
+    out = cr._align_member_words(m)
+    assert [w["word"] for w in out] == [" Hallo", " Welt", " heute"]
+    wrong = "".join(w["word"] for w in out[0:2]).lstrip()
+    assert capture_samples._apply_chips_to_text(
+        m["text_for_training"],
+        [{"wrong": wrong, "correct": "Servus", "idx": 0, "idx_end": 1}], out,
+    ) == "Servus heute"
 
 
 def test_apply_chips_consistency_with_training_tokens():
