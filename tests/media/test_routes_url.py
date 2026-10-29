@@ -1175,6 +1175,26 @@ def test_me_reports_route_caps(client, url_enabled, monkeypatch, field, switch):
     assert client.get("/v1/me").json()[field] is False
 
 
+@pytest.mark.parametrize("fmt", ["verbose_json", "json"])
+def test_media_id_dropped_during_the_run_is_not_advertised(
+        client, url_enabled, fake_model, monkeypatch, fmt):
+    """The id is fixed right after the download but echoed only once every
+    stage has finished: a TTL sweep or another run's cap eviction in between
+    must not leave the client an id whose GET 404s."""
+    real = fake_model.transcribe
+
+    def _evict_then_decode(path, **kw):
+        url_media_store._REG.clear()                       # sweep / eviction
+        return real(path, **kw)
+    monkeypatch.setattr(fake_model, "transcribe", _evict_then_decode)
+    r = _post_url(client, response_format=fmt)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert "source_media_id" not in body
+    assert "source_media_expires_at" not in body
+    assert any(w.startswith("source_media:") for w in body["warnings"])
+
+
 # --- prefetched_media_id (reuse the language check's download) ---------------
 
 def _prefetched(tmp_path, *, user_id=None, kind="audio", source_url=_URL, name="pre.m4a"):

@@ -3479,6 +3479,15 @@ async def transcribe(
                     _warnings.append(
                         "retain_media: the media store could not keep the "
                         "upload — not retained")
+            elif _source_media_id is not None and url_media_store.resolve_entry(
+                    _source_media_id, user_id=_user_id) is None:
+                # A link run fixed its id right after the download; the TTL
+                # sweep or another register()'s cap eviction can drop it
+                # during a long run — never advertise an id whose GET 404s.
+                _source_media_id = None
+                _warnings.append(
+                    "source_media: the downloaded audio left the media store "
+                    "before the run finished — not retained")
 
             if response_format == "verbose_json":
                 response = {
