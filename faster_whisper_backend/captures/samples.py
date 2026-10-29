@@ -21,7 +21,15 @@ from faster_whisper_backend.pipeline import engine as pl_engine
 from faster_whisper_backend.settings import config as cfg
 
 
-_JOIN_STR = {"space": " ", "period_space": ". "}
+# Sentence-final punctuation (before any closing quotes/brackets): a member
+# ending in one gets no extra "." under the period_space join.
+_SENTENCE_END = ".?!…"
+_SENTENCE_CLOSERS = "\"'”’»«)]"
+
+
+def _ends_sentence(text: str) -> bool:
+    tail = text.rstrip(_SENTENCE_CLOSERS)
+    return bool(tail) and tail[-1] in _SENTENCE_END
 
 
 def _global_silence_ms() -> int:
@@ -157,7 +165,11 @@ def _build_default_transcript(
         t = _apply_chips_to_text(base, chips, words).strip()
         if t:
             parts.append(t)
-    return _JOIN_STR.get(strategy, " ").join(parts)
+    if strategy == "period_space":
+        # ". " between members, unless the member already ends a sentence
+        # ("Hallo Welt." must not become "Hallo Welt.. Wie …").
+        parts = [p if _ends_sentence(p) else p + "." for p in parts[:-1]] + parts[-1:]
+    return " ".join(parts)
 
 
 def _build_merged_wav(

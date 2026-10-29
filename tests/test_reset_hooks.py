@@ -45,9 +45,7 @@ _NOT_RESET = {
     },
     "faster_whisper_backend.transcription.progress": {},
     "faster_whisper_backend.translation.gating": {},
-    "faster_whisper_backend.captures.samples": {
-        "_JOIN_STR": "constant join-strategy → separator map",
-    },
+    "faster_whisper_backend.captures.samples": {},
     "faster_whisper_backend.runtime.model_registry": {},
     # Stateless since P16: the registry moved to model_registry. Listed so a
     # container added back here is caught without a hook.

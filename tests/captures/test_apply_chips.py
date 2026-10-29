@@ -143,3 +143,17 @@ def test_single_capture_ground_preview_uses_the_shared_helper(client):
     t = client.get("/captures").text
     assert ("_applyChipsToText(state.finalText, state.corrections, state.words)"
             in t)
+
+
+@pytest.mark.parametrize("finals, expected", [
+    (["Hallo Welt.", "Wie geht es?", "gut"], "Hallo Welt. Wie geht es? gut"),
+    (["Stopp!", "«Ja.»", "nein"], "Stopp! «Ja.» nein"),
+    (["eins", "zwei…", "drei"], "eins. zwei… drei"),
+])
+def test_period_space_join_adds_no_period_after_sentence_punctuation(
+        finals, expected):
+    """period_space put a literal ". " between members even when a member
+    already ended its sentence: "Hallo Welt.. Wie geht es?. gut"."""
+    members = [{"final": f} for f in finals]
+    assert capture_samples._build_default_transcript(
+        members, "period_space") == expected
