@@ -1204,6 +1204,17 @@ def _redistribute(group_texts: "list[str]", translated: str) -> "list[str]":
                if ch in _UNSPACED_CUT_PUNCT], spaces] if unspaced
              else [spaces])
     total = sum(len(t) for t in group_texts) or 1
+
+    def _room(tier: "list[int]", s: int) -> int:
+        # How many more cuts this tier can still take after a cut at s,
+        # each leaving a non-blank slice.
+        count, last = 0, s
+        for b in tier:
+            if b > last and b < len(translated) and \
+                    translated[last:b].strip():
+                count, last = count + 1, b
+        return count
+
     cuts: "list[int]" = []
     acc = 0
     prev = 0
@@ -1217,10 +1228,15 @@ def _redistribute(group_texts: "list[str]", translated: str) -> "list[str]":
         # empty member slice (a cue with source text rendering blank). The
         # slice must hold text too: in a double space ("know.  Yes") the
         # second space is past a cut on the first, yet slices to " ".
+        # A boundary that leaves too few for the members still to come
+        # would force those to a raw cut through a word, so it is dropped
+        # whenever the tier holds enough boundaries for every member.
         cut = None
         for tier in tiers:
             cands = [s for s in tier
                      if s > prev and translated[prev:s].strip()]
+            cands = ([s for s in cands if _room(tier, s) >= n - 2 - i]
+                     or cands)
             if cands:
                 best = min(cands, key=lambda s: abs(s - ideal))
                 if abs(best - ideal) <= reach:

@@ -449,6 +449,20 @@ def test_redistribute_double_space_never_empties_member():
         "Ich weiss nicht. Ja das ist gut okay".split()
 
 
+def test_redistribute_leaves_a_word_boundary_for_every_later_member():
+    """An early member's nearest space must not be one the later members
+    still need: taking it left them no boundary and a raw cut split "Yes"
+    into "Y" / "es." although the reply had a space for every cut."""
+    assert translation._redistribute(
+        ["Also ich glaube, das ist wirklich eine sehr gute Idee für uns",
+         "oder?", "Ja."],
+        "Well, I think that's a really good idea for us, right? Yes.") == \
+        ["Well, I think that's a really good idea for us,", "right?", "Yes."]
+    assert translation._redistribute(
+        ["x" * 34, "x", "x" * 44, "x" * 25],
+        "hh egfhbg daedhge hdf") == ["hh", "egfhbg", "daedhge", "hdf"]
+
+
 def test_redistribute_never_emits_empty_members():
     """3+ members whose ideal cuts snap to the same space must not yield an
     empty slice (the cue would silently render blank in SRT/VTT/UI)."""
