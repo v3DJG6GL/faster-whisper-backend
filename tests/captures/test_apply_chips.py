@@ -118,6 +118,24 @@ _WORD_CASES = [
      [_w(" Ich"), _w(" sage"), _w(" Hallo"), _w(" Welt"), _w(" und"),
       _w(" HalloWelt")],
      "Ich sage Hallo, Welt und HalloWelt"),
+    # A stale `wrong` that is a prefix of the words at its idx ties with
+    # them: the page strikes and replaces the whole "Hallo,", so does the
+    # export, not just "Hallo" with the comma left behind.
+    ("Ja Hallo, Welt",
+     [{"idx": 1, "wrong": "Hallo", "correct": "Servus"}],
+     [_w(" Ja"), {"word": " Hallo", "train_word": " Hallo,"}, _w(" Welt")],
+     "Ja Servus Welt"),
+    # Same for a range chip whose stored `wrong` covers only its first word.
+    ("Hallo Welt",
+     [{"idx": 0, "idx_end": 1, "wrong": "Hallo", "correct": "Hi"}],
+     [_w(" Hallo"), _w(" Welt")],
+     "Hi"),
+    # And a stale `wrong` that is a suffix of them: the karaoke word is
+    # "(die", the card strikes and replaces all of it.
+    ("ja die (die Sache",
+     [{"idx": 2, "wrong": "die", "correct": "DER"}],
+     [_w(" ja"), _w(" die"), _w(" (die"), _w(" Sache")],
+     "ja die DER Sache"),
     # A chip saved before the words kept their spaces ("HalloWelt"): the
     # page shows it on the words at its idx, so it applies there.
     ("Hallo Welt wie geht's",

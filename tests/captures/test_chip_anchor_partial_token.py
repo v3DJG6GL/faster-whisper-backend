@@ -12,7 +12,9 @@ from faster_whisper_backend.captures.samples import _apply_chips_to_text
     ("ja die „die Sache", "ja die „DER Sache"),
 ])
 def test_chip_after_an_opening_bracket_rewrites_the_marked_word(text, expected):
-    words = [{"word": w} for w in text.split()]
+    # The bracket is in the text only: a karaoke word "(die" would make the
+    # page heal `wrong` to "(die" and replace the bracket with it.
+    words = [{"word": w.lstrip("(„")} for w in text.split()]
     chip = {"idx": 2, "wrong": "die", "correct": "DER"}
     assert _apply_chips_to_text(text, [chip], words=words) == expected
 

@@ -3398,7 +3398,7 @@
     // `words` (the aligned karaoke words the chips were made on) maps idx
     // onto the text's token position, past removed words, and is searched
     // next to a possibly stale stored `wrong` (the words at idx..idx_end,
-    // what renderChips heals `wrong` to; a tie keeps the stored one).
+    // what renderChips heals `wrong` to; a tie keeps those words).
     if (!corrections || !corrections.length) return text || '';
     var out = text || '';
     var W = /[\p{L}\p{N}_]/u;
@@ -3467,11 +3467,12 @@
         var end = (typeof c.idx_end === 'number') ? c.idx_end : c.idx;
         var healed = words.slice(Math.max(0, c.idx), Math.max(0, end) + 1)
           .map(tokOf).join('').replace(/^\s+/, '');
-        if (healed && healed !== wrong) needles.push(healed);
+        if (healed && healed !== wrong) needles.unshift(healed);
       }
       // An anchored chip takes the occurrence nearest its idx over every
-      // pass (a tie keeps the earlier pass): the page strikes the words at
-      // idx, so a far match of the stale `wrong` must not beat the words
+      // pass (a tie keeps the earlier pass, so the healed words win over a
+      // stale `wrong` that is a part of them): the page strikes the words
+      // at idx, so a far match of the stale `wrong` must not beat the words
       // there.
       var best = -1, bestEnd = -1, bestD = -1;
       for (var t = 0; t < needles.length * 2 && (anchored || best < 0); t++) {
