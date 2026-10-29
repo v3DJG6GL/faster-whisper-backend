@@ -553,6 +553,44 @@ def test_write_srts_reads_a_short_millisecond_field_as_ffmpeg_does(tmp_path):
                             "2\n00:00:03,40 --> 00:00:03,40\nInverted\n")
 
 
+def test_write_srts_clamps_an_inverted_cue_followed_only_by_cues_ffmpeg_drops(tmp_path):
+    """ffmpeg's SRT demuxer drops a cue with no text (empty lines, or only the
+    next cue's number), so an inverted cue before such cues is the muxer's
+    real last one and is clamped; a whitespace or trailing-number body is
+    text ffmpeg keeps, so the inverted cue before it is left alone."""
+    def written(srt):
+        (p,) = pk._write_srts(str(tmp_path), [pk.SubtitleTrack("en", "English", srt)])
+        with open(p, encoding="utf-8") as f:
+            return f.read()
+    dropped = ("1\n00:00:01,000 --> 00:00:00,500\nHello\n\n"
+               "2\n00:00:03,000 --> 00:00:04,000\n\n\n3\n"
+               "00:00:05,000 --> 00:00:06,000\n\n")
+    assert written(dropped) == dropped.replace("00:00:00,500", "00:00:01,000")
+    for kept in ("1\n00:00:01,000 --> 00:00:00,500\nHello\n\n"
+                 "2\n00:00:05,000 --> 00:00:06,000\n \n",
+                 "1\n00:00:01,000 --> 00:00:00,500\nHello\n\n"
+                 "2\n00:00:05,000 --> 00:00:06,000\n42\n"):
+        assert written(kept) == kept
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="needs a system ffmpeg")
+def test_package_real_ffmpeg_mp4_accepts_an_inverted_cue_before_an_empty_last_cue(tmp_path):
+    av = pytest.importorskip("av")
+    src = str(tmp_path / "src.mp4")
+    subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+                    "-f", "lavfi", "-i", "testsrc=size=64x64:rate=10:duration=1",
+                    "-c:v", "libx264", "-pix_fmt", "yuv420p", src], check=True, timeout=60)
+    tracks = [pk.SubtitleTrack("en", "English",
+                               "1\n00:00:00,500 --> 00:00:00,200\nHello\n\n"
+                               "2\n00:00:00,900 --> 00:00:01,000\n\n")]
+    out = _run(pk.package(src, tracks, container="mp4", default_track=0, timeout=60))
+    try:
+        with av.open(out) as c:
+            assert [s.type for s in c.streams].count("subtitle") == 1
+    finally:
+        shutil.rmtree(os.path.dirname(out), ignore_errors=True)
+
+
 @pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="needs a system ffmpeg")
 def test_package_real_ffmpeg_mp4_accepts_a_cue_that_ends_before_it_starts(tmp_path):
     av = pytest.importorskip("av")

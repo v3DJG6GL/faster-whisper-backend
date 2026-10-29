@@ -270,13 +270,33 @@ def _ts_ms(h: str, m: str, s: str, ms: str) -> int:
     return ((int(h) * 60 + int(m)) * 60 + int(s)) * 1000 + int(ms)
 
 
+# A line ffmpeg's SRT demuxer takes for the next cue's number (strtol
+# consumes it whole and the value is not negative).
+_CUE_NUMBER_RE = re.compile(r"[ \t\v\f]*(?:\+?[0-9]+|-0+)")
+
+
+def _ffmpeg_keeps_cue(body: str, final: bool) -> bool:
+    # ffmpeg drops a cue with no text: it skips empty lines (not whitespace
+    # ones) and, unless the cue is the file's last, a number line just
+    # before the next timing line.
+    lines = [ln for ln in body.split("\n") if ln]
+    if lines and not final and _CUE_NUMBER_RE.fullmatch(lines[-1]):
+        lines.pop()
+    return bool(lines)
+
+
 def _clamp_inverted_last_cue(text: str) -> str:
     # MP4's timed text refuses a negative duration (movenc fails the whole
     # mux). ffmpeg's subtitle queue already stretches any other inverted cue
-    # to the next cue's start, so only one that no cue starts after becomes
-    # zero-length — clamping an earlier one would hide its text.
-    last = max((_ts_ms(*m.group(3, 4, 5, 6)) for m in _CUE_TIMING_RE.finditer(text)),
-               default=0)
+    # to the next cue it keeps, so only one that no kept cue starts after
+    # becomes zero-length — clamping an earlier one would hide its text.
+    cues = list(_CUE_TIMING_RE.finditer(text))
+    last = 0
+    for i, m in enumerate(cues):
+        nl = text.find("\n", m.end())
+        end = cues[i + 1].start() if i + 1 < len(cues) else len(text)
+        if nl >= 0 and _ffmpeg_keeps_cue(text[nl + 1:end], i + 1 == len(cues)):
+            last = max(last, _ts_ms(*m.group(3, 4, 5, 6)))
 
     def _clamp(m: "re.Match[str]") -> str:
         start = _ts_ms(*m.group(3, 4, 5, 6))
