@@ -527,7 +527,7 @@ def test_nullable_number_survives_a_partial_number(client):
     """A number input reads '' while it holds '-' (LOG_PROB_THRESHOLD is
     always negative) or is cleared to retype; that nulled the field and
     disabled the input under the cursor."""
-    fn = _block(_html(client), "function nullableNumberEditor(name, v) {", "\n}\n")
+    fn = _block(_html(client), "function nullableNumberEditor(name, v, fallback = 0) {", "\n}\n")
     out = _node(_FAKE_DOM + """
 const state = { LOG_PROB_THRESHOLD: -1.0 };
 function currentValue(n) { return state[n]; }
@@ -549,6 +549,48 @@ const i = find(wrap, e => e.tagName === 'INPUT');
 })();
 """)
     assert out == [[-1.0, False], -0.8, -0.8, -0.8]
+
+
+@needs_node
+def test_null_default_number_field_never_saves_an_empty_string(client):
+    """DIARIZATION_NUM_SPEAKERS (int | None, default null) has no runtime
+    type while null: it got a text box, and typing '3' then clearing it
+    saved '' (AdminConfig 422s, taking every other dirty field with it).
+    Once saved, the next render gave it a plain number box that ignores a
+    clear, so 'auto' (null) was unreachable."""
+    html = _html(client)
+    src = "\n".join([
+        _block(html, "const NULLABLE_NUMBER_FIELDS = {", "\n};\n"),
+        _block(html, "function makeEditor(name) {", "\n}\n"),
+        _block(html, "function nullableNumberEditor(name, v, fallback = 0) {", "\n}\n"),
+        _block(html, "function stringEditor(name, v) {", "\n}\n"),
+        _block(html, "function numberEditor(name, v) {", "\n}\n"),
+    ])
+    out = _node(_FAKE_DOM + """
+const state = { DIARIZATION_NUM_SPEAKERS: null };
+const seen = [];
+function currentValue(n) { return state[n]; }
+function setDirty(n, v) { state[n] = v; seen.push(v); }
+function fieldDef(n) { return { value: null, default_value: null, choices: null }; }
+""" + src + """
+const input = (ed) => find(ed, e => e.tagName === 'INPUT');
+const button = (ed) => find(ed, e => e.tagName === 'BUTTON');
+(async function () {
+  let ed = makeEditor('DIARIZATION_NUM_SPEAKERS');
+  const fresh = input(ed).disabled;
+  if (button(ed)) await fire(button(ed), 'click');   // enable
+  const enabled = state.DIARIZATION_NUM_SPEAKERS;
+  input(ed).value = '3';
+  await fire(input(ed), 'input');
+  input(ed).value = '';
+  await fire(input(ed), 'input');
+  await fire(input(ed), 'blur');
+  ed = makeEditor('DIARIZATION_NUM_SPEAKERS');      // re-render with 3 saved
+  if (button(ed)) await fire(button(ed), 'click');   // disable → auto
+  console.log(JSON.stringify([fresh, enabled, seen, state.DIARIZATION_NUM_SPEAKERS]));
+})();
+""")
+    assert out == [True, 2, [2, 3, None], None]
 
 
 # ---- "↑ view" jump-link ---------------------------------------------------------

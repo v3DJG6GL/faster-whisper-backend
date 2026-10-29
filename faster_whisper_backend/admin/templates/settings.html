@@ -1252,6 +1252,16 @@ function refreshFieldReset(name) {
   wrap.style.display = same ? 'none' : '';
 }
 
+// AdminConfig `float | None` / `int | None` fields → the number "enable"
+// restores when the field never held one. Each must pass the field's bounds:
+// the speaker counts are ge=1, so a 0 would fail the save.
+const NULLABLE_NUMBER_FIELDS = {
+  NO_SPEECH_THRESHOLD: 0.6, LOG_PROB_THRESHOLD: -1, COMPRESSION_RATIO_THRESHOLD: 2.4,
+  HALLUCINATION_SILENCE_THRESHOLD: 2,
+  DIARIZATION_NUM_SPEAKERS: 2, DIARIZATION_MIN_SPEAKERS: 2,
+  DIARIZATION_MAX_SPEAKERS: 2,
+};
+
 function makeEditor(name) {
   // Read through the dirty overlay so re-renders triggered by setDirty
   // (e.g. "↺ Reset to default" or list-editor mutations) reflect the
@@ -1300,6 +1310,13 @@ function makeEditor(name) {
   // array vs. boolean vs. number) BEFORE name-based heuristics, otherwise
   // misses like MAX_LOADED_MODELS routing to a list editor sneak in.
   if (typeof v === 'boolean') return boolEditor(name, v);
+  // Numeric fields that can be null ("disabled" / "auto"): routed by name
+  // BEFORE the number check. A null value has no runtime type, so it fell
+  // through to stringEditor and a cleared box saved '' (422); a set value
+  // took numberEditor, which ignores a clear, so null was unreachable.
+  if (Object.hasOwn(NULLABLE_NUMBER_FIELDS, name)) {
+    return nullableNumberEditor(name, v, NULLABLE_NUMBER_FIELDS[name]);
+  }
   if (typeof v === 'number') return numberEditor(name, v);
   // Model-aware editors (must precede generic Array/list dispatch). Source
   // their options from the current ALLOWED_MODELS state — typing in the
@@ -1345,12 +1362,6 @@ function makeEditor(name) {
     return selectEditor(name, v, _ed.choices);
   }
   if (name === 'DEFAULT_PROMPT') return textareaEditor(name, v || '');
-  // Numeric fields that can be null ("disabled"). Render as number input with
-  // a "(disable)" button next to it so the user can clear → None.
-  if (name === 'NO_SPEECH_THRESHOLD' || name === 'LOG_PROB_THRESHOLD'
-      || name === 'COMPRESSION_RATIO_THRESHOLD') {
-    return nullableNumberEditor(name, v);
-  }
   return stringEditor(name, v == null ? '' : v);
 }
 
@@ -5133,14 +5144,14 @@ function pipelineTestPanel() {
   return wrap;
 }
 
-function nullableNumberEditor(name, v) {
+function nullableNumberEditor(name, v, fallback = 0) {
   // Toggle between "active number" and "disabled (null)" states. When null:
   //   - input is HTMLDisabled (greyed out, can't focus or type)
   //   - button label flips to "enable" so the user knows it's a toggle
   // When non-null:
   //   - input is editable
   //   - button reads "disable" (sets value back to null)
-  // Re-enabling restores the last-known number (or 0 if there was none).
+  // Re-enabling restores the last-known number (or `fallback` if there was none).
   const wrap = document.createElement('span');
   wrap.className = 'nullable-wrap';
   wrap.style.display = 'flex'; wrap.style.gap = '0.375rem'; wrap.style.alignItems = 'center';
@@ -5151,7 +5162,7 @@ function nullableNumberEditor(name, v) {
   btn.style.padding = '0.125rem 0.5rem';
 
   // Last non-null value the user typed, used to restore on "enable" click.
-  let lastVal = (v == null) ? 0 : v;
+  let lastVal = (v == null) ? fallback : v;
 
   function paint() {
     const cur = currentValue(name);
