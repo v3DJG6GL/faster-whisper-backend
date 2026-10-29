@@ -623,14 +623,15 @@ def _is_hub_timeout(exc: BaseException) -> bool:
 
 def _is_hub_unreachable(exc: BaseException) -> bool:
     """True when ``exc`` or its cause chain is a connection-level httpx
-    error (DNS failure, connection refused, no route, …) or a hub 5xx.
+    error (DNS failure, connection refused, no route, …), a hub 5xx, or the
+    hub's own offline mode (HF_HUB_OFFLINE=1 refuses every request).
     Same ``__cause__``-only rule as _is_hub_timeout: a disk-full or
     size-check error is no network error."""
     import httpx
-    from huggingface_hub.errors import HfHubHTTPError
+    from huggingface_hub.errors import HfHubHTTPError, OfflineModeIsEnabled
 
     def network(e: BaseException) -> bool:
-        if isinstance(e, httpx.TransportError):
+        if isinstance(e, (httpx.TransportError, OfflineModeIsEnabled)):
             return True
         if isinstance(e, HfHubHTTPError):
             status = getattr(getattr(e, "response", None), "status_code", 0)

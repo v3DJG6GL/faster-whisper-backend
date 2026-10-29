@@ -1343,10 +1343,17 @@ def _wrapped_connect_error():
     return wrapped
 
 
+def _offline_mode_error():
+    from huggingface_hub.errors import OfflineModeIsEnabled
+    return OfflineModeIsEnabled("Cannot reach https://huggingface.co: "
+                                "offline mode is enabled")
+
+
 @pytest.mark.parametrize("make_error", [
     _connect_error,                                 # DNS / refused / no route
     _wrapped_connect_error,                         # hf_hub_download's HEAD
     lambda: _hub_status_error(503),                 # hub 5xx
+    _offline_mode_error,                            # HF_HUB_OFFLINE=1
 ])
 def test_load_uses_the_cached_gguf_when_the_hub_is_unreachable(
         monkeypatch, make_error):
