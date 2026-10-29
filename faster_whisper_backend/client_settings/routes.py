@@ -59,6 +59,34 @@ class PutClientSettings(BaseModel):
     device: str | None = None
 
 
+# Deepest nesting a stored blob may have (the blob object itself is level 1).
+# GET renders through pydantic's response serializer, which 500s from about
+# 255 levels while PUT's JSONResponse took them — so an over-deep PUT
+# answered 200 and every later pull of that account 500'd. The desktop
+# client's serde_json stops at 128 levels of the whole response anyway; its
+# real blob is a handful of levels deep.
+_MAX_BLOB_DEPTH = 64
+
+
+class _BlobTooDeep(ValueError):
+    """Raised by _put_checked; the route maps it to 422."""
+
+
+def _put_checked(
+    user_id: str, blob: dict[str, Any], base_version: int, device: str | None,
+) -> tuple[bool, dict[str, Any] | None]:
+    """client_settings_store.put after the nesting check — both walk the
+    whole blob, so both run off the loop."""
+    stack: list[tuple[Any, int]] = [(blob, 1)]
+    while stack:
+        node, depth = stack.pop()
+        if depth > _MAX_BLOB_DEPTH:
+            raise _BlobTooDeep
+        children = node.values() if isinstance(node, dict) else node
+        stack.extend((c, depth + 1) for c in children if isinstance(c, (dict, list)))
+    return client_settings_store.put(user_id, blob, base_version, device=device)
+
+
 def _store_unavailable() -> HTTPException:
     """503 for StoreUnavailable: init_db failed at startup (the reason is in
     the server log — typically a CLIENT_SETTINGS_DB path that isn't writable
@@ -115,8 +143,9 @@ async def put_client_settings(
     the client can 3-way merge and re-PUT without another GET round-trip.
     413 = blob over the server cap; 422 = blob is not strict JSON (a
     non-finite float, or a lone UTF-16 surrogate in the blob or the device
-    label — nothing is stored). Force-push is just a PUT echoing the
-    version fetched a moment ago; there is no bypass flag."""
+    label) or is nested past _MAX_BLOB_DEPTH — nothing is stored.
+    Force-push is just a PUT echoing the version fetched a moment ago;
+    there is no bypass flag."""
     try:
         # Off the loop: put() re-serialises the caller's already-parsed dict
         # with json.dumps + encode BEFORE the blob cap can reject it. The
@@ -125,14 +154,19 @@ async def put_client_settings(
         # bounded by that knob — not MAX_REQUEST_BYTES — but a 4 MiB
         # re-serialise is still real work that must not freeze the loop.
         ok, row = await asyncio.to_thread(
-            client_settings_store.put,
+            _put_checked,
             user["user_id"],
             payload.blob,
             payload.base_version,
-            device=payload.device,
+            payload.device,
         )
     except client_settings_store.StoreUnavailable:
         raise _store_unavailable() from None
+    except _BlobTooDeep:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            f"client settings blob nested deeper than {_MAX_BLOB_DEPTH} levels",
+        )
     except client_settings_store.InvalidBlob:
         # Before `except ValueError` — InvalidBlob subclasses it.
         raise HTTPException(

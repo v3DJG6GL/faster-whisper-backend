@@ -130,6 +130,38 @@ def test_legacy_non_finite_row_serves_null_not_500(client, make_user_key):
     assert json.loads(r.content, parse_constant=_reject) == {"x": None, "y": "keep"}
 
 
+def _nested(depth):
+    """`depth` levels of containers: depth-1 dicts around a list leaf."""
+    blob = {"leaf": [1, "x"]}
+    for _ in range(depth - 2):
+        blob = {"k": blob}
+    return blob
+
+
+def test_over_deep_blob_422_and_nothing_stored(client, monkeypatch):
+    """GET renders through pydantic's serializer, which 500s from ~255
+    levels; PUT used to store such a blob with a 200, leaving every later
+    pull of the account a bare 500 until the row was replaced."""
+    from faster_whisper_backend.client_settings import routes
+    monkeypatch.setattr(routes, "_MAX_BLOB_DEPTH", 8)
+    r = _put(client, {"a": _nested(8)}, 0)  # cap + 1
+    assert r.status_code == 422
+    assert "nested deeper than 8" in r.json()["detail"]
+    r = client.get(_URL)
+    assert r.status_code == 200
+    assert r.json()["version"] == 0 and r.json()["blob"] is None
+
+
+def test_blob_at_depth_cap_round_trips(client, monkeypatch):
+    from faster_whisper_backend.client_settings import routes
+    monkeypatch.setattr(routes, "_MAX_BLOB_DEPTH", 8)
+    blob = {"theme": "dark", "nest": _nested(7)}  # cap
+    assert _put(client, blob, 0).status_code == 200
+    r = client.get(_URL)
+    assert r.status_code == 200
+    assert r.json()["blob"] == blob
+
+
 def test_malformed_422(client):
     # Missing base_version.
     r = client.put(_URL, json={"blob": {}})
