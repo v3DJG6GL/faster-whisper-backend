@@ -134,6 +134,21 @@ def test_unknown_short_name_evicts_nothing(monkeypatch):
     assert built == [] and tx_models._model_leases == {}
 
 
+def test_unknown_short_name_fails_the_shared_gate(monkeypatch):
+    """_check_model_name is what the preload, the URL language check and
+    GET /v1/request-default-settings call to refuse what the loader refuses,
+    so the short-name rule lives there, not only inside the load."""
+    _stub_load(monkeypatch)
+    monkeypatch.setattr(tx_models.cfg, "ALLOWED_MODELS", set(), raising=False)
+
+    with pytest.raises(HTTPException) as exc:
+        tx_models._check_model_name("largev3")
+
+    assert exc.value.status_code == 400
+    tx_models._check_model_name("a")
+    tx_models._check_model_name("org/repo")
+
+
 def test_short_name_of_a_local_dir_still_loads(monkeypatch, tmp_path):
     _stub_load(monkeypatch)
     monkeypatch.chdir(tmp_path)

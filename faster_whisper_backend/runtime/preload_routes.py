@@ -113,12 +113,13 @@ def _allowed(family: str, model_id: str,
 
     whisper: judged on the RESOLVED id (`whisper-1` → DEFAULT_MODEL, the
     same mapping the transcribe route applies before its gate). An EMPTY
-    ALLOWED_MODELS admits the configured default plus any WELL-FORMED id —
-    `tx_models._check_model_name`, the gate pair `_get_or_load_model`
-    applies, so a path-shaped id is deferred here instead of wasting a queue
-    slot on a load the guard rejects anyway. A non-empty one admits exactly
-    its members, as that gate does (the default is NOT implied: a load of it
-    would 400 there).
+    ALLOWED_MODELS admits the configured default plus any WELL-FORMED id
+    that is a repo id, a local dir or a faster-whisper size —
+    `tx_models._check_model_name`, the gates `_get_or_load_model` applies
+    before the Hub, so a path-shaped id or a typo'd size is deferred here
+    instead of wasting a queue slot on a load the guard rejects anyway. A
+    non-empty one admits exactly its members, as that gate does (the default
+    is NOT implied: a load of it would 400 there).
     diarization/separation: the allowlist plus the configured model (global
     AND the caller's effective value), and an empty allowlist therefore means
     "the configured model only", never "anything". translation:
@@ -142,7 +143,7 @@ def _allowed(family: str, model_id: str,
         model_id = preload.normalize_id(family, model_id)
         if not model_id:
             return False
-        # The loader's own gate pair, called rather than mirrored, so a new
+        # The loader's own gates, called rather than mirrored, so a new
         # rule there cannot leave the preload admitting what it refuses.
         try:
             tx_models._check_model_name(model_id)

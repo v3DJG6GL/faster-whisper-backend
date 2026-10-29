@@ -47,9 +47,11 @@ def url_enabled(app_module, tmp_path, monkeypatch):
                         raising=False)
     monkeypatch.setattr(app_module.cfg, "URL_MEDIA_DIR",
                         str(tmp_path / "url_media"), raising=False)
-    # No allowlist: app_module blanks DEFAULT_MODEL, which the factory list
-    # would refuse at the language check's up-front model gate.
+    # No allowlist, and a faster-whisper size for the DEFAULT_MODEL app_module
+    # blanks: the language check's up-front model gate refuses "" (the factory
+    # list does too), as the loader would.
     monkeypatch.setattr(app_module.cfg, "ALLOWED_MODELS", set(), raising=False)
+    monkeypatch.setattr(app_module.cfg, "DEFAULT_MODEL", "small", raising=False)
     url_media_store.startup_reset()
 
     async def _probe(url, *, timeout):

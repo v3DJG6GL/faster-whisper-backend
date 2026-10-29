@@ -506,6 +506,15 @@ def test_route_judges_the_resolved_whisper_id(client, app_module, monkeypatch):
     assert preload.is_warm("whisper-1") is False
 
 
+def test_unknown_short_whisper_name_is_not_admitted(monkeypatch):
+    """A typo'd size is deferred up front, as the loader would 400 it,
+    instead of taking a queue slot for a load that cannot succeed."""
+    from faster_whisper_backend.runtime import preload_routes
+    _enable(monkeypatch, DEFAULT_MODEL="large-v3", ALLOWED_MODELS=set())
+    assert preload_routes._allowed("whisper", "largev3") is False
+    assert preload_routes._allowed("whisper", "large-v3") is True
+
+
 # --- PC6: the translation allowlist rule is main's --------------------------
 
 def test_translation_allowlist_is_mains_rule(monkeypatch):

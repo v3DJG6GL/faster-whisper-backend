@@ -1096,11 +1096,31 @@ def _check_model_shape(name: str) -> None:
         )
 
 
+def _check_model_known(name: str) -> None:
+    """400 for a short name that is neither a local dir nor a faster-whisper size.
+
+    It can only end in the constructor's ValueError ("Invalid model size"). (No
+    "/" never auto-converts, so ``name`` is already the constructor's path.)"""
+    # Lazy import (see the TYPE_CHECKING note up top).
+    from faster_whisper import available_models
+
+    if ("/" not in name and not os.path.isdir(name)
+            and name not in available_models()):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Model '{name}' is not a faster-whisper model name or a "
+                   f"HuggingFace repo id. Known names: "
+                   f"{', '.join(available_models())}",
+        )
+
+
 def _check_model_name(name: str) -> None:
-    """Both model gates the loader applies, without loading anything — for
-    endpoints that only read a model's config (GET /v1/request-default-settings)."""
+    """Every model gate the loader applies before the Hub, without loading
+    anything — for callers that must refuse what the loader refuses (GET
+    /v1/request-default-settings, the preload, the URL language check)."""
     _check_model_allowed(name)
     _check_model_shape(name)
+    _check_model_known(name)
 
 
 async def _get_or_load_model(name: str, *, lease: bool = False) -> "WhisperModel":
@@ -1147,22 +1167,11 @@ async def _load_on_miss(name: str, *, lease: bool) -> "WhisperModel":
     # Lazy import (see the TYPE_CHECKING note up top): only when a model is
     # actually loaded do we need the native faster_whisper stack.
     from faster_whisper import WhisperModel  # noqa: F401  (used in executor lambdas below)
-    from faster_whisper import available_models
 
     _check_model_shape(name)
-    # A short name that is neither a local dir nor a faster-whisper size can
-    # only end in the constructor's ValueError ("Invalid model size"). Refuse
-    # it here: past this point the LRU loop below evicts a resident model for
-    # a load that was never going to succeed. (No "/" never auto-converts, so
-    # `name` is already the constructor's path.)
-    if ("/" not in name and not os.path.isdir(name)
-            and name not in available_models()):
-        raise HTTPException(
-            status_code=400,
-            detail=f"Model '{name}' is not a faster-whisper model name or a "
-                   f"HuggingFace repo id. Known names: "
-                   f"{', '.join(available_models())}",
-        )
+    # Refused here, not in the constructor: past this point the LRU loop below
+    # evicts a resident model for a load that was never going to succeed.
+    _check_model_known(name)
 
     # Auto-convert HF transformers Whisper repos to CT2 format if enabled.
     # Runs OUTSIDE _model_load_lock so loads of OTHER cached models stay
