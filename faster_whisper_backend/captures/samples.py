@@ -12,6 +12,7 @@ import json
 import os
 import re
 import threading
+import unicodedata
 from typing import Any
 
 from fastapi import HTTPException, status
@@ -98,8 +99,12 @@ def _apply_chips_to_text(
             return (0, int(i))
         except (TypeError, ValueError):
             return (1, 0)
+    # A combining mark (a Devanagari or Thai vowel sign, an NFD accent) and
+    # ZWNJ/ZWJ are part of the word they sit in: "लत" is not a whole word
+    # inside "बोलते".
     def _w(ch):
-        return ch.isalnum() or ch == "_"
+        return (ch.isalnum() or ch == "_" or ch in "\u200c\u200d"
+                or unicodedata.category(ch)[0] == "M")
     ordered = sorted(
         (c for c in corrections if isinstance(c, dict)), key=_sk,
     )

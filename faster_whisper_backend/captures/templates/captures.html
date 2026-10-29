@@ -3403,7 +3403,8 @@
     // what renderChips heals `wrong` to; a tie keeps those words).
     if (!corrections || !corrections.length) return text || '';
     var out = text || '';
-    var W = /[\p{L}\p{N}_]/u;
+    // Combining marks and ZWNJ/ZWJ belong to their word, as on the server.
+    var W = /[\p{L}\p{M}\p{N}_\u200c\u200d]/u;
     function nWords(s) { return s.split(/\s+/).filter(Boolean).length; }
     // The token a karaoke word owns ('' when removed); the training token
     // wins when attached.

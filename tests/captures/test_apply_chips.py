@@ -50,6 +50,21 @@ _CASES = [
     ("foobar foo foo",
      [{"wrong": "foo", "correct": "bar"}],
      "foobar bar foo"),
+    # A combining mark is part of its word: "लत" ends before the vowel sign
+    # inside "बोलते", "คร" before the one inside "ครับ", "E" before the NFD
+    # accent of "Éric", and ZWNJ joins "روم" to "می‌".
+    ("वे बोलते हैं लत",
+     [{"wrong": "लत", "correct": "X"}],
+     "वे बोलते हैं X"),
+    ("ครับ คร",
+     [{"wrong": "คร", "correct": "X"}],
+     "ครับ X"),
+    ("Éric E",
+     [{"wrong": "E", "correct": "X"}],
+     "Éric X"),
+    ("می‌روم روم",
+     [{"wrong": "روم", "correct": "X"}],
+     "می‌روم X"),
 ]
 
 
