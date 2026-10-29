@@ -2873,6 +2873,8 @@ def _build_export_stream(only_status: str | None, include_audio: bool):
     Hard filters applied regardless of `only_status`:
       - `is_stale=true` (group audio/text drift) → skipped
       - `is_locked=true` (admin lock; mirrors reapply skip) → skipped
+      - a group whose members no longer match the ids its merged WAV was
+        built from (`member_hashes`) → skipped
       - `status=audio_missing` (file is gone) → skipped
       - missing WAV on disk → both manifest entry AND tar entry skipped
         (prevents the manifest from referencing files that don't exist
@@ -2933,6 +2935,14 @@ def _build_export_stream(only_status: str | None, include_audio: bool):
                 # column so reviewers see — and the trainer learns from — the
                 # same text.
                 members = capture_samples_store.get_members(sid)
+                # member_hashes is keyed by the member ids the merged WAV was
+                # built from. A member row deleted before its auto-dissolve ran
+                # (still waiting on this lock, or failed and swallowed) leaves
+                # the N-member WAV with N-1 members' text: a misaligned pair.
+                # An empty map (no build recorded) is not proof of a mismatch.
+                built_from = g.get("member_hashes") or {}
+                if built_from and set(built_from) != {m["id"] for m in members}:
+                    continue
                 text = capture_samples._build_default_transcript(
                     members, g.get("transcript_join_strategy") or "space",
                     words_for=_chip_words,

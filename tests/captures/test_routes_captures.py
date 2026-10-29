@@ -970,6 +970,45 @@ def test_export_joins_the_text_with_the_strategy_of_the_reread_sample(
         ("quelle. quelle", 2)]
 
 
+def test_export_skips_a_sample_whose_members_no_longer_match_its_wav(
+        captures_store_db, groups_store_db, monkeypatch, tmp_path):
+    """delete_capture commits the member's row DELETE before its auto-dissolve
+    takes the rebuild lock (and swallows a dissolve failure), so the export
+    could pack the 2-member WAV with the surviving member's text and
+    member_count 1. A sample with no recorded build (empty member_hashes)
+    is still exported."""
+    import io
+    import tarfile
+
+    from faster_whisper_backend.captures import routes as captures_routes
+    from faster_whisper_backend.captures import samples_store as gs
+
+    drifted, legacy = "e" * 32, "f" * 32
+    for sid, hashed in ((drifted, True), (legacy, False)):
+        cids = [_ready_capture(captures_store_db, monkeypatch, tmp_path,
+                               language="de", translations=None)
+                for _ in range(2)]
+        captures_routes._insert_sample_with_sid(
+            sid=sid, user_id="alice", member_ids=cids,
+            transcript="quelle quelle", join_strategy="space", silence_ms=300,
+            member_hash_map={c: "h" for c in cids} if hashed else {},
+            duration_ms=1000, language="de", member_trims={},
+        )
+        _write_merged_wav(gs, sid, b"both members audio")
+    gone = gs.get_members(drifted)[1]["id"]
+    with captures_store_db._lock:
+        with captures_store_db._require_conn() as conn:
+            conn.execute("DELETE FROM captures WHERE id = ?", (gone,))
+    blob = b"".join(captures_routes._build_export_stream(None, True))
+    with tarfile.open(fileobj=io.BytesIO(blob), mode="r:gz") as tar:
+        rows = [json.loads(line) for line in tar.extractfile(
+            "manifest.jsonl").read().decode("utf-8").splitlines() if line]
+        assert [n for n in tar.getnames() if n.startswith("audio/")] == [
+            f"audio/{legacy}.wav"]
+    assert [(r["audio_filepath"], r["member_count"]) for r in rows] == [
+        (f"audio/{legacy}.wav", 2)]
+
+
 def test_export_sizes_each_wav_from_the_file_it_opened(
         captures_store_db, groups_store_db, monkeypatch, tmp_path):
     """info.size came from a getsize before the open, so an os.replace landing
