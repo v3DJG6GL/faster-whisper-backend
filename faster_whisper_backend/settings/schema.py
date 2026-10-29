@@ -587,6 +587,18 @@ _STRICT_ORIGIN_RE = re.compile(
 # 'https://x:443' could never match; it is normalised away like the case.
 _DEFAULT_PORT_RE = re.compile(r"(https://.*[^:]):443|(http://.*[^:]):80")
 
+# Settings that reach an os / sqlite path call or os.environ, which raise
+# ValueError (not OSError) on a NUL, past the OSError fallbacks: a saved
+# LOG_FILE with one crash-looped the next boot in log_setup.install(), a saved
+# HF_TOKEN in main.py's os.environ set. AdminConfig refuses the NUL;
+# config_store drops one stored before that rule existed.
+NUL_FREE_PATH_FIELDS = (
+    "LOG_FILE", "CAPTURES_DIR", "CAPTURES_DB", "DOWNLOAD_ROOT",
+    "CONVERTED_MODELS_DIR", "URL_MEDIA_DIR", "API_KEYS_DB", "SESSIONS_DB",
+    "REPORTS_DB", "RECENT_TRANSCRIPTIONS_DB", "JOBS_DB",
+    "STATS_SYSTEM_METRICS_DB", "USAGE_DB", "CLIENT_SETTINGS_DB")
+NUL_FREE_FIELDS = (*NUL_FREE_PATH_FIELDS, "HF_TOKEN")
+
 
 def _origin_entry(entry: str, info: ValidationInfo) -> str | None:
     """`entry` lowercased (the browser's serialisation; lowercased BEFORE the
@@ -1661,18 +1673,13 @@ class AdminConfig(BaseModel):
             raise ValueError("'..' segments are not allowed")
         return v
 
-    @field_validator("LOG_FILE", "CAPTURES_DIR", "CAPTURES_DB", "DOWNLOAD_ROOT",
-                     "CONVERTED_MODELS_DIR", "URL_MEDIA_DIR", "API_KEYS_DB",
-                     "SESSIONS_DB", "REPORTS_DB", "RECENT_TRANSCRIPTIONS_DB",
-                     "JOBS_DB", "STATS_SYSTEM_METRICS_DB", "USAGE_DB",
-                     "CLIENT_SETTINGS_DB")
+    @field_validator(*NUL_FREE_FIELDS)
     @classmethod
-    def _no_nul_in_path(cls, v: str | None) -> str | None:
-        # Every os / sqlite path call raises ValueError (not OSError) on a NUL,
-        # past the OSError fallbacks: a saved LOG_FILE with one crash-looped
-        # the next boot in log_setup.install().
+    def _no_nul(cls, v: str | None, info: ValidationInfo) -> str | None:
+        # See NUL_FREE_FIELDS.
         if v is not None and "\x00" in v:
-            raise ValueError("a NUL character is not allowed in a path")
+            what = "path" if info.field_name in NUL_FREE_PATH_FIELDS else "token"
+            raise ValueError(f"a NUL character is not allowed in a {what}")
         return v
 
     @field_validator("SERVER_HOST")

@@ -417,6 +417,14 @@ def test_path_settings_refuse_an_embedded_nul(field):
         _ok(**{field: "data/x\x00.log"})
 
 
+def test_hf_token_refuses_an_embedded_nul():
+    """os.environ raises ValueError on a NUL: a saved HF_TOKEN with one 500ed
+    the save in apply_hot_changes and crash-looped the next boot in main.py."""
+    _ok(HF_TOKEN="hf_abc")
+    with pytest.raises(ValidationError, match="NUL character is not allowed in a token"):
+        _ok(HF_TOKEN="hf_ab\x00c")
+
+
 # ---------------------------------------------------------------------------
 # _cap_list (ALLOWED_MODELS / PRELOAD_MODELS)
 # ---------------------------------------------------------------------------
