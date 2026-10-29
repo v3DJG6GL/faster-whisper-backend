@@ -1844,6 +1844,23 @@ def test_stored_bundle_values_refused_since_are_migrated_not_fatal(tmp_path, cap
     assert on_disk["SERVER_PORT"] == 9000 and on_disk["BEST_OF"] == 3
 
 
+def test_stored_nul_in_a_path_or_token_is_dropped_not_fatal(tmp_path, capsys):
+    # A file saved before the NUL rule must lose only those keys at boot,
+    # not every override — and an unrelated save must not 422 on them.
+    p = tmp_path / "config.local.json"
+    p.write_text(json.dumps({"URL_MEDIA_DIR": "data/x\x00y",
+                             "HF_TOKEN": "hf_secret\x00tail",
+                             "DEFAULT_MODEL": "small"}), encoding="utf-8")
+    out = cs.load_overrides(str(p))
+    assert out == {"DEFAULT_MODEL": "small"}
+    err = capsys.readouterr().err
+    assert "dropped URL_MEDIA_DIR" in err and "dropped HF_TOKEN" in err
+    assert "hf_secret" not in err
+    cs.save_overrides({"BEAM_SIZE": 3}, str(p))
+    assert json.loads(p.read_text(encoding="utf-8")) == {
+        "DEFAULT_MODEL": "small", "BEAM_SIZE": 3}
+
+
 # ---------------------------------------------------------------------------
 # WHISPER_MODEL_OVERRIDE__ values stay env values on a per-model save
 # ---------------------------------------------------------------------------

@@ -100,10 +100,12 @@ def _migrate_tightened_bundle_values(raw: dict[str, Any]) -> list[str]:
     a Whisper-code membership check: an unknown code failed every decode
     that relied on it, so it is dropped (inherit). SUPPRESS_TOKENS (top
     level too) gained a token-id range: an id far past the vocab crashed
-    every decode, so it is dropped the same way. A PIPELINE_RULES
-    callback:map key that is whitespace-only is dropped. Per-identity bindings
-    (api_keys_store._parse_binding) and the env JSON bundles (config.py) run
-    the same per-bundle rules via migrate_tightened_bundle."""
+    every decode, so it is dropped the same way. A path setting or HF_TOKEN
+    holding a NUL (schema.NUL_FREE_FIELDS) is dropped (default). A
+    PIPELINE_RULES callback:map key that is whitespace-only is dropped.
+    Per-identity bindings (api_keys_store._parse_binding) and the env JSON
+    bundles (config.py) run the same per-bundle rules via
+    migrate_tightened_bundle."""
     notes = _migrate_segment_guards(raw, "")
     for key, check in (("DEFAULT_LANGUAGE", settings_schema._language_code),
                        ("SUPPRESS_TOKENS", settings_schema._suppress_tokens_csv)):
@@ -114,6 +116,13 @@ def _migrate_tightened_bundle_values(raw: dict[str, Any]) -> list[str]:
             except ValueError as e:
                 del raw[key]
                 notes.append(f"dropped {key} {val!r}: {e}")
+    for key in settings_schema.NUL_FREE_FIELDS:
+        val = raw.get(key)
+        if isinstance(val, str) and "\x00" in val:
+            del raw[key]
+            # The value is not echoed: HF_TOKEN is a secret.
+            notes.append(f"dropped {key}: it holds a NUL character, "
+                         f"which is no longer accepted")
     for group_key in ("OVERRIDE_PROFILES", "MODEL_OVERRIDES"):
         group = raw.get(group_key)
         if not isinstance(group, dict):
