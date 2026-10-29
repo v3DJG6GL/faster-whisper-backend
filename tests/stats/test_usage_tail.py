@@ -160,3 +160,21 @@ def test_outcome_stubs_stay_out_of_the_tail_distributions(usage_store_db):
     assert us.wait_quantiles(**win)["n"] == 1
     assert us.failures(**win)["jobs"] == 1
     assert [m["model"] for m in us.by_model(**win)] == ["large-v3"]
+
+
+def test_tail_all_time_reaches_jobs_older_than_the_hourly_retention(usage_store_db):
+    """usage_jobs prunes on its own (longer) clock: with the rollups kept 90
+    days and the jobs 365, All time used to start at the oldest rollup and
+    leave a 200-day-old job still on disk out of the tail."""
+    us = usage_store_db
+    old = us.now_hour() - 200 * 24
+    for jid, hour in (("o" * 32, old), ("n" * 32, None)):
+        us.record_usage(key_id="k", user_id="u", audio_s=10.0, words=5, status="ok",
+                        kind="file", job_id=jid, hour=hour, processing_s=1.0)
+    counts = us.sweep(unreported_after_h=24, jobs_retention_days=365,
+                      app_retention_days=0, hourly_retention_days=90)
+    assert counts["hourly"] >= 1 and counts["jobs"] == 0
+    doc = us.tail(user_id=None, tz=_UTC, tz_name="UTC", all_time=True)
+    assert doc["from"] == _D(datetime.datetime.fromtimestamp(old * 3600, _UTC).date().isoformat())
+    assert doc["failures"]["jobs"] == 2
+    assert doc["compare"]["audio_s"]["cur"] == 20.0

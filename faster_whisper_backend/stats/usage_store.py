@@ -2072,6 +2072,24 @@ def truncated_to_days(start_ts: float, retention_days: int,
     return days if float(start_ts) < now - days * 86400 else None
 
 
+def _first_tail_day(conn: sqlite3.Connection, user_id: Ids, key_id: Ids,
+                    kind: Ids, tz: zoneinfo.ZoneInfo | None) -> int | None:
+    """tail()'s all-time start: the earlier of the rollups' first day and
+    the first in-scope job row (stubs excluded, as in _jobs_where). The two
+    tables prune on separate clocks; with USAGE_RETENTION_DAYS shorter than
+    USAGE_JOBS_RETENTION_DAYS the rollups alone would start All time after
+    jobs the tail still holds and leave them out silently."""
+    kinds = [kind] if isinstance(kind, str) else kind
+    hourly = _first_day(conn, user_id, tz, (), key_id, kinds)
+    where, params = _scope_where(user_id, key_id, kinds=kinds, kind_col="kind")
+    row = conn.execute("SELECT MIN(created_ts) AS ts FROM usage_jobs" + where
+                       + _no_outcome_stub(), params).fetchone()
+    if row is None or row["ts"] is None:
+        return hourly
+    jobs = _epoch_day(_date_of(float(row["ts"]), tz))
+    return jobs if hourly is None else min(hourly, jobs)
+
+
 @_reads_own_conn
 def wait_quantiles(*, start_ts: float, end_ts: float, user_id: str | None = None,
                    key_id: str | None = None, kind: str | None = None,
@@ -2257,8 +2275,7 @@ def tail(
     per-model table, and compare deltas."""
     now = time.time() if now is None else float(now)
     today = _date_of(now, tz)
-    first_day = (_first_day(_require_conn(), user_id, tz, (), key_id,
-                            [kind] if isinstance(kind, str) else kind)
+    first_day = (_first_tail_day(_require_conn(), user_id, key_id, kind, tz)
                  if all_time else None)
     f, t = resolve_window(today=today, days=days, from_day=from_day,
                           to_day=to_day, all_time=all_time, first_day=first_day)
