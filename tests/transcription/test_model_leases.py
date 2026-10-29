@@ -149,15 +149,49 @@ def test_unknown_short_name_fails_the_shared_gate(monkeypatch):
     tx_models._check_model_name("org/repo")
 
 
-def test_short_name_of_a_local_dir_still_loads(monkeypatch, tmp_path):
+@pytest.mark.parametrize("field, value", [
+    ("DEFAULT_MODEL", "my-model"),
+    ("ALLOWED_MODELS", {"my-model"}),
+    ("PRELOAD_MODELS", ["my-model"]),
+    ("STREAMING_PARTIAL_MODEL", "my-model"),
+])
+def test_short_name_of_a_local_dir_still_loads(monkeypatch, tmp_path,
+                                               field, value):
     _stub_load(monkeypatch)
     monkeypatch.chdir(tmp_path)
     (tmp_path / "my-model").mkdir()
     monkeypatch.setattr(tx_models.cfg, "MAX_LOADED_MODELS", 4, raising=False)
+    monkeypatch.setattr(tx_models.cfg, field, value, raising=False)
 
     asyncio.run(tx_models._get_or_load_model("my-model"))
 
     assert "my-model" in tx_models._loaded_models
+
+
+def test_short_name_of_an_unconfigured_dir_fails_the_shared_gate(
+        monkeypatch, tmp_path):
+    """With no allowlist, a client's "static" or "docs" is a directory under
+    the server's cwd too: refused up front (preload included), not loaded
+    after the LRU loop evicted the hot model for it."""
+    _stub_load(monkeypatch)
+    built = []
+    _stub_doomed_constructor(monkeypatch, built)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "static").mkdir()
+    monkeypatch.setattr(tx_models.cfg, "DEFAULT_MODEL", "a", raising=False)
+    monkeypatch.setattr(tx_models.cfg, "PRELOAD_MODELS", [], raising=False)
+    monkeypatch.setattr(tx_models.cfg, "MAX_LOADED_MODELS", 1, raising=False)
+    _register("a")
+
+    with pytest.raises(HTTPException) as exc:
+        tx_models._check_model_name("static")
+    assert exc.value.status_code == 400
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(tx_models._get_or_load_model("static", lease=True))
+
+    assert exc.value.status_code == 400
+    assert set(tx_models._loaded_models) == {"a"}
+    assert built == [] and tx_models._model_leases == {}
 
 
 @pytest.mark.parametrize("err", ["RepositoryNotFoundError",
