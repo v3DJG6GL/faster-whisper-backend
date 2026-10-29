@@ -265,7 +265,9 @@ _CUE_TIMING_RE = re.compile(rf"^([ \t]*)({_TS})([ \t]*-->[ \t]*)({_TS})",
 
 
 def _ts_ms(h: str, m: str, s: str, ms: str) -> int:
-    return ((int(h) * 60 + int(m)) * 60 + int(s)) * 1000 + int(ms.ljust(3, "0"))
+    # ffmpeg's SRT demuxer reads the millisecond field as an integer (%3d):
+    # ",5" is 5 ms, not 500 — compare the cue the muxer will see.
+    return ((int(h) * 60 + int(m)) * 60 + int(s)) * 1000 + int(ms)
 
 
 def _clamp_inverted_cue(m: "re.Match[str]") -> str:

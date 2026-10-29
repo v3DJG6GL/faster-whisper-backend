@@ -538,6 +538,17 @@ def test_write_srts_clamps_an_inverted_cue_end_to_its_start(tmp_path):
                             "3\n00:00:08,000 --> 00:00:08,000\nZero\n")
 
 
+def test_write_srts_reads_a_short_millisecond_field_as_ffmpeg_does(tmp_path):
+    """ffmpeg's SRT demuxer reads ",5" as 5 ms and ",40" as 40 ms (%3d), so
+    1,40 --> 1,5 is inverted to the muxer and 2,5 --> 2,40 is not."""
+    srt = ("1\n00:00:02,5 --> 00:00:02,40\nKept\n\n"
+           "2\n00:00:03,40 --> 00:00:03,5\nInverted\n")
+    (p,) = pk._write_srts(str(tmp_path), [pk.SubtitleTrack("en", "English", srt)])
+    with open(p, encoding="utf-8") as f:
+        assert f.read() == ("1\n00:00:02,5 --> 00:00:02,40\nKept\n\n"
+                            "2\n00:00:03,40 --> 00:00:03,40\nInverted\n")
+
+
 @pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="needs a system ffmpeg")
 def test_package_real_ffmpeg_mp4_accepts_a_cue_that_ends_before_it_starts(tmp_path):
     av = pytest.importorskip("av")
