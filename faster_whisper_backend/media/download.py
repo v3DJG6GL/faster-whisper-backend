@@ -592,6 +592,11 @@ def validate_url(url: str) -> str:
         raise UrlDownloadError("only http(s) URLs are supported")
     if not parts.hostname:
         raise UrlDownloadError("the URL has no host")
+    # `user:pw@host`: the probes' urllib requests read `pw@host` as a port
+    # (InvalidURL), which surfaced as "could not be reached". Say what it is.
+    if "@" in parts.netloc:
+        raise UrlDownloadError(
+            "links with a user name or password in them are not supported")
     # An empty or >63-char label (`a..com`) or a lone surrogate makes
     # getaddrinfo raise UnicodeError downstream: answer a client 400 here.
     try:

@@ -69,6 +69,19 @@ def test_validate_url_rejects_a_lone_surrogate():
             udl.validate_url(url)
 
 
+def test_validate_url_rejects_userinfo_with_an_honest_message():
+    """`user:pw@host` used to pass and then fail in the probe as "the site
+    could not be reached" (http.client read `pw@host` as the port)."""
+    for url in ("https://user:pw@files.example.com/talk.mp3",
+                "https://user@files.example.com/talk.mp3",
+                "http://@example.com/a.mp3"):
+        with pytest.raises(udl.UrlDownloadError, match="user name or password"):
+            udl.validate_url(url)
+    # An '@' outside the authority is ordinary path/query text.
+    url = "https://example.com/@channel/a.mp3?by=a@b.c"
+    assert udl.validate_url(url) == url
+
+
 def test_validate_url_rejects_overlong():
     with pytest.raises(udl.UrlDownloadError):
         udl.validate_url("https://example.com/" + "a" * 2048)
