@@ -88,7 +88,9 @@ RENAMED_RULES: dict[str, str] = {
 # admin last saved, so a factory fix never reached it — the stored copy wins
 # over config.json entry for entry. upgrade_rule_entries rewrites an entry ONLY
 # when both its pattern and its replacement still equal the old factory text
-# exactly: an entry the admin edited is theirs and stays untouched.
+# exactly: an entry the admin edited is theirs and stays untouched. A copy saved
+# before an entry was relabelled holds the old text under its old label
+# (RELABELLED_RULE_ENTRIES).
 UPGRADED_RULE_ENTRIES: dict[str, tuple[tuple[str, str], tuple[str, str]]] = {
     # The old pair matched `"…"` greedily from any quote, so a quote that was
     # still open at the end of one utterance's text was paired differently
@@ -137,6 +139,16 @@ UPGRADED_RULE_ENTRIES: dict[str, tuple[tuple[str, str], tuple[str, str]]] = {
         ('(^\\s*|(?<=[.!?…])(?!(?<=\\d\\.)\\d)\\s*|(?<=\\n)\\s*)(?!¡)'
          '((?:[^.!?…¡\\n]|(?<=\\d)\\.(?=\\d))+!)', '\\1¡\\2'),
     ),
+}
+
+# Factory regex-list entry labels that were renamed, old -> current, for the
+# UPGRADED_RULE_ENTRIES lookup. The label is rewritten only together with the
+# text (an entry under the old label that the admin edited stays theirs).
+RELABELLED_RULE_ENTRIES: dict[str, str] = {
+    # f940127 / dace748 / b7449d8 (June 2026).
+    "strip-only-terminators-and-commas": "Strip terminators & commas",
+    "replace-and": "delete-punct-before-hyphen",
+    "strip-non-keep-punct": "strip-stray-symbols",
 }
 
 # Factory rules that GAINED a rule-level language scope in config.json, keyed
@@ -290,14 +302,16 @@ def upgrade_rule_entries(raw: dict[str, Any]) -> list[str]:
         for e in entries:
             if not isinstance(e, dict) or not isinstance(e.get("label"), str):
                 continue
-            up = UPGRADED_RULE_ENTRIES.get(e["label"])
+            label = RELABELLED_RULE_ENTRIES.get(e["label"], e["label"])
+            up = UPGRADED_RULE_ENTRIES.get(label)
             if up is None:
                 continue
             (old_pat, old_rep), (new_pat, new_rep) = up
             if e.get("pattern") == old_pat and (e.get("replacement") or "") == old_rep:
+                e["label"] = label
                 e["pattern"] = new_pat
                 e["replacement"] = new_rep
-                done.append(f"{r.get('name')}/{e.get('label')}")
+                done.append(f"{r.get('name')}/{label}")
     return done
 
 

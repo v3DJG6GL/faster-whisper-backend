@@ -185,3 +185,28 @@ def test_copy_saved_before_f940127_rename_is_migrated_and_scoped(tmp_path):
         r["name"] for r in _factory_rules()]
     assert _rule(out["PIPELINE_RULES"], "de-split-punctuation-keywords")["languages"] == ["de"]
 
+
+@pytest.mark.parametrize("old_label,label", sorted(renames.RELABELLED_RULE_ENTRIES.items()))
+def test_entry_saved_under_its_old_label_is_upgraded_and_relabelled(old_label, label):
+    """A copy saved before the relabel holds the old factory text under the
+    old label ("vom 3.-10 Oktober" still became "vom 310 Oktober")."""
+    rules = copy.deepcopy(_factory_rules())
+    (old_pat, old_rep), _new = renames.UPGRADED_RULE_ENTRIES[label]
+    rule = next(r for r in rules
+                if any(e.get("label") == label for e in r.get("entries") or []))
+    e = next(e for e in rule["entries"] if e.get("label") == label)
+    e["label"], e["pattern"], e["replacement"] = old_label, old_pat, old_rep
+    raw = {"PIPELINE_RULES": rules}
+    assert renames.upgrade_rule_entries(raw) == [f"{rule['name']}/{label}"]
+    assert raw["PIPELINE_RULES"] == _factory_rules()
+    assert renames.upgrade_rule_entries(raw) == []
+
+
+def test_edited_entry_under_an_old_label_stays_the_admins():
+    rules = copy.deepcopy(_factory_rules())
+    e = next(e for r in rules for e in r.get("entries") or []
+             if e.get("label") == "delete-punct-before-hyphen")
+    e["label"], e["pattern"], e["replacement"] = "replace-and", "(?:,)(-)", ""
+    assert renames.upgrade_rule_entries({"PIPELINE_RULES": rules}) == []
+    assert (e["label"], e["pattern"]) == ("replace-and", "(?:,)(-)")
+
