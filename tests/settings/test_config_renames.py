@@ -320,3 +320,28 @@ def test_old_copy_running_beside_its_switched_off_renamed_rule_keeps_running(tmp
     out = cs.load_overrides(str(p))["PIPELINE_RULES"]
     kept = [r for r in out if r["name"] in (old, new)]
     assert [(r["name"], r["enabled"], r["languages"]) for r in kept] == [(new, True, ["de"])]
+
+
+def test_stored_single_regex_rule_becomes_a_one_entry_regex_list(tmp_path):
+    """8cde7fd replaced the `regex` rule type with regex-list. A copy saved
+    before it (May 21 - June 15) failed validation and took EVERY override
+    with it; its rules are one-entry lists now, labelled with their slug, so
+    the factory text fixes keyed by those old labels reach them too."""
+    from faster_whisper_backend.settings import config_store as cs
+    rules = copy.deepcopy(_factory_rules())
+    rules.insert(-1, {"name": "replace-szet-lc", "label": "Replace ß → ss",
+                      "enabled": True, "seeded": True, "note": "why",
+                      "type": "regex", "pattern": "ß", "replacement": "ss"})
+    rules.insert(-1, {"name": "replace-and", "label": "Replace ,- AND .-",
+                      "type": "regex", "pattern": "(?:,|\\.)(- |-)", "replacement": ""})
+    p = tmp_path / "config.local.json"
+    p.write_text(json.dumps({"PIPELINE_RULES": rules, "BEAM_SIZE": 3}), encoding="utf-8")
+    out = cs.load_overrides(str(p))
+    assert out["BEAM_SIZE"] == 3
+    szet = _rule(out["PIPELINE_RULES"], "replace-szet-lc")
+    assert (szet["type"], szet["note"], szet["entries"]) == ("regex-list", "why", [
+        {"pattern": "ß", "replacement": "ss", "label": "replace-szet-lc", "note": ""}])
+    assert "pattern" not in szet
+    assert _rule(out["PIPELINE_RULES"], "replace-and")["entries"] == [
+        {"pattern": "(?<!\\d)(?:,|\\.)(- |-)", "replacement": "",
+         "label": "delete-punct-before-hyphen", "note": ""}]

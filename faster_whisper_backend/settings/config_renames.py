@@ -284,6 +284,23 @@ def rename_slugs(slugs: Any, known: Any = None) -> Any:
     return type(slugs)(out) if not isinstance(slugs, list) else out
 
 
+def _regex_rule_to_list(rule: Any) -> None:
+    """Rewrite a stored rule of the single `regex` type (in place) as the
+    one-entry regex-list that does the same, labelled with its slug (the key
+    RELABELLED_RULE_ENTRIES knows it by). 8cde7fd (June 2026) removed the type
+    with no migration, so a copy saved before then failed validation — which
+    drops ALL local overrides. A malformed rule is left to the schema."""
+    if not (isinstance(rule, dict) and rule.get("type") == "regex"
+            and isinstance(rule.get("pattern"), str)
+            and isinstance(rule.get("replacement", ""), (str, type(None)))):
+        return
+    name = rule.get("name")
+    rule["type"] = "regex-list"
+    rule["entries"] = [{"pattern": rule.pop("pattern"),
+                        "replacement": rule.pop("replacement", None) or "",
+                        "label": name if isinstance(name, str) else ""}]
+
+
 def migrate_rule_slugs(raw: dict[str, Any]) -> dict[str, Any]:
     """Apply RENAMED_RULES to a stored overrides dict (in place; also
     returned): the `name` of each stored PIPELINE_RULES entry and the
@@ -294,8 +311,11 @@ def migrate_rule_slugs(raw: dict[str, Any]) -> dict[str, Any]:
     factory rule is dropped beside it: every slug list now names the new
     rule, so the duplicate would run on every language, excluded nowhere.
     When only the old copy is enabled, the disabled new-named one is dropped
-    instead, so whether the rule runs does not change."""
+    instead, so whether the rule runs does not change. A stored rule of the
+    removed `regex` type becomes a one-entry regex-list first."""
     rules = raw.get("PIPELINE_RULES")
+    for r in rules if isinstance(rules, list) else ():
+        _regex_rule_to_list(r)
     # str only: a hand-edited non-string name must reach the schema's
     # error, not crash the dict lookups here (load_overrides never raises).
     names = _rule_names(rules)
