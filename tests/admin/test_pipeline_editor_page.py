@@ -418,3 +418,48 @@ const api = async () => ({ ok: true, status: 200, json: async () => ({ rules: se
     out = subprocess.run(["node", "-"], input=fns + drive, capture_output=True, text=True,
                          encoding="utf-8", timeout=30, check=True)
     assert json.loads(out.stdout) == {"clean": True, "seeded": True}
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
+def test_unshadowed_promote_of_a_new_map_rule_leaves_save_unlit(client):
+    """The server's canonical MapRule always carries `map_meta: {}` (a
+    default_factory field survives exclude_none); the '+ add' dialog builds a
+    callback:map rule without it, so _sansRevs saw a diff and Save stayed lit
+    after the promote — a Save that pinned a full local copy of the rules."""
+    from faster_whisper_backend.pipeline.apply import canon_rules
+
+    html = _html(client)
+    fns = (_slice(html, "function _sortDeep(o) {", "  // The server copy (schema model_dump)")
+           + _slice(html, "function _withDefaults(r) {", "  // Content equality ignoring")
+           + _slice(html, "function _sansRevs(v, keep) {", "function commitData() {")
+           + _slice(html, "async function _postFactory(arr) {", "async function _fetchFactory() {"))
+    new_rule = {"name": "my-map", "label": "My map", "type": "callback:map",
+                "enabled": True, "languages": [], "locked": False, "seeded": False,
+                "exposed": False, "tags": [], "note": "", "color": "", "map": {"foo": "bar"}}
+    served = canon_rules([dict(new_rule, seeded=True),
+                          {"name": "terminal", "type": "terminal", "seeded": True}])
+    assert served[0]["map_meta"] == {}
+    drive = r"""
+const name = 'PIPELINE_RULES';
+const term = SERVED[1];
+const fields = { PIPELINE_RULES: { value: [term], default_value: [term] } };
+const fieldDef = n => fields[n];
+const dirty = {};
+const setDirty = (n, v) => { dirty[n] = v; };
+const paintAll = () => {};
+const alert = m => { throw new Error(m); };
+let factoryRules = [term];
+let rules = [NEW_RULE, term];
+const api = async () => ({ ok: true, status: 200, json: async () => ({ rules: SERVED }) });
+(async () => {
+  await _postFactory(rules);
+  console.log(JSON.stringify({ clean: dirty[name] === fields[name].value,
+                               hash_free: !('map_meta' in _ruleStrip(rules[0])) }));
+})();
+"""
+    drive = (drive.replace("SERVED", json.dumps(served))
+             .replace("NEW_RULE", json.dumps(new_rule)))
+    fns += _slice(html, "function _ruleStrip(r) {", "function _ruleContentEqual(a, b) {")
+    out = subprocess.run(["node", "-"], input=fns + drive, capture_output=True, text=True,
+                         encoding="utf-8", timeout=30, check=True)
+    assert json.loads(out.stdout) == {"clean": True, "hash_free": True}

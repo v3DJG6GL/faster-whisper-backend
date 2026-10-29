@@ -2823,6 +2823,8 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
     if (!r || typeof r !== 'object') return Object.assign({}, r);
     const c = Object.assign({ enabled: true, languages: [], locked: false,
                               exposed: false, tags: [], note: '', color: '' }, r);
+    // A MapRule always dumps `map_meta` (default {}); the add dialog has none.
+    if (c.type === 'callback:map' && c.map_meta === undefined) c.map_meta = {};
     if (Array.isArray(c.entries)) {
       c.entries = c.entries.map(e => (e && typeof e === 'object')
         ? Object.assign({ replacement: '', label: '', note: '' }, e) : e);
