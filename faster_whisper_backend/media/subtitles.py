@@ -111,10 +111,11 @@ def list_tracks(info: dict) -> "tuple[list[dict], dict[str, dict]]":
     if len(public) > MAX_TRACKS:
         # The cap keeps the spoken language's tracks first, so a link with
         # dozens of manual translations still offers its own; the kept
-        # ones stay in the site's order.
-        spoken = language_of(info)
-        keep = sorted(range(len(public)),
-                      key=lambda i: public[i]["lang"] != spoken)[:MAX_TRACKS]
+        # ones stay in the site's order. Compared on the base language: a
+        # manual "en-US" track is the video's own when it speaks "en".
+        spoken = (language_of(info) or "").split("-")[0].lower()
+        keep = sorted(range(len(public)), key=lambda i: public[i]["lang"].split(
+            "-")[0].lower() != spoken)[:MAX_TRACKS]
         public = [public[i] for i in sorted(keep)]
         sources = {t["id"]: sources[t["id"]] for t in public}
     return public, sources

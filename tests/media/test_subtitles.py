@@ -227,3 +227,18 @@ def test_cap_keeps_the_spoken_languages_tracks_past_many_translations():
     assert ids[-2:] == ["m-ru", "a-ru"]  # kept, in the site's order
     assert ids[:-2] == [f"m-{lang}" for lang in langs[:subs.MAX_TRACKS - 2]]
     assert set(sources) == set(ids)
+
+
+def test_cap_keeps_a_region_tagged_track_of_the_spoken_language():
+    """The video speaks "en" but its own manual track is keyed "en-US" (or
+    the site names "en-GB" over an "en-US" track): matched on the base
+    language, not dropped behind 30 translations."""
+    langs = [f"{a}{b}" for a in "abcdefghijklmnopqrst" for b in "fg"][:30]
+    manual = {lang: [{"url": f"https://e.test/{lang}.vtt"}] for lang in langs}
+    manual["en-US"] = [{"url": "https://e.test/en-US.vtt"}]
+    for spoken in ("en", "en-GB"):
+        info = {"language": spoken, "subtitles": manual,
+                "automatic_captions": {"en-orig": [{"url": "https://e.test/a-en.vtt"}]}}
+        ids = [t["id"] for t in subs.list_tracks(info)[0]]
+        assert len(ids) == subs.MAX_TRACKS
+        assert ids[-2:] == ["m-en-US", "a-en"], spoken
