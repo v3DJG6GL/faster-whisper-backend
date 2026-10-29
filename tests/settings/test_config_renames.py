@@ -381,6 +381,24 @@ def test_old_copy_running_beside_its_switched_off_renamed_rule_keeps_running(tmp
     assert [(r["name"], r["enabled"], r["languages"]) for r in kept] == [(new, True, ["de"])]
 
 
+def test_switched_off_renamed_rule_the_admin_edited_keeps_the_edits_and_runs(tmp_path):
+    """The old copy may take the switched-off new card's slot only while that
+    card is still factory content: an edited one keeps the admin's words and
+    note, and runs in place of the dropped copy."""
+    from faster_whisper_backend.settings import config_store as cs
+    old, new = "strip-and-lowercase-non-noun", "de-strip-and-lowercase-non-noun"
+    rules = copy.deepcopy(_factory_rules())
+    edited = _rule(rules, new)
+    rules.insert(-1, dict(copy.deepcopy(edited), name=old, languages=[], enabled=True))
+    edited.update(enabled=False, note="mine", wordlist=[*edited["wordlist"], "zzzadminword"])
+    p = tmp_path / "config.local.json"
+    p.write_text(json.dumps({"PIPELINE_RULES": rules}), encoding="utf-8")
+    out = cs.load_overrides(str(p))["PIPELINE_RULES"]
+    kept = [r for r in out if r["name"] in (old, new)]
+    assert [(r["name"], r["enabled"], r["note"]) for r in kept] == [(new, True, "mine")]
+    assert "zzzadminword" in kept[0]["wordlist"]
+
+
 def test_stored_single_regex_rule_becomes_a_one_entry_regex_list(tmp_path):
     """8cde7fd replaced the `regex` rule type with regex-list. A copy saved
     before it (May 21 - June 15) failed validation and took EVERY override

@@ -250,15 +250,22 @@ def _content_digest(rule: dict[str, Any]) -> str | None:
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
 
 
-def _unscoped_factory_copy(rule: dict[str, Any], name: str) -> bool:
-    """True while a stored rule is still the factory rule `name` of
-    UPGRADED_RULE_LANGUAGES as shipped before its scope: no languages, the
-    factory type and pattern, and factory content (_FACTORY_CONTENT_DIGESTS)."""
+def _factory_content(rule: dict[str, Any], name: str) -> bool:
+    """True while a stored rule still does what the factory rule `name` of
+    UPGRADED_RULE_LANGUAGES does: the factory type and pattern, and factory
+    content (_FACTORY_CONTENT_DIGESTS)."""
     scope = UPGRADED_RULE_LANGUAGES.get(name)
-    return (scope is not None and not rule.get("languages")
+    return (scope is not None
             and (rule.get("type"), rule.get("pattern")) == scope[0]
             and (name not in _FACTORY_CONTENT_DIGESTS
                  or _content_digest(rule) in _FACTORY_CONTENT_DIGESTS[name]))
+
+
+def _unscoped_factory_copy(rule: dict[str, Any], name: str) -> bool:
+    """True while a stored rule is still the factory rule `name` of
+    UPGRADED_RULE_LANGUAGES as shipped before its scope: no languages and
+    factory content (_factory_content)."""
+    return not rule.get("languages") and _factory_content(rule, name)
 
 
 # Keys holding a list of rule slugs, at the top level and inside each
@@ -327,7 +334,8 @@ def migrate_rule_slugs(raw: dict[str, Any], known: Any = None) -> dict[str, Any]
     factory rule is dropped beside it: every slug list now names the new
     rule, so the duplicate would run on every language, excluded nowhere.
     When only the old copy is enabled, the disabled new-named one is dropped
-    instead, so whether the rule runs does not change. A stored rule of the
+    instead (or, when the admin edited its content, switched on), so whether
+    the rule runs does not change. A stored rule of the
     removed `regex` type becomes a one-entry regex-list first."""
     rules = raw.get("PIPELINE_RULES")
     for r in rules if isinstance(rules, list) else ():
@@ -349,13 +357,18 @@ def migrate_rule_slugs(raw: dict[str, Any], known: Any = None) -> dict[str, Any]
                                 and isinstance(k, dict) and k.get("name") == new
                                 and all(k is not d for d in dropped)), None)
                     if (kept is not None and r.get("enabled", True)
-                            and not kept.get("enabled", True)):
+                            and not kept.get("enabled", True)
+                            and _factory_content(kept, new)):
                         # The admin switched the new-named duplicate off and
                         # kept this one running: it takes the slot instead
                         # (upgrade_rule_entries then scopes it).
                         dropped.append(kept)
                         r["name"] = new
                     else:
+                        if kept is not None and r.get("enabled", True):
+                            # An edited new-named rule is the admin's: it
+                            # stays, and runs as the dropped copy did.
+                            kept["enabled"] = True
                         dropped.append(r)
         if dropped:
             rules[:] = [r for r in rules if all(r is not d for d in dropped)]
