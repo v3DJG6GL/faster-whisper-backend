@@ -3488,6 +3488,18 @@ async def transcribe(
                 _warnings.append(
                     "source_media: the downloaded audio left the media store "
                     "before the run finished — not retained")
+            # The keep_video id has the same window: it was fixed when the
+            # side download landed, often long before the transcript did.
+            _video_keys = media_video._video_response_keys(_video_task, _video_result)
+            _video_mid = _video_keys.get("source_video_media_id")
+            if _video_mid is not None and url_media_store.resolve_entry(
+                    _video_mid, user_id=_user_id) is None:
+                _video_keys = {"source_video_error": (
+                    "the downloaded video left the media store before the "
+                    "run finished")}
+                _warnings.append(
+                    "source_video: the downloaded video left the media store "
+                    "before the run finished — not retained")
 
             if response_format == "verbose_json":
                 response = {
@@ -3550,7 +3562,7 @@ async def transcribe(
                 # URL flow: where the client can fetch the downloaded audio
                 # for local playback, and how long that offer stands.
                 # Additive keys — OpenAI-compat callers ignore them.
-                response.update(media_video._video_response_keys(_video_task, _video_result))
+                response.update(_video_keys)
                 if _source_media_id is not None:
                     response["source_media_id"] = _source_media_id
                     response["source_media_expires_at"] = (
@@ -3578,7 +3590,7 @@ async def transcribe(
                 response["overrides_ignored"] = ignored
             if override_profile:
                 response["profile_applied"] = ident.request_profile_applied
-            response.update(media_video._video_response_keys(_video_task, _video_result))
+            response.update(_video_keys)
             if _source_media_id is not None:
                 response["source_media_id"] = _source_media_id
                 response["source_media_expires_at"] = (

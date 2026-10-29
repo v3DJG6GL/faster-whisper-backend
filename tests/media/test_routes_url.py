@@ -1195,6 +1195,42 @@ def test_media_id_dropped_during_the_run_is_not_advertised(
     assert any(w.startswith("source_media:") for w in body["warnings"])
 
 
+@pytest.mark.parametrize("fmt", ["verbose_json", "json"])
+def test_video_id_dropped_during_the_run_is_not_advertised(
+        client, video_enabled, fake_model, monkeypatch, fmt):
+    """The keep_video id is fixed when the side download lands, usually long
+    before the transcript: an eviction in between must not leave the client
+    a video id whose GET 404s."""
+    import time as _time
+
+    real = fake_model.transcribe
+
+    def _evict_video_then_decode(path, **kw):
+        # The task pops its _VIDEO_TASKS slot in its last step: once it is
+        # gone the task is done before the handler builds the response.
+        for _ in range(500):
+            if _PID not in media_video._VIDEO_TASKS:
+                break
+            _time.sleep(0.01)
+        vids = [m for m, e in list(url_media_store._REG.items())
+                if e.get("kind") == "video"]
+        assert vids, "the video task never retained its file"
+        for m in vids:
+            url_media_store._REG.pop(m)                     # sweep / eviction
+        return real(path, **kw)
+    monkeypatch.setattr(fake_model, "transcribe", _evict_video_then_decode)
+    r = _post_url(client, keep_video="true", progress_id=_PID,
+                  response_format=fmt)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert "source_video_media_id" not in body
+    assert "source_video_expires_at" not in body
+    assert body["source_video_error"].startswith("the downloaded video left")
+    assert any(w.startswith("source_video:") for w in body["warnings"])
+    # The audio id is untouched: only the dropped entry goes.
+    assert "source_media_id" in body
+
+
 # --- prefetched_media_id (reuse the language check's download) ---------------
 
 def _prefetched(tmp_path, *, user_id=None, kind="audio", source_url=_URL, name="pre.m4a"):
