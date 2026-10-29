@@ -230,6 +230,41 @@ def test_allowed_host_in_userinfo_does_not_pass_the_allowlist(monkeypatch):
     assert _run(udl.check_url_policy(url)) == "SimplecastEpisode"
 
 
+@pytest.mark.parametrize("url,key", [
+    # The pattern ends at the host: a longer real host still matched.
+    ("https://help.senate.gov.evil.example/hearings/x", "SenateGov"),
+    ("https://help.senate.gov:443.evil.example/", "SenateGov"),
+    ("https://x.webcamera.pl.evil.example/", "Webcamerapl"),
+    # `[^/]+` / `.+?` ran past the host into the query, fragment or path.
+    ("https://evil.example?a.simplecast.com/episodes/y", "SimplecastEpisode"),
+    ("https://evil.example#a.simplecast.com/episodes/y", "SimplecastEpisode"),
+    ("http://evil.example/a.roosterteeth.com/episode/x", "RoosterTeeth"),
+])
+def test_allowed_site_name_outside_the_host_does_not_pass(monkeypatch, url, key):
+    """79b2e8c closed only the '@' spelling: these named an allowed site
+    on the raw string while the link went to evil.example."""
+    assert udl.match_extractor(url) == key
+    monkeypatch.setattr(udl.cfg, "URL_ALLOWED_EXTRACTORS", [key], raising=False)
+    monkeypatch.setattr(udl.cfg, "URL_ALLOW_GENERIC", False, raising=False)
+    with pytest.raises(udl.UrlPolicyError, match="isn't the site it names"):
+        _run(udl.check_url_policy(url))
+
+
+@pytest.mark.parametrize("url,key", [
+    ("https://www.help.senate.gov/hearings/x", "SenateGov"),
+    ("https://help.senate.gov:443/hearings/x", "SenateGov"),
+    ("https://warszawa-plac-zamkowy.webcamera.pl", "Webcamerapl"),
+    ("https://www.youtube.com/watch?v=dQw4w9WgXcQ", "Youtube"),
+    ("https://x.simplecast.com/episodes/y?t=1", "SimplecastEpisode"),
+    # Matches any host by design: there is no site name to fake.
+    ("https://media.example.org/Mediasite/Play/"
+     "2db6c271681e4f199af3c60d1f82869b1d", "Mediasite"),
+])
+def test_real_site_links_still_pass_the_host_check(monkeypatch, url, key):
+    monkeypatch.setattr(udl.cfg, "URL_ALLOWED_EXTRACTORS", [key], raising=False)
+    assert _run(udl.check_url_policy(url)) == key
+
+
 def test_handoff_target_with_userinfo_is_not_direct_media(monkeypatch):
     monkeypatch.setattr(udl, "_direct_media_probe_sync",
                         lambda *a, **k: pytest.fail("probe ran"))

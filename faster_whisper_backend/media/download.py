@@ -977,20 +977,51 @@ async def check_url_policy(url: str, *, deadline: "float | None" = None) -> str:
                 "audio/video file")
         raise UrlPolicyError(
             "this site isn't allowed by the server's URL policy")
-    # Some _VALID_URL patterns end at the host, so `https://help.senate.gov@
-    # evil.example/` (real host evil.example) matches SenateGov on the raw
-    # string. The key must still match with the userinfo gone.
-    if _has_userinfo(url):
-        parts = urllib.parse.urlsplit(url)
-        bare = urllib.parse.urlunsplit(
-            parts._replace(netloc=parts.netloc.rpartition("@")[2]))
-        if await loop.run_in_executor(_PROBE_POOL, match_extractor, bare) != key:
-            raise UrlPolicyError(
-                "this link's host isn't the site it names")
+    if not await loop.run_in_executor(_PROBE_POOL, _match_reads_host, url, key):
+        raise UrlPolicyError("this link's host isn't the site it names")
     allowed = _allowed_extractor_keys()
     if allowed and key.lower() not in allowed:
         raise UrlPolicyError("this site isn't on the server's allowed list")
     return key
+
+
+def _match_reads_host(url: str, key: str) -> bool:
+    """False when extractor `key`'s _VALID_URL matched `url` without reading
+    its real host. Some patterns end at the host (SenateGov's ends at
+    `senate.gov`), so `https://help.senate.gov.evil.example/` and
+    `https://help.senate.gov@evil.example/` match on the raw string: the
+    match must run through the whole authority, or stop exactly where the
+    port starts. Others let `[^/]+` or `.+?` run past the host and find the
+    site's name in the query or path (`https://evil.example?a.simplecast.com
+    /episodes/y`): the pattern must stop matching once the user info and
+    host are cut out. Host-agnostic patterns (Mediasite's `[^/]+/Mediasite/`)
+    pass both, as they should. No regex match (a suitable() override) is
+    no verdict."""
+    import yt_dlp.extractor  # lazy: optional dependency
+
+    parts = urllib.parse.urlsplit(url)
+    try:
+        parts.port
+    except ValueError:
+        return False  # `help.senate.gov:443.evil.example`: no port to stop at
+    try:
+        ie = yt_dlp.extractor.get_info_extractor(key)
+        m = ie._match_valid_url(url)
+    except Exception:  # noqa: BLE001 — an unknown key is no verdict
+        return True
+    if m is None:
+        return True
+    start = len(parts.scheme) + 3
+    auth_end = start + len(parts.netloc)
+    if url[start:auth_end] != parts.netloc:
+        return False  # urlsplit dropped characters: positions are off
+    hostport = parts.netloc.rpartition("@")[2]
+    host = (hostport[:hostport.find("]") + 1] if hostport.startswith("[")
+            else hostport.partition(":")[0])
+    host_end = auth_end - len(hostport) + len(host)
+    if m.end() < auth_end and m.end() != host_end:
+        return False
+    return ie._match_valid_url(url[:start] + url[host_end:]) is None
 
 
 def _allowed_extractor_keys() -> "list[str]":
