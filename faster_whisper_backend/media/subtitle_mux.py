@@ -259,8 +259,13 @@ def build_package_argv(src: str, srt_paths: "list[str]", tracks: "list[SubtitleT
 
 
 _SRT_HINT_RE = re.compile(r"sub_(\d+)\.srt")
-_TS = r"(\d+):(\d{1,2}):(\d{1,2})[,.](\d{1,3})"
-_CUE_TIMING_RE = re.compile(rf"^([ \t]*)({_TS})([ \t]*-->[ \t]*)({_TS})",
+# What ffmpeg's SRT demuxer reads as a timing line: sscanf
+# "%d:%2d:%2d%*1[,.]%3d --> …" — each %d skips whitespace and takes a sign,
+# which counts toward the field width (%2d reads "+5" or "05", not "+05").
+_W = r"[ \t\v\f]*"
+_TS = (rf"([+-]?[0-9]+):{_W}([+-][0-9]|[0-9]{{1,2}}):{_W}([+-][0-9]|[0-9]{{1,2}})"
+       rf"[,.]{_W}([+-][0-9]{{1,2}}|[0-9]{{1,3}})")
+_CUE_TIMING_RE = re.compile(rf"^({_W})({_TS})({_W}-->{_W})({_TS})",
                             re.MULTILINE)
 
 

@@ -553,6 +553,28 @@ def test_write_srts_reads_a_short_millisecond_field_as_ffmpeg_does(tmp_path):
                             "2\n00:00:03,40 --> 00:00:03,40\nInverted\n")
 
 
+@pytest.mark.parametrize("timing, clamped", [
+    ("00:00:10, 000 --> 00:00:05,000", "00:00:10, 000 --> 00:00:10, 000"),
+    ("00:00:10,000 --> 00: 00:05,000", "00:00:10,000 --> 00:00:10,000"),
+    ("+00:00:10,000 --> -00:00:05,000", "+00:00:10,000 --> +00:00:10,000"),
+    ("00:00:10,000 --> 00:-0:+5,-01", "00:00:10,000 --> 00:00:10,000"),
+    ("\v00:00:10,000\t-->\f00:00:05,000", "\v00:00:10,000\t-->\f00:00:10,000"),
+])
+def test_write_srts_clamps_a_timing_line_with_the_whitespace_and_signs_ffmpeg_accepts(
+        tmp_path, timing, clamped):
+    """ffmpeg's SRT demuxer reads the timing line with sscanf %d fields, which
+    skip whitespace and take a sign — a cue spelled that way is still the
+    muxer's inverted last cue, and a later one spelled that way still keeps
+    an earlier inverted cue (ffmpeg stretches it) from being clamped."""
+    def written(srt):
+        (p,) = pk._write_srts(str(tmp_path), [pk.SubtitleTrack("en", "English", srt)])
+        with open(p, encoding="utf-8") as f:
+            return f.read()
+    assert written(f"1\n{timing}\nLast\n") == f"1\n{clamped}\nLast\n"
+    earlier = f"1\n00:00:02,000 --> 00:00:01,000\nTypo\n\n2\n{clamped}\nLast\n"
+    assert written(earlier) == earlier
+
+
 def test_write_srts_clamps_an_inverted_cue_followed_only_by_cues_ffmpeg_drops(tmp_path):
     """ffmpeg's SRT demuxer drops a cue with no text (empty lines, or only the
     next cue's number), so an inverted cue before such cues is the muxer's
@@ -634,3 +656,23 @@ def test_package_real_ffmpeg_keeps_a_mid_file_inverted_cue_on_screen(tmp_path):
             shutil.rmtree(os.path.dirname(out), ignore_errors=True)
         rows = [tuple(r.split(",")) for r in probe.split()]
         assert ("1.000000", "1.000000") in rows, (container, rows)
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="needs a system ffmpeg")
+def test_package_real_ffmpeg_mp4_accepts_an_inverted_cue_with_a_stray_space_or_sign(tmp_path):
+    """A hand-edit typo like a space after the comma, or a sign, is still a
+    timing line to ffmpeg — the MP4 export must not fail on it."""
+    av = pytest.importorskip("av")
+    src = str(tmp_path / "src.mp4")
+    subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+                    "-f", "lavfi", "-i", "testsrc=size=64x64:rate=10:duration=1",
+                    "-c:v", "libx264", "-pix_fmt", "yuv420p", src], check=True, timeout=60)
+    for timing in ("00:00:00,800 --> 00:00:00, 200", "+00:00:00,800 --> -00:00:00,200",
+                   "\v00:00:00,800 --> 00: 00:00,200"):
+        tracks = [pk.SubtitleTrack("en", "English", f"1\n{timing}\nHello\n")]
+        out = _run(pk.package(src, tracks, container="mp4", default_track=0, timeout=60))
+        try:
+            with av.open(out) as c:
+                assert [s.type for s in c.streams].count("subtitle") == 1, timing
+        finally:
+            shutil.rmtree(os.path.dirname(out), ignore_errors=True)
