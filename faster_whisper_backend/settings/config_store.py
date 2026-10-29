@@ -14,6 +14,7 @@ core/atomic_json.py; the config version counter lives in settings/version.py.
 
 from __future__ import annotations
 
+import copy
 import json
 import os
 import sys
@@ -487,6 +488,21 @@ def save_overrides(
                 merged.pop(k, None)
             else:
                 merged[k] = v
+        # Removing the local rules copy makes the factory list the one in
+        # force: a slug list naming a card the copy still held under its
+        # pre-split slug names that card's successors now (as the next load
+        # would map it), so the check below and the written file see those.
+        drops_local_rules = (
+            "PIPELINE_RULES" in payload and "PIPELINE_RULES" not in merged
+            and "PIPELINE_RULES" in existing
+            and "PIPELINE_RULES" not in env_pinned_fields())
+        if drops_local_rules:
+            factory = _factory_slugs() or None
+            for k in ("MODEL_OVERRIDES", "OVERRIDE_PROFILES"):
+                if k in merged:   # migrated in place; `existing` stays as read
+                    merged[k] = copy.deepcopy(merged[k])
+            _renames.migrate_rule_slugs(merged, factory)
+            _renames.migrate_bundle_keys(merged, factory)
 
         # guard_regex: run the out-of-process catastrophic-backtracking check —
         # this is a SAVE of (possibly non-admin) submitted rules.
@@ -523,14 +539,13 @@ def save_overrides(
         # a rule renamed or dropped in config.json cannot brick a save of the
         # other keys or entries (the merged pass would check every stored one).
         if "PIPELINE_RULES" not in merged:
-            if ("PIPELINE_RULES" in payload and "PIPELINE_RULES" in existing
-                    and "PIPELINE_RULES" not in env_pinned_fields()):
+            if drops_local_rules:
                 # The local copy is being removed: the factory list becomes
                 # the one in force, so EVERY stored ref must survive it, or
                 # each later save of that key 422s on a slug nobody can see.
                 slug_refs = {k: merged[k] for k in _SLUG_REF_KEYS
                              if merged.get(k) is not None}
-                slugs = (_factory_slugs() or None) if slug_refs else None
+                slugs = factory if slug_refs else None
             else:
                 slug_refs = _changed_slug_refs(payload, merged, existing)
                 slugs = _save_canonical_slugs() if slug_refs else None

@@ -1183,6 +1183,33 @@ def test_removing_the_local_rules_copy_refuses_refs_it_would_strand(
     assert "PIPELINE_RULES" not in json.loads(p.read_text(encoding="utf-8"))
 
 
+def test_removing_a_local_copy_of_a_split_card_writes_its_refs_as_the_successors(
+        tmp_path):
+    # A copy from before June still runs strip-whisper-punctuation, and the
+    # excludes name it. The factory list has its two successor cards, which
+    # the next load maps the slug to: the clear must not 422 on it.
+    split = ["strip-trailing-period", "strip-auto-punctuation"]
+    rules = [r for r in cs.load_factory_rules() if r["name"] not in split]
+    rules.insert(-1, {"name": "strip-whisper-punctuation", "label": "Strip Whisper punctuation",
+                      "type": "regex-list",
+                      "entries": [{"pattern": "\\s*\\.+\\s*$", "replacement": ""}]})
+    p = tmp_path / "config.local.json"
+    p.write_text(json.dumps({
+        "PIPELINE_RULES": rules,
+        "CAPTURES_PIPELINE_RULES_EXCLUDE": ["strip-whisper-punctuation"],
+        "MODEL_OVERRIDES": {"large-v3": {
+            "PIPELINE_RULES_EXCLUDE": ["strip-whisper-punctuation"], "BEAM_SIZE": 3}},
+        "OVERRIDE_PROFILES": {"p": {"PIPELINE_RULES_EXCLUDE": ["strip-whisper-punctuation"]}},
+    }), encoding="utf-8")
+    cs.save_overrides({"PIPELINE_RULES": None}, str(p))
+    on_disk = json.loads(p.read_text(encoding="utf-8"))
+    assert "PIPELINE_RULES" not in on_disk
+    assert sorted(on_disk["CAPTURES_PIPELINE_RULES_EXCLUDE"]) == sorted(split)
+    assert on_disk["MODEL_OVERRIDES"]["large-v3"] == {
+        "PIPELINE_RULES_EXCLUDE": split, "BEAM_SIZE": 3}
+    assert on_disk["OVERRIDE_PROFILES"]["p"]["PIPELINE_RULES_EXCLUDE"] == split
+
+
 def test_save_overrides_roundtrip_and_merge(tmp_path):
     p = str(tmp_path / "config.local.json")
     changed = cs.save_overrides({"BEAM_SIZE": 5}, p)
