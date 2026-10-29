@@ -593,6 +593,34 @@ const button = (ed) => find(ed, e => e.tagName === 'BUTTON');
     assert out == [True, 2, [2, 3, None], None]
 
 
+@needs_node
+def test_threshold_with_a_number_default_gets_no_disable_button(client):
+    """A save drops a null NO_SPEECH_THRESHOLD (exclude_none), so its
+    config.json default 0.6 comes back: a "disable" button there looked like
+    it switched the check off while the filter kept running. Only a field
+    whose null can stick (null default, or null now) keeps the toggle."""
+    html = _html(client)
+    src = "\n".join([
+        _block(html, "const NULLABLE_NUMBER_FIELDS = {", "\n};\n"),
+        _block(html, "function makeEditor(name) {", "\n}\n"),
+        _block(html, "function nullableNumberEditor(name, v, fallback = 0) {", "\n}\n"),
+        _block(html, "function numberEditor(name, v) {", "\n}\n"),
+    ])
+    out = _node(_FAKE_DOM + """
+const state = { NO_SPEECH_THRESHOLD: 0.6, LOG_PROB_THRESHOLD: null,
+                HALLUCINATION_SILENCE_THRESHOLD: 2 };
+const defaults = { NO_SPEECH_THRESHOLD: 0.6, LOG_PROB_THRESHOLD: -1.0,
+                   HALLUCINATION_SILENCE_THRESHOLD: null };
+function currentValue(n) { return state[n]; }
+function setDirty(n, v) { state[n] = v; }
+function fieldDef(n) { return { value: state[n], default_value: defaults[n], choices: null }; }
+""" + src + """
+const hasButton = (n) => !!find(makeEditor(n), e => e.tagName === 'BUTTON');
+console.log(JSON.stringify(Object.keys(state).map(hasButton)));
+""")
+    assert out == [False, True, True]
+
+
 # ---- "↑ view" jump-link ---------------------------------------------------------
 
 @needs_node

@@ -1314,7 +1314,10 @@ function makeEditor(name) {
   // BEFORE the number check. A null value has no runtime type, so it fell
   // through to stringEditor and a cleared box saved '' (422); a set value
   // took numberEditor, which ignores a clear, so null was unreachable.
-  if (Object.hasOwn(NULLABLE_NUMBER_FIELDS, name)) {
+  // Only when null can stick: a save drops a null (= config.json default),
+  // so a threshold with a numeric default keeps the plain number box.
+  if (Object.hasOwn(NULLABLE_NUMBER_FIELDS, name)
+      && (v == null || fieldDef(name).default_value == null)) {
     return nullableNumberEditor(name, v, NULLABLE_NUMBER_FIELDS[name]);
   }
   if (typeof v === 'number') return numberEditor(name, v);
