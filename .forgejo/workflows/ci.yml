@@ -192,8 +192,13 @@ jobs:
       # both Linux and Windows (run 1226); set 3 points lower so per-version
       # variance and the Windows leg's POSIX-only skips don't false-fail.
       # Raise this number as coverage grows — never lower it.
+      # -n 6, not -n auto: the three Linux legs and the Windows VM share one
+      # 22-core box, and -n auto gave each leg a worker per core (100+ in
+      # all), which starved the wall-clock tests — probe deadlines, the GPU
+      # gate's wait, node subprocess timeouts (runs 1642-1646). 3 x 6 plus
+      # the Windows leg's 6 is about one worker per core.
       - name: Run tests (with coverage gate)
-        run: pytest -n auto -q --cov-fail-under=84
+        run: pytest -n 6 -q --cov-fail-under=84
 
   # Windows portability parity guard — a single leg on the self-hosted VM
   # runner (host mode), using the system python (VM prerequisite in the
@@ -281,8 +286,10 @@ jobs:
           if ($LASTEXITCODE -ne 0) { Write-Output "::error::pip upgrade exited $LASTEXITCODE"; exit 1 }
           .venv\Scripts\python -m pip install -r requirements.txt -r requirements-dev.txt
 
+      # -n 6, not -n auto: this VM shares its host with the Linux legs (see
+      # their test step).
       - name: Run tests (with coverage gate)
-        run: .venv\Scripts\python -m pytest -n auto -q --cov-fail-under=84
+        run: .venv\Scripts\python -m pytest -n 6 -q --cov-fail-under=84
 
   # Single, stable status check to require in the branch protection. Matrix
   # legs expand/rename over time; this gate aggregates them so the required
