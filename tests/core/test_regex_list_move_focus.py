@@ -198,3 +198,17 @@ def test_real_drag_drop_keeps_the_new_order():
 console.log(JSON.stringify(dragTo(rows[0], 3, 'move')));
 """)
     assert res == {"dom": "1230", "ords": "1234", "order": "bcda", "commits": 1}
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
+def test_drag_payload_is_not_a_text_type():
+    # A text/plain payload is a native drop for every text field: releasing the
+    # grip over another card's pattern input inserted it there and dragend saw
+    # a real drop. Firefox still needs some setData to start the drag.
+    res = _run(_setup("ab") + _DRAG + r"""
+const types = [];
+const dt = { setData(t) { types.push(t); }, dropEffect: 'none' };
+grip(rows[0]).listeners.dragstart.forEach((f) => f({ dataTransfer: dt }));
+console.log(JSON.stringify(types));
+""")
+    assert res and not [t for t in res if t.lower().startswith("text")]
