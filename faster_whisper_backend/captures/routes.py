@@ -2910,29 +2910,30 @@ def _build_export_stream(only_status: str | None, include_audio: bool):
         for g in capture_samples_store.list_samples(user_id=user_filter_scope):
             if _group_skipped(g):
                 continue
-            # Always rebuild the transcript at export time from members +
-            # chips, so the exported text reflects current corrections even
-            # if the stored snapshot is stale. Source from the training-form
-            # column so reviewers see — and the trainer learns from — the
-            # same text.
             sid = g["id"]
-            members = capture_samples_store.get_members(sid)
-            text = capture_samples._build_default_transcript(
-                members, g.get("transcript_join_strategy") or "space",
-                words_for=_chip_words,
-            ).strip()
-            if not text:
-                continue
             audio_name = f"audio/{sid}.wav"
-            # The row and the WAV are read under the per-sid rebuild lock that
-            # regenerate, self-heal, dissolve and the VAD reprocess hold while
-            # they os.replace the merged WAV and patch merged_duration_ms: the
-            # snapshot above can be minutes old by now (a reprocess pass runs
-            # alongside a long export), and the manifest duration must
-            # describe the bytes packed. Never held across the yield below.
+            # The row, its members and the WAV are read under the per-sid
+            # rebuild lock that regenerate, self-heal, dissolve and the VAD
+            # reprocess hold while they os.replace the merged WAV and patch
+            # merged_duration_ms and transcript_join_strategy: the snapshot
+            # above can be minutes old by now (a reprocess pass runs alongside
+            # a long export), and the manifest text and duration must describe
+            # the bytes packed. Never held across the yield below.
             with capture_samples._rebuild_lock(sid):
                 g = capture_samples_store.get_sample(sid)
                 if g is None or _group_skipped(g):
+                    continue
+                # Always rebuild the transcript at export time from members +
+                # chips, so the exported text reflects current corrections even
+                # if the stored snapshot is stale. Source from the training-form
+                # column so reviewers see — and the trainer learns from — the
+                # same text.
+                members = capture_samples_store.get_members(sid)
+                text = capture_samples._build_default_transcript(
+                    members, g.get("transcript_join_strategy") or "space",
+                    words_for=_chip_words,
+                ).strip()
+                if not text:
                     continue
                 # Audio existence gate: skip the manifest entry entirely if
                 # the WAV isn't on disk, to avoid manifest pointing at missing

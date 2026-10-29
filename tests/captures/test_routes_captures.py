@@ -929,6 +929,47 @@ def test_export_rereads_a_sample_rebuilt_after_its_list_snapshot(
     assert sorted(entered) == [rebuilt, staled]
 
 
+def test_export_joins_the_text_with_the_strategy_of_the_reread_sample(
+        captures_store_db, groups_store_db, monkeypatch, tmp_path):
+    """The text was built from the list_samples() snapshot before the rebuild
+    lock, so a VAD reprocess that restamped transcript_join_strategy after it
+    shipped the new WAV with text joined by the old separator. Members and
+    text come from the row re-read under the lock."""
+    import io
+    import tarfile
+
+    from faster_whisper_backend.captures import routes as captures_routes
+    from faster_whisper_backend.captures import samples_store as gs
+
+    sid = "e" * 32
+    cids = [_ready_capture(captures_store_db, monkeypatch, tmp_path,
+                           language="de", translations=None) for _ in range(2)]
+    captures_routes._insert_sample_with_sid(
+        sid=sid, user_id="alice", member_ids=cids, transcript="quelle quelle",
+        join_strategy="space", silence_ms=300,
+        member_hash_map={c: "h" for c in cids}, duration_ms=1000,
+        language="de", member_trims={},
+    )
+    _write_merged_wav(gs, sid, b"old audio")
+    real_list = gs.list_samples
+
+    def _list_then_reprocess(**kw):
+        snapshot = real_list(**kw)
+        _write_merged_wav(gs, sid, b"new audio")
+        gs.update_sample(sid, {"transcript_join_strategy": "period_space",
+                               "transcript": "quelle. quelle"})
+        return snapshot
+
+    monkeypatch.setattr(gs, "list_samples", _list_then_reprocess)
+    blob = b"".join(captures_routes._build_export_stream(None, True))
+    with tarfile.open(fileobj=io.BytesIO(blob), mode="r:gz") as tar:
+        rows = [json.loads(line) for line in tar.extractfile(
+            "manifest.jsonl").read().decode("utf-8").splitlines() if line]
+        assert tar.extractfile(f"audio/{sid}.wav").read() == b"new audio"
+    assert [(r["text"], r["member_count"]) for r in rows] == [
+        ("quelle. quelle", 2)]
+
+
 def test_export_sizes_each_wav_from_the_file_it_opened(
         captures_store_db, groups_store_db, monkeypatch, tmp_path):
     """info.size came from a getsize before the open, so an os.replace landing
