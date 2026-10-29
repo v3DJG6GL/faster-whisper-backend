@@ -423,6 +423,14 @@ def test_merge_sentences_sees_danda_burmese_khmer_and_arabic_ends():
     assert translation._merge_sentences(_segs("so;", "then.")) == [[0, 1]]
 
 
+def test_merge_sentences_sees_urdu_armenian_and_amharic_ends():
+    """The Urdu ۔, Armenian ։ and Amharic ። full stops closed no group, so
+    up to six sentences were translated as one block and split by length."""
+    assert translation._merge_sentences(
+        _segs("یہ میرا گھر ہے۔", "آج موسم اچھا ہے۔", "Բարեւ։", "Ինչպես ես։",
+              "ሰላም ነው።", "እንዴት ነህ።")) == [[0], [1], [2], [3], [4], [5]]
+
+
 def test_redistribute_proportional_word_boundaries():
     # Equal source shares → cut at the space nearest the middle.
     assert translation._redistribute(["aaaa", "bbbb"],
