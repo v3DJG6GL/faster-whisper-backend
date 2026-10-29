@@ -668,6 +668,33 @@ def test_conflict_merge_reports_the_other_writers_pattern_fix_the_user_also_adde
     assert res["same"] == [["x"], ["a>1", "x>U", "y>1"]]
 
 
+def test_conflict_merge_reports_the_other_writers_pattern_fix_to_an_entry_the_user_deleted(
+        client, tmp_path):
+    # The user deleted b while the other writer only fixed b's pattern: the
+    # entry came back under a clean "Auto-merged" toast, though a deleted
+    # entry the other writer changed the replacement of stays deleted.
+    page = client.get("/quick-config").text
+    res = _run_js(client, tmp_path, _olist_consts(page) + r"""
+      const e = (p, r) => ({ pattern: p, replacement: r || p.toUpperCase() });
+      const merge = (base, mine, theirs) => {
+        const clashes = [];
+        const m = _applyFieldDiff(theirs, _fieldDiff(base, mine, _diffKindFor('entries')), clashes);
+        return [clashes, m.map(x => x.pattern + '>' + x.replacement)];
+      };
+      out({
+        fixed: merge([e('x'), e('b'), e('y')], [e('x'), e('y')], [e('x'), e('b2', 'B'), e('y')]),
+        // ... and the user appended an entry with the fixed pattern.
+        added: merge([e('a', '1'), e('x', '1'), e('b', '1')], [e('a', '1'), e('b', '1'), e('y', '5')],
+                     [e('a', '1'), e('y', '1'), e('b', '1')]),
+        // the other writer put a new entry in b's place: kept, nothing to review.
+        replaced: merge([e('x'), e('b'), e('y')], [e('x'), e('y')], [e('x'), e('c'), e('y')]),
+      });
+    """, funcs=_OLIST_FUNCS)
+    assert res["fixed"] == [["b2"], ["x>X", "b2>B", "y>Y"]]
+    assert res["added"] == [["y"], ["a>1", "b>1", "y>5"]]
+    assert res["replaced"] == [[], ["x>X", "c>C", "y>Y"]]
+
+
 def test_reapply_keeps_the_users_edits_on_a_rule_whose_entry_both_writers_edited(client, tmp_path):
     # One entry both writers edited made _reapplyDiffs skip the whole rule:
     # every other unsaved edit on it (added entries, the enabled toggle, other

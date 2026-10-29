@@ -2175,7 +2175,8 @@ function _applyFieldDiff(serverValue, diff, clashes) {
     // one side changed takes that side's version in place, and one both
     // sides changed differently is a clash (user's version kept, reported
     // through `clashes`). The user's deletions
-    // win and an entry the user edited survives the other writer deleting
+    // win (bar one the other writer fixed the pattern of: kept, a clash)
+    // and an entry the user edited survives the other writer deleting
     // it, as for dict keys. The other writer's new entries go in after
     // their nearest server-side predecessor still present (or at the top),
     // so the user's apply order holds.
@@ -2199,6 +2200,7 @@ function _applyFieldDiff(serverValue, diff, clashes) {
     }
     const have = new Set(out.map(([k]) => k));
     const kept = new Map(out);
+    const baseRaw = new Map(baseKeyed);
     let prev = null;
     for (let [i, [k, x]] of server.entries()) {
       // A pattern edit _olistAlign paired with a base entry may as well be
@@ -2209,10 +2211,14 @@ function _applyFieldDiff(serverValue, diff, clashes) {
       const mineK = kept.get(k);
       if (k !== serverOwn[i][0] && _stringify(mineK) !== _stringify(x)
           && !(mineK !== null && typeof mineK === 'object' && mineK.pattern === x.pattern)) {
+        const b = baseRaw.get(k);
         k = serverOwn[i][0];
         // The user's side holds another entry under that id (the same
         // pattern added elsewhere): theirs is not inserted, so it is a clash.
-        const clash = have.has(k) && _stringify(kept.get(k)) !== _stringify(x);
+        // So is the user's deletion of an entry the other writer only fixed
+        // the pattern of (all else as in base): it comes back for review.
+        const clash = (have.has(k) && _stringify(kept.get(k)) !== _stringify(x))
+          || (mineK === undefined && _stringify({ ...b, pattern: x.pattern }) === _stringify(x));
         if (clash && clashes) clashes.push(String(x.pattern));
       }
       if (!base.has(k) && !have.has(k)) {
