@@ -2447,7 +2447,8 @@
     actions.appendChild(statusLbl);
 
     var dirty = document.createElement('span');
-    dirty.className = 'dirty hidden';
+    // renderChips above may already have marked a healed chip dirty.
+    dirty.className = state.dirty ? 'dirty' : 'dirty hidden';
     dirty.textContent = 'unsaved';
     actions.appendChild(dirty);
     state.dirtyEl = dirty;
@@ -2705,10 +2706,15 @@
     // form before the karaoke band started showing post-pipeline
     // words. Recompute from the current display words so the chip,
     // strike-through, and applyCorrectionsToGround all agree on what
-    // text the chip is replacing.
+    // text the chip is replacing. A heal is an edit: the stored chip
+    // still carries the old `wrong`, which the export never finds in the
+    // text, so it only takes effect once saved.
+    var healed = false;
     state.corrections.forEach(function(c) {
-      c.wrong = recomputeWrong(state, c) || c.wrong;
+      var w = recomputeWrong(state, c) || c.wrong;
+      if (w !== c.wrong) { c.wrong = w; healed = true; }
     });
+    if (healed) markDirty(state);
     refreshAllReplacementsInline(state);
     if (state.corrections.length === 0) {
       var empty = document.createElement('span');

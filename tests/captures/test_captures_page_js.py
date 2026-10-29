@@ -414,6 +414,37 @@ console.log(JSON.stringify({ span: span,
 
 
 @needs_node
+def test_chip_healed_on_render_marks_the_card_unsaved(page, tmp_path):
+    """A chip stored with a filler inside `wrong` (made before the range fix)
+    got its `wrong` rewritten on expand, so the Final result showed the
+    correction, but the card stayed clean: no "unsaved" marker, no Save
+    prompt, and the export still dropped the stored chip. A chip already in
+    its healed form leaves the card clean."""
+    fns = "\n".join(_js_function(page, f) for f in (
+        "_dispWord", "_dispRemoved", "recomputeWrong", "renderChips",
+        "markDirty"))
+    out = _run_node(tmp_path, fns + r"""
+function el() { return { classList: { remove: function() {} },
+  appendChild: function() {}, addEventListener: function() {} }; }
+global.document = { createElement: el };
+function refreshAllReplacementsInline() {}
+var words = [{ word: ' foo' }, { word: ' um', removed: true }, { word: ' bar' },
+             { word: ' baz' }];
+function run(wrong) {
+  var state = { words: words, chipBox: el(), dirty: false,
+    corrections: [{ wrong: wrong, correct: 'X', idx: 0, idx_end: 2 }] };
+  renderChips(state);
+  return [state.corrections[0].wrong, state.dirty];
+}
+console.log(JSON.stringify({ stale: run('foo um bar'), healed: run('foo bar') }));
+""")
+    assert out == {"stale": ["foo bar", True], "healed": ["foo bar", False]}
+    # The capture card renders its chips before it builds the marker, so the
+    # marker has to start out shown when that render already marked it.
+    assert "dirty.className = state.dirty ? 'dirty' : 'dirty hidden';" in page
+
+
+@needs_node
 def test_strip_keyboard_follows_the_latest_preview_activation(page, tmp_path):
     """A merge-preview panel reuses its strip element, but each ▶ builds a
     fresh state. The keyboard handlers bound once kept the first state, so
