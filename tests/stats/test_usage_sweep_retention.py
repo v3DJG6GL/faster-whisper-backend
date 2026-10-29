@@ -62,6 +62,15 @@ def test_stale_unreported_scan_uses_the_partial_index(usage_store_db):
     assert any("idx_usage_jobs_unreported" in row[-1] for row in plan), plan
 
 
+def test_app_name_scrub_uses_the_partial_index(usage_store_db):
+    """The hourly scrub runs under _lock; on idx_usage_jobs_created it walks
+    every job past the app clock even when none still names a program."""
+    us = usage_store_db
+    plan = us._require_conn().execute(
+        "EXPLAIN QUERY PLAN " + us._APP_SCRUB_SQL, (0.0,)).fetchall()
+    assert any("idx_usage_jobs_app" in row[-1] for row in plan), plan
+
+
 def test_app_retention_scrubs_the_program_name_off_old_job_rows(usage_store_db):
     """USAGE_APP_RETENTION_DAYS is a privacy clock: the job rows (kept for the
     longer job retention) must not keep naming the program, or a with=

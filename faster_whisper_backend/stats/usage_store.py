@@ -204,6 +204,10 @@ CREATE INDEX IF NOT EXISTS idx_usage_jobs_user_created ON usage_jobs(user_id, cr
 -- every job past the grace period (nearly the whole retained table).
 CREATE INDEX IF NOT EXISTS idx_usage_jobs_unreported ON usage_jobs(created_ts)
   WHERE kind = 'dictation' AND reported_ts IS NULL;
+-- Same for sweep()'s app-name scrub: after the first pass almost no old row
+-- still has an app_id, so only those few should be visited.
+CREATE INDEX IF NOT EXISTS idx_usage_jobs_app ON usage_jobs(created_ts)
+  WHERE app_id IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS usage_job_stages (
   job_id   TEXT NOT NULL,
@@ -978,6 +982,11 @@ _STALE_UNREPORTED_SQL = (
     "   AND created_ts < ?"
 )
 
+_APP_SCRUB_SQL = (
+    "UPDATE usage_jobs SET app_id = NULL"
+    " WHERE app_id IS NOT NULL AND created_ts < ?"
+)
+
 
 def sweep(
     *,
@@ -1039,11 +1048,7 @@ def sweep(
                 # clock (a with= document reads them back): scrub it on the
                 # same hour boundary, so a job whose app bucket survives
                 # keeps the name _take_over_stub / _roll_late_utterance key on.
-                conn.execute(
-                    "UPDATE usage_jobs SET app_id = NULL"
-                    " WHERE app_id IS NOT NULL AND created_ts < ?",
-                    (app_cutoff_h * 3600,),
-                )
+                conn.execute(_APP_SCRUB_SQL, (app_cutoff_h * 3600,))
             conn.execute("COMMIT")
         except Exception:
             if conn.in_transaction:
