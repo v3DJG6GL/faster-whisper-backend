@@ -1207,7 +1207,9 @@ def _redistribute(group_texts: "list[str]", translated: str) -> "list[str]":
     space, and only when that boundary lies within a quarter of the member's
     share of the ideal cut; else at the raw proportional position (moved
     off a vowel/tone mark it would orphan). Members whose source is blank
-    get an empty piece."""
+    get an empty piece; a reply with fewer character clusters than members
+    is unsplittable and comes back with blank pieces, which the caller
+    reverts."""
     n = len(group_texts)
     if n <= 1:
         return [translated.strip()] if n == 1 else []
@@ -1278,6 +1280,11 @@ def _redistribute(group_texts: "list[str]", translated: str) -> "list[str]":
                  if not ch.isspace()
                  and unicodedata.category(ch) not in ("Mn", "Mc", "Me")
                  and not (k and translated[k - 1] in _JOINS_NEXT)]
+    if len(non_blank) < n:
+        # Fewer clusters than members: any split cuts inside one ('ดี' over
+        # two cues gave 'ด' + a lone 'ี'). A blank piece makes the caller
+        # revert the group.
+        return [translated] + [""] * (n - 1)
 
     cuts: "list[int]" = []
     acc = 0
@@ -1309,13 +1316,9 @@ def _redistribute(group_texts: "list[str]", translated: str) -> "list[str]":
         snapped = cut is not None
         if cut is None:
             cut = int(round(ideal))
-        # Forced forward, and reserving one non-blank char per REMAINING
-        # member so the leading cuts can never eat the tail. (A translation
-        # shorter than the member count is unsplittable — the caller reverts
-        # the group.)
-        left = n - 1 - i
-        limit = (non_blank[-left] if len(non_blank) >= left
-                 else len(translated) - left)
+        # Forced forward, and reserving one cluster start per REMAINING
+        # member so the leading cuts can never eat the tail.
+        limit = non_blank[-(n - 1 - i)]
         cut = max(prev + 1, min(cut, limit))
         if not snapped:
             # No word boundary left: raw proportional cut, pushed past any

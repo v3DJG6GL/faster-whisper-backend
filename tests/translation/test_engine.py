@@ -649,6 +649,17 @@ def test_redistribute_never_reserves_a_lone_tone_mark_for_the_tail():
         ["ฉันคิดว่าเราจะทำเสร็จวัน", "นี้", "ได้"]
 
 
+def test_redistribute_fewer_clusters_than_members_is_unsplittable():
+    """A reply with fewer character clusters than members was still cut one
+    char past the previous cut, inside a cluster: 'ดี' over two cues gave
+    'ด' and a lone vowel sign, and with no blank piece the caller never
+    reverted the group."""
+    assert translation._redistribute(["Well,", "fine."], "ดี") == ["ดี", ""]
+    assert translation._redistribute(["Ja,", "klar."], "ได้") == ["ได้", ""]
+    assert translation._redistribute(
+        ["Nein,", "das geht", "nicht."], "ไม่ได้") == ["ไม่ได้", "", ""]
+
+
 # ---------------------------------------------------------------------------
 # translate_segments — stubbed through the _complete seam
 # ---------------------------------------------------------------------------
@@ -1286,6 +1297,19 @@ def test_fluent_short_reply_reverts_group_instead_of_blank_cues(
     assert [r["en"] for r in res] == [s["text"] for s in segs]
     assert len(warns) == 1 and "redistribution left empty cues" in warns[0]
     assert meta["kept"] == {i: ["en"] for i in range(6)}
+
+
+def test_fluent_reply_with_fewer_clusters_than_cues_reverts_group(
+        base_cfg, monkeypatch):
+    """'ได้' is three chars but one cluster: over the two cues it was split
+    into a lone prevowel 'ไ' and 'ด้' instead of reverting the group."""
+    _install_fake(monkeypatch, lambda t: "ได้")
+    segs = _segs("Ja,", "klar.")
+    res, warns, meta = _run(translation.translate_segments(
+        segs, ["th"], source_lang="de", mode="fluent"))
+    assert [r["th"] for r in res] == ["Ja,", "klar."]
+    assert len(warns) == 1 and "redistribution left empty cues" in warns[0]
+    assert meta["kept"] == {0: ["th"], 1: ["th"]}
 
 
 def test_fluent_group_failure_keeps_member_originals(base_cfg, monkeypatch):
