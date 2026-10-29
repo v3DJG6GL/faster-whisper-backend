@@ -4703,6 +4703,10 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
         fd.default_value = JSON.parse(JSON.stringify(out.rules));
         if (!out.shadowed_by_local && !out.env_pinned) {
           fd.value = JSON.parse(JSON.stringify(out.rules));
+          // The server wrote every promoted rule as seeded:true; a new custom
+          // rule still says seeded:false here, and _sansRevs keeps `seeded`.
+          const promoted = new Set(out.rules.map(r => r && r.name));
+          rules.forEach(r => { if (r && promoted.has(r.name)) r.seeded = true; });
           _setRulesDirty();
         }
       }

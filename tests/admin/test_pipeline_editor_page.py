@@ -4,6 +4,12 @@ all five sync dialogs against a local list holding an edited rule, a
 not-edited-but-outdated rule and a missing config.json rule, no JS errors.
 """
 
+import json
+import shutil
+import subprocess
+
+import pytest
+
 from faster_whisper_backend.settings import config_store as cs
 from faster_whisper_backend.settings import schema as settings_schema
 
@@ -370,3 +376,45 @@ def test_new_slugs_are_unique_against_config_json_too(client):
             ".concat(factoryRules.map(b => b.name)));") in html
     assert ".concat(factoryRules.map(b => b.name)));\n" in html[
         html.index("if (!slugFixed(rule)) {"):]
+
+
+def _slice(html, start, end):
+    return html[html.index(start):html.index(end)]
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
+def test_unshadowed_promote_of_a_new_rule_leaves_save_unlit(client):
+    """A new custom rule is seeded:false in the editor; the server writes it
+    to config.json as seeded:true and _postFactory synced fieldDef to that,
+    but _sansRevs keeps `seeded`, so Save stayed lit after the promote — and
+    that Save pinned a full local copy shadowing later config.json updates.
+    The real _sansRevs / _setRulesDirty / _postFactory run under node."""
+    html = _html(client)
+    fns = (_slice(html, "function _sortDeep(o) {", "  // The server copy (schema model_dump)")
+           + _slice(html, "function _withDefaults(r) {", "  // Content equality ignoring")
+           + _slice(html, "function _sansRevs(v, keep) {", "function commitData() {")
+           + _slice(html, "async function _postFactory(arr) {", "async function _fetchFactory() {"))
+    drive = r"""
+const name = 'PIPELINE_RULES';
+const term = { name: 'terminal', type: 'terminal', seeded: true };
+const fields = { PIPELINE_RULES: { value: [term], default_value: [term] } };
+const fieldDef = n => fields[n];
+const dirty = {};
+const setDirty = (n, v) => { dirty[n] = v; };
+const paintAll = () => {};
+const alert = m => { throw new Error(m); };
+let factoryRules = [term];
+let rules = [{ name: 'my-rule', type: 'regex', pattern: 'a', replacement: 'b',
+               seeded: false }, term];
+const served = [{ name: 'my-rule', type: 'regex', pattern: 'a', replacement: 'b',
+                  seeded: true }, term];
+const api = async () => ({ ok: true, status: 200, json: async () => ({ rules: served }) });
+(async () => {
+  await _postFactory(rules);
+  const d = dirty[name];
+  console.log(JSON.stringify({ clean: d === fields[name].value, seeded: rules[0].seeded }));
+})();
+"""
+    out = subprocess.run(["node", "-"], input=fns + drive, capture_output=True, text=True,
+                         encoding="utf-8", timeout=30, check=True)
+    assert json.loads(out.stdout) == {"clean": True, "seeded": True}
