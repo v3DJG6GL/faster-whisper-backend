@@ -1041,7 +1041,7 @@ def test_merge_modal_preview_places_chips_by_aligned_words(page, tmp_path):
     fns = "\n".join(_js_function(page, f) for f in (
         "_applyChipsToText", "_buildDefaultTranscript", "_renderMergePreview",
         "_capturePreviewText"))
-    out = _run_node(tmp_path, "var JOIN_STR = { space: ' ', period_space: '. ' };\n" + fns + r"""
+    out = _run_node(tmp_path, _js_function(page, "_endsSentence") + "\n" + fns + r"""
 function escapeHtml(s) { return String(s); }
 var lines = [];
 var host = { set innerHTML(v) {}, appendChild: function(l) { lines.push(l.innerHTML); } };
@@ -1062,6 +1062,26 @@ console.log(JSON.stringify({
                    "member": "Die Katze die Maus",
                    "card": "Die Katze die Maus",
                    "unaligned": "die Katze Die Maus"}
+
+
+@needs_node
+@pytest.mark.parametrize("finals, expected", [
+    (["Hallo Welt.", "Wie geht es?", "gut"], "Hallo Welt. Wie geht es? gut"),
+    (["Stopp!", "«Ja.»", "nein"], "Stopp! «Ja.» nein"),
+    (["eins", "zwei…", "drei"], "eins. zwei… drei"),
+])
+def test_merge_preview_period_space_join_matches_the_server(
+        page, tmp_path, finals, expected):
+    """The JS twin of samples._build_default_transcript still put a literal
+    ". " between members after the server stopped doubling a member's own
+    sentence punctuation, so the preview showed "Hallo Welt.. Wie …"."""
+    fns = "\n".join(_js_function(page, f) for f in (
+        "_endsSentence", "_applyChipsToText", "_buildDefaultTranscript"))
+    rows = [{"final": f} for f in finals]
+    out = _run_node(tmp_path, fns + "\nconsole.log(JSON.stringify("
+                    "_buildDefaultTranscript(" + json.dumps(rows)
+                    + ", 'period_space')));")
+    assert out == expected
 
 
 # The open group card's applyServerSample under node: every DOM handle it
