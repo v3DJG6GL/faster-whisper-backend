@@ -69,6 +69,18 @@ def test_validate_url_rejects_a_lone_surrogate():
             udl.validate_url(url)
 
 
+def test_validate_url_rejects_a_malformed_port():
+    """urlsplit accepts these; they used to pass and fail in the probe as
+    "the site could not be reached"."""
+    for url in ("https://example.com:abc/a.mp3",
+                "https://example.com:99999/a.mp3",
+                "https://example.com:-1/a.mp3"):
+        with pytest.raises(udl.UrlDownloadError, match="port is invalid"):
+            udl.validate_url(url)
+    for url in ("https://example.com:8443/a.mp3", "https://example.com:/a.mp3"):
+        assert udl.validate_url(url) == url
+
+
 def test_validate_url_rejects_overlong():
     with pytest.raises(udl.UrlDownloadError):
         udl.validate_url("https://example.com/" + "a" * 2048)

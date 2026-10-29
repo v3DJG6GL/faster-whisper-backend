@@ -592,6 +592,12 @@ def validate_url(url: str) -> str:
         raise UrlDownloadError("only http(s) URLs are supported")
     if not parts.hostname:
         raise UrlDownloadError("the URL has no host")
+    # urlsplit takes `host:abc` / `host:99999`; only .port raises, and the
+    # probe's failure read as "could not be reached". Say what it is.
+    try:
+        parts.port
+    except ValueError:
+        raise UrlDownloadError("the URL's port is invalid") from None
     # An empty or >63-char label (`a..com`) or a lone surrogate makes
     # getaddrinfo raise UnicodeError downstream: answer a client 400 here.
     try:
