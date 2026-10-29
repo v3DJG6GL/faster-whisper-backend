@@ -677,3 +677,33 @@ jumpToGlobalRule('de-tidy');
 console.log(JSON.stringify(btn.clicked));
 """)
     assert out == 1
+
+
+@needs_node
+def test_rule_drag_payload_is_not_a_text_type(client):
+    """A text/plain payload is a native drop for every text field: releasing
+    the grip over a rule's text input or textarea inserted the row index
+    there. Firefox still needs some setData to start the drag."""
+    start = _block(_html(client, "/settings/pipeline"),
+                   "      drag.addEventListener('dragstart', (e) => {",
+                   "\n      });\n")
+    out = _node(_FAKE_DOM + """
+const DRAG_AUTOSCROLL = { begin() {} };
+const list = document.createElement('div');
+const placeholder = document.createElement('div');
+const row = document.createElement('div');
+const drag = document.createElement('span');
+const idx = 3;
+let dragSrcEl = null;
+let dragSrcIdx = null;
+function setTimeout() {}
+""" + start + """
+const types = [];
+const dt = { setData(t) { types.push(t); }, setDragImage() {} };
+fire(drag, 'dragstart', { dataTransfer: dt }).then(() => {
+  console.log(JSON.stringify([types, dragSrcIdx]));
+});
+""")
+    types, src_idx = out
+    assert types and not [t for t in types if t.lower().startswith("text")]
+    assert src_idx == 3

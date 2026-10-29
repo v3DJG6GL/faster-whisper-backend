@@ -3276,7 +3276,10 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
         dragSrcEl = row;
         DRAG_AUTOSCROLL.begin(list);   // resolve scroll target for edge auto-scroll
         // Firefox requires setData() — without it, the drag never fires.
-        try { e.dataTransfer.setData('text/plain', String(idx)); } catch (_) {}
+        // A private type, not text/plain: every text field accepts a text
+        // drop natively, so a release over a rule's input inserted the index
+        // there. The drop handler reads dragSrcIdx, never the payload.
+        try { e.dataTransfer.setData('application/x-fwb-rule-card', String(idx)); } catch (_) {}
         e.dataTransfer.effectAllowed = 'move';
         // Whole row as the drag ghost (not just the handle glyph) so
         // the user sees what they're moving. Must run synchronously.
