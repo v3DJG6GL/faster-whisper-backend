@@ -223,6 +223,11 @@ def test_single_capture_ground_preview_uses_the_shared_helper(client):
     (["你好。", "好吗？", "好"], "你好。 好吗？ 好"),
     (["「好！」", "（是？）", "مرحبا؟", "नमस्ते।", "Wie⁉", "gut"],
      "「好！」 （是？） مرحبا؟ नमस्ते। Wie⁉ gut"),
+    # Urdu ۔, Armenian ։, Amharic ።, Burmese ။, Khmer ។, double danda ॥.
+    (["یہ ٹھیک ہے۔", "Լավ է։", "ደህና ነው።", "ကောင်းတယ်။", "ល្អ។", "ॐ॥", "gut"],
+     "یہ ٹھیک ہے۔ Լավ է։ ደህና ነው። ကောင်းတယ်။ ល្អ។ ॐ॥ gut"),
+    # French typography: a space before the closing ».
+    (["Il a dit : « Oui. »", "non"], "Il a dit : « Oui. » non"),
 ])
 def test_period_space_join_adds_no_period_after_sentence_punctuation(
         finals, expected):

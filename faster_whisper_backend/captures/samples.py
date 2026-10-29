@@ -23,14 +23,18 @@ from faster_whisper_backend.settings import config as cfg
 
 # Sentence-final punctuation (before any closing quotes/brackets): a member
 # ending in one gets no extra "." under the period_space join. Covers German
-# „…“ / ‚…‘ quotes and CJK / Arabic / Devanagari enders; the JS twin
-# _endsSentence in captures.html must keep the same sets.
-_SENTENCE_END = ".?!…。！？؟।‼⁇⁈⁉"
+# „…“ / ‚…‘ quotes and CJK / Arabic / Devanagari / Burmese / Khmer / Urdu ۔ /
+# Armenian ։ / Amharic ። enders; the JS twin _endsSentence in captures.html
+# must keep the same sets.
+_SENTENCE_END = ".?!…。！？؟।॥။។៕۔։።‼⁇⁈⁉"
 _SENTENCE_CLOSERS = "\"'”’»«“‘›‹)]}」』）］｝》〉"
 
 
 def _ends_sentence(text: str) -> bool:
-    tail = text.rstrip(_SENTENCE_CLOSERS)
+    # Spaces too: French typography puts one before the » ('Oui. »').
+    tail = text.rstrip()
+    while tail and tail[-1] in _SENTENCE_CLOSERS:
+        tail = tail[:-1].rstrip()
     return bool(tail) and tail[-1] in _SENTENCE_END
 
 

@@ -1304,6 +1304,9 @@ console.log(JSON.stringify({
      "مرحبا؟ नमस्ते। Wie⁉ Was‼ gut"),
     (["{eins.}", "《二。》", "〈三！〉", "›vier?‹", "fünf"],
      "{eins.} 《二。》 〈三！〉 ›vier?‹ fünf"),
+    (["یہ ٹھیک ہے۔", "Լավ է։", "ደህና ነው።", "ကောင်းတယ်။", "ល្អ។", "ॐ॥", "gut"],
+     "یہ ٹھیک ہے۔ Լավ է։ ደህና ነው። ကောင်းတယ်။ ល្អ។ ॐ॥ gut"),
+    (["Il a dit : « Oui. »", "non"], "Il a dit : « Oui. » non"),
 ])
 def test_merge_preview_period_space_join_matches_the_server(
         page, tmp_path, finals, expected):
