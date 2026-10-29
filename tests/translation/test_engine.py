@@ -585,6 +585,18 @@ def test_redistribute_never_emits_empty_members():
     assert not all(pieces)
 
 
+def test_redistribute_reserves_non_blank_chars_for_the_tail():
+    """French typography's space before "!" / "?": the tail was reserved in
+    raw chars, a reserved space left the last cue blank and the caller
+    reverted the whole group to the source text."""
+    assert translation._redistribute(
+        ["Oh,", "thank", "you so", "much!"], "Merci beaucoup !") == \
+        ["Merci", "beaucou", "p", "!"]
+    assert translation._redistribute(
+        ["Is", "that", "really", "true?"], "Vraiment ?") == \
+        ["Vraime", "n", "t", "?"]
+
+
 # ---------------------------------------------------------------------------
 # translate_segments — stubbed through the _complete seam
 # ---------------------------------------------------------------------------

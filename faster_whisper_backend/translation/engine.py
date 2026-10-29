@@ -1250,6 +1250,9 @@ def _redistribute(group_texts: "list[str]", translated: str) -> "list[str]":
         return dict(zip(tier, rooms))
 
     rooms = [_rooms(tier) for tier in tiers]
+    # Positions of the non-blank chars: the tail is reserved in THESE, since
+    # a reserved char that is a space ("beaucoup !") still left a blank cue.
+    non_blank = [k for k, ch in enumerate(translated) if not ch.isspace()]
 
     cuts: "list[int]" = []
     acc = 0
@@ -1281,10 +1284,14 @@ def _redistribute(group_texts: "list[str]", translated: str) -> "list[str]":
         snapped = cut is not None
         if cut is None:
             cut = int(round(ideal))
-        # Forced forward, and reserving one char per REMAINING member so the
-        # leading cuts can never eat the tail. (A translation shorter than
-        # the member count is unsplittable — the caller reverts the group.)
-        cut = max(prev + 1, min(cut, len(translated) - (n - 1 - i)))
+        # Forced forward, and reserving one non-blank char per REMAINING
+        # member so the leading cuts can never eat the tail. (A translation
+        # shorter than the member count is unsplittable — the caller reverts
+        # the group.)
+        left = n - 1 - i
+        limit = (non_blank[-left] if len(non_blank) >= left
+                 else len(translated) - left)
+        cut = max(prev + 1, min(cut, limit))
         if not snapped:
             # No word boundary left: raw proportional cut, pushed past any
             # whitespace-only slice (which .strip() would empty).
@@ -1293,7 +1300,7 @@ def _redistribute(group_texts: "list[str]", translated: str) -> "list[str]":
             # Nor inside a character cluster: a cue that opens on a vowel or
             # tone mark shows it on a dotted circle, and the word before it
             # loses that mark (Thai, Khmer, Burmese, decomposed accents).
-            while cut < len(translated) - (n - 1 - i) and (
+            while cut < limit and (
                     unicodedata.category(translated[cut]) in ("Mn", "Mc", "Me")
                     or translated[cut - 1] in _JOINS_NEXT):
                 cut += 1
