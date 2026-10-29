@@ -41,6 +41,8 @@ def _stub_load(monkeypatch):
     """Neutralise everything _get_or_load_model needs from the native stack."""
     fw = types.ModuleType("faster_whisper")
     fw.WhisperModel = lambda path, **kw: FakeModel()
+    # The short names these cases load, standing in for the size list.
+    fw.available_models = lambda: ["a", "b", "c", "x", "y"]
     monkeypatch.setitem(sys.modules, "faster_whisper", fw)
 
     async def _same(name):
@@ -102,6 +104,77 @@ def test_all_leased_overflows_the_cap(monkeypatch, caplog):
     assert set(tx_models._loaded_models) == {"a", "b"}
     assert any("temporarily exceeding MAX_LOADED_MODELS" in r.getMessage()
                for r in caplog.records)
+
+
+def _stub_doomed_constructor(monkeypatch, built):
+    """WhisperModel as faster-whisper builds it: an unknown short size is a
+    ValueError, a missing Hub repo the snapshot error itself."""
+    def _build(path, **kw):
+        built.append(path)
+        if path not in sys.modules["faster_whisper"].available_models():
+            raise ValueError(f"Invalid model size '{path}'")
+        return FakeModel()
+    monkeypatch.setattr(sys.modules["faster_whisper"], "WhisperModel", _build)
+
+
+def test_unknown_short_name_evicts_nothing(monkeypatch):
+    """A typo'd size can only fail in the constructor; rejected before the
+    LRU loop, it no longer costs the hot model a cold reload."""
+    _stub_load(monkeypatch)
+    built = []
+    _stub_doomed_constructor(monkeypatch, built)
+    monkeypatch.setattr(tx_models.cfg, "MAX_LOADED_MODELS", 1, raising=False)
+    _register("a")
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(tx_models._get_or_load_model("largev3", lease=True))
+
+    assert exc.value.status_code == 400
+    assert set(tx_models._loaded_models) == {"a"}
+    assert built == [] and tx_models._model_leases == {}
+
+
+def test_short_name_of_a_local_dir_still_loads(monkeypatch, tmp_path):
+    _stub_load(monkeypatch)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "my-model").mkdir()
+    monkeypatch.setattr(tx_models.cfg, "MAX_LOADED_MODELS", 4, raising=False)
+
+    asyncio.run(tx_models._get_or_load_model("my-model"))
+
+    assert "my-model" in tx_models._loaded_models
+
+
+@pytest.mark.parametrize("err", ["RepositoryNotFoundError",
+                                 "RevisionNotFoundError"])
+def test_repo_missing_on_the_hub_evicts_nothing(monkeypatch, err):
+    """snapshot_download raises these only after its cache fallback missed,
+    so the constructor (same arguments) would too: fail before the LRU loop
+    instead of swallowing it as a best-effort pre-download failure."""
+    import httpx2
+    import huggingface_hub
+    from huggingface_hub import errors as hf_errors
+    _stub_load(monkeypatch)
+    built = []
+    _stub_doomed_constructor(monkeypatch, built)
+    monkeypatch.setattr(tx_models.cfg, "LOCAL_FILES_ONLY", False,
+                        raising=False)
+    monkeypatch.setattr(tx_models.cfg, "MAX_LOADED_MODELS", 1, raising=False)
+    response = httpx2.Response(404, request=httpx2.Request(
+        "GET", "https://huggingface.co/api/models/org/nope"))
+
+    def _missing(**kw):
+        raise getattr(hf_errors, err)("not found", response=response)
+    monkeypatch.setattr(huggingface_hub, "snapshot_download", _missing)
+    _register("a")
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(tx_models._get_or_load_model("org/nope", lease=True))
+
+    assert exc.value.status_code == 400
+    assert err in exc.value.detail
+    assert set(tx_models._loaded_models) == {"a"}
+    assert built == [] and tx_models._model_leases == {}
 
 
 # --- lease acquisition -------------------------------------------------------

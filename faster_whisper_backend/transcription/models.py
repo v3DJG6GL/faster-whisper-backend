@@ -1147,8 +1147,22 @@ async def _load_on_miss(name: str, *, lease: bool) -> "WhisperModel":
     # Lazy import (see the TYPE_CHECKING note up top): only when a model is
     # actually loaded do we need the native faster_whisper stack.
     from faster_whisper import WhisperModel  # noqa: F401  (used in executor lambdas below)
+    from faster_whisper import available_models
 
     _check_model_shape(name)
+    # A short name that is neither a local dir nor a faster-whisper size can
+    # only end in the constructor's ValueError ("Invalid model size"). Refuse
+    # it here: past this point the LRU loop below evicts a resident model for
+    # a load that was never going to succeed. (No "/" never auto-converts, so
+    # `name` is already the constructor's path.)
+    if ("/" not in name and not os.path.isdir(name)
+            and name not in available_models()):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Model '{name}' is not a faster-whisper model name or a "
+                   f"HuggingFace repo id. Known names: "
+                   f"{', '.join(available_models())}",
+        )
 
     # Auto-convert HF transformers Whisper repos to CT2 format if enabled.
     # Runs OUTSIDE _model_load_lock so loads of OTHER cached models stay
@@ -1191,10 +1205,19 @@ async def _load_on_miss(name: str, *, lease: bool) -> "WhisperModel":
     # EVERY other whisper load on the server for its whole duration. The
     # re-check under the lock below is what keeps a concurrent loader that
     # won the race honoured.
+    #
+    # Except a repo or revision the Hub says does not exist: snapshot_download
+    # raises that only once its local-cache fallback missed too, and the
+    # constructor calls it with the same arguments, so the load is doomed.
+    # Raised here, before the LRU loop below evicts a resident model for it.
+    _hub_missing: "Exception | None" = None
     if not dl_kwargs.get("local_files_only") and not os.path.isdir(load_path):
         try:
             from faster_whisper_backend.runtime import download_progress
             from huggingface_hub import snapshot_download
+            from huggingface_hub.errors import (
+                RepositoryNotFoundError, RevisionNotFoundError,
+            )
             _dl_repo = load_path
             if "/" not in _dl_repo:
                 from faster_whisper.utils import _MODELS as _FW_MODELS
@@ -1235,12 +1258,21 @@ async def _load_on_miss(name: str, *, lease: bool) -> "WhisperModel":
 
                 try:
                     await loop.run_in_executor(None, _fetch)
+                except (RepositoryNotFoundError, RevisionNotFoundError) as e:
+                    _hub_missing = e
                 finally:
                     jobs.job_end(_dl_job)
         except Exception as _dl_err:  # noqa: BLE001 — best-effort
             logger.warning(
                 "Pre-download of %s failed (%s); the model constructor "
                 "will download instead", name, _dl_err)
+    if _hub_missing is not None:
+        logger.warning("Model %s not found on the Hub: %s", name, _hub_missing)
+        raise HTTPException(
+            status_code=400,
+            detail=f"Model '{name}' was not found on the HuggingFace Hub "
+                   f"({type(_hub_missing).__name__}).",
+        ) from _hub_missing
 
     async with _model_load_lock:
         # load_secs = constructor time only: the best-effort Hub pre-download

@@ -21,6 +21,8 @@ from faster_whisper_backend.transcription import models as tx_models
 def _stub_load(monkeypatch):
     fw = types.ModuleType("faster_whisper")
     fw.WhisperModel = lambda path, **kw: FakeModel()
+    # The short names these cases load, standing in for the size list.
+    fw.available_models = lambda: ["a", "b", "c", "x", "y"]
     monkeypatch.setitem(sys.modules, "faster_whisper", fw)
 
     async def _same(name):
@@ -253,6 +255,7 @@ def test_cancel_during_construction_finishes_the_build_under_the_lock(
         return FakeModel()
     fw = types.ModuleType("faster_whisper")
     fw.WhisperModel = _slow_model
+    fw.available_models = sys.modules["faster_whisper"].available_models
     monkeypatch.setitem(sys.modules, "faster_whisper", fw)
 
     async def run():
@@ -341,6 +344,7 @@ def test_hardware_change_during_a_queued_load_reaches_the_constructor(
     built = []
     fw = types.ModuleType("faster_whisper")
     fw.WhisperModel = lambda path, **kw: built.append(kw) or FakeModel()
+    fw.available_models = sys.modules["faster_whisper"].available_models
     monkeypatch.setitem(sys.modules, "faster_whisper", fw)
     monkeypatch.setattr(tx_models, "_model_load_lock", asyncio.Lock())
     monkeypatch.setattr(tx_models.cfg, "MODEL_DEVICE", "cpu", raising=False)
