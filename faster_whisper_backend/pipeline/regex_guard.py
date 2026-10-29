@@ -64,6 +64,11 @@ _PER_CHECK_BUDGET = 5e-3
 # Hard ceiling so a save can never block the admin thread indefinitely
 # (quick_config/routes.py documents the wait around the save call).
 _GUARD_TIMEOUT_MAX = 10.0
+# Ceiling on one save's whole guard hold (the caller's compiles + the screen +
+# the child): validate runs under atomic_json.save_lock, whose waiters give up
+# after SAVE_LOCK_TIMEOUT_S (15 s). Two full budgets at _GUARD_TIMEOUT_MAX
+# would pass that, so a slow-compiling large save trims the child instead.
+_HOLD_MAX = 12.0
 
 # Max output/input length ratio for ONE substitution against the fixture. A
 # legit correction rule shrinks the text or barely grows it; an expanding
@@ -1372,6 +1377,13 @@ def _chain_advance(rx, pattern: str, replacement: str, chained: str) -> str:
         return ""
 
 
+def _slow_compile(where: str, budget: float) -> ValueError:
+    return ValueError(
+        f"{where}: checking the submitted patterns took > {budget:.2g} s — "
+        "simplify them (a case-insensitive character class spanning all of "
+        "Unicode is very slow to compile).")
+
+
 def validate(checks: list, timeout: float | None = None, spent: float = 0.0) -> None:
     """Validate every regex in ``checks`` out-of-process.
 
@@ -1397,10 +1409,13 @@ def validate(checks: list, timeout: float | None = None, spent: float = 0.0) -> 
     case-insensitively, and an IGNORECASE class spanning all of Unicode costs
     milliseconds per atom, so 20 long entries held a save thread for seconds
     before the killable child ever started. Past the budget the save is
-    refused, checked between patterns. The child gets only what is left of
-    the budget, so one save holds its thread for about one budget in all —
-    it runs under atomic_json.save_lock, whose waiters give up after
-    SAVE_LOCK_TIMEOUT_S.
+    refused, checked between patterns. The child compiles every pattern
+    again, so ``spent`` is not charged against it a second time: it gets the
+    budget minus the screen, and one save holds its thread for at most
+    ``spent`` + one budget, capped at _HOLD_MAX — it runs under
+    atomic_json.save_lock, whose waiters give up after SAVE_LOCK_TIMEOUT_S.
+    A child timeout after the caller's compiles already took half of the
+    child's time is reported as slow compiling, not as backtracking.
     """
     if not checks:
         return
@@ -1427,13 +1442,9 @@ def validate(checks: list, timeout: float | None = None, spent: float = 0.0) -> 
                 "and make the alternatives of a repeated group mutually "
                 "exclusive."
             )
-        left = budget - spent - (time.perf_counter() - t0)
-        if left <= 0:
-            raise ValueError(
-                f"{where}: checking the submitted patterns took > "
-                f"{budget:.2g} s — simplify them (a case-insensitive "
-                "character class spanning all of Unicode is very slow to "
-                "compile).")
+        if spent + time.perf_counter() - t0 > budget:
+            raise _slow_compile(where, budget)
+    left = min(budget, _HOLD_MAX - spent) - (time.perf_counter() - t0)
     import json
     import logging
     import subprocess
@@ -1448,8 +1459,12 @@ def validate(checks: list, timeout: float | None = None, spent: float = 0.0) -> 
     except subprocess.TimeoutExpired as exc:
         idx = _last_index(getattr(exc, "stderr", None))
         where = checks[idx][0] if isinstance(idx, int) and 0 <= idx < len(checks) else "a rule"
+        # The child spends about ``spent`` again compiling: past half of its
+        # time, that is the likelier culprit than a backtracking pattern.
+        if spent > left / 2:
+            raise _slow_compile(where, budget)
         raise ValueError(
-            f"{where}: regex took > {budget:.2g} s on the guard's test inputs "
+            f"{where}: regex took > {left:.2g} s on the guard's test inputs "
             "(1 KB of prose, a 4x longer copy, short repetitive runs, and the "
             "text the preceding rules produce) — likely catastrophic "
             "backtracking. Simplify the pattern."

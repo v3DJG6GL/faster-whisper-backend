@@ -440,20 +440,56 @@ def test_budget_grows_with_the_list_and_a_large_rule_set_passes(monkeypatch, cap
     assert g._GUARD_TIMEOUT_MAX - 1 < seen[1] <= g._GUARD_TIMEOUT_MAX
 
 
-def test_helper_gets_only_what_the_caller_left_of_the_budget(monkeypatch):
-    """The seconds the caller already spent compiling are charged against the
-    helper's timeout too: with the full budget on top, one save held its
-    thread ~2x the budget under atomic_json.save_lock, whose waiters give up
-    after 15 s. Nothing left refuses the save before the helper starts."""
+def test_helper_is_not_charged_the_callers_compiles_twice(monkeypatch):
+    """The child compiles every pattern again, so the seconds the caller
+    already spent compiling are NOT taken off its timeout as well: that
+    refused every save whose compiles cost over about half the budget. It gets
+    the budget minus the in-process screen; nothing left of the budget still
+    refuses the save before the helper starts."""
     import subprocess
     seen = []
     monkeypatch.setattr(subprocess, "run", lambda *a, **k: seen.append(k["timeout"])
                         or subprocess.CompletedProcess(a, 0, '{"ok": true}', ""))
     g.validate([("r", "x", "")], timeout=1.0, spent=0.75)
-    assert len(seen) == 1 and 0 < seen[0] <= 0.25
+    assert len(seen) == 1 and 0.9 < seen[0] <= 1.0
     with pytest.raises(ValueError, match="r: checking the submitted patterns took"):
         g.validate([("r", "x", "")], timeout=1.0, spent=1.0)
     assert len(seen) == 1
+
+
+def test_whole_guard_hold_stays_under_the_save_lock_timeout(monkeypatch):
+    """Caller's compiles + screen + child run under atomic_json.save_lock,
+    whose waiters give up after SAVE_LOCK_TIMEOUT_S; two full budgets at the
+    cap would pass it, so the child is trimmed to what _HOLD_MAX leaves."""
+    import subprocess
+    from faster_whisper_backend.core import atomic_json
+    assert g._GUARD_TIMEOUT_MAX <= g._HOLD_MAX < atomic_json.SAVE_LOCK_TIMEOUT_S
+    seen = []
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: seen.append(k["timeout"])
+                        or subprocess.CompletedProcess(a, 0, '{"ok": true}', ""))
+    monkeypatch.setattr(g, "_HOLD_MAX", 1.5)
+    g.validate([("r", "x", "")], timeout=1.0, spent=0.75)
+    assert len(seen) == 1 and 0.5 < seen[0] <= 0.75
+
+
+def test_helper_timeout_after_slow_compiles_does_not_blame_backtracking(monkeypatch):
+    """When the caller's compiles already took over half the child's time,
+    the child (compiling them again) timing out is reported as slow
+    compiling; only a timeout the compiles cannot explain blames
+    backtracking, quoting the time the child really had."""
+    import subprocess
+
+    def _timeout(*a, **k):
+        raise subprocess.TimeoutExpired(a[0], k["timeout"], stderr=b"0\n")
+
+    monkeypatch.setattr(subprocess, "run", _timeout)
+    with pytest.raises(ValueError) as ei:
+        g.validate([("r", "x", "")], timeout=1.0, spent=0.6)
+    msg = str(ei.value)
+    assert msg.startswith("r: checking the submitted patterns took > 1 s")
+    assert "backtracking" not in msg
+    with pytest.raises(ValueError, match=r"r: regex took > 1 s .* catastrophic backtracking"):
+        g.validate([("r", "x", "")], timeout=1.0, spent=0.0)
 
 
 def test_timeout_verdict_names_the_real_probe_inputs(monkeypatch):
