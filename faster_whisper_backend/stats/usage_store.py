@@ -1030,10 +1030,20 @@ def sweep(
                     (cutoff,),
                 ).rowcount or 0
             if app_retention_days > 0:
+                app_cutoff_h = now_hour() - int(app_retention_days) * 24
                 pruned_apps = conn.execute(
                     "DELETE FROM usage_app_hourly WHERE hour < ?",
-                    (now_hour() - int(app_retention_days) * 24,),
+                    (app_cutoff_h,),
                 ).rowcount or 0
+                # The job rows name the same program and outlive the app
+                # clock (a with= document reads them back): scrub it on the
+                # same hour boundary, so a job whose app bucket survives
+                # keeps the name _take_over_stub / _roll_late_utterance key on.
+                conn.execute(
+                    "UPDATE usage_jobs SET app_id = NULL"
+                    " WHERE app_id IS NOT NULL AND created_ts < ?",
+                    (app_cutoff_h * 3600,),
+                )
             conn.execute("COMMIT")
         except Exception:
             if conn.in_transaction:

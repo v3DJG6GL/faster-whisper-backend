@@ -60,3 +60,30 @@ def test_stale_unreported_scan_uses_the_partial_index(usage_store_db):
     plan = us._require_conn().execute(
         "EXPLAIN QUERY PLAN " + us._STALE_UNREPORTED_SQL, (0.0,)).fetchall()
     assert any("idx_usage_jobs_unreported" in row[-1] for row in plan), plan
+
+
+def test_app_retention_scrubs_the_program_name_off_old_job_rows(usage_store_db):
+    """USAGE_APP_RETENTION_DAYS is a privacy clock: the job rows (kept for the
+    longer job retention) must not keep naming the program, or a with=
+    document reads it back after the app rollup dropped it."""
+    us = usage_store_db
+    tr = [{"name": "translating", "secs": 1.0, "targets": ["de"]}]
+    for jid, age_h in (("5" * 32, 200 * 24), ("6" * 32, 10 * 24)):
+        us.record_usage(key_id="k", user_id="u", audio_s=5.0, words=20, status="ok",
+                        kind="dictation", job_id=jid, hour=us.now_hour() - age_h,
+                        stages=tr)
+        us.record_outcome(user_id="u", job_id=jid, activation="hold",
+                          delivery="typed", translation="translated",
+                          app_id="secret.app" if jid[0] == "5" else "vim")
+
+    counts = us.sweep(unreported_after_h=24, jobs_retention_days=365,
+                      app_retention_days=90, hourly_retention_days=0)
+
+    assert counts["apps"] == 1
+    assert counts["jobs"] == 0
+    doc = us.document("u", days=365, tz=_UTC, tz_name="UTC",
+                      with_stages=("translating",))
+    assert doc["apps"] == [{"app_id": "vim", "sessions": 1, "words": 20}]
+    conn = us._require_conn()
+    rows = conn.execute("SELECT job_id, app_id FROM usage_jobs ORDER BY job_id")
+    assert [tuple(r) for r in rows] == [("5" * 32, None), ("6" * 32, "vim")]
