@@ -597,6 +597,29 @@ def test_conflict_merge_keeps_the_other_writers_entry_added_where_they_deleted_o
     assert res["inPlace"] == ["x>X", "b2>B", "y>Y2"]
 
 
+def test_conflict_merge_keeps_both_new_entries_around_a_moved_one(client, tmp_path):
+    # After a side moved an entry up, a later gap overlapped an earlier one and
+    # the same deleted entry's id went to two new entries: one of the other
+    # writer's new entries was dropped under a clean "Auto-merged" toast.
+    page = client.get("/quick-config").text
+    res = _run_js(client, tmp_path, _olist_consts(page) + r"""
+      const e = (p, r) => ({ pattern: p, replacement: r || p.toUpperCase() });
+      const base = [e('a'), e('b'), e('c'), e('d')];
+      // The other writer added X on top, deleted b, moved a after c and added
+      // Y after a; the user only changed d.
+      const theirs = [e('X'), e('c'), e('a'), e('Y'), e('d')];
+      const clashes = [];
+      const m = _applyFieldDiff(theirs, _fieldDiff(base, [e('a'), e('b'), e('c'), e('d', 'D9')],
+                                                   _diffKindFor('entries')), clashes);
+      const keys = _olistAlign(_olistKeyed(base), _olistKeyed(theirs)).map(([k]) => k);
+      out({ merged: m.map(x => x.pattern + '>' + x.replacement).sort(), clashes,
+            uniqueKeys: new Set(keys).size === keys.length });
+    """, funcs=_OLIST_FUNCS)
+    assert res["merged"] == ["X>X", "Y>Y", "a>A", "c>C", "d>D9"]
+    assert res["clashes"] == []
+    assert res["uniqueKeys"] is True
+
+
 def test_reapply_keeps_the_users_edits_on_a_rule_whose_entry_both_writers_edited(client, tmp_path):
     # One entry both writers edited made _reapplyDiffs skip the whole rule:
     # every other unsaved edit on it (added entries, the enabled toggle, other

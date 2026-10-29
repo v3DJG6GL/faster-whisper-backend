@@ -2098,7 +2098,8 @@ function _olistAlign(base, side) {
     if (i > start && at > prev) {
       const dropped = base.slice(prev + 1, at).filter(([k]) => !sideKeys.has(k));
       if (dropped.length === i - start) {
-        dropped.forEach(([k], j) => { out[start + j] = [k, out[start + j][1]]; });
+        // Each id is handed out once: after a moved entry the gaps overlap.
+        dropped.forEach(([k], j) => { out[start + j] = [k, out[start + j][1]]; sideKeys.add(k); });
       }
     }
     prev = at;
