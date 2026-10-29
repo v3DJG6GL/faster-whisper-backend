@@ -327,6 +327,23 @@ def test_default_language_empty_means_autodetect(monkeypatch):
         importlib.reload(config)
 
 
+def test_model_and_log_file_env_are_stripped_and_blank_keeps_current(monkeypatch):
+    # The schema refuses "" for both, so a blank var keeps the current value
+    # like every other str (it logged an error), and an edge space from an
+    # env_file line no longer reverts the model to the factory default.
+    log_file = config.LOG_FILE
+    try:
+        _reload_with_env(monkeypatch, WHISPER_DEFAULT_MODEL="large-v3 ",
+                         WHISPER_LOG_FILE="")
+        assert config.DEFAULT_MODEL == "large-v3"
+        assert config.LOG_FILE == log_file
+        assert not [w for w in config._ENV_WARNINGS
+                    if "DEFAULT_MODEL" in w or "LOG_FILE" in w]
+    finally:
+        monkeypatch.undo()
+        importlib.reload(config)
+
+
 def test_set_typed_special_cases_stay_sets(monkeypatch):
     try:
         _reload_with_env(

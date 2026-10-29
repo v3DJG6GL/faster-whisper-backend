@@ -70,13 +70,9 @@ with open(os.path.join(os.path.dirname(os.path.dirname(
 # import, and a repo-local .env (install-service.sh keeps the pinned paths
 # there) would fill every key that is ABSENT — a popped knob comes straight
 # back. "" is present, so dotenv leaves it alone, and every path reader treats
-# it as unset. WHISPER_LOG_FILE is the exception: its reader is "passthrough",
-# where "" switches file logging off, so it stays popped.
+# it as unset.
 for _k in _DATA_PATH_ENV:
-    if _k == "WHISPER_LOG_FILE":
-        os.environ.pop(_k, None)
-    else:
-        os.environ[_k] = ""
+    os.environ[_k] = ""
 
 RATE = 16000
 

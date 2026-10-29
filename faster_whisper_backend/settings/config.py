@@ -1669,8 +1669,9 @@ _ENV_READER_OVERRIDES = {
     "SUPPRESS_CHARS": "str_or_none", "DOWNLOAD_ROOT": "str_or_none",
     "HF_TOKEN": "str_or_none", "CONVERTED_MODELS_DIR": "str_or_none",
     # empty string is PRESERVED as a literal value (e.g. "" prefix/suffix, or
-    # DEFAULT_LANGUAGE="" meaning auto-detect)
-    "DEFAULT_MODEL": "passthrough", "LOG_FILE": "passthrough",
+    # DEFAULT_LANGUAGE="" meaning auto-detect). Not DEFAULT_MODEL / LOG_FILE:
+    # the schema refuses "" for both (and a model id with an edge space), so
+    # they take the stripping "str" reader (empty → keep current).
     "PREPEND_PUNCTUATIONS": "passthrough", "APPEND_PUNCTUATIONS": "passthrough",
     "OUTPUT_PREFIX": "passthrough", "OUTPUT_SUFFIX": "passthrough",
     "DEFAULT_LANGUAGE": "passthrough",
