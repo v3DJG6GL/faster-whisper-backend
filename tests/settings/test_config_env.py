@@ -331,8 +331,12 @@ def test_model_and_log_file_env_are_stripped_and_blank_keeps_current(monkeypatch
     # The schema refuses "" for both, so a blank var keeps the current value
     # like every other str (it logged an error), and an edge space from an
     # env_file line no longer reverts the model to the factory default.
-    log_file = config.LOG_FILE
     try:
+        # The value the reload yields with the var absent, not the module's
+        # current one: another test may have repointed config.LOG_FILE.
+        monkeypatch.delenv("WHISPER_LOG_FILE", raising=False)
+        importlib.reload(config)
+        log_file = config.LOG_FILE
         _reload_with_env(monkeypatch, WHISPER_DEFAULT_MODEL="large-v3 ",
                          WHISPER_LOG_FILE="")
         assert config.DEFAULT_MODEL == "large-v3"
