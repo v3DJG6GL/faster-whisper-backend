@@ -64,6 +64,22 @@ def test_key_does_not_match_between_combining_marks():
     assert pattern.sub(replace, "लत คร") == "X Y"
 
 
+def test_large_non_ascii_map_stays_fast():
+    """One mark class per key edge made compiling a 500-key Cyrillic map
+    ~0.6 s and each sub of a 20k-char transcript ~1 s, 5-9x the plain `\\w`
+    bounds; the class was walked for every key at every text position."""
+    letters = "абвгдежзиклмнопрстуфхцчшщэюя"
+    words = [letters[i % 28] + letters[i // 28 % 28] + letters[i // 784 % 28] + "ок"
+             for i in range(1000)]
+    keys, others = words[:500], words[500:]
+    text = " ".join(f"{k} {o}," for k, o in zip(keys, others)) * 3
+    t0 = time.perf_counter()
+    pattern, replace, _ = dictation_map.compile_map({k: "x" for k in keys})
+    out = pattern.sub(replace, text)
+    assert time.perf_counter() - t0 < 0.6
+    assert out == " ".join(f"x {o}," for o in others) * 3
+
+
 def _factory_de_map():
     with open(os.path.join(paths.REPO_ROOT, "config.json"), encoding="utf-8") as fh:
         rules = json.load(fh)["PIPELINE_RULES"]

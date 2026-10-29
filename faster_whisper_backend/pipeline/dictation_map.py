@@ -28,6 +28,7 @@ Pure module: no import of ``main``.
 """
 from __future__ import annotations
 
+import itertools
 import re
 from typing import Callable
 
@@ -54,15 +55,25 @@ def _ss_variant(key: str) -> str:
 
 
 # Word edges, marks included. Only a non-ASCII edge gets the mark class: it
-# is ~800 ranges, and splicing it into every key of a 500-key map made each
-# compile (every save) ~70x slower; an ASCII letter next to a mark occurs
-# only in NFD text, which whisper does not emit.
-_NOT_AFTER_WORD = rf"(?<![\w{_MARKS}])"
-_NOT_BEFORE_WORD = rf"(?![\w{_MARKS}])"
+# is ~800 ranges, and an ASCII letter next to a mark occurs only in NFD
+# text, which whisper does not emit.
+_WORD_CLASS = {"ascii": r"\w", "other": rf"[\w{_MARKS}]"}
 
 
-def _bounded(key: str) -> str:
-    """``key`` escaped, word-bounded on every edge that is not whitespace.
+def _edge(ch: str) -> str:
+    """The word class bounding this edge; "" for a whitespace edge."""
+    if not ch or ch.isspace():
+        return ""
+    return "ascii" if ch.isascii() else "other"
+
+
+def _shape(key: str) -> tuple[int, str, str]:
+    return len(key), _edge(key[:1]), _edge(key[-1:])
+
+
+def _alternation(keys: list[str]) -> str:
+    """``keys`` as one alternation, longest first, each word-bounded on
+    every edge that is not whitespace.
 
     Not ``\\b``, and not one lookaround around the whole alternation: after a
     key's own trailing ``.`` ("z.B.") ``\\b`` needs a word character next, and
@@ -71,13 +82,25 @@ def _bounded(key: str) -> str:
     ``(?!\\w)`` refuses. A punctuation edge keeps the bound: a "-" key must
     not rewrite the hyphen inside "E-Mail". A combining mark counts as a
     word char (``\\w`` has none): a "लत" key must not rewrite the inside of
-    "बोलते", nor "คร" that of "ครับ"."""
-    out = re.escape(key)
-    if key[:1] and not key[:1].isspace():
-        out = (r"(?<!\w)" if key[:1].isascii() else _NOT_AFTER_WORD) + out
-    if key[-1:] and not key[-1:].isspace():
-        out += r"(?!\w)" if key[-1:].isascii() else _NOT_BEFORE_WORD
-    return out
+    "बोलते", nor "คร" that of "ครับ".
+
+    Keys of one length and edge kinds share one group, both bounds after
+    it (the lead one as a lookbehind over the key itself). One mark class
+    per key made each compile ~70x slower, and in front of the key it was
+    walked for every key at every text position, so the sub of a 500-key
+    Cyrillic or Hindi map ran 5-9x slower. Reordering keys of one length is
+    safe: at a given position they match the same span, so the same
+    replacement."""
+    parts = []
+    for (n, lead, tail), run in itertools.groupby(
+            sorted(keys, key=_shape, reverse=True), key=_shape):
+        out = "(?:" + "|".join(re.escape(k) for k in run) + ")"
+        if lead:
+            out += rf"(?<!{_WORD_CLASS[lead]}(?s:.){{{n}}})"
+        if tail:
+            out += rf"(?!{_WORD_CLASS[tail]})"
+        parts.append(out)
+    return "|".join(parts)
 
 
 def compile_map(m: dict) -> tuple["re.Pattern[str]", Callable[["re.Match[str]"], str], dict[str, str]]:
@@ -102,10 +125,10 @@ def compile_map(m: dict) -> tuple["re.Pattern[str]", Callable[["re.Match[str]"],
         if derived != k and derived.lower() not in lookup:
             lookup[derived.lower()] = m[k]
             keys.append(derived)
-    alternation = "|".join(_bounded(k) for k in sorted(keys, key=len, reverse=True))
+    alternation = _alternation(keys)
     punct_keys = [k for k in keys if _is_punct_value(lookup.get(k.lower(), ""))]
     if punct_keys:
-        punct_alt = "|".join(_bounded(k) for k in sorted(punct_keys, key=len, reverse=True))
+        punct_alt = _alternation(punct_keys)
         # The spaces are possessive too, so a key that itself starts with a
         # space (" Komma") needs the second branch: the marks alone.
         ahead = r"(?=(?:" + punct_alt + r"))"
