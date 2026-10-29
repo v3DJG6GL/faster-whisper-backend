@@ -521,6 +521,19 @@ def test_redistribute_thai_khmer_burmese_count_as_unspaced():
                 assert left[-1] not in joins_next, pieces
 
 
+def test_redistribute_cuts_after_burmese_and_khmer_sentence_marks():
+    """Burmese ။ and Khmer ។ were no cut candidates, so a sentence mark
+    right at the ideal cut lost to a raw cut that split တယ် across cues."""
+    assert translation._redistribute(
+        ["x" * 10] * 3,
+        "ကျေးဇူးတင်ပါတယ်။ဒီနေ့ရာသီဥတုကောင်းပါတယ်။မနက်ဖြန်တွေ့မယ်။") == \
+        ["ကျေးဇူးတင်ပါတယ်။", "ဒီနေ့ရာသီဥတုကောင်းပါတယ်။", "မနက်ဖြန်တွေ့မယ်။"]
+    assert translation._redistribute(
+        ["x" * 10] * 3,
+        "អរគុណច្រើន។ថ្ងៃនេះអាកាសធាតុល្អណាស់។ស្អែកជួបគ្នា។")[1:] == \
+        ["អាកាសធាតុល្អណាស់។", "ស្អែកជួបគ្នា។"]
+
+
 def test_redistribute_never_emits_empty_members():
     """3+ members whose ideal cuts snap to the same space must not yield an
     empty slice (the cue would silently render blank in SRT/VTT/UI)."""

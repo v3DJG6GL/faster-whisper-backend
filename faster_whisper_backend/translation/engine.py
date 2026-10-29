@@ -1173,9 +1173,10 @@ def _merge_sentences(segments: "list[dict]") -> "list[list[int]]":
     return groups
 
 
-# Clause punctuation an unspaced (Han/kana) translation can be cut after —
-# no ASCII "." or ",", which also sit inside numbers ("3.5", "1,000").
-_UNSPACED_CUT_PUNCT = frozenset("，。、！？；：!?;")
+# Clause punctuation an unspaced (Han/kana, Burmese ၊ ။, Khmer ។ ៕)
+# translation can be cut after — no ASCII "." or ",", which also sit inside
+# numbers ("3.5", "1,000"). Thai and Lao mark clauses with a space.
+_UNSPACED_CUT_PUNCT = frozenset("，。、！？；：!?;၊။។៕")
 _NON_BLANK_RE = re.compile(r"\S")
 _UNSPACED_RE = re.compile(
     r"[\u0e00-\u0eff\u1000-\u109f\u1780-\u17ff\u3040-\u30ff\u3400-\u9fff]")
