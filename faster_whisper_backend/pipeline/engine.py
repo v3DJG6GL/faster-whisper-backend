@@ -140,6 +140,9 @@ def _make_lowercase_wordlist_replacer(wordlist: frozenset):
       group(2) = first letter of the next word
       group(3) = rest of the next word
     If the user's pattern has fewer than 3 groups we degrade to plain strip.
+    Only the text before group(1) is the terminator: what the match holds
+    between or after the groups (an opening quote, a trailing space) is kept,
+    as in _upper_callback.
     A group captured in a lookaround lies outside the match, which a sub
     keeps anyway: the match is kept as is instead of inserting a copy.
     """
@@ -152,9 +155,11 @@ def _make_lowercase_wordlist_replacer(wordlist: frozenset):
             return m.group(0)
         if any(m.start(g) < m.start(0) or m.end(g) > m.end(0) for g in (1, 2, 3)):
             return m.group(0)
-        if (first + rest).lower() in wordlist:
-            return ws + first.lower() + rest
-        return ws + first + rest
+        m0, s = m.group(0), m.start(0)
+        keep = m.start(1) - s
+        if (first + rest).lower() in wordlist and m.start(2) - s >= keep:
+            return m0[keep:m.start(2) - s] + first.lower() + m0[m.end(2) - s:]
+        return m0[keep:]
     return replace
 
 

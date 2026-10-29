@@ -1,8 +1,8 @@
 """Engine tests for the callback:upper rule: it uppercases group(2) in place
 and keeps every other part of the match. The pattern is editable from
 /settings/pipeline and /quick-config, so it is not limited to the two seeded
-shapes whose match happens to be exactly group(1) + group(2). The last test
-covers the same lookaround shape for its callback:lowercase-wordlist sibling."""
+shapes whose match happens to be exactly group(1) + group(2). The last two
+tests cover the same shapes for its callback:lowercase-wordlist sibling."""
 
 import re
 
@@ -45,3 +45,14 @@ def test_lowercase_wordlist_group_outside_the_match_keeps_the_text():
     assert re.sub(r"(?<!\d)[.?!](\s*)([A-ZÄÖÜ])(\w*)", replace, text) == "Ende und Haus Baum"
     assert re.sub(r"(?<!\d)[.?!](?=(\s*)([A-ZÄÖÜ])(\w*))", replace, text) == text
     assert re.sub(r"(?<!\d)[.?!](\s*)([A-ZÄÖÜ])(?=(\w*))", replace, text) == text
+
+
+def test_lowercase_wordlist_keeps_text_between_and_after_the_groups():
+    # only the terminator before group 1 goes: an opening quote between the
+    # groups and a space after them stay, the word is lowercased in place
+    replace = pl_engine._make_lowercase_wordlist_replacer(frozenset({"und"}))
+    quote = r'(?<!\d)[.?!](\s*)["„]?([A-ZÄÖÜ])(\w*)'
+    assert re.sub(quote, replace, "Ende. „Und dann") == "Ende „und dann"
+    assert re.sub(quote, replace, "Ende. „Haus") == "Ende „Haus"
+    assert re.sub(r"(?<!\d)[.?!](\s*)([A-ZÄÖÜ])(\w*)(\s)", replace,
+                  "Ende. Und dann") == "Ende und dann"
