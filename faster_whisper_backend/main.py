@@ -1337,6 +1337,10 @@ _UPLOAD_CHUNK_BYTES = 1024 * 1024
 # no suffix rather than rejecting the upload.
 _TMP_SUFFIX_RE = re.compile(r"\A\.[A-Za-z0-9_-]{1,15}\Z")
 
+# A lone UTF-16 surrogate, dropped from decode_overrides' string values (see
+# the batch route).
+_SURROGATE_RE = re.compile(r"[\ud800-\udfff]")
+
 
 def _safe_tmp_suffix(filename: "str | None") -> str:
     """Extension of `filename` if it is short and plainly safe, else ""."""
@@ -2317,12 +2321,18 @@ async def transcribe(
                 jobs.job_update(request_id, detail=_job_detail)
 
             # Optional per-request decode overrides (JSON object). Malformed → ignored.
+            # String values lose lone UTF-16 surrogates ("\ud83d", half an emoji
+            # a client cut with a UTF-16 slice): json.loads keeps them, but the
+            # tokenizer raises on one in hotwords / initial_prompt and an echoed
+            # output_prefix / output_suffix makes the response fail to encode.
+            # Matches the streaming twin.
             _overrides = {}
             if decode_overrides:
                 try:
                     _parsed = json.loads(decode_overrides)
                     if isinstance(_parsed, dict):
-                        _overrides = _parsed
+                        _overrides = {k: (_SURROGATE_RE.sub("", v) if isinstance(v, str) else v)
+                                      for k, v in _parsed.items()}
                 except (ValueError, TypeError, RecursionError):
                     # RecursionError (a RuntimeError, NOT a ValueError) is what
                     # json.loads raises on a deeply nested array/object, so

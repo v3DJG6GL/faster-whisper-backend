@@ -541,6 +541,22 @@ def test_client_output_wrappers_in_batch(client, app_module):
     assert r.json() == "hallo welt"
 
 
+def test_batch_decode_overrides_drop_lone_surrogates(client, fake_model):
+    """decode_overrides can carry a lone UTF-16 surrogate (half an emoji a
+    client cut with a UTF-16 slice). In an output wrapper it made the success
+    response fail to encode — a 500 after the whole file was decoded — and in
+    hotwords it reached the tokenizer. Dropped, as the streaming twin does."""
+    r = client.post(
+        "/v1/audio/transcriptions", files=_FILE,
+        data={"model": "whisper-1", "response_format": "json",
+              # json.dumps escapes the surrogate as "\\ud83d", as a browser sends it.
+              "decode_overrides": json.dumps({"output_prefix": ">> \ud83d",
+                                              "hotwords": "Kardiologie \ud83d"})})
+    assert r.status_code == 200, r.text
+    assert r.json()["text"] == ">> hallo welt"
+    assert fake_model.last_kwargs["hotwords"] == "Kardiologie "
+
+
 def test_client_output_wrappers_master_gate_off(client, app_module):
     app_module.cfg.OUTPUT_PREFIX = "[cfg] "
     app_module.cfg.ALLOW_REQUEST_DECODE_OVERRIDES = False
