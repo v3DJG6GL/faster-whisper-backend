@@ -482,6 +482,16 @@ def test_redistribute_unspaced_keeps_the_in_reach_clause_mark():
         ["我们，今天去市场，", "买了很多新鲜的水果和", "蔬菜然后回家做饭吃了"]
 
 
+def test_redistribute_long_reply_stays_linear():
+    """Leaving room for later members rescanned every space per candidate,
+    O(spaces²) per cut on the event loop: a 6000-word reply took seconds."""
+    words = " ".join(f"w{k}" for k in range(6000))
+    t0 = time.perf_counter()
+    pieces = translation._redistribute(["x" * 100] * 6, words)
+    assert time.perf_counter() - t0 < 2.0
+    assert len(pieces) == 6 and " ".join(pieces) == words
+
+
 def test_redistribute_thai_khmer_burmese_count_as_unspaced():
     """Thai/Khmer/Burmese have no spaces between words: a cut no longer
     jumps to a far-away phrase space (one cue took most of the text), and a

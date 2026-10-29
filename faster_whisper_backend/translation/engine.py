@@ -37,6 +37,7 @@ its own llama calls.
 """
 
 import asyncio
+import bisect
 import importlib
 import logging
 import os
@@ -1175,6 +1176,7 @@ def _merge_sentences(segments: "list[dict]") -> "list[list[int]]":
 # Clause punctuation an unspaced (Han/kana) translation can be cut after —
 # no ASCII "." or ",", which also sit inside numbers ("3.5", "1,000").
 _UNSPACED_CUT_PUNCT = frozenset("，。、！？；：!?;")
+_NON_BLANK_RE = re.compile(r"\S")
 _UNSPACED_RE = re.compile(
     r"[\u0e00-\u0eff\u1000-\u109f\u1780-\u17ff\u3040-\u30ff\u3400-\u9fff]")
 # Thai/Lao vowels written before their consonant, and the Myanmar/Khmer
@@ -1218,15 +1220,25 @@ def _redistribute(group_texts: "list[str]", translated: str) -> "list[str]":
              else [spaces])
     total = sum(len(t) for t in group_texts) or 1
 
-    def _room(tier: "list[int]", s: int) -> int:
-        # How many more cuts this tier can still take after a cut at s,
-        # each leaving a non-blank slice.
-        count, last = 0, s
-        for b in tier:
-            if b > last and b < len(translated) and \
-                    translated[last:b].strip():
-                count, last = count + 1, b
-        return count
+    def _rooms(tier: "list[int]") -> "dict[int, int]":
+        # How many more cuts this tier can still take after a cut at each of
+        # its boundaries, each leaving a non-blank slice. One backward pass:
+        # the next cut after s is the first boundary past the first non-blank
+        # char at or after s. (Rescanning the tier per candidate was O(B²)
+        # per cut, which froze the event loop on a long reply.)
+        rooms = [0] * len(tier)
+        text_at, end = len(translated), len(translated)
+        for k in range(len(tier) - 1, -1, -1):
+            m = _NON_BLANK_RE.search(translated, tier[k], end)
+            if m:
+                text_at = m.start()
+            end = tier[k]
+            j = bisect.bisect_right(tier, text_at)
+            if j < len(tier) and tier[j] < len(translated):
+                rooms[k] = rooms[j] + 1
+        return dict(zip(tier, rooms))
+
+    rooms = [_rooms(tier) for tier in tiers]
 
     cuts: "list[int]" = []
     acc = 0
@@ -1247,12 +1259,11 @@ def _redistribute(group_texts: "list[str]", translated: str) -> "list[str]":
         # only among those within reach: dropping the one in-reach clause
         # mark for an out-of-reach one would itself force a raw cut.
         cut = None
-        for tier in tiers:
+        for tier, room in zip(tiers, rooms):
             cands = [s for s in tier
                      if s > prev and abs(s - ideal) <= reach
                      and translated[prev:s].strip()]
-            cands = ([s for s in cands if _room(tier, s) >= n - 2 - i]
-                     or cands)
+            cands = [s for s in cands if room[s] >= n - 2 - i] or cands
             if cands:
                 cut = min(cands, key=lambda s: abs(s - ideal))
                 break
