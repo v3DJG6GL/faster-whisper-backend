@@ -167,3 +167,21 @@ def test_relabelled_factory_entries_still_count_as_the_factory_copy():
         e["label"], e["note"] = "renamed", ""
     assert renames.upgrade_rule_entries({"PIPELINE_RULES": rules}) == [
         "ch-symbol-cleanup/languages"]
+
+
+def test_copy_saved_before_f940127_rename_is_migrated_and_scoped(tmp_path):
+    """f940127 renamed split-dictation-keywords (entries unchanged); a copy
+    saved June 15-17 kept the old slug, and the c4fefe2 scope is keyed by the
+    new one, so the rule ran on every language."""
+    from faster_whisper_backend.settings import config_store as cs
+    rules = copy.deepcopy(_factory_rules())
+    r = _rule(rules, "de-split-punctuation-keywords")
+    r["name"] = "split-dictation-keywords"
+    del r["languages"]
+    p = tmp_path / "config.local.json"
+    p.write_text(json.dumps({"PIPELINE_RULES": rules}), encoding="utf-8")
+    out = cs.load_overrides(str(p))
+    assert [r["name"] for r in out["PIPELINE_RULES"]] == [
+        r["name"] for r in _factory_rules()]
+    assert _rule(out["PIPELINE_RULES"], "de-split-punctuation-keywords")["languages"] == ["de"]
+

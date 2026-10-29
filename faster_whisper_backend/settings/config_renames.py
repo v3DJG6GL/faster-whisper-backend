@@ -74,6 +74,8 @@ REMOVED_KEYS: frozenset[str] = frozenset({"URL_MAX_BYTES"})
 # language prefix (de-, ch-, es-).
 RENAMED_RULES: dict[str, str] = {
     "dictation-map": "de-dictation-map",
+    # f940127 (June 2026).
+    "split-dictation-keywords": "de-split-punctuation-keywords",
     # 097c9b4 (June 2026).
     "strip-and-lowercase-non-noun": "de-strip-and-lowercase-non-noun",
     "2-2-capitalize-the-letter-after-a-hyphen": "capitalize-letter-after-hyphen",
