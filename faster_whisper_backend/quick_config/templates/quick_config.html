@@ -2114,16 +2114,20 @@ function _fieldDiff(baseline, edited, kind) {
     const cur = edited || {};
     const added = {};
     const changed = {};
+    const prior = {};   // base value of each changed key, to spot a clash
     const removed = [];
     for (const k of Object.keys(cur)) {
       if (!(k in base)) added[k] = cur[k];
-      else if (_stringify(base[k]) !== _stringify(cur[k])) changed[k] = cur[k];
+      else if (_stringify(base[k]) !== _stringify(cur[k])) {
+        changed[k] = cur[k];
+        prior[k] = base[k];
+      }
     }
     for (const k of Object.keys(base)) if (!(k in cur)) removed.push(k);
     if (!Object.keys(added).length && !Object.keys(changed).length && !removed.length) {
       return null;
     }
-    return { kind: 'dict', added, changed, removed };
+    return { kind: 'dict', added, changed, prior, removed };
   }
   if (kind === 'list') {
     const base = (baseline || []).map(_stringify);
@@ -2144,9 +2148,10 @@ function _fieldDiff(baseline, edited, kind) {
   return { kind: 'scalar', value: edited };
 }
 
-// An olist entry both writers changed differently keeps the user's version
-// (their unsaved work is never dropped) and its pattern is pushed onto
-// `clashes`, so the caller can tell the user to review it before saving.
+// An olist entry (or dict key) both writers changed differently keeps the
+// user's version (their unsaved work is never dropped) and its pattern (or
+// key) is pushed onto `clashes`, so the caller can tell the user to review
+// it before saving.
 // An entry the user deleted but the other writer fixed the pattern of comes
 // back in their version: a clash too, its pattern also pushed onto
 // `restored`, as the user's version (the deletion) is not what was kept.
@@ -2155,6 +2160,13 @@ function _applyFieldDiff(serverValue, diff, clashes, restored) {
   if (diff.kind === 'dict') {
     const out = { ...(serverValue || {}) };
     for (const k of diff.removed) delete out[k];
+    // A key the other writer also added, or also changed, to another value
+    // keeps the user's value but is a clash, as for a regex-list entry.
+    for (const [k, v] of Object.entries({ ...diff.added, ...diff.changed })) {
+      if (!clashes || !Object.hasOwn(out, k) || _stringify(out[k]) === _stringify(v)) continue;
+      if (Object.hasOwn(diff.prior, k) && _stringify(out[k]) === _stringify(diff.prior[k])) continue;
+      clashes.push(k);
+    }
     Object.assign(out, diff.added, diff.changed);
     return out;
   }

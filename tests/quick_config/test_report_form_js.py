@@ -866,6 +866,41 @@ def test_reapply_keeps_the_users_edits_on_a_rule_whose_entry_both_writers_edited
     assert res["rules"][1]["entries"] == [{"pattern": "a", "replacement": "A2"}]
 
 
+def test_reapply_reports_a_dictionary_key_both_writers_changed(client, tmp_path):
+    # The dictionary merge laid the user's keys over the fresh map without
+    # looking at it: a key the other writer had also changed (or also added)
+    # to another value was overwritten under a clean "Auto-merged" toast, and
+    # the next save lost their edit. It keeps the user's value and reports
+    # the rule, as a regex-list entry both writers edited does.
+    page = client.get("/quick-config").text
+    res = _run_js(client, tmp_path, _olist_consts(page) + r"""
+      globalThis.dirty = new Set();
+      const base = { komma: ',', punkt: '.', fragezeichen: '?' };
+      globalThis.liveRules = [
+        { name: 'both', map: { komma: ', ', punkt: '.', fragezeichen: '?', neu: 'A' } },
+        { name: 'same', map: { komma: ';', punkt: '.', fragezeichen: '?' } },
+        { name: 'theirs', map: { komma: ',', punkt: '. ', fragezeichen: '?' } },
+        { name: 'gone', map: { punkt: '.', fragezeichen: '?' } },
+      ];
+      const mine = { komma: ';', punkt: '.', fragezeichen: '?', neu: 'B' };
+      const diffs = new Map(['both', 'same', 'theirs', 'gone'].map(
+        s => [s, { map: _fieldDiff(base, s === 'both' ? mine : { ...base, komma: ';' },
+                                   _diffKindFor('map')) }]));
+      const clashed = [];
+      const merged = _reapplyDiffs(diffs, clashed, []);
+      const keys = [];
+      _applyFieldDiff({ komma: ', ', neu: 'A' }, _fieldDiff(base, mine, 'dict'), keys);
+      out({ merged, clashed, keys, maps: liveRules.map(r => r.map) });
+    """, funcs=_OLIST_FUNCS)
+    assert res["merged"] == 4
+    assert res["clashed"] == ["both"]
+    assert sorted(res["keys"]) == ["komma", "neu"]
+    assert res["maps"][0] == {"komma": ";", "punkt": ".", "fragezeichen": "?", "neu": "B"}
+    assert res["maps"][1]["komma"] == ";"
+    assert res["maps"][2] == {"komma": ";", "punkt": ". ", "fragezeichen": "?"}
+    assert res["maps"][3] == {"komma": ";", "punkt": ".", "fragezeichen": "?"}
+
+
 def test_conflict_toast_names_the_rule_that_could_not_be_merged(client, tmp_path):
     res = _run_js(client, tmp_path, r"""
       globalThis.setStatus = () => {};
