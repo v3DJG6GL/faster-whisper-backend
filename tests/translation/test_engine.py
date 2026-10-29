@@ -1607,11 +1607,72 @@ def test_load_uses_the_cached_gguf_when_the_hub_is_unreachable(
     assert record == [("direct", "/cache/m.Q4.gguf", record[0][2])]
 
 
+def _hub_answer(status, headers=None):
+    """The error huggingface_hub itself raises for this hub answer."""
+    import httpx2 as httpx   # the declared dev dep; huggingface_hub 2.x speaks httpx2
+    from huggingface_hub.utils import hf_raise_for_status
+    req = httpx.Request("GET", "https://huggingface.co/api/models/org/repo")
+    try:
+        hf_raise_for_status(httpx.Response(status, request=req,
+                                           headers=headers or {}))
+    except Exception as e:  # noqa: BLE001 — the raised error IS the value
+        return e
+    raise AssertionError(f"hub answer {status} raised nothing")
+
+
+def _token_rejected_error():
+    # A revoked / expired HF_TOKEN: 401 on every repo, as a plain
+    # HfHubHTTPError (a private or missing repo's 401 is RepositoryNotFound).
+    return _hub_answer(401, {"X-Error-Message":
+                             "Invalid credentials in Authorization header"})
+
+
+@pytest.mark.parametrize("make_error", [
+    _token_rejected_error,
+    lambda: _hub_answer(404, {"X-Error-Code": "RepoNotFound"}),
+    lambda: _hub_answer(403, {"X-Error-Code": "GatedRepo"}),
+    lambda: _hub_answer(403),
+], ids=["token-rejected", "repo-not-found", "gated", "forbidden"])
+def test_load_uses_the_cached_gguf_when_the_hub_refuses(
+        monkeypatch, make_error):
+    """A hub refusal (revoked token, gated or removed repo) fails the
+    from_pretrained listing the same way: every translation failed although
+    the GGUF was on disk."""
+    record = []
+    _install_fake_llama(monkeypatch, record)
+    monkeypatch.setattr(cfg, "LOCAL_FILES_ONLY", False, raising=False)
+
+    def refused(repo, quant, cb=None):
+        raise make_error()
+    monkeypatch.setattr(translation, "_predownload_gguf", refused)
+    monkeypatch.setattr(translation, "_cached_gguf",
+                        lambda repo, quant: "/cache/m.Q4.gguf")
+    translation._load_blocking_inner("org/repo:Q4", "cpu", "chatml")
+    assert record == [("direct", "/cache/m.Q4.gguf", record[0][2])]
+
+
+def test_load_names_hf_token_when_the_hub_rejects_it_and_nothing_is_cached(
+        monkeypatch):
+    """from_pretrained got the same 401 and the error blamed the model ref."""
+    record = []
+    _install_fake_llama(monkeypatch, record)
+    monkeypatch.setattr(cfg, "LOCAL_FILES_ONLY", False, raising=False)
+
+    def rejected(repo, quant, cb=None):
+        raise _token_rejected_error()
+    monkeypatch.setattr(translation, "_predownload_gguf", rejected)
+    monkeypatch.setattr(translation, "_cached_gguf", lambda repo, quant: None)
+    with pytest.raises(translation.TranslationError, match="HF_TOKEN"):
+        translation._load_blocking_inner("org/repo:Q4", "cpu", "chatml")
+    assert record == []
+
+
 @pytest.mark.parametrize("cached, make_error", [
     (None, _connect_error),                         # nothing on disk yet
-    ("/cache/m.Q4.gguf", lambda: _hub_status_error(404)),   # no outage
+    (None, lambda: _hub_answer(401)),               # private / missing repo
+    ("/cache/m.Q4.gguf", lambda: RuntimeError("listing failed")),  # no hub
 ])
-def test_load_falls_back_to_from_pretrained_unless_unreachable_and_cached(
+def test_load_falls_back_to_from_pretrained_unless_the_hub_failed_and_cached(
         monkeypatch, cached, make_error):
     record = []
     _install_fake_llama(monkeypatch, record)

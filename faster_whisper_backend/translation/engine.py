@@ -575,12 +575,22 @@ def _load_blocking_inner(ref: str, device: str, family: str,
             else:
                 # An unreachable hub (DNS, refused, hub 5xx) fails fast, so
                 # the fallback below cannot hang — but its listing fails on
-                # the same hub too: load a copy already on disk first.
-                if _is_hub_unreachable(e):
+                # the same hub too, as it does on any hub HTTP refusal (a
+                # revoked HF_TOKEN's 401, a gated or removed repo): load a
+                # copy already on disk first, as whisper's snapshot_download
+                # does.
+                if _is_hub_unreachable(e) or _is_hub_refusal(e):
                     local_path = _cached_gguf(repo, quant)
                 if local_path:
                     logger.warning("[translate] pre-download of %s failed "
                                    "(%s) — loading the cached copy", ref, e)
+                elif _is_hub_token_rejected(e):
+                    logger.error("[translate] pre-download of %s failed: %s",
+                                 ref, e)
+                    raise TranslationError(
+                        f"could not fetch translation model {ref}: the "
+                        f"Hugging Face hub rejected HF_TOKEN as invalid or "
+                        f"expired (HTTP 401)") from e
                 else:
                     logger.warning(
                         "[translate] pre-download of %s failed (%s) — "
@@ -653,6 +663,28 @@ def _is_hub_unreachable(exc: BaseException) -> bool:
             return isinstance(status, int) and status >= 500
         return False
     return _in_cause_chain(exc, network)
+
+
+def _is_hub_refusal(exc: BaseException) -> bool:
+    """True when ``exc`` or its cause chain is any hub HTTP error (a 401,
+    a gated or missing repo): from_pretrained's listing asks the same hub
+    and gets the same answer. Same ``__cause__``-only rule as above."""
+    from huggingface_hub.errors import HfHubHTTPError
+    return _in_cause_chain(exc, lambda e: isinstance(e, HfHubHTTPError))
+
+
+def _is_hub_token_rejected(exc: BaseException) -> bool:
+    """True when the cause chain holds the hub's 401 for a token it rejects.
+    That one comes as a plain HfHubHTTPError; a private or missing repo's
+    401 comes as RepositoryNotFoundError and says nothing about the token."""
+    from huggingface_hub.errors import HfHubHTTPError, RepositoryNotFoundError
+
+    def rejected(e: BaseException) -> bool:
+        status = getattr(getattr(e, "response", None), "status_code", 0)
+        return (isinstance(e, HfHubHTTPError)
+                and not isinstance(e, RepositoryNotFoundError)
+                and status == 401)
+    return _in_cause_chain(exc, rejected)
 
 
 def _in_cause_chain(exc: "BaseException | None", match) -> bool:
