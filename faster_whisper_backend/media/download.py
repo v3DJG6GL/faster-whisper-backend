@@ -763,9 +763,13 @@ def _wire_url(url: str) -> str:
     """`url` as it can go on the request line: http.client encodes that line
     as ASCII, so a raw non-ASCII path or query (a pasted `…/Müller.ogg`)
     raised UnicodeEncodeError instead of being fetched. Percent-encodes the
-    non-ASCII runs only (as UTF-8, the way yt-dlp's normalize_url sends it);
-    the host is left alone — http.client IDNA-encodes it and the address
-    gate keeps checking the real name — and an ASCII URL is returned as is."""
+    non-ASCII runs only (as UTF-8, the way yt-dlp's normalize_url sends it).
+    A non-ASCII host goes out IDNA-encoded: urllib writes its own `Host:`
+    header from the raw name (latin-1 — a wrong vhost, or UnicodeEncodeError)
+    and a plain-HTTP proxy gets the whole URL on the request line. Callers
+    gate the original name first; the punycode form resolves the same, and
+    a name IDNA can't encode never gets here (host_is_forbidden refuses it).
+    An ASCII URL is returned as is."""
     if url.isascii():
         return url
     parts = urllib.parse.urlsplit(url)
@@ -773,8 +777,17 @@ def _wire_url(url: str) -> str:
     def esc(s: str) -> str:
         return re.sub(r"[^\x00-\x7f]+",
                       lambda m: urllib.parse.quote(m.group()), s)
+    netloc = parts.netloc
+    if parts.hostname and not parts.hostname.isascii():
+        # Not an IPv6 literal (those are ASCII), so a ':' starts the port,
+        # kept as written (parts.port would raise on a bad one here).
+        userinfo, at, hostport = netloc.rpartition("@")
+        _host, colon, port = hostport.partition(":")
+        netloc = (esc(userinfo) + at
+                  + parts.hostname.encode("idna").decode("ascii")
+                  + colon + port)
     return urllib.parse.urlunsplit(parts._replace(
-        path=esc(parts.path), query=esc(parts.query),
+        netloc=netloc, path=esc(parts.path), query=esc(parts.query),
         fragment=esc(parts.fragment)))
 
 

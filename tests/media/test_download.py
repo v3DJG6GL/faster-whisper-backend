@@ -1434,6 +1434,60 @@ def test_direct_media_probe_and_capped_get_fetch_a_raw_unicode_path(
     assert seen == ["/M%C3%BCller%20x.ogg?t=%C3%A9"] * 2
 
 
+@pytest.mark.parametrize("via_proxy", [False, True], ids=["direct", "proxy"])
+def test_direct_media_probe_and_capped_get_send_an_idn_host_as_punycode(
+        monkeypatch, via_proxy):
+    """urllib writes its own Host header from the raw name: latin-1 bytes
+    for `müller.example` (a wrong vhost), UnicodeEncodeError for `例え.jp`
+    (probe said not media, _capped_get raised it). Through a plain-HTTP
+    proxy the whole URL is the ASCII request line. The host must go out
+    IDNA-encoded on both."""
+    import http.server
+    import socket as _s
+    import threading
+    from faster_whisper_backend.core import net_policy as np
+    monkeypatch.setattr(udl, "_host_is_forbidden", lambda h: False)
+    monkeypatch.setattr(np, "address_is_forbidden", lambda a: False)
+    _no_proxy(monkeypatch)
+    real_gai = _s.getaddrinfo
+    names = {"müller.example", "xn--mller-kva.example",
+             "例え.jp", "xn--r8jz45g.jp"}
+    monkeypatch.setattr(np.socket, "getaddrinfo", lambda host, *a, **kw: (
+        real_gai("127.0.0.1" if host in names else host, *a, **kw)))
+    seen = []
+
+    class _H(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            seen.append((self.headers.get("Host"), self.path))
+            self.send_response(200)
+            self.send_header("Content-Type", "audio/ogg")
+            self.send_header("Content-Length", "1")
+            self.end_headers()
+            self.wfile.write(b"x")
+
+        def log_message(self, *a):
+            pass
+
+    srv = http.server.HTTPServer(("127.0.0.1", 0), _H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    port = srv.server_port
+    if via_proxy:
+        monkeypatch.setenv("http_proxy", f"http://127.0.0.1:{port}")
+    try:
+        for host, wire in (("müller.example", "xn--mller-kva.example"),
+                           ("例え.jp", "xn--r8jz45g.jp")):
+            seen.clear()
+            url = udl.validate_url(f"http://{host}:{port}/a.ogg")
+            assert udl._direct_media_probe_sync(url, timeout=3) is True
+            assert udl._capped_get(url, max_bytes=10, timeout=3) == (
+                "audio/ogg", b"x")
+            path = f"http://{wire}:{port}/a.ogg" if via_proxy else "/a.ogg"
+            assert seen == [(f"{wire}:{port}", path)] * 2
+    finally:
+        srv.shutdown()
+        srv.server_close()
+
+
 def test_cutoff_shuts_a_socket_added_after_it_fired():
     """A socket whose connect() returns after the timer fired (a dribbled TLS
     handshake, a redirect hop dialled past the cutoff) must be shut at once,
