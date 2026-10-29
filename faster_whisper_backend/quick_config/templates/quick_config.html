@@ -2220,8 +2220,9 @@ function _applyFieldDiff(serverValue, diff, clashes, restored) {
         // The user's side holds another entry under that id (the same
         // pattern added elsewhere): theirs is not inserted, so it is a clash.
         // So is the user's deletion of an entry the other writer only fixed
-        // the pattern of (all else as in base): it comes back for review.
-        const back = mineK === undefined
+        // the pattern of (all else as in base): it comes back for review,
+        // unless that held entry keeps it out.
+        const back = mineK === undefined && !have.has(k)
           && _stringify({ ...b, pattern: x.pattern }) === _stringify(x);
         const clash = back || (have.has(k) && _stringify(kept.get(k)) !== _stringify(x));
         if (clash && clashes) clashes.push(String(x.pattern));

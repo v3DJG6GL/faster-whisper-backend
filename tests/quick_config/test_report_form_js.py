@@ -749,6 +749,38 @@ def test_reapply_tells_an_entry_the_user_deleted_coming_back_from_a_both_edited_
     assert res["clashes"] == ["b2"] and res["back"] == ["b2"]
 
 
+def test_reapply_keeps_a_both_edited_clash_when_the_users_entry_keeps_the_other_writers_fix_out(
+        client, tmp_path):
+    # The user deleted b and appended their own b2, so the other writer's
+    # pattern fix b2 never went in, yet the toast said "their entry is back,
+    # delete it again" (pointing at the user's own entry) instead of "your
+    # version is kept"; the same b2 on both sides was a clash too.
+    page = client.get("/quick-config").text
+    res = _run_js(client, tmp_path, _olist_consts(page) + r"""
+      const e = (p, r) => ({ pattern: p, replacement: r || p.toUpperCase() });
+      const base = [e('x'), e('b'), e('y')];
+      const theirs = [e('x'), e('b2', 'B'), e('y')];
+      const merge = (mine) => {
+        const clashes = [], back = [];
+        const m = _applyFieldDiff(theirs, _fieldDiff(base, mine, 'olist'), clashes, back);
+        return [clashes, back, m.map(x => x.pattern + '>' + x.replacement)];
+      };
+      globalThis.dirty = new Set();
+      globalThis.liveRules = [{ name: 'kept', entries: theirs }];
+      const clashed = [], restored = [];
+      _reapplyDiffs(new Map([['kept', { entries: _fieldDiff(base, [e('x'), e('y'), e('b2', 'W')],
+                                                            'olist') }]]), clashed, restored);
+      out({
+        other: merge([e('x'), e('y'), e('b2', 'W')]),
+        same: merge([e('x'), e('y'), e('b2', 'B')]),
+        clashed, restored,
+      });
+    """, funcs=_OLIST_FUNCS)
+    assert res["other"] == [["b2"], [], ["x>X", "y>Y", "b2>W"]]
+    assert res["same"] == [[], [], ["x>X", "y>Y", "b2>B"]]
+    assert res["clashed"] == ["kept"] and res["restored"] == []
+
+
 _RESTORED_TOAST = ("another writer fixed the pattern of an entry you deleted; their entry is back,"
                    " delete it again if you still want it gone")
 
