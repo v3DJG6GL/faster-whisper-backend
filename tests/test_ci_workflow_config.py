@@ -72,6 +72,22 @@ def test_checkout_steps_derive_the_instance_host():
     assert ci.count("${env:GIT_TOKEN}@${env:GIT_HOST}/") == 1
 
 
+def test_both_checkouts_test_the_runs_own_commit():
+    # all-ci's status and the release dispatch both name github.sha, but
+    # main-push runs are serialized, so a queued run starts after later
+    # pushes moved the ref: checking out the fetched tip tested a newer tree
+    # and released a commit that never ran.
+    ci = _read(".forgejo", "workflows", "ci.yml")
+    for job, end in (("  test:", "\n  test-windows:"), ("  test-windows:", "\n  all-ci:")):
+        leg = ci[ci.index(job):]
+        step = leg[leg.index("- name: Checkout"):leg.index(end)]
+        step = step[:step.index("\n      - name:")]
+        code = "\n".join(_code_lines(step))
+        assert "GIT_SHA: ${{ github.sha }}" in code
+        assert "checkout -q --force FETCH_HEAD" not in code
+        assert re.search(r'git checkout -q --force "\$(?:env:)?GIT_SHA"', code)
+
+
 def test_both_checkouts_clean_untracked_state():
     # `checkout --force` resets tracked files only; the Windows workspace is
     # a persistent directory, so .coverage/__pycache__/test-created dirs

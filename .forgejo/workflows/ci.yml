@@ -122,6 +122,7 @@ jobs:
       - name: Checkout
         env:
           GIT_REF: ${{ github.ref }}
+          GIT_SHA: ${{ github.sha }}
           GIT_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Single-source the instance host from env.REGISTRY above (it is
           # the same host that serves git and the registry). The rest of the
@@ -136,13 +137,25 @@ jobs:
           # log. Matters most on the host-mode Windows leg below, whose
           # workspace is a real directory on a long-lived VM with no cleanup —
           # but keep both legs identical so the pattern does not drift back.
+          url="https://x-access-token:${GIT_TOKEN}@${GIT_HOST}/${{ github.repository }}.git"
           git init -q .
-          git -c protocol.version=2 fetch --no-tags --prune --no-recurse-submodules --depth=1 "https://x-access-token:${GIT_TOKEN}@${GIT_HOST}/${{ github.repository }}.git" "$GIT_REF"
-          git checkout -q --force FETCH_HEAD
+          git -c protocol.version=2 fetch --no-tags --prune --no-recurse-submodules --depth=1 "$url" "$GIT_REF"
+          # Test the run's own commit, never the ref's current tip: all-ci's
+          # status lands on GIT_SHA and the mirror job releases GIT_SHA, but
+          # main-push runs are serialized, so a queued run often starts after
+          # a later push moved the ref — it would test the newer tree and
+          # vouch for (and release) a commit it never ran. Fetch the sha
+          # itself, or failing that enough of the ref's history to hold it.
+          if [ "$(git rev-parse FETCH_HEAD)" != "$GIT_SHA" ]; then
+            echo "::notice::$GIT_REF moved past $GIT_SHA since this run was queued; checking out the run's own commit"
+            git -c protocol.version=2 fetch --no-tags --no-recurse-submodules --depth=1 "$url" "$GIT_SHA" \
+              || git -c protocol.version=2 fetch --no-tags --no-recurse-submodules --depth=200 "$url" "$GIT_REF"
+          fi
+          git checkout -q --force "$GIT_SHA"
           # --force resets tracked files only. A no-op in this ephemeral
           # container, but the persistent Windows workspace below would carry
           # .coverage / __pycache__ / test-created dirs into the next run —
-          # keep both legs identical so each starts from the ref's content.
+          # keep both legs identical so each starts from the commit's content.
           git clean -qffdx
 
       # python:<ver>-trixie ships neither node nor ffmpeg, and the suite does
@@ -198,20 +211,31 @@ jobs:
       - name: Checkout
         env:
           GIT_REF: ${{ github.ref }}
+          GIT_SHA: ${{ github.sha }}
           GIT_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Same single-sourced host as the Linux leg (env.REGISTRY).
           GIT_HOST: ${{ env.REGISTRY }}
         run: |
           # No `git remote add`: see the Linux leg. This runner is host mode,
           # so .git/config survives the job on a persistent machine.
+          $url = "https://x-access-token:${env:GIT_TOKEN}@${env:GIT_HOST}/${{ github.repository }}.git"
           git init -q .
-          git -c protocol.version=2 fetch --no-tags --prune --no-recurse-submodules --depth=1 "https://x-access-token:${env:GIT_TOKEN}@${env:GIT_HOST}/${{ github.repository }}.git" "$env:GIT_REF"
+          git -c protocol.version=2 fetch --no-tags --prune --no-recurse-submodules --depth=1 $url "$env:GIT_REF"
           # pwsh hands the runner only the LAST native exit code (see the
           # ffmpeg note below), and the persistent .git still holds the
           # previous run's FETCH_HEAD: an unchecked failed fetch would test
           # the old commit and go green.
           if ($LASTEXITCODE -ne 0) { Write-Output "::error::git fetch exited $LASTEXITCODE"; exit 1 }
-          git checkout -q --force FETCH_HEAD
+          # The run's own commit, not the ref's tip — see the Linux leg.
+          if ((git rev-parse FETCH_HEAD) -ne $env:GIT_SHA) {
+            Write-Output "::notice::$env:GIT_REF moved past $env:GIT_SHA since this run was queued; checking out the run's own commit"
+            git -c protocol.version=2 fetch --no-tags --no-recurse-submodules --depth=1 $url "$env:GIT_SHA"
+            if ($LASTEXITCODE -ne 0) {
+              git -c protocol.version=2 fetch --no-tags --no-recurse-submodules --depth=200 $url "$env:GIT_REF"
+              if ($LASTEXITCODE -ne 0) { Write-Output "::error::git fetch of $env:GIT_SHA exited $LASTEXITCODE"; exit 1 }
+            }
+          }
+          git checkout -q --force "$env:GIT_SHA"
           if ($LASTEXITCODE -ne 0) { Write-Output "::error::git checkout exited $LASTEXITCODE"; exit 1 }
           # The workspace is a real directory on a long-lived VM with no
           # cleanup, and --force resets tracked files only: without this,
