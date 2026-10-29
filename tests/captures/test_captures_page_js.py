@@ -2152,3 +2152,28 @@ console.log(JSON.stringify([
   _applyChipsToText('ja die (die Sache', [{ wrong: 'die', correct: 'DER', idx: 1 }])]));
 """)
     assert out == ["ja die (DER Sache", "ja die \u201eDER Sache", "ja DER (die Sache"]
+
+
+# ---- blank chip correction in the Final-result preview ----------------------------------------
+
+@needs_node
+def test_blank_chip_correction_leaves_the_final_result_preview_alone(page, tmp_path):
+    """Save drops a chip whose correction is only spaces (as does the
+    server), but the Final-result preview applied it: "um" vanished from
+    the preview while the export kept it."""
+    fns = "\n".join(_js_function(page, f) for f in (
+        "_applyChipsToText", "_renderGroundSpans"))
+    out = _run_node(tmp_path, fns + r"""
+global.document = { createElement: function() { return {}; } };
+var spans = [];
+var area = { appendChild: function(e) { spans.push(e.textContent); } };
+var words = [{ word: ' so' }, { word: ' um' }, { word: ' yes' }];
+_renderGroundSpans({ gtArea: area, words: words,
+  corrections: [{ wrong: 'um', correct: '  ', idx: 1 },
+                { wrong: 'yes', correct: ' yeah ', idx: 2 }] });
+console.log(JSON.stringify([
+  _applyChipsToText('so um yes', [{ wrong: 'um', correct: '  ', idx: 1 }]),
+  _applyChipsToText('so um yes', [{ wrong: 'yes', correct: ' yeah ', idx: 2 }]),
+  spans.join('')]));
+""")
+    assert out == ["so um yes", "so um yeah", "so um yeah"]

@@ -2836,7 +2836,8 @@
     // in the Corrections list and skipped here (rare; word-click chips have idx).
     var cover = new Array(words.length);
     (state.corrections || []).forEach(function(c) {
-      if (typeof c.idx !== 'number' || !(c.correct || '').length) return;
+      // A blank correction is dropped on save, so it changes nothing here.
+      if (typeof c.idx !== 'number' || !(c.correct || '').trim()) return;
       var end = (typeof c.idx_end === 'number') ? c.idx_end : c.idx;
       for (var j = c.idx; j <= end && j < words.length; j++) {
         if (cover[j] == null) cover[j] = c;
@@ -2853,7 +2854,7 @@
         if (end >= words.length) end = words.length - 1;
         var sp = document.createElement('span');
         sp.className = 'word';
-        sp.textContent = (first ? '' : ' ') + chip.correct;
+        sp.textContent = (first ? '' : ' ') + chip.correct.trim();
         area.appendChild(sp);
         for (var k = i; k <= end; k++) state.wordToGround[k] = sp;
         first = false;
@@ -3458,7 +3459,8 @@
     var shift = 0;
     ordered.forEach(function(c) {
       var wrong = c.wrong || '';
-      var correct = c.correct || '';
+      // Trimmed as on save: a blank correction is dropped there.
+      var correct = (c.correct || '').trim();
       if (!wrong || !correct) return;
       var anchored = typeof c.idx === 'number';
       var pos = c.idx;
