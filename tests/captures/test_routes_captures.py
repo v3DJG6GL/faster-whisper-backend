@@ -856,6 +856,49 @@ def test_export_falls_back_to_the_original_when_the_trimmed_file_is_gone(
             f"audio/{cid}.wav"]
 
 
+def test_detail_keeps_original_timeline_when_the_trimmed_file_is_gone(
+        client, monkeypatch, tmp_path):
+    """The audio route falls back to the original when the trimmed WAV is
+    gone, but the detail routes still shifted every word back by lead_ms and
+    reported the trimmed length: the karaoke ran 2 s ahead of the speech and
+    every word past 9.1 s collapsed onto 9.1 s. They project onto the trimmed
+    timeline only while the trimmed file the audio route serves exists."""
+    from faster_whisper_backend.captures import store as captures_store
+
+    _fake_wav_transcode(monkeypatch)
+    src = tmp_path / "src.bin"
+    src.write_bytes(b"junk")
+    cid = captures_store.create_capture(
+        audio_src_path=str(src), request_id="trim-gone", model="small",
+        language="de", audio_s=12.4, raw="eins zehn", final="eins zehn",
+        words=[{"word": "eins", "start": 3.0, "end": 3.5},
+               {"word": " zehn", "start": 10.0, "end": 10.5}],
+        segments=[], user_id="alice",
+    )
+    rel = captures_store.get_capture(cid)["audio_relpath"]
+    with captures_store._lock:
+        with captures_store._require_conn() as conn:
+            conn.execute(
+                "UPDATE captures SET audio_trimmed_relpath = ?,"
+                " audio_trim_lead_ms = 2000, audio_trim_trail_ms = 1300"
+                " WHERE id = ?", (rel + ".trim.wav", cid))
+
+    cap = client.get(f"/captures/api/{cid}").json()["capture"]
+    assert cap["effective_audio_s"] == pytest.approx(12.4)
+    assert [(w["start"], w["end"]) for w in cap["words"]] == [
+        (3.0, 3.5), (10.0, 10.5)]
+    [hit] = client.get("/captures/api/by-request/trim-gone").json()["captures"]
+    assert hit["effective_audio_s"] == pytest.approx(12.4)
+
+    # With the trimmed file back on disk the projection applies again.
+    with open(captures_store.abs_audio_path(rel + ".trim.wav"), "wb") as f:
+        f.write(b"RIFF")
+    cap = client.get(f"/captures/api/{cid}").json()["capture"]
+    assert cap["effective_audio_s"] == pytest.approx(9.1)
+    assert [(w["start"], w["end"]) for w in cap["words"]] == [
+        pytest.approx((1.0, 1.5)), pytest.approx((8.0, 8.5))]
+
+
 def test_rebuild_lock_survives_prune_while_in_flight():
     """A Lock handed out but not yet acquired must not be pruned: the prune in
     _get_rebuild_lock skips sids pinned in _rebuild_inflight, so a second

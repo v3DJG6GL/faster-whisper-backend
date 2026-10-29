@@ -478,7 +478,7 @@ async def by_request_id_api(
             # else's capture, exactly the case the eleven read-by-id siblings
             # audit. It was the only cross-user read-by-key path with no log line.
             _audit_cross_user_read(user, r, "capture-by-request", r.get("id") or "")
-            _apply_trim_to_capture_row(r)
+            _apply_trim_to_capture_row(r, check_file=True)
             r["username"] = usernames.get(r.get("user_id"))
         return rows
 
@@ -642,7 +642,7 @@ async def get_capture_api(
         # trimmed WAV so time math has to match. Stored words stay in
         # original-audio time in the DB — this is read-time projection
         # only.
-        _apply_trim_to_capture_row(row)
+        _apply_trim_to_capture_row(row, check_file=True)
         row["username"] = api_keys_store.get_username(row.get("user_id"))
         return row
 
@@ -687,6 +687,20 @@ def _sniff_audio_mime(abs_path: str, fallback_ext: str) -> str:
     }.get(ext, "application/octet-stream")
 
 
+def _served_trimmed_path(row: dict[str, Any]) -> str | None:
+    """Abs path of `row`'s trimmed WAV if it is still on disk, else None —
+    the one decision behind both the audio route's fallback to the original
+    and the detail routes' trimmed-timeline projection."""
+    trimmed_rel = row.get("audio_trimmed_relpath")
+    if not trimmed_rel:
+        return None
+    try:
+        cand = captures_store.abs_audio_path(trimmed_rel)
+    except ValueError:
+        return None
+    return cand if os.path.isfile(cand) else None
+
+
 def _capture_audio_file(row: dict[str, Any], original: bool) -> tuple[str, str]:
     """(abs path, mime) of the file get_audio_api serves for `row`.
 
@@ -696,15 +710,7 @@ def _capture_audio_file(row: dict[str, Any], original: bool) -> tuple[str, str]:
     `original=True` serves the untrimmed utterance instead: that is the audio
     the decode actually received, which a latency / hallucination replay
     needs (the trim removes exactly the silence such bugs live in)."""
-    trimmed_rel = None if original else row.get("audio_trimmed_relpath")
-    abs_path: str | None = None
-    if trimmed_rel:
-        try:
-            cand = captures_store.abs_audio_path(trimmed_rel)
-            if os.path.isfile(cand):
-                abs_path = cand
-        except ValueError:
-            abs_path = None
+    abs_path = None if original else _served_trimmed_path(row)
     if abs_path is None:
         try:
             abs_path = captures_store.abs_audio_path(row["audio_relpath"])
@@ -1272,17 +1278,22 @@ def _shift_word_times(
     return out
 
 
-def _apply_trim_to_capture_row(row: dict[str, Any]) -> None:
+def _apply_trim_to_capture_row(row: dict[str, Any], check_file: bool = False) -> None:
     """In-place: if `row` carries trim offsets, shift its `words` and
     `segments` onto the trimmed-audio timeline. Always sets
     `effective_audio_s` (= original `audio_s` when
     lead/trail are None or 0) so consumers can read one field
-    uniformly without branching on trim presence."""
+    uniformly without branching on trim presence.
+
+    `check_file=True` (the detail routes) projects only when the trimmed WAV
+    the audio route would serve is still on disk: with it gone the card plays
+    the original, and shifted words would run lead_ms ahead of the speech.
+    The list render skips the per-row stat."""
     if not row:
         return
     lead = row.get("audio_trim_lead_ms")
     trail = row.get("audio_trim_trail_ms")
-    if not lead and not trail:
+    if (not lead and not trail) or (check_file and _served_trimmed_path(row) is None):
         # Still expose effective_audio_s equal to audio_s
         # so consumers can use a single field uniformly.
         row["effective_audio_s"] = float(row.get("audio_s") or 0.0)
