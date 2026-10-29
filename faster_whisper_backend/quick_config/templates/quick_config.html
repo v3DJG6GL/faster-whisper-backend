@@ -2220,6 +2220,19 @@ function _applyFieldDiff(serverValue, diff, clashes) {
         const clash = (have.has(k) && _stringify(kept.get(k)) !== _stringify(x))
           || (mineK === undefined && _stringify({ ...b, pattern: x.pattern }) === _stringify(x));
         if (clash && clashes) clashes.push(String(x.pattern));
+      } else if (k !== serverOwn[i][0] && have.has(serverOwn[i][0])
+                 && _stringify(mineK) === _stringify(x)) {
+        // The user left the entry alone, so the merge holds the other
+        // writer's fix in place, and appended one with the fixed pattern:
+        // the same entry is one too many, a different one is now shadowed.
+        const own = serverOwn[i][0];
+        if (_stringify(kept.get(own)) === _stringify(x)) {
+          out.splice(out.findIndex(([q]) => q === own), 1);
+          have.delete(own);
+          kept.delete(own);
+        } else if (clashes) {
+          clashes.push(String(x.pattern));
+        }
       }
       if (!base.has(k) && !have.has(k)) {
         const at = prev === null ? 0 : out.findIndex(([q]) => q === prev) + 1;

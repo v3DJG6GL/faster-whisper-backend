@@ -668,6 +668,31 @@ def test_conflict_merge_reports_the_other_writers_pattern_fix_the_user_also_adde
     assert res["same"] == [["x"], ["a>1", "x>U", "y>1"]]
 
 
+def test_conflict_merge_reports_the_users_new_entry_shadowed_by_the_other_writers_pattern_fix(
+        client, tmp_path):
+    # The user left x alone and appended a y entry while the other writer
+    # fixed x's pattern to y: the merge put their fix in x's place, ahead of
+    # the user's y, so the user's entry never matched (or sat there twice)
+    # under a clean "Auto-merged" toast.
+    page = client.get("/quick-config").text
+    res = _run_js(client, tmp_path, _olist_consts(page) + r"""
+      const e = (p, r) => ({ pattern: p, replacement: r });
+      const merge = (base, mine, theirs) => {
+        const clashes = [];
+        const m = _applyFieldDiff(theirs, _fieldDiff(base, mine, _diffKindFor('entries')), clashes);
+        return [clashes, m.map(x => x.pattern + '>' + x.replacement)];
+      };
+      const base = [e('a', 'A'), e('x', 'X'), e('z', 'Z')];
+      const theirs = [e('a', 'A'), e('y', 'X'), e('z', 'Z')];
+      out({
+        other: merge(base, [...base, e('y', 'W')], theirs),
+        same: merge(base, [...base, e('y', 'X')], theirs),
+      });
+    """, funcs=_OLIST_FUNCS)
+    assert res["other"] == [["y"], ["a>A", "y>X", "z>Z", "y>W"]]
+    assert res["same"] == [[], ["a>A", "y>X", "z>Z"]]
+
+
 def test_conflict_merge_reports_the_other_writers_pattern_fix_to_an_entry_the_user_deleted(
         client, tmp_path):
     # The user deleted b while the other writer only fixed b's pattern: the
