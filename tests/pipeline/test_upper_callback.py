@@ -56,3 +56,11 @@ def test_lowercase_wordlist_keeps_text_between_and_after_the_groups():
     assert re.sub(quote, replace, "Ende. „Haus") == "Ende „Haus"
     assert re.sub(r"(?<!\d)[.?!](\s*)([A-ZÄÖÜ])(\w*)(\s)", replace,
                   "Ende. Und dann") == "Ende und dann"
+
+
+def test_lowercase_wordlist_with_fewer_groups_keeps_the_match():
+    # stripping the whole match deleted the captured word: "Und", "Haus"
+    replace = pl_engine._make_lowercase_wordlist_replacer(frozenset({"und"}))
+    text = "Ende. Und dann. Haus steht."
+    assert re.sub(r"[.?!](\s*)([A-ZÄÖÜ]\w*)", replace, text) == text
+    assert re.sub(r"[.?!](\s*)([A-ZÄÖÜ])", replace, text) == text

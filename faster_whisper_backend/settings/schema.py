@@ -1819,6 +1819,17 @@ class AdminConfig(BaseModel):
                 continue
             where = f"rule {idx} ({slug!r})"
             rx = _compile(where, pattern, str(slug or ""))
+            # The replacer drops only the text before group 1 and lowercases
+            # group 2 + 3; with fewer groups it keeps the match untouched
+            # (engine._make_lowercase_wordlist_replacer), so the rule would
+            # do nothing. Save only, scoped like the guard: a loaded rule
+            # stays harmless.
+            if (rtype == "callback:lowercase-wordlist" and rx.groups < 3 and guarding
+                    and (guard_slugs is None or slug in guard_slugs)):
+                raise ValueError(
+                    f"{where}: a lowercase-wordlist pattern needs 3 groups — "
+                    "the space after the terminator, the first letter and the "
+                    f"rest of the next word — but has {rx.groups}.")
             checks.append((where, pattern, "", str(slug or ""), rx))
         if terminal_idx is not None and terminal_idx != len(v) - 1:
             raise ValueError(
