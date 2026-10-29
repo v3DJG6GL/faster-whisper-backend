@@ -13,6 +13,7 @@ import re
 import sys
 import threading
 import time
+import unicodedata
 
 import pytest
 
@@ -470,6 +471,35 @@ def test_redistribute_leaves_a_word_boundary_for_every_later_member():
     assert translation._redistribute(
         ["x" * 34, "x", "x" * 44, "x" * 25],
         "hh egfhbg daedhge hdf") == ["hh", "egfhbg", "daedhge", "hdf"]
+
+
+def test_redistribute_thai_khmer_burmese_count_as_unspaced():
+    """Thai/Khmer/Burmese have no spaces between words: a cut no longer
+    jumps to a far-away phrase space (one cue took most of the text), and a
+    raw cut never opens a cue on a vowel or tone mark or splits a stack."""
+    th = ("เมื่อวานเราคุยกันเรื่องโครงการใหม่และเราคิดว่าเราจะเริ่มทำงาน"
+          "ในสัปดาห์หน้า แต่ยังไม่แน่ใจ")
+    head, tail = translation._redistribute(
+        ["Gestern haben wir geredet",
+         "und wir denken dass wir naechste Woche anfangen"], th)
+    assert len(head) < len(tail)
+    assert head + tail == th
+    km = ("ម្សិលមិញយើងបាននិយាយអំពីគម្រោងថ្មីហើយយើងគិតថាយើងនឹងចាប់ផ្តើម"
+          "ធ្វើការនៅសប្តាហ៍ក្រោយ")
+    src = ["Gestern haben wir ueber das neue Projekt geredet",
+           "und wir denken dass wir naechste Woche anfangen",
+           "aber sicher ist das nicht"]
+    joins_next = set("เแโใไ္្")
+    for text in (th.replace(" ", ""), km,
+                 "ကျွန်တော်တို့မနေ့ကပရောဂျက်အသစ်အကြောင်းပြောခဲ့ကြတယ်"):
+        for a in range(1, 13):
+            pieces = translation._redistribute([src[0][:a * 4]] + src[1:],
+                                               text)
+            assert "".join(pieces) == text
+            for left, right in zip(pieces, pieces[1:]):
+                assert unicodedata.category(right[0]) not in ("Mn", "Mc"), \
+                    pieces
+                assert left[-1] not in joins_next, pieces
 
 
 def test_redistribute_never_emits_empty_members():

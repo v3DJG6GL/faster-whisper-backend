@@ -1169,19 +1169,26 @@ def _merge_sentences(segments: "list[dict]") -> "list[list[int]]":
 # Clause punctuation an unspaced (Han/kana) translation can be cut after —
 # no ASCII "." or ",", which also sit inside numbers ("3.5", "1,000").
 _UNSPACED_CUT_PUNCT = frozenset("，。、！？；：!?;")
-_UNSPACED_RE = re.compile(r"[\u3040-\u30ff\u3400-\u9fff]")
+_UNSPACED_RE = re.compile(
+    r"[\u0e00-\u0eff\u1000-\u109f\u1780-\u17ff\u3040-\u30ff\u3400-\u9fff]")
+# Thai/Lao vowels written before their consonant, and the Myanmar/Khmer
+# stacking marks: each belongs to the character AFTER it, so no raw cut
+# may fall right behind one.
+_JOINS_NEXT = frozenset("\u0e40\u0e41\u0e42\u0e43\u0e44"
+                        "\u0ec0\u0ec1\u0ec2\u0ec3\u0ec4\u1039\u17d2")
 
 
 def _redistribute(group_texts: "list[str]", translated: str) -> "list[str]":
     """Split one group's translated text back across its member segments,
     proportionally by each member's share of the group's source char length,
     cutting at the word boundary (space) nearest each proportional cut.
-    Unspaced (Chinese/Japanese) text has no word boundaries — its only
-    spaces sit around a Latin name — so it is cut after the nearest clause
-    punctuation, else the nearest space, and only when that boundary lies
-    within a quarter of the member's share of the ideal cut; else at the raw
-    proportional position. Members whose source is blank get an empty
-    piece."""
+    Unspaced (Chinese/Japanese/Thai/Lao/Khmer/Burmese) text has no word
+    boundaries — its spaces sit around a Latin name or between phrases —
+    so it is cut after the nearest clause punctuation, else the nearest
+    space, and only when that boundary lies within a quarter of the member's
+    share of the ideal cut; else at the raw proportional position (moved
+    off a vowel/tone mark it would orphan). Members whose source is blank
+    get an empty piece."""
     n = len(group_texts)
     if n <= 1:
         return [translated.strip()] if n == 1 else []
@@ -1253,6 +1260,13 @@ def _redistribute(group_texts: "list[str]", translated: str) -> "list[str]":
             # No word boundary left: raw proportional cut, pushed past any
             # whitespace-only slice (which .strip() would empty).
             while cut < len(translated) and not translated[prev:cut].strip():
+                cut += 1
+            # Nor inside a character cluster: a cue that opens on a vowel or
+            # tone mark shows it on a dotted circle, and the word before it
+            # loses that mark (Thai, Khmer, Burmese, decomposed accents).
+            while cut < len(translated) - (n - 1 - i) and (
+                    unicodedata.category(translated[cut]) in ("Mn", "Mc", "Me")
+                    or translated[cut - 1] in _JOINS_NEXT):
                 cut += 1
         cuts.append(cut)
         prev = cut
