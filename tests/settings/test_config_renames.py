@@ -244,3 +244,63 @@ def test_edited_old_copy_beside_its_renamed_rule_is_kept():
     raw = {"PIPELINE_RULES": rules}
     renames.migrate_rule_slugs(raw)
     assert "2-2-capitalize-the-letter-after-a-hyphen" in [r["name"] for r in raw["PIPELINE_RULES"]]
+
+
+_SPLIT_IN_JUNE = {
+    # f940127: the trailing-period entry became its own card.
+    "strip-whisper-punctuation": ["strip-trailing-period", "strip-auto-punctuation"],
+    # b7449d8
+    "german-symbol-cleanup": ["ch-symbol-cleanup", "strip-stray-symbols",
+                              "normalize-digit-range"],
+}
+
+
+def test_every_split_card_names_current_factory_rules():
+    names = {r["name"] for r in _factory_rules()}
+    assert {k: list(v) for k, v in renames.SPLIT_RULES.items()} == _SPLIT_IN_JUNE
+    for old, new in renames.SPLIT_RULES.items():
+        assert old not in names and set(new) <= names, old
+
+
+def test_exclude_of_a_split_card_names_every_card_that_took_it_over(tmp_path):
+    """An exclude saved before the June splits named a card that no longer
+    exists: inert on load (the identity got the punctuation stripped again),
+    and the next save of the bundle 422'd on a slug /settings cannot show."""
+    from faster_whisper_backend.settings import config_store as cs
+    p = tmp_path / "config.local.json"
+    p.write_text(json.dumps({
+        "CAPTURES_PIPELINE_RULES_EXCLUDE": ["german-symbol-cleanup"],
+        "MODEL_OVERRIDES": {"large-v3": {
+            "PIPELINE_RULES_EXCLUDE": ["strip-whisper-punctuation"],
+            "BEAM_SIZE": 3}},
+        "OVERRIDE_PROFILES": {"p": {
+            "PIPELINE_RULES_INCLUDE": ["strip-whisper-punctuation",
+                                       "strip-auto-punctuation"]}},
+    }), encoding="utf-8")
+    out = cs.load_overrides(str(p))
+    assert out["MODEL_OVERRIDES"]["large-v3"]["BEAM_SIZE"] == 3
+    assert set(out["MODEL_OVERRIDES"]["large-v3"]["PIPELINE_RULES_EXCLUDE"]) == set(
+        _SPLIT_IN_JUNE["strip-whisper-punctuation"])
+    assert set(out["CAPTURES_PIPELINE_RULES_EXCLUDE"]) == set(
+        _SPLIT_IN_JUNE["german-symbol-cleanup"])
+    assert sorted(out["OVERRIDE_PROFILES"]["p"]["PIPELINE_RULES_INCLUDE"]) == sorted(
+        _SPLIT_IN_JUNE["strip-whisper-punctuation"])
+
+
+def test_slug_list_beside_a_stored_copy_of_the_split_card_keeps_naming_it():
+    """A stored PIPELINE_RULES copy from before the split still runs the old
+    combined card; its own slug is the right one there."""
+    rules = copy.deepcopy(_factory_rules())
+    rules.insert(-1, {"name": "strip-whisper-punctuation", "label": "Strip Whisper punctuation",
+                      "type": "regex-list",
+                      "entries": [{"pattern": "\\s*\\.+\\s*$", "replacement": ""}]})
+    raw = {"PIPELINE_RULES": rules,
+           "CAPTURES_PIPELINE_RULES_EXCLUDE": ["strip-whisper-punctuation",
+                                               "german-symbol-cleanup"],
+           "MODEL_OVERRIDES": {"m": {"PIPELINE_RULES_EXCLUDE": ["strip-whisper-punctuation"]}}}
+    renames.migrate_rule_slugs(raw)
+    renames.migrate_bundle_keys(raw)
+    assert "strip-whisper-punctuation" in [r["name"] for r in raw["PIPELINE_RULES"]]
+    assert raw["CAPTURES_PIPELINE_RULES_EXCLUDE"] == [
+        "strip-whisper-punctuation", *_SPLIT_IN_JUNE["german-symbol-cleanup"]]
+    assert raw["MODEL_OVERRIDES"]["m"]["PIPELINE_RULES_EXCLUDE"] == ["strip-whisper-punctuation"]

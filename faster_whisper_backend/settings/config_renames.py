@@ -81,6 +81,18 @@ RENAMED_RULES: dict[str, str] = {
     "2-2-capitalize-the-letter-after-a-hyphen": "capitalize-letter-after-hyphen",
 }
 
+# Pipeline rule cards that were SPLIT, old slug -> the cards that took over
+# its entries (in run order). Mapped in slug LISTS only (rename_slugs): a
+# stored PIPELINE_RULES copy that still holds the old combined card keeps it,
+# and so do the slug lists beside it (`known`).
+SPLIT_RULES: dict[str, tuple[str, ...]] = {
+    # f940127 (June 2026): its trailing-period entry became its own card.
+    "strip-whisper-punctuation": ("strip-trailing-period", "strip-auto-punctuation"),
+    # b7449d8 (June 2026).
+    "german-symbol-cleanup": ("ch-symbol-cleanup", "strip-stray-symbols",
+                              "normalize-digit-range"),
+}
+
 # Factory regex-list entries whose text was CHANGED in config.json, keyed by
 # the entry label: (old pattern, old replacement) -> (new pattern, new
 # replacement). A saved PIPELINE_RULES copy (config.local.json, or the
@@ -243,35 +255,49 @@ _SLUG_LIST_KEYS = ("PIPELINE_RULES_EXCLUDE", "PIPELINE_RULES_INCLUDE",
 ENV_PREFIX = "WHISPER_"
 
 
-def rename_slugs(slugs: Any) -> Any:
+def _rule_names(rules: Any) -> set[str] | None:
+    """The str names of a stored PIPELINE_RULES list; None when there is none."""
+    if not isinstance(rules, list):
+        return None
+    return {r["name"] for r in rules
+            if isinstance(r, dict) and isinstance(r.get("name"), str)}
+
+
+def rename_slugs(slugs: Any, known: Any = None) -> Any:
     """Map renamed rule slugs in a list / set / tuple of slugs (order kept,
-    a slug present under both names collapses to one). Other values pass
-    through untouched."""
+    a slug present under both names collapses to one), and a split card's
+    slug to every card that took it over (SPLIT_RULES) — unless `known`, the
+    rule names in force where it is known, still holds the old card. Other
+    values pass through untouched."""
     if not isinstance(slugs, (list, tuple, set, frozenset)):
         return slugs
     out: list[Any] = []
     for s in slugs:
-        s = RENAMED_RULES.get(s, s) if isinstance(s, str) else s
-        if s not in out:
-            out.append(s)
+        if (isinstance(s, str) and s in SPLIT_RULES
+                and (known is None or s not in known)):
+            new: tuple[Any, ...] = SPLIT_RULES[s]
+        else:
+            new = (RENAMED_RULES.get(s, s) if isinstance(s, str) else s,)
+        for n in new:
+            if n not in out:
+                out.append(n)
     return type(slugs)(out) if not isinstance(slugs, list) else out
 
 
 def migrate_rule_slugs(raw: dict[str, Any]) -> dict[str, Any]:
     """Apply RENAMED_RULES to a stored overrides dict (in place; also
     returned): the `name` of each stored PIPELINE_RULES entry and the
-    top-level slug lists. The slug lists inside OVERRIDE_PROFILES /
+    top-level slug lists (SPLIT_RULES too, there). The slug lists inside OVERRIDE_PROFILES /
     MODEL_OVERRIDES bundles are migrate_bundle's job (via migrate_bundle_keys,
     which every caller also runs). A stored rule already using the new name
     wins over the old one, and an old-named copy that is still the unscoped
     factory rule is dropped beside it: every slug list now names the new
     rule, so the duplicate would run on every language, excluded nowhere."""
     rules = raw.get("PIPELINE_RULES")
-    if isinstance(rules, list):
-        # str only: a hand-edited non-string name must reach the schema's
-        # error, not crash the dict lookups here (load_overrides never raises).
-        names = {r.get("name") for r in rules
-                 if isinstance(r, dict) and isinstance(r.get("name"), str)}
+    # str only: a hand-edited non-string name must reach the schema's
+    # error, not crash the dict lookups here (load_overrides never raises).
+    names = _rule_names(rules)
+    if names is not None:
         dropped: list[dict[str, Any]] = []
         for r in rules:
             if (isinstance(r, dict) and isinstance(r.get("name"), str)
@@ -286,7 +312,7 @@ def migrate_rule_slugs(raw: dict[str, Any]) -> dict[str, Any]:
             rules[:] = [r for r in rules if all(r is not d for d in dropped)]
     for key in _SLUG_LIST_KEYS:
         if key in raw:
-            raw[key] = rename_slugs(raw[key])
+            raw[key] = rename_slugs(raw[key], names)
     return raw
 
 
@@ -373,14 +399,15 @@ def alias_env(environ: MutableMapping[str, str]) -> list[str]:
     return warnings
 
 
-def migrate_bundle(bundle: dict[str, Any]) -> list[str]:
+def migrate_bundle(bundle: dict[str, Any], known: Any = None) -> list[str]:
     """Bring ONE OverrideProfile-shaped bundle up to the current names (in
     place): renamed keys (migrate_keys), the same rename on each ``locks``
     entry, and renamed rule slugs in its slug lists. The one place a bundle
     migration lives — config.local.json / env bundles (migrate_bundle_keys),
     per-identity bindings (api_keys_store._parse_binding) and the resolver
     (effective_config._blob_to_layer) all call it. Returns the old key / lock
-    names that were renamed, for the caller's log line."""
+    names that were renamed, for the caller's log line. `known`: the rule
+    names in force, when the caller has them (rename_slugs)."""
     renamed = [k for k in RENAMED_KEYS if k in bundle]
     migrate_keys(bundle)
     locks = bundle.get("locks")
@@ -391,16 +418,18 @@ def migrate_bundle(bundle: dict[str, Any]) -> list[str]:
                            for lk in locks]
     for key in _SLUG_LIST_KEYS:
         if key in bundle:
-            bundle[key] = rename_slugs(bundle[key])
+            bundle[key] = rename_slugs(bundle[key], known)
     return renamed
 
 
-def migrate_bundle_keys(raw: dict[str, Any]) -> list[str]:
+def migrate_bundle_keys(raw: dict[str, Any], known: Any = None) -> list[str]:
     """Apply migrate_bundle to every OVERRIDE_PROFILES / MODEL_OVERRIDES
     bundle of an overrides dict (in place). The bundles are extra="forbid",
     so one pre-rename key there fails validation of the whole value. Returns
     the old names that were renamed, for the caller's log line; empty when
-    nothing matched."""
+    nothing matched. `known` defaults to the dict's own PIPELINE_RULES names."""
+    if known is None:
+        known = _rule_names(raw.get("PIPELINE_RULES"))
     renamed: list[str] = []
     for group_key in ("OVERRIDE_PROFILES", "MODEL_OVERRIDES"):
         group = raw.get(group_key)
@@ -408,7 +437,7 @@ def migrate_bundle_keys(raw: dict[str, Any]) -> list[str]:
             continue
         for bundle in group.values():
             if isinstance(bundle, dict):
-                renamed.extend(migrate_bundle(bundle))
+                renamed.extend(migrate_bundle(bundle, known))
     return sorted(set(renamed))
 
 

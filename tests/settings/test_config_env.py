@@ -1275,6 +1275,23 @@ def test_env_json_bundles_migrate_renamed_keys_and_locks(monkeypatch):
         importlib.reload(config)
 
 
+def test_env_model_override_naming_a_split_card_is_kept(monkeypatch):
+    """strip-whisper-punctuation was split in June (config_renames.SPLIT_RULES):
+    an env bundle that excludes it used to fail the unknown-slug check, which
+    dropped the whole var (BEAM_SIZE with it)."""
+    try:
+        _reload_with_env(monkeypatch, WHISPER_MODEL_OVERRIDES=json.dumps(
+            {"large-v3": {"PIPELINE_RULES_EXCLUDE": ["strip-whisper-punctuation"],
+                          "BEAM_SIZE": 3}}))
+        bundle = config.MODEL_OVERRIDES["large-v3"]
+        assert bundle["BEAM_SIZE"] == 3
+        assert set(bundle["PIPELINE_RULES_EXCLUDE"]) == {
+            "strip-trailing-period", "strip-auto-punctuation"}
+    finally:
+        monkeypatch.undo()
+        importlib.reload(config)
+
+
 def test_alias_env_ignores_the_old_name_when_either_new_spelling_is_set():
     """A stale WHISPER_USE_AUTH_TOKEN must not become WHISPER_HF_TOKEN when the
     operator moved to WHISPER_HF_TOKEN_FILE: the plain var would then make the
