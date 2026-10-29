@@ -738,6 +738,66 @@ def test_faithful_batch_size_grows_back_after_one_mismatch(base_cfg,
     assert sizes == [8, 4, 8, 8, 8, 4]
 
 
+def _numbered_fake(calls, fails):
+    """A ``_complete`` fake that mis-numbers every numbered batch for which
+    ``fails(lines)`` holds and translates the rest line by line."""
+    def fake(llm, family, prompt_or_msgs, max_tokens):
+        payload = _payload_of(prompt_or_msgs)
+        calls.append(payload)
+        if not payload.startswith(translation._NUMBERED_INSTRUCTION):
+            return _xlate(payload)
+        lines = payload.split("\n\n", 1)[1].splitlines()
+        if fails(lines):
+            return "one line only"
+        return "\n".join(
+            f"{m.group(1)}. {_xlate(m.group(2))}"
+            for m in (re.match(r"(\d+)\.\s(.*)", ln) for ln in lines))
+    return fake
+
+
+def _batch_sizes(calls):
+    return [len(c.split("\n\n", 1)[1].splitlines())
+            if c.startswith(translation._NUMBERED_INSTRUCTION) else 1
+            for c in calls]
+
+
+def test_faithful_batch_size_stops_growing_to_a_size_that_keeps_failing(
+        base_cfg, monkeypatch):
+    """A model that mis-numbers every batch above 4 lines: once a grown 8
+    failed twice, k stays at 4 instead of paying a failed 8-line decode
+    before every 4-batch for the rest of the target."""
+    monkeypatch.setattr(cfg, "TRANSLATION_BATCH_SEGMENTS", 8, raising=False)
+    calls = []
+    monkeypatch.setattr(translation, "_complete",
+                        _numbered_fake(calls, lambda lines: len(lines) > 4))
+    _stub_get_model(monkeypatch)
+
+    live = [f"Satz nummer {n}." for n in range(32)]
+    res, warns, _ = _run(translation.translate_segments(
+        _segs(*live), ["en"], source_lang="de", mode="faithful"))
+    assert warns == []
+    assert [r["en"] for r in res] == [_xlate(t) for t in live]
+    assert _batch_sizes(calls) == [8, 4, 8, 4, 8] + [4] * 6
+
+
+def test_faithful_one_bad_cue_still_grows_back_to_the_full_batch(
+        base_cfg, monkeypatch):
+    """One cue that breaks every numbered batch holding it is no size the
+    model cannot number: past it, k still grows back to the full size."""
+    monkeypatch.setattr(cfg, "TRANSLATION_BATCH_SEGMENTS", 8, raising=False)
+    calls = []
+    live = [f"Satz nummer {n}." for n in range(32)]
+    monkeypatch.setattr(translation, "_complete", _numbered_fake(
+        calls, lambda lines: any(live[5] in ln for ln in lines)))
+    _stub_get_model(monkeypatch)
+
+    res, warns, _ = _run(translation.translate_segments(
+        _segs(*live), ["en"], source_lang="de", mode="faithful"))
+    assert warns == []
+    assert [r["en"] for r in res] == [_xlate(t) for t in live]
+    assert _batch_sizes(calls) == [8, 4, 8, 4, 2, 1, 2, 1, 2, 4, 8, 8, 4]
+
+
 def test_faithful_copy_guard_sees_through_collapsed_whitespace(base_cfg,
                                                                monkeypatch):
     """The numbered batch prompt folds a segment's newlines and runs of

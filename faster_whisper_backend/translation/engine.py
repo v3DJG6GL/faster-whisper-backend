@@ -1727,6 +1727,13 @@ async def translate_segments(
             k_cfg = max(1, int(getattr(cfg, "TRANSLATION_BATCH_SEGMENTS", 8)
                                or 1))
             k = k_cfg
+            # Growing back after a halving re-tries a size that just failed.
+            # A grown size that fails a SECOND time marks it as one the model
+            # cannot number (not one bad cue): k never grows to it again in
+            # this target, or every few cues would pay a failed decode.
+            k_ceil = k_cfg
+            grown = False
+            failed_grown: set = set()
             n_batches = max(1, -(-len(segments) // k))
             unit_state["steps"] = n_batches
             i = 0
@@ -1771,8 +1778,14 @@ async def translate_segments(
                         # The leading blanks stay on top of the halved span —
                         # the next batch starts at them again, and would
                         # otherwise spend the halved size on blanks alone.
+                        cap = grown and k in failed_grown
+                        if grown:
+                            failed_grown.add(k)
                         k = max(1, (live_idx[0] - i)
                                 + (live_idx[-1] - live_idx[0] + 1) // 2)
+                        if cap:
+                            k_ceil = k
+                        grown = False
                         n_batches = max(1, -(-(len(segments) - i) // k)) + batch_no
                         continue
                     for j, out in zip(live_idx, parsed):
@@ -1800,11 +1813,12 @@ async def translate_segments(
                 batch_no += 1
                 done_units += len(batch_idx)
                 unit_state["done"] += len(batch_idx)
-                if k < k_cfg and i < len(segments):
+                grown = k < k_ceil and i < len(segments)
+                if grown:
                     # A halving gets past ONE failing position: grow k back
                     # once a batch went through, or one early mis-numbering
                     # would leave every later cue of the target tiny batches.
-                    k = min(k_cfg, 2 * k)
+                    k = min(k_ceil, 2 * k)
                     n_batches = max(1, -(-(len(segments) - i) // k)) + batch_no
                 _progress(f"{target} {min(batch_no, n_batches)}/{n_batches}",
                           last_ok)
