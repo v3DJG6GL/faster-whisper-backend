@@ -160,3 +160,41 @@ const up = press(rows[1], 'up');
 console.log(JSON.stringify({ up, body: document.activeElement === document.body }));
 """)
     assert res == {"up": {"order": "ba", "focus": "lost"}, "body": True}
+
+
+# Drag-reorder: dragover moves the row live, so dragend decides whether the
+# new order sticks. A cancelled drag (Esc, or a release outside the list:
+# dropEffect 'none') used to keep the moved order and mark the card dirty.
+_DRAG = r"""
+let _rlDragSrc = null;
+const DRAG_AUTOSCROLL = { begin() {}, move() {}, stop() {} };
+const grip = (r) => r.querySelector('.rl-grip');
+const dragTo = (r, idx, dropEffect) => {
+  const dt = { setData() {}, dropEffect: 'none' };
+  grip(r).listeners.dragstart.forEach((f) => f({ dataTransfer: dt }));
+  box.insertBefore(r, box.children.filter((c) => c !== r)[idx] || null);  // dragover
+  dt.dropEffect = dropEffect;
+  grip(r).listeners.dragend.forEach((f) => f({ dataTransfer: dt }));
+  return { dom: box.children.map((c) => rows.indexOf(c)).join(''),
+    ords: box.children.map((c) => c.querySelector('.rl-ord').textContent).join(''),
+    order: order(), commits };
+};
+rule.entries = rows.map((_, i) => ({ pattern: 'abcd'[i] }));
+"""
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
+@pytest.mark.parametrize("start", [0, 3])
+def test_cancelled_drag_puts_the_row_back_and_commits_nothing(start):
+    res = _run(_setup("abcd") + _DRAG + f"""
+console.log(JSON.stringify(dragTo(rows[{start}], {3 - start}, 'none')));
+""")
+    assert res == {"dom": "0123", "ords": "1234", "order": "abcd", "commits": 0}
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
+def test_real_drag_drop_keeps_the_new_order():
+    res = _run(_setup("abcd") + _DRAG + r"""
+console.log(JSON.stringify(dragTo(rows[0], 3, 'move')));
+""")
+    assert res == {"dom": "1230", "ords": "1234", "order": "bcda", "commits": 1}

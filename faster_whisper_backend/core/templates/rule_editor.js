@@ -320,22 +320,32 @@ function _makeEntryRow(rule, entry, commitData, onEnter) {
   const grip = document.createElement('span');
   grip.className = 'rl-grip'; grip.textContent = '⠿';
   grip.title = 'drag to reorder'; grip.draggable = true;
+  let dragOrigNext = null;   // the row's slot at dragstart, for a cancelled drag
   grip.addEventListener('dragstart', (e) => {
     _rlDragSrc = row;
+    dragOrigNext = row.nextElementSibling;
     e.dataTransfer.effectAllowed = 'move';
     try { e.dataTransfer.setData('text/plain', 'x'); } catch (_) {}
     DRAG_AUTOSCROLL.begin(row.parentNode);
     setTimeout(() => row.classList.add('rl-dragging'), 0);
   });
-  grip.addEventListener('dragend', () => {
+  grip.addEventListener('dragend', (e) => {
     row.classList.remove('rl-dragging'); _rlDragSrc = null;
     DRAG_AUTOSCROLL.stop();
-    // A drop OUTSIDE entriesBox fires no 'drop', so the live-reordered DOM
-    // (moved during dragover) would stay out of sync with rule.entries and
-    // Save would persist the OLD order. dragend always fires — sync here too
-    // (idempotent after a real in-list drop, which already committed).
     const parent = row.parentNode;
-    if (parent) { rule.entries = _readEntries(parent); _renumberEntries(parent); commitData(); }
+    if (!parent) return;
+    // dropEffect 'none' = Esc or a release outside the list: the platform's
+    // cancel. dragover already moved the row live, so put it back in its
+    // dragstart slot and leave rule.entries (and the dirty flag) alone.
+    if (e.dataTransfer && e.dataTransfer.dropEffect === 'none') {
+      parent.insertBefore(row, dragOrigNext && dragOrigNext.parentNode === parent
+        ? dragOrigNext : null);
+      _renumberEntries(parent);
+      return;
+    }
+    // A real drop: sync rule.entries with the moved DOM (idempotent after an
+    // in-list drop, which already committed).
+    rule.entries = _readEntries(parent); _renumberEntries(parent); commitData();
   });
   const ord = document.createElement('span');
   ord.className = 'rl-ord'; ord.textContent = '0';
