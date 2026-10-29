@@ -389,6 +389,31 @@ console.log(JSON.stringify({ across: run(grp, 2), within: run(grp, 0),
 
 
 @needs_node
+def test_range_chip_over_a_removed_word_keeps_it_out_of_wrong(page, tmp_path):
+    """A shift-click range across a rule-removed filler put the raw filler
+    into the chip's `wrong` ("gehe äh heim."). The exported text has no
+    filler, so the chip never matched and export silently dropped it."""
+    fns = "\n".join(_js_function(page, f) for f in (
+        "_dispWord", "_dispRemoved", "spanText", "recomputeWrong",
+        "_applyChipsToText"))
+    out = _run_node(tmp_path, fns + r"""
+var words = [{ word: ' Ich' }, { word: ' gehe' }, { word: ' äh', removed: true },
+             { word: ' heim.' }];
+var trained = words.map(function(w) {
+  return { word: w.word, train_word: w.word, train_removed: !!w.removed };
+});
+var chip = { wrong: 'stale', correct: 'fahre nach Hause.', idx: 1, idx_end: 3 };
+var span = spanText({ words: words }, 1, 3);
+chip.wrong = span;
+console.log(JSON.stringify({ span: span,
+  heal: recomputeWrong({ words: trained }, chip),
+  text: _applyChipsToText('Ich gehe heim.', [chip], words) }));
+""")
+    assert out == {"span": "gehe heim.", "heal": "gehe heim.",
+                   "text": "Ich fahre nach Hause."}
+
+
+@needs_node
 def test_strip_keyboard_follows_the_latest_preview_activation(page, tmp_path):
     """A merge-preview panel reuses its strip element, but each ▶ builds a
     fresh state. The keyboard handlers bound once kept the first state, so

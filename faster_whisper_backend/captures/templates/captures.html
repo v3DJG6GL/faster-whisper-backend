@@ -2520,14 +2520,15 @@
   // words at its idx..idx_end. Lets stored chips (whose `wrong` was
   // the raw STT form before the karaoke band started showing
   // post-pipeline words) self-heal — and ensures applyCorrectionsToGround
-  // can find the chip's `wrong` in finalText.
+  // can find the chip's `wrong` in finalText. A rule-removed word inside
+  // the span is not in that text, so it stays out of `wrong`.
   function recomputeWrong(state, chip) {
     if (typeof chip.idx !== 'number') return chip.wrong || '';
     var b = (typeof chip.idx_end === 'number') ? chip.idx_end : chip.idx;
     var parts = [];
     for (var i = chip.idx; i <= b; i++) {
       var w = state.words[i];
-      if (w) parts.push(_dispWord(w));
+      if (w && !_dispRemoved(w)) parts.push(_dispWord(w));
     }
     return parts.join('').replace(/^\s+/, '');
   }
@@ -2575,9 +2576,12 @@
   function spanText(state, a, b) {
     // Verbatim concat of the words in [a..b]. Whisper's word.word
     // carries leading space + trailing punctuation, so the joined
-    // string preserves the original spacing/punctuation.
+    // string preserves the original spacing/punctuation. Rule-removed
+    // words are skipped: the exported text no longer has them.
     var parts = [];
-    for (var i = a; i <= b; i++) parts.push(_dispWord(state.words[i]));
+    for (var i = a; i <= b; i++) {
+      if (!_dispRemoved(state.words[i])) parts.push(_dispWord(state.words[i]));
+    }
     return parts.join('').replace(/^\s+/, '');
   }
   function focusLastInput(state) {
