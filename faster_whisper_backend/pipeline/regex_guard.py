@@ -765,6 +765,13 @@ def _splits_ambiguously(atoms: "list[tuple[str, bool] | None]", flags: int) -> b
         sets.append({c for c in pool if rx.fullmatch(c)})
     m = len(atoms)
     optional = [x for x in range(m) if sets[x] is not None and atoms[x][1]]
+    # An optional atom that shares no character with any other atom of the
+    # branch is forced: it takes its character exactly when the input has
+    # one there, so it gives no second split and is not counted below —
+    # `,?` in `(?:,? ?und )+` or `\s?` in `(?:\d\d?\.\s?)+`. A pin that
+    # cannot be read might take anything, so it keeps every atom counted.
+    free = {x for x in optional
+            if None in sets or any(sets[x] & sets[y] for y in range(m) if y != x)}
     for c in set().union(*(sets[x] for x in optional)):
         cuts = [x for x in range(m) if sets[x] is None
                 or (not atoms[x][1] and c not in sets[x])]
@@ -774,7 +781,7 @@ def _splits_ambiguously(atoms: "list[tuple[str, bool] | None]", flags: int) -> b
             continue
         for s, e in zip(cuts, cuts[1:] + [cuts[0] + m]):
             seg = [x % m for x in range(s + 1, e)]
-            if sum(atoms[x][1] for x in seg) < 2:
+            if sum(x in free for x in seg) < 2:
                 continue
             if any((atoms[x][1] or atoms[y][1]) and sets[x] & sets[y]
                    for p, x in enumerate(seg) for y in seg[p + 1:]):

@@ -767,6 +767,32 @@ def test_optional_overlap_pinned_by_a_disjoint_mandatory_atom_passes(pat):
     g.validate([("r", pat, "")])
 
 
+@pytest.mark.parametrize("pat", [
+    r"(?:\d\d?\.\s?)+",
+    r"\b(?:\d\d?\.\s?)+\d{4}\b",
+    r"(?:[A-Z]\w?\.\s?)+",
+    r"(?:\d\d?\.,?)+",
+    r"(?:,? ?und )+",
+    r"(?:[,.]? ?Punkt )+",
+    r"(?:\.? ?neue Zeile )+",
+])
+def test_forced_optional_atom_does_not_count_as_a_second_split(pat):
+    """`\\s?` after the `.` of `\\d\\d?\\.` (or `,?` before ` ?und`) can only
+    take a character no other atom takes, so it never offers a second split —
+    yet it counted as the second optional atom beside `\\d?` and dotted dates
+    and repeated dictation cleanups were refused as nested repetitions."""
+    assert not g._nested_repetition(pat)
+    g.validate([("r", pat, "")])
+
+
+@pytest.mark.parametrize("pat", [r"(?:a?b?ab)+#", r"(?:xa?[ab]b?)+#"])
+def test_optional_atoms_overlapping_outside_their_stretch_stay_rejected(pat):
+    """Each optional atom here shares a character with another atom of the
+    branch, so both still count: `a?b?ab` reads "abab" as one repetition or
+    two, and `xa?[ab]b?` matches "xab" as `a` + `[ab]` or `[ab]` + `b?`."""
+    assert g._nested_repetition(pat)
+
+
 def test_optional_overlap_between_pins_still_splits_ambiguously():
     """A pin only helps when the stretch it bounds holds one optional atom:
     `n?n?nx` and `n?nxn?n` (the tail and the next head) still split each
