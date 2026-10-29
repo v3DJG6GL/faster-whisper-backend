@@ -620,6 +620,18 @@ def test_redistribute_reserves_non_blank_chars_for_the_tail():
         ["Vraime", "n", "t", "?"]
 
 
+def test_redistribute_never_reserves_a_lone_tone_mark_for_the_tail():
+    """The tail was reserved in chars, so a cut clamped onto the final Thai
+    tone mark made the last cue a lone '้' on a dotted circle."""
+    src = "Ich glaube, dass wir das heute noch fertig machen koennen"
+    assert translation._redistribute(
+        [src, "Ja."], "ฉันคิดว่าเราจะทำเสร็จวันนี้ได้") == \
+        ["ฉันคิดว่าเราจะทำเสร็จวันนี้", "ได้"]
+    assert translation._redistribute(
+        [src, "Ja.", "Ok."], "ฉันคิดว่าเราจะทำเสร็จวันนี้ได้") == \
+        ["ฉันคิดว่าเราจะทำเสร็จวัน", "นี้", "ได้"]
+
+
 # ---------------------------------------------------------------------------
 # translate_segments — stubbed through the _complete seam
 # ---------------------------------------------------------------------------

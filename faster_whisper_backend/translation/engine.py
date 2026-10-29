@@ -1267,7 +1267,12 @@ def _redistribute(group_texts: "list[str]", translated: str) -> "list[str]":
     rooms = [_rooms(tier) for tier in tiers]
     # Positions of the non-blank chars: the tail is reserved in THESE, since
     # a reserved char that is a space ("beaucoup !") still left a blank cue.
-    non_blank = [k for k, ch in enumerate(translated) if not ch.isspace()]
+    # Only where a character cluster starts: a cut clamped onto a tone mark
+    # ('ได|้') made the last cue that lone mark.
+    non_blank = [k for k, ch in enumerate(translated)
+                 if not ch.isspace()
+                 and unicodedata.category(ch) not in ("Mn", "Mc", "Me")
+                 and not (k and translated[k - 1] in _JOINS_NEXT)]
 
     cuts: "list[int]" = []
     acc = 0
