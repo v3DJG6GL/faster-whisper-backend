@@ -872,6 +872,102 @@ def test_export_falls_back_to_the_original_when_the_trimmed_file_is_gone(
             f"audio/{cid}.wav"]
 
 
+def _write_merged_wav(gs, sid, data):
+    abs_p = gs.abs_path_for(gs.get_sample(sid)["merged_wav_relpath"])
+    os.makedirs(os.path.dirname(abs_p), exist_ok=True)
+    with open(abs_p, "wb") as f:
+        f.write(data)
+    return abs_p
+
+
+def test_export_rereads_a_sample_rebuilt_after_its_list_snapshot(
+        captures_store_db, groups_store_db, monkeypatch, tmp_path):
+    """The export walks a list_samples() snapshot, and a VAD reprocess running
+    alongside a long export os.replaces the merged WAV and patches
+    merged_duration_ms after it: the manifest shipped the new audio with the
+    old duration, and a sample the pass flagged stale was exported anyway.
+    Each group is re-read under its rebuild lock before it is packed."""
+    import io
+    import tarfile
+
+    from faster_whisper_backend.captures import routes as captures_routes
+    from faster_whisper_backend.captures import samples as capture_samples
+    from faster_whisper_backend.captures import samples_store as gs
+
+    rebuilt, staled = "b" * 32, "c" * 32
+    for sid in (rebuilt, staled):
+        _grouped_capture(captures_store_db, monkeypatch, tmp_path, sid)
+        _write_merged_wav(gs, sid, b"old audio")
+    real_list = gs.list_samples
+
+    def _list_then_reprocess(**kw):
+        snapshot = real_list(**kw)
+        _write_merged_wav(gs, rebuilt, b"new, longer audio")
+        gs.update_sample(rebuilt, {"merged_duration_ms": 2500})
+        gs.update_sample(staled, {"is_stale": 1})
+        return snapshot
+
+    entered = []
+    real_lock = capture_samples._rebuild_lock
+
+    def _counting(s):
+        entered.append(s)
+        return real_lock(s)
+
+    monkeypatch.setattr(gs, "list_samples", _list_then_reprocess)
+    monkeypatch.setattr(capture_samples, "_rebuild_lock", _counting)
+    blob = b"".join(captures_routes._build_export_stream(None, True))
+    with tarfile.open(fileobj=io.BytesIO(blob), mode="r:gz") as tar:
+        rows = [json.loads(line) for line in tar.extractfile(
+            "manifest.jsonl").read().decode("utf-8").splitlines() if line]
+        assert [n for n in tar.getnames() if n.startswith("audio/")] == [
+            f"audio/{rebuilt}.wav"]
+        audio = tar.extractfile(f"audio/{rebuilt}.wav").read()
+    assert [(r["audio_filepath"], r["duration"]) for r in rows] == [
+        (f"audio/{rebuilt}.wav", pytest.approx(2.5))]
+    assert audio == b"new, longer audio"
+    assert sorted(entered) == [rebuilt, staled]
+
+
+def test_export_sizes_each_wav_from_the_file_it_opened(
+        captures_store_db, groups_store_db, monkeypatch, tmp_path):
+    """info.size came from a getsize before the open, so an os.replace landing
+    in between (a rebuild, a VAD trim) made tarfile copy the old byte count
+    out of the new file: a shorter one aborted the whole streamed download
+    with "unexpected end of data". Both the group and the singleton site."""
+    import builtins
+    import io
+    import tarfile
+
+    from faster_whisper_backend.captures import routes as captures_routes
+    from faster_whisper_backend.captures import samples_store as gs
+
+    sid = "d" * 32
+    _grouped_capture(captures_store_db, monkeypatch, tmp_path, sid)
+    group_abs = _write_merged_wav(gs, sid, b"old merged audio, long")
+    cid = _ready_capture(captures_store_db, monkeypatch, tmp_path,
+                         language="de", translations=None)
+    single_abs = captures_store_db.abs_audio_path(
+        captures_store_db.get_capture(cid)["audio_relpath"])
+    swaps = {group_abs: b"short", single_abs: b"tiny"}
+
+    def _replace_then_open(path, *a, **kw):
+        data = swaps.pop(path, None)
+        if data is not None:
+            with builtins.open(path + ".new", "wb") as f:
+                f.write(data)
+            os.replace(path + ".new", path)
+        return builtins.open(path, *a, **kw)
+
+    monkeypatch.setattr(captures_routes, "open", _replace_then_open,
+                        raising=False)
+    blob = b"".join(captures_routes._build_export_stream(None, True))
+    assert swaps == {}
+    with tarfile.open(fileobj=io.BytesIO(blob), mode="r:gz") as tar:
+        assert tar.extractfile(f"audio/{sid}.wav").read() == b"short"
+        assert tar.extractfile(f"audio/{cid}.wav").read() == b"tiny"
+
+
 def test_detail_keeps_original_timeline_when_the_trimmed_file_is_gone(
         client, monkeypatch, tmp_path):
     """The audio route falls back to the original when the trimmed WAV is

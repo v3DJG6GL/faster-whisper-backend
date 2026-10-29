@@ -2892,21 +2892,23 @@ def _build_export_stream(only_status: str | None, include_audio: bool):
     # Chips land on the word their idx marks (see _chip_words_lookup).
     _chip_words = _chip_words_lookup()
 
+    def _group_skipped(g: dict[str, Any]) -> bool:
+        # Status gate — groups have the same status field as captures.
+        # The caller has already mapped "all" → None upstream, so a
+        # truthy only_status here is a concrete status to match.
+        if only_status and (g.get("status") or "new") != only_status:
+            return True
+        # Hard filters (apply even on `only_status=all`). Stale = audio/
+        # text drift; locked = admin lock (same skip as captures_reapply,
+        # so this stays consistent with what the trainer last saw).
+        return bool(g.get("is_stale") or g.get("is_locked"))
+
     try:
 
         # 1. Capture groups (the packed-for-fine-tune training samples).
         user_filter_scope: str | None = None  # admin-only path; no per-user scope
         for g in capture_samples_store.list_samples(user_id=user_filter_scope):
-            # Status gate — groups have the same status field as captures.
-            # The caller has already mapped "all" → None upstream, so a
-            # truthy only_status here is a concrete status to match.
-            if only_status:
-                if (g.get("status") or "new") != only_status:
-                    continue
-            # Hard filters (apply even on `only_status=all`). Stale = audio/
-            # text drift; locked = admin lock (same skip as captures_reapply,
-            # so this stays consistent with what the trainer last saw).
-            if g.get("is_stale") or g.get("is_locked"):
+            if _group_skipped(g):
                 continue
             # Always rebuild the transcript at export time from members +
             # chips, so the exported text reflects current corrections even
@@ -2921,42 +2923,57 @@ def _build_export_stream(only_status: str | None, include_audio: bool):
             ).strip()
             if not text:
                 continue
-            # Audio existence gate: skip the manifest entry entirely if the
-            # WAV isn't on disk, to avoid manifest pointing at missing files.
-            try:
-                abs_p = capture_samples_store.abs_path_for(g["merged_wav_relpath"])
-            except ValueError:
-                continue
-            if not os.path.isfile(abs_p):
-                continue
-
             audio_name = f"audio/{sid}.wav"
-            # Group `model` and `request_id` are intentionally empty — a
-            # group has multiple members each with their own model id. Per-
-            # member audit is reachable via the group's GET /members endpoint.
-            manifest_lines.write(json.dumps(_build_manifest_row(
-                audio_filepath=audio_name,
-                text=text,
-                duration=float(g.get("merged_duration_ms") or 0) / 1000.0,
-                language=g.get("language") or "",
-                source="sample",
-                user_id=g.get("user_id") or "",
-                status_value=g.get("status") or "new",
-                created_ts=float(g.get("created_ts") or 0.0),
-                model="",
-                request_id="",
-                member_count=len(members),
-                admin_notes=g.get("admin_notes") or "",
-                corrections=[],
-                task=_group_task(members),
-            ), ensure_ascii=False).encode("utf-8") + b"\n")
+            # The row and the WAV are read under the per-sid rebuild lock that
+            # regenerate, self-heal, dissolve and the VAD reprocess hold while
+            # they os.replace the merged WAV and patch merged_duration_ms: the
+            # snapshot above can be minutes old by now (a reprocess pass runs
+            # alongside a long export), and the manifest duration must
+            # describe the bytes packed. Never held across the yield below.
+            with capture_samples._rebuild_lock(sid):
+                g = capture_samples_store.get_sample(sid)
+                if g is None or _group_skipped(g):
+                    continue
+                # Audio existence gate: skip the manifest entry entirely if
+                # the WAV isn't on disk, to avoid manifest pointing at missing
+                # files.
+                try:
+                    abs_p = capture_samples_store.abs_path_for(g["merged_wav_relpath"])
+                except ValueError:
+                    continue
+                if not os.path.isfile(abs_p):
+                    continue
 
+                # Group `model` and `request_id` are intentionally empty — a
+                # group has multiple members each with their own model id.
+                # Per-member audit is reachable via the group's GET /members
+                # endpoint.
+                manifest_lines.write(json.dumps(_build_manifest_row(
+                    audio_filepath=audio_name,
+                    text=text,
+                    duration=float(g.get("merged_duration_ms") or 0) / 1000.0,
+                    language=g.get("language") or "",
+                    source="sample",
+                    user_id=g.get("user_id") or "",
+                    status_value=g.get("status") or "new",
+                    created_ts=float(g.get("created_ts") or 0.0),
+                    model="",
+                    request_id="",
+                    member_count=len(members),
+                    admin_notes=g.get("admin_notes") or "",
+                    corrections=[],
+                    task=_group_task(members),
+                ), ensure_ascii=False).encode("utf-8") + b"\n")
+
+                if include_audio:
+                    info = tarfile.TarInfo(audio_name)
+                    info.mtime = int(g.get("created_ts") or time.time())
+                    with open(abs_p, "rb") as af:
+                        # The size of the file opened, not a getsize before
+                        # the open: tarfile copies exactly info.size bytes.
+                        info.size = os.fstat(af.fileno()).st_size
+                        tar.addfile(info, af)
             if include_audio:
-                info = tarfile.TarInfo(audio_name)
-                info.size = os.path.getsize(abs_p)
-                info.mtime = int(g.get("created_ts") or time.time())
-                with open(abs_p, "rb") as af:
-                    tar.addfile(info, af)
                 chunk = buf.getvalue()
                 buf.seek(0); buf.truncate()
                 if chunk:
@@ -3068,9 +3085,12 @@ def _build_export_stream(only_status: str | None, include_audio: bool):
 
             if include_audio:
                 info = tarfile.TarInfo(audio_name)
-                info.size = os.path.getsize(abs_p)
                 info.mtime = int(row.get("created_ts") or time.time())
                 with open(abs_p, "rb") as af:
+                    # fstat, not a getsize before the open: a VAD trim that
+                    # os.replaces the file in between left tarfile copying
+                    # the old file's byte count out of the new one.
+                    info.size = os.fstat(af.fileno()).st_size
                     tar.addfile(info, af)
                 chunk = buf.getvalue()
                 buf.seek(0); buf.truncate()
