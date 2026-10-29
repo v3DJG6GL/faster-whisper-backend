@@ -601,11 +601,11 @@ function tick() { return new Promise(function(r) { setTimeout(r, 0); }); }
   _openProposeModal({ startInBatch: true });
   _closePropose();                       // Close before the GET returned
   _proposals = [{ member_ids: ['a'] }];
-  pending[0]();
+  pending[0](true);
   await tick();
   var closed = entered;
   _openProposeModal({ startInBatch: true });
-  pending[1]();
+  pending[1](true);
   await tick();
   console.log(JSON.stringify({ closed: closed, open: entered }));
 })();
@@ -776,6 +776,48 @@ var FIRST = """ + json.dumps(first) + r""";
 })();
 """)
     assert out == {"held": True, "posts": [], "busy": False, "queue": ["a", "b"]}
+
+
+@needs_node
+@pytest.mark.parametrize("second, active, cards", [
+    ("refresh", False, []),
+    ("open", True, ["b"]),
+])
+def test_batch_open_superseded_while_loading_waits_for_the_latest_reload(
+        page, tmp_path, second, active, cards):
+    """A Batch open whose GET a Refresh or second click superseded still
+    entered batch mode when it landed, on the queue left from an earlier
+    session: the card showed (and auto-played) a stale proposal, live for an
+    Accept that the newer reload then released mid-POST."""
+    fns = "\n".join(_js_function(page, n) for n in (
+        "_loadProposals", "_openProposeModal", "_enterBatchMode", "_renderBatchCard",
+        "_advanceBatch"))
+    out = _run_node(tmp_path, fns + _BATCH_STUBS + r"""
+var _filtSpeakers = [], gets = [], cards = [], shown = false, _batchKeyHandler = null;
+_batchActive = false;
+_proposals = [{ member_ids: ['old'] }];   // left from an earlier batch session
+var modal = fakeEl();
+modal.classList = { add: function() { shown = true; }, remove: function() { shown = false; },
+  contains: function(c) { return c === 'show' && shown; } };
+document.getElementById = function(id) { return id === 'propose-modal' ? modal : fakeEl(); };
+document.addEventListener = function() {};
+function _onBatchKey() {}
+_buildProposalCard = function(p) { cards.push(p.member_ids[0]); return fakeEl(); };
+function _renderProposals(ps) { _proposals = ps; }
+api = function(m) { return new Promise(function(r) { gets.push(r); }); };
+var SECOND = """ + json.dumps(second) + r""";
+(async function() {
+  _openProposeModal({ startInBatch: true });
+  if (SECOND === 'open') _openProposeModal({ startInBatch: true });
+  else _loadProposals();                 // the modal's Refresh while loading
+  gets[0]({ proposals: [{ member_ids: ['a'] }] });
+  await wait(0);
+  gets[1]({ proposals: [{ member_ids: ['b'] }] });
+  await wait(0);
+  console.log(JSON.stringify({ active: _batchActive, cards: cards }));
+})();
+""")
+    assert out == {"active": active, "cards": cards}
 
 
 # ---- group card ---------------------------------------------------------------------

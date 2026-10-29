@@ -4482,11 +4482,13 @@
     return card;
   }
 
+  // Resolves true only when this call rendered the reply: a superseded or
+  // failed load leaves _proposals holding an older queue.
   async function _loadProposals() {
     // An Accept / Dismiss / Revert in flight renders its own next card: a
     // reload landing first would release _batchBusy under it, so the card
     // showed the proposal still being POSTed (Accept sent it twice).
-    if (_batchActive && _batchBusy && !_batchLoadHold) return;
+    if (_batchActive && _batchBusy && !_batchLoadHold) return false;
     // The redraw below detaches every card, ▶ player included: stop the
     // shared audio first, or it plays on with no control left to pause it.
     _stopAnyPreview();
@@ -4508,7 +4510,7 @@
       var sp = _filtSpeakers.slice();
       var j = await api('GET', '/captures/api/propose-merges'
         + (sp.length ? '?user_id=' + encodeURIComponent(sp.join(',')) : ''));
-      if (seq !== _proposalsSeq) return;
+      if (seq !== _proposalsSeq) return false;
       _batchLoadHold = false;
       _renderProposals((j.proposals || []).filter(function(p) {
         return !sp.length || sp.indexOf(p.user_id) !== -1;
@@ -4520,8 +4522,9 @@
         _batchUndo = null;
         _renderBatchCard();
       }
+      return true;
     } catch (e) {
-      if (seq !== _proposalsSeq) return;
+      if (seq !== _proposalsSeq) return false;
       // The old queue stays: keep it usable.
       if (_batchLoadHold) { _batchLoadHold = false; _batchBusy = false; }
       if (e && e.message !== 'unauthorized' && e.message !== 'not-admin') {
@@ -4532,6 +4535,7 @@
         err.textContent = 'Failed to load proposals: ' + (e.message || e);
         listEl.appendChild(err);
       }
+      return false;
     }
   }
 
@@ -4997,7 +5001,11 @@
     var modal = document.getElementById('propose-modal');
     modal.classList.add('show');
     var startInBatch = opts && opts.startInBatch;
-    _loadProposals().then(function() {
+    _loadProposals().then(function(rendered) {
+      // Superseded (a Refresh or second open meanwhile) or failed:
+      // _proposals is still the previous session's queue, and the latest
+      // load owns the modal.
+      if (!rendered) return;
       // Closed while loading: a batch session in the hidden modal would
       // still take Ctrl+arrows on the page and accept unseen proposals.
       if (!modal.classList.contains('show')) return;
