@@ -70,8 +70,10 @@ find_python() {
   return 1
 }
 
-if [ ! -x "$PY" ]; then
-  # An existing venv is kept whatever it runs.
+# An existing venv is kept whatever Python it runs, as long as that python
+# starts and has pip. A dangling bin/python (its base interpreter was removed)
+# or a pip-less one (a failed build by an older installer) is rebuilt.
+if ! { [ -x "$PY" ] && as_user "$PY" -m pip --version >/dev/null 2>&1; }; then
   if ! SYS_PY="$(find_python)"; then
     if [ -n "${PYTHON:-}" ]; then
       echo "PYTHON=$PYTHON is not a Python 3.14+ interpreter; point it at one and re-run." >&2
@@ -84,10 +86,14 @@ if [ ! -x "$PY" ]; then
   echo "Creating venv at $VENV with $SYS_PY ..."
   # Create the venv as the invoking user so they own it. A failed build (on
   # Debian/Ubuntu ensurepip ships apart, as python3.X-venv) leaves bin/python
-  # behind, which the check above would keep on the next run: remove it.
+  # behind: remove it. A broken venv is rebuilt with --clear, since `python -m
+  # venv` leaves an existing bin/python link alone; a dir without pyvenv.cfg is
+  # not a venv and is not cleared.
   had_venv_dir=0
   [ -e "$VENV" ] && had_venv_dir=1
-  if ! as_user "$SYS_PY" -m venv "$VENV"; then
+  clear=
+  [ -f "$VENV/pyvenv.cfg" ] && clear=--clear
+  if ! as_user "$SYS_PY" -m venv ${clear:+"$clear"} "$VENV"; then
     [ "$had_venv_dir" -eq 1 ] || rm -rf "$VENV"
     echo "Could not create the venv with $SYS_PY. On Debian/Ubuntu install its venv package (e.g. apt install python3.14-venv), then re-run $0" >&2
     exit 1

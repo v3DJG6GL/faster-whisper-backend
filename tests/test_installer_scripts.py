@@ -541,6 +541,44 @@ def test_linux_installer_removes_a_venv_whose_build_failed(tmp_path):
     assert rc == 1 and (venv / "keep").is_dir()
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="bash installer")
+def test_linux_installer_rebuilds_a_venv_whose_python_is_dead_or_pipless(tmp_path):
+    # A venv whose base interpreter was removed has a dangling bin/python, and
+    # an older installer's failed build left an executable but pip-less one.
+    # Both die at `$PY -m pip` on every re-run unless rebuilt, and with --clear:
+    # `python -m venv` keeps an existing bin/python link as it is.
+    sh = _read("install-service.sh")
+    block = sh[sh.index('VENV="$REPO_DIR/venv"'):sh.index("\n# Stop a running service")]
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    py314 = bindir / "python3.14"
+    py314.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    py314.chmod(0o755)
+    venv = tmp_path / "venv"
+    (venv / "bin").mkdir(parents=True)
+    (venv / "pyvenv.cfg").write_text("home = /usr/bin\n", encoding="utf-8")
+    py = venv / "bin" / "python"
+
+    def run():
+        # Echo every as_user step; run only the pip probe, against the stub.
+        out = subprocess.run(
+            [shutil.which("bash"), "-c",
+             f'set -euo pipefail\nas_user() {{ echo "ran: $*"; [ "$1" != "$PY" ] || "$@"; }}\n{block}'],
+            capture_output=True, text=True, timeout=60,
+            env={"PATH": f"{bindir}:/usr/bin:/bin", "REPO_DIR": str(tmp_path)})
+        assert out.returncode == 0, out.stderr
+        return out.stdout
+    py.symlink_to(tmp_path / "gone" / "python3.12")
+    assert f"ran: {py314} -m venv --clear {venv}" in run()
+    py.unlink()
+    py.write_text("#!/bin/sh\necho 'No module named pip' >&2\nexit 1\n", encoding="utf-8")
+    py.chmod(0o755)
+    assert f"ran: {py314} -m venv --clear {venv}" in run()
+    # A working venv is kept, whatever Python it runs.
+    py.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    assert "-m venv" not in run()
+
+
 def test_installers_warn_about_legacy_repo_root_state_before_the_start():
     # Since the data-dir move the service reads data/db/ and
     # data/config.local.json; stores and config left in the repo root are
