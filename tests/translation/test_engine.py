@@ -798,6 +798,28 @@ def test_faithful_one_bad_cue_still_grows_back_to_the_full_batch(
     assert _batch_sizes(calls) == [8, 4, 8, 4, 2, 1, 2, 1, 2, 4, 8, 8, 4]
 
 
+def test_faithful_two_bad_cues_apart_still_grow_back_to_the_full_batch(
+        base_cfg, monkeypatch):
+    """Two isolated bad cues with full batches numbered fine between them
+    are no size failing twice IN A ROW: past the second one, k still grows
+    back to the full size instead of decoding every later cue alone."""
+    monkeypatch.setattr(cfg, "TRANSLATION_BATCH_SEGMENTS", 8, raising=False)
+    calls = []
+    live = [f"Satz nummer {n}." for n in range(48)]
+    bad = (live[5], live[29])
+    monkeypatch.setattr(translation, "_complete", _numbered_fake(
+        calls, lambda lines: any(b in ln for ln in lines for b in bad)))
+    _stub_get_model(monkeypatch)
+
+    res, warns, _ = _run(translation.translate_segments(
+        _segs(*live), ["en"], source_lang="de", mode="faithful"))
+    assert warns == []
+    assert [r["en"] for r in res] == [_xlate(t) for t in live]
+    ladder = [8, 4, 2, 1, 2, 1, 2, 4]           # around one bad cue
+    assert _batch_sizes(calls) == ([8, 4] + ladder + [8, 8]
+                                   + ladder + [8, 4])
+
+
 def test_faithful_copy_guard_sees_through_collapsed_whitespace(base_cfg,
                                                                monkeypatch):
     """The numbered batch prompt folds a segment's newlines and runs of

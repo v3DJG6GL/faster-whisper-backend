@@ -1761,9 +1761,10 @@ async def translate_segments(
                                or 1))
             k = k_cfg
             # Growing back after a halving re-tries a size that just failed.
-            # A grown size that fails a SECOND time marks it as one the model
-            # cannot number (not one bad cue): k never grows to it again in
-            # this target, or every few cues would pay a failed decode.
+            # A grown size that fails a SECOND time with no batch of that
+            # size numbered in between marks it as one the model cannot
+            # number (not one bad cue): k never grows to it again in this
+            # target, or every few cues would pay a failed decode.
             k_ceil = k_cfg
             grown = False
             failed_grown: set = set()
@@ -1842,6 +1843,9 @@ async def translate_segments(
                                 results[j][target] = src
                                 _keep_original(f"segment {j + 1}", [j],
                                                target, reason)
+                    # A size that numbered fine is no size the model cannot
+                    # number: only a failure IN A ROW at it caps k_ceil.
+                    failed_grown = {s for s in failed_grown if s > k}
                 i += len(batch_idx)
                 batch_no += 1
                 done_units += len(batch_idx)
