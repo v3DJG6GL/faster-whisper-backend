@@ -306,6 +306,34 @@ def test_slug_list_beside_a_stored_copy_of_the_split_card_keeps_naming_it():
     assert raw["MODEL_OVERRIDES"]["m"]["PIPELINE_RULES_EXCLUDE"] == ["strip-whisper-punctuation"]
 
 
+def _pre_june_rules():
+    rules = [r for r in copy.deepcopy(_factory_rules())
+             if r["name"] not in _SPLIT_IN_JUNE["strip-whisper-punctuation"]]
+    rules.insert(-1, {"name": "strip-whisper-punctuation", "label": "Strip Whisper punctuation",
+                      "type": "regex-list",
+                      "entries": [{"pattern": "\\s*\\.+\\s*$", "replacement": ""}]})
+    return rules
+
+
+def test_local_slug_lists_follow_the_env_rule_list_in_force(
+        tmp_path, monkeypatch):
+    """WHISPER_PIPELINE_RULES is applied after config.local.json: with no
+    local rule copy, whether a local exclude still names a split card is up
+    to the env list (still holding the old card here), not config.json."""
+    from faster_whisper_backend.settings import config_store as cs
+    monkeypatch.setenv("WHISPER_PIPELINE_RULES", json.dumps(_pre_june_rules()))
+    p = tmp_path / "config.local.json"
+    p.write_text(json.dumps({
+        "CAPTURES_PIPELINE_RULES_EXCLUDE": ["strip-whisper-punctuation"],
+        "MODEL_OVERRIDES": {"large-v3": {
+            "PIPELINE_RULES_EXCLUDE": ["strip-whisper-punctuation"], "BEAM_SIZE": 3}},
+    }), encoding="utf-8")
+    out = cs.load_overrides(str(p))
+    assert set(out["CAPTURES_PIPELINE_RULES_EXCLUDE"]) == {"strip-whisper-punctuation"}
+    assert out["MODEL_OVERRIDES"]["large-v3"] == {
+        "PIPELINE_RULES_EXCLUDE": ["strip-whisper-punctuation"], "BEAM_SIZE": 3}
+
+
 @pytest.mark.parametrize("old,new", sorted(_RENAMED_IN_097C9B4.items()))
 def test_old_copy_running_beside_its_switched_off_renamed_rule_keeps_running(tmp_path, old, new):
     """An admin who saw the duplicate and switched off the NEW card kept the

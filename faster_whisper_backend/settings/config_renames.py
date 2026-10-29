@@ -301,10 +301,11 @@ def _regex_rule_to_list(rule: Any) -> None:
                         "label": name if isinstance(name, str) else ""}]
 
 
-def migrate_rule_slugs(raw: dict[str, Any]) -> dict[str, Any]:
+def migrate_rule_slugs(raw: dict[str, Any], known: Any = None) -> dict[str, Any]:
     """Apply RENAMED_RULES to a stored overrides dict (in place; also
     returned): the `name` of each stored PIPELINE_RULES entry and the
-    top-level slug lists (SPLIT_RULES too, there). The slug lists inside OVERRIDE_PROFILES /
+    top-level slug lists (SPLIT_RULES too, there; `known` as in
+    migrate_bundle_keys). The slug lists inside OVERRIDE_PROFILES /
     MODEL_OVERRIDES bundles are migrate_bundle's job (via migrate_bundle_keys,
     which every caller also runs). A stored rule already using the new name
     wins over the old one, and an old-named copy that is still the unscoped
@@ -345,7 +346,7 @@ def migrate_rule_slugs(raw: dict[str, Any]) -> dict[str, Any]:
             rules[:] = [r for r in rules if all(r is not d for d in dropped)]
     for key in _SLUG_LIST_KEYS:
         if key in raw:
-            raw[key] = rename_slugs(raw[key], names)
+            raw[key] = rename_slugs(raw[key], names if known is None else known)
     return raw
 
 
@@ -460,7 +461,8 @@ def migrate_bundle_keys(raw: dict[str, Any], known: Any = None) -> list[str]:
     bundle of an overrides dict (in place). The bundles are extra="forbid",
     so one pre-rename key there fails validation of the whole value. Returns
     the old names that were renamed, for the caller's log line; empty when
-    nothing matched. `known` defaults to the dict's own PIPELINE_RULES names."""
+    nothing matched. `known` (the rule names in force) defaults to the dict's
+    own PIPELINE_RULES names."""
     if known is None:
         known = _rule_names(raw.get("PIPELINE_RULES"))
     renamed: list[str] = []

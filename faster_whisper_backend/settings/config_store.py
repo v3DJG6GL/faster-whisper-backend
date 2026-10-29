@@ -139,6 +139,25 @@ def _migrate_tightened_bundle_values(raw: dict[str, Any]) -> list[str]:
     return notes
 
 
+def _env_rule_names() -> set[str] | None:
+    """The rule names of a WHISPER_PIPELINE_RULES JSON list (renamed slugs
+    mapped, as config.py does before it applies it); None when the var is
+    unset or not a JSON list. config.py applies that list AFTER this file
+    loads, so with no local rule copy it, not config.json, decides whether a
+    stored slug list still names a card split since (config_renames.
+    rename_slugs)."""
+    text = os.environ.get(settings_schema.ENV_VAR_MAPPING["PIPELINE_RULES"])
+    if text is None or not text.strip():
+        return None
+    try:
+        names = _renames._rule_names(json.loads(text))
+    except ValueError:
+        return None
+    if names is None:
+        return None
+    return {_renames.RENAMED_RULES.get(n, n) for n in names}
+
+
 def _migrate_legacy_keys(raw: dict[str, Any]) -> dict[str, Any]:
     """One-time key migration (config_renames.RENAMED_KEYS). AdminConfig forbids
     unknown keys and a validation failure drops ALL overrides, so a stored
@@ -152,7 +171,10 @@ def _migrate_legacy_keys(raw: dict[str, Any]) -> dict[str, Any]:
         print(f"[config_store] dropped removed keys {gone} — they no longer "
               f"exist and have no successor", file=sys.stderr)
     _renames.migrate_keys(raw)
-    _renames.migrate_rule_slugs(raw)
+    # A local rule copy decides on its own: the file is validated against it.
+    known = (None if isinstance(raw.get("PIPELINE_RULES"), list)
+             else _env_rule_names())
+    _renames.migrate_rule_slugs(raw, known)
     # A stored PIPELINE_RULES copy still carrying a factory entry's OLD text
     # gets the fixed one (config_renames.UPGRADED_RULE_ENTRIES); an entry the
     # admin edited is left alone.
@@ -160,7 +182,7 @@ def _migrate_legacy_keys(raw: dict[str, Any]) -> dict[str, Any]:
     if upgraded:
         print(f"[config_store] upgraded stored factory rule entries {upgraded} "
               f"to the current factory text", file=sys.stderr)
-    _renames.migrate_bundle_keys(raw)
+    _renames.migrate_bundle_keys(raw, known)
     for note in _migrate_tightened_bundle_values(raw):
         print(f"[config_store] {note}", file=sys.stderr)
     # Wildcard-host origins ('https://*.example.com') used to pass the origin
