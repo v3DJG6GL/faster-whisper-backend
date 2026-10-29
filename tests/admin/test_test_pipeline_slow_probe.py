@@ -5,9 +5,21 @@ repetition, a tiny fixed count) backtracks 2**N times at every position: the
 whole server would freeze, not one core."""
 
 import subprocess
+import sys
 import time
 
+import pytest
+
 from faster_whisper_backend.admin import routes as admin_routes
+
+# Every probe round starts a `python -I` child inside its timeout. Sixty walks
+# against the 0.2 s rounds these tests need (a bigger budget no longer shows
+# a charge per finished walk) outlast it on a loaded Windows runner, where a
+# child's start alone can pass 0.2 s (CI run 1660); the walk logic is the
+# same on every platform, so Linux keeps it covered.
+_SIXTY_WALKS_OUTRUN_WINDOWS_STARTS = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="0.2 s probe rounds are shorter than a loaded Windows child start")
 
 # ~0.1-0.2 s per position on "" alone; well past the lowered budget on 4 chars.
 _EMPTY_BACKTRACK = "(?:|){22}(?!)"
@@ -243,6 +255,7 @@ def test_a_pattern_slow_on_other_text_is_timed_again_on_the_text_it_is_handed(cl
     assert steps[2]["after"] == "DONE"
 
 
+@_SIXTY_WALKS_OUTRUN_WINDOWS_STARTS
 def test_healthy_walks_do_not_spend_the_probe_time(client, monkeypatch):
     # Every upper rule changes the text, so each pattern rule walks again;
     # walks that time nothing out must not use up the request's probe time
@@ -281,6 +294,7 @@ def test_a_round_cut_short_by_the_budget_blames_no_unit(monkeypatch):
     assert stop == 2
 
 
+@_SIXTY_WALKS_OUTRUN_WINDOWS_STARTS
 def test_probe_walks_that_each_finish_still_stop_at_the_request_wall_time(client, monkeypatch):
     # Every upper rule changes the text, so each pattern rule walks again and
     # each walk finishes: they must still stop at the request's probe wall
