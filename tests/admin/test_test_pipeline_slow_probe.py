@@ -322,3 +322,74 @@ def test_fast_patterns_adding_up_past_the_timeout_blame_none_of_them(monkeypatch
     _marks, slow, _stop = admin_routes._probe_chain(
         "aaaa", _units(["(?:|){18}(?!)"] * 12))
     assert slow == set()
+
+
+def _scripted_rounds(monkeypatch, rounds, budget=None):
+    """subprocess.run as a script of rounds: each is (stdout, stderr) for a
+    round killed at its timeout, or a str stdout for one that finishes; a
+    killed round also spends its timeout of `budget`'s wall, as a real one
+    would."""
+    timeouts = []
+
+    def _run(*a, timeout, **k):
+        timeouts.append(timeout)
+        out = rounds[len(timeouts) - 1]
+        if isinstance(out, str):
+            return subprocess.CompletedProcess(a[0], 0, out, "")
+        if budget is not None:
+            budget["wall"] -= timeout
+        raise subprocess.TimeoutExpired(a[0], timeout, output=out[0], stderr=out[1])
+    monkeypatch.setattr(subprocess, "run", _run)
+    return timeouts
+
+
+def _mark(ri, text="aaaa"):
+    return "%d %s\n" % (ri, admin_routes._text_sha(text))
+
+
+def test_a_round_cut_by_the_wall_keeps_what_the_round_before_it_reached(monkeypatch):
+    # Round 1 names unit 1 and spends 2 of the 3 s wall; round 2 is cut to
+    # 1 s and killed before it prints anything. Unit 1 stays named slow and
+    # the walk stops past it, not at unit 0 with nothing marked.
+    monkeypatch.setattr(admin_routes, "_TEST_PIPELINE_PROBE_TIMEOUT", 2.0)
+    budget = {"left": 6.0, "wall": 3.0}
+    timeouts = _scripted_rounds(
+        monkeypatch, [(_mark(0), "1 0.0010\n"), ("", "")], budget)
+    marks, slow, stop = admin_routes._probe_chain(
+        "aaaa", _units(["(?:|){40}(?!)", "a", "b"]), None, budget)
+    assert timeouts[0] == 2.0 and 0.9 < timeouts[1] <= 1.0
+    assert (marks, slow, stop) == ({0: admin_routes._text_sha("aaaa")}, {1}, 2)
+
+
+def test_a_late_kill_walks_again_without_spending_a_round_or_the_budget(monkeypatch):
+    # 0.4 s of fast units precede two slow ones: the first kill is not unit
+    # 3's fault, and its retry must leave the rounds and the killed-round
+    # budget for naming both slow units and finishing the walk.
+    monkeypatch.setattr(admin_routes, "_TEST_PIPELINE_PROBE_TIMEOUT", 2.0)
+    budget = {"left": 6.0}
+    timeouts = _scripted_rounds(monkeypatch, [
+        (_mark(0), "1 0.0010\n2 0.2000\n3 0.4000\n"),
+        (_mark(0), "1 0.0010\n2 0.2000\n3 0.4000\n"),
+        (_mark(0), "1 0.0010\n2 0.2000\n4 0.4000\n"),
+        _mark(0)])
+    marks, slow, stop = admin_routes._probe_chain(
+        "aaaa", _units(["f1", "f2", "s1", "s2", "a", "b"]), None, budget)
+    assert (slow, stop) == ({3, 4}, None)
+    assert timeouts == [2.0, 2.4, 2.4, 2.4]
+    assert abs(budget["left"] - 2.0) < 1e-9
+
+
+def test_fast_units_that_outlast_two_rounds_still_get_walked_to_the_end(monkeypatch):
+    # The fast prefix outlasts round 1 (killed in unit 2) and round 2 (in
+    # unit 4): the third round gets the time to finish the walk, instead of
+    # a sliver of the budget that throws round 2's progress away.
+    monkeypatch.setattr(admin_routes, "_TEST_PIPELINE_PROBE_TIMEOUT", 2.0)
+    budget = {"left": 6.0, "wall": 15.0}
+    timeouts = _scripted_rounds(monkeypatch, [
+        (_mark(0), "1 0.0010\n2 1.9500\n"),
+        (_mark(0), "1 0.0010\n2 1.9500\n3 2.9000\n4 3.9000\n"),
+        _mark(0)])
+    marks, slow, stop = admin_routes._probe_chain(
+        "aaaa", _units(["f"] * 5), None, budget)
+    assert (marks, slow, stop) == ({0: admin_routes._text_sha("aaaa")}, set(), None)
+    assert timeouts == [2.0, 3.95, 5.9]

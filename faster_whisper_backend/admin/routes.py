@@ -732,8 +732,10 @@ _TEST_PIPELINE_MAX_PATTERN = _field_max_length(
 # one core. The child walks the rules first and is killed when a round passes
 # this budget.
 _TEST_PIPELINE_PROBE_TIMEOUT = 2.0
-# Rounds after a kill (each names one culprit); units still unprobed after
-# that are reported as not run rather than risked in-process.
+# Rounds after a kill (each names one culprit; a unit killed after slow but
+# finished units first gets up to as many rounds of its own on top); units
+# still unprobed after that are reported as not run rather than risked
+# in-process.
 _TEST_PIPELINE_PROBE_ROUNDS = 3
 # Wall time every walk of one dry run may spend in all, killed or not: each
 # text-changing map or callback before a pattern forces a walk of the rest of
@@ -810,12 +812,14 @@ def _probe_chain(text: str, units: list[list[Any]],
     `skip`: unit index -> the digests of its rule's input it is already known
     slow on; on that input it is reported slow and not timed again, on any
     other it is timed afresh.
-    `budget`: its "left" holds the seconds killed rounds may still spend,
-    shared across walks (a round that finishes costs nothing); its optional
-    "wall" holds the seconds every round may still spend, killed or not. A
-    round is cut at what is left of either; a cut round's kill blames no unit
-    (the walk stops there, unprobed), and once one is gone the walk stops
-    where it got to."""
+    `budget`: its "left" holds the seconds killed rounds may still spend on
+    their culprits, shared across walks (a round that finishes, or that kills
+    a unit late and walks again, costs nothing; a culprit's round is charged
+    past the `lead` before it); its optional "wall" holds the seconds every
+    round may still spend, killed or not. A round is cut at what is left of
+    either; a cut round's kill blames no unit (the walk stops there, or where
+    an earlier round got further, unprobed), and once one is gone the walk
+    stops where it got to."""
     import subprocess
     import sys
     import time
@@ -853,13 +857,23 @@ def _probe_chain(text: str, units: list[list[Any]],
                               if marks.get(units[i][1]) in hs}, stop
 
     last: tuple[dict[int, str], int] = ({}, 0)
+
+    def _further(marks: dict[int, str], stop: int) -> tuple[dict[int, str], int]:
+        # Every round walks the same text from unit 0, so the round that got
+        # further also holds the other's marks.
+        return (marks, stop) if stop >= last[1] else last
+
     # How long the child took to reach the last unit it was killed in.
     lead = 0.0
-    for _ in range(_TEST_PIPELINE_PROBE_ROUNDS):
+    rounds = retries = 0
+    while rounds < _TEST_PIPELINE_PROBE_ROUNDS:
         want = timeout = _TEST_PIPELINE_PROBE_TIMEOUT + lead
         if budget is not None:
-            timeout = min(timeout, budget["left"], budget.get("wall", timeout))
-            if timeout <= 0:
+            # "left" bounds the culprit's share; the `lead` before it is
+            # units the last round already saw finish.
+            timeout = min(timeout, lead + budget["left"], budget.get("wall", timeout))
+            # A child cut by `lead` cannot get back to where the last stopped.
+            if timeout <= lead:
                 break
         t0 = time.monotonic()
         try:
@@ -875,23 +889,30 @@ def _probe_chain(text: str, units: list[list[Any]],
                 budget["wall"] -= time.monotonic() - t0
             return _done(_marks(p.stdout), None)
         except subprocess.TimeoutExpired as exc:
-            if budget is not None:
-                budget["left"] -= timeout
-                if "wall" in budget:
-                    budget["wall"] -= time.monotonic() - t0
+            if budget is not None and "wall" in budget:
+                budget["wall"] -= time.monotonic() - t0
             marks = _marks(getattr(exc, "stdout", None))
             got = _culprit(getattr(exc, "stderr", None))
-            if got is None or not 0 <= got[0] < len(units):
-                return _done(marks, 0)
-            idx, at = got
-            if timeout < want:
-                return _done(marks, idx)
-            if timeout - at < 0.9 * _TEST_PIPELINE_PROBE_TIMEOUT:
-                # Fast units before it used up the round: not its fault.
+            idx, at = (got if got is not None and 0 <= got[0] < len(units)
+                       else (-1, 0.0))
+            # Fast units before it used up the round: not its fault.
+            not_its_fault = timeout - at < 0.9 * _TEST_PIPELINE_PROBE_TIMEOUT
+            if idx >= 0 and timeout >= want and not_its_fault \
+                    and retries < _TEST_PIPELINE_PROBE_ROUNDS:
+                # Its own round costs no round and none of "left".
+                retries += 1
                 lead = at
-                last = (marks, idx)
+                last = _further(marks, idx)
                 continue
+            if budget is not None:
+                budget["left"] -= (_TEST_PIPELINE_PROBE_TIMEOUT if timeout >= want
+                                   else timeout - lead)
+            if idx < 0:
+                return _done(*_further(marks, 0))
+            if timeout < want or not_its_fault:
+                return _done(*_further(marks, idx))
             slow.add(idx)
+            rounds += 1
             last = (marks, idx + 1)
         except Exception as exc:  # noqa: BLE001 - probe infra failure -> fail open
             logger.warning("test-pipeline probe skipped: %s", exc)
