@@ -570,9 +570,18 @@ def _load_blocking_inner(ref: str, device: str, family: str,
                 logger.warning("[translate] pre-download of %s timed out "
                                "(%s) — loading the cached copy", ref, e)
             else:
-                logger.warning(
-                    "[translate] pre-download of %s failed (%s) — falling "
-                    "back to llama.cpp's own downloader", ref, e)
+                # An unreachable hub (DNS, refused, hub 5xx) fails fast, so
+                # the fallback below cannot hang — but its listing fails on
+                # the same hub too: load a copy already on disk first.
+                if _is_hub_unreachable(e):
+                    local_path = _cached_gguf(repo, quant)
+                if local_path:
+                    logger.warning("[translate] pre-download of %s failed "
+                                   "(%s) — loading the cached copy", ref, e)
+                else:
+                    logger.warning(
+                        "[translate] pre-download of %s failed (%s) — "
+                        "falling back to llama.cpp's own downloader", ref, e)
     try:
         if local_path:
             return llama_cpp.Llama(
@@ -608,9 +617,32 @@ def _is_hub_timeout(exc: BaseException) -> bool:
     error of the resumed call carries a timeout as mere ``__context__``."""
     import httpx  # the hub's own HTTP client — always installed with it
 
+    return _in_cause_chain(
+        exc, lambda e: isinstance(e, httpx.TimeoutException))
+
+
+def _is_hub_unreachable(exc: BaseException) -> bool:
+    """True when ``exc`` or its cause chain is a connection-level httpx
+    error (DNS failure, connection refused, no route, …) or a hub 5xx.
+    Same ``__cause__``-only rule as _is_hub_timeout: a disk-full or
+    size-check error is no network error."""
+    import httpx
+    from huggingface_hub.errors import HfHubHTTPError
+
+    def network(e: BaseException) -> bool:
+        if isinstance(e, httpx.TransportError):
+            return True
+        if isinstance(e, HfHubHTTPError):
+            status = getattr(getattr(e, "response", None), "status_code", 0)
+            return isinstance(status, int) and status >= 500
+        return False
+    return _in_cause_chain(exc, network)
+
+
+def _in_cause_chain(exc: "BaseException | None", match) -> bool:
     seen = set()
     while exc is not None and id(exc) not in seen:
-        if isinstance(exc, httpx.TimeoutException):
+        if match(exc):
             return True
         seen.add(id(exc))
         exc = exc.__cause__

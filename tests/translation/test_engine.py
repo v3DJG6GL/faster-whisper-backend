@@ -1323,6 +1323,67 @@ def test_load_uses_the_cached_gguf_when_the_hub_times_out(monkeypatch):
     assert record[0][1] == "/cache/m.Q4.gguf"
 
 
+def _hub_status_error(status):
+    import httpx
+    from huggingface_hub.errors import HfHubHTTPError
+    req = httpx.Request("GET", "https://huggingface.co/api/models/org/repo")
+    return HfHubHTTPError(f"{status}",
+                          response=httpx.Response(status, request=req))
+
+
+def _connect_error():
+    import httpx
+    return httpx.ConnectError("Name or service not known")
+
+
+def _wrapped_connect_error():
+    from huggingface_hub.errors import LocalEntryNotFoundError
+    wrapped = LocalEntryNotFoundError("cannot locate")
+    wrapped.__cause__ = _connect_error()            # `raise … from` it
+    return wrapped
+
+
+@pytest.mark.parametrize("make_error", [
+    _connect_error,                                 # DNS / refused / no route
+    _wrapped_connect_error,                         # hf_hub_download's HEAD
+    lambda: _hub_status_error(503),                 # hub 5xx
+])
+def test_load_uses_the_cached_gguf_when_the_hub_is_unreachable(
+        monkeypatch, make_error):
+    """An unreachable hub fails the from_pretrained listing as well: a GGUF
+    already on disk must load, as it does on a hub timeout."""
+    record = []
+    _install_fake_llama(monkeypatch, record)
+    monkeypatch.setattr(cfg, "LOCAL_FILES_ONLY", False, raising=False)
+
+    def unreachable(repo, quant, cb=None):
+        raise make_error()
+    monkeypatch.setattr(translation, "_predownload_gguf", unreachable)
+    monkeypatch.setattr(translation, "_cached_gguf",
+                        lambda repo, quant: "/cache/m.Q4.gguf")
+    translation._load_blocking_inner("org/repo:Q4", "cpu", "chatml")
+    assert record == [("direct", "/cache/m.Q4.gguf", record[0][2])]
+
+
+@pytest.mark.parametrize("cached, make_error", [
+    (None, _connect_error),                         # nothing on disk yet
+    ("/cache/m.Q4.gguf", lambda: _hub_status_error(404)),   # no outage
+])
+def test_load_falls_back_to_from_pretrained_unless_unreachable_and_cached(
+        monkeypatch, cached, make_error):
+    record = []
+    _install_fake_llama(monkeypatch, record)
+    monkeypatch.setattr(cfg, "LOCAL_FILES_ONLY", False, raising=False)
+
+    def fail(repo, quant, cb=None):
+        raise make_error()
+    monkeypatch.setattr(translation, "_predownload_gguf", fail)
+    monkeypatch.setattr(translation, "_cached_gguf", lambda repo, quant: cached)
+    assert translation._load_blocking_inner(
+        "org/repo:Q4", "cpu", "chatml") == "LLM-FP"
+    assert record[0][0] == "from_pretrained"
+
+
 def test_load_n_ctx_follows_family(monkeypatch):
     """n_ctx is the FAMILY's window, not one module constant."""
     record = []
