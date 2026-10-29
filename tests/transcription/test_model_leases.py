@@ -261,6 +261,44 @@ def test_hub_refusal_of_an_existing_repo_points_at_the_token(
     assert any("is restricted.?Visit" in r.getMessage() for r in caplog.records)
 
 
+@pytest.mark.parametrize("status, refused", [(401, True), (503, False)])
+def test_hub_rejecting_the_token_evicts_nothing(monkeypatch, status, refused):
+    """A wrong or revoked HF_TOKEN is a plain HfHubHTTPError 401 (not
+    RepositoryNotFoundError), on public repos too, and the constructor would
+    send the same token: refused before the LRU loop with a pointer at the
+    token. Any other HTTP error stays a best-effort pre-download failure."""
+    import httpx2
+    import huggingface_hub
+    from huggingface_hub import errors as hf_errors
+    _stub_load(monkeypatch)
+    built = []
+    monkeypatch.setattr(sys.modules["faster_whisper"], "WhisperModel",
+                        lambda path, **kw: built.append(path) or FakeModel())
+    monkeypatch.setattr(tx_models.cfg, "LOCAL_FILES_ONLY", False,
+                        raising=False)
+    monkeypatch.setattr(tx_models.cfg, "MAX_LOADED_MODELS", 1, raising=False)
+    response = httpx2.Response(status, request=httpx2.Request(
+        "GET", "https://huggingface.co/api/models/org/public"))
+
+    def _rejected(**kw):
+        raise hf_errors.HfHubHTTPError("Invalid credentials in Authorization "
+                                       "header", response=response)
+    monkeypatch.setattr(huggingface_hub, "snapshot_download", _rejected)
+    _register("a")
+
+    if not refused:
+        asyncio.run(tx_models._get_or_load_model("org/public"))
+        assert built == ["org/public"]
+        return
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(tx_models._get_or_load_model("org/public", lease=True))
+
+    assert exc.value.status_code == 400
+    assert "rejected HF_TOKEN" in exc.value.detail
+    assert set(tx_models._loaded_models) == {"a"}
+    assert built == [] and tx_models._model_leases == {}
+
+
 # --- lease acquisition -------------------------------------------------------
 
 def test_lease_taken_on_cache_hit_and_on_load(monkeypatch):

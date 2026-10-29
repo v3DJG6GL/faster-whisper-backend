@@ -1223,17 +1223,19 @@ async def _load_on_miss(name: str, *, lease: bool) -> "WhisperModel":
     # re-check under the lock below is what keeps a concurrent loader that
     # won the race honoured.
     #
-    # Except a repo or revision the Hub says does not exist: snapshot_download
-    # raises that only once its local-cache fallback missed too, and the
-    # constructor calls it with the same arguments, so the load is doomed.
-    # Raised here, before the LRU loop below evicts a resident model for it.
-    _hub_missing: "Exception | None" = None
+    # Except a repo or revision the Hub says does not exist, or a token it
+    # rejects (401 on every repo, public ones too): snapshot_download raises
+    # those only once its local-cache fallback missed too, and the constructor
+    # calls it with the same arguments, so the load is doomed. Raised here,
+    # before the LRU loop below evicts a resident model for it.
+    _hub_refused: "Exception | None" = None
     if not dl_kwargs.get("local_files_only") and not os.path.isdir(load_path):
         try:
             from faster_whisper_backend.runtime import download_progress
             from huggingface_hub import snapshot_download
             from huggingface_hub.errors import (
-                GatedRepoError, RepositoryNotFoundError, RevisionNotFoundError,
+                GatedRepoError, HfHubHTTPError, RepositoryNotFoundError,
+                RevisionNotFoundError,
             )
             _dl_repo = load_path
             if "/" not in _dl_repo:
@@ -1276,25 +1278,32 @@ async def _load_on_miss(name: str, *, lease: bool) -> "WhisperModel":
                 try:
                     await loop.run_in_executor(None, _fetch)
                 except (RepositoryNotFoundError, RevisionNotFoundError) as e:
-                    _hub_missing = e
+                    _hub_refused = e
+                except HfHubHTTPError as e:
+                    if e.response.status_code != 401:
+                        raise
+                    _hub_refused = e
                 finally:
                     jobs.job_end(_dl_job)
         except Exception as _dl_err:  # noqa: BLE001 — best-effort
             logger.warning(
                 "Pre-download of %s failed (%s); the model constructor "
                 "will download instead", name, _dl_err)
-    if _hub_missing is not None:
+    if _hub_refused is not None:
         # The Hub's own text (its access hint for a gated repo) stays in the log.
         logger.warning("Model %s refused by the Hub: %s", name,
-                       log_safe(str(_hub_missing)))
-        _kind = type(_hub_missing).__name__
+                       log_safe(str(_hub_refused)))
+        _kind = type(_hub_refused).__name__
         # Set only past the huggingface_hub import above, so its names exist.
-        if isinstance(_hub_missing, GatedRepoError):
+        if isinstance(_hub_refused, GatedRepoError):
             _why = (f"is a gated HuggingFace Hub repo ({_kind}): request "
                     f"access on its Hub page and set HF_TOKEN to that "
                     f"account's token")
-        elif isinstance(_hub_missing, RevisionNotFoundError):
+        elif isinstance(_hub_refused, RevisionNotFoundError):
             _why = f"was not found on the HuggingFace Hub ({_kind})"
+        elif not isinstance(_hub_refused, RepositoryNotFoundError):
+            _why = (f"could not be fetched: the HuggingFace Hub rejected "
+                    f"HF_TOKEN as invalid or expired ({_kind}, HTTP 401)")
         else:
             # The Hub answers a private repo, or a gated one without a token,
             # the same way as a missing one.
@@ -1303,7 +1312,7 @@ async def _load_on_miss(name: str, *, lease: bool) -> "WhisperModel":
                     f"access")
         raise HTTPException(
             status_code=400, detail=f"Model '{name}' {_why}.",
-        ) from _hub_missing
+        ) from _hub_refused
 
     async with _model_load_lock:
         # load_secs = constructor time only: the best-effort Hub pre-download
