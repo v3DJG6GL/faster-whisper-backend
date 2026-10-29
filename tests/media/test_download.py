@@ -69,19 +69,6 @@ def test_validate_url_rejects_a_lone_surrogate():
             udl.validate_url(url)
 
 
-def test_validate_url_rejects_userinfo_with_an_honest_message():
-    """`user:pw@host` used to pass and then fail in the probe as "the site
-    could not be reached" (http.client read `pw@host` as the port)."""
-    for url in ("https://user:pw@files.example.com/talk.mp3",
-                "https://user@files.example.com/talk.mp3",
-                "http://@example.com/a.mp3"):
-        with pytest.raises(udl.UrlDownloadError, match="user name or password"):
-            udl.validate_url(url)
-    # An '@' outside the authority is ordinary path/query text.
-    url = "https://example.com/@channel/a.mp3?by=a@b.c"
-    assert udl.validate_url(url) == url
-
-
 def test_validate_url_rejects_overlong():
     with pytest.raises(udl.UrlDownloadError):
         udl.validate_url("https://example.com/" + "a" * 2048)
@@ -177,6 +164,46 @@ def test_direct_media_probe_gates_generic(monkeypatch):
                         lambda u, timeout: False)
     with pytest.raises(udl.UrlDownloadError, match="direct"):
         _run(udl.check_url_policy("https://x/page.html"))
+
+
+def test_direct_media_probe_refuses_userinfo_with_an_honest_message(monkeypatch):
+    """`user:pw@host` used to reach the urllib probe and fail as "the site
+    could not be reached" (http.client read `pw@host` as the port)."""
+    monkeypatch.setattr(udl, "match_extractor", lambda u: "Generic")
+    monkeypatch.setattr(udl.cfg, "URL_ALLOW_GENERIC", False, raising=False)
+    monkeypatch.setattr(udl.cfg, "URL_ALLOW_DIRECT_MEDIA", True, raising=False)
+    monkeypatch.setattr(udl, "_direct_media_probe_sync",
+                        lambda u, timeout: pytest.fail("probe ran"))
+    for url in ("https://user:pw@files.example.com/talk.mp3",
+                "https://user@files.example.com/talk.mp3",
+                "http://@example.com/a.mp3"):
+        with pytest.raises(udl.UrlDownloadError, match="user name or password"):
+            _run(udl.check_url_policy(udl.validate_url(url)))
+    # An '@' outside the authority is ordinary path/query text.
+    monkeypatch.setattr(udl, "_direct_media_probe_sync",
+                        lambda u, timeout: True)
+    url = "https://example.com/@channel/a.mp3?by=a@b.c"
+    assert _run(udl.check_url_policy(udl.validate_url(url))) == "Generic"
+
+
+def test_userinfo_link_still_reaches_yt_dlp(monkeypatch):
+    """yt-dlp sends userinfo as basic auth itself: with URL_ALLOW_GENERIC a
+    direct file behind basic auth, or a site link, is not refused."""
+    url = "https://user:pw@nas.example.com/talk.mp3"
+    assert udl.validate_url(url) == url
+    monkeypatch.setattr(udl, "match_extractor", lambda u: "Generic")
+    monkeypatch.setattr(udl.cfg, "URL_ALLOW_GENERIC", True, raising=False)
+    assert _run(udl.check_url_policy(url)) == "Generic"
+    monkeypatch.setattr(udl, "match_extractor", lambda u: "SoundCloud")
+    monkeypatch.setattr(udl.cfg, "URL_ALLOWED_EXTRACTORS", [], raising=False)
+    assert _run(udl.check_url_policy(url)) == "SoundCloud"
+
+
+def test_handoff_target_with_userinfo_is_not_direct_media(monkeypatch):
+    monkeypatch.setattr(udl, "_direct_media_probe_sync",
+                        lambda *a, **k: pytest.fail("probe ran"))
+    assert _run(udl._handoff_serves_media(
+        "https://user:pw@cdn.example.com/a.mp3", time.monotonic() + 5)) is False
 
 
 def _probe_opener_raising(monkeypatch, exc):

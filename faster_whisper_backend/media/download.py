@@ -592,11 +592,6 @@ def validate_url(url: str) -> str:
         raise UrlDownloadError("only http(s) URLs are supported")
     if not parts.hostname:
         raise UrlDownloadError("the URL has no host")
-    # `user:pw@host`: the probes' urllib requests read `pw@host` as a port
-    # (InvalidURL), which surfaced as "could not be reached". Say what it is.
-    if "@" in parts.netloc:
-        raise UrlDownloadError(
-            "links with a user name or password in them are not supported")
     # An empty or >63-char label (`a..com`) or a lone surrogate makes
     # getaddrinfo raise UnicodeError downstream: answer a client 400 here.
     try:
@@ -796,6 +791,10 @@ def _wire_url(url: str) -> str:
         fragment=esc(parts.fragment)))
 
 
+def _has_userinfo(url: str) -> bool:
+    return "@" in urllib.parse.urlsplit(url).netloc
+
+
 def _direct_media_probe_sync(url: str, *, timeout: float,
                              accept_hls: bool = False) -> bool:
     """Capped GET (first byte only) that answers: does this URL serve
@@ -950,6 +949,14 @@ async def check_url_policy(url: str, *, deadline: "float | None" = None) -> str:
         if getattr(cfg, "URL_ALLOW_GENERIC", False):
             return key
         if getattr(cfg, "URL_ALLOW_DIRECT_MEDIA", True):
+            # `user:pw@host`: our urllib probe reads `pw@host` as a port
+            # (InvalidURL), which surfaced as "could not be reached". Say
+            # what it is. yt-dlp sends userinfo as basic auth itself, so the
+            # URL_ALLOW_GENERIC path above takes such a link as it is.
+            if _has_userinfo(url):
+                raise UrlDownloadError(
+                    "links with a user name or password in them are not "
+                    "supported")
             probe_timeout = float(getattr(cfg, "URL_SOCKET_TIMEOUT_S", 15))
             if deadline is not None:
                 probe_timeout = max(1.0, min(probe_timeout,
@@ -1080,6 +1087,8 @@ async def _handoff_serves_media(target: str, deadline: float) -> bool:
     try:
         target = validate_url(target)
     except UrlDownloadError:
+        return False
+    if _has_userinfo(target):  # the urllib probe cannot ask it (check_url_policy)
         return False
     budget = max(1.0, min(float(getattr(cfg, "URL_SOCKET_TIMEOUT_S", 15)),
                           deadline - time.monotonic()))
