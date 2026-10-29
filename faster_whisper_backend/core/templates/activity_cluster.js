@@ -165,7 +165,18 @@
     // lands on the pop itself and the cancel is silently dropped. _lastH
     // stays put, so the release re-render below applies the latest frame.
     if (pop._held) return;
-    if (h !== pop._lastH) { pop.innerHTML = h; pop._lastH = h; }
+    if (h === pop._lastH) return;
+    // The swap also detaches a control a keyboard user Tabbed onto, dropping
+    // focus to <body>: put it back on the same job's cancel (or the footer
+    // link), or on the opener when that job has left.
+    var a = document.activeElement, had = a !== pop && pop.contains(a);
+    var pid = had ? a.getAttribute('data-pid') : null;
+    pop.innerHTML = h; pop._lastH = h;
+    if (!had) return;
+    var n = pid == null ? pop.querySelector('.hact-foot a')
+      : [].filter.call(pop.querySelectorAll('.hact-cancel'),
+          function(c){ return c.getAttribute('data-pid') === pid; })[0];
+    (n && !n.disabled ? n : btn).focus();
   }
   pop.addEventListener('pointerdown', function(){ pop._held = true; });
   function releaseHold(){
