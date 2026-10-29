@@ -1425,7 +1425,7 @@ def test_sample_save_does_not_resend_status(client):
     html = client.get("/captures").text
     save = html[html.index("saveTBtn.onclick = function() {"):]
     save = save[:save.index("saveTBtn.disabled = true;")]
-    assert "admin_notes:   sampleState.adminNotes," in save
+    assert "payload.admin_notes = sampleState.adminNotes;" in save
     assert "status:" not in save
 
 
