@@ -5,6 +5,7 @@ serving real (PyAV-encoded) TS and fMP4 segments."""
 import asyncio
 import io
 import struct
+import time
 import urllib.error
 
 import numpy as np
@@ -120,6 +121,18 @@ def test_hls_master_without_audio_renditions_picks_the_leanest_variant():
 def test_hls_unsupported(text, why):
     with pytest.raises(seg.Unsupported, match=why):
         seg.parse_hls(text, _BASE)
+
+
+def test_hls_attribute_list_parses_in_linear_time():
+    # parse_hls runs on the event loop: a tag line with a long name run and
+    # no "=" took seconds (quadratic backtracking) and froze the server.
+    text = f"#EXTM3U\n#EXT-X-KEY:{'A' * 60_000}\n#EXTINF:6,\na.ts\n#EXT-X-ENDLIST\n"
+    t0 = time.monotonic()
+    media = seg.parse_hls(text, _BASE)
+    assert time.monotonic() - t0 < 1
+    assert media.segments == [(("https://cdn.test/v/audio/a.ts", None), 6.0)]
+    assert seg._attrs('#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="a,b",xNAME="x"') == {
+        "TYPE": "AUDIO", "GROUP-ID": "a,b", "NAME": "x"}
 
 
 # ── dash_media / source_of ────────────────────────────────────────────────

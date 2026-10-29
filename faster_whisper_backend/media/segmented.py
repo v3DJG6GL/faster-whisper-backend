@@ -103,7 +103,10 @@ def source_of(info: dict) -> "dict | None":
             "base": info.get("fragment_base_url"), "headers": headers}
 
 
-_ATTR_RE = re.compile(r'([A-Z0-9-]+)=("[^"]*"|[^,]*)')
+# The lookbehind lets a name start only where a name run starts: without it a
+# long run with no "=" (a hostile playlist line) is retried from each of its
+# characters, quadratic on the event loop.
+_ATTR_RE = re.compile(r'(?<![A-Z0-9-])([A-Z0-9-]+)=("[^"]*"|[^,]*)')
 
 
 def _attrs(line: str) -> "dict[str, str]":
