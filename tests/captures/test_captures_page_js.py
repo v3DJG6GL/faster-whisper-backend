@@ -333,12 +333,17 @@ var onStatus = """ + handler + r""";
 
 # ---- chip strip -----------------------------------------------------------------
 
+def _chip_max(page):
+    """The page's CHIP_TEXT_MAX declaration, for functions that read it."""
+    return re.search(r"var CHIP_TEXT_MAX = \d+;", page).group(0) + "\n"
+
+
 @needs_node
 def test_shift_extend_clears_stale_inline_replacements(page, tmp_path):
     """Shift-click extending the last chip left the green `.word-replacement`
     at its old end word (and at any absorbed chip's end) in the strip, so the
     correction showed twice until the card was rebuilt."""
-    fns = (_js_function(page, "extendLastChip") + "\n"
+    fns = (_chip_max(page) + _js_function(page, "extendLastChip") + "\n"
            + _js_function(page, "clearReplacementInline"))
     out = _run_node(tmp_path, fns + r"""
 var removed = [];
@@ -369,7 +374,7 @@ def test_shift_extend_stops_at_a_member_boundary(page, tmp_path):
     clips its end, keeping both members' text as `wrong`, so the save
     succeeded but the correction never applied. Within a member (and on a
     single capture's strip, which has no member_idx) it still extends."""
-    fn = _js_function(page, "extendLastChip")
+    fn = _chip_max(page) + _js_function(page, "extendLastChip")
     out = _run_node(tmp_path, fn + r"""
 var toasts = [];
 function toast(m) { toasts.push(m); }
@@ -446,7 +451,7 @@ console.log(JSON.stringify({ span: span, heal: chip.wrong,
 
 def _heal_fns(page):
     """renderChips and its heal helpers, with a do-nothing DOM."""
-    return re.search(r"var CHIP_TEXT_MAX = \d+;", page).group(0) + "\n" + "\n".join(
+    return _chip_max(page) + "\n".join(
         _js_function(page, f) for f in (
             "_dispWord", "_dispRemoved", "recomputeWrong", "renderChips",
             "markDirty")) + r"""
@@ -501,9 +506,42 @@ var full = words.map(function(w) { return w.word; }).join('').trim();
 var state = { words: words, chipBox: el(), dirty: false,
   corrections: [{ wrong: full.slice(0, 200), correct: 'X', idx: 0, idx_end: 39 }] };
 renderChips(state);
-console.log(JSON.stringify({ long: full.length > 200, dirty: state.dirty }));
+console.log(JSON.stringify({ long: full.length > 200, dirty: state.dirty,
+  kept: state.corrections[0].wrong === full.slice(0, 200) }));
 """)
-    assert out == {"long": True, "dirty": False}
+    # The full text is never put back either: Save would refuse it.
+    assert out == {"long": True, "dirty": False, "kept": True}
+
+
+@needs_node
+def test_chip_text_past_the_server_cap_is_refused_on_the_page(page, tmp_path):
+    """The store keeps 200 chars of a chip's `wrong` and `correct`, and Save
+    toasted "Saved." anyway: the export then rewrote only part of a long span
+    or emitted a cut correction. Extending or clicking past the cap now
+    toasts instead, and the correction input stops at the cap."""
+    fns = _heal_fns(page) + "\n".join(_js_function(page, f) for f in (
+        "extendLastChip", "spanText", "onWordClick"))
+    out = _run_node(tmp_path, fns + r"""
+var toasts = [], inputs = [];
+function toast(m, err) { toasts.push(m); }
+function selectWord() {} function focusLastInput() {} function chipCovers() { return false; }
+function clearReplacementInline() {} function applyCorrectionsToGround() {}
+global.document = { createElement: function(tag) { var e = el(); if (tag === 'input') inputs.push(e); return e; } };
+var words = [];
+for (var i = 0; i < 40; i++) words.push({ word: ' wort' + (i < 10 ? '0' : '') + i });
+words.push({ word: ' ' + 'x'.repeat(201) });
+var state = { words: words, chipBox: el(), dirty: false,
+  corrections: [{ wrong: 'wort00', correct: '', idx: 0, idx_end: 0 }] };
+extendLastChip(state, 20);
+var within = state.corrections[0].idx_end;
+extendLastChip(state, 39);
+var past = state.corrections[0].idx_end;
+onWordClick(state, 40, false);
+console.log(JSON.stringify({ within: within, past: past, chips: state.corrections.length,
+  toasts: toasts.length, maxLength: inputs[0].maxLength }));
+""")
+    assert out == {"within": 20, "past": 20, "chips": 1, "toasts": 2,
+                   "maxLength": 200}
 
 
 @needs_node

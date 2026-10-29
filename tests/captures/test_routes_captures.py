@@ -1994,6 +1994,28 @@ def test_patch_keeps_every_chip_the_schema_accepts(client, make_user_key):
     assert len(captures_store.get_capture("chipcap00001")["corrections"]) == 51
 
 
+@pytest.mark.parametrize("field", ["wrong", "correct"])
+def test_patch_refuses_chip_text_past_the_stored_cap(client, make_user_key, field):
+    """The store keeps CAP_CORRECTION_FIELD chars of a chip's `wrong` and
+    `correct`; a longer one was saved cut with a 200 and "Saved.", and the
+    export then rewrote only part of the span. Now it is a 422."""
+    from faster_whisper_backend.captures import store as captures_store
+    from faster_whisper_backend.core import text_corrections
+
+    _uid, raw = make_user_key("root", is_admin=True)
+    _insert_member(captures_store._require_conn(), "chipcap00003", None)
+    cap = text_corrections.CAP_CORRECTION_FIELD
+    chip = {"wrong": "w", "correct": "c", "idx": 0}
+    r = client.patch("/captures/api/chipcap00003", headers=bearer(raw),
+                     json={"corrections": [dict(chip, **{field: "x" * (cap + 1)})]})
+    assert r.status_code == 422
+    assert captures_store.get_capture("chipcap00003")["corrections"] == []
+    r = client.patch("/captures/api/chipcap00003", headers=bearer(raw),
+                     json={"corrections": [dict(chip, **{field: "x" * cap})]})
+    assert r.status_code == 200, r.text
+    assert captures_store.get_capture("chipcap00003")["corrections"][0][field] == "x" * cap
+
+
 def test_patch_refuses_a_merge_that_grows_past_the_chip_cap(
         client, make_user_key):
     """A three-way merge can add the user's chips on top of a full stored

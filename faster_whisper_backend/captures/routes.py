@@ -178,8 +178,11 @@ def _assert_member_sample_not_locked(
 
 class CorrectionIn(BaseModel):
     model_config = {"extra": "forbid"}
-    wrong: str = ""
-    correct: str = ""
+    # The store keeps CAP_CORRECTION_FIELD chars of each: past that a Save
+    # answered 200 while the export applied a cut `wrong` (rewriting only part
+    # of the span) or a cut `correct`. The page never sends more.
+    wrong: str = Field(default="", max_length=text_corrections.CAP_CORRECTION_FIELD)
+    correct: str = Field(default="", max_length=text_corrections.CAP_CORRECTION_FIELD)
     idx: int | None = None
     idx_end: int | None = None
 
