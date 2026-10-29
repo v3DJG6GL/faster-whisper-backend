@@ -758,8 +758,11 @@ def test_legacy_state_mapping_uses_the_loader_overrides_path():
     """The startup call feeds config_store.OVERRIDES_PATH (the file the loader
     actually reads) into the mapping — not a re-derived copy of the rule.
     Identity, not equality: the ImportError fallback re-derives an equal
-    string, which `==` cannot tell apart from the imported one."""
+    string, which `==` cannot tell apart from the imported one. Reloaded
+    first: an app_module test reloads config while config_store names its
+    tmp file, and teardown restores only config_store's constant."""
     from faster_whisper_backend.settings import config_store
+    importlib.reload(config)
     assert config._overrides_path is config_store.OVERRIDES_PATH
 
 def test_legacy_data_dir_root_db_warns_when_ignored(tmp_path):
