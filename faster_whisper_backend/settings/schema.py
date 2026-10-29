@@ -1714,6 +1714,8 @@ class AdminConfig(BaseModel):
              before the killable guard, so 200 such entries pinned a save
              thread for minutes. Past the budget the save is refused — the
              child, which compiles the same patterns, would time out anyway.
+             What is spent here is handed to regex_guard.validate, whose
+             in-process structural screen is charged on top.
           2. Every regex-list entry's replacement TEMPLATE parses against its
              pattern (always, in-process — catches bad backrefs like `\\3` when
              only 2 groups exist; CPython parses templates eagerly, so this is
@@ -1858,7 +1860,7 @@ class AdminConfig(BaseModel):
             to_guard = (checks if guard_slugs is None
                         else [c for c in checks if c[3] in guard_slugs])
             if to_guard:
-                regex_guard.validate([c[:3] for c in to_guard])
+                regex_guard.validate([c[:3] for c in to_guard], spent=compile_spent)
         return v
 
     @model_validator(mode="after")

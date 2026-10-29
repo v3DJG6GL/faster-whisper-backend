@@ -9,6 +9,7 @@ submit 200 of them in one regex-list rule and pin a save thread for minutes
 """
 
 import re
+import subprocess
 
 import pytest
 from pydantic import ValidationError
@@ -59,3 +60,24 @@ def test_load_and_untouched_rules_are_not_charged(no_compile_budget):
     settings_schema.AdminConfig.model_validate(
         {"PIPELINE_RULES": _rules("slow", _SLOW_TO_COMPILE)},
         context={"guard_regex": True, "guard_slugs": frozenset({"other"})})
+
+
+def test_structural_screen_is_charged_against_the_same_budget(monkeypatch):
+    """The in-process screen compiles each branch atom again, IGNORECASE:
+    here ~40 ms against a top-level compile the re cache serves for free, so
+    a resent save used to pass the compile budget and then spend unbounded
+    time screening before the killable child ever started."""
+    monkeypatch.setattr(regex_guard, "_GUARD_TIMEOUT", 5e-3)
+    monkeypatch.setattr(regex_guard, "_PER_CHECK_BUDGET", 0.0)
+    monkeypatch.setattr(regex_guard, "_GUARD_TIMEOUT_MAX", 5e-3)
+    child = []
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: child.append(a)
+                        or subprocess.CompletedProcess(a, 0, '{"ok": true}', ""))
+    cls = r"[\x00-+\--\U0010fff%d]"
+    pat = "(?:(?:" + cls % 1 + "|" + cls % 2 + cls % 3 + "),)+"
+    re.compile(pat)  # cached: the charged top-level compile costs ~nothing
+    with pytest.raises(ValidationError) as ei:
+        settings_schema.AdminConfig.model_validate(
+            {"PIPELINE_RULES": _rules("wide", pat)}, context={"guard_regex": True})
+    assert "rule 0 ('wide') entry 0: checking the submitted patterns took" in str(ei.value)
+    assert child == []

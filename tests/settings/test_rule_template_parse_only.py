@@ -38,7 +38,7 @@ def test_save_reaches_the_out_of_process_guard_without_matching_first(monkeypatc
     from faster_whisper_backend.pipeline import regex_guard
 
     seen = []
-    monkeypatch.setattr(regex_guard, "validate", seen.extend)
+    monkeypatch.setattr(regex_guard, "validate", lambda checks, **_: seen.extend(checks))
     t0 = time.monotonic()
     settings_schema.AdminConfig.model_validate(
         {"PIPELINE_RULES": _rules(_EMPTY_INPUT_BOMB, "x")},

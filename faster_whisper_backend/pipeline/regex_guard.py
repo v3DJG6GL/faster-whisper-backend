@@ -1368,7 +1368,7 @@ def _chain_advance(rx, pattern: str, replacement: str, chained: str) -> str:
         return ""
 
 
-def validate(checks: list, timeout: float | None = None) -> None:
+def validate(checks: list, timeout: float | None = None, spent: float = 0.0) -> None:
     """Validate every regex in ``checks`` out-of-process.
 
     ``checks`` is a list of ``(where, pattern, replacement)`` tuples, spanning
@@ -1386,9 +1386,23 @@ def validate(checks: list, timeout: float | None = None) -> None:
     Fails OPEN: if the helper can't be launched / crashes, the save proceeds
     WITHOUT the backtracking check rather than blocking a legitimate edit — the
     guard is a safety improvement, never a gate that can break saving.
+
+    The in-process structural screen is charged against the same wall-clock
+    budget, on top of ``spent`` (the seconds the caller already spent
+    compiling these patterns): it compiles every branch atom again,
+    case-insensitively, and an IGNORECASE class spanning all of Unicode costs
+    milliseconds per atom, so 20 long entries held a save thread for seconds
+    before the killable child ever started. Past the budget the save is
+    refused, checked between patterns.
     """
     if not checks:
         return
+    import time
+
+    budget = (timeout if timeout is not None
+              else min(_GUARD_TIMEOUT + _PER_CHECK_BUDGET * len(checks),
+                       _GUARD_TIMEOUT_MAX))
+    t0 = time.perf_counter()
     # Structural screen first, in-process: exponential shapes can be slower
     # than any wall-clock probe on inputs the fixtures don't happen to contain,
     # so they are refused on shape rather than on measured time.
@@ -1406,14 +1420,17 @@ def validate(checks: list, timeout: float | None = None) -> None:
                 "and make the alternatives of a repeated group mutually "
                 "exclusive."
             )
+        if spent + time.perf_counter() - t0 > budget:
+            raise ValueError(
+                f"{where}: checking the submitted patterns took > "
+                f"{budget:.2g} s — simplify them (a case-insensitive "
+                "character class spanning all of Unicode is very slow to "
+                "compile).")
     import json
     import logging
     import subprocess
     import sys
 
-    budget = (timeout if timeout is not None
-              else min(_GUARD_TIMEOUT + _PER_CHECK_BUDGET * len(checks),
-                       _GUARD_TIMEOUT_MAX))
     payload = json.dumps([[c[1], c[2]] for c in checks])
     try:
         proc = subprocess.run(
