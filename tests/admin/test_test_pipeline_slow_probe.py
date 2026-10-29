@@ -411,3 +411,49 @@ def test_an_unprobed_entry_after_a_slow_one_does_not_hide_the_slow_verdict(clien
     step = r.json()["steps"][0]
     assert step["not_run"] is True
     assert "killable probe" in step["error"] and "may be harmless" not in step["error"]
+
+
+def _list_step(client, entries):
+    r = client.post("/settings/test-pipeline", json={
+        "sample": "aaaa",
+        "rules": [{"name": "rl", "type": "regex-list", "enabled": True,
+                   "entries": entries}],
+    })
+    assert r.status_code == 200, r.text
+    return r.json()["steps"][0]
+
+
+def test_an_unprobed_entry_after_a_screened_one_does_not_hide_the_screen_verdict(client, monkeypatch):
+    # The probe has no time left, so entry 1 is held as "may be harmless";
+    # entry 0 is never probed (the save-time screen catches it) and its
+    # nested-repetition verdict must stay the card's error.
+    monkeypatch.setattr(admin_routes, "_TEST_PIPELINE_PROBE_WALL", 0.0)
+    step = _list_step(client, [{"pattern": "(a+)+$", "replacement": "x"},
+                               {"pattern": "a", "replacement": "b"}])
+    assert step["not_run"] is True
+    assert step["error"].startswith("nested repetition")
+    assert "may be harmless" not in step["error"]
+
+
+def test_an_unprobed_entry_does_not_hide_an_earlier_entrys_compile_error(client, monkeypatch):
+    # Both rounds are killed late in entry 1, which spends the probe time:
+    # entry 0 (a compile error) was walked, entry 1 is held as unprobed.
+    monkeypatch.setattr(admin_routes, "_TEST_PIPELINE_PROBE_TIMEOUT", 0.2)
+    monkeypatch.setattr(admin_routes, "_TEST_PIPELINE_PROBE_ROUNDS", 1)
+    _scripted_rounds(monkeypatch, [(_mark(0), "1 0.0010\n2 0.1990\n"),
+                                   (_mark(0), "1 0.0010\n2 0.3950\n")])
+    step = _list_step(client, [{"pattern": "(", "replacement": "x"},
+                               {"pattern": "a", "replacement": "b"}])
+    assert step["not_run"] is True
+    assert "may be harmless" not in step["error"]
+    assert "missing )" in step["error"]
+
+
+def test_a_slow_entry_after_a_screened_one_does_not_hide_the_screen_verdict(client, monkeypatch):
+    monkeypatch.setattr(admin_routes, "_TEST_PIPELINE_PROBE_TIMEOUT", 0.2)
+    monkeypatch.setattr(admin_routes, "_TEST_PIPELINE_PROBE_ROUNDS", 1)
+    step = _list_step(client, [{"pattern": "(a+)+$", "replacement": "x"},
+                               {"pattern": _EMPTY_BACKTRACK, "replacement": "x"}])
+    assert step["not_run"] is True
+    assert step["error"].startswith("nested repetition")
+    assert "killable probe" not in step["error"]

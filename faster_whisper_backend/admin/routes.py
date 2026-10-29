@@ -1156,7 +1156,12 @@ async def test_pipeline(payload: dict[str, Any]) -> JSONResponse:
                 try:
                     cur = text
                     total = 0
+                    # The card shows ONE error, whatever the entry order: the
+                    # strongest verdict, the first of its rank — a save-time
+                    # screen 3 > caught slow 2 > compile/backref error 1 >
+                    # never probed ("may be harmless") 0.
                     bad: str | None = None
+                    rank = -1
                     for ei, entry in enumerate(entries):
                         ep = entry.get("pattern", "") or ""
                         if not ep:
@@ -1165,21 +1170,21 @@ async def test_pipeline(payload: dict[str, Any]) -> JSONResponse:
                         # str, and the screens' cost is quadratic in what
                         # they are handed — a list's repr is unbounded.
                         if not isinstance(ep, str):
-                            if bad is None:
-                                bad = "pattern must be a string"
+                            if rank < 1:
+                                bad, rank = "pattern must be a string", 1
                             continue
                         fc_msg = _fixed_count_msg(ep)
                         if fc_msg is not None or regex_guard._nested_repetition(ep):
                             # Wins over an earlier compile error: `not_run`
                             # needs its "not executed here" caveat shown.
-                            bad = fc_msg or _NESTED_REP_MSG
+                            if rank < 3:
+                                bad, rank = fc_msg or _NESTED_REP_MSG, 3
                             lout["not_run"] = True
                             continue
                         if ei in held:
-                            # An entry the probe never reached must not hide
-                            # one it caught too slow as "may be harmless".
-                            if bad != _SLOW_PROBE_MSG:
-                                bad = held[ei]
+                            r = 2 if held[ei] == _SLOW_PROBE_MSG else 0
+                            if rank < r:
+                                bad, rank = held[ei], r
                             lout["not_run"] = True
                             continue
                         try:
@@ -1191,8 +1196,8 @@ async def test_pipeline(payload: dict[str, Any]) -> JSONResponse:
                             # Engine parity (pl_engine.rebuild_caches): a bad entry is
                             # SKIPPED, not the whole card — the valid entries still
                             # apply. Surface the first bad pattern as an advisory.
-                            if bad is None:
-                                bad = str(e)
+                            if rank < 1:
+                                bad, rank = str(e), 1
                             continue
                         er = entry.get("replacement", "") or ""
                         try:
@@ -1219,8 +1224,8 @@ async def test_pipeline(payload: dict[str, Any]) -> JSONResponse:
                         # TypeError: a non-string replacement in a hand-rolled
                         # body. The engine skips those entries too.
                         except (re.error, IndexError, TypeError) as e:
-                            if bad is None:
-                                bad = str(e)
+                            if rank < 1:
+                                bad, rank = str(e), 1
                             continue
                         # Engine parity: each entry is its own engine row and
                         # the walk stops once the text passes the output bound
