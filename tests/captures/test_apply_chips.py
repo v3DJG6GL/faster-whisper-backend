@@ -149,6 +149,12 @@ def test_single_capture_ground_preview_uses_the_shared_helper(client):
     (["Hallo Welt.", "Wie geht es?", "gut"], "Hallo Welt. Wie geht es? gut"),
     (["Stopp!", "«Ja.»", "nein"], "Stopp! «Ja.» nein"),
     (["eins", "zwei…", "drei"], "eins. zwei… drei"),
+    (["Er sagte „Ja.“", "weiter"], "Er sagte „Ja.“ weiter"),
+    (["‚Stopp!‘", "gut"], "‚Stopp!‘ gut"),
+    (["›Oui?‹", "non"], "›Oui?‹ non"),
+    (["你好。", "好吗？", "好"], "你好。 好吗？ 好"),
+    (["「好！」", "（是？）", "مرحبا؟", "नमस्ते।", "Wie⁉", "gut"],
+     "「好！」 （是？） مرحبا؟ नमस्ते। Wie⁉ gut"),
 ])
 def test_period_space_join_adds_no_period_after_sentence_punctuation(
         finals, expected):
