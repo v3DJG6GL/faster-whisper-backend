@@ -76,7 +76,11 @@ def _apply_chips_to_text(
     included), not text tokens. `words` — the aligned karaoke items the
     chips were made on — maps idx onto the text's token position: a filler
     or a dictated "Komma" owns no token, so without it the position is only
-    a nearest match and drifts past such words."""
+    a nearest match and drifts past such words. With `words`, an anchored
+    chip whose stored `wrong` is not in the text is matched by the words at
+    idx..idx_end instead, the way the page re-derives it on display: a chip
+    saved before those words kept their spaces ("HalloWelt") shows as
+    applied on the page and must be applied here too."""
     if not corrections:
         return text or ""
     out = text or ""
@@ -120,9 +124,14 @@ def _apply_chips_to_text(
         pos = idx
         if anchored and starts is not None:
             pos = starts[max(0, min(idx, len(starts) - 1))]
+        needles = [wrong]
+        if anchored and words:
+            healed = _span_text(words, idx, c.get("idx_end"))
+            if healed and healed != wrong:
+                needles.append(healed)
         best, best_end, best_d = -1, -1, -1
-        for flex in (False, True):
-            for i, j in _occurrences(out, wrong, cursor if anchored else 0,
+        for needle, flex in ((n, f) for n in needles for f in (False, True)):
+            for i, j in _occurrences(out, needle, cursor if anchored else 0,
                                      flex):
                 if ((_w(out[i]) and i > 0 and _w(out[i - 1]))
                         or (_w(out[j - 1]) and j < len(out) and _w(out[j]))):
@@ -145,7 +154,7 @@ def _apply_chips_to_text(
         out = out[:best] + correct + out[best_end:]
         if anchored:
             cursor = best + len(correct)
-            shift += len(wrong.split()) - len(correct.split())
+            shift += len(needle.split()) - len(correct.split())
     return out
 
 
@@ -166,6 +175,27 @@ def _occurrences(text: str, needle: str, start: int, flex: bool):
     while m:
         yield m.start(), m.end()
         m = rx.search(text, m.start() + 1)
+
+
+def _span_text(words: list[dict[str, Any]], idx: int, idx_end: Any) -> str:
+    """The text of the aligned karaoke words idx..idx_end (a removed word
+    owns none), joined the way the page builds a chip's `wrong`: each token
+    carries its own leading space. The training token wins when attached."""
+    try:
+        end = int(idx_end) if idx_end is not None else idx
+    except (TypeError, ValueError):
+        end = idx
+    parts = []
+    for w in words[max(0, idx):max(0, end) + 1]:
+        if not isinstance(w, dict):
+            continue
+        if w.get("train_word") is not None:
+            tok, gone = w.get("train_word") or "", w.get("train_removed")
+        else:
+            tok, gone = w.get("word") or "", w.get("removed")
+        if not gone:
+            parts.append(tok)
+    return "".join(parts).lstrip()
 
 
 def _build_default_transcript(

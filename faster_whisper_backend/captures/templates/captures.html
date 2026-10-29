@@ -2720,8 +2720,8 @@
     // words. Recompute from the current display words so the chip,
     // strike-through, and applyCorrectionsToGround all agree on what
     // text the chip is replacing. A heal is an edit: the stored chip
-    // still carries the old `wrong`, which the export never finds in the
-    // text, so it only takes effect once saved. It marks the card unsaved
+    // still carries the old `wrong` (the export finds it only through the
+    // same words at its idx, see _applyChipsToText). It marks the card unsaved
     // only when the server would store something new (it keeps `wrong`
     // trimmed and cut at CHIP_TEXT_MAX) and the user saves by hand: a
     // locked sample refuses a non-admin's Save (saveBlocked), and on an
@@ -3395,11 +3395,20 @@
     // nearest its idx; a verbatim match wins, else any whitespace run in
     // `wrong` matches any whitespace run in the text. `words` (the aligned
     // karaoke words the chips were made on) maps idx onto the text's token
-    // position, past removed words.
+    // position, past removed words, and stands in for a stored `wrong` the
+    // text no longer has (the words at idx..idx_end).
     if (!corrections || !corrections.length) return text || '';
     var out = text || '';
     var W = /[\p{L}\p{N}_]/u;
     function nWords(s) { return s.split(/\s+/).filter(Boolean).length; }
+    // The token a karaoke word owns ('' when removed); the training token
+    // wins when attached.
+    function tokOf(w) {
+      if (!w || typeof w !== 'object') return '';
+      var hasTrain = w.train_word !== undefined && w.train_word !== null;
+      var tok = hasTrain ? (w.train_word || '') : (w.word || '');
+      return (hasTrain ? w.train_removed : w.removed) ? '' : tok;
+    }
     // (start, end) of each occurrence of `needle` from `start`, overlapping
     // ones included; `flex` lets a whitespace run match any whitespace run.
     function occurrences(needle, start, flex) {
@@ -3427,14 +3436,7 @@
     if (words && words.length) {
       starts = [0];
       words.forEach(function(w) {
-        var n = 0;
-        if (w && typeof w === 'object') {
-          var hasTrain = w.train_word !== undefined && w.train_word !== null;
-          var tok = hasTrain ? (w.train_word || '') : (w.word || '');
-          var gone = hasTrain ? w.train_removed : w.removed;
-          if (!gone) n = nWords(tok);
-        }
-        starts.push(starts[starts.length - 1] + n);
+        starts.push(starts[starts.length - 1] + nWords(tokOf(w)));
       });
     }
     var ordered = corrections.slice().filter(function(c) {
@@ -3458,9 +3460,17 @@
       if (anchored && starts) {
         pos = starts[Math.max(0, Math.min(c.idx, starts.length - 1))];
       }
-      var best = -1, bestEnd = -1, bestD = -1;
-      for (var t = 0; t < 2 && best < 0; t++) {
-        var occ = occurrences(wrong, anchored ? cursor : 0, t === 1);
+      var needles = [wrong];
+      if (anchored && words && words.length) {
+        var end = (typeof c.idx_end === 'number') ? c.idx_end : c.idx;
+        var healed = words.slice(Math.max(0, c.idx), Math.max(0, end) + 1)
+          .map(tokOf).join('').replace(/^\s+/, '');
+        if (healed && healed !== wrong) needles.push(healed);
+      }
+      var best = -1, bestEnd = -1, bestD = -1, needle = wrong;
+      for (var t = 0; t < needles.length * 2 && best < 0; t++) {
+        needle = needles[t >> 1];
+        var occ = occurrences(needle, anchored ? cursor : 0, t % 2 === 1);
         for (var o = 0; o < occ.length; o++) {
           var i = occ[o][0], j = occ[o][1];
           if ((W.test(out[i]) && i > 0 && W.test(out[i - 1]))
@@ -3479,7 +3489,7 @@
       out = out.slice(0, best) + correct + out.slice(bestEnd);
       if (anchored) {
         cursor = best + correct.length;
-        shift += nWords(wrong) - nWords(correct);
+        shift += nWords(needle) - nWords(correct);
       }
     });
     return out;

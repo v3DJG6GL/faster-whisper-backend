@@ -91,6 +91,12 @@ _WORD_CASES = [
      [_w(" Satz"), _w(" eins."), _w("", True), _w("", True), _w(" Satz"),
       _w(" zwei")],
      "Satz drei. Satz zwei"),
+    # A chip saved before the words kept their spaces ("HalloWelt"): the
+    # page shows it on the words at its idx, so it applies there.
+    ("Hallo Welt wie geht's",
+     [{"idx": 0, "idx_end": 1, "wrong": "HalloWelt", "correct": "Hallo Leute"}],
+     [_w(" Hallo"), _w(" Welt"), _w(" wie"), _w(" geht's")],
+     "Hallo Leute wie geht's"),
 ]
 
 
@@ -106,6 +112,16 @@ def test_apply_chips_maps_idx_past_removed_words(text, chips, words, expected):
 
 def test_default_transcript_aligns_chips_with_the_members_words():
     text, chips, words, expected = _WORD_CASES[0]
+    member = {"text_for_training": text, "corrections": chips}
+    assert capture_samples._build_default_transcript(
+        [member], "space", words_for=lambda m: words) == expected
+
+
+def test_default_transcript_applies_a_chip_with_a_stale_wrong():
+    # Accepting a merge proposal posts only the member ids: the sample is
+    # built from the STORED chips, and a "HalloWelt" chip the preview showed
+    # as applied must not be dropped from the transcript.
+    text, chips, words, expected = _WORD_CASES[-1]
     member = {"text_for_training": text, "corrections": chips}
     assert capture_samples._build_default_transcript(
         [member], "space", words_for=lambda m: words) == expected
