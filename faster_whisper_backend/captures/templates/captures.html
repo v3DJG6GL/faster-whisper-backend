@@ -3392,12 +3392,37 @@
     // joining into the group's final-result preview. Same matching rules
     // as the server: whole-word occurrences only, an anchored chip searches
     // past the previous anchored replacement and takes the occurrence
-    // nearest its idx. `words` (the aligned karaoke words the chips were
-    // made on) maps idx onto the text's token position, past removed words.
+    // nearest its idx; a verbatim match wins, else any whitespace run in
+    // `wrong` matches any whitespace run in the text. `words` (the aligned
+    // karaoke words the chips were made on) maps idx onto the text's token
+    // position, past removed words.
     if (!corrections || !corrections.length) return text || '';
     var out = text || '';
     var W = /[\p{L}\p{N}_]/u;
     function nWords(s) { return s.split(/\s+/).filter(Boolean).length; }
+    // (start, end) of each occurrence of `needle` from `start`, overlapping
+    // ones included; `flex` lets a whitespace run match any whitespace run.
+    function occurrences(needle, start, flex) {
+      var res = [], i;
+      if (!flex) {
+        for (i = out.indexOf(needle, start); i >= 0;
+             i = out.indexOf(needle, i + 1)) {
+          res.push([i, i + needle.length]);
+        }
+        return res;
+      }
+      var parts = needle.split(/\s+/).filter(Boolean);
+      if (!parts.length) return res;
+      var rx = new RegExp(parts.map(function(p) {
+        return p.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      }).join('\\s+'), 'g');
+      rx.lastIndex = start;
+      for (var m = rx.exec(out); m; m = rx.exec(out)) {
+        res.push([m.index, m.index + m[0].length]);
+        rx.lastIndex = m.index + 1;
+      }
+      return res;
+    }
     var starts = null;
     if (words && words.length) {
       starts = [0];
@@ -3433,24 +3458,25 @@
       if (anchored && starts) {
         pos = starts[Math.max(0, Math.min(c.idx, starts.length - 1))];
       }
-      var best = -1, bestD = -1;
-      var i = out.indexOf(wrong, anchored ? cursor : 0);
-      while (i >= 0) {
-        var j = i + wrong.length;
-        if (!((W.test(wrong[0]) && i > 0 && W.test(out[i - 1]))
-              || (W.test(wrong[wrong.length - 1]) && j < out.length
-                  && W.test(out[j])))) {
-          if (!anchored) { best = i; break; }
+      var best = -1, bestEnd = -1, bestD = -1;
+      for (var t = 0; t < 2 && best < 0; t++) {
+        var occ = occurrences(wrong, anchored ? cursor : 0, t === 1);
+        for (var o = 0; o < occ.length; o++) {
+          var i = occ[o][0], j = occ[o][1];
+          if ((W.test(out[i]) && i > 0 && W.test(out[i - 1]))
+              || (W.test(out[j - 1]) && j < out.length && W.test(out[j]))) {
+            continue;
+          }
+          if (!anchored) { best = i; bestEnd = j; break; }
           // A word glued to a "(" or „ before it is that token, not the next.
           var k = nWords(out.slice(0, i));
           if (i > 0 && !/\s/.test(out[i - 1])) k -= 1;
           var d = Math.abs(k + shift - pos);
-          if (best < 0 || d < bestD) { best = i; bestD = d; }
+          if (best < 0 || d < bestD) { best = i; bestEnd = j; bestD = d; }
         }
-        i = out.indexOf(wrong, i + 1);
       }
       if (best < 0) return;
-      out = out.slice(0, best) + correct + out.slice(best + wrong.length);
+      out = out.slice(0, best) + correct + out.slice(bestEnd);
       if (anchored) {
         cursor = best + correct.length;
         shift += nWords(wrong) - nWords(correct);

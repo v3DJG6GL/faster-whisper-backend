@@ -60,9 +60,12 @@ def _apply_chips_to_text(
 ) -> str:
     """Substitute each chip's `wrong` text with its `correct` text in
     `text`. Walk in idx order so multi-word spans replace as a unit.
-    If `wrong` isn't found verbatim (whitespace drift / regex specials),
-    that chip is left alone. Mirrored byte-for-byte by the JS twin
-    `_applyChipsToText` so server- and client-derived transcripts agree.
+    A verbatim match wins; failing that, any whitespace run in `wrong`
+    matches any whitespace run in the text (a multi-word chip's `wrong`
+    joins its words with spaces, the text may have a dictated line break
+    there). If `wrong` still isn't found, a chip is left alone. Mirrored
+    byte-for-byte by the JS twin `_applyChipsToText` so server- and
+    client-derived transcripts agree.
 
     Only a whole-word occurrence counts: a chip on "cat" must not rewrite
     the "cat" inside "scat". An anchored chip searches past the previous
@@ -117,14 +120,15 @@ def _apply_chips_to_text(
         pos = idx
         if anchored and starts is not None:
             pos = starts[max(0, min(idx, len(starts) - 1))]
-        best, best_d = -1, -1
-        i = out.find(wrong, cursor if anchored else 0)
-        while i >= 0:
-            j = i + len(wrong)
-            if not ((_w(wrong[0]) and i > 0 and _w(out[i - 1]))
-                    or (_w(wrong[-1]) and j < len(out) and _w(out[j]))):
+        best, best_end, best_d = -1, -1, -1
+        for flex in (False, True):
+            for i, j in _occurrences(out, wrong, cursor if anchored else 0,
+                                     flex):
+                if ((_w(out[i]) and i > 0 and _w(out[i - 1]))
+                        or (_w(out[j - 1]) and j < len(out) and _w(out[j]))):
+                    continue
                 if not anchored:
-                    best = i
+                    best, best_end = i, j
                     break
                 # Whole tokens before the occurrence: a "(" or „ it starts
                 # inside belongs to its own word, not the one before.
@@ -133,15 +137,35 @@ def _apply_chips_to_text(
                     k -= 1
                 d = abs(k + shift - pos)
                 if best < 0 or d < best_d:
-                    best, best_d = i, d
-            i = out.find(wrong, i + 1)
+                    best, best_end, best_d = i, j, d
+            if best >= 0:
+                break
         if best < 0:
             continue
-        out = out[:best] + correct + out[best + len(wrong):]
+        out = out[:best] + correct + out[best_end:]
         if anchored:
             cursor = best + len(correct)
             shift += len(wrong.split()) - len(correct.split())
     return out
+
+
+def _occurrences(text: str, needle: str, start: int, flex: bool):
+    """(start, end) of each occurrence of `needle` in `text` from `start`,
+    overlapping ones included. `flex` lets any whitespace run in `needle`
+    match any whitespace run in `text`."""
+    if not flex:
+        i = text.find(needle, start)
+        while i >= 0:
+            yield i, i + len(needle)
+            i = text.find(needle, i + 1)
+        return
+    if not needle.split():
+        return
+    rx = re.compile(r"\s+".join(map(re.escape, needle.split())))
+    m = rx.search(text, start)
+    while m:
+        yield m.start(), m.end()
+        m = rx.search(text, m.start() + 1)
 
 
 def _build_default_transcript(

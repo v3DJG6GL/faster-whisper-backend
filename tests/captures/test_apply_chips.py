@@ -84,6 +84,13 @@ _WORD_CASES = [
       {"word": "äh", "train_word": "", "train_removed": True},
       _w("der"), _w("Patient"), _w("der"), _w("Arzt")],
      "den Patient der Arzt"),
+    # A multi-word chip across a dictated line break: its `wrong` joins the
+    # words with a space, the text has "\n" there.
+    ("Satz eins.\nSatz zwei",
+     [{"idx": 1, "idx_end": 4, "wrong": "eins. Satz", "correct": "drei. Satz"}],
+     [_w(" Satz"), _w(" eins."), _w("", True), _w("", True), _w(" Satz"),
+      _w(" zwei")],
+     "Satz drei. Satz zwei"),
 ]
 
 
