@@ -703,10 +703,39 @@ def test_faithful_mismatch_after_leading_blanks_keeps_the_batch_size(
         mode="faithful"))
     assert warns == []
     assert [r["en"] for r in res[4:]] == [_xlate(t) for t in live]
-    # 8 (mismatch) → 6: [4 blanks + 2 live], then 6-cue batches over the
-    # rest (6, 6, 6, 6, 2) — not 14 pairs at k = 2.
+    # 8 (mismatch) → 6: [4 blanks + 2 live], then k grows back to 8 over
+    # the rest (8, 8, 8, 2) — not 14 pairs at k = 2.
     sizes = [len(c.split("\n\n", 1)[1].splitlines()) for c in calls]
-    assert sizes == [4, 2, 6, 6, 6, 6, 2]
+    assert sizes == [4, 2, 8, 8, 8, 2]
+
+
+def test_faithful_batch_size_grows_back_after_one_mismatch(base_cfg,
+                                                           monkeypatch):
+    """A halving gets past one failing position: once the halved batch went
+    through, k grows back to TRANSLATION_BATCH_SEGMENTS instead of staying
+    shrunk for every later cue of the target."""
+    monkeypatch.setattr(cfg, "TRANSLATION_BATCH_SEGMENTS", 8, raising=False)
+    calls = []
+
+    def fake(llm, family, prompt_or_msgs, max_tokens):
+        payload = _payload_of(prompt_or_msgs)
+        calls.append(payload)
+        if len(calls) == 1:
+            return "one line only"                  # first batch mismatches
+        lines = payload.split("\n\n", 1)[1].splitlines()
+        return "\n".join(
+            f"{m.group(1)}. {_xlate(m.group(2))}"
+            for m in (re.match(r"(\d+)\.\s(.*)", ln) for ln in lines))
+    monkeypatch.setattr(translation, "_complete", fake)
+    _stub_get_model(monkeypatch)
+
+    live = [f"Satz nummer {n}." for n in range(32)]
+    res, warns, _ = _run(translation.translate_segments(
+        _segs(*live), ["en"], source_lang="de", mode="faithful"))
+    assert warns == []
+    assert [r["en"] for r in res] == [_xlate(t) for t in live]
+    sizes = [len(c.split("\n\n", 1)[1].splitlines()) for c in calls]
+    assert sizes == [8, 4, 8, 8, 8, 4]
 
 
 def test_faithful_copy_guard_sees_through_collapsed_whitespace(base_cfg,

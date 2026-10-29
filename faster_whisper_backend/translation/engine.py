@@ -1724,7 +1724,9 @@ async def translate_segments(
             continue
 
         if mode == "faithful":
-            k = max(1, int(getattr(cfg, "TRANSLATION_BATCH_SEGMENTS", 8) or 1))
+            k_cfg = max(1, int(getattr(cfg, "TRANSLATION_BATCH_SEGMENTS", 8)
+                               or 1))
+            k = k_cfg
             n_batches = max(1, -(-len(segments) // k))
             unit_state["steps"] = n_batches
             i = 0
@@ -1767,8 +1769,8 @@ async def translate_segments(
                         # actually sent, not k: a short tail or leading
                         # blanks would otherwise resend the identical prompt.
                         # The leading blanks stay on top of the halved span —
-                        # the next batch starts at them again, and k would
-                        # otherwise stay shrunk for the rest of the target.
+                        # the next batch starts at them again, and would
+                        # otherwise spend the halved size on blanks alone.
                         k = max(1, (live_idx[0] - i)
                                 + (live_idx[-1] - live_idx[0] + 1) // 2)
                         n_batches = max(1, -(-(len(segments) - i) // k)) + batch_no
@@ -1798,6 +1800,12 @@ async def translate_segments(
                 batch_no += 1
                 done_units += len(batch_idx)
                 unit_state["done"] += len(batch_idx)
+                if k < k_cfg and i < len(segments):
+                    # A halving gets past ONE failing position: grow k back
+                    # once a batch went through, or one early mis-numbering
+                    # would leave every later cue of the target tiny batches.
+                    k = min(k_cfg, 2 * k)
+                    n_batches = max(1, -(-(len(segments) - i) // k)) + batch_no
                 _progress(f"{target} {min(batch_no, n_batches)}/{n_batches}",
                           last_ok)
         else:
