@@ -58,6 +58,14 @@ def _global_edge_ms() -> int:
         return 300
 
 
+def _word_char(ch: str) -> bool:
+    """A character that belongs to the word it sits in. A combining mark (a
+    Devanagari or Thai vowel sign, an NFD accent) and ZWNJ/ZWJ do: "लत" is
+    no whole word inside "बोलते", and "की" is not "क" with a stray sign."""
+    return (ch.isalnum() or ch == "_" or ch in "\u200c\u200d"
+            or unicodedata.category(ch)[0] == "M")
+
+
 def _apply_chips_to_text(
     text: str,
     corrections: list[dict[str, Any]],
@@ -99,12 +107,6 @@ def _apply_chips_to_text(
             return (0, int(i))
         except (TypeError, ValueError):
             return (1, 0)
-    # A combining mark (a Devanagari or Thai vowel sign, an NFD accent) and
-    # ZWNJ/ZWJ are part of the word they sit in: "लत" is not a whole word
-    # inside "बोलते".
-    def _w(ch):
-        return (ch.isalnum() or ch == "_" or ch in "\u200c\u200d"
-                or unicodedata.category(ch)[0] == "M")
     ordered = sorted(
         (c for c in corrections if isinstance(c, dict)), key=_sk,
     )
@@ -151,8 +153,9 @@ def _apply_chips_to_text(
         for needle, flex in ((n, f) for n in needles for f in (False, True)):
             for i, j in _occurrences(out, needle, cursor if anchored else 0,
                                      flex):
-                if ((_w(out[i]) and i > 0 and _w(out[i - 1]))
-                        or (_w(out[j - 1]) and j < len(out) and _w(out[j]))):
+                if ((_word_char(out[i]) and i > 0 and _word_char(out[i - 1]))
+                        or (_word_char(out[j - 1]) and j < len(out)
+                            and _word_char(out[j]))):
                     continue
                 if not anchored:
                     best, best_end = i, j
@@ -333,9 +336,6 @@ def _merged_wav_patch(
     }
 
 
-_ALIGN_PUNCT_RE = re.compile(r"^[^\w]+|[^\w]+$", re.UNICODE)
-
-
 def _align_key(s: str) -> str:
     """Normalise a token for LCS comparison: strip surrounding whitespace
     AND leading/trailing non-word punctuation, then casefold. Internal
@@ -354,8 +354,12 @@ def _align_key(s: str) -> str:
     _align_words_to_final) — the user sees the dotted-underline + tooltip without
     the misleading strike-through."""
     s = (s or "").strip()
-    s = _ALIGN_PUNCT_RE.sub("", s)
-    return s.casefold()
+    i, j = 0, len(s)
+    while i < j and not _word_char(s[i]):
+        i += 1
+    while j > i and not _word_char(s[j - 1]):
+        j -= 1
+    return s[i:j].casefold()
 
 
 def _align_words_to_final(

@@ -137,6 +137,21 @@ def test_deletion_marks_removed(monkeypatch):
     assert out[2]["word"] == "welt"
 
 
+def test_deletion_keeps_a_words_final_vowel_sign(monkeypatch):
+    # The edge-punctuation strip cut the vowel sign off "का" and "की" (both
+    # "क"), so the kept "की" was given to the deleted "का" and the real
+    # "की" was struck as removed.
+    _install_word_map(monkeypatch, {})
+    words = _words("राम", "का", "की", "घर")
+    final = "राम की घर"
+    out = capture_samples._align_words_to_final(words, final)
+
+    assert _join(out) == final
+    assert [bool(w.get("removed")) for w in out] == [False, True, False, False]
+    assert out[2]["word"] == "की"
+    assert "raw_word" not in out[2]
+
+
 # ---------------------------------------------------------------------------
 # plain 1 -> 1 (no count change)
 # ---------------------------------------------------------------------------
