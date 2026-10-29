@@ -1762,7 +1762,10 @@ class AdminConfig(BaseModel):
             t0 = time.perf_counter()
             try:
                 rx = re.compile(pat)
-            except (re.error, OverflowError) as e:
+            # RecursionError: sre's parser recurses once per open group, so
+            # '(' * 512 (within the pattern cap) escapes re.error — and
+            # pydantic turns only ValueError into a ValidationError.
+            except (re.error, OverflowError, RecursionError) as e:
                 raise ValueError(f"{where}: invalid regex: {e}")
             if guarding and (guard_slugs is None or slug in guard_slugs):
                 compile_spent += time.perf_counter() - t0

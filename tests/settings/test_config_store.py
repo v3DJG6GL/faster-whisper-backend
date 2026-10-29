@@ -480,6 +480,20 @@ def test_pipeline_callback_map_skips_pattern_validation():
     assert m.PIPELINE_RULES[0].type == "callback:map"
 
 
+def test_pipeline_deeply_nested_regex_is_invalid_not_a_crash(tmp_path):
+    # sre's parser recurses per open group: '(' * 512 (within the pattern
+    # cap) raised RecursionError out of model_validate — a bare 500 on a
+    # save, and load_overrides raised instead of ignoring the file at boot.
+    deep = [_regex("deep", pattern="(" * 512), _terminal()]
+    with pytest.raises(ValidationError, match="invalid regex"):
+        _ok(PIPELINE_RULES=deep)
+    p = tmp_path / "config.local.json"
+    p.write_text(json.dumps({"PIPELINE_RULES": deep}), encoding="utf-8")
+    assert cs.load_overrides(str(p)) == {}
+    with pytest.raises(RuntimeError, match="invalid regex"):
+        cs.load_factory_rules(str(p))
+
+
 def _ok_on_save(**fields):
     """Validate as a SAVE would (guard_regex context) — runs the out-of-process
     regex probe (backref + catastrophic-backtracking guard)."""
