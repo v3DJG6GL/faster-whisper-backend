@@ -1174,6 +1174,7 @@ def test_load_fails_instead_of_falling_back_when_the_hub_times_out(
     record = []
     _install_fake_llama(monkeypatch, record)
     monkeypatch.setattr(cfg, "LOCAL_FILES_ONLY", False, raising=False)
+    monkeypatch.setattr(translation, "_cached_gguf", lambda repo, quant: None)
 
     def stall(repo, quant, cb=None):
         raise httpx.ReadTimeout("hub stalled")
@@ -1193,6 +1194,24 @@ def test_load_fails_instead_of_falling_back_when_the_hub_times_out(
     with pytest.raises(translation.TranslationError, match="did not answer"):
         translation._load_blocking_inner("org/repo:Q4", "cpu", "chatml")
     assert record == []
+
+
+def test_load_uses_the_cached_gguf_when_the_hub_times_out(monkeypatch):
+    """model_info runs before hf_hub_download (which would serve the cache
+    on a HEAD timeout): a GGUF already on disk must still load."""
+    import httpx
+    record = []
+    _install_fake_llama(monkeypatch, record)
+    monkeypatch.setattr(cfg, "LOCAL_FILES_ONLY", False, raising=False)
+
+    def stall(repo, quant, cb=None):
+        raise httpx.ReadTimeout("hub stalled")
+    monkeypatch.setattr(translation, "_predownload_gguf", stall)
+    monkeypatch.setattr(translation, "_cached_gguf",
+                        lambda repo, quant: "/cache/m.Q4.gguf")
+    translation._load_blocking_inner("org/repo:Q4", "cpu", "chatml")
+    assert record[0][0] == "direct"
+    assert record[0][1] == "/cache/m.Q4.gguf"
 
 
 def test_load_n_ctx_follows_family(monkeypatch):

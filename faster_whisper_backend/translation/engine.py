@@ -557,14 +557,22 @@ def _load_blocking_inner(ref: str, device: str, family: str,
                 # The fallback below lists the same repo on the same hub
                 # with NO deadline (HfFileSystem.ls): it would pin the
                 # loader thread and the load lock forever — fail instead.
-                logger.error("[translate] pre-download of %s timed out: %s",
-                             ref, e)
-                raise TranslationError(
-                    f"the Hugging Face hub did not answer while fetching "
-                    f"translation model {ref} — try again later") from e
-            logger.warning(
-                "[translate] pre-download of %s failed (%s) — falling back "
-                "to llama.cpp's own downloader", ref, e)
+                # model_info runs before hf_hub_download (which would serve
+                # the cache on a HEAD timeout): load a copy already on disk
+                # with the no-network resolver before giving up.
+                local_path = _cached_gguf(repo, quant)
+                if not local_path:
+                    logger.error("[translate] pre-download of %s timed "
+                                 "out: %s", ref, e)
+                    raise TranslationError(
+                        f"the Hugging Face hub did not answer while fetching "
+                        f"translation model {ref} — try again later") from e
+                logger.warning("[translate] pre-download of %s timed out "
+                               "(%s) — loading the cached copy", ref, e)
+            else:
+                logger.warning(
+                    "[translate] pre-download of %s failed (%s) — falling "
+                    "back to llama.cpp's own downloader", ref, e)
     try:
         if local_path:
             return llama_cpp.Llama(
