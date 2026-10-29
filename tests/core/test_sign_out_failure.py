@@ -72,7 +72,7 @@ def _sign_out(logout: list, clicks: int = 1, gap_ms: int = 0,
              f"const ROTATE = {json.dumps(rotate)};\n")
     out = subprocess.run(
         ["node", "-"], input=given + _CHROME_STUB + _FETCH + js + _DRIVE,
-        capture_output=True, text=True, timeout=30, check=True)
+        capture_output=True, text=True, encoding="utf-8", timeout=30, check=True)
     return json.loads(out.stdout)
 
 

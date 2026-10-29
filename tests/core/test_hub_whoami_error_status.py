@@ -77,7 +77,7 @@ def _run(first: int, then: int) -> dict:
     given = f"const STATUSES = {json.dumps([first, then])};\n"
     out = subprocess.run(
         ["node", "-"], input=given + _STUB + _hub_script() + _DRIVE,
-        capture_output=True, text=True, timeout=30, check=True)
+        capture_output=True, text=True, encoding="utf-8", timeout=30, check=True)
     return json.loads(out.stdout)
 
 

@@ -87,7 +87,7 @@ def _editor_fns() -> str:
 
 def _run(drive: str) -> dict:
     out = subprocess.run(["node", "-"], input=_DOM_STUB + _editor_fns() + drive,
-                         capture_output=True, text=True, timeout=30, check=True)
+                         capture_output=True, text=True, encoding="utf-8", timeout=30, check=True)
     return json.loads(out.stdout)
 
 

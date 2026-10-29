@@ -83,7 +83,7 @@ def _run_chrome(statuses: list) -> dict:
     given = f"const STATUSES = {json.dumps(statuses)};\n"
     out = subprocess.run(
         ["node", "-"], input=given + _CHROME_STUB + _CLOCK + js + _CHROME_DRIVE,
-        capture_output=True, text=True, timeout=30, check=True)
+        capture_output=True, text=True, encoding="utf-8", timeout=30, check=True)
     return json.loads(out.stdout)
 
 
@@ -164,7 +164,7 @@ def test_hub_retries_until_whoami_answers_on_load(first):
     given = f"const STATUSES = {json.dumps([first, 200])};\n"
     out = subprocess.run(
         ["node", "-"], input=given + _HUB_STUB + _CLOCK + _hub_script() + _HUB_DRIVE,
-        capture_output=True, text=True, timeout=30, check=True)
+        capture_output=True, text=True, encoding="utf-8", timeout=30, check=True)
     assert json.loads(out.stdout) == {
         "body_hidden": False, "tile_on": True, "delays": [2000], "calls": 2,
     }
@@ -182,7 +182,7 @@ def _run_hub(statuses: list, extra: str, drive: str) -> dict:
     out = subprocess.run(
         ["node", "-"],
         input=given + stub + _CLOCK + extra + _hub_script() + drive,
-        capture_output=True, text=True, timeout=30, check=True)
+        capture_output=True, text=True, encoding="utf-8", timeout=30, check=True)
     return json.loads(out.stdout)
 
 
@@ -239,5 +239,5 @@ def test_chrome_announces_a_fresh_whoami():
         ["node", "-"],
         input="const STATUSES = [200];\n" + _CHROME_STUB + _CLOCK + events
         + js + drive,
-        capture_output=True, text=True, timeout=30, check=True)
+        capture_output=True, text=True, encoding="utf-8", timeout=30, check=True)
     assert json.loads(out.stdout)["events"] == ["whisper:whoami"]

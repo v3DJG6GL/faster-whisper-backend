@@ -54,7 +54,7 @@ def _run(status: int, cached) -> dict:
     given = f"const STATUS = {status}, CACHED = {json.dumps(cached)};\n"
     out = subprocess.run(
         ["node", "-"], input=given + _STUB + js + _DRIVE,
-        capture_output=True, text=True, timeout=30, check=True)
+        capture_output=True, text=True, encoding="utf-8", timeout=30, check=True)
     return json.loads(out.stdout)
 
 

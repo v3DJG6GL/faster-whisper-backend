@@ -272,7 +272,10 @@ def test_converted_models_dir_tilde_is_expanded(monkeypatch, tmp_path):
     dotenv does not expand it) resolves under the home dir like DOWNLOAD_ROOT,
     not to a relative literal "~" dir under the cwd."""
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))  # expanduser on Windows
     monkeypatch.setattr(tx_models.cfg, "CONVERTED_MODELS_DIR", "~/models/ct2",
                         raising=False)
     out = tx_models._converted_dir_for("org/ft", "float16")
-    assert out == os.path.join(str(tmp_path), "models", "ct2", "org__ft", "float16")
+    # normpath: on Windows expanduser("~/x") keeps the "/".
+    assert os.path.normpath(out) == os.path.join(
+        str(tmp_path), "models", "ct2", "org__ft", "float16")

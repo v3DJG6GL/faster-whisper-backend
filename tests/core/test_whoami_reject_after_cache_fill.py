@@ -39,7 +39,7 @@ def test_rejected_retry_reapplies_a_cache_filled_meanwhile():
         ["node", "-"],
         input=given + _CHROME_STUB + _CLOCK + _FILL_CACHE_ON_RETRY + js
         + _CHROME_DRIVE,
-        capture_output=True, text=True, timeout=30, check=True)
+        capture_output=True, text=True, encoding="utf-8", timeout=30, check=True)
     res = json.loads(out.stdout)
     assert (res["admin"], res["calls"], res["note_left"], res["gate"]) == (
         True, 2, False, 0)
