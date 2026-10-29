@@ -403,6 +403,20 @@ def test_log_file_rejects_unc_and_traversal():
     _bad(LOG_FILE="logs/../../x")               # windows-style .. caught too
 
 
+@pytest.mark.parametrize("field", [
+    "LOG_FILE", "CAPTURES_DIR", "CAPTURES_DB", "DOWNLOAD_ROOT",
+    "CONVERTED_MODELS_DIR", "URL_MEDIA_DIR", "API_KEYS_DB", "SESSIONS_DB",
+    "REPORTS_DB", "RECENT_TRANSCRIPTIONS_DB", "JOBS_DB",
+    "STATS_SYSTEM_METRICS_DB", "USAGE_DB", "CLIENT_SETTINGS_DB"])
+def test_path_settings_refuse_an_embedded_nul(field):
+    """os / sqlite path calls raise ValueError on a NUL, which the OSError
+    fallbacks miss: a saved LOG_FILE with one crash-looped the next boot in
+    log_setup.install(), so the save refuses it."""
+    _ok(**{field: "data/x.log"})
+    with pytest.raises(ValidationError, match="NUL character"):
+        _ok(**{field: "data/x\x00.log"})
+
+
 # ---------------------------------------------------------------------------
 # _cap_list (ALLOWED_MODELS / PRELOAD_MODELS)
 # ---------------------------------------------------------------------------

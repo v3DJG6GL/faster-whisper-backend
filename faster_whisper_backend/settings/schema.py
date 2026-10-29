@@ -1661,6 +1661,20 @@ class AdminConfig(BaseModel):
             raise ValueError("'..' segments are not allowed")
         return v
 
+    @field_validator("LOG_FILE", "CAPTURES_DIR", "CAPTURES_DB", "DOWNLOAD_ROOT",
+                     "CONVERTED_MODELS_DIR", "URL_MEDIA_DIR", "API_KEYS_DB",
+                     "SESSIONS_DB", "REPORTS_DB", "RECENT_TRANSCRIPTIONS_DB",
+                     "JOBS_DB", "STATS_SYSTEM_METRICS_DB", "USAGE_DB",
+                     "CLIENT_SETTINGS_DB")
+    @classmethod
+    def _no_nul_in_path(cls, v: str | None) -> str | None:
+        # Every os / sqlite path call raises ValueError (not OSError) on a NUL,
+        # past the OSError fallbacks: a saved LOG_FILE with one crash-looped
+        # the next boot in log_setup.install().
+        if v is not None and "\x00" in v:
+            raise ValueError("a NUL character is not allowed in a path")
+        return v
+
     @field_validator("SERVER_HOST")
     @classmethod
     def _safe_host(cls, v: str | None) -> str | None:
