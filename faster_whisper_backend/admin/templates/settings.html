@@ -425,7 +425,8 @@
     font-size: 1rem; line-height: 1; padding: 0.1rem 0.2rem; background: none; border: 0; }
   .rule-rail .drag-handle:hover { color: var(--fg); }
   .rule-rail .drag-handle:active { cursor: grabbing; }
-  .rule-row.locked .rule-rail .drag-handle { cursor: not-allowed; opacity: 0.4; }
+  .rule-row.locked .rule-rail .drag-handle,
+  .rule-row.locked .rule-editor .rl-grip { cursor: not-allowed; opacity: 0.4; }
   .rule-rail .ordinal { font-family: var(--font-mono); font-weight: 700; color: var(--bold);
     font-size: var(--fs-sm); min-width: 1.6rem; height: 1.6rem; display: flex;
     align-items: center; justify-content: center; background: var(--bg);
@@ -3885,6 +3886,12 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
       // just the drag grip (a locked rule must not move by any affordance).
       if (upBtn) upBtn.disabled = true;
       if (downBtn) downBtn.disabled = true;
+      // Same for a regex-list rule's entries: their ↑/↓ are buttons (disabled
+      // above), but the shared editor's .rl-grip drag would still reorder them.
+      body.querySelectorAll('.rl-grip').forEach(grip => {
+        grip.draggable = false;
+        grip.title = 'locked — unlock the rule to reorder';
+      });
     }
     _applyLockState();
     return row;

@@ -707,3 +707,39 @@ fire(drag, 'dragstart', { dataTransfer: dt }).then(() => {
     types, src_idx = out
     assert types and not [t for t in types if t.lower().startswith("text")]
     assert src_idx == 3
+
+
+@needs_node
+def test_locked_rule_freezes_its_regex_entry_grips(client):
+    """A locked rule disabled the entries' ↑/↓ buttons but left the shared
+    editor's .rl-grip draggable, so a drag still reordered the entries of a
+    rule shown read-only and the next Save wrote the new order."""
+    lock = _block(_html(client, "/settings/pipeline"),
+                  "    function _applyLockState() {", "\n    }\n")
+    out = _node(_FAKE_DOM + """
+El.prototype.querySelectorAll = function (sel) {
+  const want = sel.split(',').map(s => s.trim());
+  const hit = (n) => want.some(s => s.startsWith('.')
+    ? n.classList.contains(s.slice(1)) : n.tagName === s.toUpperCase());
+  const out = [];
+  (function walk(n) { n.children.forEach(c => { if (hit(c)) out.push(c); walk(c); }); })(this);
+  return out;
+};
+const rule = { type: 'regex-list', locked: true };
+const body = document.createElement('div');
+const headLine1 = document.createElement('div');
+const headLine2 = document.createElement('div');
+const drag = document.createElement('span');
+const upBtn = null, downBtn = null, _langPicker = null;
+const grips = [0, 1].map(() => {
+  const entry = document.createElement('div');
+  const grip = document.createElement('span');
+  grip.className = 'rl-grip'; grip.draggable = true;
+  entry.appendChild(grip); body.appendChild(entry);
+  return grip;
+});
+""" + lock + """
+_applyLockState();
+console.log(JSON.stringify(grips.map(g => g.draggable)));
+""")
+    assert out == [False, False]
