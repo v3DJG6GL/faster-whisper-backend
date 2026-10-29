@@ -657,11 +657,9 @@ def _evict_to_cap(conn: sqlite3.Connection) -> bool:
             excess -= evicted_status
             evicted += evicted_status
 
+    # _drop_oldest_by_bytes drops only rows that free bytes, so
+    # bytes_freed > 0 exactly when the byte pass dropped a row.
     bytes_freed = 0
-    # Set when the byte pass ran at all: a row whose audio is already gone
-    # frees 0 bytes yet is still dropped. Over-reporting only costs the
-    # proposer one cache miss.
-    byte_pass = False
     if mb_cap >= 1:
         # Walk every row to sum audio bytes — there's no cached size
         # column, so this is O(N) getsize calls per insert. Hot-path
@@ -670,7 +668,6 @@ def _evict_to_cap(conn: sqlite3.Connection) -> bool:
         byte_cap = mb_cap * 1024 * 1024
         total_bytes = _total_audio_bytes(conn)
         if total_bytes > byte_cap:
-            byte_pass = True
             for status in _EVICTION_ORDER:
                 if total_bytes <= byte_cap:
                     break
@@ -686,7 +683,7 @@ def _evict_to_cap(conn: sqlite3.Connection) -> bool:
             " rows_dropped=%d, bytes_freed=%d",
             row_cap, mb_cap, evicted, bytes_freed,
         )
-    return bool(evicted or byte_pass)
+    return bool(evicted or bytes_freed)
 
 
 def _total_audio_bytes(conn: sqlite3.Connection) -> int:
@@ -765,7 +762,11 @@ def _drop_oldest_by_bytes(
 ) -> int:
     """Delete oldest rows of a given status until `bytes_needed` bytes
     are freed. Returns bytes actually freed. Group members are
-    excluded — see _drop_oldest_with_status for the rationale."""
+    excluded — see _drop_oldest_with_status for the rationale. A row
+    whose audio is already gone frees nothing and is kept: dropping it
+    cannot help the byte cap, and the "audio_missing" pass would
+    otherwise wipe every such row (reconcile_on_startup keeps them for
+    the admin); the row-count pass still evicts them in order."""
     if bytes_needed <= 0:
         return 0
     rows = conn.execute(
@@ -786,20 +787,21 @@ def _drop_oldest_by_bytes(
         except (OSError, ValueError):
             sz = 0
             abs_p = ""
-        drop_ids.append(r["id"])
-        if abs_p:
-            drop_paths.append(abs_p)
+        abs_t = ""
         trimmed = r["audio_trimmed_relpath"]
         if trimmed:
             try:
                 abs_t = abs_audio_path(trimmed)
-                drop_paths.append(abs_t)
                 try:
                     sz += os.path.getsize(abs_t)
                 except OSError:
                     pass
             except ValueError:
                 pass
+        if sz <= 0:
+            continue
+        drop_ids.append(r["id"])
+        drop_paths.extend(p for p in (abs_p, abs_t) if p)
         freed += sz
     if drop_ids:
         _delete_ids(conn, drop_ids)

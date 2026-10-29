@@ -753,6 +753,42 @@ def test_evict_deletes_more_ids_than_one_in_list_chunk(
     assert cs.count() == 1
 
 
+def test_byte_pass_keeps_rows_whose_audio_is_already_gone(
+        captures_store_db, monkeypatch):
+    """A row with no audio frees 0 bytes, yet the byte pass dropped it and
+    kept going, so the "audio_missing" pass wiped every such row (which
+    reconcile_on_startup keeps for the admin) for nothing gained."""
+    cs = captures_store_db
+    from faster_whisper_backend.settings import config
+    conn = cs._require_conn()
+    missing = [f"gone{i:011d}" for i in range(10)]
+    conn.executemany(
+        "INSERT INTO captures (id, created_ts, model, audio_relpath,"
+        " audio_format, raw_text, final_text, words, segments, corrections,"
+        " status, user_id) VALUES (?,1.0,'m',?,'wav','r','f','[]','[]',"
+        "'[]','audio_missing','bob')",
+        [(i, cs._relpath_for(i, ".wav")) for i in missing])
+    fresh = [f"new{i:012d}" for i in range(3)]
+    for n, cid in enumerate(fresh):
+        rel = cs._relpath_for(cid, ".wav")
+        path = cs.abs_audio_path(rel)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "wb") as f:
+            f.write(b"\x00" * (1024 * 1024))
+        conn.execute(
+            "INSERT INTO captures (id, created_ts, model, audio_relpath,"
+            " audio_format, raw_text, final_text, words, segments,"
+            " corrections, status, user_id) VALUES (?,?,'m',?,'wav','r','f',"
+            "'[]','[]','[]','new','bob')", (cid, 2.0 + n, rel))
+    monkeypatch.setattr(config, "CAPTURES_MAX", 5000, raising=False)
+    monkeypatch.setattr(config, "CAPTURES_MAX_MB", 2, raising=False)
+    with cs._lock:
+        assert cs._evict_to_cap(conn) is True
+    assert all(cs.get_capture(i) is not None for i in missing)
+    assert cs.get_capture(fresh[0]) is None
+    assert cs.count() == 12
+
+
 def test_bulk_update_status_chunks_past_the_bind_variable_limit(
         captures_store_db):
     """BulkStatusIn admits 1000 ids; one IN-list of them (plus the two other
