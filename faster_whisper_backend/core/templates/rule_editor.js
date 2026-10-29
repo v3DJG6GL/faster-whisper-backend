@@ -343,10 +343,14 @@ function _makeEntryRow(rule, entry, commitData, onEnter) {
   // is just "reinsert, then _readEntries + renumber + commit" — exactly what a
   // drop does. The NEIGHBOUR is moved, not this row: reinserting the row would
   // blur the ↑/↓ button the keyboard user just pressed, dropping focus to
-  // <body> after one step. insertBefore(x, null) appends (last).
+  // <body> after one step. insertBefore(x, null) appends (last). A move onto an
+  // end-stop disables the pressed button, which drops focus to <body> too —
+  // hand focus to the row's other arrow then.
   function _rlMove(delta) {
     const parent = row.parentNode;
     if (!parent) return;
+    const pressed = delta < 0 ? upBtn : dnBtn;
+    const hadFocus = document.activeElement === pressed;
     if (delta < 0) {
       const prev = row.previousElementSibling;
       if (prev) parent.insertBefore(prev, row.nextElementSibling);
@@ -356,6 +360,7 @@ function _makeEntryRow(rule, entry, commitData, onEnter) {
     }
     rule.entries = _readEntries(parent);
     _renumberEntries(parent);
+    if (hadFocus && pressed.disabled) (pressed === upBtn ? dnBtn : upBtn).focus();
     commitData();
   }
   const stepper = document.createElement('div');
