@@ -259,7 +259,10 @@
             .then(function(st){
               if (st === 401 || st === 403) {
                 denied = true;
-                btn.hidden = true;
+                // Drop .allowed too: nav.css shows the button through
+                // `.hdr-activity.allowed` / `.page-link.allowed`, author
+                // display rules that out-rank [hidden].
+                btn.hidden = true; btn.classList.remove('allowed');
                 closePop();
                 return;
               }
@@ -327,7 +330,9 @@
       // `allowed` unchanged syncAllowed would not reopen on its own.
       if (denied) {
         denied = false;
-        if (allowed) { btn.hidden = false; openStream(); }
+        if (allowed) {
+          btn.hidden = false; btn.classList.add('allowed'); openStream();
+        }
       }
       syncAllowed();
     }, 0);
