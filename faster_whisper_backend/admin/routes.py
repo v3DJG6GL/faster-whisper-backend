@@ -735,6 +735,10 @@ _TEST_PIPELINE_PROBE_TIMEOUT = 2.0
 # Rounds after a kill (each names one culprit); units still unprobed after
 # that are reported as not run rather than risked in-process.
 _TEST_PIPELINE_PROBE_ROUNDS = 3
+# Wall time every walk of one dry run may spend in all, killed or not: each
+# text-changing map or callback before a pattern forces a walk of the rest of
+# the list, so walks that each finish would otherwise add up to minutes.
+_TEST_PIPELINE_PROBE_WALL = 15.0
 # Units: ["mark", rule] prints the sha1 of the text that rule is handed;
 # ["sub", rule, pattern, replacement] is a regex-list entry, applied exactly as
 # the dry run applies it (output bound counted first, a failing entry leaves
@@ -802,11 +806,14 @@ def _probe_chain(text: str, units: list[list[Any]],
     slow on; on that input it is reported slow and not timed again, on any
     other it is timed afresh.
     `budget`: its "left" holds the seconds killed rounds may still spend,
-    shared across walks (a round that finishes costs nothing). A round is cut
-    at what is left; a cut round's kill blames no unit (the walk stops there,
-    unprobed), and once it is gone the walk stops where it got to."""
+    shared across walks (a round that finishes costs nothing); its optional
+    "wall" holds the seconds every round may still spend, killed or not. A
+    round is cut at what is left of either; a cut round's kill blames no unit
+    (the walk stops there, unprobed), and once one is gone the walk stops
+    where it got to."""
     import subprocess
     import sys
+    import time
 
     def _marks(out: str | bytes | None) -> dict[int, str]:
         if isinstance(out, bytes):
@@ -831,9 +838,10 @@ def _probe_chain(text: str, units: list[list[Any]],
     for _ in range(_TEST_PIPELINE_PROBE_ROUNDS):
         timeout = _TEST_PIPELINE_PROBE_TIMEOUT
         if budget is not None:
-            timeout = min(timeout, budget["left"])
+            timeout = min(timeout, budget["left"], budget.get("wall", timeout))
             if timeout <= 0:
                 break
+        t0 = time.monotonic()
         try:
             p = subprocess.run(
                 [sys.executable, "-I", "-c", _PROBE_SRC],
@@ -843,10 +851,14 @@ def _probe_chain(text: str, units: list[list[Any]],
                                   pl_engine._POSTPROCESS_MAX_CHARS]),
                 capture_output=True, text=True,
                 timeout=timeout)
+            if budget is not None and "wall" in budget:
+                budget["wall"] -= time.monotonic() - t0
             return _done(_marks(p.stdout), None)
         except subprocess.TimeoutExpired as exc:
             if budget is not None:
                 budget["left"] -= timeout
+                if "wall" in budget:
+                    budget["wall"] -= time.monotonic() - t0
             idx = regex_guard._last_index(getattr(exc, "stderr", None))
             if not isinstance(idx, int) or not 0 <= idx < len(units):
                 return _done(_marks(getattr(exc, "stdout", None)), 0)
@@ -913,6 +925,13 @@ async def test_pipeline(payload: dict[str, Any]) -> JSONResponse:
         f"{_TEST_PIPELINE_PROBE_TIMEOUT:g} s in a killable probe (catastrophic "
         "backtracking risk) — not executed here: sre holds the GIL for the "
         "whole match, so a dry-run thread would freeze the server"
+    )
+
+    _UNPROBED_MSG = (
+        "not executed here: this dry run's killable-probe time ran out before "
+        "this pattern was timed on the text this step is handed (a long rule "
+        "list or earlier slow patterns), so it may be harmless — test a "
+        "shorter list to see this step"
     )
 
     def _fixed_count_msg(pat: str) -> str | None:
@@ -1005,19 +1024,20 @@ async def test_pipeline(payload: dict[str, Any]) -> JSONResponse:
                 out.append((ei, pat, rep))
         return out
 
-    # Per rule: (sha1 of the input the probe walked it on, the entry indices
-    # it found slow or never reached). A rule runs in-process only when its
-    # real input has that digest; otherwise the walk is redone from that rule
-    # on the real text (an earlier callback or map changed it in a way the
-    # child cannot replay).
-    cleared: dict[int, tuple[str, set[int]]] = {}
+    # Per rule: (sha1 of the input the probe walked it on, entry index -> the
+    # not_run message of each entry it found slow or never reached). A rule
+    # runs in-process only when its real input has that digest; otherwise the
+    # walk is redone from that rule on the real text (an earlier callback or
+    # map changed it in a way the child cannot replay).
+    cleared: dict[int, tuple[str, dict[int, str]]] = {}
     # "left": the request's time for killed probe rounds across every walk —
-    # rounds x timeout, the bound one walk always had (a walk that times
-    # nothing out costs none of it); whatever is unprobed once it is spent is
-    # reported as not run.
+    # rounds x timeout (a walk that times nothing out costs none of it).
+    # "wall": the request's time for every walk, killed or not. Whatever is
+    # unprobed once either is spent is reported as not run.
     probe: dict[str, Any] = {
         "on": True, "exhausted": False,
-        "left": _TEST_PIPELINE_PROBE_TIMEOUT * _TEST_PIPELINE_PROBE_ROUNDS}
+        "left": _TEST_PIPELINE_PROBE_TIMEOUT * _TEST_PIPELINE_PROBE_ROUNDS,
+        "wall": _TEST_PIPELINE_PROBE_WALL}
     # (rule, entry) -> the digests of the rule's input an earlier walk found
     # the unit slow on: a later walk handing it that input skips it (not run)
     # instead of timing it out again; on other text it is timed afresh.
@@ -1047,19 +1067,21 @@ async def test_pipeline(payload: dict[str, Any]) -> JSONResponse:
             return
         marks, slow, stop = res
         for ri, h in marks.items():
-            cleared[ri] = (h, set())
+            cleared[ri] = (h, {})
         for ui, (ri, ei) in owner.items():
             if ui in slow and ri in marks:
                 known_slow.setdefault((ri, ei), set()).add(marks[ri])
-            if ri in cleared and (ui in slow or (stop is not None and ui >= stop)):
-                cleared[ri][1].add(ei)
-        if stop is not None or probe["left"] <= 0:
+            if ri in cleared and ui in slow:
+                cleared[ri][1][ei] = _SLOW_PROBE_MSG
+            elif ri in cleared and stop is not None and ui >= stop:
+                cleared[ri][1][ei] = _UNPROBED_MSG
+        if stop is not None or probe["left"] <= 0 or probe["wall"] <= 0:
             probe["exhausted"] = True
 
-    def _run_rule(text: str, rule: dict, slow: set[int]) -> dict[str, Any]:
+    def _run_rule(text: str, rule: dict, held: dict[int, str]) -> dict[str, Any]:
         """Apply one rule to `text`. Returns the step dict for the response.
-        `slow`: the entry indices (-1 = the rule's own pattern) the killable
-        probe did not clear on this very text."""
+        `held`: entry index (-1 = the rule's own pattern) -> why the killable
+        probe did not clear it on this very text (its not_run message)."""
         # Dry-run contract is parity with the pipeline engine — use its replacer
         # factories rather than a second copy that could drift.
         rtype = rule.get("type", "?")
@@ -1105,8 +1127,8 @@ async def test_pipeline(payload: dict[str, Any]) -> JSONResponse:
                             bad = fc_msg or _NESTED_REP_MSG
                             lout["not_run"] = True
                             continue
-                        if ei in slow:
-                            bad = _SLOW_PROBE_MSG
+                        if ei in held:
+                            bad = held[ei]
                             lout["not_run"] = True
                             continue
                         try:
@@ -1206,8 +1228,8 @@ async def test_pipeline(payload: dict[str, Any]) -> JSONResponse:
                 if regex_guard._nested_repetition(pattern):
                     return {**common, "after": text, "error": _NESTED_REP_MSG,
                             "not_run": True}
-                if -1 in slow:
-                    return {**common, "after": text, "error": _SLOW_PROBE_MSG,
+                if -1 in held:
+                    return {**common, "after": text, "error": held[-1],
                             "not_run": True}
                 cre = re.compile(pattern)
                 if rtype == "callback:lowercase-wordlist":
@@ -1304,7 +1326,7 @@ async def test_pipeline(payload: dict[str, Any]) -> JSONResponse:
             continue
         # Every match this rule runs in-process must have been timed by the
         # killable probe on exactly this text, or it is not run.
-        slow: set[int] = set()
+        held: dict[int, str] = {}
         items = _probe_items(rule)
         if items and probe["on"]:
             h = _text_sha(text)
@@ -1315,11 +1337,11 @@ async def test_pipeline(payload: dict[str, Any]) -> JSONResponse:
                 deadline += time.monotonic() - t0
             if probe["on"]:
                 got = cleared.get(idx)
-                slow = (got[1] if got is not None and got[0] == h
-                        else {ei for ei, _p, _r in items})
+                held = (got[1] if got is not None and got[0] == h
+                        else {ei: _UNPROBED_MSG for ei, _p, _r in items})
         # _run_rule blocks for up to 2 s on its guard thread's join — run it on
         # a worker so one pathological pattern cannot stall unrelated requests.
-        step = await asyncio.to_thread(_run_rule, text, rule, slow)
+        step = await asyncio.to_thread(_run_rule, text, rule, held)
         step["ordinal"] = idx + 1
         steps.append(step)
         text = step["after"]

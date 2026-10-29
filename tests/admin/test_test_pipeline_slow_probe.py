@@ -5,6 +5,7 @@ repetition, a tiny fixed count) backtracks 2**N times at every position: the
 whole server would freeze, not one core."""
 
 import subprocess
+import time
 
 from faster_whisper_backend.admin import routes as admin_routes
 
@@ -278,3 +279,36 @@ def test_a_round_cut_short_by_the_budget_blames_no_unit(monkeypatch):
         "aaaa", _units(["a", "(?:|){24}(?!)"]), None, budget)
     assert slow == set()
     assert stop == 2
+
+
+def test_probe_walks_that_each_finish_still_stop_at_the_request_wall_time(client, monkeypatch):
+    # Every upper rule changes the text, so each pattern rule walks again and
+    # each walk finishes: they must still stop at the request's probe wall
+    # time, and what they never reached is reported as unprobed, not as slow.
+    monkeypatch.setattr(admin_routes, "_TEST_PIPELINE_PROBE_TIMEOUT", 0.2)
+    monkeypatch.setattr(admin_routes, "_TEST_PIPELINE_PROBE_WALL", 0.3)
+    spent = []
+    real = subprocess.run
+
+    def _run(*a, **k):
+        t0 = time.monotonic()
+        try:
+            return real(*a, **k)
+        finally:
+            spent.append(time.monotonic() - t0)
+    monkeypatch.setattr(subprocess, "run", _run)
+    words = ["w%d" % n for n in range(60)]
+    rules = [{"name": w, "type": "callback:upper", "enabled": True,
+              "pattern": r"\b%s\b" % w} for w in words]
+    r = client.post("/settings/test-pipeline",
+                    json={"sample": " ".join(words), "rules": rules})
+    assert r.status_code == 200, r.text
+    steps = r.json()["steps"]
+    held = [s for s in steps if s.get("not_run")]
+    assert held and held[-1]["ordinal"] == 60
+    assert all("ran out" in s["error"] and "did not finish" not in s["error"]
+               for s in held)
+    assert steps[0]["after"].startswith("W0 ")
+    # One walk past the wall at most, and every walk under the round timeout.
+    assert sum(spent) <= 0.3 + 0.2 + 0.05 * len(spent)
+    assert len(spent) < 60
