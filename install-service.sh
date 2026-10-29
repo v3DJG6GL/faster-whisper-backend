@@ -7,6 +7,7 @@
 #   ./install-service.sh --gpu        # also install NVIDIA CUDA wheels
 #   ./install-service.sh --full       # also install the heavy extras
 #   ./install-service.sh --gpu --full # (= the Docker :latest-gpu-full image)
+#   PYTHON=/path/to/python3.14 ./install-service.sh  # build the venv on that one
 #
 # --full mirrors the Docker "-full" tags (Dockerfile / Dockerfile.gpu with
 # INCLUDE_EXTRAS=1): speaker diarization (pyannote) + background-music
@@ -52,20 +53,37 @@ as_user() { if [ "$RUN_USER" = root ]; then "$@"; else sudo -u "$RUN_USER" "$@";
 VENV="$REPO_DIR/venv"
 PY="$VENV/bin/python"
 
+# The interpreter to build a new venv on: $PYTHON when set, else python3.14,
+# else python3. CI tests 3.14 only (the images' interpreter), so older ones are
+# refused; distros whose python3 is older keep it (apt needs it) and ship 3.14
+# beside it as python3.14.
+find_python() {
+  local cand
+  if [ -n "${PYTHON:-}" ]; then set -- "$PYTHON"; else set -- python3.14 python3; fi
+  for cand in "$@"; do
+    if command -v "$cand" >/dev/null 2>&1 &&
+       "$cand" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 14) else 1)' 2>/dev/null; then
+      command -v "$cand"
+      return 0
+    fi
+  done
+  return 1
+}
+
 if [ ! -x "$PY" ]; then
-  if ! command -v python3 >/dev/null 2>&1; then
-    echo "python3 not found on PATH; install Python 3.14+ and re-run." >&2
+  # An existing venv is kept whatever it runs.
+  if ! SYS_PY="$(find_python)"; then
+    if [ -n "${PYTHON:-}" ]; then
+      echo "PYTHON=$PYTHON is not a Python 3.14+ interpreter; point it at one and re-run." >&2
+    else
+      echo "No Python 3.14+ found as python3.14 or python3 (python3: $(python3 --version 2>&1 || true))." >&2
+      echo "Install Python 3.14 beside the system python3, or re-run with PYTHON=/path/to/python3.14 $0" >&2
+    fi
     exit 1
   fi
-  # CI tests 3.14 only (the images' interpreter); refuse older ones before
-  # building a venv on them. An existing venv is kept whatever it runs.
-  if ! python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 14) else 1)'; then
-    echo "python3 is older than 3.14 ($(python3 --version 2>&1)); install Python 3.14+ as python3 and re-run." >&2
-    exit 1
-  fi
-  echo "Creating venv at $VENV ..."
+  echo "Creating venv at $VENV with $SYS_PY ..."
   # Create the venv as the invoking user so they own it.
-  as_user python3 -m venv "$VENV"
+  as_user "$SYS_PY" -m venv "$VENV"
 fi
 
 # Stop a running service before pip touches the venv — otherwise wheels whose

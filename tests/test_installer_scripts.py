@@ -456,6 +456,57 @@ def test_installers_require_python_314():
     assert "Python 3.10" not in ps1
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="bash installer")
+def test_linux_installer_finds_a_python314_beside_an_older_python3(tmp_path):
+    # Debian 13 / Ubuntu 24.04 keep python3 older than 3.14 (apt needs it) and
+    # ship 3.14 beside it as python3.14: a fresh clone must build its venv on
+    # that, or on PYTHON=, never tell the operator to replace python3. Run the
+    # script's own venv block against stub interpreters only.
+    sh = _read("install-service.sh")
+    block = sh[sh.index('VENV="$REPO_DIR/venv"'):sh.index("\n# Stop a running service")]
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+
+    def stub(name, version):
+        ok = 0 if version >= (3, 14) else 1
+        path = bindir / name
+        path.write_text(f'#!/bin/sh\n[ "$1" = --version ] && echo "Python {version[0]}.{version[1]}.0"\n'
+                        f"exit {ok}\n", encoding="utf-8")
+        path.chmod(0o755)
+        return path
+
+    def run(**env):
+        out = subprocess.run(
+            [shutil.which("bash"), "-c",
+             f'set -euo pipefail\nas_user() {{ echo "ran: $*"; }}\n{block}'],
+            capture_output=True, text=True, timeout=60,
+            env={"PATH": str(bindir), "REPO_DIR": str(tmp_path), **env})
+        return out.returncode, out.stdout, out.stderr
+    stub("python3", (3, 13))
+    py314 = stub("python3.14", (3, 14))
+    rc, stdout, stderr = run()
+    assert rc == 0, stderr
+    assert f"ran: {py314} -m venv {tmp_path}/venv" in stdout
+    # An explicit PYTHON wins over every name on PATH, and is checked too.
+    own = stub("own-python", (3, 14))
+    rc, stdout, _ = run(PYTHON=str(own))
+    assert f"ran: {own} -m venv" in stdout
+    rc, stdout, stderr = run(PYTHON=str(bindir / "python3"))
+    assert rc == 1 and "ran:" not in stdout
+    assert f"PYTHON={bindir}/python3 is not a Python 3.14+" in stderr
+    # Only the older python3: refused, without the replace-python3 advice.
+    py314.unlink()
+    rc, stdout, stderr = run()
+    assert rc == 1 and "ran:" not in stdout
+    assert "Python 3.13.0" in stderr and "beside the system python3" in stderr
+    assert "3.14+ as python3" not in stderr
+    # A python3 that is 3.14+ itself still builds the venv.
+    stub("python3", (3, 14))
+    rc, stdout, stderr = run()
+    assert rc == 0, stderr
+    assert f"ran: {bindir}/python3 -m venv" in stdout
+
+
 def test_installers_warn_about_legacy_repo_root_state_before_the_start():
     # Since the data-dir move the service reads data/db/ and
     # data/config.local.json; stores and config left in the repo root are
