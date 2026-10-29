@@ -80,7 +80,7 @@ class _ContextOverflow(TranslationError):
 
 # Serializes actual llama.cpp inference across threads — llama.cpp contexts
 # are NOT thread-safe (same hazard class as diarization._infer_mutex).
-_infer_mutex = threading.Lock()
+_infer_mutex = threading.RLock()   # re-entered: _run_completion → _complete
 # Async front gate for the mutex above: waiters queue HERE, on the event
 # loop, instead of each pinning a default-executor thread while _infer_mutex
 # is held — N queued translations would otherwise occupy N pool threads
@@ -1500,9 +1500,9 @@ async def _run_completion(llm, family: str, text: str, source_code: str,
     loop = asyncio.get_running_loop()
     # Count this completion against the model until its thread is done (see
     # _decoding). Whoever takes ``claimed`` first settles the count: the
-    # thread when it starts, or this coroutine when the job was cancelled
-    # (or the submit failed) before the thread ever ran — that thread then
-    # skips the decode instead of running it on a model already evicted.
+    # thread when its decode starts, or this coroutine when the job was
+    # cancelled (or the submit failed) before that — that thread then skips
+    # the decode instead of running it on a model already evicted.
     key, claimed = id(llm), threading.Lock()
 
     def _settle() -> None:
@@ -1514,12 +1514,16 @@ async def _run_completion(llm, family: str, text: str, source_code: str,
                 _decoding.pop(key, None)
 
     def _decode() -> str:
-        if not claimed.acquire(blocking=False):
-            return ""
-        try:
-            return _complete(llm, family, prompt, max_tokens)
-        finally:
-            _settle()
+        # Claimed only once _infer_mutex is ours: a job cancelled while its
+        # thread still waits behind another decode skips its own, instead
+        # of queueing a full doomed decode ahead of every later request.
+        with _infer_mutex:
+            if not claimed.acquire(blocking=False):
+                return ""
+            try:
+                return _complete(llm, family, prompt, max_tokens)
+            finally:
+                _settle()
 
     async with _infer_gate:
         with _decoding_mutex:

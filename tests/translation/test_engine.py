@@ -2880,6 +2880,44 @@ def test_a_completion_cancelled_before_its_thread_starts_never_decodes(
     assert translation._decoding == {}
 
 
+def test_a_completion_cancelled_while_queued_on_the_mutex_never_decodes(
+        monkeypatch):
+    """A job cancelled while its thread waits for _infer_mutex behind an
+    orphaned decode skips its own decode: it used to claim at thread start
+    and then run a full doomed decode ahead of every later request."""
+    from concurrent.futures import ThreadPoolExecutor
+    calls = []
+
+    def fake(*a):
+        with translation._infer_mutex:      # as the real _complete does
+            calls.append(a)
+            return "ok"
+    monkeypatch.setattr(translation, "_complete", fake)
+    llm = _FakeLlama("org/mutex:Q4")
+    t, _held, release = _hold_infer_mutex()
+
+    async def run():
+        loop = asyncio.get_running_loop()
+        pool = ThreadPoolExecutor(1)
+        loop.set_default_executor(pool)
+        task = asyncio.ensure_future(translation._run_completion(
+            llm, "chatml", "Hallo", "de", "en", "", ""))
+        await asyncio.sleep(0.05)        # its thread waits on the mutex
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert translation._decoding == {}
+        release.set()
+        pool.shutdown(wait=True)
+    try:
+        asyncio.run(run())
+    finally:
+        release.set()
+        t.join(5)
+    assert calls == []
+    assert translation._decoding == {}
+
+
 def test_offline_load_raises_when_not_cached(monkeypatch):
     record = []
     _install_fake_llama(monkeypatch, record)
