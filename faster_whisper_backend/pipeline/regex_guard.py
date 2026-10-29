@@ -709,6 +709,10 @@ def _branch_atoms(body: str, depth: int = 0) -> "list[list[tuple[str, bool, obje
         text, q = body[i:j], body[j:k]
         i = max(k, j)
         optional = q[:1] == "?" or re.fullmatch(r"\{0*,0*1\}\??", q) is not None
+        # `{1}` / `{1,1}` matches exactly as the bare item does: reading it
+        # as a pin hid `(?:(?:,?\s?){1})+#` from _optional_only.
+        if re.fullmatch(r"\{0*1(?:,0*1)?\}\??", q):
+            q = ""
         if possessive or variable:
             branches[-1].append(None)
         elif re.fullmatch(r"\{0*(?:,0*)?\}\??", q):

@@ -810,6 +810,25 @@ def test_repeated_body_of_only_optional_atoms_is_rejected(pat):
 
 
 @pytest.mark.parametrize("pat", [
+    r"(?:(?:,?\s?){1})+#",
+    r"(?:,?(?:\s?){1})+#",
+    r"(?:(?:,?){1}\s?)+#",
+    r"(?:(?:,?\s?){1,1}?)+#",
+])
+def test_optional_only_body_behind_a_single_count_is_rejected(pat):
+    """`{1}` matches exactly as the bare group does, so wrapping the optional
+    pair (or one atom of it) in `{1}` must not hide `(?:,?\\s?)+` from the
+    screen — re.search ran 6-8 s on ", " * 22."""
+    with pytest.raises(ValueError, match="nested repetition"):
+        g.validate([("r", pat, "")])
+
+
+def test_single_count_group_with_a_mandatory_atom_passes():
+    """Seen through `{1}`, `,` still pins every repetition: linear."""
+    assert not g._nested_repetition(r"(?:(?:,\s?){1})+#")
+
+
+@pytest.mark.parametrize("pat", [
     r"(?:,?\s?){2}",
     r"(?:\w,?\s?)+",
     r"(?:\w(?:,?\s?))+",
