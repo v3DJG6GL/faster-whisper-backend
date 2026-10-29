@@ -1593,6 +1593,10 @@ _SECRET_FIELDS = ("BOOTSTRAP_ADMIN_KEY", "HF_TOKEN")
 # the new names BEFORE the _FILE indirection and the generic env loop run, so
 # existing deployments keep working unchanged (table in config_renames.py).
 _ENV_WARNINGS.extend(_renames.alias_env(os.environ))
+# The vars this loop filled from a *_FILE: the POSIX self-restart re-execs
+# with them dropped (admin/restart_service), so the new process reads the
+# secret file again instead of the old contents — a rotated key takes effect.
+_ENV_FROM_SECRET_FILES: set[str] = set()
 for _secret in ("WHISPER_" + _f for _f in _SECRET_FIELDS):
     _path = os.environ.get(_secret + "_FILE")
     if _path and not os.environ.get(_secret):
@@ -1606,6 +1610,7 @@ for _secret in ("WHISPER_" + _f for _f in _SECRET_FIELDS):
             _enc = ("utf-16" if _buf[:2] in (b"\xff\xfe", b"\xfe\xff")
                     else "utf-8-sig")
             os.environ[_secret] = _buf.decode(_enc).strip()
+            _ENV_FROM_SECRET_FILES.add(_secret)
         except (OSError, ValueError) as _exc:
             _ENV_WARNINGS.append(f"{_secret}_FILE={_path!r} could not be read: {_exc}")
 

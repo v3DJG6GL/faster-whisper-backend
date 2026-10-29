@@ -8,7 +8,7 @@ surviving the SCM child-tree kill that a regular `restart` would not.
 Restart latency is ~3-4 s end-to-end on a no-preload deployment.
 
 Other OSes (Linux/macOS, bare / systemd / Docker): re-exec the process in
-place via os.execv. Python opens sockets with O_CLOEXEC, so the listen port
+place via os.execve. Python opens sockets with O_CLOEXEC, so the listen port
 is released on exec and the fresh process re-binds cleanly. This works whether
 the server is run bare (`python main.py`), supervised by systemd (same-PID
 re-exec keeps the unit active), or in a container with a restart policy.
@@ -39,6 +39,7 @@ import tempfile
 import threading
 import time
 
+from faster_whisper_backend.settings import config as cfg
 from faster_whisper_backend.transcription import receipt as tx_receipt
 from faster_whisper_backend.paths import REPO_ROOT
 
@@ -46,7 +47,7 @@ from faster_whisper_backend.paths import REPO_ROOT
 def _flush_before_exit() -> None:
     """Last-chance flush of the shutdown obligations that lose data.
 
-    os.execv / os._exit below bypass the ASGI shutdown, so the lifespan's
+    os.execve / os._exit below bypass the ASGI shutdown, so the lifespan's
     teardown never runs. Three of its duties are lossy if skipped: held
     dictation receipts would vanish unlogged (receipt_hold's contract is
     that NOTHING is silently lost), the stats sampler's last minute of
@@ -85,10 +86,16 @@ def trigger_self_restart(delay_sec: float = 1.5) -> str:
         # root, on sys.path[0] — ModuleNotFoundError after the exec, with
         # no process left to report it). Sockets carry O_CLOEXEC so the
         # port frees on exec; the new process re-binds it.
+        # The exec'd process inherits os.environ, where config wrote each
+        # *_FILE secret's contents; with those left in place it would never
+        # re-read the file, so a rotated bootstrap key / HF token would
+        # survive the restart. Drop them so it reads the files afresh.
         def do_reexec() -> None:
             _flush_before_exit()
+            env = {k: v for k, v in os.environ.items()
+                   if k not in cfg._ENV_FROM_SECRET_FILES}
             try:
-                os.execv(sys.executable, [sys.executable, *sys.orig_argv[1:]])
+                os.execve(sys.executable, [sys.executable, *sys.orig_argv[1:]], env)
             except Exception:
                 # If exec fails, exit and let a supervisor (systemd
                 # Restart=, Docker restart policy) bring us back.
@@ -147,7 +154,7 @@ def trigger_self_restart(delay_sec: float = 1.5) -> str:
 def reclaim_hard_restart_orphans() -> None:
     """Startup sweep of TMPDIR for temp artifacts a hard restart orphaned.
 
-    The admin restart path (trigger_self_restart: os.execv / os._exit) skips the
+    The admin restart path (trigger_self_restart: os.execve / os._exit) skips the
     ASGI shutdown, so in-flight requests leak their `urldl-` job dirs,
     `urlmedia-` pipeline copies (url_media_store.make_pipeline_copy),
     `whisperup-` upload spools, `sepsrc-`/`vocals-` separation WAVs,

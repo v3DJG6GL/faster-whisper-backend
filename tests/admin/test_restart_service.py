@@ -1,17 +1,19 @@
 """Tests for restart_service: trigger_self_restart and the startup TMPDIR sweep.
 
 trigger_self_restart ARMS a threading.Timer that, after the delay, calls
-os.execv / subprocess.Popen / os._exit. We MUST NOT let that fire (it would
+os.execve / subprocess.Popen / os._exit. We MUST NOT let that fire (it would
 kill pytest). Every test monkeypatches threading.Timer to a capture-only stub
-(records the callback, never starts a thread) and guards os.execv, os._exit,
+(records the callback, never starts a thread) and guards os.execve, os._exit,
 and subprocess.Popen so even an accidental direct invocation can't escape.
 """
 
+import importlib
 import os
 
 import pytest
 
 from faster_whisper_backend.admin import restart_service
+from faster_whisper_backend.settings import config
 
 # Bound at import, before the autouse _guard stubs the module attribute, so
 # the direct-call test exercises the real function rather than the stub.
@@ -42,11 +44,12 @@ def _guard(monkeypatch):
     monkeypatch.setattr(restart_service.threading, "Timer", _FakeTimer)
 
     def _boom_execv(*a, **k):  # pragma: no cover - asserts it's never reached
-        raise AssertionError("os.execv must not be called during tests")
+        raise AssertionError("os.execve must not be called during tests")
 
     def _boom_exit(*a, **k):  # pragma: no cover
         raise AssertionError("os._exit must not be called during tests")
 
+    monkeypatch.setattr(restart_service.os, "execve", _boom_execv)
     monkeypatch.setattr(restart_service.os, "execv", _boom_execv)
     monkeypatch.setattr(restart_service.os, "_exit", _boom_exit)
     # The real flush drains receipt_hold, flushes the stats sampler and calls
@@ -82,11 +85,11 @@ def test_reexec_callback_invokes_execv(monkeypatch):
     monkeypatch.setattr(restart_service.sys, "platform", "linux")
     captured = {}
 
-    def fake_execv(path, argv):
+    def fake_execv(path, argv, env):
         captured["path"] = path
         captured["argv"] = argv
 
-    monkeypatch.setattr(restart_service.os, "execv", fake_execv)
+    monkeypatch.setattr(restart_service.os, "execve", fake_execv)
     restart_service.trigger_self_restart(delay_sec=0.1)
     # Manually fire the captured callback (the real Timer never runs it).
     _FakeTimer.instances[0].function()
@@ -105,13 +108,44 @@ def test_reexec_replays_the_original_command_line_not_sys_argv(monkeypatch):
     monkeypatch.setattr(restart_service.sys, "argv",
                         ["/repo/faster_whisper_backend/__main__.py"])
     captured = {}
-    monkeypatch.setattr(restart_service.os, "execv",
-                        lambda path, argv: captured.update(path=path, argv=argv))
+    monkeypatch.setattr(restart_service.os, "execve",
+                        lambda path, argv, env: captured.update(path=path, argv=argv))
     restart_service.trigger_self_restart(delay_sec=0.1)
     _FakeTimer.instances[0].function()
     assert captured["argv"] == [restart_service.sys.executable,
                                 "-X", "dev", "-m", "faster_whisper_backend"]
     assert "__main__.py" not in " ".join(captured["argv"])
+
+
+def test_reexec_rereads_rotated_secret_files(monkeypatch, tmp_path):
+    """config writes a *_FILE secret's contents into os.environ and reads the
+    file only while the plain var is unset; an exec that inherited that env
+    kept the OLD bootstrap key after the operator rotated the file and pressed
+    Restart. The re-exec drops exactly the file-derived vars."""
+    monkeypatch.setattr(restart_service.sys, "platform", "linux")
+    secret = tmp_path / "admin_key"
+    secret.write_text("sk-old\n")
+    monkeypatch.delenv("WHISPER_BOOTSTRAP_ADMIN_KEY", raising=False)
+    monkeypatch.setenv("WHISPER_BOOTSTRAP_ADMIN_KEY_FILE", str(secret))
+    monkeypatch.setenv("WHISPER_HF_TOKEN", "hf_plain")   # set directly: kept
+    try:
+        importlib.reload(config)
+        assert os.environ["WHISPER_BOOTSTRAP_ADMIN_KEY"] == "sk-old"
+        captured = {}
+        monkeypatch.setattr(restart_service.os, "execve",
+                            lambda path, argv, env: captured.update(env=env))
+        restart_service.trigger_self_restart(delay_sec=0.1)
+        _FakeTimer.instances[0].function()
+        env = captured["env"]
+        assert "WHISPER_BOOTSTRAP_ADMIN_KEY" not in env
+        assert env["WHISPER_BOOTSTRAP_ADMIN_KEY_FILE"] == str(secret)
+        assert env["WHISPER_HF_TOKEN"] == "hf_plain"
+    finally:
+        monkeypatch.undo()
+        # The *_FILE prepass wrote the secret straight into os.environ, which
+        # monkeypatch cannot undo; clear it before the restoring reload.
+        os.environ.pop("WHISPER_BOOTSTRAP_ADMIN_KEY", None)
+        importlib.reload(config)
 
 
 def test_reexec_callback_falls_back_to_exit_on_execv_failure(monkeypatch):
@@ -121,7 +155,7 @@ def test_reexec_callback_falls_back_to_exit_on_execv_failure(monkeypatch):
         raise OSError("exec failed")
 
     exited = {}
-    monkeypatch.setattr(restart_service.os, "execv", failing_execv)
+    monkeypatch.setattr(restart_service.os, "execve", failing_execv)
     monkeypatch.setattr(restart_service.os, "_exit",
                         lambda code: exited.__setitem__("code", code))
     restart_service.trigger_self_restart()
@@ -206,8 +240,8 @@ def _order_probe(monkeypatch):
 def test_reexec_flushes_before_execv(monkeypatch):
     monkeypatch.setattr(restart_service.sys, "platform", "linux")
     order = _order_probe(monkeypatch)
-    monkeypatch.setattr(restart_service.os, "execv",
-                        lambda path, argv: order.append("execv"))
+    monkeypatch.setattr(restart_service.os, "execve",
+                        lambda path, argv, env: order.append("execv"))
     restart_service.trigger_self_restart()
     _FakeTimer.instances[0].function()
     assert order == ["flush", "execv"]
@@ -274,7 +308,7 @@ def test_flush_before_exit_swallows_failures(monkeypatch):
 # --- hard-restart TMPDIR sweep ----------------------------------------------
 
 def test_reclaim_hard_restart_orphans(tmp_path, monkeypatch):
-    """The startup sweep reclaims what an admin restart (os.execv/os._exit,
+    """The startup sweep reclaims what an admin restart (os.execve/os._exit,
     no ASGI shutdown) orphaned — urldl- job dirs, sepsrc-/vocals- WAVs —
     while leaving fresh entries (a just-overlapping process) and unrelated
     names alone. (No app_module fixture: that fixture stubs the sweep out
