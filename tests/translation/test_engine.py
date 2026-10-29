@@ -473,6 +473,15 @@ def test_redistribute_leaves_a_word_boundary_for_every_later_member():
         "hh egfhbg daedhge hdf") == ["hh", "egfhbg", "daedhge", "hdf"]
 
 
+def test_redistribute_unspaced_keeps_the_in_reach_clause_mark():
+    """Leaving room for later members must not drop the only clause comma
+    within reach for an out-of-reach one: that raw-cut "买了" ("bought")
+    across two cues although a clean cut after the comma was right there."""
+    assert translation._redistribute(
+        ["x" * 10] * 3, "我们，今天去市场，买了很多新鲜的水果和蔬菜然后回家做饭吃了") == \
+        ["我们，今天去市场，", "买了很多新鲜的水果和", "蔬菜然后回家做饭吃了"]
+
+
 def test_redistribute_thai_khmer_burmese_count_as_unspaced():
     """Thai/Khmer/Burmese have no spaces between words: a cut no longer
     jumps to a far-away phrase space (one cue took most of the text), and a

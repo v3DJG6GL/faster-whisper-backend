@@ -1243,18 +1243,19 @@ def _redistribute(group_texts: "list[str]", translated: str) -> "list[str]":
         # second space is past a cut on the first, yet slices to " ".
         # A boundary that leaves too few for the members still to come
         # would force those to a raw cut through a word, so it is dropped
-        # whenever the tier holds enough boundaries for every member.
+        # whenever the tier holds enough boundaries for every member — but
+        # only among those within reach: dropping the one in-reach clause
+        # mark for an out-of-reach one would itself force a raw cut.
         cut = None
         for tier in tiers:
             cands = [s for s in tier
-                     if s > prev and translated[prev:s].strip()]
+                     if s > prev and abs(s - ideal) <= reach
+                     and translated[prev:s].strip()]
             cands = ([s for s in cands if _room(tier, s) >= n - 2 - i]
                      or cands)
             if cands:
-                best = min(cands, key=lambda s: abs(s - ideal))
-                if abs(best - ideal) <= reach:
-                    cut = best
-                    break
+                cut = min(cands, key=lambda s: abs(s - ideal))
+                break
         snapped = cut is not None
         if cut is None:
             cut = int(round(ideal))
