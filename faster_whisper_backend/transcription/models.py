@@ -28,6 +28,7 @@ from fastapi import HTTPException
 
 from faster_whisper_backend.transcription import decode_trace as _decode_trace
 from faster_whisper_backend.core import jobs
+from faster_whisper_backend.core.store_common import log_safe
 from faster_whisper_backend.runtime import model_registry
 from faster_whisper_backend.runtime import system_stats
 from faster_whisper_backend.settings import config as cfg
@@ -1225,7 +1226,7 @@ async def _load_on_miss(name: str, *, lease: bool) -> "WhisperModel":
             from faster_whisper_backend.runtime import download_progress
             from huggingface_hub import snapshot_download
             from huggingface_hub.errors import (
-                RepositoryNotFoundError, RevisionNotFoundError,
+                GatedRepoError, RepositoryNotFoundError, RevisionNotFoundError,
             )
             _dl_repo = load_path
             if "/" not in _dl_repo:
@@ -1276,11 +1277,25 @@ async def _load_on_miss(name: str, *, lease: bool) -> "WhisperModel":
                 "Pre-download of %s failed (%s); the model constructor "
                 "will download instead", name, _dl_err)
     if _hub_missing is not None:
-        logger.warning("Model %s not found on the Hub: %s", name, _hub_missing)
+        # The Hub's own text (its access hint for a gated repo) stays in the log.
+        logger.warning("Model %s refused by the Hub: %s", name,
+                       log_safe(str(_hub_missing)))
+        _kind = type(_hub_missing).__name__
+        # Set only past the huggingface_hub import above, so its names exist.
+        if isinstance(_hub_missing, GatedRepoError):
+            _why = (f"is a gated HuggingFace Hub repo ({_kind}): request "
+                    f"access on its Hub page and set HF_TOKEN to that "
+                    f"account's token")
+        elif isinstance(_hub_missing, RevisionNotFoundError):
+            _why = f"was not found on the HuggingFace Hub ({_kind})"
+        else:
+            # The Hub answers a private repo, or a gated one without a token,
+            # the same way as a missing one.
+            _why = (f"was not found on the HuggingFace Hub, or it is private "
+                    f"or gated ({_kind}): check the repo id and HF_TOKEN / "
+                    f"access")
         raise HTTPException(
-            status_code=400,
-            detail=f"Model '{name}' was not found on the HuggingFace Hub "
-                   f"({type(_hub_missing).__name__}).",
+            status_code=400, detail=f"Model '{name}' {_why}.",
         ) from _hub_missing
 
     async with _model_load_lock:

@@ -192,6 +192,41 @@ def test_repo_missing_on_the_hub_evicts_nothing(monkeypatch, err):
     assert built == [] and tx_models._model_leases == {}
 
 
+@pytest.mark.parametrize("err, said", [
+    ("GatedRepoError", "gated"),
+    ("RepositoryNotFoundError", "private or gated"),
+])
+def test_hub_refusal_of_an_existing_repo_points_at_the_token(
+        monkeypatch, caplog, err, said):
+    """A gated repo, and a private one without the right token, reach the
+    loader as RepositoryNotFoundError (GatedRepoError subclasses it): the
+    client is told to check HF_TOKEN / access, not only to hunt a typo, and
+    the Hub's own access hint stays in the log."""
+    import httpx2
+    import huggingface_hub
+    from huggingface_hub import errors as hf_errors
+    _stub_load(monkeypatch)
+    monkeypatch.setattr(tx_models.cfg, "LOCAL_FILES_ONLY", False,
+                        raising=False)
+    response = httpx2.Response(403, request=httpx2.Request(
+        "GET", "https://huggingface.co/api/models/org/gated"))
+
+    def _refused(**kw):
+        raise getattr(hf_errors, err)("Access to model org/gated is "
+                                      "restricted.\nVisit the page.",
+                                      response=response)
+    monkeypatch.setattr(huggingface_hub, "snapshot_download", _refused)
+
+    with caplog.at_level(logging.WARNING):
+        with pytest.raises(HTTPException) as exc:
+            asyncio.run(tx_models._get_or_load_model("org/gated"))
+
+    assert exc.value.status_code == 400
+    assert said in exc.value.detail and "HF_TOKEN" in exc.value.detail
+    assert err in exc.value.detail
+    assert any("is restricted.?Visit" in r.getMessage() for r in caplog.records)
+
+
 # --- lease acquisition -------------------------------------------------------
 
 def test_lease_taken_on_cache_hit_and_on_load(monkeypatch):
