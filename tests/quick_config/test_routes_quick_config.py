@@ -564,7 +564,7 @@ def test_quick_config_page_save_and_recent_guards(client):
     html = client.get("/quick-config").text
     for s in ("if (_saving) return;",
               "const inflight = _diffsSince(sent);",
-              "if (_reapplyDiffs(inflight, clashed)) {",
+              "if (_reapplyDiffs(inflight, clashed, restored)) {",
               "const gen = ++_recentGen;",
               "if (gen !== _recentGen) return;   // a newer reload owns the list now",
               "if (gen !== _recentGen) return;   // a reload replaced the list meanwhile",
@@ -588,7 +588,7 @@ def test_quick_config_page_save_and_recent_guards(client):
             "_diffsSince(sent)")
         assert fetch < tail.index("_diffsSince(sent)")
         window = tail[tail.index("_diffsSince(sent)"):
-                      tail.index("_reapplyDiffs(inflight, clashed)")]
+                      tail.index("_reapplyDiffs(inflight, clashed, restored)")]
         assert "await" not in window, window
         assert "applyState(j);" in window
     assert "await load()" not in save
@@ -673,7 +673,7 @@ def test_quick_config_page_failure_paths_recover(client):
     fetch = refused.index("const j = await fetchState();")
     assert fetch < refused.index("_diffsSince(initialRules)") < refused.index(
         "applyState(j);") < refused.index("rule.locked && !_isAdmin()") < refused.index(
-        "_reapplyDiffs(diffs, clashed);")
+        "_reapplyDiffs(diffs, clashed, restored);")
     do_save = html[html.index("async function doSave()"):
                    html.index("async function _doSave(")]
     catch = do_save[do_save.index("} catch (e) {"):do_save.index("} finally {")]
@@ -714,7 +714,7 @@ def test_quick_config_page_probe_stops_on_401_and_merge_skips_held_words(client)
     assert "_setRecentLabel(r.status === 401 ? 'signed out' : 'no access');" in gone
     assert "if (r.status === 401 && window._showLoginGate) window._showLoginGate();" in gone
     assert "return;" in gone
-    merge = html[html.index("function _applyFieldDiff(serverValue, diff, clashes) {"):
+    merge = html[html.index("function _applyFieldDiff(serverValue, diff, clashes, restored) {"):
                  html.index("function _diffKindFor(field) {")]
     lst = merge[merge.index("if (diff.kind === 'list') {"):]
     assert "const have = new Set(out.map(_stringify));" in lst

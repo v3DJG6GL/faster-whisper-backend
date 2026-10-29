@@ -720,6 +720,87 @@ def test_conflict_merge_reports_the_other_writers_pattern_fix_to_an_entry_the_us
     assert res["replaced"] == [[], ["x>X", "c>C", "y>Y"]]
 
 
+def test_reapply_tells_an_entry_the_user_deleted_coming_back_from_a_both_edited_one(
+        client, tmp_path):
+    # The deleted entry the other writer fixed the pattern of comes back in
+    # their version, but its rule was reported like a both-edited clash, so
+    # the toast said "your version is kept" of a deletion that was undone.
+    page = client.get("/quick-config").text
+    res = _run_js(client, tmp_path, _olist_consts(page) + r"""
+      const e = (p, r) => ({ pattern: p, replacement: r || p.toUpperCase() });
+      globalThis.dirty = new Set();
+      globalThis.liveRules = [
+        { name: 'del', entries: [e('x'), e('b2', 'B'), e('y')] },
+        { name: 'both', entries: [e('foo', 'qux')] },
+      ];
+      const diffs = new Map([
+        ['del', { entries: _fieldDiff([e('x'), e('b'), e('y')], [e('x'), e('y')], 'olist') }],
+        ['both', { entries: _fieldDiff([e('foo', 'bar')], [e('foo', 'baz')], 'olist') }],
+      ]);
+      const clashed = [], restored = [];
+      _reapplyDiffs(diffs, clashed, restored);
+      const clashes = [], back = [];
+      _applyFieldDiff([e('x'), e('b2', 'B'), e('y')],
+                      _fieldDiff([e('x'), e('b'), e('y')], [e('x'), e('y')], 'olist'), clashes, back);
+      out({ clashed, restored, clashes, back });
+    """, funcs=_OLIST_FUNCS)
+    assert res["clashed"] == ["both"]
+    assert res["restored"] == ["del"]
+    assert res["clashes"] == ["b2"] and res["back"] == ["b2"]
+
+
+_RESTORED_TOAST = ("another writer fixed the pattern of an entry you deleted; their entry is back,"
+                   " delete it again if you still want it gone")
+
+
+def test_save_toasts_say_an_entry_the_user_deleted_is_back(client, tmp_path):
+    # Every toast naming a clash said "your version is kept", also for a
+    # deleted entry the merge brought back in the other writer's version.
+    res = _run_js(client, tmp_path, r"""
+      const toasts = {};
+      globalThis.setStatus = () => {};
+      globalThis.liveRules = [];
+      globalThis.initialRules = [];
+      globalThis.fetchState = async () => ({ rules: [] });
+      globalThis._diffsSince = () => new Map();
+      globalThis.applyState = () => {};
+      globalThis.renderCards = () => {};
+      globalThis.updateButtons = () => {};
+      globalThis._isAdmin = () => true;
+      globalThis._detailText = (j, msg) => j.detail;
+      let calls = 0;
+      globalThis._reapplyDiffs = (d, clashed, restored) => {
+        if (!calls++) restored.push('rx'); return 1;
+      };
+      const run = async (name, resp) => {
+        calls = 0; _toasts.length = 0;
+        globalThis.api = async () => resp;
+        await _doSave({ rx: {} }, {});
+        toasts[name] = _toasts[_toasts.length - 1][1];
+      };
+      await run('merged', { ok: true, status: 200,
+                            json: async () => ({ saved: [], conflicts: [{ slug: 'rx' }] }) });
+      await run('inflight', { ok: true, status: 200,
+                              json: async () => ({ saved: ['rx'], conflicts: [] }) });
+      await run('refused', { ok: false, status: 403, json: async () => ({ detail: 'locked' }) });
+      calls = 1;  // the conflicted rule took no diff, the in-flight one did
+      globalThis._reapplyDiffs = (d, clashed, restored) => {
+        if (calls++ === 2) { restored.push('rx'); return 1; } return 0;
+      };
+      globalThis.api = async () => ({ ok: true, status: 200,
+                                      json: async () => ({ saved: [], conflicts: [{ slug: 'rx' }] }) });
+      _toasts.length = 0;
+      await _doSave({ rx: {} }, {});
+      toasts.unmerged = _toasts[_toasts.length - 1][1];
+      out(toasts);
+    """, funcs=("_doSave",))
+    for name in ("merged", "inflight", "refused", "unmerged"):
+        msg = res[name]
+        assert _RESTORED_TOAST in msg, name
+        assert "your version is kept" not in msg, name
+        assert "Auto-merged" not in msg, name
+
+
 def test_reapply_keeps_the_users_edits_on_a_rule_whose_entry_both_writers_edited(client, tmp_path):
     # One entry both writers edited made _reapplyDiffs skip the whole rule:
     # every other unsaved edit on it (added entries, the enabled toggle, other

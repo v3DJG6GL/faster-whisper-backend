@@ -2147,7 +2147,10 @@ function _fieldDiff(baseline, edited, kind) {
 // An olist entry both writers changed differently keeps the user's version
 // (their unsaved work is never dropped) and its pattern is pushed onto
 // `clashes`, so the caller can tell the user to review it before saving.
-function _applyFieldDiff(serverValue, diff, clashes) {
+// An entry the user deleted but the other writer fixed the pattern of comes
+// back in their version: a clash too, its pattern also pushed onto
+// `restored`, as the user's version (the deletion) is not what was kept.
+function _applyFieldDiff(serverValue, diff, clashes, restored) {
   if (!diff) return serverValue;
   if (diff.kind === 'dict') {
     const out = { ...(serverValue || {}) };
@@ -2175,7 +2178,8 @@ function _applyFieldDiff(serverValue, diff, clashes) {
     // one side changed takes that side's version in place, and one both
     // sides changed differently is a clash (user's version kept, reported
     // through `clashes`). The user's deletions
-    // win (bar one the other writer fixed the pattern of: kept, a clash)
+    // win (bar one the other writer fixed the pattern of: theirs is back,
+    // a clash also reported through `restored`)
     // and an entry the user edited survives the other writer deleting
     // it, as for dict keys. The other writer's new entries go in after
     // their nearest server-side predecessor still present (or at the top),
@@ -2217,9 +2221,11 @@ function _applyFieldDiff(serverValue, diff, clashes) {
         // pattern added elsewhere): theirs is not inserted, so it is a clash.
         // So is the user's deletion of an entry the other writer only fixed
         // the pattern of (all else as in base): it comes back for review.
-        const clash = (have.has(k) && _stringify(kept.get(k)) !== _stringify(x))
-          || (mineK === undefined && _stringify({ ...b, pattern: x.pattern }) === _stringify(x));
+        const back = mineK === undefined
+          && _stringify({ ...b, pattern: x.pattern }) === _stringify(x);
+        const clash = back || (have.has(k) && _stringify(kept.get(k)) !== _stringify(x));
         if (clash && clashes) clashes.push(String(x.pattern));
+        if (back && restored) restored.push(String(x.pattern));
       } else if (k !== serverOwn[i][0] && have.has(serverOwn[i][0])
                  && _stringify(mineK) === _stringify(x)) {
         // The user left the entry alone, so the merge holds the other
@@ -2415,17 +2421,21 @@ function _diffsSince(base, slugs) {
 // Re-apply diffs from _diffsSince onto the (freshly loaded) liveRules and
 // mark those rules dirty. Returns how many rules took a diff; a rule with an
 // entry both writers edited differently keeps the user's version of that
-// entry (see _applyFieldDiff) and its slug is pushed onto `clashed`.
-function _reapplyDiffs(diffsBySlug, clashed) {
+// entry (see _applyFieldDiff) and its slug is pushed onto `clashed`; one
+// where an entry the user deleted is back in the other writer's version
+// has its slug pushed onto `restored`.
+function _reapplyDiffs(diffsBySlug, clashed, restored) {
   let merged = 0;
   for (const [slug, fieldDiffs] of diffsBySlug) {
     const idx = liveRules.findIndex(r => r.name === slug);
     if (idx < 0) continue;  // rule was deleted / un-exposed server-side
     const clashes = [];
+    const back = [];
     for (const [field, diff] of Object.entries(fieldDiffs)) {
-      liveRules[idx][field] = _applyFieldDiff(liveRules[idx][field], diff, clashes);
+      liveRules[idx][field] = _applyFieldDiff(liveRules[idx][field], diff, clashes, back);
     }
-    if (clashes.length && clashed) clashed.push(slug);
+    if (clashes.length > back.length && clashed) clashed.push(slug);
+    if (back.length && restored) restored.push(slug);
     dirty.add(slug);
     merged++;
   }
@@ -2506,12 +2516,16 @@ async function _doSave(patch, fingerprints) {
       if (rule.locked && !_isAdmin()) diffs.delete(rule.name);
     }
     const clashed = [];
-    _reapplyDiffs(diffs, clashed);   // skips rules that no longer exist
+    const restored = [];
+    _reapplyDiffs(diffs, clashed, restored);   // skips rules that no longer exist
     renderCards();
     updateButtons();
     showToast(msg + ' — rules reloaded; your other edits were kept'
               + (clashed.length ? ' (on ' + clashed.join(', ') + ' another writer'
                  + ' also edited an entry you edited; your version is kept)' : '')
+              + (restored.length ? ' (on ' + restored.join(', ') + ' another writer'
+                 + ' fixed the pattern of an entry you deleted; their entry is back,'
+                 + ' delete it again if you still want it gone)' : '')
               + ', review and Save again.', 'err');
     return;
   }
@@ -2553,8 +2567,9 @@ async function _doSave(patch, fingerprints) {
     // FRESH fingerprint (which now matches the server) plus the
     // user's intent overlaid.
     const clashed = [];
-    const merged = _reapplyDiffs(diffsBySlug, clashed);
-    if (_reapplyDiffs(inflight, clashed) && !merged) {
+    const restored = [];
+    const merged = _reapplyDiffs(diffsBySlug, clashed, restored);
+    if (_reapplyDiffs(inflight, clashed, restored) && !merged) {
       renderCards();
       updateButtons();
     }
@@ -2563,12 +2578,15 @@ async function _doSave(patch, fingerprints) {
       renderCards();
       updateButtons();
       const prefix = saved.length ? 'Saved ' + saved.length + '. ' : '';
-      const clean = conflictSlugs.filter(s => !clashed.includes(s));
+      const clean = conflictSlugs.filter(s => !clashed.includes(s) && !restored.includes(s));
       showToast(prefix
                 + (clean.length ? 'Auto-merged your changes for ' + clean.join(', ')
                    + ' on top of the latest version. ' : '')
                 + (clashed.length ? 'Conflict on ' + clashed.join(', ') + ': another'
                    + ' writer also edited an entry you edited; your version is kept. ' : '')
+                + (restored.length ? 'Conflict on ' + restored.join(', ') + ': another'
+                   + ' writer fixed the pattern of an entry you deleted; their entry is'
+                   + ' back, delete it again if you still want it gone. ' : '')
                 + 'Review and Save again.',
                 'err');
     } else {
@@ -2577,7 +2595,10 @@ async function _doSave(patch, fingerprints) {
       showToast(prefix + 'Conflict on ' + conflictSlugs.join(', ')
                 + ' could not be auto-merged (rule changed or removed).'
                 + (clashed.length ? ' On ' + clashed.join(', ') + ' another writer also'
-                   + ' edited an entry you edited; your version is kept.' : ''),
+                   + ' edited an entry you edited; your version is kept.' : '')
+                + (restored.length ? ' On ' + restored.join(', ') + ' another writer fixed'
+                   + ' the pattern of an entry you deleted; their entry is back, delete it'
+                   + ' again if you still want it gone.' : ''),
                 'err');
     }
     return;
@@ -2597,13 +2618,19 @@ async function _doSave(patch, fingerprints) {
   applyState(j);
   // Edits typed while the POST was in flight can clash with another writer.
   const clashed = [];
-  if (_reapplyDiffs(inflight, clashed)) {
+  const restored = [];
+  if (_reapplyDiffs(inflight, clashed, restored)) {
     renderCards();
     updateButtons();
   }
-  if (clashed.length) {
-    showToast('Saved. Conflict on ' + clashed.join(', ') + ': another writer also'
-              + ' edited an entry you edited; your version is kept. Review and Save again.',
+  if (clashed.length || restored.length) {
+    showToast('Saved. '
+              + (clashed.length ? 'Conflict on ' + clashed.join(', ') + ': another writer'
+                 + ' also edited an entry you edited; your version is kept. ' : '')
+              + (restored.length ? 'Conflict on ' + restored.join(', ') + ': another writer'
+                 + ' fixed the pattern of an entry you deleted; their entry is back, delete'
+                 + ' it again if you still want it gone. ' : '')
+              + 'Review and Save again.',
               'err');
   }
 }
