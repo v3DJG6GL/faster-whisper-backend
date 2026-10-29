@@ -793,6 +793,38 @@ def test_optional_atoms_overlapping_outside_their_stretch_stay_rejected(pat):
     assert g._nested_repetition(pat)
 
 
+@pytest.mark.parametrize("pat", [
+    r"(?:,?\s?)+\.",
+    r"(?:[,;]?\s?)*$",
+    r"(?:h?a?)+!",
+    r"(?:x?y?z?)+!",
+    r"(?:\s?[,.]?)+(?=[A-Z])",
+    r"((?:,?\s?){2})+#",
+])
+def test_repeated_body_of_only_optional_atoms_is_rejected(pat):
+    """No atom shares a character with another, but nothing pins a
+    repetition either: ", " is one repetition or two, so a run of k pairs
+    reads 2**k ways — `(?:x?y?z?)+!` ran 12 s on "xyz" * 12 + "q"."""
+    with pytest.raises(ValueError, match="nested repetition"):
+        g.validate([("r", pat, "")])
+
+
+@pytest.mark.parametrize("pat", [
+    r"(?:,?\s?){2}",
+    r"(?:\w,?\s?)+",
+    r"(?:\w(?:,?\s?))+",
+    r"(?>,?\s?)+!",
+    r"(?:,?\s?)++!",
+    r"(?:[,;]?)+$",
+])
+def test_optional_only_body_that_never_repeats_or_splits_passes(pat):
+    """A single run of optional atoms, one pinned by a mandatory atom, an
+    atomic or possessive repeat and a lone optional atom match each input
+    one way."""
+    assert not g._nested_repetition(pat)
+    g.validate([("r", pat, "")])
+
+
 def test_optional_overlap_between_pins_still_splits_ambiguously():
     """A pin only helps when the stretch it bounds holds one optional atom:
     `n?n?nx` and `n?nxn?n` (the tail and the next head) still split each

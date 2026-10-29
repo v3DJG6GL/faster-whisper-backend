@@ -559,6 +559,10 @@ def _nested_repetition(pat: str) -> bool:
             # the run as many ways as `(n|nn)+` (see _optional_overlap).
             if _optional_overlap(pat[frame["start"]:close], icase):
                 frame["rep"] = True
+            # `(?:,?\s?)+` matches ", " as one repetition or as two, one atom
+            # each: see _optional_only.
+            if repeats and _optional_only(pat[frame["start"]:close]):
+                frame["rep"] = True
             if variable and not frame["atomic"] and not possessive:
                 if frame["rep"]:
                     return True
@@ -656,6 +660,26 @@ def _optional_overlap(body: str, icase: bool = False) -> bool:
     flags = re.DOTALL | (re.IGNORECASE if icase else 0)
     for atoms in _branch_atoms(body):
         if _splits_ambiguously(atoms, flags):
+            return True
+    return False
+
+
+def _optional_only(body: str) -> bool:
+    """True if a branch of the group body ``body`` is nothing but two or more
+    separately optional atoms: `,?\\s?`, `h?a?`, `[,;]?\\s?`.
+
+    Nothing in such a branch pins a repetition to the input, so once the
+    group repeats, the repetition boundary itself is a second split: ", " is
+    one repetition (`,` then `\\s`) or two (`,` alone, then `\\s` alone), and
+    a run of k pairs reads 2**k ways — though no two atoms share a character,
+    which is all _optional_overlap looks at. Positions of one alternation's
+    tail come all or none and count as one atom; a lone optional group read
+    as its atoms (`(?:(?:ab)?)+`, `(?:(?:Komma|,)?)+`) is
+    over-approximated and refused."""
+    for atoms in _branch_atoms(body):
+        if (len(atoms) >= 2 and None not in atoms and all(a[1] for a in atoms)
+                and any(a[2] is None or a[2] is not b[2]
+                        for p, a in enumerate(atoms) for b in atoms[p + 1:])):
             return True
     return False
 
