@@ -224,6 +224,17 @@ def _content_digest(rule: dict[str, Any]) -> str | None:
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
 
 
+def _unscoped_factory_copy(rule: dict[str, Any], name: str) -> bool:
+    """True while a stored rule is still the factory rule `name` of
+    UPGRADED_RULE_LANGUAGES as shipped before its scope: no languages, the
+    factory type and pattern, and factory content (_FACTORY_CONTENT_DIGESTS)."""
+    scope = UPGRADED_RULE_LANGUAGES.get(name)
+    return (scope is not None and not rule.get("languages")
+            and (rule.get("type"), rule.get("pattern")) == scope[0]
+            and (name not in _FACTORY_CONTENT_DIGESTS
+                 or _content_digest(rule) in _FACTORY_CONTENT_DIGESTS[name]))
+
+
 # Keys holding a list of rule slugs, at the top level and inside each
 # MODEL_OVERRIDES / OVERRIDE_PROFILES bundle.
 _SLUG_LIST_KEYS = ("PIPELINE_RULES_EXCLUDE", "PIPELINE_RULES_INCLUDE",
@@ -252,13 +263,16 @@ def migrate_rule_slugs(raw: dict[str, Any]) -> dict[str, Any]:
     top-level slug lists. The slug lists inside OVERRIDE_PROFILES /
     MODEL_OVERRIDES bundles are migrate_bundle's job (via migrate_bundle_keys,
     which every caller also runs). A stored rule already using the new name
-    wins over the old one."""
+    wins over the old one, and an old-named copy that is still the unscoped
+    factory rule is dropped beside it: every slug list now names the new
+    rule, so the duplicate would run on every language, excluded nowhere."""
     rules = raw.get("PIPELINE_RULES")
     if isinstance(rules, list):
         # str only: a hand-edited non-string name must reach the schema's
         # error, not crash the dict lookups here (load_overrides never raises).
         names = {r.get("name") for r in rules
                  if isinstance(r, dict) and isinstance(r.get("name"), str)}
+        dropped: list[dict[str, Any]] = []
         for r in rules:
             if (isinstance(r, dict) and isinstance(r.get("name"), str)
                     and r["name"] in RENAMED_RULES):
@@ -266,6 +280,10 @@ def migrate_rule_slugs(raw: dict[str, Any]) -> dict[str, Any]:
                 if new not in names:
                     r["name"] = new
                     names.add(new)
+                elif _unscoped_factory_copy(r, new):
+                    dropped.append(r)
+        if dropped:
+            rules[:] = [r for r in rules if all(r is not d for d in dropped)]
     for key in _SLUG_LIST_KEYS:
         if key in raw:
             raw[key] = rename_slugs(raw[key])
@@ -285,14 +303,9 @@ def upgrade_rule_entries(raw: dict[str, Any]) -> list[str]:
     for r in rules:
         if not isinstance(r, dict):
             continue
-        scope = (UPGRADED_RULE_LANGUAGES.get(r["name"])
-                 if isinstance(r.get("name"), str) else None)
-        if (scope is not None and not r.get("languages")
-                and (r.get("type"), r.get("pattern")) == scope[0]
-                and (r["name"] not in _FACTORY_CONTENT_DIGESTS
-                     or _content_digest(r)
-                     in _FACTORY_CONTENT_DIGESTS[r["name"]])):
-            r["languages"] = list(scope[1])
+        if (isinstance(r.get("name"), str)
+                and _unscoped_factory_copy(r, r["name"])):
+            r["languages"] = list(UPGRADED_RULE_LANGUAGES[r["name"]][1])
             done.append(f"{r['name']}/languages")
         if r.get("type") != "regex-list":
             continue

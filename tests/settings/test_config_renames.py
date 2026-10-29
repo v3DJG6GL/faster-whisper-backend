@@ -210,3 +210,37 @@ def test_edited_entry_under_an_old_label_stays_the_admins():
     assert renames.upgrade_rule_entries({"PIPELINE_RULES": rules}) == []
     assert (e["label"], e["pattern"]) == ("replace-and", "(?:,)(-)")
 
+
+def test_old_factory_copy_beside_its_renamed_rule_is_dropped_with_its_excludes(tmp_path):
+    """A copy holding both names (the renamed rule added from config.json
+    beside the old copy): every exclude of the old slug now names the new
+    one, so a kept old copy would run unexcluded on every language
+    ("well-known" -> "well-Known" on English)."""
+    from faster_whisper_backend.settings import config_store as cs
+    rules = copy.deepcopy(_factory_rules())
+    for old, new in _RENAMED_IN_097C9B4.items():
+        # before trim-edges: the terminal rule must stay last
+        rules.insert(-1, dict(copy.deepcopy(_rule(rules, new)), name=old, languages=[]))
+    p = tmp_path / "config.local.json"
+    p.write_text(json.dumps({
+        "PIPELINE_RULES": rules,
+        "CAPTURES_PIPELINE_RULES_EXCLUDE": list(_RENAMED_IN_097C9B4),
+        "MODEL_OVERRIDES": {"large-v3": {
+            "PIPELINE_RULES_EXCLUDE": list(_RENAMED_IN_097C9B4)}},
+    }), encoding="utf-8")
+    out = cs.load_overrides(str(p))
+    assert [r["name"] for r in out["PIPELINE_RULES"]] == [
+        r["name"] for r in _factory_rules()]
+    want = set(_RENAMED_IN_097C9B4.values())
+    assert set(out["CAPTURES_PIPELINE_RULES_EXCLUDE"]) == want
+    assert set(out["MODEL_OVERRIDES"]["large-v3"]["PIPELINE_RULES_EXCLUDE"]) == want
+
+
+def test_edited_old_copy_beside_its_renamed_rule_is_kept():
+    rules = copy.deepcopy(_factory_rules())
+    rules.append(dict(copy.deepcopy(_rule(rules, "capitalize-letter-after-hyphen")),
+                      name="2-2-capitalize-the-letter-after-a-hyphen",
+                      languages=[], pattern="(-)([a-z])"))
+    raw = {"PIPELINE_RULES": rules}
+    renames.migrate_rule_slugs(raw)
+    assert "2-2-capitalize-the-letter-after-a-hyphen" in [r["name"] for r in raw["PIPELINE_RULES"]]
