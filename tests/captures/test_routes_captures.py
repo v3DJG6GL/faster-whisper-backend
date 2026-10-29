@@ -2011,3 +2011,39 @@ def test_reprocess_vad_adopts_the_global_join_strategy(client, monkeypatch):
     row = gs.get_sample(sid)
     assert row["transcript_join_strategy"] == "period_space"
     assert row["transcript"] == "f. f"
+
+
+def test_reprocess_vad_started_mid_run_rebuilds_again_with_the_new_settings(
+        client, monkeypatch):
+    """A second "Reprocess all · VAD silence" while a job runs was dropped:
+    samples rebuilt before a settings edit kept the old silence layout while
+    the job still ended "done". It now queues one more pass."""
+    from faster_whisper_backend.captures import samples as capture_samples
+    from faster_whisper_backend.captures import samples_store as gs
+    from faster_whisper_backend.captures import vad_reprocess as vr
+    from faster_whisper_backend.settings import config as cfg
+
+    sid = "vadrerun000000"
+    _two_member_sample(gs, sid)
+    monkeypatch.setattr(cfg, "CAPTURES_VAD_MARGIN_SAMPLE_INTERNAL_MS", 300,
+                        raising=False)
+    builds = []
+
+    def _build(**kw):
+        builds.append(kw["silence_ms"])
+        if len(builds) == 1:
+            # The admin fixes the margin and clicks Reprocess again.
+            monkeypatch.setattr(cfg, "CAPTURES_VAD_MARGIN_SAMPLE_INTERNAL_MS",
+                                500, raising=False)
+            assert vr.start()["status"] == "running"
+        return 1000, {}, {}
+
+    monkeypatch.setattr(capture_samples, "_build_merged_wav", _build)
+    vr._state.update(status="running")
+    vr._run()
+    assert builds == [300, 500]
+    assert gs.get_sample(sid)["inter_segment_silence_ms"] == 500
+    st = vr.status()
+    assert st["status"] == "done"
+    assert (st["total"], st["processed"], st["rebuilt"]) == (1, 1, 1)
+    assert vr._rerun_requested is False

@@ -50,12 +50,16 @@ _IDLE_STATE: dict[str, Any] = {
 }
 _state: dict[str, Any] = dict(_IDLE_STATE)
 _worker: "threading.Thread | None" = None
+# Set by a start() that found a pass running (under _state_lock); the worker
+# consumes it and runs one more pass with the settings as they are by then.
+_rerun_requested = False
 
 
 def _reset_for_tests() -> None:
     """Test-only: back to the module's canonical idle shape."""
-    global _worker, _state
+    global _worker, _state, _rerun_requested
     _worker = None
+    _rerun_requested = False
     _state = dict(_IDLE_STATE)
 
 
@@ -65,11 +69,15 @@ def status() -> dict[str, Any]:
 
 
 def start() -> dict[str, Any]:
-    """Idempotent: a second call while running returns the current state."""
-    global _worker
+    """Idempotent: a second call while running returns the current state
+    and queues one more pass, so settings saved mid-run reach the samples
+    the running pass already rebuilt."""
+    global _worker, _rerun_requested
     with _state_lock:
         if _state["status"] == "running":
+            _rerun_requested = True
             return dict(_state)
+        _rerun_requested = False
         _state.update(_IDLE_STATE, status="running", started_ts=time.time())
     _worker = threading.Thread(target=_run, daemon=True, name="reprocess-vad")
     _worker.start()
@@ -78,109 +86,130 @@ def start() -> dict[str, Any]:
 
 
 def _run() -> None:
+    global _rerun_requested
     try:
-        from faster_whisper_backend.captures import samples_store as capture_samples_store
-        # Lazy: routes imports this module.
-        from faster_whisper_backend.captures.routes import (
-            _chip_words_lookup, _global_join_strategy,
-        )
-
-        samples = capture_samples_store.list_samples(user_id=None)
-        with _state_lock:
-            _state["total"] = len(samples)
-
-        for s in samples:
-            sid = s["id"]
-            try:
-                # Fast-path skip on the job-start snapshot; the authoritative
-                # is_locked re-check happens under the rebuild lock below.
-                if s.get("is_locked"):
-                    with _state_lock:
-                        _state["skipped"] += 1
-                    continue
-                members = capture_samples_store.get_members(sid)
-                if not members:
-                    with _state_lock:
-                        _state["skipped"] += 1
-                    continue
-                silence_ms = capture_samples._global_silence_ms()
-                join_strategy = _global_join_strategy()
-                # Hold the per-sid lock across the lock re-check, the rebuild,
-                # and the DB write (success OR stale), as regenerate_sample_api
-                # does. This keeps a concurrent regenerate from rewriting the
-                # merged WAV between our build and our patch, ensures a sample
-                # locked AFTER the job-start snapshot is never rebuilt (it may
-                # already be exported/frozen), and stops the stale flag from
-                # clobbering a regenerate that just cleared it.
-                with capture_samples._rebuild_lock(sid):
-                    fresh = capture_samples_store.get_sample(sid)
-                    if fresh is None or fresh.get("is_locked"):
-                        with _state_lock:
-                            _state["skipped"] += 1
-                        continue
-                    try:
-                        duration_ms, hashes, member_trims = capture_samples._build_merged_wav(
-                            sid=sid,
-                            member_ids=[m["id"] for m in members],
-                            silence_ms=silence_ms,
-                        )
-                        patch = capture_samples._merged_wav_patch(duration_ms, hashes, member_trims)
-                        patch["inter_segment_silence_ms"] = silence_ms
-                        patch["transcript_join_strategy"] = join_strategy
-                        patch["transcript"] = capture_samples._build_default_transcript(
-                            members, join_strategy, words_for=_chip_words_lookup())
-                        capture_samples_store.update_sample(sid, patch)
-                    except Exception as e:
-                        # Over-cap under the new settings (merge_wavs raises) or
-                        # a build failure → flag stale (excluded from export),
-                        # never truncate. The old merged WAV stays in place.
-                        logger.info(
-                            "[reprocess-vad] sample %s → stale (%s)", sid[:8], e,
-                        )
-                        capture_samples_store.update_sample(sid, {"is_stale": 1})
-                        with _state_lock:
-                            _state["stale"] += 1
-                        continue
-                with _state_lock:
-                    _state["rebuilt"] += 1
-            except Exception:
-                logger.exception("[reprocess-vad] sample %s failed", sid[:8])
-                # Keep the counter and the flag in agreement: "stale" is
-                # reported as "flagged, excluded from export", so a failure
-                # outside the build try must still set is_stale (best effort).
-                # Under the rebuild lock with the same fresh-row re-check as
-                # the main path, so the flag never clobbers a regenerate that
-                # just cleared it nor touches a sample locked since the
-                # snapshot. The inner `with` has exited, so re-acquiring is
-                # safe. Counted stale only once the flag is written: when the
-                # write itself fails the sample is still exported, so it is
-                # counted skipped.
-                flagged = False
-                try:
-                    with capture_samples._rebuild_lock(sid):
-                        fresh = capture_samples_store.get_sample(sid)
-                        if fresh is not None and not fresh.get("is_locked"):
-                            capture_samples_store.update_sample(sid, {"is_stale": 1})
-                            flagged = True
-                except Exception:  # noqa: BLE001 — the DB may be what failed
-                    pass
-                with _state_lock:
-                    _state["stale" if flagged else "skipped"] += 1
-            finally:
-                with _state_lock:
-                    _state["processed"] += 1
-
-        with _state_lock:
-            _state["status"] = "done"
-            _state["finished_ts"] = time.time()
+        while True:
+            _run_pass()
+            with _state_lock:
+                if not _rerun_requested:
+                    _state["status"] = "done"
+                    _state["finished_ts"] = time.time()
+                    # Snapshot under the lock: a start() landing after the
+                    # release resets _state to a fresh job's zeros.
+                    summary = (_state["processed"], _state["total"],
+                               _state["rebuilt"], _state["stale"],
+                               _state["skipped"])
+                    break
+                # Settings changed mid-pass: rebuild every sample again. Each
+                # pass rewrites every sample it reaches, so the last pass's
+                # counters describe the whole job.
+                _rerun_requested = False
+                _state.update(_IDLE_STATE, status="running",
+                              started_ts=_state["started_ts"])
+            logger.info("[reprocess-vad] settings changed mid-run: reprocessing again")
         logger.info(
             "[reprocess-vad] done: %d/%d samples, %d rebuilt, %d stale, %d skipped",
-            _state["processed"], _state["total"], _state["rebuilt"],
-            _state["stale"], _state["skipped"],
+            *summary,
         )
     except Exception as e:
         logger.exception("[reprocess-vad] job failed")
         with _state_lock:
+            _rerun_requested = False
             _state["status"] = "error"
             _state["error"] = str(e)
             _state["finished_ts"] = time.time()
+
+
+def _run_pass() -> None:
+    """One walk over every sample with the settings as they are now. Raises
+    on a job-level failure; _run turns that into the "error" state."""
+    from faster_whisper_backend.captures import samples_store as capture_samples_store
+    # Lazy: routes imports this module.
+    from faster_whisper_backend.captures.routes import (
+        _chip_words_lookup, _global_join_strategy,
+    )
+
+    samples = capture_samples_store.list_samples(user_id=None)
+    with _state_lock:
+        _state["total"] = len(samples)
+
+    for s in samples:
+        sid = s["id"]
+        try:
+            # Fast-path skip on the pass-start snapshot; the authoritative
+            # is_locked re-check happens under the rebuild lock below.
+            if s.get("is_locked"):
+                with _state_lock:
+                    _state["skipped"] += 1
+                continue
+            members = capture_samples_store.get_members(sid)
+            if not members:
+                with _state_lock:
+                    _state["skipped"] += 1
+                continue
+            silence_ms = capture_samples._global_silence_ms()
+            join_strategy = _global_join_strategy()
+            # Hold the per-sid lock across the lock re-check, the rebuild,
+            # and the DB write (success OR stale), as regenerate_sample_api
+            # does. This keeps a concurrent regenerate from rewriting the
+            # merged WAV between our build and our patch, ensures a sample
+            # locked AFTER the job-start snapshot is never rebuilt (it may
+            # already be exported/frozen), and stops the stale flag from
+            # clobbering a regenerate that just cleared it.
+            with capture_samples._rebuild_lock(sid):
+                fresh = capture_samples_store.get_sample(sid)
+                if fresh is None or fresh.get("is_locked"):
+                    with _state_lock:
+                        _state["skipped"] += 1
+                    continue
+                try:
+                    duration_ms, hashes, member_trims = capture_samples._build_merged_wav(
+                        sid=sid,
+                        member_ids=[m["id"] for m in members],
+                        silence_ms=silence_ms,
+                    )
+                    patch = capture_samples._merged_wav_patch(duration_ms, hashes, member_trims)
+                    patch["inter_segment_silence_ms"] = silence_ms
+                    patch["transcript_join_strategy"] = join_strategy
+                    patch["transcript"] = capture_samples._build_default_transcript(
+                        members, join_strategy, words_for=_chip_words_lookup())
+                    capture_samples_store.update_sample(sid, patch)
+                except Exception as e:
+                    # Over-cap under the new settings (merge_wavs raises) or
+                    # a build failure → flag stale (excluded from export),
+                    # never truncate. The old merged WAV stays in place.
+                    logger.info(
+                        "[reprocess-vad] sample %s → stale (%s)", sid[:8], e,
+                    )
+                    capture_samples_store.update_sample(sid, {"is_stale": 1})
+                    with _state_lock:
+                        _state["stale"] += 1
+                    continue
+            with _state_lock:
+                _state["rebuilt"] += 1
+        except Exception:
+            logger.exception("[reprocess-vad] sample %s failed", sid[:8])
+            # Keep the counter and the flag in agreement: "stale" is
+            # reported as "flagged, excluded from export", so a failure
+            # outside the build try must still set is_stale (best effort).
+            # Under the rebuild lock with the same fresh-row re-check as
+            # the main path, so the flag never clobbers a regenerate that
+            # just cleared it nor touches a sample locked since the
+            # snapshot. The inner `with` has exited, so re-acquiring is
+            # safe. Counted stale only once the flag is written: when the
+            # write itself fails the sample is still exported, so it is
+            # counted skipped.
+            flagged = False
+            try:
+                with capture_samples._rebuild_lock(sid):
+                    fresh = capture_samples_store.get_sample(sid)
+                    if fresh is not None and not fresh.get("is_locked"):
+                        capture_samples_store.update_sample(sid, {"is_stale": 1})
+                        flagged = True
+            except Exception:  # noqa: BLE001 — the DB may be what failed
+                pass
+            with _state_lock:
+                _state["stale" if flagged else "skipped"] += 1
+        finally:
+            with _state_lock:
+                _state["processed"] += 1
