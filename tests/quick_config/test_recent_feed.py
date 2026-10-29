@@ -57,6 +57,28 @@ def test_tokenize_still_rejects_digit_and_underscore_start():
     assert q._extract_bigrams("Dosis 5mg täglich") == []
 
 
+@pytest.mark.parametrize("text, tokens, bigrams", [
+    # Hindi: \w alone stops at every vowel sign; HEAD gave ["लत"].
+    ("हिन्दी भाषा बोलते हैं",
+     ["हिन्दी", "भाषा", "बोलते", "हैं"],
+     ["हिन्दी भाषा", "भाषा बोलते", "बोलते हैं"]),
+    # Thai: HEAD gave ["ภาษาไทย", "คร"].
+    ("ภาษาไทย ครับ", ["ภาษาไทย", "ครับ"], ["ภาษาไทย ครับ"]),
+    # Arabic with harakat: HEAD dropped مُحَمَّد.
+    ("مُحَمَّد كتاب", ["مُحَمَّد", "كتاب"], ["مُحَمَّد كتاب"]),
+    # NFD Latin: HEAD gave the fragment "ric".
+    ("Éric Dupont", ["Éric", "Dupont"], ["Éric Dupont"]),
+], ids=["hindi", "thai", "arabic-harakat", "nfd-latin"])
+def test_tokenize_keeps_combining_marks_inside_words(text, tokens, bigrams):
+    assert q._tokenize(text) == tokens
+    assert q._extract_bigrams(text) == bigrams
+
+
+def test_tokenize_rejects_start_right_after_a_mark():
+    # A letter after a stray mark is partway into a word, like "5mg".
+    assert q._tokenize("́ab") == []
+
+
 def test_tokenize_drops_stopwords():
     assert q._tokenize("der die das Patient") == ["Patient"]
 
