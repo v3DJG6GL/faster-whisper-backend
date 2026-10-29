@@ -405,7 +405,9 @@ def test_budget_grows_with_the_list_and_a_large_rule_set_passes(monkeypatch, cap
     backtracking' (~0.44 ms/entry measured, 40k entries permitted). The
     budget is now 2 s plus a per-entry allowance, capped. The budget the
     helper is actually run with is captured, and the acceptance must come
-    from a helper that ran — validate fails OPEN (with a warning) on a crash."""
+    from a helper that ran — validate fails OPEN (with a warning) on a crash.
+    The helper gets what the in-process screen left of the budget, hence the
+    one-second slack below each budget."""
     import logging
     import subprocess
     real_run = subprocess.run
@@ -418,8 +420,8 @@ def test_budget_grows_with_the_list_and_a_large_rule_set_passes(monkeypatch, cap
     monkeypatch.setattr(subprocess, "run", _recording_run)
     with caplog.at_level(logging.WARNING, logger="whisper-api"):
         g.validate([(f"r{i}", r"\bwort%d\b" % i, "X") for i in range(3000)])
-    assert seen == [min(g._GUARD_TIMEOUT + g._PER_CHECK_BUDGET * 3000,
-                        g._GUARD_TIMEOUT_MAX)]
+    budget = min(g._GUARD_TIMEOUT + g._PER_CHECK_BUDGET * 3000, g._GUARD_TIMEOUT_MAX)
+    assert len(seen) == 1 and budget - 1 < seen[0] <= budget
     assert seen[0] > g._GUARD_TIMEOUT
     assert "regex guard skipped" not in caplog.text
 
@@ -432,9 +434,26 @@ def test_budget_grows_with_the_list_and_a_large_rule_set_passes(monkeypatch, cap
     seen.clear()
     g.validate([(f"r{i}", "x", "") for i in range(400)])
     g.validate([(f"r{i}", "x", "") for i in range(20000)])
-    assert seen[0] == g._GUARD_TIMEOUT + g._PER_CHECK_BUDGET * 400
+    budget = g._GUARD_TIMEOUT + g._PER_CHECK_BUDGET * 400
+    assert budget - 1 < seen[0] <= budget
     assert g._GUARD_TIMEOUT < seen[0] < g._GUARD_TIMEOUT_MAX
-    assert seen[1] == g._GUARD_TIMEOUT_MAX
+    assert g._GUARD_TIMEOUT_MAX - 1 < seen[1] <= g._GUARD_TIMEOUT_MAX
+
+
+def test_helper_gets_only_what_the_caller_left_of_the_budget(monkeypatch):
+    """The seconds the caller already spent compiling are charged against the
+    helper's timeout too: with the full budget on top, one save held its
+    thread ~2x the budget under atomic_json.save_lock, whose waiters give up
+    after 15 s. Nothing left refuses the save before the helper starts."""
+    import subprocess
+    seen = []
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: seen.append(k["timeout"])
+                        or subprocess.CompletedProcess(a, 0, '{"ok": true}', ""))
+    g.validate([("r", "x", "")], timeout=1.0, spent=0.75)
+    assert len(seen) == 1 and 0 < seen[0] <= 0.25
+    with pytest.raises(ValueError, match="r: checking the submitted patterns took"):
+        g.validate([("r", "x", "")], timeout=1.0, spent=1.0)
+    assert len(seen) == 1
 
 
 def test_timeout_verdict_names_the_real_probe_inputs(monkeypatch):

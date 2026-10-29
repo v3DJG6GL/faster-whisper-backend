@@ -1397,7 +1397,10 @@ def validate(checks: list, timeout: float | None = None, spent: float = 0.0) -> 
     case-insensitively, and an IGNORECASE class spanning all of Unicode costs
     milliseconds per atom, so 20 long entries held a save thread for seconds
     before the killable child ever started. Past the budget the save is
-    refused, checked between patterns.
+    refused, checked between patterns. The child gets only what is left of
+    the budget, so one save holds its thread for about one budget in all —
+    it runs under atomic_json.save_lock, whose waiters give up after
+    SAVE_LOCK_TIMEOUT_S.
     """
     if not checks:
         return
@@ -1424,7 +1427,8 @@ def validate(checks: list, timeout: float | None = None, spent: float = 0.0) -> 
                 "and make the alternatives of a repeated group mutually "
                 "exclusive."
             )
-        if spent + time.perf_counter() - t0 > budget:
+        left = budget - spent - (time.perf_counter() - t0)
+        if left <= 0:
             raise ValueError(
                 f"{where}: checking the submitted patterns took > "
                 f"{budget:.2g} s — simplify them (a case-insensitive "
@@ -1439,7 +1443,7 @@ def validate(checks: list, timeout: float | None = None, spent: float = 0.0) -> 
     try:
         proc = subprocess.run(
             [sys.executable, _SELF],
-            input=payload, capture_output=True, text=True, timeout=budget,
+            input=payload, capture_output=True, text=True, timeout=left,
         )
     except subprocess.TimeoutExpired as exc:
         idx = _last_index(getattr(exc, "stderr", None))
