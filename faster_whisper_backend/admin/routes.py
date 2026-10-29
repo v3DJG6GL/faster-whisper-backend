@@ -745,8 +745,11 @@ _TEST_PIPELINE_PROBE_WALL = 15.0
 # the text alone); ["match", rule, pattern] is a callback pattern, matched only
 # (its callback's output is unknown here, so the next mark tells the parent
 # whether the walk still sees the real text); ["trim", rule] is the terminal.
+# Before each timed unit the child prints its index and its start, in seconds
+# since the child started, so a kill blames only a unit that had the round.
 _PROBE_SRC = (
-    "import hashlib, json, re, sys\n"
+    "import hashlib, json, re, sys, time\n"
+    "t0 = time.perf_counter()\n"
     "text, units, skip, cap = json.load(sys.stdin)\n"
     "skip = dict(skip)\n"
     "h = None\n"
@@ -761,7 +764,7 @@ _PROBE_SRC = (
     "        continue\n"
     "    if i in skip and (skip[i] is None or h in skip[i]):\n"
     "        continue\n"
-    "    sys.stderr.write('%d\\n' % i)\n"
+    "    sys.stderr.write('%d %.4f\\n' % (i, time.perf_counter() - t0))\n"
     "    sys.stderr.flush()\n"
     "    try:\n"
     "        c = re.compile(u[2])\n"
@@ -799,7 +802,9 @@ def _probe_chain(text: str, units: list[list[Any]],
     Returns (marks, slow, stop): marks maps a rule to the sha1 of its input in
     the walk; slow holds the unit indices that timed out (each round skips the
     culprit and walks again); units from `stop` on were never probed (None =
-    the walk finished). None when the child cannot run at all — fails open
+    the walk finished). A unit the kill caught after the units before it used
+    up most of the round is not blamed: the next round runs long enough to
+    give it the whole timeout. None when the child cannot run at all — fails open
     like regex_guard.validate.
 
     `skip`: unit index -> the digests of its rule's input it is already known
@@ -825,6 +830,19 @@ def _probe_chain(text: str, units: list[list[Any]],
                 found[int(ri)] = h
         return found
 
+    def _culprit(err: str | bytes | None) -> tuple[int, float] | None:
+        # The last "index start" line: the unit running when it was killed.
+        if isinstance(err, bytes):
+            err = err.decode("utf-8", "replace")
+        found = None
+        for line in (err or "").splitlines():
+            ui, _, at = line.partition(" ")
+            try:
+                found = (int(ui), float(at))
+            except ValueError:
+                continue
+        return found
+
     known = skip or {}
     slow: set[int] = set()
 
@@ -835,8 +853,10 @@ def _probe_chain(text: str, units: list[list[Any]],
                               if marks.get(units[i][1]) in hs}, stop
 
     last: tuple[dict[int, str], int] = ({}, 0)
+    # How long the child took to reach the last unit it was killed in.
+    lead = 0.0
     for _ in range(_TEST_PIPELINE_PROBE_ROUNDS):
-        timeout = _TEST_PIPELINE_PROBE_TIMEOUT
+        want = timeout = _TEST_PIPELINE_PROBE_TIMEOUT + lead
         if budget is not None:
             timeout = min(timeout, budget["left"], budget.get("wall", timeout))
             if timeout <= 0:
@@ -859,13 +879,20 @@ def _probe_chain(text: str, units: list[list[Any]],
                 budget["left"] -= timeout
                 if "wall" in budget:
                     budget["wall"] -= time.monotonic() - t0
-            idx = regex_guard._last_index(getattr(exc, "stderr", None))
-            if not isinstance(idx, int) or not 0 <= idx < len(units):
-                return _done(_marks(getattr(exc, "stdout", None)), 0)
-            if timeout < _TEST_PIPELINE_PROBE_TIMEOUT:
-                return _done(_marks(getattr(exc, "stdout", None)), idx)
+            marks = _marks(getattr(exc, "stdout", None))
+            got = _culprit(getattr(exc, "stderr", None))
+            if got is None or not 0 <= got[0] < len(units):
+                return _done(marks, 0)
+            idx, at = got
+            if timeout < want:
+                return _done(marks, idx)
+            if timeout - at < 0.9 * _TEST_PIPELINE_PROBE_TIMEOUT:
+                # Fast units before it used up the round: not its fault.
+                lead = at
+                last = (marks, idx)
+                continue
             slow.add(idx)
-            last = (_marks(getattr(exc, "stdout", None)), idx + 1)
+            last = (marks, idx + 1)
         except Exception as exc:  # noqa: BLE001 - probe infra failure -> fail open
             logger.warning("test-pipeline probe skipped: %s", exc)
             return None

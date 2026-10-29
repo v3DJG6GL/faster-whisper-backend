@@ -312,3 +312,13 @@ def test_probe_walks_that_each_finish_still_stop_at_the_request_wall_time(client
     # One walk past the wall at most, and every walk under the round timeout.
     assert sum(spent) <= 0.3 + 0.2 + 0.05 * len(spent)
     assert len(spent) < 60
+
+
+def test_fast_patterns_adding_up_past_the_timeout_blame_none_of_them(monkeypatch):
+    # Each `(?:|){18}(?!)` takes ~0.04 s on "aaaa"; twelve of them pass the
+    # round's timeout together, so the one running at the kill must get a
+    # round of its own instead of being reported as too slow.
+    monkeypatch.setattr(admin_routes, "_TEST_PIPELINE_PROBE_TIMEOUT", 0.3)
+    _marks, slow, _stop = admin_routes._probe_chain(
+        "aaaa", _units(["(?:|){18}(?!)"] * 12))
+    assert slow == set()
