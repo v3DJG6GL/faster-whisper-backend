@@ -232,6 +232,38 @@ def test_release_in_an_all_leased_overflow_keeps_the_released_model(
     assert list(tx_models._loaded_models) == ["a", "b"]
 
 
+def test_a_leased_load_keeps_a_release_scheduled_trim_from_evicting(
+        monkeypatch):
+    # "a" is pinned and "b" overflows the cap; "b"'s release schedules a trim
+    # that spares it while a request for "c" is still building. Caching the
+    # leased "c" must not take that protection away from "b".
+    _stub_load(monkeypatch)
+    entered, gate = threading.Event(), threading.Event()
+
+    def _model(path, **kw):
+        if path == "c":
+            entered.set()
+            gate.wait(5)
+        return FakeModel()
+    sys.modules["faster_whisper"].WhisperModel = _model
+    monkeypatch.setattr(tx_models.cfg, "MAX_LOADED_MODELS", 1, raising=False)
+    _register("a")
+    tx_models._model_leases["a"] = 1
+
+    async def scenario():
+        await tx_models._get_or_load_model("b", lease=True)
+        load = asyncio.ensure_future(
+            tx_models._get_or_load_model("c", lease=True))
+        await asyncio.to_thread(entered.wait, 5)
+        tx_models._release_model_lease("b")
+        gate.set()
+        await load
+        await tx_models._trim_task
+
+    asyncio.run(scenario())
+    assert sorted(tx_models._loaded_models) == ["a", "b", "c"]
+
+
 def test_release_during_an_unleased_over_cap_load_trims_after_it(monkeypatch):
     # "a" is leased, so the preload of "b" overflows the cap; "a"'s lease goes
     # while "b" is still being built (nothing over the cap yet to trim), and

@@ -676,15 +676,18 @@ def _schedule_trim_to_cap(keep: "str | None" = None) -> None:
     pending trim covers every call: it re-reads the cache once it holds the
     lock, and runs to the end without an await once it does.
 
-    ``keep`` (the model whose lease just went, or that a load just cached) is
-    never evicted by it: in an all-leased overflow that model is the only
-    unleased entry, and evicting it made every request for it a cold reload.
-    The latest call's ``keep`` wins; the excess is reclaimed by the trim the
-    release of another model's lease schedules."""
+    ``keep`` (the model whose lease just went, or that an unleased load just
+    cached) is never evicted by it: in an all-leased overflow that model is
+    the only unleased entry, and evicting it made every request for it a cold
+    reload.
+    The latest call's ``keep`` wins, except that ``None`` never clears a
+    pending trim's; the excess is reclaimed by the trim the release of
+    another model's lease schedules."""
     global _trim_task, _trim_keep
     if len(_loaded_models) <= cfg.MAX_LOADED_MODELS:
         return
-    _trim_keep = keep
+    if keep is not None or _trim_task is None or _trim_task.done():
+        _trim_keep = keep
     if _trim_task is not None and not _trim_task.done():
         return
     try:
@@ -1358,12 +1361,14 @@ async def _load_on_miss(name: str, *, lease: bool) -> "WhisperModel":
         # stop the (shielded) registry write, and a registry
         # entry with no cached model is a phantom nothing ever unregisters.
         _loaded_models[name] = new_model
+        # A cancelled caller never receives the model: it stays unleased.
+        leased = lease and _cancelled is None
         # A lease released while this was building scheduled no trim (the
         # cache was not over the cap yet), and an unleased load (preload, a
         # cancelled caller) has no release of its own to reclaim the excess.
-        _schedule_trim_to_cap(keep=name)
-        # A cancelled caller never receives the model: it stays unleased.
-        leased = lease and _cancelled is None
+        # A leased load is safe from the trim anyway: it spares nothing, so
+        # a pending trim keeps sparing the model whose release scheduled it.
+        _schedule_trim_to_cap(keep=None if leased else name)
         if leased:
             _model_leases[name] = _model_leases.get(name, 0) + 1
         # Off the loop: register_loaded_model persists the measurement
