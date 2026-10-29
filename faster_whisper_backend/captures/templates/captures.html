@@ -3730,6 +3730,18 @@
     return m + ':' + (sec < 10 ? '0' : '') + sec;
   }
 
+  // Scroll the word strip, and only the strip, so `el` shows inside it (like
+  // scrollIntoView 'nearest'). scrollIntoView itself also scrolls the page
+  // and any modal around the strip, so a playing card pulled the view back
+  // to itself on every word and the user could not scroll away.
+  function _scrollStripTo(strip, el) {
+    if (!strip || !el || !strip.getBoundingClientRect) return;
+    var s = strip.getBoundingClientRect(), w = el.getBoundingClientRect();
+    var top = s.top + (strip.clientTop || 0), bottom = top + strip.clientHeight;
+    if (w.top < top) strip.scrollTop -= top - w.top;
+    else if (w.bottom > bottom) strip.scrollTop += w.bottom - bottom;
+  }
+
   // Karaoke highlight shared by every surface (single-capture, group expand,
   // proposal preview): toggles `.active` on both the Corrections word-strip
   // span AND the matching Final-result span (state.wordToGround), so the
@@ -3748,8 +3760,7 @@
     if (idx >= 0) {
       if (state.wordEls && state.wordEls[idx]) {
         state.wordEls[idx].classList.add('active');
-        try { state.wordEls[idx].scrollIntoView({ block: 'nearest', inline: 'nearest' }); }
-        catch (_) {}
+        _scrollStripTo(state.stripEl, state.wordEls[idx]);
       }
       if (state.wordToGround && state.wordToGround[idx]) {
         state.wordToGround[idx].classList.add('active');

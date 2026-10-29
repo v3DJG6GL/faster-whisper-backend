@@ -2177,3 +2177,38 @@ console.log(JSON.stringify([
   spans.join('')]));
 """)
     assert out == ["so um yes", "so um yeah", "so um yeah"]
+
+
+# ---- karaoke scroll ---------------------------------------------------------------------------
+
+@needs_node
+def test_karaoke_highlight_scrolls_only_the_word_strip(page, tmp_path):
+    """The active word was brought on screen with scrollIntoView, which also
+    scrolls the page and the merge modal: a playing card pulled the view
+    back to itself on every word."""
+    fns = "\n".join(_js_function(page, f) for f in (
+        "_scrollStripTo", "_setActiveWord"))
+    out = _run_node(tmp_path, fns + r"""
+var calls = 0;
+function word(top) {
+  return { classList: { add: function() {}, remove: function() {} },
+    scrollIntoView: function() { calls++; },
+    getBoundingClientRect: function() {
+      return { top: top - strip.scrollTop, bottom: top + 20 - strip.scrollTop };
+    } };
+}
+// The strip shows content rows 0..100 when scrollTop is 0.
+var strip = { scrollTop: 0, clientTop: 1, clientHeight: 100,
+  getBoundingClientRect: function() { return { top: 500, bottom: 602 }; } };
+var state = { stripEl: strip,
+  wordEls: [word(510), word(560), word(650), word(505)] };
+var tops = [];
+[1, 2, 3, 0].forEach(function(i) {
+  _setActiveWord(state, i);
+  tops.push(strip.scrollTop);
+});
+console.log(JSON.stringify([calls, tops]));
+""")
+    # Visible: no scroll; below the strip: down to its bottom edge; above
+    # the strip's top: back up to it; visible again: left alone.
+    assert out == [0, [0, 69, 4, 4]]
