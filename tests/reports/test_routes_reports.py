@@ -418,6 +418,22 @@ def test_nested_string_in_steps_over_cap_422(client):
     assert r.status_code == 422
 
 
+@pytest.mark.parametrize("nested", [
+    r'"steps": [["stage", "b\ud800", "c"]]',
+    r'"stages": [{"name": "x\ud800"}]',
+    r'"stages": [{"k\udc00": "v"}]',
+])
+def test_lone_surrogate_nested_in_steps_or_stages_422(client, nested):
+    """A JSON \\ud800 escape inside the list[Any] fields used to pass
+    validation and 500 at the sqlite bind (UnicodeEncodeError); it must be
+    refused with a 422 like the typed str fields."""
+    body = '{"request_id": "req-surr", "user_comment": "x", %s}' % nested
+    r = client.post(_SUBMIT, content=body,
+                    headers={"content-type": "application/json"})
+    assert r.status_code == 422
+    assert "invalid Unicode" in r.json()["detail"]
+
+
 def test_realistic_steps_and_stages_still_accepted(client):
     steps = [[f"stage-{i}", "before " * 200, "after " * 200] for i in range(40)]
     stages = [{"name": "transcribing", "model": "large-v3", "seconds": 1.5},

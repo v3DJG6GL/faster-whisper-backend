@@ -224,6 +224,20 @@ async def submit_report(
             "Report submission is disabled by the admin.",
         )
 
+    # A JSON "\ud800" escape nested in the list[Any] fields passes validation
+    # and only fails at the sqlite bind in upsert_report — a 500 after the
+    # rate-limit budget was spent. Checked here rather than in the validator:
+    # a validation error echoes the input, and rendering that 422 hits the
+    # same UnicodeEncodeError.
+    try:
+        json.dumps([payload.steps, payload.stages],
+                   ensure_ascii=False).encode("utf-8")
+    except UnicodeEncodeError:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            "steps/stages contain invalid Unicode (lone surrogate)",
+        )
+
     _rate.hit(rate_limit.identity_key(user, request))
 
     intended = (payload.intended_text or "").strip()
