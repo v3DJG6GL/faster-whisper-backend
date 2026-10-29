@@ -25,10 +25,10 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
-import sys
 import time
-import unicodedata
 from typing import Any
+
+from faster_whisper_backend.core.unicode_marks import MARKS as _MARKS
 
 logger = logging.getLogger("whisper-api")
 
@@ -43,32 +43,8 @@ logger = logging.getLogger("whisper-api")
 # fragments "mg" / "intern".
 _TOKEN_MIN_LEN = 2
 _TOKEN_MAX_LEN = 64
-
-
-def _combining_marks_class() -> str:
-    """Every Unicode combining mark (Mn/Mc/Me) as char-class ranges.
-
-    `re` has no \\p{M} and \\w excludes marks, so without them a token
-    stopped at every vowel sign: "हिन्दी भाषा बोलते" gave only "लत", a
-    fragment from inside "बोलते" that, picked as a cb:map key, rewrites
-    the inside of other words. Same for Thai, Bengali, vowelled Arabic
-    and NFD-decomposed Latin ("E" + U+0301 + "ric" gave "ric")."""
-    ranges: list[list[int]] = []
-    for cp in range(sys.maxunicode + 1):
-        if unicodedata.category(chr(cp))[0] == "M":
-            if ranges and ranges[-1][1] == cp - 1:
-                ranges[-1][1] = cp
-            else:
-                ranges.append([cp, cp])
-    return "".join(
-        re.escape(chr(a)) if a == b else f"{re.escape(chr(a))}-{re.escape(chr(b))}"
-        for a, b in ranges
-    )
-
-
 # A mark counts as a word char on both sides: it extends the tail and,
 # before a letter, means the match would start partway into a word.
-_MARKS = _combining_marks_class()
 _TOKEN_RE = re.compile(rf"(?<![\w{_MARKS}])[^\W\d_][\w{_MARKS}\-]*")
 
 # Small German stopword set — never useful as autocomplete candidates

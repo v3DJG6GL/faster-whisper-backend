@@ -31,6 +31,8 @@ from __future__ import annotations
 import re
 from typing import Callable
 
+from faster_whisper_backend.core.unicode_marks import MARKS as _MARKS
+
 # Values that count as punctuation for the "dictated punctuation wins" prefix.
 _PUNCT_VALUE_CHARS = frozenset(".,:;!?")
 # What Whisper puts before a dictated punctuation word: its own marks
@@ -51,6 +53,14 @@ def _ss_variant(key: str) -> str:
     return key.replace("ß", "ss").replace("ẞ", "SS")
 
 
+# Word edges, marks included. Only a non-ASCII edge gets the mark class: it
+# is ~800 ranges, and splicing it into every key of a 500-key map made each
+# compile (every save) ~70x slower; an ASCII letter next to a mark occurs
+# only in NFD text, which whisper does not emit.
+_NOT_AFTER_WORD = rf"(?<![\w{_MARKS}])"
+_NOT_BEFORE_WORD = rf"(?![\w{_MARKS}])"
+
+
 def _bounded(key: str) -> str:
     """``key`` escaped, word-bounded on every edge that is not whitespace.
 
@@ -59,12 +69,14 @@ def _bounded(key: str) -> str:
     a key that starts or ends with a space (" Prozent", " Bindestrich ") sits
     right against the neighbouring word, which a blanket ``(?<!\\w)`` /
     ``(?!\\w)`` refuses. A punctuation edge keeps the bound: a "-" key must
-    not rewrite the hyphen inside "E-Mail"."""
+    not rewrite the hyphen inside "E-Mail". A combining mark counts as a
+    word char (``\\w`` has none): a "लत" key must not rewrite the inside of
+    "बोलते", nor "คร" that of "ครับ"."""
     out = re.escape(key)
     if key[:1] and not key[:1].isspace():
-        out = r"(?<!\w)" + out
+        out = (r"(?<!\w)" if key[:1].isascii() else _NOT_AFTER_WORD) + out
     if key[-1:] and not key[-1:].isspace():
-        out += r"(?!\w)"
+        out += r"(?!\w)" if key[-1:].isascii() else _NOT_BEFORE_WORD
     return out
 
 

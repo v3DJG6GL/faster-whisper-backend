@@ -54,6 +54,16 @@ def test_word_bounded_key_still_needs_whole_word():
     assert pattern.sub(replace, "12... Komma 5") == "12, 5"
 
 
+def test_key_does_not_match_between_combining_marks():
+    """`\\w` has no combining marks, so the bounds saw a word edge at every
+    vowel sign: a "लत" / "คร" key (both offered as autocomplete fragments)
+    rewrote the inside of "बोलते" / "ครับ" to "बोXे" / "Yับ"."""
+    pattern, replace, _ = dictation_map.compile_map(
+        {"लत": "X", "คร": "Y", "बोलते": "Z"})
+    assert pattern.sub(replace, "हम बोलते हैं ครับ") == "हम Z हैं ครับ"
+    assert pattern.sub(replace, "लत คร") == "X Y"
+
+
 def _factory_de_map():
     with open(os.path.join(paths.REPO_ROOT, "config.json"), encoding="utf-8") as fh:
         rules = json.load(fh)["PIPELINE_RULES"]
