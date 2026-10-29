@@ -19,6 +19,7 @@ import math
 import os
 import re
 import shutil
+import sys
 import time
 from collections import OrderedDict
 from collections.abc import Callable
@@ -1567,8 +1568,8 @@ async def _idle_evictor() -> None:
 
     VRAM reclamation: pop the WhisperModel reference from _loaded_models
     so its CT2 destructor can run, then gc.collect() to break any
-    remaining cycles. If torch is importable and CUDA is active, also
-    call torch.cuda.empty_cache() to release pool-cached blocks.
+    remaining cycles. If torch is already imported and CUDA is active,
+    also call torch.cuda.empty_cache() to release pool-cached blocks.
     """
     import gc
     while True:
@@ -1615,12 +1616,16 @@ async def _idle_evictor() -> None:
                 # full gc on the loop every 30 s would be pure stall.
                 continue
             gc.collect()
-            try:
-                import torch
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
-            except Exception:
-                pass
+            # Only a torch some other subsystem already imported can hold
+            # pool-cached blocks; a cold import here would stall the loop for
+            # seconds (libtorch + CUDA) and grow the RSS this pass frees.
+            torch = sys.modules.get("torch")
+            if torch is not None:
+                try:
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                except Exception:
+                    pass
         except asyncio.CancelledError:
             return
         except Exception:

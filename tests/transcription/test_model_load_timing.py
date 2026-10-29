@@ -480,3 +480,53 @@ def test_evictor_logs_the_unload_it_performed(monkeypatch, caplog):
     finally:
         tx_models._loaded_models.clear()
         model_registry._loaded_models.clear()
+
+
+class _ImportRecorder:
+    """A meta-path finder that only records which modules were looked up."""
+
+    def __init__(self):
+        self.names = []
+
+    def find_spec(self, name, path=None, target=None):
+        self.names.append(name)
+        return None
+
+
+def test_evictor_does_not_cold_import_torch(monkeypatch):
+    """A whisper-only process never imported torch: the unload must not pull
+    libtorch + CUDA in on the event loop just to empty a cache it never had."""
+    import gc
+    _register_stale("c")
+    tx_models._model_leases.pop("c", None)
+    monkeypatch.setattr(gc, "collect", lambda *a: None)
+    monkeypatch.delitem(sys.modules, "torch", raising=False)
+    recorder = _ImportRecorder()
+    monkeypatch.setattr(sys, "meta_path", [recorder, *sys.meta_path])
+    try:
+        _run_one_evictor_tick(monkeypatch)
+        assert "c" not in tx_models._loaded_models
+        assert "torch" not in recorder.names
+        assert "torch" not in sys.modules
+    finally:
+        tx_models._loaded_models.clear()
+        model_registry._loaded_models.clear()
+
+
+def test_evictor_empties_an_already_imported_torch_cache(monkeypatch):
+    import gc
+    _register_stale("d")
+    tx_models._model_leases.pop("d", None)
+    monkeypatch.setattr(gc, "collect", lambda *a: None)
+    emptied = []
+    torch = types.ModuleType("torch")
+    torch.cuda = types.SimpleNamespace(
+        is_available=lambda: True, empty_cache=lambda: emptied.append(1))
+    monkeypatch.setitem(sys.modules, "torch", torch)
+    try:
+        _run_one_evictor_tick(monkeypatch)
+        assert "d" not in tx_models._loaded_models
+        assert emptied == [1]
+    finally:
+        tx_models._loaded_models.clear()
+        model_registry._loaded_models.clear()
