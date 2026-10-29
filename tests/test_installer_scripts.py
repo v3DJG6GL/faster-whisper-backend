@@ -39,6 +39,33 @@ def test_linux_installer_stops_service_before_pip():
     assert stop < first_pip
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="bash installer")
+def test_linux_installer_runs_venv_steps_without_sudo_as_root(tmp_path):
+    # Already root with no SUDO_USER (su -, a root container) skips the sudo
+    # re-exec — every venv/pip step must then run without sudo, which such a
+    # host may not have. Run the script's own as_user with a stub sudo first
+    # on PATH that echoes its argv instead of running anything.
+    sh = _read("install-service.sh")
+    helper = re.search(r"^as_user\(\) .*$", sh, re.M).group(0)
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    (bindir / "sudo").write_text('#!/bin/sh\necho "sudo $*"\n', encoding="utf-8")
+    (bindir / "sudo").chmod(0o755)
+
+    def run(user):
+        out = subprocess.run(
+            [shutil.which("bash"), "-c", f"set -euo pipefail\n{helper}\nas_user echo hi"],
+            capture_output=True, text=True, timeout=60,
+            env={"PATH": f"{bindir}:/usr/bin:/bin", "RUN_USER": user})
+        assert out.returncode == 0, out.stderr
+        return out.stdout
+    assert run("root") == "hi\n"
+    assert run("alice") == "sudo -u alice echo hi\n"
+    # Every call site goes through the helper (the hint text at the end is
+    # printed, not run).
+    assert sh.count('sudo -u "$RUN_USER"') == 1
+
+
 def test_linux_installer_cpu_full_uses_pytorch_cpu_index():
     # The PyPI torch wheel hard-depends on the nvidia-* CUDA runtime; the CPU
     # --full branch must install the extras from the cpu wheel index.

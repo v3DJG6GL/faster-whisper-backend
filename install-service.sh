@@ -45,6 +45,10 @@ fi
 # Run the service as the human who invoked us, not root.
 RUN_USER="${SUDO_USER:-root}"
 
+# Run a venv/pip step as RUN_USER. A plain root shell (su -, a root
+# container) may have no sudo at all, and `sudo -u root` adds nothing there.
+as_user() { if [ "$RUN_USER" = root ]; then "$@"; else sudo -u "$RUN_USER" "$@"; fi; }
+
 VENV="$REPO_DIR/venv"
 PY="$VENV/bin/python"
 
@@ -60,7 +64,7 @@ if [ ! -x "$PY" ]; then
   fi
   echo "Creating venv at $VENV ..."
   # Create the venv as the invoking user so they own it.
-  sudo -u "$RUN_USER" python3 -m venv "$VENV"
+  as_user python3 -m venv "$VENV"
 fi
 
 # Stop a running service before pip touches the venv — otherwise wheels whose
@@ -69,11 +73,11 @@ fi
 systemctl stop "${SERVICE_NAME}" 2>/dev/null || true
 
 echo "Installing dependencies (gpu=$GPU full=$FULL) ..."
-sudo -u "$RUN_USER" "$PY" -m pip install --upgrade pip
+as_user "$PY" -m pip install --upgrade pip
 if [ "$GPU" -eq 1 ]; then
-  sudo -u "$RUN_USER" "$PY" -m pip install -r "$REPO_DIR/requirements.txt" -r "$REPO_DIR/requirements-gpu.txt"
+  as_user "$PY" -m pip install -r "$REPO_DIR/requirements.txt" -r "$REPO_DIR/requirements-gpu.txt"
 else
-  sudo -u "$RUN_USER" "$PY" -m pip install -r "$REPO_DIR/requirements.txt"
+  as_user "$PY" -m pip install -r "$REPO_DIR/requirements.txt"
 fi
 
 # --full extras. Keep the GPU branch in sync with Dockerfile.gpu's
@@ -96,24 +100,24 @@ if [ "$FULL" -eq 1 ]; then
   if [ "$GPU" -eq 1 ]; then
     # requirements-bgm.txt pins the versions (single source of truth,
     # Renovate-bumped); "audio-separator[gpu]" only swaps in the GPU extra.
-    sudo -u "$RUN_USER" "$PY" -m pip install -r "$REPO_DIR/requirements-diarize.txt" \
+    as_user "$PY" -m pip install -r "$REPO_DIR/requirements-diarize.txt" \
       -r "$REPO_DIR/requirements-bgm.txt" "audio-separator[gpu]" \
       --extra-index-url https://download.pytorch.org/whl/cu126
-    sudo -u "$RUN_USER" "$PY" -m pip install --force-reinstall --no-deps "onnxruntime-gpu==1.26.*"
+    as_user "$PY" -m pip install --force-reinstall --no-deps "onnxruntime-gpu==1.26.*"
     # Translation (llama-cpp-python): the project's cu124 wheel index — no
     # cu126 index exists; cu124 wheels run on a cu12.6 userspace (CUDA 12
     # minor-version compatibility). PyPI is sdist-only (source build).
-    sudo -u "$RUN_USER" "$PY" -m pip install -r "$REPO_DIR/requirements-translate.txt" \
+    as_user "$PY" -m pip install -r "$REPO_DIR/requirements-translate.txt" \
       --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu124
   else
     # CPU torch from the PyTorch cpu index — the PyPI wheel hard-depends on
     # the whole nvidia-* CUDA runtime (mirrors Dockerfile's extras install).
-    sudo -u "$RUN_USER" "$PY" -m pip install -r "$REPO_DIR/requirements-diarize.txt" \
+    as_user "$PY" -m pip install -r "$REPO_DIR/requirements-diarize.txt" \
       -r "$REPO_DIR/requirements-bgm.txt" \
       --extra-index-url https://download.pytorch.org/whl/cpu
     # Translation (llama-cpp-python): prebuilt CPU wheels from the project
     # index — PyPI is sdist-only and would compile llama.cpp from source.
-    sudo -u "$RUN_USER" "$PY" -m pip install -r "$REPO_DIR/requirements-translate.txt" \
+    as_user "$PY" -m pip install -r "$REPO_DIR/requirements-translate.txt" \
       --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu
   fi
 fi
@@ -147,7 +151,7 @@ fi
 # skipped by the loader.
 NVIDIA_ENV_LINE=""
 if [ "$GPU" -eq 1 ]; then
-  SITE_PKGS="$(sudo -u "$RUN_USER" "$PY" -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])')"
+  SITE_PKGS="$(as_user "$PY" -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])')"
   LD_PATHS=""
   for lib in cublas cudnn cuda_runtime cuda_nvrtc cufft curand cusolver cusparse nvjitlink; do
     LD_PATHS="${LD_PATHS:+${LD_PATHS}:}${SITE_PKGS}/nvidia/${lib}/lib"
