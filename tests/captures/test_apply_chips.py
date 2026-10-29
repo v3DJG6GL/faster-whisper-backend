@@ -91,6 +91,33 @@ _WORD_CASES = [
      [_w(" Satz"), _w(" eins."), _w("", True), _w("", True), _w(" Satz"),
       _w(" zwei")],
      "Satz drei. Satz zwei"),
+    # A verbatim match far from idx must not beat the flexible match at it:
+    # the chip marks the first pair, the line break is dictated.
+    ("Hallo\nWelt und dann Hallo Welt",
+     [{"idx": 0, "idx_end": 1, "wrong": "Hallo Welt", "correct": "Servus"}],
+     [_w(" Hallo"), _w(" Welt"), _w(" und"), _w(" dann"), _w(" Hallo"),
+      _w(" Welt")],
+     "Servus und dann Hallo Welt"),
+    # A chip saved on a form the pipeline has since changed ("die" is now
+    # "Die" at sentence start) applies on the words at its idx, as the page
+    # shows it, not on a later "die" the stale `wrong` still matches.
+    ("Die Katze und die Maus",
+     [{"idx": 0, "wrong": "die", "correct": "Der"}],
+     [_w(" Die"), _w(" Katze"), _w(" und"), _w(" die"), _w(" Maus")],
+     "Der Katze und die Maus"),
+    # Same for a training token: the chip was saved on the runtime "zwei",
+    # the word at its idx now reads "2".
+    ("Er sagt 2 mal zwei",
+     [{"idx": 2, "wrong": "zwei", "correct": "drei"}],
+     [_w(" Er"), _w(" sagt"), {"word": " zwei", "train_word": " 2"},
+      _w(" mal"), _w(" zwei")],
+     "Er sagt drei mal zwei"),
+    # A run-together stale `wrong` that also occurs later as a word.
+    ("Ich sage Hallo Welt und HalloWelt",
+     [{"idx": 2, "idx_end": 3, "wrong": "HalloWelt", "correct": "Hallo, Welt"}],
+     [_w(" Ich"), _w(" sage"), _w(" Hallo"), _w(" Welt"), _w(" und"),
+      _w(" HalloWelt")],
+     "Ich sage Hallo, Welt und HalloWelt"),
     # A chip saved before the words kept their spaces ("HalloWelt"): the
     # page shows it on the words at its idx, so it applies there.
     ("Hallo Welt wie geht's",

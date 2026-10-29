@@ -60,11 +60,12 @@ def _apply_chips_to_text(
 ) -> str:
     """Substitute each chip's `wrong` text with its `correct` text in
     `text`. Walk in idx order so multi-word spans replace as a unit.
-    A verbatim match wins; failing that, any whitespace run in `wrong`
-    matches any whitespace run in the text (a multi-word chip's `wrong`
-    joins its words with spaces, the text may have a dictated line break
-    there). If `wrong` still isn't found, a chip is left alone. Mirrored
-    byte-for-byte by the JS twin `_applyChipsToText` so server- and
+    A verbatim match counts, and so does one where any whitespace run in
+    `wrong` matches any whitespace run in the text (a multi-word chip's
+    `wrong` joins its words with spaces, the text may have a dictated line
+    break there); an anchorless chip takes the first occurrence, verbatim
+    before flexible. If `wrong` still isn't found, a chip is left alone.
+    Mirrored byte-for-byte by the JS twin `_applyChipsToText` so server- and
     client-derived transcripts agree.
 
     Only a whole-word occurrence counts: a chip on "cat" must not rewrite
@@ -72,15 +73,18 @@ def _apply_chips_to_text(
     anchored replacement (a `correct` that contains `wrong` is never hit
     twice) and, of several occurrences, takes the one whose word position
     is nearest its `idx` — a chip on the second "die" must not rewrite the
-    first. `idx` counts karaoke words (one per raw word, removed ones
-    included), not text tokens. `words` — the aligned karaoke items the
-    chips were made on — maps idx onto the text's token position: a filler
-    or a dictated "Komma" owns no token, so without it the position is only
-    a nearest match and drifts past such words. With `words`, an anchored
-    chip whose stored `wrong` is not in the text is matched by the words at
-    idx..idx_end instead, the way the page re-derives it on display: a chip
-    saved before those words kept their spaces ("HalloWelt") shows as
-    applied on the page and must be applied here too."""
+    first. That nearest pick runs over the verbatim and the whitespace-
+    flexible passes together. `idx` counts karaoke words (one per raw word,
+    removed ones included), not text tokens. `words` — the aligned karaoke
+    items the chips were made on — maps idx onto the text's token position:
+    a filler or a dictated "Komma" owns no token, so without it the position
+    is only a nearest match and drifts past such words. With `words`, an
+    anchored chip is also matched by the words at idx..idx_end, the way the
+    page re-derives `wrong` on display (a tie with the stored `wrong` keeps
+    the stored one): a chip saved before those words kept their spaces
+    ("HalloWelt"), or on a form the pipeline has since changed, shows on the
+    page at its idx and must be applied there too, not on another occurrence
+    of the stale `wrong`."""
     if not corrections:
         return text or ""
     out = text or ""
@@ -129,6 +133,10 @@ def _apply_chips_to_text(
             healed = _span_text(words, idx, c.get("idx_end"))
             if healed and healed != wrong:
                 needles.append(healed)
+        # An anchored chip takes the occurrence nearest its idx over every
+        # pass (a tie keeps the earlier pass): the page strikes the words at
+        # idx, so a far match of the stale `wrong` must not beat the words
+        # there.
         best, best_end, best_d = -1, -1, -1
         for needle, flex in ((n, f) for n in needles for f in (False, True)):
             for i, j in _occurrences(out, needle, cursor if anchored else 0,
@@ -147,14 +155,15 @@ def _apply_chips_to_text(
                 d = abs(k + shift - pos)
                 if best < 0 or d < best_d:
                     best, best_end, best_d = i, j, d
-            if best >= 0:
+            if best >= 0 and not anchored:
                 break
         if best < 0:
             continue
+        hit = out[best:best_end]
         out = out[:best] + correct + out[best_end:]
         if anchored:
             cursor = best + len(correct)
-            shift += len(needle.split()) - len(correct.split())
+            shift += len(hit.split()) - len(correct.split())
     return out
 
 

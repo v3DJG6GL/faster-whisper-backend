@@ -3392,11 +3392,13 @@
     // joining into the group's final-result preview. Same matching rules
     // as the server: whole-word occurrences only, an anchored chip searches
     // past the previous anchored replacement and takes the occurrence
-    // nearest its idx; a verbatim match wins, else any whitespace run in
-    // `wrong` matches any whitespace run in the text. `words` (the aligned
-    // karaoke words the chips were made on) maps idx onto the text's token
-    // position, past removed words, and stands in for a stored `wrong` the
-    // text no longer has (the words at idx..idx_end).
+    // nearest its idx over the verbatim and the whitespace-flexible passes
+    // (any whitespace run in `wrong` matches any whitespace run in the
+    // text); an anchorless chip takes the first, verbatim before flexible.
+    // `words` (the aligned karaoke words the chips were made on) maps idx
+    // onto the text's token position, past removed words, and is searched
+    // next to a possibly stale stored `wrong` (the words at idx..idx_end,
+    // what renderChips heals `wrong` to; a tie keeps the stored one).
     if (!corrections || !corrections.length) return text || '';
     var out = text || '';
     var W = /[\p{L}\p{N}_]/u;
@@ -3467,10 +3469,14 @@
           .map(tokOf).join('').replace(/^\s+/, '');
         if (healed && healed !== wrong) needles.push(healed);
       }
-      var best = -1, bestEnd = -1, bestD = -1, needle = wrong;
-      for (var t = 0; t < needles.length * 2 && best < 0; t++) {
-        needle = needles[t >> 1];
-        var occ = occurrences(needle, anchored ? cursor : 0, t % 2 === 1);
+      // An anchored chip takes the occurrence nearest its idx over every
+      // pass (a tie keeps the earlier pass): the page strikes the words at
+      // idx, so a far match of the stale `wrong` must not beat the words
+      // there.
+      var best = -1, bestEnd = -1, bestD = -1;
+      for (var t = 0; t < needles.length * 2 && (anchored || best < 0); t++) {
+        var occ = occurrences(needles[t >> 1], anchored ? cursor : 0,
+                              t % 2 === 1);
         for (var o = 0; o < occ.length; o++) {
           var i = occ[o][0], j = occ[o][1];
           if ((W.test(out[i]) && i > 0 && W.test(out[i - 1]))
@@ -3486,10 +3492,11 @@
         }
       }
       if (best < 0) return;
+      var hit = out.slice(best, bestEnd);
       out = out.slice(0, best) + correct + out.slice(bestEnd);
       if (anchored) {
         cursor = best + correct.length;
-        shift += nWords(needle) - nWords(correct);
+        shift += nWords(hit) - nWords(correct);
       }
     });
     return out;
