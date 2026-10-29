@@ -393,6 +393,29 @@ def test_a_late_kill_walks_again_without_spending_a_round_or_the_budget(monkeypa
     assert abs(budget["left"] - 2.0) < 1e-9
 
 
+def test_a_slow_child_start_is_not_blamed_on_the_unit_running_at_the_kill(monkeypatch):
+    # A loaded Windows runner can spend most of a 0.2 s round just starting
+    # the child (CI run 1667): unit 1 had only just begun at the kill, so it
+    # gets a round of its own with the start (twice) before it, instead of
+    # being reported as too slow.
+    monkeypatch.setattr(admin_routes, "_TEST_PIPELINE_PROBE_TIMEOUT", 0.2)
+    timeouts = _scripted_rounds(monkeypatch, [
+        (_mark(0), "s 0.1900\n1 0.0001\n"), _mark(0)])
+    marks, slow, stop = admin_routes._probe_chain("aaaa", _units(["a", "b"]))
+    assert (marks, slow, stop) == ({0: admin_routes._text_sha("aaaa")}, set(), None)
+    assert timeouts == [0.2, pytest.approx(0.2 + 0.0001 + 2 * 0.19)]
+
+
+def test_the_child_reports_its_start_before_any_unit():
+    p = subprocess.run(
+        [sys.executable, "-I", "-c", admin_routes._PROBE_SRC],
+        input='["aaaa", [["match", 0, "a"]], [], 100, %r]' % (time.time() - 0.5),
+        capture_output=True, text=True, timeout=30)
+    first, second = p.stderr.splitlines()[:2]
+    assert first.startswith("s ") and float(first[2:]) >= 0.5
+    assert second.startswith("0 ")
+
+
 def test_fast_units_that_outlast_two_rounds_still_get_walked_to_the_end(monkeypatch):
     # The fast prefix outlasts round 1 (killed in unit 2) and round 2 (in
     # unit 4): the third round gets the time to finish the walk, instead of

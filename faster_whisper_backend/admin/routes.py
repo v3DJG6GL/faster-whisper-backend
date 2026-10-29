@@ -754,11 +754,16 @@ _TEST_PIPELINE_PROBE_WALL = 15.0
 # (its callback's output is unknown here, so the next mark tells the parent
 # whether the walk still sees the real text); ["trim", rule] is the terminal.
 # Before each timed unit the child prints its index and its start, in seconds
-# since the child started, so a kill blames only a unit that had the round.
+# since the child started, so a kill blames only a unit that had the round;
+# first it prints "s" and how long it took to start since the parent spawned
+# it (wall clock, the only one two processes share), which the round spent
+# before any unit ran.
 _PROBE_SRC = (
     "import hashlib, json, re, sys, time\n"
     "t0 = time.perf_counter()\n"
-    "text, units, skip, cap = json.load(sys.stdin)\n"
+    "text, units, skip, cap, spawned = json.load(sys.stdin)\n"
+    "sys.stderr.write('s %.4f\\n' % max(0.0, time.time() - spawned))\n"
+    "sys.stderr.flush()\n"
     "skip = dict(skip)\n"
     "h = None\n"
     "for i, u in enumerate(units):\n"
@@ -811,8 +816,9 @@ def _probe_chain(text: str, units: list[list[Any]],
     the walk; slow holds the unit indices that timed out (each round skips the
     culprit and walks again); units from `stop` on were never probed (None =
     the walk finished). A unit the kill caught after the units before it used
-    up most of the round is not blamed: the next round runs long enough to
-    give it the whole timeout. None when the child cannot run at all — fails open
+    up most of the round, or after the child's start left it under half of
+    it, is not blamed: the next round runs long enough to give it the whole
+    timeout. None when the child cannot run at all — fails open
     like regex_guard.validate.
 
     `skip`: unit index -> the digests of its rule's input it is already known
@@ -839,6 +845,19 @@ def _probe_chain(text: str, units: list[list[Any]],
             if ri.isdigit() and len(h) == 40:
                 found[int(ri)] = h
         return found
+
+    def _started(err: str | bytes | None) -> float:
+        # The child's "s" line: seconds from spawn to its own clock's start.
+        if isinstance(err, bytes):
+            err = err.decode("utf-8", "replace")
+        for line in (err or "").splitlines():
+            tag, _, took = line.partition(" ")
+            if tag == "s":
+                try:
+                    return max(0.0, float(took))
+                except ValueError:
+                    return 0.0
+        return 0.0
 
     def _culprit(err: str | bytes | None) -> tuple[int, float] | None:
         # The last "index start" line: the unit running when it was killed.
@@ -869,7 +888,8 @@ def _probe_chain(text: str, units: list[list[Any]],
         # further also holds the other's marks.
         return (marks, stop) if stop >= last[1] else last
 
-    # How long the child took to reach the last unit it was killed in.
+    # How long the child took to reach the last unit it was killed in (its
+    # start counted twice).
     lead = 0.0
     rounds = retries = 0
     while rounds < _TEST_PIPELINE_PROBE_ROUNDS:
@@ -888,7 +908,7 @@ def _probe_chain(text: str, units: list[list[Any]],
                 input=json.dumps([text, units,
                                   [*((i, sorted(hs)) for i, hs in known.items()),
                                    *((i, None) for i in slow)],
-                                  pl_engine._POSTPROCESS_MAX_CHARS]),
+                                  pl_engine._POSTPROCESS_MAX_CHARS, time.time()]),
                 capture_output=True, text=True,
                 timeout=timeout)
             if budget is not None and "wall" in budget:
@@ -901,13 +921,19 @@ def _probe_chain(text: str, units: list[list[Any]],
             got = _culprit(getattr(exc, "stderr", None))
             idx, at = (got if got is not None and 0 <= got[0] < len(units)
                        else (-1, 0.0))
-            # Fast units before it used up the round: not its fault.
-            not_its_fault = timeout - at < 0.9 * _TEST_PIPELINE_PROBE_TIMEOUT
+            # Fast units before it used up the round, or the child's start
+            # left it less than half of it (a loaded Windows host can spend
+            # most of a short round starting the child): not its fault.
+            start = min(_started(getattr(exc, "stderr", None)), timeout)
+            not_its_fault = (
+                timeout - at < 0.9 * _TEST_PIPELINE_PROBE_TIMEOUT
+                or timeout - start - at < 0.5 * _TEST_PIPELINE_PROBE_TIMEOUT)
             if idx >= 0 and timeout >= want and not_its_fault \
                     and retries < _TEST_PIPELINE_PROBE_ROUNDS:
-                # Its own round costs no round and none of "left".
+                # Its own round costs no round and none of "left". The next
+                # child's start is counted twice, in case it starts slower.
                 retries += 1
-                lead = at
+                lead = at + 2 * start
                 last = _further(marks, idx)
                 continue
             if budget is not None:
