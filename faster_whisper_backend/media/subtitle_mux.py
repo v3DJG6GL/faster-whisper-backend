@@ -270,24 +270,32 @@ def _ts_ms(h: str, m: str, s: str, ms: str) -> int:
     return ((int(h) * 60 + int(m)) * 60 + int(s)) * 1000 + int(ms)
 
 
-def _clamp_inverted_cue(m: "re.Match[str]") -> str:
+def _clamp_inverted_last_cue(text: str) -> str:
     # MP4's timed text refuses a negative duration (movenc fails the whole
-    # mux); a cue that ends before it starts becomes a zero-length one.
-    if _ts_ms(*m.group(9, 10, 11, 12)) >= _ts_ms(*m.group(3, 4, 5, 6)):
-        return m.group(0)
-    return m.group(1) + m.group(2) + m.group(7) + m.group(2)
+    # mux). ffmpeg's subtitle queue already stretches any other inverted cue
+    # to the next cue's start, so only one that no cue starts after becomes
+    # zero-length — clamping an earlier one would hide its text.
+    last = max((_ts_ms(*m.group(3, 4, 5, 6)) for m in _CUE_TIMING_RE.finditer(text)),
+               default=0)
+
+    def _clamp(m: "re.Match[str]") -> str:
+        start = _ts_ms(*m.group(3, 4, 5, 6))
+        if start < last or _ts_ms(*m.group(9, 10, 11, 12)) >= start:
+            return m.group(0)
+        return m.group(1) + m.group(2) + m.group(7) + m.group(2)
+    return _CUE_TIMING_RE.sub(_clamp, text)
 
 
 def _write_srts(workdir: str, tracks: "list[SubtitleTrack]") -> "list[str]":
     """The tracks as `sub_N.srt` under fixed names, line endings normalised
-    and an inverted cue's end clamped to its start.
+    and the last inverted cue's end clamped to its start.
     Up to MAX_TRACKS × MAX_SRT_BYTES of rewriting + I/O — run off the loop."""
     srt_paths: "list[str]" = []
     for i, t in enumerate(tracks):
         p = os.path.join(workdir, f"sub_{i}.srt")
         text = t.srt.replace("\r\n", "\n").replace("\r", "\n")
         with open(p, "w", encoding="utf-8", newline="\n") as f:
-            f.write(_CUE_TIMING_RE.sub(_clamp_inverted_cue, text))
+            f.write(_clamp_inverted_last_cue(text))
         srt_paths.append(p)
     return srt_paths
 

@@ -524,18 +524,22 @@ def test_package_forwards_a_non_zero_video_index(monkeypatch):
     assert seen["video_index"] == 1
 
 
-def test_write_srts_clamps_an_inverted_cue_end_to_its_start(tmp_path):
+def test_write_srts_clamps_only_the_last_inverted_cue_end_to_its_start(tmp_path):
     """MP4 timed text refuses a cue that ends before it starts (movenc fails
-    the whole mux with a bare 500); the written SRT makes it zero-length and
-    leaves well-formed, zero-length and CRLF cues alone."""
-    srt = ("1\r\n00:00:05,000 --> 00:00:01,000\r\nBad\r\n\r\n"
+    the whole mux with a bare 500) — but only the last one by start time:
+    ffmpeg stretches any earlier inverted cue to the next cue's start, so the
+    written SRT leaves that one (and well-formed, zero-length, CRLF cues)
+    alone and makes only the last-starting one zero-length."""
+    srt = ("1\r\n00:00:05,000 --> 00:00:01,000\r\nTypo\r\n\r\n"
            "2\r\n00:00:06,000 --> 00:00:07,500 X1:0\r\nOk\r\n\r\n"
-           "3\r\n00:00:08,000 --> 00:00:08,000\r\nZero\r\n")
+           "3\r\n00:00:09,000 --> 00:00:08,000\r\nLast\r\n\r\n"
+           "4\r\n00:00:08,000 --> 00:00:08,000\r\nZero\r\n")
     (p,) = pk._write_srts(str(tmp_path), [pk.SubtitleTrack("en", "English", srt)])
     with open(p, encoding="utf-8") as f:
-        assert f.read() == ("1\n00:00:05,000 --> 00:00:05,000\nBad\n\n"
+        assert f.read() == ("1\n00:00:05,000 --> 00:00:01,000\nTypo\n\n"
                             "2\n00:00:06,000 --> 00:00:07,500 X1:0\nOk\n\n"
-                            "3\n00:00:08,000 --> 00:00:08,000\nZero\n")
+                            "3\n00:00:09,000 --> 00:00:09,000\nLast\n\n"
+                            "4\n00:00:08,000 --> 00:00:08,000\nZero\n")
 
 
 def test_write_srts_reads_a_short_millisecond_field_as_ffmpeg_does(tmp_path):
@@ -565,3 +569,30 @@ def test_package_real_ffmpeg_mp4_accepts_a_cue_that_ends_before_it_starts(tmp_pa
             assert [s.type for s in c.streams].count("subtitle") == 1
     finally:
         shutil.rmtree(os.path.dirname(out), ignore_errors=True)
+
+
+@pytest.mark.skipif(shutil.which("ffprobe") is None or shutil.which("ffmpeg") is None,
+                    reason="needs a system ffmpeg + ffprobe")
+def test_package_real_ffmpeg_keeps_a_mid_file_inverted_cue_on_screen(tmp_path):
+    """A typo'd end time on a cue that is not the last one still shows until
+    the next cue starts (ffmpeg's own repair), in MP4 and MKV alike."""
+    src = str(tmp_path / "src.mp4")
+    subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+                    "-f", "lavfi", "-i", "testsrc=size=64x64:rate=10:duration=3",
+                    "-c:v", "libx264", "-pix_fmt", "yuv420p", src], check=True, timeout=60)
+    tracks = [pk.SubtitleTrack("en", "English",
+                               "1\n00:00:00,000 --> 00:00:00,500\nA\n\n"
+                               "2\n00:00:01,000 --> 00:00:00,800\nTypo\n\n"
+                               "3\n00:00:02,000 --> 00:00:02,500\nC\n")]
+    for container in ("mp4", "mkv"):
+        out = _run(pk.package(src, tracks, container=container, default_track=0,
+                              timeout=60))
+        try:
+            probe = subprocess.run(
+                ["ffprobe", "-v", "error", "-select_streams", "s:0", "-show_packets",
+                 "-show_entries", "packet=pts_time,duration_time", "-of", "csv=p=0", out],
+                capture_output=True, text=True, check=True, timeout=60).stdout
+        finally:
+            shutil.rmtree(os.path.dirname(out), ignore_errors=True)
+        rows = [tuple(r.split(",")) for r in probe.split()]
+        assert ("1.000000", "1.000000") in rows, (container, rows)
