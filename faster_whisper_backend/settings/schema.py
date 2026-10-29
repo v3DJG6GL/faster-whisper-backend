@@ -17,6 +17,7 @@ from __future__ import annotations
 import functools
 import ipaddress
 import re
+import time
 import typing
 from pathlib import PurePath, PureWindowsPath
 from typing import Annotated, Any, Literal
@@ -1706,6 +1707,13 @@ class AdminConfig(BaseModel):
              pre-existing rule the CURRENT guard refuses — saved before a guard
              tightening, loaded fine ever since — bricked every user's save of
              any rule. Compile + template checks still cover the whole list.
+             On a save, the in-process compiles of the guarded rules are also
+             charged against regex_guard's own wall-clock budget: compiling is
+             NOT cheap for every pattern (an IGNORECASE full-range class walks
+             all 1.1M code points, ~0.4 s per 512-char pattern), and it runs
+             before the killable guard, so 200 such entries pinned a save
+             thread for minutes. Past the budget the save is refused — the
+             child, which compiles the same patterns, would time out anyway.
           2. Every regex-list entry's replacement TEMPLATE parses against its
              pattern (always, in-process — catches bad backrefs like `\\3` when
              only 2 groups exist; CPython parses templates eagerly, so this is
@@ -1719,14 +1727,46 @@ class AdminConfig(BaseModel):
         """
         if v is None:
             return v
+        from faster_whisper_backend.pipeline import regex_guard
+        ctx = info.context or {}
+        guarding = bool(ctx.get("guard_regex"))
+        guard_slugs = ctx.get("guard_slugs")
+        compile_spent = 0.0
+        compiled_guarded = 0
+
+        def _compile(where: str, pat: str, slug: str) -> re.Pattern[str]:
+            nonlocal compile_spent, compiled_guarded
+            t0 = time.perf_counter()
+            try:
+                rx = re.compile(pat)
+            except (re.error, OverflowError) as e:
+                raise ValueError(f"{where}: invalid regex: {e}")
+            if guarding and (guard_slugs is None or slug in guard_slugs):
+                compile_spent += time.perf_counter() - t0
+                compiled_guarded += 1
+                # The child guard's budget for the entries seen so far: it
+                # compiles every one of them too, so spending more than this
+                # here means the save would time out there regardless.
+                budget = min(regex_guard._GUARD_TIMEOUT
+                             + regex_guard._PER_CHECK_BUDGET * compiled_guarded,
+                             regex_guard._GUARD_TIMEOUT_MAX)
+                if compile_spent > budget:
+                    raise ValueError(
+                        f"{where}: compiling the submitted patterns took > "
+                        f"{budget:.2g} s — simplify them (a case-insensitive "
+                        "character class spanning all of Unicode is very "
+                        "slow to compile).")
+            return rx
+
         # Collect every (where, pattern, replacement, slug) that needs a regex
         # smoke-test. The actual re.sub probe runs OUT OF PROCESS at the end
         # (only on save, via the guard_regex context) so a catastrophic-
         # backtracking pattern can be killed — CPython's re can't be interrupted
         # in-process. The slug rides along so `guard_slugs` can scope the probe
         # to the rules a patch actually changed; it is stripped before the
-        # 3-tuple regex_guard.validate call.
-        checks: list[tuple[str, str, str, str]] = []
+        # 3-tuple regex_guard.validate call. The compiled pattern rides along
+        # too, so the template parse below does not compile it a second time.
+        checks: list[tuple[str, str, str, str, re.Pattern[str]]] = []
         seen: set[str] = set()
         terminal_idx: int | None = None
         for idx, rule in enumerate(v):
@@ -1746,11 +1786,9 @@ class AdminConfig(BaseModel):
             # the compiler lowercases all keys, so two keys differing only by
             # case silently shadow each other.
             if rtype == "callback:map":
-                ctx = info.context or {}
-                guard_slugs = ctx.get("guard_slugs")
                 # Scoped like the regex probe: an untouched rule must not
                 # block someone else's save (quick_config apply_rules_patch).
-                if ctx.get("guard_regex") and (guard_slugs is None or slug in guard_slugs):
+                if guarding and (guard_slugs is None or slug in guard_slugs):
                     m = getattr(rule, "map", None) or {}
                     lc: dict[str, list[str]] = {}
                     for k in m:
@@ -1767,26 +1805,19 @@ class AdminConfig(BaseModel):
                     epat = getattr(entry, "pattern", None)
                     if not epat:
                         continue
-                    try:
-                        re.compile(epat)
-                    except (re.error, OverflowError) as e:
-                        raise ValueError(
-                            f"rule {idx} ({slug!r}) entry {eidx}: invalid regex: {e}")
+                    where = f"rule {idx} ({slug!r}) entry {eidx}"
+                    rx = _compile(where, epat, str(slug or ""))
                     erepl = getattr(entry, "replacement", "") or ""
-                    checks.append(
-                        (f"rule {idx} ({slug!r}) entry {eidx}", epat, erepl,
-                         str(slug or "")))
+                    checks.append((where, epat, erepl, str(slug or ""), rx))
                 continue
             # callback:* pattern-only rows (lowercase-wordlist / dedup / upper):
             # smoke-test the pattern with an empty replacement.
             pattern = getattr(rule, "pattern", None)
             if not pattern:
                 continue
-            try:
-                re.compile(pattern)
-            except (re.error, OverflowError) as e:
-                raise ValueError(f"rule {idx} ({slug!r}): invalid regex: {e}")
-            checks.append((f"rule {idx} ({slug!r})", pattern, "", str(slug or "")))
+            where = f"rule {idx} ({slug!r})"
+            rx = _compile(where, pattern, str(slug or ""))
+            checks.append((where, pattern, "", str(slug or ""), rx))
         if terminal_idx is not None and terminal_idx != len(v) - 1:
             raise ValueError(
                 f"terminal rule must be the last entry "
@@ -1802,8 +1833,7 @@ class AdminConfig(BaseModel):
         # failing validation at LOAD (the documented fail-safe whole-file
         # drop) instead of loading cleanly and raising re.error on every
         # request at match time.
-        from faster_whisper_backend.pipeline import regex_guard
-        for where, pat, repl, _slug in checks:
+        for where, pat, repl, _slug, rx in checks:
             # `(?:(?:a{0}){N}){N}` loops N*N times even on "" — refuse on the
             # counts alone (match-free) for EVERY entry, an empty replacement
             # and a callback pattern row included, before the in-process
@@ -1813,7 +1843,7 @@ class AdminConfig(BaseModel):
             if not repl:
                 continue
             try:
-                re._compile_template(re.compile(pat), repl)
+                re._compile_template(rx, repl)
             except (re.error, IndexError) as e:
                 raise ValueError(f"{where}: regex test failed: {e}")
         # Out-of-process catastrophic-backtracking guard (a real .sub run
@@ -1824,8 +1854,7 @@ class AdminConfig(BaseModel):
         # see the docstring; the chained probe then only threads across the
         # probed rules' own entries, an accepted trade for not letting an
         # untouched rule fail (or time-budget-starve) someone else's save.
-        if checks and (info.context or {}).get("guard_regex"):
-            guard_slugs = (info.context or {}).get("guard_slugs")
+        if checks and guarding:
             to_guard = (checks if guard_slugs is None
                         else [c for c in checks if c[3] in guard_slugs])
             if to_guard:
