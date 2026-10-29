@@ -813,6 +813,39 @@ sys.exit(1)
     assert rec and "ERROR: fwb-tail-marker" in rec[0]
 
 
+def test_download_failure_log_masks_the_links_password(tmp_path, monkeypatch, caplog):
+    """yt-dlp quotes the URL in its error: a `user:pw@host` link must not
+    write the password to the persisted log."""
+    _patch_argv(monkeypatch, """
+import sys
+sys.stderr.write("ERROR: Unsupported URL: https://alice:s3cret@nas.example.com/p\\n")
+sys.exit(1)
+""")
+    with caplog.at_level("WARNING", logger="whisper-api"):
+        with pytest.raises(udl.UrlDownloadError):
+            _run(udl.download("https://alice:s3cret@nas.example.com/p",
+                              dest_dir=str(tmp_path), max_bytes=10_000,
+                              timeout=30))
+    rec = [r.getMessage() for r in caplog.records if "yt-dlp exited" in r.getMessage()]
+    assert rec and "https://***@nas.example.com/p" in rec[0]
+    assert "s3cret" not in caplog.text
+
+
+def test_probe_failure_log_masks_the_links_password(monkeypatch, caplog):
+    url = "https://alice:p@ss@nas.example.com/page"
+
+    def _raise(u):
+        raise RuntimeError(f"ERROR: Unsupported URL: {u}")
+    _stand_in_yt_dlp(monkeypatch, "Generic", _raise)
+    monkeypatch.setattr(udl.cfg, "URL_ALLOW_GENERIC", True, raising=False)
+    with caplog.at_level("WARNING", logger="whisper-api"):
+        with pytest.raises(udl.UrlDownloadError):
+            _run(udl.probe(url, timeout=5.0))
+    rec = [r.getMessage() for r in caplog.records if "probe failed" in r.getMessage()]
+    assert rec and "https://***@nas.example.com/page" in rec[0]
+    assert "p@ss" not in caplog.text
+
+
 def test_download_partial_only_is_size_limit(tmp_path, monkeypatch):
     # --max-filesize skip: clean exit, only a .part file left behind.
     _patch_argv(monkeypatch, """

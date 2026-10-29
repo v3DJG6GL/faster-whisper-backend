@@ -1309,9 +1309,18 @@ def host_for_log(url: "str | None") -> str:
         return "?"
 
 
+# yt-dlp quotes the URL verbatim in its errors ("Unsupported URL: https://
+# user:pw@host/..."): the userinfo goes before the text reaches the log.
+_URL_USERINFO_RE = re.compile(r"(?i)(https?://)[^/\s?#]+@")
+
+
+def _mask_userinfo(text: str) -> str:
+    return _URL_USERINFO_RE.sub(r"\1***@", text)
+
+
 def _log_probe_failure(url: str, e: Exception) -> None:
     logger.warning("[url-dl] probe failed for host %s: %s",
-                   host_for_log(url), log_safe(str(e)))
+                   host_for_log(url), log_safe(_mask_userinfo(str(e))))
 
 
 def _capped_get(url: str, *, max_bytes: int, timeout: float,
@@ -1985,7 +1994,7 @@ async def _run_yt_dlp(
         tail = stderr_tail.decode("utf-8", "replace")
         logger.warning("[url-dl] yt-dlp exited %s for host %s: %s",
                        proc.returncode, host_for_log(url),
-                       log_safe(tail, keep_end=True))
+                       log_safe(_mask_userinfo(tail), keep_end=True))
         raise classified_error(tail)
 
     try:
