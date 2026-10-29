@@ -28,3 +28,10 @@ def test_missing_group_or_fewer_groups():
     assert _sub(r"(\.)?( )([a-z])", "a b") == "a b"  # group 1 absent: match kept as is
     assert _sub(r"(a)(b)?", "ac") == "ac"  # group 2 absent
     assert _sub(r"(b)", "abc") == "aBc"  # one group: whole match uppercased
+
+
+def test_group_2_outside_the_match_keeps_the_text():
+    # a lookahead/lookbehind capture lies outside the match: no letter is duplicated
+    assert _sub(r"([.?!]\s+)(?=([a-zäöüß]))", "Gut. danke") == "Gut. danke"
+    assert _sub(r"(?=([.?!]\s+([a-z])))\.", "Gut. danke") == "Gut. danke"
+    assert _sub(r"(?<=([.?!])(\s))([a-z])", "end. foo") == "end. foo"
