@@ -116,14 +116,16 @@ def _dedup_callback(match: "re.Match[str]") -> str:
 def _upper_callback(match: "re.Match[str]") -> str:
     """Uppercase group(2) if the pattern produced two groups; else uppercase
     the entire match. Default seeded pattern produces ([.?!]\\s+|\\n+\\s*)
-    + ([a-zäöüß])."""
+    + ([a-zäöüß]). Only group(2)'s span changes: text the match holds
+    outside groups 1 and 2 (a literal between them, a third group) is kept."""
     try:
         g1, g2 = match.group(1), match.group(2)
     except IndexError:
         return match.group(0).upper()
     if g1 is None or g2 is None:
         return match.group(0)
-    return g1 + g2.upper()
+    m0, s = match.group(0), match.start(0)
+    return m0[:match.start(2) - s] + g2.upper() + m0[match.end(2) - s:]
 
 
 def _make_lowercase_wordlist_replacer(wordlist: frozenset):
