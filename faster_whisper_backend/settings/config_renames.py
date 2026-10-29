@@ -93,6 +93,20 @@ SPLIT_RULES: dict[str, tuple[str, ...]] = {
                               "normalize-digit-range"),
 }
 
+# Single-rule cards that 8cde7fd (June 15 2026) folded into regex-list cards
+# as entries, old slug -> the one current card whose only entry is theirs
+# (after the f940127 / b7449d8 splits). Mapped in slug LISTS only, like
+# SPLIT_RULES and under the same `known` guard (a stored copy from before
+# 8cde7fd still holds the old card). The other folded slugs share their
+# card with sibling entries (replace-szet-lc / -uc, the dictation-keyword
+# splitters, the digit and spacing tidies, tidy-newlines, replace-and) and
+# stay unmapped: excluding the whole card would drop the siblings too.
+MERGED_RULES: dict[str, str] = {
+    "trim-trailing-period": "strip-trailing-period",
+    "strip-non-keep-punct": "strip-stray-symbols",
+    "strip-only-terminators-and-commas": "strip-auto-punctuation",
+}
+
 # Factory regex-list entries whose text was CHANGED in config.json, keyed by
 # the entry label: (old pattern, old replacement) -> (new pattern, new
 # replacement). A saved PIPELINE_RULES copy (config.local.json, or the
@@ -266,16 +280,17 @@ def _rule_names(rules: Any) -> set[str] | None:
 def rename_slugs(slugs: Any, known: Any = None) -> Any:
     """Map renamed rule slugs in a list / set / tuple of slugs (order kept,
     a slug present under both names collapses to one), and a split card's
-    slug to every card that took it over (SPLIT_RULES) — unless `known`, the
-    rule names in force where it is known, still holds the old card. Other
-    values pass through untouched."""
+    slug to every card that took it over (SPLIT_RULES), a folded card's to
+    its successor (MERGED_RULES) — unless `known`, the rule names in force
+    where it is known, still holds the old card. Other values pass through
+    untouched."""
     if not isinstance(slugs, (list, tuple, set, frozenset)):
         return slugs
     out: list[Any] = []
     for s in slugs:
-        if (isinstance(s, str) and s in SPLIT_RULES
+        if (isinstance(s, str) and (s in SPLIT_RULES or s in MERGED_RULES)
                 and (known is None or s not in known)):
-            new: tuple[Any, ...] = SPLIT_RULES[s]
+            new: tuple[Any, ...] = SPLIT_RULES.get(s) or (MERGED_RULES[s],)
         else:
             new = (RENAMED_RULES.get(s, s) if isinstance(s, str) else s,)
         for n in new:

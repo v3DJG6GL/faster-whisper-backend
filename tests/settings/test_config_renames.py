@@ -306,6 +306,37 @@ def test_slug_list_beside_a_stored_copy_of_the_split_card_keeps_naming_it():
     assert raw["MODEL_OVERRIDES"]["m"]["PIPELINE_RULES_EXCLUDE"] == ["strip-whisper-punctuation"]
 
 
+def test_every_folded_card_names_the_current_card_holding_only_its_entry():
+    for old, new in renames.MERGED_RULES.items():
+        assert [renames.RELABELLED_RULE_ENTRIES.get(old, old)] == [
+            e["label"] for e in _rule(_factory_rules(), new)["entries"]], old
+
+
+def test_exclude_of_a_card_folded_in_8cde7fd_names_its_successor(tmp_path):
+    """8cde7fd folded single-rule cards into regex-list cards: an exclude
+    saved before it named a slug that no longer exists, so it did nothing on
+    load and an env value naming it was refused whole (BEAM_SIZE lost too)."""
+    from faster_whisper_backend.settings import config_store as cs
+    p = tmp_path / "config.local.json"
+    p.write_text(json.dumps({
+        "CAPTURES_PIPELINE_RULES_EXCLUDE": ["strip-non-keep-punct",
+                                            "strip-only-terminators-and-commas"],
+        "MODEL_OVERRIDES": {"large-v3": {
+            "PIPELINE_RULES_EXCLUDE": ["trim-trailing-period", "tidy-newlines"],
+            "BEAM_SIZE": 3}},
+    }), encoding="utf-8")
+    out = cs.load_overrides(str(p))
+    assert set(out["CAPTURES_PIPELINE_RULES_EXCLUDE"]) == {
+        "strip-stray-symbols", "strip-auto-punctuation"}
+    # tidy-newlines shares final-cleanup with another entry: left as it is.
+    assert out["MODEL_OVERRIDES"]["large-v3"] == {
+        "PIPELINE_RULES_EXCLUDE": ["strip-trailing-period", "tidy-newlines"],
+        "BEAM_SIZE": 3}
+    # A copy from before 8cde7fd still runs the old card under its old slug.
+    assert renames.rename_slugs(["trim-trailing-period"], {"trim-trailing-period"}) == [
+        "trim-trailing-period"]
+
+
 def _pre_june_rules():
     rules = [r for r in copy.deepcopy(_factory_rules())
              if r["name"] not in _SPLIT_IN_JUNE["strip-whisper-punctuation"]]
