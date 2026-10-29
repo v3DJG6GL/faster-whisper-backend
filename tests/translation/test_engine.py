@@ -496,6 +496,18 @@ def test_redistribute_unspaced_keeps_the_in_reach_clause_mark():
         ["我们，今天去市场，", "买了很多新鲜的水果和", "蔬菜然后回家做饭吃了"]
 
 
+def test_redistribute_unspaced_keeps_the_closing_quote_on_its_clause():
+    """A cut after 。 that closes quoted speech landed before the closing
+    quote: the next cue opened on a stray ” / 」 and the previous one kept
+    only the opening quote."""
+    assert translation._redistribute(
+        ["x" * 10] * 2, "他说：“我们明天去北京。”然后他就走了出去了") == \
+        ["他说：“我们明天去北京。”", "然后他就走了出去了"]
+    assert translation._redistribute(
+        ["x" * 10] * 2, "「明日は東京に行こう。」と彼は言いました。") == \
+        ["「明日は東京に行こう。」", "と彼は言いました。"]
+
+
 def test_redistribute_long_reply_stays_linear():
     """Leaving room for later members rescanned every space per candidate,
     O(spaces²) per cut on the event loop: a 6000-word reply took seconds."""

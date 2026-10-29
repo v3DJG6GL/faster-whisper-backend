@@ -1217,10 +1217,18 @@ def _redistribute(group_texts: "list[str]", translated: str) -> "list[str]":
         return [""] * n
     spaces = [i for i, ch in enumerate(translated) if ch == " "]
     unspaced = len(_UNSPACED_RE.findall(translated)) / len(translated) > 0.3
-    # Unspaced: a cut lands AFTER the punctuation, which stays on its clause.
-    tiers = ([[i + 1 for i, ch in enumerate(translated)
-               if ch in _UNSPACED_CUT_PUNCT], spaces] if unspaced
-             else [spaces])
+    # Unspaced: a cut lands AFTER the punctuation, which stays on its clause
+    # together with any closing quotes / brackets after it ('。”', '。」'),
+    # so the next cue never opens on a stray closer.
+    punct: "list[int]" = []
+    if unspaced:
+        for i, ch in enumerate(translated):
+            if ch in _UNSPACED_CUT_PUNCT:
+                i += 1
+                while i < len(translated) and translated[i] in _CLOSERS:
+                    i += 1
+                punct.append(i)
+    tiers = [punct, spaces] if unspaced else [spaces]
     total = sum(len(t) for t in group_texts) or 1
 
     def _rooms(tier: "list[int]") -> "dict[int, int]":
