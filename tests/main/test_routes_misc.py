@@ -203,3 +203,23 @@ def test_logs_page_copy_handler_keeps_folded_rows_drops_controls(client):
     assert "'.line.hidden, .fold-ctl, button'" in h
     assert ".folded" not in h
 
+
+
+def test_validation_error_echoing_a_lone_surrogate_stays_a_422(client):
+    # The 422 body echoes the offending value (error.input) and the key path
+    # (error.loc). A lone UTF-16 surrogate in either, sent as a JSON "\ud800"
+    # escape, made the default handler's UTF-8 encode raise -> a 500.
+    for body in ('{"user_comment": "x", "trace_ts": "\\ud800"}',
+                 '{"user_comment": "x", "\\ud800": 1}'):
+        r = client.post("/quick-config/reports/api/submit", content=body,
+                        headers={"content-type": "application/json"})
+        assert r.status_code == 422
+        assert "\\ud800" in r.text   # escaped as it arrived, still valid JSON
+        assert isinstance(r.json()["detail"], list)
+    # An encodable body keeps FastAPI's own shape and non-ASCII as-is.
+    r = client.post("/quick-config/reports/api/submit",
+                    json={"user_comment": "x", "trace_ts": "fünf"})
+    assert r.status_code == 422
+    err = r.json()["detail"][0]
+    assert err["loc"] == ["body", "trace_ts"] and err["input"] == "fünf"
+    assert "fünf" in r.text

@@ -173,6 +173,7 @@ if sys.platform == "win32":
 
 
 from fastapi import FastAPI, File, UploadFile, Form, HTTPException, Request, Depends
+from fastapi.exceptions import RequestValidationError
 
 # Auth dep used by /v1/audio/transcriptions. In open mode (no admin key in DB)
 # it returns the synthetic admin — but only to callers on
@@ -1243,6 +1244,26 @@ async def _rate_limited_handler(request: Request, exc: _rl.RateLimited):
     from fastapi.responses import JSONResponse
     return JSONResponse(exc.body(), status_code=429,
                         headers={"Retry-After": str(exc.retry_after)})
+
+
+@app.exception_handler(RequestValidationError)
+async def _request_validation_handler(request: Request, exc: RequestValidationError):
+    """FastAPI's own 422 body, kept encodable.
+
+    The default handler echoes each offending value back as error.input and
+    encodes with ensure_ascii=False, so a lone UTF-16 surrogate (a JSON
+    "\\ud800" escape) makes the UTF-8 encode raise and the client gets a 500
+    instead of the 422. Only that case falls back to an ASCII-escaped body —
+    the same JSON, the surrogate sent back as the escape it arrived as.
+    """
+    from fastapi.encoders import jsonable_encoder
+    from fastapi.responses import JSONResponse, Response
+    content = {"detail": jsonable_encoder(exc.errors())}
+    try:
+        return JSONResponse(content, status_code=422)
+    except UnicodeEncodeError:
+        return Response(json.dumps(content, separators=(",", ":")),
+                        status_code=422, media_type="application/json")
 
 
 def _shift_to_original_timeline(segments, info, pad_s: float):
