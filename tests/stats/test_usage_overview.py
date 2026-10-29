@@ -295,3 +295,25 @@ def test_overview_by_model_leaves_out_outcome_stubs(usage_store_db):
                     metric="sessions")
     assert [r["id"] for r in o["leaderboard"]] == ["large-v3"]
     assert [m["model"] for m in o["models"]] == ["large-v3"]
+
+
+def test_overview_all_time_models_reach_jobs_older_than_the_hourly_retention(usage_store_db):
+    """usage_jobs prunes on its own (longer) clock: with the rollups kept 90
+    days and the jobs 365, the All time models table used to start at the
+    oldest rollup and leave a 200-day-old job still on disk out, while the
+    tail's per-model table next to it counted it."""
+    us = usage_store_db
+    old = us.now_hour() - 200 * 24
+    for jid, hour in (("o" * 32, old), ("n" * 32, None)):
+        us.record_usage(key_id="k", user_id="u", audio_s=10.0, words=5, status="ok",
+                        kind="file", job_id=jid, hour=hour, processing_s=1.0,
+                        model="large-v3")
+    us.sweep(unreported_after_h=24, jobs_retention_days=365,
+             app_retention_days=0, hourly_retention_days=90)
+    o = us.overview(user_id=None, tz=_UTC, tz_name="UTC", all_time=True, by="model")
+    assert o["models"][0]["sessions"] == 2 and o["models"][0]["audio_s"] == 20.0
+    tail = us.tail(user_id=None, tz=_UTC, tz_name="UTC", all_time=True)
+    assert [m["runs"] for m in tail["models"]] == [2]
+    # the rollup-backed range is unchanged: it still starts after the old job
+    assert o["range"]["from"] > _D(
+        datetime.datetime.fromtimestamp(old * 3600, _UTC).date().isoformat())

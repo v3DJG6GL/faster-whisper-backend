@@ -1901,8 +1901,19 @@ def overview(
         for e in ranked[:max(1, int(limit))]
     ]
 
+    # The per-model table reads the job rows, which prune on their own clock:
+    # under All time it starts where tail() does (the earlier of the rollups'
+    # and the jobs' first day), else a USAGE_RETENTION_DAYS shorter than
+    # USAGE_JOBS_RETENTION_DAYS drops jobs still on disk. The axis, lines and
+    # leaderboard keep the document's range. with= already starts at a job.
+    models_start = start_ts
+    if all_time and not with_stages:
+        mf, _ = resolve_window(today=_from_epoch_day(t), days=None, from_day=None,
+                               to_day=t, all_time=True,
+                               first_day=_first_tail_day(conn, user_id, key_id, kinds, tz))
+        models_start = min(start_ts, _midnight_ts(_from_epoch_day(mf), tz))
     models = _models_in_window(conn, user_id, key_id, with_stages,
-                               start_ts, end_ts, kinds)
+                               models_start, end_ts, kinds)
 
     out: dict[str, Any] = {
         "v": 2,
