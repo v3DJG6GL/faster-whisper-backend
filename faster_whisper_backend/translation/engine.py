@@ -602,7 +602,10 @@ def _load_blocking_inner(ref: str, device: str, family: str,
 
 def _is_hub_timeout(exc: BaseException) -> bool:
     """True when ``exc`` or its cause chain is an httpx timeout —
-    hf_hub_download re-raises a HEAD timeout as LocalEntryNotFoundError."""
+    hf_hub_download re-raises a HEAD timeout as LocalEntryNotFoundError
+    (``from`` it). Only ``__cause__`` counts: the hub resumes a timed-out
+    download INSIDE its except-timeout block, so a disk-full or size-check
+    error of the resumed call carries a timeout as mere ``__context__``."""
     import httpx  # the hub's own HTTP client — always installed with it
 
     seen = set()
@@ -610,7 +613,7 @@ def _is_hub_timeout(exc: BaseException) -> bool:
         if isinstance(exc, httpx.TimeoutException):
             return True
         seen.add(id(exc))
-        exc = exc.__cause__ or exc.__context__
+        exc = exc.__cause__
     return False
 
 

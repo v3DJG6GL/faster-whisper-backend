@@ -1196,6 +1196,26 @@ def test_load_fails_instead_of_falling_back_when_the_hub_times_out(
     assert record == []
 
 
+def test_load_falls_back_on_an_error_raised_while_handling_a_timeout(
+        monkeypatch):
+    """The hub resumes a timed-out download inside its except-timeout block:
+    a disk-full error of that resume carries the timeout only as
+    __context__ and is not a hub timeout."""
+    import httpx
+    record = []
+    _install_fake_llama(monkeypatch, record)
+    monkeypatch.setattr(cfg, "LOCAL_FILES_ONLY", False, raising=False)
+
+    def disk_full(repo, quant, cb=None):
+        try:
+            raise httpx.ReadTimeout("transient")
+        except httpx.ReadTimeout:
+            raise OSError(28, "No space left on device")
+    monkeypatch.setattr(translation, "_predownload_gguf", disk_full)
+    translation._load_blocking_inner("org/repo:Q4", "cpu", "chatml")
+    assert record[0][0] == "from_pretrained"
+
+
 def test_load_uses_the_cached_gguf_when_the_hub_times_out(monkeypatch):
     """model_info runs before hf_hub_download (which would serve the cache
     on a HEAD timeout): a GGUF already on disk must still load."""
