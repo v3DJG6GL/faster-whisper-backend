@@ -32,6 +32,7 @@ import itertools
 import re
 from typing import Callable
 
+from faster_whisper_backend.core.unicode_marks import JOINERS as _JOINERS
 from faster_whisper_backend.core.unicode_marks import MARKS as _MARKS
 
 # Values that count as punctuation for the "dictated punctuation wins" prefix.
@@ -54,10 +55,11 @@ def _ss_variant(key: str) -> str:
     return key.replace("ß", "ss").replace("ẞ", "SS")
 
 
-# Word edges, marks included. Only a non-ASCII edge gets the mark class: it
-# is ~800 ranges, and an ASCII letter next to a mark occurs only in NFD
-# text, which whisper does not emit.
-_WORD_CLASS = {"ascii": r"\w", "other": rf"[\w{_MARKS}]"}
+# Word edges, marks and joiners included. Only a non-ASCII edge gets the
+# mark class: it is ~800 ranges, an ASCII letter next to a mark occurs only
+# in NFD text, which whisper does not emit, and a joiner joins only
+# non-Latin scripts.
+_WORD_CLASS = {"ascii": r"\w", "other": rf"[\w{_MARKS}{_JOINERS}]"}
 
 
 def _edge(ch: str) -> str:
@@ -82,7 +84,8 @@ def _alternation(keys: list[str]) -> str:
     ``(?!\\w)`` refuses. A punctuation edge keeps the bound: a "-" key must
     not rewrite the hyphen inside "E-Mail". A combining mark counts as a
     word char (``\\w`` has none): a "लत" key must not rewrite the inside of
-    "बोलते", nor "คร" that of "ครับ".
+    "बोलते", nor "คร" that of "ครับ". So does a ZWNJ / ZWJ: a Persian "می"
+    key must not rewrite the prefix of می + ZWNJ + خواهم.
 
     Keys of one length and edge kinds share one group, both bounds after
     it (the lead one as a lookbehind over the key itself). One mark class

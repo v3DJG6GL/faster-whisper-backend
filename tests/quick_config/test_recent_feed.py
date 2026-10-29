@@ -74,6 +74,19 @@ def test_tokenize_keeps_combining_marks_inside_words(text, tokens, bigrams):
     assert q._extract_bigrams(text) == bigrams
 
 
+@pytest.mark.parametrize("text, tokens, bigrams", [
+    # Persian ZWNJ: HEAD gave ["من", "می", "خواهم", "بروم"].
+    ("من می\u200cخواهم بروم",
+     ["من", "می\u200cخواهم", "بروم"],
+     ["من می\u200cخواهم", "می\u200cخواهم بروم"]),
+    # Devanagari ZWJ: HEAD gave the fragments "र्" and "याम".
+    ("र्\u200dयाम है", ["र्\u200dयाम", "है"], ["र्\u200dयाम है"]),
+], ids=["persian-zwnj", "devanagari-zwj"])
+def test_tokenize_keeps_zero_width_joiners_inside_words(text, tokens, bigrams):
+    assert q._tokenize(text) == tokens
+    assert q._extract_bigrams(text) == bigrams
+
+
 def test_tokenize_rejects_start_right_after_a_mark():
     # A letter after a stray mark is partway into a word, like "5mg".
     assert q._tokenize("́ab") == []

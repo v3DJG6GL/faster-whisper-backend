@@ -64,6 +64,16 @@ def test_key_does_not_match_between_combining_marks():
     assert pattern.sub(replace, "लत คร") == "X Y"
 
 
+def test_key_does_not_match_next_to_a_zero_width_joiner():
+    """A ZWNJ / ZWJ is neither `\\w` nor a mark, so the bounds saw a word
+    edge at it: a Persian "می" / "ها" key rewrote the verb prefix of
+    می + ZWNJ + خواهم and the plural suffix of کتاب + ZWNJ + ها."""
+    pattern, replace, _ = dictation_map.compile_map({"می": "X", "ها": "Y", "र्": "Z"})
+    text = "من می\u200cخواهم کتاب\u200cها र्\u200dयाम"
+    assert pattern.sub(replace, text) == text
+    assert pattern.sub(replace, "می ها र्") == "X Y Z"
+
+
 def test_large_non_ascii_map_stays_fast():
     """One mark class per key edge made compiling a 500-key Cyrillic map
     ~0.6 s and each sub of a 20k-char transcript ~1 s, 5-9x the plain `\\w`

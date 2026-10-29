@@ -28,6 +28,7 @@ import re
 import time
 from typing import Any
 
+from faster_whisper_backend.core.unicode_marks import JOINERS as _JOINERS
 from faster_whisper_backend.core.unicode_marks import MARKS as _MARKS
 
 logger = logging.getLogger("whisper-api")
@@ -43,9 +44,10 @@ logger = logging.getLogger("whisper-api")
 # fragments "mg" / "intern".
 _TOKEN_MIN_LEN = 2
 _TOKEN_MAX_LEN = 64
-# A mark counts as a word char on both sides: it extends the tail and,
-# before a letter, means the match would start partway into a word.
-_TOKEN_RE = re.compile(rf"(?<![\w{_MARKS}])[^\W\d_][\w{_MARKS}\-]*")
+# A mark or a ZWNJ / ZWJ counts as a word char on both sides: it extends
+# the tail and, before a letter, means the match would start partway into
+# a word (Persian می + ZWNJ + خواهم is one word, not "می" and "خواهم").
+_TOKEN_RE = re.compile(rf"(?<![\w{_MARKS}{_JOINERS}])[^\W\d_][\w{_MARKS}{_JOINERS}\-]*")
 
 # Small German stopword set — never useful as autocomplete candidates
 # for cb:map keys. Lowercase compare; preserve original casing on display.
