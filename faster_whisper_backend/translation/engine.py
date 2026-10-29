@@ -1283,16 +1283,18 @@ def _build_numbered(texts: "list[str]") -> str:
 
 def _parse_numbered(reply: str, n: int) -> "list[str] | None":
     """Parse a numbered-list reply back into n strings; None on any count
-    mismatch (missing or unparseable lines) — the caller then halves the
-    batch size and retries."""
+    mismatch (missing or unparseable lines, an index past n or a repeated
+    one: an item split in two and renumbered would shift every later cue)
+    — the caller then halves the batch size and retries."""
     found: "dict[int, str]" = {}
     for line in (reply or "").splitlines():
         m = re.match(r"\s*(\d+)\s*[.):]\s*(.*)", line)
         if not m:
             continue
         idx = int(m.group(1))
-        if 1 <= idx <= n and idx not in found:
-            found[idx] = m.group(2).strip()
+        if not 1 <= idx <= n or idx in found:
+            return None
+        found[idx] = m.group(2).strip()
     if len(found) != n:
         return None
     return [found[i + 1] for i in range(n)]

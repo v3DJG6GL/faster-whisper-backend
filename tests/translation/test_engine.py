@@ -241,6 +241,15 @@ def test_parse_numbered_mismatch_returns_none():
     assert translation._parse_numbered("", 1) is None
 
 
+def test_parse_numbered_extra_or_repeated_index_returns_none():
+    """An item split into two numbered lines and renumbered held 1..n too:
+    cue 2 got the second half of cue 1 and its own translation was lost."""
+    assert translation._parse_numbered(
+        "1. First sentence.\n2. Second sentence of item one.\n3. Item two.",
+        2) is None
+    assert translation._parse_numbered("1. a\n1. b\n2. c", 2) is None
+
+
 # ---------------------------------------------------------------------------
 # Guards
 # ---------------------------------------------------------------------------
