@@ -147,7 +147,9 @@ def _burst_cut(words, limit: float) -> int | None:
         return (_end(words[i]) - _start(words[i])) < _BURST_REAL_MIN_S
 
     # spoken_after[i]: spoken words (not close, not short) after word i.
+    # The last word has no next gap, so only its length decides.
     spoken_after = [0] * n
+    spoken_after[n - 2] = int(not _short(n - 1))
     for i in range(n - 3, lo - 1, -1):
         j = i + 1
         spoken_after[i] = spoken_after[j] + (not _close(j) and not _short(j))

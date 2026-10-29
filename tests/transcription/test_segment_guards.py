@@ -188,6 +188,15 @@ def test_burst_fallback_never_starts_at_a_real_one_frame_word():
     assert words[idx].word == " x0"
 
 
+def test_burst_counts_a_spoken_last_word_as_protecting_the_one_frame_word():
+    # " b" is a squeezed word close to " c"; " c" and the segment's last word
+    # " d" are both spoken (0.4 s and 0.5 s long), so " b" is a real one-frame
+    # word and nothing is cut, even with the burst limit at 3.
+    words = [_w(" A", 8.60, 8.95), _w(" b", 9.00, 9.05), _w(" c", 9.10, 9.50),
+             _w(" d", 9.50, 10.00)]
+    assert sg.find_tail_cut(words, "", burst=3) is None
+
+
 def test_burst_falls_back_to_the_first_close_word_when_none_looks_made_up():
     words = [_w(" a", 0.0, 1.0)] + [_w(f" x{i}", 1.0 + 0.1 * i, 1.1 + 0.1 * i)
                                      for i in range(10)]
