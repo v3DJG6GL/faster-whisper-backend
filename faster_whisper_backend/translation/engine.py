@@ -1140,8 +1140,9 @@ def _complete(llm, family: str, prompt_or_msgs, max_tokens: int) -> str:
 # ۔ for Urdu, ։ for Armenian, ። for Amharic).
 # No Greek ";": a Latin semicolon is no sentence end.
 _SENTENCE_FINAL = ".!?…。！？।॥။។៕؟۔։።‼⁇⁈⁉"
-# Closing quotes / brackets that may follow the sentence end ('."', '?»', '」').
-_CLOSERS = "\"'”’»«」』）)]】"
+# Closing quotes / brackets that may follow the sentence end ('."', '?»', '」',
+# German '.“' / '.‘', Swiss '.›'). Source side only: in Chinese “ opens.
+_CLOSERS = "\"'”’»«“‘›‹」』）)]】}］｝》〉"
 # Max segments merged into one fluent group.
 _MAX_GROUP_SEGMENTS = 6
 
@@ -1165,7 +1166,10 @@ def _merge_sentences(segments: "list[dict]") -> "list[list[int]]":
             current = []
         current.append(i)
         prev = spk or prev
-        text = (seg.get("text") or "").rstrip().rstrip(_CLOSERS)
+        # Spaces too: French typography puts one before the » ('Oui. »').
+        text = (seg.get("text") or "").rstrip()
+        while text and text[-1] in _CLOSERS:
+            text = text[:-1].rstrip()
         if (text and text[-1] in _SENTENCE_FINAL) or \
                 len(current) >= _MAX_GROUP_SEGMENTS:
             groups.append(current)

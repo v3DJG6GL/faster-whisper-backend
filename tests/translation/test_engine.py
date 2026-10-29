@@ -409,6 +409,15 @@ def test_merge_sentences_sees_full_width_and_quoted_sentence_ends():
     assert groups == [[0], [1], [2], [3], [4], [5]]
 
 
+def test_merge_sentences_sees_german_swiss_and_spaced_french_quotes():
+    """German “ / ‘, Swiss › and a French space before » hid the sentence
+    end: the quoted sentence ran on into the next cues' group."""
+    assert translation._merge_sentences(
+        _segs("Er sagte: „Komm her.“", "Sie sagte: ‚Nein!‘", "‹ Viens. ›",
+              "Il a dit : « Oui. »", "《好。》", "offen")) == \
+        [[0], [1], [2], [3], [4], [5]]
+
+
 def test_merge_sentences_sees_danda_burmese_khmer_and_arabic_ends():
     """Hindi / Burmese / Khmer / Arabic sentence marks closed no group: six
     sentences were translated as one block and split back by length, so
