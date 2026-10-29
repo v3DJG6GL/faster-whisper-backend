@@ -148,6 +148,38 @@ def test_reexec_rereads_rotated_secret_files(monkeypatch, tmp_path):
         importlib.reload(config)
 
 
+def test_reexec_drops_the_hf_token_promoted_from_config(monkeypatch):
+    """main.py copies cfg.HF_TOKEN into the bare HF_TOKEN that huggingface_hub
+    reads. An exec that inherited the copy kept sending a token the operator
+    had withdrawn (emptied secret file, field taken out of config): the new
+    process promotes nothing and adopts the leftover as the environment's."""
+    from faster_whisper_backend.pipeline import apply as pl_apply
+    monkeypatch.setattr(restart_service.sys, "platform", "linux")
+    monkeypatch.setattr(pl_apply, "_ENV_HF_TOKEN", None)
+    monkeypatch.setenv("HF_TOKEN", "hf_promoted")
+    captured = {}
+    monkeypatch.setattr(restart_service.os, "execve",
+                        lambda path, argv, env: captured.update(env=env))
+    restart_service.trigger_self_restart(delay_sec=0.1)
+    _FakeTimer.instances[0].function()
+    assert "HF_TOKEN" not in captured["env"]
+
+
+def test_reexec_restores_the_service_environments_hf_token(monkeypatch):
+    """A token the service environment set (systemd Environment=) survives
+    the restart even when a config token was promoted over it."""
+    from faster_whisper_backend.pipeline import apply as pl_apply
+    monkeypatch.setattr(restart_service.sys, "platform", "linux")
+    monkeypatch.setattr(pl_apply, "_ENV_HF_TOKEN", "hf_service")
+    monkeypatch.setenv("HF_TOKEN", "hf_promoted")
+    captured = {}
+    monkeypatch.setattr(restart_service.os, "execve",
+                        lambda path, argv, env: captured.update(env=env))
+    restart_service.trigger_self_restart(delay_sec=0.1)
+    _FakeTimer.instances[0].function()
+    assert captured["env"]["HF_TOKEN"] == "hf_service"
+
+
 def test_reexec_callback_falls_back_to_exit_on_execv_failure(monkeypatch):
     monkeypatch.setattr(restart_service.sys, "platform", "linux")
 

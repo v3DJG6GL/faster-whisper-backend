@@ -90,10 +90,19 @@ def trigger_self_restart(delay_sec: float = 1.5) -> str:
         # *_FILE secret's contents; with those left in place it would never
         # re-read the file, so a rotated bootstrap key / HF token would
         # survive the restart. Drop them so it reads the files afresh.
+        # The bare HF_TOKEN goes back to what the service environment set:
+        # the copy main.py / pipeline.apply promoted from cfg.HF_TOKEN would
+        # outlive a token withdrawn from the file or config (the new process
+        # then promotes nothing) and be adopted as the environment's own.
         def do_reexec() -> None:
+            from faster_whisper_backend.pipeline import apply as _pl_apply
             _flush_before_exit()
             env = {k: v for k, v in os.environ.items()
                    if k not in cfg._ENV_FROM_SECRET_FILES}
+            if _pl_apply._ENV_HF_TOKEN is not None:
+                env["HF_TOKEN"] = _pl_apply._ENV_HF_TOKEN
+            else:
+                env.pop("HF_TOKEN", None)
             try:
                 os.execve(sys.executable, [sys.executable, *sys.orig_argv[1:]], env)
             except Exception:
