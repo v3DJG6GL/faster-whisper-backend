@@ -361,36 +361,53 @@ def _gguf_quant(name: str) -> str:
 
 
 def _gguf_quant_size(repo_dir: str, quant: str) -> "int | None":
-    """Size of the ONE cached file matching `*{quant}.gguf` (the glob
-    translation.engine resolves the quant with), or None when there is no
-    single match. Summing the repo dir instead would charge an operator who
-    ever fetched a second quant for both files.
+    """Size of the cached file matching `*{quant}.gguf` (the glob
+    translation.engine resolves the quant with) that the loader would open,
+    or None when it would open none. Summing the repo dir instead would
+    charge an operator who ever fetched a second quant for both files.
 
-    Every snapshot counts, keyed by name like engine._cached_gguf: a quant
-    fetched at an older revision still loads under LOCAL_FILES_ONLY after a
-    newer revision pulled other files, and must keep its disk prior."""
+    Revisions are tried like engine._cached_gguf tries them: the one
+    refs/main points at first, then newest (its newest file) first; the
+    first revision holding a match decides, and two matches there are no
+    single file. A union over every revision would answer None after an
+    upstream rename (old-Q4_K_M in an old revision, new-Q4_K_M in main)
+    for a GGUF the loader opens fine, leaving fits() at size_unknown."""
     snaps = os.path.join(repo_dir, "snapshots")
     try:
-        revs = [p for p in (os.path.join(snaps, d) for d in os.listdir(snaps))
-                if os.path.isdir(p)]
+        names = os.listdir(snaps)
     except OSError:
         return None
-    if not revs:
-        return None
+    try:
+        with open(os.path.join(repo_dir, "refs", "main"), encoding="utf-8") as f:
+            main = f.read().strip()
+    except OSError:
+        main = ""
     pattern = f"*{quant}.gguf".lower()
-    # Oldest revision first, so the newest copy of a name is the one kept.
-    matches: "dict[str, str]" = {}
-    for rev in sorted(revs, key=os.path.getmtime):
+    revs = []
+    for d in names:
+        rev = os.path.join(snaps, d)
+        if not os.path.isdir(rev):
+            continue
+        newest = None
+        sizes = []
         for root, _dirs, files in os.walk(rev):
             for fn in files:
-                p = os.path.join(root, fn)
-                rel = os.path.relpath(p, rev).replace(os.sep, "/").lower()
-                if fnmatch.fnmatchcase(rel, pattern):
-                    matches[rel] = p
-    if len(matches) != 1:
-        return None
-    # os.stat follows the snapshot symlink to its blob, once.
-    return int(os.stat(next(iter(matches.values()))).st_size) or None
+                # os.stat follows the snapshot symlink to its blob: the
+                # blob's mtime is what scan_cache_dir dates a revision by.
+                try:
+                    st = os.stat(os.path.join(root, fn))
+                except OSError:
+                    continue
+                newest = st.st_mtime if newest is None else max(newest, st.st_mtime)
+                if fnmatch.fnmatchcase(fn.lower(), pattern):
+                    sizes.append(int(st.st_size))
+        if newest is None:
+            newest = os.path.getmtime(rev)
+        revs.append((d == main, newest, d, sizes))
+    for *_order, sizes in sorted(revs, key=lambda r: r[:3], reverse=True):
+        if sizes:
+            return (sizes[0] or None) if len(sizes) == 1 else None
+    return None
 
 
 def _model_path(name: str) -> "str | None":

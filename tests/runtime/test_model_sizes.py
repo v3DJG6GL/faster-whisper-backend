@@ -307,18 +307,54 @@ def test_disk_size_finds_a_gguf_quant_cached_in_an_older_snapshot(
     (snaps / "B").mkdir()
     (snaps / "A" / "x-Q4_K_M.gguf").write_bytes(b"x" * 1000)
     (snaps / "B" / "x-Q8_0.gguf").write_bytes(b"x" * 2000)
-    os.utime(snaps / "A", (1_000_000, 1_000_000))
-    os.utime(snaps / "B", (2_000_000, 2_000_000))
+    # Dated by their newest file, like scan_cache_dir dates a revision.
+    os.utime(snaps / "A" / "x-Q4_K_M.gguf", (1_000_000, 1_000_000))
+    os.utime(snaps / "B" / "x-Q8_0.gguf", (2_000_000, 2_000_000))
     monkeypatch.setenv("HF_HOME", str(hf))
 
     assert model_sizes.disk_size("gguf:org/x:Q4_K_M") == 1000
     assert model_sizes.disk_size("gguf:org/x:Q8_0") == 2000
-    # The same name in two revisions is one file, sized from the newest.
+    # Quant-less: the newest revision holding any .gguf decides.
+    assert model_sizes.disk_size("gguf:org/x") == 2000
+    # The same name in two revisions: the newest copy is the one loaded.
     (snaps / "B" / "x-Q4_K_M.gguf").write_bytes(b"x" * 1500)
-    os.utime(snaps / "B", (2_000_000, 2_000_000))
+    os.utime(snaps / "B" / "x-Q4_K_M.gguf", (2_000_000, 2_000_000))
     assert model_sizes.disk_size("gguf:org/x:Q4_K_M") == 1500
-    # Two different names across revisions: no single match.
+    # Two quants in the deciding revision: no single match.
     assert model_sizes.disk_size("gguf:org/x") is None
+
+
+def test_disk_size_sizes_the_gguf_the_loader_opens_after_a_rename(
+        ledger, tmp_path, monkeypatch):
+    """engine._cached_gguf lets the revision refs/main points at decide,
+    then the newest: a file renamed upstream (old-Q4_K_M in an old
+    revision, new-Q4_K_M in main) loads fine and must keep its disk prior
+    rather than read as "no single match" -> fits() size_unknown forever."""
+    repo = tmp_path / "hf" / "hub" / "models--org--x"
+    blobs = repo / "blobs"
+    blobs.mkdir(parents=True)
+    for rev, name, size, t in (("a" * 40, "old-Q4_K_M.gguf", 1000, 1_000_000),
+                               ("b" * 40, "new-Q4_K_M.gguf", 2000, 2_000_000)):
+        blob = blobs / rev[:8]
+        blob.write_bytes(b"x" * size)
+        snap = repo / "snapshots" / rev
+        snap.mkdir(parents=True)
+        try:
+            os.symlink(os.path.join("..", "..", "blobs", rev[:8]), snap / name)
+        except OSError:
+            pytest.skip("no symlink support")
+        os.utime(blob, (t, t))
+    (repo / "refs").mkdir()
+    (repo / "refs" / "main").write_text("b" * 40)
+    monkeypatch.setenv("HF_HOME", str(tmp_path / "hf"))
+
+    assert model_sizes.disk_size("gguf:org/x:Q4_K_M") == 2000
+    assert model_sizes.disk_size("gguf:org/x") == 2000
+    # main beats a newer revision: the loader opens main's copy.
+    os.utime(blobs / ("a" * 8), (3_000_000, 3_000_000))
+    assert model_sizes.disk_size("gguf:org/x:Q4_K_M") == 2000
+    (repo / "refs" / "main").write_text("a" * 40)
+    assert model_sizes.disk_size("gguf:org/x:Q4_K_M") == 1000
 
 
 def test_disk_size_is_none_when_nothing_is_there(ledger, tmp_path, monkeypatch):
