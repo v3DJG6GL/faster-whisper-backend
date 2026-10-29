@@ -1135,8 +1135,10 @@ def _complete(llm, family: str, prompt_or_msgs, max_tokens: int) -> str:
 # =============================================================================
 
 # Sentence-final punctuation that closes a fluent-mode group (the full-width
-# forms are what whisper writes for Chinese / Japanese).
-_SENTENCE_FINAL = ".!?…。！？"
+# forms are what whisper writes for Chinese / Japanese; the danda for
+# Hindi / Marathi / Nepali, ။ for Burmese, ។ ៕ for Khmer, ؟ for Arabic).
+# No Greek ";": a Latin semicolon is no sentence end.
+_SENTENCE_FINAL = ".!?…。！？।॥။។៕؟‼⁇⁈⁉"
 # Closing quotes / brackets that may follow the sentence end ('."', '?»', '」').
 _CLOSERS = "\"'”’»«」』）)]】"
 # Max segments merged into one fluent group.

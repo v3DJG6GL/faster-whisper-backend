@@ -409,6 +409,20 @@ def test_merge_sentences_sees_full_width_and_quoted_sentence_ends():
     assert groups == [[0], [1], [2], [3], [4], [5]]
 
 
+def test_merge_sentences_sees_danda_burmese_khmer_and_arabic_ends():
+    """Hindi / Burmese / Khmer / Arabic sentence marks closed no group: six
+    sentences were translated as one block and split back by length, so
+    words crossed cue and sentence boundaries."""
+    assert translation._merge_sentences(
+        _segs("मैं घर जा रहा हूँ।", "आज मौसम अच्छा है।", "कल मिलेंगे।")) == \
+        [[0], [1], [2]]
+    assert translation._merge_sentences(
+        _segs("ကျေးဇူးတင်ပါတယ်။", "မနက်ဖြန်တွေ့မယ်။", "អរគុណ។", "ល្អ៕",
+              "هل أنت بخير؟", "Really‼")) == [[0], [1], [2], [3], [4], [5]]
+    # A semicolon still does not close a group.
+    assert translation._merge_sentences(_segs("so;", "then.")) == [[0, 1]]
+
+
 def test_redistribute_proportional_word_boundaries():
     # Equal source shares → cut at the space nearest the middle.
     assert translation._redistribute(["aaaa", "bbbb"],
