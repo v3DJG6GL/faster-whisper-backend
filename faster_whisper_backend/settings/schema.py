@@ -1005,8 +1005,12 @@ class AdminConfig(BaseModel):
         subgroup="Advanced — preload & warm cache")
 
     # --- Speaker diarization ---
+    # evict= on each capacity switch: once off, no request can reach the
+    # cached extra again, so turning it off frees the VRAM now instead of at
+    # the idle timeout (never, with 0). Turning it on drops an empty cache.
     DIARIZATION_ENABLED: bool | None = _F(
-        "DIARIZATION_ENABLED", scope="server", group="Diarization")
+        "DIARIZATION_ENABLED", scope="server", group="Diarization",
+        evict="diarization")
     # Per-request since the stage-model-allowlist work: a caller may pick the
     # pipeline (subject to DIARIZATION_ALLOWED_MODELS); the evict metadata
     # stays so a global edit still drops the cached pipeline.
@@ -1042,7 +1046,8 @@ class AdminConfig(BaseModel):
 
     # --- Background-music separation ---
     BGM_SEPARATION_ENABLED: bool | None = _F(
-        "BGM_SEPARATION_ENABLED", scope="server", group="Music separation")
+        "BGM_SEPARATION_ENABLED", scope="server", group="Music separation",
+        evict="bgm")
     # Per-request since the stage-model-allowlist work (see DIARIZATION_MODEL).
     BGM_SEPARATION_UVR_MODEL: Annotated[str, Field(min_length=1, max_length=128)] | None = _F(
         "BGM_SEPARATION_UVR_MODEL", scope="per_request",
@@ -1067,7 +1072,8 @@ class AdminConfig(BaseModel):
 
     # --- Translation (T2T) ---
     TRANSLATION_ENABLED: bool | None = _F(
-        "TRANSLATION_ENABLED", scope="server", group="Translation")
+        "TRANSLATION_ENABLED", scope="server", group="Translation",
+        evict="translation")
     # evict="translation": editing the default/allowlist can orphan a loaded
     # model the request path could no longer reach; editing device/cap — or
     # the prompt family, which sets the load-time n_ctx — changes the load

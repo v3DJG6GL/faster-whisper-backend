@@ -215,3 +215,27 @@ def test_lowering_max_loaded_models_trims_the_resident_cache(monkeypatch):
     assert list(tx_models._loaded_models) == ["a", "d"]
     assert out["evicted"] == ["b", "c"]
     assert "MAX_LOADED_MODELS" in out["hot_applied"]
+
+
+def test_switching_a_stage_off_drops_its_cached_extra(monkeypatch):
+    # With the capacity switch off no request can reach the cached pyannote
+    # pipeline / UVR separator / GGUF models again, so the save must free them
+    # now rather than leave them in VRAM until the idle timeout (or forever
+    # with timeout 0).
+    extras: list = []
+
+    def _evictor(name):
+        async def _drop():
+            extras.append(name)
+        return _drop
+
+    written = {"DIARIZATION_ENABLED": False, "BGM_SEPARATION_ENABLED": False,
+               "TRANSLATION_ENABLED": False}
+    for name in written:
+        monkeypatch.setattr(cfg, name, True, raising=False)
+    monkeypatch.setattr(config_store, "env_pinned_fields", lambda: frozenset())
+    monkeypatch.setattr(config_store, "load_overrides", lambda: dict(written))
+    for name in pl_apply.EVICTORS:
+        monkeypatch.setitem(pl_apply.EVICTORS, name, _evictor(name))
+    asyncio.run(pl_apply.apply_hot_changes(written))
+    assert sorted(extras) == ["bgm", "diarization", "translation"]
