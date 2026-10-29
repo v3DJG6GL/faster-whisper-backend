@@ -275,6 +275,19 @@ def test_fetch_hls_ts_pieces(served, tmp_path):
     _assert_pieces_hit(pieces, starts, 6.0)
 
 
+def test_fetch_without_starts_places_pieces_by_the_playlist(served, tmp_path):
+    """starts None (the probe had no length): the pieces sit at 20/50/80 %
+    of the playlist's summed segment durations, and are reported back."""
+    table, _calls = served
+    names = [f"s{i}.ts" for i in range(15)]
+    for name, body in zip(names, ts_segments(15)):
+        table[f"https://cdn.test/v/audio/{name}"] = body
+    table[_BASE] = hls_playlist(names).encode()
+    pieces, got = _fetch({"protocol": "hls", "url": _BASE}, None, 6.0, tmp_path)
+    assert got["starts"] == [12.0, 30.0, 40.0]
+    _assert_pieces_hit(pieces, got["starts"], 6.0)
+
+
 def test_fetch_hls_resolves_segments_against_the_redirect_target(
         fake_capped_get, tmp_path):
     """A tokenised manifest endpoint that redirects to a CDN edge: relative

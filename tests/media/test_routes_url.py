@@ -1083,6 +1083,20 @@ def test_language_check_samples_only_the_segments(client, hls_link, caplog):
     assert "chunks 13 seg" in line and "cdn.test" not in caplog.text
 
 
+def test_language_check_places_segmented_pieces_by_the_playlist_length(
+        client, hls_link, monkeypatch):
+    """A bare .m3u8 link: the probe has no length, so the playlist's segment
+    durations (15 × 4 s) place the three pieces — not one 20 s piece at 0 s."""
+    async def _probe(url, *, timeout):
+        return _info(url=url, duration=None, segmented={
+            "protocol": "hls", "url": _HLS, "headers": {}})
+    monkeypatch.setattr(url_download, "probe", _probe)
+    r = client.post("/v1/audio/url-language", json={"url": _URL})
+    assert r.status_code == 200, r.text
+    assert [p["at"] for p in r.json()["pieces"]] == [12.0, 30.0, 40.0]
+    assert hls_link.heard == [20 * 16000] * 3 and hls_link.downloads == []
+
+
 @pytest.mark.parametrize("break_it,why", [
     (lambda t: t.update({_HLS: b"#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI=\"k\"\n"}),
      "encrypted"),

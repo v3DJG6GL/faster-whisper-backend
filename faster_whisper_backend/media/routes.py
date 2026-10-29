@@ -330,12 +330,13 @@ async def _download_link_audio(pid: "str | None", url: str,
 
 
 async def _segmented_pieces(pid: "str | None", url: str, source: dict,
-                            starts: "list[float]",
-                            seconds: float) -> "tuple[list | None, str]":
+                            starts: "list[float] | None", seconds: float,
+                            ) -> "tuple[list | None, list[float] | None, str]":
     """The language check's pieces from only the stream segments under them
-    (media/segmented.py), for a link whose audio is HLS/DASH: (pieces, how).
-    (None, why) when that path cannot serve this stream — the caller then
-    downloads the whole file, so nothing but a cancel escapes from here."""
+    (media/segmented.py), for a link whose audio is HLS/DASH: (pieces,
+    starts, how) — `starts` None places them by the playlist's length.
+    (None, None, why) when that path cannot serve this stream — the caller
+    then downloads the whole file, so nothing but a cancel escapes from here."""
     import urllib.error
     t0 = time.perf_counter()
     try:
@@ -366,8 +367,8 @@ async def _segmented_pieces(pid: "str | None", url: str, source: dict,
         logger.info("[url-dl] language check samples no segments (host %s): "
                     "%s — downloading the whole audio",
                     media_video._url_host_for_log(url), _log_safe(why))
-        return None, why
-    return audio, (f"chunks {got['segments']} seg / {got['bytes'] / 1e6:.1f} MB"
+        return None, None, why
+    return audio, got["starts"], (f"chunks {got['segments']} seg / {got['bytes'] / 1e6:.1f} MB"
                    f" in {time.perf_counter() - t0:.1f}s")
 
 
@@ -494,8 +495,12 @@ async def url_language(request: Request,
         starts = _lc.piece_starts(info.duration)
         audio, mid = None, None
         if info.segmented is not None:
-            audio, how = await _segmented_pieces(
-                pid, url, info.segmented, starts, _lc.PIECE_SECONDS)
+            # No probed length (a bare .m3u8 link): None lets the playlist's
+            # segment durations place the pieces, not one at 0 s.
+            audio, placed, how = await _segmented_pieces(
+                pid, url, info.segmented, starts if info.duration else None,
+                _lc.PIECE_SECONDS)
+            starts = placed or starts
         if audio is None:
             _d0 = time.perf_counter()
             mid = await _download_link_audio(pid, url, _user_id)

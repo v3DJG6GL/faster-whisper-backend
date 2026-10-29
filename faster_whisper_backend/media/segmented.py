@@ -30,7 +30,7 @@ import time
 import urllib.parse
 
 from faster_whisper_backend.media import download as _udl
-from faster_whisper_backend.media.language_check import select_segments
+from faster_whisper_backend.media.language_check import piece_starts, select_segments
 
 # Caps for one check. 2 s DASH fragments (RTVE) need 12 to cover a 20 s
 # piece plus margin; shorter segments than that fall back rather than fan
@@ -226,13 +226,16 @@ def dash_media(fragments, base_url: "str | None") -> Media:
     return Media(segments, init)
 
 
-async def fetch_pieces(source: dict, starts: "list[float]", seconds: float,
+async def fetch_pieces(source: dict, starts: "list[float] | None", seconds: float,
                        dest_dir: str, *, cancel_check,
                        progress_cb=None) -> "tuple[list[tuple[str, float]], dict]":
     """Fetch the segments under each piece into one file per piece in
     `dest_dir` (init + segments, concatenated): ([(path, skip seconds)],
-    {segments, bytes}). Raises Unsupported / UrlDownloadError (→ the caller
-    falls back), UrlCancelled when `cancel_check()` trips."""
+    {segments, bytes, starts}). `starts` None (the probe had no length — a
+    bare .m3u8 link) places the pieces by the playlist's segment durations;
+    `starts` in the result are the ones used. Raises Unsupported /
+    UrlDownloadError (→ the caller falls back), UrlCancelled when
+    `cancel_check()` trips."""
     deadline = time.monotonic() + BUDGET_S
     headers = source.get("headers") or {}
 
@@ -276,6 +279,8 @@ async def fetch_pieces(source: dict, starts: "list[float]", seconds: float,
         if media is None:
             raise Unsupported("a master playlist that points at another")
 
+    if starts is None:
+        starts = piece_starts(sum(d for _u, d in media.segments))
     runs = select_segments([d for _u, d in media.segments], starts, seconds,
                            MARGIN_S)
     for first, end, _skip in runs:
@@ -312,4 +317,5 @@ async def fetch_pieces(source: dict, starts: "list[float]", seconds: float,
             pieces.append((path, skip))
         return pieces
     pieces = await asyncio.to_thread(_write_pieces)
-    return pieces, {"segments": len(got) - len(head), "bytes": spent}
+    return pieces, {"segments": len(got) - len(head), "bytes": spent,
+                    "starts": starts}
