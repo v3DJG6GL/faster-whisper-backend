@@ -1292,6 +1292,41 @@ def test_env_model_override_naming_a_split_card_is_kept(monkeypatch):
         importlib.reload(config)
 
 
+def test_env_slug_lists_beside_a_local_copy_of_the_split_card_keep_naming_it(
+        tmp_path, monkeypatch):
+    """A config.local.json rule list from before June 17 still runs the old
+    combined card: an env list naming it is valid there and must not be split
+    onto cards that list does not hold (the unknown-slug check drops the var)."""
+    from faster_whisper_backend.paths import REPO_ROOT
+    with open(os.path.join(REPO_ROOT, "config.json"), encoding="utf-8") as fh:
+        rules = json.load(fh)["PIPELINE_RULES"]
+    rules = [r for r in rules
+             if r["name"] not in ("strip-trailing-period", "strip-auto-punctuation")]
+    rules.insert(-1, {"name": "strip-whisper-punctuation", "label": "Strip Whisper punctuation",
+                      "type": "regex-list",
+                      "entries": [{"pattern": "\\s*\\.+\\s*$", "replacement": ""}]})
+    p = tmp_path / "config.local.json"
+    p.write_text(json.dumps({"PIPELINE_RULES": rules}), encoding="utf-8")
+    _point_overrides_at(monkeypatch, p)
+    try:
+        _reload_with_env(
+            monkeypatch,
+            WHISPER_MODEL_OVERRIDES=json.dumps(
+                {"large-v3": {"PIPELINE_RULES_EXCLUDE": ["strip-whisper-punctuation"],
+                              "BEAM_SIZE": 3}}),
+            WHISPER_MODEL_OVERRIDE__tiny__PIPELINE_RULES_EXCLUDE="strip-whisper-punctuation",
+            WHISPER_CAPTURES_PIPELINE_RULES_EXCLUDE="strip-whisper-punctuation")
+        assert "strip-whisper-punctuation" in [r["name"] for r in config.PIPELINE_RULES]
+        assert config.MODEL_OVERRIDES["large-v3"] == {
+            "PIPELINE_RULES_EXCLUDE": ["strip-whisper-punctuation"], "BEAM_SIZE": 3}
+        assert config.MODEL_OVERRIDES["tiny"]["PIPELINE_RULES_EXCLUDE"] == [
+            "strip-whisper-punctuation"]
+        assert set(config.CAPTURES_PIPELINE_RULES_EXCLUDE) == {"strip-whisper-punctuation"}
+    finally:
+        monkeypatch.undo()
+        importlib.reload(config)
+
+
 def test_alias_env_ignores_the_old_name_when_either_new_spelling_is_set():
     """A stale WHISPER_USE_AUTH_TOKEN must not become WHISPER_HF_TOKEN when the
     operator moved to WHISPER_HF_TOKEN_FILE: the plain var would then make the

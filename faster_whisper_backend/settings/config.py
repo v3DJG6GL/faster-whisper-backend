@@ -1740,6 +1740,20 @@ def _env_validation_reason(exc: BaseException, skip: "set[tuple]" = frozenset())
     return str(exc).splitlines()[0].strip()
 
 
+def rule_slugs_in_force() -> "frozenset[str] | None":
+    """Slugs of the PIPELINE_RULES in force right now (config.json + local +
+    env so far); None when there are none. Also the `known` set of the slug-list
+    migrations outside config_store (env vars here, per-identity bindings in
+    effective_config / api_keys_store; config_renames.rename_slugs): a local
+    copy that still holds a card split since keeps a list naming it valid."""
+    _slugs = set()
+    for _r in (globals().get("PIPELINE_RULES") or []):
+        _n = _r.get("name") if isinstance(_r, dict) else getattr(_r, "name", None)
+        if _n:
+            _slugs.add(_n)
+    return frozenset(_slugs) if _slugs else None
+
+
 def _env_guard_off(var: str, field: str, value: object) -> object:
     """A segment guard at 1 is refused since older releases accepted it, and 1
     already behaved as off: an env value of 1 becomes 0 with a note, the
@@ -1785,12 +1799,8 @@ try:
         env-supplied MODEL_OVERRIDES / OVERRIDE_PROFILES / CAPTURES_
         PIPELINE_RULES_EXCLUDE that names a typo'd rule is rejected like a
         /settings save instead of booting silently and doing nothing."""
-        _slugs = set()
-        for _r in (globals().get("PIPELINE_RULES") or []):
-            _n = _r.get("name") if isinstance(_r, dict) else getattr(_r, "name", None)
-            if _n:
-                _slugs.add(_n)
-        return {"canonical_slugs": frozenset(_slugs)} if _slugs else {}
+        _slugs = rule_slugs_in_force()
+        return {"canonical_slugs": _slugs} if _slugs else {}
 
     for _field, _env in _ENV_VAR_MAPPING.items():
         if _field in _ENV_SPECIAL_CASES or _field in _ENV_JSON_FIELDS:
@@ -1830,7 +1840,8 @@ try:
             _parsed = json.loads(_raw)
             # Renamed field keys / locks inside the bundles keep working (the
             # bundles are extra="forbid": one old key fails the whole value)...
-            _renamed_keys = _renames.migrate_bundle_keys({_field: _parsed})
+            _renamed_keys = _renames.migrate_bundle_keys(
+                {_field: _parsed}, rule_slugs_in_force())
             if _renamed_keys:
                 _ENV_WARNINGS.append(
                     f"{_ENV_VAR_MAPPING[_field]} uses the renamed field(s) "
@@ -1884,7 +1895,8 @@ for _f in sorted(_SET_FIELDS):
         globals()[_f] = {s.strip() for s in _raw.split(",") if s.strip()}
 # Renamed rule slugs (config_renames.RENAMED_RULES) keep working in the env
 # value too — this must run AFTER the reader above, which writes it.
-CAPTURES_PIPELINE_RULES_EXCLUDE = _renames.rename_slugs(CAPTURES_PIPELINE_RULES_EXCLUDE)
+CAPTURES_PIPELINE_RULES_EXCLUDE = _renames.rename_slugs(
+    CAPTURES_PIPELINE_RULES_EXCLUDE, rule_slugs_in_force())
 # "" is a value for the set fields (empty set) and for CONVERT_QUANTIZATION
 # (→ float16); the two ALLOWED_HOSTS lists `or current` and are NOT listed.
 _EMPTY_IS_VALUE.update(_SET_FIELDS)
@@ -1989,7 +2001,8 @@ def _coerce_override_value(field: str, raw: str) -> object:
             return raw
     if field in _OVERRIDE_LIST_FIELDS:
         # Rule slugs: a renamed one (config_renames.RENAMED_RULES) keeps working.
-        return _renames.rename_slugs([s.strip() for s in raw.split(",") if s.strip()])
+        return _renames.rename_slugs([s.strip() for s in raw.split(",") if s.strip()],
+                                     rule_slugs_in_force())
     return raw
 
 

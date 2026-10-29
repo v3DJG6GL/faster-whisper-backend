@@ -129,7 +129,7 @@ def _blob_to_layer(layer_id: str, label: str, profile_name: str | None,
     # binding saved before a config_renames rename would otherwise collapse
     # (its override AND its lock silently vanish). Migrate a copy here.
     blob = dict(blob)
-    _renames.migrate_bundle(blob)
+    _renames.migrate_bundle(blob, cfg.rule_slugs_in_force())
     fields = {
         k: v for k, v in blob.items()
         if k in SCALAR_OVERRIDE_FIELDS and v is not None

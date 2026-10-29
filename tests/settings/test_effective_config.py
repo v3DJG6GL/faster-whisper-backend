@@ -278,6 +278,18 @@ def test_blob_to_layer_empty_is_none():
     assert ec._blob_to_layer("x", "x", None, {"locks": []}) is None
 
 
+def test_blob_to_layer_keeps_a_split_card_the_rules_in_force_still_hold(monkeypatch):
+    """A binding excluding strip-whisper-punctuation (split in June,
+    config_renames.SPLIT_RULES) excludes the cards that took it over, unless
+    the rule list in force (a local copy from before the split) still runs it."""
+    old = ["strip-whisper-punctuation"]
+    assert _layer("key", PIPELINE_RULES_EXCLUDE=old)["exclude"] == {
+        "strip-trailing-period", "strip-auto-punctuation"}
+    monkeypatch.setattr(cfg, "PIPELINE_RULES", [
+        {"name": "strip-whisper-punctuation"}, {"name": "trim-edges"}])
+    assert _layer("key", PIPELINE_RULES_EXCLUDE=old)["exclude"] == set(old)
+
+
 # --- request-named override profile (P10) ---------------------------------
 
 def _set_profiles(monkeypatch, profiles, allow=True):

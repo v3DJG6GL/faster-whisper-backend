@@ -787,6 +787,21 @@ def test_parse_binding_migrates_renamed_rule_slugs():
     assert stored["direct"]["PIPELINE_RULES_EXCLUDE"] == ["de-dictation-map"]
 
 
+def test_parse_binding_keeps_a_split_card_the_rules_in_force_still_hold(monkeypatch):
+    """config_renames.SPLIT_RULES maps strip-whisper-punctuation onto the
+    cards that took it over, unless the rule list in force (a local copy from
+    before the split) still holds it."""
+    from faster_whisper_backend.auth import api_keys_store
+    from faster_whisper_backend.settings import config as cfg
+    raw = '{"direct": {"PIPELINE_RULES_EXCLUDE": ["strip-whisper-punctuation"]}}'
+    assert set(api_keys_store._parse_binding(raw)["direct"]["PIPELINE_RULES_EXCLUDE"]) == {
+        "strip-trailing-period", "strip-auto-punctuation"}
+    monkeypatch.setattr(cfg, "PIPELINE_RULES", [
+        {"name": "strip-whisper-punctuation"}, {"name": "trim-edges"}])
+    assert api_keys_store._parse_binding(raw)["direct"]["PIPELINE_RULES_EXCLUDE"] == [
+        "strip-whisper-punctuation"]
+
+
 def test_list_users_migrates_the_user_binding_the_drawer_sends_back(api_keys_db):
     """The per-user drawer reads list_users() and sends the blob back on
     every save; a raw stored guard at 1 or a pre-rename key 422'd any edit

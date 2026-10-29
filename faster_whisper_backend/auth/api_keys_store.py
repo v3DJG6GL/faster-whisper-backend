@@ -306,7 +306,8 @@ def _parse_binding(raw: "str | dict | None") -> dict[str, Any]:
         # Renamed rule slugs in the include/exclude lists likewise, or the
         # re-save fails validate_binding's unknown-slug check.
         direct = dict(direct)
-        config_renames.migrate_bundle(direct)
+        from faster_whisper_backend.settings import config as cfg  # deferred, like config_store below
+        config_renames.migrate_bundle(direct, cfg.rule_slugs_in_force())
         # Same for a value the validators started refusing after it was
         # stored (guard words 1, an unparseable TEMPERATURE / SUPPRESS_TOKENS,
         # an unknown DEFAULT_LANGUAGE): validate_binding checks the whole
