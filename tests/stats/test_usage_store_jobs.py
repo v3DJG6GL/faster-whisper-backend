@@ -369,12 +369,14 @@ def test_dictation_utterance_vad_retained_averages_over_one_run(usage_store_db):
     """Each dictation utterance carries a "vad" stage under the session's
     job id. The run counted once but the hourly retained sum took every
     utterance, so five utterances at 0.9 read retained_avg 4.5 ("-350 %
-    skipped") on the rollup path while the with= path read 0.9."""
+    skipped") on the rollup path while the with= path read 0.9. Both paths
+    keep the session's first utterance: the per-job row took the latest
+    one, so 0.9 / 0.5 / 0.4 read 0.9 on the rollup and 0.4 with a chip on."""
     us = usage_store_db
-    for _ in range(5):
+    for retained in (0.9, 0.5, 0.4):
         us.record_usage(key_id="k", user_id="u", audio_s=5.0, words=20,
                         status="ok", kind="dictation", job_id="J" * 32,
-                        stages=[{"name": "vad", "secs": 0.1, "retained": 0.9}])
+                        stages=[{"name": "vad", "secs": 0.1, "retained": retained}])
     for with_stages in ((), ("vad",)):
         doc = us.document("u", days=1, tz=_UTC, tz_name="UTC",
                           with_stages=with_stages)

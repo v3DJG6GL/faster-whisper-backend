@@ -787,8 +787,10 @@ def _record_stage(conn: sqlite3.Connection, hour: int, uid: str,
             "  audio_s  = audio_s + excluded.audio_s,"
             "  model    = COALESCE(excluded.model, model),"
             "  targets  = COALESCE(excluded.targets, targets),"
-            "  speakers = COALESCE(excluded.speakers, speakers),"
-            "  retained = COALESCE(excluded.retained, retained),"
+            # The first value wins, like the hourly sums (count_run): a
+            # later utterance's ratio would make the with= path disagree.
+            "  speakers = COALESCE(speakers, excluded.speakers),"
+            "  retained = COALESCE(retained, excluded.retained),"
             "  error    = COALESCE(error, excluded.error),"
             "  kept_original = kept_original + excluded.kept_original",
             (jid, st["stage"], st["secs"], st["model"],
