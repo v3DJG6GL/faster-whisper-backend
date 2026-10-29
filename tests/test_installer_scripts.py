@@ -579,6 +579,24 @@ def test_linux_installer_rebuilds_a_venv_whose_python_is_dead_or_pipless(tmp_pat
     assert "-m venv" not in run()
 
 
+def test_windows_installer_rebuilds_a_venv_whose_python_is_dead_or_pipless():
+    # The Windows twin of the test above: venv\Scripts\python.exe is a launcher
+    # that outlives an uninstalled base Python, and a failed build leaves it
+    # without pip, so a bare Test-Path kept a venv that died at "pip install" on
+    # every re-run. The pip probe runs under a relaxed error preference (its
+    # stderr would terminate under Stop), and the rebuild clears an old venv.
+    ps1 = _read("install-service.ps1")
+    probe = ps1[ps1.index("function Test-VenvUsable"):ps1.index("\nif (-not (Test-VenvUsable))")]
+    assert re.search(r'\$ErrorActionPreference = "Continue"\n\s*try \{\n'
+                     r'\s*& \$Python -m pip --version 2>&1 \| Out-Null\n'
+                     r'\s*return \(\$LASTEXITCODE -eq 0\)\n', probe)
+    assert "if (-not (Test-Path $Python)) { return $false }" in probe
+    assert "if (-not (Test-Path $Python)) {\n" not in ps1
+    bootstrap = ps1[ps1.index("\nif (-not (Test-VenvUsable))"):ps1.index('Write-Host "venv ready."')]
+    assert 'if (Test-Path (Join-Path $venvDir "pyvenv.cfg")) { $venvFlags = @("--clear") }' in bootstrap
+    assert "& $sysPy -m venv @venvFlags $venvDir" in bootstrap
+
+
 def test_installers_warn_about_legacy_repo_root_state_before_the_start():
     # Since the data-dir move the service reads data/db/ and
     # data/config.local.json; stores and config left in the repo root are

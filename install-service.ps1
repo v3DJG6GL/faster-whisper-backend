@@ -117,9 +117,28 @@ New-Item -ItemType Directory -Force -Path $LogsDir | Out-Null
 # --- bootstrap venv if missing ---------------------------------------------
 # First-time install on a fresh clone has no venv yet. Create it inline using
 # whatever Python the user has on PATH so the script is "clone -> run" with
-# no manual prep. Idempotent: skipped entirely if venv already exists.
-if (-not (Test-Path $Python)) {
-    Write-Host "Python venv not found - bootstrapping..." -ForegroundColor Cyan
+# no manual prep. Idempotent: an existing venv is kept whatever Python it runs,
+# as long as that python starts and has pip. venv\Scripts\python.exe is a
+# launcher that finds its base interpreter through pyvenv.cfg, so it outlives
+# an uninstalled Python ("No Python at ..."), and a failed build leaves it
+# behind without pip: both died at "pip install" on every re-run, so rebuild.
+# The probe's stderr would terminate under Stop, as for pip cache purge below.
+function Test-VenvUsable {
+    if (-not (Test-Path $Python)) { return $false }
+    $oldPref = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        & $Python -m pip --version 2>&1 | Out-Null
+        return ($LASTEXITCODE -eq 0)
+    } catch {
+        return $false
+    } finally {
+        $ErrorActionPreference = $oldPref
+    }
+}
+
+if (-not (Test-VenvUsable)) {
+    Write-Host "Python venv not found or not usable - bootstrapping..." -ForegroundColor Cyan
 
     # Prefer the PEP 397 launcher (py.exe), fall back to python / python3.
     $sysPy = $null
@@ -137,8 +156,14 @@ if (-not (Test-Path $Python)) {
         throw "$sysPy is older than Python 3.14. Install Python 3.14+ from https://www.python.org/downloads/ (check 'Add to PATH'), then re-run this script."
     }
 
+    # A broken venv is rebuilt with --clear, so no site-packages built for the
+    # old interpreter survive; a dir without pyvenv.cfg is not a venv and is
+    # not cleared.
+    $venvDir   = Join-Path $RepoDir "venv"
+    $venvFlags = @()
+    if (Test-Path (Join-Path $venvDir "pyvenv.cfg")) { $venvFlags = @("--clear") }
     Write-Host "Creating venv with: $sysPy" -ForegroundColor Cyan
-    & $sysPy -m venv (Join-Path $RepoDir "venv")
+    & $sysPy -m venv @venvFlags $venvDir
     if ($LASTEXITCODE -ne 0) { throw "venv creation failed (exit $LASTEXITCODE)" }
     if (-not (Test-Path $Python)) { throw "venv created but $Python still missing - check the Python install" }
 
