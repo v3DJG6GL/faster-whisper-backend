@@ -655,10 +655,34 @@ def _release_model_lease(name: str) -> None:
     n = _model_leases.get(name, 0) - 1
     if n <= 0:
         _model_leases.pop(name, None)
+        _schedule_trim_to_cap()
     else:
         _model_leases[name] = n
     # No-op for a name the registry no longer knows (force-dropped mid-job).
     model_registry.touch_loaded_model(name)
+
+
+# The pending trim a lease release scheduled (one at a time; see below).
+_trim_task: "asyncio.Task | None" = None
+
+
+def _schedule_trim_to_cap() -> None:
+    """Run trim_to_cap in the background when the cache is over the cap: a
+    leased model the cap loop or trim_to_cap had to skip becomes evictable the
+    moment its last lease goes, and a hit-only server never misses to reclaim
+    it. A task, as the release is sync and may run under _model_load_lock. One
+    pending trim covers every release: it re-reads the cache once it holds the
+    lock, and runs to the end without an await once it does."""
+    global _trim_task
+    if len(_loaded_models) <= cfg.MAX_LOADED_MODELS:
+        return
+    if _trim_task is not None and not _trim_task.done():
+        return
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:  # no loop (a sync caller): the next miss trims
+        return
+    _trim_task = loop.create_task(trim_to_cap())
 
 
 def _resolve_model_name(requested: str) -> str:
@@ -1227,9 +1251,7 @@ async def _load_on_miss(name: str, *, lease: bool) -> "WhisperModel":
             if evicted_name is None:
                 # Every cached model is mid-request — overflow the cap rather
                 # than free a model under a running decode. The excess is
-                # reclaimed by the next load that finds an unleased entry, or
-                # by the idle evictor when MODEL_IDLE_TIMEOUT_S > 0 (it is 0
-                # by default, so do not rely on it).
+                # reclaimed once a lease is released (_schedule_trim_to_cap).
                 logger.warning(
                     "All %d cached models are in use — temporarily exceeding "
                     "MAX_LOADED_MODELS", len(_loaded_models))
@@ -1486,8 +1508,9 @@ async def trim_to_cap() -> list[str]:
     """Evict LRU UNLEASED models until the cache is within MAX_LOADED_MODELS,
     as _get_or_load_model's cap loop does on a miss. Called when the cap is
     lowered: that loop runs on misses only, so a server whose clients keep
-    hitting resident models never shrank. Leased models stay (the excess is
-    reclaimed later, as there). Returns the evicted ids."""
+    hitting resident models never shrank. Leased models stay; the release of
+    a model's last lease runs this again (_schedule_trim_to_cap). Returns the
+    evicted ids."""
     evicted: list[str] = []
     async with _model_load_lock:
         while len(_loaded_models) > cfg.MAX_LOADED_MODELS:
@@ -1575,7 +1598,7 @@ def _reset_for_tests() -> None:
     """Drop every cached model, lease and suppress-chars entry, and rebind the
     locks and lazily-built semaphores so none stays bound to a previous test's
     event loop (metrics' own hook clears the published metrics.gpu_gate)."""
-    global _model_load_lock, _convert_locks_meta
+    global _model_load_lock, _convert_locks_meta, _trim_task
     global _inference_semaphore, _url_download_semaphore
     _loaded_models.clear()
     _model_leases.clear()
@@ -1583,5 +1606,6 @@ def _reset_for_tests() -> None:
     _convert_locks.clear()
     _model_load_lock = asyncio.Lock()
     _convert_locks_meta = asyncio.Lock()
+    _trim_task = None
     _inference_semaphore = None
     _url_download_semaphore = None

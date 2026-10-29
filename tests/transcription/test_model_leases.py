@@ -170,6 +170,40 @@ def test_release_tolerates_a_dropped_model():
     assert tx_models._model_leases == {}
 
 
+def test_last_release_trims_a_cap_lowered_under_leases(monkeypatch):
+    # The cap was lowered while every resident model was leased, so
+    # trim_to_cap skipped them all; later requests only hit the cache, so no
+    # miss ever reclaims the excess. The last release must.
+    _register("a")
+    _register("b")
+    tx_models._model_leases.update({"a": 1, "b": 1})
+    _stub_load(monkeypatch)
+    monkeypatch.setattr(tx_models.cfg, "MAX_LOADED_MODELS", 1, raising=False)
+
+    async def scenario():
+        assert await tx_models.trim_to_cap() == []
+        tx_models._release_model_lease("a")
+        tx_models._release_model_lease("b")
+        await tx_models._trim_task
+        await tx_models._get_or_load_model("b")        # a hit, not a miss
+
+    asyncio.run(scenario())
+    assert list(tx_models._loaded_models) == ["b"]
+
+
+def test_release_within_the_cap_schedules_no_trim(monkeypatch):
+    _register("a")
+    tx_models._model_leases["a"] = 1
+    monkeypatch.setattr(tx_models.cfg, "MAX_LOADED_MODELS", 1, raising=False)
+
+    async def scenario():
+        tx_models._release_model_lease("a")
+        return tx_models._trim_task
+
+    assert asyncio.run(scenario()) is None
+    assert list(tx_models._loaded_models) == ["a"]
+
+
 # --- idle evictor ------------------------------------------------------------
 
 def test_idle_evictor_defers_then_evicts(monkeypatch):
