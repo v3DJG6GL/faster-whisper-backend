@@ -798,6 +798,29 @@ def test_optional_atom_before_a_disjoint_alternation_passes(pat):
 
 
 @pytest.mark.parametrize("pat", [
+    r"(?:a?(?:a|aa)c)+#",
+    r"(?:\w?(?:\w|\w\w)\.)+#",
+    r"(?:\d?(?:\d|\d\d)\.)+x",
+    r"(?:(?:a|aa)ca?)+#",
+    r"(?:a?(?:(?:a|aa)c))+#",
+])
+def test_optional_atom_beside_a_multi_width_alternation_is_rejected(pat):
+    """The `c` after `(?:a|aa)` pins where the group ends, so the follower
+    exemption let it pass, while the group stood as a pin for the optional
+    atom before it (or after the follower, for the next repetition): each
+    repetition matched `aac` two ways and `"ab." * 40 + "!"` hung re.sub."""
+    assert g._nested_repetition(pat)
+    with pytest.raises(ValueError, match="nested repetition"):
+        g.validate([("r", pat, "")])
+
+
+@pytest.mark.parametrize("pat", [r"(?:a?b(?:a|aa)c)+#", r"(?:(?:a|aa)c)+a?#"])
+def test_multi_width_alternation_pinned_off_an_optional_atom_passes(pat):
+    assert not g._nested_repetition(pat)
+    g.validate([("r", pat, "")])
+
+
+@pytest.mark.parametrize("pat", [
     r"(?:[,.]?(?:\.(?=\.)|x))+#",
     r"\b(?:\.?(?:\.(?=\.)|;))+#",
     r"m(?:x?(?:x(?=x)|y))+#",
