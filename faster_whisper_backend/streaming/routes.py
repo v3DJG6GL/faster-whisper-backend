@@ -175,6 +175,12 @@ _WS_IDLE_TIMEOUT = 4408  # client sent no audio for STREAMING_IDLE_TIMEOUT_S
 _CLIENT_OVERRIDE_KEYS: frozenset[str] = frozenset(
     settings_schema.CONFIG_TO_CLIENT_KEY.values())
 
+# A lone UTF-16 surrogate survives json.loads ("\ud83d", half an emoji a
+# client cut with a UTF-16 slice) but not the tokenizer — every partial and
+# final decode of the connection raises — nor UTF-8 encoding of a frame that
+# echoes it (output_prefix / output_suffix, the hard-break separator).
+_SURROGATE_RE = re.compile(r"[\ud800-\udfff]")
+
 
 # The handshake `language`: a Whisper code (`de`, `haw`) or a BCP-47-ish tag.
 _LANGUAGE_RE = re.compile(r"\A[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8}){0,2}\Z")
@@ -725,7 +731,10 @@ async def transcribe_stream(ws: WebSocket) -> None:
         # connection. Clamp rather than reject: an over-long prompt is a client
         # bug, not an attack, and the tail was never going to survive
         # faster-whisper's ~224-token prompt window anyway.
-        req_prompt = _req_prompt.strip()[:2048] if prompt_provided else ""
+        # Lone surrogates are dropped like the over-long tail: the rest of the
+        # prompt is still usable.
+        req_prompt = (_SURROGATE_RE.sub("", _req_prompt).strip()[:2048]
+                      if prompt_provided else "")
         # Optional per-request decode overrides (the client's "decode overrides").
         # Applied to the FINAL decode (the batch analogue); partials keep their
         # streaming-specific beam/temp/condition/vad knobs (see _build_transcribe_kwargs).
@@ -738,9 +747,11 @@ async def transcribe_stream(ws: WebSocket) -> None:
         # 1 MiB ws_max_size frame) is captured by the decode closures and
         # retained for the life of the connection, and is re-walked on every
         # partial by the lock filter (which walks precisely when overrides are
-        # NOT allowed, i.e. the hardened configuration).
+        # NOT allowed, i.e. the hardened configuration). String values lose
+        # lone surrogates, as the prompt above does.
         elif req_overrides:
-            req_overrides = {k: v for k, v in req_overrides.items()
+            req_overrides = {k: (_SURROGATE_RE.sub("", v) if isinstance(v, str) else v)
+                             for k, v in req_overrides.items()
                              if k in _CLIENT_OVERRIDE_KEYS}
         # Optional per-request server override-profile name (the client's "Server
         # override profile"). Applied as the least-specific identity layer; honored

@@ -2,6 +2,7 @@
 overrides surfaced in the `ready` frame, and profile decode params reach the
 final decode. Driven in-process; no faster-whisper needed."""
 
+import json
 import logging
 import time
 
@@ -200,6 +201,35 @@ def test_stream_prompt_sentinel_inherit_clear_value(
     assert _run({}) == "SERVER PROMPT"            # absent → inherit
     assert _run({"prompt": ""}) is None           # explicit empty → clear
     assert _run({"prompt": "my terms"}) == "my terms"   # value → verbatim
+
+
+def test_stream_handshake_drops_lone_surrogates(
+        client, make_user_key, fake_model, app_module, monkeypatch):
+    """A JSON handshake can carry a lone UTF-16 surrogate (half an emoji a
+    client cut with a UTF-16 slice). In the prompt it made faster-whisper's
+    tokenizer raise on every decode of the connection — nothing was ever
+    typed — and in an output wrapper it broke the UTF-8 frame. Dropped."""
+    monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
+    _, raw_alice = make_user_key("alice")
+    with client.websocket_connect(
+            "/v1/audio/transcriptions/stream", headers=bearer(raw_alice)) as ws:
+        # json.dumps escapes the surrogate as "\\ud83d", as a browser sends it.
+        ws.send_text(json.dumps({
+            "type": "config", "model": "whisper-1", "prompt": "Kardiologie \ud83d",
+            "decode_overrides": {"output_prefix": ">> \ud83d"},
+            "audio": {"format": "pcm_s16le", "sample_rate": 16000}}))
+        assert ws.receive_json()["type"] == "ready"
+        ws.send_bytes(_pcm(8000, 2500))
+        ws.send_bytes(_pcm(0, 1500))
+        ws.send_json({"type": "stop"})
+        msgs = _drain(ws)
+    assert fake_model.last_kwargs.get("initial_prompt") == "Kardiologie"
+    finals = [m for m in msgs if m.get("type") == "final"
+              and (m.get("committed") or m.get("tail"))]
+    assert finals
+    assert all((f.get("committed") or f.get("tail")).startswith(">> ")
+               and "\ud83d" not in (f.get("committed") or f.get("tail"))
+               for f in finals)
 
 
 def test_setup_window_error_delivers_internal_error_and_closes(
