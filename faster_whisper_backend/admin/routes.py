@@ -623,7 +623,7 @@ async def clear_local_pipeline_override(request: Request) -> JSONResponse:
                 # clear before the local override is removed from disk, or disk
                 # and the running pipeline would disagree.
                 factory = await asyncio.to_thread(config_store.load_factory_rules)
-                await asyncio.to_thread(
+                written = await asyncio.to_thread(
                     config_store.save_overrides, {"PIPELINE_RULES": None})
             except ValidationError as e:
                 # A stored per-model / profile / captures exclude still names a
@@ -644,6 +644,12 @@ async def clear_local_pipeline_override(request: Request) -> JSONResponse:
             if not env_pinned:
                 cfg.PIPELINE_RULES = factory
                 await pl_apply.rebuild_caches_off_loop("clearing local override")
+            # The save mapped stored excludes naming a card the local copy
+            # kept from before a split onto its successors: put those live
+            # too, or until a restart they name a card no live rule has.
+            refs = {k: v for k, v in written.items() if k != "PIPELINE_RULES"}
+            if refs:
+                await pl_apply.apply_hot_changes(refs)
 
         client_host = request.client.host if request.client else "?"
         logger.info("[config] local PIPELINE_RULES override cleared from=%s — "

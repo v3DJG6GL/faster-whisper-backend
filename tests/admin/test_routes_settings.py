@@ -1589,3 +1589,40 @@ def test_pipeline_test_panel_badges_a_step_that_hit_the_output_limit(client):
     assert "else if (step.capped) badge = testBadge('warn'," in rows
     assert rows.index("else if (step.capped)") \
         < rows.index("else if (step.matches) badge")
+
+
+def test_clear_local_override_puts_split_card_refs_live(
+        client, app_module, monkeypatch):
+    """A local copy from before June still runs strip-whisper-punctuation and
+    the stored excludes name it (boot kept them, the copy has the card). The
+    clear writes them as the successor cards; the running cfg must get the
+    same, or until a restart they name a card the live list no longer has and
+    the excluded successors run everywhere."""
+    from faster_whisper_backend.settings import config_store
+
+    split = ["strip-trailing-period", "strip-auto-punctuation"]
+    rules = [r for r in config_store.load_factory_rules()
+             if r["name"] not in split]
+    rules.insert(-1, {"name": "strip-whisper-punctuation",
+                      "label": "Strip Whisper punctuation", "type": "regex-list",
+                      "entries": [{"pattern": "\\s*\\.+\\s*$", "replacement": ""}]})
+    with open(config_store.OVERRIDES_PATH, "w", encoding="utf-8") as f:
+        json.dump({
+            "PIPELINE_RULES": rules,
+            "CAPTURES_PIPELINE_RULES_EXCLUDE": ["strip-whisper-punctuation"],
+            "MODEL_OVERRIDES": {"large-v3": {
+                "PIPELINE_RULES_EXCLUDE": ["strip-whisper-punctuation"]}},
+            "OVERRIDE_PROFILES": {"p": {
+                "PIPELINE_RULES_EXCLUDE": ["strip-whisper-punctuation"]}},
+        }, f)
+    for k, v in config_store.load_overrides().items():   # as at boot
+        monkeypatch.setattr(app_module.cfg, k, v, raising=False)
+    assert list(app_module.cfg.CAPTURES_PIPELINE_RULES_EXCLUDE) == [
+        "strip-whisper-punctuation"]
+
+    r = client.post("/settings/factory-rules/clear-local-override")
+    assert r.status_code == 200, r.text
+    cfg = app_module.cfg
+    assert sorted(cfg.CAPTURES_PIPELINE_RULES_EXCLUDE) == sorted(split)
+    assert cfg.MODEL_OVERRIDES["large-v3"]["PIPELINE_RULES_EXCLUDE"] == split
+    assert cfg.OVERRIDE_PROFILES["p"]["PIPELINE_RULES_EXCLUDE"] == split

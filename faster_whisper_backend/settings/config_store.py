@@ -578,8 +578,10 @@ def save_overrides(
     # Return only the fields that actually changed in this call. Compare
     # against `existing` (what was on disk before) using the validated form
     # so type coercions don't show up as spurious diffs.
+    # Dropping the local rules copy also rewrote the slug refs migrated above:
+    # report them too, so the caller puts them on the running cfg.
     changed: dict[str, Any] = {}
-    for k in payload:
+    for k in dict.fromkeys((*payload, *(_SLUG_REF_KEYS if drops_local_rules else ()))):
         new_v = to_write.get(k)             # post-validation value, or None if removed
         old_v = existing.get(k)
         if new_v != old_v:
