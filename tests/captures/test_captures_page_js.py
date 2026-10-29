@@ -444,6 +444,27 @@ console.log(JSON.stringify({ span: span, heal: chip.wrong,
                    "text": "Servus heute"}
 
 
+def _heal_fns(page):
+    """renderChips and its heal helpers, with a do-nothing DOM."""
+    return re.search(r"var CHIP_TEXT_MAX = \d+;", page).group(0) + "\n" + "\n".join(
+        _js_function(page, f) for f in (
+            "_dispWord", "_dispRemoved", "recomputeWrong", "renderChips",
+            "markDirty")) + r"""
+function el() { return { classList: { remove: function() {} },
+  appendChild: function() {}, addEventListener: function() {} }; }
+global.document = { createElement: el };
+function refreshAllReplacementsInline() {}
+"""
+
+
+def test_chip_text_cap_matches_the_server():
+    """The page's chip-text cap mirrors what clean_corrections keeps."""
+    from faster_whisper_backend.captures.routes import _CAPTURES_HTML
+    from faster_whisper_backend.core import text_corrections
+    assert (f"var CHIP_TEXT_MAX = {text_corrections.CAP_CORRECTION_FIELD};"
+            in _CAPTURES_HTML)
+
+
 @needs_node
 def test_chip_healed_on_render_marks_the_card_unsaved(page, tmp_path):
     """A chip stored with a filler inside `wrong` (made before the range fix)
@@ -451,14 +472,7 @@ def test_chip_healed_on_render_marks_the_card_unsaved(page, tmp_path):
     correction, but the card stayed clean: no "unsaved" marker, no Save
     prompt, and the export still dropped the stored chip. A chip already in
     its healed form leaves the card clean."""
-    fns = "\n".join(_js_function(page, f) for f in (
-        "_dispWord", "_dispRemoved", "recomputeWrong", "renderChips",
-        "markDirty"))
-    out = _run_node(tmp_path, fns + r"""
-function el() { return { classList: { remove: function() {} },
-  appendChild: function() {}, addEventListener: function() {} }; }
-global.document = { createElement: el };
-function refreshAllReplacementsInline() {}
+    out = _run_node(tmp_path, _heal_fns(page) + r"""
 var words = [{ word: ' foo' }, { word: ' um', removed: true }, { word: ' bar' },
              { word: ' baz' }];
 function run(wrong) {
@@ -473,6 +487,62 @@ console.log(JSON.stringify({ stale: run('foo um bar'), healed: run('foo bar') })
     # The capture card renders its chips before it builds the marker, so the
     # marker has to start out shown when that render already marked it.
     assert "dirty.className = state.dirty ? 'dirty' : 'dirty hidden';" in page
+
+
+@needs_node
+def test_heal_the_server_stores_the_same_leaves_the_card_clean(page, tmp_path):
+    """The server keeps a chip's `wrong` trimmed and cut at 200 chars, so a
+    long range chip never matched its full recomputed text: the card read
+    "unsaved" on every open, and again right after each Save."""
+    out = _run_node(tmp_path, _heal_fns(page) + r"""
+var words = [];
+for (var i = 0; i < 40; i++) words.push({ word: ' wort' + (i < 10 ? '0' : '') + i });
+var full = words.map(function(w) { return w.word; }).join('').trim();
+var state = { words: words, chipBox: el(), dirty: false,
+  corrections: [{ wrong: full.slice(0, 200), correct: 'X', idx: 0, idx_end: 39 }] };
+renderChips(state);
+console.log(JSON.stringify({ long: full.length > 200, dirty: state.dirty }));
+""")
+    assert out == {"long": True, "dirty": False}
+
+
+@needs_node
+def test_heal_on_a_proposal_preview_does_not_auto_save(page, tmp_path):
+    """On a proposal preview markDirty is the debounced preview-save-chips
+    hook, so pressing ▶ on a proposal with a stale chip rewrote the
+    members' chips without any user edit. The heal stays in memory."""
+    out = _run_node(tmp_path, _heal_fns(page) + r"""
+var saves = 0;
+var state = { words: [{ word: ' foo' }, { word: ' um', removed: true }, { word: ' bar' }],
+  chipBox: el(), dirty: false, onMarkDirty: function() { saves++; },
+  corrections: [{ wrong: 'foo um bar', correct: 'X', idx: 0, idx_end: 2 }] };
+renderChips(state);
+console.log(JSON.stringify({ wrong: state.corrections[0].wrong, saves: saves }));
+""")
+    assert out == {"wrong": "foo bar", "saves": 0}
+
+
+@needs_node
+@pytest.mark.parametrize("admin, dirty", [(False, False), (True, True)])
+def test_heal_on_a_locked_group_marks_it_unsaved_only_for_an_admin(
+        page, tmp_path, admin, dirty):
+    """The server 409s a non-admin's Save on a locked sample, so a heal
+    left such a group card "unsaved" for good, and every filter change
+    asked to drop edits nobody made. An admin can save the heal."""
+    fns = "\n".join(_js_function(page, f) for f in (
+        "applyServerSample", "_applyChipsToText"))
+    out = _run_node(tmp_path, _SAMPLE_CARD_STUBS + fns + _heal_fns(page) + r"""
+global.document = { createElement: function() { return fake(); } };
+function clearDirty(state) { state.dirty = false; }
+var _isAdmin = """ + json.dumps(admin) + r""";
+var g = { id: 'g1' }, _allSamples = [], sampleState = { chipBox: el() };
+applyServerSample({ id: 'g1', is_locked: true, members: [],
+  merged_words: [{ word: ' foo', member_idx: 0 }, { word: ' um', removed: true, member_idx: 0 },
+                 { word: ' bar', member_idx: 0 }],
+  corrections: [{ wrong: 'foo um bar', correct: 'X', idx: 0, idx_end: 2 }] });
+console.log(JSON.stringify(sampleState.dirty));
+""")
+    assert out is dirty
 
 
 @needs_node

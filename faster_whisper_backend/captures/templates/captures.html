@@ -1079,6 +1079,9 @@
   // Most members one merge may hold: the server's member_ids max_length and
   // the proposer's _MAX_MEMBERS.
   var MERGE_MAX_MEMBERS = 30;
+  // Longest chip `wrong` / `correct` the server stores
+  // (text_corrections.CAP_CORRECTION_FIELD; it trims, then cuts there).
+  var CHIP_TEXT_MAX = 200;
 
   // Sign-in is handled by the shared full-screen login gate (web_common):
   // on a 401 we call window._showLoginGate(), which prompts for a key and
@@ -2708,13 +2711,22 @@
     // strike-through, and applyCorrectionsToGround all agree on what
     // text the chip is replacing. A heal is an edit: the stored chip
     // still carries the old `wrong`, which the export never finds in the
-    // text, so it only takes effect once saved.
+    // text, so it only takes effect once saved. It marks the card unsaved
+    // only when the server would store something new (it keeps `wrong`
+    // trimmed and cut at CHIP_TEXT_MAX) and the user saves by hand: a
+    // locked sample refuses a non-admin's Save (saveBlocked), and on an
+    // auto-saving proposal preview markDirty would write the members' chips
+    // without any user edit. There the heal rides along with the next edit.
     var healed = false;
     state.corrections.forEach(function(c) {
       var w = recomputeWrong(state, c) || c.wrong;
-      if (w !== c.wrong) { c.wrong = w; healed = true; }
+      if (w === c.wrong) return;
+      if (w.trim().slice(0, CHIP_TEXT_MAX) !== c.wrong) healed = true;
+      c.wrong = w;
     });
-    if (healed) markDirty(state);
+    if (healed && !state.saveBlocked && typeof state.onMarkDirty !== 'function') {
+      markDirty(state);
+    }
     refreshAllReplacementsInline(state);
     if (state.corrections.length === 0) {
       var empty = document.createElement('span');
@@ -5515,6 +5527,9 @@
           lockBtn.textContent = d.is_locked ? 'Unlock' : 'Lock';
           dissolveBtn.style.display = d.is_locked ? 'none' : '';
           regenBtn.style.display = d.is_locked ? 'none' : '';
+          // The server 409s a non-admin's chip Save too, so renderChips
+          // below must not leave the card "unsaved" for a heal.
+          sampleState.saveBlocked = !!d.is_locked && !_isAdmin;
 
           // 5. Word strip (alternating per-member tints via mem-even /
           // mem-odd classes; styles in the .word-strip CSS block).
