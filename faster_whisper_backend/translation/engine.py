@@ -1179,6 +1179,9 @@ def _merge_sentences(segments: "list[dict]") -> "list[list[int]]":
 # translation can be cut after — no ASCII "." or ",", which also sit inside
 # numbers ("3.5", "1,000"). Thai and Lao mark clauses with a space.
 _UNSPACED_CUT_PUNCT = frozenset("，。、！？；：!?;၊။។៕")
+# The closers a cut after such a mark always takes along: no straight quote
+# (which may open the next clause) and no « (which opens one in French).
+_CUT_CLOSERS = frozenset("”’»」』）)]】")
 _NON_BLANK_RE = re.compile(r"\S")
 _UNSPACED_RE = re.compile(
     r"[\u0e00-\u0eff\u1000-\u109f\u1780-\u17ff\u3040-\u30ff\u3400-\u9fff]")
@@ -1219,15 +1222,27 @@ def _redistribute(group_texts: "list[str]", translated: str) -> "list[str]":
     unspaced = len(_UNSPACED_RE.findall(translated)) / len(translated) > 0.3
     # Unspaced: a cut lands AFTER the punctuation, which stays on its clause
     # together with any closing quotes / brackets after it ('。”', '。」'),
-    # so the next cue never opens on a stray closer.
+    # so the next cue never opens on a stray closer. A straight quote is
+    # taken along only when it closes an open one: after '：' or '。' it as
+    # often opens the next clause ('他说："你好"').
     punct: "list[int]" = []
     if unspaced:
+        quotes = {'"': 0, "'": 0}
         for i, ch in enumerate(translated):
-            if ch in _UNSPACED_CUT_PUNCT:
+            if ch in quotes:
+                quotes[ch] += 1
+            if ch not in _UNSPACED_CUT_PUNCT:
+                continue
+            seen = dict(quotes)
+            i += 1
+            while i < len(translated):
+                c = translated[i]
+                if c in seen and seen[c] % 2:
+                    seen[c] += 1
+                elif c not in _CUT_CLOSERS:
+                    break
                 i += 1
-                while i < len(translated) and translated[i] in _CLOSERS:
-                    i += 1
-                punct.append(i)
+            punct.append(i)
     tiers = [punct, spaces] if unspaced else [spaces]
     total = sum(len(t) for t in group_texts) or 1
 

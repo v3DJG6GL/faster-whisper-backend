@@ -508,6 +508,29 @@ def test_redistribute_unspaced_keeps_the_closing_quote_on_its_clause():
         ["「明日は東京に行こう。」", "と彼は言いました。"]
 
 
+def test_redistribute_unspaced_leaves_an_opening_straight_quote_on_its_clause():
+    """The closers taken along after a clause mark included the straight
+    quotes, which after '：' or '。' as often OPEN the next clause: the cue
+    ended on a dangling '"' and the next one lost its opening quote."""
+    assert translation._redistribute(
+        ["x" * 10] * 2, '他说他今天不来了。"我们自己走吧。"') == \
+        ["他说他今天不来了。", '"我们自己走吧。"']
+    assert translation._redistribute(
+        ["She asked: where are you going?", "I said: home."],
+        '她问："你去哪里？"我说："回家。"') == \
+        ['她问："你去哪里？"我说：', '"回家。"']
+    assert translation._redistribute(
+        ["他说", "你好世界今天"], "他说：'你好世界今天很好'") == \
+        ["他说：", "'你好世界今天很好'"]
+    assert translation._redistribute(
+        ["x" * 10] * 2, '我说完了我说完了。"好的，"他回答道他回答道。') == \
+        ["我说完了我说完了。", '"好的，"他回答道他回答道。']
+    # One that closes an open quote still stays with its clause.
+    assert translation._redistribute(
+        ["x" * 10] * 2, '他说："我们明天去北京。"然后他就走了出去了') == \
+        ['他说："我们明天去北京。"', "然后他就走了出去了"]
+
+
 def test_redistribute_long_reply_stays_linear():
     """Leaving room for later members rescanned every space per candidate,
     O(spaces²) per cut on the event loop: a 6000-word reply took seconds."""
