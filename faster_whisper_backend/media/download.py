@@ -993,10 +993,11 @@ def _match_reads_host(url: str, key: str) -> bool:
     match must run through the whole authority, or stop exactly where the
     port starts. Others let `[^/]+` or `.+?` run past the host and find the
     site's name in the query or path (`https://evil.example?a.simplecast.com
-    /episodes/y`): the pattern must stop matching once the user info and
-    host are cut out. Host-agnostic patterns (Mediasite's `[^/]+/Mediasite/`)
-    pass both, as they should. No regex match (a suitable() override) is
-    no verdict."""
+    /episodes/y`): the pattern must stop matching once the whole authority
+    is cut out (the port too, or `[^/]+` matches `:8443`; a parsed port is
+    digits only, so it names no site). Host-agnostic patterns (Mediasite's
+    `[^/]+/Mediasite/`) pass both, as they should. No regex match (a
+    suitable() override) is no verdict."""
     import yt_dlp.extractor  # lazy: optional dependency
 
     parts = urllib.parse.urlsplit(url)
@@ -1021,7 +1022,7 @@ def _match_reads_host(url: str, key: str) -> bool:
     host_end = auth_end - len(hostport) + len(host)
     if m.end() < auth_end and m.end() != host_end:
         return False
-    return ie._match_valid_url(url[:start] + url[host_end:]) is None
+    return ie._match_valid_url(url[:start] + url[auth_end:]) is None
 
 
 def _allowed_extractor_keys() -> "list[str]":

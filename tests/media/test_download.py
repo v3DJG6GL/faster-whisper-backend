@@ -239,6 +239,10 @@ def test_allowed_host_in_userinfo_does_not_pass_the_allowlist(monkeypatch):
     ("https://evil.example?a.simplecast.com/episodes/y", "SimplecastEpisode"),
     ("https://evil.example#a.simplecast.com/episodes/y", "SimplecastEpisode"),
     ("http://evil.example/a.roosterteeth.com/episode/x", "RoosterTeeth"),
+    # ... also behind an explicit port.
+    ("https://evil.example:8443?a.simplecast.com/episodes/y",
+     "SimplecastEpisode"),
+    ("http://evil.example:80/a.roosterteeth.com/episode/x", "RoosterTeeth"),
 ])
 def test_allowed_site_name_outside_the_host_does_not_pass(monkeypatch, url, key):
     """79b2e8c closed only the '@' spelling: these named an allowed site
@@ -258,6 +262,9 @@ def test_allowed_site_name_outside_the_host_does_not_pass(monkeypatch, url, key)
     ("https://x.simplecast.com/episodes/y?t=1", "SimplecastEpisode"),
     # Matches any host by design: there is no site name to fake.
     ("https://media.example.org/Mediasite/Play/"
+     "2db6c271681e4f199af3c60d1f82869b1d", "Mediasite"),
+    # A self-hosted one on its own port: the port is no host to fake.
+    ("https://media.example.org:8443/Mediasite/Play/"
      "2db6c271681e4f199af3c60d1f82869b1d", "Mediasite"),
 ])
 def test_real_site_links_still_pass_the_host_check(monkeypatch, url, key):
