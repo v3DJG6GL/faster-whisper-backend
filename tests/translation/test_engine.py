@@ -1281,7 +1281,7 @@ def test_load_fails_instead_of_falling_back_when_the_hub_times_out(
         monkeypatch):
     """A hub timeout must not fall back to from_pretrained: its listing
     hits the same hub with no deadline and would hang the load forever."""
-    import httpx
+    import httpx2 as httpx   # the declared dev dep; huggingface_hub 2.x speaks httpx2
     record = []
     _install_fake_llama(monkeypatch, record)
     monkeypatch.setattr(cfg, "LOCAL_FILES_ONLY", False, raising=False)
@@ -1312,7 +1312,7 @@ def test_load_falls_back_on_an_error_raised_while_handling_a_timeout(
     """The hub resumes a timed-out download inside its except-timeout block:
     a disk-full error of that resume carries the timeout only as
     __context__ and is not a hub timeout."""
-    import httpx
+    import httpx2 as httpx   # the declared dev dep; huggingface_hub 2.x speaks httpx2
     record = []
     _install_fake_llama(monkeypatch, record)
     monkeypatch.setattr(cfg, "LOCAL_FILES_ONLY", False, raising=False)
@@ -1330,7 +1330,7 @@ def test_load_falls_back_on_an_error_raised_while_handling_a_timeout(
 def test_load_uses_the_cached_gguf_when_the_hub_times_out(monkeypatch):
     """model_info runs before hf_hub_download (which would serve the cache
     on a HEAD timeout): a GGUF already on disk must still load."""
-    import httpx
+    import httpx2 as httpx   # the declared dev dep; huggingface_hub 2.x speaks httpx2
     record = []
     _install_fake_llama(monkeypatch, record)
     monkeypatch.setattr(cfg, "LOCAL_FILES_ONLY", False, raising=False)
@@ -1346,7 +1346,7 @@ def test_load_uses_the_cached_gguf_when_the_hub_times_out(monkeypatch):
 
 
 def _hub_status_error(status):
-    import httpx
+    import httpx2 as httpx   # the declared dev dep; huggingface_hub 2.x speaks httpx2
     from huggingface_hub.errors import HfHubHTTPError
     req = httpx.Request("GET", "https://huggingface.co/api/models/org/repo")
     return HfHubHTTPError(f"{status}",
@@ -1354,7 +1354,7 @@ def _hub_status_error(status):
 
 
 def _connect_error():
-    import httpx
+    import httpx2 as httpx   # the declared dev dep; huggingface_hub 2.x speaks httpx2
     return httpx.ConnectError("Name or service not known")
 
 

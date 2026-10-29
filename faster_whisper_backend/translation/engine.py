@@ -37,6 +37,7 @@ its own llama calls.
 """
 
 import asyncio
+import importlib
 import logging
 import os
 import re
@@ -609,16 +610,28 @@ def _load_blocking_inner(ref: str, device: str, family: str,
         ) from e
 
 
+def _hub_http_errors(name: str) -> "tuple[type, ...]":
+    """The hub HTTP client's exception class `name`: huggingface_hub 2.x
+    speaks httpx2, 1.x httpx, and either one may be the only one installed
+    — a bare `import httpx` raised ModuleNotFoundError out of the very
+    error path it was classifying."""
+    classes = []
+    for module in ("httpx2", "httpx"):
+        try:
+            classes.append(getattr(importlib.import_module(module), name))
+        except (ImportError, AttributeError):
+            pass
+    return tuple(classes)
+
+
 def _is_hub_timeout(exc: BaseException) -> bool:
     """True when ``exc`` or its cause chain is an httpx timeout —
     hf_hub_download re-raises a HEAD timeout as LocalEntryNotFoundError
     (``from`` it). Only ``__cause__`` counts: the hub resumes a timed-out
     download INSIDE its except-timeout block, so a disk-full or size-check
     error of the resumed call carries a timeout as mere ``__context__``."""
-    import httpx  # the hub's own HTTP client — always installed with it
-
-    return _in_cause_chain(
-        exc, lambda e: isinstance(e, httpx.TimeoutException))
+    timeouts = _hub_http_errors("TimeoutException")
+    return _in_cause_chain(exc, lambda e: isinstance(e, timeouts))
 
 
 def _is_hub_unreachable(exc: BaseException) -> bool:
@@ -627,11 +640,11 @@ def _is_hub_unreachable(exc: BaseException) -> bool:
     hub's own offline mode (HF_HUB_OFFLINE=1 refuses every request).
     Same ``__cause__``-only rule as _is_hub_timeout: a disk-full or
     size-check error is no network error."""
-    import httpx
     from huggingface_hub.errors import HfHubHTTPError, OfflineModeIsEnabled
+    transport = _hub_http_errors("TransportError")
 
     def network(e: BaseException) -> bool:
-        if isinstance(e, (httpx.TransportError, OfflineModeIsEnabled)):
+        if isinstance(e, (*transport, OfflineModeIsEnabled)):
             return True
         if isinstance(e, HfHubHTTPError):
             status = getattr(getattr(e, "response", None), "status_code", 0)
