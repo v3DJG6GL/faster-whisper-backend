@@ -41,6 +41,7 @@ import importlib
 import logging
 import os
 import re
+import sys
 import threading
 import time
 import unicodedata
@@ -785,12 +786,17 @@ def _drop_locked(ref: str) -> bool:
     model_registry.unregister_loaded_model(_STATS_PREFIX + ref)
     import gc
     gc.collect()
-    try:
-        import torch
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-    except ImportError:
-        pass
+    # llama.cpp never touches torch: only a torch some other subsystem already
+    # imported can hold pool-cached blocks. A cold import here would stall the
+    # loop for seconds (libtorch + CUDA), and a broken install (OSError from a
+    # missing CUDA lib) must not escape after the model was already dropped.
+    torch = sys.modules.get("torch")
+    if torch is not None:
+        try:
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception:  # noqa: BLE001 — best-effort cache release
+            pass
     logger.info("[translate] model %s unloaded", ref)
     return True
 

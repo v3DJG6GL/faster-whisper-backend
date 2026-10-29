@@ -2802,6 +2802,68 @@ def test_a_decode_on_another_model_does_not_block_eviction():
         t.join(5)
 
 
+class _ImportRecorder:
+    """A meta-path finder that only records which modules were looked up."""
+
+    def __init__(self):
+        self.names = []
+
+    def find_spec(self, name, path=None, target=None):
+        self.names.append(name)
+        return None
+
+
+def _stub_torch(monkeypatch, is_available):
+    import types
+    emptied = []
+    torch = types.ModuleType("torch")
+    torch.cuda = types.SimpleNamespace(
+        is_available=is_available, empty_cache=lambda: emptied.append(1))
+    monkeypatch.setitem(sys.modules, "torch", torch)
+    return emptied
+
+
+def test_drop_does_not_cold_import_torch(monkeypatch):
+    """llama.cpp never imports torch: the unload must not pull libtorch +
+    CUDA in on the event loop just to empty a cache it never had."""
+    import gc
+    monkeypatch.setattr(gc, "collect", lambda *a: None)
+    monkeypatch.delitem(sys.modules, "torch", raising=False)
+    recorder = _ImportRecorder()
+    monkeypatch.setattr(sys, "meta_path", [recorder, *sys.meta_path])
+    llm = _FakeLlama("org/cold:Q4")
+    translation._models["org/cold:Q4"] = llm
+    assert translation._drop_locked("org/cold:Q4") is True
+    assert llm.closed and "org/cold:Q4" not in translation._models
+    assert "torch" not in recorder.names
+    assert "torch" not in sys.modules
+
+
+def test_drop_empties_an_already_imported_torch_cache(monkeypatch):
+    import gc
+    monkeypatch.setattr(gc, "collect", lambda *a: None)
+    emptied = _stub_torch(monkeypatch, lambda: True)
+    translation._models["org/warm:Q4"] = _FakeLlama("org/warm:Q4")
+    assert translation._drop_locked("org/warm:Q4") is True
+    assert emptied == [1]
+
+
+def test_drop_survives_a_broken_torch_install(monkeypatch, caplog):
+    """A torch whose CUDA probe raises (OSError from a missing CUDA lib) must
+    not escape after the model was already popped, skipping the unload log."""
+    import gc
+    monkeypatch.setattr(gc, "collect", lambda *a: None)
+
+    def broken():
+        raise OSError("libcudart.so: cannot open shared object file")
+    emptied = _stub_torch(monkeypatch, broken)
+    translation._models["org/broken:Q4"] = _FakeLlama("org/broken:Q4")
+    with caplog.at_level("INFO", logger=translation.logger.name):
+        assert translation._drop_locked("org/broken:Q4") is True
+    assert emptied == []
+    assert "model org/broken:Q4 unloaded" in caplog.text
+
+
 def test_trim_skips_a_draining_decode(lru_env, monkeypatch):
     made, _stats = lru_env
 
