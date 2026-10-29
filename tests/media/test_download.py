@@ -1393,6 +1393,47 @@ def test_direct_media_probe_admits_an_hls_manifest_only_for_a_hand_off(
         srv.server_close()
 
 
+def test_direct_media_probe_and_capped_get_fetch_a_raw_unicode_path(
+        monkeypatch):
+    """validate_url admits a raw non-ASCII path (a pasted `…/Müller.ogg`),
+    but http.client encodes the request line as ASCII: the probe swallowed
+    its UnicodeEncodeError and refused the link as not media, and
+    _capped_get raised it. Both must send the path percent-encoded."""
+    import http.server
+    import threading
+    from faster_whisper_backend.core import net_policy as np
+    monkeypatch.setattr(udl, "_host_is_forbidden", lambda h: False)
+    monkeypatch.setattr(np, "address_is_forbidden", lambda a: False)
+    _no_proxy(monkeypatch)
+    seen = []
+
+    class _H(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            seen.append(self.path)
+            self.send_response(200)
+            self.send_header("Content-Type", "audio/ogg")
+            self.send_header("Content-Length", "1")
+            self.end_headers()
+            self.wfile.write(b"x")
+
+        def log_message(self, *a):
+            pass
+
+    srv = http.server.HTTPServer(("127.0.0.1", 0), _H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    url = udl.validate_url(
+        f"http://127.0.0.1:{srv.server_port}/M\u00fcller%20x.ogg?t=\u00e9")
+    try:
+        assert udl._direct_media_probe_sync(url, timeout=3) is True
+        assert udl._capped_get(url, max_bytes=10, timeout=3) == (
+            "audio/ogg", b"x")
+    finally:
+        srv.shutdown()
+        srv.server_close()
+    # The existing %20 escape is kept, not doubled.
+    assert seen == ["/M%C3%BCller%20x.ogg?t=%C3%A9"] * 2
+
+
 def test_cutoff_shuts_a_socket_added_after_it_fired():
     """A socket whose connect() returns after the timer fired (a dribbled TLS
     handshake, a redirect hop dialled past the cutoff) must be shut at once,

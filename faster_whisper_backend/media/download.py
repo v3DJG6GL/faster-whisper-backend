@@ -759,6 +759,25 @@ def _guarded_opener(cutoff: "_WallClockCutoff | None" = None,
         _NoPrivateRedirects())
 
 
+def _wire_url(url: str) -> str:
+    """`url` as it can go on the request line: http.client encodes that line
+    as ASCII, so a raw non-ASCII path or query (a pasted `…/Müller.ogg`)
+    raised UnicodeEncodeError instead of being fetched. Percent-encodes the
+    non-ASCII runs only (as UTF-8, the way yt-dlp's normalize_url sends it);
+    the host is left alone — http.client IDNA-encodes it and the address
+    gate keeps checking the real name — and an ASCII URL is returned as is."""
+    if url.isascii():
+        return url
+    parts = urllib.parse.urlsplit(url)
+
+    def esc(s: str) -> str:
+        return re.sub(r"[^\x00-\x7f]+",
+                      lambda m: urllib.parse.quote(m.group()), s)
+    return urllib.parse.urlunsplit(parts._replace(
+        path=esc(parts.path), query=esc(parts.query),
+        fragment=esc(parts.fragment)))
+
+
 def _direct_media_probe_sync(url: str, *, timeout: float,
                              accept_hls: bool = False) -> bool:
     """Capped GET (first byte only) that answers: does this URL serve
@@ -779,7 +798,7 @@ def _direct_media_probe_sync(url: str, *, timeout: float,
     if not parts.hostname or _host_is_forbidden(parts.hostname):
         return False
     req = urllib.request.Request(
-        url, headers={"Range": "bytes=0-0", "User-Agent": "faster-whisper-backend"},
+        _wire_url(url), headers={"Range": "bytes=0-0", "User-Agent": "faster-whisper-backend"},
         method="GET")
     cutoff = _WallClockCutoff(timeout)
     try:
@@ -1275,7 +1294,7 @@ def _capped_get(url: str, *, max_bytes: int, timeout: float,
             or _host_is_forbidden(parts.hostname)):
         raise UrlDownloadError("the site could not be reached from the server")
     req = urllib.request.Request(
-        url, headers={"User-Agent": "faster-whisper-backend", **(headers or {})})
+        _wire_url(url), headers={"User-Agent": "faster-whisper-backend", **(headers or {})})
     with _WallClockCutoff(timeout) as cutoff, \
             _guarded_opener(cutoff).open(req, timeout=timeout) as resp:
         ctype = (resp.headers.get("Content-Type") or "").split(";")[0].strip().lower()
