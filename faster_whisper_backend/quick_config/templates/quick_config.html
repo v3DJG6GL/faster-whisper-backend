@@ -2204,8 +2204,13 @@ function _applyFieldDiff(serverValue, diff, clashes) {
       // A pattern edit _olistAlign paired with a base entry may as well be
       // the other writer's delete + add: unless the merge already holds it
       // as is, it goes in under its own id rather than be lost to the user's
-      // deletion of, or edit to, that entry.
-      if (k !== serverOwn[i][0] && _stringify(kept.get(k)) !== _stringify(x)) k = serverOwn[i][0];
+      // deletion of, or edit to, that entry. A user's entry there with the
+      // same pattern is one entry both writers edited (a clash above).
+      const mineK = kept.get(k);
+      if (k !== serverOwn[i][0] && _stringify(mineK) !== _stringify(x)
+          && !(mineK !== null && typeof mineK === 'object' && mineK.pattern === x.pattern)) {
+        k = serverOwn[i][0];
+      }
       if (!base.has(k) && !have.has(k)) {
         const at = prev === null ? 0 : out.findIndex(([q]) => q === prev) + 1;
         out.splice(at, 0, [k, x]);

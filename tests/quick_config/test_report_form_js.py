@@ -620,6 +620,29 @@ def test_conflict_merge_keeps_both_new_entries_around_a_moved_one(client, tmp_pa
     assert res["uniqueKeys"] is True
 
 
+def test_conflict_merge_keeps_one_entry_when_both_writers_made_the_same_pattern_fix(client, tmp_path):
+    # Both writers fixed x's pattern to y and one also changed the
+    # replacement: the other writer's entry went back in under its own id as
+    # well, so the list held y twice and theirs, first, shadowed the user's.
+    page = client.get("/quick-config").text
+    res = _run_js(client, tmp_path, _olist_consts(page) + r"""
+      const e = (p, r) => ({ pattern: p, replacement: r });
+      const merge = (base, mine, theirs) => {
+        const clashes = [];
+        const m = _applyFieldDiff(theirs, _fieldDiff(base, mine, _diffKindFor('entries')), clashes);
+        return [clashes, m.map(x => x.pattern + '>' + x.replacement)];
+      };
+      out({
+        mineRepl: merge([e('x', '1'), e('a', '2')], [e('y', 'U'), e('a', '2')],
+                        [e('y', '1'), e('a', '2')]),
+        theirsRepl: merge([e('x', '1'), e('a', '2')], [e('y', '1'), e('a', '2')],
+                          [e('y', 'S'), e('a', '2')]),
+      });
+    """, funcs=_OLIST_FUNCS)
+    assert res["mineRepl"] == [["y"], ["y>U", "a>2"]]
+    assert res["theirsRepl"] == [["y"], ["y>1", "a>2"]]
+
+
 def test_reapply_keeps_the_users_edits_on_a_rule_whose_entry_both_writers_edited(client, tmp_path):
     # One entry both writers edited made _reapplyDiffs skip the whole rule:
     # every other unsaved edit on it (added entries, the enabled toggle, other
