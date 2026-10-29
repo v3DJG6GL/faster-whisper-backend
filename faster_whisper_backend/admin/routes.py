@@ -1176,7 +1176,10 @@ async def test_pipeline(payload: dict[str, Any]) -> JSONResponse:
                             lout["not_run"] = True
                             continue
                         if ei in held:
-                            bad = held[ei]
+                            # An entry the probe never reached must not hide
+                            # one it caught too slow as "may be harmless".
+                            if bad != _SLOW_PROBE_MSG:
+                                bad = held[ei]
                             lout["not_run"] = True
                             continue
                         try:

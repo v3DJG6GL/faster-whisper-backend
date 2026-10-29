@@ -393,3 +393,21 @@ def test_fast_units_that_outlast_two_rounds_still_get_walked_to_the_end(monkeypa
         "aaaa", _units(["f"] * 5), None, budget)
     assert (marks, slow, stop) == ({0: admin_routes._text_sha("aaaa")}, set(), None)
     assert timeouts == [2.0, 3.95, 5.9]
+
+
+def test_an_unprobed_entry_after_a_slow_one_does_not_hide_the_slow_verdict(client, monkeypatch):
+    # One round names entry 0 and stops there: entry 1 is never timed, and
+    # its "may be harmless" reason must not replace the card's slow verdict.
+    monkeypatch.setattr(admin_routes, "_TEST_PIPELINE_PROBE_TIMEOUT", 0.2)
+    monkeypatch.setattr(admin_routes, "_TEST_PIPELINE_PROBE_ROUNDS", 1)
+    r = client.post("/settings/test-pipeline", json={
+        "sample": "aaaa",
+        "rules": [{"name": "rl", "type": "regex-list", "enabled": True, "entries": [
+            {"pattern": _EMPTY_BACKTRACK, "replacement": "x"},
+            {"pattern": "a", "replacement": "b"},
+        ]}],
+    })
+    assert r.status_code == 200, r.text
+    step = r.json()["steps"][0]
+    assert step["not_run"] is True
+    assert "killable probe" in step["error"] and "may be harmless" not in step["error"]
