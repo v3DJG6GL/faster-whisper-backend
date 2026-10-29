@@ -643,6 +643,31 @@ def test_conflict_merge_keeps_one_entry_when_both_writers_made_the_same_pattern_
     assert res["theirsRepl"] == [["y"], ["y>1", "a>2"]]
 
 
+def test_conflict_merge_reports_the_other_writers_pattern_fix_the_user_also_added(client, tmp_path):
+    # The other writer's pattern fix x -> y went back in under its own id,
+    # but the user had added a y entry of their own: theirs was skipped with
+    # no clash, so the next save overwrote it under an "Auto-merged" toast.
+    page = client.get("/quick-config").text
+    res = _run_js(client, tmp_path, _olist_consts(page) + r"""
+      const e = (p, r) => ({ pattern: p, replacement: r });
+      const merge = (base, mine, theirs) => {
+        const clashes = [];
+        const m = _applyFieldDiff(theirs, _fieldDiff(base, mine, _diffKindFor('entries')), clashes);
+        return [clashes, m.map(x => x.pattern + '>' + x.replacement)];
+      };
+      out({
+        // the user edited x's replacement and appended y.
+        edited: merge([e('a', '1'), e('x', '1')], [e('a', '1'), e('x', 'U'), e('y', '5')],
+                      [e('a', '1'), e('y', '1')]),
+        // the user appended the very same y entry: nothing to review there.
+        same: merge([e('a', '1'), e('x', '1')], [e('a', '1'), e('x', 'U'), e('y', '1')],
+                    [e('a', '1'), e('y', '1')]),
+      });
+    """, funcs=_OLIST_FUNCS)
+    assert res["edited"] == [["x", "y"], ["a>1", "x>U", "y>5"]]
+    assert res["same"] == [["x"], ["a>1", "x>U", "y>1"]]
+
+
 def test_reapply_keeps_the_users_edits_on_a_rule_whose_entry_both_writers_edited(client, tmp_path):
     # One entry both writers edited made _reapplyDiffs skip the whole rule:
     # every other unsaved edit on it (added entries, the enabled toggle, other

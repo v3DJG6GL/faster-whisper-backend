@@ -2210,6 +2210,10 @@ function _applyFieldDiff(serverValue, diff, clashes) {
       if (k !== serverOwn[i][0] && _stringify(mineK) !== _stringify(x)
           && !(mineK !== null && typeof mineK === 'object' && mineK.pattern === x.pattern)) {
         k = serverOwn[i][0];
+        // The user's side holds another entry under that id (the same
+        // pattern added elsewhere): theirs is not inserted, so it is a clash.
+        const clash = have.has(k) && _stringify(kept.get(k)) !== _stringify(x);
+        if (clash && clashes) clashes.push(String(x.pattern));
       }
       if (!base.has(k) && !have.has(k)) {
         const at = prev === null ? 0 : out.findIndex(([q]) => q === prev) + 1;
