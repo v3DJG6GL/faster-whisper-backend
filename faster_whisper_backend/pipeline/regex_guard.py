@@ -643,10 +643,14 @@ def _optional_overlap(body: str, icase: bool = False) -> bool:
     (``_atom_chars``), not on one witness each: `[ab]?[cb]` overlaps on `b`.
     A zero-width assertion is transparent, a group of plain atoms is read as
     its atoms and an alternation of runs of single atoms (`(?:,|;)`,
-    `(?:a|aa)`) as one class-like atom per position; any other group, a possessive or variable quantifier or an atom
-    that cannot be read stands as a pin — those are left to the rest of the
-    screen. The match is one compiled atom against one character, so it is
-    safe in-process; DOTALL over-approximates, as in _follower_fixes_split.
+    `(?:a|aa)`) as one class-like atom per position. The positions past its
+    shortest run come all or none with the run they belong to, so they never
+    split against each other: `(?:Komma|,)` is not `[K,]` with two loose `m?`
+    that take each other's `m`. Any other group, a possessive or variable
+    quantifier or an atom that cannot be read stands as a pin — those are
+    left to the rest of the screen. The match is one compiled atom against
+    one character, so it is safe in-process; DOTALL over-approximates, as in
+    _follower_fixes_split.
     """
     import re
     flags = re.DOTALL | (re.IGNORECASE if icase else 0)
@@ -661,12 +665,14 @@ def _optional_overlap(body: str, icase: bool = False) -> bool:
 _ZERO_WIDTH = ("^", "$", "\\b", "\\B", "\\A", "\\Z", "(?=", "(?!", "(?<=", "(?<!")
 
 
-def _branch_atoms(body: str, depth: int = 0) -> "list[list[tuple[str, bool] | None]]":
+def _branch_atoms(body: str, depth: int = 0) -> "list[list[tuple[str, bool, object] | None]]":
     """The top-level branches of ``body``, each as a list of its consuming
-    single-character atoms ``(atom text, optional)`` with ``None`` for an
-    item that is not one (a pin, see ``_optional_overlap``)."""
+    single-character atoms ``(atom text, optional, tail)`` with ``None`` for
+    an item that is not one (a pin, see ``_optional_overlap``). ``tail`` is
+    shared by the positions past the shortest run of one alternation, and
+    None for every other atom."""
     import re
-    branches: "list[list[tuple[str, bool] | None]]" = [[]]
+    branches: "list[list[tuple[str, bool, object] | None]]" = [[]]
     i = 0
     n = len(body)
     while i < n:
@@ -696,22 +702,24 @@ def _branch_atoms(body: str, depth: int = 0) -> "list[list[tuple[str, bool] | No
                 # past the shortest branch: `(?:a|aa)` is `aa?`. A pin there
                 # hid `a?` in `(?:a?(?:a|aa)c)+#` from the check, and each
                 # repetition matched `aac` two ways.
-                if all(b and not any(o for _t, o in b) for b in inner):
+                if all(b and not any(a[1] for a in b) for b in inner):
                     low = min(len(b) for b in inner)
+                    tail = object()
                     for p in range(max(len(b) for b in inner)):
                         alts = dict.fromkeys(b[p][0] for b in inner if len(b) > p)
                         branches[-1].append(("(?:" + "|".join(alts) + ")",
-                                             optional or p >= low))
+                                             optional or p >= low,
+                                             tail if p >= low else None))
                 else:
                     branches[-1].append(None)
             else:
-                branches[-1].extend((t, o or optional) for t, o in inner[0])
+                branches[-1].extend((t, o or optional, u) for t, o, u in inner[0])
         elif char is None:
             if not (text.startswith(_ZERO_WIDTH)
                     or re.fullmatch(r"\(\?[aiLmsux-]*\)", text)):
                 branches[-1].append(None)
         else:
-            branches[-1].append((text, optional))
+            branches[-1].append((text, optional, None))
     return branches
 
 
@@ -743,7 +751,7 @@ _POOL_CHARS = frozenset(
            "   　  ٠۰०０"))
 
 
-def _splits_ambiguously(atoms: "list[tuple[str, bool] | None]", flags: int) -> bool:
+def _splits_ambiguously(atoms: "list[tuple[str, bool, object] | None]", flags: int) -> bool:
     """The test ``_optional_overlap`` describes, for one branch's ``atoms``."""
     import re
     if not any(a and a[1] for a in atoms):
@@ -765,13 +773,18 @@ def _splits_ambiguously(atoms: "list[tuple[str, bool] | None]", flags: int) -> b
         sets.append({c for c in pool if rx.fullmatch(c)})
     m = len(atoms)
     optional = [x for x in range(m) if sets[x] is not None and atoms[x][1]]
+
+    def apart(x: int, y: int) -> bool:
+        """Two items, not two positions of one alternation's tail."""
+        return x != y and (atoms[x][2] is None or atoms[x][2] is not atoms[y][2])
+
     # An optional atom that shares no character with any other atom of the
     # branch is forced: it takes its character exactly when the input has
     # one there, so it gives no second split and is not counted below —
     # `,?` in `(?:,? ?und )+` or `\s?` in `(?:\d\d?\.\s?)+`. A pin that
     # cannot be read might take anything, so it keeps every atom counted.
     free = {x for x in optional
-            if None in sets or any(sets[x] & sets[y] for y in range(m) if y != x)}
+            if None in sets or any(sets[x] & sets[y] for y in range(m) if apart(x, y))}
     for c in set().union(*(sets[x] for x in optional)):
         cuts = [x for x in range(m) if sets[x] is None
                 or (not atoms[x][1] and c not in sets[x])]
@@ -783,7 +796,7 @@ def _splits_ambiguously(atoms: "list[tuple[str, bool] | None]", flags: int) -> b
             seg = [x % m for x in range(s + 1, e)]
             if sum(x in free for x in seg) < 2:
                 continue
-            if any((atoms[x][1] or atoms[y][1]) and sets[x] & sets[y]
+            if any((atoms[x][1] or atoms[y][1]) and apart(x, y) and sets[x] & sets[y]
                    for p, x in enumerate(seg) for y in seg[p + 1:]):
                 return True
     return False

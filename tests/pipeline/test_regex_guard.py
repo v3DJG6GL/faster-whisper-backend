@@ -847,6 +847,35 @@ def test_multi_width_alternation_pinned_off_an_optional_atom_passes(pat):
 
 
 @pytest.mark.parametrize("pat", [
+    r"(?:(?:Komma|,) )+",
+    r"(?:(?:Komma|,)\s)+",
+    r"(?:\s?(?:Komma|,)\s)+",
+    r"(?:(?:Fragezeichen|\?)\s)+",
+    r"(?:\s(?:Ausrufezeichen|!))+",
+    r"(?:[,;] (?:Klammer|\())+",
+])
+def test_letters_of_one_alternation_tail_do_not_split_against_each_other(pat):
+    """`(?:Komma|,)` was read as `[K,]o?m?m?a?`: the two `m?` of the spoken
+    word took each other's `m`, so every repeated rule holding a spoken
+    punctuation word next to its sign was refused — though `Komma` comes
+    whole or not at all."""
+    assert not g._nested_repetition(pat)
+    g.validate([("r", pat, "")])
+
+
+@pytest.mark.parametrize("pat", [
+    r"(?:c(?:[bc]|[ab]cb)[bc][ab])+#",
+    r"(?:(?:c|[ab]b[ab])a?)+#",
+])
+def test_alternation_tail_trading_with_the_atoms_around_it_stays_rejected(pat):
+    """The tail positions still count one by one against the atoms outside
+    the alternation: here the tail (or the next repetition's head) takes
+    what the atoms after it take — the first runs for seconds on
+    "cbcbcb" * 20 + "!"."""
+    assert g._nested_repetition(pat)
+
+
+@pytest.mark.parametrize("pat", [
     r"(?:[,.]?(?:\.(?=\.)|x))+#",
     r"\b(?:\.?(?:\.(?=\.)|;))+#",
     r"m(?:x?(?:x(?=x)|y))+#",
