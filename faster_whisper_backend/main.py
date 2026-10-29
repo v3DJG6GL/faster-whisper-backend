@@ -175,6 +175,7 @@ if sys.platform == "win32":
 
 from fastapi import FastAPI, File, UploadFile, Form, HTTPException, Request, Depends
 from fastapi.exceptions import RequestValidationError
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 # Auth dep used by /v1/audio/transcriptions. In open mode (no admin key in DB)
 # it returns the synthetic admin — but only to callers on
@@ -1281,6 +1282,20 @@ async def _request_validation_handler(request: Request, exc: RequestValidationEr
     back as error.input (see _encodable_json_response)."""
     from fastapi.encoders import jsonable_encoder
     return _encodable_json_response({"detail": jsonable_encoder(exc.errors())}, 422)
+
+
+@app.exception_handler(StarletteHTTPException)
+async def _http_exception_handler(request: Request, exc: StarletteHTTPException):
+    """FastAPI's default HTTPException response, kept encodable: a detail that
+    quotes a raw JSON-body string (a model name, say) can carry a lone
+    surrogate (see _encodable_json_response). _rate_limited_handler still wins
+    for its subclass — Starlette looks handlers up along the MRO."""
+    from fastapi.responses import Response
+    from fastapi.utils import is_body_allowed_for_status_code
+    headers = getattr(exc, "headers", None)
+    if not is_body_allowed_for_status_code(exc.status_code):
+        return Response(status_code=exc.status_code, headers=headers)
+    return _encodable_json_response({"detail": exc.detail}, exc.status_code, headers)
 
 
 def _shift_to_original_timeline(segments, info, pad_s: float):

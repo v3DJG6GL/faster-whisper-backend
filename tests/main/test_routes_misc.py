@@ -241,3 +241,22 @@ def test_validation_error_echoing_a_non_finite_float_stays_a_422(client):
         strict = json.loads(r.text, parse_constant=pytest.fail)   # no bare NaN
         err = strict["detail"][0]
         assert err["loc"] == ["body", "trace_ts"] and err["input"] == literal
+
+
+def test_http_exception_quoting_a_lone_surrogate_keeps_its_status(client, app_module,
+                                                                  monkeypatch):
+    # The model gate's 400 quotes the JSON body's raw "model"; a lone UTF-16
+    # surrogate in it made the default HTTPException handler's UTF-8 encode
+    # raise -> a 500 instead of the 400.
+    for k, v in (("URL_DOWNLOAD_ENABLED", True), ("URL_LANGUAGE_CHECK_ENABLED", True),
+                 ("ALLOWED_MODELS", set())):
+        monkeypatch.setattr(app_module.cfg, k, v, raising=False)
+    r = client.post("/v1/audio/url-language",
+                    content='{"url": "https://www.youtube.com/watch?v=abc123xyz",'
+                            ' "model": "\\ud800/x"}',
+                    headers={"content-type": "application/json"})
+    assert r.status_code == 400
+    assert "\\ud800" in r.text and "not a valid model id" in r.json()["detail"]
+    # Everything else keeps FastAPI's default shape.
+    r = client.get("/no-such-route")
+    assert r.status_code == 404 and r.json() == {"detail": "Not Found"}
