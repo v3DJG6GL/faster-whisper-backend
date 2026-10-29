@@ -74,6 +74,9 @@ REMOVED_KEYS: frozenset[str] = frozenset({"URL_MAX_BYTES"})
 # language prefix (de-, ch-, es-).
 RENAMED_RULES: dict[str, str] = {
     "dictation-map": "de-dictation-map",
+    # 097c9b4 (June 2026).
+    "strip-and-lowercase-non-noun": "de-strip-and-lowercase-non-noun",
+    "2-2-capitalize-the-letter-after-a-hyphen": "capitalize-letter-after-hyphen",
 }
 
 # Factory regex-list entries whose text was CHANGED in config.json, keyed by
@@ -143,6 +146,8 @@ UPGRADED_RULE_ENTRIES: dict[str, tuple[tuple[str, str], tuple[str, str]]] = {
 # A regex-list / callback:map rule has no rule-level pattern (None): its
 # content is checked instead (_FACTORY_CONTENT_DIGESTS), and so is the
 # wordlist of a callback:lowercase-wordlist rule on top of its pattern.
+# Keyed by the current name: migrate_rule_slugs renames an old slug
+# (RENAMED_RULES) first.
 UPGRADED_RULE_LANGUAGES: dict[
         str, tuple[tuple[str, str | None], tuple[str, ...]]] = {
     # The callback capitalised every letter after a hyphen, which is German
@@ -160,7 +165,6 @@ UPGRADED_RULE_LANGUAGES: dict[
     ),
     "de-split-punctuation-keywords": (("regex-list", None), ("de",)),
     "ch-symbol-cleanup": (("regex-list", None), ("de",)),
-    # Keyed by its new name: migrate_rule_slugs renames "dictation-map" first.
     "de-dictation-map": (("callback:map", None), ("de",)),
 }
 

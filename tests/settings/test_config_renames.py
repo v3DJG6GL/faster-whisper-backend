@@ -89,6 +89,43 @@ def test_rules_scoped_to_german_in_c4fefe2_upgrade_a_stored_copy(tmp_path):
         assert _rule(out["PIPELINE_RULES"], name)["languages"] == ["de"], name
 
 
+_RENAMED_IN_097C9B4 = {"strip-and-lowercase-non-noun": "de-strip-and-lowercase-non-noun",
+                      "2-2-capitalize-the-letter-after-a-hyphen":
+                          "capitalize-letter-after-hyphen"}
+
+
+def test_copy_saved_before_097c9b4_renames_is_migrated_and_scoped(tmp_path):
+    """097c9b4 renamed two factory rules; a copy saved before that still
+    holds the old slugs, and the scope upgrades are keyed by the new ones."""
+    from faster_whisper_backend.settings import config_store as cs
+    rules = copy.deepcopy(_factory_rules())
+    for old, new in _RENAMED_IN_097C9B4.items():
+        r = _rule(rules, new)
+        r["name"] = old
+        del r["languages"]
+    p = tmp_path / "config.local.json"
+    p.write_text(json.dumps({
+        "PIPELINE_RULES": rules,
+        "CAPTURES_PIPELINE_RULES_EXCLUDE": list(_RENAMED_IN_097C9B4),
+    }), encoding="utf-8")
+    out = cs.load_overrides(str(p))
+    assert [r["name"] for r in out["PIPELINE_RULES"]] == [
+        r["name"] for r in _factory_rules()]
+    for new in _RENAMED_IN_097C9B4.values():
+        assert _rule(out["PIPELINE_RULES"], new)["languages"] == ["de"], new
+    assert set(out["CAPTURES_PIPELINE_RULES_EXCLUDE"]) == set(_RENAMED_IN_097C9B4.values())
+
+
+def test_copy_holding_both_097c9b4_names_keeps_one_rule_per_name():
+    rules = copy.deepcopy(_factory_rules())
+    for old, new in _RENAMED_IN_097C9B4.items():
+        rules.append(dict(copy.deepcopy(_rule(rules, new)), name=old))
+    raw = {"PIPELINE_RULES": rules}
+    renames.migrate_rule_slugs(raw)
+    names = [r["name"] for r in raw["PIPELINE_RULES"]]
+    assert len(names) == len(set(names))
+
+
 def test_edited_wordlist_rule_pattern_keeps_every_language():
     rules = copy.deepcopy(_factory_rules())
     r = _rule(rules, "de-strip-and-lowercase-non-noun")
