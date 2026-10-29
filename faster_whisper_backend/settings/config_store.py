@@ -141,22 +141,25 @@ def _migrate_tightened_bundle_values(raw: dict[str, Any]) -> list[str]:
 
 
 def _env_rule_names() -> set[str] | None:
-    """The rule names of a WHISPER_PIPELINE_RULES JSON list (renamed slugs
-    mapped, as config.py does before it applies it); None when the var is
-    unset or not a JSON list. config.py applies that list AFTER this file
-    loads, so with no local rule copy it, not config.json, decides whether a
-    stored slug list still names a card split since (config_renames.
-    rename_slugs)."""
+    """The rule names of the WHISPER_PIPELINE_RULES JSON list as config.py
+    applies it (renamed slugs mapped, upgraded, validated); None when the var
+    is unset or config.py rejects it — the rules in force are then the file's
+    and config.json's. config.py applies that list AFTER this file loads, so
+    with no local rule copy it, not config.json, decides whether a stored slug
+    list still names a card split since (config_renames.rename_slugs)."""
     text = os.environ.get(settings_schema.ENV_VAR_MAPPING["PIPELINE_RULES"])
     if text is None or not text.strip():
         return None
     try:
-        names = _renames._rule_names(json.loads(text))
-    except ValueError:
+        # The steps of config.py's JSON env loop, in its order.
+        wrapped = _renames.migrate_rule_slugs({"PIPELINE_RULES": json.loads(text)})
+        _renames.upgrade_rule_entries(wrapped)
+        _migrate_tightened_bundle_values(wrapped)
+        rules = settings_schema.AdminConfig.model_validate(
+            wrapped).model_dump(exclude_none=True).get("PIPELINE_RULES")
+    except Exception:  # noqa: BLE001 — config.py rejects on any failure too
         return None
-    if names is None:
-        return None
-    return {_renames.RENAMED_RULES.get(n, n) for n in names}
+    return _renames._rule_names(rules)
 
 
 def _migrate_legacy_keys(raw: dict[str, Any]) -> dict[str, Any]:

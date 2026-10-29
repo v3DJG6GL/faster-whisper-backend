@@ -365,6 +365,26 @@ def test_local_slug_lists_follow_the_env_rule_list_in_force(
         "PIPELINE_RULES_EXCLUDE": ["strip-whisper-punctuation"], "BEAM_SIZE": 3}
 
 
+def test_local_slug_lists_ignore_an_env_rule_list_config_rejects(
+        tmp_path, monkeypatch):
+    """An env list that fails the schema is rejected by config.py, and the
+    factory split cards stay in force: a local exclude naming the old card
+    still maps to them instead of naming a card no live rule has."""
+    from faster_whisper_backend.settings import config_store as cs
+    rules = _pre_june_rules() + [{"name": "broken", "type": "bogus-type"}]
+    monkeypatch.setenv("WHISPER_PIPELINE_RULES", json.dumps(rules))
+    p = tmp_path / "config.local.json"
+    p.write_text(json.dumps({
+        "CAPTURES_PIPELINE_RULES_EXCLUDE": ["strip-whisper-punctuation"],
+        "MODEL_OVERRIDES": {"large-v3": {
+            "PIPELINE_RULES_EXCLUDE": ["strip-whisper-punctuation"]}},
+    }), encoding="utf-8")
+    out = cs.load_overrides(str(p))
+    split = _SPLIT_IN_JUNE["strip-whisper-punctuation"]
+    assert set(out["CAPTURES_PIPELINE_RULES_EXCLUDE"]) == set(split)
+    assert out["MODEL_OVERRIDES"]["large-v3"]["PIPELINE_RULES_EXCLUDE"] == split
+
+
 @pytest.mark.parametrize("old,new", sorted(_RENAMED_IN_097C9B4.items()))
 def test_old_copy_running_beside_its_switched_off_renamed_rule_keeps_running(tmp_path, old, new):
     """An admin who saw the duplicate and switched off the NEW card kept the
