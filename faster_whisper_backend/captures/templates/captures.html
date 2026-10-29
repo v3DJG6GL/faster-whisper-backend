@@ -3345,8 +3345,8 @@
     // Mirror of Python _ends_sentence: sentence-final punctuation before
     // any closing quotes/brackets, so period_space adds no second ".".
     var i = text.length;
-    while (i > 0 && '"\'”’»«)]'.indexOf(text[i - 1]) >= 0) i--;
-    return i > 0 && '.?!…'.indexOf(text[i - 1]) >= 0;
+    while (i > 0 && '"\'”’»«“‘›‹)]}」』）］｝》〉'.indexOf(text[i - 1]) >= 0) i--;
+    return i > 0 && '.?!…。！？؟।‼⁇⁈⁉'.indexOf(text[i - 1]) >= 0;
   }
 
   function _applyChipsToText(text, corrections, words) {

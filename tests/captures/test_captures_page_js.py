@@ -1069,6 +1069,15 @@ console.log(JSON.stringify({
     (["Hallo Welt.", "Wie geht es?", "gut"], "Hallo Welt. Wie geht es? gut"),
     (["Stopp!", "«Ja.»", "nein"], "Stopp! «Ja.» nein"),
     (["eins", "zwei…", "drei"], "eins. zwei… drei"),
+    # German „…“ / ‚…‘ closers, CJK and other scripts' sentence enders.
+    (["Er sagte: „Hallo Welt.“", "Wie geht es?"],
+     "Er sagte: „Hallo Welt.“ Wie geht es?"),
+    (["‚Stopp!‘", "gut"], "‚Stopp!‘ gut"),
+    (["你好。", "「好！」", "（是？）", "gut"], "你好。 「好！」 （是？） gut"),
+    (["مرحبا؟", "नमस्ते।", "Wie⁉", "Was‼", "gut"],
+     "مرحبا؟ नमस्ते। Wie⁉ Was‼ gut"),
+    (["{eins.}", "《二。》", "〈三！〉", "›vier?‹", "fünf"],
+     "{eins.} 《二。》 〈三！〉 ›vier?‹ fünf"),
 ])
 def test_merge_preview_period_space_join_matches_the_server(
         page, tmp_path, finals, expected):
