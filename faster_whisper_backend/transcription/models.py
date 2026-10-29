@@ -655,34 +655,43 @@ def _release_model_lease(name: str) -> None:
     n = _model_leases.get(name, 0) - 1
     if n <= 0:
         _model_leases.pop(name, None)
-        _schedule_trim_to_cap()
+        _schedule_trim_to_cap(keep=name)
     else:
         _model_leases[name] = n
     # No-op for a name the registry no longer knows (force-dropped mid-job).
     model_registry.touch_loaded_model(name)
 
 
-# The pending trim a lease release scheduled (one at a time; see below).
+# The pending trim a lease release or an over-cap load scheduled (one at a
+# time; see below), and the model it spares.
 _trim_task: "asyncio.Task | None" = None
+_trim_keep: "str | None" = None
 
 
-def _schedule_trim_to_cap() -> None:
+def _schedule_trim_to_cap(keep: "str | None" = None) -> None:
     """Run trim_to_cap in the background when the cache is over the cap: a
     leased model the cap loop or trim_to_cap had to skip becomes evictable the
     moment its last lease goes, and a hit-only server never misses to reclaim
     it. A task, as the release is sync and may run under _model_load_lock. One
-    pending trim covers every release: it re-reads the cache once it holds the
-    lock, and runs to the end without an await once it does."""
-    global _trim_task
+    pending trim covers every call: it re-reads the cache once it holds the
+    lock, and runs to the end without an await once it does.
+
+    ``keep`` (the model whose lease just went, or that a load just cached) is
+    never evicted by it: in an all-leased overflow that model is the only
+    unleased entry, and evicting it made every request for it a cold reload.
+    The latest call's ``keep`` wins; the excess is reclaimed by the trim the
+    release of another model's lease schedules."""
+    global _trim_task, _trim_keep
     if len(_loaded_models) <= cfg.MAX_LOADED_MODELS:
         return
+    _trim_keep = keep
     if _trim_task is not None and not _trim_task.done():
         return
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:  # no loop (a sync caller): the next miss trims
         return
-    _trim_task = loop.create_task(trim_to_cap())
+    _trim_task = loop.create_task(_scheduled_trim())
 
 
 def _resolve_model_name(requested: str) -> str:
@@ -1511,17 +1520,31 @@ async def trim_to_cap() -> list[str]:
     hitting resident models never shrank. Leased models stay; the release of
     a model's last lease runs this again (_schedule_trim_to_cap). Returns the
     evicted ids."""
-    evicted: list[str] = []
     async with _model_load_lock:
-        while len(_loaded_models) > cfg.MAX_LOADED_MODELS:
-            name = next(
-                (n for n in _loaded_models if not _model_leases.get(n, 0)), None)
-            if name is None:
-                break
-            logger.info("Evicting model from VRAM (MAX_LOADED_MODELS lowered "
-                        "to %d): %s", cfg.MAX_LOADED_MODELS, name)
-            _drop_loaded_model(name)
-            evicted.append(name)
+        return _evict_over_cap(keep=None)
+
+
+async def _scheduled_trim() -> None:
+    """The _schedule_trim_to_cap task: _trim_keep is read under the lock, so
+    the latest call before the trim gets the lock is the one it honours."""
+    async with _model_load_lock:
+        _evict_over_cap(keep=_trim_keep)
+
+
+def _evict_over_cap(keep: "str | None") -> list[str]:
+    """trim_to_cap's eviction loop, never evicting ``keep``. Caller holds
+    _model_load_lock."""
+    evicted: list[str] = []
+    while len(_loaded_models) > cfg.MAX_LOADED_MODELS:
+        name = next(
+            (n for n in _loaded_models
+             if n != keep and not _model_leases.get(n, 0)), None)
+        if name is None:
+            break
+        logger.info("Evicting model from VRAM (over MAX_LOADED_MODELS=%d): %s",
+                    cfg.MAX_LOADED_MODELS, name)
+        _drop_loaded_model(name)
+        evicted.append(name)
     return evicted
 
 
@@ -1598,7 +1621,7 @@ def _reset_for_tests() -> None:
     """Drop every cached model, lease and suppress-chars entry, and rebind the
     locks and lazily-built semaphores so none stays bound to a previous test's
     event loop (metrics' own hook clears the published metrics.gpu_gate)."""
-    global _model_load_lock, _convert_locks_meta, _trim_task
+    global _model_load_lock, _convert_locks_meta, _trim_task, _trim_keep
     global _inference_semaphore, _url_download_semaphore
     _loaded_models.clear()
     _model_leases.clear()
@@ -1607,5 +1630,6 @@ def _reset_for_tests() -> None:
     _model_load_lock = asyncio.Lock()
     _convert_locks_meta = asyncio.Lock()
     _trim_task = None
+    _trim_keep = None
     _inference_semaphore = None
     _url_download_semaphore = None

@@ -204,6 +204,34 @@ def test_release_within_the_cap_schedules_no_trim(monkeypatch):
     assert list(tx_models._loaded_models) == ["a"]
 
 
+def test_release_in_an_all_leased_overflow_keeps_the_released_model(
+        monkeypatch):
+    # A long streaming session pins "a"; each batch request for "b" overflows
+    # the cap. Its release must not evict "b" (the only unleased entry), or
+    # every later "b" request is a cold reload.
+    _stub_load(monkeypatch)
+    builds: "list[str]" = []
+
+    def _model(path, **kw):
+        builds.append(path)
+        return FakeModel()
+    sys.modules["faster_whisper"].WhisperModel = _model
+    monkeypatch.setattr(tx_models.cfg, "MAX_LOADED_MODELS", 1, raising=False)
+    _register("a")
+    tx_models._model_leases["a"] = 1
+
+    async def scenario():
+        for _ in range(3):
+            await tx_models._get_or_load_model("b", lease=True)
+            tx_models._release_model_lease("b")
+            if tx_models._trim_task is not None:
+                await tx_models._trim_task
+
+    asyncio.run(scenario())
+    assert builds == ["b"]
+    assert list(tx_models._loaded_models) == ["a", "b"]
+
+
 # --- idle evictor ------------------------------------------------------------
 
 def test_idle_evictor_defers_then_evicts(monkeypatch):
