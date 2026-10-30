@@ -668,8 +668,9 @@ async def transcribe_stream(ws: WebSocket) -> None:
     session: "StreamSession | None" = None
     # One entry per lease taken by _load_with_keepalive. The final and partial
     # model are often the SAME name — that leases it twice and releases it
-    # twice; the refcount is what makes that correct.
-    _model_leases_held: "list[str]" = []
+    # twice; the refcount is what makes that correct. Each entry keeps the
+    # instance it leased: the release must tell a reload from it.
+    _model_leases_held: "list[tuple[str, object]]" = []
     transport = None
     consumer_task: "asyncio.Task | None" = None
     # Serializes EVERY ws send across the concurrent producer (receive loop) and
@@ -845,15 +846,16 @@ async def transcribe_stream(ws: WebSocket) -> None:
                 # once it lands, since the teardown will have run by then.
                 if task.done():
                     if not task.cancelled() and task.exception() is None:
-                        _model_leases_held.append(name)
+                        _model_leases_held.append((name, task.result()))
                 else:
                     task.add_done_callback(
                         lambda t: (not t.cancelled() and t.exception() is None
-                                   and tx_models._release_model_lease(name)))
+                                   and tx_models._release_model_lease(
+                                       name, t.result())))
                 raise
             # Only a load that RETURNED took a lease; record it for the
             # session teardown. A raising load leaves the refcount untouched.
-            _model_leases_held.append(name)
+            _model_leases_held.append((name, model))
             return model
 
         # The model the ledger row below names: the one whose load raised.
@@ -2090,7 +2092,7 @@ async def transcribe_stream(ws: WebSocket) -> None:
         # Same reason as the slots above: released before any await, so a
         # cancellation in the teardown cannot pin a model in VRAM forever.
         while _model_leases_held:
-            tx_models._release_model_lease(_model_leases_held.pop())
+            tx_models._release_model_lease(*_model_leases_held.pop())
         jobs.job_end(session_id)
         # Idempotent backstop so every exit path (normal, disconnect, error)
         # converges here and the ffmpeg subprocess + stdout-reader task are

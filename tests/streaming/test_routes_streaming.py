@@ -812,6 +812,8 @@ def test_cancel_during_a_completed_load_still_releases_the_lease(
 
     async def _loader(name, *, lease=False):
         model = await _real(name, lease=False)
+        # Cached like a real load: the release tells it from a drained one.
+        monkeypatch.setitem(tx_models._loaded_models, name, model)
         if lease:
             tx_models._model_leases[name] = \
                 tx_models._model_leases.get(name, 0) + 1

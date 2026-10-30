@@ -89,9 +89,10 @@ _model_leases: "dict[str, int]" = {}
 # name → leases still held on an INSTANCE _drop_loaded_model(force=True)
 # dropped (drain_then_evict). Leases are keyed by name, so without this a
 # reload would inherit the old holders' count and read as in use. A release
-# drains this bucket first: if a new-instance holder releases before an old
-# one, the reload stays over-protected for a while, but it is never left
-# unprotected.
+# names the instance it held, and only a holder of an instance that is no
+# longer the cached one draws from this bucket: a short request on the reload
+# that ends before a dictation still on the old instance must not leave the
+# idle reload pinned (and the cap overflowing) for the rest of that session.
 _orphan_leases: "dict[str, int]" = {}
 
 # Cache misses past the fast path, from the check to the cached model: the CT2
@@ -685,19 +686,20 @@ def _drop_loaded_model(name: str, *, force: bool = False) -> bool:
     return True
 
 
-def _release_model_lease(name: str) -> None:
+def _release_model_lease(name: str, model: "WhisperModel") -> None:
     """Release a lease taken by ``_get_or_load_model(..., lease=True)`` and
     restart the model's idle clock — a long transcription must not be evicted
     the instant it ends because the LOAD timestamp aged past the idle timeout.
+    ``model`` is the instance that call returned.
 
     Synchronous and lock-free (see the _model_leases comment). Tolerates a name
     that is no longer cached: drain_then_evict/shutdown force-drop entries out
     from under their lease holders by design."""
-    orphaned = _orphan_leases.get(name, 0) - 1
-    if orphaned >= 0:
+    if _loaded_models.get(name) is not model:
         # A holder of a force-dropped instance (see _orphan_leases): the
         # cached reload's own count, and so its trim, stay untouched.
-        if orphaned:
+        orphaned = _orphan_leases.get(name, 0) - 1
+        if orphaned > 0:
             _orphan_leases[name] = orphaned
         else:
             _orphan_leases.pop(name, None)
@@ -1211,9 +1213,10 @@ async def _get_or_load_model(name: str, *, lease: bool = False) -> "WhisperModel
     """Return the cached WhisperModel for ``name``, loading it on a miss.
 
     ``lease=True`` marks the model as in-use until the caller passes the same
-    name to :func:`_release_model_lease` (a `finally:` — see the transcribe
-    handler). A leased model survives LRU and idle eviction. The startup
-    preload deliberately does NOT lease: it wants plain LRU/idle semantics."""
+    name and the returned instance to :func:`_release_model_lease` (a
+    `finally:` — see the transcribe handler). A leased model survives LRU and
+    idle eviction. The startup preload deliberately does NOT lease: it wants
+    plain LRU/idle semantics."""
     # The allowlist is read live per request and is in neither
     # settings_schema.RESTART_REQUIRED_FIELDS nor LOAD_TIME_FIELDS, so narrowing it
     # is reported to the admin as hot-applied and evicts nothing. Gate BEFORE the
@@ -1579,7 +1582,7 @@ async def _load_on_miss(name: str, *, lease: bool) -> "WhisperModel":
         except BaseException as e:
             # The caller never receives the model, so never releases.
             if leased:
-                _release_model_lease(name)
+                _release_model_lease(name, new_model)
             if not isinstance(e, asyncio.CancelledError):
                 # A failed register leaves nothing cached, as before.
                 _loaded_models.pop(name, None)
@@ -1589,7 +1592,7 @@ async def _load_on_miss(name: str, *, lease: bool) -> "WhisperModel":
         if _cancelled is not None:
             if leased:
                 # Cancelled during the register: the lease is never released.
-                _release_model_lease(name)
+                _release_model_lease(name, new_model)
             raise _cancelled
         return new_model
 

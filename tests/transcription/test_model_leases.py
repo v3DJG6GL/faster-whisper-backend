@@ -443,7 +443,7 @@ def test_release_restamps_last_used():
     info["last_used_monotonic"] = time.monotonic() - 500
     stale = info["last_used_monotonic"]
 
-    tx_models._release_model_lease("a")
+    tx_models._release_model_lease("a", tx_models._loaded_models["a"])
 
     assert tx_models._model_leases == {}
     assert model_registry._loaded_models["a"]["last_used_monotonic"] > stale
@@ -452,7 +452,7 @@ def test_release_restamps_last_used():
 def test_release_decrements_before_zero():
     _register("a")
     tx_models._model_leases["a"] = 2
-    tx_models._release_model_lease("a")
+    tx_models._release_model_lease("a", tx_models._loaded_models["a"])
     assert tx_models._model_leases == {"a": 1}
     assert tx_models._drop_loaded_model("a") is False
 
@@ -460,8 +460,9 @@ def test_release_decrements_before_zero():
 def test_release_tolerates_a_dropped_model():
     _register("a")
     tx_models._model_leases["a"] = 1
+    old = tx_models._loaded_models["a"]
     tx_models._drop_loaded_model("a", force=True)   # drain_then_evict shape
-    tx_models._release_model_lease("a")             # must not KeyError
+    tx_models._release_model_lease("a", old)        # must not KeyError
     assert tx_models._model_leases == {}
 
 
@@ -487,20 +488,46 @@ def test_an_old_holder_release_leaves_the_reload_lease(monkeypatch):
     _stub_load(monkeypatch)
     monkeypatch.setattr(tx_models.cfg, "MAX_LOADED_MODELS", 1, raising=False)
     _register("a")
+    old = tx_models._loaded_models["a"]
     tx_models._model_leases["a"] = 1
 
     async def scenario():
         await tx_models.drain_then_evict("a")
         await tx_models._get_or_load_model("a", lease=True)   # R2 on the reload
-        tx_models._release_model_lease("a")                   # R1, old instance
+        tx_models._release_model_lease("a", old)              # R1, old instance
         await tx_models._get_or_load_model("b")
 
     asyncio.run(scenario())
     # R2 still decodes on the reload: it must survive the miss for "b".
     assert tx_models._model_leases == {"a": 1}
     assert "a" in tx_models._loaded_models
-    tx_models._release_model_lease("a")
+    tx_models._release_model_lease("a", tx_models._loaded_models["a"])
     assert tx_models._model_leases == {}
+
+
+def test_a_reload_holder_release_leaves_the_old_holder_lease_orphaned(
+        monkeypatch):
+    # The reverse order: R1 (a dictation, leased until teardown) still decodes
+    # on the drained instance when the short R2 on the reload ends. R2's
+    # release must free the reload, or a miss for "b" overflows the cap for
+    # the rest of R1's session.
+    _stub_load(monkeypatch)
+    monkeypatch.setattr(tx_models.cfg, "MAX_LOADED_MODELS", 1, raising=False)
+    _register("a")
+    old = tx_models._loaded_models["a"]
+    tx_models._model_leases["a"] = 1
+
+    async def scenario():
+        await tx_models.drain_then_evict("a")
+        reload = await tx_models._get_or_load_model("a", lease=True)
+        tx_models._release_model_lease("a", reload)           # R2 ends first
+        await tx_models._get_or_load_model("b")
+
+    asyncio.run(scenario())
+    assert list(tx_models._loaded_models) == ["b"]
+    assert tx_models._model_leases == {}
+    tx_models._release_model_lease("a", old)                  # R1 ends
+    assert tx_models._orphan_leases == {} and tx_models._model_leases == {}
 
 
 def test_last_release_trims_a_cap_lowered_under_leases(monkeypatch):
@@ -515,8 +542,8 @@ def test_last_release_trims_a_cap_lowered_under_leases(monkeypatch):
 
     async def scenario():
         assert await tx_models.trim_to_cap() == []
-        tx_models._release_model_lease("a")
-        tx_models._release_model_lease("b")
+        tx_models._release_model_lease("a", tx_models._loaded_models["a"])
+        tx_models._release_model_lease("b", tx_models._loaded_models["b"])
         await tx_models._trim_task
         await tx_models._get_or_load_model("b")        # a hit, not a miss
 
@@ -530,7 +557,7 @@ def test_release_within_the_cap_schedules_no_trim(monkeypatch):
     monkeypatch.setattr(tx_models.cfg, "MAX_LOADED_MODELS", 1, raising=False)
 
     async def scenario():
-        tx_models._release_model_lease("a")
+        tx_models._release_model_lease("a", tx_models._loaded_models["a"])
         return tx_models._trim_task
 
     assert asyncio.run(scenario()) is None
@@ -556,7 +583,7 @@ def test_release_in_an_all_leased_overflow_keeps_the_released_model(
     async def scenario():
         for _ in range(3):
             await tx_models._get_or_load_model("b", lease=True)
-            tx_models._release_model_lease("b")
+            tx_models._release_model_lease("b", tx_models._loaded_models["b"])
             if tx_models._trim_task is not None:
                 await tx_models._trim_task
 
@@ -588,7 +615,7 @@ def test_a_leased_load_keeps_a_release_scheduled_trim_from_evicting(
         load = asyncio.ensure_future(
             tx_models._get_or_load_model("c", lease=True))
         await asyncio.to_thread(entered.wait, 5)
-        tx_models._release_model_lease("b")
+        tx_models._release_model_lease("b", tx_models._loaded_models["b"])
         gate.set()
         await load
         await tx_models._trim_task
@@ -616,7 +643,7 @@ def test_release_during_an_unleased_over_cap_load_trims_after_it(monkeypatch):
     async def scenario():
         load = asyncio.ensure_future(tx_models.load_unleased("b"))
         await asyncio.to_thread(entered.wait, 5)
-        tx_models._release_model_lease("a")
+        tx_models._release_model_lease("a", tx_models._loaded_models["a"])
         gate.set()
         await load
         if tx_models._trim_task is not None:
@@ -644,7 +671,7 @@ def test_idle_evictor_defers_then_evicts(monkeypatch):
         if ticks["n"] == 2:
             # After the first (refused) sweep.
             seen.append("a" in tx_models._loaded_models)
-            tx_models._release_model_lease("a")
+            tx_models._release_model_lease("a", tx_models._loaded_models["a"])
             model_registry._loaded_models["a"]["last_used_monotonic"] = \
                 time.monotonic() - 500
         if ticks["n"] > 2:
@@ -663,6 +690,8 @@ def _leasing_loader(app_module, model, held):
     """`held` records every name leased, so the tests can key the mid-decode
     snapshot off the RESOLVED name the handler asked for, not "whisper-1"."""
     async def _loader(name, *, lease=False):
+        # Cached like a real load: the release tells it from a drained one.
+        tx_models._loaded_models[name] = model
         if lease:
             held.append(name)
             tx_models._model_leases[name] = \

@@ -549,7 +549,7 @@ async def url_language(request: Request,
                                       progress=i / len(audio), model=model_name)
                         heard[i] = await asyncio.to_thread(_detect, model, piece)
             finally:
-                tx_models._release_model_lease(model_name)
+                tx_models._release_model_lease(model_name, model)
         result = _lc.vote(heard)
         pieces = [{"at": at, "language": lang, "probability": round(p, 3)}
                   for at, (lang, p) in zip(starts, heard)]

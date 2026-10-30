@@ -767,6 +767,7 @@ async def lifespan(app: FastAPI):
     for _name in list(tx_models._loaded_models):
         tx_models._drop_loaded_model(_name, force=True)
     tx_models._model_leases.clear()
+    tx_models._orphan_leases.clear()
     # Best-effort NVML shutdown so the service exit doesn't leak driver
     # handles. Safe to call when NVML didn't init.
     system_stats.shutdown()
@@ -1594,8 +1595,9 @@ async def transcribe(
     # binding only while it is still this run's).
     _bound_plan_id: "str | None" = None
     # Set only AFTER the load returns, so the outer finally never releases a
-    # lease that was never taken (a rejected/failed load takes none).
-    _leased_model: "str | None" = None
+    # lease that was never taken (a rejected/failed load takes none). The
+    # instance rides along: the release must tell a reload from it.
+    _leased_model: "tuple[str, object] | None" = None
     request_id = uuid.uuid4().hex
     _user_id = user.get("user_id")
     _key_id = user.get("key_id")
@@ -1681,7 +1683,7 @@ async def transcribe(
         # never see a cold load — the receipt reported `load 0.0s` always.
         _model_t0 = time.perf_counter()
         model = await tx_models._get_or_load_model(resolved_model, lease=True)
-        _leased_model = resolved_model
+        _leased_model = (resolved_model, model)
         _plan_compute, _plan_device = tx_receipt._model_compute_device(resolved_model)
         _rplan.set_stage_model("transcribing", model=resolved_model,
                                device=_plan_device, compute=_plan_compute)
@@ -3728,7 +3730,7 @@ async def transcribe(
         if _video_task is not None and _status != "ok" and not _video_task.done():
             _video_task.cancel()
         if _leased_model is not None:
-            tx_models._release_model_lease(_leased_model)
+            tx_models._release_model_lease(*_leased_model)
         metrics.in_flight_transcriptions -= 1
         if _pid:
             if _close_in_outer:

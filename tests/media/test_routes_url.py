@@ -913,7 +913,8 @@ def lang_check(url_enabled, monkeypatch, fake_model):
         np.zeros(16000, dtype=np.float32) for _ in starts])
     monkeypatch.setattr(media_routes, "_has_speech", lambda audio: True)
     released: list = []
-    monkeypatch.setattr(tx_models, "_release_model_lease", released.append)
+    monkeypatch.setattr(tx_models, "_release_model_lease",
+                        lambda name, model: released.append(name))
     fake_model.released = released
     return fake_model
 
