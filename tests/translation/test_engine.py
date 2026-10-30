@@ -251,6 +251,18 @@ def test_parse_numbered_extra_or_repeated_index_returns_none():
     assert translation._parse_numbered("1. a\n1. b\n2. c", 2) is None
 
 
+def test_parse_numbered_wrapped_item_returns_none():
+    """An item wrapped over two lines kept 1..n: the unnumbered second line
+    was skipped as chatter and the cut first half passed as the whole
+    translation (its length ratio still inside the guard band)."""
+    assert translation._parse_numbered(
+        "1. Yesterday we went to the market and bought\n"
+        "fresh vegetables for the whole week.\n2. Then we went home.",
+        2) is None
+    # A blank line between items is not a wrap.
+    assert translation._parse_numbered("1. a\n\n2. b", 2) == ["a", "b"]
+
+
 # ---------------------------------------------------------------------------
 # Guards
 # ---------------------------------------------------------------------------
