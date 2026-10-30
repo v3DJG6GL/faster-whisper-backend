@@ -1080,3 +1080,24 @@ def test_whitespace_run_has_a_sibling_every_s_mode_matches(pat):
     run in place, which the class matched at once. Both were accepted."""
     with pytest.raises(ValueError):
         g.validate([("r", pat, "")], timeout=1.5)
+
+
+@pytest.mark.parametrize("pat", [
+    r"\s*" * 7 + r"\S",
+    r"\d*" * 7 + r"\D",
+    r"\d*" * 7 + r"[^1]",
+])
+def test_run_ending_in_a_set_that_matches_the_terminator_is_rejected(pat):
+    """The terminator was only checked as raw text, so a trailing negated set
+    matched the `#` and the probe ended on the first try: these were
+    accepted, yet re.sub over a 30-space or 30-digit tail took over a
+    second, growing ~n^7."""
+    assert not g._synthetic_fixture(pat).endswith("#")
+    with pytest.raises(ValueError):
+        g.validate([("r", pat, "")], timeout=1.5)
+
+
+@pytest.mark.parametrize("pat", [r"\s+$", r"\s+([.,!?])", r"(\w+)\W", r"(\d+)\s*Uhr"])
+def test_ordinary_rule_keeps_its_terminated_probe(pat):
+    assert g._synthetic_fixture(pat).endswith("#")
+    g.validate([("r", pat, "")], timeout=1.5)

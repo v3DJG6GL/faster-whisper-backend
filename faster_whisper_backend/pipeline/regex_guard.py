@@ -1344,9 +1344,15 @@ def _synthetic_fixture(pat: str) -> "str | None":
     pattern actually cares about: ~240 repetitions of a character its first
     unbounded atom matches, plus a terminator the pattern does not mention, so
     the match is forced to FAIL after exhausting every way of splitting the
-    run — the shape backtracking blows up on.
+    run — the shape backtracking blows up on. A terminator the pattern
+    matches on its own (`\\S`, `\\D`, `[^1]` all match `#`) ended the probe
+    on the first try, so it is skipped; with none left the run is probed
+    bare, which the end of the text fails just the same.
     """
+    import re
+
     try:
+        rx = re.compile(pat)
         stripped = _strip_comments(_strip_verbose(pat))
         char = _first_repeated_char(stripped)
         # Swap only a shorthand's run character: blanking the literal leaves
@@ -1361,9 +1367,9 @@ def _synthetic_fixture(pat: str) -> "str | None":
     if not char:
         return None
     for term in _SYNTH_TERMINATORS:
-        if term not in pat and term != char:
+        if term not in pat and term != char and not rx.search(term):
             return char * _SYNTH_RUN + term
-    return None
+    return char * _SYNTH_RUN
 
 
 def _witness(pat: str, depth: int = 0) -> str:
