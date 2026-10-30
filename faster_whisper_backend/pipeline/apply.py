@@ -59,13 +59,13 @@ _APPLY_LOCK = LoopLock()
 
 # The HF_TOKEN the service environment set (systemd Environment=, a shell
 # export), which clearing the config field restores instead of removing.
-# main.py promotes cfg.HF_TOKEN over it before this module is imported, so a
-# value equal to cfg.HF_TOKEN is the promoted one, not the environment's.
-_ENV_HF_TOKEN: "str | None" = (
-    os.environ.get("HF_TOKEN")
-    if os.environ.get("HF_TOKEN") != (getattr(cfg, "HF_TOKEN", None) or None)
-    else None
-)
+# main.py promotes cfg.HF_TOKEN over it before this module is imported, so it
+# first records the environment's value under SERVICE_HF_TOKEN_ENV ("" when
+# none was set); a uvicorn worker inherits that record with the promoted
+# environment. Without main (a script, a test) nothing was promoted.
+SERVICE_HF_TOKEN_ENV = "_WHISPER_SERVICE_HF_TOKEN"
+_ENV_HF_TOKEN: "str | None" = os.environ.get(
+    SERVICE_HF_TOKEN_ENV, os.environ.get("HF_TOKEN")) or None
 
 
 def rules_lock() -> LoopLock:

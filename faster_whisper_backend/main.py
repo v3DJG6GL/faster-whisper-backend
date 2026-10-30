@@ -83,7 +83,15 @@ for _msg in getattr(cfg, "_ENV_WARNINGS", ()):
 #
 # Live edits: pipeline.apply.apply_hot_changes re-syncs the env var whenever
 # cfg.HF_TOKEN changes via the admin UI, so a save takes effect without
-# a service restart. Clearing the config field unsets the env var.
+# a service restart. Clearing the config field hands back the token the
+# service environment set (systemd Environment=, a shell export), or unsets
+# the env var when it set none; the /settings Restart re-execs with that token.
+# Recorded before the promotion overwrites it, and only once: a uvicorn worker
+# (SERVER_WORKERS > 1) inherits this process's already-promoted environment.
+# The name is pipeline.apply.SERVICE_HF_TOKEN_ENV, spelled out rather than
+# imported: that module pulls the rules engine, the model cache and the stage
+# modules, which main imports only further down.
+os.environ.setdefault("_WHISPER_SERVICE_HF_TOKEN", os.environ.get("HF_TOKEN", ""))
 if cfg.HF_TOKEN:
     os.environ["HF_TOKEN"] = cfg.HF_TOKEN
     logger.info("HF_TOKEN set from cfg.HF_TOKEN (silences HF rate-limit "
