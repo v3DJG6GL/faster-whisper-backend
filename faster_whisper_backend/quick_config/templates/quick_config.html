@@ -2185,18 +2185,26 @@ function _applyFieldDiff(serverValue, diff, clashes, restored) {
     const mine = { ...diff.added, ...diff.changed };
     const mineLower = new Set(Object.keys(mine).map(k => k.toLowerCase()));
     for (const k of diff.removed) {
+      // One the other writer recased (komma -> Komma) is the same entry, so
+      // the deletion applies to their spelling (bar one the user recased
+      // too: left to the check below).
+      let o = k;
+      if (!Object.hasOwn(out, k)) {
+        o = mineLower.has(k.toLowerCase()) ? undefined
+          : Object.keys(out).find(x => x.toLowerCase() === k.toLowerCase());
+      }
       // A key the other writer changed the value of (a rename is a remove
       // plus an add) is back in their version rather than lost unseen.
-      if (!Object.hasOwn(out, k) || _stringify(out[k]) === _stringify(diff.prior[k])) {
-        delete out[k];
+      if (o === undefined || _stringify(out[o]) === _stringify(diff.prior[k])) {
+        if (o !== undefined) delete out[o];
         continue;
       }
       // Bar one the user only recased (komma -> Komma): the server refuses
       // two keys that collide when lowercased, so it is left to the check
       // below.
       if (mineLower.has(k.toLowerCase())) continue;
-      if (clashes) clashes.push(k);
-      if (restored) restored.push(k);
+      if (clashes) clashes.push(o);
+      if (restored) restored.push(o);
     }
     // A key the other writer also added, or also changed, to another value
     // keeps the user's value but is a clash, as for a regex-list entry. So

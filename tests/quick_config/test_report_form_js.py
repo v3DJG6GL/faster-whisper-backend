@@ -1062,6 +1062,29 @@ def test_reapply_brings_back_a_dictionary_key_the_user_deleted_and_the_other_wri
     assert res["maps"][2] == {"punkt": ". "}
 
 
+def test_conflict_merge_deletes_a_dictionary_key_the_other_writer_only_recased(client, tmp_path):
+    # The removed-keys loop looked the user's deletion up by exact key: komma
+    # deleted while the other writer recased it to Komma kept their Komma
+    # under a clean "Auto-merged" toast, and the next save stored the word
+    # the user deleted. A pure recase takes the deletion; a recase with a
+    # changed value is back and reported, as for the same spelling.
+    page = client.get("/quick-config").text
+    res = _run_js(client, tmp_path, _olist_consts(page) + r"""
+      const base = { komma: ',', punkt: '.' };
+      const d = _fieldDiff(base, { punkt: '.' }, 'dict');
+      const res = {};
+      for (const [name, theirs] of [['recased', { Komma: ',', punkt: '.' }],
+                                    ['changed', { Komma: ';', punkt: '.' }]]) {
+        const clashes = [], back = [];
+        res[name] = { map: _applyFieldDiff(theirs, d, clashes, back), clashes, back };
+      }
+      out(res);
+    """, funcs=_OLIST_FUNCS)
+    assert res["recased"] == {"map": {"punkt": "."}, "clashes": [], "back": []}
+    assert res["changed"] == {"map": {"Komma": ";", "punkt": "."},
+                              "clashes": ["Komma"], "back": ["Komma"]}
+
+
 def test_reapply_keeps_one_spelling_of_a_dictionary_key_both_writers_added_in_another_case(
         client, tmp_path):
     # The dictionary merge matched keys case-sensitively: the user adding
