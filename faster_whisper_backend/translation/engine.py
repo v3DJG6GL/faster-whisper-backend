@@ -1389,6 +1389,33 @@ def _redistribute(group_texts: "list[str]", translated: str) -> "list[str]":
     return pieces
 
 
+# Han and kana plus CJK / full-width punctuation: where two of these meet,
+# the text has no space. Same script ranges as captures/samples.py's
+# _CJK_SCRIPT; Thai, Lao, Khmer and Burmese stay out, as they put a space
+# between sentences and _redistribute cuts them at one.
+_GLUED_SCRIPT_RE = re.compile(
+    "[\u3000-\u303f\u3040-\u30ff\u31f0-\u31ff\u3400-\u4dbf\u4e00-\u9fff"
+    "\uf900-\ufaff\uff01-\uff9f\U00020000-\U0003134f]")
+
+
+def join_translations(parts: "list[str]") -> str:
+    """Join one target's per-segment translations into its full text: " "
+    between pieces, but nothing where a Han / kana piece (or one ending in
+    "。" and its closing quote) meets one opening in Han / kana — a fluent
+    group cut back across its cues ('我今天去商' | '店买一些面包。') must not
+    come back with a space inside a word."""
+    out = ""
+    for p in (s.strip() for s in parts):
+        if not p:
+            continue
+        if out:
+            glue = (_GLUED_SCRIPT_RE.match(out.rstrip("”’»)]")[-1:] or " ")
+                    and _GLUED_SCRIPT_RE.match(p[0]))
+            out += "" if glue else " "
+        out += p
+    return out
+
+
 # =============================================================================
 # Faithful-mode numbered-list helpers (pure)
 # =============================================================================

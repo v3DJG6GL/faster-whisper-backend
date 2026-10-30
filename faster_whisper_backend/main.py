@@ -3192,12 +3192,10 @@ async def transcribe(
             _capture_translations: "dict[str, str] | None" = None
             if will_capture and _translation_meta is not None:
                 _capture_translations = {
-                    _lang: " ".join(
-                        _s for _s in (
-                            (seg.get("translations") or {}).get(_lang, "").strip()
-                            for seg in segments_list
-                            if _lang not in (seg.get("translations_kept") or ()))
-                        if _s).strip()
+                    _lang: _tr.join_translations([
+                        (seg.get("translations") or {}).get(_lang, "")
+                        for seg in segments_list
+                        if _lang not in (seg.get("translations_kept") or ())])
                     for _lang in _translation_meta["targets"]
                 }
                 _capture_translations = {
@@ -3463,13 +3461,12 @@ async def transcribe(
             # _postprocess_text: the pipeline's rules are German-dictation-
             # shaped (de-dictation-map, punctuation words) and would mangle
             # translated text.
+            # Unspaced (zh / ja) pieces meet with no space: a fluent group
+            # cut back across its cues must read as one sentence again.
             _translations_joined = ({
-                _lang: " ".join(
-                    _s for _s in (
-                        (seg.get("translations") or {})
-                        .get(_lang, "").strip()
-                        for seg in segments_list)
-                    if _s).strip()
+                _lang: _tr.join_translations([
+                    (seg.get("translations") or {}).get(_lang, "")
+                    for seg in segments_list])
                 for _lang in _translation_meta["targets"]
             } if _translation_meta is not None else None)
 

@@ -100,3 +100,50 @@ def test_plain_json_translation_meta_kept_is_explicit_empty(client, app_module,
     body = r.json()
     assert body["translations"] == {"en": "XLATED-en"}
     assert body["translation"]["kept"] == {}
+
+
+def test_joined_translations_glue_unspaced_pieces(client, app_module,
+                                                  fake_model, monkeypatch):
+    # A fluent zh group cut back across two cues, rejoined with " ", put a
+    # space inside 商店 ("store") in the joined field and the capture row.
+    from faster_whisper_backend.captures import store as captures_store
+    from tests.conftest import FakeSegment
+    fake_model._segments = [FakeSegment("I went to the store", 0.0, 1.0),
+                            FakeSegment("to buy some bread today.", 1.0, 2.0)]
+    monkeypatch.setattr(app_module.cfg, "TRANSLATION_ENABLED", True,
+                        raising=False)
+    monkeypatch.setattr(app_module.cfg, "CAPTURES_RECORDING_ENABLED", True,
+                        raising=False)
+    pieces = {"zh": ["我今天去商", "店买一些面包。"], "en": ["Hi", "there."]}
+
+    async def _fake(segments, targets, **kwargs):
+        return [{t: pieces[t][i] for t in targets}
+                for i in range(len(segments))], [], {
+            "model": "org/d:Q4", "source": "en", "mode": "fluent"}
+    monkeypatch.setattr(translation, "translate_segments", _fake)
+    stored = {}
+
+    def _spy_create(**kw):
+        stored.update(kw)
+        return "cap-test-id"
+    monkeypatch.setattr(captures_store, "create_capture", _spy_create)
+
+    want = {"zh": "我今天去商店买一些面包。", "en": "Hi there."}
+    for fmt in ("json", "verbose_json"):
+        r = _post(client, translate_to="zh,en", response_format=fmt)
+        assert r.status_code == 200, r.text
+        assert r.json()["translations"] == want
+    assert stored["translations"] == want
+
+
+def test_join_translations_spacing():
+    j = translation.join_translations
+    assert j(["你好。", "你好吗？"]) == "你好。你好吗？"
+    assert j(["他说：“你好。”", "我很好"]) == "他说：“你好。”我很好"
+    assert j(["こんにちは、", "元気？"]) == "こんにちは、元気？"
+    # A Latin side keeps its space, and so do Thai and Korean.
+    assert j(["我用", "Python 写代码"]) == "我用 Python 写代码"
+    assert j(["Hello", "world.", "", " "]) == "Hello world."
+    assert j(["สวัสดี", "ครับ"]) == "สวัสดี ครับ"
+    assert j(["안녕하세요.", "반갑습니다."]) == "안녕하세요. 반갑습니다."
+    assert j([]) == ""
