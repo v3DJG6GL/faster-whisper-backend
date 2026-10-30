@@ -49,8 +49,13 @@ _TOKEN_RE = re.compile(r"\S+")
 
 def norm(tok: str) -> str:
     """Comparison form of one word: NFKC, casefold (which also folds ß and ẞ
-    to ss), edge punctuation stripped except ``-`` and ``/``."""
-    s = unicodedata.normalize("NFKC", tok or "").casefold()
+    to ss), edge punctuation stripped except ``-`` and ``/``.
+
+    The map matches with sre's IGNORECASE, which takes i, I, İ and ı for one
+    letter, but casefold turns "İ" into "i" + U+0307 (as does str.lower(),
+    which keys the map's lookup) and keeps "ı": both become "i" here."""
+    s = (unicodedata.normalize("NFKC", tok or "").casefold()
+         .replace("i\u0307", "i").replace("\u0131", "i"))
     i, j = 0, len(s)
     while i < j and _edge_punct(s[i]):
         i += 1
