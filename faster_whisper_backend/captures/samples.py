@@ -160,10 +160,10 @@ def _apply_chips_to_text(
     # from the text, not from its own lead (a rule may put a line break or
     # a space between two words that had none). A removed word, or one not
     # found, sits at the token after the cursor.
+    tok_starts = [m.start() for m in re.finditer(r"\S+", out)]
     starts: list[int] | None = None
     offs: list[int] = []
     if words:
-        tok_starts = [m.start() for m in re.finditer(r"\S+", out)]
         starts, at = [], 0
         for w in words:
             parts: list[str] = []
@@ -190,11 +190,12 @@ def _apply_chips_to_text(
         starts.append(bisect.bisect_left(tok_starts, at))
         offs.append(0)
     cursor = 0
-    # Word-count change of the replacements so far, so a later chip's
-    # position is compared in the original text's word frame; `cshift` is
-    # the char-count change inside each (original-frame) token.
+    # Word- and char-count change of the anchored replacements so far (all
+    # before the cursor), so a later chip's token position and its char
+    # offset in that token are compared in the original text's frame, also
+    # after a `correct` that put a space inside an unspaced run.
     shift = 0
-    cshift: dict[int, int] = {}
+    chars = 0
     for c in ordered:
         wrong = c.get("wrong") or ""
         correct = c.get("correct") or ""
@@ -219,7 +220,7 @@ def _apply_chips_to_text(
         # and a stale `wrong` that covers them (a chip saved on a whole
         # unspaced sentence when its first word owned all of it) wins over
         # the words, so the corrected sentence does not replace one char.
-        best, best_end, best_d, best_k = -1, -1, (0, 0), 0
+        best, best_end, best_d = -1, -1, (0, 0)
         for needle, flex in ((n, f) for n in needles for f in (False, True)):
             for i, j in _occurrences(out, needle, cursor if anchored else 0,
                                      flex):
@@ -245,12 +246,13 @@ def _apply_chips_to_text(
                 te = _TOKEN_REST.match(out, j).end()
                 d2 = 0
                 if _NO_SPACE_SCRIPT.search(out, ts, te):
-                    d2 = abs(i - ts - cshift.get(k + shift, 0) - off)
+                    k0 = max(0, min(k + shift, len(tok_starts) - 1))
+                    d2 = abs(i - chars - tok_starts[k0] - off)
                 d = (abs(k + shift - pos), d2)
                 if (best < 0 or d < best_d
                         or (d == best_d and i <= best and j >= best_end
                             and j - i > best_end - best)):
-                    best, best_end, best_d, best_k = i, j, d, k + shift
+                    best, best_end, best_d = i, j, d
             if best >= 0 and not anchored:
                 break
         if best < 0:
@@ -260,7 +262,7 @@ def _apply_chips_to_text(
         if anchored:
             cursor = best + len(correct)
             shift += len(hit.split()) - len(correct.split())
-            cshift[best_k] = cshift.get(best_k, 0) + len(correct) - len(hit)
+            chars += len(correct) - len(hit)
     return out
 
 

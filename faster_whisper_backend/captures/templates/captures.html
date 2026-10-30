@@ -3513,10 +3513,11 @@
     // whether a word starts a token comes from the text, not from its lead.
     // A removed word, or one not found, sits at the token after the cursor.
     var starts = null, offs = [];
+    var tokStarts = [], tm, trx = /\S+/g;
+    while ((tm = trx.exec(out))) tokStarts.push(tm.index);
     if (words && words.length) {
       starts = [];
-      var tokStarts = [], at = 0, tm, trx = /\S+/g;
-      while ((tm = trx.exec(out))) tokStarts.push(tm.index);
+      var at = 0;
       // Tokens starting before `p` (`strict`) or at or before it.
       var tokensBefore = function(p, strict) {
         var lo = 0, hi = tokStarts.length;
@@ -3556,11 +3557,12 @@
       return ai - bi;
     });
     var cursor = 0;
-    // Word-count change of the replacements so far, so a later chip's
-    // position is compared in the original text's word frame; `cshift` is
-    // the char-count change inside each (original-frame) token.
+    // Word- and char-count change of the anchored replacements so far (all
+    // before the cursor), so a later chip's token position and its char
+    // offset in that token are compared in the original text's frame, also
+    // after a `correct` that put a space inside an unspaced run.
     var shift = 0;
-    var cshift = {};
+    var chars = 0;
     ordered.forEach(function(c) {
       var wrong = c.wrong || '';
       // Trimmed as on save: a blank correction is dropped there.
@@ -3585,7 +3587,7 @@
       // that contains the other wins, else the earlier pass (the healed
       // words over a stale `wrong` that is a part of them, a stale `wrong`
       // covering them over the words), as on the server.
-      var best = -1, bestEnd = -1, bestD = 0, bestD2 = 0, bestK = 0;
+      var best = -1, bestEnd = -1, bestD = 0, bestD2 = 0;
       for (var t = 0; t < needles.length * 2 && (anchored || best < 0); t++) {
         var occ = occurrences(needles[t >> 1], anchored ? cursor : 0,
                               t % 2 === 1);
@@ -3611,13 +3613,14 @@
           var te = j + tokenRest.exec(out)[0].length;
           var d2 = 0;
           if (NS.test(out.slice(ts, te))) {
-            d2 = Math.abs(i - ts - (cshift[k + shift] || 0) - off);
+            var k0 = Math.max(0, Math.min(k + shift, tokStarts.length - 1));
+            d2 = Math.abs(i - chars - tokStarts[k0] - off);
           }
           var d = Math.abs(k + shift - pos);
           if (best < 0 || d < bestD || (d === bestD && d2 < bestD2)
               || (d === bestD && d2 === bestD2 && i <= best && j >= bestEnd
                   && j - i > bestEnd - best)) {
-            best = i; bestEnd = j; bestD = d; bestD2 = d2; bestK = k + shift;
+            best = i; bestEnd = j; bestD = d; bestD2 = d2;
           }
         }
       }
@@ -3627,7 +3630,7 @@
       if (anchored) {
         cursor = best + correct.length;
         shift += nWords(hit) - nWords(correct);
-        cshift[bestK] = (cshift[bestK] || 0) + correct.length - hit.length;
+        chars += correct.length - hit.length;
       }
     });
     return out;

@@ -206,6 +206,13 @@ _WORD_CASES = [
       {"idx": 5, "wrong": "的", "correct": "地"}],
      [_w("我"), _w("的"), _w("猫"), _w("的"), _w("狗"), _w("的")],
      "我的小猫的狗地"),
+    # Also after a chip whose `correct` put a space inside the run: the
+    # offset is still counted from the start of the original run.
+    ("我的猫的狗的",
+     [{"idx": 2, "wrong": "猫", "correct": "小 猫"},
+      {"idx": 3, "wrong": "的", "correct": "X"}],
+     [_w("我"), _w("的"), _w("猫"), _w("的"), _w("狗"), _w("的")],
+     "我的小 猫X狗的"),
     ("你好。 我的猫的狗",
      [{"idx": 4, "wrong": "的", "correct": "地"}],
      [_w("你好。"), _w(" 我"), _w("的"), _w("猫"), _w("的"), _w("狗")],
