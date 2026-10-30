@@ -370,6 +370,29 @@ def test_result_keeps_the_pending_video_flag_while_the_run_is_open(client):
     assert body == {"text": "hallo", "source_video_pending": True}
 
 
+def test_result_keeps_the_pending_flag_when_the_video_lands_during_the_read(
+        client, monkeypatch):
+    # The read returns the pre-patch blob, then media/video.py's patch and
+    # close land before the route resumes (only the close matters here): the
+    # stale flag must survive so the client polls once more for the video.
+    assert _post(client, progress_id=_PID).status_code == 200
+    js.finish(job_id=_PID, state="done", ttl_s=3600, result={
+        "text": "hallo", "source_video_pending": True})
+    tx_progress._BATCH_PROGRESS[_PID] = {"stage": "downloading", "updated": 0}
+    real_get_result = js.get_result
+
+    def _read_then_patch_and_close(job_id):
+        payload = real_get_result(job_id)
+        tx_progress._BATCH_PROGRESS.pop(_PID, None)
+        return payload
+    monkeypatch.setattr(js, "get_result", _read_then_patch_and_close)
+    try:
+        body = client.get(f"/v1/jobs/{_PID}/result").json()
+    finally:
+        tx_progress._BATCH_PROGRESS.pop(_PID, None)
+    assert body == {"text": "hallo", "source_video_pending": True}
+
+
 def test_result_refreshes_a_live_media_expiry(client, tmp_path):
     from faster_whisper_backend.media import media_store as ums
     src = tmp_path / "x.m4a"; src.write_bytes(b"x" * 10)

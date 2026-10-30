@@ -202,13 +202,17 @@ async def job_result(job_id: str, request: Request,
         raise HTTPException(status_code=409, detail="job still running")
     if row.get("state") != "done" or not row.get("result_available"):
         raise HTTPException(status_code=404, detail="no result for this job")
+    # Sampled BEFORE the read: media/video.py patches the row and only then
+    # closes the entry, so a close seen here means the read sees the patch;
+    # sampled after, a patch + close during the read scrubbed the stale
+    # pending flag and the client stopped polling for the video.
+    run_open = tx_progress._progress_entry_for(job_id, user) is not None
     payload = await asyncio.to_thread(_jobs_store.get_result, job_id)
     if payload is None:
         raise HTTPException(status_code=404, detail="no result for this job")
     if isinstance(payload, dict):
         payload = _scrub_media_refs(
-            payload, user_id=user.get("user_id"),
-            run_open=tx_progress._progress_entry_for(job_id, user) is not None)
+            payload, user_id=user.get("user_id"), run_open=run_open)
     return _JSONResponse(payload, headers={"Cache-Control": "no-store"})
 
 
