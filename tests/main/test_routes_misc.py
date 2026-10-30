@@ -87,6 +87,21 @@ def test_v1_models_hides_a_resident_model_the_loader_refuses(
     assert ids() == {"large-v3": True, "models/my-ft": True}
 
 
+def test_v1_models_hides_a_default_model_off_the_allowlist(
+        client, app_module, monkeypatch):
+    # DEFAULT_MODEL need not be on ALLOWED_MODELS, and the loader refuses it
+    # there like any other name: an allowlist hot-narrowed while the default
+    # is resident must not keep it listed as loaded:true (a request with no
+    # model / whisper-1 for it gets a 400).
+    from faster_whisper_backend.transcription import models as tx_models
+    monkeypatch.setattr(tx_models, "_loaded_models", tx_models.OrderedDict(
+        [("large-v3", object())]))
+    monkeypatch.setattr(app_module.cfg, "DEFAULT_MODEL", "large-v3")
+    monkeypatch.setattr(app_module.cfg, "ALLOWED_MODELS", {"small"})
+    data = client.get("/v1/models").json()["data"]
+    assert {e["id"]: e["loaded"] for e in data} == {"small": False}
+
+
 def test_model_device_resolves_auto(app_module, monkeypatch):
     import sys
     import types

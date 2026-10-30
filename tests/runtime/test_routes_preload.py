@@ -453,6 +453,9 @@ def test_v1_models_loaded_flag_agrees(client, app_module, monkeypatch):
     _enable(app_module, monkeypatch)
     monkeypatch.setattr(app_module.cfg, "DEFAULT_MODEL", "small",
                         raising=False)
+    # On the allowlist: /v1/models leaves out a default the loader refuses.
+    monkeypatch.setattr(app_module.cfg, "ALLOWED_MODELS", {"small"},
+                        raising=False)
     tx_models._loaded_models["small"] = object()
     try:
         data = client.get("/v1/models").json()["data"]

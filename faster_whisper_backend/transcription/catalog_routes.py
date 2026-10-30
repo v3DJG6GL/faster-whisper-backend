@@ -41,7 +41,9 @@ async def list_models():
                       for m in model_registry.loaded_models_snapshot()}
     names: list[str] = [n for n in list(tx_models._loaded_models.keys())
                         if _servable_resident(n)]
-    if cfg.DEFAULT_MODEL not in names:
+    # The same gate for the default: nothing ties it to ALLOWED_MODELS, and
+    # the loader refuses it there like any other name.
+    if cfg.DEFAULT_MODEL not in names and _servable_resident(cfg.DEFAULT_MODEL):
         names.append(cfg.DEFAULT_MODEL)
     if cfg.ALLOWED_MODELS:
         for n in sorted(cfg.ALLOWED_MODELS):
