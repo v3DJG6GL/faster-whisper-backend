@@ -3892,6 +3892,13 @@
   function _moveCursor(state, idx) {
     state.cursorIdx = idx;
     _redrawCursor(state);
+    // A move by the user: the page and the modal follow the cursor too (the
+    // strip's key handlers preventDefault the arrows, Home and End), so it
+    // never moves off screen while the strip is partly out of view.
+    var el = state.wordEls && state.wordEls[state.cursorIdx];
+    if (el && el.scrollIntoView) {
+      try { el.scrollIntoView({ block: 'nearest', inline: 'nearest' }); } catch (_) {}
+    }
   }
   // Move cursor by one VISUAL line up or down in the wrapped word-strip.
   // Uses getBoundingClientRect to first locate the nearest line in the

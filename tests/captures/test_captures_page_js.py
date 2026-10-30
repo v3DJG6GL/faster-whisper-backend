@@ -2269,3 +2269,31 @@ _redrawCursor(state);
 console.log(JSON.stringify([calls, strip.scrollTop]));
 """)
     assert out == [0, 69]
+
+
+@needs_node
+def test_keyboard_cursor_move_scrolls_the_page_to_the_cursor(page, tmp_path):
+    """Only a repaint must leave the page alone: an arrow key moves the
+    cursor (the strip's key handlers preventDefault it), so with the strip
+    partly below the window the cursor moved off screen and the page did
+    not follow."""
+    fns = "\n".join(_js_function(page, f) for f in (
+        "_scrollStripTo", "_redrawCursor", "_moveCursor"))
+    out = _run_node(tmp_path, fns + r"""
+var calls = [];
+function word(i, top) {
+  return { classList: { add: function() {}, remove: function() {} },
+    scrollIntoView: function(o) { calls.push([i, o.block, o.inline]); },
+    getBoundingClientRect: function() {
+      return { top: top - strip.scrollTop, bottom: top + 20 - strip.scrollTop };
+    } };
+}
+var strip = { scrollTop: 0, clientTop: 1, clientHeight: 100,
+  getBoundingClientRect: function() { return { top: 500, bottom: 602 }; } };
+var state = { stripEl: strip, cursorIdx: 0,
+  wordEls: [word(0, 510), word(1, 560), word(2, 650)] };
+_moveCursor(state, 1);
+_moveCursor(state, 2);
+console.log(JSON.stringify([calls, strip.scrollTop]));
+""")
+    assert out == [[[1, "nearest", "nearest"], [2, "nearest", "nearest"]], 69]
