@@ -845,6 +845,40 @@ def test_classify_error_ignores_an_http_error_repr_in_a_warning(
     assert "yt-dlp" in msg and unwanted not in msg
 
 
+_WEBPAGE_429_WARNING = (
+    "WARNING: [youtube] abc: Unable to download webpage: HTTP Error 429: Too "
+    "Many Requests (caused by <HTTPError 429: Too Many Requests>)")
+
+
+@pytest.mark.parametrize("stderr,expected", [
+    (_WEBPAGE_429_WARNING
+     + "\nERROR: [youtube] abc: Requested format is not available", None),
+    (_WEBPAGE_429_WARNING
+     + "\nERROR: unable to download video data: HTTP Error 403: Forbidden",
+     None),
+    ("WARNING: [site] abc: Unable to download webpage: HTTP Error 404: Not "
+     "Found\nERROR: [site] abc: No video formats found!", None),
+    ("WARNING: [youtube] abc: Unable to download webpage: <urlopen error "
+     "timed out>\n" + _http_error_line(404, "Not Found"),
+     "this media is unavailable or has been removed"),
+    # No ERROR line at all: the warnings are all there is to go on.
+    ("WARNING: [site] abc: Unable to download webpage: timed out",
+     "the site could not be reached from the server"),
+], ids=["webpage-429-format", "webpage-429-video-403", "webpage-404-formats",
+        "timeout-warning-404", "warning-only"])
+def test_classify_error_ignores_a_transport_failure_in_a_warning(
+        stderr, expected):
+    """A non-fatal page fetch prints "Unable to download webpage: ..." (or a
+    timeout) as a WARNING and yt-dlp goes on: that warning must not turn the
+    run's real ERROR into "the site could not be reached from the server",
+    which blamed the server's network and dropped the yt-dlp update hint."""
+    msg = udl.classify_error(stderr)
+    if expected is None:
+        assert "yt-dlp" in msg and "could not be reached" not in msg
+    else:
+        assert msg == expected
+
+
 def test_classify_error_default_never_echoes_stderr():
     secret = "/tmp/secret-path/cookies.txt https://x/?token=abc"
     msg = udl.classify_error(f"ERROR: something exploded at {secret}")

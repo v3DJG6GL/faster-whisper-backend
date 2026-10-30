@@ -1495,33 +1495,45 @@ _ERROR_TAXONOMY: "tuple[tuple[tuple[str, ...], str], ...]" = (
      "this stream hasn't finished yet — try again after it ends"),
     (("max-filesize", "file is larger than max-filesize"),
      "this media exceeds the server's size limit"),
+    # From here down the transport / HTTP-status rows read only the
+    # non-WARNING lines (see classify_error).
     (("failed to resolve", "getaddrinfo", "timed out", "connection refused"),
      "the site could not be reached from the server"),
     # The site answered with an HTTP error status: a page / metadata fetch
     # raises "Unable to download webpage: HTTP Error 404: Not Found (caused
     # by <HTTPError 404: Not Found>)". Matched on the cause's repr, so the
     # video-data stage's bare "HTTP Error 403" (mostly an outdated yt-dlp)
-    # keeps the default message and its update hint. These two rows read
-    # only the non-WARNING lines (see classify_error).
+    # keeps the default message and its update hint.
     (("<httperror 404:", "<httperror 410:"),
      "this media is unavailable or has been removed"),
     (("<httperror 4",), "the site refused the request"),
     (("unable to download webpage",),
      "the site could not be reached from the server"),
 )
+# The first needle of each row classify_error matches against the
+# non-WARNING lines only.
+_WARNING_BLIND_ROWS = frozenset({
+    "failed to resolve", "<httperror 404:", "<httperror 4",
+    "unable to download webpage"})
 
 
 def classify_error(stderr_tail: str) -> str:
     """Collapse yt-dlp output into a client-safe message. The raw text is the
     caller's to log (via log_safe); it never reaches a client."""
     low = (stderr_tail or "").lower()
-    # yt-dlp prints a skipped player client's ExtractorError, HTTPError repr
-    # included, as a WARNING and goes on — that repr must not relabel the
-    # run's real error, so the HTTP-status rows skip the WARNING lines.
-    fatal = "\n".join(line for line in low.splitlines()
-                      if not line.lstrip().startswith("warning:"))
+    # yt-dlp prints a skipped or optional fetch's failure ("Unable to
+    # download webpage: HTTP Error 429 ...", "... timed out") as a WARNING
+    # and goes on — that must not relabel the run's real error, so the
+    # transport / HTTP-status rows skip the WARNING lines. With no ERROR
+    # line at all the warnings are all there is to go on.
+    lines = low.splitlines()
+    if any(line.lstrip().startswith("error:") for line in lines):
+        fatal = "\n".join(line for line in lines
+                          if not line.lstrip().startswith("warning:"))
+    else:
+        fatal = low
     for needles, message in _ERROR_TAXONOMY:
-        text = fatal if needles[0].startswith("<httperror") else low
+        text = fatal if needles[0] in _WARNING_BLIND_ROWS else low
         if any(n in text for n in needles):
             return message
     ver = yt_dlp_version() or "not installed"
