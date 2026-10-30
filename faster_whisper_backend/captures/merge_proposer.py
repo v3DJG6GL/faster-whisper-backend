@@ -34,6 +34,7 @@ import time
 from typing import Any
 
 from faster_whisper_backend.settings import config as cfg
+from faster_whisper_backend.captures import samples as capture_samples
 from faster_whisper_backend.captures import store as captures_store
 from faster_whisper_backend.core import store_common
 
@@ -151,13 +152,11 @@ def _normalize_text(s: str | None) -> str:
 
 
 def _pick_text(row: dict[str, Any]) -> str:
-    # Prefer post-pipeline training text → final → raw. Used for both the
-    # duplicate-similarity check and the proposal-card preview.
-    for k in ("text_for_training", "final", "raw"):
-        v = row.get(k)
-        if v:
-            return str(v)
-    return ""
+    # The training text Accept and the export use (`_training_base`): a
+    # blanked one stays blank instead of previewing the raw hallucination a
+    # removal rule stripped. Used for both the duplicate-similarity check
+    # (empty never counts as a duplicate) and the proposal-card preview.
+    return capture_samples._training_base(row)
 
 
 def _dur(m: dict[str, Any]) -> float:

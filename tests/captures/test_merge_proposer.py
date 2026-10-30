@@ -47,8 +47,23 @@ def test_pick_text_priority():
     assert P._pick_text({"final": "f", "raw": "r"}) == "f"
     assert P._pick_text({"raw": "r"}) == "r"
     assert P._pick_text({}) == ""
-    # Empty strings are skipped in favor of the next populated field.
-    assert P._pick_text({"text_for_training": "", "final": "f"}) == "f"
+    # Only a NULL column (a legacy row) falls through; an empty string is the
+    # pipeline's verdict and stays empty.
+    assert P._pick_text({"text_for_training": None, "final": "f"}) == "f"
+    assert P._pick_text({"text_for_training": "", "final": "f"}) == ""
+
+
+def test_blanked_member_previews_empty_not_raw_hallucination():
+    # A removal rule blanked the near-silent clip's hallucination: the
+    # proposal card must not show it as the member's transcript, since
+    # Accept and the export leave it out.
+    blanked = {"id": "a", "created_ts": 0.0, "audio_s": 2.0,
+               "text_for_training": "", "final": "",
+               "raw": "Untertitel im Auftrag des ZDF"}
+    legacy = {"id": "b", "created_ts": 3.0, "audio_s": 2.0,
+              "text_for_training": None, "final": None, "raw": "hallo welt"}
+    prop = P._build_proposal([blanked, legacy], 0.5, 10.0, "de", "u")
+    assert [m["preview"] for m in prop["member_previews"]] == ["", "hallo welt"]
 
 
 def test_dur_prefers_trim_then_raw():
