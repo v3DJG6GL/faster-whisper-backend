@@ -87,6 +87,25 @@ def test_tokenize_keeps_zero_width_joiners_inside_words(text, tokens, bigrams):
     assert q._extract_bigrams(text) == bigrams
 
 
+def test_suggestions_skip_keys_the_map_schema_refuses():
+    # Python \w takes category No (² ³ ₂ ½); the map-key pattern runs in
+    # pydantic-core's Rust regex, whose \w does not, so "m²" / "CO₂" got a
+    # 422 on Save. Whole token dropped: "m" / "km" would be fragments.
+    from faster_whisper_backend.settings.schema import MapRule
+
+    text = ("Die Wohnung hat 80 m² und 3 km² Fläche, 5 cm³ Volumen. "
+            "CO₂ Ausstoß, x² plus y³, ½Liter Milch, Hindi बोलते हैं")
+    tokens = q._tokenize(text)
+    bigrams = q._extract_bigrams(text)
+    assert tokens == ["Wohnung", "hat", "Fläche", "Volumen", "Ausstoß",
+                      "plus", "Milch", "Hindi", "बोलते", "हैं"]
+    assert bigrams == ["Wohnung hat", "Hindi बोलते", "बोलते हैं"]
+    MapRule.model_validate({
+        "type": "callback:map", "name": "words", "label": "Words",
+        "map": {k: "x" for k in tokens + bigrams},
+    })
+
+
 def test_tokenize_rejects_start_right_after_a_mark():
     # A letter after a stray mark is partway into a word, like "5mg".
     assert q._tokenize("́ab") == []

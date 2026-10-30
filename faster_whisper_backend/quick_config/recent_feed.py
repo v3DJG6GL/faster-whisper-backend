@@ -26,6 +26,7 @@ import asyncio
 import logging
 import re
 import time
+import unicodedata
 from typing import Any
 
 from faster_whisper_backend.core.unicode_marks import JOINERS as _JOINERS
@@ -59,6 +60,17 @@ _STOPWORDS = frozenset({
     "nach", "vor", "über", "unter", "durch",
 })
 
+
+def _is_content(tok: str) -> bool:
+    """In-range length, not a stopword, and a key the cb:map schema accepts.
+    Python \\w takes category No (² ³ ₂ ½), the map-key pattern's Rust \\w
+    does not, so "m²" / "CO₂" would 422 on Save. Drop the whole token: "m" /
+    "km" are fragments the word-bounded map regex never matches in "km²"."""
+    return (_TOKEN_MIN_LEN <= len(tok) <= _TOKEN_MAX_LEN
+            and tok.lower() not in _STOPWORDS
+            and not any(unicodedata.category(c) == "No" for c in tok))
+
+
 # Per-transcription extraction cap: keep candidates relevant; bound
 # memory and SSE payload size.
 _TOKEN_CAP = 100
@@ -82,11 +94,9 @@ def _tokenize(text: str) -> list[str]:
     seen: dict[str, str] = {}
     for m in _TOKEN_RE.finditer(text or ""):
         tok = m.group(0)
-        if not (_TOKEN_MIN_LEN <= len(tok) <= _TOKEN_MAX_LEN):
+        if not _is_content(tok):
             continue
         key = tok.lower()
-        if key in _STOPWORDS:
-            continue
         if key not in seen:
             seen[key] = tok
             if len(seen) >= _TOKEN_CAP:
@@ -112,11 +122,7 @@ def _extract_bigrams(text: str) -> list[str]:
     seen: dict[str, str] = {}
     for a, b in zip(matches, matches[1:]):
         ta, tb = a.group(0), b.group(0)
-        if not (_TOKEN_MIN_LEN <= len(ta) <= _TOKEN_MAX_LEN):
-            continue
-        if not (_TOKEN_MIN_LEN <= len(tb) <= _TOKEN_MAX_LEN):
-            continue
-        if ta.lower() in _STOPWORDS or tb.lower() in _STOPWORDS:
+        if not (_is_content(ta) and _is_content(tb)):
             continue
         between = src[a.end():b.start()]
         if between.strip():
