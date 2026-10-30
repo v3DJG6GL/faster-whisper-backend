@@ -879,6 +879,31 @@ def test_classify_error_ignores_a_transport_failure_in_a_warning(
         assert msg == expected
 
 
+# What the installed yt-dlp's YouTube extractor raises (raise_no_formats) when
+# YouTube rate-limits the session: the playability reason "Video unavailable.
+# This content isn't available, try again later." plus its own suffix.
+_YT_RATE_LIMITED = (
+    "ERROR: [youtube] dQw4w9WgXcQ: Video unavailable. This content isn't "
+    "available, try again later. The current session has been rate-limited "
+    "by YouTube for up to an hour. It is recommended to use `-t sleep` to "
+    "add a delay between video requests to avoid exceeding the rate limit. "
+    "For more information, refer to  https://github.com/yt-dlp/yt-dlp/wiki/"
+    "Extractors#this-content-isnt-available-try-again-later")
+
+
+@pytest.mark.parametrize("stderr", [
+    _YT_RATE_LIMITED,
+    _YT_RATE_LIMITED.replace("The current session", "Your account"),
+], ids=["session", "account"])
+def test_classify_error_tells_a_rate_limit_from_a_removed_video(stderr):
+    """YouTube's session rate limit reads "Video unavailable. ..." first: the
+    "video unavailable" row told the user a link that works again within an
+    hour was dead."""
+    msg = udl.classify_error(stderr)
+    assert "rate-limiting" in msg and "removed" not in msg
+    assert "dQw4w9WgXcQ" not in msg and "github" not in msg
+
+
 def test_classify_error_default_never_echoes_stderr():
     secret = "/tmp/secret-path/cookies.txt https://x/?token=abc"
     msg = udl.classify_error(f"ERROR: something exploded at {secret}")

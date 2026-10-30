@@ -1482,6 +1482,14 @@ _ERROR_TAXONOMY: "tuple[tuple[tuple[str, ...], str], ...]" = (
     (("not available in your country", "geo restricted", "geo-restricted",
       "not made this video available in your country"),
      "this media isn't available in the server's region"),
+    # Above "video unavailable": YouTube's session rate limit reads "Video
+    # unavailable. This content isn't available, try again later. ... has
+    # been rate-limited by YouTube for up to an hour" — the link is fine.
+    (("rate-limited by youtube",
+      "this content isn't available, try again later",
+      "this content isn’t available, try again later"),
+     "the site is rate-limiting this server — try again later (YouTube lifts "
+     "it within about an hour)"),
     (("video unavailable", "has been removed", "no longer available",
       "account associated with this video has been terminated"),
      "this media is unavailable or has been removed"),
