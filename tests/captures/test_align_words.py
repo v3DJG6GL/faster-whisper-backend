@@ -290,6 +290,27 @@ def test_repeated_unspaced_char_anchors_the_spaced_raw_word(monkeypatch):
     assert not any(w.get("removed") for w in out)
 
 
+def test_spaced_raw_word_glued_into_a_token_does_not_take_a_later_one(monkeypatch):
+    # The spaced first word sits inside the glued token "好的" / "Python很好";
+    # a later repeat after a dictated line break is the standalone token. The
+    # lead tie-break gave the token to the earlier word, so every word in
+    # between was struck as removed by a rule.
+    _install_word_map(monkeypatch, {"换行": "\n"})
+    out = capture_samples._align_words_to_final(
+        _words(" 好", "的", "换行", "好", " 我", "知", "道"), "好的\n好 我知道")
+    assert [w["word"] for w in out] == ["好", "的", "换行", "好", "我", "知", "道"]
+    assert [w.get("removed", False) for w in out] == [
+        False, False, True, False, False, False, False]
+
+    out = capture_samples._align_words_to_final(
+        _words(" Python", "很", "好", "换行", "Python", " 很", "强"),
+        "Python很好\nPython 很强")
+    assert [w["word"] for w in out] == [
+        "Python", "很", "好", "换行", "Python", "很", "强"]
+    assert [w.get("removed", False) for w in out] == [
+        False, False, False, True, False, False, False]
+
+
 # ---------------------------------------------------------------------------
 # invariants
 # ---------------------------------------------------------------------------

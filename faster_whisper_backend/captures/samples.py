@@ -530,15 +530,26 @@ def _align_words_to_final(
     matches: list[int] = [-1] * n
     if n and m:
         # Longest common subsequence; among the longest, the one matching
-        # most raw words that start a token (a leading space) — a final
-        # token starts a word. With plain LCS a tie skipped the raw word, so
-        # in "我用 Python 写代码，Python 很好" the spaced " Python" lost the
-        # first token to the later, glued "Python" and four words in between
-        # were struck as removed. A match is worth `big` (more than every
-        # lead bonus together) plus 1 for a lead, so the match count wins
-        # and uniform leads (spaced text) align exactly as plain LCS.
+        # most raw words that are a whole token by themselves (a leading
+        # space and no unspaced word glued after them). With plain LCS a tie
+        # skipped the raw word, so in "我用 Python 写代码，Python 很好" the
+        # spaced " Python" lost the first token to the later, glued "Python"
+        # and four words in between were struck as removed. A lead alone is
+        # not enough: " 好" of " 好的" is a piece of the token "好的", and a
+        # later standalone 好 is the token it matches. A match is worth `big`
+        # (more than every bonus together) plus 1 for a whole-token word, so
+        # the match count wins and uniform leads (spaced text) align exactly
+        # as plain LCS.
         big = n + 1
-        bonus = [1 if (w.get("word") or "")[:1].isspace() else 0 for w in src]
+        bonus = [0] * n
+        for i, w in enumerate(src):
+            if not (w.get("word") or "")[:1].isspace():
+                continue
+            k = i + 1
+            while k < n and not (src[k].get("word") or "")[:1].isspace():
+                k += 1
+            tok = "".join(post_cache.get(x.get("word") or "") or "" for x in src[i:k])
+            bonus[i] = 1 if _align_key(tok) == raw_keys[i] else 0
         dp = [[0] * (m + 1) for _ in range(n + 1)]
         for i in range(n - 1, -1, -1):
             for j in range(m - 1, -1, -1):
