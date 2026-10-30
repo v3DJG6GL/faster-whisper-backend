@@ -1459,10 +1459,13 @@ _ERROR_TAXONOMY: "tuple[tuple[tuple[str, ...], str], ...]" = (
      "this media needs a downloader the server does not allow"),
     # Next (first of the non-guard rows, and only after the two longer guard
     # needles above, which contain it), by an exact marker: the SSRF guard
-    # refused a hop. Its text
-    # names the host and the internal address it resolved to — server-log
-    # material only, so it must never fall through to a message that quotes
-    # tool output.
+    # refused a hop, or the host did not resolve (the guard resolves first,
+    # so a DNS failure carries this marker, not "failed to resolve"). Its
+    # text names the host and the address it resolved to — server-log
+    # material only, never quoted to a client. Read on the non-WARNING lines
+    # like the transport rows: an optional fetch's refusal must not relabel
+    # the run's real error (no message quotes tool output, so a fall-through
+    # leaks nothing).
     ((GUARD_MARKER,),
      "the site could not be reached from the server"),
     # Age before bot: both messages start "Sign in to confirm …", so the
@@ -1521,7 +1524,7 @@ _ERROR_TAXONOMY: "tuple[tuple[tuple[str, ...], str], ...]" = (
 # The first needle of each row classify_error matches against the
 # non-WARNING lines only.
 _WARNING_BLIND_ROWS = frozenset({
-    "failed to resolve", "<httperror 404:", "<httperror 4",
+    GUARD_MARKER, "failed to resolve", "<httperror 404:", "<httperror 4",
     "unable to download webpage"})
 
 
@@ -1532,7 +1535,7 @@ def classify_error(stderr_tail: str) -> str:
     # yt-dlp prints a skipped or optional fetch's failure ("Unable to
     # download webpage: HTTP Error 429 ...", "... timed out") as a WARNING
     # and goes on — that must not relabel the run's real error, so the
-    # transport / HTTP-status rows skip the WARNING lines. With no ERROR
+    # guard / transport / HTTP-status rows skip the WARNING lines. With no ERROR
     # line at all the warnings are all there is to go on.
     lines = low.splitlines()
     if any(line.lstrip().startswith("error:") for line in lines):

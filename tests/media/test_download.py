@@ -904,6 +904,38 @@ def test_classify_error_tells_a_rate_limit_from_a_removed_video(stderr):
     assert "dQw4w9WgXcQ" not in msg and "github" not in msg
 
 
+_GUARD_DNS_WARNING = (
+    "WARNING: [site] abc: Unable to download JSON metadata: fwb-ssrf-guard: "
+    "api.cdn.example did not resolve ([Errno -2] Name or service not known)")
+_GUARD_FORBIDDEN_WARNING = (
+    "WARNING: [youtube] abc: Unable to download webpage: fwb-ssrf-guard: "
+    "cdn.example resolves to the forbidden address 10.0.0.5")
+
+
+@pytest.mark.parametrize("stderr,expected", [
+    (_GUARD_FORBIDDEN_WARNING + "\nERROR: [youtube] abc: Private video. Sign "
+     "in if you've been granted access to this video", "this video is private"),
+    (_GUARD_DNS_WARNING + "\nERROR: [site] abc: No video formats found!", None),
+    # A refusal of the main fetch reaches the ERROR line and still counts.
+    ("ERROR: [generic] page: Unable to download webpage: fwb-ssrf-guard: "
+     "cdn.example resolves to the forbidden address 10.0.0.5",
+     "the site could not be reached from the server"),
+    # No ERROR line at all: the warnings are all there is to go on.
+    (_GUARD_DNS_WARNING, "the site could not be reached from the server"),
+], ids=["warning-private", "warning-dns-formats", "fatal", "warning-only"])
+def test_classify_error_ignores_a_guard_refusal_in_a_warning(stderr, expected):
+    """An optional (fatal=False) fetch the SSRF guard refuses — the guard's
+    own DNS failure included — is printed as a WARNING and yt-dlp goes on:
+    it must not relabel the run's real ERROR "the site could not be reached
+    from the server" and drop the yt-dlp update hint."""
+    msg = udl.classify_error(stderr)
+    if expected is None:
+        assert "yt-dlp" in msg and "could not be reached" not in msg
+    else:
+        assert msg == expected
+    assert "10.0.0.5" not in msg and "api.cdn.example" not in msg
+
+
 def test_classify_error_default_never_echoes_stderr():
     secret = "/tmp/secret-path/cookies.txt https://x/?token=abc"
     msg = udl.classify_error(f"ERROR: something exploded at {secret}")
