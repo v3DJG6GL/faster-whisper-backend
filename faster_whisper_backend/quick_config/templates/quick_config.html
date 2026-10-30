@@ -2374,6 +2374,13 @@ function applyState(j) {
   // applied when the user opens a report form).
   _serverReportedChips = j.reported_chips || {};
   _serverReportedSet = new Set(Object.keys(_serverReportedChips));
+  // The hint is one key for the whole browser while the server set is this
+  // user's: on a shared browser it would badge another account's reports,
+  // and Remove on one 404s into a false "Report removed." toast. A submit
+  // adds its id to the server set, so the instant badge does not need it.
+  const _hint = getReportedIds().filter((x) => _serverReportedSet.has(x));
+  try { localStorage.setItem(_REPORTED_KEY, JSON.stringify(_hint)); }
+  catch (_) {}
   syncReportedBadges();
   renderCards();
   updateButtons();

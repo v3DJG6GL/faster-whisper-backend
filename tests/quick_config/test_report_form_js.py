@@ -245,6 +245,36 @@ def test_remove_report_404_clears_stale_local_hint(client, tmp_path):
     assert not [t for t in res["toasts"] if t[0] == "err"]
 
 
+def test_state_load_drops_another_accounts_local_reported_hint(client, tmp_path):
+    # The hint is one localStorage key per browser: after user A reported rid1
+    # and logged out, the next account on that browser saw "✓ reported" and a
+    # Remove button on A's trace, and Remove 404'd into "Report removed.".
+    res = _run_js(client, tmp_path, r"""
+      globalThis.window = {};
+      document.body = { classList: { add() {}, remove() {} } };
+      globalThis.renderCards = () => {};
+      globalThis.updateButtons = () => {};
+      globalThis.loadMyUsage = () => {};
+      markReported('rid1');
+      markReported('rid2');
+      const entry = { request_id: 'rid1', final: 'Alpha Beta' };
+      const form = _buildReportForm(entry);
+      const { badge } = _traceItem(entry, form);
+      applyState({ rules: [], reported_chips: { rid2: { corrections: [] } } });
+      out({
+        rid1: isReported('rid1'),
+        rid2: isReported('rid2'),
+        hint: getReportedIds(),
+        badge: badge.style.display,
+        removeBtn: form.querySelector('.rep-remove').style.display,
+      });
+    """, funcs=_REPORT_FUNCS + ("markReported", "syncReportedBadges", "applyState"))
+    assert res == {
+        "rid1": False, "rid2": True, "hint": ["rid2"],
+        "badge": "none", "removeBtn": "none",
+    }
+
+
 def test_first_submit_reveals_remove_button(client, tmp_path):
     # The button was only ever sized at form build or by a /state sync, so a
     # trace reported for the first time could not be withdrawn on reopen.
