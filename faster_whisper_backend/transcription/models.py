@@ -1117,8 +1117,18 @@ def _check_model_known(name: str) -> None:
                       # A per-model override names the model too (config's
                       # _canonical_env_model_id counts it as a known id).
                       or name in (getattr(cfg, "MODEL_OVERRIDES", None) or {}))
-    if (not operator_named if os.path.isdir(name)
-            else "/" not in name and name not in available_models()):
+    if os.path.isdir(name):
+        if not operator_named:
+            # Not the short-name wording: "models/my-ft" has the repo-id
+            # shape, and the fix is a config entry, not a different spelling.
+            raise HTTPException(
+                status_code=400,
+                detail=f"Model '{name}' is a local directory, which the "
+                       f"server only loads when it is configured. Add it to "
+                       f"ALLOWED_MODELS, PRELOAD_MODELS, DEFAULT_MODEL, "
+                       f"STREAMING_PARTIAL_MODEL or MODEL_OVERRIDES.",
+            )
+    elif "/" not in name and name not in available_models():
         raise HTTPException(
             status_code=400,
             detail=f"Model '{name}' is not a faster-whisper model name or a "

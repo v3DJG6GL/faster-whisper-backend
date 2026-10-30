@@ -203,6 +203,11 @@ def test_an_unconfigured_dir_fails_the_shared_gate(monkeypatch, tmp_path,
     with pytest.raises(HTTPException) as exc:
         tx_models._check_model_name(name)
     assert exc.value.status_code == 400
+    # The reason and the fix, not the short-name "not a ... repo id" wording
+    # ("docs/brand" has the repo-id shape).
+    assert "local directory" in exc.value.detail
+    assert "ALLOWED_MODELS" in exc.value.detail
+    assert "repo id" not in exc.value.detail
     with pytest.raises(HTTPException) as exc:
         asyncio.run(tx_models._get_or_load_model(name, lease=True))
 
