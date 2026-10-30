@@ -3863,8 +3863,9 @@
     if (state.cursorIdx >= 0 && state.wordEls[state.cursorIdx]) {
       var el = state.wordEls[state.cursorIdx];
       el.classList.add('cursor');
-      try { el.scrollIntoView({ block: 'nearest', inline: 'nearest' }); }
-      catch (_) {}
+      // Only the strip: this also runs when a Save / Regenerate / Lock
+      // reply repaints the card, and must not pull the page back to it.
+      _scrollStripTo(state.stripEl, el);
     }
   }
   function _moveCursor(state, idx) {

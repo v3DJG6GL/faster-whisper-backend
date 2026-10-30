@@ -2235,3 +2235,28 @@ console.log(JSON.stringify([calls, tops]));
     # Visible: no scroll; below the strip: down to its bottom edge; above
     # the strip's top: back up to it; visible again: left alone.
     assert out == [0, [0, 69, 4, 4]]
+
+
+@needs_node
+def test_keyboard_cursor_scrolls_only_the_word_strip(page, tmp_path):
+    """The cursor word was brought on screen with scrollIntoView, and a
+    Save / Regenerate / Lock reply repaints the cursor: a user who had
+    scrolled away from the card was pulled back to it."""
+    fns = "\n".join(_js_function(page, f) for f in (
+        "_scrollStripTo", "_redrawCursor"))
+    out = _run_node(tmp_path, fns + r"""
+var calls = 0;
+function word(top) {
+  return { classList: { add: function() {}, remove: function() {} },
+    scrollIntoView: function() { calls++; },
+    getBoundingClientRect: function() {
+      return { top: top - strip.scrollTop, bottom: top + 20 - strip.scrollTop };
+    } };
+}
+var strip = { scrollTop: 0, clientTop: 1, clientHeight: 100,
+  getBoundingClientRect: function() { return { top: 500, bottom: 602 }; } };
+var state = { stripEl: strip, cursorIdx: 1, wordEls: [word(510), word(650)] };
+_redrawCursor(state);
+console.log(JSON.stringify([calls, strip.scrollTop]));
+""")
+    assert out == [0, 69]
