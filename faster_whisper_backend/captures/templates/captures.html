@@ -3475,8 +3475,16 @@
         && NO_START.indexOf(b) < 0 && NO_END.indexOf(a) < 0;
     }
     function nWords(s) { return s.split(/\s+/).filter(Boolean).length; }
-    // The rest of the token from lastIndex on (up to the next whitespace).
-    var tokenRest = /\S*/y;
+    // Entries of the ascending `arr` before `p` (`strict`) or at or before it.
+    function nBefore(arr, p, strict) {
+      var lo = 0, hi = arr.length;
+      while (lo < hi) {
+        var mid = (lo + hi) >> 1;
+        if (strict ? arr[mid] < p : arr[mid] <= p) lo = mid + 1;
+        else hi = mid;
+      }
+      return lo;
+    }
     // The token a karaoke word owns ('' when removed); the training token
     // wins when attached.
     function tokOf(w) {
@@ -3518,25 +3526,15 @@
     if (words && words.length) {
       starts = [];
       var at = 0;
-      // Tokens starting before `p` (`strict`) or at or before it.
-      var tokensBefore = function(p, strict) {
-        var lo = 0, hi = tokStarts.length;
-        while (lo < hi) {
-          var mid = (lo + hi) >> 1;
-          if (strict ? tokStarts[mid] < p : tokStarts[mid] <= p) lo = mid + 1;
-          else hi = mid;
-        }
-        return lo;
-      };
       words.forEach(function(w) {
         var parts = tokOf(w).split(/\s+/).filter(Boolean);
         var p = parts.length ? out.indexOf(parts[0], at) : -1;
         if (p < 0) {
-          starts.push(tokensBefore(at, true));
+          starts.push(nBefore(tokStarts, at, true));
           offs.push(0);
           return;
         }
-        var k = tokensBefore(p, false) - 1;
+        var k = nBefore(tokStarts, p, false) - 1;
         starts.push(k);
         offs.push(p - tokStarts[k]);
         at = p + parts[0].length;
@@ -3545,7 +3543,7 @@
           if (r >= 0) at = r + parts[q].length;
         }
       });
-      starts.push(tokensBefore(at, true));
+      starts.push(nBefore(tokStarts, at, true));
       offs.push(0);
     }
     var ordered = corrections.slice().filter(function(c) {
@@ -3588,6 +3586,15 @@
       // words over a stale `wrong` that is a part of them, a stale `wrong`
       // covering them over the words), as on the server.
       var best = -1, bestEnd = -1, bestD = 0, bestD2 = 0;
+      // The tokens of the text as it now stands, so each occurrence finds
+      // the token it sits in by bisection, as on the server.
+      var curStarts = [], curEnds = [], cm, crx = /\S+/g;
+      if (anchored) {
+        while ((cm = crx.exec(out))) {
+          curStarts.push(cm.index);
+          curEnds.push(cm.index + cm[0].length);
+        }
+      }
       for (var t = 0; t < needles.length * 2 && (anchored || best < 0); t++) {
         var occ = occurrences(needles[t >> 1], anchored ? cursor : 0,
                               t % 2 === 1);
@@ -3598,19 +3605,18 @@
           }
           if (!anchored) { best = i; bestEnd = j; break; }
           // A word glued to a "(" or „ before it is that token, not the next.
-          // `ts` is the start of the token it sits in.
-          var before = out.slice(0, i).split(/\s+/).filter(Boolean);
-          var k = before.length, ts = i;
+          // `ts`..`te` is the token (tokens) it sits in.
+          var k = nBefore(curStarts, i, true), ts = i;
           if (i > 0 && !/\s/.test(out[i - 1])) {
             k -= 1;
-            ts = i - before[before.length - 1].length;
+            ts = curStarts[k];
           }
+          var kj = nBefore(curStarts, j, false) - 1;
+          var te = kj >= 0 ? Math.max(j, curEnds[kj]) : j;
           // Inside a token of a script written without spaces, the char
           // offset in that token breaks a tie (the third "的" of
           // "我的猫的狗的" is not the first, the second "Python" of
           // "Python很好，Python很强" not the first: the whole token counts).
-          tokenRest.lastIndex = j;
-          var te = j + tokenRest.exec(out)[0].length;
           var d2 = 0;
           if (NS.test(out.slice(ts, te))) {
             var k0 = Math.max(0, Math.min(k + shift, tokStarts.length - 1));

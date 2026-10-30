@@ -258,6 +258,27 @@ def test_apply_chips_in_long_unspaced_runs_stays_fast():
     assert out == "我喜欢鱼和狗" + text[6:]
 
 
+# A long spaced capture with 40 chips on its most frequent word: each
+# occurrence counted the tokens before it by splitting all the text before
+# it, which took ~7 s on the server and ~19 s in the page (200 chips: most of
+# a minute on the server).
+_LONG_TOKS = ("die Katze sieht die Maus und die Hunde bellen laut " * 600).split()
+_LONG_CHIPS = [{"idx": i, "wrong": "die", "correct": "der"}
+               for i, t in enumerate(_LONG_TOKS) if t == "die"][:40]
+_LONG_EXPECTED = " ".join(
+    "der" if i <= _LONG_CHIPS[-1]["idx"] and t == "die" else t
+    for i, t in enumerate(_LONG_TOKS))
+
+
+def test_many_chips_on_a_long_spaced_text_stay_fast():
+    text = " ".join(_LONG_TOKS)
+    words = [_w(" " + t) for t in _LONG_TOKS]
+    t0 = time.monotonic()
+    out = capture_samples._apply_chips_to_text(text, _LONG_CHIPS, words)
+    assert time.monotonic() - t0 < 2.0
+    assert out == _LONG_EXPECTED
+
+
 def test_default_transcript_aligns_chips_with_the_members_words():
     text, chips, words, expected = _WORD_CASES[0]
     member = {"text_for_training": text, "corrections": chips}
@@ -311,6 +332,28 @@ def test_js_twin_matches_server_chip_application():
              + [[t, c, w] for t, c, w, _ in _WORD_CASES])
     assert _run_js_twin(cases) == ([e for _, _, e in _CASES]
                                    + [e for *_, e in _WORD_CASES])
+
+
+@pytest.mark.skipif(_NODE is None, reason="node unavailable to run the JS twin")
+def test_js_twin_with_many_chips_on_a_long_spaced_text_stays_fast():
+    # Timed inside node (its start-up does not count); the text is built
+    # there too, as an argument this long would pass the OS limit.
+    src = (pathlib.Path(REPO_ROOT) / "faster_whisper_backend" / "captures"
+           / "templates" / "captures.html").read_text(encoding="utf-8")
+    script = (_js_function(src, "_applyChipsToText")
+              + "\nvar toks = " + json.dumps(" ".join(_LONG_TOKS[:10]))
+              + ".split(' '); toks = [].concat.apply([], Array(600).fill(toks));"
+              + "\nvar words = toks.map(function(t) { return {word: ' ' + t}; });"
+              + "\nvar t0 = Date.now();"
+              + "\nvar out = _applyChipsToText(toks.join(' '), "
+              + json.dumps(_LONG_CHIPS) + ", words);"
+              + "\nprocess.stdout.write(JSON.stringify([Date.now() - t0, out]));")
+    p = subprocess.run([_NODE, "-e", script], capture_output=True,
+                       text=True, encoding="utf-8")
+    assert p.returncode == 0, p.stderr
+    ms, out = json.loads(p.stdout)
+    assert ms < 2000
+    assert out == _LONG_EXPECTED
 
 
 # Words as production passes them: the output of _align_words_to_final, whose
