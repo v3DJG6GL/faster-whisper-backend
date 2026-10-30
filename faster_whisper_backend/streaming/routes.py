@@ -299,7 +299,8 @@ def _client_stream_values(overrides: dict, ident) -> "tuple[dict, list[str]]":
     Locked keys (ident.locked_client_keys, which also covers the master gate)
     are skipped — the handshake already reports them in overrides_ignored.
     Numbers are clamped to the field's own bounds (client_key_bounds), the
-    separator is kept verbatim up to its max length ("\\n" included).
+    separator is kept verbatim up to its max length (a spelled "\\n" is
+    decoded later, in _stream_config).
 
     The silence gates only work as a pair, so when a client value takes part:
     inner must stay below outer (inner >= outer stretches the commit wait to
@@ -383,7 +384,11 @@ def _stream_config(cfg_for, ident=None, client: "dict | None" = None) -> StreamC
         vad_min_silence_ms=int(g("VAD_INNER_SILENCE_MS")),
         commit_silence_ms=int(g("VAD_OUTER_SILENCE_MS")),
         hard_break_silence_ms=int(g("HARD_BREAK_SILENCE_MS")),
-        hard_break_separator=str(g("HARD_BREAK_SEPARATOR")),
+        # Decoded once here, where every source meets: the single-line
+        # /settings input (whose help says '\n' = newline), an env var, a
+        # profile and a client override all spell a newline as backslash + n.
+        hard_break_separator=cfg.decode_spelled_escapes(
+            str(g("HARD_BREAK_SEPARATOR"))),
         forced_commit_sec=float(g("FORCED_COMMIT_S")),
         buffer_trim_sec=trim,
         buffer_trim_keep_sec=keep,

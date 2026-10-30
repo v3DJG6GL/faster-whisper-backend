@@ -937,6 +937,24 @@ def test_profile_trim_keep_at_or_above_trim_is_clamped_below_it(monkeypatch):
     assert sc.buffer_trim_keep_sec == 8.0
 
 
+@pytest.mark.parametrize("raw, want", [("\\n", "\n"), ("\n", "\n"), (" ", " ")])
+def test_spelled_newline_separator_is_decoded_from_every_source(monkeypatch, raw, want):
+    """The /settings input for the separator is single-line and its help says
+    '\\n' = newline, so config.local.json, a profile and a client override all
+    hold backslash + n; passed on as is, live dictation typed a literal "\\n"
+    at every hard break. A real newline passes unchanged."""
+    from faster_whisper_backend.streaming import routes
+    field = "STREAMING_HARD_BREAK_SEPARATOR"
+    monkeypatch.setattr(effective_config.cfg, field, raw)
+    assert routes._stream_config(effective_config.cfg_for).hard_break_separator == want
+    monkeypatch.setattr(effective_config.cfg, field, "")
+    ident = effective_config.Resolved(values={field: raw})
+    sc = routes._stream_config(effective_config.cfg_for, ident)
+    assert sc.hard_break_separator == want
+    sc = routes._stream_config(effective_config.cfg_for, client={field: raw})
+    assert sc.hard_break_separator == want
+
+
 def test_stream_knobs_locked_are_ignored(client, make_user_key, monkeypatch):
     _, raw_admin = make_user_key("admin", is_admin=True)
     h = bearer(raw_admin)
