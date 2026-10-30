@@ -1438,15 +1438,19 @@ def _parse_numbered(reply: str, n: int) -> "list[str] | None":
     one: an item split in two and renumbered would shift every later cue)
     — the caller then halves the batch size and retries. Chatter before
     the first item, and after the n-th once a blank line sets it apart,
-    is skipped; any other unnumbered line is an item wrapped over two
-    lines, whose cut first half would pass as the whole translation, so
-    it is a mismatch too."""
+    is skipped, and so is a Markdown code fence anywhere; any other
+    unnumbered line is an item wrapped over two lines, whose cut first
+    half would pass as the whole translation, so it is a mismatch too."""
     found: "dict[int, str]" = {}
     after_item = False
     for line in (reply or "").splitlines():
         m = re.match(r"\s*(\d+)\s*[.):]\s*(.*)", line)
         if not m:
-            if line.strip() and found and (len(found) < n or after_item):
+            # A fence (a chat model wrapping its list in ```) is markup,
+            # never the second half of an item: it sets items apart like a
+            # blank line.
+            if (line.strip() and not line.lstrip().startswith(("```", "~~~"))
+                    and found and (len(found) < n or after_item)):
                 return None
             after_item = False
             continue

@@ -275,6 +275,21 @@ def test_parse_numbered_wrapped_last_item_returns_none():
         "1. a\n2. b\n\nNote: kept the tone.\nHope it helps.", 2) == ["a", "b"]
 
 
+def test_parse_numbered_skips_code_fences():
+    """A chat model that wraps its list in a Markdown code fence put the
+    closing fence right after the last item, where it counted as a wrap:
+    every fenced batch was halved down to per-segment prompts."""
+    p = translation._parse_numbered
+    assert p("```\n1. a\n2. b\n```", 2) == ["a", "b"]
+    assert p("1. a\n2. b\n```", 2) == ["a", "b"]
+    assert p("~~~text\n1. a\n2. b\n~~~\nHope it helps.", 2) == ["a", "b"]
+    # A fence between items is markup too, not a wrapped half-sentence.
+    assert p("1. a\n```\n2. b", 2) == ["a", "b"]
+    # Glued chatter and real wraps still reject the reply.
+    assert p("1. a\n2. b\nNote: x", 2) is None
+    assert p("```\n1. a\n2. b and\nmore\n```", 2) is None
+
+
 # ---------------------------------------------------------------------------
 # Guards
 # ---------------------------------------------------------------------------
