@@ -1705,9 +1705,26 @@ def test_load_falls_back_when_no_unique_match(monkeypatch):
     monkeypatch.setattr(cfg, "LOCAL_FILES_ONLY", False, raising=False)
     monkeypatch.setattr(translation, "_predownload_gguf",
                         lambda repo, quant, cb=None: None)
+    monkeypatch.setattr(translation, "_cached_gguf", lambda repo, quant: None)
     translation._load_blocking_inner("org/repo", "cpu", "chatml")
     assert record[0][0] == "from_pretrained"
     assert record[0][1]["filename"] == "*.gguf"
+
+
+def test_load_uses_the_cached_gguf_when_no_unique_hub_file_matches(
+        monkeypatch):
+    """The quant removed or renamed upstream, or a second file matching the
+    glob: from_pretrained's own listing refused the load although the GGUF
+    was on disk."""
+    record = []
+    _install_fake_llama(monkeypatch, record)
+    monkeypatch.setattr(cfg, "LOCAL_FILES_ONLY", False, raising=False)
+    monkeypatch.setattr(translation, "_predownload_gguf",
+                        lambda repo, quant, cb=None: None)
+    monkeypatch.setattr(translation, "_cached_gguf",
+                        lambda repo, quant: "/cache/m.Q4.gguf")
+    translation._load_blocking_inner("org/repo:Q4", "cpu", "chatml")
+    assert record == [("direct", "/cache/m.Q4.gguf", record[0][2])]
 
 
 def test_local_files_only_skips_predownload(monkeypatch):
@@ -1737,6 +1754,7 @@ def test_online_load_does_not_pass_dead_local_files_only_kwarg(monkeypatch):
     monkeypatch.setattr(cfg, "LOCAL_FILES_ONLY", False, raising=False)
     monkeypatch.setattr(translation, "_predownload_gguf",
                         lambda repo, quant, cb=None: None)
+    monkeypatch.setattr(translation, "_cached_gguf", lambda repo, quant: None)
     translation._load_blocking_inner("org/repo:Q4", "cpu", "chatml")
     assert record[0][0] == "from_pretrained"
     assert "local_files_only" not in record[0][1]

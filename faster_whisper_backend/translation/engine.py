@@ -595,6 +595,18 @@ def _load_blocking_inner(ref: str, device: str, family: str,
                     logger.warning(
                         "[translate] pre-download of %s failed (%s) — "
                         "falling back to llama.cpp's own downloader", ref, e)
+        else:
+            if local_path is None:
+                # 0 or several hub files match (the quant was removed or
+                # renamed upstream, or a second file now matches the glob):
+                # from_pretrained lists the same files and refuses too —
+                # load the copy already on disk first.
+                local_path = _cached_gguf(repo, quant)
+                if local_path:
+                    logger.warning("[translate] no unique %s file on the hub "
+                                   "for %s — loading the cached copy",
+                                   f"*{quant}.gguf" if quant else "*.gguf",
+                                   ref)
     try:
         if local_path:
             return llama_cpp.Llama(
