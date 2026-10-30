@@ -1452,6 +1452,39 @@ def test_merge_preview_period_space_join_matches_the_server(
     assert out == expected
 
 
+@needs_node
+@pytest.mark.parametrize("strategy", ["space", "period_space"])
+@pytest.mark.parametrize("finals, expected", [
+    (["今天天气很好", "我们去公园吧。"],
+     {"space": "今天天气很好我们去公园吧。", "period_space": "今天天气很好。我们去公园吧。"}),
+    (["𠀀", "𠀁"], {"space": "𠀀𠀁", "period_space": "𠀀。𠀁"}),
+    (["こんにちは", "元気"], {"space": "こんにちは元気", "period_space": "こんにちは。元気"}),
+    (["你好。", "我们"], {"space": "你好。 我们", "period_space": "你好。 我们"}),
+    (["我用", "Python"], {"space": "我用 Python", "period_space": "我用。 Python"}),
+    (["Python", "很好"], {"space": "Python 很好", "period_space": "Python. 很好"}),
+    (["今天", "Hallo"], {"space": "今天 Hallo", "period_space": "今天。 Hallo"}),
+    (["Hallo Welt", "今天"], {"space": "Hallo Welt 今天", "period_space": "Hallo Welt. 今天"}),
+    (["สวัสดี", "ครับ"], {"space": "สวัสดี ครับ", "period_space": "สวัสดี. ครับ"}),
+    (["Hallo Welt", "Wie geht's"],
+     {"space": "Hallo Welt Wie geht's", "period_space": "Hallo Welt. Wie geht's"}),
+])
+def test_merge_preview_join_of_unspaced_members_matches_the_server(
+        page, tmp_path, finals, expected, strategy):
+    """The JS twin joined every member with " " and closed it with ".", so
+    the merge preview of zh / ja members showed "今天天气很好. 我们…" while
+    the server joins Han / kana with no space and closes them with "。"."""
+    from faster_whisper_backend.captures.samples import _build_default_transcript
+
+    fns = "\n".join(_js_function(page, f) for f in (
+        "_endsSentence", "_applyChipsToText", "_buildDefaultTranscript"))
+    rows = [{"final": f} for f in finals]
+    out = _run_node(tmp_path, fns + "\nconsole.log(JSON.stringify("
+                    "_buildDefaultTranscript(" + json.dumps(rows)
+                    + ", " + json.dumps(strategy) + ")));")
+    assert out == expected[strategy]
+    assert out == _build_default_transcript(rows, strategy)
+
+
 # The open group card's applyServerSample under node: every DOM handle it
 # touches is a catch-all stand-in except the members list and status buttons.
 _SAMPLE_CARD_STUBS = r"""

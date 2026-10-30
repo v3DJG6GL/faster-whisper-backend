@@ -434,3 +434,27 @@ def test_period_space_join_adds_no_period_after_sentence_punctuation(
     members = [{"final": f} for f in finals]
     assert capture_samples._build_default_transcript(
         members, "period_space") == expected
+
+
+@pytest.mark.parametrize("finals, strategy, expected", [
+    (["今天天气很好", "我们去公园吧。"], "space", "今天天气很好我们去公园吧。"),
+    (["今天天气很好", "我们去公园吧。"], "period_space",
+     "今天天气很好。我们去公园吧。"),
+    # Thai (and Lao, Khmer, Burmese) put a space between sentences.
+    (["สวัสดี", "ครับ"], "space", "สวัสดี ครับ"),
+    (["ကောင်းတယ်။", "ល្អ។"], "space", "ကောင်းတယ်။ ល្អ។"),
+    (["こんにちは", "元気"], "period_space", "こんにちは。元気"),
+    # Only both sides unspaced glue; the "。" still marks the zh member.
+    (["我用", "Python"], "space", "我用 Python"),
+    (["Python", "很好"], "period_space", "Python. 很好"),
+    (["很好", "Python"], "period_space", "很好。 Python"),
+    (["Hallo Welt", "wie geht es"], "period_space", "Hallo Welt. wie geht es"),
+])
+def test_default_transcript_join_writes_no_space_between_unspaced_members(
+        finals, strategy, expected):
+    """Every member was joined with " " and period_space added a Latin ".",
+    so a zh / ja sample read "今天天气很好. 我们去公园吧。" and a
+    fine-tune on it learned spaces and ". " between clauses."""
+    members = [{"final": f} for f in finals]
+    assert capture_samples._build_default_transcript(
+        members, strategy) == expected

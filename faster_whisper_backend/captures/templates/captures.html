@@ -3683,13 +3683,23 @@
       var base = r.text_for_training || r.final || r.raw || '';
       return _applyChipsToText(base, r.corrections || [], r.words).trim();
     }).filter(Boolean);
+    // A member ending in Han / kana meets a next member starting in one with
+    // no space, and its period is "。" (Thai, Lao, Khmer and Burmese put a
+    // space between sentences). Same ranges as _CJK_SCRIPT in
+    // captures/samples.py.
+    var CJK = '[\u3005-\u3007\u3040-\u30FF\u31F0-\u31FF\u3400-\u4DBF\u4E00-\u9FFF'
+      + '\uF900-\uFAFF\uFF66-\uFF9F\u{20000}-\u{3134F}]';
+    var cjkHead = new RegExp('^' + CJK, 'u'), cjkTail = new RegExp(CJK + '$', 'u');
+    var cjk = parts.map(function(p) { return cjkTail.test(p); });
     if (strategy === 'period_space') {
       // ". " between members, unless the member already ends a sentence.
       parts = parts.map(function(p, i) {
-        return i === parts.length - 1 || _endsSentence(p) ? p : p + '.';
+        return i === parts.length - 1 || _endsSentence(p) ? p : p + (cjk[i] ? '。' : '.');
       });
     }
-    return parts.join(' ');
+    return parts.reduce(function(out, p, i) {
+      return i === 0 ? p : out + (cjk[i - 1] && cjkHead.test(p) ? '' : ' ') + p;
+    }, '');
   }
 
   function _renderMergePreview(rows) {

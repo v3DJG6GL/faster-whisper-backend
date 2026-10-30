@@ -70,6 +70,13 @@ _NO_SPACE_SCRIPT = re.compile(
     "\ua9e0-\ua9ff\uaa60-\uaa7f\uf900-\ufaff\uff66-\uff9f"
     "\U00020000-\U0003134f]")
 
+# Han and kana, the part of _NO_SPACE_SCRIPT whose sentences meet with no
+# space and end in "。" (Thai, Lao, Khmer and Burmese put a space between
+# sentences). Same ranges in the JS twin _buildDefaultTranscript.
+_CJK_SCRIPT = re.compile(
+    "[\u3005-\u3007\u3040-\u30ff\u31f0-\u31ff\u3400-\u4dbf\u4e00-\u9fff"
+    "\uf900-\ufaff\uff66-\uff9f\U00020000-\U0003134f]")
+
 
 # No word starts with a Thai / Lao following vowel or repetition mark, a
 # Japanese small kana, iteration mark or "ー", and none ends with a Thai /
@@ -333,11 +340,20 @@ def _build_default_transcript(
         t = _apply_chips_to_text(base, chips, words).strip()
         if t:
             parts.append(t)
+    # A member ending in Han / kana meets a next member starting in one with
+    # no space, and its period is "。": a zh / ja fine-tune must not learn
+    # ". " between clauses.
+    cjk = [bool(_CJK_SCRIPT.match(p[-1])) for p in parts]
     if strategy == "period_space":
         # ". " between members, unless the member already ends a sentence
         # ("Hallo Welt." must not become "Hallo Welt.. Wie …").
-        parts = [p if _ends_sentence(p) else p + "." for p in parts[:-1]] + parts[-1:]
-    return " ".join(parts)
+        parts = [p if _ends_sentence(p) else p + ("。" if cjk[k] else ".")
+                 for k, p in enumerate(parts[:-1])] + parts[-1:]
+    out = parts[0] if parts else ""
+    for k in range(1, len(parts)):
+        glue = cjk[k - 1] and _CJK_SCRIPT.match(parts[k][0])
+        out += ("" if glue else " ") + parts[k]
+    return out
 
 
 def _build_merged_wav(
