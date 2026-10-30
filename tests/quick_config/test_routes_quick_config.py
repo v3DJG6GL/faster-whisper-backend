@@ -955,3 +955,14 @@ def test_state_reported_chips_carry_the_stored_comment(client, make_user_key):
     assert r.status_code == 200
     body = client.get("/quick-config/state", headers=h).json()
     assert body["reported_chips"]["r1"]["user_comment"] == "speaker said X"
+
+
+def test_state_carries_the_callers_user_id(client, make_user_key):
+    """The page keys its localStorage "reported" hint on it, so one account
+    on a shared browser never reads another's."""
+    from tests.conftest import bearer
+
+    make_user_key("admin", is_admin=True)  # lock down: no open-mode user
+    uid, raw = make_user_key("alice", pages={"quick_config": "own"})
+    body = client.get("/quick-config/state", headers=bearer(raw)).json()
+    assert body["user_id"] == uid

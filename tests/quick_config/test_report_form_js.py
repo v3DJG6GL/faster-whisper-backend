@@ -125,6 +125,7 @@ const _ls = {};
 const localStorage = {
   getItem: (k) => (k in _ls ? _ls[k] : null),
   setItem: (k, v) => { _ls[k] = String(v); },
+  removeItem: (k) => { delete _ls[k]; },
 };
 const _toasts = [];
 function showToast(msg, kind) { _toasts.push([kind, msg]); }
@@ -139,13 +140,14 @@ function _replacements(form) {
 }
 let _serverReportedSet = new Set();
 let _serverReportedChips = {};
+let _reportedOwner = 'u1';
 """
 
 _REPORT_FUNCS = (
     "_wordifyFinal", "_buildReportForm", "_chipCovers", "_selectWord",
     "_setReplacementInline", "_clearReplacementInline", "_spanText",
     "_focusLastInput", "_removeChip", "_extendLastChip", "toggleCorrection",
-    "_renderCorrections", "getReportedIds", "isReported",
+    "_renderCorrections", "_reportedKey", "getReportedIds", "isReported",
 )
 
 
@@ -245,33 +247,71 @@ def test_remove_report_404_clears_stale_local_hint(client, tmp_path):
     assert not [t for t in res["toasts"] if t[0] == "err"]
 
 
-def test_state_load_drops_another_accounts_local_reported_hint(client, tmp_path):
-    # The hint is one localStorage key per browser: after user A reported rid1
-    # and logged out, the next account on that browser saw "✓ reported" and a
-    # Remove button on A's trace, and Remove 404'd into "Report removed.".
-    res = _run_js(client, tmp_path, r"""
-      globalThis.window = {};
-      document.body = { classList: { add() {}, remove() {} } };
-      globalThis.renderCards = () => {};
-      globalThis.updateButtons = () => {};
-      globalThis.loadMyUsage = () => {};
+_APPLY_STATE_STUBS = r"""
+  globalThis.window = {};
+  document.body = { classList: { add() {}, remove() {} } };
+  globalThis.renderCards = () => {};
+  globalThis.updateButtons = () => {};
+  globalThis.loadMyUsage = () => {};
+"""
+
+
+@pytest.mark.parametrize("server_chips", [
+    # The server set holds only the 100 newest open reports (and a /state
+    # built before a submit committed lacks that id) ...
+    "{ rid2: { corrections: [] } }",
+    # ... and is empty when the reports store read fails.
+    "{}",
+])
+def test_state_load_keeps_hint_ids_the_server_set_misses(client, tmp_path, server_chips):
+    # Every /state load pruned the hint to the server set, so a report beyond
+    # it lost "✓ reported" and its Remove button for good.
+    res = _run_js(client, tmp_path, _APPLY_STATE_STUBS + r"""
       markReported('rid1');
-      markReported('rid2');
       const entry = { request_id: 'rid1', final: 'Alpha Beta' };
       const form = _buildReportForm(entry);
       const { badge } = _traceItem(entry, form);
-      applyState({ rules: [], reported_chips: { rid2: { corrections: [] } } });
+      applyState({ rules: [], user_id: 'u1', reported_chips: %s });
       out({
         rid1: isReported('rid1'),
-        rid2: isReported('rid2'),
-        hint: getReportedIds(),
         badge: badge.style.display,
         removeBtn: form.querySelector('.rep-remove').style.display,
       });
+    """ % server_chips, funcs=_REPORT_FUNCS + (
+        "markReported", "syncReportedBadges", "applyState",
+    ))
+    assert res == {"rid1": True, "badge": "inline-flex", "removeBtn": "inline-flex"}
+
+
+def test_state_load_never_reads_another_accounts_reported_hint(client, tmp_path):
+    # On a shared browser the next account saw "✓ reported" and a Remove
+    # button on the previous account's trace, and Remove 404'd into "Report
+    # removed.". The old browser-wide key cannot be attributed: it is dropped.
+    res = _run_js(client, tmp_path, _APPLY_STATE_STUBS + r"""
+      _reportedOwner = 'uA';
+      markReported('rid1');
+      _ls[_REPORTED_KEY] = JSON.stringify(['rid9']);
+      const entry = { request_id: 'rid1', final: 'Alpha Beta' };
+      const form = _buildReportForm(entry);
+      const { badge } = _traceItem(entry, form);
+      badge.style.display = 'inline-flex';
+      applyState({ rules: [], user_id: 'uB', reported_chips: {} });
+      const asB = {
+        rid1: isReported('rid1'), rid9: isReported('rid9'),
+        badge: badge.style.display,
+        removeBtn: form.querySelector('.rep-remove').style.display,
+      };
+      markReported('rid3');
+      applyState({ rules: [], user_id: 'uA', reported_chips: {} });
+      out({
+        asB, legacyKey: _REPORTED_KEY in _ls,
+        asA: { rid1: isReported('rid1'), rid3: isReported('rid3') },
+      });
     """, funcs=_REPORT_FUNCS + ("markReported", "syncReportedBadges", "applyState"))
     assert res == {
-        "rid1": False, "rid2": True, "hint": ["rid2"],
-        "badge": "none", "removeBtn": "none",
+        "asB": {"rid1": False, "rid9": False, "badge": "none", "removeBtn": "none"},
+        "legacyKey": False,
+        "asA": {"rid1": True, "rid3": False},
     }
 
 

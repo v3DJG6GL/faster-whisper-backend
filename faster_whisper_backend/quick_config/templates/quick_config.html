@@ -1259,9 +1259,18 @@ let _serverReportedSet = new Set();
 // Filtered server-side to caller's user_id; never contains other
 // users' chips.
 let _serverReportedChips = {};
+// The hint is stored per signed-in user (/state.user_id), so on a shared
+// browser one account never reads another's. Null until the first /state:
+// no hint is read or written for an unknown user.
+let _reportedOwner = null;
 
+function _reportedKey() {
+  return _reportedOwner ? _REPORTED_KEY + ':' + _reportedOwner : null;
+}
 function getReportedIds() {
-  try { return JSON.parse(localStorage.getItem(_REPORTED_KEY) || '[]'); }
+  const key = _reportedKey();
+  if (!key) return [];
+  try { return JSON.parse(localStorage.getItem(key) || '[]'); }
   catch (_) { return []; }
 }
 function isReported(rid) {
@@ -1271,12 +1280,13 @@ function isReported(rid) {
   return ids.indexOf(rid) !== -1;
 }
 function markReported(rid) {
-  if (!rid) return;
+  const key = _reportedKey();
+  if (!rid || !key) return;
   const ids = getReportedIds();
   if (ids.indexOf(rid) !== -1) return;
   ids.unshift(rid);
   if (ids.length > _REPORTED_MAX) ids.length = _REPORTED_MAX;
-  try { localStorage.setItem(_REPORTED_KEY, JSON.stringify(ids)); }
+  try { localStorage.setItem(key, JSON.stringify(ids)); }
   catch (_) { /* quota — accept that the badge won't survive a reload */ }
 }
 function unmarkReported(rid) {
@@ -1285,8 +1295,11 @@ function unmarkReported(rid) {
   // badge clears immediately, without waiting for the next /state poll.
   if (!rid) return;
   const ids = getReportedIds().filter((x) => x !== rid);
-  try { localStorage.setItem(_REPORTED_KEY, JSON.stringify(ids)); }
-  catch (_) {}
+  const key = _reportedKey();
+  if (key) {
+    try { localStorage.setItem(key, JSON.stringify(ids)); }
+    catch (_) {}
+  }
   _serverReportedSet.delete(rid);
 }
 
@@ -2374,12 +2387,13 @@ function applyState(j) {
   // applied when the user opens a report form).
   _serverReportedChips = j.reported_chips || {};
   _serverReportedSet = new Set(Object.keys(_serverReportedChips));
-  // The hint is one key for the whole browser while the server set is this
-  // user's: on a shared browser it would badge another account's reports,
-  // and Remove on one 404s into a false "Report removed." toast. A submit
-  // adds its id to the server set, so the instant badge does not need it.
-  const _hint = getReportedIds().filter((x) => _serverReportedSet.has(x));
-  try { localStorage.setItem(_REPORTED_KEY, JSON.stringify(_hint)); }
+  // The hint stays a fallback for what the server set misses (it holds only
+  // the 100 newest open reports, is empty when the reports store fails, and
+  // a /state built before a submit committed lacks that id), so it is keyed
+  // per user instead of pruned to the set. The old browser-wide key cannot
+  // be told apart by account: drop it.
+  _reportedOwner = j.user_id ? String(j.user_id) : null;
+  try { localStorage.removeItem(_REPORTED_KEY); }
   catch (_) {}
   syncReportedBadges();
   renderCards();

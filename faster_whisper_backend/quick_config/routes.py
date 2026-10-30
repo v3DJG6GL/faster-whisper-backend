@@ -900,6 +900,10 @@ async def get_state(
         "rules": canonical,
         "role": role,
         "reported_chips": reported_chips,
+        # Keys the page's localStorage "reported" hint, so on a shared
+        # browser one account never reads another's (the same id /auth/whoami
+        # already hands this caller).
+        "user_id": user.get("user_id") or "",
         "map_collapse_after": int(getattr(cfg, "QUICK_CONFIG_MAP_COLLAPSE_AFTER", 15)),
         "word_suggestions_max": int(getattr(cfg, "QUICK_CONFIG_WORD_SUGGESTIONS_MAX", 200)),
         # Schema cap on a callback:map's entry count — the page shows a
