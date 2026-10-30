@@ -68,19 +68,55 @@ def test_batch_language_reduces_to_a_whisper_code(client, make_user_key, fake_mo
     # ISO 639-1 code (what old Java / Android locales and YouTube send: "iw"
     # Hebrew, "in" Indonesian; the standard "jv" for Whisper's "jw") folds to
     # Whisper's spelling, which the tokenizer also raises without. Blank is
-    # auto-detect; a value that reduces to no code reaches the model
-    # unchanged, as before.
+    # auto-detect; a value that reduces to no code is a 422 (below).
     _, raw = make_user_key("alice", is_admin=False)
     for sent, expected in (("DE", "de"), ("de-DE", "de"), (" pt-BR ", "pt"),
                            ("de_DE", "de"), ("pt_BR", "pt"),
                            ("iw_IL", "he"), ("in-ID", "id"), ("iw", "he"),
                            ("JI", "yi"), ("jv", "jw"),
-                           ("haw", "haw"), ("  ", None), ("xx", "xx")):
+                           ("haw", "haw"), ("  ", None)):
         r = client.post(
             "/v1/audio/transcriptions", files=_FILE, headers=bearer(raw),
             data={"model": "whisper-1", "language": sent})
         assert r.status_code == 200, (sent, r.text)
         assert fake_model.last_kwargs["language"] == expected, sent
+
+
+def test_unknown_language_is_a_422_before_the_decode(client, make_user_key,
+                                                     fake_model):
+    # A value that reduces to no Whisper code made faster-whisper's tokenizer
+    # raise only once the decode started (after the URL download and BGM
+    # separation), which surfaced as 500 "transcription failed". It is the
+    # caller's input: an explicit 422 naming the code, on both routes, and
+    # the model is never called.
+    _, raw = make_user_key("alice", is_admin=False)
+    for route in ("/v1/audio/transcriptions", "/v1/audio/translations"):
+        for sent in ("xx", "auto", "english"):
+            fake_model.last_kwargs = {}
+            r = client.post(route, files=_FILE, headers=bearer(raw),
+                            data={"model": "whisper-1", "language": sent})
+            assert r.status_code == 422, (route, sent, r.text)
+            assert repr(sent) in r.json()["detail"], (route, sent)
+            assert fake_model.last_kwargs == {}, (route, sent)
+
+
+def test_locked_language_still_ignores_an_unknown_client_code(
+        client, make_user_key, fake_model):
+    # A locked DEFAULT_LANGUAGE drops the client's field, so a bad code there
+    # is ignored like any other value, not refused.
+    _, raw_admin = make_user_key("admin", is_admin=True)
+    admin_h = bearer(raw_admin)
+    _setup_profile(client, admin_h, "de", DEFAULT_LANGUAGE="de", locks=["DEFAULT_LANGUAGE"])
+    uid, raw_alice = make_user_key("alice", is_admin=False)
+    client.patch(f"{PERMS}/{uid}/permissions", headers=admin_h,
+                 json={"pages": {}, "config": {"overrides": {}, "profiles": ["de"], "locks": []}})
+    r = client.post(
+        "/v1/audio/transcriptions", files=_FILE, headers=bearer(raw_alice),
+        data={"model": "whisper-1", "response_format": "verbose_json", "language": "xx"},
+    )
+    assert r.status_code == 200, r.text
+    assert fake_model.last_kwargs["language"] == "de"
+    assert "language" in r.json()["overrides_ignored"]
 
 
 def test_no_identity_config_is_unchanged(client, make_user_key, fake_model):

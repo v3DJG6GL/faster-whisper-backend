@@ -1712,9 +1712,18 @@ async def transcribe(
         language = _lang_field.strip() if isinstance(_lang_field, str) else None
         # "DE" / "de-DE" as the Whisper code, as the streaming handshake does
         # (/dictate sends one box to both); faster-whisper's tokenizer raises
-        # on either. A value that reduces to no code is passed on unchanged.
+        # on either. A value that reduces to no code is a caller error: the
+        # tokenizer would raise only once the decode starts (after the URL
+        # download and BGM separation) and that surfaced as a 500. A locked
+        # DEFAULT_LANGUAGE ignores the field, so it stays a silent override.
         if language:
             language = tx_models.whisper_language_code(language) or language
+            if (language not in settings_schema.WHISPER_LANGUAGE_CODES
+                    and "DEFAULT_LANGUAGE" not in ident.locked):
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"language {_log_safe(language)!r} is not a "
+                           "Whisper language code")
         _tt_field = form_data.get("translate_to")
         translate_to = _tt_field if isinstance(_tt_field, str) else None
         _tg_field = form_data.get("translation_glossary")
