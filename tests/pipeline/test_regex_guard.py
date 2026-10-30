@@ -1101,3 +1101,19 @@ def test_run_ending_in_a_set_that_matches_the_terminator_is_rejected(pat):
 def test_ordinary_rule_keeps_its_terminated_probe(pat):
     assert g._synthetic_fixture(pat).endswith("#")
     g.validate([("r", pat, "")], timeout=1.5)
+
+
+@pytest.mark.parametrize("pat", [
+    r"\s*" * 7 + "$",
+    r"-*" * 7 + r"\Z",
+    "(?m)" + r"[ \t]*" * 5 + "$",
+    "(?:" + r"\s*" * 7 + "$)?",
+])
+def test_run_ending_in_an_anchor_keeps_its_terminator(pat):
+    """The terminator skip took ANY match, and the empty one the `$` finds at
+    the end of `#` dropped every terminator: the bare run satisfied the `$`
+    at once, so these were accepted, yet re.sub over 100 spaces or dashes
+    before a word took 18-25 s."""
+    assert g._synthetic_fixture(pat).endswith("#")
+    with pytest.raises(ValueError):
+        g.validate([("r", pat, "")], timeout=1.5)

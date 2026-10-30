@@ -1345,9 +1345,11 @@ def _synthetic_fixture(pat: str) -> "str | None":
     unbounded atom matches, plus a terminator the pattern does not mention, so
     the match is forced to FAIL after exhausting every way of splitting the
     run — the shape backtracking blows up on. A terminator the pattern
-    matches on its own (`\\S`, `\\D`, `[^1]` all match `#`) ended the probe
+    consumes on its own (`\\S`, `\\D`, `[^1]` all match `#`) ended the probe
     on the first try, so it is skipped; with none left the run is probed
-    bare, which the end of the text fails just the same.
+    bare, which the end of the text fails just the same. An EMPTY match does
+    not count: `\\s*…$` matches "" at the end of `#`, and dropping the `#`
+    for it handed the `$` the bare run's end, so the probe matched at once.
     """
     import re
 
@@ -1367,7 +1369,8 @@ def _synthetic_fixture(pat: str) -> "str | None":
     if not char:
         return None
     for term in _SYNTH_TERMINATORS:
-        if term not in pat and term != char and not rx.search(term):
+        if (term not in pat and term != char
+                and not any(m.end() > m.start() for m in rx.finditer(term))):
             return char * _SYNTH_RUN + term
     return char * _SYNTH_RUN
 
