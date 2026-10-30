@@ -2073,7 +2073,8 @@ async def translate_segments(
             for g_no, group in enumerate(groups, start=1):
                 _check_cancel()
                 src_texts = [(segments[j].get("text") or "") for j in group]
-                joined = " ".join(t.strip() for t in src_texts).strip()
+                # No space where zh / ja cues meet: whisper cuts them mid-word.
+                joined = join_translations(src_texts)
                 if not joined:
                     # Every member is blank — nothing to translate, and a
                     # model call would only invent text for the cues.

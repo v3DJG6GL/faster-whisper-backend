@@ -1337,6 +1337,21 @@ def test_fluent_merges_translates_and_redistributes(base_cfg, monkeypatch):
     assert len(calls) == 2                               # one call per group
 
 
+def test_fluent_zh_source_group_reaches_model_without_inner_space(
+        base_cfg, monkeypatch):
+    # Whisper cut 商店 across two cues; the group used to reach the model
+    # as '我今天去商 店买一些面包。'.
+    calls = []
+    _install_fake(monkeypatch, lambda t: "I went to the shop to buy bread.",
+                  calls)
+    segs = _segs("我今天去商", "店买一些面包。")
+    res, warns, _ = _run(translation.translate_segments(
+        segs, ["en"], source_lang="zh", mode="fluent"))
+    assert calls == ["我今天去商店买一些面包。"]
+    assert warns == []
+    assert res[0]["en"] and res[1]["en"]
+
+
 def test_fluent_short_reply_reverts_group_instead_of_blank_cues(
         base_cfg, monkeypatch):
     """A fluent reply shorter than the group's member count cannot be
