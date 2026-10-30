@@ -232,7 +232,7 @@ def test_build_and_parse_numbered_roundtrip():
 
 
 def test_parse_numbered_tolerates_formats_and_noise():
-    reply = "Here you go:\n 1) one \n2: two\n3. three\nthanks!"
+    reply = "Here you go:\n 1) one \n2: two\n3. three\n\nthanks!"
     assert translation._parse_numbered(reply, 3) == ["one", "two", "three"]
 
 
@@ -261,6 +261,18 @@ def test_parse_numbered_wrapped_item_returns_none():
         2) is None
     # A blank line between items is not a wrap.
     assert translation._parse_numbered("1. a\n\n2. b", 2) == ["a", "b"]
+
+
+def test_parse_numbered_wrapped_last_item_returns_none():
+    """A wrap of the LAST item was skipped as chatter after the list, so
+    the last cue of the batch kept only the first half of its sentence."""
+    assert translation._parse_numbered(
+        "1. Then we went home.\n"
+        "2. Yesterday we went to the market and bought\n"
+        "fresh vegetables for the whole week.", 2) is None
+    # Chatter set apart by a blank line is still skipped.
+    assert translation._parse_numbered(
+        "1. a\n2. b\n\nNote: kept the tone.\nHope it helps.", 2) == ["a", "b"]
 
 
 # ---------------------------------------------------------------------------

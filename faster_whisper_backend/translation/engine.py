@@ -1410,20 +1410,24 @@ def _parse_numbered(reply: str, n: int) -> "list[str] | None":
     mismatch (missing or unparseable lines, an index past n or a repeated
     one: an item split in two and renumbered would shift every later cue)
     — the caller then halves the batch size and retries. Chatter before
-    the first item and after the n-th is skipped; an unnumbered line
-    between items is an item wrapped over two lines, whose cut first half
-    would pass as the whole translation, so it is a mismatch too."""
+    the first item, and after the n-th once a blank line sets it apart,
+    is skipped; any other unnumbered line is an item wrapped over two
+    lines, whose cut first half would pass as the whole translation, so
+    it is a mismatch too."""
     found: "dict[int, str]" = {}
+    after_item = False
     for line in (reply or "").splitlines():
         m = re.match(r"\s*(\d+)\s*[.):]\s*(.*)", line)
         if not m:
-            if found and len(found) < n and line.strip():
+            if line.strip() and found and (len(found) < n or after_item):
                 return None
+            after_item = False
             continue
         idx = int(m.group(1))
         if not 1 <= idx <= n or idx in found:
             return None
         found[idx] = m.group(2).strip()
+        after_item = True
     if len(found) != n:
         return None
     return [found[i + 1] for i in range(n)]
