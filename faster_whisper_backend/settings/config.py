@@ -1564,6 +1564,13 @@ def _env_str_or_none(name: str, current: "str | None") -> "str | None":
     raw = os.environ.get(name)
     return (raw or None) if raw is not None else current
 
+def _env_str_empty_is_value(name: str, current: str) -> str:
+    """Stripped-string env override where an explicitly empty var is the
+    value "" (a feature off / "use the default"), not "keep current".
+    Unset env → keep current."""
+    raw = os.environ.get(name)
+    return raw.strip() if raw is not None else current
+
 def _env_str_passthrough(name: str, current: str) -> str:
     """Raw-string env override — empty string is preserved as a real value."""
     raw = os.environ.get(name)
@@ -1677,6 +1684,14 @@ _ENV_READER_OVERRIDES = {
     "DEFAULT_LANGUAGE": "passthrough",
     # every documented non-empty value is whitespace (' ' / '\n')
     "STREAMING_HARD_BREAK_SEPARATOR": "passthrough",
+    # "" is the documented, schema-legal "off" / "use the default" value
+    # (.env.example), so WHISPER_X="" must beat a stored one; stripped like
+    # "str", since an edge space would fail the field's pattern.
+    "TRANSLATE_TO": "str_empty", "TRANSLATION_LANGUAGES": "str_empty",
+    "TRANSLATION_MODEL": "str_empty", "TRANSLATION_DEFAULT_MODEL": "str_empty",
+    "TRANSLATION_GLOSSARY": "str_empty",
+    "TRANSLATION_PROMPT_TEMPLATE": "str_empty",
+    "STREAMING_PARTIAL_MODEL": "str_empty",
     # Optional thresholds where an empty string disables the check (→ None)
     "NO_SPEECH_THRESHOLD": "float_or_none", "LOG_PROB_THRESHOLD": "float_or_none",
     "COMPRESSION_RATIO_THRESHOLD": "float_or_none",
@@ -1691,7 +1706,8 @@ _ENV_READER_OVERRIDES = {
 _ENV_READER_FUNCS = {
     "int": _env_int, "float": _env_float, "float_or_none": _env_float_or_none,
     "int_or_none": _env_int_or_none,
-    "bool": _env_bool, "str": _env_str, "str_or_none": _env_str_or_none,
+    "bool": _env_bool, "str": _env_str, "str_empty": _env_str_empty_is_value,
+    "str_or_none": _env_str_or_none,
     "passthrough": _env_str_passthrough, "csv_list": _env_csv_list,
 }
 
@@ -1703,7 +1719,8 @@ _ENV_READER_FUNCS = {
 # the next restart. Filled by the reader loop below; the special-case readers
 # that treat "" as a value are added after they run.
 _EMPTY_IS_VALUE_KINDS = frozenset({
-    "str_or_none", "passthrough", "float_or_none", "int_or_none", "csv_list"})
+    "str_or_none", "str_empty", "passthrough", "float_or_none", "int_or_none",
+    "csv_list"})
 _EMPTY_IS_VALUE: "set[str]" = set()
 
 

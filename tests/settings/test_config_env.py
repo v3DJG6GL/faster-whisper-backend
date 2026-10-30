@@ -96,6 +96,15 @@ def test_env_str_passthrough(monkeypatch):
     assert config._env_str_passthrough("X_SP", "cur") == "cur"
 
 
+def test_env_str_empty_is_value(monkeypatch):
+    monkeypatch.setenv("X_SE", "  en ")
+    assert config._env_str_empty_is_value("X_SE", "cur") == "en"
+    monkeypatch.setenv("X_SE", "")
+    assert config._env_str_empty_is_value("X_SE", "cur") == ""   # "" = off
+    monkeypatch.delenv("X_SE")
+    assert config._env_str_empty_is_value("X_SE", "cur") == "cur"
+
+
 def test_env_csv_list(monkeypatch):
     monkeypatch.setenv("X_L", "a, b ,,c")
     assert config._env_csv_list("X_L", ["z"]) == ["a", "b", "c"]
@@ -1139,6 +1148,35 @@ def test_explicitly_empty_env_pins_fields_where_empty_is_a_value(monkeypatch):
                   "DEFAULT_LANGUAGE", "CONVERT_QUANTIZATION"):
             assert f in pinned, f
         assert "BEAM_SIZE" not in pinned
+    finally:
+        monkeypatch.undo()
+        importlib.reload(config)
+
+
+def test_documented_empty_env_overrides_a_stored_value(tmp_path, monkeypatch):
+    """.env.example documents WHISPER_TRANSLATE_TO="" as "off unless
+    requested" and WHISPER_STREAMING_PARTIAL_MODEL="" as "the request's
+    model"; the plain str reader read "" as "keep current", so a value stored
+    in config.local.json silently won, with no warning and no env-pinned
+    badge on /settings."""
+    from faster_whisper_backend.settings import config_store
+    p = tmp_path / "config.local.json"
+    p.write_text(json.dumps({"TRANSLATE_TO": "en",
+                             "STREAMING_PARTIAL_MODEL": "tiny"}),
+                 encoding="utf-8")
+    _point_overrides_at(monkeypatch, p)
+    try:
+        _reload_with_env(monkeypatch, WHISPER_TRANSLATE_TO="",
+                         WHISPER_STREAMING_PARTIAL_MODEL="",
+                         WHISPER_TRANSLATION_LANGUAGES="de ")
+        assert config.TRANSLATE_TO == ""
+        assert config.STREAMING_PARTIAL_MODEL == ""
+        assert config.TRANSLATION_LANGUAGES == "de"     # still stripped
+        assert not [w for w in config._ENV_WARNINGS
+                    if "TRANSLATE" in w or "PARTIAL_MODEL" in w], config._ENV_WARNINGS
+        pinned = config_store.env_pinned_fields()
+        assert "TRANSLATE_TO" in pinned
+        assert "STREAMING_PARTIAL_MODEL" in pinned
     finally:
         monkeypatch.undo()
         importlib.reload(config)
