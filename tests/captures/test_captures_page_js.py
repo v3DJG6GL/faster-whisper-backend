@@ -116,7 +116,7 @@ def test_bulk_status_ignores_a_second_click_while_in_flight(page, tmp_path):
     first's freshly written status as prev_status, and its toast replaced
     the first's Undo: the original status was unrecoverable."""
     fns = "\n".join(_js_function(page, f) for f in (
-        "_bulkStatus", "_undoBulk", "_renderUnlessKeptOpenEdits", "_dirtyOpenEdits"))
+        "_bulkStatus", "_undoBulk", "_renderUnlessKeptOpenEdits", "_freshOpenEdits", "_dirtyOpenEdits"))
     out = _run_node(tmp_path, "var _bulkBusy = false, _openRows = {}, _openSamples = {};\n"
                     + fns + r"""
 var calls = [], pending = [], toasts = [];
@@ -159,7 +159,7 @@ def test_undo_cancelled_at_the_open_edits_prompt_stays_on_offer(page, tmp_path):
     that closure: cancelling the "Undo the bulk change?" prompt (to save the
     open edits first) lost the bulk Undo for good."""
     fns = "\n".join(_js_function(page, f) for f in (
-        "_undoBulk", "_renderUnlessKeptOpenEdits", "_dirtyOpenEdits"))
+        "_undoBulk", "_renderUnlessKeptOpenEdits", "_freshOpenEdits", "_dirtyOpenEdits"))
     out = _run_node(tmp_path, "var _bulkBusy = false, _openRows = {}, _openSamples = {};\n"
                     + fns + r"""
 var calls = [], toasts = [], answers = [false, true];
@@ -1538,7 +1538,7 @@ def test_bulk_action_asks_again_before_rendering_over_edits_made_meanwhile(
     edits only before their request. A card opened and edited while it ran
     lost its chips / notes to the render() after it, with no prompt."""
     fns = "\n".join(_js_function(page, f) for f in (
-        "_bulkStatus", "_undoBulk", "_bulkDelete", "_renderUnlessKeptOpenEdits",
+        "_bulkStatus", "_undoBulk", "_bulkDelete", "_renderUnlessKeptOpenEdits", "_freshOpenEdits",
         "_okToDropOpenEdits", "_anyOpenDirty", "_dirtyOpenEdits"))
     out = _run_node(tmp_path, fns + _BULK_DIRTY_STUBS + r"""
 var reply = """ + json.dumps(reply) + r""";
@@ -1674,7 +1674,7 @@ def test_bulk_action_asks_once_about_edits_already_agreed_to_drop(
     one the user had just agreed to drop: a second (for delete a third)
     prompt about the same edits, and a Cancel there left a stale list."""
     fns = "\n".join(_js_function(page, f) for f in (
-        "_bulkStatus", "_undoBulk", "_bulkDelete", "_renderUnlessKeptOpenEdits",
+        "_bulkStatus", "_undoBulk", "_bulkDelete", "_renderUnlessKeptOpenEdits", "_freshOpenEdits",
         "_okToDropOpenEdits", "_anyOpenDirty", "_dirtyOpenEdits", "markDirty"))
     out = _run_node(tmp_path, fns + _BULK_DIRTY_STUBS + r"""
 var reply = """ + json.dumps(reply) + r""";
@@ -1708,7 +1708,7 @@ def test_load_more_groups_asks_once_about_edits_already_agreed_to_drop(page, tmp
     user asked for. Edits made while the page loaded still get the re-ask,
     and a page superseded by a filter change still never renders."""
     fns = "\n".join(_js_function(page, f) for f in (
-        "loadMoreSamples", "_renderUnlessKeptOpenEdits",
+        "loadMoreSamples", "_renderUnlessKeptOpenEdits", "_freshOpenEdits",
         "_okToDropOpenEdits", "_anyOpenDirty", "_dirtyOpenEdits", "markDirty"))
     out = _run_node(tmp_path, fns + _BULK_DIRTY_STUBS + r"""
 var _samplesNext, _samplesLoading = false, _loadSeq = 0, _allSamples = [];
@@ -1742,12 +1742,79 @@ async function run(editMeanwhile, newFilter) {
 
 
 @needs_node
+def test_load_asks_before_rendering_over_edits_made_meanwhile(page, tmp_path):
+    """Refresh, a filter change or a finished job asked about open edits
+    only before load() started: a card opened and edited while its two GETs
+    ran lost its chips / notes to the render() after them, with no prompt.
+    On a Cancel the list on screen (and its group cursor) stays as it was;
+    edits the caller already agreed to drop are not asked about again."""
+    fns = "\n".join(_js_function(page, f) for f in (
+        "load", "_freshOpenEdits", "_okToDropOpenEdits", "_anyOpenDirty",
+        "_dirtyOpenEdits", "markDirty"))
+    out = _run_node(tmp_path, fns + r"""
+var cursor = { before_ts: 100, before_id: 'a1' };
+var _samplesNext, _samplesNextQs = '', _loadSeq = 0, _allSamples, _allCaptures;
+var _counts = {}, _totalCount = 0, _me = null, _isAdmin = true, _filtSpeakers = [];
+var _pendingModel = null, _speakerPicker = null, _openRows = {}, _openSamples = {};
+var renders = 0, asked = [], answers = [], toasts = [], pending = [];
+async function _confirm(o) { asked.push(o.title); return answers.shift(); }
+function api() { return new Promise(function(r) { pending.push(r); }); }
+function _listUrl() { return '/captures/api/list'; }
+function _speakerQs() { return ''; }
+function updateCaptureBadge() {} function rebuildModelFilter() {} function updateCounts() {}
+function _clearSelection() {} function render() { renders++; } function _syncUrl() {}
+function reloadStats() {} function toast(m) { toasts.push(m); }
+var footer = { hidden: true };
+global.document = { getElementById: function() { return footer; },
+                    body: { classList: { add: function() {} } } };
+function tick() { return new Promise(function(r) { setTimeout(r, 0); }); }
+async function run(dirtyBefore, editMeanwhile, answer) {
+  _samplesNext = cursor; _allSamples = [{ id: 'g0' }]; _allCaptures = [{ id: 'c0' }];
+  var st = { dirty: false };
+  if (dirtyBefore) markDirty(st);
+  _openRows = { c1: st };
+  answers = [answer];
+  var p = load();
+  await tick();
+  if (editMeanwhile) markDirty(st);
+  pending.shift()({ captures: [{ id: 'c9' }], is_admin: true });
+  await tick();
+  pending.shift()({ samples: [{ id: 'g9' }], next: null });
+  await p;
+  var res = { renders: renders, asked: asked, toasts: toasts,
+    captures: _allCaptures.map(function(r) { return r.id; }),
+    samples: _allSamples.map(function(g) { return g.id; }),
+    next: _samplesNext, footerHidden: footer.hidden };
+  renders = 0; asked = []; toasts = []; footer.hidden = true;
+  return res;
+}
+(async function() {
+  console.log(JSON.stringify([await run(false, false), await run(false, true, true),
+                              await run(false, true, false), await run(true, false)]));
+})();
+""")
+    new = {"renders": 1, "toasts": [], "captures": ["c9"], "samples": ["g9"],
+           "next": None, "footerHidden": True}
+    ask = "Show the refreshed list?"
+    assert out == [
+        dict(new, asked=[]),
+        dict(new, asked=[ask]),
+        {"renders": 0, "asked": [ask],
+         "toasts": ["List not refreshed: an open card has unsaved edits. "
+                    "Refresh after saving."],
+         "captures": ["c0"], "samples": ["g0"],
+         "next": {"before_ts": 100, "before_id": "a1"}, "footerHidden": False},
+        dict(new, asked=[])]
+
+
+@needs_node
 def test_load_more_groups_during_a_load_never_pages_the_old_cursor(page, tmp_path):
     """load() bumps _loadSeq at once but replaced _samplesNext only after
     both its GETs: a Load more meanwhile paged the OLD filter's cursor under
     the NEW seq, spliced those groups into the new list and overwrote its
     cursor, so every group between the two cursors went missing."""
-    fns = "\n".join(_js_function(page, f) for f in ("load", "loadMoreSamples"))
+    fns = "\n".join(_js_function(page, f) for f in (
+        "load", "loadMoreSamples", "_freshOpenEdits"))
     out = _run_node(tmp_path, fns + r"""
 var _samplesNext = { before_ts: 100, before_id: 'a1' }, _samplesLoading = false;
 var _loadSeq = 0, _allSamples = [{ id: 'old0' }], _allCaptures = [], _counts = {};
@@ -1793,7 +1860,8 @@ def test_failed_load_keeps_the_old_lists_load_more_working(page, tmp_path):
     again on success: after a failed refresh the old list's "Load more
     groups" button silently did nothing (and a Load more that finished
     meanwhile left it hidden)."""
-    fns = "\n".join(_js_function(page, f) for f in ("load", "loadMoreSamples"))
+    fns = "\n".join(_js_function(page, f) for f in (
+        "load", "loadMoreSamples", "_freshOpenEdits"))
     out = _run_node(tmp_path, fns + r"""
 var cursor = { before_ts: 100, before_id: 'a1' };
 var _samplesNext = cursor, _samplesNextQs = '', _samplesLoading = false;
@@ -1835,7 +1903,8 @@ def test_failed_load_after_a_speaker_switch_drops_the_old_lists_cursor(page, tmp
     gave the old list its cursor back, and Load more then paged Bob's
     cursor under the new filter, splicing everyone's older groups onto
     Bob's list."""
-    fns = "\n".join(_js_function(page, f) for f in ("load", "loadMoreSamples"))
+    fns = "\n".join(_js_function(page, f) for f in (
+        "load", "loadMoreSamples", "_freshOpenEdits"))
     out = _run_node(tmp_path, fns + r"""
 var _samplesNext = { before_ts: 100, before_id: 'a1' }, _samplesLoading = false;
 var _samplesNextQs = '&user_id=bob';

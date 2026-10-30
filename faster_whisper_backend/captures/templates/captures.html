@@ -1437,17 +1437,22 @@
     });
     return out;
   }
+  // Whether an open card holds edits not in `agreed` (the _dirtyOpenEdits()
+  // the user already agreed to drop): made while a request ran.
+  function _freshOpenEdits(agreed) {
+    return _dirtyOpenEdits().some(function(d) {
+      return !agreed.some(function(a) { return a.st === d.st && a.gen === d.gen; });
+    });
+  }
   // The bulk actions ask before their request, but the list stays usable
   // while it runs: a card opened and edited meanwhile would be dropped by
   // the render() after it, so ask again, but only about edits not in
-  // `agreed` (the _dirtyOpenEdits() the user already agreed to drop). On a
-  // cancel the updated rows stay in _allCaptures and show on the next render.
+  // `agreed`. On a cancel the updated rows stay in _allCaptures and show on
+  // the next render.
   // `title` overrides the prompt; `current()` false skips a superseded render.
   async function _renderUnlessKeptOpenEdits(agreed, title, current) {
-    var fresh = _dirtyOpenEdits().some(function(d) {
-      return !agreed.some(function(a) { return a.st === d.st && a.gen === d.gen; });
-    });
-    if (fresh && !(await _okToDropOpenEdits(title || 'Show the updated list?', 'Show'))) return;
+    if (_freshOpenEdits(agreed)
+        && !(await _okToDropOpenEdits(title || 'Show the updated list?', 'Show'))) return;
     if (!current || current()) render();
   }
 
@@ -3271,32 +3276,52 @@
   // -------------------------------------------------------------------
   async function load() {
     var seq = ++_loadSeq;
+    // The edits the caller already agreed to drop (none when it found no
+    // card dirty): a card opened and edited while the GETs below run would
+    // be rebuilt by the render() after them, so that one is asked about.
+    var agreed = _dirtyOpenEdits();
     // The old list's cursor: a Load more while this runs would page it
     // under the new seq and splice the old filter's groups into this list.
     var prevNext = _samplesNext;
     _samplesNext = null;
+    // The old list stays on screen: give it its cursor back, and the footer
+    // button a Load more that finished meanwhile hid. Not when the speaker
+    // filter already switched: Load more would page the old list's cursor
+    // under the new speakers and splice the two lists.
+    function keepOldList() {
+      _samplesNext = _speakerQs() === _samplesNextQs ? prevNext : null;
+      var fb = document.getElementById('btn-load-more-samples');
+      if (fb) fb.hidden = !_samplesNext;
+    }
     try {
       var j = await api('GET', _listUrl(500));
       if (seq !== _loadSeq) return;  // superseded by a newer filter
-      prevNext = null;               // the old list is being replaced
-      _allCaptures = j.captures || [];
-      _counts = j.counts || {};
-      _totalCount = j.total_count || _allCaptures.length;
       _me = j.user_id || null;
       _isAdmin = !!j.is_admin;
       if (!_isAdmin && _filtSpeakers.length) { _filtSpeakers = []; }
       // Pull groups in parallel-shape; failure is non-fatal (admin sees no groups).
+      var qs = _speakerQs(), jg = null;
       try {
-        var qs = _speakerQs();
-        var jg = await api('GET', '/captures/api/samples?limit=200' + qs);
-        if (seq !== _loadSeq) return;
-        _allSamples = jg.samples || [];
-        _samplesNext = jg.next || null;
-        _samplesNextQs = qs;
-      } catch (_) {
-        if (seq !== _loadSeq) return;
-        _allSamples = []; _samplesNext = null;
+        jg = await api('GET', '/captures/api/samples?limit=200' + qs);
+      } catch (_) {}
+      if (seq !== _loadSeq) return;
+      // Nothing of the new list is taken before this: on a cancel the old
+      // list, the one on screen with the kept card, stays as it was.
+      var keep = _freshOpenEdits(agreed)
+        && !(await _okToDropOpenEdits('Show the refreshed list?', 'Show'));
+      if (seq !== _loadSeq) return;
+      if (keep) {
+        keepOldList();
+        toast('List not refreshed: an open card has unsaved edits. Refresh after saving.');
+        return;
       }
+      prevNext = null;               // the old list is being replaced
+      _allCaptures = j.captures || [];
+      _counts = j.counts || {};
+      _totalCount = j.total_count || _allCaptures.length;
+      _allSamples = jg ? jg.samples || [] : [];
+      _samplesNext = jg ? jg.next || null : null;
+      if (jg) _samplesNextQs = qs;
       updateCaptureBadge(!!j.enabled);
       rebuildModelFilter();
       if (_pendingModel) {
@@ -3313,13 +3338,7 @@
       reloadStats();
     } catch (e) {
       if (seq !== _loadSeq) return;
-      // The old list stays on screen: give it its cursor back, and the
-      // footer button a Load more that finished meanwhile hid. Not when the
-      // speaker filter already switched: Load more would page the old list's
-      // cursor under the new speakers and splice the two lists.
-      _samplesNext = _speakerQs() === _samplesNextQs ? prevNext : null;
-      var fb = document.getElementById('btn-load-more-samples');
-      if (fb) fb.hidden = !_samplesNext;
+      keepOldList();
       if (e.message === 'unauthorized' || e.message === 'not-admin') return;
       toast('Failed to load captures: ' + e.message, true);
     }
