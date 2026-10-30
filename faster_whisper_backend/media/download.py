@@ -1501,7 +1501,8 @@ _ERROR_TAXONOMY: "tuple[tuple[tuple[str, ...], str], ...]" = (
     # raises "Unable to download webpage: HTTP Error 404: Not Found (caused
     # by <HTTPError 404: Not Found>)". Matched on the cause's repr, so the
     # video-data stage's bare "HTTP Error 403" (mostly an outdated yt-dlp)
-    # keeps the default message and its update hint.
+    # keeps the default message and its update hint. These two rows read
+    # only the non-WARNING lines (see classify_error).
     (("<httperror 404:", "<httperror 410:"),
      "this media is unavailable or has been removed"),
     (("<httperror 4",), "the site refused the request"),
@@ -1514,8 +1515,14 @@ def classify_error(stderr_tail: str) -> str:
     """Collapse yt-dlp output into a client-safe message. The raw text is the
     caller's to log (via log_safe); it never reaches a client."""
     low = (stderr_tail or "").lower()
+    # yt-dlp prints a skipped player client's ExtractorError, HTTPError repr
+    # included, as a WARNING and goes on — that repr must not relabel the
+    # run's real error, so the HTTP-status rows skip the WARNING lines.
+    fatal = "\n".join(line for line in low.splitlines()
+                      if not line.lstrip().startswith("warning:"))
     for needles, message in _ERROR_TAXONOMY:
-        if any(n in low for n in needles):
+        text = fatal if needles[0].startswith("<httperror") else low
+        if any(n in text for n in needles):
             return message
     ver = yt_dlp_version() or "not installed"
     return (f"could not download media from this link (yt-dlp {ver} — "

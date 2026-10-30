@@ -824,6 +824,27 @@ def test_classify_error_keeps_the_update_hint_for_a_video_data_403():
     assert "yt-dlp" in msg and "refused" not in msg
 
 
+@pytest.mark.parametrize("status,reason,error,unwanted", [
+    (403, "Forbidden",
+     "ERROR: unable to download video data: HTTP Error 403: Forbidden",
+     "refused"),
+    (404, "Not Found",
+     "ERROR: [youtube] abc: Requested format is not available",
+     "removed"),
+], ids=["403-warning", "404-warning"])
+def test_classify_error_ignores_an_http_error_repr_in_a_warning(
+        status, reason, error, unwanted):
+    """yt-dlp prints a skipped player client's ExtractorError, HTTPError repr
+    included, as a WARNING and goes on: the run's real ERROR keeps the
+    default message with its update hint instead of "the site refused the
+    request" / "unavailable or has been removed" for a live video."""
+    msg = udl.classify_error(
+        f"WARNING: [youtube] abc: Unable to download API page: HTTP Error "
+        f"{status}: {reason} (caused by <HTTPError {status}: {reason}>)\n"
+        f"{error}\n")
+    assert "yt-dlp" in msg and unwanted not in msg
+
+
 def test_classify_error_default_never_echoes_stderr():
     secret = "/tmp/secret-path/cookies.txt https://x/?token=abc"
     msg = udl.classify_error(f"ERROR: something exploded at {secret}")
