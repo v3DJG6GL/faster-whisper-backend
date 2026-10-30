@@ -142,3 +142,16 @@ def test_whitespace_only_key_is_ignored(key):
     pattern, replace, lookup = dictation_map.compile_map({key: "x", "Komma": ","})
     assert pattern.sub(replace, "hallo Welt  Komma zwei") == "hallo Welt  , zwei"
     assert key not in lookup
+
+
+@pytest.mark.parametrize("text, expected", [
+    ("İstanbul ve", "IST ve"),
+    ("izmir yolu", "IZM yolu"),
+    ("ς x", "S x"),
+])
+def test_key_matched_by_sre_case_folding_is_applied(text, expected):
+    """The pattern matches with sre's case folding, the value was looked up by
+    `str.lower()`; the two disagree on "İ" (lowers to "i" + U+0307) and "ς",
+    so the key matched and the text was silently left unchanged."""
+    pattern, replace, _ = dictation_map.compile_map({"istanbul": "IST", "İzmir": "IZM", "σ": "S"})
+    assert pattern.sub(replace, text) == expected

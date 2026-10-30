@@ -144,6 +144,13 @@ def compile_map(m: dict) -> tuple["re.Pattern[str]", Callable[["re.Match[str]"],
         key = mt.group(1)
         value = lookup.get(key.lower())
         if value is None:
+            # sre's case folding is not str.lower(): "İ" matches "i" but
+            # lowers to "i" + U+0307, "ς" matches "σ" but lowers to itself.
+            # Ask sre which key it matched; it folds char by char, so only
+            # keys of the matched length can be it.
+            value = next((lookup[k.lower()] for k in keys if len(k) == len(key)
+                          and re.fullmatch(re.escape(k), key, re.IGNORECASE)), None)
+        if value is None:
             return mt.group(0)
         lead = mt.start(1) - mt.start(0)
         if lead and not _is_punct_value(value):
