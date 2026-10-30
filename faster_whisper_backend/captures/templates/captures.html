@@ -1700,6 +1700,7 @@
   // Speaker filter (admins): user ids picked in the shared pick-list; sent
   // to the list API as a comma-separated user_id so the server narrows.
   var _filtSpeakers = [];
+  var _shownSpeakers = [];        // the speakers the listed rows were loaded for
   var _speakerPicker = null;
   var _statusGroup = null;
   var _pendingModel = null;       // ?model= from the URL, applied once loaded
@@ -3317,6 +3318,12 @@
         && !(await _okToDropOpenEdits('Show the refreshed list?', 'Show'));
       if (seq !== _loadSeq) return;
       if (keep) {
+        // The old list stays, and so does the speaker filter it was loaded
+        // for: a picker change set the new one (and the URL) before this
+        // load ran.
+        _filtSpeakers = _shownSpeakers.slice();
+        if (_speakerPicker) _speakerPicker.setPicked(_filtSpeakers);
+        _syncUrl();
         keepOldList();
         toast('List not refreshed: an open card has unsaved edits. Refresh after saving.');
         return;
@@ -3326,6 +3333,7 @@
       _counts = j.counts || {};
       _totalCount = j.total_count || _allCaptures.length;
       _allSamples = jg ? jg.samples || [] : [];
+      _shownSpeakers = _filtSpeakers.slice();
       _samplesNext = jg ? jg.next || null : null;
       if (jg) _samplesNextQs = qs;
       updateCaptureBadge(!!j.enabled);

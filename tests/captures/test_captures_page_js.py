@@ -1833,6 +1833,53 @@ async function run(dirtyBefore, editMeanwhile, answer) {
 
 
 @needs_node
+def test_cancelled_refresh_after_a_speaker_switch_keeps_the_shown_speakers(
+        page, tmp_path):
+    """The picker sets the new speakers and the URL before load() runs: a
+    Cancel on "Show the refreshed list?" kept Alice's list under Bob's
+    picker and URL, so the next render hid Alice's groups and the counts
+    and Load more went by Bob."""
+    fns = "\n".join(_js_function(page, f) for f in (
+        "load", "_speakerQs", "_freshOpenEdits", "_okToDropOpenEdits",
+        "_anyOpenDirty", "_dirtyOpenEdits", "markDirty"))
+    out = _run_node(tmp_path, fns + r"""
+var cursor = { before_ts: 100, before_id: 'a1' };
+var _samplesNext = cursor, _samplesNextQs = '&user_id=alice', _loadSeq = 0;
+var _allSamples = [{ id: 'alice0' }], _allCaptures = [{ id: 'c0' }];
+var _counts = {}, _totalCount = 0, _me = null, _isAdmin = true;
+var _filtSpeakers = ['bob'], _shownSpeakers = ['alice'];   // picker: Alice -> Bob
+var _pendingModel = null, _openRows = {}, _openSamples = {};
+var picked = [], urls = [], pending = [];
+var _speakerPicker = { setPicked: function(ids) { picked.push(ids.slice()); } };
+async function _confirm() { return false; }
+function api() { return new Promise(function(r) { pending.push(r); }); }
+function _listUrl() { return '/captures/api/list'; }
+function _syncUrl() { urls.push(_filtSpeakers.join(',')); }
+function render() {} function toast() {}
+var footer = { hidden: true };
+global.document = { getElementById: function() { return footer; } };
+function tick() { return new Promise(function(r) { setTimeout(r, 0); }); }
+(async function() {
+  var st = { dirty: false };
+  _openRows = { c1: st };
+  var p = load();
+  await tick();
+  markDirty(st);                          // a chip typed while the GETs run
+  pending.shift()({ captures: [{ id: 'c9' }], is_admin: true });
+  await tick();
+  pending.shift()({ samples: [{ id: 'bob9' }], next: null });
+  await p;
+  console.log(JSON.stringify({ speakers: _filtSpeakers, picked: picked, urls: urls,
+    samples: _allSamples.map(function(g) { return g.id; }),
+    next: _samplesNext, footerHidden: footer.hidden }));
+})();
+""")
+    assert out == {"speakers": ["alice"], "picked": [["alice"]], "urls": ["alice"],
+                   "samples": ["alice0"],
+                   "next": {"before_ts": 100, "before_id": "a1"}, "footerHidden": False}
+
+
+@needs_node
 def test_load_more_groups_during_a_load_never_pages_the_old_cursor(page, tmp_path):
     """load() bumps _loadSeq at once but replaced _samplesNext only after
     both its GETs: a Load more meanwhile paged the OLD filter's cursor under
