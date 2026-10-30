@@ -436,7 +436,12 @@ async def delete_my_report_api(
     existing = await asyncio.to_thread(
         reports_store.find_by_request_user, request_id, user.get("user_id"),
     )
-    if not existing:
+    # Only an open report can be withdrawn: a tab that loaded /state before
+    # an admin resolved / dismissed the report still shows Remove, and
+    # deleting then would drop the triaged row and its admin notes. Same 404
+    # as "no report", which makes the page clear its stale badge. Deleting a
+    # closed report stays on /reports (delete_report_api).
+    if not existing or existing.get("status") != "open":
         raise HTTPException(
             status.HTTP_404_NOT_FOUND, "no report to delete",
         )

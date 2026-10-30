@@ -487,3 +487,28 @@ def test_patch_waits_for_the_store_lock_off_the_loop(client, app_module):
         assert probe_t < released["t"]
 
     asyncio.run(drive())
+
+
+def test_withdraw_refuses_a_report_an_admin_already_triaged(client):
+    # Remove on /quick-config can still be showing for a report an admin
+    # resolved since the tab last loaded /state. The self-withdraw must not
+    # delete that row and its admin notes; it answers 404 like "no report".
+    rid = client.post(_SUBMIT, json=_payload(request_id="wd-1")).json()["id"]
+    r = client.patch(f"/reports/api/{rid}",
+                     json={"status": "resolved", "admin_notes": "fixed in v2"})
+    assert r.status_code == 200
+    r = client.delete("/quick-config/reports/api/by-request/wd-1")
+    assert r.status_code == 404
+    from faster_whisper_backend.reports import store as reports_store
+    kept = reports_store.get_report(rid)
+    assert kept is not None and kept["admin_notes"] == "fixed in v2"
+    # The admin path on /reports still deletes a closed report.
+    assert client.delete(f"/reports/api/{rid}").status_code == 200
+
+
+def test_withdraw_deletes_the_callers_open_report(client):
+    client.post(_SUBMIT, json=_payload(request_id="wd-2"))
+    r = client.delete("/quick-config/reports/api/by-request/wd-2")
+    assert r.status_code == 200
+    assert client.delete(
+        "/quick-config/reports/api/by-request/wd-2").status_code == 404

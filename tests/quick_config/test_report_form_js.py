@@ -247,6 +247,33 @@ def test_remove_report_404_clears_stale_local_hint(client, tmp_path):
     assert not [t for t in res["toasts"] if t[0] == "err"]
 
 
+def test_remove_report_404_does_not_claim_it_removed_a_triaged_report(client, tmp_path):
+    # The server also 404s a withdraw of a report an admin already resolved
+    # or dismissed (the row and its notes stay); "Report removed." would be
+    # false there.
+    res = _run_js(client, tmp_path, r"""
+      globalThis.confirm = () => true;
+      globalThis._detailText = (j, d) => (j && j.detail) || d;
+      globalThis.api = async () => ({
+        ok: false, status: 404, json: async () => ({ detail: 'no report to delete' }),
+      });
+      markReported('rid1');
+      const entry = { request_id: 'rid1', final: 'Alpha Beta' };
+      const form = _buildReportForm(entry);
+      _traceItem(entry, form);
+      await removeReport(form);
+      out({ reported: isReported('rid1'), toasts: _toasts });
+    """, funcs=_REPORT_FUNCS + (
+        "markReported", "unmarkReported", "syncReportedBadges", "removeReport",
+    ))
+    assert res["reported"] is False
+    assert len(res["toasts"]) == 1
+    kind, msg = res["toasts"][0]
+    assert kind != "err"
+    assert msg != "Report removed."
+    assert "already" in msg
+
+
 _APPLY_STATE_STUBS = r"""
   globalThis.window = {};
   document.body = { classList: { add() {}, remove() {} } };

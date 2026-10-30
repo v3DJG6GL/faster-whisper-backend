@@ -1783,11 +1783,13 @@ async function removeReport(form) {
       'DELETE',
       '/quick-config/reports/api/by-request/' + encodeURIComponent(rid),
     );
-    // 404 = the server holds no report for this trace (deleted on
-    // /reports or from another device); only the localStorage hint kept
-    // the badge up, so fall through and clear it — an error here would
-    // leave a badge that can never be removed.
-    if (!r.ok && r.status !== 404) {
+    // 404 = the server holds no open report for this trace (deleted on
+    // /reports or from another device, or an admin already resolved /
+    // dismissed it, which the server keeps); a stale badge kept Remove up,
+    // so fall through and clear it — an error here would leave a badge
+    // that can never be removed.
+    const gone = r.status === 404;
+    if (!r.ok && !gone) {
       let msg = 'Remove failed (' + r.status + ')';
       try { const j = await r.json(); msg = _detailText(j, msg); } catch (_) {}
       showToast(msg, 'err');
@@ -1804,7 +1806,9 @@ async function removeReport(form) {
     delete _serverReportedChips[rid];
     syncReportedBadges();
     form.classList.remove('open');
-    showToast('Report removed.', 'ok');
+    showToast(gone
+      ? 'This report was already handled or removed — nothing to withdraw.'
+      : 'Report removed.', 'ok');
   } catch (e) {
     showToast('Remove failed: ' + e, 'err');
   } finally {
