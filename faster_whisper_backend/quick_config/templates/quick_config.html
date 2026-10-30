@@ -2182,6 +2182,8 @@ function _applyFieldDiff(serverValue, diff, clashes, restored) {
   if (!diff) return serverValue;
   if (diff.kind === 'dict') {
     const out = { ...(serverValue || {}) };
+    const mine = { ...diff.added, ...diff.changed };
+    const mineLower = new Set(Object.keys(mine).map(k => k.toLowerCase()));
     for (const k of diff.removed) {
       // A key the other writer changed the value of (a rename is a remove
       // plus an add) is back in their version rather than lost unseen.
@@ -2189,12 +2191,23 @@ function _applyFieldDiff(serverValue, diff, clashes, restored) {
         delete out[k];
         continue;
       }
+      // Bar one the user only recased (komma -> Komma): the server refuses
+      // two keys that collide when lowercased, so it is left to the check
+      // below.
+      if (mineLower.has(k.toLowerCase())) continue;
       if (clashes) clashes.push(k);
       if (restored) restored.push(k);
     }
     // A key the other writer also added, or also changed, to another value
-    // keeps the user's value but is a clash, as for a regex-list entry.
-    for (const [k, v] of Object.entries({ ...diff.added, ...diff.changed })) {
+    // keeps the user's value but is a clash, as for a regex-list entry. So
+    // does one the other writer spelt in another case: theirs is dropped, as
+    // the server refuses the map with both.
+    for (const [k, v] of Object.entries(mine)) {
+      for (const o of Object.keys(out)) {
+        if (o === k || Object.hasOwn(mine, o) || o.toLowerCase() !== k.toLowerCase()) continue;
+        delete out[o];
+        if (clashes) clashes.push(o);
+      }
       if (!clashes || !Object.hasOwn(out, k) || _stringify(out[k]) === _stringify(v)) continue;
       if (Object.hasOwn(diff.prior, k) && _stringify(out[k]) === _stringify(diff.prior[k])) continue;
       clashes.push(k);

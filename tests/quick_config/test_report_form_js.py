@@ -1052,12 +1052,47 @@ def test_reapply_brings_back_a_dictionary_key_the_user_deleted_and_the_other_wri
       out({ merged, clashed, restored, clashes, back, maps: liveRules.map(r => r.map) });
     """, funcs=_OLIST_FUNCS)
     assert res["merged"] == 3
-    assert res["clashed"] == []
-    assert res["restored"] == ["changed", "renamed"]
+    # A rename that only recases the key keeps the user's key alone (the
+    # server refuses komma next to Komma): a clash, not a restore.
+    assert res["clashed"] == ["renamed"]
+    assert res["restored"] == ["changed"]
     assert res["clashes"] == ["komma"] and res["back"] == ["komma"]
     assert res["maps"][0] == {"komma": ", ", "punkt": "."}
-    assert res["maps"][1] == {"komma": ", ", "Komma": ",", "punkt": "."}
+    assert res["maps"][1] == {"Komma": ",", "punkt": "."}
     assert res["maps"][2] == {"punkt": ". "}
+
+
+def test_reapply_keeps_one_spelling_of_a_dictionary_key_both_writers_added_in_another_case(
+        client, tmp_path):
+    # The dictionary merge matched keys case-sensitively: the user adding
+    # Komma while the other writer added komma merged to a map holding both,
+    # under a clean "Auto-merged" toast, and the next save got a 422 (map
+    # keys collide when lowercased). The user's key is kept and the rule
+    # reported, as for a key both writers added with different values.
+    page = client.get("/quick-config").text
+    res = _run_js(client, tmp_path, _olist_consts(page) + r"""
+      globalThis.dirty = new Set();
+      const base = { punkt: '.' };
+      globalThis.liveRules = [
+        { name: 'added', map: { komma: ', ', punkt: '.' } },
+        { name: 'recased', map: { KOMMA: ',', punkt: '.' } },
+      ];
+      const diffs = new Map([
+        ['added', { map: _fieldDiff(base, { Komma: ',', punkt: '.' }, _diffKindFor('map')) }],
+        ['recased', { map: _fieldDiff({ komma: ',', punkt: '.' }, { Komma: ',', punkt: '.' },
+                                      'dict') }],
+      ]);
+      const clashed = [], restored = [];
+      const merged = _reapplyDiffs(diffs, clashed, restored);
+      const plain = _applyFieldDiff({ komma: ', ' }, _fieldDiff(base, { Komma: ',' }, 'dict'));
+      out({ merged, clashed, restored, plain, maps: liveRules.map(r => r.map) });
+    """, funcs=_OLIST_FUNCS)
+    assert res["merged"] == 2
+    assert res["clashed"] == ["added", "recased"]
+    assert res["restored"] == []
+    assert res["maps"][0] == {"Komma": ",", "punkt": "."}
+    assert res["maps"][1] == {"Komma": ",", "punkt": "."}
+    assert res["plain"] == {"Komma": ","}
 
 
 def test_conflict_toast_names_the_rule_that_could_not_be_merged(client, tmp_path):
