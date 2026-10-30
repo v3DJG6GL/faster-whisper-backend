@@ -7,6 +7,7 @@ captures.routes nor the workers.
 """
 from __future__ import annotations
 
+import bisect
 import contextlib
 import difflib
 import json
@@ -148,14 +149,19 @@ def _apply_chips_to_text(
     ordered = sorted(
         (c for c in corrections if isinstance(c, dict)), key=_sk,
     )
-    # Text-token position of each karaoke word: the tokens owned by the
-    # non-removed words before it (the training token when one is attached).
-    # A word with no leading space next to a script written without spaces
-    # continues the token before it: `offs` is its char offset in there.
+    # Text-token position of each karaoke word and its char offset inside
+    # that token (`offs`; non-zero for a word inside a run of a script
+    # written without spaces). The aligned words (training token when one is
+    # attached) appear in the text in order, so each non-removed word is
+    # located in it with a moving cursor: whether it starts a token comes
+    # from the text, not from its own lead (a rule may put a line break or
+    # a space between two words that had none). A removed word, or one not
+    # found, sits at the token after the cursor.
     starts: list[int] | None = None
     offs: list[int] = []
     if words:
-        starts, count, last = [], 0, ""
+        tok_starts = [m.start() for m in re.finditer(r"\S+", out)]
+        starts, at = [], 0
         for w in words:
             parts: list[str] = []
             if isinstance(w, dict):
@@ -165,19 +171,20 @@ def _apply_chips_to_text(
                     tok, gone = w.get("word") or "", w.get("removed")
                 if not gone:
                     parts = tok.split()
-            if (parts and last and not tok[:1].isspace()
-                    and (_NO_SPACE_SCRIPT.match(last[-1])
-                         or _NO_SPACE_SCRIPT.match(parts[0][0]))):
-                starts.append(count - 1)
-                offs.append(len(last))
-                count += len(parts) - 1
-                last = (last + parts[0]) if len(parts) == 1 else parts[-1]
-            else:
-                starts.append(count)
+            p = out.find(parts[0], at) if parts else -1
+            if p < 0:
+                starts.append(bisect.bisect_left(tok_starts, at))
                 offs.append(0)
-                count += len(parts)
-                last = parts[-1] if parts else last
-        starts.append(count)
+                continue
+            k = bisect.bisect_right(tok_starts, p) - 1
+            starts.append(k)
+            offs.append(p - tok_starts[k])
+            at = p + len(parts[0])
+            for part in parts[1:]:
+                q = out.find(part, at)
+                if q >= 0:
+                    at = q + len(part)
+        starts.append(bisect.bisect_left(tok_starts, at))
         offs.append(0)
     cursor = 0
     # Word-count change of the replacements so far, so a later chip's

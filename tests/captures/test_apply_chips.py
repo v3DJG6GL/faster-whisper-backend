@@ -16,6 +16,7 @@ import pytest
 
 from faster_whisper_backend.captures import samples as capture_samples
 from faster_whisper_backend.paths import REPO_ROOT
+from faster_whisper_backend.pipeline import engine as pl_engine
 
 _CASES = [
     # A chip on the second "the" leaves the first alone.
@@ -246,21 +247,73 @@ def _js_function(src, name):
 _NODE = shutil.which("node")
 
 
-@pytest.mark.skipif(_NODE is None, reason="node unavailable to run the JS twin")
-def test_js_twin_matches_server_chip_application():
+def _run_js_twin(cases):
+    """_applyChipsToText(text, chips, words) for each [text, chips, words]."""
     src = (pathlib.Path(REPO_ROOT) / "faster_whisper_backend" / "captures"
            / "templates" / "captures.html").read_text(encoding="utf-8")
     fn = _js_function(src, "_applyChipsToText")
-    cases = ([[t, c, None] for t, c, _ in _CASES]
-             + [[t, c, w] for t, c, w, _ in _WORD_CASES])
     script = (fn + "\nprocess.stdout.write(JSON.stringify("
               + json.dumps(cases, ensure_ascii=False)
               + ".map(function(c) { return _applyChipsToText(c[0], c[1], c[2]); })));")
     p = subprocess.run([_NODE, "-e", script], capture_output=True,
                        text=True, encoding="utf-8")
     assert p.returncode == 0, p.stderr
-    assert json.loads(p.stdout) == ([e for _, _, e in _CASES]
-                                    + [e for *_, e in _WORD_CASES])
+    return json.loads(p.stdout)
+
+
+@pytest.mark.skipif(_NODE is None, reason="node unavailable to run the JS twin")
+def test_js_twin_matches_server_chip_application():
+    cases = ([[t, c, None] for t, c, _ in _CASES]
+             + [[t, c, w] for t, c, w, _ in _WORD_CASES])
+    assert _run_js_twin(cases) == ([e for _, _, e in _CASES]
+                                   + [e for *_, e in _WORD_CASES])
+
+
+# Words as production passes them: the output of _align_words_to_final, whose
+# tokens carry no leading space. A rule that puts a line break or a ", "
+# between two words, or a real space in the final text, starts a new token:
+# a chip on a repeated word there must not rewrite the earlier occurrence.
+# (raw words, per-word rule map, final, chip, expected)
+_ALIGNED_CASES = [
+    (["世界", "你好", "世界"], {}, "世界 你好 世界",
+     {"idx": 2, "wrong": "世界", "correct": "地球"}, "世界 你好 地球"),
+    (["我", "的", "猫", "换行", "我", "的", "狗"], {"换行": "\n"},
+     "我的猫\n我的狗",
+     {"idx": 5, "wrong": "的", "correct": "地"}, "我的猫\n我地狗"),
+    (["我", "的", "猫", "逗号", "你", "的", "狗"], {"逗号": ","},
+     "我的猫, 你的狗",
+     {"idx": 5, "wrong": "的", "correct": "得"}, "我的猫, 你得狗"),
+    (["ปลา", "ดี", " ปลา", "ใหญ่"], {}, "ปลาดี ปลาใหญ่",
+     {"idx": 2, "wrong": "ปลา", "correct": "หมา"}, "ปลาดี หมาใหญ่"),
+    (["写", "字", " Python", " 写", "代码"], {}, "写字 Python 写代码",
+     {"idx": 3, "wrong": "写", "correct": "画"}, "写字 Python 画代码"),
+    # Still right inside one run: the third "的", not the first.
+    (["我", "的", "猫", "的", "狗", "的"], {}, "我的猫的狗的",
+     {"idx": 5, "wrong": "的", "correct": "地"}, "我的猫的狗地"),
+]
+
+
+def _aligned_words(monkeypatch, raw, mapping, final):
+    monkeypatch.setattr(
+        pl_engine, "_postprocess_text",
+        lambda text, **kw: mapping.get(text.strip(), text))
+    return capture_samples._align_words_to_final(
+        [{"word": w, "start": float(i), "end": float(i)}
+         for i, w in enumerate(raw)], final)
+
+
+@pytest.mark.parametrize("raw, mapping, final, chip, expected", _ALIGNED_CASES)
+def test_apply_chips_places_a_chip_with_aligned_words(
+        monkeypatch, raw, mapping, final, chip, expected):
+    words = _aligned_words(monkeypatch, raw, mapping, final)
+    assert capture_samples._apply_chips_to_text(final, [chip], words) == expected
+
+
+@pytest.mark.skipif(_NODE is None, reason="node unavailable to run the JS twin")
+def test_js_twin_places_a_chip_with_aligned_words(monkeypatch):
+    cases = [[final, [chip], _aligned_words(monkeypatch, raw, mapping, final)]
+             for raw, mapping, final, chip, _ in _ALIGNED_CASES]
+    assert _run_js_twin(cases) == [e for *_, e in _ALIGNED_CASES]
 
 
 def test_single_capture_ground_preview_uses_the_shared_helper(client):

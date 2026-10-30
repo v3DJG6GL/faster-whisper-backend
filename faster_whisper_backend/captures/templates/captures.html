@@ -3435,7 +3435,6 @@
       + '\uA9E0-\uA9FF\uAA60-\uAA7F\uF900-\uFAFF\uFF66-\uFF9F'
       + '\u{20000}-\u{3134F}]';
     var NS = new RegExp(NSC, 'u');
-    var NS_HEAD = new RegExp('^' + NSC, 'u'), NS_TAIL = new RegExp(NSC + '$', 'u');
     var NO_START = '\u0E30\u0E32\u0E33\u0E45\u0E46\u0EB0\u0EB2\u0EB3\u0EC6'
       + '\u3005\u3041\u3043\u3045\u3047\u3049\u3063\u3083\u3085'
       + '\u3087\u308E\u3095\u3096\u309D\u309E\u30A1\u30A3\u30A5'
@@ -3487,29 +3486,43 @@
       }
       return res;
     }
-    // A word with no leading space next to a script written without spaces
-    // continues the token before it: `offs` is its char offset in there.
+    // Each karaoke word's text-token position and char offset in that token
+    // (`offs`), located in the text with a moving cursor as on the server:
+    // whether a word starts a token comes from the text, not from its lead.
+    // A removed word, or one not found, sits at the token after the cursor.
     var starts = null, offs = [];
     if (words && words.length) {
       starts = [];
-      var count = 0, last = '';
+      var tokStarts = [], at = 0, tm, trx = /\S+/g;
+      while ((tm = trx.exec(out))) tokStarts.push(tm.index);
+      // Tokens starting before `p` (`strict`) or at or before it.
+      var tokensBefore = function(p, strict) {
+        var lo = 0, hi = tokStarts.length;
+        while (lo < hi) {
+          var mid = (lo + hi) >> 1;
+          if (strict ? tokStarts[mid] < p : tokStarts[mid] <= p) lo = mid + 1;
+          else hi = mid;
+        }
+        return lo;
+      };
       words.forEach(function(w) {
-        var tok = tokOf(w);
-        var parts = tok.split(/\s+/).filter(Boolean);
-        if (parts.length && last && !/^\s/.test(tok)
-            && (NS_TAIL.test(last) || NS_HEAD.test(parts[0]))) {
-          starts.push(count - 1);
-          offs.push(last.length);
-          count += parts.length - 1;
-          last = parts.length === 1 ? last + parts[0] : parts[parts.length - 1];
-        } else {
-          starts.push(count);
+        var parts = tokOf(w).split(/\s+/).filter(Boolean);
+        var p = parts.length ? out.indexOf(parts[0], at) : -1;
+        if (p < 0) {
+          starts.push(tokensBefore(at, true));
           offs.push(0);
-          count += parts.length;
-          if (parts.length) last = parts[parts.length - 1];
+          return;
+        }
+        var k = tokensBefore(p, false) - 1;
+        starts.push(k);
+        offs.push(p - tokStarts[k]);
+        at = p + parts[0].length;
+        for (var q = 1; q < parts.length; q++) {
+          var r = out.indexOf(parts[q], at);
+          if (r >= 0) at = r + parts[q].length;
         }
       });
-      starts.push(count);
+      starts.push(tokensBefore(at, true));
       offs.push(0);
     }
     var ordered = corrections.slice().filter(function(c) {
