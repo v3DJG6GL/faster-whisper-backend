@@ -528,6 +528,8 @@ def test_handshake_language_that_is_not_a_code_is_treated_as_absent(
     # An underscore locale (POSIX LANG, Java's Locale.toString()) folds as
     # batch folds it: /dictate sends one language box to both modes.
     ("de_DE", "de"), ("pt_BR", "pt"), ("zh_Hant_TW", "zh"), ("xx_YY", None),
+    # A withdrawn ISO 639-1 code (old Java locales, YouTube) is Whisper's code.
+    ("iw_IL", "he"), ("in-ID", "id"),
 ])
 def test_handshake_language_reduces_to_a_whisper_code(raw, expected):
     """faster-whisper's tokenizer raises on anything outside its own code

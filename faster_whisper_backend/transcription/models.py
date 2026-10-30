@@ -28,6 +28,7 @@ from fastapi import HTTPException
 
 from faster_whisper_backend.transcription import decode_trace as _decode_trace
 from faster_whisper_backend.core import jobs
+from faster_whisper_backend.core import languages
 from faster_whisper_backend.core.store_common import log_safe
 from faster_whisper_backend.runtime import model_registry
 from faster_whisper_backend.runtime import system_stats
@@ -576,11 +577,16 @@ _AUTO_DETECT_ONLY_KEYS = ("multilingual", "language_detection_threshold",
 def whisper_language_code(value: str) -> "str | None":
     """``value`` as the Whisper code faster-whisper's tokenizer accepts: the
     lower-cased value, or a locale tag's primary subtag (``DE`` → ``de``,
-    ``pt-BR`` / ``pt_BR`` → ``pt``). None when neither is one of Whisper's
+    ``pt-BR`` / ``pt_BR`` → ``pt``), that subtag in Whisper's spelling last
+    (``iw_IL`` → ``he``, ``jv`` → ``jw``). None when none is one of Whisper's
     codes."""
     # "_" too: POSIX LANG and Java's Locale.toString() write "de_DE".
     value = value.strip().lower().replace("_", "-")
-    for cand in (value, value.split("-", 1)[0]):
+    base = value.split("-", 1)[0]
+    # Folded last, so a Whisper code is never re-spelled: old Java / Android
+    # locales and YouTube send the withdrawn "iw" / "in" / "ji", which the
+    # tokenizer raises on too.
+    for cand in (value, base, languages._fold_base(base)):
         if cand in settings_schema.WHISPER_LANGUAGE_CODES:
             return cand
     return None

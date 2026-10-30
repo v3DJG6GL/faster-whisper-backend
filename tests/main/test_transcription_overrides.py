@@ -64,12 +64,17 @@ def test_batch_language_reduces_to_a_whisper_code(client, make_user_key, fake_mo
     # /dictate sends one language box to both modes; the streaming handshake
     # folds "DE" / "de-DE" to "de", so batch must too (faster-whisper's
     # tokenizer raises on either, a 500). An underscore locale ("de_DE", what
-    # POSIX LANG and Java's Locale produce) is the same tag. Blank is
+    # POSIX LANG and Java's Locale produce) is the same tag, and a withdrawn
+    # ISO 639-1 code (what old Java / Android locales and YouTube send: "iw"
+    # Hebrew, "in" Indonesian; the standard "jv" for Whisper's "jw") folds to
+    # Whisper's spelling, which the tokenizer also raises without. Blank is
     # auto-detect; a value that reduces to no code reaches the model
     # unchanged, as before.
     _, raw = make_user_key("alice", is_admin=False)
     for sent, expected in (("DE", "de"), ("de-DE", "de"), (" pt-BR ", "pt"),
                            ("de_DE", "de"), ("pt_BR", "pt"),
+                           ("iw_IL", "he"), ("in-ID", "id"), ("iw", "he"),
+                           ("JI", "yi"), ("jv", "jw"),
                            ("haw", "haw"), ("  ", None), ("xx", "xx")):
         r = client.post(
             "/v1/audio/transcriptions", files=_FILE, headers=bearer(raw),
