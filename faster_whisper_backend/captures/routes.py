@@ -3004,12 +3004,9 @@ def _build_export_stream(only_status: str | None, include_audio: bool):
                 continue
             cid = row["id"]
             # Source training-form text first so the export matches what
-            # reviewers see on /captures. Chip-applied on top. `final` and
-            # `raw` fall-backs cover captures from before the
-            # text_for_training column existed.
-            base = (row.get("text_for_training")
-                    or row.get("final")
-                    or row.get("raw") or "")
+            # reviewers see on /captures. Chip-applied on top. A blanked
+            # training text is skipped below, not swapped for the raw text.
+            base = capture_samples._training_base(row)
             chips = row.get("corrections") or []
             text = capture_samples._apply_chips_to_text(
                 base, chips, _chip_words(row) if chips else None)

@@ -1973,7 +1973,7 @@
   // an anchored chip falls back to the unaligned nearest match.
   function _capturePreviewText(r, words) {
     return _applyChipsToText(
-      r.text_for_training || r.final || r.raw || '', r.corrections || [], words)
+      (r.text_for_training ?? r.final ?? r.raw) || '', r.corrections || [], words)
       || r.raw
       || '(empty)';
   }
@@ -2153,10 +2153,10 @@
       words: r.words || [],
       // Training-form text is the canonical column reviewers see and
       // chips operate against — it's what the export emits and what
-      // Whisper will be fine-tuned on. Fall back to `final` (runtime
-      // form) then `raw` for captures from before the
-      // text_for_training column existed.
-      finalText: r.text_for_training || r.final || r.raw || '',
+      // Whisper will be fine-tuned on. `final` then `raw` stand in only
+      // for a NULL column (a legacy row): "" is the pipeline blanking the
+      // text (Python _training_base), not a cue to show the raw text.
+      finalText: (r.text_for_training ?? r.final ?? r.raw) || '',
       corrections: (r.corrections || []).map(function(c) {
         return {
           wrong: c.wrong || '',
@@ -3090,8 +3090,7 @@
         });
         _syncCapturePreview(state, r);
         // Update local state.finalText so chips/preview reflect new text.
-        state.finalText =
-          fresh.text_for_training || fresh.final || fresh.raw || '';
+        state.finalText = (fresh.text_for_training ?? fresh.final ?? fresh.raw) || '';
         if (state.gtArea) {
           state.gtArea.textContent = state.finalText;
           applyCorrectionsToGround(state);
@@ -3709,11 +3708,12 @@
   function _buildDefaultTranscript(rows, strategy) {
     // Chips-applied join. Source from `text_for_training` so the preview
     // matches the word-form training text the export will actually emit
-    // (falls back to `final` then `raw` for legacy captures predating
-    // text_for_training). A row expanded once carries its aligned words,
-    // which place anchored chips the way the export does.
+    // (falls back to `final` then `raw` only for a NULL column, a legacy
+    // capture predating text_for_training, as Python _training_base). A
+    // row expanded once carries its aligned words, which place anchored
+    // chips the way the export does.
     var parts = rows.map(function(r) {
-      var base = r.text_for_training || r.final || r.raw || '';
+      var base = (r.text_for_training ?? r.final ?? r.raw) || '';
       return _applyChipsToText(base, r.corrections || [], r.words).trim();
     }).filter(Boolean);
     // A member ending in Han / kana (past its "。" / "」" / "，") meets a next
@@ -3737,7 +3737,7 @@
     rows.forEach(function(r, i) {
       var line = document.createElement('div');
       line.className = 'seg-line';
-      var base = r.text_for_training || r.final || r.raw || '';
+      var base = (r.text_for_training ?? r.final ?? r.raw) || '';
       var memberText = _applyChipsToText(base, r.corrections || [], r.words);
       line.innerHTML = '<span class="seg-time">[' + (i + 1) + '] '
         + (r.audio_s || 0).toFixed(1) + 's</span>'
@@ -5776,7 +5776,7 @@
             var prefix = '[' + (i + 1) + '] ';
             refsWrap.appendChild(_textLine('raw',
               prefix + 'raw', m.raw || ''));
-            var training = m.text_for_training || m.final || '';
+            var training = (m.text_for_training ?? m.final) || '';
             refsWrap.appendChild(_textLine('post-processing',
               prefix + 'post-processing (training)', training));
           });
@@ -5861,7 +5861,7 @@
           (d.members || []).forEach(function(m, mi) {
             var line = document.createElement('div');
             line.style.cssText = 'font-size:var(--fs-sm);color:var(--dim);padding:0.2rem 0;';
-            var base = m.text_for_training || m.final || m.raw || '';
+            var base = (m.text_for_training ?? m.final ?? m.raw) || '';
             var memberWords = (d.merged_words || []).filter(function(w) {
               return w && w.member_idx === mi;
             });

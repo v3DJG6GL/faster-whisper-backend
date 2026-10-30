@@ -818,6 +818,23 @@ def test_export_skips_translate_row_for_translate_task_capture(
     assert rows[0]["text"] == "quelle"
 
 
+def test_export_skips_a_capture_whose_training_text_the_pipeline_blanked(
+        captures_store_db, groups_store_db, monkeypatch, tmp_path):
+    """A removal rule that blanked a Whisper hallucination over near-silence
+    leaves text_for_training "" (not NULL): the export used to fall back to
+    the raw hallucination and train the model to emit it over silence."""
+    _fake_wav_transcode(monkeypatch)
+    src = tmp_path / "src.bin"
+    src.write_bytes(b"junk")
+    cid = captures_store_db.create_capture(
+        audio_src_path=str(src), request_id="r1", model="small",
+        language="de", audio_s=1.0, raw="Untertitel im Auftrag des ZDF",
+        final="", text_for_training="", words=[], segments=[], user_id="alice",
+    )
+    captures_store_db.update_capture(cid, {"status": "ready"})
+    assert _export_manifest() == []
+
+
 def test_export_duration_describes_the_trimmed_companion(
         captures_store_db, groups_store_db, monkeypatch, tmp_path):
     """A legacy VAD-trimmed capture packs the trimmed file, so both manifest

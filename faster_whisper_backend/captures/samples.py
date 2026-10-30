@@ -342,6 +342,19 @@ def _span_text(words: list[dict[str, Any]], idx: int, idx_end: Any) -> str:
     return "".join(parts).lstrip()
 
 
+def _training_base(row: dict[str, Any]) -> str:
+    """A capture's training-form text, before chips. `final` (then `raw`)
+    stands in only when the column is NULL (a legacy row predating
+    `text_for_training`): an empty string is the pipeline's verdict (a
+    removal rule blanked a hallucination, a filler-only utterance) and must
+    not fall through to the raw text it removed."""
+    for k in ("text_for_training", "final"):
+        v = row.get(k)
+        if v is not None:
+            return v
+    return row.get("raw") or ""
+
+
 def _build_default_transcript(
     members: list[dict[str, Any]],
     strategy: str,
@@ -350,16 +363,15 @@ def _build_default_transcript(
     """Concatenate member transcripts with chips applied. Each member's
     training-form text (`text_for_training`) gets its chip corrections
     layered on top before the join, so the merged result reflects what
-    the export pipeline will actually produce. Falls back through `final`
-    then `raw` for legacy members predating the `text_for_training`
-    column.
+    the export pipeline will actually produce. See `_training_base` for
+    the legacy-member fallback.
 
     `words_for(member)` (optional) returns that member's aligned karaoke
     words, so each chip lands on the word its idx marks; it is only called
     for a member that has corrections."""
     parts: list[str] = []
     for m in members:
-        base = m.get("text_for_training") or m.get("final") or m.get("raw") or ""
+        base = _training_base(m)
         chips = m.get("corrections") or []
         words = words_for(m) if (words_for is not None and chips) else None
         t = _apply_chips_to_text(base, chips, words).strip()

@@ -296,6 +296,21 @@ def test_default_transcript_applies_a_chip_with_a_stale_wrong():
         [member], "space", words_for=lambda m: words) == expected
 
 
+# A removal rule blanked a Whisper hallucination over near-silence: the
+# training text is "" (not NULL), and the raw text it removed must not come
+# back as the label. A legacy row (NULL column) still falls back.
+_BLANKED = {"text_for_training": "", "final": "",
+            "raw": "Untertitel im Auftrag des ZDF"}
+_LEGACY = {"text_for_training": None, "final": "Wie geht es?", "raw": "wie geht es"}
+
+
+def test_default_transcript_skips_a_member_the_pipeline_blanked():
+    first = {"text_for_training": "Hallo Welt.", "final": "Hallo Welt.",
+             "raw": "hallo welt"}
+    assert capture_samples._build_default_transcript(
+        [first, _BLANKED, _LEGACY], "space") == "Hallo Welt. Wie geht es?"
+
+
 def _js_function(src, name):
     start = src.index("function " + name + "(")
     depth = 0
@@ -494,3 +509,5 @@ def test_default_transcript_glues_zh_ja_members_that_end_in_cjk_punctuation(
     members = [{"final": f} for f in finals]
     assert capture_samples._build_default_transcript(
         members, strategy) == expected
+
+

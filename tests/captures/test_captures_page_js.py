@@ -1421,6 +1421,24 @@ console.log(JSON.stringify({
 
 
 @needs_node
+def test_merge_preview_skips_a_member_the_pipeline_blanked(page, tmp_path):
+    """A removal rule that blanked a Whisper hallucination leaves
+    text_for_training "" (not NULL): the merge preview used to fall back to
+    the raw hallucination, as the server's transcript builder did. A legacy
+    row (NULL column) still falls back to `final`."""
+    fns = "\n".join(_js_function(page, f) for f in (
+        "_endsSentence", "_applyChipsToText", "_cjkEdge",
+        "_buildDefaultTranscript"))
+    out = _run_node(tmp_path, fns + r"""
+console.log(JSON.stringify(_buildDefaultTranscript([
+  { text_for_training: '', final: '', raw: 'Untertitel im Auftrag des ZDF' },
+  { text_for_training: null, final: 'Wie geht es?', raw: 'wie geht es' }],
+  'space')));
+""")
+    assert out == "Wie geht es?"
+
+
+@needs_node
 @pytest.mark.parametrize("finals, expected", [
     (["Hallo Welt.", "Wie geht es?", "gut"], "Hallo Welt. Wie geht es? gut"),
     (["Stopp!", "«Ja.»", "nein"], "Stopp! «Ja.» nein"),
