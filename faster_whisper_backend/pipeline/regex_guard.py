@@ -154,7 +154,9 @@ _SHORTHAND_CHARS = {
 # `\d*\d*…\d*1` ends on its own run character, so a run of `1` matched at
 # once; the first of these the pattern does not mention literally is used
 # instead. Letter runs need none: the prose fixtures already catch `\w*…a`.
-_RUN_SIBLINGS = {"1": "234567890", " ": "\t\u2003"}
+# ASCII whitespace comes before U+2003: under `(?a)` `\s` does not match it,
+# and `[ \t\u2003]` left no sibling, so the run matched nothing / at once.
+_RUN_SIBLINGS = {"1": "234567890", " ": "\t\n\r\f\v\u2003"}
 # Hex escapes and their exact digit counts (``\x2d``, ``\u2013``, ``\U…``).
 _HEX_ESCAPES = {"x": 2, "u": 4, "U": 8}
 

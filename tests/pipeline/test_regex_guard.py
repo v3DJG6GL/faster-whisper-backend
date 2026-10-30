@@ -1066,3 +1066,17 @@ def test_negated_class_member_does_not_steer_the_run_off_its_character():
     assert g._synthetic_fixture(pat).startswith("1" * 10)
     with pytest.raises(ValueError):
         g.validate([("r", pat, "")], timeout=1.5)
+
+
+@pytest.mark.parametrize("pat", [
+    r"(?a)" + r"\s*" * 7 + r"[ \t]",
+    r"(?a:" + r"\s*" * 7 + r"[ \t])",
+    r"\s*" * 7 + r"[ \t ]",
+    r"\s*" * 7 + r"[ \t\n ]",
+])
+def test_whitespace_run_has_a_sibling_every_s_mode_matches(pat):
+    """The `\\s` run's only siblings were a tab and U+2003: under `(?a)` the
+    U+2003 run matched nothing, and a rule writing all three left the space
+    run in place, which the class matched at once. Both were accepted."""
+    with pytest.raises(ValueError):
+        g.validate([("r", pat, "")], timeout=1.5)
