@@ -1280,11 +1280,12 @@ def _first_repeated_char(pat: str, depth: int = 0) -> "str | None":
 
 def _literal_spans(pat: str) -> "list[tuple[int, int, str]]":
     """``(start, end, char)`` for every character ``pat`` spells literally:
-    a plain character, a class member, or an escape that decodes to ONE
-    character (``\\x20``, ``\\040``, ``\\N{SPACE}``, ``\\t``). A shorthand
-    (``\\d``, ``\\s``, …) is a set, not a literal, and a ``{m,n}`` count is
-    not text the pattern matches: blanking every ``1`` of the raw text turned
-    ``\\d{1,}`` into ``\\d{\\x00,}``, no longer a repeat."""
+    a plain character, a member of a non-negated class, or an escape that
+    decodes to ONE character (``\\x20``, ``\\040``, ``\\N{SPACE}``,
+    ``\\t``). A shorthand (``\\d``, ``\\s``, …) is a set, not a literal, and
+    a ``{m,n}`` count is not text the pattern matches: blanking every ``1``
+    of the raw text turned ``\\d{1,}`` into ``\\d{\\x00,}``, no longer a
+    repeat."""
     spans = []
     i, n = 0, len(pat)
     while i < n:
@@ -1295,8 +1296,10 @@ def _literal_spans(pat: str) -> "list[tuple[int, int, str]]":
                 spans.append((i, end, char))
             i = end
         elif c == "[":
-            start, j, _negated = _skip_class(pat, i)
-            k = start
+            start, j, negated = _skip_class(pat, i)
+            # A negated class's members are what it does NOT match: as
+            # literals, `[^1\D]` swapped the `1` run to `2`, which it matches.
+            k = j if negated else start
             while k < j:
                 if pat[k] == "\\":
                     char, end = _escape_char(pat, k, in_class=True)

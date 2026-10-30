@@ -1056,3 +1056,13 @@ def test_lookaround_inside_an_overlapping_alternation_is_still_rejected(pat):
     assert g._nested_repetition(pat)
     with pytest.raises(ValueError, match="nested repetition"):
         g.validate([("r", pat, "")])
+
+
+def test_negated_class_member_does_not_steer_the_run_off_its_character():
+    """A negated class's members were read as literals the rule matches, so
+    `[^1\\D]` swapped the `\\d` run to `2`, which the class DOES match: the
+    probe matched at once and this was accepted."""
+    pat = r"\d*\d*\d*\d*\d*\d*\d*[^1\D]"
+    assert g._synthetic_fixture(pat).startswith("1" * 10)
+    with pytest.raises(ValueError):
+        g.validate([("r", pat, "")], timeout=1.5)
