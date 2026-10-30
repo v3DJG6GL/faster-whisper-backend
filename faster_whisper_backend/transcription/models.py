@@ -90,6 +90,19 @@ _model_leases: "dict[str, int]" = {}
 # alone cannot tell load_in_progress() a cold load is under way.
 _loads_in_flight = 0
 
+# (repo, revision, cache_dir, token) → the running Hub pre-download task that
+# every concurrent cache miss for that snapshot awaits (see _load_on_miss).
+# Popped when the task ends, so a failed fetch is retried by the next miss.
+_hub_prefetches: "dict[tuple, asyncio.Task]" = {}
+
+
+def _end_prefetch(key: tuple, task: "asyncio.Task") -> None:
+    if _hub_prefetches.get(key) is task:
+        del _hub_prefetches[key]
+    if not task.cancelled():
+        # Retrieved here: every waiter may have been cancelled already.
+        task.exception()
+
 
 # =============================================================================
 # SUPPRESS_CHARS resolution cache
@@ -1278,14 +1291,6 @@ async def _load_on_miss(name: str, *, lease: bool) -> "WhisperModel":
                 _dl_repo = _FW_MODELS.get(_dl_repo) or ""
             if _dl_repo:
                 _dl_label = f"whisper:{name}"
-                _dl_job = jobs.job_start("download", model=_dl_label)
-
-                def _dl_hook(done, total, _job=_dl_job):
-                    jobs.job_update(
-                        _job,
-                        progress=(done / total) if total else None,
-                        total_bytes=total or None)
-
                 _snap_kwargs = {
                     "repo_id": _dl_repo,
                     "allow_patterns": [
@@ -1299,27 +1304,57 @@ async def _load_on_miss(name: str, *, lease: bool) -> "WhisperModel":
                     _snap_kwargs["revision"] = _revision
                 if _auth_token:
                     _snap_kwargs["token"] = _auth_token
-                def _fetch():
-                    # The capture scope lives on the download's own thread,
-                    # as the GGUF and pyannote fetches do: held on the loop
-                    # across the await, a cancelled caller logged an
-                    # "aborted" download the thread then finished, and the
-                    # done row's SQLite write ran on the event loop.
-                    with download_progress.capture(
-                            _dl_label, cb=_dl_hook) as _cap:
-                        return snapshot_download(**_snap_kwargs,
-                                                 **_cap.tqdm_kwargs)
 
-                try:
-                    await loop.run_in_executor(None, _fetch)
-                except (RepositoryNotFoundError, RevisionNotFoundError) as e:
-                    _hub_refused = e
-                except HfHubHTTPError as e:
-                    if e.response.status_code != 401:
-                        raise
-                    _hub_refused = e
-                finally:
-                    jobs.job_end(_dl_job)
+                async def _prefetch():
+                    """None once the fetch is done, or the Hub's refusal for
+                    every waiting caller to raise."""
+                    _dl_job = jobs.job_start("download", model=_dl_label)
+
+                    def _dl_hook(done, total):
+                        jobs.job_update(
+                            _dl_job,
+                            progress=(done / total) if total else None,
+                            total_bytes=total or None)
+
+                    def _fetch():
+                        # The capture scope lives on the download's own
+                        # thread, as the GGUF and pyannote fetches do: held on
+                        # the loop across the await, a cancelled caller logged
+                        # an "aborted" download the thread then finished, and
+                        # the done row's SQLite write ran on the event loop.
+                        with download_progress.capture(
+                                _dl_label, cb=_dl_hook) as _cap:
+                            return snapshot_download(**_snap_kwargs,
+                                                     **_cap.tqdm_kwargs)
+
+                    try:
+                        await loop.run_in_executor(None, _fetch)
+                    except (RepositoryNotFoundError,
+                            RevisionNotFoundError) as e:
+                        return e
+                    except HfHubHTTPError as e:
+                        if e.response.status_code != 401:
+                            raise
+                        return e
+                    finally:
+                        jobs.job_end(_dl_job)
+                    return None
+
+                # Single-flight per snapshot: without it N concurrent misses
+                # for one cold repo each started a download, the later ones
+                # pinning a default-executor worker on the blob FileLock for
+                # the whole fetch. The token is in the key so a 401 for one
+                # model's override token never refuses another's.
+                _key = (_dl_repo, _revision, _download_root, _auth_token)
+                _task = _hub_prefetches.get(_key)
+                if _task is None:
+                    _task = asyncio.create_task(_prefetch())
+                    _hub_prefetches[_key] = _task
+                    _task.add_done_callback(
+                        lambda t, k=_key: _end_prefetch(k, t))
+                # Shielded: one caller's cancel (a dropped client) must not
+                # cancel the download the others are waiting on.
+                _hub_refused = await asyncio.shield(_task)
         except Exception as _dl_err:  # noqa: BLE001 — best-effort
             logger.warning(
                 "Pre-download of %s failed (%s); the model constructor "
@@ -1749,6 +1784,7 @@ def _reset_for_tests() -> None:
     _model_leases.clear()
     _suppress_chars_cache.clear()
     _convert_locks.clear()
+    _hub_prefetches.clear()
     _model_load_lock = asyncio.Lock()
     _convert_locks_meta = asyncio.Lock()
     _trim_task = None

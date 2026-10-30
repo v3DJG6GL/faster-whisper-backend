@@ -272,6 +272,60 @@ def test_repo_missing_on_the_hub_evicts_nothing(monkeypatch, err):
     assert built == [] and tx_models._model_leases == {}
 
 
+def _concurrent_cold_loads(monkeypatch, snapshot, n=4):
+    """n concurrent misses for one cold Hub repo; their outcomes."""
+    import huggingface_hub
+    _stub_load(monkeypatch)
+    monkeypatch.setattr(tx_models, "_model_load_lock", asyncio.Lock())
+    monkeypatch.setattr(tx_models.cfg, "LOCAL_FILES_ONLY", False,
+                        raising=False)
+    monkeypatch.setattr(tx_models.cfg, "MAX_LOADED_MODELS", 4, raising=False)
+    monkeypatch.setattr(huggingface_hub, "snapshot_download", snapshot)
+
+    async def run():
+        return await asyncio.gather(
+            *(tx_models._get_or_load_model("org/cold") for _ in range(n)),
+            return_exceptions=True)
+    return asyncio.run(run())
+
+
+def test_concurrent_misses_share_one_hub_download(monkeypatch):
+    """Every concurrent miss for a cold repo started its own snapshot, the
+    later ones each pinning a default-executor worker on the blob lock."""
+    calls = []
+
+    def _slow(**kw):
+        calls.append(kw["repo_id"])
+        time.sleep(0.2)
+    got = _concurrent_cold_loads(monkeypatch, _slow)
+
+    assert calls == ["org/cold"]
+    assert all(m is tx_models._loaded_models["org/cold"] for m in got)
+    assert tx_models._hub_prefetches == {}
+
+
+def test_a_shared_hub_refusal_reaches_every_caller_and_is_retried(
+        monkeypatch):
+    import httpx2
+    from huggingface_hub import errors as hf_errors
+    calls = []
+    response = httpx2.Response(404, request=httpx2.Request(
+        "GET", "https://huggingface.co/api/models/org/cold"))
+
+    def _missing(**kw):
+        calls.append(kw["repo_id"])
+        time.sleep(0.2)
+        raise hf_errors.RepositoryNotFoundError("not found", response=response)
+    got = _concurrent_cold_loads(monkeypatch, _missing)
+
+    assert len(calls) == 1
+    assert [getattr(e, "status_code", e) for e in got] == [400] * 4
+    assert tx_models._hub_prefetches == {}
+    # Not cached: the next miss asks the Hub again.
+    _concurrent_cold_loads(monkeypatch, _missing, n=1)
+    assert len(calls) == 2
+
+
 @pytest.mark.parametrize("err, said", [
     ("GatedRepoError", "gated"),
     ("RepositoryNotFoundError", "private or gated"),
