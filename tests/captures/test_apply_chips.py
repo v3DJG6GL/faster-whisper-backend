@@ -475,6 +475,15 @@ def test_default_transcript_join_writes_no_space_between_unspaced_members(
     # Next to Latin text the space stays.
     (["你好。", "Hallo"], "space", "你好。 Hallo"),
     (["Hallo.", "「你好」"], "space", "Hallo. 「你好」"),
+    # Simplified Chinese quotes with “ ” ‘ ’ and writes …… and ——.
+    (["他说“你好”", "我们走吧"], "space", "他说“你好”我们走吧"),
+    (["他说“你好”", "我们走吧"], "period_space", "他说“你好”。我们走吧"),
+    (["你好。", "“我们走吧。”"], "period_space", "你好。“我们走吧。”"),
+    (["他说‘好’", "‘是’"], "space", "他说‘好’‘是’"),
+    (["我想想……", "好吧"], "period_space", "我想想……好吧"),
+    (["好——", "我们"], "period_space", "好——。我们"),
+    (["Hallo“", "你好"], "space", "Hallo“ 你好"),
+    (["你好", "“Hallo”"], "space", "你好 “Hallo”"),
 ])
 def test_default_transcript_glues_zh_ja_members_that_end_in_cjk_punctuation(
         finals, strategy, expected):

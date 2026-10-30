@@ -78,14 +78,15 @@ _CJK_SCRIPT = re.compile(
     "\uf900-\ufaff\uff66-\uff9f\U00020000-\U0003134f]")
 
 # CJK and full-width punctuation a zh / ja member may end in ("。", "！",
-# "」", "，") and the openers it may start with ("「", "（"): skipped before
-# the Han / kana test, as Whisper ends nearly every zh / ja member in one.
-# Same sets in the JS twin _buildDefaultTranscript.
+# "」", "，", and the "”" / "’" quotes, "……" and "——" of Simplified
+# Chinese) and the openers it may start with ("「", "（", "“", "‘"): skipped
+# before the Han / kana test, as Whisper ends nearly every zh / ja member in
+# one. Same sets in the JS twin _cjkEdge.
 _CJK_PUNCT = re.compile(
-    "[\u3000-\u3004\u3008-\u303f\uff01-\uff0f\uff1a-\uff20\uff3b-\uff40"
-    "\uff5b-\uff65]")
-_CJK_OPENERS = ("\u3008\u300a\u300c\u300e\u3010\u3014\u3016\u3018\u301a"
-                "\u301d\uff08\uff3b\uff5b\uff5f\uff62")
+    "[\u2014\u2018-\u201d\u2025\u2026\u3000-\u3004\u3008-\u303f"
+    "\uff01-\uff0f\uff1a-\uff20\uff3b-\uff40\uff5b-\uff65]")
+_CJK_OPENERS = ("\u2018\u201c\u3008\u300a\u300c\u300e\u3010\u3014\u3016"
+                "\u3018\u301a\u301d\uff08\uff3b\uff5b\uff5f\uff62")
 
 
 def _cjk_tail(text: str) -> bool:

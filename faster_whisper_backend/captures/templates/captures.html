@@ -3685,18 +3685,18 @@
   function _cjkEdge(text, end) {
     // Mirror of Python _cjk_tail (end) / _cjk_head in captures/samples.py,
     // same sets: whether `text` ends / starts in Han / kana past the CJK
-    // punctuation ("。", "！", "」", "，") or openers ("「", "（") Whisper
-    // puts around nearly every zh / ja member.
+    // punctuation ("。", "！", "」", "，", "”", "……", "——") or openers
+    // ("「", "（", "“") Whisper puts around nearly every zh / ja member.
     var CJK = '[\u3005-\u3007\u3040-\u30FF\u31F0-\u31FF\u3400-\u4DBF\u4E00-\u9FFF'
       + '\uF900-\uFAFF\uFF66-\uFF9F\u{20000}-\u{3134F}]';
     if (end) {
       var i = text.length;
-      while (i > 0 && /[\u3000-\u3004\u3008-\u303F\uFF01-\uFF0F\uFF1A-\uFF20\uFF3B-\uFF40\uFF5B-\uFF65]/
+      while (i > 0 && /[\u2014\u2018-\u201D\u2025\u2026\u3000-\u3004\u3008-\u303F\uFF01-\uFF0F\uFF1A-\uFF20\uFF3B-\uFF40\uFF5B-\uFF65]/
           .test(text[i - 1])) i--;
       return new RegExp(CJK + '$', 'u').test(text.slice(0, i));
     }
-    var OPEN = '\u3008\u300A\u300C\u300E\u3010\u3014\u3016\u3018\u301A'
-      + '\u301D\uFF08\uFF3B\uFF5B\uFF5F\uFF62';
+    var OPEN = '\u2018\u201C\u3008\u300A\u300C\u300E\u3010\u3014\u3016'
+      + '\u3018\u301A\u301D\uFF08\uFF3B\uFF5B\uFF5F\uFF62';
     var j = 0;
     while (j < text.length && OPEN.indexOf(text[j]) >= 0) j++;
     return new RegExp('^' + CJK, 'u').test(text.slice(j));
