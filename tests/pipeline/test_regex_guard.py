@@ -743,6 +743,19 @@ def test_escaped_spelling_of_a_polynomial_run_is_rejected(pat):
         g.validate([("r", pat, "")], timeout=1.5)
 
 
+@pytest.mark.parametrize("pat", [
+    r"(\W+)(\W+)(\W+)(\W+)(\W+)(\W+)(\W+)#",
+    r"\W*\W*\W*\W*\W*\W*\W*#",
+])
+def test_non_word_run_ending_in_hash_is_rejected(pat):
+    """The `\\W` run was built of `#`, the pattern's own terminator, so the
+    synthetic probe matched at once and these were accepted while the same
+    pattern ending in `x` was refused."""
+    assert "#" not in g._synthetic_fixture(pat)[:-1]
+    with pytest.raises(ValueError):
+        g.validate([("r", pat, "")], timeout=1.5)
+
+
 def test_leading_bracket_is_part_of_the_class_body():
     """`[]]` had an empty body, so no witness and no synthetic probe."""
     assert g._skip_class("[]]", 0)[0] == 1

@@ -143,9 +143,11 @@ _SYNTH_RUN = 240
 # Characters tried as the terminator that forces the engine to exhaust its
 # split search. The first one the pattern does not mention literally is used.
 _SYNTH_TERMINATORS = "#!@~%"
-# What a shorthand escape can match, for the synthetic probe only.
+# What a shorthand escape can match, for the synthetic probe only. `\W` gets a
+# control character no rule writes literally: as `#` it was also the attack
+# shape's own terminator, so `\W*\W*…#` matched at once on its run of `#`.
 _SHORTHAND_CHARS = {
-    "w": "a", "W": "#", "d": "1", "D": "a", "s": " ", "S": "a",
+    "w": "a", "W": "\x01", "d": "1", "D": "a", "s": " ", "S": "a",
     "n": "\n", "t": "\t", "r": "\r", "f": "\f", "v": "\v",
 }
 # Hex escapes and their exact digit counts (``\x2d``, ``\u2013``, ``\U…``).
