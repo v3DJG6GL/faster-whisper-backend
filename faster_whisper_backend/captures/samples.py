@@ -588,21 +588,36 @@ def _split_unspaced(texts: list[str], toks: list[str]) -> list[list[str]] | None
     `texts`, character by character. In a script written without spaces the
     whole sentence is one final token: handed to one raw word, it struck
     every other word as removed by a rule although none fired. A final
-    character matched to a raw word's character goes to that word; an
-    unmatched one (a rule's insertion) joins the word before it, or the first
-    word. Returns each raw word's pieces (one per token it reaches, empty when
-    a rule deleted it), or None when no character matches."""
+    character matched to a raw word's character goes to that word; the chars
+    that replace raw chars (a substitution rule: 他 → 她) go to the words
+    whose chars they replace, in proportion, the remainder to the last; an
+    inserted one joins the word before it, or the first word. Returns each
+    raw word's pieces (one per token it reaches, empty when a rule deleted
+    it), or None when no character matches."""
     a_own = [r for r, t in enumerate(texts) for _ in t]
     tok_of = [k for k, t in enumerate(toks) for _ in t]
     b = "".join(toks)
     own = [-1] * len(b)
     sm = difflib.SequenceMatcher(None, "".join(texts), b, autojunk=False)
-    for blk in sm.get_matching_blocks():
-        for x in range(blk.size):
-            own[blk.b + x] = a_own[blk.a + x]
-    cur = next((o for o in own if o >= 0), -1)
-    if cur < 0:
+    matched = False
+    for tag, a0, a1, b0, b1 in sm.get_opcodes():
+        if tag == "equal":
+            matched = True
+            own[b0:b1] = a_own[a0:a1]
+        elif tag == "replace":
+            # Each raw word's share of the replaced chars, by how many of
+            # them it owns; the last takes the rounding remainder.
+            counts: dict[int, int] = {}
+            for r in a_own[a0:a1]:
+                counts[r] = counts.get(r, 0) + 1
+            x = b0
+            for n, (r, c) in enumerate(counts.items()):
+                take = b1 - x if n == len(counts) - 1 else (b1 - b0) * c // (a1 - a0)
+                own[x:x + take] = [r] * take
+                x += take
+    if not matched:
         return None
+    cur = 0
     pieces: list[list[str]] = [[] for _ in texts]
     prev = None
     for x, ch in enumerate(b):

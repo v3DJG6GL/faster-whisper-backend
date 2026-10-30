@@ -217,6 +217,38 @@ def test_unspaced_rule_change_marks_only_that_word(monkeypatch):
     assert "raw_word" not in out[0] and "raw_word" not in out[3]
 
 
+def test_unspaced_substitution_stays_on_the_substituted_word(monkeypatch):
+    # A rule over the whole sentence turned 他 into 她 (no per-word form
+    # explains it): the unmatched 她 went to the first MATCHED word, so 他
+    # was struck as removed and 我 showed "我她".
+    _install_word_map(monkeypatch, {})
+    out = capture_samples._align_words_to_final(
+        _words("我", "他", "好"), "我她好")
+
+    assert [w["word"] for w in out] == ["我", "她", "好"]
+    assert not any(w.get("removed") for w in out)
+    assert out[1]["raw_word"] == "他"
+    assert "raw_word" not in out[0] and "raw_word" not in out[2]
+
+
+def test_split_unspaced_spreads_replaced_and_inserted_chars():
+    split = capture_samples._split_unspaced
+    # A substituted first char stays on word 0 instead of the next word.
+    assert split(["他", "好"], ["她好"]) == [["她"], ["好"]]
+    assert split(["我", "喜欢", "他", "的", "猫"], ["我喜欢她的猫"]) == [
+        ["我"], ["喜欢"], ["她"], ["的"], ["猫"]]
+    # A replacement over two words is shared by their char counts, the
+    # remainder to the last one.
+    assert split(["我们", "去", "北京"], ["我们到北京市"]) == [
+        ["我们"], ["到"], ["北京市"]]
+    # An insertion before the first match joins the first word, one after a
+    # word joins that word.
+    assert split(["我", "喜欢", "猫"], ["嗯我喜欢猫。"]) == [
+        ["嗯我"], ["喜欢"], ["猫。"]]
+    # No char matches at all: the caller's token-count split takes over.
+    assert split(["他"], ["她"]) is None
+
+
 def test_unspaced_sentences_split_per_token(monkeypatch):
     # Two sentences joined by a space (faster-whisper glues the "。" onto
     # the word before it): each word stays inside its own token.
