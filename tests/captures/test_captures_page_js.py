@@ -1439,6 +1439,24 @@ console.log(JSON.stringify(_buildDefaultTranscript([
 
 
 @needs_node
+def test_card_preview_keeps_a_pipeline_blanked_capture_empty(page, tmp_path):
+    """The collapsed card's one-line preview fell back to the raw text when
+    the chips-applied result was empty, so a hallucination a removal rule
+    blanked showed as the card's label while the merge preview and the
+    export left it out. A legacy row (NULL columns) still previews raw."""
+    fns = "\n".join(_js_function(page, f) for f in (
+        "_applyChipsToText", "_cjkEdge", "_capturePreviewText"))
+    out = _run_node(tmp_path, fns + r"""
+console.log(JSON.stringify([
+  _capturePreviewText({ text_for_training: '', final: '',
+    raw: 'Untertitel im Auftrag des ZDF', corrections: [] }),
+  _capturePreviewText({ text_for_training: null, final: null,
+    raw: 'wie geht es', corrections: [] })]));
+""")
+    assert out == ["(empty)", "wie geht es"]
+
+
+@needs_node
 @pytest.mark.parametrize("finals, expected", [
     (["Hallo Welt.", "Wie geht es?", "gut"], "Hallo Welt. Wie geht es? gut"),
     (["Stopp!", "«Ja.»", "nein"], "Stopp! «Ja.» nein"),

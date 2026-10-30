@@ -1974,7 +1974,6 @@
   function _capturePreviewText(r, words) {
     return _applyChipsToText(
       (r.text_for_training ?? r.final ?? r.raw) || '', r.corrections || [], words)
-      || r.raw
       || '(empty)';
   }
   // Redraw an open card's preview after Save / Reprocess changed its chips
