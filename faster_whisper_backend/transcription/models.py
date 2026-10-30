@@ -576,8 +576,10 @@ _AUTO_DETECT_ONLY_KEYS = ("multilingual", "language_detection_threshold",
 def whisper_language_code(value: str) -> "str | None":
     """``value`` as the Whisper code faster-whisper's tokenizer accepts: the
     lower-cased value, or a locale tag's primary subtag (``DE`` → ``de``,
-    ``pt-BR`` → ``pt``). None when neither is one of Whisper's codes."""
-    value = value.strip().lower()
+    ``pt-BR`` / ``pt_BR`` → ``pt``). None when neither is one of Whisper's
+    codes."""
+    # "_" too: POSIX LANG and Java's Locale.toString() write "de_DE".
+    value = value.strip().lower().replace("_", "-")
     for cand in (value, value.split("-", 1)[0]):
         if cand in settings_schema.WHISPER_LANGUAGE_CODES:
             return cand
