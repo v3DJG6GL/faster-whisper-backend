@@ -781,6 +781,49 @@ def test_classify_error_taxonomy(stderr, needle):
     assert needle in udl.classify_error(stderr)
 
 
+def _http_error_line(status: int, reason: str) -> str:
+    # What str(DownloadError) carries for a page the site answered with an
+    # HTTP error (yt-dlp's _request_webpage → ExtractorError(cause=HTTPError)).
+    return (f"ERROR: [generic] page: Unable to download webpage: HTTP Error "
+            f"{status}: {reason} (caused by <HTTPError {status}: {reason}>)")
+
+
+@pytest.mark.parametrize("stderr,expected", [
+    (_http_error_line(404, "Not Found"),
+     "this media is unavailable or has been removed"),
+    (_http_error_line(410, "Gone"),
+     "this media is unavailable or has been removed"),
+    (_http_error_line(403, "Forbidden"), "the site refused the request"),
+    (_http_error_line(429, "Too Many Requests"),
+     "the site refused the request"),
+    # Not a refusal: a 5xx and a real transport failure stay unreachable.
+    (_http_error_line(503, "Service Unavailable"),
+     "the site could not be reached from the server"),
+    ("ERROR: [generic] page: Unable to download webpage: <urlopen error "
+     "[Errno -3] Temporary failure in name resolution> (caused by "
+     "TransportError('<urlopen error [Errno -3] Temporary failure in name "
+     "resolution>')); getaddrinfo failed",
+     "the site could not be reached from the server"),
+    ("WARNING: " + _http_error_line(429, "Too Many Requests")
+     + "\nERROR: Unable to download webpage: The read operation timed out",
+     "the site could not be reached from the server"),
+], ids=["404", "410", "403", "429", "503", "dns", "timeout-wins"])
+def test_classify_error_tells_an_http_error_page_from_an_unreachable_site(
+        stderr, expected):
+    """A site that answered 404 / 403 / 429 was reached: saying it "could not
+    be reached from the server" blamed the server's network for a dead link
+    or a site refusing it."""
+    assert udl.classify_error(stderr) == expected
+
+
+def test_classify_error_keeps_the_update_hint_for_a_video_data_403():
+    # The download stage's 403 carries no HTTPError repr; it mostly means an
+    # outdated yt-dlp, so the default message (with its update hint) stays.
+    msg = udl.classify_error(
+        "ERROR: unable to download video data: HTTP Error 403: Forbidden")
+    assert "yt-dlp" in msg and "refused" not in msg
+
+
 def test_classify_error_default_never_echoes_stderr():
     secret = "/tmp/secret-path/cookies.txt https://x/?token=abc"
     msg = udl.classify_error(f"ERROR: something exploded at {secret}")

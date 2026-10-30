@@ -1495,8 +1495,17 @@ _ERROR_TAXONOMY: "tuple[tuple[tuple[str, ...], str], ...]" = (
      "this stream hasn't finished yet — try again after it ends"),
     (("max-filesize", "file is larger than max-filesize"),
      "this media exceeds the server's size limit"),
-    (("unable to download webpage", "failed to resolve", "getaddrinfo",
-      "timed out", "connection refused"),
+    (("failed to resolve", "getaddrinfo", "timed out", "connection refused"),
+     "the site could not be reached from the server"),
+    # The site answered with an HTTP error status: a page / metadata fetch
+    # raises "Unable to download webpage: HTTP Error 404: Not Found (caused
+    # by <HTTPError 404: Not Found>)". Matched on the cause's repr, so the
+    # video-data stage's bare "HTTP Error 403" (mostly an outdated yt-dlp)
+    # keeps the default message and its update hint.
+    (("<httperror 404:", "<httperror 410:"),
+     "this media is unavailable or has been removed"),
+    (("<httperror 4",), "the site refused the request"),
+    (("unable to download webpage",),
      "the site could not be reached from the server"),
 )
 
