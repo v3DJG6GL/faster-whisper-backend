@@ -4691,11 +4691,9 @@
     // The latest reload releases it (_renderBatchCard on success).
     if (_batchActive) { _batchBusy = true; _batchLoadHold = true; }
     try {
-      // Accept checks members against _allCaptures, which holds only the
-      // picked speakers: another speaker's proposal could never pass. The
-      // route narrows its sweep to the picks (before its proposal cap, so
-      // a busy other speaker cannot crowd them out); the filter below is
-      // only a guard.
+      // Only the picked speakers' proposals: the route narrows its sweep
+      // to the picks (before its proposal cap, so a busy other speaker
+      // cannot crowd them out); the filter below is only a guard.
       var sp = _filtSpeakers.slice();
       var j = await api('GET', '/captures/api/propose-merges'
         + (sp.length ? '?user_id=' + encodeURIComponent(sp.join(',')) : ''));
@@ -4729,19 +4727,10 @@
   }
 
   async function _acceptProposal(p, btn) {
-    // Refuse members the loaded list knows are grouped. An id it doesn't
-    // know is a clip recorded since the last load (the proposer is fresh):
-    // let the server judge it, it 404s a deleted one.
-    var byId = {};
-    _allCaptures.forEach(function(r) { byId[r.id] = r; });
-    var missing = (p.member_ids || []).filter(function(id) {
-      var r = byId[id];
-      return r && r.sample_id;
-    });
-    if (missing.length) {
-      toast(missing.length + ' member(s) no longer eligible — try Refresh', true);
-      return;
-    }
+    // No check against the loaded captures list: the proposer is fresh and
+    // the server refuses a member that is grouped or deleted, while the
+    // list may predate a sample dissolved since (in another tab), and the
+    // modal's Refresh does not reload it — Accept was refused every time.
     _stopAnyPreview();
     var origText = btn ? btn.textContent : '';
     if (btn) { btn.disabled = true; btn.textContent = 'Merging…'; }
@@ -4975,16 +4964,6 @@
     if (action === 'accept') {
       // Mirror _acceptProposal's behavior but adapted for batch — we
       // don't have a per-card Accept button to flip into "Merging…".
-      var byId = {};
-      _allCaptures.forEach(function(r) { byId[r.id] = r; });
-      var missing = (p.member_ids || []).filter(function(id) {
-        var r = byId[id]; return r && r.sample_id;
-      });
-      if (missing.length) {
-        _batchBusy = false;
-        toast(missing.length + ' member(s) no longer eligible — try Refresh', true);
-        return;
-      }
       _stopAnyPreview();
       // Snapshot the proposal queue BEFORE we splice it so Revert can
       // restore the accepted proposal + any overlapping ones it removed.
