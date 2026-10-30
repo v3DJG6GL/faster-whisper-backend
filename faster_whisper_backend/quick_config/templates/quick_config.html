@@ -2395,6 +2395,16 @@ function applyState(j) {
   _reportedOwner = j.user_id ? String(j.user_id) : null;
   try { localStorage.removeItem(_REPORTED_KEY); }
   catch (_) {}
+  // A report an admin resolved or dismissed is no longer reported: without
+  // this the hint kept its badge, and Remove deleted the triaged row.
+  const _closed = new Set((j.closed_report_ids || [])
+    .filter((x) => !_serverReportedSet.has(x)));
+  const _hint = getReportedIds();
+  const _kept = _hint.filter((x) => !_closed.has(x));
+  if (_kept.length !== _hint.length) {
+    try { localStorage.setItem(_reportedKey(), JSON.stringify(_kept)); }
+    catch (_) {}
+  }
   syncReportedBadges();
   renderCards();
   updateButtons();

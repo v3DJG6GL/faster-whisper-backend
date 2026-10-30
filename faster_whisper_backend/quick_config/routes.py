@@ -865,6 +865,7 @@ async def get_state(
     # non-fatal — the client falls back to its localStorage hint and
     # an empty chip map.
     reported_chips: dict[str, dict[str, Any]] = {}
+    closed_report_ids: list[str] = []
     try:
         from faster_whisper_backend.reports import store as reports_store
         uid = user.get("user_id") or ""
@@ -892,6 +893,12 @@ async def get_state(
                         "corrections": rep.get("corrections") or [],
                         "user_comment": rep.get("user_comment") or "",
                     }
+            # The page's localStorage hint outlives a report an admin closed
+            # (the set above is open-only): these ids let it drop them, so
+            # "✓ reported" and a Remove that would delete the triaged row go.
+            closed_report_ids = await asyncio.to_thread(
+                reports_store.recent_closed_request_ids_for_user, uid, limit=100,
+            )
         # No fallback when uid is empty: reports are per-user; open-mode
         # callers see no reported-badge state at all.
     except Exception:
@@ -900,6 +907,7 @@ async def get_state(
         "rules": canonical,
         "role": role,
         "reported_chips": reported_chips,
+        "closed_report_ids": closed_report_ids,
         # Keys the page's localStorage "reported" hint, so on a shared
         # browser one account never reads another's (the same id /auth/whoami
         # already hands this caller).

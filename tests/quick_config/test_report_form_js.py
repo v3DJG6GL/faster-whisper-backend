@@ -315,6 +315,31 @@ def test_state_load_never_reads_another_accounts_reported_hint(client, tmp_path)
     }
 
 
+def test_state_load_drops_hint_ids_of_reports_an_admin_closed(client, tmp_path):
+    # The hint outlived a report resolved or dismissed on /reports: its trace
+    # kept "✓ reported", and Remove deleted the triaged row.
+    res = _run_js(client, tmp_path, _APPLY_STATE_STUBS + r"""
+      markReported('rid1'); markReported('rid2'); markReported('rid3');
+      const entry = { request_id: 'rid1', final: 'Alpha Beta' };
+      const form = _buildReportForm(entry);
+      const { badge } = _traceItem(entry, form);
+      badge.style.display = 'inline-flex';
+      // rid3 was closed, then reported again: its open row wins.
+      applyState({ rules: [], user_id: 'u1', closed_report_ids: ['rid1', 'rid3'],
+                   reported_chips: { rid3: { corrections: [] } } });
+      applyState({ rules: [], user_id: 'u1', reported_chips: {} });
+      out({
+        rid1: isReported('rid1'), rid2: isReported('rid2'), rid3: isReported('rid3'),
+        badge: badge.style.display,
+        removeBtn: form.querySelector('.rep-remove').style.display,
+      });
+    """, funcs=_REPORT_FUNCS + ("markReported", "syncReportedBadges", "applyState"))
+    assert res == {
+        "rid1": False, "rid2": True, "rid3": True,
+        "badge": "none", "removeBtn": "none",
+    }
+
+
 def test_first_submit_reveals_remove_button(client, tmp_path):
     # The button was only ever sized at form build or by a /state sync, so a
     # trace reported for the first time could not be withdrawn on reopen.

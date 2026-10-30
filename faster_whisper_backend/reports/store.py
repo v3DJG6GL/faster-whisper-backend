@@ -545,6 +545,27 @@ def recent_reports_for_user(
     return [_row_to_dict(r) for r in rows]
 
 
+def recent_closed_request_ids_for_user(
+    user_id: str, limit: int = 100,
+) -> list[str]:
+    """Return the request_ids of up to `limit` of the caller's resolved or
+    dismissed reports, most recently closed first. /quick-config drops
+    these from its localStorage "reported" hint, which otherwise keeps the
+    badge (and a Remove that deletes the triaged row) on a closed report."""
+    if not user_id:
+        return []
+    conn = _require_conn()
+    with _lock:
+        rows = conn.execute(
+            "SELECT request_id FROM reports"
+            " WHERE user_id = ? AND status != 'open' AND request_id IS NOT NULL"
+            " ORDER BY COALESCE(resolved_ts, created_ts) DESC"
+            " LIMIT ?",
+            (user_id, int(limit)),
+        ).fetchall()
+    return [r["request_id"] for r in rows]
+
+
 def counts_by_status(user_id: str | None = None) -> dict[str, int]:
     """Quick summary for the /reports page toolbar. `user_id=None` → all
     users (admin / scope=all); a string narrows to a single owner so a

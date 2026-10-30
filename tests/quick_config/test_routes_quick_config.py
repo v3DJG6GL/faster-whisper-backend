@@ -957,6 +957,30 @@ def test_state_reported_chips_carry_the_stored_comment(client, make_user_key):
     assert body["reported_chips"]["r1"]["user_comment"] == "speaker said X"
 
 
+def test_state_lists_the_callers_closed_reports(client, make_user_key):
+    """The page drops these from its localStorage "reported" hint; without
+    them a resolved report kept its badge, and Remove deleted the triaged
+    row."""
+    from faster_whisper_backend.reports import store as reports_store
+    from tests.conftest import bearer
+
+    make_user_key("admin", is_admin=True)  # lock down: no open-mode user
+    uid, raw = make_user_key("alice", pages={"quick_config": "own"})
+    _uid_b, raw_b = make_user_key("bob", pages={"quick_config": "own"})
+    h = bearer(raw)
+    for rid in ("r1", "r2"):
+        r = client.post("/quick-config/reports/api/submit",
+                        json={"request_id": rid, "user_comment": "x"}, headers=h)
+        assert r.status_code == 200, r.text
+    rep = reports_store.find_by_request_user("r1", uid)
+    reports_store.update_report(rep["id"], {"status": "resolved"})
+    body = client.get("/quick-config/state", headers=h).json()
+    assert body["closed_report_ids"] == ["r1"]
+    assert list(body["reported_chips"]) == ["r2"]
+    other = client.get("/quick-config/state", headers=bearer(raw_b)).json()
+    assert other["closed_report_ids"] == []
+
+
 def test_state_carries_the_callers_user_id(client, make_user_key):
     """The page keys its localStorage "reported" hint on it, so one account
     on a shared browser never reads another's."""
