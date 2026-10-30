@@ -58,6 +58,35 @@ def test_v1_models_name_each_device(client, app_module, monkeypatch):
     assert devices["tiny"] == "cpu"
 
 
+def test_v1_models_hides_a_resident_model_the_loader_refuses(
+        client, app_module, monkeypatch, tmp_path):
+    # The loader gates allowlist / shape / local dir live, before its cache
+    # hit, and a hot config change evicts nothing: a withdrawn model can stay
+    # resident, and must not be advertised as loaded:true when picking it
+    # gets a 400.
+    from faster_whisper_backend.transcription import models as tx_models
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "models" / "my-ft").mkdir(parents=True)
+    monkeypatch.setattr(tx_models, "_loaded_models", tx_models.OrderedDict(
+        [("large-v3", object()), ("models/my-ft", object())]))
+    monkeypatch.setattr(app_module.cfg, "DEFAULT_MODEL", "large-v3")
+
+    def ids():
+        return {e["id"]: e["loaded"]
+                for e in client.get("/v1/models").json()["data"]}
+
+    # Allowlist narrowed to large-v3 while models/my-ft is resident.
+    monkeypatch.setattr(app_module.cfg, "ALLOWED_MODELS", {"large-v3"})
+    assert ids() == {"large-v3": True}
+    # No allowlist, DEFAULT_MODEL moved off the local dir: no longer named.
+    monkeypatch.setattr(app_module.cfg, "ALLOWED_MODELS", set())
+    assert ids() == {"large-v3": True}
+    # Still named (the allowlist lists it): advertised as loaded.
+    monkeypatch.setattr(app_module.cfg, "ALLOWED_MODELS",
+                        {"large-v3", "models/my-ft"})
+    assert ids() == {"large-v3": True, "models/my-ft": True}
+
+
 def test_model_device_resolves_auto(app_module, monkeypatch):
     import sys
     import types

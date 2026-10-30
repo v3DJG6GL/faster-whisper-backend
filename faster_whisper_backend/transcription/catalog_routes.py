@@ -39,7 +39,8 @@ async def list_models():
     # records the fallback device after a failed primary load.
     loaded_devices = {m["name"]: m["device"]
                       for m in model_registry.loaded_models_snapshot()}
-    names: list[str] = list(tx_models._loaded_models.keys())
+    names: list[str] = [n for n in list(tx_models._loaded_models.keys())
+                        if _servable_resident(n)]
     if cfg.DEFAULT_MODEL not in names:
         names.append(cfg.DEFAULT_MODEL)
     if cfg.ALLOWED_MODELS:
@@ -68,6 +69,20 @@ async def list_models():
             for n in names
         ],
     }
+
+
+def _servable_resident(name: str) -> bool:
+    """Would _get_or_load_model still serve this resident model? Its fast
+    path re-runs the live allowlist / shape / local-dir gates before the cache
+    hit, and a hot config change evicts nothing, so a withdrawn model can stay
+    resident — listing it as loaded would point clients at a 400."""
+    try:
+        tx_models._check_model_allowed(name)
+        tx_models._check_model_shape(name)
+        tx_models._check_local_dir_named(name)
+    except (HTTPException, ValueError):
+        return False
+    return True
 
 
 def _model_device(name: str, loaded_device: "str | None") -> str:
