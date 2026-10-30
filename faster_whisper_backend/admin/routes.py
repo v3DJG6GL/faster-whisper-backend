@@ -818,8 +818,9 @@ def _probe_chain(text: str, units: list[list[Any]],
     the walk finished). A unit the kill caught after the units before it used
     up most of the round, or after the child's start left it under half of
     it, is not blamed: the next round runs long enough to give it the whole
-    timeout. None when the child cannot run at all — fails open
-    like regex_guard.validate.
+    timeout; a round the child spent starting gets one more the same way.
+    None when the child cannot run at all — fails open like
+    regex_guard.validate.
 
     `skip`: unit index -> the digests of its rule's input it is already known
     slow on; on that input it is reported slow and not timed again, on any
@@ -889,9 +890,10 @@ def _probe_chain(text: str, units: list[list[Any]],
         return (marks, stop) if stop >= last[1] else last
 
     # How long the child took to reach the last unit it was killed in (its
-    # start counted twice).
+    # start counted twice), or twice a round it spent starting.
     lead = 0.0
     rounds = retries = 0
+    restarted = False
     while rounds < _TEST_PIPELINE_PROBE_ROUNDS:
         want = timeout = _TEST_PIPELINE_PROBE_TIMEOUT + lead
         if budget is not None:
@@ -935,6 +937,15 @@ def _probe_chain(text: str, units: list[list[Any]],
                 retries += 1
                 lead = at + 2 * start
                 last = _further(marks, idx)
+                continue
+            if idx < 0 and timeout >= want and not restarted:
+                # The whole round went by before the child reached a unit:
+                # still starting, no unit's fault. One more round, with that
+                # round counted twice before it, costs no round and none of
+                # "left".
+                restarted = True
+                lead = 2 * timeout
+                last = _further(marks, 0)
                 continue
             if budget is not None:
                 budget["left"] -= (_TEST_PIPELINE_PROBE_TIMEOUT if timeout >= want

@@ -406,6 +406,30 @@ def test_a_slow_child_start_is_not_blamed_on_the_unit_running_at_the_kill(monkey
     assert timeouts == [0.2, pytest.approx(0.2 + 0.0001 + 2 * 0.19)]
 
 
+def test_a_round_the_child_spent_starting_walks_again_without_spending_the_budget(monkeypatch):
+    # A child still starting when a full round ends has printed no unit line
+    # (and maybe no "s" line): it gets one more round, with that round counted
+    # twice before the walk, instead of the whole list reported as unprobed.
+    monkeypatch.setattr(admin_routes, "_TEST_PIPELINE_PROBE_TIMEOUT", 2.0)
+    budget = {"left": 6.0, "wall": 15.0}
+    timeouts = _scripted_rounds(monkeypatch, [("", ""), _mark(0)], budget)
+    marks, slow, stop = admin_routes._probe_chain(
+        "aaaa", _units(["a"]), None, budget)
+    assert (marks, slow, stop) == ({0: admin_routes._text_sha("aaaa")}, set(), None)
+    assert timeouts == [2.0, 6.0]
+    assert budget["left"] == 6.0
+
+
+def test_a_child_that_never_starts_gets_only_one_more_round(monkeypatch):
+    monkeypatch.setattr(admin_routes, "_TEST_PIPELINE_PROBE_TIMEOUT", 2.0)
+    budget = {"left": 6.0, "wall": 15.0}
+    timeouts = _scripted_rounds(monkeypatch, [("", ""), ("", "")], budget)
+    assert admin_routes._probe_chain(
+        "aaaa", _units(["a"]), None, budget) == ({}, set(), 0)
+    assert timeouts == [2.0, 6.0]
+    assert budget["left"] == 4.0
+
+
 def test_the_child_reports_its_start_before_any_unit():
     p = subprocess.run(
         [sys.executable, "-I", "-c", admin_routes._PROBE_SRC],
