@@ -465,6 +465,44 @@ def test_release_tolerates_a_dropped_model():
     assert tx_models._model_leases == {}
 
 
+def test_a_reload_after_drain_does_not_inherit_the_old_lease(monkeypatch):
+    # R1 still decodes on the instance drain_then_evict dropped; the reload
+    # nobody leased must stay evictable, or a miss for "b" overflows the cap.
+    _stub_load(monkeypatch)
+    monkeypatch.setattr(tx_models.cfg, "MAX_LOADED_MODELS", 1, raising=False)
+    _register("a")
+    tx_models._model_leases["a"] = 1
+
+    async def scenario():
+        assert await tx_models.drain_then_evict("a") == ["a"]
+        await tx_models._get_or_load_model("a")
+        await tx_models._get_or_load_model("b")
+
+    asyncio.run(scenario())
+    assert list(tx_models._loaded_models) == ["b"]
+    assert tx_models._model_leases == {}
+
+
+def test_an_old_holder_release_leaves_the_reload_lease(monkeypatch):
+    _stub_load(monkeypatch)
+    monkeypatch.setattr(tx_models.cfg, "MAX_LOADED_MODELS", 1, raising=False)
+    _register("a")
+    tx_models._model_leases["a"] = 1
+
+    async def scenario():
+        await tx_models.drain_then_evict("a")
+        await tx_models._get_or_load_model("a", lease=True)   # R2 on the reload
+        tx_models._release_model_lease("a")                   # R1, old instance
+        await tx_models._get_or_load_model("b")
+
+    asyncio.run(scenario())
+    # R2 still decodes on the reload: it must survive the miss for "b".
+    assert tx_models._model_leases == {"a": 1}
+    assert "a" in tx_models._loaded_models
+    tx_models._release_model_lease("a")
+    assert tx_models._model_leases == {}
+
+
 def test_last_release_trims_a_cap_lowered_under_leases(monkeypatch):
     # The cap was lowered while every resident model was leased, so
     # trim_to_cap skipped them all; later requests only hit the cache, so no

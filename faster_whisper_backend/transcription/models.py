@@ -86,6 +86,13 @@ _model_load_lock = asyncio.Lock()
 # semantics therefore make check-then-mutate atomic — the same reasoning that
 # already lets the cache-hit fast path in _get_or_load_model run lock-free.
 _model_leases: "dict[str, int]" = {}
+# name → leases still held on an INSTANCE _drop_loaded_model(force=True)
+# dropped (drain_then_evict). Leases are keyed by name, so without this a
+# reload would inherit the old holders' count and read as in use. A release
+# drains this bucket first: if a new-instance holder releases before an old
+# one, the reload stays over-protected for a while, but it is never left
+# unprotected.
+_orphan_leases: "dict[str, int]" = {}
 
 # Cache misses past the fast path, from the check to the cached model: the CT2
 # conversion and Hub pre-download run OUTSIDE _model_load_lock, so the lock
@@ -669,6 +676,9 @@ def _drop_loaded_model(name: str, *, force: bool = False) -> bool:
     if not force and _model_leases.get(name, 0) > 0:
         logger.info("Model %s is in use — eviction deferred", name)
         return False
+    held = _model_leases.pop(name, 0)
+    if held > 0:
+        _orphan_leases[name] = _orphan_leases.get(name, 0) + held
     _loaded_models.pop(name, None)
     _drop_suppress_chars_cache(name)
     model_registry.unregister_loaded_model(name)
@@ -683,6 +693,16 @@ def _release_model_lease(name: str) -> None:
     Synchronous and lock-free (see the _model_leases comment). Tolerates a name
     that is no longer cached: drain_then_evict/shutdown force-drop entries out
     from under their lease holders by design."""
+    orphaned = _orphan_leases.get(name, 0) - 1
+    if orphaned >= 0:
+        # A holder of a force-dropped instance (see _orphan_leases): the
+        # cached reload's own count, and so its trim, stay untouched.
+        if orphaned:
+            _orphan_leases[name] = orphaned
+        else:
+            _orphan_leases.pop(name, None)
+        model_registry.touch_loaded_model(name)
+        return
     n = _model_leases.get(name, 0) - 1
     if n <= 0:
         _model_leases.pop(name, None)
@@ -1798,6 +1818,7 @@ def _reset_for_tests() -> None:
     global _inference_semaphore, _url_download_semaphore
     _loaded_models.clear()
     _model_leases.clear()
+    _orphan_leases.clear()
     _suppress_chars_cache.clear()
     _convert_locks.clear()
     _hub_prefetches.clear()
