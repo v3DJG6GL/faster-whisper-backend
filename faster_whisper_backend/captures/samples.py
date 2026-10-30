@@ -77,6 +77,30 @@ _CJK_SCRIPT = re.compile(
     "[\u3005-\u3007\u3040-\u30ff\u31f0-\u31ff\u3400-\u4dbf\u4e00-\u9fff"
     "\uf900-\ufaff\uff66-\uff9f\U00020000-\U0003134f]")
 
+# CJK and full-width punctuation a zh / ja member may end in ("。", "！",
+# "」", "，") and the openers it may start with ("「", "（"): skipped before
+# the Han / kana test, as Whisper ends nearly every zh / ja member in one.
+# Same sets in the JS twin _buildDefaultTranscript.
+_CJK_PUNCT = re.compile(
+    "[\u3000-\u3004\u3008-\u303f\uff01-\uff0f\uff1a-\uff20\uff3b-\uff40"
+    "\uff5b-\uff65]")
+_CJK_OPENERS = ("\u3008\u300a\u300c\u300e\u3010\u3014\u3016\u3018\u301a"
+                "\u301d\uff08\uff3b\uff5b\uff5f\uff62")
+
+
+def _cjk_tail(text: str) -> bool:
+    """Whether `text` ends in Chinese / Japanese, past its CJK punctuation."""
+    i = len(text)
+    while i and _CJK_PUNCT.match(text[i - 1]):
+        i -= 1
+    return bool(i) and bool(_CJK_SCRIPT.match(text[i - 1]))
+
+
+def _cjk_head(text: str) -> bool:
+    """Whether `text` starts in Chinese / Japanese, past its CJK openers."""
+    t = text.lstrip(_CJK_OPENERS)
+    return bool(t) and bool(_CJK_SCRIPT.match(t[0]))
+
 
 # No word starts with a Thai / Lao following vowel or repetition mark, a
 # Japanese small kana, iteration mark or "ー", and none ends with a Thai /
@@ -340,10 +364,10 @@ def _build_default_transcript(
         t = _apply_chips_to_text(base, chips, words).strip()
         if t:
             parts.append(t)
-    # A member ending in Han / kana meets a next member starting in one with
-    # no space, and its period is "。": a zh / ja fine-tune must not learn
-    # ". " between clauses.
-    cjk = [bool(_CJK_SCRIPT.match(p[-1])) for p in parts]
+    # A member ending in Han / kana (past its "。" / "」" / "，") meets a next
+    # member starting in one with no space, and its period is "。": a zh /
+    # ja fine-tune must not learn ". " between clauses.
+    cjk = [_cjk_tail(p) for p in parts]
     if strategy == "period_space":
         # ". " between members, unless the member already ends a sentence
         # ("Hallo Welt." must not become "Hallo Welt.. Wie …").
@@ -351,7 +375,7 @@ def _build_default_transcript(
                  for k, p in enumerate(parts[:-1])] + parts[-1:]
     out = parts[0] if parts else ""
     for k in range(1, len(parts)):
-        glue = cjk[k - 1] and _CJK_SCRIPT.match(parts[k][0])
+        glue = cjk[k - 1] and _cjk_head(parts[k])
         out += ("" if glue else " ") + parts[k]
     return out
 

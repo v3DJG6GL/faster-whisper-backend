@@ -1395,8 +1395,8 @@ def test_merge_modal_preview_places_chips_by_aligned_words(page, tmp_path):
     chip on a repeated word after removed fillers landed on the wrong copy:
     the reviewer approved a text the export would not emit."""
     fns = "\n".join(_js_function(page, f) for f in (
-        "_applyChipsToText", "_buildDefaultTranscript", "_renderMergePreview",
-        "_capturePreviewText"))
+        "_applyChipsToText", "_cjkEdge", "_buildDefaultTranscript",
+        "_renderMergePreview", "_capturePreviewText"))
     out = _run_node(tmp_path, _js_function(page, "_endsSentence") + "\n" + fns + r"""
 function escapeHtml(s) { return String(s); }
 var lines = [];
@@ -1429,11 +1429,11 @@ console.log(JSON.stringify({
     (["Er sagte: „Hallo Welt.“", "Wie geht es?"],
      "Er sagte: „Hallo Welt.“ Wie geht es?"),
     (["‚Stopp!‘", "gut"], "‚Stopp!‘ gut"),
-    (["你好。", "「好！」", "（是？）", "gut"], "你好。 「好！」 （是？） gut"),
+    (["你好。", "「好！」", "（是？）", "gut"], "你好。「好！」（是？） gut"),
     (["مرحبا؟", "नमस्ते।", "Wie⁉", "Was‼", "gut"],
      "مرحبا؟ नमस्ते। Wie⁉ Was‼ gut"),
     (["{eins.}", "《二。》", "〈三！〉", "›vier?‹", "fünf"],
-     "{eins.} 《二。》 〈三！〉 ›vier?‹ fünf"),
+     "{eins.} 《二。》〈三！〉 ›vier?‹ fünf"),
     (["یہ ٹھیک ہے۔", "Լավ է։", "ደህና ነው።", "ကောင်းတယ်။", "ល្អ។", "ॐ॥", "gut"],
      "یہ ٹھیک ہے۔ Լավ է։ ደህና ነው። ကောင်းတယ်။ ល្អ។ ॐ॥ gut"),
     (["Il a dit : « Oui. »", "non"], "Il a dit : « Oui. » non"),
@@ -1444,7 +1444,8 @@ def test_merge_preview_period_space_join_matches_the_server(
     ". " between members after the server stopped doubling a member's own
     sentence punctuation, so the preview showed "Hallo Welt.. Wie …"."""
     fns = "\n".join(_js_function(page, f) for f in (
-        "_endsSentence", "_applyChipsToText", "_buildDefaultTranscript"))
+        "_endsSentence", "_applyChipsToText", "_cjkEdge",
+        "_buildDefaultTranscript"))
     rows = [{"final": f} for f in finals]
     out = _run_node(tmp_path, fns + "\nconsole.log(JSON.stringify("
                     "_buildDefaultTranscript(" + json.dumps(rows)
@@ -1459,7 +1460,17 @@ def test_merge_preview_period_space_join_matches_the_server(
      {"space": "今天天气很好我们去公园吧。", "period_space": "今天天气很好。我们去公园吧。"}),
     (["𠀀", "𠀁"], {"space": "𠀀𠀁", "period_space": "𠀀。𠀁"}),
     (["こんにちは", "元気"], {"space": "こんにちは元気", "period_space": "こんにちは。元気"}),
-    (["你好。", "我们"], {"space": "你好。 我们", "period_space": "你好。 我们"}),
+    (["你好。", "我们"], {"space": "你好。我们", "period_space": "你好。我们"}),
+    # Past its CJK punctuation / closers / openers a member is still zh / ja.
+    (["今日はいい天気です。", "散歩に行きましょう。"],
+     {"space": "今日はいい天気です。散歩に行きましょう。",
+      "period_space": "今日はいい天気です。散歩に行きましょう。"}),
+    (["你好！", "「好」"], {"space": "你好！「好」", "period_space": "你好！「好」"}),
+    (["「はい」", "元気"], {"space": "「はい」元気", "period_space": "「はい」。元気"}),
+    (["今天天气很好，", "我们去公园"],
+     {"space": "今天天气很好，我们去公园", "period_space": "今天天气很好，。我们去公园"}),
+    (["你好。", "Hallo"], {"space": "你好。 Hallo", "period_space": "你好。 Hallo"}),
+    (["Hallo.", "「你好」"], {"space": "Hallo. 「你好」", "period_space": "Hallo. 「你好」"}),
     (["我用", "Python"], {"space": "我用 Python", "period_space": "我用。 Python"}),
     (["Python", "很好"], {"space": "Python 很好", "period_space": "Python. 很好"}),
     (["今天", "Hallo"], {"space": "今天 Hallo", "period_space": "今天。 Hallo"}),
@@ -1476,7 +1487,8 @@ def test_merge_preview_join_of_unspaced_members_matches_the_server(
     from faster_whisper_backend.captures.samples import _build_default_transcript
 
     fns = "\n".join(_js_function(page, f) for f in (
-        "_endsSentence", "_applyChipsToText", "_buildDefaultTranscript"))
+        "_endsSentence", "_applyChipsToText", "_cjkEdge",
+        "_buildDefaultTranscript"))
     rows = [{"final": f} for f in finals]
     out = _run_node(tmp_path, fns + "\nconsole.log(JSON.stringify("
                     "_buildDefaultTranscript(" + json.dumps(rows)

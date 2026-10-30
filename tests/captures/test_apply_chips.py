@@ -418,9 +418,9 @@ def test_single_capture_ground_preview_uses_the_shared_helper(client):
     (["Er sagte „Ja.“", "weiter"], "Er sagte „Ja.“ weiter"),
     (["‚Stopp!‘", "gut"], "‚Stopp!‘ gut"),
     (["›Oui?‹", "non"], "›Oui?‹ non"),
-    (["你好。", "好吗？", "好"], "你好。 好吗？ 好"),
+    (["你好。", "好吗？", "好"], "你好。好吗？好"),
     (["「好！」", "（是？）", "مرحبا؟", "नमस्ते।", "Wie⁉", "gut"],
-     "「好！」 （是？） مرحبا؟ नमस्ते। Wie⁉ gut"),
+     "「好！」（是？） مرحبا؟ नमस्ते। Wie⁉ gut"),
     # Urdu ۔, Armenian ։, Amharic ።, Burmese ။, Khmer ។, double danda ॥.
     (["یہ ٹھیک ہے۔", "Լավ է։", "ደህና ነው።", "ကောင်းတယ်။", "ល្អ។", "ॐ॥", "gut"],
      "یہ ٹھیک ہے۔ Լավ է։ ደህና ነው። ကောင်းတယ်။ ល្អ។ ॐ॥ gut"),
@@ -455,6 +455,33 @@ def test_default_transcript_join_writes_no_space_between_unspaced_members(
     """Every member was joined with " " and period_space added a Latin ".",
     so a zh / ja sample read "今天天气很好. 我们去公园吧。" and a
     fine-tune on it learned spaces and ". " between clauses."""
+    members = [{"final": f} for f in finals]
+    assert capture_samples._build_default_transcript(
+        members, strategy) == expected
+
+
+@pytest.mark.parametrize("finals, strategy, expected", [
+    (["你好。", "我们"], "space", "你好。我们"),
+    (["你好。", "我们"], "period_space", "你好。我们"),
+    (["今日はいい天気です。", "散歩に行きましょう。"], "space",
+     "今日はいい天気です。散歩に行きましょう。"),
+    (["你好！", "我们走吧"], "period_space", "你好！我们走吧"),
+    (["你好。", "「好！」"], "space", "你好。「好！」"),
+    # A CJK closer or clause mark still ends the member in zh / ja: "。",
+    # not a Latin ".", and no space (a clause mark is no sentence end).
+    (["「はい」", "元気"], "period_space", "「はい」。元気"),
+    (["他说「你好」", "我们走吧"], "period_space", "他说「你好」。我们走吧"),
+    (["今天天气很好，", "我们去公园"], "period_space", "今天天气很好，。我们去公园"),
+    # Next to Latin text the space stays.
+    (["你好。", "Hallo"], "space", "你好。 Hallo"),
+    (["Hallo.", "「你好」"], "space", "Hallo. 「你好」"),
+])
+def test_default_transcript_glues_zh_ja_members_that_end_in_cjk_punctuation(
+        finals, strategy, expected):
+    """Only the member's last character was tested for Han / kana, so a zh /
+    ja member ending in "。", "！" or "」" (the usual Whisper output) was still
+    joined with " ", and under period_space one ending in "」" or "，" got a
+    Latin ". " after it."""
     members = [{"final": f} for f in finals]
     assert capture_samples._build_default_transcript(
         members, strategy) == expected
