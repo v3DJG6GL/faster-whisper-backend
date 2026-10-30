@@ -260,6 +260,36 @@ def test_unspaced_sentences_split_per_token(monkeypatch):
     assert not any(w.get("removed") for w in out)
 
 
+def test_repeated_word_anchors_the_spaced_raw_word(monkeypatch):
+    # Mixed zh / en dictation where Whisper glues the second "Python" onto
+    # "，": the spaced " Python" is the whole first token, but the LCS tie
+    # skipped it for the later "Python", which took the first token while
+    # " Python" 写 代码 ， were struck as removed and 很 owned
+    # "写代码，Python 很". A chip on idx 6 then rewrote the FIRST Python.
+    _install_word_map(monkeypatch, {})
+    words = _words("我", "用", " Python", " 写", "代码", "，", "Python", " 很", "好")
+    final = "我用 Python 写代码，Python 很好"
+    out = capture_samples._align_words_to_final(words, final)
+
+    assert [w["word"].strip() for w in out] == [
+        "我", "用", "Python", "写", "代码", "，", "Python", "很", "好"]
+    assert not any(w.get("removed") for w in out)
+    chip = [{"idx": 6, "wrong": "Python", "correct": "Java"}]
+    assert capture_samples._apply_chips_to_text(final, chip, out) == (
+        "我用 Python 写代码，Java 很好")
+
+
+def test_repeated_unspaced_char_anchors_the_spaced_raw_word(monkeypatch):
+    # The opposite tie: the later " 好" starts the second token, so the
+    # unspaced 好 before it stays inside "你好".
+    _install_word_map(monkeypatch, {})
+    out = capture_samples._align_words_to_final(
+        _words("你", "好", " 好"), "你好 好")
+
+    assert [w["word"] for w in out] == ["你", "好", "好"]
+    assert not any(w.get("removed") for w in out)
+
+
 # ---------------------------------------------------------------------------
 # invariants
 # ---------------------------------------------------------------------------

@@ -513,16 +513,27 @@ def _align_words_to_final(
     n, m = len(raw_keys), len(fin_keys)
     matches: list[int] = [-1] * n
     if n and m:
+        # Longest common subsequence; among the longest, the one matching
+        # most raw words that start a token (a leading space) — a final
+        # token starts a word. With plain LCS a tie skipped the raw word, so
+        # in "我用 Python 写代码，Python 很好" the spaced " Python" lost the
+        # first token to the later, glued "Python" and four words in between
+        # were struck as removed. A match is worth `big` (more than every
+        # lead bonus together) plus 1 for a lead, so the match count wins
+        # and uniform leads (spaced text) align exactly as plain LCS.
+        big = n + 1
+        bonus = [1 if (w.get("word") or "")[:1].isspace() else 0 for w in src]
         dp = [[0] * (m + 1) for _ in range(n + 1)]
         for i in range(n - 1, -1, -1):
             for j in range(m - 1, -1, -1):
+                best = max(dp[i + 1][j], dp[i][j + 1])
                 if raw_keys[i] and raw_keys[i] == fin_keys[j]:
-                    dp[i][j] = dp[i + 1][j + 1] + 1
-                else:
-                    dp[i][j] = max(dp[i + 1][j], dp[i][j + 1])
+                    best = max(best, dp[i + 1][j + 1] + big + bonus[i])
+                dp[i][j] = best
         i = j = 0
         while i < n and j < m:
-            if raw_keys[i] and raw_keys[i] == fin_keys[j]:
+            if (raw_keys[i] and raw_keys[i] == fin_keys[j]
+                    and dp[i][j] == dp[i + 1][j + 1] + big + bonus[i]):
                 matches[i] = j
                 i += 1
                 j += 1
