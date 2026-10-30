@@ -174,6 +174,13 @@ _WORD_CASES = [
      [{"idx": 2, "wrong": "die", "correct": "DER"}],
      [_w(" ja"), _w(" die"), _w(" (die"), _w(" Sache")],
      "ja die DER Sache"),
+    # A stale `wrong` that covers the words at its idx: a chip saved when the
+    # first word of an unspaced sentence owned all of it. The corrected
+    # sentence replaces the sentence, not only the first char ("我喜欢狗。喜欢猫。").
+    ("我喜欢猫。",
+     [{"idx": 0, "idx_end": 0, "wrong": "我喜欢猫。", "correct": "我喜欢狗。"}],
+     [_w(" 我"), _w("喜欢"), _w("猫"), _w("。")],
+     "我喜欢狗。"),
     # A chip on a word inside an unspaced Chinese run, and on the third of
     # three "的" in one run (also after a chip that lengthened the run, and
     # in the second of two sentences): the char offset inside the run picks

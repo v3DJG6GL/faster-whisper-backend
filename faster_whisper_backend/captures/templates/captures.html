@@ -3423,7 +3423,8 @@
     // `words` (the aligned karaoke words the chips were made on) maps idx
     // onto the text's token position, past removed words, and is searched
     // next to a possibly stale stored `wrong` (the words at idx..idx_end,
-    // what renderChips heals `wrong` to; a tie keeps those words).
+    // what renderChips heals `wrong` to; a tie keeps those words unless
+    // the stored `wrong` covers them).
     if (!corrections || !corrections.length) return text || '';
     var out = text || '';
     // Combining marks and ZWNJ/ZWJ belong to their word, as on the server.
@@ -3558,10 +3559,11 @@
         if (healed && healed !== wrong) needles.unshift(healed);
       }
       // An anchored chip takes the occurrence nearest its idx over every
-      // pass (a tie keeps the earlier pass, so the healed words win over a
-      // stale `wrong` that is a part of them): the page strikes the words
-      // at idx, so a far match of the stale `wrong` must not beat the words
-      // there.
+      // pass: the page strikes the words at idx, so a far match of the
+      // stale `wrong` must not beat the words there. On a tie an occurrence
+      // that contains the other wins, else the earlier pass (the healed
+      // words over a stale `wrong` that is a part of them, a stale `wrong`
+      // covering them over the words), as on the server.
       var best = -1, bestEnd = -1, bestD = 0, bestD2 = 0, bestK = 0;
       for (var t = 0; t < needles.length * 2 && (anchored || best < 0); t++) {
         var occ = occurrences(needles[t >> 1], anchored ? cursor : 0,
@@ -3584,7 +3586,9 @@
             d2 = Math.abs(i - ts - (cshift[k + shift] || 0) - off);
           }
           var d = Math.abs(k + shift - pos);
-          if (best < 0 || d < bestD || (d === bestD && d2 < bestD2)) {
+          if (best < 0 || d < bestD || (d === bestD && d2 < bestD2)
+              || (d === bestD && d2 === bestD2 && i <= best && j >= bestEnd
+                  && j - i > bestEnd - best)) {
             best = i; bestEnd = j; bestD = d; bestD2 = d2; bestK = k + shift;
           }
         }

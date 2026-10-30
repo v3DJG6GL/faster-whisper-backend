@@ -133,10 +133,11 @@ def _apply_chips_to_text(
     is only a nearest match and drifts past such words. With `words`, an
     anchored chip is also matched by the words at idx..idx_end, the way the
     page re-derives `wrong` on display (a tie with the stored `wrong` keeps
-    those words, which the page replaces): a chip saved before those words
-    kept their spaces ("HalloWelt"), or on a form the pipeline has since
-    changed, shows on the page at its idx and must be applied there too, not
-    on another occurrence of the stale `wrong`."""
+    those words, which the page replaces, unless that `wrong` covers them):
+    a chip saved before those words kept their spaces ("HalloWelt"), or on a
+    form the pipeline has since changed, shows on the page at its idx and
+    must be applied there too, not on another occurrence of the stale
+    `wrong`."""
     if not corrections:
         return text or ""
     out = text or ""
@@ -209,10 +210,13 @@ def _apply_chips_to_text(
             if healed and healed != wrong:
                 needles.insert(0, healed)
         # An anchored chip takes the occurrence nearest its idx over every
-        # pass (a tie keeps the earlier pass, so the healed words win over a
-        # stale `wrong` that is a part of them): the page strikes the words
-        # at idx, so a far match of the stale `wrong` must not beat the words
-        # there.
+        # pass: the page strikes the words at idx, so a far match of the
+        # stale `wrong` must not beat the words there. On a tie an
+        # occurrence that contains the other wins, else the earlier pass:
+        # the healed words win over a stale `wrong` that is a part of them,
+        # and a stale `wrong` that covers them (a chip saved on a whole
+        # unspaced sentence when its first word owned all of it) wins over
+        # the words, so the corrected sentence does not replace one char.
         best, best_end, best_d, best_k = -1, -1, (0, 0), 0
         for needle, flex in ((n, f) for n in needles for f in (False, True)):
             for i, j in _occurrences(out, needle, cursor if anchored else 0,
@@ -236,7 +240,9 @@ def _apply_chips_to_text(
                 if _NO_SPACE_SCRIPT.search(out, ts, j):
                     d2 = abs(i - ts - cshift.get(k + shift, 0) - off)
                 d = (abs(k + shift - pos), d2)
-                if best < 0 or d < best_d:
+                if (best < 0 or d < best_d
+                        or (d == best_d and i <= best and j >= best_end
+                            and j - i > best_end - best)):
                     best, best_end, best_d, best_k = i, j, d, k + shift
             if best >= 0 and not anchored:
                 break
