@@ -1278,6 +1278,57 @@ def _first_repeated_char(pat: str, depth: int = 0) -> "str | None":
     return None
 
 
+def _literal_spans(pat: str) -> "list[tuple[int, int, str]]":
+    """``(start, end, char)`` for every character ``pat`` spells literally:
+    a plain character, a class member, or an escape that decodes to ONE
+    character (``\\x20``, ``\\040``, ``\\N{SPACE}``, ``\\t``). A shorthand
+    (``\\d``, ``\\s``, …) is a set, not a literal, and a ``{m,n}`` count is
+    not text the pattern matches: blanking every ``1`` of the raw text turned
+    ``\\d{1,}`` into ``\\d{\\x00,}``, no longer a repeat."""
+    spans = []
+    i, n = 0, len(pat)
+    while i < n:
+        c = pat[i]
+        if c == "\\":
+            char, end = _escape_char(pat, i)
+            if char is not None and pat[i + 1] not in "dDsSwW":
+                spans.append((i, end, char))
+            i = end
+        elif c == "[":
+            start, j, _negated = _skip_class(pat, i)
+            k = start
+            while k < j:
+                if pat[k] == "\\":
+                    char, end = _escape_char(pat, k, in_class=True)
+                    if char is not None and pat[k + 1] not in "dDsSwW":
+                        spans.append((k, end, char))
+                    k = end
+                else:
+                    spans.append((k, k + 1, pat[k]))
+                    k += 1
+            i = j + 1
+        elif c == "{":
+            _repeats, _atomic, k, _variable = _read_quantifier(pat, i)
+            if k == i:
+                spans.append((i, i + 1, c))  # a literal `{`
+            i = max(k, i + 1)
+        else:
+            if c not in ".^$*+?()|":
+                spans.append((i, i + 1, c))
+            i += 1
+    return spans
+
+
+def _blank_literal(pat: str, char: str) -> str:
+    """``pat`` with every literal spelling of ``char`` replaced by NUL."""
+    out, last = [], 0
+    for start, end, c in _literal_spans(pat):
+        if c == char:
+            out += [pat[last:start], "\x00"]
+            last = end
+    return "".join(out) + pat[last:]
+
+
 def _synthetic_fixture(pat: str) -> "str | None":
     """A per-pattern adversarial probe input, or None if none can be built.
 
@@ -1296,7 +1347,7 @@ def _synthetic_fixture(pat: str) -> "str | None":
         # Swap only a shorthand's run character: blanking the literal leaves
         # it in place, while a literal `1*1*…` run must stay a run of `1`.
         if (char in _RUN_SIBLINGS and char in pat
-                and _first_repeated_char(stripped.replace(char, "\x00")) == char):
+                and _first_repeated_char(_blank_literal(stripped, char)) == char):
             char = next((c for c in _RUN_SIBLINGS[char] if c not in pat), char)
     except Exception:  # noqa: BLE001 - best effort, never fail the save
         return None

@@ -772,6 +772,20 @@ def test_shorthand_run_ending_in_its_own_representative_is_rejected(pat):
         g.validate([("r", pat, "")], timeout=1.5)
 
 
+@pytest.mark.parametrize("pat", [
+    r"\d{1,}" * 7 + "1",
+    r"\d{1,9}" * 7 + "1",
+    r"(\d{1,})" * 7 + "1",
+])
+def test_counted_shorthand_run_ending_in_its_own_representative_is_rejected(pat):
+    """Telling the `\\d` run from a literal one blanked every `1` of the
+    text, the count's too: `\\d{1,}` became `\\d{\\x00,}`, no repeat, so the
+    run stayed `1` and these were accepted while `\\d*…1` was refused."""
+    assert "1" not in g._synthetic_fixture(pat)
+    with pytest.raises(ValueError):
+        g.validate([("r", pat, "")], timeout=1.5)
+
+
 def test_leading_bracket_is_part_of_the_class_body():
     """`[]]` had an empty body, so no witness and no synthetic probe."""
     assert g._skip_class("[]]", 0)[0] == 1
