@@ -1346,9 +1346,11 @@ def _synthetic_fixture(pat: str) -> "str | None":
         char = _first_repeated_char(stripped)
         # Swap only a shorthand's run character: blanking the literal leaves
         # it in place, while a literal `1*1*…` run must stay a run of `1`.
-        if (char in _RUN_SIBLINGS and char in pat
+        # Decoded, not the raw text: `\x20` or `\t` is a literal too.
+        literals = {c for _start, _end, c in _literal_spans(stripped)}
+        if (char in _RUN_SIBLINGS and char in literals
                 and _first_repeated_char(_blank_literal(stripped, char)) == char):
-            char = next((c for c in _RUN_SIBLINGS[char] if c not in pat), char)
+            char = next((c for c in _RUN_SIBLINGS[char] if c not in literals), char)
     except Exception:  # noqa: BLE001 - best effort, never fail the save
         return None
     if not char:

@@ -786,6 +786,26 @@ def test_counted_shorthand_run_ending_in_its_own_representative_is_rejected(pat)
         g.validate([("r", pat, "")], timeout=1.5)
 
 
+@pytest.mark.parametrize("pat, written", [
+    (r"\s*" * 7 + r"\x20", " "),
+    (r"\s*" * 7 + r"\040", " "),
+    (r"\s*" * 7 + r"\N{SPACE}", " "),
+    (r"\s*" * 7 + r"[ \t]", " \t"),
+])
+def test_shorthand_run_ending_in_an_escaped_representative_is_rejected(pat, written):
+    """Whether the rule writes the run character (or the sibling replacing
+    it) read the raw text, so an escaped space or tab went unseen: the run
+    stayed spaces / became tabs and the escape matched it at once."""
+    assert not set(g._synthetic_fixture(pat)) & set(written)
+    with pytest.raises(ValueError):
+        g.validate([("r", pat, "")], timeout=1.5)
+
+
+@pytest.mark.parametrize("pat", [r"\s+\x20", r"(\d+)\x20Uhr"])
+def test_ordinary_rule_with_an_escaped_space_is_accepted(pat):
+    g.validate([("r", pat, "")], timeout=1.5)
+
+
 def test_leading_bracket_is_part_of_the_class_body():
     """`[]]` had an empty body, so no witness and no synthetic probe."""
     assert g._skip_class("[]]", 0)[0] == 1
