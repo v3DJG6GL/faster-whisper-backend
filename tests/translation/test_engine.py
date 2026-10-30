@@ -2962,6 +2962,22 @@ def test_redistribute_blank_source_member_gets_empty_piece():
     assert translation._redistribute(["", ""], "x") == ["", ""]
 
 
+def test_join_translations_looks_past_quotes_on_both_sides():
+    # _redistribute cuts after "：" and leaves the opening quote on the next
+    # cue, so the joined zh text must not get a space before it.
+    pieces = translation._redistribute(["Er sagte:", "Komm jetzt."],
+                                       "他说：“走吧。”")
+    assert pieces == ["他说：", "“走吧。”"]
+    j = translation.join_translations
+    assert j(pieces) == "他说：“走吧。”"
+    assert j(["我们去", "‘北京’"]) == "我们去‘北京’"
+    assert j(["他说：\"你好\"", "我很好"]) == "他说：\"你好\"我很好"
+    assert j(["他小声说“", "明天来”。"]) == "他小声说“明天来”。"
+    # A Latin side keeps its space, quoted or not.
+    assert j(["Hello", "\"World\""]) == "Hello \"World\""
+    assert j(["我用", "“Python” 写代码"]) == "我用 “Python” 写代码"
+
+
 def test_fluent_blank_segment_is_skipped_not_fed_from_neighbour(base_cfg,
                                                                 monkeypatch):
     calls = []

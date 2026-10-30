@@ -1396,6 +1396,9 @@ def _redistribute(group_texts: "list[str]", translated: str) -> "list[str]":
 _GLUED_SCRIPT_RE = re.compile(
     "[\u3000-\u303f\u3040-\u30ff\u31f0-\u31ff\u3400-\u4dbf\u4e00-\u9fff"
     "\uf900-\ufaff\uff01-\uff9f\U00020000-\U0003134f]")
+# Western quotes and brackets a zh / ja piece can open or close on (「」（）
+# are already in _GLUED_SCRIPT_RE's ranges).
+_JOIN_MARKS = "“”‘’«»()[]\"'"
 
 
 def join_translations(parts: "list[str]") -> str:
@@ -1403,14 +1406,16 @@ def join_translations(parts: "list[str]") -> str:
     between pieces, but nothing where a Han / kana piece (or one ending in
     "。" and its closing quote) meets one opening in Han / kana — a fluent
     group cut back across its cues ('我今天去商' | '店买一些面包。') must not
-    come back with a space inside a word."""
+    come back with a space inside a word. Quotes and brackets on either side
+    of the cut are looked past: '他说：' | '“走吧。”' is one sentence too."""
     out = ""
     for p in (s.strip() for s in parts):
         if not p:
             continue
         if out:
-            glue = (_GLUED_SCRIPT_RE.match(out.rstrip("”’»)]")[-1:] or " ")
-                    and _GLUED_SCRIPT_RE.match(p[0]))
+            glue = (_GLUED_SCRIPT_RE.match(out.rstrip(_JOIN_MARKS)[-1:] or " ")
+                    and _GLUED_SCRIPT_RE.match(p.lstrip(_JOIN_MARKS)[:1]
+                                               or " "))
             out += "" if glue else " "
         out += p
     return out
