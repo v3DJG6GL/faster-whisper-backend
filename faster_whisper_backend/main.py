@@ -302,24 +302,28 @@ async def _recent_tx_retention_loop() -> None:
             logger.error("[recent-tx] retention loop error: %s", _rte)
 
 
+def _usage_sweep() -> None:
+    """One usage-store sweep with the four knobs read from cfg, so a
+    /settings edit applies without a restart. Run once at startup and by
+    the hourly loop."""
+    counts = usage_store.sweep(
+        unreported_after_h=int(getattr(cfg, "USAGE_UNREPORTED_AFTER_H", 24)),
+        jobs_retention_days=int(getattr(cfg, "USAGE_JOBS_RETENTION_DAYS", 365)),
+        app_retention_days=int(getattr(cfg, "USAGE_APP_RETENTION_DAYS", 90)),
+        hourly_retention_days=int(getattr(cfg, "USAGE_RETENTION_DAYS", 0)),
+    )
+    if any(counts.values()):
+        logger.info("[usage] sweep: %s", counts)
+
+
 async def _usage_retention_loop() -> None:
     """Hourly sweep for the usage-statistics store: closes out dictation
     sessions whose outcome never arrived and prunes the job/app rows past
-    their retention. Same shape as the reports loop; the four knobs are
-    read from cfg on every tick so a /settings edit applies without a
-    restart."""
+    their retention. Same shape as the reports loop."""
     while True:
         try:
             await asyncio.sleep(3600)
-            counts = await asyncio.to_thread(
-                usage_store.sweep,
-                unreported_after_h=int(getattr(cfg, "USAGE_UNREPORTED_AFTER_H", 24)),
-                jobs_retention_days=int(getattr(cfg, "USAGE_JOBS_RETENTION_DAYS", 365)),
-                app_retention_days=int(getattr(cfg, "USAGE_APP_RETENTION_DAYS", 90)),
-                hourly_retention_days=int(getattr(cfg, "USAGE_RETENTION_DAYS", 0)),
-            )
-            if any(counts.values()):
-                logger.info("[usage] sweep: %s", counts)
+            await asyncio.to_thread(_usage_sweep)
         except asyncio.CancelledError:
             raise
         except Exception as _ue:
@@ -460,6 +464,14 @@ async def lifespan(app: FastAPI):
         usage_store_ready = True
     except Exception as _ue:
         logger.error("Failed to initialize usage store: %s", _ue)
+    # The first hourly tick is an hour away, so a server restarted more
+    # often than that never applied the retention: sweep once now, its own
+    # best-effort step like the recent-transcriptions one above.
+    if usage_store_ready:
+        try:
+            _usage_sweep()
+        except Exception as _ue:
+            logger.warning("Startup usage sweep failed: %s", _ue)
 
     # Open the API-keys SQLite store and start the open-mode warning loop.
     # Placed BEFORE the preload loop and before any long-lived task is

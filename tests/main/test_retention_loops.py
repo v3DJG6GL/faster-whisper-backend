@@ -78,3 +78,25 @@ def test_startup_ages_out_recent_rows_past_retention(app_module, monkeypatch):
     with TestClient(app_module.app, client=("127.0.0.1", 12345)):
         ids = {r["request_id"] for r in rts.list_recent(limit=10)}
     assert ids == {"fresh"}
+
+
+def test_startup_sweeps_usage_rows_past_retention(app_module, monkeypatch):
+    """The hourly usage loop sleeps before its first sweep, so a server
+    restarted more often than hourly kept per-app rows past
+    USAGE_APP_RETENTION_DAYS. The lifespan sweeps once before serving."""
+    from fastapi.testclient import TestClient
+    from faster_whisper_backend.stats import usage_store as us
+
+    monkeypatch.setattr(app_module.cfg, "USAGE_APP_RETENTION_DAYS", 7, raising=False)
+    us.init_db(app_module.cfg.USAGE_DB)
+    now_h = us.now_hour()
+    us._require_conn().executemany(
+        "INSERT INTO usage_app_hourly VALUES (?, 'u', ?, 1, 1)",
+        [(now_h - 10 * 24, "old-app"), (now_h, "new-app")])
+    us._require_conn().close()
+    us._conn = None
+
+    with TestClient(app_module.app, client=("127.0.0.1", 12345)):
+        apps = {r[0] for r in us._require_conn().execute(
+            "SELECT app_id FROM usage_app_hourly")}
+    assert apps == {"new-app"}
