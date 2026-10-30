@@ -150,6 +150,11 @@ _SHORTHAND_CHARS = {
     "w": "a", "W": "\x01", "d": "1", "D": "a", "s": " ", "S": "a",
     "n": "\n", "t": "\t", "r": "\r", "f": "\f", "v": "\v",
 }
+# Other characters the shorthand behind a `\d` / `\s` run character matches.
+# `\d*\d*…\d*1` ends on its own run character, so a run of `1` matched at
+# once; the first of these the pattern does not mention literally is used
+# instead. Letter runs need none: the prose fixtures already catch `\w*…a`.
+_RUN_SIBLINGS = {"1": "234567890", " ": "\t\u2003"}
 # Hex escapes and their exact digit counts (``\x2d``, ``\u2013``, ``\U…``).
 _HEX_ESCAPES = {"x": 2, "u": 4, "U": 8}
 
@@ -1286,7 +1291,13 @@ def _synthetic_fixture(pat: str) -> "str | None":
     run — the shape backtracking blows up on.
     """
     try:
-        char = _first_repeated_char(_strip_comments(_strip_verbose(pat)))
+        stripped = _strip_comments(_strip_verbose(pat))
+        char = _first_repeated_char(stripped)
+        # Swap only a shorthand's run character: blanking the literal leaves
+        # it in place, while a literal `1*1*…` run must stay a run of `1`.
+        if (char in _RUN_SIBLINGS and char in pat
+                and _first_repeated_char(stripped.replace(char, "\x00")) == char):
+            char = next((c for c in _RUN_SIBLINGS[char] if c not in pat), char)
     except Exception:  # noqa: BLE001 - best effort, never fail the save
         return None
     if not char:

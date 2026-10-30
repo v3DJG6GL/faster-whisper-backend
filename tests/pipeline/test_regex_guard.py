@@ -756,6 +756,22 @@ def test_non_word_run_ending_in_hash_is_rejected(pat):
         g.validate([("r", pat, "")], timeout=1.5)
 
 
+@pytest.mark.parametrize("pat", [
+    r"\d*\d*\d*\d*\d*\d*\d*1",
+    r"(\d+)(\d+)(\d+)(\d+)(\d+)(\d+)(\d+)1",
+    r"\s*\s*\s*\s*\s*\s*\s* ",
+    r"(\s+)(\s+)(\s+)(\s+)(\s+)(\s+)(\s+) ",
+])
+def test_shorthand_run_ending_in_its_own_representative_is_rejected(pat):
+    """The `\\d` / `\\s` run was built of `1` / a space, the pattern's own
+    final literal, so the synthetic probe matched at once and these were
+    accepted. A literal run keeps its own character."""
+    assert pat[-1] not in g._synthetic_fixture(pat)
+    assert g._synthetic_fixture("1*" * 7 + "x").startswith("1" * 10)
+    with pytest.raises(ValueError):
+        g.validate([("r", pat, "")], timeout=1.5)
+
+
 def test_leading_bracket_is_part_of_the_class_body():
     """`[]]` had an empty body, so no witness and no synthetic probe."""
     assert g._skip_class("[]]", 0)[0] == 1
