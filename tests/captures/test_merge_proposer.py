@@ -8,7 +8,9 @@ over-cap), _eligible (every rejection branch + boundaries), and propose_merges
 (admin vs non-admin cache keys, per-(user,lang) partition, greedy
 non-overlapping claim, TTL cache copy + was_cached)."""
 
+import difflib
 import os
+import random
 
 import pytest
 
@@ -213,6 +215,60 @@ def test_bucket_packs_no_more_than_api_member_cap():
     assert cands  # at least the largest pack survives
     assert all(len(members) <= P._MAX_MEMBERS for _, members in cands)
     assert max(len(members) for _, members in cands) == P._MAX_MEMBERS
+
+
+def _random_bucket(seed, n=40):
+    # Small vocabulary + varied lengths: some pairs are near-duplicates, some
+    # differ only in length, most are unrelated — every gate branch is hit.
+    rng = random.Random(seed)
+    vocab = ["hallo", "welt", "heute", "morgen", "termin", "bitte", "danke", "ja"]
+    base = [" ".join(rng.choice(vocab) for _ in range(rng.randint(1, 12)))
+            for _ in range(6)]
+    texts = []
+    for _ in range(n):
+        t = rng.choice(base)
+        if rng.random() < 0.5:
+            t += " " + " ".join(rng.choice(vocab) for _ in range(rng.randint(0, 6)))
+        texts.append(t)
+    return [_bkt_member(i, rng.uniform(0.5, 3.0), t) for i, t in enumerate(texts)]
+
+
+@pytest.mark.parametrize("threshold", [0.0, 0.3, 0.6, 0.85, 0.95, 1.0])
+@pytest.mark.parametrize("seed", [1, 2, 3])
+def test_bucket_gated_dup_check_matches_plain_ratio(monkeypatch, seed, threshold):
+    bucket = _random_bucket(seed)
+
+    def ids(cands):
+        return [(score, [m["id"] for m in members]) for score, members in cands]
+
+    gated = ids(P._generate_candidates_for_bucket(bucket, 0.3, threshold, 26.0, 28.0))
+    monkeypatch.setattr(P, "_is_near_dup", lambda a, b, t: P._ratio(a, b) > t)
+    plain = ids(P._generate_candidates_for_bucket(bucket, 0.3, threshold, 26.0, 28.0))
+    assert gated == plain
+
+
+def test_bucket_dup_check_skips_full_ratio_below_the_quick_bounds(monkeypatch):
+    # ratio() is the expensive call; a pair whose quick_ratio() upper bound
+    # cannot clear the threshold must never reach it.
+    full_calls = []
+
+    class Counting(difflib.SequenceMatcher):
+        def ratio(self):
+            full_calls.append(self.quick_ratio())
+            return super().ratio()
+
+    monkeypatch.setattr(P.difflib, "SequenceMatcher", Counting)
+    bucket = [
+        _bkt_member(0, 1.0, "hallo welt"),
+        _bkt_member(1, 1.0, "hallo welt heute morgen termin bitte danke ja"),  # length gap
+        _bkt_member(2, 1.0, "xyzq"),  # no shared characters
+        _bkt_member(3, 1.0, "hallo welt!"),  # real near-duplicate of 0
+    ]
+    cands = P._generate_candidates_for_bucket(bucket, 0.3, 0.85, 26.0, 28.0)
+    top = next(c for c in cands if c[1][0]["id"] == "c0")
+    assert [m["id"] for m in top[1]] == ["c0", "c1", "c2"]  # c3 still dup-skipped
+    assert full_calls  # the near-duplicate pair does pay the full ratio()
+    assert all(q > 0.85 for q in full_calls)
 
 
 # ---------------------------------------------------------------------------

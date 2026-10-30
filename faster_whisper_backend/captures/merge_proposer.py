@@ -173,6 +173,19 @@ def _ratio(a: str, b: str) -> float:
     return difflib.SequenceMatcher(None, a, b).ratio()
 
 
+def _is_near_dup(a: str, b: str, threshold: float) -> bool:
+    """`_ratio(a, b) > threshold`, gated by difflib's two cheap upper bounds
+    (real_quick_ratio >= quick_ratio >= ratio), so only pairs that could still
+    clear the threshold pay the full ratio() — the O(N^2) bucket walk makes
+    one call per (candidate, member) pair. Same answer as the plain ratio."""
+    if not a or not b:
+        return 0.0 > threshold
+    sm = difflib.SequenceMatcher(None, a, b)
+    return (sm.real_quick_ratio() > threshold
+            and sm.quick_ratio() > threshold
+            and sm.ratio() > threshold)
+
+
 def _build_sample_score(members: list[dict[str, Any]], gap_s: float,
                         target_s: float, edge_s: float = 0.0) -> dict[str, float]:
     """Return per-component scores + composite for ranking."""
@@ -270,7 +283,7 @@ def _generate_candidates_for_bucket(
                 # Doesn't fit; try smaller successors (skip-allowed pack).
                 continue
             ct = texts[j]
-            is_dup = any(_ratio(ct, mt) > dup_threshold for mt in member_texts)
+            is_dup = any(_is_near_dup(ct, mt, dup_threshold) for mt in member_texts)
             if is_dup:
                 continue
             members.append(cand)
