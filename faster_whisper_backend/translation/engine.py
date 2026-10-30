@@ -1413,9 +1413,12 @@ def join_translations(parts: "list[str]") -> str:
         if not p:
             continue
         if out:
-            glue = (_GLUED_SCRIPT_RE.match(out.rstrip(_JOIN_MARKS)[-1:] or " ")
-                    and _GLUED_SCRIPT_RE.match(p.lstrip(_JOIN_MARKS)[:1]
-                                               or " "))
+            left = out.rstrip(_JOIN_MARKS)[-1:]
+            right = p.lstrip(_JOIN_MARKS)[:1]
+            # A side made of marks only (a lone '“' cue) lets the other
+            # side decide, or '他说：' | '“' | '走开。”' gets two spaces.
+            glue = (left or right) and all(
+                _GLUED_SCRIPT_RE.match(c) for c in (left, right) if c)
             out += "" if glue else " "
         out += p
     return out

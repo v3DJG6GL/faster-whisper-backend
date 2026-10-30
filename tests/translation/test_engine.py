@@ -2978,6 +2978,21 @@ def test_join_translations_looks_past_quotes_on_both_sides():
     assert j(["我用", "“Python” 写代码"]) == "我用 “Python” 写代码"
 
 
+def test_join_translations_mark_only_piece_glues_in_zh():
+    # A lone '"' cue gets a mark-only piece; it used to get a space on both
+    # sides ('他说： “ 走开。”').
+    pieces = translation._redistribute(["Er sagte:", "\"", "Geh weg.\""],
+                                       "他说：“走开。”")
+    assert pieces == ["他说：", "“", "走开。”"]
+    j = translation.join_translations
+    assert j(pieces) == "他说：“走开。”"
+    assert j(["我们去", "(", "北京"]) == "我们去(北京"
+    assert j(["他说：“走吧。", "”", "我们走"]) == "他说：“走吧。”我们走"
+    assert j(["“", "走开。”"]) == "“走开。”"
+    # Latin text around a lone mark keeps its spaces.
+    assert j(["He said:", "\"", "Go away.\""]) == "He said: \" Go away.\""
+
+
 def test_fluent_blank_segment_is_skipped_not_fed_from_neighbour(base_cfg,
                                                                 monkeypatch):
     calls = []
