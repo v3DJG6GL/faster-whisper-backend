@@ -495,6 +495,31 @@ console.log(JSON.stringify({ stale: run('foo um bar'), healed: run('foo bar') })
 
 
 @needs_node
+def test_heal_keeps_a_stored_wrong_that_covers_the_words(page, tmp_path):
+    """The heal cut a stored `wrong` that covers the words at its idx down
+    to those words and marked the card unsaved: a chip saved on a whole
+    unspaced sentence then replaced only its first char in the preview
+    ("我喜欢狗。喜欢猫。"), a legacy "New York" chip only "New", and a Save
+    stored the cut form, so the export did the same for good."""
+    out = _run_node(tmp_path, _heal_fns(page) + _js_function(
+        page, "_applyChipsToText") + r"""
+function run(text, words, chip) {
+  var state = { words: words, chipBox: el(), dirty: false, corrections: [chip] };
+  renderChips(state);
+  return [state.corrections[0].wrong, state.dirty,
+          _applyChipsToText(text, state.corrections, words)];
+}
+console.log(JSON.stringify([
+  run('我喜欢猫。', [{ word: ' 我' }, { word: '喜欢' }, { word: '猫' }, { word: '。' }],
+      { wrong: '我喜欢猫。', correct: '我喜欢狗。', idx: 0, idx_end: 0 }),
+  run('New York City', [{ word: ' New' }, { word: ' York' }, { word: ' City' }],
+      { wrong: 'New York', correct: 'Newark', idx: 0 })]));
+""")
+    assert out == [["我喜欢猫。", False, "我喜欢狗。"],
+                   ["New York", False, "Newark City"]]
+
+
+@needs_node
 def test_heal_the_server_stores_the_same_leaves_the_card_clean(page, tmp_path):
     """The server keeps a chip's `wrong` trimmed and cut at 200 chars, so a
     long range chip never matched its full recomputed text: the card read

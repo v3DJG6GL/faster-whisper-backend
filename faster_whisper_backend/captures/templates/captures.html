@@ -2739,6 +2739,12 @@
       // its stored text: the server refuses the full one, and the preview
       // then shows what the export does with the cut one.
       if (w === c.wrong || w.trim().length > CHIP_TEXT_MAX) return;
+      // A stored `wrong` that covers those words is kept too (a chip saved
+      // on a whole unspaced sentence when its first word owned all of it, a
+      // legacy "New York" chip with no idx_end): _applyChipsToText and the
+      // export replace all of it, so healing it down to the words would
+      // replace only them, and a Save would store that.
+      if (c.wrong && c.wrong.indexOf(w.trim()) >= 0) return;
       if (w.trim().slice(0, CHIP_TEXT_MAX) !== c.wrong) healed = true;
       c.wrong = w;
     });
