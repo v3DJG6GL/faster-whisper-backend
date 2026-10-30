@@ -3932,7 +3932,7 @@
   // batch-review card. Callers set state.stripEl + state.cursorIdx then
   // call _bindStripKeyboard(state).
   // -------------------------------------------------------------------
-  function _redrawCursor(state) {
+  function _redrawCursor(state, noScroll) {
     if (!state.wordEls) return;
     for (var i = 0; i < state.wordEls.length; i++) {
       if (state.wordEls[i]) state.wordEls[i].classList.remove('cursor');
@@ -3942,7 +3942,7 @@
       el.classList.add('cursor');
       // Only the strip: this also runs when a Save / Regenerate / Lock
       // reply repaints the card, and must not pull the page back to it.
-      _scrollStripTo(state.stripEl, el);
+      if (!noScroll) _scrollStripTo(state.stripEl, el);
     }
   }
   function _moveCursor(state, idx) {
@@ -4055,18 +4055,27 @@
     if (strip.parentNode) {
       strip.parentNode.insertBefore(hint, strip.nextSibling);
     }
+    // A mouse click focuses the strip on mousedown (which runs first): a
+    // scroll to word 0 before mouseup, of the page or of a strip scrolled
+    // down by playback or the wheel, moves another word under the pointer
+    // and the click on the word goes to the strip instead.
+    var pointerFocus = false;
+    strip.addEventListener('mousedown', function() {
+      pointerFocus = true;
+      setTimeout(function() { pointerFocus = false; }, 0);
+    });
     strip.addEventListener('focus', function() {
       var state = strip._kbState;
       strip.classList.add('has-focus');
       hint.classList.add('show');
       // Initialize cursor on first focus if not set. Only the strip
-      // scrolls to it: a mouse click focuses the strip on mousedown, and a
-      // page jump to word 0 before mouseup would lose the click on a word
-      // further down (onWordClick sets the cursor itself).
+      // scrolls to it, and only on a keyboard focus: onWordClick sets the
+      // cursor of a click itself.
       if (state.cursorIdx < 0 && state.words.length) {
         state.cursorIdx = 0;
-        _redrawCursor(state);
+        _redrawCursor(state, pointerFocus);
       }
+      pointerFocus = false;
     });
     strip.addEventListener('blur', function() {
       strip.classList.remove('has-focus');

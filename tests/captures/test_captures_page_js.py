@@ -2545,3 +2545,66 @@ handlers.focus();
 console.log(JSON.stringify([state.cursorIdx, calls]));
 """)
     assert out == [0, 0]
+
+
+def _strip_focus_harness(page):
+    """_bindStripKeyboard on a strip scrolled down by 200px (playback or the
+    wheel), so word 0 sits above its visible top; `handlers` holds the
+    strip's listeners."""
+    fns = "\n".join(_js_function(page, f) for f in (
+        "_scrollStripTo", "_redrawCursor", "_moveCursor", "_bindStripKeyboard"))
+    return fns + r"""
+var handlers = {};
+function word(top) {
+  return { classList: { add: function() {}, remove: function() {} },
+    scrollIntoView: function() {},
+    getBoundingClientRect: function() {
+      return { top: top - strip.scrollTop, bottom: top + 20 - strip.scrollTop };
+    } };
+}
+var strip = { scrollTop: 200, clientTop: 1, clientHeight: 100, parentNode: null,
+  setAttribute: function() {},
+  classList: { add: function() {}, remove: function() {} },
+  addEventListener: function(t, h) { handlers[t] = h; },
+  getBoundingClientRect: function() { return { top: 500, bottom: 602 }; } };
+global.document = { createElement: function() {
+  return { classList: { add: function() {}, remove: function() {} } }; } };
+var state = { stripEl: strip, words: ['a', 'b'], cursorIdx: -1,
+  wordEls: [word(510), word(720)] };
+_bindStripKeyboard(state);
+"""
+
+
+@needs_node
+def test_mouse_first_focus_leaves_a_scrolled_strip_alone(page, tmp_path):
+    """The first focus scrolled the strip itself to word 0: with the strip
+    scrolled down (playback follows the playing word), a click on a visible
+    word pulled the strip to its top on mousedown, mouseup landed on
+    another word and the click went to the strip, so no chip opened."""
+    out = _run_node(tmp_path, _strip_focus_harness(page) + r"""
+if (handlers.mousedown) handlers.mousedown();
+handlers.focus();
+console.log(JSON.stringify([state.cursorIdx, strip.scrollTop]));
+""")
+    assert out == [0, 200]
+
+
+@needs_node
+def test_keyboard_first_focus_scrolls_the_strip_to_the_cursor(page, tmp_path):
+    """Tab into the strip (no mousedown, or one whose focus came long
+    after): the cursor's word 0 is brought into the strip's view."""
+    out = _run_node(tmp_path, _strip_focus_harness(page) + r"""
+var res = [];
+handlers.focus();
+res.push(strip.scrollTop);
+state.cursorIdx = -1;
+strip.scrollTop = 200;
+handlers.mousedown();   // a click on an already focused strip: no focus event
+setTimeout(function() {
+  handlers.focus();
+  res.push(strip.scrollTop);
+  console.log(JSON.stringify(res));
+}, 5);
+""")
+    # Word 0 (content row 510) back at the strip's inner top (501).
+    assert out == [9, 9]
