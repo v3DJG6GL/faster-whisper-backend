@@ -469,7 +469,10 @@ if ($ff -and (-not $Full -or (Test-FfmpegShared $ff))) {
         Expand-Archive -Path $zipPath -DestinationPath $extractDir
         $inner = Get-ChildItem -Directory $extractDir | Select-Object -First 1
         if (Test-Path $RepoFfmpegDir) { Remove-Item -Recurse -Force $RepoFfmpegDir }
-        Move-Item $inner.FullName $RepoFfmpegDir
+        # Copy, not Move-Item: Windows PowerShell 5.1 cannot move a directory
+        # from $env:TEMP to a checkout on another volume. The old dir is gone,
+        # so the copy becomes ffmpeg\ itself rather than nesting inside it.
+        Copy-Item -Recurse $inner.FullName $RepoFfmpegDir
         # Stamp which zip this copy came from; compared against the pin above
         # on re-runs so a pin bump replaces the copy automatically.
         Set-Content -Path $RepoFfmpegPin -Value $FfmpegZipSha -Encoding ASCII

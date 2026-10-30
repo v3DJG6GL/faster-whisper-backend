@@ -776,6 +776,19 @@ def test_windows_legacy_store_recipe_creates_the_db_dir_before_the_move():
     assert mkdir < move
 
 
+def test_windows_shared_ffmpeg_is_copied_out_of_temp_not_moved():
+    # Windows PowerShell 5.1 cannot Move-Item a directory across volumes: with
+    # TEMP on C: and the checkout on D:, -Full aborted after the pre-flight had
+    # unregistered the service. The copy must follow the old dir's removal, or
+    # it nests as ffmpeg\ffmpeg-<ver>\ and bin\ffmpeg.exe is never found.
+    ps1 = _read("install-service.ps1")
+    assert "Move-Item $inner.FullName" not in ps1
+    remove = ps1.index("if (Test-Path $RepoFfmpegDir) { Remove-Item -Recurse -Force $RepoFfmpegDir }")
+    copy = ps1.index("Copy-Item -Recurse $inner.FullName $RepoFfmpegDir")
+    cleanup = ps1.index("Remove-Item -Recurse -Force $extractDir\n")
+    assert remove < copy < cleanup
+
+
 def test_windows_legacy_config_recipe_creates_the_data_dir_before_the_move():
     # data/ is gitignored and the installer never creates it: Move-Item onto a
     # missing folder renames config.local.json to a FILE named data, and the
