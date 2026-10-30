@@ -525,14 +525,21 @@ def test_handshake_language_that_is_not_a_code_is_treated_as_absent(
     ("de", "de"), ("DE", "de"), ("de-DE", "de"), ("pt-BR", "pt"),
     ("en-US", "en"), ("haw", "haw"), ("xx", None), ("xx-YY", None),
     ("English", None), ("", ""), ("  ", ""), (None, None), (7, None),
+    # An underscore locale (POSIX LANG, Java's Locale.toString()) folds as
+    # batch folds it: /dictate sends one language box to both modes.
+    ("de_DE", "de"), ("pt_BR", "pt"), ("zh_Hant_TW", "zh"), ("xx_YY", None),
 ])
 def test_handshake_language_reduces_to_a_whisper_code(raw, expected):
     """faster-whisper's tokenizer raises on anything outside its own code
     list, which in streaming fails every decode with no error frame — so a
     case variant or locale tag is reduced to the Whisper code, and anything
-    that does not reduce to one is treated as absent."""
+    that does not reduce to one is treated as absent. Batch reduces the same
+    value the same way."""
+    from faster_whisper_backend.transcription.models import whisper_language_code
     from faster_whisper_backend.streaming.routes import _handshake_language
     assert _handshake_language(raw) == expected
+    if isinstance(raw, str) and raw.strip():
+        assert whisper_language_code(raw) == expected
 
 
 @pytest.mark.parametrize("language,expected", [("EN", "en"), ("en-US", "en"), ("xx", None)])

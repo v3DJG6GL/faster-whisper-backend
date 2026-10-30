@@ -182,8 +182,9 @@ _CLIENT_OVERRIDE_KEYS: frozenset[str] = frozenset(
 _SURROGATE_RE = re.compile(r"[\ud800-\udfff]")
 
 
-# The handshake `language`: a Whisper code (`de`, `haw`) or a BCP-47-ish tag.
-_LANGUAGE_RE = re.compile(r"\A[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8}){0,2}\Z")
+# The handshake `language`: a Whisper code (`de`, `haw`) or a BCP-47-ish tag,
+# "-" or "_" separated (POSIX LANG and Java's Locale.toString() write "de_DE").
+_LANGUAGE_RE = re.compile(r"\A[A-Za-z]{2,3}([-_][A-Za-z0-9]{2,8}){0,2}\Z")
 
 
 def _handshake_language(raw: object) -> "str | None":
@@ -191,13 +192,15 @@ def _handshake_language(raw: object) -> "str | None":
 
     Tri-state, same as batch: not a string → None (inherit DEFAULT_LANGUAGE);
     blank → "" (explicit auto-detect, the client's cleared state). Otherwise
-    the value is lower-cased and kept when it, or a locale tag's primary
-    subtag (`de-DE` → `de`, `pt-BR` → `pt`), is one of Whisper's codes —
-    faster-whisper's tokenizer raises on anything else (`DE`, `en-US`), which
-    in streaming fails every partial and final with no error frame, and the
-    language-tagged pipeline rules are keyed by these codes too. Anything
-    else is unusable, so it is treated as absent (None), as is anything not
-    even shaped like a language code (CR/LF would reach the WARNING log raw).
+    the value is reduced by the batch route's own helper,
+    tx_models.whisper_language_code (`DE` / `de-DE` / `de_DE` → `de`), so the
+    one box /dictate sends to both modes means one language in both —
+    faster-whisper's tokenizer raises on anything else, which in streaming
+    fails every partial and final with no error frame, and the
+    language-tagged pipeline rules are keyed by these codes too. A value that
+    reduces to no code is unusable, so it is treated as absent (None), as is
+    anything not even shaped like a language code (CR/LF would reach the
+    WARNING log raw).
     """
     if not isinstance(raw, str):
         return None
@@ -206,11 +209,7 @@ def _handshake_language(raw: object) -> "str | None":
         return ""
     if not _LANGUAGE_RE.match(value):
         return None
-    value = value.lower()
-    for cand in (value, value.split("-", 1)[0]):
-        if cand in settings_schema.WHISPER_LANGUAGE_CODES:
-            return cand
-    return None
+    return tx_models.whisper_language_code(value)
 
 
 async def _refuse(ws: WebSocket, code: int, reason: str) -> None:
