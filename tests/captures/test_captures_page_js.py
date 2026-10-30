@@ -2179,6 +2179,29 @@ console.log(JSON.stringify([
     assert out == ["so um yes", "so um yeah", "so um yeah"]
 
 
+@needs_node
+def test_final_result_preview_joins_unspaced_words_without_a_space(page, tmp_path):
+    """Once a Chinese / Thai sentence is split among its words, the
+    Final-result preview put a space between every two of them; the space
+    between two members and between spaced words stays."""
+    out = _run_node(tmp_path, _js_function(page, "_renderGroundSpans") + r"""
+global.document = { createElement: function() { return {}; } };
+function render(words, corrections) {
+  var spans = [];
+  var area = { appendChild: function(e) { spans.push(e.textContent); } };
+  _renderGroundSpans({ gtArea: area, words: words, corrections: corrections || [] });
+  return spans.join('');
+}
+console.log(JSON.stringify([
+  render([{ word: '我们', member_idx: 0 }, { word: '去', member_idx: 0 },
+          { word: '北京。', member_idx: 0 }, { word: '你好', member_idx: 1 }]),
+  render([{ word: 'สวัสดี' }, { word: 'ครับ' }],
+         [{ wrong: 'ครับ', correct: 'ค่ะ', idx: 1 }]),
+  render([{ word: ' so' }, { word: ' 好' }, { word: ' yes' }])]));
+""")
+    assert out == ["我们去北京。 你好", "สวัสดีค่ะ", "so 好 yes"]
+
+
 # ---- karaoke scroll ---------------------------------------------------------------------------
 
 @needs_node

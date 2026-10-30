@@ -8,6 +8,7 @@ captures.routes nor the workers.
 from __future__ import annotations
 
 import contextlib
+import difflib
 import json
 import os
 import re
@@ -56,6 +57,17 @@ def _global_edge_ms() -> int:
         return int(getattr(cfg, "CAPTURES_VAD_MARGIN_SAMPLE_EDGE_MS", 300))
     except (TypeError, ValueError):
         return 300
+
+
+# Scripts written without spaces between words: Thai, Lao, Myanmar, Khmer,
+# Hiragana, Katakana and Han (the ideographic iteration / closing marks
+# 々〆〇 included). The JS twin NOSPACE in captures.html must keep the same
+# ranges.
+_NO_SPACE_SCRIPT = re.compile(
+    "[\u0e00-\u0eff\u1000-\u109f\u1780-\u17ff\u19e0-\u19ff"
+    "\u3005-\u3007\u3040-\u30ff\u31f0-\u31ff\u3400-\u4dbf\u4e00-\u9fff"
+    "\ua9e0-\ua9ff\uaa60-\uaa7f\uf900-\ufaff\uff66-\uff9f"
+    "\U00020000-\U0003134f]")
 
 
 def _word_char(ch: str) -> bool:
@@ -392,7 +404,10 @@ def _align_words_to_final(
     `" ".join(item["word"] for non-removed items) == final`. Inserted
     tokens (no direct raw correspondent) attach to the raw word that
     expanded into them — sharing that word's audio timestamp — rather
-    than being discarded.
+    than being discarded. A script written without spaces (zh, ja, th, lo,
+    my, km) puts many raw words in one final token; there the token is
+    split among them character by character (see _split_unspaced), so the
+    words' texts concatenate to that token instead.
     """
     src = list(words or [])
     if not src:
@@ -445,7 +460,7 @@ def _align_words_to_final(
     # segments; the inserted (unmatched) tokens in a segment go to the unmatched
     # raw words sharing that segment, apportioned by each raw word's isolated
     # post-processed token count, with any remainder to the last one.
-    owners: list[list[int]] = [[] for _ in range(n)]
+    owners: list[list[str]] = [[] for _ in range(n)]
     exp_count = [len((post_cache.get(w.get("word") or "") or "").split()) for w in src]
     anchors = [(idx, matches[idx]) for idx in range(n) if matches[idx] >= 0]
     seg_bounds = [(-1, -1)] + anchors + [(n, m)]
@@ -453,12 +468,20 @@ def _align_words_to_final(
         ri0, fj0 = seg_bounds[t]
         ri1, fj1 = seg_bounds[t + 1]
         if ri0 >= 0:
-            owners[ri0].append(fj0)  # the left anchor owns its matched token
-        ins = list(range(fj0 + 1, fj1))       # inserted final tokens in this gap
+            owners[ri0].append(fin_tokens[fj0])  # the left anchor owns its matched token
+        ins = fin_tokens[fj0 + 1:fj1]          # inserted final tokens in this gap
         if not ins:
             continue
         unmatched = list(range(ri0 + 1, ri1))  # raw words sharing this gap
-        if unmatched:
+        split = None
+        if unmatched and any(_NO_SPACE_SCRIPT.search(t) for t in ins):
+            split = _split_unspaced(
+                ["".join((post_cache.get(src[ri].get("word") or "") or "").split())
+                 for ri in unmatched], ins)
+        if split is not None:
+            for ri, parts in zip(unmatched, split):
+                owners[ri].extend(parts)
+        elif unmatched:
             k = 0
             for ri in unmatched:
                 take = exp_count[ri]
@@ -480,7 +503,7 @@ def _align_words_to_final(
         raw_w = w.get("word") or ""
         toks = owners[i]
         if toks:
-            disp = " ".join(fin_tokens[j] for j in toks)
+            disp = " ".join(toks)
             item["word"] = disp
             if disp.strip() != raw_w.strip():
                 item["raw_word"] = raw_w
@@ -490,6 +513,40 @@ def _align_words_to_final(
             item["removed"] = True
         out.append(item)
     return out
+
+
+def _split_unspaced(texts: list[str], toks: list[str]) -> list[list[str]] | None:
+    """Split the final tokens `toks` of one alignment gap among the gap's raw
+    words, whose isolated post-processed forms (whitespace removed) are
+    `texts`, character by character. In a script written without spaces the
+    whole sentence is one final token: handed to one raw word, it struck
+    every other word as removed by a rule although none fired. A final
+    character matched to a raw word's character goes to that word; an
+    unmatched one (a rule's insertion) joins the word before it, or the first
+    word. Returns each raw word's pieces (one per token it reaches, empty when
+    a rule deleted it), or None when no character matches."""
+    a_own = [r for r, t in enumerate(texts) for _ in t]
+    tok_of = [k for k, t in enumerate(toks) for _ in t]
+    b = "".join(toks)
+    own = [-1] * len(b)
+    sm = difflib.SequenceMatcher(None, "".join(texts), b, autojunk=False)
+    for blk in sm.get_matching_blocks():
+        for x in range(blk.size):
+            own[blk.b + x] = a_own[blk.a + x]
+    cur = next((o for o in own if o >= 0), -1)
+    if cur < 0:
+        return None
+    pieces: list[list[str]] = [[] for _ in texts]
+    prev = None
+    for x, ch in enumerate(b):
+        if own[x] >= 0:
+            cur = own[x]
+        if (cur, tok_of[x]) == prev:
+            pieces[cur][-1] += ch
+        else:
+            pieces[cur].append(ch)
+            prev = (cur, tok_of[x])
+    return pieces
 
 
 def _clone_word(w: dict[str, Any]) -> dict[str, Any]:

@@ -2846,6 +2846,23 @@
     area.innerHTML = '';
     state.wordToGround = new Array(words.length);
     var first = true;
+    // A word of a script written without spaces (zh, ja, th, …) carries no
+    // leading space and follows the word before it with none, as in the
+    // text; the join space between two members stays. Same ranges as
+    // _NO_SPACE_SCRIPT in captures/samples.py.
+    var NSC = '[\u0E00-\u0EFF\u1000-\u109F\u1780-\u17FF\u19E0-\u19FF'
+      + '\u3005-\u3007\u3040-\u30FF\u31F0-\u31FF\u3400-\u4DBF\u4E00-\u9FFF'
+      + '\uA9E0-\uA9FF\uAA60-\uAA7F\uF900-\uFAFF\uFF66-\uFF9F'
+      + '\u{20000}-\u{3134F}]';
+    var nsHead = new RegExp('^' + NSC, 'u'), nsTail = new RegExp(NSC + '$', 'u');
+    var prevText = '', prevMember;
+    function sep(w, txt) {
+      if (first) return '';
+      var tok = (w && (w.train_word !== undefined ? w.train_word : w.word)) || '';
+      var member = w ? w.member_idx : undefined;
+      return (!/^\s/.test(tok) && member === prevMember
+              && (nsTail.test(prevText) || nsHead.test(txt))) ? '' : ' ';
+    }
     var i = 0;
     while (i < words.length) {
       var chip = cover[i];
@@ -2854,7 +2871,10 @@
         if (end >= words.length) end = words.length - 1;
         var sp = document.createElement('span');
         sp.className = 'word';
-        sp.textContent = (first ? '' : ' ') + chip.correct.trim();
+        var ctxt = chip.correct.trim();
+        sp.textContent = sep(words[i], ctxt) + ctxt;
+        prevText = ctxt;
+        prevMember = words[end] ? words[end].member_idx : undefined;
         area.appendChild(sp);
         for (var k = i; k <= end; k++) state.wordToGround[k] = sp;
         first = false;
@@ -2872,7 +2892,9 @@
       if (!txt) { state.wordToGround[i] = null; i++; continue; }
       var sp2 = document.createElement('span');
       sp2.className = 'word';
-      sp2.textContent = (first ? '' : ' ') + txt;
+      sp2.textContent = sep(w, txt) + txt;
+      prevText = txt;
+      prevMember = w.member_idx;
       area.appendChild(sp2);
       state.wordToGround[i] = sp2;
       first = false;

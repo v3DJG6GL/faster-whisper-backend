@@ -182,6 +182,53 @@ def test_identity_no_flags(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# scripts written without spaces (zh / ja / th / lo / my / km)
+# ---------------------------------------------------------------------------
+
+def test_unspaced_chinese_gives_each_word_its_own_text(monkeypatch):
+    # The whole sentence is one final token: it went to the first word and
+    # every later word was struck as removed by a rule that never fired.
+    _install_word_map(monkeypatch, {})
+    words = _words("我们", "去", "北京", "。")
+    out = capture_samples._align_words_to_final(words, "我们去北京。")
+
+    assert [w["word"] for w in out] == ["我们", "去", "北京", "。"]
+    assert not any(w.get("removed") or "raw_word" in w for w in out)
+
+
+def test_unspaced_thai_gives_each_word_its_own_text(monkeypatch):
+    _install_word_map(monkeypatch, {})
+    out = capture_samples._align_words_to_final(
+        _words("สวัสดี", "ครับ"), "สวัสดีครับ")
+
+    assert [w["word"] for w in out] == ["สวัสดี", "ครับ"]
+    assert not any(w.get("removed") for w in out)
+
+
+def test_unspaced_rule_change_marks_only_that_word(monkeypatch):
+    _install_word_map(monkeypatch, {"北京": "上海", "去": ""})
+    words = _words("我们", "去", "北京", "。")
+    out = capture_samples._align_words_to_final(words, "我们上海。")
+
+    assert "".join(w["word"] for w in out if not w.get("removed")) == "我们上海。"
+    assert [bool(w.get("removed")) for w in out] == [False, True, False, False]
+    assert out[2]["word"] == "上海"
+    assert out[2]["raw_word"] == "北京"
+    assert "raw_word" not in out[0] and "raw_word" not in out[3]
+
+
+def test_unspaced_sentences_split_per_token(monkeypatch):
+    # Two sentences joined by a space (faster-whisper glues the "。" onto
+    # the word before it): each word stays inside its own token.
+    _install_word_map(monkeypatch, {})
+    words = _words("你好。", "我", "很", "好。")
+    out = capture_samples._align_words_to_final(words, "你好。 我很好。")
+
+    assert [w["word"] for w in out] == ["你好。", "我", "很", "好。"]
+    assert not any(w.get("removed") for w in out)
+
+
+# ---------------------------------------------------------------------------
 # invariants
 # ---------------------------------------------------------------------------
 
