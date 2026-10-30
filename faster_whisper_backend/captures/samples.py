@@ -69,6 +69,8 @@ _NO_SPACE_SCRIPT = re.compile(
     "\u3005-\u3007\u3040-\u30ff\u31f0-\u31ff\u3400-\u4dbf\u4e00-\u9fff"
     "\ua9e0-\ua9ff\uaa60-\uaa7f\uf900-\ufaff\uff66-\uff9f"
     "\U00020000-\U0003134f]")
+# The rest of the token from a position on (up to the next whitespace).
+_TOKEN_REST = re.compile(r"\S*")
 
 
 # No word starts with a Thai / Lao following vowel or repetition mark, a
@@ -237,9 +239,12 @@ def _apply_chips_to_text(
                     ts = i - len(before[-1])
                 # Inside a token of a script written without spaces, the
                 # char offset in that token breaks a tie: a chip on the
-                # third "的" of "我的猫的狗的" must not rewrite the first.
+                # third "的" of "我的猫的狗的" must not rewrite the first,
+                # nor one on the second "Python" of "Python很好，Python很强"
+                # (the whole token counts, not just up to the occurrence).
+                te = _TOKEN_REST.match(out, j).end()
                 d2 = 0
-                if _NO_SPACE_SCRIPT.search(out, ts, j):
+                if _NO_SPACE_SCRIPT.search(out, ts, te):
                     d2 = abs(i - ts - cshift.get(k + shift, 0) - off)
                 d = (abs(k + shift - pos), d2)
                 if (best < 0 or d < best_d

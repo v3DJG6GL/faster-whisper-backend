@@ -3475,6 +3475,8 @@
         && NO_START.indexOf(b) < 0 && NO_END.indexOf(a) < 0;
     }
     function nWords(s) { return s.split(/\s+/).filter(Boolean).length; }
+    // The rest of the token from lastIndex on (up to the next whitespace).
+    var tokenRest = /\S*/y;
     // The token a karaoke word owns ('' when removed); the training token
     // wins when attached.
     function tokOf(w) {
@@ -3603,9 +3605,12 @@
           }
           // Inside a token of a script written without spaces, the char
           // offset in that token breaks a tie (the third "的" of
-          // "我的猫的狗的" is not the first).
+          // "我的猫的狗的" is not the first, the second "Python" of
+          // "Python很好，Python很强" not the first: the whole token counts).
+          tokenRest.lastIndex = j;
+          var te = j + tokenRest.exec(out)[0].length;
           var d2 = 0;
-          if (NS.test(out.slice(ts, j))) {
+          if (NS.test(out.slice(ts, te))) {
             d2 = Math.abs(i - ts - (cshift[k + shift] || 0) - off);
           }
           var d = Math.abs(k + shift - pos);

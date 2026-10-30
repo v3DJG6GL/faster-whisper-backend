@@ -210,6 +210,16 @@ _WORD_CASES = [
      [{"idx": 4, "wrong": "的", "correct": "地"}],
      [_w("你好。"), _w(" 我"), _w("的"), _w("猫"), _w("的"), _w("狗")],
      "你好。 我的猫地狗"),
+    # A Latin word repeated inside an unspaced run: the earlier occurrence
+    # starts the token, yet the char offset still picks the marked one.
+    ("Python很好，Python很强",
+     [{"idx": 3, "wrong": "Python", "correct": "Java"}],
+     [_w("Python"), _w("很"), _w("好，"), _w("Python"), _w("很"), _w("强")],
+     "Python很好，Java很强"),
+    ("Hallo世界Hallo",
+     [{"idx": 2, "wrong": "Hallo", "correct": "X"}],
+     [_w("Hallo"), _w("世界"), _w("Hallo")],
+     "Hallo世界X"),
     # A chip saved before the words kept their spaces ("HalloWelt"): the
     # page shows it on the words at its idx, so it applies there.
     ("Hallo Welt wie geht's",
