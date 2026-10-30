@@ -2524,8 +2524,9 @@ console.log(JSON.stringify([
 def test_final_result_preview_joins_unspaced_words_without_a_space(page, tmp_path):
     """Once a Chinese / Thai sentence is split among its words, the
     Final-result preview put a space between every two of them; the space
-    between two members and between spaced words stays."""
-    out = _run_node(tmp_path, _js_function(page, "_renderGroundSpans") + r"""
+    between spaced words stays."""
+    out = _run_node(tmp_path, _js_function(page, "_cjkEdge") + "\n"
+                    + _js_function(page, "_renderGroundSpans") + r"""
 global.document = { createElement: function() { return {}; } };
 function render(words, corrections) {
   var spans = [];
@@ -2540,7 +2541,44 @@ console.log(JSON.stringify([
          [{ wrong: 'ครับ', correct: 'ค่ะ', idx: 1 }]),
   render([{ word: ' so' }, { word: ' 好' }, { word: ' yes' }])]));
 """)
-    assert out == ["我们去北京。 你好", "สวัสดีค่ะ", "so 好 yes"]
+    assert out == ["我们去北京。你好", "สวัสดีค่ะ", "so 好 yes"]
+
+
+@needs_node
+def test_final_result_preview_joins_zh_ja_members_like_the_server(page, tmp_path):
+    """The server joins two zh / ja members with no space (also past the
+    member's "。" / "」"), but the group card's Final result still put " "
+    at every member boundary: it showed "我们去北京 你好" for a sample whose
+    transcript and export read "我们去北京你好"."""
+    from faster_whisper_backend.captures.samples import _build_default_transcript
+
+    fns = "\n".join(_js_function(page, f) for f in ("_cjkEdge", "_renderGroundSpans"))
+    out = _run_node(tmp_path, fns + r"""
+global.document = { createElement: function() { return {}; } };
+function render(words, corrections) {
+  var spans = [];
+  var area = { appendChild: function(e) { spans.push(e.textContent); } };
+  _renderGroundSpans({ gtArea: area, words: words, corrections: corrections || [] });
+  return spans.join('');
+}
+console.log(JSON.stringify([
+  render([{ word: '我们', member_idx: 0 }, { word: '去', member_idx: 0 },
+          { word: '北京', member_idx: 0 }, { word: '你好', member_idx: 1 }]),
+  render([{ word: '他说', member_idx: 0 }, { word: '「好', member_idx: 0 },
+          { word: '」', member_idx: 0 }, { word: '「是」', member_idx: 1 }]),
+  render([{ word: '我们', member_idx: 0 }, { word: '北京', member_idx: 0 },
+          { word: '你好', member_idx: 1 }],
+         [{ wrong: '北京', correct: '上海', idx: 1 }]),
+  render([{ word: '你好。', member_idx: 0 }, { word: ' Hallo', member_idx: 1 }]),
+  render([{ word: 'สวัสดี', member_idx: 0 }, { word: 'ครับ', member_idx: 1 }])]));
+""")
+    assert out == ["我们去北京你好", "他说「好」「是」", "我们上海你好",
+                   "你好。 Hallo", "สวัสดี ครับ"]
+    # The same joins as the server's transcript.
+    assert out[:2] + out[3:] == [
+        _build_default_transcript([{"final": a}, {"final": b}], "space")
+        for a, b in (("我们去北京", "你好"), ("他说「好」", "「是」"),
+                     ("你好。", "Hallo"), ("สวัสดี", "ครับ"))]
 
 
 # ---- karaoke scroll ---------------------------------------------------------------------------
