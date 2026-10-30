@@ -573,20 +573,27 @@ def assemble_transcribe_kwargs(resolved_model, model, *, language, temperature,
 _AUTO_DETECT_ONLY_KEYS = ("multilingual", "language_detection_threshold",
                           "language_detection_segments")
 
+# Languages Whisper spells with another code than the language table does:
+# browsers and OSes report Norwegian Bokmål "nb-NO" / "nb_NO" (and "nob"
+# folds to "nb"), Filipino "fil", while the tokenizer knows only "no" / "tl".
+# Kept here, not in core/languages.py: the table names nb as a language.
+_WHISPER_SPELLING: "dict[str, str]" = {"nb": "no", "fil": "tl"}
+
 
 def whisper_language_code(value: str) -> "str | None":
     """``value`` as the Whisper code faster-whisper's tokenizer accepts: the
     lower-cased value, or a locale tag's primary subtag (``DE`` → ``de``,
     ``pt-BR`` / ``pt_BR`` → ``pt``), that subtag in Whisper's spelling last
-    (``iw_IL`` → ``he``, ``jv`` → ``jw``). None when none is one of Whisper's
-    codes."""
+    (``iw_IL`` → ``he``, ``jv`` → ``jw``, ``nb-NO`` → ``no``). None when none
+    is one of Whisper's codes."""
     # "_" too: POSIX LANG and Java's Locale.toString() write "de_DE".
     value = value.strip().lower().replace("_", "-")
     base = value.split("-", 1)[0]
     # Folded last, so a Whisper code is never re-spelled: old Java / Android
     # locales and YouTube send the withdrawn "iw" / "in" / "ji", which the
     # tokenizer raises on too.
-    for cand in (value, base, languages._fold_base(base)):
+    folded = languages._fold_base(base)
+    for cand in (value, base, folded, _WHISPER_SPELLING.get(folded)):
         if cand in settings_schema.WHISPER_LANGUAGE_CODES:
             return cand
     return None
