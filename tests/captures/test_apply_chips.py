@@ -65,6 +65,28 @@ _CASES = [
     ("می‌روم روم",
      [{"wrong": "روم", "correct": "X"}],
      "می‌روم X"),
+    # Chinese, Japanese and Thai put no space between words: a chip on a
+    # word between two letters applies, so long as it does not part a
+    # letter from its combining mark (ั in "ครับ"), a following vowel (า in
+    # "ปลา") or a small kana (ょ in "ちょっと").
+    ("我喜欢猫和狗",
+     [{"wrong": "猫", "correct": "鱼"}],
+     "我喜欢鱼和狗"),
+    ("今日は良い天気",
+     [{"wrong": "良い", "correct": "悪い"}],
+     "今日は悪い天気"),
+    ("สวัสดีครับ",
+     [{"wrong": "ครับ", "correct": "ค่ะ"}],
+     "สวัสดีค่ะ"),
+    ("ครับ",
+     [{"wrong": "คร", "correct": "X"}],
+     "ครับ"),
+    ("ปลา",
+     [{"wrong": "ปล", "correct": "X"}],
+     "ปลา"),
+    ("ちょっと待って",
+     [{"wrong": "ち", "correct": "X"}],
+     "ちょっと待って"),
 ]
 
 
@@ -151,6 +173,27 @@ _WORD_CASES = [
      [{"idx": 2, "wrong": "die", "correct": "DER"}],
      [_w(" ja"), _w(" die"), _w(" (die"), _w(" Sache")],
      "ja die DER Sache"),
+    # A chip on a word inside an unspaced Chinese run, and on the third of
+    # three "的" in one run (also after a chip that lengthened the run, and
+    # in the second of two sentences): the char offset inside the run picks
+    # the occurrence, not the first one.
+    ("我喜欢猫和狗",
+     [{"idx": 2, "wrong": "猫", "correct": "鱼"}],
+     [_w("我"), _w("喜欢"), _w("猫"), _w("和"), _w("狗")],
+     "我喜欢鱼和狗"),
+    ("我的猫的狗的",
+     [{"idx": 5, "wrong": "的", "correct": "地"}],
+     [_w("我"), _w("的"), _w("猫"), _w("的"), _w("狗"), _w("的")],
+     "我的猫的狗地"),
+    ("我的猫的狗的",
+     [{"idx": 2, "wrong": "猫", "correct": "小猫"},
+      {"idx": 5, "wrong": "的", "correct": "地"}],
+     [_w("我"), _w("的"), _w("猫"), _w("的"), _w("狗"), _w("的")],
+     "我的小猫的狗地"),
+    ("你好。 我的猫的狗",
+     [{"idx": 4, "wrong": "的", "correct": "地"}],
+     [_w("你好。"), _w(" 我"), _w("的"), _w("猫"), _w("的"), _w("狗")],
+     "你好。 我的猫地狗"),
     # A chip saved before the words kept their spaces ("HalloWelt"): the
     # page shows it on the words at its idx, so it applies there.
     ("Hallo Welt wie geht's",

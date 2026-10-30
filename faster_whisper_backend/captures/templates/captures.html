@@ -3428,6 +3428,33 @@
     var out = text || '';
     // Combining marks and ZWNJ/ZWJ belong to their word, as on the server.
     var W = /[\p{L}\p{M}\p{N}_\u200c\u200d]/u;
+    // A script written without spaces (same ranges as _NO_SPACE_SCRIPT in
+    // captures/samples.py) and the server's _NO_WORD_START / _NO_WORD_END.
+    var NSC = '[\u0E00-\u0EFF\u1000-\u109F\u1780-\u17FF\u19E0-\u19FF'
+      + '\u3005-\u3007\u3040-\u30FF\u31F0-\u31FF\u3400-\u4DBF\u4E00-\u9FFF'
+      + '\uA9E0-\uA9FF\uAA60-\uAA7F\uF900-\uFAFF\uFF66-\uFF9F'
+      + '\u{20000}-\u{3134F}]';
+    var NS = new RegExp(NSC, 'u');
+    var NS_HEAD = new RegExp('^' + NSC, 'u'), NS_TAIL = new RegExp(NSC + '$', 'u');
+    var NO_START = '\u0E30\u0E32\u0E33\u0E45\u0E46\u0EB0\u0EB2\u0EB3\u0EC6'
+      + '\u3005\u3041\u3043\u3045\u3047\u3049\u3063\u3083\u3085'
+      + '\u3087\u308E\u3095\u3096\u309D\u309E\u30A1\u30A3\u30A5'
+      + '\u30A7\u30A9\u30C3\u30E3\u30E5\u30E7\u30EE\u30F5\u30F6'
+      + '\u30FC\u30FD\u30FE\uFF67\uFF68\uFF69\uFF6A\uFF6B\uFF6C'
+      + '\uFF6D\uFF6E\uFF6F\uFF70';
+    var NO_END = '\u0E40\u0E41\u0E42\u0E43\u0E44\u0EC0\u0EC1\u0EC2\u0EC3\u0EC4';
+    // Mirror of the server's _word_edge, for the boundary before out[i] on
+    // whole code points (an astral Han character is two UTF-16 units): two
+    // words of a script written without spaces meet with no space; a letter
+    // never parts from its combining mark.
+    function wordEdge(i) {
+      var a = out.slice(Math.max(0, i - 2), i);
+      if (!/^[\uD800-\uDBFF][\uDC00-\uDFFF]$/.test(a)) a = out[i - 1];
+      var b = String.fromCodePoint(out.codePointAt(i));
+      if (!(W.test(a) && W.test(b))) return true;
+      return (NS.test(a) || NS.test(b)) && !/\p{M}/u.test(b)
+        && NO_START.indexOf(b) < 0 && NO_END.indexOf(a) < 0;
+    }
     function nWords(s) { return s.split(/\s+/).filter(Boolean).length; }
     // The token a karaoke word owns ('' when removed); the training token
     // wins when attached.
@@ -3460,12 +3487,30 @@
       }
       return res;
     }
-    var starts = null;
+    // A word with no leading space next to a script written without spaces
+    // continues the token before it: `offs` is its char offset in there.
+    var starts = null, offs = [];
     if (words && words.length) {
-      starts = [0];
+      starts = [];
+      var count = 0, last = '';
       words.forEach(function(w) {
-        starts.push(starts[starts.length - 1] + nWords(tokOf(w)));
+        var tok = tokOf(w);
+        var parts = tok.split(/\s+/).filter(Boolean);
+        if (parts.length && last && !/^\s/.test(tok)
+            && (NS_TAIL.test(last) || NS_HEAD.test(parts[0]))) {
+          starts.push(count - 1);
+          offs.push(last.length);
+          count += parts.length - 1;
+          last = parts.length === 1 ? last + parts[0] : parts[parts.length - 1];
+        } else {
+          starts.push(count);
+          offs.push(0);
+          count += parts.length;
+          if (parts.length) last = parts[parts.length - 1];
+        }
       });
+      starts.push(count);
+      offs.push(0);
     }
     var ordered = corrections.slice().filter(function(c) {
       return c && typeof c === 'object';
@@ -3477,17 +3522,20 @@
     });
     var cursor = 0;
     // Word-count change of the replacements so far, so a later chip's
-    // position is compared in the original text's word frame.
+    // position is compared in the original text's word frame; `cshift` is
+    // the char-count change inside each (original-frame) token.
     var shift = 0;
+    var cshift = {};
     ordered.forEach(function(c) {
       var wrong = c.wrong || '';
       // Trimmed as on save: a blank correction is dropped there.
       var correct = (c.correct || '').trim();
       if (!wrong || !correct) return;
       var anchored = typeof c.idx === 'number';
-      var pos = c.idx;
+      var pos = c.idx, off = 0;
       if (anchored && starts) {
         pos = starts[Math.max(0, Math.min(c.idx, starts.length - 1))];
+        off = offs[Math.max(0, Math.min(c.idx, offs.length - 1))];
       }
       var needles = [wrong];
       if (anchored && words && words.length) {
@@ -3501,22 +3549,31 @@
       // stale `wrong` that is a part of them): the page strikes the words
       // at idx, so a far match of the stale `wrong` must not beat the words
       // there.
-      var best = -1, bestEnd = -1, bestD = -1;
+      var best = -1, bestEnd = -1, bestD = 0, bestD2 = 0, bestK = 0;
       for (var t = 0; t < needles.length * 2 && (anchored || best < 0); t++) {
         var occ = occurrences(needles[t >> 1], anchored ? cursor : 0,
                               t % 2 === 1);
         for (var o = 0; o < occ.length; o++) {
           var i = occ[o][0], j = occ[o][1];
-          if ((W.test(out[i]) && i > 0 && W.test(out[i - 1]))
-              || (W.test(out[j - 1]) && j < out.length && W.test(out[j]))) {
+          if ((i > 0 && !wordEdge(i)) || (j < out.length && !wordEdge(j))) {
             continue;
           }
           if (!anchored) { best = i; bestEnd = j; break; }
           // A word glued to a "(" or „ before it is that token, not the next.
           var k = nWords(out.slice(0, i));
           if (i > 0 && !/\s/.test(out[i - 1])) k -= 1;
+          // Inside a token of a script written without spaces, the char
+          // offset in that token breaks a tie (the third "的" of
+          // "我的猫的狗的" is not the first).
+          var ts = i - /\S*$/.exec(out.slice(0, i))[0].length;
+          var d2 = 0;
+          if (NS.test(out.slice(ts, j))) {
+            d2 = Math.abs(i - ts - (cshift[k + shift] || 0) - off);
+          }
           var d = Math.abs(k + shift - pos);
-          if (best < 0 || d < bestD) { best = i; bestEnd = j; bestD = d; }
+          if (best < 0 || d < bestD || (d === bestD && d2 < bestD2)) {
+            best = i; bestEnd = j; bestD = d; bestD2 = d2; bestK = k + shift;
+          }
         }
       }
       if (best < 0) return;
@@ -3525,6 +3582,7 @@
       if (anchored) {
         cursor = best + correct.length;
         shift += nWords(hit) - nWords(correct);
+        cshift[bestK] = (cshift[bestK] || 0) + correct.length - hit.length;
       }
     });
     return out;

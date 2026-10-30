@@ -61,13 +61,25 @@ def _global_edge_ms() -> int:
 
 # Scripts written without spaces between words: Thai, Lao, Myanmar, Khmer,
 # Hiragana, Katakana and Han (the ideographic iteration / closing marks
-# 々〆〇 included). The JS twin NOSPACE in captures.html must keep the same
-# ranges.
+# 々〆〇 included). The JS twins in captures.html (_applyChipsToText,
+# _renderGroundSpans) must keep the same ranges.
 _NO_SPACE_SCRIPT = re.compile(
     "[\u0e00-\u0eff\u1000-\u109f\u1780-\u17ff\u19e0-\u19ff"
     "\u3005-\u3007\u3040-\u30ff\u31f0-\u31ff\u3400-\u4dbf\u4e00-\u9fff"
     "\ua9e0-\ua9ff\uaa60-\uaa7f\uf900-\ufaff\uff66-\uff9f"
     "\U00020000-\U0003134f]")
+
+
+# No word starts with a Thai / Lao following vowel or repetition mark, a
+# Japanese small kana, iteration mark or "ー", and none ends with a Thai /
+# Lao leading vowel. Same sets in the JS twin _applyChipsToText.
+_NO_WORD_START = ("\u0e30\u0e32\u0e33\u0e45\u0e46\u0eb0\u0eb2\u0eb3\u0ec6"
+                  "\u3005\u3041\u3043\u3045\u3047\u3049\u3063\u3083\u3085"
+                  "\u3087\u308e\u3095\u3096\u309d\u309e\u30a1\u30a3\u30a5"
+                  "\u30a7\u30a9\u30c3\u30e3\u30e5\u30e7\u30ee\u30f5\u30f6"
+                  "\u30fc\u30fd\u30fe\uff67\uff68\uff69\uff6a\uff6b\uff6c"
+                  "\uff6d\uff6e\uff6f\uff70")
+_NO_WORD_END = "\u0e40\u0e41\u0e42\u0e43\u0e44\u0ec0\u0ec1\u0ec2\u0ec3\u0ec4"
 
 
 def _word_char(ch: str) -> bool:
@@ -76,6 +88,18 @@ def _word_char(ch: str) -> bool:
     no whole word inside "बोलते", and "की" is not "क" with a stray sign."""
     return (ch.isalnum() or ch == "_" or ch in "\u200c\u200d"
             or unicodedata.category(ch)[0] == "M")
+
+
+def _word_edge(a: str, b: str) -> bool:
+    """Whether one word may end on `a` and the next begin on `b`. Two word
+    characters belong to one word, except next to a script written without
+    spaces (zh, ja, th, …), where two words meet with no space between them
+    — but a letter never parts from the combining mark after it."""
+    if not (_word_char(a) and _word_char(b)):
+        return True
+    return (bool(_NO_SPACE_SCRIPT.match(a) or _NO_SPACE_SCRIPT.match(b))
+            and unicodedata.category(b)[0] != "M"
+            and b not in _NO_WORD_START and a not in _NO_WORD_END)
 
 
 def _apply_chips_to_text(
@@ -94,10 +118,12 @@ def _apply_chips_to_text(
     client-derived transcripts agree.
 
     Only a whole-word occurrence counts: a chip on "cat" must not rewrite
-    the "cat" inside "scat". An anchored chip searches past the previous
-    anchored replacement (a `correct` that contains `wrong` is never hit
-    twice) and, of several occurrences, takes the one whose word position
-    is nearest its `idx` — a chip on the second "die" must not rewrite the
+    the "cat" inside "scat" (in a script written without spaces a word may
+    sit between two letters, see _word_edge). An anchored chip searches past
+    the previous anchored replacement (a `correct` that contains `wrong` is
+    never hit twice) and, of several occurrences, takes the one whose word
+    position is nearest its `idx` (in such a script, its char offset inside
+    the run breaks a tie) — a chip on the second "die" must not rewrite the
     first. That nearest pick runs over the verbatim and the whitespace-
     flexible passes together. `idx` counts karaoke words (one per raw word,
     removed ones included), not text tokens. `words` — the aligned karaoke
@@ -124,23 +150,41 @@ def _apply_chips_to_text(
     )
     # Text-token position of each karaoke word: the tokens owned by the
     # non-removed words before it (the training token when one is attached).
+    # A word with no leading space next to a script written without spaces
+    # continues the token before it: `offs` is its char offset in there.
     starts: list[int] | None = None
+    offs: list[int] = []
     if words:
-        starts = [0]
+        starts, count, last = [], 0, ""
         for w in words:
-            n = 0
+            parts: list[str] = []
             if isinstance(w, dict):
                 if w.get("train_word") is not None:
                     tok, gone = w.get("train_word") or "", w.get("train_removed")
                 else:
                     tok, gone = w.get("word") or "", w.get("removed")
                 if not gone:
-                    n = len(tok.split())
-            starts.append(starts[-1] + n)
+                    parts = tok.split()
+            if (parts and last and not tok[:1].isspace()
+                    and (_NO_SPACE_SCRIPT.match(last[-1])
+                         or _NO_SPACE_SCRIPT.match(parts[0][0]))):
+                starts.append(count - 1)
+                offs.append(len(last))
+                count += len(parts) - 1
+                last = (last + parts[0]) if len(parts) == 1 else parts[-1]
+            else:
+                starts.append(count)
+                offs.append(0)
+                count += len(parts)
+                last = parts[-1] if parts else last
+        starts.append(count)
+        offs.append(0)
     cursor = 0
     # Word-count change of the replacements so far, so a later chip's
-    # position is compared in the original text's word frame.
+    # position is compared in the original text's word frame; `cshift` is
+    # the char-count change inside each (original-frame) token.
     shift = 0
+    cshift: dict[int, int] = {}
     for c in ordered:
         wrong = c.get("wrong") or ""
         correct = c.get("correct") or ""
@@ -148,9 +192,10 @@ def _apply_chips_to_text(
             continue
         rank, idx = _sk(c)
         anchored = rank == 0
-        pos = idx
+        pos, off = idx, 0
         if anchored and starts is not None:
             pos = starts[max(0, min(idx, len(starts) - 1))]
+            off = offs[max(0, min(idx, len(offs) - 1))]
         needles = [wrong]
         if anchored and words:
             healed = _span_text(words, idx, c.get("idx_end"))
@@ -161,13 +206,12 @@ def _apply_chips_to_text(
         # stale `wrong` that is a part of them): the page strikes the words
         # at idx, so a far match of the stale `wrong` must not beat the words
         # there.
-        best, best_end, best_d = -1, -1, -1
+        best, best_end, best_d, best_k = -1, -1, (0, 0), 0
         for needle, flex in ((n, f) for n in needles for f in (False, True)):
             for i, j in _occurrences(out, needle, cursor if anchored else 0,
                                      flex):
-                if ((_word_char(out[i]) and i > 0 and _word_char(out[i - 1]))
-                        or (_word_char(out[j - 1]) and j < len(out)
-                            and _word_char(out[j]))):
+                if ((i > 0 and not _word_edge(out[i - 1], out[i]))
+                        or (j < len(out) and not _word_edge(out[j - 1], out[j]))):
                     continue
                 if not anchored:
                     best, best_end = i, j
@@ -177,9 +221,16 @@ def _apply_chips_to_text(
                 k = len(out[:i].split())
                 if i > 0 and not out[i - 1].isspace():
                     k -= 1
-                d = abs(k + shift - pos)
+                # Inside a token of a script written without spaces, the
+                # char offset in that token breaks a tie: a chip on the
+                # third "的" of "我的猫的狗的" must not rewrite the first.
+                ts = i - len(re.search(r"\S*$", out[:i]).group())
+                d2 = 0
+                if _NO_SPACE_SCRIPT.search(out, ts, j):
+                    d2 = abs(i - ts - cshift.get(k + shift, 0) - off)
+                d = (abs(k + shift - pos), d2)
                 if best < 0 or d < best_d:
-                    best, best_end, best_d = i, j, d
+                    best, best_end, best_d, best_k = i, j, d, k + shift
             if best >= 0 and not anchored:
                 break
         if best < 0:
@@ -189,6 +240,7 @@ def _apply_chips_to_text(
         if anchored:
             cursor = best + len(correct)
             shift += len(hit.split()) - len(correct.split())
+            cshift[best_k] = cshift.get(best_k, 0) + len(correct) - len(hit)
     return out
 
 
