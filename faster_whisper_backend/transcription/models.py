@@ -22,6 +22,7 @@ import shutil
 import sys
 import time
 from collections import OrderedDict
+from types import MappingProxyType
 from collections.abc import Callable
 
 from fastapi import HTTPException
@@ -577,7 +578,7 @@ _AUTO_DETECT_ONLY_KEYS = ("multilingual", "language_detection_threshold",
 # browsers and OSes report Norwegian Bokmål "nb-NO" / "nb_NO" (and "nob"
 # folds to "nb"), Filipino "fil", while the tokenizer knows only "no" / "tl".
 # Kept here, not in core/languages.py: the table names nb as a language.
-_WHISPER_SPELLING: "dict[str, str]" = {"nb": "no", "fil": "tl"}
+_WHISPER_SPELLING = MappingProxyType({"nb": "no", "fil": "tl"})
 
 
 def whisper_language_code(value: str) -> "str | None":
