@@ -463,3 +463,47 @@ const api = async () => ({ ok: true, status: 200, json: async () => ({ rules: SE
     out = subprocess.run(["node", "-"], input=fns + drive, capture_output=True, text=True,
                          encoding="utf-8", timeout=30, check=True)
     assert json.loads(out.stdout) == {"clean": True, "hash_free": True}
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
+def test_unshadowed_promote_after_a_map_key_delete_leaves_save_unlit(client):
+    """The map editor's row delete leaves the key's map_meta timestamp behind;
+    the server's MapRule validator drops it, so after the promote fieldDef
+    (synced to the server copy) and the editor differed in map_meta only and
+    Save stayed lit under a 'same as config.json' badge — a Save that pinned
+    a full local copy of the rules."""
+    from faster_whisper_backend.pipeline.apply import canon_rules
+
+    html = _html(client)
+    fns = (_slice(html, "function _sortDeep(o) {", "  // The server copy (schema model_dump)")
+           + _slice(html, "function _withDefaults(r) {", "  // Content equality ignoring")
+           + _slice(html, "function _sansRevs(v, keep) {", "function commitData() {")
+           + _slice(html, "async function _postFactory(arr) {", "async function _fetchFactory() {"))
+    edited = {"name": "my-map", "label": "My map", "type": "callback:map",
+              "enabled": True, "languages": [], "locked": False, "seeded": True,
+              "exposed": False, "tags": [], "note": "", "color": "", "map": {"foo": "bar"},
+              "map_meta": {"foo": 1700000000, "komma": 1700000001}}
+    served = canon_rules([edited, {"name": "terminal", "type": "terminal", "seeded": True}])
+    assert served[0]["map_meta"] == {"foo": 1700000000}
+    drive = r"""
+const name = 'PIPELINE_RULES';
+const term = SERVED[1];
+const fields = { PIPELINE_RULES: { value: [term], default_value: [term] } };
+const fieldDef = n => fields[n];
+const dirty = {};
+const setDirty = (n, v) => { dirty[n] = v; };
+const paintAll = () => {};
+const alert = m => { throw new Error(m); };
+let factoryRules = [term];
+let rules = [EDITED, term];
+const api = async () => ({ ok: true, status: 200, json: async () => ({ rules: SERVED }) });
+(async () => {
+  await _postFactory(rules);
+  console.log(JSON.stringify({ clean: dirty[name] === fields[name].value }));
+})();
+"""
+    drive = (drive.replace("SERVED", json.dumps(served))
+             .replace("EDITED", json.dumps(edited)))
+    out = subprocess.run(["node", "-"], input=fns + drive, capture_output=True, text=True,
+                         encoding="utf-8", timeout=30, check=True)
+    assert json.loads(out.stdout) == {"clean": True}

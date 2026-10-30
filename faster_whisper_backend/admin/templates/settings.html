@@ -2824,7 +2824,13 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
     const c = Object.assign({ enabled: true, languages: [], locked: false,
                               exposed: false, tags: [], note: '', color: '' }, r);
     // A MapRule always dumps `map_meta` (default {}); the add dialog has none.
-    if (c.type === 'callback:map' && c.map_meta === undefined) c.map_meta = {};
+    // Its validator also drops map_meta keys no longer in `map` (schema
+    // _prune_map_meta), which the map editor's row delete leaves behind.
+    if (c.type === 'callback:map') {
+      const keys = c.map || {};
+      c.map_meta = Object.fromEntries(Object.entries(c.map_meta || {})
+        .filter(([k]) => Object.prototype.hasOwnProperty.call(keys, k)));
+    }
     if (Array.isArray(c.entries)) {
       c.entries = c.entries.map(e => (e && typeof e === 'object')
         ? Object.assign({ replacement: '', label: '', note: '' }, e) : e);
