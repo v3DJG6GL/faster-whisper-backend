@@ -1120,9 +1120,12 @@
   }
 
   // Themed yes/no confirm dialog (replaces the browser-native confirm()).
-  // Returns a Promise<bool>. opts: {title, body, confirmLabel, danger}.
-  // Enter confirms (unless Cancel has focus), Esc / Cancel / backdrop-click
-  // reject. A dialog opened while one is up cancels that one: a load() that
+  // Returns a Promise<bool>. opts: {title, body, confirmLabel, danger,
+  // focusCancel}. Enter in the dialog confirms (unless Cancel has focus),
+  // Esc / Cancel / backdrop-click reject. focusCancel is for a prompt the
+  // user did not ask for (it pops up when a request lands): a keystroke
+  // meant for the card being edited must not pick the destructive answer.
+  // A dialog opened while one is up cancels that one: a load() that
   // lands can ask on its own while a filter change is asking, and the first
   // prompt's promise must not hang (nor its Enter listener stay behind).
   var _confirmClose = null;
@@ -1146,6 +1149,10 @@
       }
       function onKey(e) {
         if (e.key === 'Escape') { e.preventDefault(); close(false); }
+        // An Enter from outside the dialog is not an answer: one that
+        // commits a chip input, or lands before the focus moves in, bubbles
+        // up to here.
+        else if (e.key === 'Enter' && !m.contains(e.target)) return;
         // preventDefault also swallows the focused button's own activation,
         // so a tabbed-to Cancel must still cancel.
         else if (e.key === 'Enter') { e.preventDefault(); close(document.activeElement !== cancel); }
@@ -1156,7 +1163,8 @@
       document.addEventListener('keydown', onKey);
       _confirmClose = close;
       m.classList.add('show');
-      setTimeout(function() { try { ok.focus(); } catch (_) {} }, 50);
+      var first = opts.focusCancel ? cancel : ok;
+      setTimeout(function() { try { first.focus(); } catch (_) {} }, 50);
     });
   }
 
@@ -1393,12 +1401,13 @@
       return st && st.state && st.state.dirty;
     });
   }
-  async function _okToDropOpenEdits(title, confirmLabel) {
+  // `unasked`: the prompt pops up on its own (see _confirm's focusCancel).
+  async function _okToDropOpenEdits(title, confirmLabel, unasked) {
     if (!_anyOpenDirty()) return true;
     return !!(await _confirm({
       title: title,
       body: 'An open capture or group has unsaved edits that will be lost.',
-      confirmLabel: confirmLabel, danger: true }));
+      confirmLabel: confirmLabel, danger: true, focusCancel: !!unasked }));
   }
   // The filter controls (status, speaker, model, search, Refresh) end in
   // render() / load() too. Ask first; on a cancel `revert` puts the control
@@ -3323,7 +3332,7 @@
       // Nothing of the new list is taken before this: on a cancel the old
       // list, the one on screen with the kept card, stays as it was.
       var keep = _freshOpenEdits(agreed)
-        && !(await _okToDropOpenEdits('Show the refreshed list?', 'Show'));
+        && !(await _okToDropOpenEdits('Show the refreshed list?', 'Show', true));
       if (seq !== _loadSeq) return;
       if (keep) {
         // The old list stays, and so does the speaker filter it was loaded

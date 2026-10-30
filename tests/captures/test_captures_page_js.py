@@ -71,11 +71,18 @@ def page(client):
 # ---- _confirm ---------------------------------------------------------------
 
 def _confirm_harness(page):
-    """_confirm with a stand-in dialog; `handlers` holds the keydown ones."""
+    """_confirm with a stand-in dialog; `handlers` holds the keydown ones.
+    `enter(target)` presses Enter on `target` (default: the focused
+    element); only the two buttons are inside the dialog."""
     return "var _confirmClose = null;\n" + _js_function(page, "_confirm") + r"""
 var els = {};
 function el(id) {
-  return els[id] || (els[id] = { id: id, focus: function() {},
+  return els[id] || (els[id] = { id: id,
+    focus: function() { document.activeElement = this; },
+    contains: function(x) {
+      return id === 'dialog-modal'
+        && (x === els['dialog-ok'] || x === els['dialog-cancel']);
+    },
     classList: { add: function() {}, remove: function() {} } });
 }
 var handlers = [];
@@ -87,7 +94,10 @@ global.document = {
     handlers = handlers.filter(function(x) { return x !== h; });
   },
 };
-function enter() { handlers[0]({ key: 'Enter', preventDefault: function() {} }); }
+function enter(target) {
+  if (handlers[0]) handlers[0]({ key: 'Enter', target: target || document.activeElement,
+    preventDefault: function() {} });
+}
 """
 
 
@@ -132,6 +142,66 @@ def test_confirm_opened_over_another_cancels_that_one(page, tmp_path):
 })();
 """)
     assert out == [False, 1, True, 0]
+
+
+@needs_node
+def test_confirm_ignores_an_enter_from_outside_the_dialog(page, tmp_path):
+    """load() opens "Show the refreshed list?" on its own while a card is
+    being edited: the Enter that commits a chip input bubbled up to the
+    dialog's document listener and confirmed it, dropping the edits."""
+    out = _run_node(tmp_path, _confirm_harness(page) + r"""
+(async function() {
+  var res = [];
+  var settled = false;
+  var p = _confirm({ confirmLabel: 'Show', danger: true });
+  p.then(function() { settled = true; });
+  var chipInput = { id: 'chip-input' };
+  document.activeElement = chipInput;
+  enter(chipInput);
+  await null;
+  res.push(settled, handlers.length);
+  document.activeElement = el('dialog-ok');
+  enter();
+  res.push(await p);
+  console.log(JSON.stringify(res));
+})();
+""")
+    assert out == [False, 1, True]
+
+
+@needs_node
+def test_unasked_refresh_prompt_focuses_cancel(page, tmp_path):
+    """A keystroke typed as the unasked prompt appears lands on its focused
+    button: OK dropped the open card's edits. The user's own prompts keep
+    focusing OK."""
+    out = _run_node(tmp_path, _confirm_harness(page) + r"""
+var focused = [];
+function opened(o) {
+  _confirm(o);
+  return new Promise(function(r) {
+    setTimeout(function() {
+      focused.push(document.activeElement && document.activeElement.id);
+      _confirmClose(false);
+      r();
+    }, 80);
+  });
+}
+(async function() {
+  await opened({ title: 'Refresh the list?' });
+  await opened({ title: 'Show the refreshed list?', focusCancel: true });
+  console.log(JSON.stringify(focused));
+})();
+""")
+    assert out == ["dialog-ok", "dialog-cancel"]
+
+
+def test_load_refresh_prompt_is_marked_unasked(page):
+    """Only load()'s own "Show the refreshed list?" pops up unasked; the
+    prompt helper passes that on as focusCancel."""
+    load = _js_function(page, "load")
+    assert "_okToDropOpenEdits('Show the refreshed list?', 'Show', true)" in load
+    helper = _js_function(page, "_okToDropOpenEdits")
+    assert "focusCancel: !!unasked" in helper
 
 
 # ---- bulk status / undo -------------------------------------------------------
