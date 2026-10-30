@@ -2391,3 +2391,34 @@ _moveCursor(state, 2);
 console.log(JSON.stringify([calls, strip.scrollTop]));
 """)
     assert out == [[[1, "nearest", "nearest"], [2, "nearest", "nearest"]], 69]
+
+
+@needs_node
+def test_first_focus_of_the_strip_leaves_the_page_alone(page, tmp_path):
+    """A mouse click focuses the strip on mousedown, and the first focus put
+    the cursor on word 0 with a page scroll: with the strip's top above the
+    window the page jumped before mouseup, and the click on a word further
+    down was lost."""
+    fns = "\n".join(_js_function(page, f) for f in (
+        "_scrollStripTo", "_redrawCursor", "_moveCursor", "_bindStripKeyboard"))
+    out = _run_node(tmp_path, fns + r"""
+var calls = 0, handlers = {};
+function word() {
+  return { classList: { add: function() {}, remove: function() {} },
+    scrollIntoView: function() { calls++; },
+    getBoundingClientRect: function() { return { top: 510, bottom: 530 }; } };
+}
+var strip = { scrollTop: 0, clientTop: 1, clientHeight: 100, parentNode: null,
+  setAttribute: function() {},
+  classList: { add: function() {}, remove: function() {} },
+  addEventListener: function(t, h) { handlers[t] = h; },
+  getBoundingClientRect: function() { return { top: 500, bottom: 602 }; } };
+global.document = { createElement: function() {
+  return { classList: { add: function() {}, remove: function() {} } }; } };
+var state = { stripEl: strip, words: ['a', 'b'], cursorIdx: -1,
+  wordEls: [word(), word()] };
+_bindStripKeyboard(state);
+handlers.focus();
+console.log(JSON.stringify([state.cursorIdx, calls]));
+""")
+    assert out == [0, 0]

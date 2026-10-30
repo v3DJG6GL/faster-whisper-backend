@@ -4042,9 +4042,13 @@
       var state = strip._kbState;
       strip.classList.add('has-focus');
       hint.classList.add('show');
-      // Initialize cursor on first focus if not set.
+      // Initialize cursor on first focus if not set. Only the strip
+      // scrolls to it: a mouse click focuses the strip on mousedown, and a
+      // page jump to word 0 before mouseup would lose the click on a word
+      // further down (onWordClick sets the cursor itself).
       if (state.cursorIdx < 0 && state.words.length) {
-        _moveCursor(state, 0);
+        state.cursorIdx = 0;
+        _redrawCursor(state);
       }
     });
     strip.addEventListener('blur', function() {
