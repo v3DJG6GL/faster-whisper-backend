@@ -1650,7 +1650,7 @@ def test_page_load_drops_a_superseded_filter_response(client):
     """Out-of-order /list responses for two quick speaker-picker ticks must
     not leave the older filter's rows on screen."""
     html = client.get("/captures").text
-    load = html[html.index("async function load()"):]
+    load = html[html.index("async function load("):]
     load = load[:load.index("async function loadMoreSamples()")]
     assert "var seq = ++_loadSeq;" in load
     assert load.count("if (seq !== _loadSeq) return;") >= 3

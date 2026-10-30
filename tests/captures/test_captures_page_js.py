@@ -1546,6 +1546,7 @@ var events = [], pending = [];
 var rows = [{ id: 'a' }, { id: 'b' }];
 var modal = { classList: { remove: function() { events.push('hide'); } } };
 async function _okToDropOpenEdits() { return true; }
+function _dirtyOpenEdits() { return []; }
 function api() { events.push('post'); return new Promise(function(r) { pending.push(r); }); }
 function _stopAnyPreview() { events.push('stop'); }
 function load() { events.push('load'); } function toast() {}
@@ -1903,6 +1904,55 @@ function tick() { return new Promise(function(r) { setTimeout(r, 0); }); }
     assert out == {"speakers": ["alice"], "picked": [["alice"]], "urls": ["alice"],
                    "samples": ["alice0"],
                    "next": {"before_ts": 100, "before_id": "a1"}, "footerHidden": False}
+
+
+@needs_node
+@pytest.mark.parametrize("anchor", [
+    "dissolveBtn.onclick = ",
+    "document.getElementById('merge-commit').onclick = ",
+])
+def test_load_after_a_request_asks_about_edits_made_during_it(
+        page, tmp_path, anchor):
+    """Dissolve and the merge modal's Create await their DELETE / POST and
+    only then call load(), which took the edits it may drop when it
+    started: a chip typed during the request (a dissolve can wait seconds
+    on a running rebuild) counted as agreed and the refreshed list dropped
+    it with no prompt."""
+    handler = _js_block(page, page.index(anchor) + len(anchor))
+    fns = "\n".join(_js_function(page, f) for f in (
+        "load", "_freshOpenEdits", "_okToDropOpenEdits", "_anyOpenDirty",
+        "_dirtyOpenEdits", "markDirty"))
+    out = _run_node(tmp_path, fns + r"""
+var _samplesNext = null, _samplesNextQs = '', _loadSeq = 0, _allSamples = [], _allCaptures = [];
+var _counts = {}, _totalCount = 0, _me = null, _isAdmin = true, _filtSpeakers = [];
+var _shownSpeakers = [], _pendingModel = null, _speakerPicker = null;
+var _openRows = {}, _openSamples = {};
+var renders = 0, asked = [], pending = [];
+async function _confirm(o) { asked.push(o.title); return o.title !== 'Show the refreshed list?'; }
+function api(m, u) {
+  if (m !== 'GET') return new Promise(function(r) { pending.push(r); });
+  return Promise.resolve({ captures: [], samples: [], is_admin: true });
+}
+function _listUrl() { return '/captures/api/list'; }
+function _speakerQs() { return ''; }
+function updateCaptureBadge() {} function rebuildModelFilter() {} function updateCounts() {}
+function _clearSelection() {} function render() { renders++; } function _syncUrl() {}
+function reloadStats() {} function toast() {} function _stopAnyPreview() {}
+var g = { id: 'g1' }, rows = [{ id: 'c1' }], modal = { classList: { remove: function() {} } };
+global.document = { getElementById: function() { return {}; },
+                    body: { classList: { add: function() {} } } };
+function tick() { return new Promise(function(r) { setTimeout(r, 0); }); }
+(async function() {
+  var st = { dirty: false };
+  _openRows = { c9: st };
+  await (""" + handler + r""")();
+  markDirty(st);                          // a chip typed during the request
+  pending.shift()({});
+  for (var i = 0; i < 5; i++) await tick();
+  console.log(JSON.stringify({ asked: asked.slice(-1), renders: renders }));
+})();
+""")
+    assert out == {"asked": ["Show the refreshed list?"], "renders": 0}
 
 
 @needs_node
