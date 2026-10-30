@@ -1097,6 +1097,34 @@ def _check_model_shape(name: str) -> None:
         )
 
 
+def _check_local_dir_named(name: str) -> bool:
+    """400 for a local directory the operator did not configure; True when
+    ``name`` is a (configured) local directory.
+
+    Read live, like the allowlist: DEFAULT_MODEL and the rest hot-apply and
+    evict nothing, so the cache-hit fast path runs this too."""
+    if not os.path.isdir(name):
+        return False
+    operator_named = (name == cfg.DEFAULT_MODEL
+                      or name in (cfg.ALLOWED_MODELS or ())
+                      or name in (cfg.PRELOAD_MODELS or ())
+                      or name == cfg.STREAMING_PARTIAL_MODEL
+                      # A per-model override names the model too (config's
+                      # _canonical_env_model_id counts it as a known id).
+                      or name in (getattr(cfg, "MODEL_OVERRIDES", None) or {}))
+    if not operator_named:
+        # Not the short-name wording: "models/my-ft" has the repo-id
+        # shape, and the fix is a config entry, not a different spelling.
+        raise HTTPException(
+            status_code=400,
+            detail=f"Model '{name}' is a local directory, which the "
+                   f"server only loads when it is configured. Add it to "
+                   f"ALLOWED_MODELS, PRELOAD_MODELS, DEFAULT_MODEL, "
+                   f"STREAMING_PARTIAL_MODEL or MODEL_OVERRIDES.",
+        )
+    return True
+
+
 def _check_model_known(name: str) -> None:
     """400 for a local dir the operator did not configure, and for a short
     name that is not a faster-whisper size.
@@ -1107,28 +1135,12 @@ def _check_model_known(name: str) -> None:
     configured: from a client, "static" or "docs/brand" is a directory under
     the server's cwd too — with a "/" it skips the Hub pre-download and loads
     (or, with AUTO_CONVERT_HF_MODELS, converts) that directory."""
+    if _check_local_dir_named(name):
+        return
     # Lazy import (see the TYPE_CHECKING note up top).
     from faster_whisper import available_models
 
-    operator_named = (name == cfg.DEFAULT_MODEL
-                      or name in (cfg.ALLOWED_MODELS or ())
-                      or name in (cfg.PRELOAD_MODELS or ())
-                      or name == cfg.STREAMING_PARTIAL_MODEL
-                      # A per-model override names the model too (config's
-                      # _canonical_env_model_id counts it as a known id).
-                      or name in (getattr(cfg, "MODEL_OVERRIDES", None) or {}))
-    if os.path.isdir(name):
-        if not operator_named:
-            # Not the short-name wording: "models/my-ft" has the repo-id
-            # shape, and the fix is a config entry, not a different spelling.
-            raise HTTPException(
-                status_code=400,
-                detail=f"Model '{name}' is a local directory, which the "
-                       f"server only loads when it is configured. Add it to "
-                       f"ALLOWED_MODELS, PRELOAD_MODELS, DEFAULT_MODEL, "
-                       f"STREAMING_PARTIAL_MODEL or MODEL_OVERRIDES.",
-            )
-    elif "/" not in name and name not in available_models():
+    if "/" not in name and name not in available_models():
         raise HTTPException(
             status_code=400,
             detail=f"Model '{name}' is not a faster-whisper model name or a "
@@ -1160,6 +1172,14 @@ async def _get_or_load_model(name: str, *, lease: bool = False) -> "WhisperModel
     # clients after the admin withdrew it (MODEL_IDLE_TIMEOUT_S defaults to 0,
     # so the entry only leaves on LRU pressure or restart).
     _check_model_allowed(name)
+    # Same for the shape and local-dir gates: both read DEFAULT_MODEL and the
+    # other operator-named fields live, which hot-apply just the same. Moving
+    # DEFAULT_MODEL off "models/my-ft" must refuse it here as everywhere else
+    # (_check_model_name), not only once the entry leaves the cache. The
+    # short-name check stays on the miss: it needs the faster_whisper import,
+    # and a resident short name passed it already.
+    _check_model_shape(name)
+    _check_local_dir_named(name)
 
     cached = _loaded_models.get(name)
     if cached is not None:
@@ -1191,9 +1211,9 @@ async def _load_on_miss(name: str, *, lease: bool) -> "WhisperModel":
     # actually loaded do we need the native faster_whisper stack.
     from faster_whisper import WhisperModel  # noqa: F401  (used in executor lambdas below)
 
-    _check_model_shape(name)
-    # Refused here, not in the constructor: past this point the LRU loop below
-    # evicts a resident model for a load that was never going to succeed.
+    # (_check_model_shape ran before the fast path.) Refused here, not in the
+    # constructor: past this point the LRU loop below evicts a resident model
+    # for a load that was never going to succeed.
     _check_model_known(name)
 
     # Auto-convert HF transformers Whisper repos to CT2 format if enabled.

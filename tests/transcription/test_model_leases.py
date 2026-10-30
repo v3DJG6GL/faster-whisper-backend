@@ -216,6 +216,30 @@ def test_an_unconfigured_dir_fails_the_shared_gate(monkeypatch, tmp_path,
     assert built == [] and tx_models._model_leases == {}
 
 
+@pytest.mark.parametrize("absolute", [False, True])
+def test_a_resident_dir_is_refused_once_default_model_moves_off_it(
+        monkeypatch, tmp_path, absolute):
+    """DEFAULT_MODEL hot-applies and evicts nothing: the cache-hit fast path
+    must refuse the withdrawn dir as _check_model_name does, not serve it
+    until an LRU eviction or a restart."""
+    _stub_load(monkeypatch)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "models" / "my-ft").mkdir(parents=True)
+    name = str(tmp_path / "models" / "my-ft") if absolute else "models/my-ft"
+    monkeypatch.setattr(tx_models.cfg, "MAX_LOADED_MODELS", 4, raising=False)
+    monkeypatch.setattr(tx_models.cfg, "PRELOAD_MODELS", [], raising=False)
+    monkeypatch.setattr(tx_models.cfg, "DEFAULT_MODEL", name, raising=False)
+    asyncio.run(tx_models._get_or_load_model(name))
+    monkeypatch.setattr(tx_models.cfg, "DEFAULT_MODEL", "a", raising=False)
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(tx_models._get_or_load_model(name, lease=True))
+
+    assert exc.value.status_code == 400
+    assert name in tx_models._loaded_models     # resident, still refused
+    assert tx_models._model_leases == {}
+
+
 @pytest.mark.parametrize("err", ["RepositoryNotFoundError",
                                  "RevisionNotFoundError"])
 def test_repo_missing_on_the_hub_evicts_nothing(monkeypatch, err):
