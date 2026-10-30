@@ -19,6 +19,7 @@ Conventions:
 """
 import json
 import os
+import re
 
 from faster_whisper_backend.settings import config_renames as _renames
 from faster_whisper_backend import paths as _paths  # underscore: not a setting
@@ -1576,6 +1577,18 @@ def _env_str_passthrough(name: str, current: str) -> str:
     raw = os.environ.get(name)
     return raw if raw is not None else current
 
+_SPELLED_ESCAPES = {"n": "\n", "r": "\r", "t": "\t", "\\": "\\"}
+
+def _env_str_unescaped(name: str, current: str) -> str:
+    """Passthrough that decodes a spelled \\n / \\r / \\t (\\\\ = a literal
+    backslash). dotenv single quotes, a compose env_file and a Windows
+    service <env> all deliver '\\n' as backslash + n, which live dictation
+    would then type into the document instead of a line break."""
+    raw = os.environ.get(name)
+    if raw is None:
+        return current
+    return re.sub(r"\\([nrt\\])", lambda m: _SPELLED_ESCAPES[m.group(1)], raw)
+
 def _env_csv_list(name: str, current: list[str]) -> list[str]:
     """Comma-separated list parse — unset → keep current; explicitly-empty
     env (e.g. WHISPER_PRELOAD_MODELS="") → empty list. Callers that need
@@ -1682,8 +1695,9 @@ _ENV_READER_OVERRIDES = {
     "PREPEND_PUNCTUATIONS": "passthrough", "APPEND_PUNCTUATIONS": "passthrough",
     "OUTPUT_PREFIX": "passthrough", "OUTPUT_SUFFIX": "passthrough",
     "DEFAULT_LANGUAGE": "passthrough",
-    # every documented non-empty value is whitespace (' ' / '\n')
-    "STREAMING_HARD_BREAK_SEPARATOR": "passthrough",
+    # every documented non-empty value is whitespace (' ' / newline), and
+    # the newline usually arrives spelled as backslash + n
+    "STREAMING_HARD_BREAK_SEPARATOR": "unescaped",
     # "" is the documented, schema-legal "off" / "use the default" value
     # (.env.example), so WHISPER_X="" must beat a stored one; stripped like
     # "str", since an edge space would fail the field's pattern.
@@ -1708,7 +1722,8 @@ _ENV_READER_FUNCS = {
     "int_or_none": _env_int_or_none,
     "bool": _env_bool, "str": _env_str, "str_empty": _env_str_empty_is_value,
     "str_or_none": _env_str_or_none,
-    "passthrough": _env_str_passthrough, "csv_list": _env_csv_list,
+    "passthrough": _env_str_passthrough, "unescaped": _env_str_unescaped,
+    "csv_list": _env_csv_list,
 }
 
 
@@ -1719,8 +1734,8 @@ _ENV_READER_FUNCS = {
 # the next restart. Filled by the reader loop below; the special-case readers
 # that treat "" as a value are added after they run.
 _EMPTY_IS_VALUE_KINDS = frozenset({
-    "str_or_none", "str_empty", "passthrough", "float_or_none", "int_or_none",
-    "csv_list"})
+    "str_or_none", "str_empty", "passthrough", "unescaped", "float_or_none",
+    "int_or_none", "csv_list"})
 _EMPTY_IS_VALUE: "set[str]" = set()
 
 
