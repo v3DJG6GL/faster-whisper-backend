@@ -1122,10 +1122,14 @@
   // Themed yes/no confirm dialog (replaces the browser-native confirm()).
   // Returns a Promise<bool>. opts: {title, body, confirmLabel, danger}.
   // Enter confirms (unless Cancel has focus), Esc / Cancel / backdrop-click
-  // reject.
+  // reject. A dialog opened while one is up cancels that one: a load() that
+  // lands can ask on its own while a filter change is asking, and the first
+  // prompt's promise must not hang (nor its Enter listener stay behind).
+  var _confirmClose = null;
   function _confirm(opts) {
     opts = opts || {};
     return new Promise(function(resolve) {
+      if (_confirmClose) _confirmClose(false);
       var m = document.getElementById('dialog-modal');
       document.getElementById('dialog-title').textContent = opts.title || 'Confirm';
       document.getElementById('dialog-body').textContent = opts.body || '';
@@ -1134,6 +1138,7 @@
       ok.textContent = opts.confirmLabel || 'Confirm';
       ok.className = opts.danger ? 'danger' : 'primary';
       function close(result) {
+        if (_confirmClose === close) _confirmClose = null;
         m.classList.remove('show');
         ok.onclick = null; cancel.onclick = null; m.onclick = null;
         document.removeEventListener('keydown', onKey);
@@ -1149,6 +1154,7 @@
       cancel.onclick = function() { close(false); };
       m.onclick = function(e) { if (e.target === m) close(false); };  // backdrop
       document.addEventListener('keydown', onKey);
+      _confirmClose = close;
       m.classList.add('show');
       setTimeout(function() { try { ok.focus(); } catch (_) {} }, 50);
     });

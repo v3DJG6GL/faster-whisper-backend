@@ -70,13 +70,9 @@ def page(client):
 
 # ---- _confirm ---------------------------------------------------------------
 
-@needs_node
-def test_confirm_enter_on_focused_cancel_cancels(page, tmp_path):
-    """The dialog's document-level Enter handler confirmed regardless of
-    focus, and its preventDefault swallowed the button's own activation, so
-    Tab to Cancel + Enter ran the destructive action."""
-    fn = _js_function(page, "_confirm")
-    out = _run_node(tmp_path, fn + r"""
+def _confirm_harness(page):
+    """_confirm with a stand-in dialog; `handlers` holds the keydown ones."""
+    return "var _confirmClose = null;\n" + _js_function(page, "_confirm") + r"""
 var els = {};
 function el(id) {
   return els[id] || (els[id] = { id: id, focus: function() {},
@@ -92,6 +88,15 @@ global.document = {
   },
 };
 function enter() { handlers[0]({ key: 'Enter', preventDefault: function() {} }); }
+"""
+
+
+@needs_node
+def test_confirm_enter_on_focused_cancel_cancels(page, tmp_path):
+    """The dialog's document-level Enter handler confirmed regardless of
+    focus, and its preventDefault swallowed the button's own activation, so
+    Tab to Cancel + Enter ran the destructive action."""
+    out = _run_node(tmp_path, _confirm_harness(page) + r"""
 (async function() {
   var res = [];
   var p = _confirm({ confirmLabel: 'Delete', danger: true });
@@ -106,6 +111,27 @@ function enter() { handlers[0]({ key: 'Enter', preventDefault: function() {} });
 })();
 """)
     assert out == [False, True]
+
+
+@needs_node
+def test_confirm_opened_over_another_cancels_that_one(page, tmp_path):
+    """A load() that lands opens "Show the refreshed list?" on its own, and
+    a filter change may be asking right then: the new dialog took over the
+    buttons, so the filter's prompt never settled (every later filter change
+    was ignored) and its Enter listener stayed, confirming it on the next
+    Enter anywhere."""
+    out = _run_node(tmp_path, _confirm_harness(page) + r"""
+(async function() {
+  var first = _confirm({ title: 'Change the filter?' });
+  var second = _confirm({ title: 'Show the refreshed list?' });
+  var res = [await first, handlers.length];
+  document.activeElement = el('dialog-ok');
+  enter();
+  res.push(await second, handlers.length);
+  console.log(JSON.stringify(res));
+})();
+""")
+    assert out == [False, 1, True, 0]
 
 
 # ---- bulk status / undo -------------------------------------------------------
