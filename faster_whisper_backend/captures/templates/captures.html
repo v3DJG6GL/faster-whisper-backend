@@ -2883,6 +2883,39 @@
       + '\uA9E0-\uA9FF\uAA60-\uAA7F\uF900-\uFAFF\uFF66-\uFF9F'
       + '\u{20000}-\u{3134F}]';
     var nsHead = new RegExp('^' + NSC, 'u'), nsTail = new RegExp(NSC + '$', 'u');
+    // Each shown span: a chip's correction over the words it covers, or a
+    // word the pipeline kept. memberHead: each member's whole shown text, its
+    // head at a member boundary as the server reads it, so a member opening
+    // in a "「" / "（" word of its own (faster-whisper keeps CJK openers apart)
+    // still starts in Han / kana.
+    var items = [], memberHead = {};
+    var i = 0;
+    while (i < words.length) {
+      var w = words[i];
+      var hm = w ? w.member_idx : undefined;
+      var chip = cover[i];
+      if (chip) {
+        var end = (typeof chip.idx_end === 'number') ? chip.idx_end : chip.idx;
+        if (end >= words.length) end = words.length - 1;
+        var ctxt = chip.correct.trim();
+        items.push({ from: i, to: end, txt: ctxt,
+                     member: words[end] ? words[end].member_idx : undefined });
+        memberHead[hm] = (memberHead[hm] || '') + ctxt;
+        i = end + 1;
+        continue;
+      }
+      // Prefer the training-text token (CAPTURES_PIPELINE_RULES_EXCLUDE
+      // respected) so the Final result matches the export; fall back to the
+      // runtime `word` when no distinct training token was attached.
+      var hasTrain = (w && w.train_word !== undefined);
+      var removed = hasTrain ? !!w.train_removed : !!(w && w.removed);
+      var txt = removed ? ''
+        : (hasTrain ? (w.train_word || '') : ((w && w.word) || '')).trim();
+      if (!txt) { state.wordToGround[i] = null; i++; continue; }
+      items.push({ from: i, to: i, txt: txt, member: hm });
+      memberHead[hm] = (memberHead[hm] || '') + txt;
+      i++;
+    }
     // memberText: the current member's text so far, so a member that ends
     // in a word of its own ("。") is still read past it.
     var prevText = '', prevMember, memberText = '';
@@ -2891,51 +2924,22 @@
       var tok = (w && (w.train_word !== undefined ? w.train_word : w.word)) || '';
       var member = w ? w.member_idx : undefined;
       if (member !== prevMember) {
-        return _cjkEdge(memberText, true) && _cjkEdge(txt, false) ? '' : ' ';
+        return _cjkEdge(memberText, true) && _cjkEdge(memberHead[member], false) ? '' : ' ';
       }
       return (!/^\s/.test(tok)
               && (nsTail.test(prevText) || nsHead.test(txt))) ? '' : ' ';
     }
-    function took(txt, member) {
-      memberText = (first || member !== prevMember ? '' : memberText) + txt;
-      prevText = txt;
-      prevMember = member;
-    }
-    var i = 0;
-    while (i < words.length) {
-      var chip = cover[i];
-      if (chip) {
-        var end = (typeof chip.idx_end === 'number') ? chip.idx_end : chip.idx;
-        if (end >= words.length) end = words.length - 1;
-        var sp = document.createElement('span');
-        sp.className = 'word';
-        var ctxt = chip.correct.trim();
-        sp.textContent = sep(words[i], ctxt) + ctxt;
-        took(ctxt, words[end] ? words[end].member_idx : undefined);
-        area.appendChild(sp);
-        for (var k = i; k <= end; k++) state.wordToGround[k] = sp;
-        first = false;
-        i = end + 1;
-        continue;
-      }
-      var w = words[i];
-      // Prefer the training-text token (CAPTURES_PIPELINE_RULES_EXCLUDE
-      // respected) so the Final result matches the export; fall back to the
-      // runtime `word` when no distinct training token was attached.
-      var hasTrain = (w && w.train_word !== undefined);
-      var removed = hasTrain ? !!w.train_removed : !!(w && w.removed);
-      if (removed) { state.wordToGround[i] = null; i++; continue; }
-      var txt = (hasTrain ? (w.train_word || '') : ((w && w.word) || '')).trim();
-      if (!txt) { state.wordToGround[i] = null; i++; continue; }
-      var sp2 = document.createElement('span');
-      sp2.className = 'word';
-      sp2.textContent = sep(w, txt) + txt;
-      took(txt, w.member_idx);
-      area.appendChild(sp2);
-      state.wordToGround[i] = sp2;
+    items.forEach(function(it) {
+      var sp = document.createElement('span');
+      sp.className = 'word';
+      sp.textContent = sep(words[it.from], it.txt) + it.txt;
+      memberText = (first || it.member !== prevMember ? '' : memberText) + it.txt;
+      prevText = it.txt;
+      prevMember = it.member;
+      area.appendChild(sp);
+      for (var k = it.from; k <= it.to; k++) state.wordToGround[k] = sp;
       first = false;
-      i++;
-    }
+    });
   }
 
   function applyCorrectionsToGround(state) {

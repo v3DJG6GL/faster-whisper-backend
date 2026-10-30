@@ -2588,6 +2588,41 @@ console.log(JSON.stringify([
                      ("你好。", "Hallo"), ("สวัสดี", "ครับ"))]
 
 
+@needs_node
+def test_final_result_preview_reads_a_member_past_an_opener_word_of_its_own(page, tmp_path):
+    """faster-whisper keeps "「" / "（" as a word of their own, and the Final
+    result tested the next member only on that first word, so it showed
+    "我们去北京。 「你好」" where the transcript and export read
+    "我们去北京。「你好」"."""
+    from faster_whisper_backend.captures.samples import _build_default_transcript
+
+    fns = "\n".join(_js_function(page, f) for f in ("_cjkEdge", "_renderGroundSpans"))
+    out = _run_node(tmp_path, fns + r"""
+global.document = { createElement: function() { return {}; } };
+function render(words) {
+  var spans = [];
+  var area = { appendChild: function(e) { spans.push(e.textContent); } };
+  _renderGroundSpans({ gtArea: area, words: words, corrections: [] });
+  return spans.join('');
+}
+function m(member, list) {
+  return list.map(function(w) {
+    return typeof w === 'string' ? { word: w, member_idx: member }
+      : Object.assign({ member_idx: member }, w);
+  });
+}
+console.log(JSON.stringify([
+  render(m(0, ['我们', '去', '北京。']).concat(m(1, ['「', '你好', '」']))),
+  render(m(0, ['你好。']).concat(m(1, ['（', '笑', '）']))),
+  render(m(0, ['你好']).concat(m(1, [{ word: '嗯', removed: true }, '「', '是', '」'])))]));
+""")
+    assert out == ["我们去北京。「你好」", "你好。（笑）", "你好「是」"]
+    assert out == [
+        _build_default_transcript([{"final": a}, {"final": b}], "space")
+        for a, b in (("我们去北京。", "「你好」"), ("你好。", "（笑）"),
+                     ("你好", "「是」"))]
+
+
 # ---- karaoke scroll ---------------------------------------------------------------------------
 
 @needs_node
