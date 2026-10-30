@@ -228,14 +228,16 @@ def _apply_chips_to_text(
                     best, best_end = i, j
                     break
                 # Whole tokens before the occurrence: a "(" or „ it starts
-                # inside belongs to its own word, not the one before.
-                k = len(out[:i].split())
+                # inside belongs to its own word, not the one before. `ts`
+                # is the start of the token it sits in.
+                before = out[:i].split()
+                k, ts = len(before), i
                 if i > 0 and not out[i - 1].isspace():
                     k -= 1
+                    ts = i - len(before[-1])
                 # Inside a token of a script written without spaces, the
                 # char offset in that token breaks a tie: a chip on the
                 # third "的" of "我的猫的狗的" must not rewrite the first.
-                ts = i - len(re.search(r"\S*$", out[:i]).group())
                 d2 = 0
                 if _NO_SPACE_SCRIPT.search(out, ts, j):
                     d2 = abs(i - ts - cshift.get(k + shift, 0) - off)

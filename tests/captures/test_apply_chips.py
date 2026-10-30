@@ -11,6 +11,7 @@ import json
 import pathlib
 import shutil
 import subprocess
+import time
 
 import pytest
 
@@ -181,6 +182,13 @@ _WORD_CASES = [
      [{"idx": 0, "idx_end": 0, "wrong": "我喜欢猫。", "correct": "我喜欢狗。"}],
      [_w(" 我"), _w("喜欢"), _w("猫"), _w("。")],
      "我喜欢狗。"),
+    # A dictated line break right before the chip's word: the token it sits
+    # in starts after the "\n", not at the line before (Python's `$` matched
+    # before a trailing "\n" and the server rewrote the last "的").
+    ("我喜欢狗\n的猫的",
+     [{"idx": 1, "wrong": "的", "correct": "地"}],
+     [_w("我喜欢狗"), _w("\n的"), _w("猫"), _w("的")],
+     "我喜欢狗\n地猫的"),
     # A chip on a word inside an unspaced Chinese run, and on the third of
     # three "的" in one run (also after a chip that lengthened the run, and
     # in the second of two sentences): the char offset inside the run picks
@@ -219,6 +227,18 @@ def test_apply_chips_rewrites_only_the_marked_word(text, chips, expected):
 @pytest.mark.parametrize("text, chips, words, expected", _WORD_CASES)
 def test_apply_chips_maps_idx_past_removed_words(text, chips, words, expected):
     assert capture_samples._apply_chips_to_text(text, chips, words) == expected
+
+
+def test_apply_chips_in_long_unspaced_runs_stays_fast():
+    # Each occurrence looked up its token start with a regex over all the
+    # text before it, backtracking through every earlier run: a 7k-char
+    # Chinese text took seconds per chip (a 30k-char one over a minute).
+    text = " ".join(["我喜欢猫和狗" * 50] * 24)
+    t0 = time.monotonic()
+    out = capture_samples._apply_chips_to_text(
+        text, [{"idx": 0, "wrong": "猫", "correct": "鱼"}])
+    assert time.monotonic() - t0 < 2.0
+    assert out == "我喜欢鱼和狗" + text[6:]
 
 
 def test_default_transcript_aligns_chips_with_the_members_words():

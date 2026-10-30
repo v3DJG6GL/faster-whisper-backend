@@ -3575,12 +3575,16 @@
           }
           if (!anchored) { best = i; bestEnd = j; break; }
           // A word glued to a "(" or „ before it is that token, not the next.
-          var k = nWords(out.slice(0, i));
-          if (i > 0 && !/\s/.test(out[i - 1])) k -= 1;
+          // `ts` is the start of the token it sits in.
+          var before = out.slice(0, i).split(/\s+/).filter(Boolean);
+          var k = before.length, ts = i;
+          if (i > 0 && !/\s/.test(out[i - 1])) {
+            k -= 1;
+            ts = i - before[before.length - 1].length;
+          }
           // Inside a token of a script written without spaces, the char
           // offset in that token breaks a tie (the third "的" of
           // "我的猫的狗的" is not the first).
-          var ts = i - /\S*$/.exec(out.slice(0, i))[0].length;
           var d2 = 0;
           if (NS.test(out.slice(ts, j))) {
             d2 = Math.abs(i - ts - (cshift[k + shift] || 0) - off);
