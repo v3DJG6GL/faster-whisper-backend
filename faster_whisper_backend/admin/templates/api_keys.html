@@ -370,7 +370,7 @@
     gap: 0.4rem; align-items: center; padding: 0.12rem 0; }
   .cfg-ovr-row .nm { font-family: var(--font-mono); font-size: var(--fs-sm); }
   .cfg-ovr-row input[type=text], .cfg-ovr-row input[type=number],
-  .cfg-ovr-row select { background: var(--input-bg); color: var(--fg);
+  .cfg-ovr-row select, .cfg-ovr-row textarea { background: var(--input-bg); color: var(--fg);
     border: 1px solid var(--border); border-radius: 4px; font: inherit;
     font-size: var(--fs-sm); padding: 0.1rem 0.3rem; width: 100%;
     box-sizing: border-box; }
@@ -1463,6 +1463,13 @@
         var n = meta.kind === 'int' ? parseInt(el.value, 10) : parseFloat(el.value);
         onchange(isNaN(n) ? null : n);
       };
+    } else if (meta.kind === 'textarea') {
+      // Multi-line text (glossary pairs, prompt, hotwords): a text <input>
+      // strips the newlines, so it would save the whole value as one line.
+      el = document.createElement('textarea'); el.rows = 3;
+      el.value = val == null ? '' : val;
+      if (meta.maxlen) el.maxLength = meta.maxlen;
+      el.onchange = function () { onchange(el.value); };
     } else {
       el = document.createElement('input'); el.type = 'text'; el.value = val == null ? '' : val;
       if (meta.maxlen) el.maxLength = meta.maxlen;

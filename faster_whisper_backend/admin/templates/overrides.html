@@ -121,7 +121,8 @@
   .ov-row .ov-name { font-family: var(--font-mono); font-size: var(--fs-sm);
     color: var(--dim); overflow: hidden; text-overflow: ellipsis; }
   .ov-row.is-set .ov-name { color: var(--bold); }
-  .ov-val input[type=text], .ov-val input[type=number], .ov-val select {
+  .ov-val input[type=text], .ov-val input[type=number], .ov-val select,
+  .ov-val textarea {
     width: 100%; box-sizing: border-box; background: var(--input-bg);
     color: var(--fg); border: 1px solid var(--border); border-radius: 6px;
     padding: 0.2rem 0.4rem; font-family: var(--font-mono);
@@ -826,6 +827,13 @@ window._renderWaterfall = (function () {
         var n = meta.kind === 'int' ? parseInt(el.value, 10) : parseFloat(el.value);
         onchange(isNaN(n) ? null : n);
       };
+    } else if (meta.kind === 'textarea') {
+      // Multi-line text (glossary pairs, prompt, hotwords): a text <input>
+      // strips the newlines, so it would save the whole value as one line.
+      el = document.createElement('textarea'); el.rows = 3;
+      el.value = val == null ? '' : val;
+      if (meta.maxlen) el.maxLength = meta.maxlen;
+      el.onchange = function () { onchange(el.value); };
     } else {
       el = document.createElement('input'); el.type = 'text'; el.value = val == null ? '' : val;
       if (meta.maxlen) el.maxLength = meta.maxlen;

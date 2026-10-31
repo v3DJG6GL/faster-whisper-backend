@@ -445,3 +445,23 @@ function api(method, url, body) {
     out = _run(js, tmp_path)
     assert out == {"open_disabled": True, "loads": 1, "closed_disabled": False,
                    "posts": 2}
+
+
+def test_direct_override_textarea_field_keeps_its_newlines(client, tmp_path):
+    """_cfgWidget rendered every 'str' field as a text <input>, which strips
+    newlines: editing a multi-line glossary as a direct override saved one
+    line. The 'textarea' kind builds a <textarea> and returns its value as is."""
+    html = client.get("/settings/api-keys").text
+    js = _fn(html, "_cfgWidget") + r"""
+var document = { createElement: function (tag) { return { tag: tag }; } };
+var window = { __ovstate: { field_meta: {
+  TRANSLATION_GLOSSARY: { kind: 'textarea', maxlen: 4000 } } } };
+function ovState() { return window.__ovstate; }
+var got = null;
+var el = _cfgWidget('TRANSLATION_GLOSSARY', 'a = b\nc = d', function (v) { got = v; });
+el.value += '\ne = f';
+el.onchange();
+console.log(JSON.stringify({ tag: el.tag, maxlen: el.maxLength, got: got }));
+"""
+    out = _run(js, tmp_path)
+    assert out == {"tag": "textarea", "maxlen": 4000, "got": "a = b\nc = d\ne = f"}

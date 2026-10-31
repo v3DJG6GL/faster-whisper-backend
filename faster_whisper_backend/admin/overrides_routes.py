@@ -26,6 +26,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from faster_whisper_backend.admin import routes as admin_routes
 from faster_whisper_backend.auth import api_keys_store
 from faster_whisper_backend.settings import config as cfg
 from faster_whisper_backend.settings import config_store
@@ -82,8 +83,16 @@ def _build_field_meta() -> dict[str, dict[str, Any]]:
     bounds. Drives the profile editor + direct-override sub-editor. `locks`
     and `requestable` are profile-level metadata, not per-field overrides —
     rendered by dedicated controls, never in the field grid."""
-    return settings_schema.override_field_meta(
+    meta = settings_schema.override_field_meta(
         settings_schema.OverrideProfile, exclude={"locks", "requestable"})
+    # The multi-line text fields the /settings per-model pane already renders
+    # as a <textarea>: a single-line <input> strips the newlines, so editing a
+    # multi-line glossary or prompt here would save it as one line. Only the
+    # 'textarea' kind is taken; the rest of that overlay is per-model-pane only.
+    for name, extra in admin_routes._MO_FIELD_META_OVERLAY.items():
+        if extra.get("kind") == "textarea" and name in meta:
+            meta[name]["kind"] = "textarea"
+    return meta
 
 
 def _build_defaults() -> dict[str, Any]:

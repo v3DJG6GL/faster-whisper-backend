@@ -59,6 +59,21 @@ def test_state_shape_and_field_meta(client, make_user_key):
     assert "MODEL_DEVICE" not in j["field_meta"]
 
 
+def test_state_field_meta_marks_multiline_text_as_textarea(client, make_user_key):
+    """The profile editor and the per-identity sub-editor rendered every 'str'
+    field as a text <input>, which strips newlines: a multi-line glossary
+    saved as one line and the other pairs were gone. The multi-line fields
+    get the same 'textarea' kind as on the /settings per-model pane."""
+    _, _, h = _admin(make_user_key)
+    fm = client.get(f"{OV}/state", headers=h).json()["field_meta"]
+    for name in ("TRANSLATION_GLOSSARY", "DEFAULT_PROMPT", "DEFAULT_HOTWORDS"):
+        assert fm[name]["kind"] == "textarea", name
+        assert fm[name]["maxlen"] > 0, name
+    # Only the textarea kind is taken over: other per-model-pane kinds stay off.
+    assert fm["NO_SPEECH_THRESHOLD"]["kind"] == "float"
+    assert fm["DEFAULT_LANGUAGE"]["kind"] == "str"
+
+
 def test_state_includes_inherited_defaults(client, make_user_key, app_module):
     """The /state payload ships the live global value for every overridable field
     so the editor can render `inherits <value>` (and seed `+ override` from it).
@@ -725,6 +740,30 @@ console.log(JSON.stringify(out));
     out = json.loads(p.stdout.strip().splitlines()[-1])
     assert out == {"dirty_renamed": 0, "dirty_status": "err", "still_open": True,
                    "clean_renamed": 1}
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node unavailable")
+def test_page_textarea_field_keeps_its_newlines(client, tmp_path):
+    """makeWidget's 'textarea' kind builds a <textarea> (a text <input> strips
+    the newlines of a multi-line glossary) and hands its value back as is."""
+    html = client.get(OV).text
+    start = html.index("  function makeWidget(")
+    js = html[start:html.index("\n  }\n", start) + 4] + r"""
+var document = { createElement: function (tag) { return { tag: tag }; } };
+var got = null;
+var el = makeWidget('TRANSLATION_GLOSSARY', { kind: 'textarea', maxlen: 4000 },
+                    'a = b\nc = d', function (v) { got = v; });
+el.value += '\ne = f';
+el.onchange();
+console.log(JSON.stringify({ tag: el.tag, maxlen: el.maxLength, got: got }));
+"""
+    f = tmp_path / "probe.js"
+    f.write_text(js, encoding="utf-8")
+    p = subprocess.run([shutil.which("node"), str(f)], capture_output=True,
+                       text=True, encoding="utf-8", timeout=30)
+    assert p.returncode == 0, p.stderr
+    out = json.loads(p.stdout.strip().splitlines()[-1])
+    assert out == {"tag": "textarea", "maxlen": 4000, "got": "a = b\nc = d\ne = f"}
 
 
 @pytest.mark.parametrize("writer", ["post_state", "rename_profile"])
