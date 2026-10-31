@@ -3,7 +3,7 @@ delete-punct-before-hyphen, the language tags on language-specific rules, the
 Spanish opening-mark rule, the dictation-map → de-dictation-map rename,
 tighten-digit-separators and normalize-digit-range on a digit chain
 (3/4/2026), and capitalize-after-terminator, space-before-closing-punct and
-trim-trailing-period on a long run of paragraph breaks / spaces.
+trim-trailing-period on a long run of paragraph breaks / spaces / dots.
 
 2026-09-19: "vom 3.-10 Oktober" left the pipeline as "vom 310 Oktober" —
 final-cleanup deleted ".-" between two numbers. A silently changed date or
@@ -526,6 +526,18 @@ def test_trim_trailing_period_is_fast_on_a_hallucinated_symbol_loop(app_module, 
     `\\s*\\.+\\s*$` started a match at every space of the run, took the rest
     of it and found no dot: 40000 spaces took 8 s on /transcribe. A match now
     starts only at a run's first space."""
+    _assert_trim_trailing_period_is_fast(app_module, unit, n)
+
+
+def test_trim_trailing_period_is_fast_on_a_hallucinated_dot_run(app_module):
+    """Whisper also writes "Das war es......" on silence, and the rule runs
+    before strip-auto-punctuation deletes the dots. A match started at every
+    dot of the run, took the rest of it and found text after it: 24000 dots
+    took 8 s. A match now starts only at a run's first dot."""
+    _assert_trim_trailing_period_is_fast(app_module, ".", 20000)
+
+
+def _assert_trim_trailing_period_is_fast(app_module, unit, n):
     app_module.cfg.PIPELINE_RULES = copy.deepcopy(_factory_rules())
     pl_engine.rebuild_caches()
     t0 = time.perf_counter()
@@ -539,7 +551,8 @@ def test_trim_trailing_period_output_is_unchanged():
     entry = _trailing_period_entry(_factory_rules())
     old = renames.UPGRADED_RULE_ENTRIES["trim-trailing-period"][0]
     for s in ("Wert 5.", "gut. . . ", "x. .", "a  \t.\n", "z.B. morgen", " . ", "...",
-              "Ende.\n\n", "a b", "  ", "1.5 mg .\t.", "Satz. Zwei"):
+              "Ende.\n\n", "a b", "  ", "1.5 mg .\t.", "Satz. Zwei", "es...... Danke",
+              "5\n.\n\n.", ". .", "a.. b.."):
         assert re.sub(entry["pattern"], entry["replacement"], s) == re.sub(*old, s), s
 
 

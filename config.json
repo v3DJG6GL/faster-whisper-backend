@@ -300,7 +300,7 @@
       "type": "regex-list",
       "entries": [
         {
-          "pattern": "(?<!\\s)\\s*\\.+\\s*$",
+          "pattern": "(?<!\\s)\\s*(?<!\\.)\\.+\\s*$",
           "replacement": "",
           "label": "trim-trailing-period",
           "note": ""
