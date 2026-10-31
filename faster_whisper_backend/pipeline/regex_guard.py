@@ -1317,13 +1317,14 @@ def _synthetic_fixtures(pat: str) -> "list[str]":
     budget, so ~30 full runs of an ordinary polynomial rule (`(\\d+)\\s*(\\d*)`)
     used up its allowance and refused it. Each candidate is first matched as a
     SHORT run (_SYNTH_SCREEN), and only the first candidate per distinct
-    outcome (the spans the rule matches) gets the full-length probe: two runs
-    the rule treats the same way at every position cost the same. A run the
-    rule matches nowhere is keyed on which of its atoms accept the run
-    character instead: `\\n\\s*\\s*…x` refuses a space run at once and splits
-    a newline run every way. An ordinary rule matches none of them and is
-    probed once per run character class; `\\d*…[1-8]` matches a `2` run but
-    not a `9` one, so both are kept.
+    outcome gets the full-length probe. The outcome is the spans the rule
+    matches plus which of its atoms accept the run character (_char_atoms):
+    two inputs whose characters every single-character atom accepts or
+    refuses alike drive the engine through the same steps, while equal spans
+    alone do not (`\\s*x|\\n*…\\n*y|\\s` splits a newline run every way before
+    `\\s` matches it like a space run). An ordinary rule is probed once per
+    run character class; `\\n\\s*…x` and `2\\d*…x|\\d+` keep the run their
+    leading atom accepts.
     """
     import re
 
@@ -1365,14 +1366,13 @@ def _synthetic_fixtures(pat: str) -> "list[str]":
     probes: dict = {}
     for c in dict.fromkeys(char + family):
         for t in terms:
-            outcome = tuple(m.span() for m in rx.finditer(c * screen + t))
-            if not outcome:
-                # "No match anywhere" says nothing about cost: a run the
-                # rule's first atom refuses fails at once, one it accepts
-                # splits every way first. Only runs every atom treats alike
-                # share it.
-                outcome = ("none", c if atoms is None else tuple(
-                    a.fullmatch(c) is not None for a in atoms))
+            # Equal spans say nothing about cost: a rule that splits a `\n`
+            # run every way before a cheap `|\s` matches it ends with the
+            # spans a space run gets at once. Only runs every atom treats
+            # alike share a probe.
+            outcome = (tuple(m.span() for m in rx.finditer(c * screen + t)),
+                       c if atoms is None else tuple(
+                           a.fullmatch(c) is not None for a in atoms))
             probes.setdefault(outcome, c * _SYNTH_RUN + t)
     return list(probes.values())
 

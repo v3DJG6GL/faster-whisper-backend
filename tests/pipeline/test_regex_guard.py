@@ -1191,6 +1191,22 @@ def test_run_no_candidate_matches_keeps_the_run_the_rule_starts_on(pat, probe):
 
 
 @pytest.mark.parametrize("pat, probe", [
+    (r"\s*x|" + r"\n*" * 7 + r"y|\s", "\n" * 240),
+    (r"2" + r"\d*" * 7 + r"x|\d+", "2" * 240),
+    (r"\d*" * 7 + r"[^9#]|\d+", "9" * 240),
+])
+def test_run_a_cheap_branch_matches_like_its_sibling_keeps_its_probe(pat, probe):
+    """The screen keyed a run the rule matches on its spans alone, and the
+    cheap last branch gives every run character the same ones: only the
+    space or `1` run was probed, which the slow branch refuses at once.
+    These were accepted, yet re.sub over 40 newlines, `2`s or `9`s takes
+    over a second, growing ~n^7."""
+    assert any(s.startswith(probe) for s in g._synthetic_fixtures(pat))
+    with pytest.raises(ValueError):
+        g.validate([("r", pat, "")], timeout=1.5)
+
+
+@pytest.mark.parametrize("pat, probe", [
     (r"\d+" * 20 + r"(?:\W|$)", "1" * 240 + "z"),
     (r"\s+" * 20 + r"(?:[^\w\s]|$)", " " * 240 + "z"),
 ])
