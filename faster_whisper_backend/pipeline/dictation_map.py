@@ -28,6 +28,7 @@ Pure module: no import of ``main``.
 """
 from __future__ import annotations
 
+import functools
 import itertools
 import re
 from typing import Callable
@@ -111,6 +112,19 @@ def _alternation(keys: list[str]) -> str:
     return "|".join(parts)
 
 
+@functools.lru_cache(maxsize=4)
+def _compile_map_pattern(source: str) -> "re.Pattern[str]":
+    # re.compile keeps every pattern in re's module cache (hundreds of
+    # entries), and a map's alternation is one big pattern (~1 MB at 2000
+    # keys): each dictionary edit or edited-map dry run left the old one
+    # pinned there long after the rule dropped it. Purge it right away; this
+    # small cache keeps an unchanged map (the next rebuild, a repeated dry
+    # run) from recompiling.
+    pattern = re.compile(source, re.IGNORECASE)
+    re.purge()
+    return pattern
+
+
 def compile_map(m: dict) -> tuple["re.Pattern[str]", Callable[["re.Match[str]"], str], dict[str, str]]:
     """Compile a map into ``(pattern, replacer, lookup)``.
 
@@ -143,7 +157,7 @@ def compile_map(m: dict) -> tuple["re.Pattern[str]", Callable[["re.Match[str]"],
         prefix = r"(?:" + _WHISPER_PUNCT + r"(?:[ \t]*+" + ahead + r"|" + ahead + r"))?"
     else:
         prefix = ""
-    pattern = re.compile(prefix + r"(" + alternation + r")", re.IGNORECASE)
+    pattern = _compile_map_pattern(prefix + r"(" + alternation + r")")
 
     def replace(mt: "re.Match[str]") -> str:
         key = mt.group(1)

@@ -11,6 +11,7 @@ factory strip rule keeps `…` and `:` runs, so such a run reaches the map on
 import copy
 import json
 import os
+import re
 import time
 
 import pytest
@@ -18,6 +19,7 @@ import pytest
 from faster_whisper_backend import paths
 from faster_whisper_backend.pipeline import dictation_map
 from faster_whisper_backend.pipeline import engine as pl_engine
+from faster_whisper_backend.settings import config as cfg
 
 
 @pytest.mark.parametrize("mark", ["…", ":", "."])
@@ -204,3 +206,34 @@ def test_lead_word_bound_on_tricky_keys(text, expected):
         "Komma": ",", ".com": "DOT", "3D": "DREI", "istanbul": "IST",
         "größer als": ">", "über": "U"})
     assert pattern.sub(replace, text) == expected
+
+
+def _in_re_cache(source):
+    # Reading re's private caches is fine in a test: the leak lives there.
+    return any(key[1] == source for key in [*re._cache, *re._cache2])
+
+
+def test_an_edited_map_leaves_no_old_pattern_in_res_cache(monkeypatch):
+    """re.compile caches every pattern module-wide (up to 512), so each
+    dictionary edit pinned the replaced map's whole alternation there:
+    ~1 MB per edit at 2000 keys, never freed while the server ran."""
+    sources = []
+    try:
+        for i in range(3):
+            monkeypatch.setattr(cfg, "PIPELINE_RULES", [{
+                "name": "m", "label": "m", "type": "callback:map", "enabled": True,
+                "map": {"Komma": ",", f"wort{i}": "x"}}])
+            pl_engine.rebuild_caches()
+            sources.append(pl_engine._COMPILED_RULES[0].pattern.pattern)
+        # The /settings/pipeline dry run compiles its edited map the same way.
+        sources.append(dictation_map.compile_map({"Komma": ",", "probe": "x"})[0].pattern)
+        assert len(set(sources)) == 4
+        assert not any(_in_re_cache(s) for s in sources)
+    finally:
+        monkeypatch.undo()
+        pl_engine.rebuild_caches()
+
+
+def test_an_unchanged_map_is_not_recompiled():
+    m = {"Komma": ",", "Punkt": "."}
+    assert dictation_map.compile_map(dict(m))[0] is dictation_map.compile_map(dict(m))[0]
