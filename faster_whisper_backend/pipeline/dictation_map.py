@@ -19,10 +19,10 @@ always had, two things are decided here:
   3.5 survives). " HB 12... Komma 5" therefore reached the map as
   "12. Komma 5", became "12. , 5" and the dedup rule kept the period — the
   dictated comma lost. A run of ``. , : ; ! ? …`` (plus spaces) directly
-  before a word whose value is punctuation is now consumed by the match and
-  replaced together with it: "12... Komma 5" → "12,5", "1, Komma, 5" →
-  "1,5". A mark between two digits ("12.5", "12,5") is never followed by a
-  dictation word and is untouched.
+  before a word whose value is punctuation (or "/") is now consumed by the
+  match and replaced together with it: "12... Komma 5" → "12,5", "1, Komma,
+  5" → "1,5", "120. Schrägstrich 80" → "120/80". A mark between two digits
+  ("12.5", "12,5") is never followed by a dictation word and is untouched.
 
 Pure module: no import of ``main``.
 """
@@ -36,7 +36,10 @@ from faster_whisper_backend.core.unicode_marks import JOINERS as _JOINERS
 from faster_whisper_backend.core.unicode_marks import MARKS as _MARKS
 
 # Values that count as punctuation for the "dictated punctuation wins" prefix.
-_PUNCT_VALUE_CHARS = frozenset(".,:;!?")
+# "/" too: Whisper's pause mark in front of a dictated Schrägstrich survived
+# after a digit ("120. Schrägstrich 80" → "120. / 80"), and a mark before a
+# slash is never wanted. Not "-": "12.-15. Mai" is a German ordinal range.
+_PUNCT_VALUE_CHARS = frozenset(".,:;!?/")
 # What Whisper puts before a dictated punctuation word: its own marks
 # (the ellipsis as three periods or as one character); compile_map adds the
 # spaces after them. Starts only at the beginning of a run and is

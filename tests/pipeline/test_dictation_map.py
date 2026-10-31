@@ -8,6 +8,7 @@ factory strip rule keeps `…` and `:` runs, so such a run reaches the map on
 /transcribe, every streaming final and every captures reapply.
 """
 
+import copy
 import json
 import os
 import time
@@ -16,6 +17,7 @@ import pytest
 
 from faster_whisper_backend import paths
 from faster_whisper_backend.pipeline import dictation_map
+from faster_whisper_backend.pipeline import engine as pl_engine
 
 
 @pytest.mark.parametrize("mark", ["…", ":", "."])
@@ -90,10 +92,13 @@ def test_large_non_ascii_map_stays_fast():
     assert out == " ".join(f"x {o}," for o in others) * 3
 
 
-def _factory_de_map():
+def _factory_rules():
     with open(os.path.join(paths.REPO_ROOT, "config.json"), encoding="utf-8") as fh:
-        rules = json.load(fh)["PIPELINE_RULES"]
-    return next(r["map"] for r in rules if r["name"] == "de-dictation-map")
+        return json.load(fh)["PIPELINE_RULES"]
+
+
+def _factory_de_map():
+    return next(r["map"] for r in _factory_rules() if r["name"] == "de-dictation-map")
 
 
 @pytest.mark.parametrize("text, expected", [
@@ -155,3 +160,20 @@ def test_key_matched_by_sre_case_folding_is_applied(text, expected):
     so the key matched and the text was silently left unchanged."""
     pattern, replace, _ = dictation_map.compile_map({"istanbul": "IST", "İzmir": "IZM", "σ": "S"})
     assert pattern.sub(replace, text) == expected
+
+
+@pytest.mark.parametrize("text, expected", [
+    ("Blutdruck 120. Schrägstrich 80.", "Blutdruck 120/80"),
+    ("Blutdruck 120... Schrägstrich 80", "Blutdruck 120/80"),
+    ("Blutdruck 120, Schrägstrich 80.", "Blutdruck 120/80"),
+    # "-" stays out: "12.-15. Mai" is a German ordinal range.
+    ("Seite 12. Bindestrich 15.", "Seite 12.-15"),
+    ("Patient. Schrägstrich Angehörige.", "Patient / Angehörige"),
+])
+def test_dictated_slash_eats_whispers_pause_mark(app_module, text, expected):
+    """The prefix took only `. , : ; ! ?` values, so Whisper's period at the
+    pause after a number stayed in front of a dictated Schrägstrich:
+    "Blutdruck 120. Schrägstrich 80." became "Blutdruck 120. / 80"."""
+    app_module.cfg.PIPELINE_RULES = copy.deepcopy(_factory_rules())
+    pl_engine.rebuild_caches()
+    assert pl_engine._postprocess_text(text, model_name="", language="de") == expected
