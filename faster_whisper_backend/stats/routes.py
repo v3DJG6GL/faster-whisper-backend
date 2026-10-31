@@ -76,10 +76,11 @@ def _require_stats_page_sse(request: Request) -> dict[str, Any]:
 
 @dataclass(frozen=True)
 class StatsScope:
-    """What one viewer of /stats may see — resolved ONCE per request (or per
-    stream connection) from the authenticated record and handed to every
-    builder, so the snapshot, the stream and the usage endpoint can never
-    disagree about a caller's scope.
+    """What one viewer of /stats may see — resolved ONCE per request (the
+    stream: before its first frame and on every re-check, see stats_stream)
+    from the authenticated record and handed to every builder, so the
+    snapshot, the stream and the usage endpoint can never disagree about a
+    caller's scope.
 
       scope            "own" (the caller's own jobs + usage) or "all"
       user_id          owner filter for jobs / recent rows / usage; None = no filter
@@ -813,19 +814,20 @@ async def stats_stream(
     keepalive frame needed. `?lite=1` streams the activity-cluster diet
     payload (see _build_payload).
 
-    The viewer's StatsScope is resolved once here and re-resolved whenever
-    the config version moves (a permission edit), so an admin narrowing a
+    The Depends only gates the connect: the viewer's StatsScope is resolved
+    in the generator, before the first frame, then again whenever the
+    config version moves (a permission edit), so an admin narrowing a
     user's stats scope takes effect on that user's open tab within a tick —
     without the reconnect churn of ending the stream on every bump — and
     at least every _REAUTH_INTERVAL_S, so an expired session ends it."""
     _lite = bool(lite)
-    scope = stats_scope_for(user)
     # -1 never equals a real version, so the check before the first frame
-    # always re-resolves: a snapshot taken here, after the Depends, absorbed
-    # a revoke or narrowing landing in between and the stream kept the old
-    # scope until _REAUTH_INTERVAL_S.
+    # always re-resolves and sets all three: seeding them here, after the
+    # Depends, absorbed a revoke or narrowing landing in between and the
+    # stream kept the old scope until _REAUTH_INTERVAL_S.
+    scope: StatsScope | None = None
     seen = -1
-    resolved_at = time.monotonic()
+    resolved_at = 0.0
 
     async def gen():
         nonlocal scope, seen, resolved_at
