@@ -463,6 +463,21 @@ def test_an_entry_with_a_synthetic_run_gets_its_own_allowance(monkeypatch):
     assert g._GUARD_TIMEOUT_MAX - 1 < seen[2] <= g._GUARD_TIMEOUT_MAX
 
 
+def test_a_slow_entry_cannot_borrow_the_allowance_of_cheap_ones(monkeypatch):
+    """The allowances are pooled into ONE child timeout, so a cubic amount
+    rule refused on its own was accepted behind 31 `Wort{i}\\s+` entries
+    (~8 s). The child caps each entry's own CPU time at _GUARD_TIMEOUT, here
+    lowered so a quadratic rule (~0.1 s) stands in for the cubic one."""
+    monkeypatch.setattr(g, "_GUARD_TIMEOUT", 0.03)
+    cheap = [[rf"Wort{i}\s+", ""] for i in range(31)]
+    assert g._probe(cheap) is None
+    idx, msg = g._probe(cheap + [[r"(\d+)\s*(\d*)\s*Euro", r"\1 EUR"]])
+    assert idx == 31
+    assert msg.startswith("this rule took ")
+    assert "more than any single rule may (0.03 s)" in msg
+    assert "test inputs" in msg and "catastrophic backtracking" in msg
+
+
 def test_helper_is_not_charged_the_callers_compiles_twice(monkeypatch):
     """The child compiles every pattern again, so the seconds the caller
     already spent compiling are NOT taken off its timeout as well: that

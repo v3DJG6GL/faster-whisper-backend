@@ -66,7 +66,9 @@ _PER_CHECK_BUDGET = 5e-3
 # (_synthetic_fixtures): an ordinary polynomial rule pays real time on one,
 # `(\d+)\s*(\d*)\s*Euro` ~0.1 s on its 240-digit run, so a list of 20 amount
 # rules used up the 5 ms allowances and was refused as backtracking. ~2x the
-# measured cost; an explosive entry still blows through it.
+# measured cost; an explosive entry still blows through it. The allowances
+# are pooled into one child timeout, so the child also caps each entry's own
+# CPU time at _GUARD_TIMEOUT: a slow entry cannot borrow its neighbours'.
 _SYNTH_BUDGET = 0.25
 # Hard ceiling so a save can never block the admin thread indefinitely
 # (quick_config/routes.py documents the wait around the save call).
@@ -1589,7 +1591,8 @@ def validate(checks: list, timeout: float | None = None, spent: float = 0.0) -> 
     pattern that repeats an already-repeating group (`(x+)+`, `(a|a)*` — see
     ``_nested_repetition``), a bad regex/replacement (e.g. a backref to a
     non-existent group), a replacement that expands the fixture beyond
-    ``_MAX_GROWTH``, or a catastrophic-backtracking timeout. No-op for an empty
+    ``_MAX_GROWTH``, or a catastrophic-backtracking timeout (of the whole
+    child, or of one entry past _GUARD_TIMEOUT of CPU). No-op for an empty
     list.
 
     Fails OPEN: if the helper can't be launched / crashes, the save proceeds
@@ -1659,9 +1662,8 @@ def validate(checks: list, timeout: float | None = None, spent: float = 0.0) -> 
             raise _slow_compile(where, budget)
         raise ValueError(
             f"{where}: regex took > {left:.2g} s on the guard's test inputs "
-            "(1 KB of prose, a 4x longer copy, short repetitive runs, and the "
-            "text the preceding rules produce) — likely catastrophic "
-            "backtracking. Simplify the pattern."
+            f"{_PROBE_INPUTS} — likely catastrophic backtracking. Simplify "
+            "the pattern."
         )
     except Exception as exc:  # noqa: BLE001 - guard infra failure -> fail open
         logging.getLogger("whisper-api").warning(
@@ -1681,6 +1683,11 @@ def validate(checks: list, timeout: float | None = None, spent: float = 0.0) -> 
         idx = result.get("index")
         where = checks[idx][0] if isinstance(idx, int) and 0 <= idx < len(checks) else "a rule"
         raise ValueError(f"{where}: regex test failed: {result.get('error')}")
+
+
+# What the child probes every entry on, named in both slow-entry verdicts.
+_PROBE_INPUTS = ("(1 KB of prose, a 4x longer copy, short repetitive runs, "
+                 "and the text the preceding rules produce)")
 
 
 def _last_index(stderr_text: "str | bytes | None") -> int | None:
@@ -1709,6 +1716,10 @@ def _probe(checks: list):
     CHAINED fixture (the fixture as the preceding entries have rewritten it).
     Return (index, message) on the first failure, else None. Emit the index to
     stderr before each test so the parent can name the culprit if it kills us.
+
+    The parent's timeout pools every entry's allowance, so one entry's CPU
+    time is also capped here at _GUARD_TIMEOUT, what it could spend saved on
+    its own: a slow rule never borrows the time of the cheap ones next to it.
     """
     import re
     import sys
@@ -1723,6 +1734,7 @@ def _probe(checks: list):
         sys.stderr.flush()
         try:
             rx = re.compile(item[0])
+            _t_entry = time.process_time()
             # process_time, not perf_counter: this child shares the box with
             # live transcription, and a wall clock charges the pattern for
             # every de-schedule the OS lands mid-probe — measured 20-36x fake
@@ -1846,6 +1858,14 @@ def _probe(checks: list):
         # pipeline does. Truncated to _CHAIN_CAP so a legitimately expanding
         # rule set can't make the chained probe itself the expensive thing.
         chained = _chain_advance(rx, item[0], item[1], chained)
+        _t_entry = time.process_time() - _t_entry
+        if _t_entry > _GUARD_TIMEOUT:
+            return i, (
+                f"this rule took {_t_entry:.2g} s of CPU on the guard's test "
+                f"inputs {_PROBE_INPUTS} — more than any single rule may "
+                f"({_GUARD_TIMEOUT:.2g} s); likely catastrophic backtracking. "
+                "Simplify the pattern."
+            )
     return None
 
 
