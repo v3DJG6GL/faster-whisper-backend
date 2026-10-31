@@ -438,6 +438,31 @@ def test_budget_grows_with_the_list_and_a_large_rule_set_passes(monkeypatch, cap
     assert g._GUARD_TIMEOUT_MAX - 1 < seen[1] <= g._GUARD_TIMEOUT_MAX
 
 
+def test_an_entry_with_a_synthetic_run_gets_its_own_allowance(monkeypatch):
+    """`(\\d+)\\s*(\\d*)\\s*Euro` spends ~0.1 s on its 240-digit synthetic
+    run, so 20 such amount rules overran 2 s + 20 x 5 ms and were refused as
+    catastrophic backtracking. Each entry the child gives a synthetic run now
+    adds _SYNTH_BUDGET (capped); a literal entry, which gets none, does not."""
+    import subprocess
+    seen = []
+
+    def _ok_run(*args, **kwargs):
+        seen.append(kwargs["timeout"])
+        return subprocess.CompletedProcess(args, 0, stdout='{"ok": true}', stderr="")
+
+    monkeypatch.setattr(subprocess, "run", _ok_run)
+    units = ["Euro", "Dollar", "Franken", "Prozent", "Grad"] * 4
+    g.validate([(u, r"(\d+)\s*(\d*)\s*" + u, r"\1,\2 " + u) for u in units])
+    g.validate([(u, r"\b" + u + r"\b", u) for u in units])
+    g.validate([(f"r{i}", r"(\d+)\s*Euro%d" % i, "") for i in range(100)])
+    budget = g._GUARD_TIMEOUT + (g._PER_CHECK_BUDGET + g._SYNTH_BUDGET) * 20
+    assert budget < g._GUARD_TIMEOUT_MAX
+    assert budget - 1 < seen[0] <= budget
+    budget = g._GUARD_TIMEOUT + g._PER_CHECK_BUDGET * 20
+    assert budget - 1 < seen[1] <= budget
+    assert g._GUARD_TIMEOUT_MAX - 1 < seen[2] <= g._GUARD_TIMEOUT_MAX
+
+
 def test_helper_is_not_charged_the_callers_compiles_twice(monkeypatch):
     """The child compiles every pattern again, so the seconds the caller
     already spent compiling are NOT taken off its timeout as well: that

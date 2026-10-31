@@ -52,7 +52,8 @@ import os
 FIXTURE = "Hallo. Wie geht's? 10.23 Uhr! Bitte. " * 32
 
 # Whole-validation wall-clock budget: _GUARD_TIMEOUT plus a per-entry
-# allowance, capped at _GUARD_TIMEOUT_MAX. Legit find->replace patterns finish
+# allowance (more for an entry that gets a synthetic run), capped at
+# _GUARD_TIMEOUT_MAX. Legit find->replace patterns finish
 # in microseconds against a 1 KB input; only catastrophic backtracking
 # approaches this. But the child runs ~7 probe inputs per entry (measured
 # ~0.44 ms/entry on trivial rules), and an admin full save re-probes EVERY
@@ -61,6 +62,12 @@ FIXTURE = "Hallo. Wie geht's? 10.23 Uhr! Bitte. " * 32
 _GUARD_TIMEOUT = 2.0
 # ~10x the measured per-entry cost: generous headroom for richer patterns.
 _PER_CHECK_BUDGET = 5e-3
+# Extra allowance for an entry the child also probes with a synthetic run
+# (_synthetic_fixtures): an ordinary polynomial rule pays real time on one,
+# `(\d+)\s*(\d*)\s*Euro` ~0.1 s on its 240-digit run, so a list of 20 amount
+# rules used up the 5 ms allowances and was refused as backtracking. ~2x the
+# measured cost; an explosive entry still blows through it.
+_SYNTH_BUDGET = 0.25
 # Hard ceiling so a save can never block the admin thread indefinitely
 # (quick_config/routes.py documents the wait around the save call).
 _GUARD_TIMEOUT_MAX = 10.0
@@ -138,7 +145,8 @@ _SCALE_MIN_REJECT = 5e-3
 _CHAIN_CAP = 4096
 
 # Synthetic-probe shape (see _synthetic_fixtures). Same length as _ADVERSARIAL
-# so one extra probe costs about one extra fixture pass for a legitimate rule.
+# so one extra probe costs about one extra fixture pass for a linear rule (a
+# polynomial one pays more: _SYNTH_BUDGET).
 _SYNTH_RUN = 240
 # Characters tried as the terminator that forces the engine to exhaust its
 # split search (which ones are probed: see _synthetic_fixtures).
@@ -1552,6 +1560,16 @@ def _chain_advance(rx, pattern: str, replacement: str, chained: str) -> str:
         return ""
 
 
+def _gets_synthetic_run(pat: str) -> bool:
+    """Whether the child will probe ``pat`` with a synthetic run: the early
+    exit of _synthetic_fixtures, without its compile (the parent must not pay
+    for one). Best effort: a scan failure just withholds the allowance."""
+    try:
+        return bool(_first_repeated_char(_strip_comments(_strip_verbose(pat))))
+    except Exception:  # noqa: BLE001 - budget sizing only, never fail the save
+        return False
+
+
 def _slow_compile(where: str, budget: float) -> ValueError:
     return ValueError(
         f"{where}: checking the submitted patterns took > {budget:.2g} s — "
@@ -1596,10 +1614,11 @@ def validate(checks: list, timeout: float | None = None, spent: float = 0.0) -> 
         return
     import time
 
-    budget = (timeout if timeout is not None
-              else min(_GUARD_TIMEOUT + _PER_CHECK_BUDGET * len(checks),
-                       _GUARD_TIMEOUT_MAX))
     t0 = time.perf_counter()
+    budget = (timeout if timeout is not None
+              else min(_GUARD_TIMEOUT + _PER_CHECK_BUDGET * len(checks)
+                       + _SYNTH_BUDGET * sum(_gets_synthetic_run(c[1]) for c in checks),
+                       _GUARD_TIMEOUT_MAX))
     # Structural screen first, in-process: exponential shapes can be slower
     # than any wall-clock probe on inputs the fixtures don't happen to contain,
     # so they are refused on shape rather than on measured time.
