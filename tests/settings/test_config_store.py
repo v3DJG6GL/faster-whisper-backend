@@ -425,6 +425,14 @@ def test_hf_token_refuses_an_embedded_nul():
         _ok(HF_TOKEN="hf_ab\x00c")
 
 
+def test_hf_token_drops_surrounding_whitespace():
+    """models.py sends HF_TOKEN as the explicit Hub token, which the hub does
+    not clean: "hf_abc " became the illegal header "Bearer hf_abc " and every
+    Hub model load failed. A blank token turns into "" (no token sent)."""
+    assert _ok(HF_TOKEN=" hf_abc\n").HF_TOKEN == "hf_abc"
+    assert _ok(HF_TOKEN=" \t\n").HF_TOKEN == ""
+
+
 # ---------------------------------------------------------------------------
 # _cap_list (ALLOWED_MODELS / PRELOAD_MODELS)
 # ---------------------------------------------------------------------------

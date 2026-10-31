@@ -1682,6 +1682,17 @@ class AdminConfig(BaseModel):
             raise ValueError(f"a NUL character is not allowed in a {what}")
         return v
 
+    @field_validator("HF_TOKEN", mode="before")
+    @classmethod
+    def _strip_hf_token(cls, v: Any) -> Any:
+        """A token pasted with a stray space or newline went out as the
+        header "Bearer hf_x ", which httpx refuses, so every Hub model load
+        failed; a blank one becomes "" (no token). Never raises: a load-time
+        ValidationError drops every override."""
+        if isinstance(v, str):
+            return v.strip()
+        return v
+
     @field_validator("SERVER_HOST")
     @classmethod
     def _safe_host(cls, v: str | None) -> str | None:
