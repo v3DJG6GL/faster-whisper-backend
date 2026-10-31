@@ -143,6 +143,8 @@ _SYNTH_RUN = 240
 # Characters tried as the terminator that forces the engine to exhaust its
 # split search (which ones are probed: see _synthetic_fixtures).
 _SYNTH_TERMINATORS = "#!@~%"
+# Word-character terminators, for a rule whose tail matches every one above.
+_SYNTH_LETTERS = "zq"
 # What a shorthand escape can match, for the synthetic probe only. `\W` gets a
 # control character no rule writes literally: as `#` it was also the attack
 # shape's own terminator, so `\W*\W*…#` matched at once on its run of `#`.
@@ -1299,7 +1301,10 @@ def _synthetic_fixtures(pat: str) -> "list[str]":
     bare run's last space). Each run character of the run's family (`\\d`,
     `\\s`, `\\W`, see _RUN_FAMILIES) is probed bare and with the first
     terminator the rule does not write; the first terminator the rule cannot
-    match on its own is added for a rule that eats the others (`[^!]`). An
+    match on its own is added for a rule that eats the others (`[^!]`), the
+    first unwritten one it cannot match non-empty for a rule that eats one
+    and empty-matches the rest (`[!-/]|$`), and a letter for a rule that
+    eats every punctuation mark and the end of the text (`\\W|$`). An
     extra probe only adds a chance to catch a slow rule: the call site times
     them, a fast rule passes every one in microseconds.
     """
@@ -1315,7 +1320,16 @@ def _synthetic_fixtures(pat: str) -> "list[str]":
     family = next((f for f in _RUN_FAMILIES if char in f), "")
     terms = dict.fromkeys([
         next((t for t in _SYNTH_TERMINATORS if t not in pat), "#"),
+        # The single pick before the union, kept so the set stays a superset
+        # of it: `\d*…(?:[!-/]|$)` eats the first and empty-matches every
+        # terminator, so only one it cannot consume fails the run.
+        next((t for t in _SYNTH_TERMINATORS
+              if t not in pat and t != char
+              and not any(m.end() > m.start() for m in rx.finditer(t))), ""),
         next((t for t in _SYNTH_TERMINATORS if not rx.search(t)), ""),
+        # Every terminator above is punctuation: `…(?:\W|$)` eats each one
+        # and the bare run's end, and only a word character fails it.
+        next(t for t in _SYNTH_LETTERS if t != char),
         "",
     ])
     return [c * _SYNTH_RUN + t for c in dict.fromkeys(char + family) for t in terms]

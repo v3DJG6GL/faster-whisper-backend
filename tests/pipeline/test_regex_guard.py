@@ -1137,3 +1137,21 @@ def test_run_ending_in_an_anchor_keeps_its_terminator(pat):
     assert g._synthetic_fixtures(pat)[0].endswith("#")
     with pytest.raises(ValueError):
         g.validate([("r", pat, "")], timeout=1.5)
+
+
+@pytest.mark.parametrize("pat, probe", [
+    (r"\s*" * 7 + r"(?:[^\w\s]|$)", " " * 240 + "z"),
+    (r"\d*" * 7 + r"(?:\W|$)", "1" * 240 + "z"),
+    (r"\d*" * 7 + r"(?:[!-/]|$)", "1" * 240 + "@"),
+    (r"\s*" * 7 + r"(?:[!-@]|$)", " " * 240 + "~"),
+])
+def test_run_whose_tail_eats_every_union_terminator_is_rejected(pat, probe):
+    """Every terminator of the union was punctuation, the bare run ends at
+    `$`, and the pre-union pick (an unwritten terminator the rule cannot match
+    non-empty) had dropped out of it: a tail eating `\\W` or `[!-/]` plus the
+    end of the text matched every probe at once. These were accepted, yet
+    re.sub over a ~40-character run followed by a letter or space takes
+    10-20 s."""
+    assert probe in g._synthetic_fixtures(pat)
+    with pytest.raises(ValueError):
+        g.validate([("r", pat, "")], timeout=1.5)
