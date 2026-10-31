@@ -295,7 +295,6 @@ def test_load_overrides_upgrades_a_stored_old_quote_entry(tmp_path):
     (" Datum 3 Schrägstrich 4 Schrägstrich 2026.", "3/4/2026"),
     (" Aktenzeichen 12 Schrägstrich 3 Schrägstrich 4 Schrägstrich 5.", "12/3/4/5"),
     (" Datum 3 / 4 / 2026.", "3/4/2026"),
-    (" Version 1 Komma 2 Komma 3.", "1,2,3"),
     (" Blutdruck 120 Schrägstrich 80.", "120/80"),
 ])
 def test_every_separator_of_a_digit_chain_is_tightened(app_module, text, want):
@@ -307,6 +306,24 @@ def test_every_separator_of_a_digit_chain_is_tightened(app_module, text, want):
     pl_engine.rebuild_caches()
     out = pl_engine._postprocess_text(text, model_name="", language="de")
     assert want in out.split()
+
+
+@pytest.mark.parametrize("text, want", [
+    (" Dosis 0,5, 1,0 und 1,5 mg.", "Dosis 0,5, 1,0 und 1,5 mg"),
+    (" Dosis 2,5, 5 und 10 mg.", "Dosis 2,5, 5 und 10 mg"),
+    (" Seiten 3-5, 7-9.", "Seiten 3/5, 7/9"),
+    (" Seiten 3 Schrägstrich 5, 7 Schrägstrich 9.", "Seiten 3/5, 7/9"),
+])
+def test_a_list_of_decimals_or_ranges_keeps_its_commas(app_module, text, want):
+    """The comma is the German decimal mark, so tightening every comma of a
+    chain glued a list Whisper punctuated ("0,5, 1,0" → "0,5,1,0"). Only a
+    deployment that keeps Whisper's commas sees it: strip-auto-punctuation
+    off."""
+    rules = copy.deepcopy(_factory_rules())
+    next(r for r in rules if r["name"] == "strip-auto-punctuation")["enabled"] = False
+    app_module.cfg.PIPELINE_RULES = rules
+    pl_engine.rebuild_caches()
+    assert pl_engine._postprocess_text(text, model_name="", language="de") == want
 
 
 def test_stored_old_digit_separator_entry_is_upgraded_once():

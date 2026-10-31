@@ -687,8 +687,8 @@
       "type": "regex-list",
       "entries": [
         {
-          "pattern": "(\\d)\\s*([/,\\-])\\s*(?=\\d)",
-          "replacement": "\\1\\2",
+          "pattern": "(?<=\\d)\\s*([/\\-])\\s*(?=\\d)|(?<![/\\-])(?<![/\\-]\\s)(\\d)\\s*(,)\\s*(\\d)",
+          "replacement": "\\1\\2\\3\\4",
           "label": "tighten-digit-separators",
           "note": "Removes spaces around a / , or - between two digits: 12 / 5 → 12/5."
         },
