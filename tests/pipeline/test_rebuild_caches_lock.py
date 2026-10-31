@@ -46,3 +46,19 @@ def test_overlapping_rebuilds_end_on_the_latest_rules(monkeypatch):
     finally:
         monkeypatch.undo()
         pl_engine.rebuild_caches()
+
+
+def test_rebuild_drops_the_old_rule_sets_holdback_specs(monkeypatch):
+    """A spec from an older rule set is never served again (the gen keys the
+    cache), but it stayed cached until 64 newer specs pushed it out — MBs
+    each on a large dictionary map."""
+    monkeypatch.setattr(cfg, "PIPELINE_RULES", [_map_rule({"komma eins": ","})])
+    try:
+        pl_engine.rebuild_caches()
+        pl_engine.holdback_start("a komma", language="de")
+        assert pl_engine._holdback_spec.cache_info().currsize == 1
+        pl_engine.rebuild_caches()
+        assert pl_engine._holdback_spec.cache_info().currsize == 0
+    finally:
+        monkeypatch.undo()
+        pl_engine.rebuild_caches()

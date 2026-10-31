@@ -282,6 +282,9 @@ def _rebuild_caches_locked() -> None:
     _TERMINAL_LABEL = terminal_label
     _TERMINAL_CARD_NO = terminal_card_no
     _RULES_GEN += 1
+    # The new gen never hits an old spec, but each one (MBs on a large map)
+    # stayed in the cache until 64 newer ones pushed it out.
+    _holdback_spec.cache_clear()
 
 
 def _apply_rule(rule: _CompiledRule, text: str) -> str:
