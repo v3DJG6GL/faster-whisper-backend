@@ -153,6 +153,11 @@ _SHIPPED_BEFORE_ENTRY_UPGRADE = {
     "trim-trailing-period": {
         "pattern": "\\s*\\.+\\s*$", "replacement": "",
         "label": "trim-trailing-period", "note": ""},
+    "tidy-newlines": {
+        "pattern": "[ \\t]*,?[ \\t]*(\\n+)[ \\t]*,?[ \\t]*", "replacement": "\\1",
+        "label": "tidy-newlines",
+        "note": "Collapses surrounding whitespace and a stray comma on each side "
+                "of a newline, keeping the newline."},
 }
 
 

@@ -177,6 +177,18 @@ UPGRADED_RULE_ENTRIES: dict[str, tuple[tuple[str, str], tuple[str, str]]] = {
         ('\\s*\\.+\\s*$', ''),
         ('(?<!\\s)\\s*(?<!\\.)\\.+\\s*$', ''),
     ),
+    # The old pattern's two adjacent space runs tried every split of a space
+    # run at every space of it when no line break followed: cubic (1000
+    # spaces: 2 s, 4000: minutes). collapse-multi-space shrinks the run
+    # first, but with the digit-and-whitespace-tidy card off (or excluded) a
+    # hallucinated "* * * *" loop reached it whole once strip-stray-symbols
+    # deleted the symbols. A match now starts only at the first space of a
+    # run and takes it in one piece; the output is the same. The text never
+    # changed before (also as the single `regex` rule).
+    "tidy-newlines": (
+        ('[ \\t]*,?[ \\t]*(\\n+)[ \\t]*,?[ \\t]*', '\\1'),
+        ('(?:(?<![ \\t])[ \\t]+)?(?:,[ \\t]*)?(\\n+)[ \\t]*(?:,[ \\t]*)?', '\\1'),
+    ),
     # Spanish opening marks: es-punctuation now runs before this rule, so
     # the strip must take an opening ¿/¡ along with its closing mark (an
     # orphaned "¿Qué hora es" otherwise), keeping it only where the closing

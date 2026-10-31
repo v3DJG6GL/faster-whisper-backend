@@ -2,8 +2,9 @@
 delete-punct-before-hyphen, the language tags on language-specific rules, the
 Spanish opening-mark rule, the dictation-map → de-dictation-map rename,
 tighten-digit-separators and normalize-digit-range on a digit chain
-(3/4/2026), and capitalize-after-terminator, space-before-closing-punct and
-trim-trailing-period on a long run of paragraph breaks / spaces / dots.
+(3/4/2026), capitalize-after-terminator, space-before-closing-punct and
+trim-trailing-period on a long run of paragraph breaks / spaces / dots, and
+tidy-newlines on a long space run.
 
 2026-09-19: "vom 3.-10 Oktober" left the pipeline as "vom 310 Oktober" —
 final-cleanup deleted ".-" between two numbers. A silently changed date or
@@ -564,5 +565,46 @@ def test_stored_old_trailing_period_entry_is_upgraded_once():
     raw = {"PIPELINE_RULES": rules}
     assert renames.upgrade_rule_entries(raw) == [
         "strip-trailing-period/trim-trailing-period"]
+    assert raw["PIPELINE_RULES"] == _factory_rules()
+    assert renames.upgrade_rule_entries(raw) == []
+
+
+def _newline_entry(rules):
+    return next(e for r in rules for e in (r.get("entries") or [])
+                if e.get("label") == "tidy-newlines")
+
+
+def test_tidy_newlines_is_fast_on_a_symbol_loop_with_the_whitespace_card_off(app_module):
+    """collapse-multi-space shrinks the space run that strip-stray-symbols
+    leaves of a hallucinated "* * * *" loop, but an admin may switch its
+    card off (or exclude it). tidy-newlines then got the run whole, and its
+    two adjacent space runs tried every split of it at every space: 1000
+    items took 2 s, 4000 took minutes."""
+    rules = copy.deepcopy(_factory_rules())
+    next(r for r in rules if r.get("name") == "digit-and-whitespace-tidy")["enabled"] = False
+    app_module.cfg.PIPELINE_RULES = rules
+    pl_engine.rebuild_caches()
+    t0 = time.perf_counter()
+    out = pl_engine._postprocess_text(" Das war es " + "* " * 2000 + "Danke.",
+                                      model_name="", language="de")
+    assert time.perf_counter() - t0 < 1.0
+    assert out.split() == ["Das", "war", "es", "Danke"]
+
+
+def test_tidy_newlines_output_is_unchanged():
+    entry = _newline_entry(_factory_rules())
+    old = renames.UPGRADED_RULE_ENTRIES["tidy-newlines"][0]
+    for s in ("a ,\n, b", "Hallo   ,   \n   Welt", "x\n\n\ty", "\t\ta\n\t\n,a\t", "\n \n ",
+              "a , , \n", ",\n,", "a  b", " \t ", "Zeile 1,\nZeile 2", "\n", "a ,b\n"):
+        assert re.sub(entry["pattern"], entry["replacement"], s) == re.sub(*old, s), s
+
+
+def test_stored_old_tidy_newlines_entry_is_upgraded_once():
+    rules = copy.deepcopy(_factory_rules())
+    old_pat, old_rep = renames.UPGRADED_RULE_ENTRIES["tidy-newlines"][0]
+    e = _newline_entry(rules)
+    e["pattern"], e["replacement"] = old_pat, old_rep
+    raw = {"PIPELINE_RULES": rules}
+    assert renames.upgrade_rule_entries(raw) == ["final-cleanup/tidy-newlines"]
     assert raw["PIPELINE_RULES"] == _factory_rules()
     assert renames.upgrade_rule_entries(raw) == []

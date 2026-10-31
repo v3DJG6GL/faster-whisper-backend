@@ -768,7 +768,7 @@
       "type": "regex-list",
       "entries": [
         {
-          "pattern": "[ \\t]*,?[ \\t]*(\\n+)[ \\t]*,?[ \\t]*",
+          "pattern": "(?:(?<![ \\t])[ \\t]+)?(?:,[ \\t]*)?(\\n+)[ \\t]*(?:,[ \\t]*)?",
           "replacement": "\\1",
           "label": "tidy-newlines",
           "note": "Collapses surrounding whitespace and a stray comma on each side of a newline, keeping the newline."
