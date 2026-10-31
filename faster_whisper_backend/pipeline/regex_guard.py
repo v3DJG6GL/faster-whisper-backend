@@ -1317,9 +1317,12 @@ def _synthetic_fixtures(pat: str) -> "list[str]":
     used up its allowance and refused it. Each candidate is first matched as a
     SHORT run (_SYNTH_SCREEN), and only the first candidate per distinct
     outcome (the spans the rule matches) gets the full-length probe: two runs
-    the rule treats the same way at every position cost the same. An ordinary
-    rule matches none of them and is probed once; `\\d*…[1-8]` matches a `2`
-    run but not a `9` one, so both are kept.
+    the rule treats the same way at every position cost the same. A run the
+    rule matches nowhere is keyed on which of its atoms accept the run
+    character instead: `\\n\\s*\\s*…x` refuses a space run at once and splits
+    a newline run every way. An ordinary rule matches none of them and is
+    probed once per run character class; `\\d*…[1-8]` matches a `2` run but
+    not a `9` one, so both are kept.
     """
     import re
 
@@ -1337,10 +1340,12 @@ def _synthetic_fixtures(pat: str) -> "list[str]":
             import re._parser as _reparser
         except ImportError:  # pragma: no cover - Python < 3.11
             import sre_parse as _reparser
-        width = _reparser.parse(pat).getwidth()[0]
+        parsed = _reparser.parse(pat)
+        width = parsed.getwidth()[0]
     except Exception:  # noqa: BLE001 - width analysis is best effort
-        width = 0
+        parsed, width = None, 0
     screen = min(max(_SYNTH_SCREEN, width + 2), _SYNTH_SCREEN_MAX)
+    atoms = _char_atoms(parsed)
     family = next((f for f in _RUN_FAMILIES if char in f), "")
     terms = dict.fromkeys([
         next((t for t in _SYNTH_TERMINATORS if t not in pat), "#"),
@@ -1360,8 +1365,57 @@ def _synthetic_fixtures(pat: str) -> "list[str]":
     for c in dict.fromkeys(char + family):
         for t in terms:
             outcome = tuple(m.span() for m in rx.finditer(c * screen + t))
+            if not outcome:
+                # "No match anywhere" says nothing about cost: a run the
+                # rule's first atom refuses fails at once, one it accepts
+                # splits every way first. Only runs every atom treats alike
+                # share it.
+                outcome = ("none", c if atoms is None else tuple(
+                    a.fullmatch(c) is not None for a in atoms))
             probes.setdefault(outcome, c * _SYNTH_RUN + t)
     return list(probes.values())
+
+
+def _char_atoms(parsed) -> "list | None":
+    """Every single-character atom of a parsed pattern, compiled on its own,
+    or None if they cannot be told apart (an inline flag group, a failure):
+    two run characters each atom accepts or refuses alike drive the engine
+    through the same steps. A `\\w` probe stands in for `\\b` / `\\B`."""
+    import re
+
+    try:
+        try:
+            import re._compiler as _recompiler
+            import re._parser as _reparser
+        except ImportError:  # pragma: no cover - Python < 3.11
+            import sre_compile as _recompiler
+            import sre_parse as _reparser
+        consuming = (_reparser.LITERAL, _reparser.NOT_LITERAL,
+                     _reparser.ANY, _reparser.IN)
+        found: dict = {}
+
+        def walk(node) -> bool:
+            if isinstance(node, _reparser.SubPattern):
+                return all(walk(item) for item in node.data)
+            if isinstance(node, (list, tuple)):
+                # Identity: an opcode equals its int, e.g. an ASSERT's direction.
+                if len(node) == 2 and any(node[0] is op for op in consuming):
+                    found.setdefault(repr(node), node)
+                    return True
+                if (len(node) == 2 and node[0] is _reparser.SUBPATTERN
+                        and (node[1][1] or node[1][2])):
+                    return False  # local flags: the atom alone would lie
+                return all(walk(item) for item in node)
+            return True
+
+        if parsed is None or not walk(parsed) or len(found) > 64:
+            return None
+        state = parsed.state
+        return [re.compile(r"\w", state.flags & ~re.VERBOSE)] + [
+            _recompiler.compile(_reparser.SubPattern(state, [node]), state.flags)
+            for node in found.values()]
+    except Exception:  # noqa: BLE001 - best effort: probe each run character
+        return None
 
 
 def _witness(pat: str, depth: int = 0) -> str:

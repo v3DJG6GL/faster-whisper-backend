@@ -1172,3 +1172,19 @@ def test_ordinary_polynomial_rules_are_probed_once_and_accepted():
     for _name, pat, _repl in _NUMBERS_RULES:
         assert len(g._synthetic_fixtures(pat)) == 1
     g.validate(_NUMBERS_RULES)
+
+
+@pytest.mark.parametrize("pat, probe", [
+    (r"\n" + r"\s*" * 7 + "x", "\n" * 240 + "#"),
+    (r"(?<=\n)" + r"\s*" * 7 + "x", "\n" * 240 + "#"),
+    (r"[ \t]*" + r"\n*" * 6 + "x", "\n" * 240 + "#"),
+    (r"(?=\t)" + r"\s*" * 6 + "x", "\t" * 240 + "#"),
+])
+def test_run_no_candidate_matches_keeps_the_run_the_rule_starts_on(pat, probe):
+    """The screen kept one candidate per outcome, and "no match anywhere" is
+    every candidate's outcome here: only the space run was probed, which the
+    leading `\\n` or `\\t` refuses at once. These were accepted, yet re.sub
+    over 30 newlines before a `#` takes 0.4 s, growing ~n^7."""
+    assert probe in g._synthetic_fixtures(pat)
+    with pytest.raises(ValueError):
+        g.validate([("r", pat, "")], timeout=1.5)
