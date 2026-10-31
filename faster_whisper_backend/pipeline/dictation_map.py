@@ -28,10 +28,11 @@ Pure module: no import of ``main``.
 """
 from __future__ import annotations
 
-import functools
+import collections
 import itertools
 import re
-from typing import Callable
+import threading
+from typing import Callable, Iterable
 
 from faster_whisper_backend.core.unicode_marks import JOINERS as _JOINERS
 from faster_whisper_backend.core.unicode_marks import MARKS as _MARKS
@@ -112,17 +113,42 @@ def _alternation(keys: list[str]) -> str:
     return "|".join(parts)
 
 
-@functools.lru_cache(maxsize=4)
+# The live rule set's map patterns (replaced wholesale by retain_live_maps at
+# each engine rebuild) plus a few recent other ones (a dry run of an edited
+# map), so N unchanged maps never recompile and a dropped map is released.
+_LIVE: dict[str, "re.Pattern[str]"] = {}
+_RECENT: "collections.OrderedDict[str, re.Pattern[str]]" = collections.OrderedDict()
+_RECENT_MAX = 4
+_CACHE_LOCK = threading.Lock()
+
+
 def _compile_map_pattern(source: str) -> "re.Pattern[str]":
+    with _CACHE_LOCK:
+        pattern = _LIVE.get(source) or _RECENT.get(source)
+        if pattern is not None:
+            return pattern
     # re.compile keeps every pattern in re's module cache (hundreds of
     # entries), and a map's alternation is one big pattern (~1 MB at 2000
     # keys): each dictionary edit or edited-map dry run left the old one
-    # pinned there long after the rule dropped it. Purge it right away; this
-    # small cache keeps an unchanged map (the next rebuild, a repeated dry
-    # run) from recompiling.
+    # pinned there long after the rule dropped it. Purge it right away.
     pattern = re.compile(source, re.IGNORECASE)
     re.purge()
+    with _CACHE_LOCK:
+        _RECENT[source] = pattern
+        while len(_RECENT) > _RECENT_MAX:
+            _RECENT.popitem(last=False)
     return pattern
+
+
+def retain_live_maps(patterns: Iterable["re.Pattern[str]"]) -> None:
+    """Keep exactly these map patterns (the rule set the engine just compiled)
+    for reuse by the next rebuild or dry run; any other live one is dropped."""
+    global _LIVE
+    live = {p.pattern: p for p in patterns}
+    with _CACHE_LOCK:
+        _LIVE = live
+        for source in live:
+            _RECENT.pop(source, None)
 
 
 def compile_map(m: dict) -> tuple["re.Pattern[str]", Callable[["re.Match[str]"], str], dict[str, str]]:

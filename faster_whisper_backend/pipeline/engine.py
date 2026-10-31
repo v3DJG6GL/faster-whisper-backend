@@ -282,6 +282,8 @@ def _rebuild_caches_locked() -> None:
     _TERMINAL_LABEL = terminal_label
     _TERMINAL_CARD_NO = terminal_card_no
     _RULES_GEN += 1
+    _dictation_map.retain_live_maps(
+        r.pattern for r in compiled if r.type == "callback:map")
     # The new gen never hits an old spec, but each one (MBs on a large map)
     # stayed in the cache until 64 newer ones pushed it out.
     _holdback_spec.cache_clear()

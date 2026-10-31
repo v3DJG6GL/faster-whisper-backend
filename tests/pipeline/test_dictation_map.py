@@ -237,3 +237,53 @@ def test_an_edited_map_leaves_no_old_pattern_in_res_cache(monkeypatch):
 def test_an_unchanged_map_is_not_recompiled():
     m = {"Komma": ",", "Punkt": "."}
     assert dictation_map.compile_map(dict(m))[0] is dictation_map.compile_map(dict(m))[0]
+
+
+def _map_rules(maps):
+    return [{"name": f"m{i}", "label": f"m{i}", "type": "callback:map",
+             "enabled": True, "map": m} for i, m in enumerate(maps)]
+
+
+def test_six_unchanged_maps_are_not_recompiled_by_each_rebuild(monkeypatch):
+    """A 4-slot LRU cycled by 5+ maps (one per language) missed every time, so
+    every rules save and every dry run recompiled every map cold."""
+    maps = [{"Komma": ",", f"sechskarte{i}": "x"} for i in range(6)]
+    real_compile = re.compile
+    compiled = []
+
+    def spy(source, flags=0):
+        if "sechskarte" in source:
+            compiled.append(source)
+        return real_compile(source, flags)
+
+    monkeypatch.setattr(re, "compile", spy)
+    monkeypatch.setattr(cfg, "PIPELINE_RULES", _map_rules(maps))
+    try:
+        for _ in range(3):
+            pl_engine.rebuild_caches()
+        # The /settings/pipeline dry run compiles every stored map again.
+        for m in maps:
+            dictation_map.compile_map(dict(m))
+        assert len(compiled) == 6
+    finally:
+        monkeypatch.undo()
+        pl_engine.rebuild_caches()
+
+
+def test_a_dropped_map_pattern_is_released(monkeypatch):
+    import gc
+    import weakref
+    kept, dropped = {"Komma": ",", "bleibkarte": "x"}, {"Komma": ",", "wegkarte": "x"}
+    try:
+        monkeypatch.setattr(cfg, "PIPELINE_RULES", _map_rules([kept, dropped]))
+        pl_engine.rebuild_caches()
+        ref = weakref.ref(pl_engine._COMPILED_RULES[1].pattern)
+        source = ref().pattern
+        monkeypatch.setattr(cfg, "PIPELINE_RULES", _map_rules([kept]))
+        pl_engine.rebuild_caches()
+        gc.collect()
+        assert ref() is None
+        assert not _in_re_cache(source)
+    finally:
+        monkeypatch.undo()
+        pl_engine.rebuild_caches()
