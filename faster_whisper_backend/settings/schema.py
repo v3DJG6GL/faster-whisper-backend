@@ -1806,7 +1806,9 @@ class AdminConfig(BaseModel):
             # RecursionError: sre's parser recurses once per open group, so
             # '(' * 512 (within the pattern cap) escapes re.error — and
             # pydantic turns only ValueError into a ValidationError.
-            except (re.error, OverflowError, RecursionError) as e:
+            # ValueError: conflicting inline flags ('(?a)(?u)x') — caught so
+            # the 422 still names the rule and entry.
+            except (re.error, OverflowError, RecursionError, ValueError) as e:
                 raise ValueError(f"{where}: invalid regex: {e}")
             if guarding and (guard_slugs is None or slug in guard_slugs):
                 compile_spent += time.perf_counter() - t0

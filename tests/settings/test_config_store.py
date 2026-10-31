@@ -764,6 +764,17 @@ def test_regex_list_entry_bad_regex_reports_index():
     assert "entry 0" in str(ei.value)
 
 
+def test_regex_list_entry_conflicting_flags_reports_index():
+    # re.compile raises a plain ValueError (not re.error) for conflicting
+    # inline flags: the 422 said only "ASCII and UNICODE flags are
+    # incompatible", naming no rule or entry.
+    with pytest.raises(ValidationError) as ei:
+        _ok(PIPELINE_RULES=[{"name": "rl", "label": "RL", "type": "regex-list",
+                             "entries": [{"pattern": "a"}, {"pattern": "(?a)(?u)x"}]},
+                            _terminal()])
+    assert "rule 0 ('rl') entry 1: invalid regex" in str(ei.value)
+
+
 def test_map_meta_pruned_to_map_keys():
     rule = {"name": "m", "label": "m", "type": "callback:map",
             "map": {"Komma": ","}, "map_meta": {"Komma": 5, "ghost": 9}}
