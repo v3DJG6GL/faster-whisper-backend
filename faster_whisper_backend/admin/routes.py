@@ -1235,8 +1235,10 @@ async def test_pipeline(payload: dict[str, Any]) -> JSONResponse:
                         # OverflowError: a repeat count past MAXREPEAT in a
                         # range (`a{1,4294967296}`), which the fixed-count
                         # screen does not cover; RecursionError: groups nested
-                        # too deep for sre's parser (`((((…`).
-                        except (re.error, OverflowError, RecursionError) as e:
+                        # too deep for sre's parser (`((((…`); ValueError:
+                        # incompatible inline flags (`(?a)(?u)x`).
+                        except (re.error, OverflowError, RecursionError,
+                                ValueError) as e:
                             # Engine parity (pl_engine.rebuild_caches): a bad entry is
                             # SKIPPED, not the whole card — the valid entries still
                             # apply. Surface the first bad pattern as an advisory.
