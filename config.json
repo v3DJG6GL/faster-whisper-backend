@@ -320,7 +320,7 @@
       "type": "regex-list",
       "entries": [
         {
-          "pattern": "(\\d)\\s*-\\s*(?=\\d)",
+          "pattern": "(\\d)[^\\S\\n]*-[^\\S\\n]*(?=\\d)",
           "replacement": "\\1/",
           "label": "normalize-digit-range",
           "note": ""
@@ -687,7 +687,7 @@
       "type": "regex-list",
       "entries": [
         {
-          "pattern": "(\\d)\\s*([/,\\-])\\s*(?=\\d)",
+          "pattern": "(\\d)[^\\S\\n]*([/,\\-])[^\\S\\n]*(?=\\d)",
           "replacement": "\\1\\2",
           "label": "tighten-digit-separators",
           "note": "Removes spaces around a / , or - between two digits: 12 / 5 → 12/5."

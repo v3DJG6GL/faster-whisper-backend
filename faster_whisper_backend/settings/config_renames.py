@@ -141,16 +141,18 @@ UPGRADED_RULE_ENTRIES: dict[str, tuple[tuple[str, str], tuple[str, str]]] = {
     # The new one only looks ahead at that digit. Every comma is joined: in
     # the default pipeline strip-auto-punctuation has deleted Whisper's list
     # commas by then, so the comma left is a dictated decimal mark ("Minus 2
-    # Komma 5" → "- 2,5").
+    # Komma 5" → "- 2,5"). Nor does it eat a dictated line break: "5 Neue
+    # Zeile Bindestrich 2" read as the range "5-2".
     "tighten-digit-separators": (
         ('(\\d)\\s*([/,\\-])\\s*(\\d)', '\\1\\2\\3'),
-        ('(\\d)\\s*([/,\\-])\\s*(?=\\d)', '\\1\\2'),
+        ('(\\d)[^\\S\\n]*([/,\\-])[^\\S\\n]*(?=\\d)', '\\1\\2'),
     ),
     # Same consumed digit: "3-4-2026" → "3/4-2026", so whether a date kept a
-    # hyphen depended on its day or month having one digit.
+    # hyphen depended on its day or month having one digit. A line break
+    # between the numbers is kept, as in tighten-digit-separators.
     "normalize-digit-range": (
         ('(\\d)\\s*-\\s*(\\d)', '\\1/\\2'),
-        ('(\\d)\\s*-\\s*(?=\\d)', '\\1/'),
+        ('(\\d)[^\\S\\n]*-[^\\S\\n]*(?=\\d)', '\\1/'),
     ),
     # Spanish opening marks: es-punctuation now runs before this rule, so
     # the strip must take an opening ¿/¡ along with its closing mark (an

@@ -424,3 +424,28 @@ def test_stored_old_digit_range_entry_is_upgraded(tmp_path, single_regex):
         ("normalize-digit-range", *new)]
     assert re.sub(old_pat, old_rep, "3-4-2026") == "3/4-2026"
     assert re.sub(*new, "3-4-2026") == "3/4/2026"
+
+
+@pytest.mark.parametrize("text, want", [
+    (" Medikamente Neue Zeile Bindestrich Ramipril 5 Neue Zeile Bindestrich 2 Tabletten",
+     "Medikamente\n-Ramipril 5\n-2 Tabletten"),
+    (" Blutdruck 120 Schrägstrich 80 Neuer Absatz Bindestrich 3 Tage Pause",
+     "Blutdruck 120/80\n\n-3 Tage Pause"),
+    (" Natrium 140 neuer Absatz Minus 3 im Verlauf Punkt", "Natrium 140\n\n- 3 im Verlauf."),
+    (" Score 12 Neue Zeile Schrägstrich 4", "Score 12\n/ 4"),
+])
+def test_a_dictated_line_break_between_two_numbers_is_kept(app_module, text, want):
+    """tighten-digit-separators runs after de-dictation-map, and its `\\s*`
+    took the line break a dictated "Neue Zeile" / "Neuer Absatz" left after a
+    number: the next list item glued onto it as a range or fraction
+    ("Ramipril 5-2 Tabletten", "Score 12/4")."""
+    app_module.cfg.PIPELINE_RULES = copy.deepcopy(_factory_rules())
+    pl_engine.rebuild_caches()
+    assert pl_engine._postprocess_text(text, model_name="", language="de") == want
+
+
+def test_digit_range_keeps_a_line_break_between_two_numbers():
+    entry = _by_name()["normalize-digit-range"]["entries"][0]
+    sub = lambda t: re.sub(entry["pattern"], entry["replacement"], t)
+    assert sub("Ramipril 5\n-2 Tabletten") == "Ramipril 5\n-2 Tabletten"
+    assert sub("Termin 10 - 12 Uhr") == "Termin 10/12 Uhr"
