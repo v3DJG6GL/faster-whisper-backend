@@ -276,6 +276,44 @@ def test_logs_stream_reauth_rechecks_an_expired_session_without_a_bump(
             req, seen, at - logs_routes._REAUTH_INTERVAL_S - 1)
 
 
+def test_logs_stream_rechecks_the_caller_before_the_backlog(
+        client, make_user_key, app_module, monkeypatch, tmp_path):
+    """The stream snapshotted the config version inside the generator, AFTER
+    the Depends had resolved the caller, so a revoke landing in between was
+    absorbed: the backlog went out and the live tail ran on with the old
+    identity for up to _REAUTH_INTERVAL_S. Driven directly (never through
+    TestClient)."""
+    import asyncio
+
+    from faster_whisper_backend.admin import logs_routes
+    from faster_whisper_backend.auth import api_keys_store
+    from faster_whisper_backend.auth import dependencies as auth_dependencies
+    from tests.conftest import bearer, fake_request
+
+    log = tmp_path / "live.log"
+    log.write_text("first\n", encoding="utf-8")
+    monkeypatch.setattr(app_module.cfg, "LOG_FILE", str(log), raising=False)
+    make_user_key("root", is_admin=True)
+    uid, raw = make_user_key("alice", pages={"logs": "all"})
+    req = fake_request(headers=bearer(raw))
+    # The connect's Depends passes, then the revoke lands.
+    logs_routes._require_logs_page_sse(
+        auth_dependencies.resolve_user_for_page_sse(req, "logs"))
+    api_keys_store.revoke_user(uid)
+
+    async def drive():
+        gen = logs_routes._stream_log_lines(req)
+        try:
+            got = await asyncio.wait_for(gen.__anext__(), timeout=5)
+        except StopAsyncIteration:
+            return
+        finally:
+            await gen.aclose()
+        raise AssertionError(f"stream kept going after revoke: {got!r}")
+
+    asyncio.run(drive())
+
+
 def test_logs_page_template_guards_every_localstorage_access():
     """Blocked site data makes the localStorage getter throw: the head
     bootstrap threw on every load and the zoom IIFE aborted (dead +/-

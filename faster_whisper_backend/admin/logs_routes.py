@@ -149,8 +149,17 @@ async def _stream_log_lines(request: Request):
     Re-authenticates `request` whenever the config version moves or
     _REAUTH_INTERVAL_S passes (see _logs_stream_reauth) and ends the stream
     once access is gone."""
-    seen = settings_version.config_version()
-    resolved_at = time.monotonic()
+    # Re-resolve once BEFORE the backlog: the connect's Depends ran before
+    # this generator started, and a version snapshot taken here would absorb
+    # a revoke landing in between — the stream then kept the old identity
+    # until _REAUTH_INTERVAL_S. -1 never equals a real version, so this
+    # first check always re-resolves (the WebSocket path snapshots before
+    # authenticating for the same reason).
+    try:
+        seen, resolved_at = await asyncio.to_thread(
+            _logs_stream_reauth, request, -1, 0.0)
+    except HTTPException:
+        return
     initial = int(getattr(cfg, "LOG_VIEWER_INITIAL_LINES", 2000))
     # Off the loop, same as /logs/older: this walks the rotation chain
     # backwards in 8 KB blocks and an async generator inside a

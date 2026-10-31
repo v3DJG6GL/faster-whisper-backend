@@ -1187,7 +1187,11 @@ async def stream_recent(
     perms = user["permissions"]
     caller_uid = user.get("user_id") or ""
     sees_all = perms.scope("quick_config") == "all"
-    seen = settings_version.config_version()
+    # -1 never equals a real version, so the check before the replay always
+    # re-resolves: a snapshot taken here, after the Depends, absorbed a
+    # revoke or downgrade to own landing in between and the stream kept the
+    # old scope until _REAUTH_INTERVAL_S.
+    seen = -1
     resolved_at = time.monotonic()
 
     def _visible(entry: dict[str, Any] | None) -> bool:
@@ -1218,6 +1222,8 @@ async def stream_recent(
     async def gen():
         q = qc_recent_feed.subscribe()
         try:
+            if not await _rescope():
+                return
             # Replay the freshest page from the durable store (oldest-
             # first so the client receives them in chronological order,
             # matching the prior in-memory deque iteration semantics).

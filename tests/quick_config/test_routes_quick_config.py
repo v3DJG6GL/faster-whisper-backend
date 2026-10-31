@@ -902,6 +902,47 @@ def test_stream_recent_rechecks_access_after_the_wait(client, make_user_key,
     asyncio.run(drive())
 
 
+def test_stream_recent_rechecks_the_caller_before_the_replay(
+        client, make_user_key, app_module):
+    """stream_recent snapshotted the config version AFTER the Depends had
+    resolved the caller, so a downgrade to own landing in between was
+    absorbed: the replay (and every live trace for up to
+    _REAUTH_INTERVAL_S) went out in the old "all" scope. Driven directly,
+    never via TestClient streaming."""
+    import asyncio
+    import time as _time
+
+    from faster_whisper_backend.auth import api_keys_store
+    from faster_whisper_backend.quick_config import routes as qc
+    from faster_whisper_backend.stats import recent_transcriptions_store
+    from tests.conftest import bearer, fake_request
+
+    make_user_key("root", is_admin=True)
+    uid, raw = make_user_key("alice", pages={"quick_config": "all"})
+    _base = _time.time() + 1000.0
+    recent_transcriptions_store.record_trace(
+        request_id="foreign", model="m", raw="b", final="b",
+        user_id="someone-else", created_ts=_base + 1.0)
+    recent_transcriptions_store.record_trace(
+        request_id="own", model="m", raw="a", final="a", user_id=uid,
+        created_ts=_base + 2.0)
+    req = fake_request(headers=bearer(raw))
+
+    async def drive():
+        user = qc.require_user_or_admin_sse(req)          # the Depends
+        api_keys_store.set_user_permissions(
+            uid, {"pages": {"quick_config": "own"}})
+        resp = await qc.stream_recent(req, user)
+        body = resp.body_iterator
+        try:
+            return await asyncio.wait_for(body.__anext__(), timeout=10)
+        finally:
+            await body.aclose()
+
+    got = asyncio.run(drive())
+    assert '"own"' in got and "someone-else" not in got
+
+
 def test_concurrent_patches_do_not_lose_an_update(client, app_module,
                                                   monkeypatch):
     """Two overlapping patches of DIFFERENT rules both used to snapshot the

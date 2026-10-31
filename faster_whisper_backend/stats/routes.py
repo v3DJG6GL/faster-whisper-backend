@@ -820,16 +820,16 @@ async def stats_stream(
     at least every _REAUTH_INTERVAL_S, so an expired session ends it."""
     _lite = bool(lite)
     scope = stats_scope_for(user)
-    seen = settings_version.config_version()
+    # -1 never equals a real version, so the check before the first frame
+    # always re-resolves: a snapshot taken here, after the Depends, absorbed
+    # a revoke or narrowing landing in between and the stream kept the old
+    # scope until _REAUTH_INTERVAL_S.
+    seen = -1
     resolved_at = time.monotonic()
 
     async def gen():
         nonlocal scope, seen, resolved_at
         while True:
-            payload = await asyncio.to_thread(
-                _build_payload, scope, lite=_lite)
-            yield f"data: {json.dumps(payload, allow_nan=False, default=str)}\n\n"
-            await asyncio.sleep(1.0)
             try:
                 fresh = await asyncio.to_thread(
                     _rescope_on_version_change, request, seen, resolved_at)
@@ -837,6 +837,10 @@ async def stats_stream(
                 return
             if fresh is not None:
                 scope, seen, resolved_at = fresh
+            payload = await asyncio.to_thread(
+                _build_payload, scope, lite=_lite)
+            yield f"data: {json.dumps(payload, allow_nan=False, default=str)}\n\n"
+            await asyncio.sleep(1.0)
 
     return web_common.sse_response(gen())
 

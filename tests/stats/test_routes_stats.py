@@ -236,7 +236,8 @@ def test_stats_stream_frame_is_built_off_the_loop(client):
 
     src = inspect.getsource(stats_routes.stats_stream)
     assert "await asyncio.to_thread(" in src
-    assert "_build_payload" in src.split("await asyncio.to_thread(")[1][:80]
+    assert any("_build_payload" in call[:80]
+               for call in src.split("await asyncio.to_thread(")[1:])
 
     snap = asyncio.run(asyncio.to_thread(
         stats_routes._build_payload, stats_routes.ADMIN_SCOPE, lite=True))
@@ -566,7 +567,6 @@ def test_stream_rechecks_version(client, make_user_key, app_module):
     src = inspect.getsource(stats_routes.stats_stream)
     assert "_rescope_on_version_change, request, seen, resolved_at)" in src
     assert "await asyncio.to_thread(" in src   # SQLite lookups off the loop
-    assert "settings_version.config_version()" in src
 
     make_user_key("root", is_admin=True)
     uid, raw = make_user_key("alice", pages={"stats": "all"})
@@ -584,6 +584,50 @@ def test_stream_rechecks_version(client, make_user_key, app_module):
     api_keys_store.set_user_permissions(uid, {"pages": {"stats": "none"}})
     with pytest.raises(HTTPException):
         stats_routes._rescope_on_version_change(req, seen2, at2)
+
+
+def test_stream_rechecks_the_caller_before_its_first_frame(
+        client, make_user_key):
+    """The stream snapshotted the config version AFTER the Depends had
+    resolved the caller, so a narrowing or revoke landing in between was
+    absorbed and the old scope streamed on for up to _REAUTH_INTERVAL_S.
+    The generator is driven directly (never through TestClient)."""
+    import asyncio
+
+    from faster_whisper_backend.auth import api_keys_store
+    from faster_whisper_backend.stats import routes as stats_routes
+    from tests.conftest import bearer, fake_request
+
+    make_user_key("root", is_admin=True)
+    uid, raw = make_user_key("alice", pages={"stats": "all"})
+    req = fake_request(headers=bearer(raw))
+
+    async def first_frame():
+        user = stats_routes._require_stats_page_sse(req)   # the Depends
+        api_keys_store.set_user_permissions(uid, {"pages": {"stats": "own"}})
+        resp = await stats_routes.stats_stream(req, lite=1, user=user)
+        body = resp.body_iterator
+        try:
+            return await asyncio.wait_for(body.__anext__(), timeout=10)
+        finally:
+            await body.aclose()
+
+    assert '"scope": "own"' in asyncio.run(first_frame())
+
+    async def after_revoke():
+        user = stats_routes._require_stats_page_sse(req)
+        api_keys_store.revoke_user(uid)
+        resp = await stats_routes.stats_stream(req, lite=1, user=user)
+        body = resp.body_iterator
+        try:
+            got = await asyncio.wait_for(body.__anext__(), timeout=10)
+        except StopAsyncIteration:
+            return
+        finally:
+            await body.aclose()
+        raise AssertionError(f"frame streamed after revoke: {got[:80]!r}")
+
+    asyncio.run(after_revoke())
 
 
 def test_stream_rechecks_an_expired_session_without_a_bump(
