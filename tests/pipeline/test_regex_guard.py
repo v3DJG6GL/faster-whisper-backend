@@ -238,6 +238,25 @@ def test_verbose_mode_is_scanned_without_its_whitespace_and_comments():
         g.validate([("r", r"(?x)z*([nd]+\ ?) +\#", "")])
 
 
+def test_top_level_word_list_skips_the_pairwise_overlap_check(monkeypatch):
+    """A top-level `\\b(?:w1|w2|…)\\b` could only mark the root frame as
+    repeating, which nothing reads, yet the screen compared every branch pair:
+    40 entries of 72 prefix-free words took over 2 s and were refused as slow
+    to compile. The same group inside another group is still checked."""
+    calls = []
+    real = g._spans_overlap
+
+    def spy(pat, spans, icase=False):
+        calls.append(pat)
+        return real(pat, spans, icase)
+
+    monkeypatch.setattr(g, "_spans_overlap", spy)
+    assert not g._nested_repetition(r"\b(?:a1|b2|c3)\b")
+    assert calls == []
+    assert g._nested_repetition(r"(?:x(?:a|ab))+")
+    assert calls
+
+
 def test_verbose_mode_whitespace_does_not_steer_the_synthetic_probe():
     """The synthetic probe and the chain seed must read a `(?x)` pattern the
     way the engine does: `- * - * …` is `-*-*…`, whose run is dashes. Built

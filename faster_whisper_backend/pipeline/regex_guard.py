@@ -640,7 +640,9 @@ def _nested_repetition(pat: str) -> bool:
             # refuses it. A possessive or atomic group never re-splits — and
             # neither does one whose split a mandatory, disjoint next atom
             # pins down: `(?:(?:um|umm), )+` (see _follower_fixes_split).
-            elif (spans and not frame["atomic"] and not possessive
+            # Nothing reads the root frame's flag (it is never popped), so a
+            # top-level `\b(?:w1|w2|…)\b` skips the pairwise overlap check.
+            elif (len(stack) > 1 and spans and not frame["atomic"] and not possessive
                     and _spans_overlap(pat, spans, icase)
                     and not (i == close + 1
                              and _follower_fixes_split(pat, spans, i))):
