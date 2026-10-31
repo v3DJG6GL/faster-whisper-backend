@@ -1234,11 +1234,32 @@ def test_bounded_count_is_the_run_only_without_an_unbounded_repeat():
     assert g._first_repeated_char(r"\d{2}\s*x") == " "
     assert g._first_repeated_char(r"(?:\d{2})+x") == "1"
     assert g._first_repeated_char(r"\d{1,2}\.\d{2}") == "1"
+    assert "1" * g._SYNTH_RUN + "#" in g._synthetic_fixtures(r"\d{2}\s*x")
+
+
+@pytest.mark.parametrize("pat, run", [
+    (r"-{1,30}" * 5 + r"\s*#", "-"),
+    (r"-{0,30}" * 5 + r"\s*#", "-"),
+    (r"\.{0,30}" * 5 + r"\s*x", "."),
+    (r"\s{1,300}" * 7 + r"\d*#", " "),
+    (r"-{1,300}" * 7 + r"\s*#", "-"),
+    (r"(?:-{0,60}){7}\s*x", "-"),
+    (r"k{0,40}" * 7 + r"\s*x", "k"),
+    (r"\s{0,30}" * 4 + "x+", " "),
+])
+def test_chain_of_bounded_counts_keeps_the_run_of_its_character(pat, run):
+    """Built on the unbounded repeat behind them alone, the bounded counts
+    were a lead written at their minimum, so no probe held a run of their
+    character. These were accepted, yet re.sub over 40 dashes and a `#`
+    takes 8 s, growing ~n^7. Their run is probed next to the led one."""
+    assert any(s.startswith(run * g._SYNTH_RUN) for s in g._synthetic_fixtures(pat))
 
 
 @pytest.mark.parametrize("pat", [
     r"(\d{1,2})" + r"\s*" * 7 + "Uhr",
     r"Euro{1,2}" + r"\s*" * 7 + "#",
+    r"-{0,30}" * 5 + r"\s*#",
+    r"\s{0,30}" * 4 + "x+",
 ])
 def test_run_behind_a_bounded_count_is_rejected(pat):
     with pytest.raises(ValueError):
@@ -1247,6 +1268,7 @@ def test_run_behind_a_bounded_count_is_rejected(pat):
 
 @pytest.mark.parametrize("pat", [
     r"(\d{1,2}):(\d{2}) Uhr",
+    r"(\d{1,2})\.(\d{1,2})\.(\d{4})",
     r"(?P<h>\d{1,2})[.:](?P<m>\d{2})\s*Uhr",
     r"\d{1,2}\.\d{1,2}\.\d{2,4}",
 ])

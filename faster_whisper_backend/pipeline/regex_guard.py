@@ -1357,7 +1357,8 @@ def _synthetic_fixtures(pat: str) -> "list[str]":
     in microseconds however explosive it is. So synthesize the run this
     pattern actually cares about: ~240 repetitions of a character its first
     unbounded atom matches (bare, and led by a witness of the atoms in front
-    of it), plus a terminator, so the match is forced to FAIL
+    of it), and of its first bounded count's if that comes first
+    (`-{0,30}…-{0,30}\\s*#`), plus a terminator, so the match is forced to FAIL
     after exhausting every way of splitting the run — the shape backtracking
     blows up on.
 
@@ -1390,22 +1391,18 @@ def _synthetic_fixtures(pat: str) -> "list[str]":
 
     try:
         rx = re.compile(pat)
-        char, prefix = _first_repeat(_strip_comments(_strip_verbose(pat)))
+        body = _strip_comments(_strip_verbose(pat))
+        # The first unbounded repeat's run, and the first bounded count's too:
+        # `\d{1,2}` of `(\d{1,2})\s*…Uhr` leads the `\s*` run, yet a chain of
+        # them (`-{0,30}…-{0,30}\s*#`) is the explosive part, on a run of
+        # their own character that no lead writes out.
+        picks = [p for p in dict.fromkeys((_first_repeat(body),
+                                           _first_repeat(body, 0, True)))
+                 if p[0]]
     except Exception:  # noqa: BLE001 - best effort, never fail the save
         return []
-    if not char:
+    if not picks:
         return []
-    family = next((f for f in _RUN_FAMILIES if char in f), "")
-    # A mandatory atom in front of the run (`Komma\s*…#`, `x\d*…#`) matches no
-    # bare run, so the run is also probed led by a witness of it, the way a
-    # transcript reaches it. Never INSTEAD of the bare run: the led branch can
-    # eat the whole run before another one splits it (`Komma\s*|\s*…#`), and
-    # a lead only the run's own character supplies (`1\d*…1`, `\r\n\s*…#`)
-    # leaves its siblings unled.
-    try:
-        lead = _witness(_lead_pattern(prefix)) if prefix else ""
-    except Exception:  # noqa: BLE001 - best effort: probe the bare run
-        lead = ""
     # The short run must be long enough for the rule to match at all
     # (`(\d+)` x7 then `1` needs 8 characters) or every candidate looks alike.
     try:
@@ -1419,34 +1416,49 @@ def _synthetic_fixtures(pat: str) -> "list[str]":
         parsed, width = None, 0
     screen = min(max(_SYNTH_SCREEN, width + 2), _SYNTH_RUN)
     shape = _char_atoms(parsed)
-    terms = dict.fromkeys([
-        next((t for t in _SYNTH_TERMINATORS if t not in pat), "#"),
-        # The single pick before the union, kept so the set stays a superset
-        # of it: `\d*…(?:[!-/]|$)` eats the first and empty-matches every
-        # terminator, so only one it cannot consume fails the run.
-        next((t for t in _SYNTH_TERMINATORS
-              if t not in pat and t != char
-              and not any(m.end() > m.start() for m in rx.finditer(t))), ""),
-        next((t for t in _SYNTH_TERMINATORS if not rx.search(t)), ""),
-        # Every terminator above is punctuation: `…(?:\W|$)` eats each one
-        # and the bare run's end, and only a word character fails it.
-        next(t for t in _SYNTH_LETTERS if t != char),
-        "",
-    ])
     probes: dict = {}
-    # The lead is part of the outcome: a led and a bare run the rule matches
-    # nowhere end alike, though only the led one reaches the explosive part.
-    for led in dict.fromkeys(("", lead)):
-        for c in dict.fromkeys(char + family):
-            for t in terms:
-                # Equal spans say nothing about cost: a rule that splits a
-                # `\n` run every way before a cheap `|\s` matches it ends with
-                # the spans a space run gets at once. Only runs every atom
-                # treats alike share a probe.
-                outcome = (led,
-                           tuple(m.span() for m in rx.finditer(led + c * screen + t)),
-                           _run_signature(shape, c, t))
-                probes.setdefault(outcome, led + c * _SYNTH_RUN + t)
+    for char, prefix in picks:
+        family = next((f for f in _RUN_FAMILIES if char in f), "")
+        # A mandatory atom in front of the run (`Komma\s*…#`, `x\d*…#`)
+        # matches no bare run, so the run is also probed led by a witness of
+        # it, the way a transcript reaches it. Never INSTEAD of the bare run:
+        # the led branch can eat the whole run before another one splits it
+        # (`Komma\s*|\s*…#`), and a lead only the run's own character supplies
+        # (`1\d*…1`, `\r\n\s*…#`) leaves its siblings unled.
+        try:
+            lead = _witness(_lead_pattern(prefix)) if prefix else ""
+        except Exception:  # noqa: BLE001 - best effort: probe the bare run
+            lead = ""
+        terms = dict.fromkeys([
+            next((t for t in _SYNTH_TERMINATORS if t not in pat), "#"),
+            # The single pick before the union, kept so the set stays a
+            # superset of it: `\d*…(?:[!-/]|$)` eats the first and
+            # empty-matches every terminator, so only one it cannot consume
+            # fails the run.
+            next((t for t in _SYNTH_TERMINATORS
+                  if t not in pat and t != char
+                  and not any(m.end() > m.start() for m in rx.finditer(t))), ""),
+            next((t for t in _SYNTH_TERMINATORS if not rx.search(t)), ""),
+            # Every terminator above is punctuation: `…(?:\W|$)` eats each
+            # one and the bare run's end, and only a word character fails it.
+            next(t for t in _SYNTH_LETTERS if t != char),
+            "",
+        ])
+        # The lead is part of the outcome: a led and a bare run the rule
+        # matches nowhere end alike, though only the led one reaches the
+        # explosive part.
+        for led in dict.fromkeys(("", lead)):
+            for c in dict.fromkeys(char + family):
+                for t in terms:
+                    # Equal spans say nothing about cost: a rule that splits a
+                    # `\n` run every way before a cheap `|\s` matches it ends
+                    # with the spans a space run gets at once. Only runs every
+                    # atom treats alike share a probe.
+                    outcome = (led,
+                               tuple(m.span() for m in
+                                     rx.finditer(led + c * screen + t)),
+                               _run_signature(shape, c, t))
+                    probes.setdefault(outcome, led + c * _SYNTH_RUN + t)
     return list(probes.values())
 
 
