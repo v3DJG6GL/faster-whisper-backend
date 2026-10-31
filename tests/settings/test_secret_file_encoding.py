@@ -1,4 +1,5 @@
-"""Secret *_FILE indirection copes with what Windows editors and shells write.
+"""Secret *_FILE indirection and the .env loader cope with what Windows editors
+and shells write.
 
 Windows PowerShell 5.1 `"key" > file` writes UTF-16 with a BOM, which a strict
 UTF-8 read turned into an import-time UnicodeDecodeError (the server did not
@@ -72,3 +73,39 @@ def test_helper_leaves_no_secret_behind(tmp_path):
         finally:
             importlib.reload(config)
     assert os.environ.get(_VAR) == before
+
+
+@pytest.mark.parametrize("data, applied", [
+    # PowerShell 5.1 `>`: UTF-16 with a BOM is decoded and applied.
+    ("WHISPER_BEAM_SIZE=3\r\nWHISPER_DEFAULT_PROMPT=Grüße\r\n".encode("utf-16"),
+     True),
+    # An "ANSI" (cp1252) save is not guessed at: skipped with a warning.
+    ("WHISPER_BEAM_SIZE=3\nWHISPER_DEFAULT_PROMPT=Grüße\n".encode("cp1252"),
+     False),
+], ids=["utf16-bom", "cp1252"])
+def test_a_non_utf8_dotenv_does_not_fail_import(tmp_path, data, applied):
+    """dotenv reads .env as strict UTF-8: either file crashed `import config`
+    with a UnicodeDecodeError naming neither .env nor the fix."""
+    import json
+    import subprocess
+    import sys
+    from faster_whisper_backend.paths import REPO_ROOT
+    (tmp_path / ".env").write_bytes(data)
+    # Under `python -c` dotenv searches from the cwd, so tmp_path's .env is
+    # the one loaded; no inherited WHISPER_* may shadow its keys.
+    env = {k: v for k, v in os.environ.items()
+           if not k.startswith("WHISPER_") and k != "PYTHON_DOTENV_DISABLED"}
+    env.update(PYTHONPATH=str(REPO_ROOT), WHISPER_DATA_DIR=str(tmp_path / "data"))
+    out = subprocess.run(
+        [sys.executable, "-c",
+         "import json; from faster_whisper_backend.settings import config as c;"
+         "print(json.dumps([c.BEAM_SIZE, c.DEFAULT_PROMPT, c._ENV_WARNINGS]))"],
+        cwd=tmp_path, env=env, capture_output=True, text=True, timeout=120)
+    assert out.returncode == 0, out.stderr
+    beam, prompt, warnings = json.loads(out.stdout.strip().splitlines()[-1])
+    skipped = [w for w in warnings if "re-save it as UTF-8" in w]
+    if applied:
+        assert (beam, prompt, skipped) == (3, "Grüße", [])
+    else:
+        assert beam != 3 and prompt != "Grüße"
+        assert len(skipped) == 1 and str(tmp_path / ".env") in skipped[0]

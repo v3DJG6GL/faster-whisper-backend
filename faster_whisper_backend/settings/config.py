@@ -17,6 +17,7 @@ Conventions:
 - Algorithm code (regex compilation, pipeline functions) lives in pipeline/engine.py.
 - Per-setting descriptions live in settings/descriptions.py (shown in /settings).
 """
+import io
 import json
 import os
 import re
@@ -29,12 +30,30 @@ from faster_whisper_backend import paths as _paths  # underscore: not a setting
 # load_dotenv does NOT override variables already set in the real environment,
 # so an exported env var / docker-compose `environment:` still wins over .env.
 # Guarded: the app must still import if python-dotenv isn't installed.
+# dotenv reads .env as strict UTF-8, so a non-UTF-8 file used to crash the
+# import. Windows PowerShell 5.1 `>` writes UTF-16 with a BOM (unambiguous, so
+# decode it); any other undecodable file (an "ANSI"/cp1252 save) is not
+# guessed at: it is skipped with a warning, folded into _ENV_WARNINGS below.
+_DOTENV_WARNINGS: list[str] = []
 try:
-    from dotenv import load_dotenv as _load_dotenv
-
-    _load_dotenv()
+    from dotenv import find_dotenv as _find_dotenv, load_dotenv as _load_dotenv
 except ImportError:
     pass
+else:
+    # Found from this frame, exactly where a bare load_dotenv() looks.
+    _dotenv_path = _find_dotenv()
+    try:
+        _load_dotenv(_dotenv_path)
+    except UnicodeDecodeError:
+        with open(_dotenv_path, "rb") as _fh:
+            _buf = _fh.read()
+        try:
+            if _buf[:2] not in (b"\xff\xfe", b"\xfe\xff"):
+                raise UnicodeError
+            _load_dotenv(stream=io.StringIO(_buf.decode("utf-16")))
+        except UnicodeError:
+            _DOTENV_WARNINGS.append(
+                f"{_dotenv_path} is not UTF-8 and was skipped; re-save it as UTF-8")
 
 
 # The checkout root — where the committed config.json lives (see paths.py).
@@ -1465,6 +1484,7 @@ except ImportError:
 # (config.py runs too early to log), so a typo like WHISPER_BEAM_SIZE=ten is
 # surfaced as a warning rather than silently ignored. See main.py startup.
 _ENV_WARNINGS: list[str] = []
+_ENV_WARNINGS.extend(_DOTENV_WARNINGS)  # a skipped .env (top of the module)
 # Names of env vars whose value a reader below could not parse (and so kept
 # the current value). The validation pass at the bottom folds these into
 # _ENV_REJECTED: a value that controls nothing must not badge its field as
