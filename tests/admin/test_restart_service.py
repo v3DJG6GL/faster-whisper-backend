@@ -184,6 +184,25 @@ def test_reexec_does_not_restore_a_dotenv_hf_token(monkeypatch):
     assert pl_apply.SERVICE_HF_TOKEN_ENV not in captured["env"]
 
 
+def test_reexec_drops_an_empty_hf_token_record(monkeypatch):
+    """A process started without a token records "" for the environment's.
+    Kept on exec, it blocked the record of a bare HF_TOKEN added to .env since
+    (main.py only sets the record when absent), so clearing the config field
+    later popped that .env token."""
+    from faster_whisper_backend.pipeline import apply as pl_apply
+    monkeypatch.setattr(restart_service.sys, "platform", "linux")
+    monkeypatch.setattr(config, "_ENV_FROM_DOTENV", set())
+    monkeypatch.setattr(pl_apply, "_ENV_HF_TOKEN", None)
+    monkeypatch.delenv("HF_TOKEN", raising=False)
+    monkeypatch.setenv(pl_apply.SERVICE_HF_TOKEN_ENV, "")
+    captured = {}
+    monkeypatch.setattr(restart_service.os, "execve",
+                        lambda path, argv, env: captured.update(env=env))
+    restart_service.trigger_self_restart(delay_sec=0.1)
+    _FakeTimer.instances[0].function()
+    assert pl_apply.SERVICE_HF_TOKEN_ENV not in captured["env"]
+
+
 def test_reexec_drops_the_hf_token_promoted_from_config(monkeypatch):
     """main.py copies cfg.HF_TOKEN into the bare HF_TOKEN that huggingface_hub
     reads. An exec that inherited the copy kept sending a token the operator

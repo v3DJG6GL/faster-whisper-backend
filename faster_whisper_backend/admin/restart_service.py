@@ -97,16 +97,18 @@ def trigger_self_restart(delay_sec: float = 1.5) -> str:
         # outlive a token withdrawn from the file or config (the new process
         # then promotes nothing) and be adopted as the environment's own.
         # A bare HF_TOKEN from .env is not the environment's: the new process
-        # reads it from .env again (and records it afresh), or not at all.
+        # reads it from .env again, or not at all. Its record is always
+        # dropped, so the new process records it afresh after its own .env
+        # load: the restored service token, else what .env now sets, else "".
         def do_reexec() -> None:
             from faster_whisper_backend.pipeline import apply as _pl_apply
             _flush_before_exit()
             env = {k: v for k, v in os.environ.items()
                    if k not in cfg._ENV_FROM_SECRET_FILES
                    and k not in cfg._ENV_FROM_DOTENV}
-            if "HF_TOKEN" in cfg._ENV_FROM_DOTENV:
-                env.pop(_pl_apply.SERVICE_HF_TOKEN_ENV, None)
-            elif _pl_apply._ENV_HF_TOKEN is not None:
+            env.pop(_pl_apply.SERVICE_HF_TOKEN_ENV, None)
+            if (_pl_apply._ENV_HF_TOKEN is not None
+                    and "HF_TOKEN" not in cfg._ENV_FROM_DOTENV):
                 env["HF_TOKEN"] = _pl_apply._ENV_HF_TOKEN
             else:
                 env.pop("HF_TOKEN", None)
