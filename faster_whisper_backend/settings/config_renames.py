@@ -154,6 +154,15 @@ UPGRADED_RULE_ENTRIES: dict[str, tuple[tuple[str, str], tuple[str, str]]] = {
         ('(\\d)\\s*-\\s*(\\d)', '\\1/\\2'),
         ('(\\d)[^\\S\\n]*-[^\\S\\n]*(?=\\d)', '\\1/'),
     ),
+    # The old pattern started a match at every space of a run and scanned to
+    # its end when no closing mark followed, so a hallucinated "... ... ..."
+    # loop (one space left per item once strip-auto-punctuation deleted the
+    # dots) took quadratic time on /transcribe (20000 items: 2 s). A match now
+    # starts only at the first space of a run; the output is the same.
+    "space-before-closing-punct": (
+        ('[ \\t]+([,.:;!?%\\)\\]\\}])', '\\1'),
+        ('(?<![ \\t])[ \\t]+([,.:;!?%\\)\\]\\}])', '\\1'),
+    ),
     # Spanish opening marks: es-punctuation now runs before this rule, so
     # the strip must take an opening ¿/¡ along with its closing mark (an
     # orphaned "¿Qué hora es" otherwise), keeping it only where the closing

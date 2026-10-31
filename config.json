@@ -705,7 +705,7 @@
           "note": "Joins digits split after a / or - group: 2/3 4 → 2/34."
         },
         {
-          "pattern": "[ \\t]+([,.:;!?%\\)\\]\\}])",
+          "pattern": "(?<![ \\t])[ \\t]+([,.:;!?%\\)\\]\\}])",
           "replacement": "\\1",
           "label": "space-before-closing-punct",
           "note": "Removes space before closing punctuation: , . : ; ! ? % ) ] }."

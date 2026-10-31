@@ -2,7 +2,8 @@
 delete-punct-before-hyphen, the language tags on language-specific rules, the
 Spanish opening-mark rule, the dictation-map → de-dictation-map rename,
 tighten-digit-separators and normalize-digit-range on a digit chain
-(3/4/2026), and capitalize-after-terminator on a run of paragraph breaks.
+(3/4/2026), and capitalize-after-terminator and space-before-closing-punct
+on a long run of paragraph breaks / spaces.
 
 2026-09-19: "vom 3.-10 Oktober" left the pipeline as "vom 310 Oktober" —
 final-cleanup deleted ".-" between two numbers. A silently changed date or
@@ -449,3 +450,45 @@ def test_digit_range_keeps_a_line_break_between_two_numbers():
     sub = lambda t: re.sub(entry["pattern"], entry["replacement"], t)
     assert sub("Ramipril 5\n-2 Tabletten") == "Ramipril 5\n-2 Tabletten"
     assert sub("Termin 10 - 12 Uhr") == "Termin 10/12 Uhr"
+
+
+def _closing_punct_entry(rules):
+    return next(e for r in rules for e in (r.get("entries") or [])
+                if e.get("label") == "space-before-closing-punct")
+
+
+@pytest.mark.parametrize("unit", ["... ", " .", " ,"])
+def test_space_before_closing_punct_is_fast_on_a_hallucinated_dot_loop(app_module, unit):
+    """Whisper hallucinates "... ... ..." on silence; strip-auto-punctuation
+    deletes the marks and leaves one long space run, which the "  +" collapse
+    only reaches later in the card. `[ \\t]+` started a match at every space
+    of the run and scanned to its end when no closing mark followed: 10000
+    items took 2 s on /transcribe. A match now starts only at a run's first
+    space."""
+    app_module.cfg.PIPELINE_RULES = copy.deepcopy(_factory_rules())
+    pl_engine.rebuild_caches()
+    t0 = time.perf_counter()
+    out = pl_engine._postprocess_text(" Das war es " + unit * 10000 + "Danke.",
+                                      model_name="", language="de")
+    assert time.perf_counter() - t0 < 1.0
+    assert out == "Das war es Danke"
+
+
+def test_space_before_closing_punct_output_is_unchanged():
+    entry = _closing_punct_entry(_factory_rules())
+    old = renames.UPGRADED_RULE_ENTRIES["space-before-closing-punct"][0]
+    for s in ("a , b", "a \t \t. b  ;c", "( 45 Jahre ) klagt .", "x   y", " \t", "a  ,\n  .",
+              "Wert 12 % ] } ! ?", "\t,\t.\t"):
+        assert re.sub(entry["pattern"], entry["replacement"], s) == re.sub(*old, s), s
+
+
+def test_stored_old_closing_punct_entry_is_upgraded_once():
+    rules = copy.deepcopy(_factory_rules())
+    old_pat, old_rep = renames.UPGRADED_RULE_ENTRIES["space-before-closing-punct"][0]
+    e = _closing_punct_entry(rules)
+    e["pattern"], e["replacement"] = old_pat, old_rep
+    raw = {"PIPELINE_RULES": rules}
+    assert renames.upgrade_rule_entries(raw) == [
+        "digit-and-whitespace-tidy/space-before-closing-punct"]
+    assert raw["PIPELINE_RULES"] == _factory_rules()
+    assert renames.upgrade_rule_entries(raw) == []
