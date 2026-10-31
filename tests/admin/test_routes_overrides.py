@@ -40,7 +40,11 @@ def test_overrides_page_renders(client):
                    # instead of a bare "save failed (409)"
                    "setStatus(jc.detail || 'profile still in use'",
                    # the What-if row names the decode path's own outcomes
-                   "ignored_invalid: '⊘ ignored — invalid value'"):
+                   "ignored_invalid: '⊘ ignored — invalid value'",
+                   # a dropped outer names its locked partner, not itself, and
+                   # a moved partner the client never sent shows no "sent —"
+                   "ignored_partner_locked: '⊘ ignored — partner gate locked'",
+                   "cs.sent == null ? 'fitted to the sent gate'"):
         assert marker in body, marker
 
 
@@ -268,7 +272,8 @@ def test_resolve_sim_reports_the_live_dictation_knobs_as_the_handshake_sets_them
     fit = sim(uid, streaming_vad_outer_silence_ms=2000)["STREAMING_VAD_OUTER_SILENCE_MS"]
     assert fit["client_sim"] == {"value": 2000, "sent": 2000, "outcome": "applied"}
 
-    # A LOCKED hard break is never moved: a client outer above it is dropped.
+    # A LOCKED hard break is never moved: a client outer above it is dropped,
+    # reported as the partner's lock (the outer field itself is not locked).
     r = client.patch(f"{PERMS}/{uid}/permissions", headers=h, json={
         "pages": {}, "config": {"overrides": {"STREAMING_HARD_BREAK_SILENCE_MS": 5000},
                                 "profiles": [],
@@ -276,7 +281,7 @@ def test_resolve_sim_reports_the_live_dictation_knobs_as_the_handshake_sets_them
     assert r.status_code == 200, r.text
     f = sim(uid, streaming_vad_outer_silence_ms=6000)
     assert f["STREAMING_VAD_OUTER_SILENCE_MS"]["client_sim"] == {
-        "value": 6000, "sent": 6000, "outcome": "ignored_locked"}
+        "value": 6000, "sent": 6000, "outcome": "ignored_partner_locked"}
     assert f["STREAMING_HARD_BREAK_SILENCE_MS"]["client_sim"] is None
 
 

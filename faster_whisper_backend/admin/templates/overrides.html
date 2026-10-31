@@ -349,11 +349,16 @@ window._renderWaterfall = (function () {
     if (fr.client_sim) {
       // value = what the server would use; sent = what the client sent.
       var cs = fr.client_sim;
-      var ig = cs.outcome === 'ignored_locked' || cs.outcome === 'ignored_invalid';
+      var ig = cs.outcome === 'ignored_locked' || cs.outcome === 'ignored_invalid'
+        || cs.outcome === 'ignored_partner_locked';
       var simFlag = {
         ignored_locked: '⊘ ignored — locked',
+        ignored_partner_locked: '⊘ ignored — partner gate locked',
         ignored_invalid: '⊘ ignored — invalid value',
-        clamped: 'clamped (sent ' + esc(fmt(cs.sent)) + ')'
+        // sent == null: a silence gate the client did not send, moved to
+        // fit one it did.
+        clamped: cs.sent == null ? 'fitted to the sent gate'
+          : 'clamped (sent ' + esc(fmt(cs.sent)) + ')'
       }[cs.outcome] || 'applied';
       rows.push('<li class="ov-wf-layer sim' + (ig ? ' ignored' : '') + '">'
         + '<span class="ov-wf-tick"></span>'

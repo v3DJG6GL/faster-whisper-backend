@@ -435,14 +435,15 @@ def _sim_client_value(ck: str, raw: Any, model_id: str | None,
     decode path would use it: "applied" (as sent, or merely parsed — "5",
     "true", "0.2,0.4"), "clamped" (bounded / capped / fitted to `value`),
     "ignored_invalid" (unparsable, dropped) or, for a live-dictation outer
-    silence that a LOCKED partner gate cannot fit, "ignored_locked".
+    silence that a LOCKED partner gate cannot fit, "ignored_partner_locked"
+    (the outer itself is not locked).
     `stream` is stream_routes._client_stream_values over the whole simulated
     request: the silence gates are fitted as a set, not one key at a time."""
     if ck in settings_schema.STREAM_ONLY_CLIENT_KEYS:
         (out, notes), key = stream, _STREAM_FIELDS[ck]
         if (key not in out and key == "STREAMING_VAD_OUTER_SILENCE_MS"
                 and any(n.startswith("outer ") for n in notes)):
-            return raw, "ignored_locked"
+            return raw, "ignored_partner_locked"
     elif ck in _VAD_SUB_KEYS:
         # VAD seeded on with a non-empty params dict, so the sub-param is
         # judged on its own value rather than on the config's VAD toggle.
