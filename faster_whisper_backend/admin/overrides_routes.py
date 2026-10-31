@@ -36,6 +36,7 @@ from faster_whisper_backend.core.loop_lock import LoopLock
 from faster_whisper_backend.pipeline import apply as pl_apply
 from faster_whisper_backend.auth.dependencies import require_admin
 from faster_whisper_backend.core import templates
+from faster_whisper_backend.streaming import routes as stream_routes
 from faster_whisper_backend.transcription import models as tx_models
 
 logger = logging.getLogger("whisper.overrides")
@@ -414,24 +415,35 @@ async def rename_profile(payload: _RenameProfileIn, request: Request) -> JSONRes
 
 
 # Client keys the live decode path (tx_models._apply_decode_overrides) parses;
-# the VAD sub-params land inside its vad_parameters dict. The rest
-# (suppress_chars, output_prefix/suffix, streaming_*) are read elsewhere and
-# stay reported as sent.
+# the VAD sub-params land inside its vad_parameters dict. The live-dictation
+# keys (settings_schema.STREAM_ONLY_CLIENT_KEYS) go through the streaming
+# handshake's own parser instead; the rest (suppress_chars,
+# output_prefix/suffix) are read elsewhere and stay reported as sent.
 _VAD_SUB_KEYS = {"vad_min_silence_duration_ms": "min_silence_duration_ms",
                  "vad_speech_pad_ms": "speech_pad_ms",
                  "vad_threshold": "threshold"}
 _DECODE_KEYS = frozenset({*tx_models._DECODE_INT_BOUNDS, *tx_models._DECODE_FLOAT_BOUNDS,
                           *tx_models._DECODE_STR_CAPS, "temperature", "suppress_tokens",
                           "condition_on_previous_text", "multilingual", "vad_filter"})
+_STREAM_FIELDS = {ck: f for f, ck in settings_schema.CONFIG_TO_CLIENT_KEY.items()
+                  if ck in settings_schema.STREAM_ONLY_CLIENT_KEYS}
 
 
 def _sim_client_value(ck: str, raw: Any, model_id: str | None,
-                      ident: Any) -> tuple[Any, str]:
+                      ident: Any, stream: tuple[dict, list[str]]) -> tuple[Any, str]:
     """(value, outcome) for one unlocked simulated client key, as the live
     decode path would use it: "applied" (as sent, or merely parsed — "5",
-    "true", "0.2,0.4"), "clamped" (bounded / capped to `value`) or
-    "ignored_invalid" (unparsable, dropped)."""
-    if ck in _VAD_SUB_KEYS:
+    "true", "0.2,0.4"), "clamped" (bounded / capped / fitted to `value`),
+    "ignored_invalid" (unparsable, dropped) or, for a live-dictation outer
+    silence that a LOCKED partner gate cannot fit, "ignored_locked".
+    `stream` is stream_routes._client_stream_values over the whole simulated
+    request: the silence gates are fitted as a set, not one key at a time."""
+    if ck in settings_schema.STREAM_ONLY_CLIENT_KEYS:
+        (out, notes), key = stream, _STREAM_FIELDS[ck]
+        if (key not in out and key == "STREAMING_VAD_OUTER_SILENCE_MS"
+                and any(n.startswith("outer ") for n in notes)):
+            return raw, "ignored_locked"
+    elif ck in _VAD_SUB_KEYS:
         # VAD seeded on with a non-empty params dict, so the sub-param is
         # judged on its own value rather than on the config's VAD toggle.
         out = tx_models._apply_decode_overrides(
@@ -496,6 +508,9 @@ def resolve(user_id: str = "", key_id: str = "", model: str = "",
         user_id=user_id or None, key_id=key_id or None,
         request_overrides=sim_dict, with_provenance=True,
     )
+    # The live-dictation knobs as the streaming handshake would set them
+    # (clamped, the silence gates fitted as a pair, locked keys skipped).
+    stream = stream_routes._client_stream_values(sim_dict, r)
 
     fields: dict[str, Any] = {}
     for fname, stack in (r.provenance or {}).items():
@@ -514,8 +529,11 @@ def resolve(user_id: str = "", key_id: str = "", model: str = "",
             if fname in r.locked or ck in r.locked_client_keys:
                 value, outcome = sim_dict[ck], "ignored_locked"
             else:
-                value, outcome = _sim_client_value(ck, sim_dict[ck], model_id, r)
+                value, outcome = _sim_client_value(ck, sim_dict[ck], model_id, r, stream)
             client_sim = {"value": value, "sent": sim_dict[ck], "outcome": outcome}
+        elif fname in stream[0]:
+            # A silence gate the client did not send, moved to fit one it did.
+            client_sim = {"value": stream[0][fname], "sent": None, "outcome": "clamped"}
         fields[fname] = {
             "winner_value": winner["value"] if winner else None,
             "winner_layer": winner["layer_id"] if winner else None,

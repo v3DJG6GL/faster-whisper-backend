@@ -239,6 +239,47 @@ def test_resolve_sim_reports_the_value_the_decode_path_uses(client, make_user_ke
     assert cs("DEFAULT_HOTWORDS")["value"] == "x" * 2048
 
 
+def test_resolve_sim_reports_the_live_dictation_knobs_as_the_handshake_sets_them(
+        client, make_user_key):
+    # The live-dictation client keys fell through to "applied" with the raw
+    # value, while the streaming handshake (_client_stream_values) clamps them,
+    # drops what it cannot parse, fits the silence-gate pair and drops an outer
+    # that a LOCKED partner cannot fit: outer 99999 runs as 10000 and moves the
+    # hard break 5000 -> 11000. Report what the dictation client would get.
+    _, _, h = _admin(make_user_key)
+    uid, _ = make_user_key("erin", is_admin=False)
+
+    def sim(user, **keys):
+        return client.get(f"{OV}/resolve", headers=h, params={
+            "user_id": user, "model": "whisper-1",
+            "sim": json.dumps(keys)}).json()["fields"]
+
+    f = sim(uid, streaming_vad_outer_silence_ms=99999,
+            streaming_vad_threshold="abc", streaming_hard_break_separator=" / ")
+    assert f["STREAMING_VAD_OUTER_SILENCE_MS"]["client_sim"] == {
+        "value": 10000, "sent": 99999, "outcome": "clamped"}
+    assert f["STREAMING_HARD_BREAK_SILENCE_MS"]["client_sim"] == {
+        "value": 11000, "sent": None, "outcome": "clamped"}  # the moved partner
+    assert f["STREAMING_VAD_THRESHOLD"]["client_sim"]["outcome"] == "ignored_invalid"
+    assert f["STREAMING_HARD_BREAK_SEPARATOR"]["client_sim"] == {
+        "value": " / ", "sent": " / ", "outcome": "applied"}
+    assert f["STREAMING_VAD_INNER_SILENCE_MS"]["client_sim"] is None  # inner 700 fits
+
+    fit = sim(uid, streaming_vad_outer_silence_ms=2000)["STREAMING_VAD_OUTER_SILENCE_MS"]
+    assert fit["client_sim"] == {"value": 2000, "sent": 2000, "outcome": "applied"}
+
+    # A LOCKED hard break is never moved: a client outer above it is dropped.
+    r = client.patch(f"{PERMS}/{uid}/permissions", headers=h, json={
+        "pages": {}, "config": {"overrides": {"STREAMING_HARD_BREAK_SILENCE_MS": 5000},
+                                "profiles": [],
+                                "locks": ["STREAMING_HARD_BREAK_SILENCE_MS"]}})
+    assert r.status_code == 200, r.text
+    f = sim(uid, streaming_vad_outer_silence_ms=6000)
+    assert f["STREAMING_VAD_OUTER_SILENCE_MS"]["client_sim"] == {
+        "value": 6000, "sent": 6000, "outcome": "ignored_locked"}
+    assert f["STREAMING_HARD_BREAK_SILENCE_MS"]["client_sim"] is None
+
+
 def test_resolve_reports_a_binding_store_fault(client, make_user_key, monkeypatch):
     # A binding-fetch fault locks every field fail-closed with no owning
     # layer; the explorer showed "locked" everywhere and gave no reason.
