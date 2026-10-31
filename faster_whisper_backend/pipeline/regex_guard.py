@@ -1318,13 +1318,14 @@ def _synthetic_fixtures(pat: str) -> "list[str]":
     used up its allowance and refused it. Each candidate is first matched as a
     SHORT run (_SYNTH_SCREEN), and only the first candidate per distinct
     outcome gets the full-length probe. The outcome is the spans the rule
-    matches plus which of its atoms accept the run character (_char_atoms):
-    two inputs whose characters every single-character atom accepts or
-    refuses alike drive the engine through the same steps, while equal spans
-    alone do not (`\\s*x|\\n*…\\n*y|\\s` splits a newline run every way before
-    `\\s` matches it like a space run). An ordinary rule is probed once per
-    run character class; `\\n\\s*…x` and `2\\d*…x|\\d+` keep the run their
-    leading atom accepts.
+    matches plus which of its atoms accept the run character and the
+    terminator (_run_signature): two inputs whose characters every
+    single-character atom accepts or refuses alike drive the engine through
+    the same steps, while equal spans alone do not (`\\s*x|\\n*…\\n*y|\\s`
+    splits a newline run every way before `\\s` matches it like a space run).
+    An ordinary rule is probed once per run character class; `\\n\\s*…x` and
+    `2\\d*…x|\\d+` keep the run their leading atom accepts, `(?=\\s+[a-z])…#`
+    the letter its lookahead needs.
     """
     import re
 
@@ -1347,7 +1348,7 @@ def _synthetic_fixtures(pat: str) -> "list[str]":
     except Exception:  # noqa: BLE001 - width analysis is best effort
         parsed, width = None, 0
     screen = min(max(_SYNTH_SCREEN, width + 2), _SYNTH_RUN)
-    atoms = _char_atoms(parsed)
+    shape = _char_atoms(parsed)
     family = next((f for f in _RUN_FAMILIES if char in f), "")
     terms = dict.fromkeys([
         next((t for t in _SYNTH_TERMINATORS if t not in pat), "#"),
@@ -1371,19 +1372,42 @@ def _synthetic_fixtures(pat: str) -> "list[str]":
             # spans a space run gets at once. Only runs every atom treats
             # alike share a probe.
             outcome = (tuple(m.span() for m in rx.finditer(c * screen + t)),
-                       c if atoms is None else tuple(
-                           a.fullmatch(c) is not None for a in atoms))
+                       _run_signature(shape, c, t))
             probes.setdefault(outcome, c * _SYNTH_RUN + t)
     return list(probes.values())
 
 
-def _char_atoms(parsed) -> "list | None":
+def _run_signature(shape, c: str, t: str) -> tuple:
+    """Which atoms of _char_atoms' ``shape`` accept the run character ``c``
+    and which of those that can reach the end of the run accept the
+    terminator ``t`` (the raw characters when the atoms are unknown).
+
+    A terminator only counts for an atom it can reach: `Prozent`'s `z` sits
+    behind a `P` no digit run gets past, so `z` and `#` probe a digit run
+    alike, while `(?=\\d+z)…` gates its backtracking on that very `z`."""
+    if shape is None:
+        return c, t
+    atoms, reach, ends = shape
+    run = [a.fullmatch(c) is not None for a in atoms]
+    return tuple(run), ends and not t, tuple(
+        a.fullmatch(t) is not None
+        and any(all(run[j] for j in occ) for occ in occs)
+        for a, occs in zip(atoms, reach))
+
+
+def _char_atoms(parsed) -> "tuple[list, list, bool] | None":
     """Every single-character atom of a parsed pattern, compiled on its own,
     or None if they cannot be told apart (an inline flag group, a failure):
-    two run characters each atom accepts or refuses alike drive the engine
-    through the same steps. A `\\w` probe stands in for `\\b` / `\\B`."""
-    import re
+    two inputs whose characters each atom accepts or refuses alike drive the
+    engine through the same steps. Zero-width tests that read a character
+    get a stand-in atom: `\\w` for `\\b` / `\\B`, `\\n` for `^` / `$`; the
+    third item says whether a `$` / `\\Z` tells the end of the text from a
+    character.
 
+    The second item lists, per atom, the atoms in front of each occurrence
+    in its sequences (_run_signature: one the run character fails never lets
+    it reach the terminator). A lookbehind reads back over them, so its atoms
+    get none."""
     try:
         try:
             import re._compiler as _recompiler
@@ -1393,28 +1417,54 @@ def _char_atoms(parsed) -> "list | None":
             import sre_parse as _reparser
         consuming = (_reparser.LITERAL, _reparser.NOT_LITERAL,
                      _reparser.ANY, _reparser.IN)
+        stand_ins = {
+            _reparser.AT_BOUNDARY: (_reparser.IN, [
+                (_reparser.CATEGORY, _reparser.CATEGORY_WORD)]),
+            _reparser.AT_BEGINNING: (_reparser.LITERAL, ord("\n")),
+            _reparser.AT_END: (_reparser.LITERAL, ord("\n")),
+        }
+        stand_ins[_reparser.AT_NON_BOUNDARY] = stand_ins[_reparser.AT_BOUNDARY]
         found: dict = {}
+        ends = False
 
-        def walk(node) -> bool:
+        def walk(node, preds: tuple) -> bool:
+            nonlocal ends
             if isinstance(node, _reparser.SubPattern):
-                return all(walk(item) for item in node.data)
+                for item in node.data:
+                    if not walk(item, preds):
+                        return False
+                    if any(item[0] is op for op in consuming):
+                        preds += (repr(item),)
+                return True
             if isinstance(node, (list, tuple)):
                 # Identity: an opcode equals its int, e.g. an ASSERT's direction.
-                if len(node) == 2 and any(node[0] is op for op in consuming):
-                    found.setdefault(repr(node), node)
+                op = node[0] if len(node) == 2 else None
+                if any(op is o for o in consuming):
+                    found.setdefault(repr(node), (node, []))[1].append(preds)
                     return True
-                if (len(node) == 2 and node[0] is _reparser.SUBPATTERN
-                        and (node[1][1] or node[1][2])):
+                if op is _reparser.AT:
+                    ends |= node[1] in (_reparser.AT_END, _reparser.AT_END_STRING)
+                    if node[1] in stand_ins:
+                        stand = stand_ins[node[1]]
+                        found.setdefault(repr(stand), (stand, []))[1].append(preds)
+                    return True
+                if op is _reparser.SUBPATTERN and (node[1][1] or node[1][2]):
                     return False  # local flags: the atom alone would lie
-                return all(walk(item) for item in node)
+                if ((op is _reparser.ASSERT or op is _reparser.ASSERT_NOT)
+                        and node[1][0] < 0):
+                    return walk(node[1][1], ())
+                return all(walk(item, preds) for item in node)
             return True
 
-        if parsed is None or not walk(parsed) or len(found) > 64:
+        if parsed is None or not walk(parsed, ()) or len(found) > 64:
             return None
         state = parsed.state
-        return [re.compile(r"\w", state.flags & ~re.VERBOSE)] + [
+        index = {key: i for i, key in enumerate(found)}
+        return [
             _recompiler.compile(_reparser.SubPattern(state, [node]), state.flags)
-            for node in found.values()]
+            for node, _ in found.values()
+        ], [[tuple(index[k] for k in occ) for occ in occs]
+            for _, occs in found.values()], ends
     except Exception:  # noqa: BLE001 - best effort: probe each run character
         return None
 

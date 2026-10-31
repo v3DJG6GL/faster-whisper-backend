@@ -1207,6 +1207,29 @@ def test_run_a_cheap_branch_matches_like_its_sibling_keeps_its_probe(pat, probe)
 
 
 @pytest.mark.parametrize("pat, probe", [
+    (r"(?=\s+[a-z])" + r"\s*" * 7 + "#", " " * 240 + "z"),
+    (r"(?=\d+z)" + r"\d*" * 7 + "#", "1" * 240 + "z"),
+])
+def test_run_whose_lookahead_needs_a_letter_keeps_the_letter_probe(pat, probe):
+    """A run the rule matches nowhere was keyed without its terminator, so
+    every terminator collapsed onto the first one, `!`, which the lookahead
+    refuses at once. These were accepted, yet re.sub over 30 spaces or
+    digits before a word takes about a second, growing ~n^7."""
+    assert probe in g._synthetic_fixtures(pat)
+    with pytest.raises(ValueError):
+        g.validate([("r", pat, "")], timeout=1.5)
+
+
+@pytest.mark.parametrize("pat", [r"(\d+)\s*%", r"\s+([,.!?])", r"(\d+)\s*Uhr\b"])
+def test_ordinary_rule_probes_its_terminators_once(pat):
+    """Keying on the terminator must not split terminators the rule cannot
+    tell apart: `Prozent`'s `z` (in _NUMBERS_RULES) never meets a digit run's
+    end, and neither does a `\\b` behind `Uhr`."""
+    assert len(g._synthetic_fixtures(pat)) == 1
+    g.validate([("r", pat, "")])
+
+
+@pytest.mark.parametrize("pat, probe", [
     (r"\d+" * 20 + r"(?:\W|$)", "1" * 240 + "z"),
     (r"\s+" * 20 + r"(?:[^\w\s]|$)", " " * 240 + "z"),
 ])
