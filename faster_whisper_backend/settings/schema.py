@@ -1605,6 +1605,34 @@ class AdminConfig(BaseModel):
             )
         return self
 
+    # The live-dictation silence gates only work as a pair with outer:
+    # inner >= outer stretches the commit wait, and a hard break that is on
+    # but <= outer breaks after EVERY utterance (the idle-silence clock
+    # survives the finalize). streaming/routes repairs client values only;
+    # server values are never adjusted, so the admin's pair is refused here.
+    # On SAVE only, and only by a save touching the pair (config_store sets
+    # silence_pair_check to the touched keys): at load a failure drops every
+    # override.
+    @model_validator(mode="after")
+    def _validate_silence_gates(self, info: ValidationInfo) -> "AdminConfig":
+        touched = (info.context or {}).get("silence_pair_check") or ()
+        if not touched:
+            return self
+        outer_f = "STREAMING_VAD_OUTER_SILENCE_MS"
+        outer = int(_effective(self, outer_f, info=info))
+        for fld, bad, want, why in (
+                ("STREAMING_VAD_INNER_SILENCE_MS", lambda v: v >= outer,
+                 f"below {outer} ms", "every commit would wait longer"),
+                ("STREAMING_HARD_BREAK_SILENCE_MS", lambda v: 0 < v <= outer,
+                 f"0 (off) or above {outer} ms",
+                 "every dictated sentence would start a new document")):
+            v = int(_effective(self, fld, info=info))
+            if (fld in touched or outer_f in touched) and bad(v):
+                raise ValueError(
+                    f"{fld} {v} ms does not fit {outer_f} {outer} ms ({why}) "
+                    f"— set {fld} to {want}, or change {outer_f}")
+        return self
+
     @model_validator(mode="after")
     def _validate_custom_template(self, info: ValidationInfo) -> "AdminConfig":
         family = _effective(self, "TRANSLATION_PROMPT_FAMILY", "auto", info=info)

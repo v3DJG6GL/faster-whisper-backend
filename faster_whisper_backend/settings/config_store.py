@@ -410,6 +410,10 @@ def with_env_model_overrides(model_overrides: Any) -> Any:
 # A save touching any of these runs schema's __Host-/__Secure- cookie check.
 _COOKIE_PREFIX_KEYS = ("SESSION_COOKIE_NAME", "SESSION_CSRF_COOKIE_NAME",
                        "SESSION_COOKIE_SECURE")
+# A save touching any of these runs schema's live-dictation silence-pair check.
+_SILENCE_PAIR_KEYS = ("STREAMING_VAD_INNER_SILENCE_MS",
+                      "STREAMING_VAD_OUTER_SILENCE_MS",
+                      "STREAMING_HARD_BREAK_SILENCE_MS")
 
 
 def _unreadable_overrides_error(path: str, why: str,
@@ -528,9 +532,13 @@ def save_overrides(
             context["guard_slugs"] = frozenset(guard_slugs)
         # Same scoping for the __Host-/__Secure- cookie check: a name stored
         # before that check existed (or hand-edited) must not 422 a save of
-        # unrelated keys. A None (revert) still touches the key.
+        # unrelated keys. A None (revert) still touches the key. Likewise
+        # the live-dictation silence pairs, scoped to the touched keys.
         if any(k in payload for k in _COOKIE_PREFIX_KEYS):
             context["cookie_prefix_check"] = True
+        silence_keys = frozenset(k for k in _SILENCE_PAIR_KEYS if k in payload)
+        if silence_keys:
+            context["silence_pair_check"] = silence_keys
         if "TRUSTED_ORIGINS" in payload or "CORS_ALLOW_ORIGINS" in payload:
             context["strict_origins"] = True   # schema._origin_entry
         # A stored or submitted PIPELINE_RULES of [] leaves no valid slug: a
@@ -570,14 +578,14 @@ def save_overrides(
             # drops EVERY override on a failure. A file that is consistent only
             # thanks to an env pin would be written and then thrown away, so
             # it must also pass the bare check. The regex guard already ran,
-            # and the cookie-prefix check is save-only (load never runs it),
-            # so re-running it without the env-pinned Secure flag would
-            # refuse a cookie that IS Secure.
+            # and the cookie-prefix and silence-pair checks are save-only
+            # (load never runs them), so re-running them without the env pins
+            # would refuse a cookie that IS Secure or a pair that DOES fit.
             settings_schema.AdminConfig.model_validate(merged, context={
                 k: v for k, v in context.items()
                 if k not in ("env_effective", "guard_regex", "guard_slugs",
                              "cookie_prefix_check", "empty_rules_known",
-                             "strict_origins")})
+                             "strict_origins", "silence_pair_check")})
         to_write = validated.model_dump(exclude_none=True, mode="json")
 
         atomic_json.atomic_write_json(to_write, path, sort_keys=True, tmp_prefix=".config.local.")

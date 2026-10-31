@@ -181,6 +181,24 @@ def test_prefixed_cookie_name_needs_the_secure_flag():
     _ok(SESSION_COOKIE_NAME="__Host-s")
 
 
+def test_silence_gates_must_fit_outer_on_save():
+    # Outer 6000 with the default hard break 5000 broke after every dictated
+    # sentence; inner 1500 vs the default outer 1200 stretched every commit.
+    # Refused on save only: at load a failure would drop every override.
+    def save(**fields):
+        return settings_schema.AdminConfig.model_validate(
+            fields, context={"silence_pair_check": frozenset(fields)})
+    for bad in ({"STREAMING_VAD_OUTER_SILENCE_MS": 6000},
+                {"STREAMING_VAD_INNER_SILENCE_MS": 1500},
+                {"STREAMING_HARD_BREAK_SILENCE_MS": 1200}):
+        with pytest.raises(ValidationError, match="does not fit"):
+            save(**bad)
+        _ok(**bad)
+    save(STREAMING_VAD_OUTER_SILENCE_MS=6000, STREAMING_HARD_BREAK_SILENCE_MS=0)
+    save(STREAMING_VAD_OUTER_SILENCE_MS=6000,
+         STREAMING_HARD_BREAK_SILENCE_MS=7000)
+
+
 # ---------------------------------------------------------------------------
 # Patterns / literals
 # ---------------------------------------------------------------------------
@@ -1480,6 +1498,25 @@ def test_save_overrides_stored_prefixed_cookie_blocks_only_cookie_saves(tmp_path
         cs.save_overrides({"SESSION_COOKIE_NAME": "__Host-s"}, str(p))
     # Saving the fix itself goes through.
     cs.save_overrides({"SESSION_COOKIE_SECURE": True}, str(p))
+
+
+def test_save_overrides_silence_pair_checked_on_save_not_load(tmp_path,
+                                                              monkeypatch):
+    """A save of outer 6000 against the default hard break 5000 is refused,
+    but the same pair already on disk still loads and blocks only saves that
+    touch the pair."""
+    monkeypatch.setattr(cs, "_env_effective_values", lambda: {})
+    p = tmp_path / "config.local.json"
+    with pytest.raises(ValidationError, match="STREAMING_HARD_BREAK_SILENCE_MS"):
+        cs.save_overrides({"STREAMING_VAD_OUTER_SILENCE_MS": 6000}, str(p))
+    assert not p.exists()
+    p.write_text(json.dumps({"STREAMING_VAD_OUTER_SILENCE_MS": 6000}),
+                 encoding="utf-8")
+    assert cs.load_overrides(str(p)) == {"STREAMING_VAD_OUTER_SILENCE_MS": 6000}
+    cs.save_overrides({"BEAM_SIZE": 3}, str(p))
+    with pytest.raises(ValidationError):
+        cs.save_overrides({"STREAMING_HARD_BREAK_SILENCE_MS": 4000}, str(p))
+    cs.save_overrides({"STREAMING_HARD_BREAK_SILENCE_MS": 0}, str(p))
 
 
 def test_save_overrides_invalid_raises(tmp_path):
