@@ -1294,6 +1294,31 @@ def test_lookbehind_rule_without_an_explosive_part_is_accepted():
     g.validate([("r", r"(?<=Komma )(\d+)", "")])
 
 
+@pytest.mark.parametrize("lead_pat, lead", [
+    ("x{65}", "x" * 65),
+    ("x{70}", "x" * 70),
+    ("Komma " * 11, "Komma " * 11),
+], ids=["x65", "x70", "Komma11"])
+def test_run_behind_a_long_lead_is_led_by_all_of_it(lead_pat, lead):
+    """The lead was cut at the chained witness's 64 characters, so a longer
+    mandatory one matched no led probe and none reached the run."""
+    probe = lead + " " * g._SYNTH_RUN
+    assert any(s.startswith(probe)
+               for s in g._synthetic_fixtures(lead_pat + r"\s*#"))
+
+
+def test_run_behind_a_long_lead_is_rejected():
+    """`x{65}` (or "Komma " x11) in front of `\\s*` x7 `#` was accepted while
+    `x{64}` was refused, yet re.sub over the lead and 40 spaces takes 0.5 s,
+    growing ~n^6."""
+    with pytest.raises(ValueError):
+        g.validate([("r", "x{65}" + r"\s*" * 7 + "#", "")], timeout=1.5)
+
+
+def test_long_lead_leaves_an_ordinary_rules_probe_alone():
+    assert g._synthetic_fixtures(r"(\d+)\s*(\d*)\s*Euro") == ["1" * g._SYNTH_RUN + "#"]
+
+
 @pytest.mark.parametrize("pat", [r"\s+$", r"\s+([.,!?])", r"(\w+)\W", r"(\d+)\s*Uhr"])
 def test_ordinary_rule_keeps_its_terminated_probe(pat):
     assert g._synthetic_fixtures(pat)[0].endswith("#")

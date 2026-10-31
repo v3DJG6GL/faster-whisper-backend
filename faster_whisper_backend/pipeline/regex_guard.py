@@ -150,6 +150,11 @@ _CHAIN_CAP = 4096
 # so one extra probe costs about one extra fixture pass for a linear rule (a
 # polynomial one pays more: _SYNTH_BUDGET).
 _SYNTH_RUN = 240
+# Longest text in front of the run the synthetic probe leads it with (see
+# _lead_pattern), well past the 64 characters a chained witness is cut at: a
+# mandatory lead it cut short (`x{65}\s*…#`) matched no probe, so none
+# reached the run behind it.
+_SYNTH_LEAD = 4 * _SYNTH_RUN
 # Characters tried as the terminator that forces the engine to exhaust its
 # split search (which ones are probed: see _synthetic_fixtures).
 _SYNTH_TERMINATORS = "#!@~%"
@@ -1341,7 +1346,7 @@ def _lead_pattern(prefix: str, depth: int = 0) -> str:
             atom = opening + _lead_pattern(group, depth + 1) + ")"
         if q[:1] == "{" and not q.rstrip("?+").endswith(",}"):
             lo = q[1:].split(",")[0].rstrip("}?+")
-            out.append(atom * min(int(lo) if _ascii_digits(lo) else 0, 64))
+            out.append(atom * min(int(lo) if _ascii_digits(lo) else 0, _SYNTH_LEAD))
         else:
             out.append(atom + q)
         i = max(k, j)
@@ -1426,7 +1431,7 @@ def _synthetic_fixtures(pat: str) -> "list[str]":
         # (`Komma\s*|\s*…#`), and a lead only the run's own character supplies
         # (`1\d*…1`, `\r\n\s*…#`) leaves its siblings unled.
         try:
-            lead = _witness(_lead_pattern(prefix)) if prefix else ""
+            lead = _witness(_lead_pattern(prefix), width=_SYNTH_LEAD) if prefix else ""
         except Exception:  # noqa: BLE001 - best effort: probe the bare run
             lead = ""
         terms = dict.fromkeys([
@@ -1555,7 +1560,7 @@ def _char_atoms(parsed) -> "tuple[list, list, bool] | None":
         return None
 
 
-def _witness(pat: str, depth: int = 0) -> str:
+def _witness(pat: str, depth: int = 0, width: int = 64) -> str:
     """A short string ``pat`` plausibly matches, or "" if none can be built.
 
     Used to keep the CHAINED probe reachable: an entry whose pattern matches
@@ -1570,12 +1575,13 @@ def _witness(pat: str, depth: int = 0) -> str:
     few wasted characters in a probe input; it can never reject anything by
     itself, because the chained probe's only verdict is the parent's timeout.
     """
-    return _witnesses(pat, depth)[0]
+    return _witnesses(pat, depth, width=width)[0]
 
 
-def _witnesses(pat: str, depth: int = 0, limit: int = 16) -> "list[str]":
+def _witnesses(pat: str, depth: int = 0, limit: int = 16,
+               width: int = 64) -> "list[str]":
     """Up to ``limit`` witnesses for ``pat`` (at least one, maybe ""), each at
-    most 64 characters: one per top-level alternative and per alternative of
+    most ``width`` characters: one per top-level alternative and per alternative of
     every nested group, combined. The first is ``_witness``'s — every first
     alternative. Built the same way: one representative character per atom,
     a repeat written three times, optional atoms omitted."""
@@ -1592,16 +1598,17 @@ def _witnesses(pat: str, depth: int = 0, limit: int = 16) -> "list[str]":
         char, group, j = _next_atom(pat, i)
         repeats, _atomic, k, _variable = _read_quantifier(pat, j)
         optional = k > j and not repeats  # `?` / `{0,1}` — leave it out
-        if not optional and any(len(w) < 64 for w in cur):
+        if not optional and any(len(w) < width for w in cur):
             if group is not None:
-                pieces = _witnesses(group, depth + 1, limit) if depth < 4 else []
+                pieces = (_witnesses(group, depth + 1, limit, width)
+                          if depth < 4 else [])
             else:
                 pieces = [char] if char else []
             if pieces:
                 cur = [w + p * (3 if repeats else 1) for w in cur for p in pieces][:limit]
         i = max(k, j)
     out.extend(cur)
-    return list(dict.fromkeys(w[:64] for w in out))[:limit]
+    return list(dict.fromkeys(w[:width] for w in out))[:limit]
 
 
 def _chain_advance(rx, pattern: str, replacement: str, chained: str) -> str:
