@@ -846,12 +846,16 @@ def validate_binding(raw: Any, previous: Any = None) -> dict[str, Any]:
     profile reference / unknown pipeline slug."""
     if not isinstance(raw, dict):
         raise ValueError("config must be a JSON object")
-    overrides = raw.get("overrides") or {}
+    # Default only on None: a falsy wrong type ([] / "" / 0) must reach the
+    # type checks, not pass as "empty" and wipe the stored overrides / locks.
+    overrides = raw.get("overrides")
+    if overrides is None:
+        overrides = {}
     if not isinstance(overrides, dict):
         raise ValueError("config.overrides must be a JSON object")
-    locks = raw.get("locks") or []
+    locks = raw.get("locks")
     blob = dict(overrides)
-    if locks:
+    if locks is not None and locks != []:
         blob["locks"] = locks
     try:
         direct = settings_schema.OverrideProfile.model_validate(blob).model_dump(

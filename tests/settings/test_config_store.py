@@ -1220,6 +1220,25 @@ def test_binding_save_keeps_a_stored_slug_a_rules_edit_removed(monkeypatch):
         cs.validate_binding({"overrides": {"PIPELINE_RULES_EXCLUDE": ["x"]}})
 
 
+@pytest.mark.parametrize("bad", [[], "", 0, False])
+def test_binding_refuses_a_falsy_wrong_type_for_overrides(bad):
+    # A falsy non-object must be refused like a non-empty one, not pass as
+    # "empty" and wipe the key's stored direct overrides.
+    with pytest.raises(ValueError, match="config.overrides must be a JSON object"):
+        cs.validate_binding({"overrides": bad})
+
+
+@pytest.mark.parametrize("bad", ["", 0, False, {}])
+def test_binding_refuses_a_falsy_wrong_type_for_locks(bad):
+    with pytest.raises(ValueError, match="locks"):
+        cs.validate_binding({"overrides": {}, "locks": bad})
+
+
+def test_binding_defaults_missing_or_null_overrides_and_locks_to_empty():
+    for raw in ({}, {"overrides": None, "locks": None}, {"locks": []}):
+        assert cs.validate_binding(raw)["direct"] == {}
+
+
 def test_removing_the_local_rules_copy_refuses_refs_it_would_strand(
         tmp_path, monkeypatch):
     # Resetting PIPELINE_RULES makes the factory list canonical; a stored
