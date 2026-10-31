@@ -145,6 +145,12 @@ _SYNTH_RUN = 240
 _SYNTH_TERMINATORS = "#!@~%"
 # Word-character terminators, for a rule whose tail matches every one above.
 _SYNTH_LETTERS = "zq"
+# Short-run length each candidate probe is first matched at, to drop the ones
+# the rule treats like an earlier candidate (see _synthetic_fixtures). Short
+# enough that even an explosive rule screens in milliseconds; raised to the
+# pattern's minimum match width (+2), up to the max, so it can match at all.
+_SYNTH_SCREEN = 8
+_SYNTH_SCREEN_MAX = 16
 # What a shorthand escape can match, for the synthetic probe only. `\W` gets a
 # control character no rule writes literally: as `#` it was also the attack
 # shape's own terminator, so `\W*\W*…#` matched at once on its run of `#`.
@@ -1304,9 +1310,16 @@ def _synthetic_fixtures(pat: str) -> "list[str]":
     match on its own is added for a rule that eats the others (`[^!]`), the
     first unwritten one it cannot match non-empty for a rule that eats one
     and empty-matches the rest (`[!-/]|$`), and a letter for a rule that
-    eats every punctuation mark and the end of the text (`\\W|$`). An
-    extra probe only adds a chance to catch a slow rule: the call site times
-    them, a fast rule passes every one in microseconds.
+    eats every punctuation mark and the end of the text (`\\W|$`).
+
+    Not every candidate is probed: the child times the whole entry against ONE
+    budget, so ~30 full runs of an ordinary polynomial rule (`(\\d+)\\s*(\\d*)`)
+    used up its allowance and refused it. Each candidate is first matched as a
+    SHORT run (_SYNTH_SCREEN), and only the first candidate per distinct
+    outcome (the spans the rule matches) gets the full-length probe: two runs
+    the rule treats the same way at every position cost the same. An ordinary
+    rule matches none of them and is probed once; `\\d*…[1-8]` matches a `2`
+    run but not a `9` one, so both are kept.
     """
     import re
 
@@ -1317,6 +1330,17 @@ def _synthetic_fixtures(pat: str) -> "list[str]":
         return []
     if not char:
         return []
+    # The short run must be long enough for the rule to match at all
+    # (`(\d+)` x7 then `1` needs 8 characters) or every candidate looks alike.
+    try:
+        try:
+            import re._parser as _reparser
+        except ImportError:  # pragma: no cover - Python < 3.11
+            import sre_parse as _reparser
+        width = _reparser.parse(pat).getwidth()[0]
+    except Exception:  # noqa: BLE001 - width analysis is best effort
+        width = 0
+    screen = min(max(_SYNTH_SCREEN, width + 2), _SYNTH_SCREEN_MAX)
     family = next((f for f in _RUN_FAMILIES if char in f), "")
     terms = dict.fromkeys([
         next((t for t in _SYNTH_TERMINATORS if t not in pat), "#"),
@@ -1332,7 +1356,12 @@ def _synthetic_fixtures(pat: str) -> "list[str]":
         next(t for t in _SYNTH_LETTERS if t != char),
         "",
     ])
-    return [c * _SYNTH_RUN + t for c in dict.fromkeys(char + family) for t in terms]
+    probes: dict = {}
+    for c in dict.fromkeys(char + family):
+        for t in terms:
+            outcome = tuple(m.span() for m in rx.finditer(c * screen + t))
+            probes.setdefault(outcome, c * _SYNTH_RUN + t)
+    return list(probes.values())
 
 
 def _witness(pat: str, depth: int = 0) -> str:

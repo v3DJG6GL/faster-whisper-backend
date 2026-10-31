@@ -794,7 +794,7 @@ def test_shorthand_run_ending_in_an_escaped_representative_is_rejected(pat, writ
     """Whether the rule writes the run character (or the sibling replacing
     it) read the raw text, so an escaped space or tab went unseen: the run
     stayed spaces / became tabs and the escape matched it at once."""
-    assert "\n" * g._SYNTH_RUN + "#" in g._synthetic_fixtures(pat)
+    assert any(not set(s) & set(written) for s in g._synthetic_fixtures(pat))
     with pytest.raises(ValueError):
         g.validate([("r", pat, "")], timeout=1.5)
 
@@ -1112,7 +1112,7 @@ def test_run_that_one_probe_choice_misses_is_rejected(pat, probe):
     another branch consumes, a bare run a trailing `.` ends on. These were
     accepted, yet re.sub over a run of ~40 such characters takes seconds,
     growing ~n^7. The probes are a union now."""
-    assert probe in g._synthetic_fixtures(pat)
+    assert any(s.startswith(probe) for s in g._synthetic_fixtures(pat))
     with pytest.raises(ValueError):
         g.validate([("r", pat, "")], timeout=1.5)
 
@@ -1155,3 +1155,20 @@ def test_run_whose_tail_eats_every_union_terminator_is_rejected(pat, probe):
     assert probe in g._synthetic_fixtures(pat)
     with pytest.raises(ValueError):
         g.validate([("r", pat, "")], timeout=1.5)
+
+
+_NUMBERS_RULES = [
+    ("rule 'numbers' entry 1", r"(\d+)[.,]?(\d*)\s*(?:Prozent|%)", r"\1,\2 %"),
+    ("rule 'numbers' entry 2", r"(\d+)\s*(\d*)\s*Euro", r"\1\2 €"),
+]
+
+
+def test_ordinary_polynomial_rules_are_probed_once_and_accepted():
+    """The union probed every digit with every terminator as a full 240-char
+    run, ~30 per entry against a budget sized for one, so these two ordinary
+    rules (polynomial on a digit run no transcript holds) were refused as
+    "likely catastrophic backtracking". Runs the rule treats alike at every
+    position are probed once."""
+    for _name, pat, _repl in _NUMBERS_RULES:
+        assert len(g._synthetic_fixtures(pat)) == 1
+    g.validate(_NUMBERS_RULES)
