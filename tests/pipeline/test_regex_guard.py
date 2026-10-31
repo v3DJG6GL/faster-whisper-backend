@@ -1188,3 +1188,23 @@ def test_run_no_candidate_matches_keeps_the_run_the_rule_starts_on(pat, probe):
     assert probe in g._synthetic_fixtures(pat)
     with pytest.raises(ValueError):
         g.validate([("r", pat, "")], timeout=1.5)
+
+
+@pytest.mark.parametrize("pat, probe", [
+    (r"\d+" * 20 + r"(?:\W|$)", "1" * 240 + "z"),
+    (r"\s+" * 20 + r"(?:[^\w\s]|$)", " " * 240 + "z"),
+])
+def test_rule_wider_than_the_short_run_keeps_the_terminator_it_refuses(pat, probe):
+    """The short run was capped at 16 characters, so a rule needing 20 matched
+    no candidate and only the first terminator, which its tail eats at once,
+    was probed. These were accepted, yet re.sub over 26 digits or spaces
+    before a letter takes 3 s, and over 30 more than a minute."""
+    assert probe in g._synthetic_fixtures(pat)
+    with pytest.raises(ValueError):
+        g.validate([("r", pat, "")], timeout=1.5)
+
+
+def test_wide_ordinary_rule_is_probed_once_and_accepted():
+    pat = r"(\d+)\s*(\d*)\s*Euro und Cent Betrag"
+    assert len(g._synthetic_fixtures(pat)) == 1
+    g.validate([("r", pat, "")])

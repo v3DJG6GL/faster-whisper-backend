@@ -148,9 +148,10 @@ _SYNTH_LETTERS = "zq"
 # Short-run length each candidate probe is first matched at, to drop the ones
 # the rule treats like an earlier candidate (see _synthetic_fixtures). Short
 # enough that even an explosive rule screens in milliseconds; raised to the
-# pattern's minimum match width (+2), up to the max, so it can match at all.
+# pattern's minimum match width (+2) so it can match at all: a wider rule
+# matched no capped screen run, so a run whose terminator it accepts at once
+# stood in for the one it splits every way.
 _SYNTH_SCREEN = 8
-_SYNTH_SCREEN_MAX = 16
 # What a shorthand escape can match, for the synthetic probe only. `\W` gets a
 # control character no rule writes literally: as `#` it was also the attack
 # shape's own terminator, so `\W*\W*…#` matched at once on its run of `#`.
@@ -1344,7 +1345,7 @@ def _synthetic_fixtures(pat: str) -> "list[str]":
         width = parsed.getwidth()[0]
     except Exception:  # noqa: BLE001 - width analysis is best effort
         parsed, width = None, 0
-    screen = min(max(_SYNTH_SCREEN, width + 2), _SYNTH_SCREEN_MAX)
+    screen = min(max(_SYNTH_SCREEN, width + 2), _SYNTH_RUN)
     atoms = _char_atoms(parsed)
     family = next((f for f in _RUN_FAMILIES if char in f), "")
     terms = dict.fromkeys([
