@@ -5,8 +5,7 @@ Endpoints (all admin-only):
   GET    /settings/api-keys                       HTML page
   GET    /settings/api-keys/api/users             list users + key counts
   POST   /settings/api-keys/api/users             { username, is_admin }
-  DELETE /settings/api-keys/api/users/{uid}       soft-revoke (cascades to keys,
-                                                  deletes synced settings)
+  DELETE /settings/api-keys/api/users/{uid}       soft-revoke (cascades to keys)
   GET    /settings/api-keys/api/users/{uid}/keys  list keys for one user
   POST   /settings/api-keys/api/users/{uid}/keys  { label }   -> show-once raw key
   DELETE /settings/api-keys/api/users/{uid}/keys/{kid}        soft-revoke
@@ -29,7 +28,6 @@ import contextlib
 import json
 import logging
 import re
-import sqlite3
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
@@ -253,18 +251,6 @@ def revoke_user_api(uid: str) -> JSONResponse:
         raise HTTPException(
             status.HTTP_409_CONFLICT,
             f"{e} — create another admin first",
-        )
-    # The revoked user drops out of list_users, taking the synced-settings
-    # drawer (the only Delete for that blob) with it, and nothing un-revokes
-    # — so remove the server copy now, or it (possibly carrying the client's
-    # saved backend API keys) stays on disk unreachable. Best-effort: the
-    # revoke has already happened and must stand.
-    try:
-        client_settings_store.delete(uid)
-    except (client_settings_store.StoreUnavailable, sqlite3.Error) as e:
-        logger.warning(
-            "[api-keys] revoked user=%s but could not delete their synced"
-            " client settings: %s", uid[:8], e,
         )
     return JSONResponse({"ok": True})
 

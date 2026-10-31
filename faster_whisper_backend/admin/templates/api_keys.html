@@ -1153,7 +1153,7 @@
     revBtn.style.marginLeft = 'auto';       // separate the destructive action
     revBtn.onclick = function () {
       if (!confirm('Revoke user "' + u.username +
-          '"? This will also revoke all of their keys and delete their synced settings.')) return;
+          '"? This will also revoke all of their keys.')) return;
       api('DELETE', '/settings/api-keys/api/users/' + encodeURIComponent(u.id))
         .then(function (r) {
           if (r.status === 409) {
