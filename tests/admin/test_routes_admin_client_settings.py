@@ -279,6 +279,40 @@ def test_delete_then_meta_empty(client, make_user_key):
     assert uid not in m["by_user"]
 
 
+def test_revoke_user_deletes_synced_settings(client, make_user_key):
+    """Revoking a user hid their card (and its synced-settings drawer, the
+    only Delete for the blob) for good, but left the blob — possibly holding
+    the client's saved backend API keys — on disk."""
+    from faster_whisper_backend.client_settings import store as client_settings_store
+
+    _admin_uid, admin_key = make_user_key("boss", is_admin=True)
+    uid, key = make_user_key("leaver")
+    _seed(client, {"backends": [{"api_key": "sk-x"}]}, headers=bearer(key))
+    assert client_settings_store.get(uid) is not None
+    r = client.delete(f"{_API}/users/{uid}", headers=bearer(admin_key))
+    assert r.status_code == 200
+    assert r.json() == {"ok": True}
+    assert client_settings_store.get(uid) is None
+    # No stored copy is fine too.
+    uid2, _key2 = make_user_key("never-synced")
+    r = client.delete(f"{_API}/users/{uid2}", headers=bearer(admin_key))
+    assert r.json() == {"ok": True}
+
+
+def test_revoke_user_stands_when_settings_store_unavailable(
+    client, make_user_key, monkeypatch,
+):
+    from faster_whisper_backend.auth import api_keys_store
+    from faster_whisper_backend.client_settings import store as client_settings_store
+
+    _admin_uid, admin_key = make_user_key("boss", is_admin=True)
+    uid, _key = make_user_key("leaver")
+    monkeypatch.setattr(client_settings_store, "_conn", None)
+    r = client.delete(f"{_API}/users/{uid}", headers=bearer(admin_key))
+    assert r.status_code == 200
+    assert api_keys_store.get_user(uid)["revoked_ts"] is not None
+
+
 def test_open_mode_sentinel_manageable(client):
     """The "(open-mode)" row belongs to no listed user but must stay
     exportable/deletable — otherwise a blob stored before lockdown would
