@@ -115,13 +115,12 @@ def test_synthetic_probe_targets_the_patterns_own_alphabet():
     """Half two of the fix: a run of the character the first unbounded atom
     matches, terminated by something the pattern cannot match so the engine is
     forced to exhaust the split search."""
-    synth = g._synthetic_fixture(_MANUFACTURED[1][1])
-    assert synth is not None
-    assert synth.startswith("-" * g._SYNTH_RUN)
-    assert synth[-1] not in "-#"
+    synths = g._synthetic_fixtures(_MANUFACTURED[1][1])
+    assert all(s.startswith("-" * g._SYNTH_RUN) for s in synths)
+    assert "-" * g._SYNTH_RUN + "!" in synths
     # A shorthand class resolves too; a pattern with no repetition does not.
-    assert g._synthetic_fixture(r"(\d+),(\d+)").startswith("1" * 10)
-    assert g._synthetic_fixture(r"\bfoo\b") is None
+    assert "1" * g._SYNTH_RUN + "#" in g._synthetic_fixtures(r"(\d+),(\d+)")
+    assert g._synthetic_fixtures(r"\bfoo\b") == []
 
 
 @pytest.mark.parametrize("pat,expected", [
@@ -245,8 +244,7 @@ def test_verbose_mode_whitespace_does_not_steer_the_synthetic_probe():
     from the raw spacing, the probe was 240 spaces the pattern never touches
     and validate() accepted what the unspaced spelling is refused for."""
     pat = r"(?x)- * - * - * - * - * [#]"
-    synth = g._synthetic_fixture(pat)
-    assert synth is not None and synth.startswith("-" * g._SYNTH_RUN)
+    assert "-" * g._SYNTH_RUN + "!" in g._synthetic_fixtures(pat)
     with pytest.raises(ValueError):
         g.validate([("t", pat, "x")])
 
@@ -342,8 +340,8 @@ def test_negated_shorthand_class_gets_a_real_witness():
     import re
     cand = g._class_char(r"\w", True)
     assert cand is not None and re.match(r"[^\w]", cand)
-    synth = g._synthetic_fixture(r"[^\w]+#")
-    assert synth is not None and re.match(r"[^\w]", synth)
+    synths = g._synthetic_fixtures(r"[^\w]+#")
+    assert synths and all(re.match(r"[^\w]", s) for s in synths)
 
 
 def test_scaling_ratio_alone_cannot_reject_a_fast_pattern(monkeypatch):
@@ -751,23 +749,23 @@ def test_non_word_run_ending_in_hash_is_rejected(pat):
     """The `\\W` run was built of `#`, the pattern's own terminator, so the
     synthetic probe matched at once and these were accepted while the same
     pattern ending in `x` was refused."""
-    assert "#" not in g._synthetic_fixture(pat)[:-1]
+    assert "\x01" * g._SYNTH_RUN + "!" in g._synthetic_fixtures(pat)
     with pytest.raises(ValueError):
         g.validate([("r", pat, "")], timeout=1.5)
 
 
-@pytest.mark.parametrize("pat", [
-    r"\d*\d*\d*\d*\d*\d*\d*1",
-    r"(\d+)(\d+)(\d+)(\d+)(\d+)(\d+)(\d+)1",
-    r"\s*\s*\s*\s*\s*\s*\s* ",
-    r"(\s+)(\s+)(\s+)(\s+)(\s+)(\s+)(\s+) ",
+@pytest.mark.parametrize("pat, probe", [
+    (r"\d*\d*\d*\d*\d*\d*\d*1", "2"),
+    (r"(\d+)(\d+)(\d+)(\d+)(\d+)(\d+)(\d+)1", "2"),
+    (r"\s*\s*\s*\s*\s*\s*\s* ", "\t"),
+    (r"(\s+)(\s+)(\s+)(\s+)(\s+)(\s+)(\s+) ", "\t"),
 ])
-def test_shorthand_run_ending_in_its_own_representative_is_rejected(pat):
+def test_shorthand_run_ending_in_its_own_representative_is_rejected(pat, probe):
     """The `\\d` / `\\s` run was built of `1` / a space, the pattern's own
     final literal, so the synthetic probe matched at once and these were
     accepted. A literal run keeps its own character."""
-    assert pat[-1] not in g._synthetic_fixture(pat)
-    assert g._synthetic_fixture("1*" * 7 + "x").startswith("1" * 10)
+    assert probe * g._SYNTH_RUN + "#" in g._synthetic_fixtures(pat)
+    assert g._synthetic_fixtures("1*" * 7 + "x")[0].startswith("1" * 10)
     with pytest.raises(ValueError):
         g.validate([("r", pat, "")], timeout=1.5)
 
@@ -781,7 +779,7 @@ def test_counted_shorthand_run_ending_in_its_own_representative_is_rejected(pat)
     """Telling the `\\d` run from a literal one blanked every `1` of the
     text, the count's too: `\\d{1,}` became `\\d{\\x00,}`, no repeat, so the
     run stayed `1` and these were accepted while `\\d*…1` was refused."""
-    assert "1" not in g._synthetic_fixture(pat)
+    assert "2" * g._SYNTH_RUN + "#" in g._synthetic_fixtures(pat)
     with pytest.raises(ValueError):
         g.validate([("r", pat, "")], timeout=1.5)
 
@@ -796,7 +794,7 @@ def test_shorthand_run_ending_in_an_escaped_representative_is_rejected(pat, writ
     """Whether the rule writes the run character (or the sibling replacing
     it) read the raw text, so an escaped space or tab went unseen: the run
     stayed spaces / became tabs and the escape matched it at once."""
-    assert not set(g._synthetic_fixture(pat)) & set(written)
+    assert "\n" * g._SYNTH_RUN + "#" in g._synthetic_fixtures(pat)
     with pytest.raises(ValueError):
         g.validate([("r", pat, "")], timeout=1.5)
 
@@ -1063,7 +1061,7 @@ def test_negated_class_member_does_not_steer_the_run_off_its_character():
     `[^1\\D]` swapped the `\\d` run to `2`, which the class DOES match: the
     probe matched at once and this was accepted."""
     pat = r"\d*\d*\d*\d*\d*\d*\d*[^1\D]"
-    assert g._synthetic_fixture(pat).startswith("1" * 10)
+    assert "1" * g._SYNTH_RUN + "#" in g._synthetic_fixtures(pat)
     with pytest.raises(ValueError):
         g.validate([("r", pat, "")], timeout=1.5)
 
@@ -1082,24 +1080,46 @@ def test_whitespace_run_has_a_sibling_every_s_mode_matches(pat):
         g.validate([("r", pat, "")], timeout=1.5)
 
 
-@pytest.mark.parametrize("pat", [
-    r"\s*" * 7 + r"\S",
-    r"\d*" * 7 + r"\D",
-    r"\d*" * 7 + r"[^1]",
+@pytest.mark.parametrize("pat, run", [
+    (r"\s*" * 7 + r"\S", " "),
+    (r"\d*" * 7 + r"\D", "1"),
+    (r"\d*" * 7 + r"[^1]", "1"),
 ])
-def test_run_ending_in_a_set_that_matches_the_terminator_is_rejected(pat):
+def test_run_ending_in_a_set_that_matches_the_terminator_is_rejected(pat, run):
     """The terminator was only checked as raw text, so a trailing negated set
     matched the `#` and the probe ended on the first try: these were
     accepted, yet re.sub over a 30-space or 30-digit tail took over a
     second, growing ~n^7."""
-    assert not g._synthetic_fixture(pat).endswith("#")
+    assert run * g._SYNTH_RUN in g._synthetic_fixtures(pat)
+    with pytest.raises(ValueError):
+        g.validate([("r", pat, "")], timeout=1.5)
+
+
+@pytest.mark.parametrize("pat, probe", [
+    (r"\d*" * 7 + r"[1-8]", "9" * 240),
+    (r"\s*" * 7 + r"[\t-\r ]", " " * 240),
+    (r"\s*" * 7 + r"(?=\S)", " " * 240),
+    (r"\d*" * 7 + r"(?=\D)", "1" * 240),
+    (r"\s*" * 7 + r"(?:x|$)|[^\w\s]", " " * 240 + "#"),
+    (r"\s*" * 7 + r"(?:x|\Z)|\S", " " * 240 + "#"),
+    (r"\s*" * 7 + r".", "\n" * 240),
+    (r"\s*" * 7 + r"[^\n]", "\n" * 240),
+    (r"\W*" * 7 + r".", "\n" * 240),
+])
+def test_run_that_one_probe_choice_misses_is_rejected(pat, probe):
+    """One probe string, picked by heuristics, always had a rule that matched
+    it at once: a sibling inside the rule's class range, a `#` a lookahead or
+    another branch consumes, a bare run a trailing `.` ends on. These were
+    accepted, yet re.sub over a run of ~40 such characters takes seconds,
+    growing ~n^7. The probes are a union now."""
+    assert probe in g._synthetic_fixtures(pat)
     with pytest.raises(ValueError):
         g.validate([("r", pat, "")], timeout=1.5)
 
 
 @pytest.mark.parametrize("pat", [r"\s+$", r"\s+([.,!?])", r"(\w+)\W", r"(\d+)\s*Uhr"])
 def test_ordinary_rule_keeps_its_terminated_probe(pat):
-    assert g._synthetic_fixture(pat).endswith("#")
+    assert g._synthetic_fixtures(pat)[0].endswith("#")
     g.validate([("r", pat, "")], timeout=1.5)
 
 
@@ -1114,6 +1134,6 @@ def test_run_ending_in_an_anchor_keeps_its_terminator(pat):
     the end of `#` dropped every terminator: the bare run satisfied the `$`
     at once, so these were accepted, yet re.sub over 100 spaces or dashes
     before a word took 18-25 s."""
-    assert g._synthetic_fixture(pat).endswith("#")
+    assert g._synthetic_fixtures(pat)[0].endswith("#")
     with pytest.raises(ValueError):
         g.validate([("r", pat, "")], timeout=1.5)

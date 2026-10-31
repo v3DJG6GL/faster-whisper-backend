@@ -21,7 +21,7 @@ fast on prose but slow on a long unpunctuated run is caught too.
 
 Two of those probes exist because fixed fixtures alone are not enough:
 
-  * a per-pattern SYNTHETIC run (``_synthetic_fixture``) — the fixed fixtures
+  * a per-pattern SYNTHETIC run (``_synthetic_fixtures``) — the fixed fixtures
     contain no `-`, `n`, `d`, `m`, `k` or `f`, so a pattern built around any of
     those matches nothing in any probe and returns in microseconds however
     explosive it is;
@@ -137,11 +137,11 @@ _SCALE_MIN_REJECT = 5e-3
 # each substitution so the chaining itself can never become the blowup.
 _CHAIN_CAP = 4096
 
-# Synthetic-probe shape (see _synthetic_fixture). Same length as _ADVERSARIAL
+# Synthetic-probe shape (see _synthetic_fixtures). Same length as _ADVERSARIAL
 # so one extra probe costs about one extra fixture pass for a legitimate rule.
 _SYNTH_RUN = 240
 # Characters tried as the terminator that forces the engine to exhaust its
-# split search. The first one the pattern does not mention literally is used.
+# split search (which ones are probed: see _synthetic_fixtures).
 _SYNTH_TERMINATORS = "#!@~%"
 # What a shorthand escape can match, for the synthetic probe only. `\W` gets a
 # control character no rule writes literally: as `#` it was also the attack
@@ -150,13 +150,14 @@ _SHORTHAND_CHARS = {
     "w": "a", "W": "\x01", "d": "1", "D": "a", "s": " ", "S": "a",
     "n": "\n", "t": "\t", "r": "\r", "f": "\f", "v": "\v",
 }
-# Other characters the shorthand behind a `\d` / `\s` run character matches.
-# `\d*\d*…\d*1` ends on its own run character, so a run of `1` matched at
-# once; the first of these the pattern does not mention literally is used
-# instead. Letter runs need none: the prose fixtures already catch `\w*…a`.
-# ASCII whitespace comes before U+2003: under `(?a)` `\s` does not match it,
-# and `[ \t\u2003]` left no sibling, so the run matched nothing / at once.
-_RUN_SIBLINGS = {"1": "234567890", " ": "\t\n\r\f\v\u2003"}
+# Run characters probed together: a run of the first unbounded atom's
+# character is probed with every other member of its family too. A rule's
+# trailing set can match the representative (`\d*…1`, `\d*…[1-8]`,
+# `\s*…[ \t]`, `\s*….`) and so match the run at once; some member it does
+# not match then fails at the end and backtracks. ASCII whitespace comes
+# first: under `(?a)` `\s` does not match U+2003. `\W` takes `\n`, which a
+# trailing `.` does not match.
+_RUN_FAMILIES = ("1234567890", " \t\n\r\f\v\u2003", "\x01\n")
 # Hex escapes and their exact digit counts (``\x2d``, ``\u2013``, ``\U…``).
 _HEX_ESCAPES = {"x": 2, "u": 4, "U": 8}
 
@@ -1280,99 +1281,44 @@ def _first_repeated_char(pat: str, depth: int = 0) -> "str | None":
     return None
 
 
-def _literal_spans(pat: str) -> "list[tuple[int, int, str]]":
-    """``(start, end, char)`` for every character ``pat`` spells literally:
-    a plain character, a member of a non-negated class, or an escape that
-    decodes to ONE character (``\\x20``, ``\\040``, ``\\N{SPACE}``,
-    ``\\t``). A shorthand (``\\d``, ``\\s``, …) is a set, not a literal, and
-    a ``{m,n}`` count is not text the pattern matches: blanking every ``1``
-    of the raw text turned ``\\d{1,}`` into ``\\d{\\x00,}``, no longer a
-    repeat."""
-    spans = []
-    i, n = 0, len(pat)
-    while i < n:
-        c = pat[i]
-        if c == "\\":
-            char, end = _escape_char(pat, i)
-            if char is not None and pat[i + 1] not in "dDsSwW":
-                spans.append((i, end, char))
-            i = end
-        elif c == "[":
-            start, j, negated = _skip_class(pat, i)
-            # A negated class's members are what it does NOT match: as
-            # literals, `[^1\D]` swapped the `1` run to `2`, which it matches.
-            k = j if negated else start
-            while k < j:
-                if pat[k] == "\\":
-                    char, end = _escape_char(pat, k, in_class=True)
-                    if char is not None and pat[k + 1] not in "dDsSwW":
-                        spans.append((k, end, char))
-                    k = end
-                else:
-                    spans.append((k, k + 1, pat[k]))
-                    k += 1
-            i = j + 1
-        elif c == "{":
-            _repeats, _atomic, k, _variable = _read_quantifier(pat, i)
-            if k == i:
-                spans.append((i, i + 1, c))  # a literal `{`
-            i = max(k, i + 1)
-        else:
-            if c not in ".^$*+?()|":
-                spans.append((i, i + 1, c))
-            i += 1
-    return spans
-
-
-def _blank_literal(pat: str, char: str) -> str:
-    """``pat`` with every literal spelling of ``char`` replaced by NUL."""
-    out, last = [], 0
-    for start, end, c in _literal_spans(pat):
-        if c == char:
-            out += [pat[last:start], "\x00"]
-            last = end
-    return "".join(out) + pat[last:]
-
-
-def _synthetic_fixture(pat: str) -> "str | None":
-    """A per-pattern adversarial probe input, or None if none can be built.
+def _synthetic_fixtures(pat: str) -> "list[str]":
+    """Per-pattern adversarial probe inputs, or [] if none can be built.
 
     The fixed fixtures are German prose plus four repetitive runs, and between
     them they contain no `-`, `n`, `d`, `m`, `k` or `f`. A pattern built around
     a character none of them contains matches NOTHING in any probe and returns
     in microseconds however explosive it is. So synthesize the run this
     pattern actually cares about: ~240 repetitions of a character its first
-    unbounded atom matches, plus a terminator the pattern does not mention, so
-    the match is forced to FAIL after exhausting every way of splitting the
-    run — the shape backtracking blows up on. A terminator the pattern
-    consumes on its own (`\\S`, `\\D`, `[^1]` all match `#`) ended the probe
-    on the first try, so it is skipped; with none left the run is probed
-    bare, which the end of the text fails just the same. An EMPTY match does
-    not count: `\\s*…$` matches "" at the end of `#`, and dropping the `#`
-    for it handed the `$` the bare run's end, so the probe matched at once.
+    unbounded atom matches, plus a terminator, so the match is forced to FAIL
+    after exhausting every way of splitting the run — the shape backtracking
+    blows up on.
+
+    A UNION of probes, not one cleverly chosen string: every pick of run
+    character or terminator had a rule that matched it at once (`\\d*…[1-8]`
+    on a `2` run, `…(?=\\S)` or `…|[^\\w\\s]` on `#`, a trailing `.` on the
+    bare run's last space). Each run character of the run's family (`\\d`,
+    `\\s`, `\\W`, see _RUN_FAMILIES) is probed bare and with the first
+    terminator the rule does not write; the first terminator the rule cannot
+    match on its own is added for a rule that eats the others (`[^!]`). An
+    extra probe only adds a chance to catch a slow rule: the call site times
+    them, a fast rule passes every one in microseconds.
     """
     import re
 
     try:
         rx = re.compile(pat)
-        stripped = _strip_comments(_strip_verbose(pat))
-        char = _first_repeated_char(stripped)
-        # Swap only a shorthand's run character: blanking the literal leaves
-        # it in place, while a literal `1*1*…` run must stay a run of `1`.
-        # Decoded, not the raw text: `\x20` or `\t` is a literal too.
-        literals = {c for _start, _end, c in _literal_spans(stripped)}
-        if (char in _RUN_SIBLINGS and char in literals
-                and _first_repeated_char(_blank_literal(stripped, char)) == char):
-            char = next((c for c in _RUN_SIBLINGS[char] if c not in literals), char)
+        char = _first_repeated_char(_strip_comments(_strip_verbose(pat)))
     except Exception:  # noqa: BLE001 - best effort, never fail the save
-        return None
+        return []
     if not char:
-        return None
-    for term in _SYNTH_TERMINATORS:
-        if (term not in pat and term != char
-                and not any(m.end() > m.start() for m in rx.finditer(term))):
-            return char * _SYNTH_RUN + term
-    return char * _SYNTH_RUN
+        return []
+    family = next((f for f in _RUN_FAMILIES if char in f), "")
+    terms = dict.fromkeys([
+        next((t for t in _SYNTH_TERMINATORS if t not in pat), "#"),
+        next((t for t in _SYNTH_TERMINATORS if not rx.search(t)), ""),
+        "",
+    ])
+    return [c * _SYNTH_RUN + t for c in dict.fromkeys(char + family) for t in terms]
 
 
 def _witness(pat: str, depth: int = 0) -> str:
@@ -1679,9 +1625,7 @@ def _probe(checks: list):
         probes = list(_ADVERSARIAL)
         # Per-pattern synthetic run: closes the fixed-alphabet hole above for
         # any character, not just the ones the four fixtures happen to hold.
-        synthetic = _synthetic_fixture(item[0])
-        if synthetic:
-            probes.append(synthetic)
+        probes.extend(_synthetic_fixtures(item[0]))
         # The chained fixture: what this entry is actually handed at match time
         # once its predecessors have rewritten the text. An entry that is
         # harmless on prose but explodes on a long run some EARLIER entry
