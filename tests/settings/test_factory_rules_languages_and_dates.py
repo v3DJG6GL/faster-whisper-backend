@@ -314,10 +314,20 @@ def test_every_separator_of_a_digit_chain_is_tightened(app_module, text, want):
     (" Dosis 2,5, 5 und 10 mg.", "Dosis 2,5, 5 und 10 mg"),
     (" Seiten 3-5, 7-9.", "Seiten 3/5, 7/9"),
     (" Seiten 3 Schrägstrich 5, 7 Schrägstrich 9.", "Seiten 3/5, 7/9"),
+    (" Dosis 0,25, 0,5 mg.", "Dosis 0,25, 0,5 mg"),
+    (" Werte 12,25, 1,5 und 3,0.", "Werte 12,25, 1,5 und 3,0"),
+    (" Dosis 2,5, 5, 10 mg.", "Dosis 2,5, 5, 10 mg"),
+    (" Blutdruck 120/80, 130/85.", "Blutdruck 120/80, 130/85"),
+    (" Seiten 10-12, 14-16.", "Seiten 10/12, 14/16"),
+    (" Dosis 12 Komma 5 mg.", "Dosis 12,5 mg"),
+    (" Dosis 12 , 5 mg.", "Dosis 12,5 mg"),
+    (" Dosis 1 Komma 5, 2 Komma 5 mg.", "Dosis 1,5, 2,5 mg"),
 ])
 def test_a_list_of_decimals_or_ranges_keeps_its_commas(app_module, text, want):
     """The comma is the German decimal mark, so tightening every comma of a
-    chain glued a list Whisper punctuated ("0,5, 1,0" → "0,5,1,0"). Only a
+    chain glued a list Whisper punctuated ("0,5, 1,0" → "0,5,1,0"), and
+    with several digits before the list comma ("0,25, 1,0", "120/80,
+    130/85") the comma arm started again inside the number. Only a
     deployment that keeps Whisper's commas sees it: strip-auto-punctuation
     off."""
     rules = copy.deepcopy(_factory_rules())

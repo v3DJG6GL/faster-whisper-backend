@@ -687,10 +687,10 @@
       "type": "regex-list",
       "entries": [
         {
-          "pattern": "(?<=\\d)\\s*([/\\-])\\s*(?=\\d)|(?<![/\\-])(?<![/\\-]\\s)(\\d)\\s*(,)\\s*(\\d)",
+          "pattern": "(?<=\\d)\\s*([/\\-])\\s*(?=\\d)|(?<![\\d/\\-,])(?<![/\\-]\\s)(?!(?<=,\\s)\\d+,)(\\d+)\\s*(,)\\s*(\\d)",
           "replacement": "\\1\\2\\3\\4",
           "label": "tighten-digit-separators",
-          "note": "Removes spaces around a / , or - between two digits: 12 / 5 → 12/5."
+          "note": "Removes spaces around a / , or - between two digits: 12 / 5 → 12/5. A comma after a decimal, fraction or range is a list comma and keeps its space: 0,25, 1,0 and 120/80, 130/85 stay apart."
         },
         {
           "pattern": "(?<=\\d) +(?=\\d[/\\-])",

@@ -139,12 +139,15 @@ UPGRADED_RULE_ENTRIES: dict[str, tuple[tuple[str, str], tuple[str, str]]] = {
     # not start the next match on it and every second / or - of a chain kept
     # its spaces: "3 / 4 / 2026" → "3/4 / 2026". The new one only looks around
     # the digits of a / or -. A comma still consumes its digits (it is the
-    # German decimal mark) and is skipped right after a / or - number, so a
-    # list like "0,5, 1,0" or "3/5, 7/9" is not glued into one.
+    # German decimal mark), but only from the first digit of a whole number
+    # that is not itself the tail of a decimal, fraction or range, so a list
+    # like "0,25, 1,0" or "120/80, 130/85" is not glued into one. After a
+    # list comma it joins only a dictated "Komma" (a space before the comma):
+    # "1,5, 2 , 5" → "1,5, 2,5", but "2,5, 5, 10" stays.
     "tighten-digit-separators": (
         ('(\\d)\\s*([/,\\-])\\s*(\\d)', '\\1\\2\\3'),
-        ('(?<=\\d)\\s*([/\\-])\\s*(?=\\d)|(?<![/\\-])(?<![/\\-]\\s)'
-         '(\\d)\\s*(,)\\s*(\\d)', '\\1\\2\\3\\4'),
+        ('(?<=\\d)\\s*([/\\-])\\s*(?=\\d)|(?<![\\d/\\-,])(?<![/\\-]\\s)'
+         '(?!(?<=,\\s)\\d+,)(\\d+)\\s*(,)\\s*(\\d)', '\\1\\2\\3\\4'),
     ),
     # Same consumed digit: "3-4-2026" → "3/4-2026", so whether a date kept a
     # hyphen depended on its day or month having one digit.
