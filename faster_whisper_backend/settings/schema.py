@@ -2613,6 +2613,17 @@ class OverrideProfile(_CallTimeOverrideMixin, _StreamingOverrideMixin):
 AdminConfig.model_rebuild()
 
 
+# The free-text fields whose value spans lines (TRANSLATION_GLOSSARY: one
+# "source = target" pair per line, split by the translation engine's
+# splitlines()). Every WebUI editor of them is a <textarea>: a single-line
+# <input> strips the newlines, so the first keystroke would save the pairs
+# joined into one line. Read by admin/routes (global form + per-model pane)
+# and admin/overrides_routes (profile + direct-override editors) — kept here
+# so the overrides router never has to import the heavy admin.routes.
+MULTILINE_TEXT_FIELDS: frozenset[str] = frozenset(
+    {"DEFAULT_PROMPT", "DEFAULT_HOTWORDS", "TRANSLATION_GLOSSARY"})
+
+
 # JSON-schema "type" → widget kind for override_field_meta below.
 _JSON_TYPE_TO_KIND = {
     "integer": "int", "number": "float", "boolean": "bool",

@@ -70,11 +70,10 @@ _MO_FIELD_META_OVERLAY: dict[str, dict[str, Any]] = {
     "REVISION": {"kind": "string", "placeholder": "main | <git-sha>"},
     "DEFAULT_LANGUAGE": {"kind": "string",
                          "placeholder": "e.g. en, de (empty = auto)"},
-    "DEFAULT_PROMPT": {"kind": "textarea"},
-    "DEFAULT_HOTWORDS": {"kind": "textarea"},
-    # One "source = target" pair per line (translation engine splitlines);
-    # a single-line <input> would join the pairs on the first keystroke.
-    "TRANSLATION_GLOSSARY": {"kind": "textarea"},
+    # DEFAULT_PROMPT / DEFAULT_HOTWORDS / TRANSLATION_GLOSSARY: a single-line
+    # <input> would join their lines on the first keystroke.
+    **{name: {"kind": "textarea"}
+       for name in sorted(settings_schema.MULTILINE_TEXT_FIELDS)},
     "NO_SPEECH_THRESHOLD": {"kind": "nullable_float", "step": 0.05},
     "LOG_PROB_THRESHOLD": {"kind": "nullable_float", "step": 0.1},
     "COMPRESSION_RATIO_THRESHOLD": {"kind": "nullable_float", "step": 0.1},
