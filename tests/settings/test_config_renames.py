@@ -150,6 +150,9 @@ _SHIPPED_BEFORE_ENTRY_UPGRADE = {
         "pattern": "[ \\t]+([,.:;!?%\\)\\]\\}])", "replacement": "\\1",
         "label": "space-before-closing-punct",
         "note": "Removes space before closing punctuation: , . : ; ! ? % ) ] }."},
+    "trim-trailing-period": {
+        "pattern": "\\s*\\.+\\s*$", "replacement": "",
+        "label": "trim-trailing-period", "note": ""},
 }
 
 

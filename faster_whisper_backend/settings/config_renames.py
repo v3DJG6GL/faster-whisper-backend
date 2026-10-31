@@ -164,6 +164,16 @@ UPGRADED_RULE_ENTRIES: dict[str, tuple[tuple[str, str], tuple[str, str]]] = {
         ('[ \\t]+([,.:;!?%\\)\\]\\}])', '\\1'),
         ('(?<![ \\t])[ \\t]+([,.:;!?%\\)\\]\\}])', '\\1'),
     ),
+    # Same scan: at every space of a run the old pattern took the rest of the
+    # run and found no dot, so a hallucinated "* * * *" loop (a space run once
+    # strip-stray-symbols deleted the symbols) took quadratic time on
+    # /transcribe (20000 items: 2 s). A match now starts only at the first
+    # space of a run; the output is the same. The text never changed before,
+    # in the single `regex` rule or the strip-whisper-punctuation card either.
+    "trim-trailing-period": (
+        ('\\s*\\.+\\s*$', ''),
+        ('(?<!\\s)\\s*\\.+\\s*$', ''),
+    ),
     # Spanish opening marks: es-punctuation now runs before this rule, so
     # the strip must take an opening ¿/¡ along with its closing mark (an
     # orphaned "¿Qué hora es" otherwise), keeping it only where the closing

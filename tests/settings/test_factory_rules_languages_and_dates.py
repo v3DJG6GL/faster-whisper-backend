@@ -2,8 +2,8 @@
 delete-punct-before-hyphen, the language tags on language-specific rules, the
 Spanish opening-mark rule, the dictation-map → de-dictation-map rename,
 tighten-digit-separators and normalize-digit-range on a digit chain
-(3/4/2026), and capitalize-after-terminator and space-before-closing-punct
-on a long run of paragraph breaks / spaces.
+(3/4/2026), and capitalize-after-terminator, space-before-closing-punct and
+trim-trailing-period on a long run of paragraph breaks / spaces.
 
 2026-09-19: "vom 3.-10 Oktober" left the pipeline as "vom 310 Oktober" —
 final-cleanup deleted ".-" between two numbers. A silently changed date or
@@ -512,3 +512,44 @@ def test_closing_punct_rule_saved_before_june_is_upgraded(tmp_path):
     new = renames.UPGRADED_RULE_ENTRIES["space-before-closing-punct"][1]
     assert [(e["label"], e["pattern"], e["replacement"]) for e in got] == [
         ("space-before-closing-punct", *new)]
+
+
+def _trailing_period_entry(rules):
+    return next(e for r in rules for e in (r.get("entries") or [])
+                if e.get("label") == "trim-trailing-period")
+
+
+@pytest.mark.parametrize("unit, n", [("* ", 40000), ("( ) ", 20000)])
+def test_trim_trailing_period_is_fast_on_a_hallucinated_symbol_loop(app_module, unit, n):
+    """Whisper hallucinates "* * * *" (or "( ) ( )") on silence;
+    strip-stray-symbols deletes the symbols and leaves one long space run.
+    `\\s*\\.+\\s*$` started a match at every space of the run, took the rest
+    of it and found no dot: 40000 spaces took 8 s on /transcribe. A match now
+    starts only at a run's first space."""
+    app_module.cfg.PIPELINE_RULES = copy.deepcopy(_factory_rules())
+    pl_engine.rebuild_caches()
+    t0 = time.perf_counter()
+    out = pl_engine._postprocess_text(" Das war es " + unit * n + "Danke.",
+                                      model_name="", language="de")
+    assert time.perf_counter() - t0 < 1.0
+    assert out == "Das war es Danke"
+
+
+def test_trim_trailing_period_output_is_unchanged():
+    entry = _trailing_period_entry(_factory_rules())
+    old = renames.UPGRADED_RULE_ENTRIES["trim-trailing-period"][0]
+    for s in ("Wert 5.", "gut. . . ", "x. .", "a  \t.\n", "z.B. morgen", " . ", "...",
+              "Ende.\n\n", "a b", "  ", "1.5 mg .\t.", "Satz. Zwei"):
+        assert re.sub(entry["pattern"], entry["replacement"], s) == re.sub(*old, s), s
+
+
+def test_stored_old_trailing_period_entry_is_upgraded_once():
+    rules = copy.deepcopy(_factory_rules())
+    old_pat, old_rep = renames.UPGRADED_RULE_ENTRIES["trim-trailing-period"][0]
+    e = _trailing_period_entry(rules)
+    e["pattern"], e["replacement"] = old_pat, old_rep
+    raw = {"PIPELINE_RULES": rules}
+    assert renames.upgrade_rule_entries(raw) == [
+        "strip-trailing-period/trim-trailing-period"]
+    assert raw["PIPELINE_RULES"] == _factory_rules()
+    assert renames.upgrade_rule_entries(raw) == []
