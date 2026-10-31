@@ -1324,14 +1324,19 @@ def _lead_pattern(prefix: str, depth: int = 0) -> str:
     """``prefix`` (the text _first_repeat finds in front of the run) with
     each bounded count written out at its minimum, so the synthetic run's
     lead is ``_witness`` of text a transcript holds there: _witness writes
-    every repeat three times, and `Euro{1,2}\\s*…#` matches no `Eurooo`."""
+    every repeat three times, and `Euro{1,2}\\s*…#` matches no `Eurooo`.
+    A positive lookbehind becomes the group it reads back over: _witness
+    drops a lookaround, so `(?<=Komma )\\s*…#` got no lead and no probe
+    reached the run behind the word. A lookahead stays: it reads the run."""
     out: list[str] = []
     i = 0
     while i < len(prefix):
         _char, group, j = _next_atom(prefix, i)
         k = _read_quantifier(prefix, j)[2]
         atom, q = prefix[i:j], prefix[j:k]
-        if group is not None and depth < 4:
+        if atom.startswith("(?<=") and atom.endswith(")") and depth < 4:
+            atom = "(?:" + _lead_pattern(atom[4:-1], depth + 1) + ")"
+        elif group is not None and depth < 4:
             opening = atom[:len(atom) - len(group) - 1]
             atom = opening + _lead_pattern(group, depth + 1) + ")"
         if q[:1] == "{" and not q.rstrip("?+").endswith(",}"):

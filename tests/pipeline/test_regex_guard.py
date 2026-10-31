@@ -1254,6 +1254,24 @@ def test_ordinary_rule_with_a_bounded_count_is_accepted(pat):
     g.validate([("r", pat, "")])
 
 
+@pytest.mark.parametrize("pat, probe", [
+    (r"(?<=Komma )" + r"\s*" * 7 + "#", "Komma " + " " * 240),
+    (r"(?<=x)" + r"\d*" * 7 + "#", "x" + "1" * 240),
+])
+def test_run_behind_a_lookbehind_is_rejected(pat, probe):
+    """The lead dropped a lookbehind like any lookaround, so the word it reads
+    back over led no probe and the bare run never satisfied it. These were
+    accepted, yet re.sub over "Komma " and 45 spaces takes about a second,
+    growing ~n^7, like the refused `Komma\\s*…#`."""
+    assert any(s.startswith(probe) for s in g._synthetic_fixtures(pat))
+    with pytest.raises(ValueError):
+        g.validate([("r", pat, "")], timeout=1.5)
+
+
+def test_lookbehind_rule_without_an_explosive_part_is_accepted():
+    g.validate([("r", r"(?<=Komma )(\d+)", "")])
+
+
 @pytest.mark.parametrize("pat", [r"\s+$", r"\s+([.,!?])", r"(\w+)\W", r"(\d+)\s*Uhr"])
 def test_ordinary_rule_keeps_its_terminated_probe(pat):
     assert g._synthetic_fixtures(pat)[0].endswith("#")
