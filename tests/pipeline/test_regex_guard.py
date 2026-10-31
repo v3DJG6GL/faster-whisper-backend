@@ -1435,6 +1435,32 @@ def test_run_whose_lookahead_needs_a_letter_keeps_the_letter_probe(pat, probe):
         g.validate([("r", pat, "")], timeout=1.5)
 
 
+@pytest.mark.parametrize("pat, probe", [
+    (r"Komma(?=\s+[a-z])" + r"\s*" * 7 + "#", "Komma" + " " * 240 + "z"),
+    (r"Komma (?=\s+[a-z])" + r"\s*" * 7 + "#", "Komma" + " " * 241 + "z"),
+    (r"x(?=\d+z)" + r"\d*" * 7 + "#", "x" + "1" * 240 + "z"),
+])
+def test_led_run_whose_lookahead_needs_a_letter_keeps_the_letter_probe(pat, probe):
+    """The terminator check was never told about the lead: the lead's `K` (or
+    `x`) refuses the run character, so no terminator looked reachable on the
+    led run and only `!` was probed, which the lookahead refuses at once.
+    These were accepted, yet re.sub over "Komma" and 40 spaces before a word
+    takes 0.5 s, growing ~n^6."""
+    assert probe in g._synthetic_fixtures(pat)
+
+
+def test_led_run_whose_lookahead_needs_a_letter_is_rejected():
+    with pytest.raises(ValueError):
+        g.validate([("r", r"Komma(?=\s+[a-z])" + r"\s*" * 7 + "#", "")], timeout=1.5)
+
+
+@pytest.mark.parametrize("pat, count", [
+    (r"Komma\s*(\d+)", 2), (r"(\d{1,2})\s*Uhr", 3), (r"Euro\s*(\d+)", 2),
+])
+def test_lead_adds_no_terminator_probe_to_an_ordinary_rule(pat, count):
+    assert len(g._synthetic_fixtures(pat)) == count
+
+
 @pytest.mark.parametrize("pat", [r"(\d+)\s*%", r"\s+([,.!?])", r"(\d+)\s*Uhr\b"])
 def test_ordinary_rule_probes_its_terminators_once(pat):
     """Keying on the terminator must not split terminators the rule cannot

@@ -1462,26 +1462,30 @@ def _synthetic_fixtures(pat: str) -> "list[str]":
                     outcome = (led,
                                tuple(m.span() for m in
                                      rx.finditer(led + c * screen + t)),
-                               _run_signature(shape, c, t))
+                               _run_signature(shape, c, t, led))
                     probes.setdefault(outcome, led + c * _SYNTH_RUN + t)
     return list(probes.values())
 
 
-def _run_signature(shape, c: str, t: str) -> tuple:
+def _run_signature(shape, c: str, t: str, led: str = "") -> tuple:
     """Which atoms of _char_atoms' ``shape`` accept the run character ``c``
     and which of those that can reach the end of the run accept the
     terminator ``t`` (the raw characters when the atoms are unknown).
 
     A terminator only counts for an atom it can reach: `Prozent`'s `z` sits
     behind a `P` no digit run gets past, so `z` and `#` probe a digit run
-    alike, while `(?=\\d+z)…` gates its backtracking on that very `z`."""
+    alike, while `(?=\\d+z)…` gates its backtracking on that very `z`. The
+    text ``led`` in front of the run gets the atoms that match it past too:
+    `Komma(?=\\s+[a-z])…`'s `K` refuses a space, yet the lead walks it."""
     if shape is None:
         return c, t
     atoms, reach, ends = shape
     run = [a.fullmatch(c) is not None for a in atoms]
+    passed = [ok or any(a.fullmatch(ch) for ch in set(led))
+              for a, ok in zip(atoms, run)]
     return tuple(run), ends and not t, tuple(
         a.fullmatch(t) is not None
-        and any(all(run[j] for j in occ) for occ in occs)
+        and any(all(passed[j] for j in occ) for occ in occs)
         for a, occs in zip(atoms, reach))
 
 
