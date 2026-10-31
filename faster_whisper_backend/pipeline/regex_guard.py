@@ -1279,9 +1279,17 @@ def _first_repeated_char(pat: str, depth: int = 0) -> "str | None":
     pattern backtrack. Best effort by construction: returning None simply
     skips the synthetic probe for that pattern.
     """
-    i = 0
+    return _first_repeat(pat, depth)[0]
+
+
+def _first_repeat(pat: str, depth: int = 0) -> "tuple[str | None, str]":
+    """_first_repeated_char's character, and the pattern text of its branch
+    in front of that atom (`Komma` of `Komma\s*…#`, `m` of `m(-*)…#`)."""
+    i = start = 0
     n = len(pat)
     while i < n:
+        if pat[i] == "|":
+            start = i + 1  # the atom's own branch has nothing before it
         char, group, j = _next_atom(pat, i)
         repeats, _atomic, k, _variable = _read_quantifier(pat, j)
         if repeats:
@@ -1289,15 +1297,15 @@ def _first_repeated_char(pat: str, depth: int = 0) -> "str | None":
                 if depth < 4:
                     found = _first_char(group, depth + 1)
                     if found:
-                        return found
+                        return found, pat[start:i]
             elif char:
-                return char
+                return char, pat[start:i]
         elif group is not None and depth < 4:
-            found = _first_repeated_char(group, depth + 1)
+            found, inner = _first_repeat(group, depth + 1)
             if found:
-                return found
+                return found, pat[start:i] + inner
         i = max(k, j)
-    return None
+    return None, ""
 
 
 def _synthetic_fixtures(pat: str) -> "list[str]":
@@ -1308,7 +1316,8 @@ def _synthetic_fixtures(pat: str) -> "list[str]":
     a character none of them contains matches NOTHING in any probe and returns
     in microseconds however explosive it is. So synthesize the run this
     pattern actually cares about: ~240 repetitions of a character its first
-    unbounded atom matches, plus a terminator, so the match is forced to FAIL
+    unbounded atom matches (led by a witness of the atoms in front of it),
+    plus a terminator, so the match is forced to FAIL
     after exhausting every way of splitting the run — the shape backtracking
     blows up on.
 
@@ -1341,11 +1350,21 @@ def _synthetic_fixtures(pat: str) -> "list[str]":
 
     try:
         rx = re.compile(pat)
-        char = _first_repeated_char(_strip_comments(_strip_verbose(pat)))
+        char, prefix = _first_repeat(_strip_comments(_strip_verbose(pat)))
     except Exception:  # noqa: BLE001 - best effort, never fail the save
         return []
     if not char:
         return []
+    family = next((f for f in _RUN_FAMILIES if char in f), "")
+    # A mandatory atom in front of the run (`Komma\s*…#`, `x\d*…#`) matches no
+    # bare run, so the run is led by a witness of it, the way a transcript
+    # reaches it. One the run itself supplies (`\n\s*…x`) adds nothing.
+    try:
+        lead = _witness(prefix) if prefix else ""
+    except Exception:  # noqa: BLE001 - best effort: probe the bare run
+        lead = ""
+    if all(ch in char + family for ch in lead):
+        lead = ""
     # The short run must be long enough for the rule to match at all
     # (`(\d+)` x7 then `1` needs 8 characters) or every candidate looks alike.
     try:
@@ -1359,7 +1378,6 @@ def _synthetic_fixtures(pat: str) -> "list[str]":
         parsed, width = None, 0
     screen = min(max(_SYNTH_SCREEN, width + 2), _SYNTH_RUN)
     shape = _char_atoms(parsed)
-    family = next((f for f in _RUN_FAMILIES if char in f), "")
     terms = dict.fromkeys([
         next((t for t in _SYNTH_TERMINATORS if t not in pat), "#"),
         # The single pick before the union, kept so the set stays a superset
@@ -1381,9 +1399,9 @@ def _synthetic_fixtures(pat: str) -> "list[str]":
             # run every way before a cheap `|\s` matches it ends with the
             # spans a space run gets at once. Only runs every atom treats
             # alike share a probe.
-            outcome = (tuple(m.span() for m in rx.finditer(c * screen + t)),
+            outcome = (tuple(m.span() for m in rx.finditer(lead + c * screen + t)),
                        _run_signature(shape, c, t))
-            probes.setdefault(outcome, c * _SYNTH_RUN + t)
+            probes.setdefault(outcome, lead + c * _SYNTH_RUN + t)
     return list(probes.values())
 
 

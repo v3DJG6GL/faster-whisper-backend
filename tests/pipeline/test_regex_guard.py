@@ -1157,6 +1157,32 @@ def test_run_that_one_probe_choice_misses_is_rejected(pat, probe):
         g.validate([("r", pat, "")], timeout=1.5)
 
 
+@pytest.mark.parametrize("pat, probe", [
+    (r"Komma" + r"\s*" * 7 + "#", "Komma" + " " * 240),
+    (r"x" + r"\d*" * 7 + "#", "x" + "1" * 240),
+    (r"m" + r"(-*)" * 7 + "#", "m" + "-" * 240),
+    (r"k" + r"\s*" * 7 + r"(?=\S)", "k" + " " * 240),
+    (r"(?i:k)" + r"\s*" * 7 + r"(?=\S)", "k" + " " * 240),
+    (r"a|Komma" + r"\s*" * 7 + "#", "Komma" + " " * 240),
+])
+def test_run_behind_an_ordinary_word_is_rejected(pat, probe):
+    """The synthetic run had nothing in front of it, so a mandatory atom
+    before the explosive part (`Komma`, `x`, `(?i:k)`) matched no probe and
+    these were accepted, yet re.sub over the word and a ~40-character run
+    takes 0.5-1.8 s, growing ~n^7. The run is led by a witness of it now."""
+    assert any(s.startswith(probe) for s in g._synthetic_fixtures(pat))
+    with pytest.raises(ValueError):
+        g.validate([("r", pat, "")], timeout=1.5)
+
+
+def test_run_without_a_leading_atom_is_probed_bare():
+    """No lead for a rule with nothing in front of its run, nor for one the
+    run itself supplies (`\\n\\s*…x`, 855ee6f), nor past a top-level `|`."""
+    for pat in (r"\s*" * 7 + "#", r"\n" + r"\s*" * 7 + "x",
+                r"(?=\t)" + r"\s*" * 7 + "x", r"\s*x|" + r"\d*" * 7 + "#"):
+        assert all(s[0] in " \t\n\r\f\v 1234567890" for s in g._synthetic_fixtures(pat))
+
+
 @pytest.mark.parametrize("pat", [r"\s+$", r"\s+([.,!?])", r"(\w+)\W", r"(\d+)\s*Uhr"])
 def test_ordinary_rule_keeps_its_terminated_probe(pat):
     assert g._synthetic_fixtures(pat)[0].endswith("#")
