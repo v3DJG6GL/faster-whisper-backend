@@ -78,3 +78,18 @@ def test_overflowing_repeat_count_skips_the_entry_not_the_rebuild(app_module):
     _set(app_module, {"name": "dd", "label": "DD", "type": "callback:dedup",
                       "enabled": True, "pattern": "a{4294967296}"})
     assert pl_engine._postprocess_text("a", model_name="") == "a"
+
+
+def test_flag_conflict_and_deep_nesting_skip_the_entry_not_the_rebuild(app_module):
+    # re.compile raises ValueError for conflicting inline flags and
+    # RecursionError for groups nested too deep; both escaped the
+    # skip-bad-entry handler and aborted the rebuild (the dry run skips them).
+    for bad in ("(?a)(?u)bar", "(" * 512):
+        _set(app_module, {"name": "rl", "label": "RL", "type": "regex-list",
+                          "enabled": True,
+                          "entries": [{"pattern": "foo", "replacement": "FOO"},
+                                      {"pattern": bad, "replacement": "x"}]})
+        assert pl_engine._postprocess_text("foo bar", model_name="") == "FOO bar"
+        _set(app_module, {"name": "dd", "label": "DD", "type": "callback:dedup",
+                          "enabled": True, "pattern": bad})
+        assert pl_engine._postprocess_text("bar", model_name="") == "bar"
