@@ -1396,13 +1396,13 @@ def _run_signature(shape, c: str, t: str) -> tuple:
 
 
 def _char_atoms(parsed) -> "tuple[list, list, bool] | None":
-    """Every single-character atom of a parsed pattern, compiled on its own,
-    or None if they cannot be told apart (an inline flag group, a failure):
-    two inputs whose characters each atom accepts or refuses alike drive the
-    engine through the same steps. Zero-width tests that read a character
-    get a stand-in atom: `\\w` for `\\b` / `\\B`, `\\n` for `^` / `$`; the
-    third item says whether a `$` / `\\Z` tells the end of the text from a
-    character.
+    """Every single-character atom of a parsed pattern, compiled on its own
+    with the flags in force where it sits (`(?i:euro)`), or None on a
+    failure or past 256 atoms: two inputs whose characters each atom accepts
+    or refuses alike drive the engine through the same steps. Zero-width
+    tests that read a character get a stand-in atom: `\\w` for `\\b` / `\\B`,
+    `\\n` for `^` / `$`; the third item says whether a `$` / `\\Z` tells the
+    end of the text from a character.
 
     The second item lists, per atom, the atoms in front of each occurrence
     in its sequences (_run_signature: one the run character fails never lets
@@ -1427,44 +1427,45 @@ def _char_atoms(parsed) -> "tuple[list, list, bool] | None":
         found: dict = {}
         ends = False
 
-        def walk(node, preds: tuple) -> bool:
+        def walk(node, flags: int, preds: tuple) -> None:
             nonlocal ends
             if isinstance(node, _reparser.SubPattern):
                 for item in node.data:
-                    if not walk(item, preds):
-                        return False
+                    walk(item, flags, preds)
                     if any(item[0] is op for op in consuming):
-                        preds += (repr(item),)
-                return True
-            if isinstance(node, (list, tuple)):
+                        preds += ((repr(item), flags),)
+            elif isinstance(node, (list, tuple)):
                 # Identity: an opcode equals its int, e.g. an ASSERT's direction.
                 op = node[0] if len(node) == 2 else None
-                if any(op is o for o in consuming):
-                    found.setdefault(repr(node), (node, []))[1].append(preds)
-                    return True
                 if op is _reparser.AT:
                     ends |= node[1] in (_reparser.AT_END, _reparser.AT_END_STRING)
-                    if node[1] in stand_ins:
-                        stand = stand_ins[node[1]]
-                        found.setdefault(repr(stand), (stand, []))[1].append(preds)
-                    return True
-                if op is _reparser.SUBPATTERN and (node[1][1] or node[1][2]):
-                    return False  # local flags: the atom alone would lie
-                if ((op is _reparser.ASSERT or op is _reparser.ASSERT_NOT)
-                        and node[1][0] < 0):
-                    return walk(node[1][1], ())
-                return all(walk(item, preds) for item in node)
-            return True
+                    node = stand_ins.get(node[1], (None, None))
+                    op = node[0]
+                if any(op is o for o in consuming):
+                    entry = found.setdefault((repr(node), flags), (node, flags, []))
+                    entry[2].append(preds)
+                elif op is _reparser.SUBPATTERN:
+                    _group, add, drop, body = node[1]
+                    walk(body, _recompiler._combine_flags(flags, add, drop), preds)
+                elif op is _reparser.ASSERT or op is _reparser.ASSERT_NOT:
+                    walk(node[1][1], flags, preds if node[1][0] > 0 else ())
+                else:
+                    for item in node:
+                        walk(item, flags, preds)
 
-        if parsed is None or not walk(parsed, ()) or len(found) > 64:
+        if parsed is None:
             return None
-        state = parsed.state
+        walk(parsed, parsed.state.flags, ())
+        if len(found) > 256:  # each costs a compile, ~30 µs
+            return None
+        atoms = []
+        for atom, flags, _ in found.values():
+            state = _reparser.State()
+            state.flags = flags  # the compiler ORs these into every atom
+            atoms.append(_recompiler.compile(_reparser.SubPattern(state, [atom]), flags))
         index = {key: i for i, key in enumerate(found)}
-        return [
-            _recompiler.compile(_reparser.SubPattern(state, [node]), state.flags)
-            for node, _ in found.values()
-        ], [[tuple(index[k] for k in occ) for occ in occs]
-            for _, occs in found.values()], ends
+        return atoms, [[tuple(index[k] for k in occ) for occ in occs]
+                       for *_, occs in found.values()], ends
     except Exception:  # noqa: BLE001 - best effort: probe each run character
         return None
 

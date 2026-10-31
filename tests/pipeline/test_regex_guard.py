@@ -1174,6 +1174,19 @@ def test_ordinary_polynomial_rules_are_probed_once_and_accepted():
     g.validate(_NUMBERS_RULES)
 
 
+@pytest.mark.parametrize("pat", [
+    r"(\d+)\s*(\d*)\s*(?i:euro)",
+    r"(\d+)\s*(\d*)\s*" + "".join(chr(0xC0 + i) for i in range(70)),
+])
+def test_ordinary_rule_with_a_flag_group_or_many_atoms_is_probed_once(pat):
+    """A scoped flag group (or more than 64 distinct atoms) made the guard
+    give up on telling run characters apart, so every digit got its own
+    240-char probe: the pair `(?i:euro)` / `(?i:prozent)` was refused as
+    "likely catastrophic backtracking" while the `(?i)` spelling saved."""
+    assert len(g._synthetic_fixtures(pat)) == 1
+    g.validate([("r", pat, "")])
+
+
 @pytest.mark.parametrize("pat, probe", [
     (r"\n" + r"\s*" * 7 + "x", "\n" * 240 + "#"),
     (r"(?<=\n)" + r"\s*" * 7 + "x", "\n" * 240 + "#"),
