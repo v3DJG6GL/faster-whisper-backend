@@ -1282,9 +1282,19 @@ def _first_repeated_char(pat: str, depth: int = 0) -> "str | None":
     return _first_repeat(pat, depth)[0]
 
 
-def _first_repeat(pat: str, depth: int = 0) -> "tuple[str | None, str]":
+def _first_repeat(pat: str, depth: int = 0,
+                  bounded: "bool | None" = None) -> "tuple[str | None, str]":
     """_first_repeated_char's character, and the pattern text of its branch
-    in front of that atom (`Komma` of `Komma\\s*…#`, `m` of `m(-*)…#`)."""
+    in front of that atom (`Komma` of `Komma\\s*…#`, `m` of `m(-*)…#`).
+
+    The first UNBOUNDED repeat (`*`, `+`, `{n,}`) wins: a bounded count in
+    front of it (`\\d{1,2}` of `(\\d{1,2})\\s*…Uhr`) is text in front, whose
+    witness leads the run; a run of its character never reached the `\\s*`.
+    Only a pattern without one falls back to its first bounded repeat
+    (``bounded``: that second pass)."""
+    if bounded is None:
+        found = _first_repeat(pat, depth, False)
+        return found if found[0] else _first_repeat(pat, depth, True)
     i = start = 0
     n = len(pat)
     while i < n:
@@ -1292,6 +1302,8 @@ def _first_repeat(pat: str, depth: int = 0) -> "tuple[str | None, str]":
             start = i + 1  # the atom's own branch has nothing before it
         char, group, j = _next_atom(pat, i)
         repeats, _atomic, k, _variable = _read_quantifier(pat, j)
+        if repeats and not bounded and pat[j] == "{":
+            repeats = pat[j:k].rstrip("?+").endswith(",}")  # `{n,}` only
         if repeats:
             if group is not None:
                 if depth < 4:
@@ -1301,11 +1313,34 @@ def _first_repeat(pat: str, depth: int = 0) -> "tuple[str | None, str]":
             elif char:
                 return char, pat[start:i]
         elif group is not None and depth < 4:
-            found, inner = _first_repeat(group, depth + 1)
+            found, inner = _first_repeat(group, depth + 1, bounded)
             if found:
                 return found, pat[start:i] + inner
         i = max(k, j)
     return None, ""
+
+
+def _lead_pattern(prefix: str, depth: int = 0) -> str:
+    """``prefix`` (the text _first_repeat finds in front of the run) with
+    each bounded count written out at its minimum, so the synthetic run's
+    lead is ``_witness`` of text a transcript holds there: _witness writes
+    every repeat three times, and `Euro{1,2}\\s*…#` matches no `Eurooo`."""
+    out: list[str] = []
+    i = 0
+    while i < len(prefix):
+        _char, group, j = _next_atom(prefix, i)
+        k = _read_quantifier(prefix, j)[2]
+        atom, q = prefix[i:j], prefix[j:k]
+        if group is not None and depth < 4:
+            opening = atom[:len(atom) - len(group) - 1]
+            atom = opening + _lead_pattern(group, depth + 1) + ")"
+        if q[:1] == "{" and not q.rstrip("?+").endswith(",}"):
+            lo = q[1:].split(",")[0].rstrip("}?+")
+            out.append(atom * min(int(lo) if _ascii_digits(lo) else 0, 64))
+        else:
+            out.append(atom + q)
+        i = max(k, j)
+    return "".join(out)
 
 
 def _synthetic_fixtures(pat: str) -> "list[str]":
@@ -1363,7 +1398,7 @@ def _synthetic_fixtures(pat: str) -> "list[str]":
     # a lead only the run's own character supplies (`1\d*…1`, `\r\n\s*…#`)
     # leaves its siblings unled.
     try:
-        lead = _witness(prefix) if prefix else ""
+        lead = _witness(_lead_pattern(prefix)) if prefix else ""
     except Exception:  # noqa: BLE001 - best effort: probe the bare run
         lead = ""
     # The short run must be long enough for the rule to match at all

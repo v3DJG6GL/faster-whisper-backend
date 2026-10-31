@@ -1215,6 +1215,45 @@ def test_ordinary_rule_probed_bare_and_led_is_accepted(pat):
     g.validate([("r", pat, "")])
 
 
+@pytest.mark.parametrize("pat, probe", [
+    (r"(\d{1,2})" + r"\s*" * 7 + "Uhr", "1" + " " * 240),
+    (r"\d{2}" + r"\s*" * 7 + "#", "11" + " " * 240),
+    (r"m{2}" + r"\s*" * 7 + "#", "mm" + " " * 240),
+    (r"[a-z]{2}" + r"\s*" * 7 + "#", "aa" + " " * 240),
+    (r"Euro{1,2}" + r"\s*" * 7 + "#", "Euro" + " " * 240),
+    (r"(?:ab){2}" + r"\s*" * 7 + "#", "abab" + " " * 240),
+])
+def test_run_behind_a_bounded_count_is_built_on_the_unbounded_repeat(pat, probe):
+    """A bounded count like `\\d{1,2}` repeats, so the run was built from its
+    character, with nothing in front: a `1` run never reaches the `\\s*`.
+    These were accepted, yet re.sub over "12" and ~60 spaces takes 5 s."""
+    assert any(s.startswith(probe) for s in g._synthetic_fixtures(pat))
+
+
+def test_bounded_count_is_the_run_only_without_an_unbounded_repeat():
+    assert g._first_repeated_char(r"\d{2}\s*x") == " "
+    assert g._first_repeated_char(r"(?:\d{2})+x") == "1"
+    assert g._first_repeated_char(r"\d{1,2}\.\d{2}") == "1"
+
+
+@pytest.mark.parametrize("pat", [
+    r"(\d{1,2})" + r"\s*" * 7 + "Uhr",
+    r"Euro{1,2}" + r"\s*" * 7 + "#",
+])
+def test_run_behind_a_bounded_count_is_rejected(pat):
+    with pytest.raises(ValueError):
+        g.validate([("r", pat, "")], timeout=1.5)
+
+
+@pytest.mark.parametrize("pat", [
+    r"(\d{1,2}):(\d{2}) Uhr",
+    r"(?P<h>\d{1,2})[.:](?P<m>\d{2})\s*Uhr",
+    r"\d{1,2}\.\d{1,2}\.\d{2,4}",
+])
+def test_ordinary_rule_with_a_bounded_count_is_accepted(pat):
+    g.validate([("r", pat, "")])
+
+
 @pytest.mark.parametrize("pat", [r"\s+$", r"\s+([.,!?])", r"(\w+)\W", r"(\d+)\s*Uhr"])
 def test_ordinary_rule_keeps_its_terminated_probe(pat):
     assert g._synthetic_fixtures(pat)[0].endswith("#")
