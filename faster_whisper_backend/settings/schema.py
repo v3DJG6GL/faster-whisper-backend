@@ -1687,8 +1687,9 @@ class AdminConfig(BaseModel):
     def _strip_hf_token(cls, v: Any) -> Any:
         """A token pasted with a stray space or newline went out as the
         header "Bearer hf_x ", which httpx refuses, so every Hub model load
-        failed; a blank one becomes "" (no token). Never raises: a load-time
-        ValidationError drops every override."""
+        failed; a blank one becomes "", which falls back to the service
+        environment's HF_TOKEN. Never raises: a load-time ValidationError
+        drops every override."""
         if isinstance(v, str):
             return v.strip()
         return v
