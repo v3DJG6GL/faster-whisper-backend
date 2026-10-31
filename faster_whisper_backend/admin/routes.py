@@ -110,6 +110,8 @@ _MO_LOAD_TIME_FIELDS_JSON: str = json.dumps(sorted(
     settings_schema.LOAD_TIME_FIELDS & set(settings_schema.ModelOverride.model_fields)
 ))
 _MO_FIELD_META_JSON: str = json.dumps(_mo_field_meta())
+_MULTILINE_TEXT_FIELDS_JSON: str = json.dumps(
+    sorted(settings_schema.MULTILINE_TEXT_FIELDS))
 _WHISPER_LANGS_JSON: str = json.dumps(
     [{"code": c, "name": n} for c, n in WHISPER_LANGUAGE_NAMES.items()])
 
@@ -332,6 +334,7 @@ async def settings_page() -> HTMLResponse:
             .replace("{{SERVER_IDENT}}", _SERVER_IDENT_SHELL)
             .replace("{{MO_LOAD_TIME_FIELDS_JSON}}", _MO_LOAD_TIME_FIELDS_JSON)
             .replace("{{MO_FIELD_META_JSON}}", _MO_FIELD_META_JSON)
+            .replace("{{MULTILINE_TEXT_FIELDS_JSON}}", _MULTILINE_TEXT_FIELDS_JSON)
             .replace("{{WHISPER_LANGS_JSON}}", _WHISPER_LANGS_JSON),
             current="settings"),
         headers={
@@ -358,6 +361,7 @@ async def pipeline_page() -> HTMLResponse:
             .replace("{{SERVER_IDENT}}", "")
             .replace("{{MO_LOAD_TIME_FIELDS_JSON}}", _MO_LOAD_TIME_FIELDS_JSON)
             .replace("{{MO_FIELD_META_JSON}}", _MO_FIELD_META_JSON)
+            .replace("{{MULTILINE_TEXT_FIELDS_JSON}}", _MULTILINE_TEXT_FIELDS_JSON)
             .replace("{{WHISPER_LANGS_JSON}}", _WHISPER_LANGS_JSON),
             current="pipeline"),
         headers={

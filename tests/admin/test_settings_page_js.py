@@ -621,6 +621,50 @@ console.log(JSON.stringify(Object.keys(state).map(hasButton)));
     assert out == [False, True, True]
 
 
+@needs_node
+def test_multiline_text_fields_get_a_textarea_that_keeps_newlines(client):
+    """Only DEFAULT_PROMPT got a <textarea>: the glossary (one pair per line)
+    and hotwords got a text <input>, which strips the newlines, so a pasted
+    multi-line glossary saved as one line and every pair after the first
+    was gone."""
+    html = _html(client)
+    src = "\n".join([
+        _block(html, "const NULLABLE_NUMBER_FIELDS = {", "\n};\n"),
+        _block(html, "const MULTILINE_TEXT_FIELDS = ", ";\n"),
+        _block(html, "function makeEditor(name) {", "\n}\n"),
+        _block(html, "function stringEditor(name, v) {", "\n}\n"),
+        _block(html, "function textareaEditor(name, v) {", "\n}\n"),
+    ])
+    out = _node(_FAKE_DOM + """
+const state = { TRANSLATION_GLOSSARY: 'Niere = kidney\\nLeber = liver',
+                DEFAULT_HOTWORDS: 'a\\nb', DEFAULT_PROMPT: 'p\\nq',
+                DEFAULT_LANGUAGE: 'de' };
+function currentValue(n) { return state[n]; }
+function setDirty(n, v) { state[n] = v; }
+function fieldDef(n) { return { value: state[n], default_value: '', choices: null }; }
+""" + src + """
+(async function () {
+  const out = {};
+  for (const n of Object.keys(state)) {
+    const ed = makeEditor(n);
+    out[n] = [ed.tagName, ed.value];
+  }
+  const g = makeEditor('TRANSLATION_GLOSSARY');
+  g.value += '\\nMilz = spleen';
+  await fire(g, 'input');
+  out.saved = state.TRANSLATION_GLOSSARY;
+  console.log(JSON.stringify(out));
+})();
+""")
+    assert out == {
+        "TRANSLATION_GLOSSARY": ["TEXTAREA", "Niere = kidney\nLeber = liver"],
+        "DEFAULT_HOTWORDS": ["TEXTAREA", "a\nb"],
+        "DEFAULT_PROMPT": ["TEXTAREA", "p\nq"],
+        "DEFAULT_LANGUAGE": ["INPUT", "de"],
+        "saved": "Niere = kidney\nLeber = liver\nMilz = spleen",
+    }
+
+
 # ---- "↑ view" jump-link ---------------------------------------------------------
 
 @needs_node

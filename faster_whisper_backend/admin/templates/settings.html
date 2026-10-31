@@ -1262,6 +1262,12 @@ const NULLABLE_NUMBER_FIELDS = {
   DIARIZATION_MAX_SPEAKERS: 2,
 };
 
+// Free-text fields whose value spans lines (the glossary's one pair per
+// line, prompt, hotwords) get a <textarea>: a text <input> strips the
+// newlines, so a pasted glossary would save as one joined line. Injected
+// at render time from settings_schema.MULTILINE_TEXT_FIELDS.
+const MULTILINE_TEXT_FIELDS = new Set({{MULTILINE_TEXT_FIELDS_JSON}});
+
 function makeEditor(name) {
   // Read through the dirty overlay so re-renders triggered by setDirty
   // (e.g. "↺ Reset to default" or list-editor mutations) reflect the
@@ -1364,7 +1370,7 @@ function makeEditor(name) {
   if (_ed && Array.isArray(_ed.choices) && _ed.choices.length) {
     return selectEditor(name, v, _ed.choices);
   }
-  if (name === 'DEFAULT_PROMPT') return textareaEditor(name, v || '');
+  if (MULTILINE_TEXT_FIELDS.has(name)) return textareaEditor(name, v || '');
   return stringEditor(name, v == null ? '' : v);
 }
 
