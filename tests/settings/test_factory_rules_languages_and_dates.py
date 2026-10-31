@@ -87,6 +87,21 @@ def test_hyphen_capitalization_is_german_only(app_module):
     assert run("Eisen-infusion", "de") == "Eisen-Infusion"
 
 
+@pytest.mark.parametrize("text, want", [
+    (" Die 45-jährige Patientin.", "Die 45-jährige Patientin"),
+    (" 3-mal pro Tag.", "3-mal pro Tag"),
+    (" Ein 3-teiliges Set.", "Ein 3-teiliges Set"),
+    (" Die Eisen-infusion.", "Die Eisen-Infusion"),
+    (" Eisen Bindestrich infusion.", "Eisen-Infusion"),
+])
+def test_hyphen_capitalization_leaves_a_digit_compound_lowercase(app_module, text, want):
+    """A German digit compound ("45-jährige", "3-mal") is lowercase after the
+    hyphen; the rule capitalised it ("45-Jährige")."""
+    app_module.cfg.PIPELINE_RULES = copy.deepcopy(_factory_rules())
+    pl_engine.rebuild_caches()
+    assert pl_engine._postprocess_text(text, model_name="", language="de") == want
+
+
 def test_spanish_opening_marks(app_module):
     app_module.cfg.PIPELINE_RULES = [
         copy.deepcopy(_by_name()["es-punctuation"]),

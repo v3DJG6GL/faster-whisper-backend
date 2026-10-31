@@ -22,15 +22,31 @@ def _rule(rules, name):
     return next(r for r in rules if r.get("name") == name)
 
 
+# Factory patterns changed after the rule got its scope (the hyphen rule
+# stopped firing after a digit): a copy saved before the scope still holds
+# the old one, which is what UPGRADED_RULE_LANGUAGES keys on.
+_PATTERN_BEFORE_SCOPE = {"capitalize-letter-after-hyphen": "(-)([a-zäöüß])"}
+
+
+def _pre_scope_rules():
+    """The factory rules with the patterns a copy saved before the scopes
+    holds (the languages are the current factory ones)."""
+    rules = _factory_rules()
+    for name, pattern in _PATTERN_BEFORE_SCOPE.items():
+        _rule(rules, name)["pattern"] = pattern
+    return rules
+
+
 def test_every_language_upgrade_matches_its_factory_rule():
     for name, ((typ, pattern), langs) in renames.UPGRADED_RULE_LANGUAGES.items():
         r = _rule(_factory_rules(), name)
-        assert (r["type"], r.get("pattern"), r["languages"]) == (typ, pattern, list(langs))
+        assert (r["type"], _PATTERN_BEFORE_SCOPE.get(name, r.get("pattern")),
+                r["languages"]) == (typ, pattern, list(langs))
 
 
 @pytest.mark.parametrize("stored_languages", [[], None, "absent"])
 def test_stored_hyphen_rule_without_languages_becomes_german_only(stored_languages):
-    rules = copy.deepcopy(_factory_rules())
+    rules = _pre_scope_rules()
     r = _rule(rules, "capitalize-letter-after-hyphen")
     if stored_languages == "absent":
         del r["languages"]
@@ -38,7 +54,7 @@ def test_stored_hyphen_rule_without_languages_becomes_german_only(stored_languag
         r["languages"] = stored_languages
     raw = {"PIPELINE_RULES": rules}
     assert renames.upgrade_rule_entries(raw) == ["capitalize-letter-after-hyphen/languages"]
-    assert raw["PIPELINE_RULES"] == _factory_rules()
+    assert raw["PIPELINE_RULES"] == _pre_scope_rules()
     assert renames.upgrade_rule_entries(raw) == []
 
 
@@ -60,7 +76,7 @@ def test_edited_hyphen_rule_keeps_its_own_scope_and_pattern():
 
 def test_load_overrides_scopes_a_stored_hyphen_rule_to_german(tmp_path):
     from faster_whisper_backend.settings import config_store as cs
-    rules = copy.deepcopy(_factory_rules())
+    rules = _pre_scope_rules()
     _rule(rules, "capitalize-letter-after-hyphen")["languages"] = []
     p = tmp_path / "config.local.json"
     p.write_text(json.dumps({"PIPELINE_RULES": rules}), encoding="utf-8")
@@ -98,7 +114,7 @@ def test_copy_saved_before_097c9b4_renames_is_migrated_and_scoped(tmp_path):
     """097c9b4 renamed two factory rules; a copy saved before that still
     holds the old slugs, and the scope upgrades are keyed by the new ones."""
     from faster_whisper_backend.settings import config_store as cs
-    rules = copy.deepcopy(_factory_rules())
+    rules = _pre_scope_rules()
     for old, new in _RENAMED_IN_097C9B4.items():
         r = _rule(rules, new)
         r["name"] = old
@@ -217,7 +233,7 @@ def test_old_factory_copy_beside_its_renamed_rule_is_dropped_with_its_excludes(t
     one, so a kept old copy would run unexcluded on every language
     ("well-known" -> "well-Known" on English)."""
     from faster_whisper_backend.settings import config_store as cs
-    rules = copy.deepcopy(_factory_rules())
+    rules = _pre_scope_rules()
     for old, new in _RENAMED_IN_097C9B4.items():
         # before trim-edges: the terminal rule must stay last
         rules.insert(-1, dict(copy.deepcopy(_rule(rules, new)), name=old, languages=[]))
@@ -390,7 +406,7 @@ def test_old_copy_running_beside_its_switched_off_renamed_rule_keeps_running(tmp
     """An admin who saw the duplicate and switched off the NEW card kept the
     old one running: dropping the old copy would stop the rule silently."""
     from faster_whisper_backend.settings import config_store as cs
-    rules = copy.deepcopy(_factory_rules())
+    rules = _pre_scope_rules()
     _rule(rules, new)["enabled"] = False
     rules.insert(-1, dict(copy.deepcopy(_rule(rules, new)), name=old,
                           languages=[], enabled=True))
