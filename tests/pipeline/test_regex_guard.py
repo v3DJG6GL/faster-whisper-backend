@@ -238,11 +238,19 @@ def test_verbose_mode_is_scanned_without_its_whitespace_and_comments():
         g.validate([("r", r"(?x)z*([nd]+\ ?) +\#", "")])
 
 
-def test_top_level_word_list_skips_the_pairwise_overlap_check(monkeypatch):
-    """A top-level `\\b(?:w1|w2|…)\\b` could only mark the root frame as
-    repeating, which nothing reads, yet the screen compared every branch pair:
-    40 entries of 72 prefix-free words took over 2 s and were refused as slow
-    to compile. The same group inside another group is still checked."""
+@pytest.mark.parametrize("pat", [
+    r"\b(?:a1|b2|c3)\b",
+    r"(\b(?:a1|b2|c3)\b)",
+    r"(?i:\b(?:a1|b2|c3)\b)",
+    r"(?:x(?:a1|b2|c3))",
+    r"(?=\b(?:a1|b2|c3)\b)\w+",
+])
+def test_unrepeated_word_list_skips_the_pairwise_overlap_check(monkeypatch, pat):
+    """A `\\b(?:w1|w2|…)\\b` no variable quantifier encloses — at top level,
+    or wrapped in a capture for `\\1`, a scoped flag or a lookahead — can only
+    mark frames whose flag nothing reads, yet the screen compared every branch
+    pair: 40 entries of 72 prefix-free words took over 2 s and were refused as
+    slow to compile. A repeated wrapper still runs the check and refuses."""
     calls = []
     real = g._spans_overlap
 
@@ -251,9 +259,10 @@ def test_top_level_word_list_skips_the_pairwise_overlap_check(monkeypatch):
         return real(pat, spans, icase)
 
     monkeypatch.setattr(g, "_spans_overlap", spy)
-    assert not g._nested_repetition(r"\b(?:a1|b2|c3)\b")
+    assert not g._nested_repetition(pat)
     assert calls == []
     assert g._nested_repetition(r"(?:x(?:a|ab))+")
+    assert g._nested_repetition(r"(?:(?:a|ab))+")
     assert calls
 
 

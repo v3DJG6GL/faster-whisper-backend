@@ -527,8 +527,17 @@ def _nested_repetition(pat: str) -> bool:
     # and is not an overlapping alternation; "open": index of its `(`;
     # "inner": the branch slices of an alternation group that is this
     # group's WHOLE body — `(?:(a|ab))+` puts the `|` on the un-quantified
-    # child, so the quantified parent must check the child's branches.
-    stack = [{"rep": False, "start": 0, "alts": [], "atomic": False}]
+    # child, so the quantified parent must check the child's branches;
+    # "pending": overlap checks that would set "rep", run only where "rep" is
+    # read (see _rep) — a `(\b(?:w1|w2|…)\b)` no repeat encloses never pays
+    # the O(branches²) pair test.
+    stack = [{"rep": False, "start": 0, "alts": [], "atomic": False, "pending": []}]
+
+    def _rep(frame) -> bool:
+        return frame["rep"] or any(
+            _spans_overlap(pat, spans, icase)
+            and not (follow is not None and _follower_fixes_split(pat, spans, follow))
+            for spans, follow in frame["pending"])
     i = 0
     while i < n:
         c = pat[i]
@@ -577,7 +586,7 @@ def _nested_repetition(pat: str) -> bool:
                     j = min(cand) + 1
             stack.append({"rep": False, "start": j, "alts": [], "atomic": atomic,
                           "lookaround": lookaround, "conditional": conditional,
-                          "open": i})
+                          "open": i, "pending": []})
             i = j
             continue
         if c == ")" and len(stack) > 1:
@@ -603,7 +612,7 @@ def _nested_repetition(pat: str) -> bool:
             if repeats and _optional_only(pat[frame["start"]:close]):
                 frame["rep"] = True
             if variable and not frame["atomic"] and not possessive:
-                if frame["rep"]:
+                if _rep(frame):
                     return True
                 # (a|a)* — identical alternatives overlap, so the engine
                 # re-tries the same split every way round. Prefix-ambiguous
@@ -640,13 +649,12 @@ def _nested_repetition(pat: str) -> bool:
             # refuses it. A possessive or atomic group never re-splits — and
             # neither does one whose split a mandatory, disjoint next atom
             # pins down: `(?:(?:um|umm), )+` (see _follower_fixes_split).
-            # Nothing reads the root frame's flag (it is never popped), so a
-            # top-level `\b(?:w1|w2|…)\b` skips the pairwise overlap check.
-            elif (len(stack) > 1 and spans and not frame["atomic"] and not possessive
-                    and _spans_overlap(pat, spans, icase)
-                    and not (i == close + 1
-                             and _follower_fixes_split(pat, spans, i))):
-                stack[-1]["rep"] = True
+            # The check is only queued: it runs when a variable quantifier
+            # reads the flag, and a root or lookaround frame drops it unread.
+            elif not frame["atomic"]:
+                stack[-1]["pending"] += frame["pending"]
+                if spans and not possessive:
+                    stack[-1]["pending"].append((spans, i if i == close + 1 else None))
             continue
         if c == "|":
             stack[-1]["alts"].append(i)
