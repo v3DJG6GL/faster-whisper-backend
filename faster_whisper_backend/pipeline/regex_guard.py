@@ -1284,7 +1284,7 @@ def _first_repeated_char(pat: str, depth: int = 0) -> "str | None":
 
 def _first_repeat(pat: str, depth: int = 0) -> "tuple[str | None, str]":
     """_first_repeated_char's character, and the pattern text of its branch
-    in front of that atom (`Komma` of `Komma\s*…#`, `m` of `m(-*)…#`)."""
+    in front of that atom (`Komma` of `Komma\\s*…#`, `m` of `m(-*)…#`)."""
     i = start = 0
     n = len(pat)
     while i < n:
