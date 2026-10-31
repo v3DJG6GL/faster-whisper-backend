@@ -379,6 +379,25 @@ def test_align_member_words_no_train_when_equal(monkeypatch):
     assert all("train_word" not in w for w in out)
 
 
+def test_align_member_words_blanked_training_marks_every_word_removed(monkeypatch):
+    # A training-only removal rule blanked the member ("" is the verdict, not
+    # a missing value), while runtime `final` kept the text. Falling back to
+    # `final` attached no train_word, so the group card showed the words the
+    # merged transcript and the export leave out.
+    _install_word_map(monkeypatch, {})
+    m = {
+        "words": _words(" Untertitel", " im", " Auftrag", " des", " ZDF"),
+        "final": "Untertitel im Auftrag des ZDF",
+        "text_for_training": "",
+        "model": None,
+    }
+    out = cr._align_member_words(m)
+    assert all("train_word" in w and w.get("train_removed") is True for w in out)
+    # A missing training text still falls back to `final`.
+    m.pop("text_for_training")
+    assert all("train_word" not in w for w in cr._align_member_words(m))
+
+
 def test_align_member_words_keeps_the_lead_on_word_when_equal(monkeypatch):
     # With no train_word the page builds a range chip's `wrong` from `word`
     # with join(''). Matched tokens came back without the raw lead, so a

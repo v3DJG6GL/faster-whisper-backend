@@ -2280,7 +2280,12 @@ def _align_member_words(
     api_keys_store lookup instead of one per member."""
     words = m.get("words") or []
     final = m.get("final") or ""
-    training = m.get("text_for_training") or final
+    # Only a missing training text falls back to `final`: a blanked "" is the
+    # pipeline's verdict (a removal rule stripped a hallucination), so its
+    # words must come back train_removed like the export leaves them out.
+    training = m.get("text_for_training")
+    if training is None:
+        training = final
     uid, mdl = m.get("user_id"), m.get("model")
     if ident_cache is None:
         ident = effective_config.build_ident({"user_id": uid}, mdl)
