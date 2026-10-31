@@ -404,38 +404,53 @@ def test_budget_grows_with_the_list_and_a_large_rule_set_passes(monkeypatch, cap
     budget is now 2 s plus a per-entry allowance, capped. The budget the
     helper is actually run with is captured, and the acceptance must come
     from a helper that ran — validate fails OPEN (with a warning) on a crash.
-    The helper gets what the in-process screen left of the budget, hence the
-    one-second slack below each budget."""
+    The helper gets what the in-process screen left of the budget, so each
+    bound allows the time the screen took before the helper started (a fixed
+    1 s slack failed on a loaded CI runner)."""
     import logging
     import subprocess
+    import time
     real_run = subprocess.run
     seen = []
+    started = []
 
     def _recording_run(*args, **kwargs):
         seen.append(kwargs["timeout"])
+        started.append(time.perf_counter())
         return real_run(*args, **kwargs)
 
     monkeypatch.setattr(subprocess, "run", _recording_run)
+    checks = [(f"r{i}", r"\bwort%d\b" % i, "X") for i in range(3000)]
+    t0 = time.perf_counter()
     with caplog.at_level(logging.WARNING, logger="whisper-api"):
-        g.validate([(f"r{i}", r"\bwort%d\b" % i, "X") for i in range(3000)])
+        g.validate(checks)
     budget = min(g._GUARD_TIMEOUT + g._PER_CHECK_BUDGET * 3000, g._GUARD_TIMEOUT_MAX)
-    assert len(seen) == 1 and budget - 1 < seen[0] <= budget
+    # The screen before the helper starts is all that may come off the budget.
+    assert len(seen) == 1 and budget - (started[0] - t0) <= seen[0] <= budget
     assert seen[0] > g._GUARD_TIMEOUT
     assert "regex guard skipped" not in caplog.text
 
     # Below the cap the budget is the per-entry formula; far past it, the cap.
     def _ok_run(*args, **kwargs):
         seen.append(kwargs["timeout"])
+        started.append(time.perf_counter())
         return subprocess.CompletedProcess(args, 0, stdout='{"ok": true}', stderr="")
 
     monkeypatch.setattr(subprocess, "run", _ok_run)
     seen.clear()
-    g.validate([(f"r{i}", "x", "") for i in range(400)])
-    g.validate([(f"r{i}", "x", "") for i in range(20000)])
+    started.clear()
+    small = [(f"r{i}", "x", "") for i in range(400)]
+    # Just past the cap; a longer list only slows the screen.
+    capped = [(f"r{i}", "x", "") for i in range(3000)]
+    assert g._GUARD_TIMEOUT + g._PER_CHECK_BUDGET * len(capped) > g._GUARD_TIMEOUT_MAX
+    t0 = time.perf_counter()
+    g.validate(small)
+    t1 = time.perf_counter()
+    g.validate(capped)
     budget = g._GUARD_TIMEOUT + g._PER_CHECK_BUDGET * 400
-    assert budget - 1 < seen[0] <= budget
+    assert budget - (started[0] - t0) <= seen[0] <= budget
     assert g._GUARD_TIMEOUT < seen[0] < g._GUARD_TIMEOUT_MAX
-    assert g._GUARD_TIMEOUT_MAX - 1 < seen[1] <= g._GUARD_TIMEOUT_MAX
+    assert g._GUARD_TIMEOUT_MAX - (started[1] - t1) <= seen[1] <= g._GUARD_TIMEOUT_MAX
 
 
 def test_an_entry_with_a_synthetic_run_gets_its_own_allowance(monkeypatch):
