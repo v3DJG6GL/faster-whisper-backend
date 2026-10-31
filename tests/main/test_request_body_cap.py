@@ -226,3 +226,50 @@ def test_every_self_parsing_post_route_is_held_to_the_json_cap(app_module):
     # The package route parses its own JSON under its own, larger ceiling.
     found.discard("/v1/audio/media/{media_id}/package")
     assert found == app_module._SELF_PARSED_JSON_PATHS
+
+
+def test_multipart_label_on_a_non_upload_route_keeps_the_backstop(
+        client, app_module, monkeypatch):
+    # FastAPI buffers a non-JSON body whole before auth on every route with
+    # a body field: a multipart label must not hand a JSON route the
+    # gigabyte upload ceiling.
+    monkeypatch.setattr(app_module, "_NON_UPLOAD_BODY_BACKSTOP", 1024)
+    r = client.put("/v1/synced-client-settings", content=b"x" * 4096,
+                   headers={"Content-Type": "multipart/form-data; boundary=x"})
+    assert r.status_code == 413
+    assert r.json() == {"detail": "request body too large"}
+
+
+def test_multipart_upload_route_is_not_held_to_the_backstop(
+        client, app_module, monkeypatch):
+    monkeypatch.setattr(app_module, "_NON_UPLOAD_BODY_BACKSTOP", 1024)
+    r = client.post(
+        "/v1/audio/transcriptions",
+        files={"file": ("a.wav", b"RIFFxxxxWAVE" + b"\0" * 200_000, "audio/wav")},
+        data={"model": "whisper-1", "response_format": "json"},
+    )
+    assert r.status_code == 200, r.text
+
+
+def test_every_multipart_route_is_an_upload_path(app_module):
+    # A new route taking File()/Form() must join the path set, or its
+    # uploads are clamped to the non-upload backstop.
+    import inspect
+    import re
+
+    def _walk(routes):
+        for r in routes:
+            if hasattr(r, "original_router"):
+                yield from _walk(r.original_router.routes)
+            else:
+                yield r
+    found = set()
+    for route in _walk(app_module.app.routes):
+        endpoint = getattr(route, "endpoint", None)
+        if endpoint is None:
+            continue
+        src = inspect.getsource(endpoint)
+        # \b: NamedTemporaryFile( is not a File() param.
+        if re.search(r"\b(?:File|Form)\(|request\.form\(\)", src):
+            found.add(route.path)
+    assert found == app_module._MULTIPART_UPLOAD_PATHS

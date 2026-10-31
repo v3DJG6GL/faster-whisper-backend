@@ -1002,6 +1002,14 @@ _SELF_PARSED_JSON_PATHS = frozenset({
     "/v1/audio/url-media/audio",
     "/v1/audio/url-language",
 })
+# The only routes that take a multipart body (File()/Form() params): the
+# full MAX_REQUEST_BYTES is theirs alone. FastAPI buffers any other route's
+# non-JSON body whole before auth, so a multipart label there must not lift
+# it past the non-upload backstop.
+_MULTIPART_UPLOAD_PATHS = frozenset({
+    "/v1/audio/transcriptions",
+    "/v1/audio/translations",
+})
 
 
 def _media_package_max_body_bytes() -> int:
@@ -1050,17 +1058,19 @@ async def _max_body_mw(request: Request, call_next):
     # routes that call request.json() themselves parse it whatever the
     # header says. Both must share the ceiling or they bypass it (the
     # self-parsing routes get it by path below, _SELF_PARSED_JSON_PATHS,
-    # whatever they declare). multipart media uploads always declare their
-    # own media type and keep the full MAX_REQUEST_BYTES — sized for a
-    # MEDIA_MAX_BYTES video, i.e. gigabytes. Every OTHER non-JSON body keeps
-    # the old 256 MiB backstop: nothing but an upload has business being
-    # larger, and the media cap must not silently widen text/plain PUTs.
+    # whatever they declare). multipart media uploads to the upload routes
+    # (_MULTIPART_UPLOAD_PATHS) keep the full MAX_REQUEST_BYTES — sized for
+    # a MEDIA_MAX_BYTES video, i.e. gigabytes. Every OTHER non-JSON body,
+    # multipart-labelled ones to any other route included, keeps the old
+    # 256 MiB backstop: nothing but an upload has business being larger,
+    # and the media cap must not silently widen text/plain PUTs.
     _ctype = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
     _main, _, _sub = _ctype.partition("/")
     if not _ctype or (_main == "application"
                       and (_sub == "json" or _sub.endswith("+json"))):
         max_body = min(max_body, int(getattr(cfg, "MAX_JSON_BODY_BYTES", 4_194_304)))
-    elif _ctype != "multipart/form-data":
+    elif (_ctype != "multipart/form-data"
+          or request.url.path not in _MULTIPART_UPLOAD_PATHS):
         max_body = min(max_body, _NON_UPLOAD_BODY_BACKSTOP)
     # Two path-exact exceptions for the media export: the raw-body video
     # upload (the route counts its own bytes against MEDIA_MAX_BYTES, so the
