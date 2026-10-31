@@ -228,6 +228,29 @@ UPGRADED_RULE_LANGUAGES: dict[
     "de-dictation-map": (("callback:map", None), ("de",)),
 }
 
+# Factory single-pattern rules whose pattern was CHANGED in config.json, keyed
+# by rule name: (type, old pattern) -> new pattern. The same stored-copy gap
+# and guard as UPGRADED_RULE_ENTRIES: upgrade_rule_entries rewrites the
+# pattern ONLY while the stored rule's type and pattern still equal the old
+# factory ones; a rule the admin edited stays theirs. Keyed by the current
+# name (migrate_rule_slugs renames first). A rule also in
+# UPGRADED_RULE_LANGUAGES gets its scope first, which keys on the old pattern.
+UPGRADED_RULE_PATTERNS: dict[str, tuple[tuple[str, str], str]] = {
+    # `\n+\s*` tried every split of a newline run at every start, so a run of
+    # paragraph breaks with no lowercase letter after it took cubic time on
+    # the event loop of /transcribe (2000 newlines: 23 s). The new one starts
+    # a match only at the last newline of a run.
+    "capitalize-after-terminator": (
+        ("callback:upper", "([.?!]\\s+|\\n+\\s*)([a-zäöüß])"),
+        "([.?!]\\s+|\\n[^\\S\\n]*)([a-zäöüß])",
+    ),
+    # The old one also fired after a digit: "45-jährige" → "45-Jährige".
+    "capitalize-letter-after-hyphen": (
+        ("callback:upper", "(-)([a-zäöüß])"),
+        "(?<!\\d)(-)([a-zäöüß])",
+    ),
+}
+
 # The entries / map a stored copy of a pattern-less rule in
 # UPGRADED_RULE_LANGUAGES must still hold to get the scope: digests
 # (_content_digest) of every factory version shipped before the scope
@@ -399,11 +422,12 @@ def migrate_rule_slugs(raw: dict[str, Any], known: Any = None) -> dict[str, Any]
 
 
 def upgrade_rule_entries(raw: dict[str, Any]) -> list[str]:
-    """Apply UPGRADED_RULE_ENTRIES and UPGRADED_RULE_LANGUAGES to the stored
-    PIPELINE_RULES of an overrides dict (in place). Returns the labels of the
-    entries (and "<rule>/languages" for the scopes) rewritten, for the
-    caller's log line; empty when nothing matched. Idempotent: an upgraded
-    entry no longer equals the old text, an upgraded rule has languages."""
+    """Apply UPGRADED_RULE_ENTRIES, UPGRADED_RULE_LANGUAGES and
+    UPGRADED_RULE_PATTERNS to the stored PIPELINE_RULES of an overrides dict
+    (in place). Returns the labels of the entries (and "<rule>/languages",
+    "<rule>/pattern" for the scopes and patterns) rewritten, for the caller's
+    log line; empty when nothing matched. Idempotent: an upgraded entry or
+    pattern no longer equals the old text, an upgraded rule has languages."""
     rules = raw.get("PIPELINE_RULES")
     done: list[str] = []
     if not isinstance(rules, list):
@@ -415,6 +439,11 @@ def upgrade_rule_entries(raw: dict[str, Any]) -> list[str]:
                 and _unscoped_factory_copy(r, r["name"])):
             r["languages"] = list(UPGRADED_RULE_LANGUAGES[r["name"]][1])
             done.append(f"{r['name']}/languages")
+        up_pat = (UPGRADED_RULE_PATTERNS.get(r["name"])
+                  if isinstance(r.get("name"), str) else None)
+        if up_pat is not None and (r.get("type"), r.get("pattern")) == up_pat[0]:
+            r["pattern"] = up_pat[1]
+            done.append(f"{r['name']}/pattern")
         if r.get("type") != "regex-list":
             continue
         entries = r.get("entries")

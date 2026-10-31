@@ -55,8 +55,9 @@ def test_stored_hyphen_rule_without_languages_becomes_german_only(stored_languag
     else:
         r["languages"] = stored_languages
     raw = {"PIPELINE_RULES": rules}
-    assert renames.upgrade_rule_entries(raw) == ["capitalize-letter-after-hyphen/languages"]
-    assert raw["PIPELINE_RULES"] == _pre_scope_rules()
+    assert renames.upgrade_rule_entries(raw) == ["capitalize-letter-after-hyphen/languages",
+                                                 "capitalize-letter-after-hyphen/pattern"]
+    assert raw["PIPELINE_RULES"] == _factory_rules()
     assert renames.upgrade_rule_entries(raw) == []
 
 
@@ -74,6 +75,45 @@ def test_edited_hyphen_rule_keeps_its_own_scope_and_pattern():
     raw = {"PIPELINE_RULES": rules}
     assert renames.upgrade_rule_entries(raw) == []
     assert edited["languages"] == []
+
+
+def test_every_pattern_upgrade_ends_on_its_factory_pattern():
+    for name, ((typ, _old), new) in renames.UPGRADED_RULE_PATTERNS.items():
+        r = _rule(_factory_rules(), name)
+        assert (r["type"], r["pattern"]) == (typ, new), name
+
+
+@pytest.mark.parametrize("name", sorted(renames.UPGRADED_RULE_PATTERNS))
+def test_load_overrides_upgrades_a_stored_old_factory_pattern(tmp_path, name):
+    """A saved copy (every quick-config dictionary add writes the whole list)
+    kept the old pattern forever: the cubic capitalize-after-terminator froze
+    /transcribe on a run of paragraph breaks, and "45-jährige" still became
+    "45-Jährige"."""
+    from faster_whisper_backend.settings import config_store as cs
+    rules = _factory_rules()
+    _rule(rules, name)["pattern"] = renames.UPGRADED_RULE_PATTERNS[name][0][1]
+    p = tmp_path / "config.local.json"
+    p.write_text(json.dumps({"PIPELINE_RULES": rules}), encoding="utf-8")
+    out = cs.load_overrides(str(p))
+    factory = _rule(_factory_rules(), name)
+    stored = _rule(out["PIPELINE_RULES"], name)
+    assert (stored["pattern"], stored["languages"]) == (
+        factory["pattern"], factory.get("languages", []))
+    assert renames.upgrade_rule_entries({"PIPELINE_RULES": out["PIPELINE_RULES"]}) == []
+
+
+@pytest.mark.parametrize("name", sorted(renames.UPGRADED_RULE_PATTERNS))
+def test_edited_factory_pattern_stays_the_admins(name):
+    rules = _factory_rules()
+    edited = _rule(rules, name)
+    edited["pattern"] = "(-|\\n)([a-z])"
+    assert renames.upgrade_rule_entries({"PIPELINE_RULES": rules}) == []
+    assert edited["pattern"] == "(-|\\n)([a-z])"
+    retyped = _rule(rules, name)
+    retyped["type"], retyped["pattern"] = (
+        "callback:dedup", renames.UPGRADED_RULE_PATTERNS[name][0][1])
+    assert renames.upgrade_rule_entries({"PIPELINE_RULES": rules}) == []
+    assert retyped["pattern"] == renames.UPGRADED_RULE_PATTERNS[name][0][1]
 
 
 def test_load_overrides_scopes_a_stored_hyphen_rule_to_german(tmp_path):
