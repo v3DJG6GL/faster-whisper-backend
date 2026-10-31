@@ -670,7 +670,7 @@
       "exposed": false,
       "color": "",
       "tags": [],
-      "note": "Capitalizes a lowercase letter right after a hyphen: Eisen-infusion → Eisen-Infusion. Not after a digit: 45-jährige and 3-mal stay lowercase.",
+      "note": "Capitalizes a lowercase letter right after a hyphen: Eisen-infusion → Eisen-Infusion.",
       "type": "callback:upper",
       "pattern": "(?<!\\d)(-)([a-zäöüß])"
     },

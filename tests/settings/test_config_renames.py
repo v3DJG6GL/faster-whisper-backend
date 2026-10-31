@@ -116,6 +116,64 @@ def test_edited_factory_pattern_stays_the_admins(name):
     assert retyped["pattern"] == renames.UPGRADED_RULE_PATTERNS[name][0][1]
 
 
+# The upgraded factory rules and entries as config.json shipped them before
+# their pattern upgrade (origin/main of 2026-10). The upgrade rewrites only
+# the pattern / replacement, so every other field, the notes included, must
+# still be the factory one: the /settings pipeline editor compares the whole
+# rule, and an untouched copy would read as edited forever.
+_SHIPPED_BEFORE_PATTERN_UPGRADE = {
+    "capitalize-after-terminator": {
+        "name": "capitalize-after-terminator",
+        "label": "Capitalize after sentence terminator", "enabled": True,
+        "locked": True, "seeded": True, "exposed": False, "color": "", "tags": [],
+        "note": "Capitalizes the first letter after a . ? ! plus whitespace, or after "
+                "a newline (whitespace required, so 'x.y' is untouched).",
+        "type": "callback:upper", "pattern": "([.?!]\\s+|\\n+\\s*)([a-zäöüß])"},
+    "capitalize-letter-after-hyphen": {
+        "name": "capitalize-letter-after-hyphen",
+        "label": "Capitalize letter after hyphen", "enabled": True,
+        "languages": ["de"], "locked": False, "seeded": True, "exposed": False,
+        "color": "", "tags": [],
+        "note": "Capitalizes a lowercase letter right after a hyphen: "
+                "Eisen-infusion → Eisen-Infusion.",
+        "type": "callback:upper", "pattern": "(-)([a-zäöüß])"},
+}
+_SHIPPED_BEFORE_ENTRY_UPGRADE = {
+    "tighten-digit-separators": {
+        "pattern": "(\\d)\\s*([/,\\-])\\s*(\\d)", "replacement": "\\1\\2\\3",
+        "label": "tighten-digit-separators",
+        "note": "Removes spaces around a / , or - between two digits: 12 / 5 → 12/5."},
+    "normalize-digit-range": {
+        "pattern": "(\\d)\\s*-\\s*(\\d)", "replacement": "\\1/\\2",
+        "label": "normalize-digit-range", "note": ""},
+    "space-before-closing-punct": {
+        "pattern": "[ \\t]+([,.:;!?%\\)\\]\\}])", "replacement": "\\1",
+        "label": "space-before-closing-punct",
+        "note": "Removes space before closing punctuation: , . : ; ! ? % ) ] }."},
+}
+
+
+def test_upgraded_rules_end_equal_to_the_factory_rule_notes_included():
+    """0a9403f8 changed the hyphen rule's note along with its pattern: the
+    upgraded copy kept the old note, so the pipeline editor showed a rule the
+    admin never touched as edited (diverged once stamped), and "promote"
+    would have written the old note back."""
+    assert set(_SHIPPED_BEFORE_PATTERN_UPGRADE) == set(renames.UPGRADED_RULE_PATTERNS)
+    for name, old in _SHIPPED_BEFORE_PATTERN_UPGRADE.items():
+        raw = {"PIPELINE_RULES": [copy.deepcopy(old)]}
+        assert renames.upgrade_rule_entries(raw) == [f"{name}/pattern"]
+        assert raw["PIPELINE_RULES"] == [_rule(_factory_rules(), name)], name
+    for label, old in _SHIPPED_BEFORE_ENTRY_UPGRADE.items():
+        rules = _factory_rules()
+        entries = next(r["entries"] for r in rules
+                       if any(e.get("label") == label for e in r.get("entries") or []))
+        i = next(i for i, e in enumerate(entries) if e["label"] == label)
+        entries[i] = copy.deepcopy(old)
+        raw = {"PIPELINE_RULES": rules}
+        assert len(renames.upgrade_rule_entries(raw)) == 1
+        assert raw["PIPELINE_RULES"] == _factory_rules(), label
+
+
 def test_load_overrides_scopes_a_stored_hyphen_rule_to_german(tmp_path):
     from faster_whisper_backend.settings import config_store as cs
     rules = _pre_scope_rules()
