@@ -67,20 +67,23 @@ def test_capitalize_after_terminator_is_fast_on_a_run_of_paragraph_breaks(app_mo
     """`\\n+\\s*` tried every split of a newline run at every start when no
     lowercase letter follows it, so a repeated "Neuer Absatz" (one paragraph
     break each) took cubic time: 2000 newlines ran 23 s on the event loop of
-    /transcribe."""
+    /transcribe. `\\n\\s*` was still quadratic (32000 newlines: 22 s): it
+    started at every newline of the run and scanned to its end. A match now
+    starts only at the last newline of a run."""
     rule = _by_name()["capitalize-after-terminator"]
     app_module.cfg.PIPELINE_RULES = [
         copy.deepcopy(rule), {"name": "trim-edges", "label": "Trim", "type": "terminal"}]
     pl_engine.rebuild_caches()
-    text = "Befund" + "\n" * 2000 + "Ende"
-    t0 = time.perf_counter()
-    out = pl_engine._postprocess_text(text, model_name="", language="de")
-    assert time.perf_counter() - t0 < 1.0
-    assert out == text
-    old = r"([.?!]\s+|\n+\s*)([a-zäöüß])"
-    for s in ("Gut. danke\n\n  ja", "a\n \n\tb\n\n\n.c", "x.y! über\n1\nß"):
-        assert (re.sub(rule["pattern"], pl_engine._upper_callback, s)
-                == re.sub(old, pl_engine._upper_callback, s))
+    for text in ("Befund" + "\n" * 40000 + "Ende", "Befund" + "\n \n" * 20000 + "Ende"):
+        t0 = time.perf_counter()
+        out = pl_engine._postprocess_text(text, model_name="", language="de")
+        assert time.perf_counter() - t0 < 1.0
+        assert out == text
+    for old in (r"([.?!]\s+|\n+\s*)([a-zäöüß])", r"([.?!]\s+|\n\s*)([a-zäöüß])"):
+        for s in ("Gut. danke\n\n  ja", "a\n \n\tb\n\n\n.c", "x.y! über\n1\nß",
+                  "a\r\n\x0b\nb\n\x85\u2028c\n\x0c\x1cä"):
+            assert (re.sub(rule["pattern"], pl_engine._upper_callback, s)
+                    == re.sub(old, pl_engine._upper_callback, s))
 
 
 def test_language_specific_rules_are_tagged():

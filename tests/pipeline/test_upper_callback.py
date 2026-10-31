@@ -14,8 +14,9 @@ def _sub(pattern, text):
 
 
 def test_seeded_patterns_unchanged():
-    assert _sub(r"(-)([a-zäöüß])", "E-mail an x-ray") == "E-Mail an x-Ray"
-    assert _sub(r"([.?!]\s+|\n+\s*)([a-zäöüß])", "Gut. danke\n\n  ja") == "Gut. Danke\n\n  Ja"
+    assert _sub(r"(?<!\d)(-)([a-zäöüß])", "E-mail an x-ray, 3-mal") == "E-Mail an x-Ray, 3-mal"
+    assert (_sub(r"([.?!]\s+|\n[^\S\n]*)([a-zäöüß])", "Gut. danke\n\n  ja")
+            == "Gut. Danke\n\n  Ja")
 
 
 def test_text_outside_the_two_groups_is_kept():
