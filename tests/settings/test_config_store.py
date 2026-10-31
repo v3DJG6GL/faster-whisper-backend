@@ -374,6 +374,28 @@ def test_allowed_hosts_ip_cidr():
     _bad(USER_WEBUI_ALLOWED_HOSTS=["example.com"])  # hostname is not an IP/CIDR
 
 
+def test_allowed_hosts_rewrites_ipv4_mapped_entries(tmp_path):
+    """auth/hosts folds a "::ffff:a.b.c.d" client to a.b.c.d, so a mapped
+    entry copied from the "::" bind's log saved cleanly and then 403ed that
+    client. It is stored as the IPv4 spelling; other entries stay as written."""
+    from types import SimpleNamespace
+    from faster_whisper_backend.auth.hosts import host_in_allowlist
+    got = _ok(ADMIN_WEBUI_ALLOWED_HOSTS=[
+        "::ffff:192.168.1.5", "::ffff:10.0.0.0/120", "::ffff:0:0/95",
+        "::1", "fd00::/8", "192.168.2.0/24",
+    ]).ADMIN_WEBUI_ALLOWED_HOSTS
+    assert got == ["192.168.1.5", "10.0.0.0/24", "::ffff:0:0/95",
+                   "::1", "fd00::/8", "192.168.2.0/24"]
+    req = SimpleNamespace(client=SimpleNamespace(host="::ffff:192.168.1.5"))
+    assert host_in_allowlist(req, got)
+    req = SimpleNamespace(client=SimpleNamespace(host="::ffff:10.0.0.77"))
+    assert host_in_allowlist(req, got)
+    p = str(tmp_path / "config.local.json")
+    cs.save_overrides({"USER_WEBUI_ALLOWED_HOSTS": ["::ffff:192.168.1.5"]}, p)
+    on_disk = json.loads(open(p, encoding="utf-8").read())
+    assert on_disk["USER_WEBUI_ALLOWED_HOSTS"] == ["192.168.1.5"]
+
+
 def test_server_host_loose_charset():
     _ok(SERVER_HOST="0.0.0.0")
     _ok(SERVER_HOST="::")

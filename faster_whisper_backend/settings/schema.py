@@ -2079,15 +2079,27 @@ class AdminConfig(BaseModel):
     def _validate_hosts(cls, v: list[str] | None) -> list[str] | None:
         if v is None:
             return v
+        out: list[str] = []
         for entry in v:
             try:
-                ipaddress.ip_network(entry, strict=False)
+                net = ipaddress.ip_network(entry, strict=False)
             except ValueError as e:
                 raise ValueError(
                     f"'{entry}' is not a valid IP or CIDR (e.g. '127.0.0.1' or "
                     f"'192.168.1.0/24'): {e}"
                 )
-        return v
+            # auth/hosts folds a "::ffff:a.b.c.d" client to a.b.c.d, which
+            # never matches an IPv6 network, so a mapped entry (as uvicorn logs
+            # a v4 client on the "::" bind) saved cleanly and then 403ed.
+            # Rewrite it to the IPv4 spelling instead of refusing it: a
+            # load-time ValidationError drops every override. Below /96 the
+            # range is not all-mapped, so it stays as written.
+            mapped = getattr(net.network_address, "ipv4_mapped", None)
+            if mapped is not None and net.prefixlen >= 96:
+                entry = (str(mapped) if "/" not in entry else
+                         str(ipaddress.IPv4Network((mapped, net.prefixlen - 96))))
+            out.append(entry)
+        return out
 
     @field_validator("CORS_ALLOW_ORIGINS")
     @classmethod
