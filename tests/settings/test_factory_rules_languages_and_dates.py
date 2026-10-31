@@ -236,6 +236,7 @@ def test_upgraded_entries_match_config_json():
         e = next(e for r in _factory_rules() for e in (r.get("entries") or [])
                  if e.get("label") == label)
         assert (e["pattern"], e["replacement"]) == new
+    assert set(renames.EARLIER_RULE_ENTRIES) <= set(renames.UPGRADED_RULE_ENTRIES)
 
 
 def test_stored_old_factory_entry_is_upgraded_once():
@@ -492,3 +493,22 @@ def test_stored_old_closing_punct_entry_is_upgraded_once():
         "digit-and-whitespace-tidy/space-before-closing-punct"]
     assert raw["PIPELINE_RULES"] == _factory_rules()
     assert renames.upgrade_rule_entries(raw) == []
+
+
+def test_closing_punct_rule_saved_before_june_is_upgraded(tmp_path):
+    """A copy saved before 8cde7fd holds the single `regex` rule with the
+    pattern from before `%` joined the class, which UPGRADED_RULE_ENTRIES
+    does not know: it kept the quadratic scan on a "... ... ..." loop."""
+    from faster_whisper_backend.settings import config_store as cs
+    old_pat, old_rep = renames.EARLIER_RULE_ENTRIES["space-before-closing-punct"][0]
+    rules = copy.deepcopy(_factory_rules())
+    rules.insert(0, {"name": "space-before-closing-punct",
+                     "label": "Remove space before closing punctuation",
+                     "type": "regex", "pattern": old_pat, "replacement": old_rep})
+    p = tmp_path / "config.local.json"
+    p.write_text(json.dumps({"PIPELINE_RULES": rules}), encoding="utf-8")
+    got = next(r for r in cs.load_overrides(str(p))["PIPELINE_RULES"]
+               if r["name"] == "space-before-closing-punct")["entries"]
+    new = renames.UPGRADED_RULE_ENTRIES["space-before-closing-punct"][1]
+    assert [(e["label"], e["pattern"], e["replacement"]) for e in got] == [
+        ("space-before-closing-punct", *new)]

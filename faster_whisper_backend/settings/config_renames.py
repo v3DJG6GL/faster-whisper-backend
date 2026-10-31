@@ -116,7 +116,8 @@ MERGED_RULES: dict[str, str] = {
 # when both its pattern and its replacement still equal the old factory text
 # exactly: an entry the admin edited is theirs and stays untouched. A copy saved
 # before an entry was relabelled holds the old text under its old label
-# (RELABELLED_RULE_ENTRIES).
+# (RELABELLED_RULE_ENTRIES); one saved before an earlier change of the text
+# holds that text (EARLIER_RULE_ENTRIES).
 UPGRADED_RULE_ENTRIES: dict[str, tuple[tuple[str, str], tuple[str, str]]] = {
     # The old pair matched `"…"` greedily from any quote, so a quote that was
     # still open at the end of one utterance's text was paired differently
@@ -192,6 +193,17 @@ UPGRADED_RULE_ENTRIES: dict[str, tuple[tuple[str, str], tuple[str, str]]] = {
         ('(^\\s*|[.!?…]\\s*|\\n\\s*)(?!¡)([^.!?…¡\\n]+!)', '\\1¡\\2'),
         ('(^\\s*|(?<=[.!?…])(?!(?<=\\d\\.)\\d)\\s*|(?<=\\n)\\s*)(?!¡)'
          '((?:[^.!?…¡\\n]|(?<=\\d)\\.(?=\\d))+!)', '\\1¡\\2'),
+    ),
+}
+
+# Earlier factory texts of an UPGRADED_RULE_ENTRIES label, (pattern,
+# replacement) pairs that a stored copy may still hold instead of the old
+# side there; each is upgraded to the same new text, under the same guard.
+EARLIER_RULE_ENTRIES: dict[str, tuple[tuple[str, str], ...]] = {
+    # The single `regex` rule shipped up to 8cde7fd (June 15 2026), before
+    # `%` joined the class: just as quadratic on a space run.
+    "space-before-closing-punct": (
+        ('[ \\t]+([,.:;!?\\)\\]\\}])', '\\1'),
     ),
 }
 
@@ -467,8 +479,9 @@ def upgrade_rule_entries(raw: dict[str, Any]) -> list[str]:
             up = UPGRADED_RULE_ENTRIES.get(label)
             if up is None:
                 continue
-            (old_pat, old_rep), (new_pat, new_rep) = up
-            if e.get("pattern") == old_pat and (e.get("replacement") or "") == old_rep:
+            old, (new_pat, new_rep) = up
+            if ((e.get("pattern"), e.get("replacement") or "")
+                    in (old, *EARLIER_RULE_ENTRIES.get(label, ()))):
                 e["label"] = label
                 e["pattern"] = new_pat
                 e["replacement"] = new_rep
