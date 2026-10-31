@@ -1,7 +1,8 @@
 """Factory PIPELINE_RULES (config.json): the digit guard on
 delete-punct-before-hyphen, the language tags on language-specific rules, the
 Spanish opening-mark rule, the dictation-map → de-dictation-map rename, and
-tighten-digit-separators on a digit chain (3/4/2026).
+tighten-digit-separators and normalize-digit-range on a digit chain
+(3/4/2026).
 
 2026-09-19: "vom 3.-10 Oktober" left the pipeline as "vom 310 Oktober" —
 final-cleanup deleted ".-" between two numbers. A silently changed date or
@@ -340,3 +341,42 @@ def test_stored_old_digit_separator_entry_is_upgraded_once():
     assert renames.upgrade_rule_entries(raw) == []
     assert re.sub(old_pat, old_rep, "3 / 4 / 2026") == "3/4 / 2026"
     assert re.sub(new_pat, new_rep, "3 / 4 / 2026") == "3/4/2026"
+
+
+@pytest.mark.parametrize("text, want", [
+    (" Datum 3-4-2026.", "3/4/2026"),
+    (" Datum 3 - 4 - 2026.", "3/4/2026"),
+    (" Seiten 1-2-3.", "1/2/3"),
+    (" Termin 10 - 12 Uhr.", "10/12"),
+])
+def test_every_hyphen_of_a_digit_chain_becomes_a_slash(app_module, text, want):
+    """normalize-digit-range consumed the digit after the hyphen, so with a
+    one-digit day or month every second hyphen stayed: "3-4-2026" became
+    "3/4-2026"."""
+    app_module.cfg.PIPELINE_RULES = copy.deepcopy(_factory_rules())
+    pl_engine.rebuild_caches()
+    out = pl_engine._postprocess_text(text, model_name="", language="de")
+    assert want in out.split()
+
+
+@pytest.mark.parametrize("single_regex", [False, True])
+def test_stored_old_digit_range_entry_is_upgraded(tmp_path, single_regex):
+    """A copy saved before 8cde7fd holds the rule as a single `regex` card,
+    which becomes a one-entry list labelled with its slug first."""
+    from faster_whisper_backend.settings import config_store as cs
+    rules = copy.deepcopy(_factory_rules())
+    (old_pat, old_rep), new = renames.UPGRADED_RULE_ENTRIES["normalize-digit-range"]
+    i = next(i for i, r in enumerate(rules) if r["name"] == "normalize-digit-range")
+    if single_regex:
+        rules[i] = {"name": "normalize-digit-range", "label": "Normalize digit range",
+                    "type": "regex", "pattern": old_pat, "replacement": old_rep}
+    else:
+        rules[i]["entries"][0].update(pattern=old_pat, replacement=old_rep)
+    p = tmp_path / "config.local.json"
+    p.write_text(json.dumps({"PIPELINE_RULES": rules}), encoding="utf-8")
+    got = next(r for r in cs.load_overrides(str(p))["PIPELINE_RULES"]
+               if r["name"] == "normalize-digit-range")["entries"]
+    assert [(e["label"], e["pattern"], e["replacement"]) for e in got] == [
+        ("normalize-digit-range", *new)]
+    assert re.sub(old_pat, old_rep, "3-4-2026") == "3/4-2026"
+    assert re.sub(*new, "3-4-2026") == "3/4/2026"

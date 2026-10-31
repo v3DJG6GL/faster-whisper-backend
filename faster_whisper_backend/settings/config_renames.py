@@ -146,6 +146,12 @@ UPGRADED_RULE_ENTRIES: dict[str, tuple[tuple[str, str], tuple[str, str]]] = {
         ('(?<=\\d)\\s*([/\\-])\\s*(?=\\d)|(?<![/\\-])(?<![/\\-]\\s)'
          '(\\d)\\s*(,)\\s*(\\d)', '\\1\\2\\3\\4'),
     ),
+    # Same consumed digit: "3-4-2026" → "3/4-2026", so whether a date kept a
+    # hyphen depended on its day or month having one digit.
+    "normalize-digit-range": (
+        ('(\\d)\\s*-\\s*(\\d)', '\\1/\\2'),
+        ('(\\d)\\s*-\\s*(?=\\d)', '\\1/'),
+    ),
     # Spanish opening marks: es-punctuation now runs before this rule, so
     # the strip must take an opening ¿/¡ along with its closing mark (an
     # orphaned "¿Qué hora es" otherwise), keeping it only where the closing

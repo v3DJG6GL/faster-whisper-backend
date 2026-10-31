@@ -320,8 +320,8 @@
       "type": "regex-list",
       "entries": [
         {
-          "pattern": "(\\d)\\s*-\\s*(\\d)",
-          "replacement": "\\1/\\2",
+          "pattern": "(\\d)\\s*-\\s*(?=\\d)",
+          "replacement": "\\1/",
           "label": "normalize-digit-range",
           "note": ""
         }
