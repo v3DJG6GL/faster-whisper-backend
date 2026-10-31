@@ -136,36 +136,21 @@ UPGRADED_RULE_ENTRIES: dict[str, tuple[tuple[str, str], tuple[str, str]]] = {
         ('(?<!\\d)(?:,|\\.)(- |-)', ''),
     ),
     # The old pattern consumed the digit after the separator, so re.sub could
-    # not start the next match on it and every second / or - of a chain kept
-    # its spaces: "3 / 4 / 2026" → "3/4 / 2026". The new one only looks around
-    # the digits of a / or -. A comma still consumes its digits (it is the
-    # German decimal mark), but only from the first digit of a whole number
-    # that is not itself the tail of a decimal, fraction or range, so a list
-    # like "0,25, 1,0" or "120/80, 130/85" is not glued into one. After a
-    # list comma it joins only a dictated "Komma" (a space before the comma):
-    # "1,5, 2 , 5" → "1,5, 2,5", but "2,5, 5, 10" stays.
+    # not start the next match on it and every second separator of a chain
+    # kept its spaces: "3 / 4 / 2026" → "3/4 / 2026", "1, 2, 3" → "1,2, 3".
+    # The new one only looks ahead at that digit. Every comma is joined: in
+    # the default pipeline strip-auto-punctuation has deleted Whisper's list
+    # commas by then, so the comma left is a dictated decimal mark ("Minus 2
+    # Komma 5" → "- 2,5").
     "tighten-digit-separators": (
         ('(\\d)\\s*([/,\\-])\\s*(\\d)', '\\1\\2\\3'),
-        ('(?<=\\d)\\s*([/\\-])\\s*(?=\\d)|(?<![\\d/\\-,])(?<![/\\-]\\s)'
-         '(?!(?<=,\\s)\\d+,)(\\d+)\\s*(,)\\s*(\\d)', '\\1\\2\\3\\4'),
+        ('(\\d)\\s*([/,\\-])\\s*(?=\\d)', '\\1\\2'),
     ),
     # Same consumed digit: "3-4-2026" → "3/4-2026", so whether a date kept a
     # hyphen depended on its day or month having one digit.
     "normalize-digit-range": (
         ('(\\d)\\s*-\\s*(\\d)', '\\1/\\2'),
         ('(\\d)\\s*-\\s*(?=\\d)', '\\1/'),
-    ),
-    # The old pair joined ANY two numbers at a / or - group, so once
-    # strip-auto-punctuation deleted the comma of a list the two items became
-    # one number: "Seiten 3-5, 7-9" → "3/57/9". The new one joins only a
-    # number that is not itself part of another / or - group.
-    "merge-digit-pair-before": (
-        ('(?<=\\d) +(?=\\d[/\\-])', ''),
-        ('(?<![/\\-\\d])(\\d+) +(?=\\d[/\\-])', '\\1'),
-    ),
-    "merge-digit-pair-after": (
-        ('(?<=[/\\-]\\d) +(?=\\d)', ''),
-        ('(?<=[/\\-]\\d) +(?=\\d+(?![\\d/\\-]))', ''),
     ),
     # Spanish opening marks: es-punctuation now runs before this rule, so
     # the strip must take an opening ¿/¡ along with its closing mark (an

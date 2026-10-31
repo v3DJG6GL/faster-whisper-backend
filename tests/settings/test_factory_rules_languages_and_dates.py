@@ -311,6 +311,7 @@ def test_load_overrides_upgrades_a_stored_old_quote_entry(tmp_path):
     (" Datum 3 Schrägstrich 4 Schrägstrich 2026.", "3/4/2026"),
     (" Aktenzeichen 12 Schrägstrich 3 Schrägstrich 4 Schrägstrich 5.", "12/3/4/5"),
     (" Datum 3 / 4 / 2026.", "3/4/2026"),
+    (" Version 1 Komma 2 Komma 3.", "1,2,3"),
     (" Blutdruck 120 Schrägstrich 80.", "120/80"),
 ])
 def test_every_separator_of_a_digit_chain_is_tightened(app_module, text, want):
@@ -325,66 +326,25 @@ def test_every_separator_of_a_digit_chain_is_tightened(app_module, text, want):
 
 
 @pytest.mark.parametrize("text, want", [
-    (" Dosis 0,5, 1,0 und 1,5 mg.", "Dosis 0,5, 1,0 und 1,5 mg"),
-    (" Dosis 2,5, 5 und 10 mg.", "Dosis 2,5, 5 und 10 mg"),
-    (" Seiten 3-5, 7-9.", "Seiten 3/5, 7/9"),
-    (" Seiten 3 Schrägstrich 5, 7 Schrägstrich 9.", "Seiten 3/5, 7/9"),
-    (" Dosis 0,25, 0,5 mg.", "Dosis 0,25, 0,5 mg"),
-    (" Werte 12,25, 1,5 und 3,0.", "Werte 12,25, 1,5 und 3,0"),
-    (" Dosis 2,5, 5, 10 mg.", "Dosis 2,5, 5, 10 mg"),
-    (" Blutdruck 120/80, 130/85.", "Blutdruck 120/80, 130/85"),
-    (" Seiten 10-12, 14-16.", "Seiten 10/12, 14/16"),
-    (" Dosis 12 Komma 5 mg.", "Dosis 12,5 mg"),
-    (" Dosis 12 , 5 mg.", "Dosis 12,5 mg"),
-    (" Dosis 1 Komma 5, 2 Komma 5 mg.", "Dosis 1,5, 2,5 mg"),
+    (" Base Excess Minus 2 Komma 5.", "Base Excess - 2,5"),
+    (" BE -2 Komma 5.", "BE -2,5"),
+    (" Sphäre -1 Komma 25.", "Sphäre -1,25"),
+    (" Sphäre Minus 1 Komma 25, Zylinder Minus 0 Komma 5.",
+     "Sphäre - 1,25 Zylinder - 0,5"),
+    (" Kalium 3 Komma 5 Bindestrich 5 Komma 0.", "Kalium 3,5-5,0"),
+    (" Temperatur 37 Komma 5 - 38 Komma 2.", "Temperatur 37,5/38,2"),
+    (" am 1 2 / 0 3 / 2026.", "am 12/03/2026"),
+    (" am 0 3 / 0 4 / 2026.", "am 03/04/2026"),
 ])
-def test_a_list_of_decimals_or_ranges_keeps_its_commas(app_module, text, want):
-    """The comma is the German decimal mark, so tightening every comma of a
-    chain glued a list Whisper punctuated ("0,5, 1,0" → "0,5,1,0"), and
-    with several digits before the list comma ("0,25, 1,0", "120/80,
-    130/85") the comma arm started again inside the number. Only a
-    deployment that keeps Whisper's commas sees it: strip-auto-punctuation
-    off."""
-    rules = copy.deepcopy(_factory_rules())
-    next(r for r in rules if r["name"] == "strip-auto-punctuation")["enabled"] = False
-    app_module.cfg.PIPELINE_RULES = rules
-    pl_engine.rebuild_caches()
-    assert pl_engine._postprocess_text(text, model_name="", language="de") == want
-
-
-@pytest.mark.parametrize("text, want", [
-    (" Seiten 3-5, 7-9.", "Seiten 3/5 7/9"),
-    (" Seiten 12-15, 7-9.", "Seiten 12/15 7/9"),
-    (" Seiten 3 Schrägstrich 5, 7 Schrägstrich 9.", "Seiten 3/5 7/9"),
-    (" Zimmer 2/3, 4/5.", "Zimmer 2/3 4/5"),
-    (" Werte 1/2 3/4.", "Werte 1/2 3/4"),
-    (" 1 2/3 Tabletten.", "12/3 Tabletten"),
-    (" 2/3 4 mal.", "2/34 mal"),
-    (" 12 3/4 Stunden.", "123/4 Stunden"),
-])
-def test_a_list_of_fractions_or_ranges_stays_apart_by_default(app_module, text, want):
-    """strip-auto-punctuation deletes the list comma first, and the
-    merge-digit-pair entries then joined the two items into one number:
-    "Seiten 3-5, 7-9" became "3/57/9". A split number ("1 2/3") is still
-    joined."""
+def test_a_dictated_decimal_or_split_date_is_joined_by_default(app_module, text, want):
+    """strip-auto-punctuation deletes Whisper's list commas before the digit
+    tidy, so every comma tighten-digit-separators sees is a dictated decimal
+    mark. A comma arm that skipped a number after a minus or a range end left
+    "- 2, 5" and "3,5-5, 0", and merge-digit-pair entries that skipped a
+    number inside a / group left "12/0 3/2026"."""
     app_module.cfg.PIPELINE_RULES = copy.deepcopy(_factory_rules())
     pl_engine.rebuild_caches()
     assert pl_engine._postprocess_text(text, model_name="", language="de") == want
-
-
-@pytest.mark.parametrize("label", ["merge-digit-pair-before", "merge-digit-pair-after"])
-def test_stored_old_digit_pair_entry_is_upgraded_once(label):
-    rules = copy.deepcopy(_factory_rules())
-    (old_pat, old_rep), new = renames.UPGRADED_RULE_ENTRIES[label]
-    e = next(e for r in rules for e in (r.get("entries") or [])
-             if e.get("label") == label)
-    e["pattern"], e["replacement"] = old_pat, old_rep
-    raw = {"PIPELINE_RULES": rules}
-    assert renames.upgrade_rule_entries(raw) == [f"digit-and-whitespace-tidy/{label}"]
-    assert raw["PIPELINE_RULES"] == _factory_rules()
-    assert renames.upgrade_rule_entries(raw) == []
-    assert re.sub(old_pat, old_rep, "3/5 7/9") == "3/57/9"
-    assert re.sub(*new, "3/5 7/9") == "3/5 7/9"
 
 
 def test_stored_old_digit_separator_entry_is_upgraded_once():
