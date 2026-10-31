@@ -70,7 +70,9 @@ else:
                 f"{_dotenv_path} is not valid UTF-8 text ({_exc}); "
                 "re-save it as UTF-8") from None
         _before = set(os.environ)
-        _load_dotenv(stream=io.StringIO(_text))
+        # newline=None: the universal newlines a text-mode open applied, so a
+        # CRLF file's quoted multi-line value keeps no "\r".
+        _load_dotenv(stream=io.StringIO(_text, newline=None))
         _ENV_FROM_DOTENV = set(os.environ) - _before
 
 

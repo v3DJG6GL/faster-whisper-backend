@@ -164,3 +164,15 @@ def test_env_from_dotenv_holds_an_alias_copied_onto_a_blank_new_name(tmp_path):
     assert out.returncode == 0, out.stderr
     assert json.loads(out.stdout.strip().splitlines()[-1]) == [
         1234, ["WHISPER_SESSION_TTL_S", "WHISPER_SESSION_TTL_SECONDS"]]
+
+
+def test_a_crlf_dotenv_multiline_value_keeps_no_carriage_return(tmp_path):
+    """The decoded text went to dotenv without the newline translation of a
+    text-mode open, so a quoted multi-line value from a Windows editor kept
+    its "\\r"."""
+    import json
+    out = _import_config_from(
+        tmp_path, b'WHISPER_DEFAULT_PROMPT="multi\r\nline"\r\n',
+        expr="c.DEFAULT_PROMPT")
+    assert out.returncode == 0, out.stderr
+    assert json.loads(out.stdout.strip().splitlines()[-1]) == "multi\nline"
