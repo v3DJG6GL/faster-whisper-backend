@@ -67,7 +67,7 @@ else:
                 raise UnicodeError("it contains a NUL byte")
         except UnicodeError as _exc:
             raise RuntimeError(
-                f"{_dotenv_path} is not valid UTF-8 text ({_exc}); "
+                f"{_dotenv_path} could not be read as text ({_exc}); "
                 "re-save it as UTF-8") from None
         _before = set(os.environ)
         # newline=None: the universal newlines a text-mode open applied, so a

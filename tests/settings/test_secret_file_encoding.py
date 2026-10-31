@@ -122,7 +122,10 @@ def test_a_bom_dotenv_is_decoded_and_applied(tmp_path, data):
     # UTF-8 with NULs, which os.environ refuses after earlier keys were set.
     b"WHISPER_BEAM_SIZE=3\n" + "WHISPER_DEFAULT_PROMPT=x\r\n".encode("utf-16-le"),
     b"WHISPER_BEAM_SIZE=3\nWHISPER_DEFAULT_PROMPT=a\x00b\n",
-], ids=["cp1252", "utf16le-append", "utf8-nul"])
+    # A UTF-16 BOM file with an odd byte count: the message named UTF-8 next
+    # to a 'utf-16-le' codec reason.
+    _DOTENV.encode("utf-16") + b"\n",
+], ids=["cp1252", "utf16le-append", "utf8-nul", "utf16-bom-odd"])
 def test_an_unusable_dotenv_stops_import_with_the_fix(tmp_path, data):
     """Skipping the file started the server on the default DATA_DIR with
     empty stores and every security pin of .env dropped; a NUL crashed with
@@ -130,8 +133,9 @@ def test_an_unusable_dotenv_stops_import_with_the_fix(tmp_path, data):
     fix."""
     out = _import_config_from(tmp_path, data)
     assert out.returncode != 0
-    assert f"{tmp_path / '.env'} is not valid UTF-8 text" in out.stderr, out.stderr
+    assert f"{tmp_path / '.env'} could not be read as text (" in out.stderr, out.stderr
     assert "re-save it as UTF-8" in out.stderr
+    assert "not valid UTF-8" not in out.stderr
     assert "embedded null byte" not in out.stderr
 
 
