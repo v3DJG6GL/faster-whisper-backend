@@ -532,10 +532,19 @@ def _nested_repetition(pat: str) -> bool:
     # read (see _rep) — a `(\b(?:w1|w2|…)\b)` no repeat encloses never pays
     # the O(branches²) pair test.
     stack = [{"rep": False, "start": 0, "alts": [], "atomic": False, "pending": []}]
+    # One pair test per branch list: `(?:(?:w1|w2|…))+` reaches the same
+    # spans through the child's "pending" entry and its "inner" hand-off.
+    tested: "dict[tuple, bool]" = {}
+
+    def _overlap(spans) -> bool:
+        key = tuple(spans)
+        if key not in tested:
+            tested[key] = _spans_overlap(pat, spans, icase)
+        return tested[key]
 
     def _rep(frame) -> bool:
         return frame["rep"] or any(
-            _spans_overlap(pat, spans, icase)
+            _overlap(spans)
             and not (follow is not None and _follower_fixes_split(pat, spans, follow))
             for spans, follow in frame["pending"])
     i = 0
@@ -620,7 +629,7 @@ def _nested_repetition(pat: str) -> bool:
                 # (a|ab)+, (x|xx)+y, (n|d|nd)+# all let one run of input be
                 # split many ways, which backtracks exponentially. An empty
                 # branch — (|a)+ — is the degenerate case of the same thing.
-                if spans and _spans_overlap(pat, spans, icase):
+                if spans and _overlap(spans):
                     return True
             # A lookaround is matched once and never backtracked into, so a
             # repeat inside it cannot split the enclosing group's input
@@ -929,8 +938,18 @@ def _spans_overlap(pat: str, spans: "list[tuple[int, int]]", icase: bool = False
         return True
     # Overlap through a class or shorthand is the same trap with no shared
     # text: (cx|[bc]x)+# splits "cxcx…" both ways. Refuse when one branch
-    # matches the start of another branch's witness.
-    return any(_branches_overlap(a, b, icase) for a in stripped for b in stripped)
+    # matches the start of another branch's witness. Each branch is compiled
+    # and its witnesses built once, not once per PAIR: a 500-word list is
+    # 250 000 pairs, and per-pair rebuilding held the save lock for 15 s.
+    if len(stripped) < 2:
+        return False
+    matchers = [_branch_matcher(b, icase) for b in stripped]
+    for a in stripped:
+        rxs = [rx for b, rx in zip(stripped, matchers) if rx is not None and b != a]
+        if rxs and any(w and rx.match(w) is not None
+                       for w in _witnesses(a) for rx in rxs):
+            return True
+    return False
 
 
 def _follower_fixes_split(pat: str, spans: "list[tuple[int, int]]", i: int) -> bool:
@@ -1059,18 +1078,19 @@ def _loose_quantifier(b: str) -> bool:
     return False
 
 
-def _branches_overlap(a: str, b: str, icase: bool = False) -> bool:
-    """True if branch ``b`` matches a prefix of a string branch ``a`` matches.
+def _branch_matcher(b: str, icase: bool = False):
+    """Branch ``b`` compiled to test whether it matches a prefix of a string
+    another branch matches, or None when it may not be matched in-process.
 
-    Best effort over ``_witnesses`` — one per alternative of every group
-    nested in ``a``, so `(?:a|b)c` is seen to overlap `bc` through its second
-    alternative even though `(?:a|b)c` can never be the matcher (below).
-    ``icase`` compiles ``b`` case-insensitively, as the engine will. ``a == b``
-    is a branch paired with itself (two equal branches are caught earlier by
-    _spans_overlap's dedupe). An empty witness, or a branch that does not
-    compile on its own (a group reference, an inline flag), never counts as an
-    overlap. This runs IN-PROCESS on a user-supplied fragment, so ``b`` is
-    matched only when that match is linear: never when it holds a nested
+    _spans_overlap matches it against every other branch ``a``'s
+    ``_witnesses`` — one per alternative of every group nested in ``a``, so
+    `(?:a|b)c` is seen to overlap `bc` through its second alternative even
+    though `(?:a|b)c` can never be the matcher (below). Best effort: ``icase``
+    compiles ``b`` case-insensitively, as the engine will. An empty witness,
+    or a branch that does not compile on its own (a group reference, an
+    inline flag), never counts as an overlap. This runs IN-PROCESS on a
+    user-supplied fragment, so ``b`` is matched only when that match is
+    linear: never when it holds a nested
     alternation — unquantified ``(?:x|xx)(?:x|xx)…`` backtracks exponentially
     even on a 64-character witness — and never when it holds any quantifier
     but a fixed count: optional atoms backtrack exponentially too
@@ -1080,14 +1100,13 @@ def _branches_overlap(a: str, b: str, icase: bool = False) -> bool:
     ``(?:(?:a{0}){N}){N}`` loops N*N times however short the witness is.
     """
     import re
-    if (a == b or ("(" in b and "|" in b) or _loose_quantifier(b)
+    if (("(" in b and "|" in b) or _loose_quantifier(b)
             or _fixed_count_product(b) > _MAX_FIXED_COUNT):
-        return False
+        return None
     try:
-        rx = re.compile(b, re.IGNORECASE if icase else 0)
+        return re.compile(b, re.IGNORECASE if icase else 0)
     except Exception:  # noqa: BLE001 - a fragment need not compile alone
-        return False
-    return any(w and rx.match(w) is not None for w in _witnesses(a))
+        return None
 
 
 def _class_char(body: str, negated: bool) -> "str | None":

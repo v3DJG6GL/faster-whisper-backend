@@ -266,6 +266,40 @@ def test_unrepeated_word_list_skips_the_pairwise_overlap_check(monkeypatch, pat)
     assert calls
 
 
+def test_repeated_word_list_builds_each_branch_once(monkeypatch):
+    """The pair test rebuilt both branches' witnesses, fixed counts and
+    compiled form for every PAIR of a repeated word list — 250 000 pairs for
+    500 words, which held the save thread (and the save lock) for 15 s before
+    refusing. And `(?:(?:w1|w2|…))+` ran the whole test twice, once from the
+    child's queued check and once via the inner hand-off. Per-branch work is
+    now done once per branch, and one branch list is tested once."""
+    words = "|".join(f"w{i:02d}" for i in range(30))
+    counts = {"witnesses": 0, "fixed": 0, "spans": 0}
+    real_witnesses, real_fixed, real_spans = (
+        g._witnesses, g._fixed_count_product, g._spans_overlap)
+
+    def witnesses(pat, depth=0, *args, **kwargs):
+        counts["witnesses"] += depth == 0
+        return real_witnesses(pat, depth, *args, **kwargs)
+
+    def fixed(pat):
+        counts["fixed"] += 1
+        return real_fixed(pat)
+
+    def spans(pat, spans, icase=False):
+        counts["spans"] += 1
+        return real_spans(pat, spans, icase)
+
+    monkeypatch.setattr(g, "_witnesses", witnesses)
+    monkeypatch.setattr(g, "_fixed_count_product", fixed)
+    monkeypatch.setattr(g, "_spans_overlap", spans)
+    assert not g._nested_repetition(rf"(?:\b(?:{words})\b )+")
+    assert counts == {"witnesses": 30, "fixed": 30, "spans": 1}
+    counts.update(witnesses=0, fixed=0, spans=0)
+    assert not g._nested_repetition(rf"(?:(?:{words}))+")
+    assert counts == {"witnesses": 30, "fixed": 30, "spans": 1}
+
+
 def test_verbose_mode_whitespace_does_not_steer_the_synthetic_probe():
     """The synthetic probe and the chain seed must read a `(?x)` pattern the
     way the engine does: `- * - * …` is `-*-*…`, whose run is dashes. Built
@@ -638,7 +672,7 @@ def test_fixed_count_group_inside_a_repeat_is_not_screened(pat):
 
 
 def test_overlap_check_never_runs_a_grouped_branch_in_process():
-    """`_branches_overlap` matches one branch against another's witness IN the
+    """`_spans_overlap` matches one branch against another's witness IN the
     parent process; nested unquantified alternations in that branch backtrack
     exponentially (n=28 took 5 s, n=40 hours). Run in a child with a timeout
     so a regression fails here instead of hanging the suite."""
@@ -656,7 +690,7 @@ def test_overlap_check_never_runs_a_grouped_branch_in_process():
 
 def test_overlap_check_never_runs_an_optional_atom_branch_in_process():
     """`?` / `{0,1}` are not variable quantifiers, so a group-free branch of
-    optional atoms never set the frame's "rep" — and `_branches_overlap`
+    optional atoms never set the frame's "rep" — and `_spans_overlap`
     matched `a?…a?a…a` against an `a…a` witness in-process: the classic
     a?^n a^n blowup (n=26 took 3 s, doubling per +1). Same child + timeout
     as the grouped-branch case, so a regression fails instead of hanging."""
