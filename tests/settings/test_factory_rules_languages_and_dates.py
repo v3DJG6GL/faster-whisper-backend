@@ -1,6 +1,7 @@
 """Factory PIPELINE_RULES (config.json): the digit guard on
 delete-punct-before-hyphen, the language tags on language-specific rules, the
-Spanish opening-mark rule, and the dictation-map → de-dictation-map rename.
+Spanish opening-mark rule, the dictation-map → de-dictation-map rename, and
+tighten-digit-separators on a digit chain (3/4/2026).
 
 2026-09-19: "vom 3.-10 Oktober" left the pipeline as "vom 310 Oktober" —
 final-cleanup deleted ".-" between two numbers. A silently changed date or
@@ -288,3 +289,37 @@ def test_load_overrides_upgrades_a_stored_old_quote_entry(tmp_path):
     new = renames.UPGRADED_RULE_ENTRIES["tighten-quote-spacing"][1]
     got = _quote_entry(out["PIPELINE_RULES"])
     assert (got["pattern"], got["replacement"]) == new
+
+
+@pytest.mark.parametrize("text, want", [
+    (" Datum 3 Schrägstrich 4 Schrägstrich 2026.", "3/4/2026"),
+    (" Aktenzeichen 12 Schrägstrich 3 Schrägstrich 4 Schrägstrich 5.", "12/3/4/5"),
+    (" Datum 3 / 4 / 2026.", "3/4/2026"),
+    (" Version 1 Komma 2 Komma 3.", "1,2,3"),
+    (" Blutdruck 120 Schrägstrich 80.", "120/80"),
+])
+def test_every_separator_of_a_digit_chain_is_tightened(app_module, text, want):
+    """tighten-digit-separators consumed the digit after the separator, so
+    re.sub could not start the next match on it and every second separator
+    of a chain kept its spaces: "3 Schrägstrich 4 Schrägstrich 2026" became
+    "3/4 / 2026"."""
+    app_module.cfg.PIPELINE_RULES = copy.deepcopy(_factory_rules())
+    pl_engine.rebuild_caches()
+    out = pl_engine._postprocess_text(text, model_name="", language="de")
+    assert want in out.split()
+
+
+def test_stored_old_digit_separator_entry_is_upgraded_once():
+    rules = copy.deepcopy(_factory_rules())
+    (old_pat, old_rep), (new_pat, new_rep) = \
+        renames.UPGRADED_RULE_ENTRIES["tighten-digit-separators"]
+    e = next(e for r in rules for e in (r.get("entries") or [])
+             if e.get("label") == "tighten-digit-separators")
+    e["pattern"], e["replacement"] = old_pat, old_rep
+    raw = {"PIPELINE_RULES": rules}
+    assert renames.upgrade_rule_entries(raw) == [
+        "digit-and-whitespace-tidy/tighten-digit-separators"]
+    assert raw["PIPELINE_RULES"] == _factory_rules()
+    assert renames.upgrade_rule_entries(raw) == []
+    assert re.sub(old_pat, old_rep, "3 / 4 / 2026") == "3/4 / 2026"
+    assert re.sub(new_pat, new_rep, "3 / 4 / 2026") == "3/4/2026"

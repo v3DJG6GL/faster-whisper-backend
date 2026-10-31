@@ -135,6 +135,14 @@ UPGRADED_RULE_ENTRIES: dict[str, tuple[tuple[str, str], tuple[str, str]]] = {
         ('(?:,|\\.)(- |-)', ''),
         ('(?<!\\d)(?:,|\\.)(- |-)', ''),
     ),
+    # The old pattern consumed the digit after the separator, so re.sub could
+    # not start the next match on it and every second separator of a chain
+    # kept its spaces: "3 / 4 / 2026" → "3/4 / 2026", "1, 2, 3" → "1,2, 3".
+    # The new one only looks ahead at that digit.
+    "tighten-digit-separators": (
+        ('(\\d)\\s*([/,\\-])\\s*(\\d)', '\\1\\2\\3'),
+        ('(\\d)\\s*([/,\\-])\\s*(?=\\d)', '\\1\\2'),
+    ),
     # Spanish opening marks: es-punctuation now runs before this rule, so
     # the strip must take an opening ¿/¡ along with its closing mark (an
     # orphaned "¿Qué hora es" otherwise), keeping it only where the closing
