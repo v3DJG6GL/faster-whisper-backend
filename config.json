@@ -693,16 +693,16 @@
           "note": "Removes spaces around a / , or - between two digits: 12 / 5 → 12/5. A comma after a decimal, fraction or range is a list comma and keeps its space: 0,25, 1,0 and 120/80, 130/85 stay apart."
         },
         {
-          "pattern": "(?<=\\d) +(?=\\d[/\\-])",
-          "replacement": "",
+          "pattern": "(?<![/\\-\\d])(\\d+) +(?=\\d[/\\-])",
+          "replacement": "\\1",
           "label": "merge-digit-pair-before",
-          "note": "Joins digits split before a / or - group: 1 2/3 → 12/3."
+          "note": "Joins digits split before a / or - group: 1 2/3 → 12/3. A number that ends a / or - group itself is the previous item of a list and stays apart: 3/5 7/9."
         },
         {
-          "pattern": "(?<=[/\\-]\\d) +(?=\\d)",
+          "pattern": "(?<=[/\\-]\\d) +(?=\\d+(?![\\d/\\-]))",
           "replacement": "",
           "label": "merge-digit-pair-after",
-          "note": "Joins digits split after a / or - group: 2/3 4 → 2/34."
+          "note": "Joins digits split after a / or - group: 2/3 4 → 2/34. A number that starts a / or - group itself is the next item of a list and stays apart: 3/5 7/9."
         },
         {
           "pattern": "[ \\t]+([,.:;!?%\\)\\]\\}])",

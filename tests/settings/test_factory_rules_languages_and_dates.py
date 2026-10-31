@@ -337,6 +337,41 @@ def test_a_list_of_decimals_or_ranges_keeps_its_commas(app_module, text, want):
     assert pl_engine._postprocess_text(text, model_name="", language="de") == want
 
 
+@pytest.mark.parametrize("text, want", [
+    (" Seiten 3-5, 7-9.", "Seiten 3/5 7/9"),
+    (" Seiten 12-15, 7-9.", "Seiten 12/15 7/9"),
+    (" Seiten 3 Schrägstrich 5, 7 Schrägstrich 9.", "Seiten 3/5 7/9"),
+    (" Zimmer 2/3, 4/5.", "Zimmer 2/3 4/5"),
+    (" Werte 1/2 3/4.", "Werte 1/2 3/4"),
+    (" 1 2/3 Tabletten.", "12/3 Tabletten"),
+    (" 2/3 4 mal.", "2/34 mal"),
+    (" 12 3/4 Stunden.", "123/4 Stunden"),
+])
+def test_a_list_of_fractions_or_ranges_stays_apart_by_default(app_module, text, want):
+    """strip-auto-punctuation deletes the list comma first, and the
+    merge-digit-pair entries then joined the two items into one number:
+    "Seiten 3-5, 7-9" became "3/57/9". A split number ("1 2/3") is still
+    joined."""
+    app_module.cfg.PIPELINE_RULES = copy.deepcopy(_factory_rules())
+    pl_engine.rebuild_caches()
+    assert pl_engine._postprocess_text(text, model_name="", language="de") == want
+
+
+@pytest.mark.parametrize("label", ["merge-digit-pair-before", "merge-digit-pair-after"])
+def test_stored_old_digit_pair_entry_is_upgraded_once(label):
+    rules = copy.deepcopy(_factory_rules())
+    (old_pat, old_rep), new = renames.UPGRADED_RULE_ENTRIES[label]
+    e = next(e for r in rules for e in (r.get("entries") or [])
+             if e.get("label") == label)
+    e["pattern"], e["replacement"] = old_pat, old_rep
+    raw = {"PIPELINE_RULES": rules}
+    assert renames.upgrade_rule_entries(raw) == [f"digit-and-whitespace-tidy/{label}"]
+    assert raw["PIPELINE_RULES"] == _factory_rules()
+    assert renames.upgrade_rule_entries(raw) == []
+    assert re.sub(old_pat, old_rep, "3/5 7/9") == "3/57/9"
+    assert re.sub(*new, "3/5 7/9") == "3/5 7/9"
+
+
 def test_stored_old_digit_separator_entry_is_upgraded_once():
     rules = copy.deepcopy(_factory_rules())
     (old_pat, old_rep), (new_pat, new_rep) = \

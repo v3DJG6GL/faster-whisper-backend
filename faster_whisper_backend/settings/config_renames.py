@@ -155,6 +155,18 @@ UPGRADED_RULE_ENTRIES: dict[str, tuple[tuple[str, str], tuple[str, str]]] = {
         ('(\\d)\\s*-\\s*(\\d)', '\\1/\\2'),
         ('(\\d)\\s*-\\s*(?=\\d)', '\\1/'),
     ),
+    # The old pair joined ANY two numbers at a / or - group, so once
+    # strip-auto-punctuation deleted the comma of a list the two items became
+    # one number: "Seiten 3-5, 7-9" → "3/57/9". The new one joins only a
+    # number that is not itself part of another / or - group.
+    "merge-digit-pair-before": (
+        ('(?<=\\d) +(?=\\d[/\\-])', ''),
+        ('(?<![/\\-\\d])(\\d+) +(?=\\d[/\\-])', '\\1'),
+    ),
+    "merge-digit-pair-after": (
+        ('(?<=[/\\-]\\d) +(?=\\d)', ''),
+        ('(?<=[/\\-]\\d) +(?=\\d+(?![\\d/\\-]))', ''),
+    ),
     # Spanish opening marks: es-punctuation now runs before this rule, so
     # the strip must take an opening ¿/¡ along with its closing mark (an
     # orphaned "¿Qué hora es" otherwise), keeping it only where the closing
