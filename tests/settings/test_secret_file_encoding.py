@@ -75,18 +75,9 @@ def test_helper_leaves_no_secret_behind(tmp_path):
     assert os.environ.get(_VAR) == before
 
 
-@pytest.mark.parametrize("data, applied", [
-    # PowerShell 5.1 `>`: UTF-16 with a BOM is decoded and applied.
-    ("WHISPER_BEAM_SIZE=3\r\nWHISPER_DEFAULT_PROMPT=Grüße\r\n".encode("utf-16"),
-     True),
-    # An "ANSI" (cp1252) save is not guessed at: skipped with a warning.
-    ("WHISPER_BEAM_SIZE=3\nWHISPER_DEFAULT_PROMPT=Grüße\n".encode("cp1252"),
-     False),
-], ids=["utf16-bom", "cp1252"])
-def test_a_non_utf8_dotenv_does_not_fail_import(tmp_path, data, applied):
-    """dotenv reads .env as strict UTF-8: either file crashed `import config`
-    with a UnicodeDecodeError naming neither .env nor the fix."""
-    import json
+def _import_config_from(tmp_path, data, **env_vars):
+    """Import config in a fresh interpreter whose .env holds `data`; print
+    BEAM_SIZE and DEFAULT_PROMPT as JSON."""
     import subprocess
     import sys
     from faster_whisper_backend.paths import REPO_ROOT
@@ -95,17 +86,49 @@ def test_a_non_utf8_dotenv_does_not_fail_import(tmp_path, data, applied):
     # the one loaded; no inherited WHISPER_* may shadow its keys.
     env = {k: v for k, v in os.environ.items()
            if not k.startswith("WHISPER_") and k != "PYTHON_DOTENV_DISABLED"}
-    env.update(PYTHONPATH=str(REPO_ROOT), WHISPER_DATA_DIR=str(tmp_path / "data"))
-    out = subprocess.run(
+    env.update(PYTHONPATH=str(REPO_ROOT), WHISPER_DATA_DIR=str(tmp_path / "data"),
+               **env_vars)
+    return subprocess.run(
         [sys.executable, "-c",
          "import json; from faster_whisper_backend.settings import config as c;"
-         "print(json.dumps([c.BEAM_SIZE, c.DEFAULT_PROMPT, c._ENV_WARNINGS]))"],
+         "print(json.dumps([c.BEAM_SIZE, c.DEFAULT_PROMPT]))"],
         cwd=tmp_path, env=env, capture_output=True, text=True, timeout=120)
+
+
+_DOTENV = "WHISPER_BEAM_SIZE=3\r\nWHISPER_DEFAULT_PROMPT=Grüße\r\n"
+
+
+@pytest.mark.parametrize("data", [
+    _DOTENV.encode("utf-16"),       # PowerShell 5.1 `>`: UTF-16 with a BOM
+    _DOTENV.encode("utf-32"),       # `Out-File -Encoding utf32`: FF FE 00 00
+    b"\xef\xbb\xbf" + _DOTENV.encode(),  # UTF-8 BOM: not glued to the 1st key
+], ids=["utf16-bom", "utf32-bom", "utf8-bom"])
+def test_a_bom_dotenv_is_decoded_and_applied(tmp_path, data):
+    """dotenv reads .env as strict UTF-8: a UTF-16 file crashed `import
+    config` with a UnicodeDecodeError naming neither .env nor the fix, and a
+    UTF-32 one (whose FF FE prefix looks like UTF-16) with 'embedded null
+    byte'."""
+    import json
+    out = _import_config_from(tmp_path, data)
     assert out.returncode == 0, out.stderr
-    beam, prompt, warnings = json.loads(out.stdout.strip().splitlines()[-1])
-    skipped = [w for w in warnings if "re-save it as UTF-8" in w]
-    if applied:
-        assert (beam, prompt, skipped) == (3, "Grüße", [])
-    else:
-        assert beam != 3 and prompt != "Grüße"
-        assert len(skipped) == 1 and str(tmp_path / ".env") in skipped[0]
+    assert json.loads(out.stdout.strip().splitlines()[-1]) == [3, "Grüße"]
+
+
+@pytest.mark.parametrize("data", [
+    # An "ANSI" (cp1252) save is not guessed at.
+    _DOTENV.encode("cp1252"),
+    # PowerShell 5.1 `>>` appends BOM-less UTF-16LE to a UTF-8 file: valid
+    # UTF-8 with NULs, which os.environ refuses after earlier keys were set.
+    b"WHISPER_BEAM_SIZE=3\n" + "WHISPER_DEFAULT_PROMPT=x\r\n".encode("utf-16-le"),
+    b"WHISPER_BEAM_SIZE=3\nWHISPER_DEFAULT_PROMPT=a\x00b\n",
+], ids=["cp1252", "utf16le-append", "utf8-nul"])
+def test_an_unusable_dotenv_stops_import_with_the_fix(tmp_path, data):
+    """Skipping the file started the server on the default DATA_DIR with
+    empty stores and every security pin of .env dropped; a NUL crashed with
+    a bare 'embedded null byte'. Now the import stops naming .env and the
+    fix."""
+    out = _import_config_from(tmp_path, data)
+    assert out.returncode != 0
+    assert f"{tmp_path / '.env'} is not valid UTF-8 text" in out.stderr, out.stderr
+    assert "re-save it as UTF-8" in out.stderr
+    assert "embedded null byte" not in out.stderr
