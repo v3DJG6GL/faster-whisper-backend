@@ -1462,48 +1462,26 @@ def _synthetic_fixtures(pat: str) -> "list[str]":
                     outcome = (led,
                                tuple(m.span() for m in
                                      rx.finditer(led + c * screen + t)),
-                               _run_signature(shape, c, t, led))
+                               _run_signature(shape, c, t))
                     probes.setdefault(outcome, led + c * _SYNTH_RUN + t)
     return list(probes.values())
 
 
-def _run_signature(shape, c: str, t: str, led: str = "") -> tuple:
+def _run_signature(shape, c: str, t: str) -> tuple:
     """Which atoms of _char_atoms' ``shape`` accept the run character ``c``
     and which of those that can reach the end of the run accept the
     terminator ``t`` (the raw characters when the atoms are unknown).
 
     A terminator only counts for an atom it can reach: `Prozent`'s `z` sits
     behind a `P` no digit run gets past, so `z` and `#` probe a digit run
-    alike, while `(?=\\d+z)…` gates its backtracking on that very `z`. The
-    text ``led`` in front of the run gets the atoms that match it past too:
-    `Komma(?=\\s+[a-z])…`'s `K` refuses a space, yet the lead walks it. Only
-    up to a repeat that eats the run, with every atom behind it accepting the
-    run character: the lead's characters are `Satz`'s own `z` and the second
-    `Zitat` of `Zitat\\s*(.*?)\\s*Zitat Ende` too, which no run gets to."""
+    alike, while `(?=\\d+z)…` gates its backtracking on that very `z`."""
     if shape is None:
         return c, t
     atoms, reach, ends = shape
     run = [a.fullmatch(c) is not None for a in atoms]
-    passed = [ok or any(a.fullmatch(ch) for ch in set(led))
-              for a, ok in zip(atoms, run)]
-
-    def led_in(path) -> bool:
-        # The lead walks the musts up to a repeat the run character feeds,
-        # then the run every must behind it (or the atom is that repeat).
-        *front, (me, _, own) = path
-        fed = False
-        for j, must, rep in front:
-            if must and not run[j]:
-                if not passed[j]:
-                    return False
-                fed = False
-            fed |= rep and run[j]
-        return fed or (own and run[me])
-
     return tuple(run), ends and not t, tuple(
         a.fullmatch(t) is not None
-        and any(all(run[j] for j in occ) or (led and led_in(path))
-                for occ, path in occs)
+        and any(all(run[j] for j in occ) for occ in occs)
         for a, occs in zip(atoms, reach))
 
 
@@ -1518,12 +1496,8 @@ def _char_atoms(parsed) -> "tuple[list, list, bool] | None":
 
     The second item lists, per atom, the atoms in front of each occurrence
     in its sequences (_run_signature: one the run character fails never lets
-    it reach the terminator), paired with the path to it: every atom in
-    front, a repeat's and a group's too, then the atom itself, as (index,
-    mandatory, in a repeat), so a lead walks only the atoms in front of the
-    run (`[a-z]` of `Komma(?=\\s+[a-z])` lies behind a space run, `Satz`'s
-    `z` behind none). A lookbehind reads back over them, so its atoms get
-    none."""
+    it reach the terminator). A lookbehind reads back over them, so its atoms
+    get none."""
     try:
         try:
             import re._compiler as _recompiler
@@ -1543,58 +1517,35 @@ def _char_atoms(parsed) -> "tuple[list, list, bool] | None":
         found: dict = {}
         ends = False
 
-        repeats = tuple(getattr(_reparser, name, None) for name in (
-            "MAX_REPEAT", "MIN_REPEAT", "POSSESSIVE_REPEAT"))
-
-        def walk(node, flags: int, preds: tuple, path: tuple,
-                 must: bool = True, rep: bool = False) -> tuple:
-            """Record ``node``'s atoms; return the path entries it consumes."""
+        def walk(node, flags: int, preds: tuple) -> None:
             nonlocal ends
             if isinstance(node, _reparser.SubPattern):
-                eaten: tuple = ()
                 for item in node.data:
-                    got = walk(item, flags, preds, path, must, rep)
-                    eaten += got
-                    path += got
+                    walk(item, flags, preds)
                     if any(item[0] is op for op in consuming):
                         preds += ((repr(item), flags),)
-                return eaten
-            if not isinstance(node, (list, tuple)):
-                return ()
-            # Identity: an opcode equals its int, e.g. an ASSERT's direction.
-            op = node[0] if len(node) == 2 else None
-            zero_width = op is _reparser.AT
-            if zero_width:
-                ends |= node[1] in (_reparser.AT_END, _reparser.AT_END_STRING)
-                node = stand_ins.get(node[1], (None, None))
-                op = node[0]
-            if any(op is o for o in consuming):
-                key = (repr(node), flags)
-                here = ((key, must, rep),)
-                found.setdefault(key, (node, flags, []))[2].append(
-                    (preds, path + here))
-                return () if zero_width else here
-            if op is _reparser.SUBPATTERN:
-                _group, add, drop, body = node[1]
-                return walk(body, _recompiler._combine_flags(flags, add, drop),
-                            preds, path, must, rep)
-            if op is _reparser.ASSERT or op is _reparser.ASSERT_NOT:
-                if node[1][0] > 0:
-                    walk(node[1][1], flags, preds, path, must, rep)
+            elif isinstance(node, (list, tuple)):
+                # Identity: an opcode equals its int, e.g. an ASSERT's direction.
+                op = node[0] if len(node) == 2 else None
+                if op is _reparser.AT:
+                    ends |= node[1] in (_reparser.AT_END, _reparser.AT_END_STRING)
+                    node = stand_ins.get(node[1], (None, None))
+                    op = node[0]
+                if any(op is o for o in consuming):
+                    entry = found.setdefault((repr(node), flags), (node, flags, []))
+                    entry[2].append(preds)
+                elif op is _reparser.SUBPATTERN:
+                    _group, add, drop, body = node[1]
+                    walk(body, _recompiler._combine_flags(flags, add, drop), preds)
+                elif op is _reparser.ASSERT or op is _reparser.ASSERT_NOT:
+                    walk(node[1][1], flags, preds if node[1][0] > 0 else ())
                 else:
-                    walk(node[1][1], flags, (), ())
-                return ()
-            if any(op is o for o in repeats if o is not None):
-                low, high, body = node[1]
-                return walk(body, flags, preds, path, must and low > 0,
-                            rep or high > 1)
-            # A branch, a condition, an atomic group: nothing in it is a must.
-            return sum((walk(item, flags, preds, path, False, rep)
-                        for item in node), ())
+                    for item in node:
+                        walk(item, flags, preds)
 
         if parsed is None:
             return None
-        walk(parsed, parsed.state.flags, (), ())
+        walk(parsed, parsed.state.flags, ())
         if len(found) > 256:  # each costs a compile, ~30 µs
             return None
         atoms = []
@@ -1603,9 +1554,7 @@ def _char_atoms(parsed) -> "tuple[list, list, bool] | None":
             state.flags = flags  # the compiler ORs these into every atom
             atoms.append(_recompiler.compile(_reparser.SubPattern(state, [atom]), flags))
         index = {key: i for i, key in enumerate(found)}
-        return atoms, [[(tuple(index[k] for k in occ),
-                         tuple((index[k], must, rep) for k, must, rep in path))
-                        for occ, path in occs]
+        return atoms, [[tuple(index[k] for k in occ) for occ in occs]
                        for *_, occs in found.values()], ends
     except Exception:  # noqa: BLE001 - best effort: probe each run character
         return None
