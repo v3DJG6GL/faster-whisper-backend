@@ -75,9 +75,10 @@ def test_helper_leaves_no_secret_behind(tmp_path):
     assert os.environ.get(_VAR) == before
 
 
-def _import_config_from(tmp_path, data, **env_vars):
+def _import_config_from(tmp_path, data, expr="[c.BEAM_SIZE, c.DEFAULT_PROMPT]",
+                        **env_vars):
     """Import config in a fresh interpreter whose .env holds `data`; print
-    BEAM_SIZE and DEFAULT_PROMPT as JSON."""
+    `expr` (over the module `c`) as JSON."""
     import subprocess
     import sys
     from faster_whisper_backend.paths import REPO_ROOT
@@ -91,7 +92,7 @@ def _import_config_from(tmp_path, data, **env_vars):
     return subprocess.run(
         [sys.executable, "-c",
          "import json; from faster_whisper_backend.settings import config as c;"
-         "print(json.dumps([c.BEAM_SIZE, c.DEFAULT_PROMPT]))"],
+         f"print(json.dumps({expr}))"],
         cwd=tmp_path, env=env, capture_output=True, text=True, timeout=120)
 
 
@@ -132,3 +133,20 @@ def test_an_unusable_dotenv_stops_import_with_the_fix(tmp_path, data):
     assert f"{tmp_path / '.env'} is not valid UTF-8 text" in out.stderr, out.stderr
     assert "re-save it as UTF-8" in out.stderr
     assert "embedded null byte" not in out.stderr
+
+
+def test_env_from_dotenv_holds_exactly_the_names_dotenv_set(tmp_path):
+    """The self-restart drops these from the exec'd environment so the new
+    process reads .env again; a real env var that .env also names stays out
+    (it is the environment's), an alias copied from an old name .env set is
+    in (it would otherwise outlive that line's removal)."""
+    import json
+    out = _import_config_from(
+        tmp_path,
+        b"WHISPER_BEAM_SIZE=3\nWHISPER_DEFAULT_PROMPT=from-dotenv\n"
+        b"WHISPER_USE_AUTH_TOKEN=hf_old\n",
+        expr="[c.DEFAULT_PROMPT, sorted(c._ENV_FROM_DOTENV)]",
+        WHISPER_DEFAULT_PROMPT="real")
+    assert out.returncode == 0, out.stderr
+    assert json.loads(out.stdout.strip().splitlines()[-1]) == [
+        "real", ["WHISPER_BEAM_SIZE", "WHISPER_HF_TOKEN", "WHISPER_USE_AUTH_TOKEN"]]

@@ -38,6 +38,11 @@ from faster_whisper_backend import paths as _paths  # underscore: not a setting
 # import with that path and the fix: skipping it would start the server on the
 # default DATA_DIR with empty stores and every security pin dropped. The whole
 # file is checked before load_dotenv sets anything.
+# _ENV_FROM_DOTENV holds the names the load set (never a real env var that
+# .env also names): the POSIX self-restart re-execs with them dropped
+# (admin/restart_service), so the new process reads .env again and an edited
+# or removed line takes effect.
+_ENV_FROM_DOTENV: set[str] = set()
 try:
     from dotenv import find_dotenv as _find_dotenv, load_dotenv as _load_dotenv
 except ImportError:
@@ -64,7 +69,9 @@ else:
             raise RuntimeError(
                 f"{_dotenv_path} is not valid UTF-8 text ({_exc}); "
                 "re-save it as UTF-8") from None
+        _before = set(os.environ)
         _load_dotenv(stream=io.StringIO(_text))
+        _ENV_FROM_DOTENV = set(os.environ) - _before
 
 
 # The checkout root — where the committed config.json lives (see paths.py).
@@ -1640,7 +1647,14 @@ _SECRET_FIELDS = ("BOOTSTRAP_ADMIN_KEY", "HF_TOKEN")
 # Renamed keys: the old WHISPER_<old>[_FILE] env spellings are aliased onto
 # the new names BEFORE the _FILE indirection and the generic env loop run, so
 # existing deployments keep working unchanged (table in config_renames.py).
+_env_before_alias = set(os.environ)
 _ENV_WARNINGS.extend(_renames.alias_env(os.environ))
+# A new name copied from an old one that .env set came from .env too.
+_ENV_FROM_DOTENV |= {
+    _renames.ENV_PREFIX + _new + _sfx
+    for _old, _new in _renames.RENAMED_KEYS.items() for _sfx in ("", "_FILE")
+    if _renames.ENV_PREFIX + _old + _sfx in _ENV_FROM_DOTENV
+    and _renames.ENV_PREFIX + _new + _sfx not in _env_before_alias}
 # The vars this loop filled from a *_FILE: the POSIX self-restart re-execs
 # with them dropped (admin/restart_service), so the new process reads the
 # secret file again instead of the old contents — a rotated key takes effect.

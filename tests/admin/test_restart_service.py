@@ -148,6 +148,42 @@ def test_reexec_rereads_rotated_secret_files(monkeypatch, tmp_path):
         importlib.reload(config)
 
 
+def test_reexec_rereads_the_dotenv(monkeypatch):
+    """load_dotenv copies .env into os.environ and never overrides a var that
+    is already set; an exec that inherited those copies ran on the OLD .env
+    after the operator edited or removed a line and pressed Restart. The
+    re-exec drops exactly the .env-sourced vars."""
+    monkeypatch.setattr(restart_service.sys, "platform", "linux")
+    monkeypatch.setattr(config, "_ENV_FROM_DOTENV", {"WHISPER_BEAM_SIZE"})
+    monkeypatch.setenv("WHISPER_BEAM_SIZE", "5")
+    monkeypatch.setenv("WHISPER_DEFAULT_PROMPT", "real")   # environment's: kept
+    captured = {}
+    monkeypatch.setattr(restart_service.os, "execve",
+                        lambda path, argv, env: captured.update(env=env))
+    restart_service.trigger_self_restart(delay_sec=0.1)
+    _FakeTimer.instances[0].function()
+    assert "WHISPER_BEAM_SIZE" not in captured["env"]
+    assert captured["env"]["WHISPER_DEFAULT_PROMPT"] == "real"
+
+
+def test_reexec_does_not_restore_a_dotenv_hf_token(monkeypatch):
+    """A bare HF_TOKEN from .env was recorded as the service environment's
+    and put back, so removing it from .env never took effect on Restart."""
+    from faster_whisper_backend.pipeline import apply as pl_apply
+    monkeypatch.setattr(restart_service.sys, "platform", "linux")
+    monkeypatch.setattr(config, "_ENV_FROM_DOTENV", {"HF_TOKEN"})
+    monkeypatch.setattr(pl_apply, "_ENV_HF_TOKEN", "hf_dotenv")
+    monkeypatch.setenv("HF_TOKEN", "hf_dotenv")
+    monkeypatch.setenv(pl_apply.SERVICE_HF_TOKEN_ENV, "hf_dotenv")
+    captured = {}
+    monkeypatch.setattr(restart_service.os, "execve",
+                        lambda path, argv, env: captured.update(env=env))
+    restart_service.trigger_self_restart(delay_sec=0.1)
+    _FakeTimer.instances[0].function()
+    assert "HF_TOKEN" not in captured["env"]
+    assert pl_apply.SERVICE_HF_TOKEN_ENV not in captured["env"]
+
+
 def test_reexec_drops_the_hf_token_promoted_from_config(monkeypatch):
     """main.py copies cfg.HF_TOKEN into the bare HF_TOKEN that huggingface_hub
     reads. An exec that inherited the copy kept sending a token the operator
