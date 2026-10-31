@@ -87,18 +87,23 @@ def _alternation(keys: list[str]) -> str:
     "बोलते", nor "คร" that of "ครับ". So does a ZWNJ / ZWJ: a Persian "می"
     key must not rewrite the prefix of می + ZWNJ + خواهم.
 
-    Keys of one length and edge kinds share one group, both bounds after
-    it (the lead one as a lookbehind over the key itself). One mark class
-    per key made each compile ~70x slower, and in front of the key it was
-    walked for every key at every text position, so the sub of a 500-key
-    Cyrillic or Hindi map ran 5-9x slower. Reordering keys of one length is
-    safe: at a given position they match the same span, so the same
-    replacement."""
+    Keys of one length and edge kinds share one group. One mark class per
+    key made each compile ~70x slower, and in front of the key it was walked
+    for every key at every text position, so the sub of a 500-key Cyrillic
+    or Hindi map ran 5-9x slower: a non-ASCII lead bound sits after the
+    group, as a lookbehind over the key itself (sre folds case char by char,
+    so the match is exactly n chars). An ASCII lead bound is one ``\\w`` test
+    and stays in front: after the group, every branch was walked at every
+    text position, mid-word included, before it could refuse — a 2000-key
+    map ran ~4x slower. Reordering keys of one length is safe: at a given
+    position they match the same span, so the same replacement."""
     parts = []
     for (n, lead, tail), run in itertools.groupby(
             sorted(keys, key=_shape, reverse=True), key=_shape):
         out = "(?:" + "|".join(re.escape(k) for k in run) + ")"
-        if lead:
+        if lead == "ascii":
+            out = r"(?<!\w)" + out
+        elif lead:
             out += rf"(?<!{_WORD_CLASS[lead]}(?s:.){{{n}}})"
         if tail:
             out += rf"(?!{_WORD_CLASS[tail]})"

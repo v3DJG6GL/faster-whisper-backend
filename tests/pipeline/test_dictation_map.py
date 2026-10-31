@@ -175,3 +175,32 @@ def test_dictated_slash_keeps_the_mark_in_front_of_it(app_module, text, expected
     app_module.cfg.PIPELINE_RULES = copy.deepcopy(_factory_rules())
     pl_engine.rebuild_caches()
     assert pl_engine._postprocess_text(text, model_name="", language="de") == expected
+
+
+def test_ascii_lead_bound_is_tested_before_the_keys():
+    """Placed after the key group as a lookbehind over the key, the ASCII
+    lead bound let sre walk every branch at every text position, mid-word
+    included: a 2000-key map took ~4x as long per letter. Only the ~800-range
+    mark class of a non-ASCII edge keeps the trailing placement."""
+    pattern, _, _ = dictation_map.compile_map({"Komma": ",", "über": "x"})
+    assert r"(?<!\w)(?:Komma)(?!\w)" in pattern.pattern
+    assert r"(?:Komma)(?<!" not in pattern.pattern
+    assert "(?:über)(?<![" in pattern.pattern
+
+
+@pytest.mark.parametrize("text, expected", [
+    ("Komma am Anfang", ", am Anfang"),
+    ("xKomma 3Komma _Komma Komma", "xKomma 3Komma _Komma ,"),
+    ("12... Komma 5", "12, 5"),
+    ("e-Mail x.com und .com", "e-Mail x.com und DOT"),
+    ("3D und a3D, 3d", "DREI und a3D, DREI"),
+    ("Komma", ","),
+    ("İstanbul xİstanbul", "IST xİstanbul"),
+    ("die grösser als Grenze, xgrösser als", "die > Grenze, xgrösser als"),
+    ("über, xüber, ́über", "U, xüber, ́über"),
+])
+def test_lead_word_bound_on_tricky_keys(text, expected):
+    pattern, replace, _ = dictation_map.compile_map({
+        "Komma": ",", ".com": "DOT", "3D": "DREI", "istanbul": "IST",
+        "größer als": ">", "über": "U"})
+    assert pattern.sub(replace, text) == expected
