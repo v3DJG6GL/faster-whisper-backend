@@ -914,10 +914,38 @@ def test_stream_knobs_hard_break_kept_above_outer(client, app_module, monkeypatc
                                {"streaming_hard_break_silence_ms": 800})
     assert seen["config"].hard_break_silence_ms == (
         app_module.cfg.STREAMING_VAD_OUTER_SILENCE_MS + 1000)
-    # Server-only values are the admin's: never adjusted.
+    # A server-only pair is no client value: fitted in _stream_config instead.
     monkeypatch.setattr(app_module.cfg, "STREAMING_HARD_BREAK_SILENCE_MS", 500)
     _, seen = _knobs_handshake(client, monkeypatch, {"beam_size": 3})
-    assert seen["client"] == {} and seen["config"].hard_break_silence_ms == 500
+    assert seen["client"] == {} and seen["config"].hard_break_silence_ms == (
+        app_module.cfg.STREAMING_VAD_OUTER_SILENCE_MS + 1000)
+
+
+def test_profile_silence_gates_are_fitted_to_the_resolved_outer(monkeypatch):
+    """AdminConfig refuses only a GLOBAL silence pair that does not fit: a
+    profile outer above the global hard break made every dictated sentence
+    its own document, and a profile inner >= outer stretched every commit."""
+    from faster_whisper_backend.streaming import routes
+    c = effective_config.cfg
+    monkeypatch.setattr(c, "STREAMING_VAD_INNER_SILENCE_MS", 700)
+    monkeypatch.setattr(c, "STREAMING_VAD_OUTER_SILENCE_MS", 1200)
+    monkeypatch.setattr(c, "STREAMING_HARD_BREAK_SILENCE_MS", 5000)
+
+    def sc_for(**values):
+        ident = effective_config.Resolved(values=values)
+        return routes._stream_config(effective_config.cfg_for, ident)
+    sc = sc_for(STREAMING_VAD_OUTER_SILENCE_MS=6000)
+    assert (sc.commit_silence_ms, sc.hard_break_silence_ms) == (6000, 7000)
+    sc = sc_for(STREAMING_VAD_INNER_SILENCE_MS=1500)
+    assert (sc.vad_min_silence_ms, sc.commit_silence_ms) == (1150, 1200)
+    # Hard break 0 (off) stays off; a fitting pair passes through untouched.
+    sc = sc_for(STREAMING_VAD_OUTER_SILENCE_MS=6000,
+                STREAMING_HARD_BREAK_SILENCE_MS=0)
+    assert sc.hard_break_silence_ms == 0
+    sc = sc_for(STREAMING_VAD_INNER_SILENCE_MS=900,
+                STREAMING_HARD_BREAK_SILENCE_MS=3000)
+    assert (sc.vad_min_silence_ms, sc.commit_silence_ms,
+            sc.hard_break_silence_ms) == (900, 1200, 3000)
 
 
 def test_profile_trim_keep_at_or_above_trim_is_clamped_below_it(monkeypatch):

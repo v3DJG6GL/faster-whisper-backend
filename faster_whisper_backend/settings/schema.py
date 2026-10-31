@@ -1608,8 +1608,9 @@ class AdminConfig(BaseModel):
     # The live-dictation silence gates only work as a pair with outer:
     # inner >= outer stretches the commit wait, and a hard break that is on
     # but <= outer breaks after EVERY utterance (the idle-silence clock
-    # survives the finalize). streaming/routes repairs client values only;
-    # server values are never adjusted, so the admin's pair is refused here.
+    # survives the finalize). streaming/routes._stream_config fits the
+    # RESOLVED pair (like the trim pair), which covers profiles and
+    # identities; the GLOBAL pair is refused here so the admin learns of it.
     # On SAVE only, and only by a save touching the pair (config_store sets
     # silence_pair_check to the touched keys): at load a failure drops every
     # override.

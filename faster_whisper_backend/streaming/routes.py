@@ -291,6 +291,15 @@ def authenticate_ws(ws: WebSocket) -> "dict | None":
     return auth._resolve_user(ws, _ws_credentials(ws))
 
 
+def _fit_silence_gates(inner: int, outer: int, hb: int) -> "tuple[int, int]":
+    """(inner, hard break) made to fit outer: inner >= outer stretches the
+    commit wait to the forced-commit cap (session.py) — so inner = outer - 50;
+    a hard break that is on but <= outer breaks after every utterance (the
+    idle-silence clock survives the finalize) — so hard break = outer + 1000."""
+    return (max(0, outer - 50) if inner >= outer else inner,
+            outer + 1000 if 0 < hb <= outer else hb)
+
+
 def _client_stream_values(overrides: dict, ident) -> "tuple[dict, list[str]]":
     """The live-dictation knobs this connection's decode_overrides set
     (settings_schema.STREAM_ONLY_CLIENT_KEYS), as {STREAMING_* field: value} for
@@ -302,14 +311,11 @@ def _client_stream_values(overrides: dict, ident) -> "tuple[dict, list[str]]":
     separator is kept verbatim up to its max length (a spelled "\\n" is
     decoded later, in _stream_config).
 
-    The silence gates only work as a pair, so when a client value takes part:
-    inner must stay below outer (inner >= outer stretches the commit wait to
-    the forced-commit cap, session.py) — else inner = outer - 50; and a hard
-    break must be off (0) or longer than outer (the idle-silence clock
-    survives the finalize, so hard break <= outer would break after every
-    utterance) — else hard break = outer + 1000. Server-only values are the
-    admin's and are never adjusted; a LOCKED partner is never adjusted either
-    — a client outer that conflicts with one is dropped instead."""
+    The silence gates only work as a pair, so when a client value takes part
+    the pair is fitted here (_fit_silence_gates) and each change is noted. A
+    pair of server-only values is fitted silently in _stream_config, like the
+    trim pair; a LOCKED partner is never moved — a client outer that conflicts
+    with one is dropped instead."""
     bounds = settings_schema.client_key_bounds()
     field_of = {ck: f for f, ck in settings_schema.CONFIG_TO_CLIENT_KEY.items()}
     values: dict = {}
@@ -340,17 +346,14 @@ def _client_stream_values(overrides: dict, ident) -> "tuple[dict, list[str]]":
                 or (hb_f in locked and hb and hb <= values[outer_f])):
             notes.append(f"outer {values.pop(outer_f)} ms dropped "
                          f"(locked inner {inner} / hard break {hb} ms)")
-    outer = eff(outer_f)
-    if inner_f in values or outer_f in values:
-        inner = eff(inner_f)
-        if inner >= outer:
-            values[inner_f] = max(0, outer - 50)
-            notes.append(f"inner {inner}→{values[inner_f]} ms (below outer {outer})")
-    if hb_f in values or outer_f in values:
-        hb = eff(hb_f)
-        if hb and hb <= outer:
-            values[hb_f] = outer + 1000
-            notes.append(f"hard break {hb}→{values[hb_f]} ms (above outer {outer})")
+    outer, inner, hb = eff(outer_f), eff(inner_f), eff(hb_f)
+    fit_inner, fit_hb = _fit_silence_gates(inner, outer, hb)
+    if (inner_f in values or outer_f in values) and fit_inner != inner:
+        values[inner_f] = fit_inner
+        notes.append(f"inner {inner}→{fit_inner} ms (below outer {outer})")
+    if (hb_f in values or outer_f in values) and fit_hb != hb:
+        values[hb_f] = fit_hb
+        notes.append(f"hard break {hb}→{fit_hb} ms (above outer {outer})")
     return values, notes
 
 
@@ -370,20 +373,25 @@ def _stream_config(cfg_for, ident=None, client: "dict | None" = None) -> StreamC
     # or before the buffer start, so the trim never fires and the buffer grows
     # to MAX_BUFFER_S. AdminConfig's validator only sees the GLOBAL pair; a
     # profile / identity value can still cross it, so the resolved pair is
-    # clamped here, like the VAD inner/outer pair in _client_stream_values.
+    # clamped here. The silence gates likewise: AdminConfig refuses only a
+    # GLOBAL pair that does not fit, so a profile / identity outer above the
+    # global hard break (or the reverse) is fitted here.
     trim = float(g("BUFFER_TRIM_S"))
     keep = float(g("BUFFER_TRIM_KEEP_S"))
     if keep >= trim:
         keep = trim - 1.0
+    outer = int(g("VAD_OUTER_SILENCE_MS"))
+    inner, hard_break = _fit_silence_gates(
+        int(g("VAD_INNER_SILENCE_MS")), outer, int(g("HARD_BREAK_SILENCE_MS")))
     return StreamConfig(
         sample_rate=SAMPLE_RATE,
         # Public config keys (the g("…") suffix, after STREAMING_) may differ from
         # the internal StreamConfig field names — this adapter is the seam.
         min_chunk_ms=int(g("PARTIAL_INTERVAL_MS")),
         min_speech_ms=int(g("GATE_MIN_SPEECH_MS")),
-        vad_min_silence_ms=int(g("VAD_INNER_SILENCE_MS")),
-        commit_silence_ms=int(g("VAD_OUTER_SILENCE_MS")),
-        hard_break_silence_ms=int(g("HARD_BREAK_SILENCE_MS")),
+        vad_min_silence_ms=inner,
+        commit_silence_ms=outer,
+        hard_break_silence_ms=hard_break,
         # Decoded once here, where every source meets: the single-line
         # /settings input (whose help says '\n' = newline), an env var, a
         # profile and a client override all spell a newline as backslash + n.
