@@ -1647,14 +1647,16 @@ _SECRET_FIELDS = ("BOOTSTRAP_ADMIN_KEY", "HF_TOKEN")
 # Renamed keys: the old WHISPER_<old>[_FILE] env spellings are aliased onto
 # the new names BEFORE the _FILE indirection and the generic env loop run, so
 # existing deployments keep working unchanged (table in config_renames.py).
-_env_before_alias = set(os.environ)
+_env_before_alias = dict(os.environ)
 _ENV_WARNINGS.extend(_renames.alias_env(os.environ))
-# A new name copied from an old one that .env set came from .env too.
+# A new name copied from an old one that .env set came from .env too — also
+# when the environment held it blank (alias_env copies onto a blank one).
 _ENV_FROM_DOTENV |= {
     _renames.ENV_PREFIX + _new + _sfx
     for _old, _new in _renames.RENAMED_KEYS.items() for _sfx in ("", "_FILE")
     if _renames.ENV_PREFIX + _old + _sfx in _ENV_FROM_DOTENV
-    and _renames.ENV_PREFIX + _new + _sfx not in _env_before_alias}
+    and os.environ.get(_renames.ENV_PREFIX + _new + _sfx)
+    != _env_before_alias.get(_renames.ENV_PREFIX + _new + _sfx)}
 # The vars this loop filled from a *_FILE: the POSIX self-restart re-execs
 # with them dropped (admin/restart_service), so the new process reads the
 # secret file again instead of the old contents — a rotated key takes effect.

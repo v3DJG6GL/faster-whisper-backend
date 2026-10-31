@@ -150,3 +150,17 @@ def test_env_from_dotenv_holds_exactly_the_names_dotenv_set(tmp_path):
     assert out.returncode == 0, out.stderr
     assert json.loads(out.stdout.strip().splitlines()[-1]) == [
         "real", ["WHISPER_BEAM_SIZE", "WHISPER_HF_TOKEN", "WHISPER_USE_AUTH_TOKEN"]]
+
+
+def test_env_from_dotenv_holds_an_alias_copied_onto_a_blank_new_name(tmp_path):
+    """alias_env copies an old .env name onto a new name the environment holds
+    blank (a templated compose line). Left out, the copy outlived the .env
+    line's edit or removal on Restart."""
+    import json
+    out = _import_config_from(
+        tmp_path, b"WHISPER_SESSION_TTL_SECONDS=1234\n",
+        expr="[c.SESSION_TTL_S, sorted(c._ENV_FROM_DOTENV)]",
+        WHISPER_SESSION_TTL_S="")
+    assert out.returncode == 0, out.stderr
+    assert json.loads(out.stdout.strip().splitlines()[-1]) == [
+        1234, ["WHISPER_SESSION_TTL_S", "WHISPER_SESSION_TTL_SECONDS"]]
