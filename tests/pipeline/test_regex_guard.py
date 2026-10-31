@@ -1176,11 +1176,43 @@ def test_run_behind_an_ordinary_word_is_rejected(pat, probe):
 
 
 def test_run_without_a_leading_atom_is_probed_bare():
-    """No lead for a rule with nothing in front of its run, nor for one the
-    run itself supplies (`\\n\\s*…x`, 855ee6f), nor past a top-level `|`."""
-    for pat in (r"\s*" * 7 + "#", r"\n" + r"\s*" * 7 + "x",
-                r"(?=\t)" + r"\s*" * 7 + "x", r"\s*x|" + r"\d*" * 7 + "#"):
-        assert all(s[0] in " \t\n\r\f\v 1234567890" for s in g._synthetic_fixtures(pat))
+    """No lead for a rule with nothing in front of its run, nor past a
+    top-level `|`; one the run itself supplies (`\\n\\s*…x`, 855ee6f) keeps
+    its bare probes next to the led ones."""
+    for pat in (r"\s*" * 7 + "#", r"(?=\t)" + r"\s*" * 7 + "x",
+                r"\s*x|" + r"\d*" * 7 + "#"):
+        assert all(s[0] in " \t\n\r\f\v 1234567890" and len(s) <= g._SYNTH_RUN + 1
+                   for s in g._synthetic_fixtures(pat))
+    assert "\n" * g._SYNTH_RUN + "#" in g._synthetic_fixtures(r"\n" + r"\s*" * 7 + "x")
+
+
+@pytest.mark.parametrize("pat, probe", [
+    (r"(?:Komma\s*|" + r"\s*" * 7 + "#)", " " * 240 + "!"),
+    (r"\n" + r"\s*" * 7 + r"\n", "\n" + " " * 240 + "#"),
+    (r"21" + r"\d*" * 7 + "#", "21" + "2" * 240 + "!"),
+    (r"\t " + r"\s*" * 7 + "#", "\t " + "\t" * 240 + "!"),
+])
+def test_run_is_probed_bare_and_led(pat, probe):
+    """The led run replaced the bare one, and a lead of run-family characters
+    was dropped: a led branch that eats the run hid the explosive one, and the
+    lead `\\n`, `21` or `\\t ` never reached a sibling run. These were
+    accepted, yet re.sub over ~50 such characters takes seconds, ~n^7."""
+    assert probe in g._synthetic_fixtures(pat)
+
+
+@pytest.mark.parametrize("pat", [
+    r"Komma\s*|" + r"\s*" * 7 + "#",
+    r"1" + r"\d*" * 7 + "1",
+    r"\r\n" + r"\s*" * 7 + "#",
+])
+def test_run_probed_bare_and_led_is_rejected(pat):
+    with pytest.raises(ValueError):
+        g.validate([("r", pat, "")], timeout=1.5)
+
+
+@pytest.mark.parametrize("pat", [r"(\d+)\s*(\d*)\s*Euro", r"Komma\s*(\d+)", r"\n\s*x"])
+def test_ordinary_rule_probed_bare_and_led_is_accepted(pat):
+    g.validate([("r", pat, "")])
 
 
 @pytest.mark.parametrize("pat", [r"\s+$", r"\s+([.,!?])", r"(\w+)\W", r"(\d+)\s*Uhr"])
