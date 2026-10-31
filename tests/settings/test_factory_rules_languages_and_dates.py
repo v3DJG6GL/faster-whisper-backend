@@ -1,8 +1,8 @@
 """Factory PIPELINE_RULES (config.json): the digit guard on
 delete-punct-before-hyphen, the language tags on language-specific rules, the
-Spanish opening-mark rule, the dictation-map → de-dictation-map rename, and
+Spanish opening-mark rule, the dictation-map → de-dictation-map rename,
 tighten-digit-separators and normalize-digit-range on a digit chain
-(3/4/2026).
+(3/4/2026), and capitalize-after-terminator on a run of paragraph breaks.
 
 2026-09-19: "vom 3.-10 Oktober" left the pipeline as "vom 310 Oktober" —
 final-cleanup deleted ".-" between two numbers. A silently changed date or
@@ -12,6 +12,7 @@ import copy
 import json
 import os
 import re
+import time
 
 import pytest
 
@@ -60,6 +61,26 @@ def test_date_range_survives_the_whole_factory_pipeline(app_module):
         " Die Patientin ist vom 3.-10 Oktober abwesend Punkt",
         model_name="", language="de")
     assert out == "Die Patientin ist vom 3.-10 Oktober abwesend."
+
+
+def test_capitalize_after_terminator_is_fast_on_a_run_of_paragraph_breaks(app_module):
+    """`\\n+\\s*` tried every split of a newline run at every start when no
+    lowercase letter follows it, so a repeated "Neuer Absatz" (one paragraph
+    break each) took cubic time: 2000 newlines ran 23 s on the event loop of
+    /transcribe."""
+    rule = _by_name()["capitalize-after-terminator"]
+    app_module.cfg.PIPELINE_RULES = [
+        copy.deepcopy(rule), {"name": "trim-edges", "label": "Trim", "type": "terminal"}]
+    pl_engine.rebuild_caches()
+    text = "Befund" + "\n" * 2000 + "Ende"
+    t0 = time.perf_counter()
+    out = pl_engine._postprocess_text(text, model_name="", language="de")
+    assert time.perf_counter() - t0 < 1.0
+    assert out == text
+    old = r"([.?!]\s+|\n+\s*)([a-zäöüß])"
+    for s in ("Gut. danke\n\n  ja", "a\n \n\tb\n\n\n.c", "x.y! über\n1\nß"):
+        assert (re.sub(rule["pattern"], pl_engine._upper_callback, s)
+                == re.sub(old, pl_engine._upper_callback, s))
 
 
 def test_language_specific_rules_are_tagged():

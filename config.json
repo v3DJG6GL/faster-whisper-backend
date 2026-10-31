@@ -792,7 +792,7 @@
       "tags": [],
       "note": "Capitalizes the first letter after a . ? ! plus whitespace, or after a newline (whitespace required, so 'x.y' is untouched).",
       "type": "callback:upper",
-      "pattern": "([.?!]\\s+|\\n+\\s*)([a-zäöüß])"
+      "pattern": "([.?!]\\s+|\\n\\s*)([a-zäöüß])"
     },
     {
       "name": "trim-edges",

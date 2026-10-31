@@ -195,11 +195,14 @@ RELABELLED_RULE_ENTRIES: dict[str, str] = {
 }
 
 # Factory rules that GAINED a rule-level language scope in config.json, keyed
-# by rule name: (type, pattern) of the factory rule -> the languages it runs
-# on now. A stored copy of the rule has no languages (or []: every language),
-# so the fix never reached it. upgrade_rule_entries sets the scope ONLY while
-# the stored rule still has no languages and its type and pattern still equal
-# the factory ones. A rule the admin rewrote is theirs and stays untouched.
+# by rule name: (type, pattern) a stored copy saved BEFORE the scope holds ->
+# the languages the rule runs on now. That pattern is the factory one of the
+# time; the factory rule may have moved on since (capitalize-letter-after-
+# hyphen no longer fires after a digit). A stored copy of the rule has no
+# languages (or []: every language), so the fix never reached it.
+# upgrade_rule_entries sets the scope ONLY while the stored rule still has
+# no languages and its type and pattern still equal the pre-scope ones. A
+# rule the admin rewrote is theirs and stays untouched.
 # A regex-list / callback:map rule has no rule-level pattern (None): its
 # content is checked instead (_FACTORY_CONTENT_DIGESTS), and so is the
 # wordlist of a callback:lowercase-wordlist rule on top of its pattern.
@@ -269,8 +272,8 @@ def _content_digest(rule: dict[str, Any]) -> str | None:
 
 def _factory_content(rule: dict[str, Any], name: str) -> bool:
     """True while a stored rule still does what the factory rule `name` of
-    UPGRADED_RULE_LANGUAGES does: the factory type and pattern, and factory
-    content (_FACTORY_CONTENT_DIGESTS)."""
+    UPGRADED_RULE_LANGUAGES did before its scope: the pre-scope type and
+    pattern, and factory content (_FACTORY_CONTENT_DIGESTS)."""
     scope = UPGRADED_RULE_LANGUAGES.get(name)
     return (scope is not None
             and (rule.get("type"), rule.get("pattern")) == scope[0]

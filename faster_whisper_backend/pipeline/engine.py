@@ -115,7 +115,7 @@ def _dedup_callback(match: "re.Match[str]") -> str:
 
 def _upper_callback(match: "re.Match[str]") -> str:
     """Uppercase group(2) if the pattern produced two groups; else uppercase
-    the entire match. Default seeded pattern produces ([.?!]\\s+|\\n+\\s*)
+    the entire match. Default seeded pattern produces ([.?!]\\s+|\\n\\s*)
     + ([a-zäöüß]). Only group(2)'s span changes: text the match holds
     outside groups 1 and 2 (a literal between them, a third group) is kept.
     A group(2) captured in a lookaround lies outside the match, which a sub

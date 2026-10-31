@@ -37,7 +37,9 @@ def _pre_scope_rules():
     return rules
 
 
-def test_every_language_upgrade_matches_its_factory_rule():
+def test_every_language_upgrade_keys_on_a_pre_scope_copy_of_its_factory_rule():
+    """The key is the factory type and pattern (the pre-scope pattern where
+    _PATTERN_BEFORE_SCOPE names one), and the scope is the factory one."""
     for name, ((typ, pattern), langs) in renames.UPGRADED_RULE_LANGUAGES.items():
         r = _rule(_factory_rules(), name)
         assert (r["type"], _PATTERN_BEFORE_SCOPE.get(name, r.get("pattern")),
