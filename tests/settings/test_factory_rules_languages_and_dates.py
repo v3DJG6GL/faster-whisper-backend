@@ -463,13 +463,13 @@ def test_space_before_closing_punct_is_fast_on_a_hallucinated_dot_loop(app_modul
     """Whisper hallucinates "... ... ..." on silence; strip-auto-punctuation
     deletes the marks and leaves one long space run, which the "  +" collapse
     only reaches later in the card. `[ \\t]+` started a match at every space
-    of the run and scanned to its end when no closing mark followed: 10000
-    items took 2 s on /transcribe. A match now starts only at a run's first
-    space."""
+    of the run and scanned to its end when no closing mark followed: 40000
+    items took 7 s on /transcribe. A match now starts only at a run's first
+    space (0.05 s)."""
     app_module.cfg.PIPELINE_RULES = copy.deepcopy(_factory_rules())
     pl_engine.rebuild_caches()
     t0 = time.perf_counter()
-    out = pl_engine._postprocess_text(" Das war es " + unit * 10000 + "Danke.",
+    out = pl_engine._postprocess_text(" Das war es " + unit * 40000 + "Danke.",
                                       model_name="", language="de")
     assert time.perf_counter() - t0 < 1.0
     assert out == "Das war es Danke"
