@@ -1456,9 +1456,26 @@ def test_led_run_whose_lookahead_needs_a_letter_is_rejected():
 
 @pytest.mark.parametrize("pat, count", [
     (r"Komma\s*(\d+)", 2), (r"(\d{1,2})\s*Uhr", 3), (r"Euro\s*(\d+)", 2),
+    (r"Prozent\s*(\d+)\s*Euro", 2), (r"Satz\s*(\d+)", 2), (r"Absatz\s*", 2),
+    (r"(?i)neue zeile\s*", 4), (r"(?i)ganz\s+(\d+)\s*zentimeter", 2),
+    (r"(?<!\d)[.?!](\s*)([A-ZÄÖÜ])(\w*)", 2),
 ])
 def test_lead_adds_no_terminator_probe_to_an_ordinary_rule(pat, count):
+    """The lead walked every atom one of its characters matches, wherever it
+    sat: `Satz`'s own `z`, or the `[A-ZÄÖÜ]` a space run never gets past,
+    looked reachable, and each got a useless full-length `z` probe."""
     assert len(g._synthetic_fixtures(pat)) == count
+
+
+@pytest.mark.parametrize("pat", [
+    r"Anführungszeichen\s*(.*?)\s*Anführungszeichen",
+    r"Klammer auf\s*(.*?)\s*Klammer zu",
+])
+def test_lead_letter_gets_no_terminator_probe(pat):
+    """The `z` in the lead, or behind the second word's `K` that refuses the
+    run, is no terminator the run reaches: 8 and 12 probes instead of 6 and 9
+    (the rest end the led run bare, as an unled `\\s*(.*?)…` run does)."""
+    assert not [p for p in g._synthetic_fixtures(pat) if p[-1] in g._SYNTH_LETTERS]
 
 
 @pytest.mark.parametrize("pat", [r"(\d+)\s*%", r"\s+([,.!?])", r"(\d+)\s*Uhr\b"])
