@@ -163,17 +163,15 @@ def test_key_matched_by_sre_case_folding_is_applied(text, expected):
 
 
 @pytest.mark.parametrize("text, expected", [
-    ("Blutdruck 120. Schrägstrich 80.", "Blutdruck 120/80"),
-    ("Blutdruck 120... Schrägstrich 80", "Blutdruck 120/80"),
-    ("Blutdruck 120, Schrägstrich 80.", "Blutdruck 120/80"),
-    # "-" stays out: "12.-15. Mai" is a German ordinal range.
-    ("Seite 12. Bindestrich 15.", "Seite 12.-15"),
-    ("Patient. Schrägstrich Angehörige.", "Patient / Angehörige"),
+    ("Treffen am 3. Schrägstrich 4. Mai in Bern.", "Treffen am 3. / 4. Mai in Bern"),
+    ("Im 1. Schrägstrich 2. Quartal.", "Im 1. / 2. Quartal"),
+    ("Siehe http: Schrägstrich Schrägstrich www.", "Siehe http: / / www"),
 ])
-def test_dictated_slash_eats_whispers_pause_mark(app_module, text, expected):
-    """The prefix took only `. , : ; ! ?` values, so Whisper's period at the
-    pause after a number stayed in front of a dictated Schrägstrich:
-    "Blutdruck 120. Schrägstrich 80." became "Blutdruck 120. / 80"."""
+def test_dictated_slash_keeps_the_mark_in_front_of_it(app_module, text, expected):
+    """A dictated Schrägstrich must not eat the mark in front of it: an
+    ordinal pair "am 3. Schrägstrich 4. Mai" read as the fraction "3/4. Mai"
+    once it did, and "http:" lost its colon. The pause period of
+    "120. Schrägstrich 80" looks the same at the map, so it stays."""
     app_module.cfg.PIPELINE_RULES = copy.deepcopy(_factory_rules())
     pl_engine.rebuild_caches()
     assert pl_engine._postprocess_text(text, model_name="", language="de") == expected
