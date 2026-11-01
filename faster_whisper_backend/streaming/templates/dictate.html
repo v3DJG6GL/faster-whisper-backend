@@ -1,20 +1,17 @@
 <!doctype html>
 <!--
-  Live dictation page for /v1/audio/transcriptions/stream.
+  Live dictation page for /v1/audio/transcriptions/stream, plus a batch mode
+  that records the whole clip and POSTs it to /v1/audio/transcriptions.
 
   Rendered through web_common.render_page (NOT served as a plain static file),
-  so it carries the same header, nav, scale picker, severity pills and sign-out
-  as every other WebUI page and the double-brace placeholders below are
-  substituted server-side.
+  so the double-brace placeholders below are substituted server-side. Auth is
+  the WebUI session cookie (see wsBase below); a signed-out visitor gets the
+  shared login gate like anywhere else.
 
-  Auth: the session cookie the rest of the WebUI already uses. There is no API
-  key field and no server field — the page talks to the origin that served it,
-  the browser attaches the cookie to both the WebSocket handshake and the batch
-  POST, and a signed-out visitor gets the shared login gate like anywhere else.
-
-  Audio: captures the mic via an AudioWorklet, downsamples to 16 kHz mono s16le
-  PCM, streams it over the WebSocket, and renders LocalAgreement stabilized
-  partials (committed bold + provisional faded) plus append-only finals.
+  Streaming: captures the mic via an AudioWorklet, downsamples to 16 kHz mono
+  s16le PCM, streams it over the WebSocket, and renders LocalAgreement
+  stabilized partials (committed bold + provisional faded) plus append-only
+  finals.
   Self-contained — no CDNs.
 -->
 <html lang="en">
@@ -167,9 +164,8 @@
   const wsBase = () =>
     (location.protocol === "https:" ? "wss" : "ws") + "://" + location.host;
 
-  // Settings persisted per browser. The credential is the session cookie, so
-  // there has never been anything secret to keep out of this blob — but an
-  // older build of this page did store an API key here, hence the cleanup.
+  // Settings persisted per browser. An older build also stored an API key and
+  // server URL here; loadPrefs re-saves to drop them.
   const PREF_FIELDS = ["mode", "model", "lang", "format"];
 
   function loadPrefs() {
@@ -196,7 +192,7 @@
     registerProcessor('cap', Cap);
   `;
 
-  // Linear-resample incoming Float32 (at ctxRate) down to TARGET_SR, pack to
+  // Linear-resample incoming Float32 (at srcRate) down to TARGET_SR, pack to
   // int16, and ship full frames as WS binary.
   function pushSamples(float32, srcRate) {
     if (!float32.length) return;
