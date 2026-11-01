@@ -1,5 +1,3 @@
-# .forgejo/workflows/mirror-ghcr.yml
-#
 # Reconciling one-way sync of published container images from this
 # instance's registry to ghcr.io (companion to the git mirror at
 # github.com/v3DJG6GL/faster-whisper-backend). `crane cp` copies
@@ -11,27 +9,19 @@
 # publishing run instead of a registry_package burst (see below). ci.yml
 # ends with an always()-run `mirror` job that POSTs to this workflow's
 # dispatch endpoint once per publishing run — dispatch bypasses the event
-# pipeline, so the run-scoped actions token is accepted there. (The split
-# originally also dodged skipped-`needs` jobs hanging a run on Forgejo v15,
-# forgejo#12937; this instance runs v16, where that is fixed.)
+# pipeline, so the run-scoped actions token is accepted there.
 #
-# No registry_package trigger (removed 2026-08-26): Forgejo fires that
-# event once per package VERSION published — one publish = one event per
-# tag (latest, sha-*, buildcache-*, × cpu/gpu/-full variants), and on
-# this instance the concurrency group merely SERIALIZES the burst
-# instead of deduping it (runs 353–371 were one such pile-up), so every
-# commit spawned ~12 back-to-back runs. The single ci.yml dispatch
-# replaces the whole burst. The crons stay as a reconcile backstop for
-# anything a dispatch run missed.
+# No registry_package trigger: Forgejo fires it once per package VERSION
+# (latest, sha-*, buildcache-* × every variant), and the concurrency group
+# only SERIALIZES that burst (~12 runs per commit), never dedupes it. The
+# crons stay as a reconcile backstop for anything a dispatch run missed.
 #
 # Setup (job no-ops with a notice until this is done):
 #   * Add repo secrets GHCR_USER (GitHub username) + GHCR_TOKEN (a GitHub
 #     PAT (classic) with `write:packages` — the same pair configured on
 #     nextcloud-fpm-nginx works verbatim).
-#   * No visibility flip needed: the destination is the LEGACY GHCR
-#     package left by the GitHub-era CI, which is already public — the
-#     mirror re-points its latest/latest-gpu (and future v*) tags at the
-#     Forgejo-built digests, where existing consumers already pull.
+#   * No visibility flip needed: the destination is the legacy GHCR package
+#     of the GitHub-era CI — already public, where existing consumers pull.
 #
 # buildcache-* tags are excluded on purpose (buildx cache blobs, not
 # runnable images, and they churn every run). sha-* tags ARE mirrored:
@@ -77,10 +67,9 @@ concurrency:
 env:
   # Source is derived at runtime from GITHUB_SERVER_URL + GITHUB_REPOSITORY
   # (lowercased — registry paths are), so instance/user/repo renames need no
-  # edit here. Only the ghcr.io destination is fixed: it lives on a
-  # different platform and can't be derived from this run's context. It
-  # targets the legacy public package (GitHub-era CI history) so the tags
-  # keep flowing where existing consumers already pull from.
+  # edit here. Only the ghcr.io destination is fixed: it lives on another
+  # platform and can't be derived from this run's context (it is the legacy
+  # public package — see the header).
   DST_IMAGE: ghcr.io/v3djg6gl/faster-whisper-backend
 
 jobs:
