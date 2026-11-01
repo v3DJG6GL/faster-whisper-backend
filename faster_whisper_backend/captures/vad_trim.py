@@ -123,7 +123,7 @@ def trim_wav(
         return _no_trim(orig_duration_ms)
 
     # Bail out if the trim wouldn't actually save anything meaningful
-    # (under ~50 ms on either side) AND we're overwriting in place.
+    # (under ~50 ms in total) AND we're overwriting in place.
     # When dst != src we still write so the caller can rely on dst
     # existing.
     leading_trimmed = start_sample
