@@ -1312,8 +1312,8 @@ function makeEditor(name) {
 // model's field sections + its pipeline-rules checklist; a field row shows an
 // input when overridden, "inherits {global}" + "+ override" when not.
 // Clicking the active entry collapses the pane (localStorage 'mo.detail.<id>';
-// advanced subgroups use 'mo.adv.<id>'). Diff mode dims rows that match the
-// resolved global. Edits refresh dot / match / count / inherits text in place
+// advanced subgroups use 'mo.adv.<section id>', shared by all models). Diff
+// mode dims rows that match the resolved global. Edits refresh dot / match / count / inherits text in place
 // via refreshMarkers(field): no input rebuild, so focus survives.
 function modelOverridesEditor(name, v) {
   // Authoritative state. Local mutable copy of the saved overrides; full
@@ -2541,9 +2541,11 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
   //       "checklist" → one checkbox per rule plus a "↑ view" jump-link to
   //         the global editor; the rules themselves are not editable. Used by
   //         the per-model override pane and CAPTURES_PIPELINE_RULES_EXCLUDE.
-  //         opts.excludeSet (Set<slug>) drives initial state; the callbacks
-  //         are opts.onToggle(slug, wantActive, globallyEnabled) (wantActive
-  //         = the box is ticked, i.e. NOT excluded) and opts.onJumpToGlobal(slug).
+  //         opts.excludeSet / opts.includeSet (Set<slug>: forced off /
+  //         forced on; captures passes no includeSet) drive initial state;
+  //         opts.terminalToggleable unlocks the terminal row's box. Callbacks:
+  //         opts.onToggle(slug, wantActive, globallyEnabled) (wantActive = the
+  //         box is ticked) and opts.onJumpToGlobal(slug).
   // initialRules: list of rule dicts as stored in PIPELINE_RULES.
   // In "full" mode every edit calls setDirty(name, snapshot) on a local copy,
   // so save tracks the whole list as one entry.
