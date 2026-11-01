@@ -1,8 +1,8 @@
 """The cb:map editor's "n / cap" readout needs window.__mme on EVERY page
-that embeds the shared rule editor. /quick-config sets it from its API
-payload (map_max_entries); /settings previously got nothing and showed a
-bare count with a never-disabled add button, so RULE_EDITOR_JS now bakes a
-schema-derived default into the editor itself.
+that embeds the shared rule editor, or it shows a bare count and the add
+button never disables. /quick-config sets it from its API payload
+(map_max_entries); RULE_EDITOR_JS bakes a schema-derived default for the
+rest (/settings).
 """
 
 from faster_whisper_backend.settings import schema as settings_schema
