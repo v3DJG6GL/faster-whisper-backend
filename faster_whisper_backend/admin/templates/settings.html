@@ -3621,13 +3621,13 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
 
     // Label editor (terminal's label is hardcoded). A custom rule's slug
     // follows its label; the header spans update in place, with no repaint,
-    // so the caret survives typing. The slug is fixed once the rule is in
-    // config.json (membership, not `seeded`, as in _canReset/_canDelete: a
-    // promote under a local-list shadow keeps seeded:false, and re-slugging
-    // would detach it, local-only here and "missing" there) or saved on this
-    // server (per-model, profile and captures checklists and per-identity
-    // bindings name the slug; a rename 422s the next save or silently
-    // un-excludes the rule for a user).
+    // so the caret survives typing.
+    // Membership in config.json — not the seeded flag — is authoritative
+    // (as in _canReset/_canDelete): a promote under a local-list shadow keeps
+    // seeded:false, and re-slugging would detach it (local-only here,
+    // "missing" there). A slug saved on this server is fixed too: per-model,
+    // profile and captures checklists and per-identity bindings name it, and a
+    // rename 422s the next save or silently un-excludes the rule for a user.
     const savedSlugs = new Set((fieldDef(name).value || []).map(r => r && r.name));
     const slugFixed = r => r.seeded || _factoryHas(r.name) || savedSlugs.has(r.name);
     if (rule.type !== 'terminal') {

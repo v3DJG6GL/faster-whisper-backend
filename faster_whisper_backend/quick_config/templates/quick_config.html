@@ -2615,8 +2615,8 @@ async function _doSave(patch, fingerprints) {
 }
 
 
-// Silent re-apply after Save: an inline header strip, so the admin keeps
-// editing. Fades out on completion; sticks (red-tinted) on error so the
+// --- Silent reapply strip (auto-triggered after Save) ---
+// An inline header strip, so the admin keeps editing. Fades out on completion; sticks (red-tinted) on error so the
 // failure isn't missed.
 let _stripPoll = null;
 let _stripFadeTimer = null;

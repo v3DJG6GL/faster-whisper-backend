@@ -170,8 +170,8 @@ function _makeMapRow(rule, key, val, commitData, datalistId, onEnter, ts, showDa
   return tr;
 }
 
-// regex-list entry editor (shared by /settings + /quick-config): an ordered
-// batch of {pattern, replacement, label?, note?} entries. The DOM IS the source
+// ---- regex-list entry editor (shared by /settings + /quick-config) ----
+// An ordered batch of {pattern, replacement, label?, note?} entries. The DOM IS the source
 // of truth: add / delete / drag-reorder all reduce to "mutate the DOM, then
 // _readEntries + commit". Empty-pattern rows are skipped on read (kept in the
 // DOM so an in-progress row isn't lost), mirroring cb:map. Helpers live at

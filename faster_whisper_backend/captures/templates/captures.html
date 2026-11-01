@@ -2325,8 +2325,8 @@
        {value: 'dismissed', label: 'Dismissed'}],
       state.newStatus,
       async function(v) {
-        // Status-only PATCH: an unsaved chip edit stays dirty until Save,
-        // and status needs no three-way merge.
+        // Auto-save on click. Status-only PATCH: an unsaved chip edit stays
+        // dirty until Save, and status needs no three-way merge.
         var prev = state.newStatus;
         state.newStatus = v;
         // Lets a Save reply sent before this click keep it instead of
