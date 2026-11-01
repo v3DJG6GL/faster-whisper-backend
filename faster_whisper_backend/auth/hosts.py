@@ -42,11 +42,19 @@ def _build_networks(allowlist: list[str]) -> list[ipaddress._BaseNetwork]:
         if not entry:
             continue
         try:
-            nets.append(ipaddress.ip_network(entry, strict=False))
+            net = ipaddress.ip_network(entry, strict=False)
         except ValueError:
             # Bad entry — skip silently. The /settings endpoint validates inputs;
             # this is a runtime defense for handwritten config edits.
             continue
+        # _to_ip folds a "::ffff:a.b.c.d" client to IPv4, which is never inside
+        # an IPv6 network, so fold a mapped entry the same way. The schema
+        # already rewrites saved values; this covers the env vars too. Below
+        # /96 the range is not all-mapped, so it stays IPv6.
+        mapped = getattr(net.network_address, "ipv4_mapped", None)
+        if mapped is not None and net.prefixlen >= 96:
+            net = ipaddress.IPv4Network((mapped, net.prefixlen - 96))
+        nets.append(net)
     return nets
 
 
