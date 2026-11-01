@@ -544,7 +544,7 @@ def test_write_srts_clamps_only_the_last_inverted_cue_end_to_its_start(tmp_path)
 
 def test_write_srts_reads_a_short_millisecond_field_as_ffmpeg_does(tmp_path):
     """ffmpeg's SRT demuxer reads ",5" as 5 ms and ",40" as 40 ms (%3d), so
-    1,40 --> 1,5 is inverted to the muxer and 2,5 --> 2,40 is not."""
+    3,40 --> 3,5 is inverted to the muxer and 2,5 --> 2,40 is not."""
     srt = ("1\n00:00:02,5 --> 00:00:02,40\nKept\n\n"
            "2\n00:00:03,40 --> 00:00:03,5\nInverted\n")
     (p,) = pk._write_srts(str(tmp_path), [pk.SubtitleTrack("en", "English", srt)])
