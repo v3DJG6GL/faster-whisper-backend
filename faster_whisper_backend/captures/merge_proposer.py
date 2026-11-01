@@ -4,7 +4,7 @@ Auto-merge proposer for /captures fine-tuning data curation.
 Given the user's ungrouped captures, ranks plausible merges into ~26 s
 samples that respect the configurable duration cap
 (cfg.CAPTURES_SAMPLE_MAX_DURATION_S, default 29.9 s) that the merge
-endpoints enforce in captures_routes._validate_merge_payload (mirrors its
+endpoints enforce in captures/routes.py _validate_merge_payload (mirrors its
 trimmed-body + join-gap + outer-edge arithmetic).
 
 Heuristic rationale (see docs/captures-finetune-findings.md + research notes):
@@ -52,7 +52,7 @@ _MAX_MEMBERS = 30
 # Sentinel cache key for admin "all users" view.
 _ALL_USERS = "__all__"
 
-# {cache_key: (generated_ts, [ProposedGroup, ...])}
+# {cache_key: (generated_ts, [proposal dict, ...])}
 _CACHE: dict[str, tuple[float, list[dict[str, Any]]]] = {}
 # Insertion-order ceiling, matching _TRIM_DUR_CACHE_MAX below. A scope=all
 # caller picks the ?user_id= that becomes the key, and invalidate() only pops
@@ -98,8 +98,9 @@ def trimmed_duration_s(row: dict[str, Any]) -> float:
     to raw `audio_s` when group trimming is disabled, the audio can't
     be read, or VAD is unavailable (matches audio_vad_trim's own fallback).
 
-    Public so captures_routes (merge validation + the manual merge-estimate
-    endpoint) can reuse the same cached per-capture trim as the proposer."""
+    Public so captures/routes.py (merge validation + the manual
+    merge-estimate endpoint) can reuse the same cached per-capture trim as
+    the proposer."""
     raw = float(row.get("audio_s") or 0.0)
     if not getattr(cfg, "CAPTURES_VAD_TRIM_ENABLED_FOR_SAMPLES", False):
         return raw
@@ -222,8 +223,6 @@ def _build_sample_score(members: list[dict[str, Any]], gap_s: float,
 def _format_reason(scored: dict[str, float], n: int) -> str:
     total = scored["total_dur"]
     wall = scored["wall_dur"]
-    # Minutes + seconds only when the wall span is materially larger than the
-    # packed audio; otherwise plain seconds.
     if wall > total * 1.5 and wall >= 60:
         mins = int(wall // 60)
         secs = int(wall % 60)
@@ -478,7 +477,8 @@ def _propose_merges_locked(
     # but only when group trimming is on — the legacy/trim-off merge path emits
     # no outer margin (audio_merge.merge_wavs), so counting it here would
     # over-pack the cap budget by ~2×edge_s and depress fill scores, diverging
-    # from captures_routes._validate_merge_payload's same trim-gated estimate.
+    # from captures/routes.py _validate_merge_payload's same trim-gated
+    # estimate.
     edge_s = (
         float(getattr(cfg, "CAPTURES_VAD_MARGIN_SAMPLE_EDGE_MS", 300)) / 1000.0
         if getattr(cfg, "CAPTURES_VAD_TRIM_ENABLED_FOR_SAMPLES", False)
@@ -524,8 +524,8 @@ def _propose_merges_locked(
     sessions.extend(cur.values())
 
     # Per session × user × language × task → candidates. user_id partition
-    # matters because create_sample_api enforces same-user (captures/routes.py
-    # create_sample_api); without it, the admin "all users" view could emit
+    # matters because captures/routes.py create_sample_api enforces same-user;
+    # without it, the admin "all users" view could emit
     # proposals that the merge endpoint rejects. task matters because a
     # translate capture carries the SOURCE language but English text, so
     # packing it with a transcribe clip would join English into a
