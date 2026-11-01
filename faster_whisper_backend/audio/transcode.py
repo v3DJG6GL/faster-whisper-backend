@@ -89,10 +89,9 @@ def _decoded_frames(container, stream):
     a packet the decoder rejects as invalid data. One damaged frame in an
     otherwise playable file (a bad mp3 frame, a flac block with a broken
     CRC) must not abort the whole decode: faster-whisper's own decode_audio
-    tolerates it, so the file transcribes — while a bare container.decode()
-    raised InvalidDataError here. That is a PyAV FFmpegError (a decode
-    failure: the caller falls back), NOT the plain ValueError main.py treats
-    as a refused input."""
+    tolerates it, so the file transcribes. Any other decode error stays a
+    PyAV FFmpegError (a decode failure: the caller falls back), NOT the
+    plain ValueError main.py treats as a refused input."""
     invalid = _av().error.InvalidDataError
     for packet in container.demux(stream):
         try:
@@ -227,7 +226,6 @@ def transcode_to_wav(src_path: str, dst_path: str, *,
             for packet in out_stream.encode(resampled):
                 out_container.mux(packet)
 
-        # Flush the encoder.
         for packet in out_stream.encode(None):
             out_container.mux(packet)
         # Close inside the try: close writes the trailer and flushes the
