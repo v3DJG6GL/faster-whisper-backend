@@ -260,10 +260,9 @@ def test_recent_query_filters_raw_and_final(client):
     assert ids == ["q1"]
     r = client.post("/quick-config/recent/search", json={"q": "ASPIRIN"})
     assert [t["request_id"] for t in r.json()["recent"]] == ["q2"]
-    # No query → both rows (newest-first). The unfiltered slice stays a GET.
+    # The unfiltered slice stays a GET.
     r = client.get("/quick-config/recent")
     assert [t["request_id"] for t in r.json()["recent"]] == ["q2", "q1"]
-    # No match → empty.
     r = client.post("/quick-config/recent/search", json={"q": "zzznope"})
     assert r.json()["recent"] == []
 
@@ -291,12 +290,10 @@ def test_recent_get_no_longer_filters_by_query_string(client):
 def test_reapply_rules_status(client):
     r = client.get("/quick-config/reapply-rules/status")
     assert r.status_code == 200
-    # captures_reapply.status() returns the worker state dict.
     assert isinstance(r.json(), dict)
 
 
 def test_reapply_rules_start_captures_disabled(client, app_module):
-    # CAPTURES_RECORDING_ENABLED defaults False -> idle, no-op note.
     app_module.cfg.CAPTURES_RECORDING_ENABLED = False
     r = client.post("/quick-config/reapply-rules")
     assert r.status_code == 200
@@ -592,7 +589,8 @@ def test_quick_config_page_save_and_recent_guards(client):
         assert "await" not in window, window
         assert "applyState(j);" in window
     assert "await load()" not in save
-    # The seen-set reset moved AFTER the await.
+    # The seen-set reset follows the await: a trace pushed during the wait
+    # went into the old set, so an earlier reset would drop it.
     body = html[html.index("async function reloadRecent()"):html.index("async function loadOlder()")]
     assert body.index("await api(") < body.index("_seenReqIds = new Set();")
 
@@ -741,7 +739,7 @@ def test_redact_collapses_hidden_rule_ordinals():
         user, rules)
     assert out == [{"loc": "PIPELINE_RULES",
                     "msg": "<hidden rule>: invalid regex: boom"}]
-    # The sentinel must survive the collapse — static/page doSave keys on it
+    # The sentinel must survive the collapse — the page's _doSave keys on it
     # to route the error to the generic "contact admin" toast — and no
     # digit-bearing ordinal may remain.
     assert "<hidden rule>" in out[0]["msg"]
