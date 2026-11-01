@@ -86,7 +86,6 @@ class HypothesisBuffer:
         an n-gram match against the committed tail.
         """
         new_words = [TSWord(a + offset, b + offset, t) for (a, b, t) in words]
-        # Keep only words that begin after what we've already committed.
         self.new = [w for w in new_words if w.start > self.last_commited_time - _INSERT_SLACK]
 
         if not self.new:
@@ -96,9 +95,9 @@ class HypothesisBuffer:
             return  # not at the seam — no boundary re-emission to dedup
         if not self.commited_in_buffer:
             return
-        # Drop the longest committed-tail n-gram (n = 1..5) that the new hypothesis
-        # re-emits at its front. Both sides are joined the same way, so the exact
-        # spacing of the word tokens is irrelevant to the equality.
+        # Drop the shortest committed-tail n-gram (n = 1..5, first match wins, as
+        # upstream) that the new hypothesis re-emits at its front. Both sides are
+        # joined the same way, so the exact spacing of the word tokens is irrelevant.
         cn = len(self.commited_in_buffer)
         nn = len(self.new)
         for i in range(1, min(cn, nn, _MAX_NGRAM) + 1):
@@ -125,7 +124,7 @@ class HypothesisBuffer:
                 self.buffer.pop(0)  # pop from BOTH lists on a match
                 self.new.pop(0)
             else:
-                break  # first mismatch ends the agreed prefix
+                break
         self.buffer = self.new  # leftover tail is next iteration's reference
         self.new = []
         self.commited_in_buffer.extend(commit)
