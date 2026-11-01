@@ -99,9 +99,7 @@ def init_db(path: str) -> None:
     safe to call on every startup; the schema-CREATE statements use
     IF NOT EXISTS. Call before any other function in this module."""
     global _conn
-    # Autocommit + WAL rationale lives on store_common.open_wal_db. _lock
-    # serialises writers (so the COUNT inside _evict_to_cap sees a stable
-    # total) but does not make the INSERT + DELETEs atomic vs crash.
+    # Autocommit + WAL rationale lives on store_common.open_wal_db.
     _conn = store_common.open_wal_db(path)
     # Rename legacy columns (raw / final, *_json) in place, before _SCHEMA so
     # CREATE TABLE IF NOT EXISTS never sees the old names as the live ones.
@@ -247,9 +245,9 @@ def find_by_request_user(
     request_id: "str | None", user_id: "str | None",
 ) -> "dict[str, Any] | None":
     """Return the most recent report row keyed on (user_id, request_id),
-    or None. Used by upsert_report (so re-reporting the same trace
-    updates the existing row instead of stacking duplicates) and by
-    reports_routes.delete_my_report_api to target the caller's own row."""
+    or None. reports_routes.delete_my_report_api uses it to target the
+    caller's own row; upsert_report does the same lookup under its own lock
+    span via _find_by_request_user_locked."""
     if not request_id or not user_id:
         return None
     with _lock:
@@ -298,14 +296,12 @@ def upsert_report(
     `was_updated` flag is True when an existing row was merged; False
     when a fresh row was inserted.
 
-    On update: corrections go through three_way_merge_corrections —
-    keyed on (idx, idx_end) for anchored chips and on (wrong, correct)
-    for anchorless ones, with `baseline_corrections` (the stored chips the
-    client's form was seeded from) as the baseline, so a chip the user
-    removed or re-ranged is dropped instead of surviving the merge —
-    intended_text and user_comment overwrite
-    (latest submission supersedes), and created_ts bumps to "now" so
-    the row re-floats to the top of /reports.
+    On update: corrections three-way-merge against `baseline_corrections`
+    (the stored chips the client's form was seeded from), so a chip the
+    user removed or re-ranged is dropped instead of surviving the merge;
+    intended_text and user_comment overwrite (latest submission
+    supersedes); created_ts bumps to "now" so the row re-floats to the top
+    of /reports.
     """
     request_id = (request_id or None) and str(request_id)[:_CAP_REQUEST_ID]
     raw_t = (raw or "")[:_CAP_RAW]
