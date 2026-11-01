@@ -1,7 +1,6 @@
 """POST /settings/test-pipeline refuses a regex-list replacement or a map value
-longer than a saved rule may carry. Editor rules skip the schema adapter, and
-one re.sub of the 8192-char sample with an oversized replacement allocates
-sample x replacement before the output bound is checked."""
+longer than a saved rule may carry: editor rules skip the schema adapter, so
+the dry run applies the save's bounds itself."""
 
 from typing import get_args
 
