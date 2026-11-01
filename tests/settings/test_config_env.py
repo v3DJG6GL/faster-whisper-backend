@@ -138,7 +138,7 @@ def test_per_model_env_scanner_end_to_end(monkeypatch):
         assert config.MODEL_OVERRIDES.get("ORG/NAME.CT2", {}).get("BEAM_SIZE") == 7
     finally:
         monkeypatch.undo()
-        importlib.reload(config)  # restore from the clean environment
+        importlib.reload(config)
 
 
 def test_env_value_is_stored_as_the_schema_normalizes_it(monkeypatch):
@@ -659,10 +659,10 @@ def test_env_cross_field_triple_inconsistent_pair_is_reverted(monkeypatch):
 
 
 def test_env_cross_field_backstop_keeps_unrelated_env_values(monkeypatch):
-    """A loc=() model-validator error names no field, and the backstop then
-    reverted the WHOLE remainder: an inconsistent captures pair also threw
-    out WHISPER_SESSION_COOKIE_SECURE (a non-Secure cookie on HTTPS) and
-    WHISPER_BEAM_SIZE, each blamed with the captures-sizing message."""
+    """A loc=() model-validator error names no field, yet the backstop must
+    revert only the inconsistent captures pair: unrelated env values such as
+    WHISPER_SESSION_COOKIE_SECURE (else a non-Secure cookie on HTTPS) and
+    WHISPER_BEAM_SIZE stay in force, unblamed."""
     try:
         _reload_with_env(
             monkeypatch,
@@ -1089,10 +1089,10 @@ def test_env_cross_field_consistent_with_local_override_applies(tmp_path, monkey
 def test_explicitly_empty_env_pins_fields_where_empty_is_a_value(monkeypatch):
     """WHISPER_X="" is a real value for the readers that map "" to None / ""
     / [] / set() / a fixed default (CONVERT_QUANTIZATION -> float16) — the
-    var controls the field, so /settings must badge it
-    as env-pinned (and the hot-apply path must skip it) instead of letting
-    an edit "work" until the next restart. A reader that treats "" as
-    "keep current" (BEAM_SIZE) still does not pin."""
+    var controls the field, so /settings must badge it as env-pinned (and
+    the hot-apply path must skip it) instead of letting an edit "work" until
+    the next restart. A reader that treats "" as "keep current" (BEAM_SIZE)
+    still does not pin."""
     from faster_whisper_backend.settings import config_store
     try:
         _reload_with_env(
@@ -1555,9 +1555,10 @@ def test_blank_model_overrides_var_does_not_drop_a_stored_entry(monkeypatch):
 
 def test_stored_model_override_survives_an_env_field_outside_env_allowlist(
         monkeypatch):
-    """Same as above, but the model also has a WHISPER_MODEL_OVERRIDE__ var:
-    the env field is ignored (the env allowlist refuses it), the stored
-    fields stay instead of the whole entry being dropped."""
+    """A stored entry for a model outside the env allowlist, plus a
+    WHISPER_MODEL_OVERRIDE__ var for it: the env field is ignored (the env
+    allowlist refuses it), the stored fields stay instead of the whole entry
+    being dropped."""
     from faster_whisper_backend.settings import config_store
     monkeypatch.setattr(config_store, "load_overrides",
                         lambda path=None: {"MODEL_OVERRIDES": {"tiny": {"BEAM_SIZE": 2}}})
