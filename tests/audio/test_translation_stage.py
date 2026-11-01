@@ -49,8 +49,6 @@ def _progress_spy(app_module, seen, pid):
     return orig, spy
 
 
-# --- route behaviour ---------------------------------------------------------
-
 def test_translation_stage_populates_segments_and_response(
         client, app_module, monkeypatch):
     monkeypatch.setattr(app_module.cfg, "TRANSLATION_ENABLED", True,
@@ -69,7 +67,6 @@ def test_translation_stage_populates_segments_and_response(
     # The stage saw the raw segment texts + the detected source language.
     assert calls[0]["segments"] == [{"text": "hallo welt", "speaker": None}]
     assert calls[0]["source_lang"] == "de"
-    # ...and the main transcript stays untranslated.
     assert "XLATED" not in body["text"]
 
 
@@ -170,8 +167,8 @@ def test_translate_to_clamped_to_max_targets_with_warning(
     monkeypatch.setattr(app_module.cfg, "TRANSLATION_ENABLED", True,
                         raising=False)
     monkeypatch.setattr(app_module.cfg, "TRANSLATION_MAX_TARGETS", 3)
-    # TRANSLATION_MAX_TARGETS 3; ask for 5 (+ a malformed entry and a
-    # duplicate, both dropped silently BEFORE the clamp).
+    # Ask for 5 (+ a malformed entry and a duplicate, both dropped silently
+    # BEFORE the clamp).
     calls = []
     _stub_translate(monkeypatch, calls=calls)
     r = _post(client, translate_to="en,NOT_A_CODE,fr,en,it,es,pt")
@@ -248,10 +245,6 @@ def test_invalid_translation_mode_is_422(client):
 
 
 def test_captures_never_store_translated_text(client, app_module, monkeypatch):
-    # Regression guard for the stage's CRITICAL invariant: the capture row's
-    # TRANSCRIPT fields (raw/final/training text + segment diag) must carry
-    # only the source-language transcript — the stage's translations live
-    # exclusively in their own keyed `translations` column.
     from faster_whisper_backend.captures import store as captures_store
     monkeypatch.setattr(app_module.cfg, "TRANSLATION_ENABLED", True,
                         raising=False)
@@ -270,20 +263,18 @@ def test_captures_never_store_translated_text(client, app_module, monkeypatch):
     assert r.json()["translations"]["en"] == "XLATED-en"  # the stage ran
     assert stored, "capture was not persisted"
 
-    # The invariant this test was written for, and the one that still holds:
-    # the TRANSCRIPT fields carry the source language and nothing else.
-    # Whisper learns to emit `final` / `text_for_training` for this audio, so
-    # a translation leaking into them would teach it to translate when it was
-    # asked to transcribe.
+    # The TRANSCRIPT fields carry the source language only: Whisper learns to
+    # emit `final` / `text_for_training` for this audio, so a translation
+    # leaking into them would teach it to translate when asked to transcribe.
     transcript_fields = {k: v for k, v in stored.items()
                          if k in ("raw", "final", "text_for_training",
                                   "segments", "words", "language")}
     assert "XLATED" not in json.dumps(transcript_fields, default=str)
 
-    # Translations ARE kept now — but only in their own keyed column, tagged
-    # with the model and with the fact that they are machine output. Whisper's
-    # translate task targets English only, so the exporter has to pick one
-    # language out of this map, which it could not do from a joined blob.
+    # Translations live only in their own keyed column, tagged with the model
+    # and as machine output. Whisper's translate task targets English only, so
+    # the exporter has to pick one language out of this map, which it could
+    # not do from a joined blob.
     assert stored["translations"] == {"en": "XLATED-en"}
     assert stored["translation_source"] == "cascade-mt"
     assert stored["translation_model"]
@@ -345,8 +336,6 @@ def test_translation_progress_forwards_target_fields_into_plan_units(
     assert {u["state"] for u in receipt["units"]} == {"done"}
     assert receipt["compute"] == "fluent"
 
-
-# --- context_segments form field ---------------------------------------------
 
 def test_context_segments_form_field_inherit_value_clamp(
         client, app_module, monkeypatch):
