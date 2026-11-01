@@ -21,9 +21,9 @@ Endpoints (all admin-only):
 Last-admin guard: revoking the only admin key (or only admin user)
 returns 409. Prevents accidental lockout.
 
-The HTML page is a single-file React-less app: vanilla JS + an HttpOnly
-session cookie (same pattern as /settings). Generates keys with a show-once modal —
-the raw key is copied to the clipboard, then never retrievable.
+The HTML page is a single-file vanilla-JS app on an HttpOnly session
+cookie (same pattern as /settings). A new key is shown once in a modal with a
+copy button, then never retrievable.
 """
 from __future__ import annotations
 
