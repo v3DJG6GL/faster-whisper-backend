@@ -18,7 +18,7 @@ URL = "/v1/request-default-settings"
 
 @pytest.fixture(autouse=True)
 def _a_default_model(app_module, monkeypatch):
-    # The test config has no default model; the endpoint resolves one.
+    # The test config has no default model, and the endpoint needs one to resolve to.
     monkeypatch.setattr(app_module.cfg, "DEFAULT_MODEL", "tiny")
     monkeypatch.setattr(app_module.cfg, "ALLOWED_MODELS", set())
 
