@@ -1,5 +1,5 @@
-"""dictation_map.compile_map: the "dictated punctuation wins" prefix must stay
-linear on a long hallucinated punctuation run.
+"""dictation_map.compile_map: key word bounds and the "dictated punctuation
+wins" prefix, which must stay linear on a long hallucinated punctuation run.
 
 A plain greedy `[.,:;!?…]+` prefix was retried from every start position
 inside the run, each attempt backtracking char by char into the failed
