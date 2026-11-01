@@ -49,7 +49,6 @@ def test_translates_and_echoes_ids_in_input_order(client, app_module,
     assert body["translation"]["targets"] == ["en", "fr"]
     assert body["translation"]["mode"] == "faithful"
     assert body["warnings"] == []
-    # The stub saw texts + speakers and the request's source language.
     assert calls[0]["segments"][0] == {"text": "eins", "speaker": "SPEAKER_00"}
     assert calls[0]["segments"][1] == {"text": "zwei", "speaker": None}
     assert calls[0]["source_lang"] == "de"
@@ -877,7 +876,7 @@ def test_locked_translation_model_applies_to_the_text_endpoint(
 def test_inflight_refusal_releases_the_held_receipt(client, app_module,
                                                      monkeypatch):
     """The in-flight acquire sits OUTSIDE the handler's try, so its 429 never
-    reached the `except HTTPException` release. The parked dictation receipt
+    reaches the `except HTTPException` release. The parked dictation receipt
     must still be released — not left for the sweeper to log 90 s later."""
     from faster_whisper_backend.transcription import receipt as tx_receipt
     from faster_whisper_backend.transcription import receipt_hold
