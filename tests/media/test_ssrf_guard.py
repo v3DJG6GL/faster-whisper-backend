@@ -5,21 +5,24 @@ metadata addresses on every hop, but yt-dlp fetched with its own opener: a
 host that looks public to the probe could 302 `extract_info` and the download
 subprocess into an internal address, and nothing checked that hop.
 
-These tests run the real thing against two loopback HTTP servers:
+The redirect and happy-path tests run the real thing against two loopback
+HTTP servers:
 
   PUBLIC   127.0.0.2  — stands in for the attacker's public host. It answers
                         the direct-media probe (User-Agent
-                        "faster-whisper-backend") with 200 audio/mpeg and
-                        redirects everyone else — i.e. yt-dlp — to INTERNAL.
+                        "faster-whisper-backend") and any /direct… path with
+                        200 audio/mpeg, and redirects everything else — i.e.
+                        yt-dlp — to INTERNAL.
   INTERNAL 127.0.0.1  — stands in for 169.254.169.254 / a LAN service. Every
                         request it receives is a guard failure.
 
-THE ONLY PATCH is the repro's: the literal 127.0.0.2 is treated as a public
-address. In-process that is a monkeypatch of net_policy.address_is_forbidden;
-for the download subprocess it is a copy of the guard tree next to a patched
-copy of net_policy.py (the guard loads net_policy relative to its own
-location, so the copy is what the child enforces). 127.0.0.1 is judged by the
-real, unpatched policy, and yt-dlp itself is never patched.
+In those tests THE ONLY PATCH is the repro's: the literal 127.0.0.2 is treated
+as a public address. In-process that is a monkeypatch of
+net_policy.address_is_forbidden; for the download subprocess it is a copy of
+the guard tree next to a patched copy of net_policy.py (the guard loads
+net_policy relative to its own location, so the copy is what the child
+enforces). 127.0.0.1 is judged by the real, unpatched policy, and yt-dlp itself
+is never patched.
 """
 
 from __future__ import annotations
@@ -49,10 +52,6 @@ from faster_whisper_backend.paths import REPO_ROOT
 def _run(coro):
     return asyncio.run(coro)
 
-
-# ---------------------------------------------------------------------------
-# the two servers
-# ---------------------------------------------------------------------------
 
 class _Internal(http.server.BaseHTTPRequestHandler):
     hits: "list[str]" = []
@@ -164,10 +163,6 @@ def guard_tree(tmp_path, monkeypatch):
                                      "fwb_ssrf_guard.py"))
     return guard_dir
 
-
-# ---------------------------------------------------------------------------
-# (a) registration
-# ---------------------------------------------------------------------------
 
 def test_guard_registers_in_process():
     udl.guard_self_check(force=True)
@@ -362,10 +357,6 @@ def test_pinned_download_flags_parse_on_the_pinned_yt_dlp():
         yt_dlp.YoutubeDL(bad)
 
 
-# ---------------------------------------------------------------------------
-# (b) the finding: a redirect into an internal address, both fetch paths
-# ---------------------------------------------------------------------------
-
 def test_probe_refuses_redirect_into_loopback(servers, public_is_public,
                                               monkeypatch):
     public, _ = servers
@@ -393,10 +384,6 @@ def test_download_refuses_redirect_into_loopback(tmp_path, servers,
     assert _Internal.hits == []
     assert os.listdir(dest) == []
 
-
-# ---------------------------------------------------------------------------
-# (c) the happy path still works through the guarded handler
-# ---------------------------------------------------------------------------
 
 def test_download_allows_a_public_looking_target(tmp_path, servers,
                                                  public_is_public, guard_tree):
@@ -473,7 +460,7 @@ def test_probe_extraction_is_cut_at_its_wall_clock_deadline(
 
 
 # ---------------------------------------------------------------------------
-# (d) no data: / ftp: escape hatch
+# no data: / ftp: escape hatch
 # ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("target", [
@@ -506,7 +493,7 @@ def test_probe_refuses_non_http_redirect(target, servers, public_is_public,
 
 
 # ---------------------------------------------------------------------------
-# (e) fail closed
+# fail closed
 # ---------------------------------------------------------------------------
 
 @pytest.fixture
@@ -554,7 +541,7 @@ def test_guard_failure_is_not_sticky(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# (f) one definition of the address policy
+# one definition of the address policy
 # ---------------------------------------------------------------------------
 
 def test_url_download_uses_net_policy_directly():
@@ -565,7 +552,6 @@ def test_url_download_uses_net_policy_directly():
 def test_guard_uses_the_same_net_policy_module():
     udl.guard_self_check(force=True)
     guard = sys.modules["fwb_ssrf_guard_inproc"]
-    # Same file, and in-process literally the same module object.
     assert guard.net_policy is net_policy
     assert guard.MARKER == udl.GUARD_MARKER
 
@@ -723,7 +709,7 @@ def test_net_policy_trusts_the_proxy_hop_but_not_a_direct_private_host(private_p
     assert private_proxy.dialled == [("10.0.0.5", 3128)]
 
     # HTTPS through CONNECT: the tunnel host marks the proxy hop on its own,
-    # and SNI still names the target (the earlier proxy test's invariant).
+    # and SNI still names the target.
     seen = {}
 
     class FakeCtx:
