@@ -17,10 +17,6 @@ def _row(conn, cid, *, user_id, status="new", audio_s=2.0, created_ts=1.0,
     )
 
 
-# ---------------------------------------------------------------------------
-# stats
-# ---------------------------------------------------------------------------
-
 def test_stats_empty_queue(client):
     st = client.get("/captures/api/stats").json()
     assert st["total"] == {"n": 0, "s": 0.0, "median_s": None}
@@ -105,10 +101,6 @@ def test_stats_folds_speakers_past_eight_into_others(client, make_user_key):
         f"u{i}" for i in range(10)]
 
 
-# ---------------------------------------------------------------------------
-# list: comma-separated speakers
-# ---------------------------------------------------------------------------
-
 def test_list_user_id_accepts_several_speakers(client, make_user_key):
     from faster_whisper_backend.captures import store as captures_store
 
@@ -176,10 +168,6 @@ def test_samples_user_id_accepts_several_speakers(client, make_user_key):
     # a non-admin's speaker list is ignored: still pinned to herself
     assert ids(f"?user_id={uid_b},{uid_c}", raw_a) == ["sampleaaaaa1"]
 
-
-# ---------------------------------------------------------------------------
-# bulk status
-# ---------------------------------------------------------------------------
 
 def test_bulk_status_updates_and_reports_prev(client, make_user_key):
     from faster_whisper_backend.captures import store as captures_store
@@ -403,10 +391,6 @@ def test_bulk_routes_require_captures_page_when_locked(client, make_user_key):
                        json={"ids": ["x" * 12]}).status_code == 403
     assert client.get("/captures/api/stats", headers=h).status_code == 403
 
-
-# ---------------------------------------------------------------------------
-# bulk delete
-# ---------------------------------------------------------------------------
 
 def test_bulk_delete_removes_rows_and_skips_locked(client, make_user_key):
     from faster_whisper_backend.captures import samples_store as gs
