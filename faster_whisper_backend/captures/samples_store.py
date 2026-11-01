@@ -1,6 +1,6 @@
 """Durable store for capture samples — packed, duration-capped training
 samples (cfg.CAPTURES_SAMPLE_MAX_DURATION_S, default 29.9 s) built from
-one or more consecutive same-speaker captures.
+one or more same-speaker captures.
 
 Lives in the same SQLite DB as `captures` (re-uses the connection from
 `captures_store`). The merged WAV files sit under `CAPTURES_DIR/groups/`
@@ -37,7 +37,7 @@ class SampleLockedError(Exception):
     """dissolve_sample(refuse_locked=True) found the sample locked under the
     rebuild lock."""
 
-_groups_audio_dir: str | None = None    # e.g. CAPTURES_DIR/groups
+_groups_audio_dir: str | None = None
 
 _SCHEMA_CORE = """
 CREATE TABLE IF NOT EXISTS capture_samples (
@@ -369,9 +369,9 @@ def expire_samples_older_than(cutoff_ts: float) -> list[str]:
     releases the members, after which captures_store.sweep_retention picks them
     up as ordinary rows and applies the same age rule to them.
 
-    Deliberately NOT called with captures_store's lock held — dissolve_sample
-    takes this module's lock and then captures_store's, and the two are
-    separate objects.
+    Never call this with captures_store's lock held: dissolve_sample takes
+    this module's lock and then captures_store's (a plain, non-reentrant
+    Lock), so the caller would deadlock.
     """
     conn = _require_conn()
     with _lock:
@@ -443,8 +443,8 @@ def reconcile_on_startup() -> tuple[int, int, int]:
     `captures_store.reconcile_on_startup` but scoped to this store.
 
       1. For each group whose merged WAV is missing on disk, count it.
-         No column is set — the GET /audio route already returns 404
-         and the UI surfaces a Regenerate banner; tracking it twice
+         No column is set — the audio route rebuilds a missing merged
+         WAV from its members on demand (410 when it can't), so a flag
          would add no signal.
       2. For each file under `groups/` with no matching capture_samples
          row, unlink (true orphans: dissolved groups whose unlink
