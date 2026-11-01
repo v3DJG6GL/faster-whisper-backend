@@ -17,8 +17,8 @@
 // ships no keyboard reorder, so edit mode adds Alt+arrows (move) and
 // Alt+Shift+arrows (resize) on the focused tile title.
 // uPlot sparklines re-fit on size changes via their own ResizeObservers.
-// v6: the usage half gained tiles (headline, stages, hours); a v5 layout
-// would remove them on load, so the key moved and v5 layouts are ignored.
+// Bump the key's version when the tile set changes: a saved layout from
+// the old set would remove the new tiles on load.
 const GS_KEY_BASE = 'whisper-stats-layout-v11';
 const GS_PRESET_KEY = 'whisper-stats-preset';
 const GS_PRESETS = {
@@ -40,16 +40,13 @@ const grid = GridStack.init({
     breakpoints: [{ w: 700, c: 1 }],
     layout: 'list',
   },
-  // String form so cells track --fs-base (the scale picker). At 100% scale,
-  // 4rem = 60px (matches the previous fixed value); at 130% it's ~78px.
-  // Saved layouts (column units) preserve unchanged across scale changes.
+  // String form so cells track --fs-base (the scale picker); saved layouts
+  // are in column units, so they survive a scale change.
   cellHeight: '4rem',
   margin: 6,
   // Gravity on: tiles pack upward, so a gap left by a shrunk or removed
   // tile closes by itself and a full-width tile (recent jobs) can be
-  // dragged above its neighbours, which move down to make room. The GPU
-  // card is one item with swapped inner content, so the old float:true
-  // workaround for a hidden second item is no longer needed.
+  // dragged above its neighbours, which move down to make room.
   float: false,
   resizable: { handles: 'se,s,e' },
   draggable: { handle: '.card h3' },
@@ -57,7 +54,7 @@ const grid = GridStack.init({
   // Read-mostly by default; [✎ edit layout] lifts this.
   staticGrid: true,
 });
-// Persist on every change (debounced via setTimeout to coalesce rapid drags).
+// Debounced to coalesce rapid drags.
 let _saveTimer = null;
 function _saveLayout() {
   if (_saveTimer) clearTimeout(_saveTimer);
@@ -112,8 +109,6 @@ window._fwSetPreset = setPreset;
   });
 })();
 
-// Edit mode: drag handles + resize corners live, tile titles focusable for
-// the keyboard, the header button reads "done".
 let layoutEditing = false;
 const editLayoutBtn = document.getElementById('edit-layout-btn');
 function setLayoutEditing(on) {
@@ -177,7 +172,7 @@ if (resetLayoutBtn) {
   });
 }
 
-// --- Usage section (independent of the live SSE dashboard) ------------------
+// Usage section (independent of the live SSE dashboard).
 // One document from GET /stats/usage (v2) feeds every usage card: the
 // headline strip, the chart (stacked bars by kind, lines otherwise, a dashed
 // compare line), the legend / table twin, the leaderboard, the pipeline
@@ -200,7 +195,6 @@ const chartEl = $('usage-plot');
 const tipEl = $('usage-tip');
 if (!chartEl || typeof uPlot === 'undefined') return;
 
-// ---------------------------------------------------------------- helpers
 // Ported from the frontend's usageDerive.ts so both surfaces bucket, level
 // and read the URL the same way.
 const KINDS = ['dictation', 'file', 'url', 'text'];
@@ -215,11 +209,10 @@ const KIND_COLOR = (() => {
   for (const k in KIND_FALLBACK) out[k] = (cs.getPropertyValue('--kind-' + k) || '').trim() || KIND_FALLBACK[k];
   return out;
 })();
-// Pipeline stages, in pipeline order, sharing the glyph strip's hues.
-// Stage hues are the shared --stage-* tokens (web_common.STAGE_COLORS, the
-// desktop app's app.css values), resolved once because uPlot strokes and
-// SVG fills need literal colours. The fallbacks only matter if the tokens
-// are missing, i.e. never on a served page.
+// Stage hues: the shared --stage-* tokens (web_common.STAGE_COLORS = the
+// desktop app's app.css values, also the glyph strip's), resolved once
+// because uPlot strokes and SVG fills need literal colours. The fallbacks
+// only apply if the tokens are missing, i.e. never on a served page.
 const STAGE_FALLBACK = { downloading: '#d9a45b', separating: '#6faed9', vad: '#a493e8',
                          transcribing: '#93b76f', diarizing: '#c68fb4', translating: '#4dd0c4' };
 const STAGE_COLOR = (() => {
@@ -230,9 +223,8 @@ const STAGE_COLOR = (() => {
 const STAGE_LABEL = { translating: 'Translation', diarizing: 'Speaker diarization',
                       vad: 'Silence skipping', separating: 'Music separation',
                       transcribing: 'Transcription', downloading: 'Download' };
-// The whole pipeline in run order, grouped by what the stage is for. The
-// meter denominator per stage = sessions of the kinds it can run on
-// (mirrors usage_store.STAGE_ELIGIBLE).
+// STAGE_KINDS: the kinds each stage can run on; a stage's meter denominator
+// is the sessions of those kinds (mirrors usage_store.STAGE_ELIGIBLE).
 const STAGE_GROUPS = [
   ['Core', ['transcribing']],
   ['Preparation · before the model', ['downloading', 'separating', 'vad']],
@@ -309,12 +301,11 @@ function dayOfIso(iso) {
   if (!m) return null;
   return Math.floor(Date.UTC(+m[1], +m[2] - 1, +m[3]) / DAY_MS);
 }
-// Quartile levels over the ACTIVE cells (the frontend's quantileBreaks): a
-// quiet week still gets a full ramp, and one giant day cannot flatten it.
-// The desktop app's levelling (usageDerive.ts quantileBreaks): the active
-// slots ranked into four equal-count groups, each break the top of its
-// group; a duplicate break is clamped up so the steps stay ordered. Same
-// algorithm here so a slot is the same shade on both.
+// Quartile levels over the ACTIVE slots, as usageDerive.ts quantileBreaks
+// does it (so a slot is the same shade on both): four equal-count groups,
+// each break the top of its group, a duplicate break clamped up so the steps
+// stay ordered. A quiet week still gets a full ramp; one giant day cannot
+// flatten it.
 function quantileBreaks(values) {
   const a = values.filter(v => Number.isFinite(v) && v > 0).sort((x, y) => x - y);
   const n = a.length;
@@ -340,7 +331,6 @@ function levelOf(v, br) {
   return v <= br[0] ? 1 : v <= br[1] ? 2 : v <= br[2] ? 3 : 4;
 }
 
-// ---------------------------------------------------------------- state
 // Everything the scope bar + the usage card's own controls decide. Mirrored
 // to the URL (parsePageQuery / pageQueryParams), defaults omitted.
 // Filters are lists (empty = no filter): `kinds` is OR across job kinds,
@@ -408,7 +398,6 @@ function filterCount() {
 const kindsLabel = () => Q.kinds.map(k => KIND_LABEL[k] || k).join(' + ');
 const pickLabel = (dim, id) => pickLabels[dim][id] || id;
 
-// ---------------------------------------------------------------- scope bar
 function seg(id) { return $(id); }
 function setSeg(id, val) {
   const g = seg(id); if (!g) return;
@@ -476,10 +465,9 @@ function renderChips() {
     }
   }
 }
-// ---- who / keys pickers: the shared searchable checklist (web_common
+// Who / keys pickers: the shared searchable checklist (web_common
 // PICK_LIST_JS) fed by /stats/pick — users (keys) with usage in the window,
-// ranked by the measure. Changes apply as they are made; "clear" empties
-// the pick. The keys list narrows to the picked users' keys.
+// ranked by the measure. The keys list narrows to the picked users' keys.
 let whoPicker = null, keysPicker = null;
 const _pickMetric = { user: 'audio_s', key: 'audio_s' };
 // What each widget already holds. setPicked() rebuilds the option list, and
@@ -562,9 +550,7 @@ function wireScopeBar() {
     Q.range = v; Q.from = Q.to = null; setSeg('sb-range', v); load();
   });
   onSeg('sb-compare', (v) => { Q.compare = v; setSeg('sb-compare', v); load(); });
-  // Kind chips: OR across the chosen kinds; "all" is the empty selection,
-  // choosing every kind collapses to it, Alt-click isolates one (like the
-  // chart legend).
+  // Kind chips: OR across kinds; Alt-click isolates one, like the chart legend.
   const kinds = $('sb-kind');
   if (kinds) kinds.addEventListener('click', (e) => {
     const c = e.target.closest('.chip'); if (!c) return;
@@ -594,7 +580,6 @@ function wireScopeBar() {
     }
     load();
   });
-  // Custom span popover: two dates bounded by each other + span shortcuts.
   const pop = $('sb-custom');
   if (pop) {
     pop.addEventListener('click', (e) => {
@@ -640,7 +625,6 @@ function validateCustom() {
     : 'pick a start on or before the end (at most 10 years)';
 }
 
-// ---------------------------------------------------------------- fetch
 let lastDoc = null;
 // The metric lastDoc was ranked and valued by (the server echoes it).
 // setMetric writes Q.metric before its load lands, and a failed load keeps
@@ -760,7 +744,6 @@ function showError() {
 }
 function hideError() { const el = $('usage-error'); if (el) el.classList.add('hidden'); }
 
-// ---------------------------------------------------------------- render
 function kindScoped(split) {
   // A per-kind split ({all, dictation, file, url, text}) narrowed to the
   // chosen kinds: `all` when none are chosen, else the chosen ones summed
@@ -849,7 +832,6 @@ function renderTurnaround() {
     s += '<rect' + attrs + ' x="' + (pl + i * bw).toFixed(1) + '" y="' + pt + '" width="' + bw.toFixed(1) + '" height="' + ih + '" fill="transparent"/>';
     if (share > 0) s += '<rect' + NP + ' x="' + x.toFixed(1) + '" y="' + (pt + ih - h * share).toFixed(1) + '" width="' + (bw - 2).toFixed(1) + '" height="' + (h * share).toFixed(1) + '" fill="url(#ta-hatch)" rx="2"/>';
     if (i % labelEvery === 0) s += '<text' + NP + ' x="' + (x + bw / 2 - 1).toFixed(1) + '" y="' + (H - 4) + '" text-anchor="middle">' + esc(fmtEdge(t.edges_s[i])) + '</text>';
-    // job count: inside the bar when it is tall enough, else just above it
     if (c > 0 && bw >= 16) {
       const inside = h >= 16;
       s += '<text' + NP + ' class="' + (inside ? 'cnt in' : 'cnt') + '" x="' + (x + bw / 2 - 1).toFixed(1) + '" y="' + (inside ? y + 11 : y - 3).toFixed(1) + '" text-anchor="middle">' + c + '</text>';
@@ -948,9 +930,9 @@ function renderFailures() {
     + noStage;
 }
 
-// Headline strip: five numbers for the window (+ deltas vs the compare
-// window). Words, time saved and wpm stay a desktop-app story: on a server
-// page volume is minutes.
+// Headline strip: six tiles for the window (+ deltas vs the compare
+// window). Volume is audio minutes, words only its sub-line: time saved and
+// wpm stay a desktop-app story.
 function renderHeadline() {
   const el = $('headline-strip'); if (!el) return;
   const tot = kindScoped(lastDoc.totals) || {};
@@ -1078,9 +1060,8 @@ document.addEventListener('click', (e) => {
 });
 function cmpWord() { return lastDoc.compare && lastDoc.compare.mode === 'yoy' ? 'last year' : 'prev'; }
 
-// ---- chart
 let chart = null;
-let curLines = [];         // [{id, label, values, color, others, hatch}] in stack order
+let curLines = [];         // [{id, label, values, color, others, me, user_label}] in stack order
 let hidden = new Set();    // line ids toggled off in the legend
 let stacked = false;
 let xs = [];
@@ -1141,7 +1122,7 @@ function chartData() {
       for (let i = 0; i < n; i++) { cum[i] += Number(ln.values[i] || 0); out[i] = cum[i]; }
       return out;
     });
-    series = rows.slice().reverse();          // top of the stack first
+    series = rows.slice().reverse();
   } else {
     series = vis.map(ln => ln.values.map(v => v == null ? null : Number(v)));
   }
@@ -1399,8 +1380,7 @@ function renderTable() {
 
 // ---- leaderboard: the same entities ranked by the metric; rows are
 // click-to-filter (user / key), kinds toggle the kind chip.
-// Column sort for the leaderboard: click a header (again to flip); the
-// server's metric order is the default and the rank column follows.
+// boardSort.key null = the server's metric order; the rank column follows the sort.
 let boardSort = { key: null, dir: -1 };
 // The stage rollups carry no kind / key column: with a kinds chip or a
 // keys pick on, the server says so (filter.kind_scoped / filter.key_scoped
@@ -1493,8 +1473,8 @@ function renderBoard() {
   });
 }
 
-// ---- pipeline stages: the whole pipeline in run order, transcription as
-// the reference row; unused stages keep their row and say '0 of N'.
+// ---- pipeline stages: every stage by STAGE_GROUPS (transcription first,
+// then preparation, then enrichment); unused stages keep their row and say '0 of N'.
 function renderStages() {
   const el = $('stages-rows'); if (!el) return;
   const rows = {};
@@ -1578,9 +1558,7 @@ function renderStages() {
   }
 }
 
-// ---- busy hours: weekday × hour of the measure summed over the window,
-// linear- or quartile-levelled (quantileBreaks), the busiest cell ringed,
-// hour-of-day and weekday marginal bars, a phrase for the pattern.
+// ---- busy hours / days / months: the rhythm grids (see RHYTHMS below).
 const DOW = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 const DOW_LONG = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
 // Parts of the day as hour ranges (the title phrase says "Wed 12–18",
@@ -1594,17 +1572,15 @@ function weekdayCounts(from, to) {
   for (let d = from; d <= to; d++) out[(d + 3) % 7]++;
   return out;
 }
-// The phrase in the title: the smallest day/part group holding most of the
-// measure, most specific first; 'no clear pattern' when nothing does.
+// The phrase in the title: one slot holding 50 %+ of the measure, else the
+// most specific day / hour-range group holding 60 %+, prefixed "mostly" so
+// it reads as a share, not as the peak; '–' when none does, 'quiet' when empty.
 function hoursPhrase(cells) {
   const total = cells.reduce((a, v) => a + v, 0);
   if (!(total > 0)) return 'quiet';
   const sum = (days, h0, h1) => days.reduce((a, d) => {
     for (let h = h0; h < h1; h++) a += cells[d * 24 + h]; return a; }, 0);
   let peak = 0; cells.forEach((v, i) => { if (v > cells[peak]) peak = i; });
-  // One slot holding half of everything is named as that slot; otherwise
-  // the smallest day / hour-range group holding 60 %+ is named, prefixed
-  // "mostly" so it reads as a share, not as the peak.
   if (cells[peak] / total >= 0.5) return DOW[Math.floor(peak / 24)] + ' ' + ('0' + (peak % 24)).slice(-2) + '–' + ('0' + (peak % 24 + 1)).slice(-2);
   const groups = [];
   for (let d = 0; d < 7; d++) DAY_PARTS.forEach(([p, a, b]) => groups.push([DOW[d] + ' ' + p, [d], a, b]));
@@ -1713,10 +1689,9 @@ function renderHours() {
   // Fill from the source the rhythm reads; `shiftDay` maps a compare-window
   // day onto this grid too (prev: the window offset; yoy: the same calendar
   // day a year on, since a constant 365/366 slips a day across a leap day).
-  // `target.tot` sums every record, also one with no cell on this grid: the
-  // days grid of a one-month window has that month's columns, so a compare
-  // window reaching into a longer month (Oct 31 for a Nov window) dropped
-  // whole days from the legend's "vs prev" total.
+  // `target.tot` sums every record, also one with no cell on this grid (a
+  // compare window's Oct 31 on a Nov days grid), so the legend's "vs prev"
+  // total stays whole.
   const fill = (target, doc, shiftDay) => {
     if (mode === 'hours' || mode === 'days') {
       (mode === 'hours' ? doc.hours : doc.dom_hours || []).forEach(h => {
@@ -1763,7 +1738,6 @@ function renderHours() {
   // months: each cell is its own occurrence).
   const occ = mode === 'hours' ? weekdayCounts(rg.from, rg.to) : new Array(L.rows).fill(1);
   const colOcc = L.colOcc || null;           // days: how often each day of month occurs
-  // Does the window contain this cell / column / row at all (days: the day of month occurs; months: the month has days; hours: the weekday occurs)?
   const cellIn = i => mode === 'days' ? colOcc[i % L.cols] > 0 : mode === 'months' ? L.cellOcc[i] > 0 : occ[Math.floor(i / L.cols)] > 0;
   const colIn = c => mode === 'days' ? colOcc[c] > 0 : mode === 'months' ? L.cellOcc.some((o, i) => o > 0 && i % L.cols === c) : true;
   const rowIn = r => mode === 'hours' ? occ[r] > 0 : mode === 'months' ? L.cellOcc.slice(r * L.cols, r * L.cols + L.cols).some(o => o > 0) : true;
@@ -1827,8 +1801,6 @@ function renderHours() {
     el.addEventListener('focusout', () => move(null));
   }
   el.dataset.cols = L.cols;
-  // Tooltip rows shared by cells and marginals: per kind, then total
-  // (bold, ruled), then the readings, then the compare window (dimmed).
   const kindRows = (pick) => Object.keys(byKind).sort((a, b) => KINDS.indexOf(a) - KINDS.indexOf(b))
     .map(k => [k, pick(byKind[k][0]), pick(byKind[k][1])]).filter(r => r[1] || r[2])
     .map(r => tipRow(KIND_COLOR[r[0]], KIND_LABEL[r[0]] || r[0], fmtM(r[1]) + ' ' + ML + ' · ' + fmtC(r[2]) + ' ' + CL)).join('');
@@ -1914,7 +1886,7 @@ function domPhrase(colTot, rowTot) {
   for (const [label, a, b] of DAY_PARTS) if (rowTot.slice(a, b).reduce((x, v) => x + v, 0) / total >= 0.6) return 'mostly ' + label;
   return '–';
 }
-// Months: the top month when it carries 40 %+, else the top two.
+// Months: the top month when it carries 40 %+, else the top two when they carry 50 %+.
 function monthPhrase(colTot) {
   const total = colTot.reduce((a, v) => a + v, 0);
   const order = colTot.map((v, i) => [v, i]).sort((a, b) => b[0] - a[0]);
@@ -1934,12 +1906,10 @@ function publishModels() {
   }
 }
 
-// ---------------------------------------------------------------- wiring
 onSeg('usage-bucket', (v) => { Q.bucket = v; setSeg('usage-bucket', v); load(); });
-// The measure is global: the scope bar's control, a headline tile, or the
-// M key set it, and every usage card re-renders from the same document.
-// The document only needs refetching when its ranking (leaderboard) or
-// series depend on it, which they do, so load() it is.
+// The measure is global (scope bar, a headline tile, or the M key) and
+// every usage card reads it; load() refetches since the server ranks the
+// leaderboard and builds the series by it.
 function setMetric(v) {
   if (!METRIC_LABEL[v] || v === Q.metric) return;
   Q.metric = v; setSeg('sb-metric', v);
