@@ -76,7 +76,6 @@ def test_totals_window_filtering(usage_store_db):
     us = usage_store_db
     us.record_usage(key_id="k", user_id="u", audio_s=1.0, words=1, status="ok", hour=10)
     us.record_usage(key_id="k", user_id="u", audio_s=1.0, words=1, status="ok", hour=20)
-    # window [15, 25] should only see the hour=20 row.
     rows = us.totals_by_key(start_hour=15, end_hour=25)
     assert rows[0]["requests"] == 1
 
@@ -119,7 +118,7 @@ def test_prune_noop_when_non_positive(usage_store_db):
 
 def test_prune_drops_old(usage_store_db):
     us = usage_store_db
-    old_hour = us.now_hour() - 24 * 100   # 100 days ago
+    old_hour = us.now_hour() - 24 * 100
     us.record_usage(key_id="k", user_id="u", audio_s=1.0, words=1, status="ok", hour=old_hour)
     us.record_usage(key_id="k", user_id="u", audio_s=1.0, words=1, status="ok")  # now
     deleted = us.prune(retention_days=30)
@@ -141,8 +140,8 @@ def test_series_day_buckets_utc(usage_store_db, set_tz):
 def test_series_week_buckets_utc(usage_store_db, set_tz):
     set_tz("UTC")
     us = usage_store_db
-    us.record_usage(key_id="k", user_id="u", audio_s=1.0, words=1, status="ok", hour=0)         # day 0
-    us.record_usage(key_id="k", user_id="u", audio_s=1.0, words=1, status="ok", hour=24 * 8)     # day 8
+    us.record_usage(key_id="k", user_id="u", audio_s=1.0, words=1, status="ok", hour=0)
+    us.record_usage(key_id="k", user_id="u", audio_s=1.0, words=1, status="ok", hour=24 * 8)
     s = us.series(bucket="week")
     # day0 -> week 0; day8 -> 8 - 8%7 = 7
     assert [c["day"] for c in s] == [0, 7]
@@ -196,9 +195,9 @@ def test_series_and_leaderboard_carry_proc_s_and_sessions(usage_store_db):
 
 def test_record_usage_logs_the_real_error_when_sqlite_rolled_back(
         usage_store_db, monkeypatch, caplog):
-    """SQLite rolls back by itself on SQLITE_FULL; a bare ROLLBACK then raised
-    "cannot rollback - no transaction is active", and that is what the
-    record_usage warning logged instead of the disk-full cause."""
+    """SQLite rolls back by itself on SQLITE_FULL, so a bare ROLLBACK raises
+    "cannot rollback - no transaction is active"; the record_usage warning
+    must log the disk-full cause, not that."""
     import logging
     import sqlite3
     us = usage_store_db
