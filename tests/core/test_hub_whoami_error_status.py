@@ -1,7 +1,7 @@
-"""The hub's own whoami pass (core/templates/hub.html) read every non-ok
-/auth/whoami as "not signed in" and hid the tiles, so a 500 (session store
-briefly locked), a proxy 502/503 or a 429 blanked the hub for a signed-in
-user. Only a 401/403 hides it now; any other status keeps the current tiles.
+"""The hub's own whoami pass (core/templates/hub.html) hides the tiles only
+on a 401/403. Any other non-ok /auth/whoami (a 500 while the session store is
+briefly locked, a proxy 502/503, a 429) keeps the current tiles, so a
+transient error never blanks the hub for a signed-in user.
 
 The hub script runs under node against a minimal DOM stub and a fetch stub
 whose whoami status changes between the page-load pass and a later
