@@ -164,10 +164,8 @@ def test_hunyuan_prompt_plain_context_and_glossary():
     plain = _build("hunyuan", "Hallo")[0]["content"]
     assert plain == ("Translate the following segment into English, "
                      "without additional explanation.\n\nHallo")
-    # Contextual branch: Tencent's official Chinese-instruction template —
-    # context above the instruction, the explicit "do not translate the
-    # preceding text" clause, payload on its own line after the fullwidth
-    # colon.
+    # Contextual branch: Tencent's official Chinese-instruction template,
+    # verbatim.
     with_ctx = _build("hunyuan", "Hallo", context="A: Guten Tag")[0]["content"]
     assert with_ctx == (
         "A: Guten Tag\n"
@@ -1267,7 +1265,6 @@ def test_batch_guard_failure_retries_that_segment_alone(base_cfg, monkeypatch):
     calls = []
 
     def per_item(t):
-        # Sabotage only the second segment inside the batch.
         if t == "Zweitens kaputt.":
             return t                                     # copy → guard fails
         return _xlate(t)
@@ -1386,7 +1383,6 @@ def test_fluent_group_failure_keeps_member_originals(base_cfg, monkeypatch):
     assert res[1]["en"] == segs[1]["text"]
     assert len(warns) == 1 and "kept original" in warns[0]
     assert "segments 1-2" in warns[0]
-    # Whole-group revert flags EVERY member as kept-original.
     assert meta["kept"] == {0: ["en"], 1: ["en"]}
 
 
@@ -1683,8 +1679,8 @@ def _token_rejected_error():
 def test_load_uses_the_cached_gguf_when_the_hub_refuses(
         monkeypatch, make_error):
     """A hub refusal (revoked token, gated or removed repo) fails the
-    from_pretrained listing the same way: every translation failed although
-    the GGUF was on disk."""
+    from_pretrained listing the same way: a GGUF already on disk must still
+    load."""
     record = []
     _install_fake_llama(monkeypatch, record)
     monkeypatch.setattr(cfg, "LOCAL_FILES_ONLY", False, raising=False)
@@ -1762,8 +1758,8 @@ def test_load_falls_back_when_no_unique_match(monkeypatch):
 def test_load_uses_the_cached_gguf_when_no_unique_hub_file_matches(
         monkeypatch):
     """The quant removed or renamed upstream, or a second file matching the
-    glob: from_pretrained's own listing refused the load although the GGUF
-    was on disk."""
+    glob: from_pretrained's own listing refuses the load, so a GGUF already
+    on disk must load directly."""
     record = []
     _install_fake_llama(monkeypatch, record)
     monkeypatch.setattr(cfg, "LOCAL_FILES_ONLY", False, raising=False)
@@ -2369,7 +2365,6 @@ def test_warm_hit_does_not_block_on_cold_load(lru_env, monkeypatch):
         cold = asyncio.ensure_future(translation._get_model("o/cold"))
         try:
             await loop.run_in_executor(None, started.wait, 5)
-            # The warm hit returns while the cold load is still parked.
             assert await asyncio.wait_for(
                 translation._get_model("o/warm"), 1) is warm
         finally:
@@ -3261,8 +3256,8 @@ def test_a_completion_cancelled_before_its_thread_starts_never_decodes(
 def test_a_completion_cancelled_while_queued_on_the_mutex_never_decodes(
         monkeypatch):
     """A job cancelled while its thread waits for _infer_mutex behind an
-    orphaned decode skips its own decode: it used to claim at thread start
-    and then run a full doomed decode ahead of every later request."""
+    orphaned decode skips its own decode instead of running a full doomed
+    decode ahead of every later request."""
     from concurrent.futures import ThreadPoolExecutor
     calls = []
 
