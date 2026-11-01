@@ -22,7 +22,6 @@ def test_stats_page_loopback_ok(client):
 def test_stats_snapshot_open_mode_ok(client):
     r = client.get("/stats/snapshot")
     assert r.status_code == 200
-    # The snapshot is a JSON object payload built by _build_payload.
     assert isinstance(r.json(), dict)
 
 
@@ -94,7 +93,6 @@ def test_snapshot_lite_shape(client):
     snap = client.get("/stats/snapshot?lite=1").json()
     assert set(snap) >= {"ts", "jobs", "gpu", "host", "models",
                          "in_flight_transcriptions", "severity"}
-    # The diet payload skips the heavy metrics keys.
     assert "recent_transcriptions" not in snap
     assert "requests" not in snap
     assert set(snap["host"]) == {"cpu_pct", "ram_used_mb", "ram_total_mb",
@@ -115,10 +113,8 @@ def test_header_activity_cluster_shell_on_every_page(client):
         assert 'id="hact-pop"' in html, path
         assert '/stats/stream?lite=1' in html, path
         assert '<span id="hact-jobs" class="v">0</span>' in html, path
-        # GPU/VRAM values render as placeholders, never live numbers.
         assert '<span id="hact-gpuv" class="v">&ndash;</span>' in html, path
         assert '<span id="hact-vramv" class="v">&ndash;</span>' in html, path
-        # ...and the button ships default-hidden.
         assert re.search(r'<button id="hact"[^>]*\shidden[\s>]', html), path
 
 
@@ -388,10 +384,6 @@ def test_snapshot_running_row_carries_the_username(client, app_module,
         jobs.job_end(jid)
 
 
-# ---------------------------------------------------------------------------
-# StatsScope: the "own" page scope (decisions 1-3, 2026-09-02)
-# ---------------------------------------------------------------------------
-
 _MACHINE_KEYS = {"gpu", "gpu_error", "host", "process", "models", "model_loads",
                  "preload", "uptime_sec", "requests", "errors_total",
                  "errors_window", "latency_ms", "in_flight_transcriptions"}
@@ -588,10 +580,10 @@ def test_stream_rechecks_version(client, make_user_key, app_module):
 
 def test_stream_rechecks_the_caller_before_its_first_frame(
         client, make_user_key):
-    """The stream snapshotted the config version AFTER the Depends had
-    resolved the caller, so a narrowing or revoke landing in between was
-    absorbed and the old scope streamed on for up to _REAUTH_INTERVAL_S.
-    The generator is driven directly (never through TestClient)."""
+    """A narrowing or revoke that lands between the Depends resolving the
+    caller and the stream's first frame must apply to that first frame, not
+    up to _REAUTH_INTERVAL_S later. The generator is driven directly (never
+    through TestClient)."""
     import asyncio
 
     from faster_whisper_backend.auth import api_keys_store
@@ -632,10 +624,10 @@ def test_stream_rechecks_the_caller_before_its_first_frame(
 
 def test_stream_rechecks_an_expired_session_without_a_bump(
         client, make_user_key, monkeypatch):
-    """Session expiry bumps no config version, so a version-only re-check
-    kept streaming the 1 Hz payload to a cookie session past SESSION_TTL_S.
-    An unchanged version still re-resolves once the interval passed (the
-    helper is called directly — the stream itself is never driven)."""
+    """Session expiry bumps no config version, so with an unchanged version
+    the stream must still re-resolve once _REAUTH_INTERVAL_S has passed, and
+    end for a cookie session past SESSION_TTL_S (the helper is called
+    directly — the stream itself is never driven)."""
     import time
 
     from fastapi import HTTPException
@@ -665,10 +657,6 @@ def test_stream_rechecks_an_expired_session_without_a_bump(
         stats_routes._rescope_on_version_change(
             req, seen, at - stats_routes._REAUTH_INTERVAL_S - 1)
 
-
-# ---------------------------------------------------------------------------
-# /stats/usage under StatsScope (own → own rows; all → scrubbed; admin → named)
-# ---------------------------------------------------------------------------
 
 def _seed_usage(alice, bob, alice_key, bob_key):
     from faster_whisper_backend.stats import usage_store as us
@@ -759,10 +747,6 @@ def test_usage_admin_sees_names_and_can_preview_user(client, app_module,
     assert prev["leaderboard"][0]["user_label"] == "alice"
     assert not re.fullmatch(r"key-[0-9a-f]{8}", prev["leaderboard"][0]["label"])
 
-
-# ---------------------------------------------------------------------------
-# Page chrome for the own scope (string pins: the inline JS has no harness)
-# ---------------------------------------------------------------------------
 
 def test_stats_page_ships_own_scope_chrome(client):
     html = client.get("/stats").text
@@ -1226,9 +1210,9 @@ def test_stats_page_jobs_table_v2(client):
 
 
 def test_stats_page_ring_scrubber_range_mode_and_tail_cards(client):
-    """Phase 3.2: the ring scrubber and live/range seg in the header, the
-    sparks fed from /stats/history in range mode, the turnaround and
-    failures tiles fed from /stats/tail, turnaround in the headline."""
+    """The ring scrubber and live/range seg in the header, the sparks fed
+    from /stats/history in range mode, the turnaround and failures tiles
+    fed from /stats/tail, turnaround in the headline."""
     html = client.get("/stats").text
     with pathlib.Path(REPO_ROOT, "static", "stats.js").open(encoding="utf-8") as f:
         js = f.read()
@@ -1453,8 +1437,6 @@ def test_stats_js_chart_never_all_hidden_after_reload(client):
         js = f.read()
     assert "if (hidden.size === curLines.length) hidden.clear();" in js
     assert "if (hidden.size && hidden.size === curLines.length) hidden.clear();" in js
-    # The prune runs inside prepareLines BEFORE the compare total (and so
-    # before renderAll draws the legend), not after it in renderChart.
     prep = js[js.index("function prepareLines() {"):js.index("function chartData()")]
     assert prep.index("hidden.clear();") < prep.index(
         "const keep = new Set(visibleLines()")
@@ -1695,7 +1677,7 @@ def test_stats_stream_onopen_cancels_recovery(client):
 
 
 def test_stats_toolbar_reflows_without_hard_breaks(client):
-    """The scope bar has no forced line breaks any more: each label +
+    """The scope bar has no forced line breaks: each label +
     control pair is one unsplittable .sb-group and the rows are whatever
     flex-wrap makes of the page canvas (wide window = fewer rows)."""
     html = client.get("/stats").text
@@ -1722,18 +1704,16 @@ def test_stats_window_caption_is_its_own_header_band(client):
     assert cap < hdr_end
     band = t.rfind('<div class="subbar', 0, cap)
     assert 'class="subbar subbar-caption"' in t[band:cap]
-    # not inside the filters row
     filters = t.index('id="sb-filters"')
     assert t.index("</div>", filters) < band
 
 
 def test_stats_js_turnaround_overlays_and_rhythm_compare_total(client):
-    """No JS harness: pin the strings. Everything painted over the
-    turnaround histogram's hit target lets the pointer through (the hatch
-    rect and the count text carry no data-tip, so hovering them hid the
-    tooltip); the rhythm legend's compare total counts every compare record,
-    also one the window's days grid has no column for (Oct 31 vs a Nov
-    window)."""
+    """Everything painted over the turnaround histogram's hit target lets
+    the pointer through (the hatch rect and the count text carry no
+    data-tip, so hovering them hid the tooltip); the rhythm legend's compare
+    total counts every compare record, also one the window's days grid has
+    no column for (Oct 31 vs a Nov window)."""
     with pathlib.Path(REPO_ROOT, "static", "stats.js").open(encoding="utf-8") as f:
         js = f.read()
     ta = js[js.index("function renderTurnaround() {"):]
@@ -1754,8 +1734,8 @@ def test_stats_js_turnaround_overlays_and_rhythm_compare_total(client):
 
 
 def test_stats_page_stream_recovery_jobs_gap_and_hidden_range_refresh(client):
-    """No JS harness: pin the strings. The recovery probe hits an endpoint
-    behind the stream's own gate and stops on 401 / 403 (a /v1/models 200
+    """The recovery probe hits an endpoint behind the stream's own gate
+    and stops on 401 / 403 (a /v1/models 200
     reopened a 403ing stream every 1.5 s forever), with a back-off that
     survives repeated failures; a server restart (uptime going backwards)
     clears the rings whichever reconnect wins; an anchored jobs table with
@@ -1782,8 +1762,8 @@ def test_stats_page_stream_recovery_jobs_gap_and_hidden_range_refresh(client):
 
 
 def test_stats_page_status_pill_keeps_the_stream_state(client):
-    """No JS harness: pin the strings. refreshStatusPill painted from ring
-    state alone, so a spark hover or L on a page whose stream was
+    """refreshStatusPill painted from ring state alone, so a spark hover
+    or L on a page whose stream was
     reconnecting, or ended for good by the probe's 401 / 403, turned the
     pill green "live". setStatus records the non-live state, the stream
     clears it, and the pill consults it before painting 'pill live'. Two
