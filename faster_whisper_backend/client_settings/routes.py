@@ -61,8 +61,8 @@ class PutClientSettings(BaseModel):
 
 # Deepest nesting a stored blob may have (the blob object itself is level 1).
 # GET renders through pydantic's response serializer, which 500s from about
-# 255 levels while PUT's JSONResponse took them — so an over-deep PUT
-# answered 200 and every later pull of that account 500'd. The desktop
+# 255 levels while PUT's JSONResponse accepts them, so without this cap one
+# over-deep PUT breaks every later pull of that account. The desktop
 # client's serde_json stops at 128 levels of the whole response anyway; its
 # real blob is a handful of levels deep.
 _MAX_BLOB_DEPTH = 64
