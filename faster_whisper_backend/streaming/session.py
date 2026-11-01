@@ -179,10 +179,8 @@ class StreamSession:
         self.format_key = format_key
         self.diagnose = diagnose
 
-        # Silero VAD is a synchronous ONNX call and it runs once per 32 ms
-        # frame, so doing it inline pinned the event loop for as long as a
-        # client kept uploading — the decodes were already offloaded, this was
-        # the one hot path left on the loop.
+        # Silero VAD is a synchronous ONNX call once per 32 ms frame; inline it
+        # would pin the event loop for as long as a client keeps uploading.
         #
         # ONE worker, and one pool per session, for two reasons: the endpointer
         # keeps a rolling buffer that must see frames in order (a single worker
@@ -221,14 +219,11 @@ class StreamSession:
         self._trimmed_text = ""            # committed text whose audio _maybe_trim cut away
         self._trimmed_sec = 0.0            # seconds of utterance audio _maybe_trim cut away
         # Audio + word dicts banked by _maybe_trim so on_final can hand captures
-        # the WHOLE utterance, freed on reset. The old claim here — that
-        # forced_commit_sec (25 s) caps this at ~2 MB — was wrong twice over:
-        # forced_commit_sec counts SPEECH (_speech_ms), not buffered wall
-        # clock, and max_buffer_sec tested only the LIVE buffer, which
-        # _maybe_trim keeps pinned near buffer_trim_keep_sec. A caller emitting
-        # one speech frame per ~1.1 s of silence banked 860 s / 56 MB against a
-        # documented 600 s / 38 MB ceiling that never fired. _trimmed_samples
-        # tracks the bank so the ceiling can measure the whole utterance.
+        # the WHOLE utterance, freed on reset. forced_commit_sec does not bound
+        # this (it counts SPEECH, _speech_ms, not buffered wall clock), and the
+        # live buffer stays pinned near buffer_trim_keep_sec — so
+        # _trimmed_samples tracks the bank for the max_buffer_sec ceiling to
+        # measure the whole utterance.
         self._trimmed_audio: "list[np.ndarray]" = []
         self._trimmed_samples = 0
         self._trimmed_words: "list[dict]" = []
@@ -247,8 +242,6 @@ class StreamSession:
         # (VAD/endpointing stays intact) and finals still run.
         self._skip_partials = False
 
-    # ---- audio buffer -----------------------------------------------------
-    #
     # Frames arrive every 32 ms but the buffer is only *read* per partial decode
     # (min_chunk_ms, ~1 s) — so appending must not copy. Frames are queued as
     # chunks and joined on the first read, which caches the result and collapses
@@ -285,8 +278,6 @@ class StreamSession:
         self._audio_chunks = [buf]
         self._audio_samples = buf.shape[0]
         self._audio_cache = buf
-
-    # ---- public API -------------------------------------------------------
 
     async def feed_pcm(self, pcm_int16_le: bytes) -> None:
         """Feed a chunk of raw 16 kHz mono signed-16-bit little-endian PCM."""
@@ -360,8 +351,6 @@ class StreamSession:
             # teardown never blocks the loop on an in-flight VAD frame.
             self._vad_pool.shutdown(wait=False)
 
-    # ---- frame pump -------------------------------------------------------
-
     async def _consume_frame(self, frame: np.ndarray) -> None:
         # Off the loop (see _vad_pool). Per frame rather than per chunk: a
         # finalize inside this loop calls endpointer.reset(), so pre-computing
@@ -381,12 +370,10 @@ class StreamSession:
         # keeps an utterance open and silence piles up here frame by frame, and
         # forced_commit_sec can't help: it counts speech, not buffered audio.
         # Checked unconditionally so no gate can shadow it. Finalizing (not
-        # discarding) keeps whatever was actually said — the session just
-        # continues in a fresh utterance.
-        # Counter, not the property: this runs on every frame (see the buffer
-        # note above).
-        # Live buffer PLUS what _maybe_trim banked: the bank is still held for
-        # the finalize, so it is the utterance's real memory cost.
+        # discarding) keeps whatever was said; the session continues in a fresh
+        # utterance. Counts the live buffer PLUS the trim bank (still held for
+        # the finalize, so real memory cost), via the counters, not the
+        # property — this runs on every frame (see the buffer note above).
         _held = self._audio_samples + self._trimmed_samples
         if _held >= self.cfg.max_buffer_sec * self.cfg.sample_rate:
             logger.warning("[stream %s] audio buffer hit the %.0f s ceiling (%.1f s "
@@ -464,8 +451,6 @@ class StreamSession:
                 self._set_audio(self.audio[-self._preroll_keep_samples:])
             self._buffer_offset = 0.0
 
-    # ---- decode steps -----------------------------------------------------
-
     async def _run_partial(self) -> None:
         self._new_since_partial = 0
         if self._skip_partials:
@@ -479,10 +464,10 @@ class StreamSession:
         except CloseAbort:
             raise
         except Exception as exc:  # noqa: BLE001
-            # A raise here aborted feed_pcm's frame loop and lost the rest of
-            # the chunk (a hole in the utterance's audio) — the bug the final
-            # decode had. A failed preview is just a skipped one; the next
-            # partial or the final decode catches up. Type-only log, as there.
+            # A raise would abort feed_pcm's frame loop and lose the rest of
+            # the chunk (a hole in the utterance's audio). A failed preview is
+            # just a skipped one; the next partial or the final decode catches
+            # up. Type-only log: the message can carry a client handshake string.
             logger.warning("[stream %s] partial decode failed (%s) — skipped",
                            self.session_id[:8], type(exc).__name__)
             return
@@ -602,12 +587,10 @@ class StreamSession:
                 return
             proc_dur = 0.0
             decoded = False
-            # No decode ran, so LocalAgreement is the only word source. Its
-            # committed list + tail span the WHOLE utterance in absolute
-            # (utterance) time and already hold any trim-banked words, so the
-            # list is complete as it stands — the trim merge below must NOT
-            # re-base it or prepend _trimmed_words (every banked word would
-            # appear twice).
+            # No decode ran, so LocalAgreement is the only word source; its
+            # words are utterance-absolute and complete (see above): the trim
+            # merge below must NOT re-base them or prepend _trimmed_words
+            # (every banked word would appear twice).
             words = [{"word": w.text, "start": w.start, "end": w.end}
                      for w in (self.la.committed + tail)]
         else:
@@ -619,16 +602,14 @@ class StreamSession:
             except CloseAbort:
                 raise
             except Exception as exc:  # noqa: BLE001
-                # A failed final decode used to propagate with the utterance
-                # still open: _silence_ms stayed over the commit threshold, so
-                # the very next frame re-entered here and decoded the same
-                # buffer again — for as long as the fault lasted — while the
-                # raise also aborted feed_pcm's frame loop and lost the rest of
-                # that chunk. Treat it like the decode that returned nothing:
-                # what LocalAgreement already agreed (and the client already
-                # showed as partials) is the transcript. Same tolerance, and the
-                # same type-only log, as close(): the message can carry a
-                # client-chosen handshake string.
+                # Not re-raised: with the utterance still open _silence_ms stays
+                # over the commit threshold, so every next frame would re-decode
+                # the same buffer for as long as the fault lasts, and the raise
+                # would abort feed_pcm's frame loop, losing the rest of the chunk.
+                # Treat it like the decode that returned nothing: what
+                # LocalAgreement already agreed (and the client saw as partials)
+                # is the transcript. Type-only log, as in close(): the message
+                # can carry a client-chosen handshake string.
                 logger.warning("[stream %s] final decode failed (%s) — using the "
                                "partial transcript", self.session_id[:8], type(exc).__name__)
                 decode_failed = True
@@ -732,12 +713,12 @@ class StreamSession:
         without closing the WebSocket.
 
         Words still held back go out first, as a release final — BEFORE the
-        ``boundary`` marker, so they land in the document they belong to. Then
-        emits a ``boundary`` marker so the client resets its injection baseline (and
-        optionally types ``hard_break_separator`` between documents), then clears the
-        cross-utterance accumulators. The rolling prompt is reset too — a long pause
-        is treated as a new context; to instead keep terminology across breaks, drop
-        the ``self._prompt`` reset below."""
+        ``boundary`` marker, so they land in the document they belong to. If a
+        document was sent, a ``boundary`` marker follows so the client resets its
+        injection baseline (and optionally types ``hard_break_separator`` between
+        documents); then the cross-utterance accumulators are cleared. The rolling
+        prompt is reset too — a long pause is treated as a new context; to instead
+        keep terminology across breaks, drop the ``self._prompt`` reset below."""
         if self._has_held():
             await self._release_held()
         # Only a document the client was actually sent has an end to mark. One
@@ -756,8 +737,6 @@ class StreamSession:
         self._reset_document()
         self._prompt = self.base_prompt.strip()
         self._idle_silence_ms = 0
-
-    # ---- document composition ---------------------------------------------
 
     def _reset_document(self) -> None:
         """Start a new document: nothing sent, formatting anchored at the start."""
@@ -863,8 +842,6 @@ class StreamSession:
         await self._emit_update(flush_hold=True, flush_all=True,
                                 utterance=None, flush=True)
 
-    # ---- emission ---------------------------------------------------------
-
     async def _emit_document(
         self, processed: str, *, forced: bool = False, flush_all: bool = False,
         last: bool = False, words: Optional[list[dict]] = None,
@@ -960,8 +937,6 @@ class StreamSession:
         if held > self.cfg.max_hold_chars:
             boundary = max(boundary, len(processed) - self.cfg.tail_margin_chars)
         return max(boundary, self._committed_len)
-
-    # ---- utterance lifecycle ---------------------------------------------
 
     def _make_prompt(self, in_flight: str = "") -> str:
         """base_prompt in full + the last prompt_words confirmed words;
