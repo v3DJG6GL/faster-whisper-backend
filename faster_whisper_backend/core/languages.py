@@ -4,7 +4,7 @@
 ``faster_whisper.tokenizer._LANGUAGE_CODES``, pinned by a test) — the admin
 language picker, the config validators and the translation prompts all read
 it. ``EXTRA_LANGUAGE_NAMES`` adds the codes translation models support that
-Whisper cannot transcribe (``translation._FAMILIES`` language lists).
+Whisper cannot transcribe (``translation.engine._FAMILIES`` language lists).
 """
 
 import re
@@ -218,8 +218,9 @@ def _normalise_code(code: str) -> str:
 def language_codes(csv: "str | None", limit: "int | None" = None) -> "list[str]":
     """A csv of codes ("en,fr-CA") → deduped ordered list of the well-formed
     ones, normalised so "DE" is "de", "fr-ca" the same target as "fr-CA" and
-    "iw" / "deu" the same as "he" / "de"; malformed entries drop silently. `limit` stops the walk once that many
-    codes are collected — a per-request csv can carry a 1 MiB form field."""
+    "iw" / "deu" the same as "he" / "de"; malformed entries drop silently.
+    `limit` stops the walk once that many codes are collected — a per-request
+    csv can carry a 1 MiB form field."""
     out: "list[str]" = []
     seen: "set[str]" = set()
     for code in (csv or "").split(","):
