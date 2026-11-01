@@ -104,10 +104,9 @@ _DOTENV = "WHISPER_BEAM_SIZE=3\r\nWHISPER_DEFAULT_PROMPT=Grüße\r\n"
     b"\xef\xbb\xbf" + _DOTENV.encode(),  # UTF-8 BOM: not glued to the 1st key
 ], ids=["utf32-bom", "utf8-bom"])
 def test_a_bom_dotenv_is_decoded_and_applied(tmp_path, data):
-    """dotenv reads .env as strict UTF-8: a UTF-16 file crashed `import
-    config` with a UnicodeDecodeError naming neither .env nor the fix, and a
-    UTF-32 one (whose FF FE prefix looks like UTF-16) with 'embedded null
-    byte'."""
+    """dotenv reads .env as strict UTF-8: a UTF-32 file (whose FF FE prefix
+    looks like UTF-16) crashed `import config` with 'embedded null byte', and
+    a UTF-8 BOM was glued to the first key."""
     import json
     out = _import_config_from(tmp_path, data)
     assert out.returncode == 0, out.stderr
