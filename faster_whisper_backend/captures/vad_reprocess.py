@@ -175,9 +175,11 @@ def _run_pass() -> None:
                         members, join_strategy, words_for=_chip_words_lookup())
                     capture_samples_store.update_sample(sid, patch)
                 except Exception as e:
-                    # Over-cap under the new settings (merge_wavs raises) or
-                    # a build failure → flag stale (excluded from export),
-                    # never truncate. The old merged WAV stays in place.
+                    # Over-cap under the new settings or a build failure →
+                    # flag stale (excluded from export), never truncate.
+                    # merge_wavs refuses an over-cap build before writing, so
+                    # that case keeps the old merged WAV; a later failure may
+                    # leave the new one on disk.
                     logger.info(
                         "[reprocess-vad] sample %s → stale (%s)", sid[:8], e,
                     )
@@ -189,16 +191,13 @@ def _run_pass() -> None:
                 _state["rebuilt"] += 1
         except Exception:
             logger.exception("[reprocess-vad] sample %s failed", sid[:8])
-            # Keep the counter and the flag in agreement: "stale" is
-            # reported as "flagged, excluded from export", so a failure
-            # outside the build try must still set is_stale (best effort).
-            # Under the rebuild lock with the same fresh-row re-check as
-            # the main path, so the flag never clobbers a regenerate that
-            # just cleared it nor touches a sample locked since the
-            # snapshot. The inner `with` has exited, so re-acquiring is
-            # safe. Counted stale only once the flag is written: when the
-            # write itself fails the sample is still exported, so it is
-            # counted skipped.
+            # "stale" is reported as "flagged, excluded from export", so a
+            # failure outside the build try must still set is_stale (best
+            # effort). The fresh-row re-check under the rebuild lock keeps
+            # the flag off a regenerate that just cleared it and off a
+            # sample locked since the snapshot; the inner `with` has exited,
+            # so re-acquiring is safe. A failed flag write leaves the sample
+            # exported, so it counts as skipped.
             flagged = False
             try:
                 with capture_samples._rebuild_lock(sid):
