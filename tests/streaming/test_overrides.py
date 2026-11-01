@@ -168,8 +168,8 @@ def test_final_drops_low_confidence_hallucination_segment(
 
     finals = [m for m in msgs if m["type"] == "final"]
     doc = (finals[-1]["committed"] + finals[-1]["tail"]) if finals else ""
-    assert "fieber" in doc                               # healthy segment kept
-    assert "watching" not in doc                         # hallucination dropped
+    assert "fieber" in doc
+    assert "watching" not in doc
 
 
 def test_stream_prompt_sentinel_inherit_clear_value(
@@ -353,8 +353,8 @@ def test_model_load_failure_with_peer_gone_is_not_logged_as_server_error(
     def _gone(real_send):
         async def _gone_send(self, message):
             # Fail at the ASGI layer (below Starlette's own send()), so its state
-            # machine turns the OSError into WebSocketDisconnect and flips the
-            # socket to DISCONNECTED — the exact uvicorn peer-gone sequence.
+            # machine also flips the socket to DISCONNECTED — the exact uvicorn
+            # peer-gone sequence.
             if message["type"] != "websocket.accept":
                 async def _asgi_gone(_msg):
                     raise OSError("peer gone")
@@ -488,8 +488,8 @@ def test_handshake_drops_unknown_decode_override_keys(
 @pytest.mark.parametrize("language", ["en\nFAKE log record", "x" * 5000])
 def test_handshake_language_that_is_not_a_code_is_treated_as_absent(
         client, make_user_key, fake_model, app_module, monkeypatch, language):
-    """The handshake `language` reaches faster-whisper, which logs it raw (CR/LF
-    included) on an English-only model on every partial, and the usage row.
+    """The handshake `language` reaches the usage row and faster-whisper, which
+    logs it raw (CR/LF included) on every partial of an English-only model.
     A value not shaped like a language code is dropped at the handshake."""
     monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
     monkeypatch.setattr(app_module.cfg, "DEFAULT_LANGUAGE", None, raising=False)
@@ -590,9 +590,9 @@ def test_stream_closes_when_key_is_revoked_mid_session(
         time.sleep(0.5)
         ws.send_bytes(_pcm(8000, 200))         # producer notices → closes
         try:
-            # Safety net only: with the fix the socket is already gone, so this
-            # send is a no-op. WITHOUT it the session would still be live and the
-            # drain below would block forever instead of failing the assertions.
+            # Safety net only: the socket is normally already gone, so this is a
+            # no-op; if the close regresses, the stop makes the drain below fail
+            # the assertions instead of blocking forever.
             ws.send_json({"type": "stop"})
         except Exception:  # noqa: BLE001 — already closed, as expected
             pass
