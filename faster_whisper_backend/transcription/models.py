@@ -39,7 +39,7 @@ from faster_whisper_backend.settings import schema as settings_schema
 from faster_whisper_backend.stats import metrics
 
 # faster_whisper pulls the heavy native stack (ctranslate2/onnxruntime/av). It is
-# imported lazily at first model load (see _get_or_load_model) so this module
+# imported lazily at first model load (see _load_on_miss) so this module
 # stays importable for tests/tooling on a box without the CUDA stack installed.
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
@@ -1015,11 +1015,10 @@ async def _ensure_ct2_model(name: str) -> str:
     return output_dir
 
 
-# Shared GPU inference limiter — caps concurrent model.transcribe() calls across
-# BOTH the streaming WebSocket and the batch /transcribe route so they don't
-# oversubscribe the GPU under the ~10-concurrent target. Built lazily on first
-# use (binds to the running loop); width = cfg.INFERENCE_CONCURRENCY (restart-
-# required). streaming/routes.py acquires the same object via this getter.
+# Shared GPU inference limiter: batch, URL and streaming transcription and
+# on-GPU translation all take this one gate, so together they cannot
+# oversubscribe the GPU. Built lazily on first use (binds to the running loop);
+# width = cfg.INFERENCE_CONCURRENCY (restart-required).
 _inference_semaphore: "asyncio.Semaphore | None" = None
 
 
