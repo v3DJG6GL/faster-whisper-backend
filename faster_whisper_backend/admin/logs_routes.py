@@ -178,7 +178,6 @@ async def _stream_log_lines(request: Request):
     # and does not render or count it as a log line.
     yield "data: __LIVE_TAIL__\n\n"
 
-    # Live tail from the offset sampled before the backlog.
     while True:
         await asyncio.sleep(0.5)
         try:
