@@ -352,13 +352,13 @@ def _strip_outer_group(branch: str) -> str:
     """Strip every layer of parentheses that wraps a whole branch body.
 
     ``((a))`` → ``a``, ``(a)`` → ``a``, ``(?:13)`` → ``13``, ``abc`` → ``abc``.
-    Only strips when the opening ``(`` is balanced by the LAST ``)`` (i.e. the
-    parens wrap the entire branch, not just a prefix). A non-capturing, named,
-    atomic or scoped-flag prefix (``?:``, ``?P<name>``, ``?<name>``, ``?>``,
-    ``?i:``) goes with the parens: left in place, the body would not compile
-    and an overlapping branch wrapped in ``(?:...)`` would pass the overlap
-    check. A lookaround, conditional, comment or
-    backreference group is not the plain body it holds and stays as it is.
+    Only strips when the opening ``(`` is balanced by the LAST ``)``, not a
+    prefix group. A non-capturing, named, atomic or scoped-flag prefix
+    (``?:``, ``?P<name>``, ``?<name>``, ``?>``, ``?i:``) goes with the parens:
+    left in place, the body would not compile and an overlapping branch
+    wrapped in ``(?:...)`` would pass the overlap check. A lookaround,
+    conditional, comment or backreference group is not the plain body it
+    holds and stays as it is.
     """
     import re
     while len(branch) >= 2 and branch[0] == "(":
@@ -670,13 +670,13 @@ def _nested_repetition(pat: str) -> bool:
             # An overlapping alternation splits its input many ways whether
             # or not it carries a quantifier of its own: `((?:a|aa){2})+$`
             # is `(?:a|aa)(?:a|aa)` repeated, and `(?:c|(n|nn))+#` repeats
-            # the `(n|nn)` split exactly as `(n|nn)+#` does. Mark the parent
-            # as repeating, so a variable quantifier on any enclosing group
-            # refuses it. A possessive or atomic group never re-splits — and
-            # neither does one whose split a mandatory, disjoint next atom
-            # pins down: `(?:(?:um|umm), )+` (see _follower_fixes_split).
-            # The check is only queued: it runs when a variable quantifier
-            # reads the flag, and a root or lookaround frame drops it unread.
+            # the `(n|nn)` split exactly as `(n|nn)+#` does. Queue the check
+            # on the parent: it runs only when a variable quantifier on an
+            # enclosing group reads "rep" (_rep), and a root or lookaround
+            # frame drops it unread. A possessive or atomic group never
+            # re-splits, and neither does one whose split a mandatory,
+            # disjoint next atom pins down: `(?:(?:um|umm), )+` (see
+            # _follower_fixes_split).
             elif not frame["atomic"]:
                 stack[-1]["pending"] += frame["pending"]
                 if spans and not possessive:
@@ -1047,10 +1047,10 @@ def _class_runs_overlap(branches: "list[str]", icase: bool) -> bool:
     so the walk stops at the first pair of atoms that share no character.
     An alternation inside a branch is read as one class per position, as
     _branch_atoms reads it: a match is over-approximated, never missed. Two
-    branches of plain characters are left to the text comparison above, a
-    branch holding a pin to the witness test. Characters are tested as in
-    _splits_ambiguously: each atom compiled alone, against one pool built
-    from every atom's characters."""
+    branches of plain characters are left to _spans_overlap's text
+    comparison, a branch holding a pin to its witness test. Characters are
+    tested as in _splits_ambiguously: each atom compiled alone, against one
+    pool built from every atom's characters."""
     import re
     if all(re.fullmatch(r"[^\\\[\]().?*+{}|^$]*", b) for b in branches):
         return False  # plain words only: the text comparison was exact
@@ -2046,10 +2046,8 @@ def _probe(checks: list):
     import re
     import sys
     import time
-    # The fixture as it looks after entries 0..i-1 have been applied, in LIST
-    # ORDER (engine._postprocess_text applies them in list order, unsorted). Entry 0
-    # sees the plain fixture; every later entry is additionally probed against
-    # whatever its predecessors manufactured.
+    # The fixture after entries 0..i-1 (list order, see _chain_advance):
+    # entry 0 sees the plain fixture.
     chained = FIXTURE
     for i, item in enumerate(checks):
         sys.stderr.write("%d\n" % i)
