@@ -2167,7 +2167,7 @@ function _fieldDiff(baseline, edited, kind) {
   }
   // scalar
   if (_stringify(baseline) === _stringify(edited)) return null;
-  return { kind: 'scalar', value: edited };
+  return { kind: 'scalar', base: baseline, value: edited };
 }
 
 // An olist entry (or dict key) both writers changed differently keeps the
@@ -2314,6 +2314,13 @@ function _applyFieldDiff(serverValue, diff, clashes, restored) {
       if (have.has(k)) prev = k;
     }
     return out.map(([, x]) => x);
+  }
+  // Two edits of one scalar (a callback rule's pattern) cannot merge: one the
+  // other writer also changed, to another value, keeps the user's value but
+  // is a clash, as for a list entry, so the toast does not call it merged.
+  const theirs = _stringify(serverValue);
+  if (clashes && theirs !== _stringify(diff.base) && theirs !== _stringify(diff.value)) {
+    clashes.push(String(diff.value));
   }
   return diff.value;
 }
@@ -2624,9 +2631,9 @@ async function _doSave(patch, fingerprints) {
     // means only the keys the user added/changed/removed get overlaid —
     // the other user's keys survive; regex-list entries merge per entry
     // (by pattern), and an entry both writers edited keeps the user's
-    // version, named in the toast. For scalars (enabled, …) the user's new
-    // value still wins (no way to merge two scalar edits), but the user
-    // reviews before re-saving.
+    // version, named in the toast. For scalars (enabled, pattern) the user's
+    // new value still wins (no way to merge two scalar edits); one the other
+    // writer also changed to another value is a clash, named in the toast.
     const conflictSlugs = conflicts.map(c => c.slug);
     const conflictSet = new Set(conflictSlugs);
     // The non-conflicting rules ARE saved (the server only sends

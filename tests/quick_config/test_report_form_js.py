@@ -903,6 +903,29 @@ def test_reapply_keeps_a_both_edited_clash_when_the_users_entry_keeps_the_other_
     assert res["clashed"] == ["kept"] and res["restored"] == []
 
 
+def test_reapply_reports_a_scalar_both_writers_changed_differently_as_a_clash(
+        client, tmp_path):
+    # A callback rule's pattern is a scalar: the merge kept the user's value
+    # over the other writer's different one and the toast called the rule
+    # "Auto-merged", so their edit was dropped by the next save unseen.
+    page = client.get("/quick-config").text
+    res = _run_js(client, tmp_path, _olist_consts(page) + r"""
+      globalThis.dirty = new Set();
+      const reapply = (theirs) => {
+        globalThis.liveRules = [{ name: 'lw', type: 'callback:lowercase-wordlist',
+                                  enabled: true, pattern: theirs }];
+        const clashed = [], restored = [];
+        _reapplyDiffs(new Map([['lw', { pattern: _fieldDiff('a', 'b', _diffKindFor('pattern')) }]]),
+                      clashed, restored);
+        return [liveRules[0].pattern, clashed, restored];
+      };
+      out({ other: reapply('c'), same: reapply('b'), untouched: reapply('a') });
+    """, funcs=_OLIST_FUNCS)
+    assert res["other"] == ["b", ["lw"], []]
+    assert res["same"] == ["b", [], []]
+    assert res["untouched"] == ["b", [], []]
+
+
 _RESTORED_TOAST = ("another writer changed an entry you deleted; their entry is back,"
                    " delete it again if you still want it gone")
 
