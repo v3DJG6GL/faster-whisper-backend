@@ -41,7 +41,8 @@ MEDIA_ID_PATTERN = r"[0-9a-f]{32}"
 MEDIA_ID_RE = re.compile(rf"\A{MEDIA_ID_PATTERN}\Z")
 
 # media_id -> {path, ext, kind ("audio"|"video"), user_id,
-#              created (time.monotonic), size, source_url}
+#              created (time.monotonic), size, source_url,
+#              probe? (cached stream facts)}
 _REG: "dict[str, dict]" = {}
 
 # Extensions we expect yt-dlp to produce. Anything else keeps a neutral
@@ -228,8 +229,7 @@ def resolve_entry(media_id: str, *, user_id: "str | None") -> "dict | None":
 
 
 def resolve(media_id: str, *, user_id: "str | None") -> "tuple[str, str] | None":
-    """(abs_path, ext) — the original two-field accessor, kept for callers
-    that only stream the file; see resolve_entry() for the kind."""
+    """(abs_path, ext) shorthand over resolve_entry(), same miss rules."""
     e = resolve_entry(media_id, user_id=user_id)
     return (e["path"], e["ext"]) if e else None
 
@@ -257,9 +257,8 @@ def expires_at_unix(media_id: str) -> "int | None":
     return int(time.time() + max(0.0, remaining))
 
 
-# Name shape register() creates: {media id}.{ext} (stem checked against
-# MEDIA_ID_RE). Anything else in the dir was not put there by this store and
-# is left alone.
+# The orphan scan only touches register()'s `{media id}.{ext}` names;
+# anything else in the dir is left alone.
 
 # An on-disk file must be at least this old before the orphan scan trusts
 # "no registry row" — register() moves the file into place from a worker
