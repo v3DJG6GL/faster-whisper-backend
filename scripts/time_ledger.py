@@ -11,9 +11,9 @@ commit. Review-run commits (subject code-review / security-review / simplify /
 release) and bot commits (Renovate, CI) are dropped before sessions are built.
 
 Cross-check: Claude Code keeps ~30 days of transcripts under
-~/.claude/projects/<repo path, every non-alphanumeric as ->/; the time between your own
-prompts there (gap <= 1 h, +15 min per block) is compared week by week with
-the commit estimate for the days both exist.
+~/.claude/projects/<repo path with every non-alphanumeric char as "-">/;
+the time between your own prompts there (gap <= 1 h, +15 min per block) is
+compared week by week with the commit estimate for the days both exist.
 
 The default output path is gitignored: main is mirrored to a public GitHub
 repo, and the report shows when you work.
