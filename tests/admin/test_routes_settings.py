@@ -36,8 +36,8 @@ def test_post_state_valid(client):
 
 
 def test_stats_own_shows_machine_round_trip(client, app_module):
-    """The /settings switch behind decision 2 (own-scope users see machine
-    cards) saves, hot-applies onto cfg and resets back to the default."""
+    """The /settings switch that lets own-scope users see machine cards saves,
+    hot-applies onto cfg and resets back to the default."""
     cfg = app_module.cfg
     assert cfg.STATS_OWN_SCOPE_SHOW_SYSTEM_METRICS is False
     r = client.post("/settings/state", json={"STATS_OWN_SCOPE_SHOW_SYSTEM_METRICS": True})
@@ -60,11 +60,9 @@ def test_post_state_invalid_value_422(client):
 
 
 def test_reset_to_default_clears_local_override(client):
-    """Resetting a setting to its in-repo default must DELETE the override key
-    from config.local.json — clearing the 'local.json' badge AND reverting the
-    running value. Regression: the WebUI '↺ Reset to default' button submits the
-    default *value* (not a removal), which previously rewrote the key and left
-    the badge stuck on 'local.json' (and the running cfg on the stale value)."""
+    """The WebUI '↺ Reset to default' button submits the default *value*, not a
+    removal, so posting it must DELETE the override key from config.local.json:
+    the 'local.json' badge clears and the running value reverts."""
     from faster_whisper_backend.settings import config_store
 
     default_val = client.get("/settings/state").json()["fields"]["BEST_OF"]["default_value"]
@@ -514,12 +512,10 @@ def test_test_pipeline_dry_run(client):
 
 
 def test_test_pipeline_stops_at_the_engine_output_bound(client):
-    # Engine parity: pl_engine._postprocess_text stops the rule walk once the
-    # text passes _POSTPROCESS_MAX_CHARS. The dry run used to keep doubling,
-    # reporting a `final` production never produces and echoing every
-    # multi-MB step twice. The rule that would pass the bound is stopped
-    # BEFORE its sub and keeps the text it was handed, so nothing the dry run
-    # builds ever passes the bound.
+    # pl_engine._postprocess_text stops the rule walk once the text passes
+    # _POSTPROCESS_MAX_CHARS (keeping that rule's output). The dry run stops
+    # one sub earlier: the rule that would pass the bound keeps the text it
+    # was handed, so nothing the dry run builds ever passes the bound.
     bound = pl_engine._POSTPROCESS_MAX_CHARS
     dbl = {"pattern": ".+", "replacement": "\\g<0>\\g<0>"}
     rules = [{"name": f"r{i}", "type": "regex-list", "enabled": True,
@@ -567,9 +563,9 @@ def test_test_pipeline_regex_list_skips_bad_entry(client):
     )
     assert r.status_code == 200
     step = r.json()["steps"][0]
-    assert step["after"] == "X Z"        # valid entries applied despite the bad one
+    assert step["after"] == "X Z"
     assert step["matches"] == 2
-    assert step["error"]                 # bad pattern surfaced as an advisory
+    assert step["error"]
     assert r.json()["final"] == "X Z"
 
 
@@ -744,7 +740,7 @@ def test_test_pipeline_map_rule_non_dict_map_is_step_error(client):
     assert r.status_code == 200, r.text
     step = r.json()["steps"][0]
     assert step["error"]
-    assert step["after"] == "hallo"      # sample passed through unchanged
+    assert step["after"] == "hallo"
 
 
 def test_admin_rules_save_survives_concurrent_quick_config_patch(
@@ -856,9 +852,6 @@ def test_post_state_requires_admin_when_locked(client, make_user_key):
     assert r.status_code == 403
 
 
-# ---------------------------------------------------------------------------
-# Env-pinned provenance + read-only WebUI behaviour
-# ---------------------------------------------------------------------------
 # env_pinned_fields() reads os.environ live, and get_state()/post_state() use it,
 # so setting the env var is enough to exercise the precedence + badge path
 # without reloading config.
@@ -871,8 +864,7 @@ def test_get_state_marks_env_pinned(client, monkeypatch):
 
 
 def test_post_state_env_pinned_is_ignored_at_runtime(client, monkeypatch):
-    # An env-pinned field saves to config.local.json but must NOT change the
-    # running cfg — the env var wins. The response flags it as ignored.
+    # Still saved to config.local.json; the env var wins at runtime.
     monkeypatch.setenv("WHISPER_BEAM_SIZE", "3")
     body = client.post("/settings/state", json={"BEAM_SIZE": 7}).json()
     assert "BEAM_SIZE" in body["env_pinned_ignored"]
@@ -889,12 +881,11 @@ def test_settings_page_greys_out_env_pinned_inputs(client):
 
 
 def test_settings_page_injects_mo_constants(client):
-    """The per-model pane's LOAD_TIME_FIELDS set and FIELD_META are no longer
-    hand-written JS literals — they are derived from config_store /
-    ModelOverride and substituted into the {{MO_*_JSON}} placeholders at
-    render time. The rendered script must carry the real data (virtual
-    REVISION in the load-time set; schema-derived NUM_WORKERS bounds in the
-    field meta) and no unsubstituted placeholder."""
+    """The per-model pane's LOAD_TIME_FIELDS set and FIELD_META are derived
+    from config_store / ModelOverride and substituted into the {{MO_*_JSON}}
+    placeholders at render time. The rendered script must carry the real data
+    (virtual REVISION in the load-time set; schema-derived NUM_WORKERS bounds
+    in the field meta) and no unsubstituted placeholder."""
     import json
     import re
 
@@ -930,8 +921,8 @@ def test_settings_page_injects_mo_constants(client):
 def test_model_sections_cover_every_model_override_field(client):
     """The per-model editor renders only the fields SECTIONS names (no
     catch-all), so a ModelOverride field absent from the literal is invisible
-    and uneditable there — 15 stage/translation fields once shipped that way.
-    Mirrors test_field_groups_cover_every_setting for the per-model pane."""
+    and uneditable there. Mirrors test_field_groups_cover_every_setting for
+    the per-model pane."""
     import re
 
     from faster_whisper_backend.settings import schema as settings_schema
@@ -984,7 +975,6 @@ def test_save_dispatches_extras_eviction(client, monkeypatch):
     assert r.status_code == 200
     assert calls == ["diarization"]
 
-    # A raising evictor is swallowed — the save still succeeds.
     calls.clear()
     monkeypatch.setitem(pl_apply.EVICTORS, "bgm",
                         _spy("bgm", fail=True))
@@ -997,27 +987,21 @@ def test_save_dispatches_extras_eviction(client, monkeypatch):
 def test_field_groups_cover_every_setting():
     """The WebUI layout (_FIELD_GROUPS) must list exactly the AdminConfig schema
     fields: no setting silently missing from the form, no stale/typo'd entry.
-    Regression guard — adding a config field without wiring its WebUI group (as
-    happened with STREAMING_HARD_BREAK_*) should fail here, not ship invisible."""
+    A config field added without its WebUI group fails here, not ships invisible."""
     from faster_whisper_backend.admin import routes as admin_routes
     from faster_whisper_backend.settings import schema as settings_schema
 
     displayed = admin_routes._all_fields()
     assert len(displayed) == len(set(displayed)), "duplicate field in _FIELD_GROUPS"
     schema = set(settings_schema.AdminConfig.model_fields)
-    # Fields intentionally edited on a DEDICATED page, not the /settings form.
-    # OVERRIDE_PROFILES has its own master-detail editor on /settings/overrides
-    # (served by /settings/overrides/state), so it is not in _FIELD_GROUPS.
+    # Edited on a dedicated page, not the /settings form: OVERRIDE_PROFILES
+    # has its own master-detail editor on /settings/overrides.
     managed_elsewhere = {"OVERRIDE_PROFILES"}
     missing = schema - set(displayed) - managed_elsewhere
     stale = set(displayed) - schema
     assert not missing, f"settings missing from the WebUI layout: {sorted(missing)}"
     assert not stale, f"_FIELD_GROUPS entries that are not config fields: {sorted(stale)}"
 
-
-# ---------------------------------------------------------------------------
-# Translation model editors + template preview / test endpoint
-# ---------------------------------------------------------------------------
 
 def test_settings_page_wires_translation_model_editors(client):
     """The model dropdown / multi-select editors are parameterized by a
@@ -1056,8 +1040,8 @@ def test_off_list_default_is_not_called_failing_where_the_gate_admits_it(client)
 
 
 def test_per_model_override_seed_honours_the_field_min(client):
-    """+ override on a field whose global is null seeded 0, below e.g.
-    DIARIZATION_NUM_SPEAKERS' ge=1, so the next Save 422'd the whole payload."""
+    """+ override on a field whose global is null seeds the field's min, not 0:
+    0 sits below e.g. DIARIZATION_NUM_SPEAKERS' ge=1 and 422s the whole Save."""
     text = client.get("/settings").text
     assert "defaultForKind(meta) : cur" in text
     f = text[text.index("function defaultForKind(meta)"):]
@@ -1066,9 +1050,9 @@ def test_per_model_override_seed_honours_the_field_min(client):
 
 
 def test_prompt_lab_preview_clears_on_any_error(client):
-    """Only r.ok and 403 were handled: a 400 (off-allowlist model, unknown
-    family) or 422 (sample bounds) left the previous inputs' prompt, family
-    chip and sampling line on show as if current."""
+    """Any preview error, not just 403 (e.g. 400 off-allowlist model / unknown
+    family, 422 sample bounds), clears the previous prompt, family chip and
+    sampling line so stale output never shows as current."""
     text = client.get("/settings").text
     f = text[text.index("function schedulePreview()"):]
     f = f[:f.index("\n  }\n")]
@@ -1082,7 +1066,7 @@ def test_settings_page_ships_template_editor_and_preview(client):
     assert "function translationTemplateEditor" in text
     # Client-side preview uses the canned sample + .replace semantics.
     assert "Wir haben die Messung gestern wiederholt." in text
-    # The test button posts the UNSAVED textarea value to the new endpoint.
+    # The test button posts the UNSAVED textarea value to /settings/translation-test.
     assert "/settings/translation-test" in text
     # Visibility follows the (unsaved) family select.
     assert "TRANSLATION_PROMPT_FAMILY" in text
