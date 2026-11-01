@@ -48,8 +48,6 @@ def _enable(monkeypatch, **over):
     return cfg
 
 
-# --- keys and residency ------------------------------------------------------
-
 def test_stats_keys_and_uvr_friendly_name_normalisation():
     assert preload.stats_key("whisper", "large-v3") == "large-v3"
     assert preload.stats_key("diarization", "a/b") == "pyannote:a/b"
@@ -98,8 +96,6 @@ def test_is_resident_per_family(monkeypatch):
     assert preload.is_resident("translation", "o/r:Q8") is False
 
 
-# --- the admission ladder ----------------------------------------------------
-
 def test_rung1_resident_touches_and_warms(monkeypatch):
     _enable(monkeypatch)
     monkeypatch.setattr(diarization, "_pipeline_key", ("p/x", "cpu", 4))
@@ -144,7 +140,6 @@ def test_size_unknown_tries_when_nothing_must_be_evicted(monkeypatch):
     a model gets measured."""
     _enable(monkeypatch)
     _fits(monkeypatch, (None, "size_unknown"))
-    # Nothing resident in the way → try it, and let the load measure it.
     assert preload._admit("diarization", "p/x") == ("loading", None)
 
 
@@ -289,8 +284,6 @@ def test_eviction_off_never_displaces_a_cold_singleton_peer(monkeypatch):
     assert preload._admit("separation", "x") == ("deferred", "family_busy")
 
 
-# --- warm-lease cascade ------------------------------------------------------
-
 def test_ttl_sweep_drops_a_plans_keys_together_overlap_survives(monkeypatch):
     _enable(monkeypatch)
     # Admitted, but start() was never called so _queue is None -> every row
@@ -304,7 +297,6 @@ def test_ttl_sweep_drops_a_plans_keys_together_overlap_survives(monkeypatch):
     for k in ("pyannote:p/x", "uvr:UVR-A.onnx", "gguf:o/r:Q4"):
         assert preload.is_warm(k), k
 
-    # Expire only the first plan.
     preload._plans["a" * 8].expires_mono = time.monotonic() - 1
 
     async def _one_sweep():
@@ -337,8 +329,6 @@ def test_is_warm_never_raises_unset_or_throwing():
     model_registry.set_warm_predicate(_boom)
     assert model_registry.is_warm("anything") is False
 
-
-# --- registration ------------------------------------------------------------
 
 def test_reregistration_restamps_and_does_not_double_enqueue(monkeypatch):
     _enable(monkeypatch)
@@ -538,8 +528,6 @@ def test_failure_cleanup_finds_a_rekeyed_plan_with_a_refused_entry(
     assert preload._plans["c" * 8].user_id == "alice"
 
 
-# --- thread safety -----------------------------------------------------------
-
 def test_sync_entry_points_are_thread_safe_against_the_sweeper(monkeypatch):
     """register_plan / on_stage_start / is_warm are called from executor
     threads while the sweeper mutates the same dicts on the loop."""
@@ -587,8 +575,6 @@ def test_sync_entry_points_are_thread_safe_against_the_sweeper(monkeypatch):
     assert orphans == []
 
 
-# --- stage-ahead cursor ------------------------------------------------------
-
 def test_cursor_is_monotone_and_only_looks_forward(monkeypatch):
     _enable(monkeypatch)
     _fits(monkeypatch, (None, "size_unknown"))
@@ -606,9 +592,9 @@ def test_cursor_is_monotone_and_only_looks_forward(monkeypatch):
 
 
 def test_a_full_queue_keeps_the_cursor_so_the_next_tick_retries(monkeypatch):
-    """on_stage_start used to advance the cursor before it knew it could
-    enqueue: a full queue at that tick lost the stage-ahead warm for good,
-    since every later tick of the same stage stopped at the cursor."""
+    """A full queue must not advance the cursor: every later tick of the
+    same stage stops at the cursor, so the stage-ahead warm would be lost
+    for good."""
     _enable(monkeypatch)
     _fits(monkeypatch, (None, "size_unknown"))
     preload.register_plan("u", [("separation", "UVR-A"),
@@ -736,14 +722,9 @@ def test_reset_for_tests_cancels_the_worker():
     asyncio.run(_run())
 
 
-# ---------------------------------------------------------------------------
-# The plan receipt
-#
-# Every log line this module had lived in the worker, and the worker only runs
-# for entries that were ENQUEUED — so `resident` (the normal steady state) and
-# every registration-time deferral produced no output at all. A working
-# preload and a preload that was never called looked identical.
-# ---------------------------------------------------------------------------
+# The plan receipt: the worker logs only ENQUEUED entries, so without it
+# `resident` (the steady state) and every registration-time deferral would
+# log nothing, and a working preload would look like one never called.
 
 def test_plan_receipt_logs_the_all_resident_case(monkeypatch, caplog):
     _enable(monkeypatch)
@@ -759,7 +740,7 @@ def test_plan_receipt_logs_the_all_resident_case(monkeypatch, caplog):
 
 
 def test_plan_receipt_states_a_registration_time_deferral(monkeypatch, caplog):
-    """The reason used to exist only in the HTTP response body."""
+    """The deferral reason must reach the log, not only the HTTP body."""
     _enable(monkeypatch, DIARIZATION_ENABLED=False)
     with caplog.at_level("INFO"):
         preload.register_plan("u1", [("diarization", "p/x")])
