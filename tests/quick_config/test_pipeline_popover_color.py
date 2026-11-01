@@ -35,8 +35,6 @@ def _expose_first_regex_list_rule(app_module, color=None):
     return slug
 
 
-# ---- /quick-config colour mirroring (bug 2.1) --------------------------------
-
 def test_quick_config_state_includes_color(client, app_module):
     slug = _expose_first_regex_list_rule(app_module, color="blue")
     assert slug is not None
@@ -50,20 +48,15 @@ def test_quick_config_state_includes_color(client, app_module):
 def test_quick_config_page_applies_and_styles_color(client):
     r = client.get("/quick-config")
     assert r.status_code == 200
-    # client reads rule.color onto the card …
     assert "card.dataset.color = rule.color" in r.text
-    # … and the colour-token CSS exists for it (border + wash).
     assert '.card[data-color="blue"]' in r.text
     assert '.card[data-color="pink"]' in r.text
 
-
-# ---- pipeline popovers + combobox (bugs 1.1/1.2/1.3) -------------------------
 
 def test_pipeline_uses_top_layer_popover_helper(client):
     t = client.get("/settings/pipeline").text
     assert "_anchorPopover" in t
     assert "showPopover" in t            # native Popover API
-    # colour palette popover
     assert "color-pop" in t
     assert "popover" in t
 
@@ -76,14 +69,11 @@ def test_pipeline_tag_picker_is_aria_combobox(client):
     assert "ArrowDown" in t and "ArrowUp" in t
 
 
-# ---- lock-vs-colour precedence + SVG icon (bug 1.4) -------------------------
-
 def test_pipeline_lock_color_precedence_scoped(client):
     t = client.get("/settings/pipeline").text
-    # Locked rows are no longer tinted at all: the yellow row tint reused the
-    # per-card colour mechanism and made an un-coloured locked rule read as
-    # "coloured yellow". The lock chip alone signals locked, so the colour
-    # token always owns the rail/border — there must be no locked row tint.
+    # No locked row tint: it reused the per-card colour mechanism and made an
+    # un-coloured locked rule read as "coloured yellow". The lock chip alone
+    # signals locked; the colour token owns the rail/border.
     assert ".rule-row.locked:not([data-color])" not in t
     # Terminal keeps a neutral accent, still scoped so a colour token wins.
     assert ".rule-row.terminal:not([data-color])" in t
@@ -105,8 +95,6 @@ def test_pipeline_lock_icon_is_svg_not_emoji(client):
     # … and no lock emoji survive anywhere on the page.
     assert "🔒" not in t and "🔓" not in t
 
-
-# ---- syntax guard over the inline scripts -----------------------------------
 
 _NODE = shutil.which("node")
 
