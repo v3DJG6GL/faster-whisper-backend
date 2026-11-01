@@ -1,6 +1,6 @@
 
 <script>(function(){
-  // ---- Shared floating-layer positioner: window._anchorPopover ---------
+  // window._anchorPopover: shared floating-layer positioner.
   // One placement ladder for every dropdown a toolbar or header opens
   // (pick-lists, the header activity popover, tag / language suggest
   // lists, the pipeline colour palette):
