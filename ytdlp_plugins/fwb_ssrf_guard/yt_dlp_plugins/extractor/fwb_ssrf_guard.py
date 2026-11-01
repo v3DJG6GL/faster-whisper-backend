@@ -2,7 +2,7 @@
 
 WHY: faster_whisper_backend/media/download.py's own probes refuse private / loopback / link-local /
 metadata addresses on every hop, but the two fetches that actually move bytes
-— probe()'s `extract_info` and download()'s `python -m yt_dlp` — used yt-dlp's
+— probe()'s `extract_info` and download()'s yt-dlp subprocess — used yt-dlp's
 own opener, which follows redirects and re-resolves DNS with no policy at all.
 A "public" host could therefore 302 the downloader into 169.254.169.254 or a
 LAN service, and the guarded probe never saw that hop.
@@ -39,7 +39,7 @@ definition, see below):
       redirect destination.
 
 Every error message carries the marker `fwb-ssrf-guard`, which
-download.classify_error (faster_whisper_backend/media/download.py) maps to the client-safe "the site could not be
+download.classify_error maps to the client-safe "the site could not be
 reached from the server" — except the external-downloader refusal, whose
 longer EXTERNAL_FD_MARKER maps to "this media needs a downloader the server
 does not allow". The offending host/address appears only in the
@@ -90,7 +90,6 @@ RH_NAME = "fwb-guarded-urllib"
 _SUPERSEDED_RH_KEYS = ("Urllib", "Requests", "CurlCFFI", "Websockets")
 
 
-# ── the shared policy ───────────────────────────────────────────────────────
 # net_policy.py is the single definition of "which addresses we refuse". It is
 # imported normally when the repo root is on sys.path (the in-process probe),
 # and loaded BY PATH otherwise (the download subprocess, whose sys.path
@@ -157,12 +156,11 @@ def _check_url(url: str) -> None:
             f"{MARKER}: refusing a non-http(s) URL (scheme {parts.scheme!r})")
     try:
         port = parts.port or 0
-    except ValueError:  # out-of-range / non-numeric port passes validate_url
+    except ValueError:  # a redirect / extractor URL never passed validate_url
         raise RequestError(f"{MARKER}: invalid port") from None
     _resolve_pinned(parts.hostname or "", port)
 
 
-# ── pinned connections ──────────────────────────────────────────────────────
 # Only connect() is overridden: everything else (the Host header, the request
 # line, chunking) still sees the original hostname, which is what makes
 # name-based virtual hosting and certificate validation keep working.
@@ -174,7 +172,6 @@ def _dials_a_proxy(conn) -> bool:
                 or getattr(conn, "_tunnel_host", None))
 
 
-# ── per-thread dial observer ────────────────────────────────────────────────
 # download.probe() bounds its in-process extract_info by WALL CLOCK: it hands
 # observe_dials() a callback that records every socket this thread dials, and
 # shuts them all at its deadline (a per-op socket timeout cannot stop a host
@@ -343,7 +340,6 @@ class GuardedUrllibRH(_urllib.UrllibRH):
         return super()._send(request)
 
 
-# ── downloaders that fetch outside the handler registry ─────────────────────
 # Sentinel on the replacement function, not on this module's own object: the
 # file loads twice under two module names (see install()), and the second
 # load must recognise the first one's patch.
