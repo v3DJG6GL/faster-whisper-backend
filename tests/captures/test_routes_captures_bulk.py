@@ -297,9 +297,10 @@ def _restore_audio(captures_store, cid):
 
 def test_audio_missing_row_with_restored_file_can_be_retriaged(
         client, make_user_key):
-    """audio_missing is only set at boot and never cleared: once the WAV is
-    back (late mount, restore) both the single and the bulk status PATCH
-    accept the row again instead of locking it out of the export."""
+    """audio_missing is only set and lifted at boot: once the WAV is back
+    (late mount, restore) before the next boot, both the single and the bulk
+    status PATCH accept the row again instead of locking it out of the
+    export."""
     from faster_whisper_backend.captures import store as captures_store
 
     _root, raw_root = make_user_key("root", is_admin=True)

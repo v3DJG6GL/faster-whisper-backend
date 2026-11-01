@@ -967,6 +967,77 @@ def test_reconcile_skips_groups_subtree(captures_store_db, monkeypatch, tmp_path
     assert os.path.isfile(merged)  # groups/ subtree preserved
 
 
+def _hide_audio(cs, cid, tmp_path):
+    """Move a row's WAV out of the audio tree (an unmounted volume; inside
+    it reconcile would unlink it as an orphan) and return a callable that
+    puts it back."""
+    abs_p = cs.abs_audio_path(cs.get_capture(cid)["audio_relpath"])
+    aside = str(tmp_path / f"{cid}.aside")
+    os.rename(abs_p, aside)
+    return lambda: os.rename(aside, abs_p)
+
+
+def test_reconcile_gives_back_the_status_once_the_audio_returns(
+    captures_store_db, groups_store_db, monkeypatch, tmp_path,
+):
+    """audio_missing used to be a one-way trip: a reviewed or ready capture
+    whose volume mounted late stayed in eviction tier 2 and out of the
+    ready export for good, though its WAV was back."""
+    cs = captures_store_db
+    reviewed = _make(cs, monkeypatch, tmp_path)
+    ready = _make(cs, monkeypatch, tmp_path)
+    cs.update_capture(reviewed, {"status": "reviewed"})
+    cs.update_capture(ready, {"status": "ready"})
+    # A sample member: its membership must survive the round trip untouched.
+    _group_one(cs, groups_store_db, "gmissing00000000", ready,
+               sample_ts=1.0, member_ts=1.0)
+    stamp = cs.get_capture(ready)["reviewed_ts"]
+    restore = [_hide_audio(cs, reviewed, tmp_path),
+               _hide_audio(cs, ready, tmp_path)]
+
+    assert cs.reconcile_on_startup()[0] == 2
+    assert cs.get_capture(reviewed)["status"] == "audio_missing"
+    assert cs.get_capture(ready)["status"] == "audio_missing"
+    # Bookkeeping stays off the wire.
+    assert "status_before_missing" not in cs.get_capture(ready)
+    # A second boot with the audio still gone keeps both marked and keeps
+    # the saved status (the mark is not applied twice over itself).
+    assert cs.reconcile_on_startup()[0] == 0
+    assert cs.get_capture(ready)["status"] == "audio_missing"
+
+    for put_back in restore:
+        put_back()
+    assert cs.reconcile_on_startup() == (0, 0)  # the WAVs are no orphans
+    got = cs.get_capture(ready)
+    assert got["status"] == "ready" and got["reviewed_ts"] == stamp
+    assert got["sample_id"] == "gmissing00000000" and got["sample_order"] == 0
+    assert cs.get_capture(reviewed)["status"] == "reviewed"
+    saved = cs._require_conn().execute(
+        "SELECT status_before_missing FROM captures WHERE id IN (?, ?)",
+        (reviewed, ready)).fetchall()
+    assert [r[0] for r in saved] == [None, None]
+
+
+def test_reconcile_restores_a_row_marked_before_the_column_to_new(
+    captures_store_db, monkeypatch, tmp_path,
+):
+    """A row marked audio_missing by an older version kept no previous status:
+    it comes back as 'new' (unreviewed, so no reviewed_ts), while a row whose
+    audio is still gone stays marked."""
+    cs = captures_store_db
+    old = _make(cs, monkeypatch, tmp_path)
+    gone = _make(cs, monkeypatch, tmp_path)
+    cs._require_conn().execute(
+        "UPDATE captures SET status='audio_missing', reviewed_ts=5.0"
+        " WHERE id IN (?, ?)", (old, gone))
+    cs._safe_unlink(cs.abs_audio_path(cs.get_capture(gone)["audio_relpath"]))
+
+    assert cs.reconcile_on_startup()[0] == 0
+    got = cs.get_capture(old)
+    assert got["status"] == "new" and got["reviewed_ts"] is None
+    assert cs.get_capture(gone)["status"] == "audio_missing"
+
+
 # ---------------------------------------------------------------------------
 # sweep_retention
 # ---------------------------------------------------------------------------

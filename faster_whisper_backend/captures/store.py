@@ -157,6 +157,9 @@ def _ensure_columns(conn: sqlite3.Connection) -> None:
         ("translation_model", "ADD COLUMN translation_model TEXT"),
         ("translation_source", "ADD COLUMN translation_source TEXT"),
         ("task", "ADD COLUMN task TEXT"),
+        # Not a translation column: the status reconcile_on_startup gives
+        # back once an audio_missing row's file returns.
+        ("status_before_missing", "ADD COLUMN status_before_missing TEXT"),
     ):
         if col not in cols:
             conn.execute(f"ALTER TABLE captures {ddl}")
@@ -277,6 +280,8 @@ def _row_to_dict(row: sqlite3.Row, include_words: bool = True) -> dict[str, Any]
             d["translations"] = {}
     except (TypeError, ValueError):
         d["translations"] = {}
+    # reconcile_on_startup's own bookkeeping, not part of the capture.
+    d.pop("status_before_missing", None)
     return d
 
 
@@ -1366,7 +1371,12 @@ def reconcile_on_startup() -> tuple[int, int]:
 
       1. For each row whose audio file is missing, set status=
          'audio_missing' (never auto-delete — the admin needs to see the
-         loss in the UI).
+         loss in the UI) and keep the status it had in
+         status_before_missing. A row marked earlier whose file is back
+         (a late mount, a restored backup) gets that status again — 'new'
+         when none was kept (marked before the column existed) — or a
+         reviewed / ready capture would stay in eviction tier 2 and out of
+         the export for good.
       2. For each file under CAPTURES_DIR with no matching row, unlink
          (orphaned files from prior crashes / clear-all races).
 
@@ -1374,13 +1384,14 @@ def reconcile_on_startup() -> tuple[int, int]:
     conn = _require_conn()
     audio_dir = _require_audio_dir()
     rows_marked = 0
+    rows_restored = 0
     files_unlinked = 0
 
     known_paths: set[str] = set()
     with _lock:
         cur = conn.execute(
-            "SELECT id, audio_relpath, audio_trimmed_relpath, status"
-            " FROM captures",
+            "SELECT id, audio_relpath, audio_trimmed_relpath, status,"
+            " status_before_missing FROM captures",
         )
         for r in cur.fetchall():
             try:
@@ -1389,10 +1400,24 @@ def reconcile_on_startup() -> tuple[int, int]:
                 continue
             if os.path.isfile(abs_p):
                 known_paths.add(os.path.abspath(abs_p))
+                if r["status"] == "audio_missing":
+                    back = r["status_before_missing"]
+                    if back not in _VALID_STATUS or back == "audio_missing":
+                        back = "new"
+                    # 'new' carries no reviewed_ts (update_capture's rule);
+                    # a kept status gets back the stamp it never lost.
+                    stamp = ", reviewed_ts=NULL" if back == "new" else ""
+                    conn.execute(
+                        "UPDATE captures SET status=?,"
+                        f" status_before_missing=NULL{stamp} WHERE id=?",
+                        (back, r["id"]),
+                    )
+                    rows_restored += 1
             else:
                 if r["status"] != "audio_missing":
                     conn.execute(
-                        "UPDATE captures SET status='audio_missing' WHERE id=?",
+                        "UPDATE captures SET status='audio_missing',"
+                        " status_before_missing=status WHERE id=?",
                         (r["id"],),
                     )
                     rows_marked += 1
@@ -1438,8 +1463,8 @@ def reconcile_on_startup() -> tuple[int, int]:
 
     logger.info(
         "[captures] reconcile: %d rows marked audio_missing, "
-        "%d orphan files removed",
-        rows_marked, files_unlinked,
+        "%d rows restored from audio_missing, %d orphan files removed",
+        rows_marked, rows_restored, files_unlinked,
     )
     return rows_marked, files_unlinked
 

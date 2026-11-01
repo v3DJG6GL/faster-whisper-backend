@@ -765,9 +765,9 @@ async def get_audio_api(
 
 def _audio_still_missing(row: dict[str, Any]) -> bool:
     """True while an audio_missing row's original WAV is really absent. The
-    status is only set at boot (reconcile_on_startup) and never cleared, so
+    status is only set and lifted at boot (reconcile_on_startup), so
     a file restored after a late mount must not keep the row un-triageable
-    forever. A relpath that escapes the audio root counts as missing."""
+    until the next restart. A relpath that escapes the audio root counts as missing."""
     try:
         return not os.path.isfile(
             captures_store.abs_audio_path(row.get("audio_relpath") or ""))

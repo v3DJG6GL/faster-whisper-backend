@@ -114,6 +114,12 @@ def test_captures_migration_upgrades_a_pre_existing_table(tmp_path):
         assert got["translations"] == {"en": "hello"}
         # A row that never had translations reads back empty, not a crash.
         assert captures_store.get_capture("bare")["translations"] == {}
+        # reconcile_on_startup's saved pre-audio_missing status; a pre-
+        # existing row starts with none (it restores to 'new').
+        assert "status_before_missing" in cols
+        assert captures_store._conn.execute(
+            "SELECT status_before_missing FROM captures WHERE id='keep'",
+        ).fetchone()[0] is None
 
 
 def test_captures_translations_round_trip_as_a_keyed_map(
