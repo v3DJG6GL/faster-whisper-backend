@@ -393,7 +393,7 @@ def test_reconcile_keeps_known_wav(captures_store_db, groups_store_db):
         f.write(b"x")
     missing, unlinked, orphan_fks = gs.reconcile_on_startup()
     assert missing == 0
-    assert os.path.isfile(abs_p)  # known WAV is not unlinked
+    assert os.path.isfile(abs_p)
 
 
 def test_reconcile_clears_orphan_fks(captures_store_db, groups_store_db):
