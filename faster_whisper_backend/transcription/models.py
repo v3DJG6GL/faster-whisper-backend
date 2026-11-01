@@ -41,8 +41,6 @@ from faster_whisper_backend.stats import metrics
 # faster_whisper pulls the heavy native stack (ctranslate2/onnxruntime/av). It is
 # imported lazily at first model load (see _get_or_load_model) so this module
 # stays importable for tests/tooling on a box without the CUDA stack installed.
-# TYPE_CHECKING keeps the WhisperModel annotation resolvable for type checkers
-# without importing it at runtime.
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from faster_whisper import WhisperModel
@@ -50,25 +48,11 @@ if TYPE_CHECKING:
 logger = logging.getLogger("whisper-api")
 
 
-# =============================================================================
-# Per-request model selection with LRU cache
-# =============================================================================
-# Clients can ask for any faster-whisper-compatible model via the OpenAI
-# `model` form param. We resolve the OpenAI default `whisper-1` (and empty)
-# to WHISPER_DEFAULT_MODEL, lazy-load on first use, and keep up to
-# WHISPER_MAX_LOADED_MODELS hot in VRAM (LRU eviction).
-#
-# Examples a client can pass:
-#   "whisper-1"                                        OpenAI default -> our default
-#   "large-v2"                                         faster-whisper short name
-#   "large-v3" / "large-v3-turbo" / "distil-large-v3"
-#   "Systran/faster-whisper-large-v3"                  full HF repo id
-#   "primeline/whisper-large-v3-turbo-german"          German-finetuned
-#
-# Set WHISPER_ALLOWED_MODELS to restrict which model names are accepted (a
-# comma-separated allowlist; empty = any well-formed model id goes, useful on
-# a private LAN).
-# Source: cfg.DEFAULT_MODEL / cfg.ALLOWED_MODELS / cfg.MAX_LOADED_MODELS.
+# Clients pick any faster-whisper-compatible model via the OpenAI `model`
+# form param: "whisper-1" / empty → cfg.DEFAULT_MODEL, a short name
+# ("large-v3"), or an HF repo id. Models lazy-load on first use and up to
+# cfg.MAX_LOADED_MODELS stay hot in VRAM (LRU). cfg.ALLOWED_MODELS restricts
+# the accepted names (empty = any well-formed id).
 
 # Insertion order = LRU order (oldest at front). move_to_end on hit.
 _loaded_models: "OrderedDict[str, WhisperModel]" = OrderedDict()
@@ -114,15 +98,10 @@ def _end_prefetch(key: tuple, task: "asyncio.Task") -> None:
         task.exception()
 
 
-# =============================================================================
-# SUPPRESS_CHARS resolution cache
-# =============================================================================
-# Resolve the user's SUPPRESS_CHARS string to vocabulary token IDs via the
-# loaded model's hf_tokenizer. The encoding depends on the model's BPE
-# table, so the cache key is (model_id, chars_str). Invalidated on model
-# unload (LRU/idle/evict-on-edit) and naturally rekeyed when SUPPRESS_CHARS
-# changes. An LRU capped at _SUPPRESS_CHARS_CACHE_MAX entries: a client's
-# suppress_chars decode key makes the strings caller-chosen.
+# (model_id, chars) → vocab token ids: the encoding depends on the model's
+# BPE table. Dropped on model unload (LRU/idle/evict-on-edit); an LRU capped
+# at _SUPPRESS_CHARS_CACHE_MAX because a client's suppress_chars decode key
+# makes the strings caller-chosen.
 _suppress_chars_cache: "OrderedDict[tuple[str, str], tuple[int, ...]]" = OrderedDict()
 _SUPPRESS_CHARS_CACHE_MAX = 256
 
@@ -137,7 +116,8 @@ def _resolve_suppress_chars(model_id: str,
     faster-whisper's own non_speech_tokens approach). Multi-piece results
     are skipped with a warning (suppressing only the first piece would
     block every word that starts with that piece). ``from_client``: the
-    chars came from a request, so their resolution logs at DEBUG only."""
+    chars came from a request, so the resolved-ids line logs at DEBUG, not
+    INFO (a multi-piece skip still warns)."""
     if not chars:
         return ()
     key = (model_id, chars)
@@ -181,12 +161,11 @@ def _resolve_suppress_chars(model_id: str,
     return out
 
 
-# Per-request decode-param overrides (the client's "decode overrides"). Optional;
-# absent leaves behavior identical to before (config-only). Every value is clamped
-# to the SAME bounds the admin config enforces (settings/schema.py), so an untrusted
-# client cannot request unbounded compute on the shared server. Applied AFTER config
-# resolution, so the order is: request > per-model override > global default.
-# Only model.transcribe kwargs belong in these tables: every key in them is
+# Per-request decode overrides: every value is clamped to the SAME bounds the
+# admin config enforces (settings/schema.py), so an untrusted client cannot
+# request unbounded compute on the shared server. Applied AFTER config
+# resolution: request > per-model override > global default. Only
+# model.transcribe kwargs belong in these tables: every key in them is
 # forwarded as one (live-dictation keys are applied by the streaming route).
 def _client_bounds(key: str) -> "tuple":
     """(min, max) of a client decode key, read from its config field's own
@@ -289,7 +268,6 @@ def _apply_decode_overrides(kwargs, resolved_model, overrides, ident=None):
     the admin-set value stands and the client override is ignored."""
     if not isinstance(overrides, dict) or not overrides:
         return kwargs
-    # Lock gate: an identity layer can forbid the client from overriding a field.
     locked_client_keys = ident.locked_client_keys if ident is not None else frozenset()
     if locked_client_keys:
         overrides = {k: v for k, v in overrides.items() if k not in locked_client_keys}
@@ -404,7 +382,7 @@ def _client_temperature(v) -> "float | tuple[float, ...] | None":
     """A client `temperature` decode key: a number, or a retry ladder as a
     list or a comma string (TEMPERATURE's own format, parsed by
     _temperature_ladder). Rungs are clamped to _TEMPERATURE_BOUNDS and capped
-    at _TEMPERATURE_RUNGS_MAX; one rung is a float (as before), several a
+    at _TEMPERATURE_RUNGS_MAX; one rung is a float, several a
     tuple (faster-whisper's ladder). None for anything unparseable or empty —
     the override is then dropped, like the other clamp paths."""
     # Only the first _TEMPERATURE_RUNGS_MAX tokens are ever parsed: a
@@ -430,12 +408,11 @@ def assemble_transcribe_kwargs(resolved_model, model, *, language, temperature,
     """Assemble the full ``model.transcribe`` kwargs from per-model config.
 
     Single source of truth shared by the batch endpoint and the streaming FINAL
-    decode, so the two produce identical results for the same audio (there must
-    be no difference between streaming and batch). The per-request values
-    (``language``, ``temperature``, ``vad_filter``, ``vad_parameters``,
-    ``want_word_ts``, ``initial_prompt``) are passed in already resolved; every
-    other knob is read here via ``cf`` which layers per-identity (``ident``) >
-    per-model > global. ``ident=None`` is byte-identical to the pre-feature path.
+    decode, so the two produce identical results for the same audio. The
+    per-request values (``language``, ``temperature``, ``vad_filter``,
+    ``vad_parameters``, ``want_word_ts``, ``initial_prompt``) are passed in
+    already resolved; every other knob is read here via ``cf``, which layers
+    per-identity (``ident``) > per-model > global.
     """
     def cf(field):
         return effective_config.cfg_for(resolved_model, field, ident)
@@ -457,9 +434,8 @@ def assemble_transcribe_kwargs(resolved_model, model, *, language, temperature,
         log_prob_threshold=cf("LOG_PROB_THRESHOLD"),
         compression_ratio_threshold=cf("COMPRESSION_RATIO_THRESHOLD"),
     )
-    # Whisper task — only forwarded off-default, so the kwargs dict (and the
-    # streaming FINAL decode, which never passes `task`) stay byte-identical
-    # to the pre-feature path for plain transcription.
+    # task is forwarded off-default only, so plain transcription's kwargs
+    # match the streaming FINAL decode, which never passes `task`.
     if task and task != "transcribe":
         transcribe_kwargs["task"] = task
     # Optional advanced kwargs — only forwarded when set, so the
@@ -469,9 +445,6 @@ def assemble_transcribe_kwargs(resolved_model, model, *, language, temperature,
         transcribe_kwargs["hotwords"] = _hotwords
     _temp_str = cf("TEMPERATURE")
     if _temp_str:
-        # Per-model/identity override of the temperature ladder. Comma-
-        # separated floats; falls back to the per-request `temperature`
-        # (default 0.0) when unset.
         ladder = _temperature_ladder(_temp_str)
         if ladder:
             transcribe_kwargs["temperature"] = ladder
@@ -535,16 +508,13 @@ def assemble_transcribe_kwargs(resolved_model, model, *, language, temperature,
     _append_p = cf("APPEND_PUNCTUATIONS")
     if _append_p is not None:
         transcribe_kwargs["append_punctuations"] = _append_p
-    # Per-request overrides win (clamped), EXCEPT fields locked by an identity
-    # layer (skipped). No-op when None/empty.
     _apply_decode_overrides(transcribe_kwargs, resolved_model, overrides, ident=ident)
     # A client hallucination_silence_threshold of 0 is "off" too (see above).
     if not transcribe_kwargs.get("hallucination_silence_threshold"):
         transcribe_kwargs.pop("hallucination_silence_threshold", None)
-    # SUPPRESS_CHARS — chars resolved to vocab IDs via the loaded model's
-    # tokenizer, then merged into the EFFECTIVE suppress_tokens list, i.e.
-    # after a client suppress_tokens override (which used to replace the
-    # merged ids). Genuinely additive: key absent = faster-whisper's default
+    # SUPPRESS_CHARS — resolved to vocab IDs via the loaded model's tokenizer
+    # and merged into the EFFECTIVE suppress_tokens, i.e. after a client
+    # suppress_tokens override. Additive: key absent = faster-whisper's default
     # (-1, the non-speech set) plus the chars; a cleared list (None, from the
     # config or the client) = the chars only; a list = the list plus the chars.
     # A client suppress_chars (unless locked) replaces the configured string;
@@ -722,7 +692,7 @@ _trim_keep: "str | None" = None
 
 
 def _schedule_trim_to_cap(keep: "str | None" = None) -> None:
-    """Run trim_to_cap in the background when the cache is over the cap: a
+    """Run the over-cap eviction (_scheduled_trim) in the background: a
     leased model the cap loop or trim_to_cap had to skip becomes evictable the
     moment its last lease goes, and a hit-only server never misses to reclaim
     it. A task, as the release is sync and may run under _model_load_lock. One
@@ -758,38 +728,24 @@ def _resolve_model_name(requested: str) -> str:
     return requested
 
 
-# =============================================================================
-# Auto HF→CT2 conversion (opt-in via AUTO_CONVERT_HF_MODELS)
-# =============================================================================
-# Cache structure: <root>/<sanitised_id>/<quantization>/{model.bin, ...}
-# - root: cfg.CONVERTED_MODELS_DIR or ~/.cache/whisper-ct2
-# - sanitised_id: model id with "/" replaced by "__"
-# - quantization: e.g. "float16" — encoded in the path so changing the cfg
-#                 doesn't collide with the previously-saved version.
-#
-# Locking strategy:
-# - Per-model asyncio.Lock (held during conversion, NOT held during the
-#   subsequent WhisperModel load — so cached-model fast paths for OTHER
-#   models stay snappy).
-# - filelock.FileLock for cross-process safety (uvicorn --workers > 1).
-# - Atomic publish: write to <output_dir>.tmp, then os.rename to final.
-#   Crash mid-conversion leaves no false-positive "model.bin exists" state.
+# Auto HF→CT2 conversion (opt-in via AUTO_CONVERT_HF_MODELS). Cache layout:
+# <root>/<sanitised_id>[@<revision>]/<quantization>/{model.bin, ...}; the
+# quantization is in the path so changing CONVERT_QUANTIZATION never collides
+# with an earlier conversion.
 
 _CT2_QUANTIZATIONS = {
     "float32", "float16", "bfloat16", "int16",
     "int8", "int8_float32", "int8_float16", "int8_bfloat16",
 }
 
-# Per-model asyncio locks for conversion. Lazy-populated.
 _convert_locks: "dict[str, asyncio.Lock]" = {}
 _convert_locks_meta = asyncio.Lock()
 
 
 def _converted_root() -> str:
-    """Resolve the output root for converted models. Honours
-    cfg.CONVERTED_MODELS_DIR when set, else ~/.cache/whisper-ct2. A "~" /
-    $VAR in the configured value is expanded like DOWNLOAD_ROOT (dotenv does
-    not): verbatim, the weights landed in a literal "./~" dir under the cwd."""
+    """Output root for converted models. "~" and $VAR in CONVERTED_MODELS_DIR
+    are expanded here (dotenv does not): verbatim, the weights landed in a
+    literal "./~" dir under the cwd."""
     configured = getattr(cfg, "CONVERTED_MODELS_DIR", None)
     if configured:
         return os.path.expandvars(os.path.expanduser(configured))
@@ -815,18 +771,16 @@ def _conversion_repo_files(model_id: str,
                            revision: "str | None" = None) -> "list[str] | None":
     """Return the repo's file list if `model_id` is an HF transformers Whisper
     checkpoint (has model.safetensors / pytorch_model.bin, or their sharded
-    .index.json, but no model.bin in the repo); [] for a local HF-format dir. None when no conversion is
-    needed: already-CT2 repos and local CT2 dirs.
+    .index.json, but no model.bin in the repo); [] for a local HF-format dir.
+    None when no conversion is needed: already-CT2 repos and local CT2 dirs.
 
-    Implementation: probe the HF Hub file list. Network call (~1 s) but only
-    runs when AUTO_CONVERT_HF_MODELS is on AND the converted-output cache
-    misses, so it's at worst once per model per process lifetime."""
-    # Local path that exists → never convert.
+    Probes the HF Hub file list (a ~1 s network call) only when
+    AUTO_CONVERT_HF_MODELS is on and no current conversion exists, so an
+    already-CT2 repo id pays it again on every load miss."""
     if os.path.isdir(model_id):
         if os.path.isfile(os.path.join(model_id, "model.bin")):
             return None
         return []
-    # Heuristic: HF repo id always contains a single "/".
     if "/" not in model_id or model_id.count("/") != 1:
         return None
     try:
@@ -872,14 +826,11 @@ def _pinned_snapshot_files(files: "list[str]") -> "list[str]":
 def _convert_blocking(model_id: str, output_dir: str, quantization: str,
                       revision: "str | None" = None,
                       files: "list[str] | None" = None) -> None:
-    """Synchronous CT2 conversion. Runs in a thread executor so the event
-    loop stays responsive. Lazy-imports torch / transformers / ctranslate2
-    converter machinery; missing extras → RuntimeError with pip command.
-
-    Atomic publish: writes to `<output_dir>.tmp` then renames to `output_dir`
-    so a crash mid-write leaves no false-positive (next start re-detects the
-    missing model.bin and retries cleanly). `files` is the repo listing at
-    `revision`, from the conversion probe."""
+    """Blocking CT2 conversion (run off the event loop). Writes to
+    `<output_dir>.tmp`, then renames it onto `output_dir`, so a crash
+    mid-write never leaves a published-looking model.bin: the next load finds
+    none and retries. `files` is the repo listing at `revision`, from the
+    conversion probe."""
     try:
         from ctranslate2.converters import TransformersConverter
         import transformers  # noqa: F401  ensure dep present
@@ -910,14 +861,12 @@ def _convert_blocking(model_id: str, output_dir: str, quantization: str,
             allow_patterns=_pinned_snapshot_files(files or []))
     converter = TransformersConverter(
         model_name_or_path=source,
-        # tokenizer.json + preprocessor_config.json are required by faster-
-        # whisper at runtime (transcribe.py:700, :732). vocabulary.json is
-        # generated by CT2 itself; copying the HF vocab.json is harmless but
-        # not necessary.
+        # faster-whisper reads tokenizer.json + preprocessor_config.json at
+        # runtime; CT2 writes vocabulary.json itself.
         copy_files=["tokenizer.json", "preprocessor_config.json"],
-        # Loading the source as fp16 keeps RAM ~halved during conversion;
-        # HF Whisper checkpoints typically ship as fp16 anyway, no precision
-        # loss. low_cpu_mem_usage avoids HF's duplicate-on-CPU intermediate.
+        # Loading the source as fp16 roughly halves conversion RAM, and only
+        # for an fp16-compute target, so nothing is lost. low_cpu_mem_usage
+        # avoids HF's duplicate-on-CPU intermediate.
         load_as_float16=(quantization in ("float16", "int8_float16")),
         low_cpu_mem_usage=True,
     )
@@ -1006,10 +955,7 @@ def _pinned_revision(name: str) -> "str | None":
 async def _ensure_ct2_model(name: str) -> str:
     """If `name` is an HF transformers Whisper repo and AUTO_CONVERT_HF_MODELS
     is on, ensure a CT2 conversion exists locally and return its path.
-    Otherwise return `name` unchanged.
-
-    Locking: per-name asyncio.Lock + filelock.FileLock (cross-process).
-    Conversion runs in a thread executor (blocking torch / numpy work)."""
+    Otherwise return `name` unchanged."""
     if not getattr(cfg, "AUTO_CONVERT_HF_MODELS", False):
         return name
     quantization = getattr(cfg, "CONVERT_QUANTIZATION", None) or "float16"
@@ -1025,18 +971,14 @@ async def _ensure_ct2_model(name: str) -> str:
     if os.path.isfile(os.path.join(output_dir, "model.bin")):
         logger.info("auto-convert: %s changed since its conversion; "
                     "reconverting", name)
-    # Skip the file-list probe + conversion for already-CT2 repos and
-    # local paths. OFF the loop: the probe makes a synchronous
-    # huggingface_hub.list_repo_files() HTTPS call (its own docstring says
-    # "~1 s"), and this is an async def. Pure predicate, evaluated before the
-    # per-model lock below, so nothing can reorder against it.
+    # Off the loop: the probe is a synchronous list_repo_files() HTTPS call.
+    # None = nothing to convert (already-CT2 repo or local CT2 dir).
     files = await asyncio.to_thread(_conversion_repo_files, name, revision)
     if files is None:
         return name
 
-    # Per-model asyncio lock (lazy create). Ensures only one conversion of
-    # a given model proceeds within this worker, without serialising loads
-    # of OTHER models behind a global lock.
+    # One conversion per model within this worker, without serialising
+    # loads of OTHER models behind a global lock.
     async with _convert_locks_meta:
         lk = _convert_locks.setdefault(name, asyncio.Lock())
     async with lk:
@@ -1110,11 +1052,8 @@ def _get_url_download_semaphore() -> "asyncio.Semaphore":
 # faster-whisper short name OR HuggingFace repo id (org/name) — the same shape
 # settings_schema._MODEL_ID_PATTERN validates configured model ids against. Used
 # below to bound what an EMPTY ALLOWED_MODELS accepts from a request.
-# \Z, not $: `$` also matches just BEFORE a trailing newline, so "some-repo\n"
-# passed the gate. \Z anchors at the true end of the string and is a pure
-# tightening here (no legitimate model id ends in a newline); fixing it in the
-# pattern also covers every other caller of this regex, which stripping inside
-# _resolve_model_name would not.
+# \Z, not $: `$` also matches just BEFORE a trailing newline, so
+# "some-repo\n" would pass the gate.
 _MODEL_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.\-]*(/[A-Za-z0-9_.\-]+)?\Z")
 
 
@@ -1268,11 +1207,8 @@ async def _load_on_miss(name: str, *, lease: bool) -> "WhisperModel":
     # for a load that was never going to succeed.
     _check_model_known(name)
 
-    # Auto-convert HF transformers Whisper repos to CT2 format if enabled.
-    # Runs OUTSIDE _model_load_lock so loads of OTHER cached models stay
-    # snappy during the (rare, slow) conversion step. Returns `name`
-    # unchanged if conversion is off, repo is already CT2, or it's a
-    # local path with model.bin.
+    # OUTSIDE _model_load_lock, so loads of OTHER models stay snappy during
+    # the (rare, slow) conversion.
     load_path = await _ensure_ct2_model(name)
 
     loop = asyncio.get_running_loop()
@@ -1312,9 +1248,10 @@ async def _load_on_miss(name: str, *, lease: bool) -> "WhisperModel":
     #
     # Except a repo or revision the Hub says does not exist, or a token it
     # rejects (401 on every repo, public ones too): snapshot_download raises
-    # those only once its local-cache fallback missed too, and the constructor
-    # calls it with the same arguments, so the load is doomed. Raised here,
-    # before the LRU loop below evicts a resident model for it.
+    # those (a missing revision at once, the rest only once its local-cache
+    # fallback missed too), and the constructor calls it with the same
+    # arguments, so the load is doomed. Raised here, before the LRU loop
+    # below evicts a resident model for it.
     _hub_refused: "Exception | None" = None
     if not dl_kwargs.get("local_files_only") and not os.path.isdir(load_path):
         try:
@@ -1399,7 +1336,7 @@ async def _load_on_miss(name: str, *, lease: bool) -> "WhisperModel":
                 "Pre-download of %s failed (%s); the model constructor "
                 "will download instead", name, _dl_err)
     if _hub_refused is not None:
-        # The Hub's own text (its access hint for a gated repo) stays in the log.
+        # The Hub's own text goes to the log, capped by log_safe (LOG_FIELD_MAX).
         logger.warning("Model %s refused by the Hub: %s", name,
                        log_safe(str(_hub_refused)))
         _kind = type(_hub_refused).__name__
@@ -1472,14 +1409,10 @@ async def _load_on_miss(name: str, *, lease: bool) -> "WhisperModel":
         }
 
         logger.info("Loading model: %s", name)
-        # NVML delta sampling: compare GPU memory before/after construction
-        # to estimate this model's VRAM footprint. Done under
-        # _model_load_lock so concurrent loads can't pollute the delta.
-        # Subsequent loads of the same size may under-report due to
-        # CTranslate2's caching allocator (cached freed memory gets reused).
-        # Sampled on the card the model loads onto (its DEVICE_INDEX), not
-        # always GPU 0: on a two-GPU host the delta would otherwise be read
-        # on the wrong card.
+        # NVML before/after delta on the model's own card (DEVICE_INDEX)
+        # estimates its VRAM footprint. Under _model_load_lock so concurrent
+        # loads can't pollute the delta; a later load of the same size may
+        # under-report (CTranslate2's caching allocator reuses freed memory).
         _vram_index = (load_kwargs["device_index"]
                        if isinstance(load_kwargs["device_index"], int) else 0)
         vram_before = system_stats.gpu_mem_used_bytes(_vram_index)
@@ -1534,8 +1467,8 @@ async def _load_on_miss(name: str, *, lease: bool) -> "WhisperModel":
         vram_delta = (vram_after - vram_before
                       if vram_before is not None and vram_after is not None
                       else None)
-        # Negative deltas can happen if another process freed VRAM during load
-        # (or the CT2 allocator did). Clamp to 0 rather than store nonsense.
+        # Negative when another process (or the CT2 allocator) freed VRAM
+        # during the load.
         if vram_delta is not None and vram_delta < 0:
             vram_delta = 0
         # Cached BEFORE the register await: a cancellation landing on it
@@ -1584,10 +1517,10 @@ async def _load_on_miss(name: str, *, lease: bool) -> "WhisperModel":
             if leased:
                 _release_model_lease(name, new_model)
             if not isinstance(e, asyncio.CancelledError):
-                # A failed register leaves nothing cached, as before. Forced,
-                # as a lock-free cache hit may have leased the model during
-                # the write: that holder's lease turns orphaned, so its
-                # release cannot leave a count pinning the next load of name.
+                # A failed register leaves nothing cached. Forced, as a
+                # lock-free cache hit may have leased the model during the
+                # write: that holder's lease turns orphaned, so its release
+                # cannot leave a count pinning the next load of name.
                 _drop_loaded_model(name, force=True)
                 if _cancelled is not None:
                     raise _cancelled from e
@@ -1600,10 +1533,8 @@ async def _load_on_miss(name: str, *, lease: bool) -> "WhisperModel":
         return new_model
 
 
-# =============================================================================
-# Residency API (runtime.preload's view of this cache)
-# =============================================================================
-# The preloader asks the same handful of questions of all four model caches.
+# Residency API (runtime.preload's view of this cache): the preloader asks
+# the same handful of questions of all four model caches.
 # These answer them for the whisper cache so the invariants behind each answer
 # live next to the state they describe instead of being hand-copied into
 # preload. Every function reads the module globals at call time, so a test
@@ -1677,9 +1608,9 @@ async def evict(name: str) -> bool:
 
 
 async def drain_then_evict(model_id: "str | None" = None) -> list[str]:
-    """Drain-then-evict pattern. Drops the cached entry for `model_id` (or all
-    entries when None) so the next request for that id reloads the model with
-    current cfg / per-model settings.
+    """Drop the cached entry for `model_id` (or all entries when None) so the
+    next request for that id reloads the model with current cfg / per-model
+    settings.
 
     "Drain" comes for free from Python reference counting: in-flight transcribe
     requests already hold their own `model` reference (captured via `_get_or_
@@ -1689,8 +1620,7 @@ async def drain_then_evict(model_id: "str | None" = None) -> list[str]:
 
     Called from pipeline.apply.apply_hot_changes when a load-time field (MODEL_DEVICE,
     MODEL_COMPUTE_TYPE, NUM_WORKERS, DEVICE_INDEX, …) changes either globally
-    or in a per-model override. Either case can require reload to take
-    effect; this helper makes that reload lazy and non-disruptive.
+    or in a per-model override.
     """
     evicted: list[str] = []
     async with _model_load_lock:
@@ -1713,22 +1643,23 @@ async def trim_to_cap() -> list[str]:
     as _get_or_load_model's cap loop does on a miss. Called when the cap is
     lowered: that loop runs on misses only, so a server whose clients keep
     hitting resident models never shrank. Leased models stay; the release of
-    a model's last lease runs this again (_schedule_trim_to_cap). Returns the
-    evicted ids."""
+    a model's last lease schedules a trim of its own (_schedule_trim_to_cap)
+    that spares the released model. Returns the evicted ids."""
     async with _model_load_lock:
         return _evict_over_cap(keep=None)
 
 
 async def _scheduled_trim() -> None:
     """The _schedule_trim_to_cap task: _trim_keep is read under the lock, so
-    the latest call before the trim gets the lock is the one it honours."""
+    the latest ``keep`` set before the trim gets the lock is the one it
+    honours (a ``None`` keep never clears a pending one)."""
     async with _model_load_lock:
         _evict_over_cap(keep=_trim_keep)
 
 
 def _evict_over_cap(keep: "str | None") -> list[str]:
-    """trim_to_cap's eviction loop, never evicting ``keep``. Caller holds
-    _model_load_lock."""
+    """The eviction loop of trim_to_cap and _scheduled_trim, never evicting
+    ``keep``. Caller holds _model_load_lock."""
     evicted: list[str] = []
     while len(_loaded_models) > cfg.MAX_LOADED_MODELS:
         name = next(
