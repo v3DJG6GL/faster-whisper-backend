@@ -26,8 +26,6 @@ class _RaisingLock:
         return False
 
 
-# --- diarization -------------------------------------------------------------
-
 class _Ann:
     def itertracks(self, yield_label=True):
         return iter([(types.SimpleNamespace(start=0.0, end=1.0), None, "S0")])
@@ -211,8 +209,6 @@ def test_diarize_cancel_only_still_installs_the_hook(diar_cfg, monkeypatch,
     assert diarization._leases == {}
 
 
-# --- bgm separation ----------------------------------------------------------
-
 class _Sep:
     """audio-separator stub; records the leases seen mid-separation."""
 
@@ -329,9 +325,9 @@ def test_bgm_orphan_release_mid_load_keeps_the_new_session_device(
 
 def test_bgm_same_model_orphan_release_mid_load_keeps_the_stats_row(
         bgm_cfg, monkeypatch):
-    """A same-model reload (device change) registers its stats row before
-    the coroutine publishes the new separator; an orphan of that model
-    released in between must not unregister the row just written."""
+    """A same-model reload (device change) publishes the new separator and
+    then awaits its stats-row write; an orphan of that model released while
+    that await is pending must not unregister the row just written."""
     _stub_seps(monkeypatch, [])
     old = asyncio.run(bgm_separation._get_separator("Foo", lease=True))
     monkeypatch.setattr(bgm_cfg, "BGM_SEPARATION_DEVICE", "cuda",
@@ -393,8 +389,6 @@ def test_bgm_balances_the_lease_on_cancel(bgm_cfg, monkeypatch, tmp_path):
     assert bgm_separation._leases == {}
 
 
-# --- same-id reload: live holders are not orphans ---------------------------
-#
 # A device/batch change re-keys the singleton under the SAME model id, so the
 # orphaned pipeline and the freshly loaded one share a lease key. The live
 # holder's release must be charged to `_leases` (and restamp the idle clock),
