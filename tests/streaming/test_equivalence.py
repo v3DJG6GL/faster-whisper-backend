@@ -13,9 +13,6 @@ The session holds back the raw words a rule could still join with the
 next utterance (pl_engine.holdback_start) and never re-formats sent text, so
 a later final cannot rewrite what an earlier one typed (quotes typed twice,
 a stray 'neue' left before a newline).
-
-The app_module fixture is requested only for its side effects (isolated
-config + stores).
 """
 
 import asyncio
