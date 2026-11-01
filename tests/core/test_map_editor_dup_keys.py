@@ -1,7 +1,7 @@
 """cb:map editor: two rows with the same spoken word collapse into one dict
-key on read (last row wins), so Save dropped the earlier replacement with no
-warning while the "n / cap" readout still counted both rows. _readMap now
-flags every row sharing a key.
+key on read (last row wins), so Save would silently drop the earlier
+replacement while the "n / cap" readout counts both. _readMap must flag every
+row sharing a key.
 
 The real _makeMapRow / _readMap run under node against a minimal DOM stub
 (table > tr > td > input), no browser needed."""
@@ -105,7 +105,7 @@ def test_duplicate_flag_is_styled():
 @pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
 def test_spoken_words_differing_only_in_case_are_flagged():
     # compile_map lowercases keys and the save validator rejects case
-    # collisions, so "Komma" next to "foo" -> "komma" is a clash.
+    # collisions, so "Komma" and "komma" clash.
     res = _run(_SETUP + r"""
 key(r1).value = 'Komma'; key(r1).fire('input');
 key(r2).value = 'komma'; key(r2).fire('input');
