@@ -1006,7 +1006,7 @@ function onSparkHover(u) {
   if (ts == null && hoverU !== u) return;
   if (ts === frozenTs) return;
   // No pointer (a scrub / Space / range refresh): every setData re-resolves
-  // the cursor's PIXEL against the shifted x-scale, which used to walk the
+  // the cursor's PIXEL against the shifted x-scale, which would walk the
   // frozen timestamp a sample on per tick. Put the cursor back on the
   // frozen sample instead; once it has left the axis, return to now.
   if (hoverU === null && frozenTs != null) {
@@ -1814,10 +1814,8 @@ const rjExpanded = new Set();
 // window.__statsFilter). The who filter carries user ids, matched against
 // a finished row's user_id (scrubbed viewers' rows carry none, so a pick
 // shows no rows); running rows carry only a username, so those
-// match the picker's display names (userNames). Usage kinds map onto the
-// job kinds the snapshot rows carry: files and links are transcribe jobs,
-// dictation is dictate, text is translate. Preload and download jobs always
-// show: a finished 'download' row is a MODEL download
+// match the picker's display names (userNames). Preload and download jobs
+// always show: a finished 'download' row is a MODEL download
 // (metrics.record_download), no user's link, and a running one is either
 // that or a link's media fetch.
 const RJ_KIND_OF = { dictation: ['dictate'], file: ['transcribe'],
