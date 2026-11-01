@@ -19,9 +19,8 @@ Because v2's onfailure semantics on graceful exits are unreliable: issue
 Don't depend on it. <onfailure> stays in the XML purely as defense-in-
 depth for crashes.
 
-Why detached subprocess works here when it failed for NSSM (per the
-prior comment that lived in this file): NSSM tied the python process
-directly into the SCM job; spawning a detached child from inside that
+Why a detached subprocess works here when it failed for NSSM: NSSM tied
+the python process directly into the SCM job; spawning a detached child from inside that
 job triggered STATUS_DLL_INIT_FAILED 0xC0000142. WinSW's `restart!`
 is *designed* to be invoked from inside a service-jobbed child -- its
 whole purpose is to survive the SCM kill. Different mechanism, no
@@ -72,7 +71,7 @@ def _flush_before_exit() -> None:
 
 
 def trigger_self_restart(delay_sec: float = 1.5) -> str:
-    """Schedule process exit so WinSW relaunches us via `restart!`.
+    """Schedule a self-restart: os.execve re-exec on POSIX, WinSW `restart!` on Windows.
 
     Returns immediately with a method label (for the admin UI to display).
     The Timer thread fires after `delay_sec` so the caller's HTTP response
@@ -115,8 +114,9 @@ def trigger_self_restart(delay_sec: float = 1.5) -> str:
             try:
                 os.execve(sys.executable, [sys.executable, *sys.orig_argv[1:]], env)
             except Exception:
-                # If exec fails, exit and let a supervisor (systemd
-                # Restart=, Docker restart policy) bring us back.
+                # If exec fails, exit 0: only a supervisor that restarts on
+                # a clean exit (systemd Restart=always / on-success, Docker
+                # always / unless-stopped) brings us back; on-failure policies don't.
                 os._exit(0)
 
         threading.Timer(delay_sec, do_reexec).start()
@@ -137,9 +137,6 @@ def trigger_self_restart(delay_sec: float = 1.5) -> str:
         return "winsw-missing-fallback"
 
     def do_restart() -> None:
-        # `restart!` (with the trailing `!`) is WinSW's "restart from inside
-        # the wrapped process" command. It detaches a helper that re-execs
-        # the wrapper after we die.
         try:
             subprocess.Popen(
                 [winsw, "restart!"],
@@ -157,10 +154,9 @@ def trigger_self_restart(delay_sec: float = 1.5) -> str:
 
         # Give WinSW a moment to register the restart command, then exit.
         # os._exit (not sys.exit): bypass uvicorn's signal handlers and
-        # Python's atexit hooks. The lossy lifespan duties (held receipts,
-        # stats samples, NVML) are flushed below; everything else — temp files, child
-        # processes — is reclaimed by the OS plus the next startup's TMPDIR
-        # sweep (reclaim_hard_restart_orphans below).
+        # atexit. _flush_before_exit covers the lossy duties; temp files and
+        # child processes go to the OS plus the next startup's TMPDIR sweep
+        # (reclaim_hard_restart_orphans).
         time.sleep(0.2)
         _flush_before_exit()
         os._exit(0)
