@@ -561,6 +561,19 @@
       ]
     },
     {
+      "name": "dedup-punct",
+      "label": "Dedup punctuation runs",
+      "enabled": true,
+      "locked": true,
+      "seeded": true,
+      "exposed": false,
+      "color": "",
+      "tags": [],
+      "note": "Collapses a run of 2+ of , . : ; ! ? to one: the last non-comma, else a comma. Runs before the dictation map, so dictated marks come out as spoken: Fragezeichen Ausrufezeichen → ?!, Punkt Punkt Punkt → ...",
+      "type": "callback:dedup",
+      "pattern": "[,.:;!?]{2,}"
+    },
+    {
       "name": "de-dictation-map",
       "label": "DE: Dictation map",
       "enabled": true,
@@ -741,19 +754,6 @@
           "note": ""
         }
       ]
-    },
-    {
-      "name": "dedup-punct",
-      "label": "Dedup punctuation runs",
-      "enabled": true,
-      "locked": true,
-      "seeded": true,
-      "exposed": false,
-      "color": "",
-      "tags": [],
-      "note": "Collapses a run of 2+ of , . : ; ! ? to one: the last non-comma, else a comma.",
-      "type": "callback:dedup",
-      "pattern": "[,.:;!?]{2,}"
     },
     {
       "name": "final-cleanup",

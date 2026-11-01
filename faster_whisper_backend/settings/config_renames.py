@@ -299,6 +299,42 @@ UPGRADED_RULE_PATTERNS: dict[str, tuple[tuple[str, str], str]] = {
     ),
 }
 
+# Factory rules that MOVED in config.json, keyed by rule name: (the rule it now
+# runs directly before, the runs of rule names around it as config.json shipped
+# them before the move). A saved PIPELINE_RULES copy keeps the order it was
+# saved in, so the move never reached it. upgrade_rule_entries moves the rule
+# ONLY while the stored list still holds one of those runs in one piece: a list
+# the admin reordered there, or put a rule of their own into, stays theirs.
+MOVED_RULES: dict[str, tuple[str, tuple[tuple[str, ...], ...]]] = {
+    # Behind the dictation map it collapsed DICTATED marks — strip-auto-
+    # punctuation had deleted Whisper's by then: "Fragezeichen
+    # Ausrufezeichen" came out "!", "Punkt Punkt Punkt" ".".
+    "dedup-punct": ("de-dictation-map", (
+        ("de-dictation-map", "capitalize-letter-after-hyphen",
+         "digit-and-whitespace-tidy", "dedup-punct"),
+        ("de-dictation-map", "capitalize-letter-after-hyphen", "es-punctuation",
+         "digit-and-whitespace-tidy", "dedup-punct"),
+    )),
+}
+
+
+def _move_rules(rules: list[Any]) -> list[str]:
+    """Apply MOVED_RULES to a stored PIPELINE_RULES list (in place). Returns
+    "<rule>/position" for each rule moved."""
+    done: list[str] = []
+    for name, (anchor, runs) in MOVED_RULES.items():
+        names = [r.get("name") if isinstance(r, dict) else None for r in rules]
+        for run in runs:
+            at = next((i for i in range(len(names) - len(run) + 1)
+                       if tuple(names[i:i + len(run)]) == run), None)
+            if at is None:
+                continue
+            src, dst = run.index(name), run.index(anchor)
+            rules.insert(at + dst - (dst > src), rules.pop(at + src))
+            done.append(f"{name}/position")
+            break
+    return done
+
 # The entries / map a stored copy of a pattern-less rule in
 # UPGRADED_RULE_LANGUAGES must still hold to get the scope: digests
 # (_content_digest) of every factory version shipped before the scope
@@ -470,16 +506,18 @@ def migrate_rule_slugs(raw: dict[str, Any], known: Any = None) -> dict[str, Any]
 
 
 def upgrade_rule_entries(raw: dict[str, Any]) -> list[str]:
-    """Apply UPGRADED_RULE_ENTRIES, UPGRADED_RULE_LANGUAGES and
-    UPGRADED_RULE_PATTERNS to the stored PIPELINE_RULES of an overrides dict
-    (in place). Returns the labels of the entries (and "<rule>/languages",
-    "<rule>/pattern" for the scopes and patterns) rewritten, for the caller's
-    log line; empty when nothing matched. Idempotent: an upgraded entry or
-    pattern no longer equals the old text, an upgraded rule has languages."""
+    """Apply UPGRADED_RULE_ENTRIES, UPGRADED_RULE_LANGUAGES,
+    UPGRADED_RULE_PATTERNS and MOVED_RULES to the stored PIPELINE_RULES of an
+    overrides dict (in place). Returns the labels of the entries (and
+    "<rule>/languages", "<rule>/pattern", "<rule>/position" for the scopes,
+    patterns and moves) rewritten, for the caller's log line; empty when
+    nothing matched. Idempotent: an upgraded entry or pattern no longer equals
+    the old text, an upgraded rule has languages, a moved rule breaks its run."""
     rules = raw.get("PIPELINE_RULES")
     done: list[str] = []
     if not isinstance(rules, list):
         return done
+    done.extend(_move_rules(rules))
     for r in rules:
         if not isinstance(r, dict):
             continue
