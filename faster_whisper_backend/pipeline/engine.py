@@ -20,23 +20,15 @@ from faster_whisper_backend.settings import schema as settings_schema
 logger = logging.getLogger("whisper-api")
 
 
-# =============================================================================
-# Text post-processing pipeline — unified rules list (cfg.PIPELINE_RULES)
-# =============================================================================
-# A single ordered list of rules is applied to the joined transcript. Each
-# rule is one of: "regex-list" (ordered batch of pattern→replacement entries), "callback:lowercase-wordlist"
-# (smart German non-noun lowercaser), "callback:map" (dictation word→symbol
-# map), "callback:dedup" (collapse adjacent punctuation runs), "callback:upper"
-# (capitalize after sentence terminator), or "terminal" (final lstrip+rstrip;
-# always last). See config.py:PIPELINE_RULES for the canonical seeded list and
-# settings/schema.py for the Pydantic schema.
-#
-# rebuild_caches() compiles each rule's regex pattern once at module load and
-# again on admin WebUI save of a cache_rebuild field (settings/schema.py
-# CACHE_REBUILD_FIELDS).
+# One ordered rule list (cfg.PIPELINE_RULES) runs over the joined transcript.
+# Kinds: "regex-list" (ordered pattern→replacement entries),
+# "callback:lowercase-wordlist" (German non-noun lowercaser), "callback:map"
+# (dictation word→symbol), "callback:dedup" (collapse adjacent punctuation
+# runs), "callback:upper" (capitalize after a sentence terminator) and
+# "terminal" (final lstrip+rstrip; always last). Seeded list: config.json
+# (settings/config.py PIPELINE_RULES); schema: settings/schema.py.
 # The terminal row, empty patterns and invalid regexes are left out of the
-# compiled list; globally-disabled rules stay in it and are filtered per call,
-# so a per-model PIPELINE_RULES_INCLUDE can force-enable them.
+# compiled list; globally-disabled rules stay in it (see _CompiledRule.enabled).
 
 from dataclasses import dataclass, field as _dc_field
 
@@ -186,16 +178,13 @@ _REBUILD_LOCK = threading.Lock()
 def rebuild_caches() -> None:
     """(Re)compile every rule in cfg.PIPELINE_RULES into _COMPILED_RULES.
 
-    Called once at module load (bottom of this module) and again by the admin
-    WebUI after a config change to PIPELINE_RULES (CACHE_REBUILD_FIELDS).
-
     The terminal row is filtered out (it runs as the implicit final trim,
     not via the walker). Globally-DISABLED rules are still compiled — the
     runtime filter consults `rule.enabled` per-call so per-model
-    PIPELINE_RULES_INCLUDE can force-enable a globally-disabled rule. Rules
-    with invalid regex are logged + skipped (the save-time validator
-    usually catches these, but a hand-edited config.py or a runtime
-    catastrophic-backtracking case might surface here).
+    PIPELINE_RULES_INCLUDE can force-enable a globally-disabled rule. A rule
+    whose PATTERN does not compile (a hand-edited config file the save-time
+    validator never saw) is logged + skipped; a regex-list replacement
+    template is not checked here (re parses it at the first sub).
     """
     with _REBUILD_LOCK:
         _rebuild_caches_locked()
@@ -225,8 +214,6 @@ def _rebuild_caches_locked() -> None:
         # EXCLUDE/INCLUDE and the global toggle flip the whole card together).
         # Entries run in list order — NO longest-first sort. A bad entry is
         # skipped (not the whole card); an empty-pattern entry is a no-op.
-        # Each row is a plain string-replacement sub, exactly like the retired
-        # single `regex` type.
         if rtype == "regex-list":
             rname = rule.get("name", "?")
             rlabel = rule.get("label", rname)
@@ -262,14 +249,10 @@ def _rebuild_caches_locked() -> None:
                 m = rule.get("map", {}) or {}
                 if not m:
                     continue
-                # Pre-bind the per-rule replacer once at compile time. _apply_rule
-                # then becomes a uniform pattern.sub(payload, text) for every rule
-                # type — no closure allocation on the hot path (twice per request).
                 cre, payload, map_lookup = _dictation_map.compile_map(m)
             else:
                 pattern = rule.get("pattern", "")
                 if not pattern:
-                    # Empty pattern on a callback rule → skip (no-op).
                     continue
                 cre = re.compile(pattern)
                 if rtype == "callback:lowercase-wordlist":
@@ -298,8 +281,8 @@ def _rebuild_caches_locked() -> None:
     _RULES_GEN += 1
     _dictation_map.retain_live_maps(
         r.pattern for r in compiled if r.type == "callback:map")
-    # The new gen never hits an old spec, but each one (MBs on a large map)
-    # stayed in the cache until 64 newer ones pushed it out.
+    # Older-gen specs are never hit again but hold MBs each on a large map;
+    # drop them now rather than wait for the LRU to evict them.
     _holdback_spec.cache_clear()
 
 
@@ -369,8 +352,9 @@ def _postprocess_text(text: str, model_name: "str | None" = None,
                        ident=None,
                        language: "str | None" = None) -> str:
     """Run the unified pipeline rule list on `text`. If `trace` is a list,
-    each rule that changes the text appends `(label_with_ordinal, before, after)`
-    so the per-request log block can render a diff view.
+    each rule that changes the text, is skipped, or is force-included appends
+    `(label_with_ordinal, before, after)` so the per-request log block can
+    render a diff view.
 
     Per-model scoping (precedence top-down):
       1. PIPELINE_RULES_EXCLUDE — force-DISABLE for this model (highest priority).
@@ -382,9 +366,11 @@ def _postprocess_text(text: str, model_name: "str | None" = None,
          disabled.
       4. Otherwise inherit `rule.enabled` from the global PIPELINE_RULES list.
 
-    Effective:  (rule.enabled AND slug NOT in EXCLUDE) OR (slug IN INCLUDE),
+    Effective (_rule_runs):  slug NOT in EXCLUDE (extra_excludes included)
+    AND (rule.enabled OR slug IN INCLUDE)
     AND (rule.languages is empty OR language matches or is unknown).
-    A rule cannot appear in both lists — pydantic validator rejects that.
+    The per-model lists cannot share a slug (pydantic rejects that);
+    extra_excludes can, and then the exclude wins.
 
     `extra_excludes` is an additional set of rule slugs to skip on top of
     the per-model EXCLUDE. Used by the /captures storage path to produce
@@ -407,9 +393,8 @@ def _postprocess_text(text: str, model_name: "str | None" = None,
     exclude, include = _scoping(model_name, ident, extra_excludes)
     capped = False
     for card in _cards(_COMPILED_RULES):
-        # A repeating rule runs on its own output again until a pass leaves
-        # the text as it was (or _REPEAT_MAX_PASSES). A skipped card changes
-        # nothing, so it is traced once and left after its first pass.
+        # A skipped card changes nothing, so it is traced once and left
+        # after its first pass.
         for pass_no in range(1, _card_passes(card) + 1):
             card_in = text
             for rule in card:
@@ -419,11 +404,8 @@ def _postprocess_text(text: str, model_name: "str | None" = None,
                 ordinal = _rule_ordinal(rule.card_no, rule.sub_no)
                 label = rule.label if pass_no == 1 else f"{rule.label} (pass {pass_no})"
                 if not _rule_runs(rule, exclude, include, language):
-                    # When tracing, surface the skip so the log explains why a
-                    # rule didn't run — the reasons in _rule_runs' order:
-                    # force-EXCLUDE wins outright (admin explicitly turned this
-                    # off), then the language, then globally disabled and not
-                    # force-included.
+                    # Trace why the rule was skipped, testing the reasons in
+                    # _rule_runs' order so the label names the one that applied.
                     if trace is not None:
                         if rule.name in exclude:
                             why = f"EXCLUDED for {model_name}"
