@@ -4,8 +4,8 @@ A client whose Server URL is `https://user:pass@host` (nginx/Caddy basic auth
 in front of the backend) sends TWO Authorization headers — `Basic …` from the
 URL first, `Bearer <api_key>` second. Every auth path reads the key through
 `auth.bearer_credentials`, which scans all values (and a proxy-merged
-"Basic x, Bearer y" value) for the first Bearer credential; a single header
-behaves exactly as before."""
+"Basic x, Bearer y" value) for the first Bearer credential; a single
+Bearer header is the one-value case of the same scan."""
 
 from starlette.requests import Request
 
