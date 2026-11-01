@@ -397,9 +397,9 @@ async def _empty_captions_to_strip(src: str, video_codec: "str | None",
     if not await asyncio.to_thread(ffmpeg_has_bsf, "filter_units"):
         return False
     from faster_whisper_backend.media import captions as _cc
-    # A cancelled export only abandons the to_thread await: without this the
-    # scan's ffmpeg kept reading the source after the route had released
-    # its in-flight slot (the packaging ffmpeg below IS killed on cancel).
+    # A cancelled export only abandons the to_thread await: `cancel` stops
+    # the scan's ffmpeg, which would otherwise keep reading the source after
+    # the route released its in-flight slot (package() kills its own ffmpeg).
     cancel = threading.Event()
     try:
         return await asyncio.to_thread(_cc.embedded_captions_empty, src,
