@@ -277,9 +277,6 @@ def _migrate_legacy_keys(raw: dict[str, Any]) -> dict[str, Any]:
     if resynced:
         print(f"[config_store] updated stored rules {resynced} you never edited "
               f"to the current config.json version", file=sys.stderr)
-    # A stored PIPELINE_RULES copy still carrying a factory entry's OLD text
-    # gets the fixed one (config_renames.UPGRADED_RULE_ENTRIES); an entry the
-    # admin edited is left alone.
     upgraded = _renames.upgrade_rule_entries(raw)
     if upgraded:
         print(f"[config_store] upgraded stored factory rule entries {upgraded} "
