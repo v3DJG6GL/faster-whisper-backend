@@ -32,7 +32,7 @@ def test_v1_models_shape(client):
     for entry in body["data"]:
         assert entry["object"] == "model"
         assert "id" in entry
-        assert "loaded" in entry  # bool flag
+        assert "loaded" in entry
         assert isinstance(entry["loaded"], bool)
     # No model is loaded in the harness (preload neutralised), so every
     # listed model reports loaded=False.
@@ -143,10 +143,6 @@ def test_logs_older_open(client):
     body = r.json()
     assert "lines" in body and "next_skip" in body
 
-
-# ---------------------------------------------------------------------------
-# _security_headers_mw — the outermost response-header layer
-# ---------------------------------------------------------------------------
 
 def test_security_headers_on_every_response(client):
     r = client.get("/")
@@ -276,7 +272,7 @@ def test_validation_error_echoing_a_lone_surrogate_stays_a_422(client):
 def test_validation_error_echoing_a_non_finite_float_stays_a_422(client):
     # json.loads accepts the NaN / Infinity literals; pydantic echoes the
     # refused float as error.input and JSONResponse's allow_nan=False raised
-    # ValueError -> a 500. The fallback sends each back as the literal it was.
+    # ValueError -> a 500. The fallback echoes each as a JSON string instead.
     for literal in ("NaN", "Infinity", "-Infinity"):
         r = client.post("/quick-config/reports/api/submit",
                         content='{"user_comment": "x", "trace_ts": %s}' % literal,
