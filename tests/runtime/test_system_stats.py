@@ -33,7 +33,6 @@ def test_snapshot_shape():
     assert isinstance(snap["host"], dict)
     assert isinstance(snap["process"], dict)
     assert isinstance(snap["models"], list)
-    # CI has no NVML; the else branch keeps the test green on a GPU box.
     if snap["gpu"] is None:
         assert isinstance(snap["gpu_error"], str) and snap["gpu_error"]
     else:
