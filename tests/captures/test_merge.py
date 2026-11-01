@@ -163,11 +163,10 @@ def test_merge_clean_two_file_shape(tmp_path):
 def test_merge_output_is_owner_only(tmp_path):
     """The merged WAV must land 0600 regardless of the process umask.
 
-    merge_wavs writes a tmp file with wave.open (plain open -> umask applies,
-    typically 0644) and os.replace()s it over dst_path, which hands the tmp
-    inode's mode to the destination. The preview route creates dst_path with
-    tempfile.mkstemp (0600) in the SHARED system temp dir, so without an
-    explicit chmod the merged dictation audio became world-readable there.
+    os.replace() hands the tmp inode's mode to dst_path, and the preview
+    route creates dst_path with tempfile.mkstemp in the SHARED system temp
+    dir, so a umask-moded tmp would leave the merged dictation audio
+    world-readable there.
     """
     old = os.umask(0o022)
     try:
@@ -183,7 +182,7 @@ def test_merge_output_is_owner_only(tmp_path):
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX file modes only")
 def test_trim_wav_output_is_owner_only(tmp_path, monkeypatch):
-    """audio_vad_trim.trim_wav has the byte-identical tmp+replace block."""
+    """audio_vad_trim.trim_wav uses the same tmp+replace pattern as merge_wavs."""
     import sys
     import types
     from faster_whisper_backend.captures import vad_trim as audio_vad_trim
