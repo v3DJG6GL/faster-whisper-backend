@@ -133,7 +133,6 @@
         opt.addEventListener('click', function() { _toggleCode(l.code); });
         dropContent.appendChild(opt);
       });
-      // Family shortcuts at the bottom
       var groupKeys = Object.keys(groups).sort();
       var matchingGroups = groupKeys.filter(function(g) {
         return !q || g.toLowerCase().indexOf(q) >= 0;
@@ -152,9 +151,8 @@
             + (allIn ? '✓ ' : '') + g + '</span>'
             + '<span class="lp-code">' + gc.join(', ') + '</span>';
           opt.addEventListener('click', function() {
-            // One commit for the whole family: a per-code _addCode /
-            // _removeCode loop fired onChange once per member, so the page
-            // saw (and committed) every half-applied list on the way.
+            // One _fire for the whole family: a per-code _addCode /
+            // _removeCode loop would commit every half-applied list.
             if (allIn) {
               codes = codes.filter(function(c) { return gc.indexOf(c) < 0; });
             } else {
