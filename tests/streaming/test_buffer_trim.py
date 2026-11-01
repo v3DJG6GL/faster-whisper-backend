@@ -3,13 +3,12 @@ lose its opening.
 
 _maybe_trim cuts the front of the audio buffer (anchored at a committed word)
 to bound partial-decode latency. The cut words' audio is gone, so the final
-decode can only re-hear the remaining buffer — its result used to REPLACE the
-whole utterance, deleting the already-committed-and-shown opening (observed
-live: a 16 s dictation losing its first clause). The fix banks the cut words'
-text, folds it into the rolling prompt (seam context), and prepends it to the
-final decode's result; on_final hands captures the WHOLE utterance — the
-banked audio slices plus the buffer, and the banked words plus the decode's
-words re-based onto the utterance timeline.
+decode only re-hears the remaining buffer; on its own, its result would delete
+the already-committed-and-shown opening. So the session banks the cut words'
+text, folds it into the rolling prompt (seam context) and prepends it to the
+final decode's result. on_final hands captures the WHOLE utterance: the banked
+audio slices plus the buffer, and the banked words plus the decode's words
+re-based onto the utterance timeline.
 """
 
 import asyncio
@@ -511,8 +510,8 @@ def test_buffer_counter_matches_the_array_after_every_frame():
 def test_capture_segments_share_the_utterance_timeline(client, app_module, monkeypatch):
     """Route level: after a mid-utterance trim the capture's audio and words
     span the whole utterance, so its segments must too. The final decode's
-    segments are relative to the TRIMMED buffer; they used to be stored
-    unshifted, trimmed_sec seconds early against the stored audio."""
+    segments are relative to the TRIMMED buffer, so they are shifted by
+    trimmed_sec onto the stored audio."""
     from faster_whisper_backend.captures import store as captures_store
     from faster_whisper_backend.streaming import routes as streaming_routes
 
