@@ -17,13 +17,9 @@ import time
 
 from faster_whisper_backend.settings import config as cfg
 from faster_whisper_backend.core import store_common
-# Tail WARNING+ records into an in-memory ring used by the nav-row severity
-# pills and the /stats page. Does no I/O — append to a deque and return.
+# No I/O (deque append only), so safe on every root-logger record.
 from faster_whisper_backend.core.web_common import SeverityCounter
 
-# =============================================================================
-# Logging setup: stderr (with colors when TTY) + rotating file (no colors)
-# =============================================================================
 # Log path and rotation policy come from settings/config.py / WHISPER_LOG_FILE.
 # The file copy strips ANSI escape codes so it stays grep-friendly and the
 # /logs web viewer can re-color via CSS based on content.
@@ -35,10 +31,9 @@ _ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*m")
 
 
 class _StripAnsiFormatter(logging.Formatter):
-    # Emit file timestamps in UTC (ISO-8601 with a trailing 'Z'). The log file
-    # is then unambiguous regardless of the server's timezone; the /logs web
-    # viewer converts each line to the reader's local time (like every other
-    # timestamp surface). gmtime is a class attribute so it applies to asctime.
+    # File timestamps in UTC (trailing 'Z'), so the log is unambiguous whatever
+    # the server's timezone; the /logs viewer converts each line to the
+    # reader's local time, like every other timestamp surface.
     converter = time.gmtime
 
     def format(self, record: logging.LogRecord) -> str:
@@ -93,8 +88,6 @@ def install() -> None:
         )
 
     _root.setLevel(logging.INFO)
-    # Remove any handlers a previous import (or basicConfig) added so we don't
-    # double-log on auto-reload.
     for _h in list(_root.handlers):
         _root.removeHandler(_h)
         _h.close()
