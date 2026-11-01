@@ -376,7 +376,6 @@ def test_vram_delta_is_sampled_on_the_load_device_index(monkeypatch):
     _stub_load(monkeypatch)
     monkeypatch.setattr(tx_models, "_model_load_lock", asyncio.Lock())
     monkeypatch.setattr(tx_models.cfg, "DEVICE_INDEX", 1, raising=False)
-    # GPU 0 stays flat; GPU 1 grows by 3000 across the load.
     reads = {0: iter([500, 500]), 1: iter([1000, 4000])}
     monkeypatch.setattr(tx_models.system_stats, "gpu_mem_used_bytes",
                         lambda index=0: next(reads[index]))
