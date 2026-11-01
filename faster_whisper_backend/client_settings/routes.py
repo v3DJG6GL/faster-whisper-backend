@@ -90,7 +90,7 @@ def _put_checked(
 def _store_unavailable() -> HTTPException:
     """503 for StoreUnavailable: init_db failed at startup (the reason is in
     the server log — typically a CLIENT_SETTINGS_DB path that isn't writable
-    in this deployment). A bare 500 here told the operator nothing."""
+    in this deployment)."""
     return HTTPException(
         status.HTTP_503_SERVICE_UNAVAILABLE,
         "client-settings store unavailable on this server — check the server "
