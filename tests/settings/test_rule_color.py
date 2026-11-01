@@ -26,7 +26,6 @@ def test_color_default_is_empty():
 
 @pytest.mark.parametrize("junk", ["NEONpuke", "#ff0000", "rgb(1,2,3)", "12", "   "])
 def test_color_junk_normalises_to_empty(junk):
-    # MUST NOT raise — a bad cosmetic token would otherwise nuke every override.
     assert _rule(color=junk).color == ""
 
 
