@@ -4,7 +4,8 @@
 # HOST requirements: an NVIDIA driver (CUDA 12.x-capable) + the NVIDIA Container
 # Toolkit, and the container must be started with GPU access — see
 # docker-compose.gpu.yml. With no GPU visible at runtime, model load
-# auto-falls back to CPU/int8 (faster_whisper_backend/settings/config.py MODEL_DEVICE_FALLBACK), still functional.
+# auto-falls back to CPU/int8 (MODEL_DEVICE_FALLBACK in
+# faster_whisper_backend/settings/config.py), still functional.
 #
 # Build/run:
 #   docker compose -f docker-compose.gpu.yml up -d   (standalone GPU compose file)
@@ -22,8 +23,7 @@ WORKDIR /app
 
 # Deps in three layers ordered by churn — see the same block in Dockerfile for
 # the reasoning. The payoff is largest here: the CUDA wheels in
-# requirements-gpu.txt are ~1.2 GB (cuBLAS alone is 581 MB), and before the
-# split a one-line pydantic bump in requirements.txt re-downloaded all of it.
+# requirements-gpu.txt (~1.2 GB, cuBLAS alone 581 MB) share the heavy layer.
 COPY requirements-heavy.txt requirements-gpu.txt ./
 RUN pip install --upgrade pip \
  && pip install -r requirements-heavy.txt -r requirements-gpu.txt
