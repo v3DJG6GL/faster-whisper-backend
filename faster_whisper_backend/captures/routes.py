@@ -2249,8 +2249,8 @@ def _build_merged_words(
 
     `get_members` strips heavy fields for the list view, so callers hydrate
     `words` first. Each member's words go through `_align_words_to_final`
-    (LCS-align raw→final). Cost is bounded — ≤30 members, ≤a few hundred words
-    per packed sample — and only runs on expand."""
+    (an LCS DP, raw→final), so every caller runs this off the loop (costs: see
+    get_sample_api)."""
     silence_s = max(0, int(silence_ms)) / 1000.0
     eff_dur_s: float | None = None
     if merged_duration_ms is not None:
@@ -2946,8 +2946,8 @@ def _build_export_stream(only_status: str | None, include_audio: bool):
                 info.mtime = int(row.get("created_ts") or time.time())
                 with open(abs_p, "rb") as af:
                     # fstat, not a getsize before the open: a VAD trim that
-                    # os.replaces the file in between left tarfile copying
-                    # the old file's byte count out of the new one.
+                    # os.replaces the file in between would leave tarfile
+                    # copying the old file's byte count out of the new one.
                     info.size = os.fstat(af.fileno()).st_size
                     tar.addfile(info, af)
                 chunk = buf.getvalue()
