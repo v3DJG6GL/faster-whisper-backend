@@ -30,9 +30,10 @@ Scope: the active capture is module-global (not thread-local), because
 snapshot_download fans file downloads out to worker threads that would never
 see a thread-local. diarization/bgm serialize their loads module-wide, but
 translation serializes only per ref (`_loading[ref]`) and runs the load
-outside its `_lock`, and main's whisper pre-download deliberately runs
-*outside* `_model_load_lock` — so two different refs downloading at once,
-two cold whisper loads, or a request plus a preload worker can overlap.
+outside its `_lock`, and transcription.models' whisper pre-download
+deliberately runs *outside* `_model_load_lock` — so two different refs
+downloading at once, two cold whisper loads, or a request plus a preload
+worker can overlap.
 When they do, the newest live scope is the active one: bars constructed
 afterwards report under its label, and byte counts may blend — progress is
 a convenience, never a correctness surface. Scopes may exit in ANY order:
@@ -64,7 +65,7 @@ _LOG_MIN_INTERVAL_S = 30.0
 # Callback cadence (drives 1 Hz pollers — anything finer is wasted work).
 _CB_MIN_INTERVAL_S = 0.5
 
-try:  # hub arrives transitively (>=1.29.0 floor via requirements-convert)
+try:  # hub arrives transitively (floor pinned in requirements-convert)
     _hub_tqdm_mod = importlib.import_module("huggingface_hub.utils.tqdm")
     _BaseTqdm = _hub_tqdm_mod.tqdm
 except Exception:  # noqa: BLE001 — module must import without hub
@@ -101,7 +102,6 @@ class _Capture:
         # ReportingTqdm holds its _dp_lock across bump()).
         self._last_sent = -1
 
-    # -- called from ReportingTqdm ------------------------------------------
     def add_bar(self, bar_id: int, total: int) -> None:
         with self.lock:
             self.bars[bar_id] = [0, max(0, int(total or 0))]
@@ -147,7 +147,6 @@ class _Capture:
             except Exception:  # noqa: BLE001 — progress must never break us
                 pass
 
-    # -- totals + hf kwargs --------------------------------------------------
     def totals(self) -> tuple[int, int]:
         with self.lock:
             return (sum(v[0] for v in self.bars.values()),
