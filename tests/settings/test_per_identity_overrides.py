@@ -217,7 +217,6 @@ def test_per_key_gate_follows_session_login(client, make_user_key):
                      allow_request_decode_overrides=False,
                      allow_request_override_profile=False,
                      allowed_override_profiles=["fast"])
-    # Baseline: as a bearer token, the restriction applies.
     jb = client.get("/v1/me", headers=bearer(raw_alice)).json()
     assert jb["can_request_decode_overrides"] is False
     assert jb["can_request_override_profile"] is False
@@ -226,7 +225,6 @@ def test_per_key_gate_follows_session_login(client, make_user_key):
     r = client.post("/auth/login", json={"key": raw_alice})
     assert r.status_code == 200, r.text
     assert r.json().get("open_mode") is False
-    # Cookie-authed /v1/me (no bearer header): the per-key gate must still apply.
     jc = client.get("/v1/me").json()
     assert jc["can_request_decode_overrides"] is False
     assert jc["can_request_override_profile"] is False
@@ -253,7 +251,7 @@ def test_override_profiles_excludes_non_requestable(client, make_user_key):
                           "internal": {"BEAM_SIZE": 1, "requestable": False}})
     _, raw_alice = make_user_key("alice")
     r = client.get("/v1/override-profiles", headers=bearer(raw_alice))
-    assert r.json() == {"profiles": ["fast"]}     # internal hidden from clients
+    assert r.json() == {"profiles": ["fast"]}
 
 
 def test_override_profile_detail_values_and_locks(client, make_user_key):
@@ -287,7 +285,7 @@ def test_override_profile_detail_exposes_prompt(client, make_user_key):
     j = client.get("/v1/override-profiles/withp", headers=ah).json()
     assert j["prompt"] == "Medizin: Anamnese"
     assert j["prompt_locked"] is True
-    assert "default_prompt" not in j["values"]      # prompt is NOT a client decode key
+    assert "default_prompt" not in j["values"]
     j2 = client.get("/v1/override-profiles/nop", headers=ah).json()
     assert j2["prompt"] is None
     assert j2["prompt_locked"] is False
@@ -326,7 +324,6 @@ def test_binding_roundtrip_preserves_request_gates(client, make_user_key):
     assert stored["allow_request_override_profile"] is False
     assert stored["allow_request_decode_overrides"] is True
     assert stored["allowed_override_profiles"] == ["fast"]
-    # re-read via the keys listing → the stored config carries the gates
     r = client.get(f"{PERMS}/{uid}/keys", headers=h)
     cfg = r.json()["keys"][0]["config"]
     assert cfg["allow_request_override_profile"] is False
