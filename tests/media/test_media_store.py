@@ -276,7 +276,7 @@ def test_register_kind_and_resolve_entry(tmp_path):
     e = ums.resolve_entry(mid, user_id="u1")
     assert e["kind"] == "video" and e["ext"] == "mkv" and e["size"] == 40
     assert os.path.isfile(e["path"])
-    # The two-field accessor is unchanged for the audio route.
+    # resolve() still hands the audio route its (path, ext) pair.
     assert ums.resolve(mid, user_id="u1") == (e["path"], "mkv")
     # An unknown kind reads as audio, never as a fourth state.
     mid2 = ums.register(_make_src(tmp_path, name="a.m4a"), user_id=None, kind="weird")
