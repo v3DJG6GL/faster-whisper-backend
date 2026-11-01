@@ -257,9 +257,6 @@ def expires_at_unix(media_id: str) -> "int | None":
     return int(time.time() + max(0.0, remaining))
 
 
-# The orphan scan only touches register()'s `{media id}.{ext}` names;
-# anything else in the dir is left alone.
-
 # An on-disk file must be at least this old before the orphan scan trusts
 # "no registry row" — register() moves the file into place from a worker
 # thread a moment before it inserts the row.
