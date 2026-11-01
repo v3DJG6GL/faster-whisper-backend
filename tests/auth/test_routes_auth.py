@@ -93,11 +93,9 @@ def test_cross_user_report_read_is_404(client, make_user_key):
     assert r.status_code == 404
 
 
-# The /quick-config/stream SSE body is an infinite generator (keepalive loop),
-# so driving it over HTTP with TestClient hangs on close. The credential-
-# carrier logic lives entirely in require_user_or_admin_sse and runs BEFORE
-# any streaming — so we exercise that dependency directly with a constructed
-# ASGI scope.
+# The /quick-config/stream body is an endless keepalive loop, so TestClient
+# hangs on close. The credential check lives entirely in
+# require_user_or_admin_sse and runs before any streaming, so call it directly.
 
 def _fake_request(headers=None, query=b""):
     from starlette.requests import Request
@@ -159,7 +157,6 @@ def test_sse_missing_key_rejected_when_locked(client, make_user_key):
         raise AssertionError("expected 401 HTTPException")
 
 
-# Tiered host gates.
 # Admin tier (ADMIN_WEBUI_ALLOWED_HOSTS, loopback default): /docs, /redoc are
 # host-only shells; /openapi.json adds an admin key; /settings* same shape.
 # User tier (USER_WEBUI_ALLOWED_HOSTS, OPEN default): /stats, /logs, … shells
@@ -189,8 +186,7 @@ def test_docs_shells_have_no_external_refs(client, make_user_key):
 
 
 def test_docs_shells_remote_403_even_with_admin_key(client, make_user_key):
-    # Host-only admin gate: a remote host outside ADMIN_WEBUI_ALLOWED_HOSTS is
-    # 403 regardless of key — the key cannot open the host gate.
+    # A key cannot open the host gate: outside ADMIN_WEBUI_ALLOWED_HOSTS is 403.
     _uid, raw = make_user_key("root", is_admin=True)
     with TestClient(client.app, client=_REMOTE) as c:
         for path in _DOCS_SHELLS:
