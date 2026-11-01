@@ -858,7 +858,7 @@ def test_stats_page_loads_static_stats_js(client):
     assert "const GS_KEY_BASE = 'whisper-stats-layout-v11'" in js
     assert "const grid = GridStack.init({" in js
     assert "function load()" in js
-    # Nothing moved twice: the inline page no longer carries either block.
+    # Each block lives only in stats.js, never duplicated inline.
     assert "GridStack.init({" not in html
     assert "function load()" not in html
 
@@ -1127,9 +1127,9 @@ def test_stats_jobs_users_filter(client, make_user_key):
 
 
 def test_stats_usage_echoes_display_names_for_picked_users(client, make_user_key):
-    """A pasted `users=` link never opened the picker, so the page had no
-    name for the id and the jobs table's running rows (keyed by username)
-    matched nothing. The usage doc echoes the names; a scrubbed viewer gets
+    """A pasted `users=` link skips the picker, so without help the page has
+    no name for the id and the jobs table's running rows (keyed by username)
+    match nothing. The usage doc echoes the names; a scrubbed viewer gets
     only their own."""
     from tests.conftest import bearer
     _, raw_admin = make_user_key("root", is_admin=True)
@@ -1506,9 +1506,10 @@ def test_stats_board_unknown_kind_row_not_clickable(client):
 
 
 def test_stats_jobs_kind_accepts_the_chips_comma_list(client):
-    """The "links" chip maps onto transcribe + download (+ preload), so the
-    load-older page must take the set: `kind=a,b` keeps any of them, one
-    unknown member is a 422, and the page sends every mapped job kind."""
+    """A kinds chip maps onto several job kinds (its own plus preload and
+    download, which always show), so the load-older page must take the set:
+    `kind=a,b` keeps any of them, one unknown member is a 422, and the page
+    sends every mapped job kind."""
     from faster_whisper_backend.stats import recent_transcriptions_store as rts
     rts.record_timing(request_id="t1", model="m", audio_s=10.0, processing_s=1.0,
                       status="ok", words=1, kind="transcribe", created_ts=3001.0)
