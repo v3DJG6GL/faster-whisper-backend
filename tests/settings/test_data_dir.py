@@ -66,9 +66,6 @@ def _j(*parts):
 
 def test_defaults_land_on_the_platform_layout():
     got = _resolve({})
-    # Same tree on both platforms; only the two roots differ (Windows is bare
-    # metal by definition — the images are Linux — and rolls them under the
-    # checkout).
     assert got["api"] == _j(_DATA_ROOT, "db", "api_keys.local.sqlite3")
     assert got["cs"] == _j(_DATA_ROOT, "db", "client_settings.local.sqlite3")
     assert got["log"] == _j(_DATA_ROOT, "logs", "whisper.log")
