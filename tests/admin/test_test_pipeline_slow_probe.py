@@ -213,10 +213,20 @@ def test_a_pattern_found_slow_is_not_timed_again_by_each_later_walk(client, monk
 
 def test_probe_time_across_walks_is_capped(client, monkeypatch):
     # Each `(?:|c){18}(?!)` is slow only on the c-runs its own map writes, so
-    # every walk kills a NEW unit: the request's probe time still stops at
-    # rounds x timeout, and what was not probed is not run.
+    # every walk kills a NEW unit: the culprits' time still stops at rounds x
+    # timeout ("left"), and what was not probed is not run. The kills' wall
+    # time can exceed that on a host slow to start the child (its rounds and
+    # the lead before a culprit are free, see _probe_chain), so only "wall"
+    # bounds the sum.
     monkeypatch.setattr(admin_routes, "_TEST_PIPELINE_PROBE_TIMEOUT", 0.2)
     killed = _count_probe_timeouts(monkeypatch)
+    budgets = []
+    real_chain = admin_routes._probe_chain
+
+    def _chain(text, units, skip=None, budget=None):
+        budgets.append(budget)
+        return real_chain(text, units, skip, budget)
+    monkeypatch.setattr(admin_routes, "_probe_chain", _chain)
     rules = []
     for n, c in zip("123456", "bcdefg"):
         rules += [{"name": "m" + n, "type": "callback:map", "enabled": True,
@@ -228,7 +238,10 @@ def test_probe_time_across_walks_is_capped(client, monkeypatch):
     assert r.status_code == 200, r.text
     steps = r.json()["steps"]
     assert all(s.get("not_run") is True for s in steps[1::2])
-    assert sum(killed) <= 0.2 * admin_routes._TEST_PIPELINE_PROBE_ROUNDS + 1e-6
+    assert budgets and all(b is budgets[0] for b in budgets)
+    assert abs(budgets[0]["left"]) <= 1e-6
+    assert len(killed) >= admin_routes._TEST_PIPELINE_PROBE_ROUNDS
+    assert sum(killed) <= admin_routes._TEST_PIPELINE_PROBE_WALL
 
 
 def test_a_pattern_slow_on_other_text_is_timed_again_on_the_text_it_is_handed(client, monkeypatch):
