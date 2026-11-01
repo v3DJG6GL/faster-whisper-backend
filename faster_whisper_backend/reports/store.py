@@ -292,9 +292,7 @@ def upsert_report(
     baseline_corrections: "list | None" = None,
 ) -> "tuple[str, bool]":
     """Insert a new report or update the existing one keyed on
-    (user_id, request_id). Returns (report_id, was_updated). The
-    `was_updated` flag is True when an existing row was merged; False
-    when a fresh row was inserted.
+    (user_id, request_id). Returns (report_id, was_updated).
 
     On update: corrections three-way-merge against `baseline_corrections`
     (the stored chips the client's form was seeded from), so a chip the
