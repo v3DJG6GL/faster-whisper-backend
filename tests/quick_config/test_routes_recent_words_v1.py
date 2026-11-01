@@ -1,13 +1,8 @@
-"""Integration tests for the GET /v1/recent-words client API.
-
-Recent-word suggestions for the desktop "Dictionary" spoken-symbol (callback:map)
-key field — the /v1 analogue of the /quick-config autocomplete datalist. It
-aggregates the caller's recent-transcription tokens ∪ bigrams (newest-first,
-case-insensitive dedup, capped at QUICK_CONFIG_WORD_SUGGESTIONS_MAX) via the
-shared build_word_suggestions() helper, scoped exactly like /quick-config/recent
-(own rows unless quick_config scope == "all"). Like /v1/pipeline-rules it lives
-in the /v1 namespace with NO host allowlist, so a remote client isn't 403'd by
-USER_WEBUI_ALLOWED_HOSTS (unlike the browser /quick-config page).
+"""Integration tests for GET /v1/recent-words: the desktop Dictionary
+key-field suggestions, built by the same build_word_suggestions() helper as the
+/quick-config datalist and scoped like /quick-config/recent. Like
+/v1/pipeline-rules it has NO host allowlist, so a remote client isn't 403'd by
+USER_WEBUI_ALLOWED_HOSTS the way the browser /quick-config page is.
 """
 
 from tests.conftest import bearer
@@ -23,10 +18,6 @@ def _seed(uid, tokens, *, request_id, bigrams=None):
         tokens=tokens, bigrams=bigrams or [], user_id=uid,
     )
 
-
-# --------------------------------------------------------------------------
-# Shape / open mode (synthetic admin sees all)
-# --------------------------------------------------------------------------
 
 def test_v1_recent_words_open_mode_shape(client):
     body = client.get("/v1/recent-words").json()
@@ -52,10 +43,6 @@ def test_v1_recent_words_case_insensitive_dedup(client):
     assert sum(1 for w in words if w.lower() == "komma") == 1
 
 
-# --------------------------------------------------------------------------
-# Cap / limit / disabled
-# --------------------------------------------------------------------------
-
 def test_v1_recent_words_cap_honored(client, app_module):
     app_module.cfg.QUICK_CONFIG_WORD_SUGGESTIONS_MAX = 2
     _seed("u1", ["a-word", "b-word", "c-word", "d-word"], request_id="r1")
@@ -80,10 +67,6 @@ def test_v1_recent_words_limit_param_clamps(client, app_module):
     # ...but `max` always echoes the server cap, and limit can't exceed it.
     assert client.get("/v1/recent-words?limit=999").json()["max"] == 50
 
-
-# --------------------------------------------------------------------------
-# Per-user scoping (the security property): user A never sees user B's words
-# --------------------------------------------------------------------------
 
 def test_v1_recent_words_scoped_per_user(client, make_user_key):
     from faster_whisper_backend.auth import api_keys_store
@@ -115,10 +98,6 @@ def test_v1_recent_words_admin_sees_all(client, make_user_key):
     assert "alpha-word" in words and "bravo-word" in words
 
 
-# --------------------------------------------------------------------------
-# Page-permission + lockdown gating
-# --------------------------------------------------------------------------
-
 def test_v1_recent_words_requires_quick_config_page(client, make_user_key):
     make_user_key("root", is_admin=True)  # lockdown
     _uid, raw = make_user_key("bob", pages={"quick_config": "none"})
@@ -129,10 +108,6 @@ def test_v1_recent_words_requires_auth_when_locked_down(client, make_user_key):
     make_user_key("root", is_admin=True)  # lockdown
     assert client.get("/v1/recent-words").status_code == 401  # no bearer
 
-
-# --------------------------------------------------------------------------
-# The whole point: /v1/recent-words is NOT host-gated (unlike /quick-config)
-# --------------------------------------------------------------------------
 
 def test_v1_recent_words_not_host_gated(app_module, make_user_key):
     from starlette.testclient import TestClient
