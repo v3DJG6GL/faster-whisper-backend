@@ -259,8 +259,6 @@ def test_separator_construction_error_keeps_raw_text_out_of_the_message(
     assert "Foo.onnx" in str(ei.value)
 
 
-# --- actual-device bookkeeping -----------------------------------------------
-
 def test_free_locked_clears_the_session_device(monkeypatch):
     """actual_device() must not keep reporting an evicted model's session —
     unless a live separator still owns one (an orphan draining after a
@@ -297,8 +295,6 @@ def test_register_records_the_actual_session_device(monkeypatch):
     assert model_registry._loaded_models["uvr:Foo.onnx"]["device"] == "cpu"
 
 
-# --- progress weighting ------------------------------------------------------
-
 def test_pass_fraction_weights_model_pass_heavier():
     assert bgm_separation._pass_fraction(1, 0.0) == 0.0
     assert bgm_separation._pass_fraction(1, 1.0) == bgm_separation._PASS1_WEIGHT
@@ -329,12 +325,10 @@ def test_pass_fraction_reads_the_running_jobs_weighting(monkeypatch):
             bgm_separation._PASS1_WEIGHT
     finally:
         tls.single_pass = None
-    # No running job → the module global decides, as before.
+    # No running job → the module global decides.
     monkeypatch.setattr(bgm_separation, "_single_pass", True)
     assert bgm_separation._pass_fraction(1, 0.9) == 0.9
 
-
-# --- lease key is resolved once ---------------------------------------------
 
 def test_separate_releases_the_key_it_leased_after_a_config_edit(monkeypatch):
     """An admin edit of BGM_SEPARATION_UVR_MODEL while a job is loading or
@@ -359,12 +353,11 @@ def test_separate_releases_the_key_it_leased_after_a_config_edit(monkeypatch):
     assert bgm_separation._orphans == {}
 
 
-# --- the tail restamp is owned by the release -------------------------------
-
 def test_separate_does_not_touch_a_model_it_never_leased(monkeypatch):
-    """_separate_with used to restamp whatever _separator_key named when the
-    run ended — a concurrent load of another model mid-run then got its idle
-    clock / stats 'last used' refreshed by a job that never touched it."""
+    """The tail restamp names the key this job leased, not whatever
+    _separator_key names when the run ends — otherwise a concurrent load of
+    another model mid-run gets its idle clock / stats 'last used' refreshed
+    by a job that never touched it."""
     import asyncio
     from faster_whisper_backend.runtime import model_registry
     cfg = bgm_separation.cfg
@@ -399,8 +392,6 @@ def test_separate_does_not_touch_a_model_it_never_leased(monkeypatch):
     assert bgm_separation._leases == {}
 
 
-# --- cancel is re-checked once the inference slot is ours -------------------
-
 def test_cancel_after_the_mutex_wait_skips_the_separation(monkeypatch):
     import asyncio
     answers = iter([False])          # queued: not yet; acquired: cancelled
@@ -426,8 +417,6 @@ def test_cancel_after_the_mutex_wait_skips_the_separation(monkeypatch):
     assert sep.calls == []
     assert getattr(bgm_separation._progress_tls, "cancel", None) is None
 
-
-# --- the release survives a cancellation delivered in the finally -----------
 
 def test_release_returns_the_lease_immediately_while_a_load_holds_the_lock(
         monkeypatch):
@@ -456,14 +445,11 @@ def test_release_returns_the_lease_immediately_while_a_load_holds_the_lock(
             task = asyncio.create_task(bgm_separation.separate("in.wav"))
             for _ in range(5):
                 await asyncio.sleep(0)
-            # The job finished and released WITHOUT waiting on the lock.
             assert task.done() and task.result() == "out.wav"
             assert bgm_separation._leases == {}
 
     asyncio.run(_main())
 
-
-# --- a same-name orphan keeps the idle drop from freeing ---------------------
 
 def test_idle_drop_defers_the_free_while_a_same_name_orphan_drains(monkeypatch):
     """Force-drop orphans S1, a later job loads S2 under the same key and
@@ -485,8 +471,6 @@ def test_idle_drop_defers_the_free_while_a_same_name_orphan_drains(monkeypatch):
     assert bgm_separation._orphans == {"m.onnx": 1}
     assert bgm_separation.actual_device() == "cuda"
 
-
-# --- a load cancelled or failed mid-way --------------------------------------
 
 def _foo_model(monkeypatch, device="cpu"):
     cfg = bgm_separation.cfg
@@ -531,7 +515,7 @@ def test_cancel_during_register_keeps_the_separator_its_row_describes(monkeypatc
             await task
     asyncio.run(_main())
     assert bgm_separation._separator is sep
-    assert bgm_separation._leases == {}   # the cancelled caller never releases
+    assert bgm_separation._leases == {}   # dropped for the caller, which never got it
     assert "uvr:Foo.onnx" in model_registry._loaded_models
     assert bgm_separation._drop_locked() is True
     assert "uvr:Foo.onnx" not in model_registry._loaded_models
@@ -585,7 +569,7 @@ def test_cancel_while_register_is_queued_still_lists_the_separator(monkeypatch):
     finally:
         gate.set()
     assert bgm_separation._separator is sep
-    assert bgm_separation._leases == {}   # the cancelled caller never releases
+    assert bgm_separation._leases == {}   # dropped for the caller, which never got it
     assert "uvr:Foo.onnx" in model_registry._loaded_models
     assert bgm_separation._drop_locked() is True
     assert "uvr:Foo.onnx" not in model_registry._loaded_models
@@ -628,8 +612,6 @@ def test_failed_reload_redoes_the_free_an_orphan_deferred_to_it(monkeypatch):
     assert bgm_separation.actual_device() is None
     assert bgm_separation._deferred_free == set()
 
-
-# --- a task cancelled mid-separation (shutdown, framework cancel) ------------
 
 def test_task_cancel_mid_separation_defers_the_drop_and_unlinks_the_output(
         monkeypatch):
