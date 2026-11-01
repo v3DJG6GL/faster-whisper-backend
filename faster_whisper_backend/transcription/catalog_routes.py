@@ -102,11 +102,10 @@ def _model_device(name: str, loaded_device: "str | None") -> str:
     return device[:16]
 
 
-# llama-cpp-python version cache, url_download.yt_dlp_version-style: the
-# distribution finder walks sys.path (listdir/stat per entry) for a value
-# that cannot change without a restart, and /v1/me is the WebUI's per-page-
-# load capability probe — resolve once, behind a sentinel so "not installed"
-# (None) is cached too.
+# llama-cpp-python version, cached like media/download.py's yt_dlp_version:
+# the distribution lookup walks sys.path (listdir/stat per entry) for a value
+# fixed until restart, and /v1/me is the WebUI's per-page-load capability
+# probe. The sentinel lets "not installed" (None) be cached too.
 _LLAMA_CPP_VERSION_UNSET = object()
 _LLAMA_CPP_VERSION: "str | None | object" = _LLAMA_CPP_VERSION_UNSET
 
@@ -139,16 +138,15 @@ async def whoami_capabilities(user: dict = Depends(_get_current_user_dep)):
     # The caller's identity layers, for the per_request values below
     # (TRANSLATE_TO, TRANSLATION_MAX_TARGETS) — resolved once.
     _ident = effective_config.build_ident(user, None)
-    # Additive: whether the optional pipeline stages exist on this server at
-    # all, so the client can disable its "Separate music" / "Speaker
-    # diarization" toggles pre-flight instead of letting a request soft-fail
-    # into a warning. Server-wide feature switches, not per-identity grants.
+    # Whether the optional pipeline stages exist on this server at all, so
+    # the client can disable its "Separate music" / "Speaker diarization"
+    # toggles pre-flight instead of letting a request soft-fail into a warning. Server-wide feature switches, not per-identity grants.
     caps["bgm_separation_enabled"] = bool(
         getattr(cfg, "BGM_SEPARATION_ENABLED", False))
     caps["diarization_enabled"] = bool(
         getattr(cfg, "DIARIZATION_ENABLED", False))
-    # Additive: transcribe-from-URL capacity switch + the installed yt-dlp
-    # version (or null). The version is deliberately visible to user-tier
+    # Transcribe-from-URL capacity switch + the installed yt-dlp version
+    # (or null). The version is deliberately visible to user-tier
     # callers: "is the downloader stale?" is the first question when a site
     # stops working, and clients surface it in their error guidance.
     caps["url_download_enabled"] = bool(
@@ -159,13 +157,13 @@ async def whoami_capabilities(user: dict = Depends(_get_current_user_dep)):
     # the client can size its own local copies and refuse an oversized file
     # before sending it. Always present: uploads are capped too.
     caps["media_max_bytes"] = int(getattr(cfg, "MEDIA_MAX_BYTES", 10_000_000_000))
-    # Additive: the cap for a file the server KEEPS (POST /v1/audio/media,
-    # a link's video) — media_store.max_retainable_bytes(), at most
+    # The cap for a file the server KEEPS (POST /v1/audio/media, a link's
+    # video) — media_store.max_retainable_bytes(), at most
     # media_max_bytes and lower when RETAINED_MEDIA_MAX_BYTES is. A
     # preview's VIDEO rungs are flagged over_cap against this one (its
     # "audio only" rung against media_max_bytes).
     caps["retained_max_bytes"] = url_media_store.max_retainable_bytes()
-    # Additive: whether a link's VIDEO can be kept/fetched (keep_video on the
+    # Whether a link's VIDEO can be kept/fetched (keep_video on the
     # transcription form, POST /v1/audio/url-media/video). Always present;
     # the detail key rides only when on — same discipline as yt_dlp_version.
     caps["url_video_enabled"] = bool(
@@ -173,22 +171,20 @@ async def whoami_capabilities(user: dict = Depends(_get_current_user_dep)):
     if caps["url_video_enabled"]:
         # No server-side height ceiling in this release: null = best available.
         caps["url_video_default_max_height"] = None
-    # Additive: whether the spoken-language check of a link is offered
-    # (POST /v1/audio/url-language).
+    # Gates POST /v1/audio/url-language.
     caps["url_language_check_enabled"] = bool(
         caps["url_download_enabled"]
         and getattr(cfg, "URL_LANGUAGE_CHECK_ENABLED", False))
-    # Additive: whether a link's own subtitle tracks are listed by the preview
-    # and fetchable (POST /v1/audio/url-subtitles).
+    # Gates the preview's subtitle-track list and POST /v1/audio/url-subtitles.
     caps["url_subtitles_enabled"] = bool(
         caps["url_download_enabled"]
         and getattr(cfg, "URL_SUBTITLES_ENABLED", False))
-    # Additive: the durable job resource (GET/DELETE /v1/jobs*). The flag is
+    # The durable job resource (GET/DELETE /v1/jobs*). The flag is
     # always present; the detail block rides only when on.
     caps["jobs_enabled"] = tx_progress._jobs_enabled()
     if caps["jobs_enabled"]:
         caps["jobs"] = {"ttl_s": int(tx_progress._jobs_ttl_s())}
-    # Additive: subtitle packaging (POST /v1/audio/media{,/{id}/package}).
+    # Subtitle packaging (POST /v1/audio/media{,/{id}/package}).
     # The flag is always present; the detail block rides only when the
     # feature is on — its `reason` says why ffmpeg cannot (a stripped build).
     _pk_on = bool(getattr(cfg, "MEDIA_PACKAGE_ENABLED", True))
@@ -208,20 +204,15 @@ async def whoami_capabilities(user: dict = Depends(_get_current_user_dep)):
             "ffmpeg_version": _pk_caps.version,
         }
     # Stage-model list builder shared by all three optional stages below.
-    # Configured model FIRST, then the allowlist (de-duplicated, order kept):
-    # an empty allowlist means "the configured model only" for the
-    # diarization/separation stages, so building from the allowlist alone
-    # published [] for a server that accepts one model — and a picker
-    # pre-flighting on it showed nothing. This is exactly those stages'
-    # admission rule (allowlist ∪ configured, where "configured" is the
-    # CALLER's effective value — an identity override — ahead of the global
-    # one, so a picker defaults to what the caller runs). Translation differs: its
-    # EMPTY allowlist is permissive at request time (_translation_model_
-    # allowed admits any well-formed ref), so translation_models is "what
-    # the picker offers", not "all the server accepts". The list
-    # deliberately never consults residency: a loaded-but-no-longer-
+    # Configured model first (the CALLER's effective value ahead of the
+    # global one, so a picker defaults to what the caller runs), then the
+    # allowlist, de-duplicated: that is the diarization/separation admission
+    # rule, where an empty allowlist means "the configured model only".
+    # Translation's EMPTY allowlist admits any well-formed ref
+    # (_translation_model_allowed), so translation_models is only what the
+    # picker offers. Residency is never consulted: a loaded-but-no-longer-
     # allowed model must not be offered (every request naming it would be
-    # refused); residency is reported per row by the "loaded" flag instead.
+    # refused); the per-row "loaded" flag reports residency.
     def _stage_refs(configured, allowed) -> "list[str]":
         refs = []
         for _m in (*configured, *(allowed or [])):
@@ -233,10 +224,8 @@ async def whoami_capabilities(user: dict = Depends(_get_current_user_dep)):
         return ((effective_config.cfg_for(None, field, _ident) or "").strip(),
                 (getattr(cfg, field, "") or "").strip())
 
-    # Additive: text-to-text translation capability surface. The flag is
-    # always present (pre-flight for the client's Translate control); the
-    # detail keys ride only when the stage exists — same shape discipline as
-    # yt_dlp_version above.
+    # Translation: the flag is always present (pre-flight for the client's
+    # Translate control); the detail keys ride only when the stage exists.
     caps["translation_enabled"] = bool(
         getattr(cfg, "TRANSLATION_ENABLED", False))
     if caps["translation_enabled"]:
@@ -264,16 +253,13 @@ async def whoami_capabilities(user: dict = Depends(_get_current_user_dep)):
         # respected), parsed csv → list like the transcribe handler does.
         caps["translate_to_default"] = language_codes(
             effective_config.cfg_for(None, "TRANSLATE_TO", _ident))
-        # Engine version, yt_dlp_version-style best-effort (null when the
-        # optional dependency set isn't installed); cached at module level —
-        # it cannot change without a restart.
+        # Engine version, null when the optional dependency set isn't installed.
         caps["llama_cpp_version"] = _llama_cpp_version()
-    # Additive: the stage-model allowlists with a loaded flag, mirroring
+    # The stage-model allowlists with a loaded flag, mirroring
     # translation_models — the client's model pickers pre-flight on these.
-    # "Loaded" = the module's single cached instance is exactly this model
-    # (both stages cache one pipeline/separator at a time). preload.is_resident
-    # owns that comparison for every family, including the separator's
-    # friendly-name → ".onnx" filename mapping this used to open-code.
+    # "Loaded" = the stage's single cached pipeline/separator is exactly this
+    # model; preload.is_resident owns that comparison (incl. the separator's
+    # friendly-name → ".onnx" mapping).
     caps["diarization_models"] = [
         {"id": _m, "loaded": preload.is_resident("diarization", _m)}
         for _m in _stage_refs(
