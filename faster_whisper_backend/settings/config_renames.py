@@ -262,7 +262,7 @@ RELABELLED_RULE_ENTRIES: dict[str, str] = {
 # by rule name: (type, pattern) a stored copy saved BEFORE the scope holds ->
 # the languages the rule runs on now. That pattern is the factory one of the
 # time; the factory rule may have moved on since (capitalize-letter-after-
-# hyphen no longer fires after a digit). A stored copy of the rule has no
+# hyphen now fires only after a capitalised word). A stored copy of the rule has no
 # languages (or []: every language), so the fix never reached it.
 # upgrade_rule_entries sets the scope ONLY while the stored rule still has
 # no languages and its type and pattern still equal the pre-scope ones. A
@@ -299,6 +299,10 @@ UPGRADED_RULE_LANGUAGES: dict[
 # factory ones; a rule the admin edited stays theirs. Keyed by the current
 # name (migrate_rule_slugs renames first). A rule also in
 # UPGRADED_RULE_LANGUAGES gets its scope first, which keys on the old pattern.
+# A copy saved before an earlier change of the pattern holds that one
+# (EARLIER_RULE_PATTERNS), the factory note of the old pattern is rewritten
+# with it (UPGRADED_RULE_NOTES), and a field the new pattern needs to work as
+# the factory rule does is set with it (UPGRADED_RULE_FIELDS).
 UPGRADED_RULE_PATTERNS: dict[str, tuple[tuple[str, str], str]] = {
     # `\n+\s*` tried every split of a newline run at every start, so a run of
     # paragraph breaks with no lowercase letter after it took cubic time on
@@ -308,10 +312,46 @@ UPGRADED_RULE_PATTERNS: dict[str, tuple[tuple[str, str], str]] = {
         ("callback:upper", "([.?!]\\s+|\\n+\\s*)([a-zäöüß])"),
         "([.?!]\\s+|\\n[^\\S\\n]*)([a-zäöüß])",
     ),
-    # The old one also fired after a digit: "45-jährige" → "45-Jährige".
+    # The old one fired after any word, so an adjective compound Whisper wrote
+    # right broke: "schwarz-weiß" → "schwarz-Weiß", "deutsch-französisches" →
+    # "deutsch-Französisches". The new one fires only after a word that starts
+    # with a capital ("Eisen-infusion", "A4-blatt"), so a digit compound
+    # ("45-jährige") stays lowercase as well.
     "capitalize-letter-after-hyphen": (
-        ("callback:upper", "(-)([a-zäöüß])"),
-        "(?<!\\d)(-)([a-zäöüß])",
+        ("callback:upper", "(?<!\\d)(-)([a-zäöüß])"),
+        "(\\b[A-ZÄÖÜ]\\w*-)([a-zäöüß])",
+    ),
+}
+
+EARLIER_RULE_PATTERNS: dict[str, tuple[str, ...]] = {
+    # Before 0a9403f8 it also fired after a digit: "45-jährige" → "45-Jährige".
+    "capitalize-letter-after-hyphen": ("(-)([a-zäöüß])",),
+}
+
+# Fields set on a stored copy together with its UPGRADED_RULE_PATTERNS
+# pattern: the factory rule gained them with that pattern, which without them
+# does only part of its job.
+UPGRADED_RULE_FIELDS: dict[str, dict[str, Any]] = {
+    # The capital-first pattern matches the word before the hyphen, so one
+    # pass capitalises only the first lowercase part of a chain:
+    # "Hals-nasen-ohren-arzt" → "Hals-Nasen-ohren-arzt". Repeating it reaches
+    # every part.
+    "capitalize-letter-after-hyphen": {"repeat": True},
+}
+
+# The note a factory rule of UPGRADED_RULE_PATTERNS shipped with beside its old
+# pattern -> its note now, rewritten only together with the pattern and only
+# while the stored note is still that factory text (the /settings editor
+# compares the whole rule: an untouched copy would read as edited).
+UPGRADED_RULE_NOTES: dict[str, tuple[str, str]] = {
+    "capitalize-letter-after-hyphen": (
+        "Capitalizes a lowercase letter right after a hyphen: Eisen-infusion → "
+        "Eisen-Infusion.",
+        "Capitalizes a lowercase letter right after a hyphen that follows a "
+        "capitalized word: Eisen-infusion → Eisen-Infusion, A4-blatt → "
+        "A4-Blatt. Repeated, so every part of a chain: Hals-nasen-ohren-arzt → "
+        "Hals-Nasen-Ohren-Arzt. An adjective compound (schwarz-weiß) and a "
+        "digit compound (45-jährige) stay as they are.",
     ),
 }
 
@@ -543,8 +583,13 @@ def upgrade_rule_entries(raw: dict[str, Any]) -> list[str]:
             done.append(f"{r['name']}/languages")
         up_pat = (UPGRADED_RULE_PATTERNS.get(r["name"])
                   if isinstance(r.get("name"), str) else None)
-        if up_pat is not None and (r.get("type"), r.get("pattern")) == up_pat[0]:
+        if up_pat is not None and r.get("type") == up_pat[0][0] and r.get(
+                "pattern") in (up_pat[0][1], *EARLIER_RULE_PATTERNS.get(r["name"], ())):
             r["pattern"] = up_pat[1]
+            r.update(UPGRADED_RULE_FIELDS.get(r["name"], {}))
+            note = UPGRADED_RULE_NOTES.get(r["name"])
+            if note is not None and r.get("note") == note[0]:
+                r["note"] = note[1]
             done.append(f"{r['name']}/pattern")
         if r.get("type") != "regex-list":
             continue

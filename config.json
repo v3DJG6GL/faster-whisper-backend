@@ -683,9 +683,10 @@
       "exposed": false,
       "color": "",
       "tags": [],
-      "note": "Capitalizes a lowercase letter right after a hyphen: Eisen-infusion → Eisen-Infusion.",
+      "note": "Capitalizes a lowercase letter right after a hyphen that follows a capitalized word: Eisen-infusion → Eisen-Infusion, A4-blatt → A4-Blatt. Repeated, so every part of a chain: Hals-nasen-ohren-arzt → Hals-Nasen-Ohren-Arzt. An adjective compound (schwarz-weiß) and a digit compound (45-jährige) stay as they are.",
+      "repeat": true,
       "type": "callback:upper",
-      "pattern": "(?<!\\d)(-)([a-zäöüß])"
+      "pattern": "(\\b[A-ZÄÖÜ]\\w*-)([a-zäöüß])"
     },
     {
       "name": "digit-and-whitespace-tidy",
