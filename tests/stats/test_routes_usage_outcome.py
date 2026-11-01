@@ -27,10 +27,6 @@ def _dictate(uid, job_id, *, words=10, audio_s=6.0, key_id=None):
                              kind="dictation", job_id=job_id)
 
 
-# --------------------------------------------------------------------------
-# Auth
-# --------------------------------------------------------------------------
-
 def test_outcome_requires_bearer_when_locked_down(client, make_user_key):
     make_user_key("root", is_admin=True)
     r = client.post(_URL, json={"outcomes": [_outcome()]})
@@ -51,10 +47,6 @@ def test_outcome_needs_no_page_permission(client, make_user_key):
     r = client.post(_URL, json={"outcomes": [_outcome()]}, headers=bearer(raw))
     assert r.status_code == 200
 
-
-# --------------------------------------------------------------------------
-# Validation
-# --------------------------------------------------------------------------
 
 @pytest.mark.parametrize("body", [
     {},
@@ -81,10 +73,6 @@ def test_outcome_batch_of_100_accepted(client):
     assert len(r.json()["results"]) == 100
     assert {x["status"] for x in r.json()["results"]} == {"accepted"}
 
-
-# --------------------------------------------------------------------------
-# Semantics
-# --------------------------------------------------------------------------
 
 def test_outcome_accepted_then_duplicate_and_visible_in_usage(client, make_user_key):
     make_user_key("root", is_admin=True)
