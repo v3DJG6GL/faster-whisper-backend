@@ -37,8 +37,6 @@ _log_safe = store_common.log_safe
 router = APIRouter()
 
 
-# ── Text-to-text translation (translate an existing transcript) ─────────────
-
 # Every accepted request is real llama.cpp inference, possibly minutes of it,
 # so the meaningful limit is CONCURRENCY, not rate: what hurts is one client
 # holding the model while everyone else waits, and a per-minute counter cannot
@@ -110,12 +108,10 @@ async def translate_text(request: Request,
     if not getattr(cfg, "TRANSLATION_ENABLED", False):
         raise HTTPException(status_code=403,
                             detail="translation is disabled on this server")
-    # The per-minute backstop fires just below, INSIDE the release-on-reject
-    # bracket: it costs one dict lookup and needs nothing parsed, but its 429
-    # (like every validation exit) must release a parked dictation receipt,
-    # and the receipt key only exists once the body is parsed (the body cap
-    # middleware bounds the wire cost of parsing first). The in-flight slot
-    # is taken much later, right before the work starts — see below.
+    # The per-minute backstop fires inside the release-on-reject bracket
+    # below: its 429 must release a parked dictation receipt, whose key only
+    # exists once the body is parsed. The in-flight slot is taken later,
+    # right before the work starts.
     _inflight_key = _rl.identity_key(user, request)
     # Canonical job id — stamped on every log line of this run (req=<id8>)
     # so a multi-minute translation can be followed through the log.
@@ -301,10 +297,8 @@ async def translate_text(request: Request,
         tx_receipt._release_held_receipt(_held_key, "request rejected")
         raise
 
-    # ── Canonical job logging ────────────────────────────────────────────
-    # Start receipt now, throttled heartbeats from the progress wrapper,
-    # and a mirrored terminal line (✓ done / ✗ failed / ✗ cancelled) on
-    # every exit path — this endpoint used to log only on cancel/failure.
+    # Start line now, throttled heartbeats from the progress wrapper, and a
+    # terminal line (✓ done / ✗ failed / ✗ cancelled) on every exit path.
     _uid = (user.get("user_id") or "")
     logger.info(
         "[translate] req=%s start: %d segments × %d targets (%s) model=%s "
@@ -345,7 +339,8 @@ async def translate_text(request: Request,
     # release the receipt out from under it.
     _receipt_claimed_below = False
     # Server jobs row (kind "translate"): written after the progress seed,
-    # finished by _record_run on every non-ok exit and by the success tail.
+    # finished by the success tail, by _record_run / the HTTPException arm on
+    # a non-ok exit, and by the finally on a disconnect.
     _job_row = False
     _job_finished = False
     # Set by the CancelledError arm: a disconnect (or shutdown) unwinds past
@@ -372,7 +367,6 @@ async def translate_text(request: Request,
             if _held_key:
                 receipt_hold.touch(_held_key)
             pct = int(max(0.0, min(1.0, f or 0.0)) * 100)
-            # Log on every crossed 10% boundary, and at least every 30 s.
             if (now - _hb["last_log"] >= 30.0
                     or pct // 10 > _hb["last_pct"] // 10):
                 _hb["last_log"] = now
@@ -614,29 +608,21 @@ async def translate_text(request: Request,
         raise HTTPException(status_code=500, detail="translation failed")
     finally:
         # Release FIRST — before any await and before job_end. A client
-        # disconnect raises CancelledError, which is a BaseException, so every
-        # `except Exception` arm above is skipped and only `finally` runs; a
-        # release sitting after an await in here would in turn be skipped if
-        # the cancellation landed on that await. That is exactly the bug class
-        # the streaming teardown documents (streaming/routes.py, the `finally`
-        # of the websocket handler that releases _stream_sessions / model
-        # leases before any await), where it permanently burned one of
-        # STREAMING_MAX_SESSIONS. Nullable local: only a
-        # successful acquire sets it, so a refused request releases nothing.
+        # disconnect raises CancelledError past every `except Exception` arm,
+        # so only this finally runs, and a release placed after an await here
+        # would be skipped if the cancellation landed on that await (the same
+        # leak the streaming handler's teardown guards against).
         if _inflight_held is not None:
             _translate_inflight.release(_inflight_held)
             _inflight_held = None
         if _hold_beat is not None:
             _hold_beat.cancel()      # synchronous: no await in this finally
-        # Same reasoning for the held dictation receipt: the five except arms
-        # above cover every exception, but a dropped connection raises
-        # CancelledError past all of them, and the receipt would then survive
-        # only until the 90 s idle sweep — long after the utterance it belongs
-        # to scrolled off. Releasing here is the catch-all, not a sixth
-        # duplicate: release on an already-released or already-claimed key is a
-        # no-op, so the five paths above keep their own, more specific notes.
-        # The success path claims the receipt AFTER this finally runs, which is
-        # what the flag guards.
+        # Catch-all for the held dictation receipt: the CancelledError arm (a
+        # dropped connection) releases nothing, and the receipt would then
+        # survive until the 90 s idle sweep. Releasing an already-released or
+        # already-claimed key is a no-op, so the arms that release keep their
+        # more specific notes. The success path claims the receipt AFTER this
+        # finally runs, which is what the flag guards.
         if _held_key and not _receipt_claimed_below:
             tx_receipt._release_held_receipt(
                 _held_key,
