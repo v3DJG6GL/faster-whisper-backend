@@ -616,7 +616,7 @@ def test_window_forms_days_from_to_and_all(usage_store_db):
                     now=now)
     with pytest.raises(ValueError):
         us.document("u", with_stages=("decoding",), tz=_UTC, tz_name="UTC", now=now)
-    # No usage at all: all-time is today, first_day is null.
+    # No usage at all.
     doc = us.document("nobody", all_time=True, tz=_UTC, tz_name="UTC", now=now)
     assert doc["range"]["from"] == today and doc["range"]["first_day"] is None
 
@@ -882,7 +882,6 @@ def test_sweep_marks_unreported_and_prunes(usage_store_db):
                                             "none": 0, "unreported": 1}
     assert doc["dictation"]["translation"]["unreported"] == 1
     assert doc["apps"] == [{"app_id": "vim", "sessions": 1, "words": 30}]
-    # Marked once: a second sweep finds nothing.
     assert us.sweep(unreported_after_h=24, jobs_retention_days=0,
                     app_retention_days=90, hourly_retention_days=0)["marked"] == 0
 
