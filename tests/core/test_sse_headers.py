@@ -35,7 +35,6 @@ def test_sse_response_sets_proxy_safe_headers():
     assert "no-store" in cache, cache
 
 
-# Modules that serve an SSE stream; each must route it through sse_response().
 _ROUTE_FILES = ["faster_whisper_backend/stats/routes.py",
                 "faster_whisper_backend/quick_config/routes.py",
                 "faster_whisper_backend/admin/logs_routes.py"]
