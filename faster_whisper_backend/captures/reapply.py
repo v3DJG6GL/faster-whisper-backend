@@ -190,11 +190,9 @@ def _run_pass() -> None:
         _state["total"] = int(total_row[0]) if total_row else 0
 
     affected_sample_ids: set[str] = set()
-    # Reprocess re-runs ONLY the pipeline (no model re-decode), so it
-    # resolves the owning USER's effective pipeline rules (no key — captures
-    # store no key_id — and no per-request layer). Memoised per
-    # (user_id, model) so a bulk reapply does one resolve per distinct pair,
-    # not one per row. Config is snapshotted for the run's duration.
+    # Pipeline only (no re-decode): resolve the owning USER's effective rules,
+    # with no key layer (captures store no key_id) and no per-request layer.
+    # Memoised per (user_id, model), which also snapshots the rules for the run.
     ident_cache: dict = {}
 
     def _ident_for(uid, model_id):
@@ -230,8 +228,6 @@ def _run_pass() -> None:
             continue
         if new_final != (r["final"] or ""):
             patch["final"] = new_final
-        # Training-form text reflects PIPELINE_RULES minus the
-        # captures-specific excludes (the excludes snapshotted for the run).
         try:
             new_training = training_text(
                 raw_text, new_final, model=r["model"], ident=ident,
