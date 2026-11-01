@@ -1,7 +1,6 @@
 """Tests for the streaming endpointer: energy gate, the make_endpointer fallback
-logic, and frame iteration. The bundled-Silero path needs faster-whisper (not
-installed in the deps-free test env), so its availability is monkeypatched to keep
-these deterministic on every platform.
+logic, and frame iteration. The fallback tests monkeypatch SileroEndpointer
+instead of loading the bundled model, so they stay deterministic on every platform.
 """
 
 import numpy as np
@@ -43,10 +42,8 @@ def test_make_endpointer_energy_backend():
 
 
 def test_silero_off_threshold_floored_at_low_threshold():
-    # The off-threshold (which releases the speech latch) must stay positive even
-    # for a configured threshold < 0.15 — otherwise it goes negative and the
-    # latch can never release (prob is always >= 0), so silence never ends the
-    # utterance. Needs the bundled Silero model; skip where unavailable.
+    # A threshold < 0.15 must not push the latch-release off-threshold below 0,
+    # or the latch never releases and silence never ends the utterance.
     pytest.importorskip("faster_whisper")
     assert streaming_vad.SileroEndpointer(threshold=0.1)._off >= 0.01
     # default keeps the standard Silero hysteresis (threshold - 0.15)
