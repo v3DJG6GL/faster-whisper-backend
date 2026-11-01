@@ -20,12 +20,11 @@ from faster_whisper_backend.core import store_common
 # No I/O (deque append only), so safe on every root-logger record.
 from faster_whisper_backend.core.web_common import SeverityCounter
 
-# Log path and rotation policy come from settings/config.py / WHISPER_LOG_FILE.
 # The file copy strips ANSI escape codes so it stays grep-friendly and the
-# /logs web viewer can re-color via CSS based on content.
-# An uncreatable log dir (e.g. the container-first /data default on a
-# bare-metal box without WHISPER_DATA_DIR) must not kill the import — the
-# server degrades to stderr-only logging, the standard container posture.
+# /logs web viewer can re-color via CSS based on content. An uncreatable log
+# dir (the container-first /data default on bare metal without
+# WHISPER_DATA_DIR) degrades to stderr-only logging instead of killing the
+# import.
 
 _ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*m")
 
