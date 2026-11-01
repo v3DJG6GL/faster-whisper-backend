@@ -1015,9 +1015,9 @@ def rename_profile_refs(old: str, new: str) -> int:
     touched = 0
     with _lock:
         # A real transaction: the connection is autocommit (open_wal_db), so
-        # without BEGIN a mid-scan error left bindings split between `old` and
-        # `new` — and the overrides route rolls the profile rename back on
-        # that error, so the rows already moved would point at nothing.
+        # without BEGIN a mid-scan error would leave bindings split between
+        # `old` and `new` — and the overrides route rolls the profile rename
+        # back on that error, so the rows already moved would point at nothing.
         conn.execute("BEGIN IMMEDIATE")
         try:
             # Per-user bindings live under the permissions JSON's "config" sub-key.
@@ -1191,7 +1191,6 @@ def bootstrap_admin_from_env(raw_key: str) -> None:
             uid = _bootstrap_admin_uid()
             if uid is None:
                 raise
-    # Insert the raw key (bypass generate path so we honour the env value).
     kp, k4 = _split_display_parts(raw_key)
     new_key_id = uuid.uuid4().hex
     try:
