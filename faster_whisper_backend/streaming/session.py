@@ -657,14 +657,10 @@ class StreamSession:
                 # Applies to the dropped_all case too: the drop verdict judged the
                 # remaining buffer, not the banked (multi-partial-agreed) prefix.
                 raw = self._trimmed_text + raw
-        # Reassemble the WHOLE utterance for on_final: the banked audio slices +
-        # the remaining buffer, and the banked word dicts (absolute times) + the
-        # final decode's words shifted from buffer-relative to utterance time.
-        # Captures therefore store the full audio↔text pair, not a fragment.
-        # The LocalAgreement words (gate path, failed or empty decode) are
-        # already utterance-absolute and already include the banked prefix
-        # (see above), so only a real decode's buffer-relative words are
-        # re-based here.
+        # Reassemble the WHOLE utterance for on_final, so captures store the full
+        # audio↔text pair, not a fragment. Only a real decode's words are
+        # buffer-relative; the LocalAgreement words (gate path, failed or empty
+        # decode) are already utterance-absolute and include the banked prefix.
         full_audio = self._whole_audio(audio)
         if self._trimmed_audio and decoded and not words_absolute:
             off = self._buffer_offset
@@ -907,10 +903,10 @@ class StreamSession:
 
         The ONE place the ordinal moves. It advances whenever the ordinal may
         have reached the wire — the utterance was announced, or a ``final``
-        carried it — and never otherwise. It used to be bumped at the end of the
-        finalize body, which a raising postprocess/on_final skipped AFTER
-        ``final(N)`` had gone out: the next utterance then reused N, and a
-        client pairing ``captured`` receipts by ordinal lost that phrase's."""
+        carried it — and never otherwise. It must advance even when
+        postprocess/on_final raised AFTER ``final(N)`` went out: reusing N would
+        make a client that pairs ``captured`` receipts by ordinal lose that
+        phrase's."""
         if self._utt_state is not None or final_emitted:
             self._utterance_index += 1
         self._reset_utterance()
