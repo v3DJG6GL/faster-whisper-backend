@@ -22,7 +22,7 @@ import os
 
 from faster_whisper_backend.audio import ffmpeg as audio_ffmpeg
 
-_OUT_FORMAT = "s16"          # signed 16-bit
+_OUT_FORMAT = "s16"
 _OUT_CODEC = "pcm_s16le"     # WAV's native uncompressed codec
 
 
