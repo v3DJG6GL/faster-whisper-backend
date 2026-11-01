@@ -1602,9 +1602,10 @@ def _env_csv_list(name: str, current: list[str]) -> list[str]:
 
 # --- Secrets: *_FILE indirection -------------------------------------------
 # For sensitive values, allow `WHISPER_<NAME>_FILE=/path` (Docker/K8s secrets,
-# kept out of `docker inspect` / /proc/<pid>/environ). If the *_FILE form is set
-# and the plain var is not, read+strip the file into os.environ so the normal
-# readers below (and the per-model loop) pick it up uniformly.
+# kept out of `docker inspect`; child processes still inherit the decoded value).
+# If the *_FILE form is set and the plain var is not, read+strip the file into
+# os.environ so the normal readers below (and the per-model loop) pick it up
+# uniformly.
 #
 # Single source of truth for "this config field holds a credential" — also
 # consulted by the env-revalidation loop below, which must not echo a stored
@@ -2064,7 +2065,7 @@ _ENV_OVERRIDE_VALUES: "dict[str, dict[str, object]]" = {}
 # MODEL_OVERRIDES as it stands before the per-model vars below land (stored,
 # or replaced by the WHISPER_MODEL_OVERRIDES JSON var): the value a rejected
 # per-model field reverts to. _ENV_PRE predates the JSON layer, so reverting to
-# it dropped the JSON value for that field. One level deep, as _ENV_PRE.
+# it would drop the JSON value for that field. One level deep, as _ENV_PRE.
 _MODEL_OVERRIDES_PRE_FIELDS: "dict[str, dict[str, object]]" = {
     _k2: dict(_e2) for _k2, _e2 in MODEL_OVERRIDES.items() if isinstance(_e2, dict)}
 for _k, _v in os.environ.items():
@@ -2157,7 +2158,7 @@ try:
     # validator (the MIN/TARGET/MAX sample-sizing triple) sees the whole
     # environment together — validating one at a time, or against a partial
     # dict, fills the unset members from _BASELINE (snapshotted before
-    # config.local.json) and mis-rejected a self-consistent pair like
+    # config.local.json) and rejects a self-consistent pair like
     # TARGET=15 + MAX=20.
     def _effective_env_dict(**override):
         """Full effective config (in-file defaults + config.local.json +
@@ -2196,7 +2197,7 @@ try:
     # CAPTURES_PIPELINE_RULES_EXCLUDE still names. Such an error fails every
     # isolation and backstop validation below whatever field is under test,
     # so without this set every env scalar (the session-cookie flag
-    # included) was reverted and blamed for it. Reported once, as itself.
+    # included) would be reverted and blamed for it. Reported once, as itself.
     _PRE_ENV_SIGS: "set[tuple]" = set()
     if _changed:
         try:
