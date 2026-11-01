@@ -44,8 +44,6 @@ def _stage(snap, name):
     return next(s for s in snap["plan"] if s["stage"] == name)
 
 
-# --- estimates ----------------------------------------------------------------
-
 def test_seed_estimates_use_seed_rates(ledger, clock):
     p = _plan(clock, stages=["separating", "transcribing", "diarizing"])
     p.set_audio_seconds(600.0, src="decoder")
@@ -212,8 +210,6 @@ def test_a_download_without_a_fraction_fills_by_work_time_only(ledger, clock):
     assert p._fraction(st, clock()) == pytest.approx(5 / 20)
     assert _stage(p.snapshot(), "downloading")["est_s"] == pytest.approx(20.0)
 
-
-# --- progression --------------------------------------------------------------
 
 def test_took_replaces_est_and_overall_is_monotone(ledger, clock):
     p = _plan(clock, stages=["transcribing", "translating"])
