@@ -136,6 +136,38 @@ def test_joined_translations_glue_unspaced_pieces(client, app_module,
     assert stored["translations"] == want
 
 
+def test_joined_translations_glue_a_digit_to_han_only_for_a_zh_target(
+        client, app_module, fake_model, monkeypatch):
+    # The joined field and the capture row are built per target: zh glues
+    # '3' | '个', while an en target quoting the same pieces keeps its space.
+    from faster_whisper_backend.captures import store as captures_store
+    from tests.conftest import FakeSegment
+    fake_model._segments = [FakeSegment("I bought 3", 0.0, 1.0),
+                            FakeSegment("apples.", 1.0, 2.0)]
+    monkeypatch.setattr(app_module.cfg, "TRANSLATION_ENABLED", True,
+                        raising=False)
+    monkeypatch.setattr(app_module.cfg, "CAPTURES_RECORDING_ENABLED", True,
+                        raising=False)
+    stored = {}
+
+    def _spy_create(**kw):
+        stored.update(kw)
+        return "cap-test-id"
+    monkeypatch.setattr(captures_store, "create_capture", _spy_create)
+    pieces = ["我买了3", "个苹果。"]
+
+    async def _fake(segments, targets, **kwargs):
+        return [{t: pieces[i] for t in targets}
+                for i in range(len(segments))], [], {
+            "model": "org/d:Q4", "source": "en", "mode": "fluent"}
+    monkeypatch.setattr(translation, "translate_segments", _fake)
+    r = _post(client, translate_to="zh,en", response_format="json")
+    assert r.status_code == 200, r.text
+    want = {"zh": "我买了3个苹果。", "en": "我买了3 个苹果。"}
+    assert r.json()["translations"] == want
+    assert stored["translations"] == want
+
+
 def test_join_translations_spacing():
     j = translation.join_translations
     assert j(["你好。", "你好吗？"]) == "你好。你好吗？"

@@ -3008,6 +3008,22 @@ def test_join_translations_mark_only_piece_glues_in_zh():
     assert j(["He said:", "\"", "Go away.\""]) == "He said: \" Go away.\""
 
 
+def test_join_translations_glues_digit_and_latin_to_han_in_a_zh_ja_target():
+    j = translation.join_translations
+    assert j(["我买了3", "个苹果"], target="zh") == "我买了3个苹果"
+    assert j(["我用", "Python写代码"], target="zh-Hans") == "我用Python写代码"
+    assert j(["東京で", "iPhoneを買った"], target="ja") == "東京でiPhoneを買った"
+    assert j(["他有3", "“个”"], target="cmn") == "他有3“个”"
+    assert j(["我买了3", "个苹果"], target="yue") == "我买了3个苹果"
+    # Latin | Latin is no script boundary: a cut name stays as cut.
+    assert j(["Mü", "ller先生"], target="zh") == "Mü ller先生"
+    # Any other target (or none) keeps the space: an English text quoting
+    # a Chinese original.
+    assert j(["We met in", "北京"], target="en") == "We met in 北京"
+    assert j(["我买了3", "个苹果"], target="ko") == "我买了3 个苹果"
+    assert j(["我买了3", "个苹果"]) == "我买了3 个苹果"
+
+
 def test_fluent_blank_segment_is_skipped_not_fed_from_neighbour(base_cfg,
                                                                 monkeypatch):
     calls = []

@@ -1399,27 +1399,40 @@ _GLUED_SCRIPT_RE = re.compile(
 # Western quotes and brackets a zh / ja piece can open or close on (「」（）
 # are already in _GLUED_SCRIPT_RE's ranges).
 _JOIN_MARKS = "“”‘’«»()[]\"'"
+# A digit or Latin letter: in a zh / ja target it glues to a Han / kana
+# neighbour ('我买了3' | '个苹果').
+_DIGIT_LATIN_RE = re.compile("[0-9A-Za-z\u00c0-\u00d6\u00d8-\u00f6\u00f8-\u024f]")
 
 
-def join_translations(parts: "list[str]") -> str:
+def join_translations(parts: "list[str]", target: "str | None" = None) -> str:
     """Join one target's per-segment translations into its full text: " "
     between pieces, but nothing where a Han / kana piece (or one ending in
     "。" and its closing quote) meets one opening in Han / kana — a fluent
     group cut back across its cues ('我今天去商' | '店买一些面包。') must not
     come back with a space inside a word. Quotes and brackets on either side
-    of the cut are looked past: '他说：' | '“走吧。”' is one sentence too."""
+    of the cut are looked past: '他说：' | '“走吧。”' is one sentence too.
+    When ``target`` is zh / ja / yue, a digit or Latin letter meeting Han /
+    kana glues as well ('我买了3' | '个苹果'); any other target keeps that
+    space — an English text quoting a Chinese original reads 'in 北京 today'."""
+    han_target = _target_base(target) in _HAN_SHARING_TARGETS
+
+    def _kind(c: str) -> str:
+        if _GLUED_SCRIPT_RE.match(c):
+            return "glued"
+        return "latin" if han_target and _DIGIT_LATIN_RE.match(c) else ""
+
     out = ""
     for p in (s.strip() for s in parts):
         if not p:
             continue
         if out:
-            left = out.rstrip(_JOIN_MARKS)[-1:]
-            right = p.lstrip(_JOIN_MARKS)[:1]
             # A side made of marks only (a lone '“' cue) lets the other
             # side decide, or '他说：' | '“' | '走开。”' gets two spaces.
-            glue = (left or right) and all(
-                _GLUED_SCRIPT_RE.match(c) for c in (left, right) if c)
-            out += "" if glue else " "
+            # Latin | Latin never glues: 'Mü' | 'ller' is a cut word no
+            # script rule can tell from two words.
+            kinds = {_kind(c) for c in (out.rstrip(_JOIN_MARKS)[-1:],
+                                        p.lstrip(_JOIN_MARKS)[:1]) if c}
+            out += "" if "glued" in kinds and "" not in kinds else " "
         out += p
     return out
 

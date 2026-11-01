@@ -3228,7 +3228,8 @@ async def transcribe(
                     _lang: _tr.join_translations([
                         (seg.get("translations") or {}).get(_lang, "")
                         for seg in segments_list
-                        if _lang not in (seg.get("translations_kept") or ())])
+                        if _lang not in (seg.get("translations_kept") or ())],
+                        target=_lang)
                     for _lang in _translation_meta["targets"]
                 }
                 _capture_translations = {
@@ -3502,7 +3503,7 @@ async def transcribe(
             _translations_joined = ({
                 _lang: _tr.join_translations([
                     (seg.get("translations") or {}).get(_lang, "")
-                    for seg in segments_list])
+                    for seg in segments_list], target=_lang)
                 for _lang in _translation_meta["targets"]
             } if _translation_meta is not None else None)
 
