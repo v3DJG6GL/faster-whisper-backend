@@ -130,7 +130,7 @@ def configure_origins(cors_origins: list[str], trusted_origins: list[str]) -> No
 
 # A rejected Origin is logged at most this often: the check runs before any
 # credential, so an unauthenticated caller could otherwise drive the log at
-# request rate (same reasoning as auth/dependencies.py's open-mode nag interval).
+# request rate.
 _ORIGIN_REJECT_LOG_INTERVAL_S = 60.0
 # -inf, not 0.0: time.monotonic() counts from host boot, so 0.0 swallowed the
 # first rejection of a server started within a minute of boot.
