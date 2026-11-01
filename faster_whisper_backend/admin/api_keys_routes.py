@@ -179,8 +179,7 @@ def list_users_api() -> JSONResponse:
     # Newest last_used_ts across each user's non-revoked keys — feeds the
     # header's "last active" timestamp + activity dot (renderUser builds the
     # header synchronously, before the per-user /keys fetch, so this can't be
-    # derived client-side from the rendered key cards). Same batched shape as
-    # the counts above.
+    # derived client-side from the rendered key cards).
     last_used = api_keys_store.last_used_by_user()
     out = [
         {
@@ -258,7 +257,7 @@ async def usage_api(days: int = 0) -> JSONResponse:
     one of that user's keys plus any pre-feature backfilled usage; per-key
     totals cover only real keys (backfill has no key id)."""
     # Window in UTC epoch-hours; the N-day window is reckoned in the server's
-    # local timezone (admin/operator perspective). days=0 => lifetime.
+    # local timezone (admin/operator perspective).
     start_hour = None
     if days and days > 0:
         start_hour = usage_store.local_day_start_hour(days_ago=int(days) - 1)
@@ -508,7 +507,7 @@ async def import_client_settings_api(
     await _cs_user_or_404(uid)
     try:
         # Off the loop: force_put json.dumps + encodes the whole blob BEFORE
-        # the blob cap can reject it (see client_settings_routes.put_client_settings).
+        # the blob cap can reject it (see client_settings/routes.py put_client_settings).
         state = await asyncio.to_thread(
             client_settings_store.force_put,
             uid, payload.blob, device="WebUI import",
