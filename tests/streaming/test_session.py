@@ -51,13 +51,11 @@ def _hold_trailing(word):
     return holdback
 
 
-# ---- committed/tail emission mechanics ------------------------------------
-
 def test_committed_is_append_only_and_document_equals_postprocess():
     """Across successive finalizes the committed prefix only ever grows (never
     rewrites earlier text), and committed+tail always equals the post-processed
     whole document."""
-    s, msgs = _make_session(postprocess=lambda raw: raw)  # identity pipeline
+    s, msgs = _make_session(postprocess=lambda raw: raw)
 
     async def run():
         s.raw_confirmed = "der patient hat fieber."
@@ -71,15 +69,12 @@ def test_committed_is_append_only_and_document_equals_postprocess():
     asyncio.run(run())
     finals = [m for m in msgs if m["type"] == "final"]
     committeds = [m["committed"] for m in finals]
-    # append-only: each committed extends the previous, never rewrites it.
     for a, b in zip(committeds, committeds[1:]):
         assert b.startswith(a), f"committed rewritten: {a!r} -> {b!r}"
-    # committed+tail reconstructs the post-processed document at every step.
     for m in finals:
         assert m["committed"] + m["tail"] in ("der patient hat fieber.",
                                               "der patient hat fieber. blutdruck normal",
                                               "der patient hat fieber. blutdruck normal.")
-    # the final committed (after close) equals the whole post-processed transcript.
     assert committeds[-1] == "der patient hat fieber. blutdruck normal."
     # "blutdruck" is shown live (in some tail) but never committed mid-sentence
     # until it stabilises on close.
@@ -106,8 +101,8 @@ def test_committed_never_holds_half_resolved_dictation_phrase():
     asyncio.run(run())
     finals = [m for m in msgs if m["type"] == "final"]
     committeds = [m["committed"] for m in finals]
-    assert all("neue" not in c for c in committeds)   # literal "neue" never committed
-    assert all("neue" not in m["tail"] for m in finals)  # ... nor shown
+    assert all("neue" not in c for c in committeds)
+    assert all("neue" not in m["tail"] for m in finals)
     assert committeds[-1] == "bla bla \n text."
 
 
@@ -120,8 +115,7 @@ def test_close_commits_unterminated_tail():
         s.raw_confirmed = "hallo welt"                # no terminator
         await s._emit_update()
         pre = [m for m in msgs if m["type"] == "final"]
-        # shown immediately, but provisional (not committed) — fixes the "text only
-        # appears after the next utterance" bug.
+        # Shown at once as a provisional tail, not held back until the next utterance.
         assert pre and pre[-1]["committed"] == "" and pre[-1]["tail"] == "hallo welt"
         await s.close()
 
@@ -136,7 +130,8 @@ def test_close_falls_back_on_a_failed_final_decode_and_still_commits(caplog):
     """A decode error in the in-flight utterance's final decode on close() is
     absorbed by _finalize_inner's decode_failed fallback (the partial
     transcript), so close() never sees it: the closing document still commits
-    the confirmed text. close()'s own tolerance is pinned by the next test.
+    the confirmed text. close()'s own tolerance is pinned by
+    test_close_survives_failing_on_final_and_still_commits.
     The frames alone are identical either way, so the logs tell them apart."""
     import logging
 
@@ -212,8 +207,6 @@ def test_close_abort_still_propagates_without_closing_document():
     asyncio.run(run())
     assert not [m for m in msgs if m.get("last")]
 
-
-# ---- full PCM loop --------------------------------------------------------
 
 _pcm = const_pcm
 
@@ -342,7 +335,7 @@ def test_silence_only_input_never_finalizes_or_hallucinates():
 
 
 def test_skip_partials_suppresses_partial_decode_but_keeps_finals():
-    """B1 backpressure: when the streaming route signals it's behind realtime
+    """Backpressure: when the streaming route signals it's behind realtime
     (_skip_partials), the session skips the EXPENSIVE partial decode but still
     runs finals on silence — audio/VAD stay intact so we catch up without losing
     the utterance. Clearing the flag resumes partials."""
@@ -408,8 +401,6 @@ def test_prompt_words_zero_carries_no_confirmed_words():
     asyncio.run(run())
     assert final_prompts == ["Glossar", "Glossar"]
 
-
-# ---- anti-hallucination: all-dropped final vs empty-decode fallback --------
 
 def test_all_dropped_final_keeps_empty_and_does_not_resurrect_partials():
     """When the FINAL decode drops every segment as a hallucination (empty raw,
@@ -477,8 +468,6 @@ def test_empty_final_still_falls_back_to_localagreement():
     asyncio.run(run())
     assert "welt" in s.raw_confirmed        # recovered from the partials' transcript
 
-
-# ---- hold-back, release finals, re-anchor ----------------------------------
 
 _FAST = dict(min_chunk_ms=96, vad_min_silence_ms=96, commit_silence_ms=192,
              min_speech_ms=64, forced_commit_sec=100, buffer_trim_sec=100,
@@ -735,7 +724,7 @@ def test_language_change_reanchors_without_rewriting_sent_text(caplog):
 
 
 def test_committed_region_only_grows():
-    """The document-level agreement now runs on emitted documents, which only
+    """The document-level agreement runs on emitted documents, which only
     grow — so committed never shrinks or changes either."""
     s, msgs = _make_session(postprocess=lambda raw: raw.strip())
 
