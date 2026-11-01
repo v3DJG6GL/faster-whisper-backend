@@ -60,7 +60,7 @@ def test_sync_actions_are_buttons_above_the_list(client):
 
 def test_new_config_json_rules_get_a_notice(client):
     """A saved local rule list replaces the factory list, so a rule that an
-    update adds to config.json stayed invisible (2026-09-19: es-punctuation)."""
+    update adds to config.json stays invisible without this notice."""
     html = _html(client)
     assert "function _missingFactoryRules()" in html
     assert "'↓ Review and add'" in html
