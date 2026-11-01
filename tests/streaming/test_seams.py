@@ -1,7 +1,6 @@
 """Property test: a live-dictation document never rewrites what it already sent.
 
-A compact port of the seam fuzzer that found the "dictation written twice"
-family: Whisper-style raw passages (leading spaces, Whisper's own commas and
+Whisper-style raw passages (leading spaces, Whisper's own commas and
 periods around spoken dictation words), re-split into utterances at EVERY word
 boundary (as-is, and with Whisper closing the first utterance with a period)
 plus seeded three-way splits. Each split is driven through a real
@@ -13,8 +12,6 @@ StreamSession with the real pipeline and hold-back, and must:
 * re-anchor (WARNING) only for the self-correction "Punkt | Strichpunkt",
   where the dedup rule legitimately lets the later mark replace the earlier
   one — sent text is kept there, the rest formatted on its own.
-
-Before the hold-back, 96 of 1194 German pause positions rewrote sent text.
 """
 
 import asyncio
@@ -115,8 +112,8 @@ def _run(utts, language):
 
 
 def _splits(words, rng):
-    """(utterances, [(last word, first word) per seam]) for every 2-way split
-    as-is and with a period closing the first part, then 20 seeded 3-way
+    """(utterances, [(words before, words after) per seam]) for every 2-way
+    split as-is and with a period closing the first part, then 20 seeded 3-way
     splits."""
     n = len(words)
     out = []
