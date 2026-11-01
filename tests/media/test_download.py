@@ -20,10 +20,6 @@ import pytest
 from faster_whisper_backend.media import download as udl
 
 
-# ---------------------------------------------------------------------------
-# validate_url
-# ---------------------------------------------------------------------------
-
 @pytest.mark.parametrize("url", [
     "https://www.youtube.com/watch?v=abc123",
     "http://example.com/talk.mp3",
@@ -86,10 +82,6 @@ def test_validate_url_rejects_overlong():
         udl.validate_url("https://example.com/" + "a" * 2048)
 
 
-# ---------------------------------------------------------------------------
-# policy (info-dict half)
-# ---------------------------------------------------------------------------
-
 def test_policy_rejects_playlist(monkeypatch):
     with pytest.raises(udl.UrlDownloadError, match="[Pp]laylist"):
         udl._policy_check_info({"_type": "playlist"})
@@ -123,10 +115,8 @@ def test_effective_max_bytes_is_media_cap(monkeypatch):
     assert udl._effective_max_bytes() == 12345
 
 
-# ---------------------------------------------------------------------------
-# policy (extractor half) — match_extractor is monkeypatched: the real
-# registry match is yt-dlp's own behavior, not ours to test.
-# ---------------------------------------------------------------------------
+# Extractor-policy tests monkeypatch match_extractor: the real registry
+# match is yt-dlp's own behavior, not ours to test.
 
 def _run(coro):
     # asyncio.run (not a bare new_event_loop): the loop must be CLOSED after
@@ -179,8 +169,9 @@ def test_direct_media_probe_gates_generic(monkeypatch):
 
 
 def test_direct_media_probe_refuses_userinfo_with_an_honest_message(monkeypatch):
-    """`user:pw@host` used to reach the urllib probe and fail as "the site
-    could not be reached" (http.client read `pw@host` as the port)."""
+    """`user:pw@host` must not reach the urllib probe: http.client reads
+    `pw@host` as the port, so it would fail as "the site could not be
+    reached"."""
     monkeypatch.setattr(udl, "match_extractor", lambda u: "Generic")
     monkeypatch.setattr(udl.cfg, "URL_ALLOW_GENERIC", False, raising=False)
     monkeypatch.setattr(udl.cfg, "URL_ALLOW_DIRECT_MEDIA", True, raising=False)
@@ -245,8 +236,8 @@ def test_allowed_host_in_userinfo_does_not_pass_the_allowlist(monkeypatch):
     ("http://evil.example:80/a.roosterteeth.com/episode/x", "RoosterTeeth"),
 ])
 def test_allowed_site_name_outside_the_host_does_not_pass(monkeypatch, url, key):
-    """79b2e8c closed only the '@' spelling: these named an allowed site
-    on the raw string while the link went to evil.example."""
+    """Besides the '@' spelling: each names an allowed site on the raw
+    string while the link goes to evil.example."""
     assert udl.match_extractor(url) == key
     monkeypatch.setattr(udl.cfg, "URL_ALLOWED_EXTRACTORS", [key], raising=False)
     monkeypatch.setattr(udl.cfg, "URL_ALLOW_GENERIC", False, raising=False)
@@ -413,7 +404,6 @@ def test_probe_refuses_a_direct_media_link_handed_to_a_site_extractor(monkeypatc
     captured = _probe_with_extractor(monkeypatch, "Generic", "Youtube")
     with pytest.raises(udl.UrlPolicyError):
         _run(udl.probe("https://x/a.mp3", timeout=5.0))
-    # ...and the extraction itself was pinned to GenericIE.
     assert captured["allowed_extractors"] == ["generic"]
 
 
@@ -719,8 +709,8 @@ def test_unresolvable_host_is_forbidden(monkeypatch):
     def _nxdomain(*a, **k):
         raise OSError("nxdomain")
 
-    # The resolver lives in net_policy now — the ONE definition of the
-    # address gate, shared with the yt-dlp guard subprocess.
+    # net_policy holds the one address gate (shared with the yt-dlp guard
+    # subprocess), so its resolver is the one to stub.
     monkeypatch.setattr(udl.net_policy.socket, "getaddrinfo", _nxdomain)
     assert udl._host_is_forbidden("anything.invalid") is True
 
@@ -730,10 +720,6 @@ def test_empty_resolution_is_forbidden(monkeypatch):
                         lambda *a, **k: [])
     assert udl._host_is_forbidden("anything.invalid") is True
 
-
-# ---------------------------------------------------------------------------
-# progress-template parsing
-# ---------------------------------------------------------------------------
 
 def test_parse_progress_line_well_formed():
     assert udl._parse_progress_fields("dl:1024 4096 NA")[:2] == (1024, 4096)
@@ -759,10 +745,6 @@ def test_parse_progress_line_infinite_total_is_none():
 def test_parse_progress_line_rejects_noise(line):
     assert udl._parse_progress_fields(line) is None
 
-
-# ---------------------------------------------------------------------------
-# classify_error — one per taxonomy bucket + default; never echoes input
-# ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("stderr,needle", [
     ("ERROR: Sign in to confirm you're not a bot", "bot"),
@@ -942,10 +924,6 @@ def test_classify_error_default_never_echoes_stderr():
     assert "secret-path" not in msg and "token=abc" not in msg
     assert "yt-dlp" in msg
 
-
-# ---------------------------------------------------------------------------
-# download() against a fake yt-dlp subprocess
-# ---------------------------------------------------------------------------
 
 def _fake_argv(script: str) -> "list[str]":
     return [sys.executable, "-c", script]
@@ -1314,8 +1292,7 @@ time.sleep(60)
 
 
 def test_real_argv_shape(monkeypatch):
-    # Pin the security-relevant properties of the real argv: URL last, after
-    # a literal "--"; no %(title)s anywhere; the size cap present.
+    # Pin the security-relevant properties of the real argv.
     monkeypatch.setattr(udl.cfg, "URL_SOCKET_TIMEOUT_S", 15, raising=False)
     argv = udl.build_download_argv("https://example.com/watch?v=-startswithdash",
                                    dest_dir="/tmp/x", max_bytes=123)
@@ -1330,9 +1307,9 @@ def test_real_argv_shape(monkeypatch):
 
 
 def test_probe_selects_download_format(monkeypatch):
-    """Regression: without an explicit format, extract_info resolves the
-    default merged VIDEO and filesize_approx trips the size cap for media
-    whose audio track is far below it."""
+    """Without an explicit format, extract_info resolves the default merged
+    VIDEO and filesize_approx trips the size cap for media whose audio
+    track is far below it."""
     captured = _stand_in_yt_dlp(monkeypatch, "Youtube", {
         "extractor_key": "Youtube", "title": "t",
         "duration": 60, "filesize": 900_000,
@@ -1370,8 +1347,7 @@ def test_probe_rejects_channel_page_as_playlist(monkeypatch):
 
 
 def test_host_for_log_never_raises():
-    # Logging must never raise: a hostile URL (urlsplit ValueError) and a
-    # missing one both collapse to "?", a normal one yields ONLY the host.
+    # "http://[::1" makes urlsplit raise ValueError.
     assert udl.host_for_log("http://[::1") == "?"
     assert udl.host_for_log(None) == "?"
     assert udl.host_for_log("") == "?"
@@ -1603,11 +1579,11 @@ def _dribbling_server(header: bytes, interval: float):
 
 
 def test_direct_media_probe_cuts_a_dribbled_header(monkeypatch):
-    """gap-url-infra#1: http.client reads headers line by line with a fresh
-    per-op timeout per recv, so a host trickling one header byte at a time
-    never trips it — the probe thread (one of four in _PROBE_POOL) stayed
-    wedged for the whole dribble. The wall-clock cutoff must free it at
-    `timeout`, through the REAL opener and connection classes."""
+    """http.client reads headers line by line with a fresh per-op timeout
+    per recv, so a host trickling one header byte at a time never trips it
+    and would wedge a _PROBE_POOL thread for the whole dribble. The
+    wall-clock cutoff must free it at `timeout`, through the REAL opener
+    and connection classes."""
     import time as _t
     from faster_whisper_backend.core import net_policy as np
     monkeypatch.setattr(udl, "_host_is_forbidden", lambda h: False)
@@ -1623,7 +1599,7 @@ def test_direct_media_probe_cuts_a_dribbled_header(monkeypatch):
             udl._direct_media_probe_sync(f"http://127.0.0.1:{port}/a.mp3", timeout=0.5)
         assert accepted.is_set()
         # The dribble alone takes ~7 s. 4 s, not 2: a loaded CI runner needed
-        # 2.5 s for the 0.5 s deadline (run 1078) and the cut is still proven.
+        # 2.5 s for the 0.5 s deadline, and the cut is still proven.
         assert _t.monotonic() - t0 < 4.0
     finally:
         srv.close()
@@ -1819,10 +1795,6 @@ def test_cutoff_shuts_a_socket_added_after_it_fired():
         b.close()
 
 
-# ---------------------------------------------------------------------------
-# video: the ladder, the video argv, the merged-result detection
-# ---------------------------------------------------------------------------
-
 def _fmt(**kw):
     base = {"format_id": "x", "ext": "webm", "protocol": "https"}
     base.update(kw)
@@ -1852,13 +1824,13 @@ _LADDER_INFO = {
 
 def test_video_ladder_groups_by_height_and_picks_best_audio():
     ladder = udl.build_video_ladder(_LADDER_INFO, max_bytes=100_000_000)
-    # The estimated 60 fps rung leads its height; the EXACTLY sized 30 fps
-    # sibling stays as a second 1080 rung (its bitrate is unknown, so it
-    # cannot be the same stream) — the "Premium beside AV1" shape.
+    # The estimated 60 fps rung leads its height (yt-dlp's own ordering);
+    # the EXACTLY sized 30 fps sibling stays as a second 1080 rung (its
+    # bitrate is unknown, so it cannot be the same stream) — the "Premium
+    # beside AV1" shape.
     assert [r["height"] for r in ladder] == [1080, 1080, 720, 360]
     top = ladder[0]
-    # 60 fps beats 30 fps inside the 1080 rung (yt-dlp's own ordering);
-    # bytes come from tbr × duration when no filesize is listed.
+    # Bytes come from tbr × duration when no filesize is listed.
     assert top["fps"] == 60 and top["vcodec"].startswith("avc1")
     assert top["video_bytes"] == 2000 * 100 * 125
     assert top["bytes_approx"] is True
@@ -2182,8 +2154,8 @@ open(os.path.join(r"__DEST__", "media.mkv"), "wb").write(b"x" * 64)
 
 def test_download_video_fallback_legs_drop_the_rung_estimates(tmp_path, monkeypatch):
     # The rung's 137/140 are gone and the selector's fallback fetched
-    # 299 + 251: the never-fetched rung legs' estimates must not stay in
-    # the denominator (the bar used to stop at 50 %).
+    # 299 + 251: the never-fetched rung legs' estimates must leave the
+    # denominator, or the bar stops at 50 %.
     _patch_video_argv(monkeypatch, _OFF_RUNG_LEGS_SCRIPT)
     seen = []
     _run(udl.download_video(
