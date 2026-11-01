@@ -2,8 +2,8 @@
 
 The WebUI exchanges a pasted API key at /auth/login for an HttpOnly session
 cookie. This module persists those sessions so they survive a browser/computer
-restart (unlike the old tab-scoped sessionStorage). Non-browser clients (curl,
-SDKs) never touch this — they keep sending `Authorization: Bearer`.
+restart. Non-browser clients (curl, SDKs) never touch this — they keep
+sending `Authorization: Bearer`.
 
 Storage layout:
 
@@ -26,7 +26,8 @@ stored value. Stored plaintext because it is, by design, handed to the client.
 
 Lookup is O(1) via an in-memory `_SESSION_INDEX: dict[token_hash, row]`,
 maintained INCREMENTALLY on create/revoke and rebuilt in full only on init,
-purge, or when PRAGMA data_version shows a sibling worker's commit.
+purge, a sibling worker's commit (PRAGMA data_version), or a moved
+'revocations' counter (revocation_generation).
 
 Expiry is absolute: a row lives SESSION_TTL_S from login, whatever the
 activity, and lookups never write. The cookie is set once at login with that
@@ -60,10 +61,10 @@ _conn: sqlite3.Connection | None = None
 _DB_READY: bool = False
 
 # In-memory token_hash → session row index. Maintained incrementally on
-# create/revoke; rebuilt in full only on init, purge, or a detected sibling
-# commit. INVARIANT: any incremental insert must carry exactly the keys
-# _rebuild_index_locked() produces (user_id, key_id, csrf_token, created_ts,
-# expires_ts).
+# create/revoke (and _fetch_on_miss); rebuilt in full only on init, purge, a
+# detected sibling commit, or a moved 'revocations' counter. INVARIANT: any
+# incremental insert must carry exactly the keys _rebuild_index_locked()
+# produces (user_id, key_id, csrf_token, created_ts, expires_ts).
 _SESSION_INDEX: dict[str, dict[str, Any]] = {}
 
 # Last `PRAGMA data_version` observed on _conn — same role as in
@@ -87,8 +88,10 @@ _DATA_VERSION: int = -1
 # elapsed time negative and skip every HIT's check for the size of the step.
 _REFRESH_MIN_INTERVAL_S = 1.0
 _LAST_REFRESH_TS: float = float("-inf")
-# Last 'revocations' counter revocation_generation() returned. When it moves,
-# the index is refreshed past the throttle above (see that function).
+# Last 'revocations' counter value this worker's index already reflects:
+# set by revocation_generation() after its rebuild, and by revoke_session for
+# its own single step. When the counter moves past it, the index is refreshed
+# past the throttle above (see revocation_generation).
 _LAST_REV_GEN: int = -1
 
 _TOKEN_BYTES = 32   # secrets.token_urlsafe(32) → 43-char base64url, 256-bit
@@ -110,10 +113,6 @@ CREATE TABLE IF NOT EXISTS meta (
 );
 """
 
-
-# ---------------------------------------------------------------------
-# Init
-# ---------------------------------------------------------------------
 
 def init_db(db_path: str) -> None:
     """Open the SQLite DB (WAL) and ensure the schema exists. Idempotent.
@@ -162,10 +161,6 @@ def _require_conn() -> sqlite3.Connection:
         raise RuntimeError("sessions_store.init_db() was not called before use.")
     return _conn
 
-
-# ---------------------------------------------------------------------
-# Token + index helpers
-# ---------------------------------------------------------------------
 
 def hash_token(raw_token: str) -> str:
     """SHA-256 hex of the raw session token (UTF-8)."""
@@ -285,10 +280,6 @@ def _purge_expired_locked() -> None:
         pass  # cleanup is non-fatal
 
 
-# ---------------------------------------------------------------------
-# Public API
-# ---------------------------------------------------------------------
-
 def create_session(user_id: str, ttl_s: float,
                    key_id: str | None = None) -> tuple[str, str]:
     """Create a session for `user_id` valid for `ttl_s` seconds. Returns
@@ -307,13 +298,10 @@ def create_session(user_id: str, ttl_s: float,
     conn = _require_conn()
     with _lock:
         # Absorb any sibling worker's commit BEFORE we write. Re-stamping
-        # _DATA_VERSION after our own commit (as this used to) reads a counter
-        # that has already moved for the sibling's commit, marking it as seen
-        # and stranding e.g. a revocation that landed in another worker.
-        # NOTE: with SERVER_WORKERS>1 this check can still trigger one full
-        # rebuild here when a sibling committed since the last check (bounded
-        # by _REFRESH_MIN_INTERVAL_S on the read path) — it is only the
-        # STEADY-STATE per-login rebuild that is gone.
+        # _DATA_VERSION after our own commit would read a counter already
+        # moved by the sibling's commit, marking it seen and stranding e.g. a
+        # revocation that landed in another worker. With SERVER_WORKERS>1 this
+        # still costs one full rebuild per detected sibling commit.
         if _data_version_locked() != _DATA_VERSION:
             _rebuild_index_locked()
         conn.execute(
@@ -323,16 +311,14 @@ def create_session(user_id: str, ttl_s: float,
             " VALUES (?,?,?,?,?,?,NULL)",
             (th, user_id, key_id, csrf_token, now, expires),
         )
-        # Insert the one new row rather than re-reading the whole table.
-        # /auth/login takes any valid key, is throttled only on FAILURES
-        # (`LOGIN_FAILURE_RATE`, so a scripted valid-key login loop is
-        # unthrottled), has no per-user session cap, and rows are reaped only
-        # hourly by `_sessions_purge_loop` in main.py — so a full STEADY-STATE
-        # rebuild here made N logins cost O(N²)
-        # and, because `login` is async and calls this inline, every one of those
-        # rebuilds runs on the event loop. Our own commit does not move
-        # PRAGMA data_version on this connection, so _DATA_VERSION stays valid
-        # without a re-stamp — the pre-write check above is what keeps the
+        # Insert the one new row rather than rebuilding: /auth/login is
+        # throttled only on FAILURES (`LOGIN_FAILURE_RATE`, so a scripted
+        # valid-key login loop is unthrottled), has no per-user session cap,
+        # and rows are reaped only hourly (`_sessions_purge_loop` in main.py),
+        # so a rebuild per login is O(N²) over N logins, on the event loop
+        # (`login` is async and calls this inline). Our own commit does not
+        # move PRAGMA data_version on this connection, so _DATA_VERSION stays
+        # valid without a re-stamp; the pre-write check above keeps the
         # sibling-detection contract in _refresh_if_sibling_committed.
         _SESSION_INDEX[th] = {
             "user_id": user_id,
@@ -446,19 +432,17 @@ def revoke_session(raw_token: str) -> None:
                     pass
                 raise
         finally:
-            # Drop the one key rather than re-reading every live session,
-            # mirroring the incremental insert create_session already does.
-            # The full rebuild here was O(live sessions) on the event loop —
-            # measured ~37 ms at 20 000 rows, and /auth/login is throttled
-            # only on failures (`LOGIN_FAILURE_RATE`) with no per-user cap, so
-            # N is caller-growable. No post-commit re-stamp: our own commit
-            # does not move PRAGMA data_version on this connection, and
-            # re-stamping would swallow a sibling's commit that landed since
-            # the last check. In a finally: a failed write still stops THIS
-            # worker honouring the cookie it was asked to sign out.
+            # Drop the one key, as create_session inserts one: a full rebuild
+            # is O(live sessions) on the event loop (~37 ms at 20 000 rows)
+            # and N is caller-growable (see create_session). No post-commit
+            # re-stamp: our own commit does not move PRAGMA data_version on
+            # this connection, and re-stamping would swallow a sibling's
+            # commit that landed since the last check. In a finally: a failed
+            # write still stops THIS worker honouring the cookie it was asked
+            # to sign out.
             _SESSION_INDEX.pop(th, None)
     if revoked:
-        settings_version.bump_config_version()   # signed-out identity's live streaming idents re-auth
+        settings_version.bump_config_version()
 
 
 def revocation_generation() -> int:
@@ -470,9 +454,10 @@ def revocation_generation() -> int:
     never moves for it. Not `PRAGMA data_version`: every sibling login moves
     that, and every live stream would re-resolve auth on each one.
 
-    When the counter moved, the index is rebuilt before returning: the caller
-    bumps the config version, a live stream then re-authenticates through
-    lookup_session, and a throttled HIT on the stale index would let the
+    When the counter moved past _LAST_REV_GEN (a sibling's revocation; this
+    worker's own logout is pre-adopted by revoke_session), the index is
+    rebuilt before returning: the caller bumps the config version, a live
+    stream then re-authenticates through lookup_session, and a throttled HIT on the stale index would let the
     revoked cookie through and spend the bump. The rebuild is unconditional,
     not gated on `PRAGMA data_version`: _data_version_locked() answers a
     failed header read with the cached value, which would read as "no
