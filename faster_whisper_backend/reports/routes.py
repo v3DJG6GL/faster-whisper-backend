@@ -6,9 +6,7 @@ Two surfaces:
     require_user_webui_host + get_current_user. The form + delete control
     live inline on each .trace-item in /quick-config:
     POST   /quick-config/reports/api/submit                — receiver
-    DELETE /quick-config/reports/api/by-request/{request_id} — caller
-                                                              undoes
-                                                              own row
+    DELETE /quick-config/reports/api/by-request/{request_id} — caller undoes own row
 
   /reports                          — triage page + APIs:
     GET   /reports                  HTML triage page
@@ -403,9 +401,6 @@ async def delete_my_report_api(
     per (user_id, request_id) is enforced by upsert_report, so this
     targets exactly the caller's row. Does NOT touch capture chips —
     reports and captures are independent stores."""
-    # find_by_request_user returns None when user_id is falsy (e.g. an
-    # unauthenticated caller); the 404 path below covers both that and
-    # an authenticated caller whose user_id has no matching report row.
     # In open mode user_id is the literal "(open-mode)" sentinel — a
     # real value — so the query runs and matches the admin's own row.
     # Off the loop (see patch_report_api): both wait on reports_store._lock.
