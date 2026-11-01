@@ -63,7 +63,6 @@ def test_unstable_tail_is_never_committed_until_agreement():
     assert _texts(p.commit()) == []
     assert _texts(p.provisional()) == [" Fieber"]
 
-    # A second agreeing pass finally commits "Fieber"; "Vieber" never made it in.
     p.insert_hypothesis(
         [(0.0, 0.5, " Der"), (0.5, 1.0, " Patient"), (1.0, 1.5, " hat"),
          (1.5, 2.0, " Fieber")], 0.0,
@@ -88,7 +87,6 @@ def test_boundary_ngram_dedup_prevents_double_emission():
     # A new hypothesis that re-emits "Patient" at the seam (start≈1.0).
     p.insert_hypothesis([(1.0, 1.5, " Patient"), (1.5, 2.0, " hat")], 0.0)
     p.commit()
-    # "Patient" appears exactly once; "hat" committed.
     assert p.committed_text == " Der Patient hat"
     assert p.committed_text.count("Patient") == 1
 
@@ -116,7 +114,7 @@ def test_finish_returns_tail_without_reset_then_reset_clears():
     p.commit()
     tail = p.finish()
     assert _texts(tail) == [" hat"]
-    assert p.committed_text == " Der Patient"  # finish() did not change committed
+    assert p.committed_text == " Der Patient"
     p.reset()
     assert p.committed == []
     assert p.provisional() == []
