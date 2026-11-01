@@ -154,14 +154,14 @@ async def _stream_log_lines(request: Request):
     except HTTPException:
         return
     initial = int(getattr(cfg, "LOG_VIEWER_INITIAL_LINES", 2000))
-    # Off the loop, same as /logs/older: this walks the rotation chain
-    # backwards in 8 KB blocks and an async generator inside a
-    # StreamingResponse runs on the event loop, so doing it inline let one
-    # subscriber stall every other request while it read.
+    # Off the loop, same as /logs/older: an async generator inside a
+    # StreamingResponse runs on the event loop, so walking the rotation chain
+    # backwards in 8 KB blocks inline would let one subscriber stall every
+    # other request while it reads.
     # The tail's start offset is sampled in the same thread BEFORE the
-    # backlog read: sampled after the backlog was yielded (which waits on a
-    # slow client), every line logged in between was in neither. Now such a
-    # line shows twice at worst (backlog + tail), never not at all.
+    # backlog read, so a line logged meanwhile shows twice at worst (backlog
+    # + tail) but is never lost; sampled after the backlog is yielded (which
+    # waits on a slow client), such a line would be in neither.
     def _size_then_backlog() -> "tuple[int, list[str]]":
         try:
             size = os.path.getsize(cfg.LOG_FILE)
