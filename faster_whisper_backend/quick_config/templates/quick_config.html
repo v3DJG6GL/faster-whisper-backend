@@ -253,8 +253,7 @@
   .trace-final { color: var(--bold); }
   .trace-final .trace-tag { color: var(--green); }
   details.trace-steps { margin-top: 0.375rem; }
-  /* The disclosure is a REAL button: border, hover, rotating chevron chip,
-     verb-first label. Still a native <details>/<summary> underneath. */
+  /* Styled as a button, but still a native <details>/<summary>. */
   details.trace-steps > summary { list-style: none; display: flex;
     align-items: center; gap: 0.5rem; background: var(--input-bg);
     border: 1px solid var(--border); border-radius: 6px;
@@ -554,12 +553,9 @@ let _lockedSlugs = new Set();
 // role: "admin" (set on <body> by load()) short-circuits the server-side
 // lock guard, so an admin keeps fully editable controls on a locked rule.
 function _isAdmin() { return document.body.classList.contains('role-admin'); }
-// Enforced read-only for a locked rule: disable every control that could
-// mutate it (the enabled switch, the per-type editor's inputs, its
-// "+ add entry" / delete buttons and the per-card Save) and kill the
-// regex-list drag grips. View-only affordances stay live — the cb:map
-// "show N older" toggle and the regex-entry note toggle reveal content,
-// they don't edit it, so the rule stays fully readable.
+// Read-only for a locked rule: every control and drag grip is disabled
+// except the view-only toggles (cb:map "show N older", regex-entry note),
+// which reveal content rather than edit it, so the rule stays readable.
 function _applyLockState(card) {
   card.classList.add('locked');
   card.querySelectorAll('input, select, textarea, button').forEach((el) => {
@@ -1012,10 +1008,9 @@ function renderTrace(entry) {
   }
   item.appendChild(meta);
 
-  // Stage chips: what this run actually DID, and what each stage cost.
-  // Placed above `raw` so "how this run executed" precedes "what it produced".
-  // Rows pushed live over SSE carry no stages until a reload (the push
-  // precedes record_timing); a report on one gets them server-side.
+  // Stage chips sit above `raw`: how the run executed precedes what it
+  // produced. Rows pushed live over SSE carry no stages until a reload (the
+  // push precedes record_timing); a report on one gets them server-side.
   {
     const stages = (Array.isArray(entry.stages) ? entry.stages : [])
       .filter(st => st && st.name);
@@ -1179,9 +1174,6 @@ function renderTrace(entry) {
     item.appendChild(traceTextBlock('final', entry.final || '', 'trace-final'));
   }
 
-  // Action row: "Report" button + (conditional) "✓ reported" badge.
-  // The inline form is lazy — built on first click, kept in DOM after
-  // submit so subsequent visits see the badge.
   const actions = document.createElement('div');
   actions.className = 'trace-actions';
   const reportBtn = document.createElement('button');
@@ -1283,9 +1275,8 @@ function syncReportedBadges() {
 const _WORD_RE = /[\wÀ-ɏ][\wÀ-ɏ\-]*/g;
 
 function _wordifyFinal(form, finalText) {
-  // Tokenize `final` into clickable word spans + track char offsets so a
-  // multi-word chip can slice the original string and preserve any
-  // inter-word punctuation/whitespace.
+  // Char offsets are kept so a multi-word chip can slice the original
+  // string, inter-word punctuation/whitespace included.
   const container = form.querySelector('.rep-final-words');
   container.innerHTML = '';
   form._finalText = finalText || '';
@@ -1350,9 +1341,8 @@ function _buildReportForm(entry) {
     + '  <button type="button" class="rep-remove">Remove report</button>'
     + '  <button type="button" class="rep-submit primary">Submit report</button>'
     + '</div>';
-  // Seed chips from the user's previously-submitted report (if any).
-  // Deep-clone so user edits don't mutate the shared server snapshot;
-  // _serverReportedChips is rewritten on every /state load.
+  // Seed from the user's earlier report, deep-cloned so edits don't mutate
+  // _serverReportedChips (rewritten on every /state load).
   const _seed = _serverReportedChips[entry.request_id || ''];
   form._corrections = (_seed && Array.isArray(_seed.corrections))
     ? JSON.parse(JSON.stringify(_seed.corrections))
@@ -1366,16 +1356,14 @@ function _buildReportForm(entry) {
   form._baseline = JSON.parse(JSON.stringify(form._corrections));
   form._entry = entry;
   _wordifyFinal(form, entry.final || '');
-  // idx_end is the inclusive range end, set on every chip (idx_end === idx
-  // for one word) so range helpers need no special case. The server stores
-  // it only when it differs from idx (core/text_corrections.clean_corrections):
-  // restore it on seeded chips, and strike through the seeded words.
+  // The server stores idx_end only when it differs from idx
+  // (core/text_corrections.clean_corrections): restore it on seeded chips
+  // (see _chipCovers), and strike through the seeded words.
   form._corrections.forEach((c) => {
     if (typeof c.idx !== 'number') return;
     if (typeof c.idx_end !== 'number') c.idx_end = c.idx;
     for (let j = c.idx; j <= c.idx_end; j++) _selectWord(form, j, true);
   });
-  // Show what the user previously submitted right away.
   if (form._corrections.length) {
     _renderCorrections(form);
   }
@@ -1530,9 +1518,8 @@ function toggleCorrection(form, idx, word, shiftKey) {
     _extendLastChip(form, idx);
     return;
   }
-  // Click on a word that's already inside any chip removes that chip.
-  // Splitting a multi-word chip in two is intentionally out of scope —
-  // simpler to nuke and re-create.
+  // A click inside a chip removes the whole chip: splitting a multi-word
+  // chip in two is intentionally out of scope.
   const existingI = form._corrections.findIndex(c => _chipCovers(c, idx));
   if (existingI >= 0) {
     _removeChip(form, existingI);
@@ -1690,9 +1677,8 @@ async function submitReport(form) {
 }
 
 async function removeReport(form) {
-  // Withdraw the user's report for this trace. Reports are an
-  // independent store: removing one does NOT touch any capture's chip
-  // corrections (those are managed at /captures via batch-review).
+  // Reports are an independent store: removing one does NOT touch any
+  // capture's chip corrections (those are managed at /captures via batch-review).
   const entry = form._entry || {};
   const rid = entry.request_id || '';
   if (!rid) {
@@ -1781,7 +1767,7 @@ async function reloadRecent() {
   try {
     // A search term is dictation text, so it goes in a POST body — a query
     // string lands in every access log and in browser history. No term =
-    // plain GET, which stays cacheable/bookmarkable as before.
+    // plain GET, which stays cacheable/bookmarkable.
     const r = q
       ? await api('POST', '/quick-config/recent/search', { q: q })
       : await api('GET', '/quick-config/recent');
@@ -1934,7 +1920,6 @@ function startStream() {
     // the SSE handshake) — it fails the connection permanently. Mirror the
     // /stats recovery: poll a cheap cookie-authed endpoint until it 200s,
     // then catch up via reloadRecent() (deduped) and reopen the stream.
-    // Back off on repeated failures (3s → ×1.7 → cap 30s).
     _setRecentLabel('reconnecting…');
     if (_recoveryTimer) return;
     let delay = 3000;
@@ -1945,7 +1930,7 @@ function startStream() {
         // nulls the timer): tearing that healthy stream down would also wipe
         // the "Load older" pages the user paged in.
         if (!_recoveryTimer) return;
-        // An expired sign-in (the server now ends the stream on one) or
+        // An expired sign-in (the server ends the stream on one) or
         // revoked access: stop polling and say so, as /stats does, instead
         // of retrying a dead endpoint under "reconnecting…" forever.
         if (r.status === 401 || r.status === 403) {
@@ -2292,8 +2277,8 @@ async function fetchState() {
 
 async function load() {
   // Always resolves: a rejected first fetch (server restarting, proxy error
-  // page) used to skip reloadRecent() and startStream() in the bootstrap
-  // chain, leaving the page at "loading…" with no stream to recover on.
+  // page) must not skip reloadRecent() and startStream() in the bootstrap
+  // chain, or the page sits at "loading…" with no stream to recover on.
   try {
     const j = await fetchState();
     if (j) applyState(j);
@@ -2703,8 +2688,8 @@ async function startReapplyJobSilent(n) {
   try { r = await api('POST', '/quick-config/reapply-rules'); }
   catch (e) { fail(String(e)); return; }
   if (!r.ok) { fail('HTTP ' + r.status); return; }
-  // Reset any prior interval before scheduling — guards against a double
-  // click triggering two concurrent polls.
+  // Reset any prior interval before scheduling: a Save while an earlier
+  // job is still polling would otherwise run two concurrent polls.
   if (_stripPoll) { clearInterval(_stripPoll); _stripPoll = null; }
   const status = await _pollStripOnce();
   // Keep polling unless the job is already over: status==='done'|'error'
@@ -2749,11 +2734,10 @@ if (_recentSearchInput) {
 }
 
 load().then(() => {
-  // Populate the recent list via a plain fetch FIRST so the panel no longer
-  // depends on the SSE replay succeeding (a single failed /stream handshake
-  // used to leave it empty). reloadRecent() also seeds the dedupe set + the
-  // "Load older" cursor before the stream opens, so the on-connect replay is
-  // skipped as already-seen rather than duplicated.
+  // Populate the recent list via a plain fetch FIRST so a failed /stream
+  // handshake cannot leave the panel empty. reloadRecent() also seeds the
+  // dedupe set + the "Load older" cursor before the stream opens, so the
+  // on-connect replay is skipped as already-seen rather than duplicated.
   return reloadRecent();
 }).then(() => {
   startStream();
