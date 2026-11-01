@@ -1,19 +1,14 @@
-"""Tests for captures_reapply.start()/status() worker management.
+"""Tests for captures_reapply: start()/status() worker management and the
+_run() worker body.
 
-_run() runs the whole rules pipeline over the entire captures DB, so we
-never run the real worker: threading.Thread is monkeypatched to a stub
-that records the target but never executes it. We assert start() is
-idempotent (a second call while "running" returns state without spawning a
-2nd worker) and that status() returns a dict copy of the live state.
+The start() tests never run the real worker, because it walks the whole
+captures DB: threading.Thread is replaced by a stub that records the target
+and does not execute it. The _run() tests do execute the worker body,
+synchronously and against a temp captures DB, with the engine's
+`_postprocess_text` and `build_ident` replaced by fakes.
 
-The _run() tests at the bottom DO execute the worker body, synchronously and
-against a temp captures DB, with the engine's `_postprocess_text` and
-`build_ident` replaced by fakes — the start() tests alone left the whole
-row loop uncovered.
-
-The conftest autouse fixture resets _worker/_state between tests through
-captures_reapply._reset_for_tests, which restores the canonical idle state
-(the shape start() expects); _IDLE below pins that shape.
+The conftest autouse fixture calls captures_reapply._reset_for_tests between
+tests, which restores the canonical idle state.
 """
 
 import logging
@@ -60,21 +55,12 @@ def fake_thread(monkeypatch):
     return _FakeThread
 
 
-# ---------------------------------------------------------------------------
-# status()
-# ---------------------------------------------------------------------------
-
 def test_status_returns_dict_copy():
     s = captures_reapply.status()
     assert s == _IDLE
-    # Mutating the returned dict must not affect module state.
     s["status"] = "tampered"
     assert captures_reapply._state["status"] == "idle"
 
-
-# ---------------------------------------------------------------------------
-# start()
-# ---------------------------------------------------------------------------
 
 def test_start_spawns_one_worker(fake_thread):
     state = captures_reapply.start()
@@ -86,12 +72,10 @@ def test_start_spawns_one_worker(fake_thread):
     assert t.daemon is True
     assert t.name == "reapply-rules"
     assert t.started is True
-    # The module tracks the live worker.
     assert captures_reapply._worker is t
 
 
 def test_start_resets_counters(fake_thread):
-    # Pre-dirty the state to prove start() resets it.
     captures_reapply._state.update({
         "status": "done", "processed": 99, "captures_updated": 5,
         "groups_updated": 3, "error": "old",
@@ -111,10 +95,9 @@ def test_start_is_idempotent_while_running(fake_thread):
     assert len(fake_thread.created) == 1
     worker1 = captures_reapply._worker
 
-    # Second call while running: returns current state, no 2nd worker spawned.
     second = captures_reapply.start()
     assert second["status"] == "running"
-    assert len(fake_thread.created) == 1  # still just one
+    assert len(fake_thread.created) == 1
     assert captures_reapply._worker is worker1
 
 
@@ -141,10 +124,6 @@ def test_status_reflects_running_after_start(fake_thread):
     captures_reapply.start()
     assert captures_reapply.status()["status"] == "running"
 
-
-# ---------------------------------------------------------------------------
-# _run() — the worker body, executed for real
-# ---------------------------------------------------------------------------
 
 @pytest.fixture
 def fake_pipeline(monkeypatch):
