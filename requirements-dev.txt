@@ -7,13 +7,12 @@
 # tools are listed here.
 pytest>=9.2.0
 pytest-cov>=7.1.0
-# Runs the suite across all cores (`-n auto`): serial, the ~4000 tests with
-# coverage take ~16 min, on a 22-core box under 3. pytest-cov merges the
-# workers' coverage data.
+# Runs the suite across all cores (`-n auto`); serial, the suite with coverage
+# takes several times longer. pytest-cov merges the workers' coverage data.
 pytest-xdist>=3.8.0
 # Starlette's TestClient (used by the route integration tests) prefers httpx2;
 # without it, TestClient falls back to httpx with a deprecation warning. Pinned
 # here (Renovate keeps it current).
 httpx2>=2.16.0
-# Linter; config in ruff.toml, run by the Linux CI legs (`ruff check .`).
+# Linter; config in ruff.toml, run by the Linux CI leg (`ruff check .`).
 ruff>=0.17.3
