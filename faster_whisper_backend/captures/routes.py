@@ -1,25 +1,8 @@
-"""Admin /captures page + JSON APIs for Whisper fine-tuning data review.
+"""/captures page + JSON APIs for reviewing Whisper fine-tuning captures and packed samples.
 
-Layout:
-
-  GET    /captures                       HTML page (admin host + token)
-  GET    /captures/api/list              paginated metadata (no audio)
-  GET    /captures/api/{cid}             single row incl. word timestamps
-  GET    /captures/api/by-request/{rid}  cross-link from /reports
-  GET    /captures/api/{cid}/audio       streams the raw audio (Range OK)
-  PATCH  /captures/api/{cid}             corrections / corrected_text /
-                                         admin_notes / status
-  DELETE /captures/api/{cid}             single delete
-  POST   /captures/api/clear             typed-confirmation wipe
-  GET    /captures/api/export            tar.gz (manifest.jsonl + audio/)
-
-Mutating routes use a HEADER-ONLY admin-token guard (no ?token= fallback).
-The audio endpoint is GET and also header-only — browsers consume it via
-fetch() + URL.createObjectURL(blob), not <audio src=...>, so no token in
-URL is needed.
-
-Word-timestamp + chip schema matches /reports' (text_corrections), so a
-future "promote a capture into a report" flow needs no translation.
+Auth is per route (see the comment above `router`). Word-timestamp + chip schema matches
+/reports' (text_corrections), so a future "promote a capture into a report" flow needs no
+translation.
 """
 from __future__ import annotations
 
@@ -65,14 +48,6 @@ from faster_whisper_backend.captures import vad_trim as audio_vad_trim
 
 logger = logging.getLogger("whisper-api")
 
-# Router-level dependency: only the IP gate. The page-permission gate
-# (`require_page("captures")`) must NOT live at router level because it
-# transitively requires a bearer (via get_current_user), and the HTML
-# page is fetched by browser navigation which can't pass Authorization
-# headers — the login modal runs in the page's own JS. Page-perm gates
-# therefore live per-API-route, where fetch() already attaches the
-# bearer. Mutation routes additionally `Depends(require_admin)` for
-# system-wide writes (clear, reprocess-all, export).
 # One dedicated worker for the merge proposer. NOT the default executor:
 # that is the pool main.transcribe runs CT2 inference in, and a proposer sweep
 # is seconds of pure CPU that any captures-page holder can trigger without a
@@ -99,22 +74,20 @@ def _proposer_pool() -> "concurrent.futures.ThreadPoolExecutor":
 _corrections_write_lock = threading.Lock()
 
 
+# Router-level dependency is only the host gate: require_page("captures")
+# needs credentials, and a keyless browser navigation must still load the
+# HTML shell (the login modal runs in its JS). So the page gate is per API
+# route; system-wide writes (clear, reprocess-all, export) add require_admin.
 router = APIRouter(
     prefix="/captures",
     dependencies=[Depends(require_user_webui_host)],
 )
 
 
-# ---------------------------------------------------------------------
-# Rate limit per identity on the audio-streaming endpoints
-# ---------------------------------------------------------------------
-# Sized for how the review UI actually behaves, not for a steady cadence:
-# working a captures backlog means auditioning card after card, plus the
-# merge modal's preview and the sample players, so a reviewer produces bursts
-# of dozens of fetches within a few seconds. The budget is per IDENTITY now
-# rather than per host, so a shared office egress IP no longer pools every
-# reviewer's clicks into one bucket.
-
+# Audio-endpoint rate limit. Sized for bursts, not a steady cadence:
+# auditioning card after card plus the merge preview and sample players fires
+# dozens of fetches in seconds. Per identity, not per host, so reviewers
+# behind one office egress IP don't share a bucket.
 _audio_rate = rate_limit.FixedWindow(
     config_field="CAPTURES_AUDIO_RATE_PER_MIN",
     window_s=60.0,
@@ -128,13 +101,10 @@ def _audit_cross_user_read(
     user: dict[str, Any], row: dict[str, Any] | None,
     kind: str, row_id: str,
 ) -> None:
-    """Emit an INFO line when a non-admin viewer reads a row owned by a
-    different user (scope=all path). Self-reads + admin-host requests
-    that already have access don't audit — only the data-leaving-the-
-    user-pool case is interesting. Cheap; makes DSGVO Art. 9 data-
-    subject access requests answerable from the standard log stream.
-    Silent for admin users (they bypass scope and would otherwise
-    audit every read on their own dashboard)."""
+    """INFO-log a non-admin's read of another user's row (scope=all), so
+    DSGVO Art. 9 access requests are answerable from the log stream.
+    Self-reads are silent, and so are admins: they bypass scope and would
+    audit every read on their own dashboard."""
     if user.get("is_admin"):
         return
     caller_uid = user.get("user_id") or ""
@@ -172,15 +142,11 @@ def _assert_member_sample_not_locked(
         raise HTTPException(status.HTTP_409_CONFLICT, "sample is locked")
 
 
-# ---------------------------------------------------------------------
-# Schemas
-# ---------------------------------------------------------------------
-
 class CorrectionIn(BaseModel):
     model_config = {"extra": "forbid"}
-    # The store keeps CAP_CORRECTION_FIELD chars of each: past that a Save
-    # answered 200 while the export applied a cut `wrong` (rewriting only part
-    # of the span) or a cut `correct`. The page never sends more.
+    # Reject past the store's CAP_CORRECTION_FIELD truncation: a silently cut
+    # `wrong` would make the export rewrite only part of the span (or apply a
+    # cut `correct`). The page never sends more.
     wrong: str = Field(default="", max_length=text_corrections.CAP_CORRECTION_FIELD)
     correct: str = Field(default="", max_length=text_corrections.CAP_CORRECTION_FIELD)
     idx: int | None = None
@@ -228,10 +194,6 @@ class ClearIn(BaseModel):
     confirm: str = Field(default="", max_length=32)
 
 
-# ---------------------------------------------------------------------
-# Page
-# ---------------------------------------------------------------------
-
 @router.get(
     "",
     response_class=HTMLResponse,
@@ -244,10 +206,6 @@ async def captures_page() -> HTMLResponse:
     html = html.replace("{{SAMPLE_CAP_S}}", f"{cap_s:g}")
     return HTMLResponse(html, media_type="text/html")
 
-
-# ---------------------------------------------------------------------
-# JSON APIs
-# ---------------------------------------------------------------------
 
 # Cap on the admin-only `?user_id=a,b,...` list (one bind variable each).
 _MAX_OWNER_FILTER_IDS = 200
@@ -317,11 +275,9 @@ async def list_captures_api(
             "user_id": user.get("user_id"),
         }, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
 
-    # Query AND serialization off the loop, exactly like
-    # reports_routes.list_reports_api: up to 1000 rows each carrying four
-    # 50k-char text columns plus a per-row json.loads, then two full-table
-    # aggregates, then JSONResponse's own json.dumps of the whole body — of
-    # which the serialization was the larger half there (1.8 s of 2.17 s).
+    # Query AND serialization off the loop: up to 1000 rows of four 50k-char
+    # text columns + a per-row json.loads, two full-table aggregates, then the
+    # json.dumps of the whole body (1.8 s of 2.17 s in the /reports twin).
     # Rows are plain types, so these are the same bytes JSONResponse emits.
     body = await asyncio.to_thread(_render)
     return Response(content=body, media_type="application/json")
@@ -401,24 +357,16 @@ async def propose_merges_api(
                 422, f"user_id: at most {_MAX_OWNER_FILTER_IDS} ids")
         if ids:
             owners = ids[0] if len(ids) == 1 else ids
-    # Off the event loop AND off the default executor. On a cold
-    # _TRIM_DUR_CACHE (every restart) this walks up to
-    # the hardcoded 500-row proposer window
-    # (captures_merge_proposer._propose_merges_locked) doing a PCM read plus a
-    # full VAD pass per row,
-    # and the candidate walk itself is O(N*M^2) — measured 25-144 s on a
-    # 500-row bucket. asyncio.to_thread would put that on the DEFAULT executor,
-    # which is the pool main.transcribe runs CT2 inference in, so concurrent
-    # sweeps could starve transcription outright. The proposer gets one
-    # dedicated worker instead: same proposals, same caller latency, but it can
-    # never hold more than one thread no matter how many callers ask.
+    # On _PROPOSER_POOL, not to_thread (see there): on a cold _TRIM_DUR_CACHE
+    # (every restart) a sweep does a PCM read + full VAD pass per row of the
+    # 500-row proposer window, and the candidate walk is O(N*M^2) — measured
+    # 25-144 s on a 500-row bucket.
     proposals, cached = await asyncio.get_running_loop().run_in_executor(
         _proposer_pool(),
         functools.partial(
             captures_merge_proposer.propose_merges,
-            # Only scope=all callers can narrow via ?user_id=; the proposer
-            # ignores user_id_filter when is_admin=False (caller scoped to
-            # caller_user_id partition).
+            # is_admin means scope=all here; False pins the sweep to
+            # caller_user_id and ignores user_id_filter.
             user_id_filter=owners,
             is_admin=sees_all,
             caller_user_id=caller_uid,
@@ -476,10 +424,8 @@ async def by_request_id_api(
             rows = [r for r in rows if r.get("user_id") == caller_uid]
         usernames = api_keys_store.get_usernames([r.get("user_id") for r in rows])
         for r in rows:
-            # This route hands a scope=all non-admin the FULL capture row —
-            # raw/final text and the owner's resolved username — for someone
-            # else's capture, exactly the case the eleven read-by-id siblings
-            # audit. It was the only cross-user read-by-key path with no log line.
+            # A scope=all non-admin gets someone else's FULL row here (raw/final
+            # text + owner username), so audit it like the read-by-id routes.
             _audit_cross_user_read(user, r, "capture-by-request", r.get("id") or "")
             _apply_trim_to_capture_row(r, check_file=True)
             r["username"] = usernames.get(r.get("user_id"))
@@ -535,7 +481,7 @@ async def list_samples_api(
     and may narrow via the admin-only `?user_id=...` query. Optional
     `?status=` filter accepts the same enum as PatchSampleIn
     (new/reviewed/ready/dismissed); unknown values fall through to no
-    filter, matching list_captures_api's tolerance.
+    filter.
 
     Paged newest-first: pass the `next` object from the previous response
     back as `?before_ts=&before_id=` to fetch the next page. `next` is null on
@@ -546,8 +492,7 @@ async def list_samples_api(
     would otherwise resolve to the single-capture handler and 404 — the
     UI's `load()` then silently swallows the failure and renders no
     groups, making merged groups invisible after creation."""
-    # Same owner scope as the list: `?user_id=a,b` narrows to several
-    # speakers (the raw string bound as `user_id = ?` matched nothing).
+    # Same owner scope as the list: `?user_id=a,b` narrows to several speakers.
     scope = _effective_owner_filter(user, user_filter)
 
     def _gather() -> tuple[list[dict[str, Any]], bool]:
@@ -586,16 +531,9 @@ async def list_samples_api(
                                        if m.get("request_id")]
         return groups, has_more
 
-    # OFF the loop, like propose_merges_api / get_sample_audio_api /
-    # regenerate_sample_api above. Was one full get_capture per member
-    # (measured 3.0 s of frozen event loop for 300 groups x 4 members at
-    # 234 KB of words each); now one light query per group, still offloaded
-    # because a 200-group page is hundreds of queries.
+    # Off the loop: a 200-group page is hundreds of member queries (full
+    # per-member hydration once froze the loop 3.0 s for 300 groups x 4).
     groups, has_more = await asyncio.to_thread(_gather)
-    # Cursor for the next page, or null when this was the last one. The page
-    # loads more on demand rather than rendering the whole table at once —
-    # each group costs a member query, so an
-    # unbounded first paint was both slow and unbounded in memory.
     nxt = None
     if has_more and groups:
         last = groups[-1]
@@ -657,7 +595,6 @@ async def get_capture_api(
 # (filename-derived extensions lie). Browsers are picky: Safari refuses
 # m4a/mp4 unless Content-Type is exactly `audio/mp4`.
 _AUDIO_SNIFFS: tuple[tuple[bytes, int, str], ...] = (
-    # offset 0
     (b"RIFF", 0, "audio/wav"),
     (b"OggS", 0, "audio/ogg"),
     (b"ID3",  0, "audio/mpeg"),
@@ -666,7 +603,6 @@ _AUDIO_SNIFFS: tuple[tuple[bytes, int, str], ...] = (
     (b"\xFF\xF2", 0, "audio/mpeg"),
     (b"fLaC", 0, "audio/flac"),
     (b"\x1A\x45\xDF\xA3", 0, "audio/webm"),  # EBML — webm/matroska
-    # offset 4
     (b"ftyp", 4, "audio/mp4"),  # m4a / mp4 audio
 )
 
@@ -680,7 +616,6 @@ def _sniff_audio_mime(abs_path: str, fallback_ext: str) -> str:
     for sig, off, mime in _AUDIO_SNIFFS:
         if head[off:off + len(sig)] == sig:
             return mime
-    # Fallback to extension-based guess
     ext = (fallback_ext or "").lower().lstrip(".")
     return {
         "wav": "audio/wav", "mp3": "audio/mpeg", "ogg": "audio/ogg",
@@ -783,7 +718,7 @@ def _bulk_guard(
     unknown OR cross-user → `not_found` (uniform, no existence oracle),
     member of a locked sample (non-admin) → `locked`. Accepted cross-user
     rows are audit-logged like their single-id counterparts. Ids are
-    de-duplicated preserving order."""
+    de-duplicated preserving order; empty ids are dropped unreported."""
     rows: list[dict[str, Any]] = []
     skipped: list[dict[str, str]] = []
     wanted = list(dict.fromkeys(i for i in ids if isinstance(i, str) and i))
@@ -849,7 +784,8 @@ async def bulk_status_api(
         updated.sort(key=lambda u: pos.get(u["id"], len(pos)))
         # A row deleted between the guard and the write (another tab, the
         # retention evictor) is absent from `updated`; report it, as
-        # bulk-delete does, so updated + skipped covers every submitted id.
+        # bulk-delete does, so updated + skipped covers every distinct
+        # non-empty submitted id.
         done = {u["id"] for u in updated}
         skipped.extend({"id": i, "reason": "not_found"}
                        for i in ok_ids if i not in done)
@@ -1033,10 +969,6 @@ async def clear_captures_api(payload: ClearIn, request: Request) -> JSONResponse
     return JSONResponse({"ok": True, "deleted": n})
 
 
-# ---------------------------------------------------------------------
-# Per-capture pipeline reprocess (re-run rules on `raw`)
-# ---------------------------------------------------------------------
-
 @router.post(
     "/api/{cid}/reprocess",
     dependencies=[Depends(require_page("captures"))],
@@ -1122,9 +1054,10 @@ async def reprocess_capture_api(
 )
 async def reprocess_all_captures_api() -> JSONResponse:
     """Trigger the bulk pipeline-reapply job — same worker used by
-    /quick-config/reapply-rules. Idempotent: a second call while the
-    job is running returns the current state instead of spawning a
-    duplicate worker. Use after PIPELINE_RULES edits to bring every
+    /quick-config/reapply-rules. A second call while the job is running
+    spawns no duplicate worker: it returns the current state and queues
+    one more full pass, so rules saved mid-run reach the rows the running
+    pass already did. Use after PIPELINE_RULES edits to bring every
     capture's `final` + `text_for_training` (and downstream group
     `transcript`) in line with the current rules."""
     return JSONResponse(captures_reapply.start())
@@ -1147,9 +1080,10 @@ async def reprocess_all_status_api() -> JSONResponse:
 async def reprocess_vad_api() -> JSONResponse:
     """Trigger the bulk VAD/silence re-merge job: rebuild every sample's
     merged WAV with the CURRENT global silence settings (skips locked
-    samples; over-cap samples are flagged stale, never truncated). Idempotent:
-    a second call while running returns the current state. Use after editing
-    the global Sample-sizing / Silence-trim settings."""
+    samples; over-cap samples are flagged stale, never truncated). A second
+    call while running returns the current state and queues one more full
+    pass, so settings saved mid-run reach the samples already rebuilt. Use
+    after editing the global Sample-sizing / Silence-trim settings."""
     return JSONResponse(captures_vad_reprocess.start())
 
 
@@ -1162,19 +1096,14 @@ async def reprocess_vad_status_api() -> JSONResponse:
     return JSONResponse(captures_vad_reprocess.status())
 
 
-# ---------------------------------------------------------------------
-# Capture samples (packed training clips within the configured duration cap)
-# ---------------------------------------------------------------------
-
-# Join strategy + inter-member silence are GLOBAL admin settings now
+# Join strategy + inter-member silence are global settings
 # (cfg.CAPTURES_SAMPLE_JOIN_STRATEGY / cfg.CAPTURES_VAD_MARGIN_SAMPLE_INTERNAL_MS),
-# not per-request — so the merge/preview/patch payloads no longer carry them.
+# so the merge/preview/patch payloads carry neither.
 _MAX_GROUP_MEMBERS = 30
 # A group's chips are the projection of ALL its members' chips, so the
 # group-level schemas bound the whole projection; the binding limit is per
-# member (CAP_CORRECTIONS), checked with over_cap after the split. Bounding
-# the group list by the per-member cap 422'd every save of a group whose
-# members together held more than 200 chips.
+# member (CAP_CORRECTIONS), checked with over_cap after the split (the
+# per-member cap here would 422 a group whose members hold >200 chips).
 _CAP_GROUP_CORRECTIONS = text_corrections.CAP_CORRECTIONS * _MAX_GROUP_MEMBERS
 
 
@@ -1215,7 +1144,7 @@ class PatchSampleIn(BaseModel):
 
 
 def _global_join_strategy() -> str:
-    """Transcript join strategy, sourced from the global setting."""
+    """The global transcript join strategy; any unknown value falls back to "space"."""
     j = getattr(cfg, "CAPTURES_SAMPLE_JOIN_STRATEGY", "space")
     return j if j in ("space", "period_space") else "space"
 
@@ -1228,24 +1157,16 @@ def _shift_word_times(
     keep_all: bool = False,
 ) -> list[dict[str, Any]]:
     """Return a NEW list with each item's start/end shifted by -lead_ms/1000
-    and clamped to [0, eff_duration_s] (when given).
+    and clamped to [0, eff_duration_s] (when given); input dicts are untouched.
 
-    Used after a VAD trim where the served audio is shorter than the
-    original: stored words/segments live in original-audio time so the
-    DB stays canonical; this helper rebases them onto the trimmed
-    audio's timeline so audio.currentTime alignment is correct.
+    Stored words/segments live in original-audio time so the DB stays
+    canonical; this rebases them onto the VAD-trimmed audio's timeline so
+    audio.currentTime alignment is correct.
 
     Items whose interval lies entirely outside [0, eff_duration_s] are
     dropped — they map to audio that was cut away — unless `keep_all`, which
     keeps them as zero-length entries clamped to the nearest edge (words: chip
-    idx counts raw words, see _emit_member_words). All other fields
-    (word, raw_word, removed, member_idx, …) are preserved verbatim.
-    Returns a deep-enough copy (dicts re-built so the originals are
-    untouched).
-
-    Returns an empty list when items is empty / None. Returns items
-    unchanged (as a fresh list) when both lead_ms and eff_duration_s
-    indicate no work (no shift, no clamp)."""
+    idx counts raw words, see _emit_member_words)."""
     if not items:
         return []
     shift_s = float(lead_ms or 0) / 1000.0
@@ -1297,8 +1218,6 @@ def _apply_trim_to_capture_row(row: dict[str, Any], check_file: bool = False) ->
     lead = row.get("audio_trim_lead_ms")
     trail = row.get("audio_trim_trail_ms")
     if (not lead and not trail) or (check_file and _served_trimmed_path(row) is None):
-        # Still expose effective_audio_s equal to audio_s
-        # so consumers can use a single field uniformly.
         row["effective_audio_s"] = float(row.get("audio_s") or 0.0)
         return
     lead_ms = int(lead or 0)
@@ -1319,11 +1238,12 @@ def _validate_merge_payload(
     *,
     enforce_cap: bool = True,
 ) -> tuple[list[dict[str, Any]], str, list[str], int]:
-    """Shared validation for create_sample_api and the preview-audio endpoint.
+    """Shared validation for create_sample_api and the preview / estimate endpoints.
 
     Validates: deduped member_ids, every capture exists, none is already in
-    a group, all members belong to the same user (and the caller is either
-    that user or admin), audio files are present on disk, and — when
+    a group, all members belong to the same user (whom the caller's scope may
+    read: the owner, or any scope=all caller incl. admin), audio files are
+    present on disk, and — when
     `enforce_cap` — the TRIMMED merged duration (per-member VAD trim + inter-
     segment silence) is within the configured cap. The cap is measured on trimmed audio because
     that's what the merged WAV actually is (and what the proposer packs to);
@@ -1350,13 +1270,10 @@ def _validate_merge_payload(
             raise HTTPException(
                 status.HTTP_404_NOT_FOUND, f"capture {mid} not found",
             )
-        # Enforce the scope guard per-member BEFORE revealing any state
-        # (already-in-sample / audio-missing) — otherwise a scope=own caller
-        # could probe another user's capture id for existence + state. scope=all
-        # (incl. admin) bypasses; scope=own requires the caller to BE the owner.
-        # 404 (not 403) matches the captures detail endpoints — don't leak
-        # existence. detail matches the missing branch above byte-for-byte so
-        # the body doesn't become the existence oracle the status closes.
+        # Scope guard per member BEFORE revealing any state (already-in-sample
+        # / audio-missing), so a scope=own caller cannot probe another user's
+        # capture id. 404 with the not-found branch's exact detail, so neither
+        # status nor body is an existence oracle.
         user["permissions"].assert_can_read_row(
             cap, "captures", user.get("user_id") or "",
             detail=f"capture {mid} not found",
@@ -1396,16 +1313,14 @@ def _validate_merge_payload(
             status.HTTP_400_BAD_REQUEST, "members must all share one language",
         )
     owner_user_id = next(iter(user_ids))
-    # Re-assert at the resolved owner (defense-in-depth; the per-member guard in
-    # the loop above already enforced this for every member). scope=all (incl.
-    # admin) bypasses; scope=own requires the caller to BE the owner.
+    # Re-assert at the resolved owner: defense-in-depth, the per-member guard
+    # in the loop already enforced this.
     user["permissions"].assert_can_read_row(
         {"user_id": owner_user_id}, "captures", user.get("user_id") or "",
     )
-    # Audit the cross-user merge surface so a non-admin scope=all caller
-    # reading another user's captures via /groups, /preview-audio,
-    # /preview-words or /preview-save-chips is recorded — matches the
-    # per-row audit calls at every other capture/group endpoint.
+    # Audit a non-admin scope=all caller merging another user's captures; every
+    # merge endpoint (create, /preview-audio, /preview-words, /preview-save-chips,
+    # /merge-estimate) validates through here, like the per-row audits elsewhere.
     _audit_cross_user_read(
         user, {"user_id": owner_user_id}, "merge",
         ",".join(member_ids[:3]) + ("+" if len(member_ids) > 3 else ""),
@@ -1454,9 +1369,7 @@ def _preview_member_trims(
     max_gap = int(getattr(cfg, "CAPTURES_VAD_MARGIN_SAMPLE_INTERNAL_MS", 300))
     join_ms = int(capture_samples._global_silence_ms())
     trims: dict[str, Any] = {}
-    # Mirror merge_wavs' uniform layout: leading edge, then bodies joined by
-    # `join_ms`, stamping each member's absolute offset so the preview karaoke
-    # lines up with the audio /preview-audio streams.
+    # Mirror merge_wavs' uniform layout: leading edge, then bodies joined by `join_ms`.
     cursor_ms = edge
     first = True
     for mid, p in zip(member_ids, member_paths):
@@ -1466,9 +1379,7 @@ def _preview_member_trims(
                 pcm, n, edge_pad_ms=edge, max_internal_gap_ms=max_gap,
             )
         except Exception:
-            # merge_wavs raises on the same failure, so /preview-audio fails too;
-            # abandon the trim map entirely rather than emit a partial one that
-            # would desync this member's karaoke from the rest.
+            # merge_wavs raises on the same failure, so /preview-audio fails too.
             return {}
         if not first:
             cursor_ms += join_ms
@@ -1495,25 +1406,22 @@ async def create_sample_api(
 
     Server-enforced invariants:
       - all members exist, are not yet in a sample, are all owned by the
-        same user (and either the caller is that user OR is admin)
+        same user (and either the caller is that user OR has scope=all on captures)
       - total audio + gap silence within the configured duration cap
       - members' audio files match (1 ch, 16 bit, 16 kHz)
     """
     import uuid as _uuid
 
     member_ids = payload.member_ids
-    # OFF the loop: _validate_merge_payload runs a Silero VAD pass per member
+    # Off the loop: _validate_merge_payload runs a Silero VAD pass per member
     # and _build_merged_wav runs another plus a WAV write with fsync — up to 30
-    # members per call, with no rate limit. The sibling routes that touch the
-    # same helpers (get_sample_audio_api, regenerate_sample_api) were already
-    # offloaded for exactly this reason; this one was missed.
+    # members per call, with no rate limit.
     captures, owner_user_id, member_paths, _total_audio_ms = (
         await asyncio.to_thread(
             _validate_merge_payload, member_ids, capture_samples._global_silence_ms(), user)
     )
 
-    # Build merged WAV — sid generated upfront so the build path is
-    # known before the DB insert (mirrors captures_store).
+    # sid up front: the merged WAV is written at the sid path before the DB insert.
     sid = _uuid.uuid4().hex
     # Off the loop: placing chips aligns each chip-carrying member's words.
     transcript = await asyncio.to_thread(
@@ -1529,11 +1437,8 @@ async def create_sample_api(
             silence_ms=capture_samples._global_silence_ms(),
         )
     )
-    # Derive language from the first member with a populated value —
-    # Whisper detects language per-clip; members of the same group should
-    # all share it, but if a member somehow has an empty language we
-    # tolerate that and fall through to the next one rather than
-    # emitting an empty `language` in the export manifest.
+    # First non-empty member language (validation already refused a mixed
+    # group), so a member with no language never empties the manifest field.
     group_language = ""
     for _c in captures:
         _lang = (_c.get("language") or "").strip()
@@ -1608,8 +1513,7 @@ async def preview_merge_audio_api(
             capture_samples._global_silence_ms(), user)
     )
 
-    # tempfile.NamedTemporaryFile(delete=False) so FileResponse can stream
-    # the closed file; _TempFileResponse unlinks it however the response ends.
+    # mkstemp + close so FileResponse can stream the closed file; _TempFileResponse unlinks it however the response ends.
     fd, tmp_path = tempfile.mkstemp(prefix="preview_merge_", suffix=".wav")
     os.close(fd)
     try:
@@ -1642,10 +1546,8 @@ async def preview_merge_audio_api(
         path=tmp_path,
         media_type="audio/wav",
         filename="preview.wav",
-        # Merged dictation audio. FileResponse otherwise emits only
-        # ETag/Last-Modified, which makes the body heuristically cacheable by
-        # any shared cache in front of the app — the same reason get_audio_api
-        # and get_sample_audio_api send this.
+        # Merged dictation audio: FileResponse alone emits only ETag/Last-Modified,
+        # which makes the body heuristically cacheable by a shared cache.
         headers={"Cache-Control": "no-store"},
     )
 
@@ -1664,21 +1566,19 @@ async def preview_merge_words_api(
     UI overlay karaoke highlighting AND seed the chip-correction box on
     the preview panel without persisting a group row.
 
-    Pure CPU; no rate-limit (bounded by ≤30 members × few hundred words +
-    memoized per-word _postprocess_text). Same validation gates as the
+    No rate limit; the per-member PCM read + VAD trim and the chip
+    alignment run off the event loop. Same validation gates as the
     audio endpoint."""
     captures, _owner, member_paths, _total_audio_ms = (
         await asyncio.to_thread(
             _validate_merge_payload, payload.member_ids,
             capture_samples._global_silence_ms(), user)
     )
-    # `_preview_member_trims` must be called INSIDE the thread. As a
-    # functools.partial argument it was evaluated eagerly on the event loop,
-    # which is where its blocking PCM read + uncached Silero-VAD pass per
-    # member (up to 30) then ran — ~2 ms of loop block per second of member
-    # audio, and _validate_merge_payload's cap is on the TRIMMED total so
-    # silence-heavy members are not bounded by it. The sibling
-    # preview_merge_audio_api already does its VAD inside merge_wavs.
+    # `_preview_member_trims` must run INSIDE the thread (a functools.partial
+    # argument is evaluated eagerly, on the loop): a blocking PCM read +
+    # uncached Silero-VAD pass per member (up to 30), ~2 ms per second of audio,
+    # and the cap is on the TRIMMED total so silence-heavy members are not
+    # bounded by it.
     # The transcript too: placing chips aligns each chip-carrying member.
     def _build() -> tuple[list[dict[str, Any]], str]:
         words = _build_merged_words(
@@ -1821,10 +1721,6 @@ def _insert_sample_with_sid(
 ) -> None:
     """Direct insert that honours a pre-allocated sid (needed because the
     audio file is written at the sid path before this call).
-
-    Group chip state lives on the member captures, not on the group
-    row — every read re-projects from members — so no chip plumbing
-    appears here.
 
     The member UPDATE's rowcount is the concurrency gate: create_sample_api
     awaits between _validate_merge_payload and this insert, so a
@@ -2048,10 +1944,9 @@ def _keep_anchorless(
 ) -> list[dict[str, Any]]:
     """`chips` (a member's share of a split group list) plus the member's
     stored anchorless chips. Those have no global word index, so the
-    projection leaves them out and the split cannot hand them back; a
-    REPLACE of the member's list with the split result alone deleted them.
-    `clean_corrections` keeps such chips and `_apply_chips_to_text` applies
-    them, so they are kept as they are."""
+    projection leaves them out and the split cannot hand them back;
+    replacing the member's list with the split result alone would delete
+    chips that `clean_corrections` keeps and `_apply_chips_to_text` applies."""
     keep = [c for c in (existing or [])
             if isinstance(c, dict) and not _has_anchor(c)]
     return chips + keep if keep else chips
@@ -2098,10 +1993,7 @@ def _enrich_sample(g: dict[str, Any]) -> dict[str, Any]:
         merged_lead_trim_ms=int(g.get("merged_lead_trim_ms") or 0),
         merged_duration_ms=int(g.get("merged_duration_ms") or 0),
     )
-    # Effective duration mirrors the singleton field: equals
-    # merged_duration_ms / 1000 since merged_duration_ms is already the
-    # post-trim value. Exposed for a uniform display shape with
-    # singletons.
+    # Mirrors the singleton field; merged_duration_ms is already post-trim.
     g["effective_audio_s"] = float(g.get("merged_duration_ms") or 0) / 1000.0
     return g
 
@@ -2109,14 +2001,11 @@ def _enrich_sample(g: dict[str, Any]) -> dict[str, Any]:
 def _refresh_final_if_stale(
     row: dict[str, Any], *, parent_locked: bool | None = None,
 ) -> None:
-    """Recompute `final` AND `text_for_training` from `raw` via the
-    current pipeline. If either differs from what's stored, write it
-    back and update the row in place.
-
-    This is the per-row self-heal that keeps fetched captures
-    rule-current without requiring the user to click "Re-apply rules"
-    first. The bulk reapply job is still useful for unfetched captures
-    (export, retention sweep).
+    """Per-row self-heal: recompute `final` and `text_for_training` from
+    `raw` with the current pipeline and write back what changed, so a
+    fetched capture is rule-current without a "Re-apply rules" click. The
+    bulk reapply job still covers unfetched captures (export, retention
+    sweep).
 
     `text_for_training` is the canonical /captures display text — it
     must reflect current PIPELINE_RULES (minus the captures-specific
@@ -2214,14 +2103,14 @@ def _emit_member_words(
 ) -> None:
     """Append member i's aligned words to `merged`, placed on the merged
     timeline. When `segments` is given, each word's original time is remapped
-    through the per-member trim map first (per-member trimming); otherwise the
-    legacy flat offset is used.
+    through the per-member trim map first; otherwise the legacy flat offset is
+    used.
 
     Exactly one entry per aligned word: chip idx counts the members' raw
     words (_project_member_corrections / _split_corrections_to_members) and
     the client indexes chips into this list, so a word that maps to cut audio
     (trimmed lead, past the merged end) or has no timestamps is kept as a
-    zero-length entry — skipping it moved every later chip onto the next
+    zero-length entry — skipping it would shift every later chip onto the next
     word, or into the next member."""
     last_s = max(0.0, member_offset_s)
     for w in ws:
@@ -2357,16 +2246,16 @@ def _build_merged_words(
 
     Two timelines, picked by whether `member_trims` is populated:
 
-    - Per-member trimming (new groups): each member was silence-trimmed
-      before concatenation, so member i starts at (Σ_{j<i} new_dur_j) +
-      i × silence_s, and each word's original time is remapped through that
-      member's kept-speech `segments` map. This is what keeps karaoke aligned
-      after the dead-air at member joins is removed.
+    - Per-member trimming: each member was silence-trimmed before
+      concatenation. Member i starts at its stamped `offset_ms` (uniform-silence
+      layout) or, for groups without one, at (Σ_{j<i} new_dur_j) + i × silence_s.
+      Each word's original time is remapped through that member's kept-speech
+      `segments` map, which keeps karaoke aligned after the dead air at member
+      joins is removed.
 
     - Legacy groups (member_trims empty): member i starts at (Σ_{j<i} dur_j) +
       i × silence_s − merged_lead_trim_ms, using full member durations and the
-      single merged-WAV outer-edge offset — i.e. the original behaviour, so
-      pre-existing groups render exactly as before.
+      single merged-WAV outer-edge offset.
 
     `get_members` strips heavy fields for the list view, so callers hydrate
     `words` first. Each member's words go through `_align_words_to_final`
@@ -2377,8 +2266,6 @@ def _build_merged_words(
     if merged_duration_ms is not None:
         eff_dur_s = max(0.0, float(merged_duration_ms) / 1000.0)
     merged: list[dict[str, Any]] = []
-    # Members of a merge share an owner+model, so memoise the per-member
-    # identity resolve to avoid one api_keys_store lookup per member.
     ident_cache: dict = {}
 
     use_per_member = bool(member_trims)
@@ -2435,7 +2322,6 @@ def _build_merged_words(
             cum_ms += new_dur_ms
         return merged
 
-    # Legacy path (no per-member trims): original flat-offset behaviour.
     lead_s = max(0, int(merged_lead_trim_ms or 0)) / 1000.0
     cum = 0.0
     for i, m in enumerate(members):
@@ -2469,12 +2355,9 @@ async def patch_sample_api(
     )
     _audit_cross_user_read(user, g, "sample-patch", sid)
     if g["is_locked"] and not user.get("is_admin"):
-        # `is_locked` is writable by any captures-scoped caller (below), so the
-        # lock must also be RELEASABLE by them — otherwise setting it is a
-        # one-way switch: the guard here would block the very patch that clears
-        # it, and only an admin could undo it. A non-admin may therefore send
-        # exactly one thing while the sample is locked, the unlock itself.
-        # Every other edit stays frozen, which is what the lock is for.
+        # `is_locked` is writable by any captures-scoped caller (below), so they
+        # must be able to release it too, or the lock is a one-way switch only an
+        # admin can undo. While locked, a non-admin may send only the unlock.
         _unlock_only = (
             payload.is_locked is False
             and payload.model_dump(exclude_none=True).keys() == {"is_locked"}
@@ -2488,8 +2371,7 @@ async def patch_sample_api(
     # to 30 update_capture writes and rebuilds the transcript.
     def _apply() -> dict[str, Any] | None:
         patch: dict[str, Any] = {}
-        # Lazily-fetched hydrated members; up to three branches below need
-        # this list and used to issue independent get_members calls each.
+        # Lazily-fetched hydrated members, shared by the branches below.
         _members_cache: list[dict[str, Any]] | None = None
         def _members() -> list[dict[str, Any]]:
             nonlocal _members_cache
@@ -2498,9 +2380,8 @@ async def patch_sample_api(
                 _hydrate_members(_members_cache)
             return _members_cache
 
-        # Join strategy + inter-member silence are GLOBAL settings now; they're no
-        # longer patchable per-sample. Changing them and rebuilding audio for
-        # existing samples is done via the bulk VAD reprocess action / regenerate.
+        # Join strategy and inter-member silence are global settings, applied to
+        # an existing sample by regenerate or the bulk VAD reprocess.
         if payload.is_locked is not None:
             patch["is_locked"] = 1 if payload.is_locked else 0
         if payload.status is not None:
@@ -2657,8 +2538,7 @@ async def regenerate_sample_api(
     # shared with the VAD reprocess worker thread, and acquiring it inline
     # blocks the whole server for the length of that rebuild.
     updated = await asyncio.to_thread(_regenerate)
-    # The enrich pass belongs off the loop too — see get_sample_api. It was
-    # left inline while the rebuild beside it was already offloaded.
+    # The enrich pass belongs off the loop too — see get_sample_api.
     return JSONResponse(
         {"sample": await asyncio.to_thread(_enrich_sample, updated)})
 
@@ -2700,12 +2580,12 @@ def _ensure_sample_wav(g: dict[str, Any]) -> str:
     the WAV in place and return its abs path. If unrecoverable, raise
     HTTPException(410).
 
-    Merged WAVs are deterministic functions of (members, silence_ms,
-    join_strategy) — treating them as cached derived data instead of
-    a precious one-shot artifact means no deletion path (clear_all,
-    legacy reconcile, crash mid-write, manual cleanup, etc.) surfaces
-    as a hard 404 to the user. The "Regenerate" button still exists
-    for the legitimate force-rebuild case (user edited silence/join).
+    The merged WAV is treated as cached derived data, rebuilt from the
+    members' audio and the sample's stored silence (the VAD edge/gap
+    globals apply as they are at rebuild time), so no deletion path
+    (clear_all, legacy reconcile, crash mid-write, manual cleanup)
+    surfaces as a hard 404. Regenerate is how a sample adopts changed
+    global silence / join settings.
     """
     try:
         abs_p = capture_samples_store.abs_path_for(g["merged_wav_relpath"])
@@ -2755,9 +2635,10 @@ def _ensure_sample_wav(g: dict[str, Any]) -> str:
         )
         patch = capture_samples._merged_wav_patch(duration_ms, hashes, member_trims)
         # The stale flag records that the sample no longer fits the CURRENT
-        # globals (VAD reprocess); this rebuild uses the stored silence and
-        # proves nothing about that, so a review click must not re-admit the
-        # sample to the export. Only regenerate (current globals) clears it.
+        # globals; this rebuild uses the stored silence and proves nothing
+        # about that, so a review click must not re-admit the sample to the
+        # export. Only a rebuild under the current globals (regenerate, a
+        # successful VAD reprocess) clears it.
         patch.pop("is_stale", None)
         capture_samples_store.update_sample(g["id"], patch)
     return abs_p
@@ -2785,11 +2666,10 @@ async def get_sample_audio_api(
         detail="sample not found",
     )
     _audit_cross_user_read(user, g, "sample-audio", sid)
-    # Off the loop: this takes a cross-thread threading.Lock that the VAD
-    # reprocess worker holds for a whole rebuild, and then runs the merge
-    # (a Silero-VAD pass per member plus a WAV write) synchronously. Inline
-    # in an `async def` that parked the single event-loop thread inside
-    # lock.acquire(), stalling every other request and WebSocket.
+    # Off the loop: this waits on a threading.Lock the VAD reprocess worker
+    # holds for a whole rebuild, then runs the merge (a Silero-VAD pass per
+    # member plus a WAV write) synchronously; inline it would stall every
+    # other request and WebSocket.
     abs_p = await asyncio.to_thread(_ensure_sample_wav, g)
     return FileResponse(
         abs_p,
@@ -2800,10 +2680,6 @@ async def get_sample_audio_api(
         },
     )
 
-
-# ---------------------------------------------------------------------
-# Export: streamed tar.gz
-# ---------------------------------------------------------------------
 
 def _build_manifest_row(
     *,
@@ -2824,10 +2700,9 @@ def _build_manifest_row(
 ) -> dict[str, Any]:
     """Build a single manifest line dict with the unified 14-key schema.
 
-    Same keys for singletons and groups — defaults populate the keys
-    that don't apply (e.g. groups → request_id=""; singletons →
-    member_count=1). Heterogeneous-field-set was a documented pain
-    point for cross-corpus filtering during fine-tuning.
+    Same keys for singletons and groups, so fine-tuning can filter across
+    the corpus; defaults fill the keys that don't apply (e.g. groups →
+    request_id=""; singletons → member_count=1).
 
     `task` is Whisper's own multitask label: "transcribe" pairs audio with
     text in the SAME language, "translate" pairs non-English audio with
@@ -2891,22 +2766,18 @@ def _build_export_stream(only_status: str | None, include_audio: bool):
 
     buf = io.BytesIO()
     tar = tarfile.open(fileobj=buf, mode="w:gz", compresslevel=6)
-    # Spooled, not a list: the manifest holds one JSON line per row carrying
-    # the full transcript, admin notes and correction chips, and every line was
-    # kept resident until the b"".join at the end materialised a second copy.
-    # Measured ~104 MB peak at the shipped 5000-row cap, and grouped rows are
-    # exempt from that cap. Rolls to disk past 8 MB; the tarball is unchanged.
+    # Spooled, not a list: each line carries the full transcript, notes and
+    # chips; held in memory it peaked at ~104 MB at the 5000-row cap, and
+    # grouped rows are exempt from that cap. Rolls to disk past 8 MB. The
+    # finally below closes it even when an aborted client abandons the
+    # generator, so no temp file leaks.
     manifest_lines = tempfile.SpooledTemporaryFile(max_size=8 * 1024 * 1024)
-    # Closed even if the client disconnects mid-stream and the
-    # generator is abandoned — otherwise every aborted export leaks
-    # a spooled temp file.
     # Chips land on the word their idx marks (see _chip_words_lookup).
     _chip_words = _chip_words_lookup()
 
     def _group_skipped(g: dict[str, Any]) -> bool:
-        # Status gate — groups have the same status field as captures.
-        # The caller has already mapped "all" → None upstream, so a
-        # truthy only_status here is a concrete status to match.
+        # The caller already mapped "all" → None, so a truthy
+        # only_status is a concrete status to match.
         if only_status and (g.get("status") or "new") != only_status:
             return True
         # Hard filters (apply even on `only_status=all`). Stale = audio/
@@ -2915,8 +2786,6 @@ def _build_export_stream(only_status: str | None, include_audio: bool):
         return bool(g.get("is_stale") or g.get("is_locked"))
 
     try:
-
-        # 1. Capture groups (the packed-for-fine-tune training samples).
         user_filter_scope: str | None = None  # admin-only path; no per-user scope
         for g in capture_samples_store.list_samples(user_id=user_filter_scope):
             if _group_skipped(g):
@@ -2934,11 +2803,8 @@ def _build_export_stream(only_status: str | None, include_audio: bool):
                 g = capture_samples_store.get_sample(sid)
                 if g is None or _group_skipped(g):
                     continue
-                # Always rebuild the transcript at export time from members +
-                # chips, so the exported text reflects current corrections even
-                # if the stored snapshot is stale. Source from the training-form
-                # column so reviewers see — and the trainer learns from — the
-                # same text.
+                # The text is rebuilt below from members + chips, not taken from
+                # the stored transcript, so it reflects current corrections.
                 members = capture_samples_store.get_members(sid)
                 # member_hashes is keyed by the member ids the merged WAV was
                 # built from. A member row deleted before its auto-dissolve ran
@@ -2954,9 +2820,6 @@ def _build_export_stream(only_status: str | None, include_audio: bool):
                 ).strip()
                 if not text:
                     continue
-                # Audio existence gate: skip the manifest entry entirely if
-                # the WAV isn't on disk, to avoid manifest pointing at missing
-                # files.
                 try:
                     abs_p = capture_samples_store.abs_path_for(g["merged_wav_relpath"])
                 except ValueError:
@@ -2964,10 +2827,8 @@ def _build_export_stream(only_status: str | None, include_audio: bool):
                 if not os.path.isfile(abs_p):
                     continue
 
-                # Group `model` and `request_id` are intentionally empty — a
-                # group has multiple members each with their own model id.
-                # Per-member audit is reachable via the group's GET /members
-                # endpoint.
+                # No single model / request_id for a multi-member group; the
+                # per-member audit is the group's GET /members endpoint.
                 manifest_lines.write(json.dumps(_build_manifest_row(
                     audio_filepath=audio_name,
                     text=text,
@@ -2999,7 +2860,6 @@ def _build_export_stream(only_status: str | None, include_audio: bool):
                 if chunk:
                     yield chunk
 
-        # 2. Ungrouped captures (no sample_id).
         for row in captures_store.iter_captures_for_export(status=only_status):
             if row.get("sample_id"):
                 continue
@@ -3114,7 +2974,8 @@ def _build_export_stream(only_status: str | None, include_audio: bool):
                 if chunk:
                     yield chunk
 
-        # Manifest last so it's written in row order matching the audio.
+        # Manifest last: it is complete, and its size known, only once
+        # every row has been streamed.
         info = tarfile.TarInfo("manifest.jsonl")
         info.size = manifest_lines.tell()
         info.mtime = int(time.time())
@@ -3129,17 +2990,9 @@ def _build_export_stream(only_status: str | None, include_audio: bool):
         manifest_lines.close()
 
 
-# ---------------------------------------------------------------------
-# HTML page
-# ---------------------------------------------------------------------
-# Single-page admin: list view + per-row expand. The expanded row plays
-# the audio karaoke-style (active word highlights with playback), lets
-# the admin shift-click to mark wrong words, and edits the ground-truth
-# via per-span correction chips. Status flow: new → reviewed → ready
-# (export-eligible) | dismissed (omitted).
-#
-# IMPORTANT (CLAUDE memory note): never place a `{{...}}` placeholder
-# inside a /* */, //, or <!-- --> comment — render_page() does a literal
-# string replace and the substitution corrupts the surrounding context.
+# Status flow: new → reviewed → ready (export-eligible) | dismissed.
+# Never put a `{{...}}` placeholder inside a /* */, // or <!-- --> comment
+# in captures.html: render_page() does a literal string replace and the
+# substitution corrupts the surrounding context.
 
 _CAPTURES_HTML = templates.load(__file__, "captures.html")
