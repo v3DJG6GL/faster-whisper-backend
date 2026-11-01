@@ -1,8 +1,5 @@
-"""Integration tests for /captures routes.
-
-Captures rows require real audio transcode (ffmpeg) to create, so these
-tests focus on the read/list/route-ordering/auth surface that works without
-fabricating audio blobs.
+"""Integration tests for /captures routes. Audio-backed rows use
+`_fake_wav_transcode` (a stub WAV writer) instead of a real ffmpeg transcode.
 """
 
 import json
@@ -50,7 +47,6 @@ def test_captures_list_open_mode(client):
 
 
 def test_reprocess_vad_job_lifecycle(client):
-    # Status endpoint is registered and reports a known state.
     s0 = client.get("/captures/api/reprocess-vad/status")
     assert s0.status_code == 200
     assert s0.json()["status"] == "idle"
@@ -97,7 +93,7 @@ def test_propose_merges_ok(client):
 def test_by_request_id_ok(client):
     r = client.get("/captures/api/by-request/unknown-req")
     assert r.status_code == 200
-    assert r.json()["captures"] == []  # no captures for an unknown request id
+    assert r.json()["captures"] == []
 
 
 def test_host_gate_rejects_non_loopback(app_module, monkeypatch):
@@ -346,7 +342,6 @@ def test_locked_member_mutations_blocked_at_endpoints(client, make_user_key):
     assert client.post(
         "/captures/api/locked01cid/reprocess", headers=h,
     ).status_code == 409
-    # Row untouched and still present.
     row = captures_store.get_capture("locked01cid")
     assert row is not None and row["status"] == "new"
 
@@ -448,10 +443,6 @@ def test_list_toolbar_counts_scoped_to_caller(client, make_user_key):
     assert admin_body["counts"]["new"] == 3
 
 
-# ---------------------------------------------------------------------------
-# /captures/api/samples pagination
-# ---------------------------------------------------------------------------
-
 def _insert_sample_at(conn, gs, sid, *, ts, user_id="alice"):
     conn.execute(
         "INSERT INTO capture_samples (id, user_id, created_ts,"
@@ -496,7 +487,7 @@ def test_samples_are_paged_and_the_cursor_walks_every_row(client, make_user_key)
         assert pages < 10, "cursor is not advancing"
 
     assert len(seen) == len(stamps)
-    assert len(set(seen)) == len(stamps)      # no row served twice
+    assert len(set(seen)) == len(stamps)
     # Newest-first across page boundaries.
     order = [stamps[int(s[4])] for s in seen]
     assert order == sorted(order, reverse=True)
@@ -512,16 +503,10 @@ def test_last_page_reports_no_cursor(client, make_user_key):
     for i in range(2):
         _insert_sample_at(conn, gs, f"exact{i}sid0000", ts=float(i), user_id=uid)
 
-    # A page that is exactly `limit` long with nothing after it must NOT
-    # advertise a next cursor.
     body = client.get("/captures/api/samples?limit=2", headers=bearer(raw)).json()
     assert len(body["samples"]) == 2
     assert body["next"] is None
 
-
-# ---------------------------------------------------------------------------
-# Cross-user read audit trail + preview-audio cache policy
-# ---------------------------------------------------------------------------
 
 def _insert_capture_with_request(conn, cid, request_id, user_id):
     rel = os.path.join(cid[0:2], cid[2:4], f"{cid}.wav")
@@ -538,10 +523,9 @@ def _insert_capture_with_request(conn, cid, request_id, user_id):
 
 def test_by_request_id_audits_cross_user_read(client, make_user_key, caplog):
     """The by-request lookup hands a scope=all NON-admin the full capture row
-    (raw/final text + the owner's username) for someone else's capture. That
-    is exactly what the eleven read-by-id siblings audit, and it was the one
-    cross-user read-by-key path with no log line — DSARs are answered from
-    this log stream."""
+    (raw/final text + the owner's username) for someone else's capture, so it
+    is audited like the read-by-id siblings — DSARs are answered from this log
+    stream."""
     import logging
     from faster_whisper_backend.captures import store as captures_store
 
@@ -746,10 +730,6 @@ def test_audio_rate_limit_is_hot_and_per_identity(client, app_module,
         assert client.get("/captures/api/nope0001/audio",
                           headers=bearer(raw)).status_code == 404
 
-
-# ---------------------------------------------------------------------------
-# Export: the English translate row
-# ---------------------------------------------------------------------------
 
 def _export_manifest(only_status="ready"):
     import io
@@ -1099,7 +1079,6 @@ def test_detail_keeps_original_timeline_when_the_trimmed_file_is_gone(
     [hit] = client.get("/captures/api/by-request/trim-gone").json()["captures"]
     assert hit["effective_audio_s"] == pytest.approx(12.4)
 
-    # With the trimmed file back on disk the projection applies again.
     with open(captures_store.abs_audio_path(rel + ".trim.wav"), "wb") as f:
         f.write(b"RIFF")
     cap = client.get(f"/captures/api/{cid}").json()["capture"]
@@ -1415,7 +1394,6 @@ def test_insert_sample_with_sid_rolls_back_a_failed_commit(
     assert failed and not real_conn.in_transaction
     assert real_conn.execute("SELECT COUNT(*) FROM capture_samples").fetchone()[0] == 0
     assert captures_store.get_capture(cid)["sample_id"] is None
-    # The connection is usable again: the next merge commits.
     cr._insert_sample_with_sid(sid="f" * 32, **kwargs)
     assert captures_store.get_capture(cid)["sample_id"] == "f" * 32
 
@@ -1856,7 +1834,6 @@ def test_reprocess_and_self_heal_scope_a_translate_capture_by_english(
     assert client.get("/captures/api/transl000001", headers=h).status_code == 200
     row = captures_store.get_capture("transl000001")
     assert row["final"] == text and row["text_for_training"] == text
-    # Explicit /reprocess — nothing changes.
     r = client.post("/captures/api/transl000001/reprocess", headers=h)
     assert r.status_code == 200, r.text
     assert r.json()["changed"] == []
@@ -2063,7 +2040,6 @@ def test_a_group_holding_more_chips_than_one_member_may_saves(
                      json={"corrections": projected,
                            "baseline_corrections": projected})
     assert r.status_code == 200, r.text
-    # One member pushed past the store cap is the per-member 422.
     over = ([{"wrong": "", "correct": "y", "idx": i} for i in range(cap + 1)]
             + projected[half:])
     r = client.patch(f"/captures/api/samples/{sid}", headers=h,
