@@ -8,8 +8,8 @@ lock, and the process normally has one loop for its whole life, so that never
 mattered in production. Under the test suite every ``TestClient`` lifespan is
 its own loop: a lock a previous loop left held (worker cancelled while
 loading, loop torn down before the release ran) wedges the next lifespan's
-shutdown (observed on the Windows CI job, ``drop_pipeline`` at shutdown). This lock keeps one ``asyncio.Lock``
-per event loop, so a stale lock from a dead loop can never be waited on, and
+shutdown. This lock keeps one ``asyncio.Lock`` per event loop, so a stale
+lock from a dead loop can never be waited on, and
 a lock one live loop holds is never swapped out from under it by another
 (``release()`` always finds the object its own loop acquired). Closed loops
 are pruned. It does NOT exclude two live loops from each other — nothing
