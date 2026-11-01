@@ -19,15 +19,10 @@
 # (Dockerfile.gpu, install-service.sh, install-service.ps1) force-reinstalls
 # onnxruntime-gpu==1.26.* (the last CUDA 12.8 build) last.
 audio-separator[cpu]>=0.48.0
-# audio-separator imports audioread (spec_utils.py/vr_separator.py) but does
-# not declare it — it historically rode in as a librosa dependency. librosa
-# 1.0.0 dropped audioread, which broke the 0.44.5 import chain in the -full
-# image (2026-08-26: "[bgm] audio_separator import failed: No module named
-# 'audioread'"). Declare the real import explicitly and cap librosa below
-# the next minor so a surprise librosa bump cannot break the import chain
-# again (audioread is now declared, so 1.0.x itself is tolerated). Every
-# install path (Dockerfile, Dockerfile.gpu, both installers) installs this
-# file with -r, so these pins are the single source of truth. Drop both
+# audio-separator imports audioread but does not declare it; it used to ride
+# in via librosa, and librosa 1.0.0 dropped it, which broke the bgm import.
+# Declare it explicitly (so 1.0.x is fine) and cap librosa below the next
+# minor so a surprise bump cannot break the import chain again. Drop both
 # pins once audio-separator declares audioread / supports librosa 1.x.
 audioread>=3.1.0
 librosa<1.1
