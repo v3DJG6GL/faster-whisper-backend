@@ -4,23 +4,15 @@ SQLite (stdlib) in WAL mode — single-file, crash-safe, indexed. Lives at
 cfg.RECENT_TRANSCRIPTIONS_DB (defaults to recent_transcriptions.local.sqlite3
 alongside config.local.json).
 
-Replaces the legacy in-memory ring buffers (`quick_config_state.recent_traces`
-and `metrics.recent_tx`) so the /quick-config trace panel and /stats
-dashboard "Recent transcriptions" widget survive service restarts and
-scale beyond a 20-row cap.
+Two upserts per job, both keyed by request_id: `record_trace` (success
+only, via quick_config.recent_feed) writes the text payload (raw/final,
+steps, tokens, bigrams); `record_timing` (always, via metrics) writes the
+timing / status / recent-jobs fields. On the error path only the timing
+half runs and inserts a minimal row, so /stats still counts the request.
 
-Two upsert call sites per /transcribe request, both keyed by request_id:
-
-  1. `record_trace(...)` (success path, inside the inner try) writes the
-     rich payload: raw_text, final_text, steps, tokens,
-     bigrams, model, language, user_id, username, created_ts.
-
-  2. `record_timing(...)` (outer finally, always) writes processing_s,
-     audio_s, words, status. On the error path it inserts a
-     minimal row (no raw/final/steps) so /stats still counts the request.
-
-Lazy pruning every `cfg.RECENT_TRANSCRIPTIONS_PRUNE_EVERY` inserts: a
-single DELETE statement enforces both the row cap and the TTL. A cap of
+Lazy pruning every `cfg.RECENT_TRANSCRIPTIONS_PRUNE_EVERY` writes (each
+record_trace / record_timing upsert counts, so a successful transcription
+counts twice): a single DELETE enforces both the row cap and the TTL. A cap of
 0 disables the count clause; a TTL of 0 disables the age clause.
 
 Module-level connection: SQLite's WAL mode lets us share one connection
@@ -49,7 +41,7 @@ from faster_whisper_backend.core import store_common
 
 logger = logging.getLogger("whisper-api")
 
-_lock = threading.RLock()  # reentrant: record_trace/record_timing hold the lock and may call prune() which re-acquires it
+_lock = threading.RLock()  # reentrant: writers call prune() while holding it
 _conn: sqlite3.Connection | None = None
 _path: str | None = None
 _insert_counter = 0
@@ -64,20 +56,18 @@ _CAP_STEPS_JSON = 200_000
 # Hard row bound on the steps list, applied before the JSON byte cap.
 _CAP_STEPS_ROWS = 500
 _CAP_TOKEN_FIELD = 64
-# The model id arrives verbatim from the request form field. A name outside the
-# allowlist is rejected with a 400, but the outer `finally` in main.transcribe
-# still records the attempt, so the rejected string reaches this table anyway.
-# 96 matches settings_schema.ModelId's max_length — no legitimate id is affected.
+# A model id rejected with a 400 is still recorded verbatim (the error
+# path writes a timing row), so cap it. 96 = settings.schema.ModelId's
+# max_length, so no legitimate id is affected.
 _CAP_MODEL = 96
-# The one client-originated column that had no cap. A streaming handshake's
-# {"type":"config","language":...} is only length-bounded by the 1 MiB frame
-# size, and on the fallback path (no fw_info) it lands here verbatim and is
-# then served back through /quick-config/recent and the SSE replay. 32 is far
-# above any BCP-47 tag.
+# A streaming handshake's {"type":"config","language":...} is bounded only
+# by the 1 MiB frame size and, with no fw_info, lands here verbatim and is
+# served back via /quick-config/recent and the SSE replay. 32 is far above
+# any BCP-47 tag.
 _CAP_LANGUAGE = 32
-# Recent-jobs extras. stages is server-built ([{name, secs, model?,
-# detail?}, …] — a handful of pipeline stages), so the cap is a defensive
-# bound, not a fight with an attacker. key_label mirrors api_keys' label cap.
+# Recent-jobs extras. stages is server-built (a handful of pipeline
+# stages), so its cap is only a defensive bound. _CAP_KEY_LABEL sits below
+# api_keys_store's 128-char label cap.
 _CAP_KIND = 16
 _CAP_STAGES_JSON = 20_000
 _CAP_KEY_LABEL = 120
@@ -107,9 +97,8 @@ CREATE INDEX IF NOT EXISTS idx_rt_user_created ON recent_transcriptions(user_id,
 
 
 def init_db(path: str) -> None:
-    """Open (or create) the DB at `path` in WAL mode. Idempotent — call
-    once on service startup before any other function in this module.
-    Mirrors reports_store.init_db / captures_store.init_db."""
+    """Open (or create) the DB at `path` in WAL mode. Idempotent; call on
+    startup before anything else in this module."""
     global _conn, _path
     conn = store_common.open_wal_db(path)
     # Publish the connection only once schema + migrations succeeded: a
@@ -119,14 +108,11 @@ def init_db(path: str) -> None:
         conn.execute("PRAGMA temp_store=MEMORY;")
         conn.executescript(_SCHEMA)
         store_common.secure_db_file(path)
-        # Migrate pre-existing DBs (created before the `source` column): add it with
-        # the 'file' default so old rows read as batch/file-upload transcriptions.
-        # Column renames (2026-09): the same measurements now carry the same
-        # names in every store (audio_s / processing_s / words, as usage_jobs
-        # already said). RENAME COLUMN keeps the data and rewrites the indexes.
+        # Rename old column names in place so every store uses the same names
+        # (audio_s / processing_s / words, the JSON columns without `_json`,
+        # as the wire always emitted). RENAME COLUMN keeps the data and
+        # rewrites the indexes.
         cols = {r["name"] for r in conn.execute("PRAGMA table_info(recent_transcriptions)")}
-        # The JSON-bearing columns dropped their `_json` suffix (the wire has
-        # always emitted the bare names); a pre-existing DB is renamed in place.
         for old, new in (("audio_dur_s", "audio_s"), ("proc_dur_s", "processing_s"),
                          ("words_count", "words"),
                          ("steps_json", "steps"), ("tokens_json", "tokens"),
@@ -135,18 +121,17 @@ def init_db(path: str) -> None:
                 conn.execute(f"ALTER TABLE recent_transcriptions RENAME COLUMN {old} TO {new}")
         conn.commit()
         cols = {r["name"] for r in conn.execute("PRAGMA table_info(recent_transcriptions)")}
+        # Pre-`source` DBs: the 'file' default makes old rows read as
+        # file-upload transcriptions.
         if "source" not in cols:
             conn.execute(
                 "ALTER TABLE recent_transcriptions ADD COLUMN source TEXT NOT NULL DEFAULT 'file'")
-        # "Recent jobs" columns (nullable, additive): `kind` distinguishes
-        # transcribe/translate/download rows (NULL reads as a transcription and
-        # resolves via `source`), `stages` carries the per-stage timing list
-        # ([{name, secs, model?, detail?}, …]) and `key_label` snapshots the API
-        # key's display label at record time (labels are mutable/deletable in
-        # api_keys, so resolving at read time would lie about history).
-        # v2 stats columns (nullable, additive): `wait_s` = seconds the request
-        # queued for a GPU slot, `error_class` / `error_stage` = why and where
-        # a failed job failed (metrics.ERROR_CLASSES).
+        # Nullable, additive columns. `kind` NULL reads as a transcription
+        # (resolved via `source`); `stages` = per-stage timing list;
+        # `key_label` snapshots the key's label at record time because labels
+        # are mutable / deletable, so resolving at read time would lie about
+        # history; `wait_s` = GPU queue wait; `error_class` / `error_stage` =
+        # why and where a job failed (metrics.ERROR_CLASSES).
         for col, ddl in (
             ("kind", "ADD COLUMN kind TEXT"),
             ("stages", "ADD COLUMN stages TEXT"),
@@ -215,11 +200,9 @@ def _truncate_steps(steps: list) -> list:
     # far above any legitimate trace, and it bounds the byte walk below
     # regardless of how many entries the incoming list carries.
     out = out[-_CAP_STEPS_ROWS:]
-    # Walk newest-first accumulating each entry's own serialized length
-    # instead of re-serializing the whole remaining list per drop (that
-    # was quadratic). Budget the two enclosing brackets plus json.dumps'
-    # ", " separator per entry, so the caller's single serialization is
-    # guaranteed under the cap. Kept in lockstep with reports_store.
+    # Sum each entry's own serialized length (linear, no re-dump per drop),
+    # budgeting the brackets plus json.dumps' ", " per entry so the caller's
+    # serialization fits under the cap. Kept in lockstep with reports_store.
     budget = _CAP_STEPS_JSON - 2
     keep = 0
     for entry in reversed(out):
@@ -276,7 +259,7 @@ def _row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
 
 
 def _lazy_prune_if_due(prune_every: int, max_rows: int, ttl_days: float) -> None:
-    """Bumps an in-process counter; calls prune() every Nth insert."""
+    """Calls prune() every Nth upsert (trace and timing halves both count)."""
     global _insert_counter
     _insert_counter += 1
     if prune_every <= 0:
@@ -307,13 +290,12 @@ def record_trace(
     max_rows: int = 500,
     ttl_days: float = 30.0,
 ) -> None:
-    """Insert or update the rich half of a /transcribe row. Called on the
-    success path (inside the inner try in main.py). UPSERTs by request_id
-    so a later record_timing() call merges the timing fields in.
+    """Upsert the text half of a job row (success path only); a
+    record_timing() for the same request_id merges the timing fields in.
 
-    All text fields are silently truncated at module caps; over-large
-    `steps` lists shed leading entries (terminal trim + wrapper are the
-    rows the admin actually wants — see _truncate_steps)."""
+    Text fields are truncated at the module caps; over-large `steps` lists
+    shed leading entries (the terminal trim + wrapper are the rows the admin
+    wants — see _truncate_steps)."""
     if not request_id:
         return
     raw_s = (raw or "")[:_CAP_RAW]
@@ -372,20 +354,15 @@ def record_timing(
     error_class: str | None = None,
     error_stage: str | None = None,
 ) -> None:
-    """Insert or update the timing half. Called in the outer finally so
-    it runs on BOTH success (after record_trace) and error paths. UPSERT
-    by request_id: on success it patches timing fields onto the row
-    record_trace already wrote; on error it inserts a minimal row with
-    no raw/final/steps.
+    """Upsert the timing half; runs for every job, success or error. On
+    success it patches the row record_trace wrote; on error it inserts a
+    minimal row with no raw/final/steps.
 
-    `kind` ('translate' / 'download' / NULL = a transcription, resolved
-    via `source`), `stages` (per-stage timing dicts, JSON-encoded) and
-    `key_label` are the additive "Recent jobs" fields — all optional,
-    COALESCEd on conflict so a caller that omits them never blanks what
-    an earlier write recorded. `username` is COALESCEd the same way: a
-    translate row (and every error-path row) has no record_trace() half,
-    so without it here the /stats USER·KEY cell read "—" for a job whose
-    user_id was known all along."""
+    `kind` ('translate' / 'download' / NULL = a transcription, resolved via
+    `source`), `stages` (per-stage timing dicts, JSON-encoded), `key_label`
+    and `username` are COALESCEd on conflict, so a caller that omits them
+    never blanks an earlier write. Translate and error-path rows have no
+    trace half, so username must come in here."""
     if not request_id:
         return
     model = (model or "")[:_CAP_MODEL]
@@ -440,8 +417,9 @@ def append_stage(request_id: str, stage: dict, *, add_processing_s: float = 0.0)
     written, and the /stats jobs table should show one row with two stages
     (exactly like a batch job) rather than a dictate row and an orphan
     translate row. Appends `stage` to the row's stages list and adds its
-    wall time to processing_s. Returns False when no such row exists (the
-    caller then records its own row as before)."""
+    wall time to processing_s. Returns False when no such row exists or the
+    grown list would not serialise or would pass the stages cap (the caller
+    then records its own row)."""
     if not request_id or not stage:
         return False
     conn = _require_conn()
@@ -482,26 +460,19 @@ def list_recent(
     status: str | None = None,
     slow_rtf: float | None = None,
 ) -> list[dict[str, Any]]:
-    """Return up to `limit` rows newer than `before_ts` (or the newest
-    `limit` rows when before_ts is None / 0), newest-first. When
-    user_id_filter is set, returns only rows for that user — used by
-    /quick-config scope='own' to keep one user's traces out of another
-    user's view.
+    """Up to `limit` rows OLDER than `before_ts` (the newest rows when it
+    is None / 0), newest-first. Every filter composes with that cursor, so
+    "Load older" walks back through matches only:
 
-    When `query` is set, only rows whose raw_text OR final_text contain
-    the substring are returned (case-insensitive substring match). This
-    composes with both the before_ts cursor and user_id_filter, so the
-    "Load older" pagination walks back through matches only. Note: SQLite
-    LIKE is ASCII case-insensitive — non-ASCII (e.g. German umlauts) is
-    matched case-sensitively; acceptable for this free-text search.
-
-    The /stats jobs table adds `kind` (a recent-jobs kind, or a sequence
-    of them: any of those), `status`
-    ('ok' | 'error' | 'cancelled', or 'failed' = anything but ok) and
-    `slow_rtf` (only jobs whose processing took more than that fraction of
-    their audio: RTF = proc / audio > slow_rtf). All compose with the
-    cursor and the user filter. user_id_filter may also be a sequence of
-    ids (an IN clause) — the /stats jobs who-filter."""
+    - user_id_filter: one id (/quick-config scope='own' keeps one user's
+      traces out of another's view) or a sequence (an IN clause, the /stats
+      jobs who-filter; an empty sequence = no filter).
+    - query: case-insensitive substring of raw_text OR final_text. SQLite
+      LIKE folds ASCII only, so umlauts match case-sensitively; acceptable
+      for this free-text search.
+    - kind: a recent-jobs kind, or a sequence of them (any of those).
+    - status: 'ok' | 'error' | 'cancelled', or 'failed' = anything but ok.
+    - slow_rtf: only jobs with processing_s / audio_s > slow_rtf."""
     _require_conn()
     where: list[str] = []
     params: list[Any] = []
@@ -600,7 +571,7 @@ def sweep_retention() -> int:
 
 
 def clear_all() -> int:
-    """Wipe every row. Returns the count deleted. Admin-triggered."""
+    """Wipe every row; returns the count deleted."""
     conn = _require_conn()
     with _lock:
         cur = conn.execute("DELETE FROM recent_transcriptions")
