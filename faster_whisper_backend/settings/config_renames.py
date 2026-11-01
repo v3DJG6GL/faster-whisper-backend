@@ -74,9 +74,7 @@ REMOVED_KEYS: frozenset[str] = frozenset({"URL_MAX_BYTES"})
 # language prefix (de-, ch-, es-).
 RENAMED_RULES: dict[str, str] = {
     "dictation-map": "de-dictation-map",
-    # f940127 (June 2026).
     "split-dictation-keywords": "de-split-punctuation-keywords",
-    # 097c9b4 (June 2026).
     "strip-and-lowercase-non-noun": "de-strip-and-lowercase-non-noun",
     "2-2-capitalize-the-letter-after-a-hyphen": "capitalize-letter-after-hyphen",
 }
@@ -86,9 +84,8 @@ RENAMED_RULES: dict[str, str] = {
 # stored PIPELINE_RULES copy that still holds the old combined card keeps it,
 # and so do the slug lists beside it (`known`).
 SPLIT_RULES: dict[str, tuple[str, ...]] = {
-    # f940127 (June 2026): its trailing-period entry became its own card.
+    # Its trailing-period entry became its own card.
     "strip-whisper-punctuation": ("strip-trailing-period", "strip-auto-punctuation"),
-    # b7449d8 (June 2026).
     "german-symbol-cleanup": ("ch-symbol-cleanup", "strip-stray-symbols",
                               "normalize-digit-range"),
 }
@@ -133,7 +130,7 @@ UPGRADED_RULE_ENTRIES: dict[str, tuple[tuple[str, str], tuple[str, str]]] = {
     ),
     # The old pattern also fired right after a digit, so "vom 3.-10 Oktober"
     # became "vom 310 Oktober" ("12.-14.03." → "1214.03.", "2,-5 mg" →
-    # "25 mg"). The new one never fires after a digit (c4fefe2).
+    # "25 mg"). The new one never fires after a digit.
     "delete-punct-before-hyphen": (
         ('(?:,|\\.)(- |-)', ''),
         ('(?<!\\d)(?:,|\\.)(- |-)', ''),
@@ -262,7 +259,6 @@ EARLIER_RULE_ENTRIES: dict[str, tuple[tuple[str, str], ...]] = {
 # UPGRADED_RULE_ENTRIES lookup. The label is rewritten only together with the
 # text (an entry under the old label that the admin edited stays theirs).
 RELABELLED_RULE_ENTRIES: dict[str, str] = {
-    # f940127 / dace748 / b7449d8 (June 2026).
     "strip-only-terminators-and-commas": "Strip terminators & commas",
     "replace-and": "delete-punct-before-hyphen",
     "strip-non-keep-punct": "strip-stray-symbols",
