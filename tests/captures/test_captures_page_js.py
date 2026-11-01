@@ -68,8 +68,6 @@ def page(client):
     return client.get("/captures").text
 
 
-# ---- _confirm ---------------------------------------------------------------
-
 def _confirm_harness(page):
     """_confirm with a stand-in dialog; `handlers` holds the keydown ones.
     `enter(target)` presses Enter on `target` (default: the focused
@@ -204,8 +202,6 @@ def test_load_refresh_prompt_is_marked_unasked(page):
     assert "focusCancel: !!unasked" in helper
 
 
-# ---- bulk status / undo -------------------------------------------------------
-
 @needs_node
 def test_bulk_status_ignores_a_second_click_while_in_flight(page, tmp_path):
     """A second bulk PATCH sent while the first was in flight reported the
@@ -273,8 +269,6 @@ function toast(msg, err, action) { toasts.push(action || null); }
 """)
     assert out == {"sent": [], "label": "Undo", "after": ["new"]}
 
-
-# ---- single-capture Save ------------------------------------------------------
 
 @needs_node
 def test_capture_resave_keeps_a_concurrent_chip(page, tmp_path):
@@ -426,8 +420,6 @@ var onStatus = """ + handler + r""";
     assert out["pill"] == {"className": "pill status-ready", "textContent": "ready"}
     assert out["asked"] == ['.cc-head .pill[class*="status-"]']
 
-
-# ---- chip strip -----------------------------------------------------------------
 
 def _chip_max(page):
     """The page's CHIP_TEXT_MAX declaration, for functions that read it."""
@@ -729,8 +721,6 @@ console.log(JSON.stringify([first.cursorIdx, second.cursorIdx]));
     assert out == [0, 1]
 
 
-# ---- merge preview ▶ ------------------------------------------------------------
-
 def _preview_click_handler(page):
     anchor = "toggleBtn.addEventListener('click', async function() {"
     return _js_block(page, page.index(anchor) + len("toggleBtn.addEventListener('click', "))
@@ -862,8 +852,6 @@ console.log(JSON.stringify({
     assert out == {"inline": [False, True, True], "modal": True}
 
 
-# ---- merge proposals --------------------------------------------------------------
-
 @needs_node
 @pytest.mark.parametrize("picked, url, shown", [
     ([], "/captures/api/propose-merges", ["pa", "pb", "pc"]),
@@ -892,8 +880,6 @@ _loadProposals().then(function() {
 """)
     assert out == {"urls": [url], "shown": shown}
 
-
-# ---- batch review -------------------------------------------------------------------
 
 @needs_node
 def test_batch_open_closed_while_loading_never_enters_batch_mode(page, tmp_path):
@@ -1176,8 +1162,6 @@ var SECOND = """ + json.dumps(second) + r""";
     assert out == {"active": active, "cards": cards}
 
 
-# ---- group card ---------------------------------------------------------------------
-
 @needs_node
 def test_group_regenerate_asks_before_dropping_unsaved_edits(page, tmp_path):
     """Regenerate (and the missing-audio banner's button) ends in
@@ -1358,8 +1342,6 @@ function tick() { return new Promise(function(r) { setTimeout(r, 0); }); }
     assert out == {"raced": {"made": ["new"], "src": "blob:new"}, "made": ["new"]}
 
 
-# ---- stacking -------------------------------------------------------------------------
-
 def _z_index(page, selector):
     """The z-index set by the page's `  <selector> {` rules."""
     found = re.findall(r"\n  " + re.escape(selector) + r" \{[^}]*?z-index: (\d+);", page)
@@ -1375,8 +1357,6 @@ def test_confirm_dialog_and_toast_stack_above_the_merge_modals(page):
     assert _z_index(page, ".modal") > overlay
     assert _z_index(page, "#toast") > _z_index(page, ".modal")
 
-
-# ---- chip placement by aligned words ------------------------------------------------
 
 # "die Katze die Maus" after four fillers the pipeline removed: the chip on the
 # FIRST "die" sits at karaoke idx 4, which is text token 2 (the second "die")
@@ -1600,8 +1580,6 @@ console.log(JSON.stringify({ aligned: full, trimmed: memberLines[0] }));
                    "trimmed": "[1] 1.0s · die Katze Die Maus"}
 
 
-# ---- capture card preview -------------------------------------------------------------
-
 @needs_node
 def test_capture_save_and_reprocess_redraw_the_card_preview(page, tmp_path):
     """The collapsed card's one-line preview was painted once by renderCard:
@@ -1639,8 +1617,6 @@ var state = { cid: 'c1', corrections: [chip], baselineCorrections: [],
                    "asked": '.capture-card[data-id="c1"] .cc-preview'}
     assert "preview.className = 'cc-preview';" in _js_function(page, "renderCard")
 
-
-# ---- proposals Refresh ------------------------------------------------------------------
 
 @needs_node
 @pytest.mark.parametrize("batch", [True, False])
@@ -1720,8 +1696,6 @@ function tick() { return new Promise(function(r) { setTimeout(r, 0); }); }
     assert out == ["stop", "post", "play", "stop", "hide", "load"]
 
 
-# ---- bulk actions vs edits made during the request ---------------------------------------
-
 _BULK_DIRTY_STUBS = r"""
 var _openRows = {}, _openSamples = {}, _bulkBusy = false, renders = 0, asked = [];
 var answers = [], pending = [];
@@ -1775,8 +1749,6 @@ async function run(keep) {
     assert out["dropped"]["renders"] == 1
 
 
-# ---- group status vs a Save in flight ------------------------------------------------------
-
 @needs_node
 def test_group_status_click_during_save_survives_the_save_reply(page, tmp_path):
     """The group Save reply carried the status from before a status click
@@ -1818,8 +1790,6 @@ function tick() { return new Promise(function(r) { setTimeout(r, 0); }); }
                    "plain": "dismissed"}
 
 
-# ---- sticky action bar ------------------------------------------------------------------
-
 def test_action_bar_sticks_below_the_sticky_header(page):
     """The selection bar stuck at top: 0 like the shared header (z-index
     10), so once scrolled it slid under the header and hid the bulk actions
@@ -1831,8 +1801,6 @@ def test_action_bar_sticks_below_the_sticky_header(page):
             "_hdr.offsetHeight + 'px');") in page
     assert "new ResizeObserver(_setHeaderH).observe(_hdr);" in page
 
-
-# ---- capture status click vs aligned words -----------------------------------------------
 
 @needs_node
 def test_capture_status_click_keeps_the_aligned_words(page, tmp_path):
@@ -2241,8 +2209,6 @@ global.document = { getElementById: function() { return footer; } };
     assert out == {"hidden": True, "urls": ["/captures/api/list"], "samples": ["bob0"]}
 
 
-# ---- header-click collapse vs unsaved edits -------------------------------------------------
-
 @needs_node
 def test_header_collapse_asks_before_dropping_a_cards_unsaved_edits(page, tmp_path):
     """A header click collapsed an open capture or group card holding
@@ -2363,8 +2329,6 @@ var _openRows = {};
     assert out == {"c1": {"card": "a2", "dirty": True}, "c2": False}
 
 
-# ---- capture Save / Reprocess vs a status click made meanwhile ---------------------------------
-
 @needs_node
 def test_capture_status_click_during_save_or_reprocess_survives_the_reply(page, tmp_path):
     """The capture Save and Reprocess replies carry the row read before a
@@ -2412,8 +2376,6 @@ function tick() { return new Promise(function(res) { setTimeout(res, 0); }); }
                    "reproc": {"status": "reviewed", "corrections": 1, "text": "t"},
                    "plain": "dismissed"}
 
-
-# ---- proposal chip auto-save -------------------------------------------------------------------
 
 @needs_node
 def test_proposal_chip_save_updates_the_list_rows(page, tmp_path):
@@ -2522,8 +2484,6 @@ async function run(answer) {
     assert out["toasts"][-1] == "Regenerated"
 
 
-# ---- chip position after a bracket or quote ---------------------------------------------------
-
 @needs_node
 def test_chip_on_a_word_after_a_bracket_rewrites_that_word(page, tmp_path):
     """A word glued to a "(" or „ counted as the next token, so a chip on
@@ -2537,8 +2497,6 @@ console.log(JSON.stringify([
 """)
     assert out == ["ja die (DER Sache", "ja die \u201eDER Sache", "ja DER (die Sache"]
 
-
-# ---- blank chip correction in the Final-result preview ----------------------------------------
 
 @needs_node
 def test_blank_chip_correction_leaves_the_final_result_preview_alone(page, tmp_path):
@@ -2658,8 +2616,6 @@ console.log(JSON.stringify([
         for a, b in (("我们去北京。", "「你好」"), ("你好。", "（笑）"),
                      ("你好", "「是」"))]
 
-
-# ---- karaoke scroll ---------------------------------------------------------------------------
 
 @needs_node
 def test_karaoke_highlight_scrolls_only_the_word_strip(page, tmp_path):
