@@ -133,11 +133,9 @@ def test_rung3_idle_peer_evictable_admits_despite_no_room(monkeypatch):
 
 
 def test_size_unknown_tries_when_nothing_must_be_evicted(monkeypatch):
-    """`fits` returns None for "cannot say", explicitly distinct from a
-    definite no. Refusing on it made the check self-defeating: preload never
-    loaded an unmeasured model, so the load that would have measured it never
-    happened, so it stayed unmeasured — forever, and silently. Trying is how
-    a model gets measured."""
+    """`fits` returns None for "cannot say", distinct from a definite no.
+    Refusing on it is self-defeating: an unmeasured model would never load,
+    so it would never get measured. Trying is how a model gets measured."""
     _enable(monkeypatch)
     _fits(monkeypatch, (None, "size_unknown"))
     assert preload._admit("diarization", "p/x") == ("loading", None)
@@ -202,7 +200,6 @@ def test_job_leased_singleton_is_family_busy_not_an_orphan(monkeypatch):
     monkeypatch.setattr(diarization, "_pipeline_key", ("p/other", "cpu", 4))
     diarization._leases["p/other"] = 1
     assert preload._admit("diarization", "p/x") == ("deferred", "family_busy")
-    # And it is not offered up as an evictable peer either.
     assert preload._idle_peer("diarization", "p/x") is None
 
     monkeypatch.setattr(bgm_separation, "_separator_key", ("o.onnx", "cpu"))
@@ -464,7 +461,6 @@ def test_denied_entries_are_reported_and_never_join_the_plan(monkeypatch):
     assert rows["p/bad"]["state"] == "deferred"
     assert rows["p/bad"]["reason"] == "not_allowed"
     assert preload._plans["e" * 8].entries == [("diarization", "p/x")]
-    # A denied model gets no warm lease either.
     assert preload.is_warm("pyannote:p/bad") is False
 
 
