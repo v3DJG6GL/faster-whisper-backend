@@ -22,8 +22,8 @@ def _translation_default_model() -> str:
 def _translation_model_allowed(ref: str,
                                requested: "str | None" = None,
                                inherited: "str | None" = None) -> bool:
-    """The one admission rule the startup preload, the batch stage, the
-    stage-ahead plan and /v1/text/translations all share: a non-empty
+    """The one admission rule every translation entry point shares (see the
+    module docstring): a non-empty
     TRANSLATION_ALLOWED_MODELS admits its members plus the configured
     default, while an EMPTY allowlist admits any well-formed ref (an opt-in
     allowlist — deliberately laxer than the diarization/separation gates,
