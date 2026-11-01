@@ -63,7 +63,7 @@ def test_v1_get_open_mode_shape(client):
     assert body["map_collapse_after"] == 15
     # The schema cap on callback:map entries, served so clients can render a
     # "n / cap" readout instead of discovering the cap via a failed save. Read
-    # off the schema here too — the module's 10_000 fallback would otherwise
+    # off the schema here too — web_common's 10_000 fallback would otherwise
     # make a hardcoded literal pass even after the introspection went blind.
     caps = [m.max_length
             for m in settings_schema.MapRule.model_fields["map"].metadata
