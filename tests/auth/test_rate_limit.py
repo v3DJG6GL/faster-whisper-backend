@@ -229,9 +229,9 @@ def test_inflight_acquire_with_cap_off_takes_no_slot(gauge, monkeypatch):
     monkeypatch.setattr(cfg, "TRANSLATE_MAX_INFLIGHT_PER_USER", 0)
     assert gauge.acquire("alice") is False
     monkeypatch.setattr(cfg, "TRANSLATE_MAX_INFLIGHT_PER_USER", 1)
-    assert gauge.acquire("alice") is True  # the next caller holds the only slot
+    assert gauge.acquire("alice") is True
     with pytest.raises(rate_limit.RateLimited):
-        gauge.acquire("alice")  # the one after must still be refused
+        gauge.acquire("alice")
 
 
 class _Client:
