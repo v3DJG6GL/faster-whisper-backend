@@ -358,10 +358,10 @@ def record_timing(
 
     `kind` ('dictate' / 'translate' / 'download' / NULL = a transcription,
     resolved via `source`), `stages` (per-stage timing dicts, JSON-encoded),
-    `key_label`
-    and `username` are COALESCEd on conflict, so a caller that omits them
-    never blanks an earlier write. Translate and error-path rows have no
-    trace half, so username must come in here."""
+    `key_label`, `username`, `wait_s` and `error_class` / `error_stage` are
+    COALESCEd on conflict, so a caller that omits them never blanks an
+    earlier write. Translate and error-path rows have no trace half, so
+    username must come in here."""
     if not request_id:
         return
     model = (model or "")[:_CAP_MODEL]
