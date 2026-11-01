@@ -14,8 +14,8 @@ from faster_whisper_backend.admin import routes as admin_routes
 
 # Every probe round starts a `python -I` child inside its timeout. Sixty walks
 # against the 0.2 s rounds these tests need outlast it on a loaded Windows
-# runner, where a child's start alone can pass 0.2 s (CI run 1660); the walk
-# logic is the same on every platform, so Linux keeps it covered.
+# runner, where a child's start alone can pass 0.2 s; the walk logic is the
+# same on every platform, so Linux keeps it covered.
 _SIXTY_WALKS_OUTRUN_WINDOWS_STARTS = pytest.mark.skipif(
     sys.platform == "win32",
     reason="0.2 s probe rounds are shorter than a loaded Windows child start")
@@ -393,9 +393,9 @@ def test_a_late_kill_walks_again_without_spending_a_round_or_the_budget(monkeypa
 
 def test_a_slow_child_start_is_not_blamed_on_the_unit_running_at_the_kill(monkeypatch):
     # A loaded Windows runner can spend most of a 0.2 s round just starting
-    # the child (CI run 1667): unit 1 had only just begun at the kill, so it
-    # gets a round of its own with the start (twice) before it, instead of
-    # being reported as too slow.
+    # the child: unit 1 had only just begun at the kill, so it gets a round
+    # of its own with the start (twice) before it, instead of being reported
+    # as too slow.
     monkeypatch.setattr(admin_routes, "_TEST_PIPELINE_PROBE_TIMEOUT", 0.2)
     timeouts = _scripted_rounds(monkeypatch, [
         (_mark(0), "s 0.1900\n1 0.0001\n"), _mark(0)])
