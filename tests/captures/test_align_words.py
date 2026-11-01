@@ -4,8 +4,7 @@ The merge / proposal FINAL RESULT is rebuilt word-by-word from this alignment
 (via _renderGroundSpans), so the alignment must assign EVERY post-processed
 token to some raw word — otherwise tokens that a rule *inserts* (e.g. the raw
 word "Nurtax" expanding to "nur tags") silently disappear from the merged final
-while still being present in the exported text. See the bug write-up: a 1->many
-word-expanding rule dropped the expansion from the group preview.
+while still being present in the exported text.
 
 These tests pin the invariant `" ".join(non-removed word) == final` across the
 word-count-changing shapes: 1->1, 1->many, many->1, 1->0.
@@ -39,10 +38,6 @@ def _install_word_map(monkeypatch, mapping):
         return mapping.get(text.strip(), text)
     monkeypatch.setattr(pl_engine, "_postprocess_text", fake)
 
-
-# ---------------------------------------------------------------------------
-# 1 -> many expansion (the reported bug: "Nurtax" -> "nur tags")
-# ---------------------------------------------------------------------------
 
 def test_one_to_many_expansion_keeps_all_tokens(monkeypatch):
     _install_word_map(monkeypatch, {"Nurtax": "nur tags"})
@@ -88,10 +83,6 @@ def test_expansion_at_end(monkeypatch):
     assert not out[1].get("removed")
 
 
-# ---------------------------------------------------------------------------
-# many -> 1 contraction
-# ---------------------------------------------------------------------------
-
 def test_many_to_one_contraction(monkeypatch):
     # Two raw words merge into one final token: the survivor attaches to the
     # first raw word, the second is removed — no token lost or duplicated.
@@ -119,10 +110,6 @@ def test_symbol_substitution_keeps_token(monkeypatch):
     assert out[1]["word"] == "/"
     assert not out[1].get("removed")
 
-
-# ---------------------------------------------------------------------------
-# 1 -> 0 deletion
-# ---------------------------------------------------------------------------
 
 def test_deletion_marks_removed(monkeypatch):
     _install_word_map(monkeypatch, {"äh": ""})
@@ -152,10 +139,6 @@ def test_deletion_keeps_a_words_final_vowel_sign(monkeypatch):
     assert "raw_word" not in out[2]
 
 
-# ---------------------------------------------------------------------------
-# plain 1 -> 1 (no count change)
-# ---------------------------------------------------------------------------
-
 def test_plain_substitution(monkeypatch):
     _install_word_map(monkeypatch, {"weiss": "weiß"})
     words = _words("das", "weiss", "ich")
@@ -180,10 +163,6 @@ def test_identity_no_flags(monkeypatch):
         assert not w.get("removed")
         assert "raw_word" not in w  # display == raw → no diff marker
 
-
-# ---------------------------------------------------------------------------
-# scripts written without spaces (zh / ja / th / lo / my / km)
-# ---------------------------------------------------------------------------
 
 def test_unspaced_chinese_gives_each_word_its_own_text(monkeypatch):
     # The whole sentence is one final token: it went to the first word and
@@ -237,8 +216,8 @@ def test_split_unspaced_spreads_replaced_and_inserted_chars():
     assert split(["他", "好"], ["她好"]) == [["她"], ["好"]]
     assert split(["我", "喜欢", "他", "的", "猫"], ["我喜欢她的猫"]) == [
         ["我"], ["喜欢"], ["她"], ["的"], ["猫"]]
-    # A replacement over two words is shared by their char counts, the
-    # remainder to the last one.
+    # A substitution inside the run stays on its own word (去 → 到), and a
+    # trailing insertion (市) joins the word before it.
     assert split(["我们", "去", "北京"], ["我们到北京市"]) == [
         ["我们"], ["到"], ["北京市"]]
     # An insertion before the first match joins the first word, one after a
@@ -311,10 +290,6 @@ def test_spaced_raw_word_glued_into_a_token_does_not_take_a_later_one(monkeypatc
         False, False, False, True, False, False, False]
 
 
-# ---------------------------------------------------------------------------
-# invariants
-# ---------------------------------------------------------------------------
-
 def test_output_length_always_matches_raw_count(monkeypatch):
     _install_word_map(monkeypatch, {"Nurtax": "nur tags", "äh": ""})
     words = _words("äh", "Nurtax", "137")
@@ -329,11 +304,9 @@ def test_empty_words_returns_empty(monkeypatch):
     assert capture_samples._align_words_to_final([], "anything") == []
 
 
-# ---------------------------------------------------------------------------
-# _align_member_words: dual alignment (runtime `final` + EXCLUDE-aware
-# `text_for_training`). The editable Corrections strip displays the training
-# token so it matches the Final result + export; see the "134/92" write-up.
-# ---------------------------------------------------------------------------
+# _align_member_words aligns to the runtime `final` and to the EXCLUDE-aware
+# `text_for_training`: the Corrections strip shows the training token so it
+# matches the Final result and the export.
 
 def test_align_member_words_attaches_training_tokens(monkeypatch):
     # Identity per-word map: the "134 Schrägstrich 92" -> "134/92" merge is a
