@@ -17,8 +17,6 @@ def _post(client, **data):
     return client.post("/v1/audio/transcriptions", files=_FILE, data=data)
 
 
-# --- the cancel endpoint -----------------------------------------------------
-
 def test_cancel_malformed_id_is_422(client):
     assert client.post("/v1/audio/transcriptions/cancel/NOPE").status_code == 422
 
@@ -41,8 +39,6 @@ def test_cancel_flags_an_in_flight_id(client, app_module):
         tx_progress._BATCH_PROGRESS.pop(_PID, None)
         tx_progress._BATCH_CANCELLED.discard(_PID)
 
-
-# --- the handler's cooperative abort -----------------------------------------
 
 def test_pre_flagged_request_aborts_with_499(client, app_module):
     # The decode-loop check fires on the first segment: a request whose id is
@@ -85,8 +81,6 @@ def test_diarize_cancel_is_not_a_soft_fail(client, app_module, monkeypatch):
         app_module.cfg.DIARIZATION_ENABLED = False
 
 
-# --- recorded status ---------------------------------------------------------
-
 def test_cancelled_run_records_status_cancelled(client, app_module,
                                                 monkeypatch):
     # The 499 raised by the _ClientCancelled arm lands in the OUTER except
@@ -108,8 +102,6 @@ def test_cancelled_run_records_status_cancelled(client, app_module,
     assert recorded and recorded[-1]["status"] == "cancelled"
 
 
-# --- early-reject orphan entries ---------------------------------------------
-
 def test_validation_reject_leaves_no_progress_entry(client, app_module):
     # A 422 on `task` must not leak a "waiting" entry (pollable forever) or
     # a cancellable id — the seed happens inside the try whose finally pops.
@@ -123,8 +115,6 @@ def test_validation_reject_leaves_no_progress_entry(client, app_module):
     assert r.json() == {"cancelled": False}
     assert _PID not in tx_progress._BATCH_CANCELLED
 
-
-# --- owner binding -----------------------------------------------------------
 
 def test_progress_and_cancel_are_owner_bound(client, app_module,
                                              make_user_key):
@@ -163,8 +153,6 @@ def test_progress_and_cancel_are_owner_bound(client, app_module,
         tx_progress._BATCH_CANCELLED.discard(_PID)
 
 
-# --- job mirror stage transitions --------------------------------------------
-
 def test_stage_transition_clears_mirrored_progress(app_module):
     from faster_whisper_backend.core import jobs
     pid = "feedf00d" * 4
@@ -194,12 +182,10 @@ def test_stage_transition_clears_mirrored_progress(app_module):
         jobs.job_end("job-mirror-test")
 
 
-# --- a cancel that lands INSIDE a soft-fail stage -----------------------------
-# Every post-decode stage polls _check_cancelled inside its own try, and that
-# raises _ClientCancelled — a plain Exception the stage's trailing soft-fail
-# arm used to swallow as "<stage> failed", turning a cancel into a 200 with a
-# false warning (or, for separation, a bogus error log before the next check
-# finally aborted).
+# A cancel that lands INSIDE a soft-fail stage: every post-decode stage polls
+# _check_cancelled inside its own try, and the _ClientCancelled it raises is a
+# plain Exception the stage's trailing soft-fail arm must not swallow as
+# "<stage> failed" (a 200 with a false warning, or a bogus [bgm] error log).
 
 def _flag_on(app_module, monkeypatch, pid, pred):
     """Flag `pid` cancelled the moment a _progress_set call matches `pred`."""
@@ -270,8 +256,6 @@ def test_cancel_inside_translation_stage_is_not_a_soft_fail(
         tx_progress._BATCH_CANCELLED.discard(_PID)
 
 
-# --- colliding progress ids ---------------------------------------------------
-
 def test_in_flight_progress_id_is_treated_as_absent(client, app_module, caplog):
     # A client-chosen id that is already live belongs to another request:
     # this one gets no progress rail instead of sharing (and popping) the
@@ -319,8 +303,6 @@ def test_text_translations_in_flight_progress_id_is_treated_as_absent(
         tx_progress._PROGRESS_OWNER.pop(_PID, None)
 
 
-# --- owner survives a re-created entry ---------------------------------------
-
 def test_recreated_progress_entry_keeps_its_owner(client, app_module,
                                                   make_user_key):
     from tests.conftest import bearer
@@ -347,8 +329,8 @@ def test_recreated_progress_entry_keeps_its_owner(client, app_module,
 
 def test_owner_map_survives_the_stale_sweep(app_module):
     # An owner-stamped run (one waiting on the GPU gate ticks nothing) is
-    # never stale-swept (F90.1, tests/transcription/test_progress.py): the
-    # entry and its owner stamp stay together until the handler's close.
+    # never stale-swept (tests/transcription/test_progress.py): the entry
+    # and its owner stamp stay together until the handler's close.
     tx_progress._progress_set(_PID, stage="waiting", owner="u1")
     try:
         tx_progress._BATCH_PROGRESS[_PID]["updated"] = -1e9
@@ -361,8 +343,6 @@ def test_owner_map_survives_the_stale_sweep(app_module):
         tx_progress._BATCH_PROGRESS.pop("d00d" * 8, None)
         tx_progress._PROGRESS_OWNER.pop(_PID, None)
 
-
-# --- the first seed is not a stage transition --------------------------------
 
 def test_first_seed_keeps_job_start_model(app_module):
     from faster_whisper_backend.core import jobs
