@@ -9,15 +9,13 @@
 * once the session closes, the document equals the batch route's
   whole-document post-processing.
 
-The first two used to be claimed for ``committed`` only, and the session
-re-formatted the whole document per utterance: text already typed from an
-earlier final could be rewritten by a later one (quotes typed twice, a stray
-'neue' left before a newline). The session now holds back the raw words a
-rule could still join with the next utterance (pl_engine.holdback_start) and
-never re-formats sent text.
+The session holds back the raw words a rule could still join with the
+next utterance (pl_engine.holdback_start) and never re-formats sent text, so
+a later final cannot rewrite what an earlier one typed (quotes typed twice,
+a stray 'neue' left before a newline).
 
-Uses pl_engine._postprocess_text / pl_engine.holdback_start; the app_module
-fixture is requested only for its side effects (isolated config + stores).
+The app_module fixture is requested only for its side effects (isolated
+config + stores).
 """
 
 import asyncio
@@ -98,7 +96,6 @@ def test_streaming_finals_extend_and_reconstruct_batch_output(language):
         finals = _run_stream(utterances, language)
         docs = [m["committed"] + m["tail"] for m in finals]
         committeds = [m["committed"] for m in finals]
-        # the committed document, once the session closes, equals batch output.
         assert finals[-1].get("last") is True
         assert committeds[-1] == full, (
             f"streaming != batch for {utterances!r} (language {language})\n"
@@ -108,7 +105,6 @@ def test_streaming_finals_extend_and_reconstruct_batch_output(language):
             assert b.startswith(a), (
                 f"document rewritten for {utterances!r} (language {language})\n"
                 f" was: {a!r}\n now: {b!r}")
-        # append-only committed region.
         for a, b in zip(committeds, committeds[1:]):
             assert b.startswith(a), (
                 f"committed text rewritten (not append-only) for {utterances!r}\n"
