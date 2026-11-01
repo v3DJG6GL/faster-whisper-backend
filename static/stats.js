@@ -779,8 +779,8 @@ function renderAll() {
 }
 
 // ---- turnaround: fixed-edge histogram of end-to-end time (proc + wait),
-// the queue-wait share hatched inside each bar, p50 / p95 marked; wait
-// p50 / p95 by day as a small line beneath.
+// the queue-wait share hatched inside each bar, p50 / p95 marked; the
+// window's queue-wait p50 / p95 / max go in the note beneath.
 function fmtEdge(s) { return s >= 60 ? (s / 60) + 'm' : s + 's'; }
 function renderTurnaround() {
   const el = $('turnaround-hist'); if (!el) return;
@@ -1732,8 +1732,8 @@ function renderHours() {
     const d = (cur - prev) / prev * 100;
     return (d > 0.5 ? '▲ ' : d < -0.5 ? '▼ ' : '— ') + Math.abs(d).toFixed(0) + ' % vs ' + cmpWord();
   };
-  // Occurrences per row in the window (hours: how many Tuesdays; days and
-  // months: each cell is its own occurrence).
+  // Weekday occurrences per row, read only in hours mode (how many Tuesdays,
+  // for the per-weekday average); days / months count theirs in colOcc / cellOcc.
   const occ = mode === 'hours' ? weekdayCounts(rg.from, rg.to) : new Array(L.rows).fill(1);
   const colOcc = L.colOcc || null;           // days: how often each day of month occurs
   const cellIn = i => mode === 'days' ? colOcc[i % L.cols] > 0 : mode === 'months' ? L.cellOcc[i] > 0 : occ[Math.floor(i / L.cols)] > 0;
