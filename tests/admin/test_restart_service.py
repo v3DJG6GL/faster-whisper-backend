@@ -53,10 +53,8 @@ def _guard(monkeypatch):
     monkeypatch.setattr(restart_service.os, "execv", _boom_execv)
     monkeypatch.setattr(restart_service.os, "_exit", _boom_exit)
     # The real flush drains receipt_hold, flushes the stats sampler and calls
-    # system_stats.shutdown() (which flips the module-global NVML_OK for the
-    # rest of the session); only _order_probe swaps in its own recorder; the
-    # direct-call test runs the real function through _REAL_FLUSH with every
-    # duty stubbed.
+    # system_stats.shutdown(), which flips the module-global NVML_OK for the
+    # rest of the session.
     monkeypatch.setattr(restart_service, "_flush_before_exit", lambda: None)
     monkeypatch.setattr(
         restart_service.subprocess, "Popen",
@@ -65,10 +63,6 @@ def _guard(monkeypatch):
     )
     yield
 
-
-# ---------------------------------------------------------------------------
-# Non-win32 path (this Linux box)
-# ---------------------------------------------------------------------------
 
 def test_reexec_label_and_timer_armed(monkeypatch):
     monkeypatch.setattr(restart_service.sys, "platform", "linux")
@@ -91,7 +85,6 @@ def test_reexec_callback_invokes_execv(monkeypatch):
 
     monkeypatch.setattr(restart_service.os, "execve", fake_execv)
     restart_service.trigger_self_restart(delay_sec=0.1)
-    # Manually fire the captured callback (the real Timer never runs it).
     _FakeTimer.instances[0].function()
     assert captured["path"] == restart_service.sys.executable
     assert captured["argv"][0] == restart_service.sys.executable
@@ -250,10 +243,6 @@ def test_reexec_callback_falls_back_to_exit_on_execv_failure(monkeypatch):
     assert exited["code"] == 0
 
 
-# ---------------------------------------------------------------------------
-# win32 branch: WinSW missing -> bare-exit fallback
-# ---------------------------------------------------------------------------
-
 def test_win32_winsw_missing_fallback(monkeypatch):
     monkeypatch.setattr(restart_service.sys, "platform", "win32")
     # Force "WhisperAPI.exe not present".
@@ -262,17 +251,12 @@ def test_win32_winsw_missing_fallback(monkeypatch):
     assert label == "winsw-missing-fallback"
     assert len(_FakeTimer.instances) == 1
     assert _FakeTimer.instances[0].interval == 1.0
-    # Callback is the bare-exit lambda: firing it would call os._exit(0).
     exited = {}
     monkeypatch.setattr(restart_service.os, "_exit",
                         lambda code: exited.__setitem__("code", code))
     _FakeTimer.instances[0].function()
     assert exited["code"] == 0
 
-
-# ---------------------------------------------------------------------------
-# win32 branch: WinSW present -> restart! spawn
-# ---------------------------------------------------------------------------
 
 def test_win32_winsw_restart_bang(monkeypatch):
     monkeypatch.setattr(restart_service.sys, "platform", "win32")
@@ -288,11 +272,8 @@ def test_win32_winsw_restart_bang(monkeypatch):
     assert len(_FakeTimer.instances) == 1
     assert _FakeTimer.instances[0].interval == 0.5
 
-    # Fire the callback: it should spawn WinSW then sleep+_exit. Stub Popen,
-    # time.sleep, and os._exit so nothing real happens.
-    # The autouse fixture already stubs _flush_before_exit, so the WinSW
-    # spawn is the only Popen call; the recorder still selects it by name so
-    # an extra Popen elsewhere in the callback cannot mask a missing spawn.
+    # The recorder selects the WinSW spawn by name so an extra Popen elsewhere
+    # in the callback cannot mask a missing spawn.
     popen_calls = []
 
     def fake_popen(args, **kwargs):
@@ -312,11 +293,8 @@ def test_win32_winsw_restart_bang(monkeypatch):
     assert exited["code"] == 0
 
 
-# ---------------------------------------------------------------------------
-# Shutdown obligations: every exec/exit path flushes the lossy lifespan
-# duties (held receipts, NVML) FIRST — the restart bypasses ASGI shutdown.
-# ---------------------------------------------------------------------------
-
+# The restart bypasses ASGI shutdown, so every exec/exit path must run
+# _flush_before_exit (held receipts, stats samples, NVML) first.
 def _order_probe(monkeypatch):
     order = []
     monkeypatch.setattr(restart_service, "_flush_before_exit",
@@ -392,8 +370,6 @@ def test_flush_before_exit_swallows_failures(monkeypatch):
     assert reached == ["flush", "sampler", "shutdown"]
 
 
-# --- hard-restart TMPDIR sweep ----------------------------------------------
-
 def test_reclaim_hard_restart_orphans(tmp_path, monkeypatch):
     """The startup sweep reclaims what an admin restart (os.execve/os._exit,
     no ASGI shutdown) orphaned — urldl- job dirs, sepsrc-/vocals- WAVs —
@@ -466,8 +442,7 @@ def test_reclaim_hard_restart_orphans_covers_pipeline_copies_and_uploads(
         tmp_path, monkeypatch):
     """The sweep also reclaims the `urlmedia-` pipeline copies
     (url_media_store.make_pipeline_copy) and the `whisperup-` batch upload
-    spools — neither carried a matchable name before, so no sweep could
-    ever see them — under the same 60 s age guard."""
+    spools, under the same 60 s age guard."""
     import time as _time
 
     fake_tmp = tmp_path / "faketmp"
