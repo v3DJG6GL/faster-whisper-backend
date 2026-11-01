@@ -121,7 +121,7 @@ async def login(request: Request, response: Response):
     except Exception:  # noqa: BLE001 — malformed/empty body → treat as no key
         body = {}
     key = body.get("key") if isinstance(body, dict) else None
-    if not isinstance(key, str):  # non-string JSON value → same as no key
+    if not isinstance(key, str):
         key = ""
     # guard → lookup → penalize must have NO await between them: guard only
     # reads the counter, so with the body read in between, N concurrent
