@@ -25,10 +25,6 @@ def _hour(y, m, d, hh=12, mm=0, tz=_UTC) -> int:
     return int(_ts(y, m, d, hh, mm, tz) // 3600)
 
 
-# --------------------------------------------------------------------------
-# Migration
-# --------------------------------------------------------------------------
-
 _LEGACY_SCHEMA = """
 CREATE TABLE usage_hourly (
   hour INTEGER NOT NULL, key_id TEXT NOT NULL, user_id TEXT NOT NULL,
@@ -96,10 +92,6 @@ def test_failed_init_leaves_the_store_closed(tmp_path, monkeypatch):
     with pytest.raises(RuntimeError):
         usage_store.totals_by_key()
 
-
-# --------------------------------------------------------------------------
-# Sessions, kinds, stages
-# --------------------------------------------------------------------------
 
 def test_sessions_counted_once_per_job_across_utterances(usage_store_db):
     us = usage_store_db
@@ -251,12 +243,10 @@ def test_dictation_targets_per_language_with_kept_count(usage_store_db):
 
 def test_translation_attaches_to_its_dictation_session(usage_store_db):
     """A dictation's follow-up translation is its own POST under a fresh
-    progress id: its translating stage landed on a kind='text' job, so
-    dictation.targets was always [] and the translating meter counted the
-    dictation AND a text session. With session_job_id naming the same
-    user's dictation job, the stage attaches there and no second session
-    is counted; another user's session id, an unknown one and a failed
-    translation record as before."""
+    progress id. With session_job_id naming the same user's dictation job,
+    its stage attaches there (dictation.targets filled, no second text
+    session); another user's session id, an unknown one and a failed
+    translation keep their own text job."""
     us = usage_store_db
     sess = "s" * 32
     tr = [{"name": "translate", "secs": 1.0, "targets": ["de"]}]
@@ -290,10 +280,8 @@ def test_translation_attaches_to_its_dictation_session(usage_store_db):
 
 def test_per_utterance_translations_count_one_run_per_session(usage_store_db):
     """Per-utterance translation sends one POST per utterance, all naming
-    the same session. Each bumped the hourly translating runs, so the
-    rollup meter read "3 of 1" (300 %) while the with= path read 1 of 1,
-    and each attach overwrote the job row's targets: en, en, fr listed
-    only fr. The session counts one run, each language once."""
+    the same session: on both paths the session counts one translating run
+    (not "3 of 1") and lists each language once (en, en, fr -> en, fr)."""
     us = usage_store_db
     sess = "s" * 32
     tr = lambda code: [{"name": "translate", "secs": 1.0, "targets": [code]}]
@@ -320,10 +308,9 @@ def test_per_utterance_translations_count_one_run_per_session(usage_store_db):
 
 
 def test_dictation_utterance_stage_counts_one_run_per_session(usage_store_db):
-    """A dictation's own utterances each carry a "transcribing" stage under
-    the session's job id: every utterance bumped the hourly runs, so the
-    console read "3 of 1" (300 %) and the stage leaderboard counted three
-    sessions, while the per-job row is one per session."""
+    """Every dictation utterance carries a "transcribing" stage under the
+    session's job id; the meter and the by=stage leaderboard still count one
+    run per session (not "3 of 1")."""
     us = usage_store_db
     for _ in range(3):
         us.record_usage(key_id="k", user_id="u", audio_s=5.0, words=20,
@@ -339,11 +326,9 @@ def test_dictation_utterance_stage_counts_one_run_per_session(usage_store_db):
 
 
 def test_attached_translation_audio_is_the_same_on_both_paths(usage_store_db):
-    """A dictation's per-utterance translation is recorded with no audio
-    and attached to the session's job. The rollup added 0 s to the
-    translating stage, but the with= path and the by=stage breakdown read
-    the joined job's audio (the whole dictation): the RTF column went from
-    "—" to a made-up ratio depending on which source answered."""
+    """A per-utterance translation attached to a dictation has no audio of
+    its own: the rollup, the with= path and the by=stage board all read 0 s
+    for translating, not the joined dictation's audio (a made-up RTF)."""
     us = usage_store_db
     sess = "s" * 32
     us.record_usage(key_id="k", user_id="u", audio_s=30.0, words=20,
@@ -367,11 +352,9 @@ def test_attached_translation_audio_is_the_same_on_both_paths(usage_store_db):
 
 def test_dictation_utterance_vad_retained_averages_over_one_run(usage_store_db):
     """Each dictation utterance carries a "vad" stage under the session's
-    job id. The run counted once but the hourly retained sum took every
-    utterance, so five utterances at 0.9 read retained_avg 4.5 ("-350 %
-    skipped") on the rollup path while the with= path read 0.9. Both paths
-    keep the session's first utterance: the per-job row took the latest
-    one, so 0.9 / 0.5 / 0.4 read 0.9 on the rollup and 0.4 with a chip on."""
+    job id. retained averages over one run per session, and both paths keep
+    the session's first utterance: 0.9 / 0.5 / 0.4 read 0.9, never a summed
+    1.8 or the latest 0.4."""
     us = usage_store_db
     for retained in (0.9, 0.5, 0.4):
         us.record_usage(key_id="k", user_id="u", audio_s=5.0, words=20,
@@ -409,9 +392,8 @@ def test_attached_targets_past_the_cap_count_once(usage_store_db):
 
 
 def test_translating_kept_original_is_the_segment_count_on_both_paths(usage_store_db):
-    """The stage row's kept_original is the guard's segment fallback count.
-    The with= path filled it from the dictation outcome instead (jobs whose
-    user kept the original), so ticking a chip swapped its meaning."""
+    """The translating stage's kept_original is the guard's segment fallback
+    count on both paths, never the dictation outcome's kept-original jobs."""
     us = usage_store_db
     jid = "d" * 32
     us.record_usage(key_id="k", user_id="u", audio_s=5.0, words=20, status="ok",
@@ -428,10 +410,9 @@ def test_translating_kept_original_is_the_segment_count_on_both_paths(usage_stor
 
 
 def test_outcome_before_a_file_run_does_not_make_it_a_dictation(usage_store_db):
-    """record_outcome refuses a non-dictation job, but only when the job
-    already exists: an outcome posted before a file run recorded left a
-    dictation stub the run then adopted, keeping kind='dictation' and
-    folding the file's words and audio into the dictation rollups."""
+    """record_outcome only refuses a non-dictation job that already exists,
+    so an early outcome leaves a dictation stub; a file run under that id
+    must take it over as kind='file', outside the dictation rollups."""
     us = usage_store_db
     jid = "f" * 32
     assert us.record_outcome(user_id="u", job_id=jid, activation="hold",
@@ -452,9 +433,8 @@ def test_outcome_before_a_file_run_does_not_make_it_a_dictation(usage_store_db):
 
 
 def test_with_document_dictation_targets_honour_the_kind_filter(usage_store_db):
-    """The with= document claims every figure is kind-scoped, but
-    dictation.targets hard-coded kind='dictation' and ignored the filter:
-    kind=file listed the dictation targets next to dictation.sessions 0."""
+    """The with= document's dictation.targets honours the kind filter like
+    every other figure: kind=file lists none next to dictation.sessions 0."""
     us = usage_store_db
     tr = lambda code: [{"name": "translating", "secs": 1.0, "targets": [code]}]
     us.record_usage(key_id="k", user_id="u", audio_s=5.0, words=20, status="ok",
@@ -526,10 +506,6 @@ def test_stage_and_target_rollups(usage_store_db):
         ("diarizing", None, 3, None), ("transcribing", None, None, None),
         ("translating", "de,fr", None, None), ("vad", None, None, 0.5)]
 
-
-# --------------------------------------------------------------------------
-# Day reckoning
-# --------------------------------------------------------------------------
 
 def test_days_reckoned_in_caller_zone_across_dst_end(usage_store_db):
     """Europe/Zurich leaves DST on 2025-10-26. An utterance at 00:30 local on
@@ -719,8 +695,8 @@ def test_with_stages_narrows_to_jobs_that_ran_all_of_them(usage_store_db):
     assert tot["text"]["sessions"] == 1
     assert doc["today"]["all"]["sessions"] == 3
     stages = {s["stage"]: s for s in doc["stages"]}
-    # The chosen stage covers every narrowed run; diarizing co-occurred once
-    # among the two narrowed batch jobs.
+    # The chosen stage covers every narrowed run; diarizing co-occurred on
+    # the one narrowed batch job (f1).
     assert (stages["translating"]["runs"], stages["translating"]["of_runs"]) == (3, 3)
     assert stages["translating"]["targets"] == [{"code": "de", "runs": 2}, {"code": "fr", "runs": 1}]
     # The reported "kept original" outcome is dictation.translation's; the
@@ -734,9 +710,8 @@ def test_with_stages_narrows_to_jobs_that_ran_all_of_them(usage_store_db):
     assert doc["apps"] == [{"app_id": "vim", "sessions": 1, "words": 60}]
     assert [c["all"] for c in doc["calendar"]] == [460]
     assert doc["calendar"][0]["file"] == 400
-    # 10:00 and 11:00 slots carry the words; the text job's slot has no
-    # words and no processing time (processing_s was not recorded) but is still
-    # a session, so the busy-hours grid can count it under that measure.
+    # The text job's slot has no words and no processing time but still
+    # counts as a session in the busy-hours grid.
     assert sorted(h["all"] for h in doc["hours"]) == [0, 60, 400]
     assert sorted(h["sessions"]["all"] for h in doc["hours"]) == [1, 1, 1]
     assert sum(h["sessions"]["text"] for h in doc["hours"]) == 1
@@ -775,10 +750,6 @@ def test_time_saved_and_wpm_over_dictation_only(usage_store_db):
     assert us.document("slow", days=1, tz=_UTC,
                        tz_name="UTC")["time_saved_s"] == 0.0
 
-
-# --------------------------------------------------------------------------
-# Outcomes + sweep
-# --------------------------------------------------------------------------
 
 def test_outcome_is_idempotent_and_rolls_once(usage_store_db):
     us = usage_store_db
@@ -842,9 +813,10 @@ def _outcome_rollups(us):
 
 
 def test_utterance_after_the_outcome_matches_the_usual_order(usage_store_db):
-    """record_outcome's stub (the report raced the utterance) used to keep
-    the late utterance's session out of usage_hourly, pin the job to the
-    open-mode key, and leave the outcome rollups at 0 words."""
+    """An outcome that races ahead of its utterance leaves a record_outcome
+    stub; the late utterance must still count its session in usage_hourly,
+    give the job its own key (not the open-mode one) and fill the outcome
+    rollups."""
     us = usage_store_db
     jid = "c" * 32
     assert us.record_outcome(user_id="alice", job_id=jid, activation="hold",
@@ -869,7 +841,7 @@ def test_utterance_after_the_outcome_matches_the_usual_order(usage_store_db):
 
 def test_outcome_naming_a_non_dictation_job_is_a_duplicate(usage_store_db):
     """Only a dictation reports an outcome: naming one's own file job id
-    folded its words and audio into the dictation and app rollups."""
+    must not fold its words and audio into the dictation and app rollups."""
     us = usage_store_db
     us.record_usage(key_id="k", user_id="u", audio_s=600.0, words=5000,
                     status="ok", kind="file", job_id="aaaaaaaa")
@@ -968,7 +940,6 @@ def test_fold_runs_on_every_init_so_a_crash_mid_migration_heals(
     conn.execute("INSERT INTO usage_hourly_legacy VALUES (7, 'k', 'u', 2, 0, 5, 1.0)")
     conn.commit()
     conn.close()
-    # The next start: init_db itself must find the parking table and fold it.
     us.init_db(str(tmp_path / "usage.sqlite3"))
     conn = us._require_conn()
     assert us.totals_for_user("u")["requests"] == 2
@@ -1080,10 +1051,6 @@ def test_parse_window_params_matches_v1_route(usage_store_db):
     us.overview(user_id=None, tz=_UTC, tz_name="UTC", from_day=us._MAX_EPOCH_DAY - 100,
                 to_day=us._MAX_EPOCH_DAY, bucket="month")
 
-
-# --------------------------------------------------------------------------
-# v2 ledger columns: wait_s, error_class / error_stage, per-stage errors
-# --------------------------------------------------------------------------
 
 def test_wait_s_accumulates_and_error_class_is_kept(usage_store_db):
     us = usage_store_db
