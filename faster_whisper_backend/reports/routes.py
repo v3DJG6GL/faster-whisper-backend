@@ -53,10 +53,6 @@ from faster_whisper_backend.core import templates
 router = APIRouter()
 
 
-# ---------------------------------------------------------------------
-# Submission payload
-# ---------------------------------------------------------------------
-
 class CorrectionIn(BaseModel):
     model_config = {"extra": "forbid"}
     # Hygiene only: bounds what can be STORED per correction. The store
@@ -75,7 +71,6 @@ class CorrectionIn(BaseModel):
     idx_end: int | None = None
 
 
-# Bounds for the nested walk in ReportSubmitIn._bound_nested_strings.
 _NESTED_STR_MAX = 65_536
 _NESTED_BUDGET = {"steps": 1_048_576, "stages": 262_144}
 _NESTED_MAX_NODES = 10_000
@@ -111,10 +106,8 @@ class ReportSubmitIn(BaseModel):
     # rather than refused with a 422 that loses the text.
     intended_text: str = Field(default="", max_length=65_536)
     user_comment: str = Field(default="", max_length=65_536)
-    # Job provenance. extra="forbid" above means the client cannot send
-    # these until they are declared here -- a report about a translation
-    # used to identify neither the language nor the translation nor the
-    # model that produced it.
+    # Job provenance: the language and the per-stage models, so a report on a
+    # translation says what produced it.
     language: str = Field(default="", max_length=32)
     stages: list[Any] = Field(default=[], max_length=32)
 
@@ -152,9 +145,6 @@ class ReportSubmitIn(BaseModel):
         return v
 
 
-# ---------------------------------------------------------------------
-# Rate limit (per reporter — identity, with a host fallback)
-# ---------------------------------------------------------------------
 # The threat model is "accidental double-click / runaway script", not a
 # motivated attacker — for that the LAN box is already locked down by
 # require_user_webui_host. Each accepted submission writes a durable row and
@@ -201,10 +191,6 @@ def _trace_provenance(request_id: str, user_id: "str | None",
     return (row["language"] or "")[:32], stages[:32]
 
 
-# ---------------------------------------------------------------------
-# Submission endpoint (under /quick-config)
-# ---------------------------------------------------------------------
-
 @router.post(
     "/quick-config/reports/api/submit",
     dependencies=[
@@ -226,9 +212,7 @@ async def submit_report(
 
     # A JSON "\ud800" escape nested in the list[Any] fields passes validation
     # and only fails at the sqlite bind in upsert_report — a 500 after the
-    # rate-limit budget was spent. Checked here rather than in the validator:
-    # a validation error echoes the input, and rendering that 422 hits the
-    # same UnicodeEncodeError.
+    # rate-limit budget was spent.
     try:
         json.dumps([payload.steps, payload.stages],
                    ensure_ascii=False).encode("utf-8")
@@ -261,10 +245,9 @@ async def submit_report(
         language = language or row_lang
 
     host = request.client.host if request.client else ""
-    # Off the loop: upsert_report runs _evict_to_cap (COUNT(*) + DELETE) on
-    # every call, which measured a median 71.5 ms with the table at REPORTS_MAX
-    # versus 7.5 ms on a partly-filled one. reports_store is thread-safe
-    # (threading.Lock + check_same_thread=False), same as the list/export paths.
+    # Off the loop: a new report runs _evict_to_cap (COUNT(*) + DELETE),
+    # measured at a median 71.5 ms with the table at REPORTS_MAX versus
+    # 7.5 ms on a partly-filled one.
     rid, was_updated = await asyncio.to_thread(
         reports_store.upsert_report,
         user_id=user.get("user_id"),
@@ -289,10 +272,6 @@ async def submit_report(
         "was_updated": was_updated,
     })
 
-
-# ---------------------------------------------------------------------
-# Admin page + APIs
-# ---------------------------------------------------------------------
 
 @router.get(
     "/reports",
@@ -364,13 +343,10 @@ async def list_reports_api(
 
     # The SERIALIZATION has to happen in the thread too, not just the query:
     # at the store's 1000-row LIMIT with max-size rows this measured 2.17 s of
-    # frozen event loop, of which the DB read plus per-row json.loads was only
-    # 0.36 s — the remaining 1.8 s was JSONResponse rendering the body. Rows
-    # are plain types out of _row_to_dict, and the dumps kwargs mirror
-    # Starlette's JSONResponse.render (allow_nan=False in particular: a
-    # non-finite value must raise here, not emit bare `NaN` that breaks the
-    # browser's response.json(); _row_to_dict already maps a legacy
-    # non-finite trace_ts to created_ts). Matches captures_routes.
+    # frozen event loop, 1.8 s of it JSONResponse rendering the body. The dumps
+    # kwargs mirror Starlette's JSONResponse.render; allow_nan=False makes a
+    # non-finite value raise here instead of emitting bare `NaN` that breaks
+    # the browser's response.json().
     body = await asyncio.to_thread(_render)
     return Response(content=body, media_type="application/json")
 
@@ -525,18 +501,8 @@ async def export_reports_api() -> Response:
     )
 
 
-# ---------------------------------------------------------------------
-# /reports HTML page
-# ---------------------------------------------------------------------
-# Card list with status/model filter + free-text search. Word-correction
-# chips render the wrong word red-strike + the correct word green.
-# Sentence rewrite computes a word-level LCS diff between `final` and
-# `intended_text` and renders deletions / insertions inline.
-#
-# IMPORTANT (CLAUDE memory note): never place a `{{...}}` placeholder
-# inside a /* */, //, or <!-- --> comment — render_page() does a literal
-# string replace and corrupting context kills the page. The placeholders
-# below are all at HTML-element scope or inside <style>/<script> as bare
-# tokens, never inside a comment.
+# Never put a `{{...}}` placeholder inside a /* */, // or <!-- --> comment
+# in reports.html: render_page() does a literal string replace, and the
+# substituted markup breaks out of the comment and kills the page.
 
 _REPORTS_HTML = templates.load(__file__, "reports.html")
