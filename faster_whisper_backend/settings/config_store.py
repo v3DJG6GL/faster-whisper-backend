@@ -14,9 +14,12 @@ core/atomic_json.py; the config version counter lives in settings/version.py.
 
 from __future__ import annotations
 
+import array
 import copy
+import functools
 import json
 import os
+import re
 import sys
 from typing import Any
 
@@ -26,7 +29,7 @@ from faster_whisper_backend.settings import version as settings_version
 from faster_whisper_backend.core import atomic_json
 from faster_whisper_backend.paths import REPO_ROOT
 
-from pydantic import ValidationError
+from pydantic import TypeAdapter, ValidationError
 from pydantic_core import PydanticCustomError
 
 
@@ -171,6 +174,96 @@ def _env_rule_names() -> set[str] | None:
     return _renames._rule_names(rules)
 
 
+@functools.cache
+def _rule_adapter() -> TypeAdapter:
+    return TypeAdapter(settings_schema.PipelineRule)
+
+
+def _editor_view(rule: Any) -> dict[str, Any] | None:
+    """A rule as the /settings pipeline editor compares and fingerprints it
+    (settings.html _ruleStrip on the /settings/state copy): the schema dump,
+    without the `seeded` flag, the server-owned map_meta and config_rev
+    itself. None for a rule the schema refuses."""
+    try:
+        out = _rule_adapter().validate_python(rule).model_dump(exclude_none=True)
+    except (ValidationError, TypeError, ValueError):
+        return None
+    for k in ("seeded", "map_meta", "config_rev"):
+        out.pop(k, None)
+    return out
+
+
+# A JS object lists array-index keys ("0", "17") first, in numeric order, then
+# the others in insertion order — the order JSON.stringify writes them in.
+_JS_INDEX_KEY = re.compile(r"0|[1-9][0-9]{0,9}")
+
+
+def _js_json(v: Any) -> str:
+    """JSON.stringify(_sortDeep(v)) as settings.html writes it: keys sorted by
+    UTF-16 code unit, then array-index keys moved to the front."""
+    if isinstance(v, dict):
+        keys = sorted(v, key=lambda k: k.encode("utf-16-be", "surrogatepass"))
+        idx = sorted((k for k in keys if _JS_INDEX_KEY.fullmatch(k)
+                      and int(k) < 2 ** 32 - 1), key=int)
+        keys = idx + [k for k in keys if k not in idx]
+        return "{" + ",".join(json.dumps(k, ensure_ascii=False) + ":" + _js_json(v[k])
+                              for k in keys) + "}"
+    if isinstance(v, list):
+        return "[" + ",".join(_js_json(x) for x in v) + "]"
+    return json.dumps(v, ensure_ascii=False)
+
+
+def _editor_rule_hash(view: dict[str, Any]) -> str:
+    """settings.html _ruleHash (cyrb53 over the UTF-16 code units of the
+    stringified rule, as 14 hex digits) of an _editor_view."""
+    units = array.array("H")
+    units.frombytes(_js_json(view).encode("utf-16-le", "surrogatepass"))
+    if sys.byteorder == "big":
+        units.byteswap()
+    m = 0xFFFFFFFF
+    h1, h2 = 0xDEADBEEF, 0x41C6CE57
+    for ch in units:
+        h1 = ((h1 ^ ch) * 2654435761) & m
+        h2 = ((h2 ^ ch) * 1597334677) & m
+    h1 = (((h1 ^ (h1 >> 16)) * 2246822507) & m) ^ (((h2 ^ (h2 >> 13)) * 3266489909) & m)
+    h2 = (((h2 ^ (h2 >> 16)) * 2246822507) & m) ^ (((h1 ^ (h1 >> 13)) * 3266489909) & m)
+    return format(4294967296 * (2097151 & h2) + h1, "x").zfill(14)
+
+
+def _resync_untouched_factory_copies(raw: dict[str, Any]) -> list[str]:
+    """Replace each stored PIPELINE_RULES rule that is still exactly the
+    config.json version it was last in sync with (the editor's sync record:
+    its config_rev equals its own fingerprint) by the current config.json
+    rule, rev included (in place) — what the editor's "↓ Update" would save.
+    upgrade_rule_entries fixes only an old entry's text, so such a copy kept
+    the other changes of its rule (a new entry, a new note) out and, its
+    content no longer matching its rev, read "edited here · config.json
+    changed too". A rule the admin edited no longer matches its rev and is
+    left to upgrade_rule_entries. Returns the names replaced."""
+    rules = raw.get("PIPELINE_RULES")
+    if not isinstance(rules, list) or not any(
+            isinstance(r, dict) and r.get("config_rev") for r in rules):
+        return []
+    try:
+        factory = {r["name"]: r for r in load_factory_rules(FACTORY_PATH)}
+    except RuntimeError:
+        return []
+    done: list[str] = []
+    for i, r in enumerate(rules):
+        if not isinstance(r, dict) or not isinstance(r.get("config_rev"), str):
+            continue
+        base = factory.get(r.get("name"))
+        if base is None or base.get("type") == "terminal":
+            continue
+        mine, theirs = _editor_view(r), _editor_view(base)
+        if (mine is None or theirs is None or mine == theirs
+                or _editor_rule_hash(mine) != r["config_rev"]):
+            continue
+        rules[i] = {**copy.deepcopy(base), "config_rev": _editor_rule_hash(theirs)}
+        done.append(base["name"])
+    return done
+
+
 def _migrate_legacy_keys(raw: dict[str, Any]) -> dict[str, Any]:
     """One-time key migration (config_renames.RENAMED_KEYS). AdminConfig forbids
     unknown keys and a validation failure drops ALL overrides, so a stored
@@ -188,6 +281,10 @@ def _migrate_legacy_keys(raw: dict[str, Any]) -> dict[str, Any]:
     known = (None if isinstance(raw.get("PIPELINE_RULES"), list)
              else _env_rule_names())
     _renames.migrate_rule_slugs(raw, known)
+    resynced = _resync_untouched_factory_copies(raw)
+    if resynced:
+        print(f"[config_store] updated stored rules {resynced} you never edited "
+              f"to the current config.json version", file=sys.stderr)
     # A stored PIPELINE_RULES copy still carrying a factory entry's OLD text
     # gets the fixed one (config_renames.UPGRADED_RULE_ENTRIES); an entry the
     # admin edited is left alone.
