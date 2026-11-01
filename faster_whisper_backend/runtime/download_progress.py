@@ -59,7 +59,6 @@ from typing import Any, Callable
 
 logger = logging.getLogger("whisper-api")
 
-# Log cadence: every crossed 10% bucket, and at least every 30 s.
 _LOG_BUCKET_PCT = 10
 _LOG_MIN_INTERVAL_S = 30.0
 # Callback cadence (drives 1 Hz pollers — anything finer is wasted work).
