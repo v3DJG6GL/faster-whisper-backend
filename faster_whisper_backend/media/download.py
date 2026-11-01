@@ -17,12 +17,11 @@ Design notes:
     info dict); the actual download runs the yt-dlp *CLI in a subprocess* —
     crash isolation from ~2000 third-party extractors, trivial cancellation
     (terminate), and a real wall-clock timeout.
-  - yt-dlp fetches with its OWN opener, which used to follow redirects and
-    re-resolve DNS with no policy: a public link could 302 the downloader
-    into the LAN or the cloud metadata service behind the probe's back. Both
-    paths now install the guard in ytdlp_plugins/ (see guard_self_check) —
-    same address policy (net_policy), applied to every hop, with the resolved
-    IP pinned — and REFUSE to run if it cannot be installed.
+  - yt-dlp fetches with its OWN opener, which on its own follows redirects
+    and re-resolves DNS with no policy: a public link could 302 the
+    downloader into the LAN or the cloud metadata service. Both paths install
+    the guard in ytdlp_plugins/ (see guard_self_check) — net_policy applied
+    to every hop, resolved IP pinned — and REFUSE to run without it.
   - No user-controlled value ever becomes a flag: the URL is the only
     client-supplied argv element and always follows a literal "--".
 """
@@ -62,8 +61,7 @@ _URL_MAX_LEN = 2048
 _URL_UNSAFE_RE = re.compile(r"[\s\x00-\x1f\x7f-\x9f\ud800-\udfff]")
 
 # Content types accepted by the direct-media probe. application/ogg is the
-# registered type for .ogg/.opus; everything else must declare audio/* or
-# video/*.
+# registered type for .ogg/.opus.
 _DIRECT_MEDIA_TYPES = ("audio/", "video/", "application/ogg")
 # HLS manifest types, admitted only for a site → GenericIE hand-off (see
 # _generic_handoff_target): the download child's match filter takes the same
@@ -157,8 +155,7 @@ _YTDLP_VERSION: "str | None | object" = _UNSET
 # whose audio track is well within the cap.
 DOWNLOAD_FORMAT = "bestaudio[ext=m4a]/bestaudio/best"
 
-# The VIDEO selectors: best video + best audio merged by ffmpeg, capped at
-# a height when the client picked a rung, with a pre-muxed fallback. yt-dlp's
+# The VIDEO selectors (merged by ffmpeg, pre-muxed fallback). yt-dlp's
 # default sort already prefers fps → HDR → codec → bitrate inside one height.
 VIDEO_FORMAT_BEST = "bv*+ba/b"
 VIDEO_FORMAT_CAPPED = "bv*[height<={h}]+ba/b[height<={h}]"
@@ -331,11 +328,10 @@ def _video_candidates(formats: list) -> "tuple[list[dict], dict | None]":
             # would price and count a leg that is never fetched.
             if acodec and acodec != "none" and \
                     "drc" not in str(f.get("format_note") or "").lower():
-                # yt-dlp's own `ba` ranks the track's language ahead of its
-                # bitrate (the extractor marks the original track 10, a dub
-                # -1, audio description -10) — by bitrate alone a louder
-                # dub became the kept video's soundtrack while the
-                # transcript followed the original.
+                # Rank like yt-dlp's own `ba`: language before bitrate (the
+                # extractor marks the original track 10, a dub -1, audio
+                # description -10), so a higher-bitrate dub never becomes the
+                # soundtrack while the transcript follows the original.
                 lp = f.get("language_preference")
                 q = f.get("quality")
                 score = (lp if isinstance(lp, (int, float)) else -1,
@@ -408,9 +404,8 @@ def build_video_ladder(info: dict, *, max_bytes: int,
            for f in chosen[:_LADDER_MAX_RUNGS]]
     if out:
         return out
-    # Nothing rankable (no format survived as a video candidate — every one
-    # would have made a rung). A direct file the generic extractor could
-    # only name by extension is still a video; a podcast mp3 is not.
+    # Nothing rankable: a direct file the generic extractor could only name
+    # by extension is still a video; a podcast mp3 is not.
     ext = str(info.get("ext") or "").lower()
     vcodec = info.get("vcodec")
     if ext in _VIDEO_FILE_EXTS or vcodec not in (None, "none"):
@@ -486,11 +481,11 @@ def _rung(f: dict, *, audio_f: "dict | None", duration: "float | None",
     note = _rung_note(f)
     spec = _rung_spec(f)
     label = " ".join(x for x in (spec, note) if x) or "Best available"
-    # An explicitly video-only format with no usable audio candidate (the
-    # site lists no separate audio format at all) still needs a merge:
-    # "ba" keeps the exact video id and lets yt-dlp pick the audio, instead
-    # of retaining a soundless file. acodec None (unknown, possibly muxed)
-    # stays a single-file rung.
+    # An explicitly video-only format with no audio candidate (none listed,
+    # or only HLS renditions whose codec yt-dlp never names) still needs a
+    # merge: "ba" keeps the exact video id and lets yt-dlp pick the audio,
+    # instead of retaining a soundless file. acodec None (unknown, possibly
+    # muxed) stays a single-file rung.
     if merges:
         audio_id: "str | None" = str(audio_f["format_id"])
     elif audio_f is None and f.get("acodec") == "none":
@@ -592,8 +587,8 @@ def validate_url(url: str) -> str:
         raise UrlDownloadError("only http(s) URLs are supported")
     if not parts.hostname:
         raise UrlDownloadError("the URL has no host")
-    # urlsplit takes `host:abc` / `host:99999`; only .port raises, and the
-    # probe's failure read as "could not be reached". Say what it is.
+    # urlsplit takes `host:abc` / `host:99999`; only .port raises — else the
+    # probe would fail as a misleading "could not be reached".
     try:
         parts.port
     except ValueError:
@@ -697,8 +692,8 @@ class _WallClockCutoff:
     header byte per op can hold a probe thread for as long as it likes —
     and the outer wait_for only abandons the await, never the thread.
     Every socket the opener dials is recorded here; when the timer fires
-    they are shut down, the blocked recv returns EOF at once and the
-    caller's except turns that into its 'no' answer."""
+    they are shut down and the blocked recv returns EOF at once. Callers
+    check `fired` to report a timeout instead of trusting a short answer."""
 
     def __init__(self, seconds: float):
         self._socks: list = []
@@ -809,12 +804,9 @@ def _direct_media_probe_sync(url: str, *, timeout: float,
     unresolvable host); raises UrlTimeoutError / UrlDownloadError when the
     server could not be asked — that is not a verdict on the link.
     `accept_hls` also counts an HLS manifest (_HLS_MANIFEST_TYPES)."""
-    # `timeout` is a wall-clock budget: the opener's timeout is per-socket-
-    # op, so a host dribbling one header byte per op could otherwise hold
-    # this worker thread far past it (the outer wait_for abandons the
-    # await, never the thread). Short per-op timeout, a monotonic deadline
-    # for the slow-but-answering case, and _WallClockCutoff to cut the
-    # socket under a dribbler that never trips the per-op timeout.
+    # `timeout` is a wall-clock budget (see _WallClockCutoff): a short
+    # per-op timeout, a monotonic deadline for the slow-but-answering case,
+    # and the cutoff for a dribbler that never trips the per-op timeout.
     deadline = time.monotonic() + timeout
     op_timeout = max(1.0, min(timeout, 5.0))
     parts = urllib.parse.urlsplit(url)
@@ -855,22 +847,21 @@ def _direct_media_probe_sync(url: str, *, timeout: float,
 # direct-media GET, yt-dlp extract_info and the thumbnail GET) run on their
 # own small pool: a wedged probe thread must only cost probe capacity, never
 # the app-wide default executor that every other asyncio.to_thread in the
-# process shares (main.py runs transcription and model loads there).
+# process shares (transcription, model loads and the retention sweeps).
 _PROBE_POOL = concurrent.futures.ThreadPoolExecutor(
     max_workers=4, thread_name_prefix="url-probe")
 
 
-# ── the yt-dlp SSRF guard ───────────────────────────────────────────────────
-# The probes above gate every hop THEY make (and pin DNS via net_policy's
-# connection classes), but the two fetches that actually move bytes —
-# probe()'s extract_info and download()'s subprocess — go through
-# yt-dlp's own opener, which follows redirects and re-resolves DNS with no
-# policy at all. ytdlp_plugins/ ships a RequestHandler that re-applies
-# net_policy to hop 0 and to every redirect hop, pins the resolved IP, and
-# speaks only http(s); it also unregisters yt-dlp's built-in handlers so
-# nothing can fall through to an unguarded opener. It is installed here for
-# the in-process probe and by ytdlp_plugins/run_guarded_yt_dlp.py for the
-# download subprocess.
+# The yt-dlp SSRF guard. The probes above gate every hop THEY make (and pin
+# DNS via net_policy's connection classes), but the two fetches that
+# actually move bytes — probe()'s extract_info and download()'s subprocess —
+# go through yt-dlp's own opener, which follows redirects and re-resolves
+# DNS with no policy at all. ytdlp_plugins/ ships a RequestHandler that
+# re-applies net_policy to hop 0 and to every redirect hop, pins the
+# resolved IP, and speaks only http(s); it also unregisters yt-dlp's
+# built-in handlers so nothing can fall through to an unguarded opener.
+# It is installed here for the in-process probe and by
+# ytdlp_plugins/run_guarded_yt_dlp.py for the download subprocess.
 GUARD_DIR = os.path.join(REPO_ROOT, "ytdlp_plugins")
 GUARD_LAUNCHER = os.path.join(GUARD_DIR, "run_guarded_yt_dlp.py")
 GUARD_MODULE = os.path.join(GUARD_DIR, "fwb_ssrf_guard", "yt_dlp_plugins",
@@ -1129,7 +1120,8 @@ def _generic_handoff_target(key: str, info: dict, url: str) -> "str | None":
 async def _handoff_serves_media(target: str, deadline: float) -> bool:
     """check_url_policy's direct-media verdict (the same guarded capped
     GET) for a GenericIE hand-off target, within the probe's deadline.
-    A target that could not be asked raises UrlTimeoutError /
+    An invalid, userinfo or forbidden target is a 'no' (the policy
+    refusal). A server that could not be asked raises UrlTimeoutError /
     UrlDownloadError like check_url_policy: probe() fails closed either
     way, and the user hears the timeout, not a policy refusal."""
     try:
@@ -1235,11 +1227,8 @@ async def probe(url: str, *, timeout: float) -> UrlMediaInfo:
         }
         if pin:
             opts["allowed_extractors"] = pin
-        # socket_timeout is per socket op: a host dribbling one header byte
-        # per op would hold this pool thread for as long as it likes (the
-        # wait_for below abandons only the await). Every socket the guard
-        # dials for this thread is shut at the deadline instead — the same
-        # cutoff the direct-media probe and capped_get use.
+        # socket_timeout is per socket op (see _WallClockCutoff): every
+        # socket the guard dials for this thread is shut at the deadline.
         observe = getattr(_guard_module, "observe_dials", None)
         with _WallClockCutoff(max(1.0, deadline - time.monotonic())) as cutoff:
             if observe is not None:
@@ -1361,18 +1350,16 @@ def _capped_get(url: str, *, max_bytes: int, timeout: float,
                 want_url: bool = False) -> "tuple[str, bytes]":
     """One small GET under the address policy: http(s) only, a forbidden
     host refused before any I/O, the guarded opener (pinned DNS, every
-    redirect hop re-checked), the body read in chunks under `max_bytes` and
-    a wall-clock deadline (the opener's `timeout` is per socket op, and the
-    header phase gets a hard cutoff too: a dribbled status line never trips
-    the per-op timeout). Returns (content type, body). Sync — callers await
-    capped_get, which runs it on _PROBE_POOL. `headers` (the extractor's,
-    e.g. a site's Referer) go on top of our User-Agent. `want_url` adds the
-    URL that answered (after redirects, each hop already policy-checked) as
-    a third item — what an HLS playlist's relative URIs resolve against.
-    Raises
-    UrlDownloadError (client-safe) for a refused host, an unaccepted content
-    type, an over-cap or over-time body; transport errors
-    (urllib.error.HTTPError included) propagate for the caller."""
+    redirect hop re-checked), the body capped at `max_bytes` and at
+    `timeout` wall-clock (the opener's timeout is per socket op; the header
+    phase gets a hard cutoff too, since a dribbled status line never trips
+    it). Returns (content type, body), plus the URL that answered after
+    redirects when `want_url` (what an HLS playlist's relative URIs resolve
+    against). Sync: callers await capped_get, which runs it on _PROBE_POOL.
+    `headers` (the extractor's, e.g. a site's Referer) go on top of our
+    User-Agent. Raises UrlDownloadError (client-safe) for a refused host, an
+    unaccepted content type, an over-cap, over-time or incomplete body;
+    transport errors (urllib.error.HTTPError included) propagate."""
     parts = urllib.parse.urlsplit(url)
     if (parts.scheme.lower() not in ("http", "https") or not parts.hostname
             or _host_is_forbidden(parts.hostname)):
@@ -1446,7 +1433,6 @@ async def fetch_thumbnail_data_uri(
     return f"data:{ctype};base64,{base64.b64encode(body).decode('ascii')}"
 
 
-# ── error taxonomy ──────────────────────────────────────────────────────────
 # (substring-of-tool-output, client-safe message). Order matters: first hit
 # wins, and the more specific conditions sit above the catch-alls.
 _HANDOFF_REFUSED = "this link leads to a site the server's URL policy doesn't allow"
@@ -1457,11 +1443,9 @@ _ERROR_TAXONOMY: "tuple[tuple[tuple[str, ...], str], ...]" = (
      "link downloads are unavailable on this server"),
     ((GUARD_EXTERNAL_FD_MARKER,),
      "this media needs a downloader the server does not allow"),
-    # Next (first of the non-guard rows, and only after the two longer guard
-    # needles above, which contain it), by an exact marker: the SSRF guard
-    # refused a hop, or the host did not resolve (the guard resolves first,
-    # so a DNS failure carries this marker, not "failed to resolve"). Its
-    # text names the host and the address it resolved to — server-log
+    # The SSRF guard refused a hop, or the host did not resolve (the guard
+    # resolves first, so a DNS failure carries this marker, not "failed to
+    # resolve"). Its text names the host and the resolved address: server-log
     # material only, never quoted to a client. Read on the non-WARNING lines
     # like the transport rows: an optional fetch's refusal must not relabel
     # the run's real error (no message quotes tool output, so a fall-through
@@ -1563,14 +1547,14 @@ def classified_error(stderr_tail: str) -> UrlDownloadError:
     return UrlDownloadError(message)
 
 
-# ── download ────────────────────────────────────────────────────────────────
-
 # NOTE: in --progress-template, "download:" is the PHASE SELECTOR (consumed
 # by yt-dlp, never printed) — the emitted line starts with our own "dl:"
 # marker so progress lines are unambiguous against yt-dlp's [info] chatter.
 _PROGRESS_PREFIX = "dl:"
 _STDERR_TAIL_MAX = 4096
-# The stdout line yt-dlp prints for a result --match-filters rejected.
+# Part of the stdout line yt-dlp prints for a result --match-filters
+# rejected. Matched anywhere in a line, so site text can forge it: only
+# trusted when no result was found.
 _FILTERED_NEEDLE = b"does not pass filter"
 # The stdout line yt-dlp's HTTP downloader prints when --max-filesize skips a
 # file (exit 0): in a merge the OTHER leg is left behind as an intermediate.
@@ -2096,8 +2080,7 @@ async def _run_yt_dlp(
 
 
 def _discard_partials(dest_dir: str) -> None:
-    """Unlink whatever the killed child left in `dest_dir` (media.* and its
-    .part), so an over-cap abort never leaves the bytes it refused."""
+    """Unlink every regular file the killed child left in `dest_dir`, so an over-cap abort never leaves the bytes it refused."""
     try:
         names = os.listdir(dest_dir)
     except OSError:
