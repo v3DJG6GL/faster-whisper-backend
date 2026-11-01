@@ -1,6 +1,6 @@
 """LoopLock: a module-level asyncio lock that survives the test suite's
 loop-per-lifespan. A lock left held by a dead loop must not wedge the next
-loop (the Windows CI failure at lifespan shutdown, run 997 onwards)."""
+loop (the Windows CI failure at lifespan shutdown)."""
 
 import asyncio
 import threading
