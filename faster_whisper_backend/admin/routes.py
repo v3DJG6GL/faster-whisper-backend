@@ -168,11 +168,10 @@ def _baseline_value(name: str) -> Any:
 
 
 def _field_choices(field: str) -> list[str] | None:
-    """Dropdown options for a field, derived from its AdminConfig `Literal` type —
-    the single source of truth for enum settings. Returns None for non-Literal
-    fields. Unwraps `Literal[...] | None`. The WebUI renders a <select> whenever
-    this is non-None (main form AND the per-model pane), so the dropdown options
-    can never drift from the schema — they ARE the schema."""
+    """Dropdown options for a field, read off its AdminConfig `Literal` type
+    (unwrapping `Literal[...] | None`) so they cannot drift from the schema;
+    None for non-Literal fields. The WebUI renders a <select> whenever this is
+    non-None, in the main form AND the per-model pane."""
     fld = settings_schema.AdminConfig.model_fields.get(field)
     if fld is None:
         return None
@@ -428,8 +427,8 @@ async def post_state(payload: dict[str, Any], request: Request) -> JSONResponse:
     pick up."""
     # OVERRIDE_PROFILES is edited only on /settings/overrides (group=None, so
     # this page never sends it), and that route owns the "profile still bound
-    # to a user or key" 409 guard. Accepting it here let a curl POST of
-    # {"OVERRIDE_PROFILES": null} delete bound profiles and their locks.
+    # to a user or key" 409 guard. Accepted here, a curl POST of
+    # {"OVERRIDE_PROFILES": null} would delete bound profiles and their locks.
     if "OVERRIDE_PROFILES" in payload:
         raise HTTPException(status.HTTP_400_BAD_REQUEST,
                             "edit OVERRIDE_PROFILES on /settings/overrides")
@@ -1192,9 +1191,8 @@ async def test_pipeline(payload: dict[str, Any]) -> JSONResponse:
             return {**common, "after": text, "skipped": True,
                     "skipped_language": True}
 
-        # regex-list: apply each entry in order to a running buffer (entry N's
-        # output feeds N+1), all inside ONE 2 s guard. Reports one card-level
-        # step (summed matches).
+        # regex-list: every entry runs inside ONE 2 s guard and the card
+        # reports one step (summed matches).
         if rtype == "regex-list":
             entries = rule.get("entries", []) or []
             if not entries:
@@ -1246,7 +1244,7 @@ async def test_pipeline(payload: dict[str, Any]) -> JSONResponse:
                                 ValueError) as e:
                             # Engine parity (pl_engine.rebuild_caches): a bad entry is
                             # SKIPPED, not the whole card — the valid entries still
-                            # apply. Surface the first bad pattern as an advisory.
+                            # apply.
                             if rank < 1:
                                 bad, rank = str(e), 1
                             continue
@@ -1498,7 +1496,6 @@ async def test_pipeline(payload: dict[str, Any]) -> JSONResponse:
         if rule.get("type") == "terminal":
             saw_terminal = True
     if not saw_terminal:
-        # No terminal row in the payload — apply the implicit trim.
         before = text
         text = text.lstrip(" \t\r").rstrip(" \t\r")
         if before != text:
@@ -1557,10 +1554,8 @@ async def translation_test(
     if fam is not None and fam != "auto" and fam not in translation._FAMILIES:
         return JSONResponse(status_code=status.HTTP_400_BAD_REQUEST,
                             content={"error": f"unknown prompt family '{fam}'"})
-    # Same admission rule as the request path — tr_gating._translation_model_allowed
-    # is the one home for the allowlist semantics (an empty allowlist admits
-    # any well-formed ref; a non-empty one admits members + the configured
-    # default).
+    # Same admission rule as the request path (tr_gating._translation_model_allowed
+    # owns the allowlist semantics).
     ref = (body.model or "").strip()
     default = (getattr(cfg, "TRANSLATION_DEFAULT_MODEL", "") or "").strip()
     if ref and not tr_gating._translation_model_allowed(ref, requested=ref):
@@ -1568,8 +1563,8 @@ async def translation_test(
             status_code=status.HTTP_400_BAD_REQUEST,
             content={"error": "model is not in TRANSLATION_ALLOWED_MODELS"})
     # An explicit "auto" (the lab's UNSAVED select) is name detection, not
-    # resolve_family: that returns the SAVED pin, so the lab previewed and
-    # ran a family no request would use once "auto" is saved.
+    # resolve_family: that returns the SAVED pin, a family no request uses
+    # once "auto" is saved.
     if fam == "auto":
         fam = translation.detect_family(ref or default)
     # Custom-family template only — a stale textarea must not leak into a
