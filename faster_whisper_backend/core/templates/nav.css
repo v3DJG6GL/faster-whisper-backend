@@ -39,13 +39,9 @@
   --col-read: 56rem; --col-form: 68.75rem; --col-data: 100rem; --col-fluid: 150rem;
   --gutter: 1rem;
   --col: var(--col-data);
-  /* system-ui resolves to the OS's actual UI font on every modern browser:
-     Segoe UI on Windows, San Francisco on macOS, Plasma's chosen font on
-     KDE (typically Noto Sans), Cantarell on GNOME. Explicit Linux names
-     (Cantarell / Ubuntu / Noto Sans / DejaVu Sans / Liberation Sans) come
-     before the generic `sans-serif` keyword because some Linux fontconfig
-     setups alias `sans-serif` to a serif (DejaVu Serif / Liberation Serif),
-     which previously rendered the WebUI as a "newspaper". */
+  /* system-ui resolves to the OS's UI font. The explicit Linux names come
+     before the generic `sans-serif` because some fontconfig setups alias
+     `sans-serif` to a serif (DejaVu Serif / Liberation Serif). */
   --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, Inter,
                "Helvetica Neue", Cantarell, Ubuntu, "Noto Sans",
                "DejaVu Sans", "Liberation Sans", Arial, sans-serif;
@@ -233,9 +229,9 @@ header .sevpills { display: inline-flex; align-items: center; gap: 0.55rem;
 /* every pill is admin-only, so the wrapper's box is too (a :not() hide, so
    the c2 / c9 ladder rules are not out-ranked) */
 body:not(.role-admin) header .sevpills { display: none; }
-/* not at c8: the activity half is display:none there but keeps .allowed, so
-   an unscoped fuse rule (0,4,1) out-ranked the c8 restore and left the lone
-   pills chip without its left border */
+/* not at c8: the activity half is display:none there but keeps .allowed,
+   and an unscoped fuse rule (0,4,1) would out-rank the c8 restore, leaving
+   the lone pills chip without its left border */
 header:not(.c8) .hact-wrap:has(.hdr-activity.allowed) + .sevpills {
   border-radius: 0 6px 6px 0; border-left: 0; }
 body.role-admin header:not(.c8) .hdr-status .hdr-activity.allowed {
@@ -391,11 +387,9 @@ header .subbar-left  { display: flex; align-items: center; gap: 0.5rem;
 header .subbar-right { display: flex; align-items: center; gap: 0.5rem;
   flex: 0 0 auto; margin-left: auto; flex-wrap: wrap; row-gap: 0.4rem;
   justify-content: flex-end; }
-/* When a filter group (.subbar-left) is present it grows to push the action
-   cluster to the right edge on its own, so `margin-left:auto` is not needed —
-   and dropping it means that when the actions can't fit and wrap to a second
-   line, they align under the title on the LEFT instead of floating at the
-   bottom-right with an empty diagonal above them. */
+/* A growing .subbar-left already pushes the actions right; without the
+   auto margin, actions that wrap align under the title on the left instead
+   of floating bottom-right. */
 header .subbar-left ~ .subbar-right { margin-left: 0; }
 header .subbar #filter { flex: 1 1 auto; min-width: 8rem; max-width: 32rem; }
 header .subbar .sep { align-self: stretch; width: 1px; background: var(--border);
@@ -433,7 +427,7 @@ header .subbar select, header .subbar input[type="text"] {
   font-family: var(--font-sans); }
 header .subbar input[type="text"] { min-width: 10rem; }
 /* A <select> is as wide as its LONGEST option (a full Hugging Face model id
-   can be 40+ chars), which used to blow a whole toolbar row. Cap it; pages
+   can be 40+ chars) and would blow a whole toolbar row. Cap it; pages
    shorten option labels and keep the full id in the option title. */
 header .subbar select { max-width: 14rem; text-overflow: ellipsis; }
 header .subbar .counts { color: var(--help); font-size: var(--fs-sm); white-space: nowrap; }
@@ -556,9 +550,8 @@ body:not(.col-data) header .width-toggle { display: none; }
   color: var(--fg); font: inherit; font-size: var(--fs-xs); padding: 0.05rem 0.5rem; cursor: pointer; }
 
 /* Admin-only chrome (settings / pipeline / api-keys / overrides links + sev
-   pills): hidden until `body.role-admin`, which is added only for an admin
-   identity (e.g. OPEN_MODE_BANNER_JS on whoami.is_admin), so non-admin keys
-   never see it. */
+   pills): hidden until OPEN_MODE_BANNER_JS adds `body.role-admin` for an
+   admin whoami (is_admin). */
 header .admin-only { display: none; }
 body.role-admin header .admin-only { display: inline-flex; }
 
@@ -709,7 +702,7 @@ header .page-link.allowed { display: inline-flex; }
   text-transform: uppercase; letter-spacing: 0.03em;
   border-top: 1px solid var(--border); margin-top: 0.25rem; }
 .lang-picker-group-hdr:first-child { border-top: 0; margin-top: 0; }
-/* Checklist badge (compact, non-interactive) for the per-model view */
+/* Read-only language badge (settings rule cards, overrides rule rows) */
 .lang-badge { display: inline-flex; align-items: center; gap: 0.2em;
   font-size: var(--fs-xs); padding: 0.05rem 0.4rem;
   background: rgba(224, 160, 64, 0.12);
@@ -825,8 +818,8 @@ header .page-link.allowed { display: inline-flex; }
 }
 
 /* Unified login gate — full-viewport screen shown by OPEN_MODE_BANNER_JS
-   whenever /auth/whoami 401s (locked-down + no session). Opaque cover, so the
-   page behind it stays hidden until the user authenticates. */
+   (_showLoginGate) on a whoami 401/403 or a page's own 401. Opaque cover, so
+   the page behind it stays hidden until the user authenticates. */
 #login-gate[hidden] { display: none; }
 #login-gate {
   position: fixed; inset: 0; z-index: 9999;
@@ -969,8 +962,8 @@ input[type="checkbox"].switch:focus-visible {
 }
 .status-btn:disabled { color: var(--dim); cursor: not-allowed; }
 /* Semantic active tones (opt-in via data-tone; un-toned buttons keep the
-   cyan default above so the captures filter is unchanged). Escalating
-   exposure → escalating emphasis; red reserved for deny/destructive. */
+   cyan default above). Escalating exposure → escalating emphasis; red
+   reserved for deny/destructive. */
 .status-btn.active[data-tone="none"]    { background: var(--border2, #3d444d); color: var(--bold); }
 .status-btn.active[data-tone="own"]     { background: #1f6feb;                 color: #fff; }
 .status-btn.active[data-tone="all"]     { background: var(--yellow);           color: #1c1407; }
