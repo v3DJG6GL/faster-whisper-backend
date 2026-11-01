@@ -462,9 +462,9 @@ def _merged_wav_patch(
 ) -> dict[str, Any]:
     """Build the capture_samples patch fields from _build_merged_wav outputs.
 
-    merged_lead/trail_trim_ms are forced to 0 under per-member trimming (the
-    outer-edge offsets are now folded into the per-member segment maps); they
-    survive only so legacy groups without member_trims keep rendering."""
+    merged_lead/trail_trim_ms are always 0: the outer-edge offsets live in
+    the per-member segment maps. The columns survive only so legacy groups
+    without member_trims keep rendering."""
     return {
         "merged_duration_ms":   int(duration_ms),
         "member_hashes":        json.dumps(hashes, sort_keys=True),
@@ -633,7 +633,7 @@ def _align_words_to_final(
                 while take > 0 and k < len(ins):
                     owners[ri].append(ins[k]); k += 1; take -= 1
             last = unmatched[-1]
-            while k < len(ins):  # leftover insertions → last raw word in the gap
+            while k < len(ins):
                 owners[last].append(ins[k]); k += 1
         else:
             # Pure insertion with no raw word in the gap: attach to an adjacent
