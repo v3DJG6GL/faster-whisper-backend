@@ -133,7 +133,6 @@ def test_progress_and_cancel_are_owner_bound(client, app_module,
                         headers=bearer(raw_bob))
         assert r.json() == {"cancelled": False}
         assert _PID not in tx_progress._BATCH_CANCELLED
-        # The owner sees and cancels their own run.
         r = client.get(f"/v1/audio/transcriptions/progress/{_PID}",
                        headers=bearer(raw_alice))
         assert r.json()["stage"] == "transcribing"
