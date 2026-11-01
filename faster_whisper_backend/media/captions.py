@@ -179,7 +179,7 @@ def embedded_captions_empty(src: str, *, video_index: int = 0, timeout: float = 
             except subprocess.TimeoutExpired:
                 proc.kill()
                 proc.wait()
-        else:  # stopped early: real captions found, or out of time
+        else:  # stopped early: real captions, time limit, cancel, or the scan raised
             proc.kill()
             proc.wait()
         proc.stdout.close()
