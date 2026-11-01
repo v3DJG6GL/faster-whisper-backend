@@ -161,7 +161,7 @@ def test_expired_session_is_rejected(client, make_user_key):
     _uid, raw = make_user_key("root", is_admin=True)
     client.post("/auth/login", json={"key": raw})
     assert client.get("/settings/state").status_code == 200
-    # Force every session into the past, then purge+rebuild the index.
+    # purge_expired also rebuilds the in-memory index, so the cookie stops resolving.
     sessions_store._require_conn().execute(
         "UPDATE sessions SET expires_ts = 1"
     )
@@ -330,7 +330,7 @@ def test_secure_flag_off_by_default(client, make_user_key):
 def test_csrf_missing_token_blocks_cookie_mutation(client, make_user_key):
     _uid, raw = make_user_key("root", is_admin=True)
     client.post("/auth/login", json={"key": raw})
-    # Cookie present, no X-CSRF-Token header -> 403 from the CSRF middleware.
+    # The 403 comes from the CSRF middleware, not from the route.
     r = client.post("/auth/logout")
     assert r.status_code == 403
 
