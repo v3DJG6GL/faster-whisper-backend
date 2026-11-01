@@ -65,7 +65,7 @@ def test_oversize_blob_rejected(client_settings_store_db):
 def test_worst_case_legit_blob_is_accepted(client_settings_store_db):
     """The desktop client sizes its sync ceiling (4 MiB) at ~2.5x a ~1.5 MB
     worst-case legitimate blob (500 backends + 500 profiles + rules +
-    secrets); the old 512 KB cap 413'd every push of such a config."""
+    secrets); the server cap must accept such a blob, not 413 it."""
     store = client_settings_store_db
     blob = {"backends": [{"name": f"b{i}", "prompt": "p" * 1500}
                          for i in range(1000)]}
@@ -260,7 +260,6 @@ def test_force_put_creates_then_bumps(client_settings_store_db):
     assert state["version"] == 3
     assert state["blob"] == {"n": 99}
 
-    # The device's stale CAS push now conflicts, surfacing the import.
     ok, current = store.put("u1", {"n": 3}, 2)
     assert ok is False
     assert current["version"] == 3
