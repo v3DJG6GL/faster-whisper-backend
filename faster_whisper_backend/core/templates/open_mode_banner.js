@@ -328,9 +328,8 @@
         // buttons); only this whoami pass may set it.
         if (isAdmin) document.body.classList.add('role-admin');
 
-        // Per-page nav-link visibility. The nav renders every link with
-        // class `.page-link` default-hidden; add `.allowed` per link the
-        // caller can reach. Admins pass on every link via is_admin.
+        // Every `.page-link` renders hidden; `.allowed` reveals the ones the
+        // caller can reach.
         document.querySelectorAll('header a.page-link[data-page]').forEach(
           function(a) {
             var page = a.getAttribute('data-page');
