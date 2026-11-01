@@ -2308,7 +2308,10 @@ function translationTemplateEditor(name, v) {
   sample.setAttribute('aria-label', 'sample text');
   left.appendChild(sample);
 
-  const gloss = document.createElement('input');
+  // A textarea, not an <input>: a text input strips the newlines of a pasted
+  // glossary (one pair per line), so the lab tested one garbled pair.
+  const gloss = document.createElement('textarea');
+  gloss.rows = 2;
   gloss.placeholder = 'glossary: Messung = measurement';
   gloss.setAttribute('aria-label', 'glossary line');
   left.appendChild(gloss);

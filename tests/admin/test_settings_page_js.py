@@ -704,6 +704,18 @@ console.log(JSON.stringify([...eds.map(e => [e.tagName, e.disabled]),
     assert out == [["TEXTAREA", True], ["INPUT", True], True, False]
 
 
+@needs_node
+def test_prompt_lab_glossary_box_keeps_newlines(client):
+    """The prompt lab's glossary box was a text <input>, which strips the
+    newlines of a pasted multi-line glossary, so the preview and the test
+    run got one garbled pair instead of the glossary that would be saved."""
+    box = _block(_html(client), "  const gloss = document.createElement(",
+                 "left.appendChild(gloss);\n")
+    out = _node(_FAKE_DOM + "const left = document.createElement('div');\n"
+                + box + "console.log(JSON.stringify(gloss.tagName));")
+    assert out == "TEXTAREA"
+
+
 # ---- "↑ view" jump-link ---------------------------------------------------------
 
 @needs_node
