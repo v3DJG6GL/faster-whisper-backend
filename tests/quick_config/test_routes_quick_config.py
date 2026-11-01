@@ -328,9 +328,8 @@ def test_post_patch_oversized_map_400(client, app_module):
     r = client.post("/quick-config/state", json={"rules_patch": {slug: {"map": big}}})
     assert r.status_code == 400, r.text
     assert str(cap) in r.json()["detail"]
-    # The single-dictionary overflow must get the actionable per-dictionary
-    # wording, not the request-wide "in total" one (the request-wide check
-    # used to reuse the per-map cap and shadowed this branch entirely).
+    # One over-cap dictionary gets the per-dictionary wording; the
+    # request-wide "in total" check must not shadow this branch.
     assert "this dictionary is full" in r.json()["detail"]
     assert "in total" not in r.json()["detail"]
 
@@ -380,9 +379,9 @@ def test_patch_response_hides_global_capture_count_from_nonadmin(
             headers=bearer(user_raw),
         )
         assert r.status_code == 200, r.text
-        assert slug in r.json()["saved"]          # the save itself still works
+        assert slug in r.json()["saved"]
         assert r.json()["captures_count"] == 0
-        assert calls == []                        # and the query never ran
+        assert calls == []
 
         r = client.post(
             "/quick-config/state",
@@ -390,7 +389,7 @@ def test_patch_response_hides_global_capture_count_from_nonadmin(
             headers=bearer(admin_raw),
         )
         assert r.status_code == 200, r.text
-        assert r.json()["captures_count"] == 7    # admin behaviour unchanged
+        assert r.json()["captures_count"] == 7
         assert len(calls) == 1
     finally:
         captures_store.count = orig
@@ -469,7 +468,6 @@ def test_post_patch_map_total_over_cap_400(client, app_module, monkeypatch):
     r = client.post("/quick-config/state", json={"rules_patch": {
         slug_a: {"map": map_a}, slug_b: {"map": map_b}}})
     assert r.status_code == 200, r.text
-    # The request-wide guard still exists, and names the total cap.
     monkeypatch.setattr(quick_config_routes, "_MAP_MAX_TOTAL_ENTRIES", 10)
     small_a = {f"awort{i}": str(i) for i in range(6)}
     small_b = {f"bwort{i}": str(i) for i in range(6)}
