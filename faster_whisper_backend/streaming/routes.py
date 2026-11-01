@@ -1478,7 +1478,7 @@ async def transcribe_stream(ws: WebSocket) -> None:
 
             # Rich diagnostic block — same formatter the batch route uses, so the
             # VAD-ate-audio / empty-output / pipeline-step diagnostics show up for
-            # streaming too. file_label marks it as a streamed utterance.
+            # streaming too.
             try:
                 _block_kwargs = dict(
                     file_label=f"stream {session_id[:8]} utt#{info['utterance']}  "
