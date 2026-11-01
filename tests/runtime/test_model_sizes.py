@@ -189,13 +189,9 @@ def test_a_nonsense_count_reads_as_zero(ledger):
     assert model_sizes.lookup("a", "cpu", "int8")["n"] == 0
 
 
-# ---------------------------------------------------------------------------
-# Disk-size prior
-#
-# Without it, a model that has never been loaded cannot be sized, so preload
-# refuses it, so it is never loaded, so it is never measured. On a fresh
-# install that deadlock covers every model and fails completely silently.
-# ---------------------------------------------------------------------------
+# Disk-size prior: without it a never-loaded model cannot be sized, so
+# preload refuses it and it is never measured. On a fresh install that
+# deadlock covers every model, silently.
 
 def test_disk_size_reads_a_uvr_onnx_file(ledger, tmp_path, monkeypatch):
     from faster_whisper_backend.settings import config as cfg
@@ -472,9 +468,9 @@ def test_disk_size_defaults_to_the_hub_cache_without_any_root(
 
 def test_disk_size_finds_whisper_under_download_root(
         ledger, tmp_path, monkeypatch):
-    """main passes DOWNLOAD_ROOT itself as snapshot_download's cache_dir and
-    maps 'large-v3' through faster_whisper's _MODELS table — the prior must
-    look where the bytes actually land."""
+    """transcription.models passes DOWNLOAD_ROOT itself as snapshot_download's
+    cache_dir and maps 'large-v3' through faster_whisper's _MODELS table — the
+    prior must look where the bytes actually land."""
     pytest.importorskip("faster_whisper")
     from faster_whisper_backend.settings import config as cfg
     monkeypatch.delenv("HF_HOME", raising=False)
@@ -522,9 +518,10 @@ def test_record_holds_the_cross_process_save_lock(ledger, monkeypatch):
 
 
 def test_lookup_reports_source(ledger, monkeypatch):
-    """lookup() says WHERE a size came from: the exact placement's record
-    (measured or a recorded disk prior), another placement (proxy), or a
-    live disk walk (disk); None when nothing is known."""
+    """lookup() says WHERE a size came from: a measurement of this placement
+    (measured) or of another one (proxy), else a disk prior — the live walk,
+    or a stored row when the walk finds nothing (disk); None when nothing is
+    known."""
     model_sizes.record("large-v3", "cuda", "float16", 3 * GB)
     model_sizes.record("medium", "cpu", "int8", 1 * GB, measured=False)
     got = model_sizes.lookup("large-v3", "cuda", "float16")
