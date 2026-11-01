@@ -71,9 +71,8 @@
   .ktitle .kname { color: var(--bold); font-weight: 600; word-break: break-word; }
   .ktitle .kname.none { color: var(--dim); font-style: italic;
     font-weight: normal; }
-  /* Meta stacks vertically: key id, then a created/used (or created/revoked)
-     timestamp grid so the two dates line up column-for-column and are easy to
-     compare. Mono values keep the digits tabular. */
+  /* The created/used (or created/revoked) dates sit in a grid so they line up
+     column-for-column for comparison; mono values keep the digits tabular. */
   .kmeta { display: flex; flex-direction: column; gap: 0.3rem; margin-top: 0.3rem;
     font-size: var(--fs-sm); color: var(--dim); }
   .kmeta .kid { color: var(--fg); font-family: var(--font-mono); }
@@ -124,10 +123,9 @@
   /* User-level .kdot: .card h3 is display:flex, so flex:none keeps the dot
      from shrinking. */
   .user-head .kdot { flex: none; }
-  /* Buttons inside <main>: a quiet ghost baseline so nothing is ever browser-
-     default, plus filled .primary and red .danger — mirrors the /pipeline
-     button language. (Modal + header buttons sit outside <main> and are
-     unaffected.) */
+  /* Buttons inside <main>: a quiet baseline so nothing is ever browser-default,
+     mirroring the /pipeline button language. Modal + header buttons sit
+     outside <main> and are unaffected. */
   main button { font: inherit; font-size: var(--fs-sm); cursor: pointer;
     line-height: 1.3; white-space: nowrap; border-radius: 6px;
     padding: 0.3rem 0.65rem; display: inline-flex; align-items: center;
@@ -315,8 +313,8 @@
   .ov-card .ohead .c { font-size: var(--fs-xs); color: var(--dim); }
   .ov-card .ohint { font-size: var(--fs-xs); color: var(--help);
     margin: 0.15rem 0 0.6rem; }
-  /* one request gate = label left, segmented control right; uniform rows with
-     hairlines so the set reads as a group (not a raw table, not loose selects) */
+  /* One row per request gate; hairlines make the set read as a group (not a raw
+     table, not loose selects). */
   .gaterow { display: grid; grid-template-columns: 1fr auto; align-items: center;
     gap: 0.8rem; padding: 0.4rem 0; border-top: 1px solid rgba(48, 54, 61, 0.55); }
   .gaterow:first-of-type { border-top: 0; }
@@ -324,7 +322,6 @@
   .gaterow .gl .sub { display: block; font-family: var(--font-mono);
     font-size: var(--fs-xs); color: var(--dim); }
   .gaterow .eff { font-size: var(--fs-xs); color: var(--dim); justify-self: end; }
-  /* restrict-to checkbox grid */
   .ov-checks { display: flex; flex-wrap: wrap; gap: 0.5rem 0.9rem; margin-top: 0.5rem; }
   .ov-checks label { display: inline-flex; align-items: center; gap: 0.25rem;
     font-size: var(--fs-sm); }
@@ -381,7 +378,7 @@
      can carry API keys), the second press downloads. */
   main button.warn-armed { color: var(--yellow); border-color: #4d3e1f;
     background: rgba(242, 204, 96, 0.07); }
-  /* Import-preview modal: label/value rows, mono values. */
+  /* Import-preview modal rows. */
   .cs-frows { display: grid; gap: 0.3rem; margin: 0.4rem 0 0; }
   .cs-frow { display: grid; grid-template-columns: 6.5rem 1fr; gap: 0.6rem;
     font-size: var(--fs-sm); }
@@ -447,7 +444,6 @@
   <div id="users-container"></div>
 </main>
 
-<!-- Show-once raw key modal -->
 <div id="key-modal" class="modal">
   <div class="box">
     <h3>&#128273; New API key <span class="pill" id="key-modal-label"></span></h3>
@@ -944,7 +940,7 @@
 
   function userCollapseKey(uid) { return 'apikeys.collapsed.' + uid; }
   // First visit (no stored pref): expand when the list is short, collapse when
-  // it's long. Stored '0' = expanded, '1' = collapsed.
+  // it's long.
   function isUserOpen(uid, nUsers) {
     var v = null;
     try { v = localStorage.getItem(userCollapseKey(uid)); } catch (_) {}
@@ -1202,7 +1198,6 @@
     acts.className = 'kacts';
     var kdraw = document.createElement('div');  // overrides drawer holder
     if (!revoked) {
-      // Rename — inline editor under the title
       var renameBtn = document.createElement('button');
       renameBtn.className = 'ghost';
       renameBtn.textContent = '✎ Rename';
@@ -1560,7 +1555,6 @@
         : (al.indexOf('*') >= 0 ? 'all' : (al.length === 0 ? 'none' : 'restrict'));
       if (dataMode === 'inherit' || dataMode === 'all') restrictOpen = false;
       else if (dataMode === 'restrict') restrictOpen = true;
-      // Keep the grid open when restrict was chosen but the list is still empty.
       var mode = (restrictOpen && dataMode === 'none') ? 'restrict' : dataMode;
       var arow = document.createElement('div'); arow.className = 'gaterow';
       var agl = document.createElement('span'); agl.className = 'gl';
