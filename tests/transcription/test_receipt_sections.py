@@ -384,9 +384,8 @@ def test_decode_trace_header_carries_the_total_wall_time(app_module):
 
 def test_one_fmt_secs_helper(app_module):
     assert tx_receipt._fmt_secs(None) == "-" and tx_receipt._fmt_secs(1.26) == "1.3s"
-    # Across the whole package, not just receipt.py + main.py: the code that
-    # left main in the 2026-10 refactor (guards, stats, media) is where a
-    # second copy would land.
+    # Across the whole package: guards, stats and media are where a second
+    # copy would land.
     import pathlib
     import faster_whisper_backend
     pkg = pathlib.Path(faster_whisper_backend.__file__).parent
