@@ -33,8 +33,8 @@ from threading import Lock
 from typing import Any, Callable
 
 
-# Populated by each model cache after its load, removed when it evicts. NOT a
-# measurement loop: it holds what the delta sample said at construction time.
+# NOT a measurement loop: each entry holds what the delta sample said at
+# construction time.
 _loaded_models_lock = Lock()
 _loaded_models: dict[str, dict[str, Any]] = {}
 
@@ -138,8 +138,8 @@ _warm_predicate: "Callable[[str], bool] | None" = None
 
 
 def set_warm_predicate(fn: "Callable[[str], bool] | None") -> None:
-    """Install (or clear, with None) the warm-lease predicate. Called by
-    preload.start(); cleared by preload._reset_for_tests()."""
+    """Install (or clear, with None) the warm-lease predicate: preload.start()
+    installs it, preload.stop() and the test resets clear it."""
     global _warm_predicate
     _warm_predicate = fn
 
