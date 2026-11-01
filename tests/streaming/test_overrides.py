@@ -1,4 +1,4 @@
-"""Phase 4: the streaming WebSocket path honours per-identity config — locked
+"""The streaming WebSocket path honours per-identity config — locked
 overrides surfaced in the `ready` frame, and profile decode params reach the
 final decode. Driven in-process; no faster-whisper needed."""
 
@@ -49,7 +49,6 @@ def test_ready_frame_reports_locked_handshake_override(client, make_user_key):
                       "audio": {"format": "pcm_s16le"}})
         ready = ws.receive_json()
     assert ready["type"] == "ready"
-    # both the locked decode key and the locked language are surfaced
     assert set(ready["overrides_ignored"]) == {"temperature", "language"}
 
 
@@ -79,7 +78,7 @@ def test_final_decode_uses_profile_beam(client, make_user_key, fake_model,
 
 def test_stream_request_override_profile_applies(
         client, make_user_key, fake_model, app_module, monkeypatch):
-    """P11/B0e: a per-request `override_profile` named in the WS handshake is
+    """A per-request `override_profile` named in the WS handshake is
     honoured — echoed as `profile_applied` in the ready frame and its decode
     params reach the final decode (least-specific layer, no admin lock)."""
     monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
@@ -106,9 +105,9 @@ def test_stream_request_override_profile_applies(
 
 def test_stream_picks_up_binding_change_without_reconnect(
         client, make_user_key, fake_model, app_module, monkeypatch):
-    """Regression: a binding change made WHILE a dictation WebSocket is open is
-    picked up on the next utterance — ident used to be frozen at handshake for
-    the whole session, so live edits silently had no effect until reconnect."""
+    """A binding change made WHILE a dictation WebSocket is open applies from
+    the next utterance: ident is re-resolved per utterance, not frozen at the
+    handshake until reconnect."""
     monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
     _, raw_admin = make_user_key("admin", is_admin=True)
     h = bearer(raw_admin)
@@ -129,9 +128,7 @@ def test_stream_picks_up_binding_change_without_reconnect(
         # utterance 1 under profile p7
         ws.send_bytes(_pcm(8000, 2500))
         ws.send_bytes(_pcm(0, 1500))
-        # admin re-binds alice p7 -> p3 mid-session (bumps the config version).
-        # Without the per-utterance re-resolve, the connection's frozen ident
-        # would keep using p7 and the final assertion below would see beam 7.
+        # admin re-binds alice p7 -> p3 mid-session (bumps the config version)
         api_keys_store.set_user_permissions(
             uid, {"pages": {}, "config": {"overrides": {}, "profiles": ["p3"], "locks": []}})
         # utterance 2 must pick up p3 (beam 3) on the same connection
@@ -145,7 +142,7 @@ def test_stream_picks_up_binding_change_without_reconnect(
 
 def test_final_drops_low_confidence_hallucination_segment(
         client, make_user_key, fake_model, app_module, monkeypatch):
-    """B3: a final-decode segment that is BOTH very low confidence AND fell through
+    """A final-decode segment that is BOTH very low confidence AND fell through
     the temperature ladder (a hallucination on near-silence) is dropped from the
     committed text; a normal segment in the same decode is kept."""
     from tests.conftest import FakeSegment
@@ -177,7 +174,7 @@ def test_final_drops_low_confidence_hallucination_segment(
 
 def test_stream_prompt_sentinel_inherit_clear_value(
         client, make_user_key, fake_model, app_module, monkeypatch):
-    """B4: the WS handshake prompt is a present-vs-absent sentinel. Absent → inherit
+    """The WS handshake prompt is a present-vs-absent sentinel. Absent → inherit
     DEFAULT_PROMPT; explicit "" → CLEAR (no initial_prompt); a value → used verbatim.
     The first utterance's final decode is seeded straight from base_prompt."""
     monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
@@ -198,9 +195,9 @@ def test_stream_prompt_sentinel_inherit_clear_value(
             _drain(ws)
         return fake_model.last_kwargs.get("initial_prompt")
 
-    assert _run({}) == "SERVER PROMPT"            # absent → inherit
-    assert _run({"prompt": ""}) is None           # explicit empty → clear
-    assert _run({"prompt": "my terms"}) == "my terms"   # value → verbatim
+    assert _run({}) == "SERVER PROMPT"
+    assert _run({"prompt": ""}) is None
+    assert _run({"prompt": "my terms"}) == "my terms"
 
 
 def test_stream_handshake_drops_lone_surrogates(
@@ -239,7 +236,7 @@ def test_setup_window_error_delivers_internal_error_and_closes(
     an `internal` error frame and close without hanging. The error reply is sent
     under the same send-lock as every other send — hoisted above the try so it is
     bound even on an early failure — and the consumer is cancelled in the finally
-    (no orphaned task). Guards the previously-untested outer error path."""
+    (no orphaned task)."""
     monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
     _, raw_alice = make_user_key("alice")
 
@@ -274,8 +271,7 @@ def test_model_load_failure_delivers_generic_error_and_closes(
     """A model-load failure during the handshake must deliver a
     `model_load_failed` frame and close — without leaking the raw exception
     text (it can carry the model dir / filesystem path); the detail is logged
-    server-side instead. Mirrors the internal-error guard above for the other
-    client-facing error reply touched by the same security fix."""
+    server-side instead."""
     _, raw_alice = make_user_key("alice")
 
     async def _boom(name, *, lease=False):
@@ -292,8 +288,6 @@ def test_model_load_failure_delivers_generic_error_and_closes(
     errors = [m for m in msgs if m.get("type") == "error"]
     assert errors, f"expected a model_load_failed frame, got {msgs!r}"
     assert errors[0]["code"] == "model_load_failed"
-    # Security: the raw exception text (filesystem / model-dir paths) must not
-    # reach the client; it is logged server-side instead.
     assert "secret-path" not in errors[0]["message"]
     assert errors[0]["message"] == "model could not be loaded"
 
@@ -452,18 +446,14 @@ def test_partial_model_load_failure_row_names_the_partial_model(
 
 def test_handshake_drops_unknown_decode_override_keys(
         client, make_user_key, fake_model, app_module, monkeypatch):
-    """Unknown `decode_overrides` keys are discarded at the handshake instead of
-    being retained (and re-walked per partial) for the life of the connection.
-
-    They were already ignored by transcription.models._apply_decode_overrides, so this pins the
-    behaviour-preservation half too: the honoured key still reaches the final
-    decode, and the junk key never appears in the transcribe kwargs.
-    """
+    """Unknown `decode_overrides` keys are discarded at the handshake: the
+    narrowed req_overrides the decode closures hold for the connection's life
+    (and re-walk per partial; spied via _client_stream_values) keeps only
+    known keys, the honoured key still reaches the final decode, and the junk
+    keys never reach the transcribe kwargs."""
     monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
     _, raw_alice = make_user_key("alice")
 
-    # The retained dict: _client_stream_values receives the narrowed
-    # req_overrides the decode closures hold for the life of the connection.
     from faster_whisper_backend.streaming import routes as streaming_routes
     seen_keys: list = []
     real_values = streaming_routes._client_stream_values
@@ -489,9 +479,7 @@ def test_handshake_drops_unknown_decode_override_keys(
         ws.send_json({"type": "stop"})
         _drain(ws)
 
-    # The accepted override still applies...
     assert fake_model.last_kwargs["beam_size"] == 5
-    # ...and the unknown keys reached neither the kwargs nor the retained dict.
     assert "not_a_real_key" not in fake_model.last_kwargs
     assert "__proto__" not in fake_model.last_kwargs
     assert seen_keys and all(k == ["beam_size"] for k in seen_keys), seen_keys
@@ -571,10 +559,9 @@ def test_handshake_language_reaches_the_model_as_a_whisper_code(
     assert fake_model.last_kwargs["language"] == expected
 
 
-# --- mid-connection credential revalidation ----------------------------------
-# A WebSocket has no request boundary, so the handshake's authenticate_ws used to
-# be the only credential check for the whole connection: revoking a key left the
-# revoked identity decoding and writing captures/trace/usage rows indefinitely.
+# A WebSocket has no request boundary, so the credential is re-checked
+# mid-connection: with only the handshake's authenticate_ws, a revoked key would
+# keep decoding and writing captures/trace/usage rows.
 
 _drain_with_code = ws_drain   # _drain, but also returns the server's close code
 
@@ -652,10 +639,9 @@ def test_revoked_session_closes_without_a_further_client_frame(
 def test_revocation_during_the_handshake_still_closes_with_4401(
         client, make_user_key, app_module, monkeypatch):
     """A revocation landing between authentication and the end of the handshake
-    (the config message, a cold model load) used to be folded into the version
-    snapshot taken after the load, so _refresh_ident never re-checked the
-    credential and the revoked identity kept decoding. The snapshot now
-    predates authentication, so the first decode re-auths and closes."""
+    (the config message, a cold model load) still closes the connection: the
+    version snapshot predates authentication, so _refresh_ident sees the
+    revocation and the first decode re-auths and closes."""
     from faster_whisper_backend.auth import api_keys_store
     from faster_whisper_backend.streaming import routes as streaming_routes
     from faster_whisper_backend.streaming.routes import _WS_UNAUTH
@@ -828,8 +814,6 @@ def test_revocation_during_the_closing_drain_still_closes_with_4401(
     assert not any(m.get("type") == "final" and m.get("last") for m in msgs), msgs
     assert "error" not in rows, rows
 
-
-# --- live-dictation knobs as client keys --------------------------------------
 
 def _knobs_handshake(client, monkeypatch, overrides, headers=None):
     """Handshake with `overrides` and return (ready frame, the client values
