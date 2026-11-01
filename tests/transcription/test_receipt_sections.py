@@ -1,13 +1,10 @@
 """Full-pipeline sections of the per-request receipt block.
 
-_format_request_block was written when the pipeline was decode and nothing
-else. Separation, diarization and translation were added around it and never
-reached it, even though every one of their results was in scope at the call
-site. These tests pin the two halves of the fix:
+These tests pin two properties of _format_request_block:
 
-  * a stage section appears ONLY when that stage actually ran, so a
-    decode-only receipt keeps exactly the shape it has always had;
-  * the additions don't collide with the glyphs and phrases the existing
+  * a stage section appears ONLY when the caller passes that stage, so a
+    decode-only receipt keeps its decode-only shape;
+  * the stage sections don't collide with the glyphs and phrases the existing
     receipt assertions depend on (`✗`, "unchanged", "N step").
 """
 
@@ -44,10 +41,6 @@ def _block(app_module, **kw):
     base.update(kw)
     return tx_receipt._format_request_block(**base)
 
-
-# ---------------------------------------------------------------------------
-# Decode-only receipts are untouched
-# ---------------------------------------------------------------------------
 
 def test_no_stage_sections_without_stages(app_module):
     """The regression that matters most: a plain transcription must not grow
@@ -108,10 +101,6 @@ def test_soft_failed_diarization_prints_no_diarization_section(app_module):
     assert "2 speakers" not in block
 
 
-# ---------------------------------------------------------------------------
-# Pipeline table
-# ---------------------------------------------------------------------------
-
 def test_pipeline_table_lists_every_stage_in_order(app_module):
     block = _block(app_module, stages=_STAGES)
     rows = [l for l in block.splitlines()
@@ -134,9 +123,9 @@ def test_pipeline_table_splits_load_from_run(app_module):
 
 
 def test_vad_renders_as_its_own_stage(app_module):
-    """VAD is the stage that most often eats the user's audio and it had no
-    row anywhere. transcribe() runs Silero eagerly before handing back the
-    generator, so the cost is genuinely separable from the decode."""
+    """VAD is the stage that most often eats the user's audio. transcribe()
+    runs Silero eagerly before handing back the generator, so its cost is
+    separable from the decode."""
     stages = [
         {"name": "transcribing", "secs": 12.4, "model": "large-v2",
          "device": "cuda", "load_secs": 0.0},
@@ -160,10 +149,6 @@ def test_pipeline_header_says_stage_count_and_wall(app_module):
     assert "6:12" in head                        # 372.3s total
 
 
-# ---------------------------------------------------------------------------
-# Speaker column (only when diarization produced labels)
-# ---------------------------------------------------------------------------
-
 def test_speaker_column_only_with_speakers(app_module):
     plain = _block(app_module)
     assert "spk" not in plain
@@ -180,10 +165,6 @@ def test_speaker_column_tolerates_short_speaker_list(app_module):
     block = _block(app_module, speakers=["SPEAKER_00"])
     assert "S0" in block
 
-
-# ---------------------------------------------------------------------------
-# Notes
-# ---------------------------------------------------------------------------
 
 def test_notes_lists_warnings_and_skips(app_module):
     block = _block(app_module,
@@ -206,14 +187,9 @@ def test_notes_absent_when_nothing_to_say(app_module):
     assert "─── Notes" not in _block(app_module, warnings=[], skipped=[])
 
 
-# ---------------------------------------------------------------------------
-# Segment row cap
-# ---------------------------------------------------------------------------
-
 def test_segment_rows_honour_the_configured_cap(app_module, monkeypatch):
     """The tail line has to name the config knob: rows the FILE never got are
-    rows the viewer can never reveal, which is exactly why the old inert
-    "(+N more)" tail expanded into nothing."""
+    rows the viewer can never reveal."""
     monkeypatch.setattr(app_module.cfg, "LOG_SEGMENT_ROWS_MAX", 1)
     block = _block(app_module)
     assert "Guten Morgen" in block
@@ -228,10 +204,6 @@ def test_zero_cap_means_unlimited(app_module, monkeypatch):
     assert "Guten Morgen" in block and "Ja, danke" in block
     assert "not logged" not in block
 
-
-# ---------------------------------------------------------------------------
-# The `*` marker now reaches stage params
-# ---------------------------------------------------------------------------
 
 def test_stage_params_can_be_marked_non_default(app_module):
     """_is_non_default is a whitelist keyed by _KWARG_TO_CFG; without the
@@ -278,9 +250,8 @@ def test_translation_model_row_is_never_starred(app_module):
 
 
 def test_task_renders_in_decode_params_with_the_non_default_marker(app_module):
-    """`task` is the one kwarg that changes the output language, yet it was
-    missing from both the order tuple and _KWARG_TO_CFG, so a translate run's
-    decode block was byte-identical to a plain transcription's."""
+    """`task` is the one kwarg that changes the output language, so a
+    translate run's decode block must not read like a plain transcription's."""
     baseline = getattr(app_module.cfg, "_BASELINE", {})
     assert baseline.get("TASK") == "transcribe"
     rows = tx_receipt._format_decode_params({"task": "translate", "beam_size": 5})
@@ -291,12 +262,8 @@ def test_task_renders_in_decode_params_with_the_non_default_marker(app_module):
                    for r in tx_receipt._format_decode_params({"beam_size": 5}))
 
 
-# ---------------------------------------------------------------------------
-# The /logs viewer parses this block with JS regexes. Nothing else connects
-# the two, so a renamed section or a re-spaced row breaks colouring silently
-# and nobody finds out until someone opens the page.
-# ---------------------------------------------------------------------------
-
+# The /logs viewer parses this block with JS regexes and nothing else ties
+# the two: a renamed section or re-spaced row breaks its colouring silently.
 def _viewer_re(name):
     """The viewer's own JS regex literal `const <name> = /…/;`, compiled as
     Python (the patterns use no JS-only syntax) — a copy here would keep
@@ -443,10 +410,6 @@ def test_failed_stage_row_carries_its_error_class():
                                     TimeoutError())["error"] == "timeout"
 
 
-# ---------------------------------------------------------------------------
-# Standalone translate receipt
-# ---------------------------------------------------------------------------
-
 def test_translate_block_neutralises_a_forged_source_line(app_module):
     """`source` is client-supplied: a newline in it must not write an
     attacker-shaped record into the /logs viewer."""
@@ -458,10 +421,6 @@ def test_translate_block_neutralises_a_forged_source_line(app_module):
     row = next(l for l in block.splitlines() if "source_lang" in l)
     assert "de?2026-10-06" in row
 
-
-# ---------------------------------------------------------------------------
-# Identity section
-# ---------------------------------------------------------------------------
 
 def test_identity_names_an_unreadable_binding_instead_of_every_field(app_module):
     """A failed binding fetch locks every scalar field because the locks are
