@@ -1320,9 +1320,8 @@ function modelOverridesEditor(name, v) {
   // snapshot pushed via setDirty(name, snapshot) on every edit so the existing
   // /settings/state save flow sees one consistent payload.
   let overrides = JSON.parse(JSON.stringify(v || {}));
-  // Diff mode starts ON so the first view shows what differs from global.
   let selectedId = null;     // chosen during initial paint below
-  let diffMode = true;
+  let diffMode = true;       // ON so the first view shows what differs from global
   // Live handle to the per-model pipeline section so refreshPipelineSection()
   // can replaceWith() it on global PIPELINE_RULES changes.
   let pipelineSectionEl = null;
@@ -3248,10 +3247,8 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
     rankStepper.appendChild(downBtn);
     rail.appendChild(rankStepper);
 
-    // Lock padlock — toggles rule.locked. Locked = enforced read-only (the
-    // whole body + header toggles + drag are disabled) at FULL contrast, not
-    // greyed like "disabled". Click to unlock (with a confirm). The terminal
-    // trim is inherently fixed, so it shows a static, non-interactive padlock.
+    // Lock padlock (what a lock disables: _applyLockState). The terminal trim
+    // is inherently fixed, so it shows a static, non-interactive padlock.
     const lockBtn = document.createElement('button');
     lockBtn.type = 'button';
     lockBtn.className = 'lock-btn';
