@@ -36,7 +36,6 @@ from faster_whisper_backend.core.loop_lock import LoopLock
 from faster_whisper_backend.pipeline import apply as pl_apply
 from faster_whisper_backend.auth.dependencies import require_admin
 from faster_whisper_backend.core import templates
-from faster_whisper_backend.streaming import routes as stream_routes
 from faster_whisper_backend.transcription import models as tx_models
 
 logger = logging.getLogger("whisper.overrides")
@@ -517,6 +516,10 @@ def resolve(user_id: str = "", key_id: str = "", model: str = "",
     )
     # The live-dictation knobs as the streaming handshake would set them
     # (clamped, the silence gates fitted as a pair, locked keys skipped).
+    # Imported here: api_keys_routes imports this module, so a module-level
+    # import let a streaming router that fails to import take /settings/
+    # overrides and /settings/api-keys down too; now it costs only this call.
+    from faster_whisper_backend.streaming import routes as stream_routes
     stream = stream_routes._client_stream_values(sim_dict, r)
 
     fields: dict[str, Any] = {}

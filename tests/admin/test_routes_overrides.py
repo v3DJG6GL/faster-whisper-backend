@@ -76,19 +76,26 @@ def test_state_field_meta_marks_multiline_text_as_textarea(client, make_user_key
     assert fm["DEFAULT_LANGUAGE"]["kind"] == "str"
 
 
-def test_overrides_and_api_keys_routers_import_without_admin_routes(monkeypatch):
+@pytest.mark.parametrize("broken", [
+    "faster_whisper_backend.admin.routes",
+    "faster_whisper_backend.streaming.routes",
+])
+def test_overrides_and_api_keys_routers_import_without_admin_routes(
+        monkeypatch, broken):
     """main.py mounts each admin router fail-soft, so a broken admin.routes
     (settings.html, translation engine, ...) must cost only /settings. The
     textarea kinds came from admin.routes' overlay, so an import failure there
     took the overrides router and (via api_keys_routes) the API-keys page
-    down with it."""
+    down with it. The streaming router, imported for the What-if's stream
+    values, did the same."""
     import faster_whisper_backend.admin as admin_pkg
     importlib.import_module("faster_whisper_backend.admin.api_keys_routes")
     for mod in ("overrides_routes", "api_keys_routes"):
         monkeypatch.delattr(admin_pkg, mod)
         monkeypatch.delitem(sys.modules, f"faster_whisper_backend.admin.{mod}")
-    monkeypatch.setitem(sys.modules, "faster_whisper_backend.admin.routes", None)
-    monkeypatch.delattr(admin_pkg, "routes", raising=False)
+    parent, _, leaf = broken.rpartition(".")
+    monkeypatch.setitem(sys.modules, broken, None)
+    monkeypatch.delattr(importlib.import_module(parent), leaf, raising=False)
     importlib.import_module("faster_whisper_backend.admin.api_keys_routes")
     fresh = sys.modules["faster_whisper_backend.admin.overrides_routes"]
     fm = fresh._build_field_meta()
