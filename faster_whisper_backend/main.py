@@ -329,7 +329,8 @@ async def _sessions_purge_loop() -> None:
     Nothing else purges them at runtime: the lazy eviction in lookup_session
     only fires for a token that is presented again, so with the 30-day
     TTL a login loop grew both the sessions table and the in-memory index
-    without bound. /auth/login takes any valid key and has no rate limit.
+    without bound. /auth/login mints a session for any valid key and only
+    rate-limits failures.
     Same shape as the retention loops above."""
     while True:
         try:
@@ -763,13 +764,11 @@ app = FastAPI(
     docs_url=None, redoc_url=None, openapi_url=None,
 )
 
-# CORS — opt-in, off by default (empty allowlist → no middleware, no
-# Access-Control-* headers, unchanged behavior). Enable by listing browser
-# origins in CORS_ALLOW_ORIGINS so cross-origin JSON-API calls work (e.g. a
-# third-party browser app on another origin calling this backend; /dictate
-# itself always talks to its own origin).
-# '*' allows any origin, in which case credentials must be disabled per the CORS
-# spec. The WebSocket streaming path is not subject to CORS.
+# CORS — opt-in: an empty CORS_ALLOW_ORIGINS registers no middleware and
+# sends no Access-Control-* headers (/dictate always talks to its own origin).
+# List browser origins there so cross-origin JSON-API calls work. '*' allows
+# any origin, so credentials must be disabled per the CORS spec.
+# The WebSocket streaming path is not subject to CORS.
 _cors_origins = list(getattr(cfg, "CORS_ALLOW_ORIGINS", []) or [])
 # The origin guard (auth/hosts.py) gets the raw lists via configure_origins
 # below and treats '*' as a literal, never allow-all.
@@ -1030,11 +1029,7 @@ async def _max_body_mw(request: Request, call_next):
     # blob is ~1.5 MB, its store cap just under the desktop client's 4 MiB sync
     # ceiling less 4 KiB). The media type is parsed, not prefix-matched:
     # FastAPI treats `application/*+json` as JSON. A body with NO Content-Type
-    # is buffered whole, and the self-parsing routes (_SELF_PARSED_JSON_PATHS,
-    # below) ignore the header, so both share the ceiling. Only multipart to
-    # _MULTIPART_UPLOAD_PATHS keeps the full MAX_REQUEST_BYTES; every other
-    # non-JSON body keeps the 256 MiB backstop, so the media cap never widens
-    # text/plain PUTs.
+    # is buffered whole too, so it shares the ceiling.
     _ctype = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
     _main, _, _sub = _ctype.partition("/")
     if not _ctype or (_main == "application"
@@ -1065,8 +1060,7 @@ async def _max_body_mw(request: Request, call_next):
     # Count bytes as they stream in. Past the cap the receive channel reports
     # the client as disconnected, which unwinds whatever is consuming the body
     # (Starlette raises ClientDisconnect out of Request.body()/form()) instead
-    # of letting it accumulate. The cap is the same max_body the
-    # Content-Length check above used, so a request under it is unaffected.
+    # of letting it accumulate.
     _received = 0
     _orig_receive = request.receive
 
@@ -1181,11 +1175,9 @@ _CSP = (
 
 @app.middleware("http")
 async def _security_headers_mw(request: Request, call_next):
-    """Outermost @app.middleware layer (only CORSMiddleware, when enabled,
-    wraps it): response headers every route should carry.
-
-    Registered last so it wraps _metrics_mw/_max_body_mw/_csrf_mw and therefore
-    also stamps their early 403/413 returns.
+    """Response headers every route should carry. Outermost @app.middleware
+    layer (only CORSMiddleware, when enabled, wraps it), so the inner guards'
+    early 403/413 returns get them too.
 
     Cache-Control is set as a DEFAULT, not an override — a handler that already
     chose its own value keeps it. Some bodies are scope-filtered per caller
@@ -1359,7 +1351,7 @@ def _refuse_input(path: str) -> None:
     import av
     try:
         container, _stream = _transcode._open_audio(path)
-    except av.FFmpegError:  # a ValueError too: checked first
+    except av.FFmpegError:  # some (InvalidDataError) are ValueErrors: still "does not open", not a refusal
         return
     container.close()
 
@@ -1457,12 +1449,10 @@ async def transcribe(
     num_speakers = _spk_clamp(num_speakers)
     min_speakers = _spk_clamp(min_speakers)
     max_speakers = _spk_clamp(max_speakers)
-    # Bound the two OpenAI-compatible knobs that carry no schema of their own.
-    # Both are already bounded on every sibling path — DEFAULT_PROMPT is
-    # Field(max_length=2048) and the `hotwords` client override is capped by
-    # _DECODE_STR_CAPS, while `temperature` inside decode_overrides is clamped
-    # rung by rung to _TEMPERATURE_BOUNDS. Clamp rather than 422 so a caller that is merely
-    # sloppy keeps working; NaN fails every comparison, hence the self-test.
+    # Bound the two OpenAI-compatible knobs that carry no schema of their own,
+    # as every sibling path (DEFAULT_PROMPT, decode_overrides) already is.
+    # Clamp rather than 422 so a merely sloppy caller keeps working; NaN fails
+    # every comparison, hence the self-test.
     if prompt is not None:
         prompt = prompt[:tx_models._DECODE_STR_CAPS.get("prompt", 2048)]
     _t_lo, _t_hi = tx_models._TEMPERATURE_BOUNDS
@@ -1685,10 +1675,6 @@ async def transcribe(
         _rplan.set_stage_model("transcribing", model=resolved_model,
                                device=_plan_device, compute=_plan_compute)
 
-        # Resolve the caller's effective per-identity config ONCE for this
-        # request: layered decode params, pipeline include/exclude, output
-        # wrappers, and which fields are locked against client overrides.
-        # Open mode / no per-identity config → no identity layers.
         # `override_profile` (if sent + allowed) joins as the least-specific layer.
         ident = effective_config.build_ident(user, resolved_model, request_profile=override_profile)
 
@@ -1986,7 +1972,7 @@ async def transcribe(
                             and random.random() < sample_rate
                             and not await _ready_fills_cap()):
                         will_capture = True
-                        want_word_ts = True  # force DTW for capture
+                        want_word_ts = True
                 except Exception as _ce:
                     logger.warning("[capture] eligibility check failed: %s", _ce)
 
@@ -2034,9 +2020,8 @@ async def transcribe(
             # language-scoped pipeline rules) keys on the text's language.
             _text_lang_pre = ("en" if _task == "translate"
                               else (_decode_language or None))
-            # Diarization request knobs: same absent-inherits / locked-wins
-            # shape as task above. The capacity gate (DIARIZATION_ENABLED)
-            # is checked at the stage itself and soft-fails into `warnings`.
+            # The capacity gate (DIARIZATION_ENABLED) is checked at the
+            # stage itself and soft-fails into `warnings`.
             _diarize = bool(effective_config._resolve_request_knob(
                 resolved_model, ident, ignored,
                 "DIARIZE", "diarize", _form_bool(diarize), default=False))
@@ -2142,10 +2127,10 @@ async def transcribe(
                 resolved_model, ident, ignored,
                 "SEPARATE_BGM", "separate_bgm", _form_bool(separate_bgm),
                 default=False))
-            # Per-request stage models (pyannote pipeline id / UVR model):
-            # same ladder again. A non-empty allowlist that misses the
-            # resolved value soft-fails by skipping THAT stage — before its
-            # enabled gate, so the warning names the actual reason.
+            # Per-request stage models (pyannote pipeline id / UVR model): a
+            # non-empty allowlist that misses the resolved value soft-fails by
+            # skipping THAT stage — before its enabled gate, so the warning
+            # names the actual reason.
             _dm_req = (diarization_model or "").strip() or None
             _diarization_model = effective_config._resolve_request_knob(
                 resolved_model, ident, ignored,
@@ -2183,11 +2168,9 @@ async def transcribe(
                     "server (BGM_SEPARATION_ALLOWED_MODELS)")
                 _skip("separating")
                 _separate = False
-            # Translation (T2T) request knobs: the same locked-wins /
-            # request-wins / config-inherits ladder as diarize/separate_bgm
-            # above. The capacity gates (TRANSLATION_ENABLED, model allowlist)
-            # live at the stage itself and soft-fail into `_warnings`.
-            # Present-but-empty is an explicit "no targets" (overrides an
+            # Translation (T2T): the capacity gates (TRANSLATION_ENABLED,
+            # model allowlist) live at the stage itself and soft-fail into
+            # `_warnings`. Present-but-empty is an explicit "no targets" (overrides an
             # inherited TRANSLATE_TO); only an ABSENT field inherits.
             _tt_req = translate_to.strip() if translate_to is not None else None
             _tt_raw = effective_config._resolve_request_knob(
@@ -2273,12 +2256,11 @@ async def transcribe(
                     # are verbatim copies; auto-detect learns it post-decode.
                     source_lang=_text_lang_pre)
 
-            # Stage-ahead: the stage plan is fully resolved here (every
-            # enable/allowlist/soft-skip verdict above has landed), so this is
-            # the first point at which the server knows which models this job
-            # will actually need. Registered through the SAME register_plan the
-            # endpoint calls — the client-driven and server-driven paths must
-            # be one mechanism, or they will diverge.
+            # Stage-ahead: the first point at which the server knows which
+            # models this job will need (register_plan drops a stage whose
+            # *_ENABLED gate is off). Registered through the SAME register_plan
+            # the endpoint calls — the client-driven and server-driven paths
+            # must be one mechanism, or they will diverge.
             #
             # Whisper is deliberately NOT a stage-ahead target of its own job:
             # it is loaded above, before this plan can exist. Only a CLIENT
@@ -2455,13 +2437,12 @@ async def transcribe(
                                         pass
                                     _sep_wav = None
                                 if _refused:
-                                    # _open_audio REFUSED the input (a
-                                    # playlist container, no audio stream).
-                                    # Never hand that to the separator: its
-                                    # own decoders (libsndfile, audioread's
-                                    # ffmpeg) have no protocol whitelist and
-                                    # no playlist refusal. The soft-fail arm
-                                    # below warns and transcribes as is.
+                                    # Never hand a refused input to the
+                                    # separator: its own decoders (libsndfile,
+                                    # audioread's ffmpeg) have no protocol
+                                    # whitelist and no playlist refusal. The
+                                    # soft-fail arm below warns and
+                                    # transcribes as is.
                                     _ps(step=None)
                                     raise _bgm_separation.BgmSeparationError(
                                         "music separation skipped: the file "
@@ -3202,17 +3183,14 @@ async def transcribe(
             before_trim = full_text_str
             full_text_str = full_text_str.lstrip(" \t\r").rstrip(" \t\r")
             if trace is not None and before_trim != full_text_str:
-                # Defensive trim AFTER the output wrappers — distinct from the
-                # in-pipeline terminal trim (which already carried `#{card}`),
-                # so use a distinct unnumbered label to avoid a duplicate line.
+                # Unnumbered label: the in-pipeline terminal trim already
+                # wrote its own `#{card}` line.
                 trace.append(("Trim edges (post-wrapper)",
                               before_trim, full_text_str))
 
-            # Persist the capture if eligibility passed before the decode
-            # AND duration falls in the configured window AND we have
-            # enough disk free. Done BEFORE the log block so the block
-            # can record `captured=<id_prefix>` for traceability. We copy
-            # (not move) tmp_path so the outer finally's cleanup is unchanged.
+            # Capture persistence runs BEFORE the log block so the block can
+            # record `captured=<id_prefix>`. It copies (not moves) tmp_path
+            # so the outer finally's cleanup is unchanged.
             if will_capture:
                 try:
                     audio_dur_s = float(getattr(info, "duration", 0.0) or 0.0)
@@ -3227,11 +3205,10 @@ async def transcribe(
                             request_id[:8],
                         )
                     elif min_s <= audio_dur_s <= max_s:
-                        # Disk-free guard. Skip on <1 GB free; don't fail
-                        # the transcription. Best-effort: a failure to
-                        # query free space (e.g. inaccessible dir) is
-                        # treated as "OK to try" and the create_capture
-                        # path itself surfaces the real error.
+                        # Low disk skips the capture, never fails the
+                        # transcription. Fails open: if free space can't be
+                        # queried, try anyway — create_capture surfaces the
+                        # real error.
                         try:
                             _free = (await asyncio.to_thread(
                                 shutil.disk_usage, cfg.CAPTURES_DIR)).free
@@ -3986,9 +3963,11 @@ if cfg.ADMIN_UI_ENABLED:
     # per-user API key auth; it just rides the same ADMIN_UI_ENABLED switch.
     if _include_router("quick-config", "faster_whisper_backend.quick_config.routes"):
         logger.info("Quick-config UI enabled at /quick-config")
-    # /reports: admin-only triage page for user-submitted transcription
-    # error reports. The submission endpoint /quick-config/reports/api/submit
-    # lives on the same router and accepts any active API key.
+    # /reports: triage page for user-submitted transcription error reports,
+    # gated on the "reports" page permission plus a per-row scope check;
+    # only clear / export are admin-only. The submission endpoint
+    # /quick-config/reports/api/submit lives on the same router and accepts
+    # any active API key.
     if _include_router("reports", "faster_whisper_backend.reports.routes"):
         logger.info(
             "Reports UI enabled at /reports (admin key required for triage; "
@@ -3996,10 +3975,10 @@ if cfg.ADMIN_UI_ENABLED:
             "enabled" if getattr(cfg, "REPORTS_ALLOW_USER_SUBMIT", True)
             else "disabled",
         )
-    # /captures: admin-only Whisper fine-tuning data capture + review.
-    # Master switch is cfg.CAPTURES_RECORDING_ENABLED — the page is
-    # always registered so the admin can browse existing rows even
-    # after disabling new capture.
+    # /captures: Whisper fine-tuning data capture + review, gated on the
+    # "captures" page permission; clear / reprocess-all / export are
+    # admin-only. cfg.CAPTURES_RECORDING_ENABLED gates only new capture,
+    # so the page stays registered and existing rows stay browsable.
     if _include_router("captures", "faster_whisper_backend.captures.routes"):
         logger.info(
             "Captures UI enabled at /captures (admin token required; "
