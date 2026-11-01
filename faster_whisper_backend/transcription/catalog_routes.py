@@ -140,7 +140,8 @@ async def whoami_capabilities(user: dict = Depends(_get_current_user_dep)):
     _ident = effective_config.build_ident(user, None)
     # Whether the optional pipeline stages exist on this server at all, so
     # the client can disable its "Separate music" / "Speaker diarization"
-    # toggles pre-flight instead of letting a request soft-fail into a warning. Server-wide feature switches, not per-identity grants.
+    # toggles pre-flight instead of letting a request soft-fail into a
+    # warning. Server-wide feature switches, not per-identity grants.
     caps["bgm_separation_enabled"] = bool(
         getattr(cfg, "BGM_SEPARATION_ENABLED", False))
     caps["diarization_enabled"] = bool(
@@ -179,8 +180,7 @@ async def whoami_capabilities(user: dict = Depends(_get_current_user_dep)):
     caps["url_subtitles_enabled"] = bool(
         caps["url_download_enabled"]
         and getattr(cfg, "URL_SUBTITLES_ENABLED", False))
-    # The durable job resource (GET/DELETE /v1/jobs*). The flag is
-    # always present; the detail block rides only when on.
+    # The durable job resource (GET/DELETE /v1/jobs*).
     caps["jobs_enabled"] = tx_progress._jobs_enabled()
     if caps["jobs_enabled"]:
         caps["jobs"] = {"ttl_s": int(tx_progress._jobs_ttl_s())}
