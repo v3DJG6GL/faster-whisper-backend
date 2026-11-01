@@ -4,9 +4,11 @@ the transcription endpoint and the WebUI.
 Storage layout:
 
   cfg.API_KEYS_DB — SQLite (WAL) with two tables:
-    users     — { id, username, is_admin, created_ts, revoked_ts }
+    users     — { id, username, is_admin, created_ts, revoked_ts,
+                  permissions (JSON) }
     api_keys  — { id, user_id, key_hash, key_prefix, key_last4,
-                  label, created_ts, revoked_ts, last_used_ts }
+                  label, created_ts, revoked_ts, last_used_ts,
+                  config (JSON per-key binding) }
 
 Keys at rest are SHA-256(raw_key) hex. Raw keys are shown ONCE on
 creation and never retrievable. High-entropy random keys (256-bit) make
@@ -19,9 +21,9 @@ public surface.
 
 `last_used_ts` is debounced 60 s per key (one DB write/min/key max).
 
-`get_open_mode_user()` returns a synthetic admin used when no real
-admin key exists — the server starts unprotected with a prominent
-WARNING banner so the operator can bootstrap.
+`OPEN_MODE_USER` is the synthetic admin used while no active admin key
+exists (open mode): auth hands it to callers on the admin host allowlist,
+with a prominent WARNING banner, so the operator can bootstrap.
 """
 from __future__ import annotations
 
@@ -44,7 +46,7 @@ logger = logging.getLogger("whisper-api")
 
 class LastAdminError(Exception):
     """Raised when revoke_user / revoke_key would leave zero active
-    admins (or active admin keys). The guard is enforced atomically
+    admin keys. The guard is enforced atomically
     under _lock so two concurrent revokes can't both pass a count==2
     check and double-revoke into a lockout."""
 
@@ -59,13 +61,12 @@ _KEY_INDEX: dict[str, dict[str, Any]] = {}
 # on every user/key mutation. Only meaningful once _DB_READY is True.
 _IS_LOCKED_DOWN: bool = False
 
-# True only after init_db() has fully succeeded. The lifespan in main.py now
-# REFUSES TO START when init_db() raises (bad permissions on a mounted
-# volume, corrupt file, read-only mount), so this guards any path that
-# reaches auth before/without init_db (tests, import-time callers) — never a
-# degraded-serving mode. An unopened store must read as LOCKED — otherwise
-# the empty _KEY_INDEX below would look like "no admin key exists" and every
-# caller would get the synthetic open-mode admin.
+# True only after init_db() has fully succeeded. The lifespan refuses to
+# start when init_db() raises, so this guards only paths that reach auth
+# before/without init_db (tests, import-time callers) — never a degraded-
+# serving mode. An unopened store must read as LOCKED, or the empty
+# _KEY_INDEX would look like "no admin key exists" and every caller would
+# get the synthetic open-mode admin.
 _DB_READY: bool = False
 
 # Last `PRAGMA data_version` observed on _conn. SQLite bumps this value on a
@@ -81,10 +82,6 @@ _LAST_USED_DEBOUNCE_S = 60.0
 KEY_PREFIX = "wk_"
 _KEY_BYTES = 32   # secrets.token_urlsafe(32) → 43-char base64url, 256-bit entropy
 
-# ---------------------------------------------------------------------
-# Permission model — per-user page access + own/all scope
-# ---------------------------------------------------------------------
-
 # Tri-state per page: "none" | "own" | "all".
 #   "none" → 403 on the page (and its API sub-routes).
 #   "own"  → page visible, store layer filters by caller's user_id.
@@ -93,9 +90,9 @@ _KEY_BYTES = 32   # secrets.token_urlsafe(32) → 43-char base64url, 256-bit ent
 # /settings and /settings/api-keys are admin-only by definition and never appear.
 PAGES: tuple[str, ...] = ("quick_config", "captures", "reports", "stats", "logs")
 
-# Per-user data pages — support the full none|own|all triple.
-# (stats joined in v2: "own" = the caller's own jobs + usage, machine cards
-# replaced by a coarse server block unless STATS_OWN_SCOPE_SHOW_SYSTEM_METRICS is on.)
+# Per-user data pages — support the full none|own|all triple. For stats,
+# "own" = the caller's own jobs + usage; machine cards become a coarse server
+# block unless STATS_OWN_SCOPE_SHOW_SYSTEM_METRICS is on.
 SCOPED_PAGES: frozenset[str] = frozenset(
     ("quick_config", "reports", "captures", "stats")
 )
@@ -151,10 +148,6 @@ CREATE INDEX IF NOT EXISTS idx_api_keys_user   ON api_keys(user_id);
 """
 
 
-# ---------------------------------------------------------------------
-# Init
-# ---------------------------------------------------------------------
-
 def init_db(db_path: str) -> None:
     """Open the SQLite DB (WAL) and ensure the schema exists. Idempotent.
     Builds the in-memory key index from active rows."""
@@ -201,10 +194,6 @@ def _require_conn() -> sqlite3.Connection:
     return _conn
 
 
-# ---------------------------------------------------------------------
-# Hash + key generation
-# ---------------------------------------------------------------------
-
 def hash_key(raw_key: str) -> str:
     """SHA-256 hex of the raw key bytes (UTF-8)."""
     # surrogatepass: a lone surrogate from a JSON login body ("\ud800") would
@@ -222,25 +211,21 @@ def generate_raw_key() -> str:
 def _split_display_parts(raw_key: str) -> tuple[str, str]:
     """Return (key_prefix, key_last4) for display.
 
-    prefix is the first 8 chars (e.g. `wk_a1b2`); last4 is the trailing
+    prefix is the first 8 chars (e.g. `wk_a1b2c`); last4 is the trailing
     4 chars. Stored in plaintext so the admin UI can render
-    `wk_a1b2…d4e5` without retaining the raw key."""
+    `wk_a1b2c…d4e5` without retaining the raw key."""
     prefix = raw_key[:8]
     last4 = raw_key[-4:]
     return prefix, last4
 
-
-# ---------------------------------------------------------------------
-# Row helpers
-# ---------------------------------------------------------------------
 
 def _row_to_user_dict(row: sqlite3.Row) -> dict[str, Any]:
     perms = _parse_permissions(row["permissions"] if "permissions" in row.keys() else None)
     if isinstance(perms.get("config"), dict):
         # The per-user drawer sends this blob back on every save: migrate it
         # as _row_to_key_dict does a key's, or a stored guard at 1 / a renamed
-        # key or slug 422s any edit (set_user_permissions reads the stored
-        # shape through get_user_permissions, not here).
+        # key or slug 422s any edit (set_user_permissions reads its own row,
+        # not through here).
         perms["config"] = _parse_binding(perms["config"])
     return {
         "id": row["id"],
@@ -328,15 +313,10 @@ def _parse_binding(raw: "str | dict | None") -> dict[str, Any]:
     allow = v.get("allowed_override_profiles")
     if isinstance(allow, list):
         out["allowed_override_profiles"] = [p for p in allow if isinstance(p, str)]
-    # Admin force (not a request gate): preserved when explicitly set.
     if isinstance(v.get("apply_no_profiles"), bool):
         out["apply_no_profiles"] = v["apply_no_profiles"]
     return out
 
-
-# ---------------------------------------------------------------------
-# In-memory index
-# ---------------------------------------------------------------------
 
 def _rebuild_index_locked() -> None:
     """Rebuild _KEY_INDEX from the DB. Caller holds _lock (or is in init).
@@ -410,10 +390,6 @@ def data_version() -> int:
         return _data_version_locked()
 
 
-# ---------------------------------------------------------------------
-# User CRUD
-# ---------------------------------------------------------------------
-
 def create_user(username: str, is_admin: bool) -> str:
     """Create a user record. Returns the new user_id. Raises ValueError
     if username is blank or a duplicate."""
@@ -480,11 +456,9 @@ def get_user(user_id: str) -> dict[str, Any] | None:
 
 
 def get_username(user_id: "str | None") -> "str | None":
-    """Return the configured username for a user_id, or None if the user
-    no longer exists / has been revoked / wasn't authenticated (open
-    mode). Cheap render-time lookup — the captures, reports, and
-    quick-config routes all call this to swap the truncated user_id
-    pill for the readable username."""
+    """Return the username for a user_id (revoked users included), or None
+    for an unknown id or the open-mode sentinel. Render-time lookup that
+    swaps the truncated user_id pill for the readable username."""
     if not user_id or user_id == "(open-mode)":
         return None
     u = get_user(user_id)
@@ -492,15 +466,10 @@ def get_username(user_id: "str | None") -> "str | None":
 
 
 def get_usernames(user_ids: "list[str | None]") -> "dict[str, str | None]":
-    """Batched companion to get_username: one SQL roundtrip for many ids.
-    Returns a dict keyed by every truthy input id mapping to its
-    username (None for unknown / sentinel ids). The empty-id and
-    "(open-mode)" sentinel are not represented in the dict; callers
-    should still default to None for those.
-
-    Use this on listing routes that would otherwise call get_username
-    once per row — a /reports list with 500 rows = 500 SQL hits where
-    one is enough."""
+    """Batched get_username for listing routes: one SQL roundtrip instead
+    of one per row. Maps every real input id to its username (None if
+    unknown); empty ids and the "(open-mode)" sentinel are left out, so
+    callers default to None for those."""
     real_ids = {
         uid for uid in user_ids
         if isinstance(uid, str) and uid and uid != "(open-mode)"
@@ -538,11 +507,9 @@ def revoke_user(user_id: str) -> None:
         # is_locked_down — guarding it would block every admin-user revoke
         # in open mode, even with a second admin user present.
         if row and int(row["is_admin"]) == 1 and int(row["has_key"]) == 1:
-            # Count remaining active admin KEYS (not users) — is_locked_down
-            # is driven by active admin keys, so revoking an admin user with
-            # the only admin keys flips the server to OPEN mode even if
-            # another keyless admin user still exists. Mirror revoke_key's
-            # JOIN count and exclude the keys we're about to cascade-revoke.
+            # Count admin KEYS, not users: is_locked_down follows keys, so a
+            # remaining keyless admin user would still leave the server OPEN.
+            # Excludes the keys about to be cascade-revoked.
             row2 = conn.execute(
                 "SELECT COUNT(*) FROM api_keys k"
                 " JOIN users u ON u.id = k.user_id"
@@ -555,8 +522,8 @@ def revoke_user(user_id: str) -> None:
                     "refusing to revoke the last admin user"
                 )
         # One transaction (the connection is autocommit): a failing second
-        # UPDATE left the user revoked — hidden from list_users, so no retry
-        # from the UI — while their keys stayed active and kept authenticating.
+        # UPDATE would leave the user revoked — hidden from list_users, so no
+        # UI retry — while their keys stay active and keep authenticating.
         conn.execute("BEGIN IMMEDIATE")
         try:
             conn.execute(
@@ -578,10 +545,6 @@ def revoke_user(user_id: str) -> None:
     settings_version.bump_config_version()   # revoked identity's live idents re-resolve
     logger.info("[auth] user revoked id=%s", user_id[:8])
 
-
-# ---------------------------------------------------------------------
-# Key CRUD
-# ---------------------------------------------------------------------
 
 def create_key(user_id: str, *, label: str = "") -> tuple[str, dict[str, Any]]:
     """Generate a new raw key, store its hash + display parts, return
@@ -635,8 +598,8 @@ def create_key(user_id: str, *, label: str = "") -> tuple[str, dict[str, Any]]:
 
 def update_key_label(key_id: str, label: str) -> dict[str, Any] | None:
     """Rename an existing key's display label. Returns the refreshed record
-    (same shape as `list_keys` rows), or None if no key has that id. Same
-    label rules as `create_key` — required + capped at 128 chars. The label is
+    (same shape as `list_keys` rows), or None if no key has that id. The label
+    is required here (unlike `create_key`) and capped at 128 chars. The label is
     cached in the auth index (so the per-request log block can show it without a
     DB hit), so a relabel rebuilds the index — rare admin action, cheap enough."""
     label = (label or "").strip()
@@ -655,7 +618,7 @@ def update_key_label(key_id: str, label: str) -> dict[str, Any] | None:
         row = conn.execute(
             "SELECT * FROM api_keys WHERE id = ?", (key_id,),
         ).fetchone()
-        _rebuild_index_locked()   # refresh the cached key_label for the log block
+        _rebuild_index_locked()
     logger.info("[auth] key relabeled kid=%s label=%s",
                 key_id[:8], store_common.log_safe(label))
     return _row_to_key_dict(row) if row else None
@@ -743,13 +706,10 @@ def revoke_key(key_id: str) -> None:
     logger.info("[auth] key revoked kid=%s", key_id[:8])
 
 
-# ---------------------------------------------------------------------
-# Auth lookup
-# ---------------------------------------------------------------------
-
 def lookup_by_raw_key(raw_key: str) -> dict[str, Any] | None:
     """Resolve a raw bearer key to its active user record. Returns
-    `{key_id, key_label, user_id, username, is_admin}` or None on miss.
+    `{key_id, key_label, user_id, username, is_admin, permissions_raw}` or
+    None on miss.
 
     O(1) via in-memory hash index. Touches last_used_ts (debounced)."""
     if not raw_key:
@@ -792,7 +752,7 @@ def touch_key_if_active(key_id: str) -> bool:
 
 
 def get_user_record(user_id: str) -> dict[str, Any] | None:
-    """Resolve a user_id to the same record shape the bearer path returns
+    """Resolve a user_id to the bearer path's record shape minus `key_label`
     (`{key_id, user_id, username, is_admin, permissions_raw}`), reading the
     LIVE users row, or None if the user is missing / revoked.
 
@@ -844,30 +804,20 @@ def _touch_last_used_debounced(key_id: str) -> None:
 _LAST_USED_CACHE: dict[str, float] = {}
 
 
-# ---------------------------------------------------------------------
-# Open-mode synthetic admin
-# ---------------------------------------------------------------------
-
 OPEN_MODE_USER: dict[str, Any] = {
     "key_id": "(open-mode)",
     "user_id": "(open-mode)",
     "username": "(open mode)",
     "is_admin": True,
-    # is_admin=True short-circuits the policy object anyway, but populate
-    # the raw shape so a hypothetical demote-to-non-admin path doesn't see
-    # a missing key.
+    # Unused while is_admin=True, but keeps the shape every auth record has.
     "permissions_raw": {},
 }
 
 
-# ---------------------------------------------------------------------
-# Permission helpers (user-level, JSON column on users)
-# ---------------------------------------------------------------------
-
 def get_user_permissions(user_id: str) -> dict[str, Any]:
     """Return the JSON-decoded permissions dict for `user_id`, or an
-    empty dict for unknown / revoked / sentinel ids. Cheap render-time
-    lookup used by the admin matrix UI."""
+    empty dict for unknown / sentinel ids (a revoked user's stored dict is
+    still returned). Cheap render-time lookup used by the admin matrix UI."""
     if not user_id or user_id == "(open-mode)":
         return {}
     conn = _require_conn()
@@ -880,14 +830,10 @@ def get_user_permissions(user_id: str) -> dict[str, Any]:
     return _parse_permissions(row["permissions"])
 
 
-# ---------------------------------------------------------------------
-# Per-identity config bindings (override profiles + direct override blob)
-# ---------------------------------------------------------------------
-
 def get_user_config(user_id: "str | None") -> dict[str, Any]:
     """Return the user's config binding {"direct": {...}, "profiles": [...]},
-    or the empty binding for unknown / revoked / sentinel ids. Stored as the
-    `config` sub-key of the permissions JSON."""
+    or the empty binding for unknown / sentinel ids (revoked users are not
+    filtered). Stored as the `config` sub-key of the permissions JSON."""
     if not user_id or user_id == "(open-mode)":
         return {"direct": {}, "profiles": []}
     return _parse_binding(get_user_permissions(user_id).get("config"))
@@ -940,23 +886,16 @@ def set_user_permissions(user_id: str, perms: dict[str, Any]) -> dict[str, Any]:
     Returns the (validated + canonical) dict that landed in the DB so
     the caller can echo it back to the UI.
 
-    Merge semantics: incoming fields are merged with whatever is stored;
-    fields absent from the payload retain their existing value. The
-    matrix UI sends the full set on each Save, but partial PATCH calls
-    (CLI, future bulk-edit) only need to send what they want to change.
+    Fields absent from the payload keep their stored value, so a partial
+    PATCH sends only what changes (the matrix UI sends the full set).
 
-    Validation rules:
-      - `perms["pages"]` must be a dict (other top-level keys ignored).
-      - Page names must be in api_keys_store.PAGES.
-      - Scope values must be in _ALLOWED_SCOPES[page] — i.e., "none"|"own"|
-        "all" for scoped pages, "none"|"all" for access-only pages.
-      - Pages missing from BOTH incoming and stored shapes default to
-        "none" — the persisted JSON is always canonical (all PAGES keys
-        present), which keeps the matrix UI simple.
-      - `perms["quick_config_tags"]`, if present, must be a list of
-        strings matching TAG_RE. Normalised (lowercased / trimmed /
-        deduped / sorted) via settings_schema.normalize_tags. None / absent
-        means "don't touch the stored value".
+    Validation: page names must be in PAGES and scopes in
+    _ALLOWED_SCOPES[page]. Pages missing from both incoming and stored
+    shapes become "none", so the persisted JSON always holds every PAGES
+    key. `quick_config_tags`, if present, is normalised via
+    settings_schema.normalize_tags; None / absent keeps the stored value.
+    `config`, if present, is validated as a binding (an empty one clears
+    it); absent keeps the stored binding.
 
     Raises ValueError on any invalid input. Rebuilds the in-memory index
     so live key holders see the new scope on their next request (no
@@ -981,14 +920,12 @@ def set_user_permissions(user_id: str, perms: dict[str, Any]) -> dict[str, Any]:
     from faster_whisper_backend.settings import config_store
     from faster_whisper_backend.settings import schema as settings_schema
 
-    # Tags: present → validate + normalise; absent → preserve stored.
     incoming_tags = perms.get("quick_config_tags")
     if incoming_tags is not None:
         clean_tags = settings_schema.normalize_tags(incoming_tags)
     else:
         clean_tags = None
 
-    # Config binding: present → validate; absent → preserve; empty → clear.
     incoming_config = perms.get("config")
     conn = _require_conn()
     # Read, merge and write in ONE critical section: a rename_profile_refs
@@ -1009,7 +946,6 @@ def set_user_permissions(user_id: str, perms: dict[str, Any]) -> dict[str, Any]:
                             previous=_parse_binding(existing_perms.get("config")))
                         if incoming_config is not None else None)
 
-        # Merge: incoming wins, otherwise keep what's stored, otherwise "none".
         existing_pages = existing_perms.get("pages") or {}
         merged_pages: dict[str, str] = {}
         for page in PAGES:
@@ -1027,8 +963,8 @@ def set_user_permissions(user_id: str, perms: dict[str, Any]) -> dict[str, Any]:
             merged_tags = list(existing_tags) if isinstance(existing_tags, list) else []
 
         clean = {"pages": merged_pages, "quick_config_tags": merged_tags}
-        # Config: incoming wins (empty → clear); absent → preserve stored. Only
-        # persisted when non-empty so the common no-config user stays clean.
+        # Config is stored only when non-empty so the common no-config user
+        # stays clean.
         if clean_config is not None:
             if not config_store.binding_is_empty(clean_config):
                 clean["config"] = clean_config
@@ -1231,13 +1167,11 @@ def bootstrap_admin_from_env(raw_key: str) -> None:
             _BOOTSTRAP_KEY_MIN_LEN, _BOOTSTRAP_KEY_MIN_DISTINCT,
         )
         return
-    # _KEY_INDEX is built from live rows only (revoked_ts IS NULL), so a hash
-    # belonging to a REVOKED key is invisible above and used to fall through to
-    # the INSERT, hit the UNIQUE on key_hash, and get swallowed silently — the
-    # server then booted into OPEN mode with the operator believing the env key
-    # had locked it down, which is exactly the failure main.py's lifespan calls
-    # fatal. Fail loudly instead. Un-revoking here would resurrect a key the
-    # operator deliberately killed, so that is not the answer either.
+    # _KEY_INDEX holds live rows only, so a REVOKED key's hash is invisible
+    # above; the INSERT would hit the UNIQUE on key_hash and the server would
+    # boot OPEN while the operator believes it locked down (fatal per main.py's
+    # lifespan), so fail loudly. Un-revoking would resurrect a deliberately
+    # killed key.
     _revoked = _require_conn().execute(
         "SELECT id FROM api_keys WHERE key_hash = ? AND revoked_ts IS NOT NULL",
         (h,),
@@ -1323,10 +1257,11 @@ def bootstrap_admin_from_env(raw_key: str) -> None:
 
 def is_locked_down() -> bool:
     """Server is locked down iff at least one active admin key exists.
-    Open mode (return False) lets every request through as the synthetic
-    admin so the operator can bootstrap. A periodic WARNING is logged
-    by the auth module while open. Reads the cache populated by
-    _rebuild_index_locked() — no table read on the per-request hot path.
+    Open mode (return False) hands the synthetic admin to callers on the
+    admin host allowlist only (dependencies.open_mode_host_ok) so the
+    operator can bootstrap; dependencies.open_mode_warning_loop nags while
+    open. Reads the cache populated by _rebuild_index_locked() — no table
+    read on the per-request hot path.
 
     A store that never initialised reports LOCKED: the lifespan refuses to
     start when init_db() fails, so this covers any path that reaches auth
