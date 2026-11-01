@@ -292,9 +292,9 @@
     if (es) { try { es.close(); } catch(_) {} es = null; }
   }
 
-  // Stale detection: the lite stream ticks at 1 Hz; after >5 s of silence
-  // (3+ missed intervals) grey the bars with an explanatory title (the
-  // data-tip CSS tooltip is scoped to the .vtag chip, not this button).
+  // The lite stream ticks at 1 Hz: after >5 s of silence grey the bars
+  // with an explanatory title (the data-tip CSS tooltip is scoped to the
+  // .vtag chip, not this button).
   setInterval(function(){
     if (!allowed || !lastTs) return;
     if (Date.now() - lastTs > 5000) {
