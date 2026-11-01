@@ -270,7 +270,7 @@ def test_hard_break_resets_document_after_long_silence():
     asyncio.run(run())
     finals = [m for m in msgs if m["type"] == "final"]
     boundaries = [m for m in msgs if m["type"] == "boundary"]
-    assert len(finals) == 1                       # one finalize before the break
+    assert len(finals) == 1
     assert len(boundaries) == 1                   # exactly one break (raw_confirmed guard)
     assert boundaries[0]["separator"] == "\n"
     assert s.raw_confirmed == ""                  # document reset → fresh grouping next
@@ -279,11 +279,10 @@ def test_hard_break_resets_document_after_long_silence():
 
 
 def test_no_partial_decode_storm_during_trailing_silence():
-    """Regression: trailing silence must NOT trigger a partial decode per frame.
-    The old inner-pause trigger fired one (synchronous) decode per 32 ms silent
-    frame, advancing the silence timer ~1 frame per decode and inflating the
-    commit wait to ~20 s. Here ~1 s of silence (≈31 frames) must cost only a
-    couple of decodes, not dozens."""
+    """Trailing silence must NOT trigger a (synchronous) partial decode per
+    32 ms frame: that advanced the silence timer ~1 frame per decode and
+    stretched the commit wait to ~20 s. ~1 s of silence (≈31 frames) must
+    cost only a couple of decodes."""
     cfg = StreamConfig(
         min_chunk_ms=96, vad_min_silence_ms=96, commit_silence_ms=2000,
         min_speech_ms=64, forced_commit_sec=100, rms_gate_dbfs=-60, preroll_keep_ms=100,
@@ -360,12 +359,12 @@ def test_skip_partials_suppresses_partial_decode_but_keeps_finals():
     )
 
     async def run():
-        s._skip_partials = True               # behind realtime
+        s._skip_partials = True
         await s.feed_pcm(_pcm(8000, 500))     # speech — partials would normally fire
-        await s.feed_pcm(_pcm(0, 400))        # silence → finalize (NOT skipped)
+        await s.feed_pcm(_pcm(0, 400))        # silence → finalize
         assert calls["partial"] == 0, "partials must be skipped when behind"
         assert calls["final"] == 1, "finals must still run when behind"
-        s._skip_partials = False              # caught up → partials resume
+        s._skip_partials = False
         await s.feed_pcm(_pcm(8000, 500))
         await s.feed_pcm(_pcm(0, 400))
 
@@ -541,7 +540,7 @@ def test_no_boundary_for_a_document_that_was_never_sent():
     assert [m.get("reason") for m in msgs
             if m["type"] == "utterance" and m["state"] == "dropped"] == ["empty"]
     assert len([m for m in msgs if m["type"] == "boundary"]) == 1
-    assert s.raw_confirmed == ""                     # reset all the same
+    assert s.raw_confirmed == ""
 
 
 def test_close_releases_held_words_in_the_last_final():
