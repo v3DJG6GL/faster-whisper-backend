@@ -1,8 +1,8 @@
-"""A 5xx/429 (or a failed fetch) on the very first /auth/whoami left the page
-blank: the shared chrome showed no gate and no nav, the hub kept #hub-body
-hidden, and nothing retried until a manual reload. Both whoami passes now
-retry with a capped backoff while nothing is painted, and the shared chrome
-shows a "server unavailable" notice until an answer arrives.
+"""On a 5xx/429 (or a failed fetch) from the very first /auth/whoami, both
+whoami passes retry with a capped backoff while nothing is painted, and the
+shared chrome shows a "server unavailable" notice until an answer arrives.
+Otherwise the page stays blank (no gate, no nav, #hub-body hidden) until a
+manual reload.
 
 The scripts run under node against a minimal DOM stub and a fetch stub that
 answers whoami from a status sequence. setTimeout is wrapped so the backoff
