@@ -117,9 +117,6 @@ _HUB_HTML = templates.load(__file__, "hub.html")
     dependencies=[Depends(require_user_webui_host)],
 )
 async def home_page():
-    # User-tier shell, same contract as /logs and /stats: host-gated HTML, a
-    # keyless browser navigation loads the shell + the shared login gate; all
-    # data the page shows is fetched with the caller's own credentials.
     tiles, admin_zone = _tiles_html()
     html = (
         _HUB_HTML
