@@ -502,9 +502,9 @@ def resolve(user_id: str = "", key_id: str = "", model: str = "",
     )
     # The live-dictation knobs as the streaming handshake would set them
     # (clamped, the silence gates fitted as a pair, locked keys skipped).
-    # Imported here: api_keys_routes imports this module, so a module-level
-    # import let a streaming router that fails to import take /settings/
-    # overrides and /settings/api-keys down too; now it costs only this call.
+    # Imported here, not at module level: api_keys_routes imports this
+    # module, so a streaming router that fails to import costs only this
+    # call instead of /settings/overrides and /settings/api-keys.
     from faster_whisper_backend.streaming import routes as stream_routes
     stream = stream_routes._client_stream_values(sim_dict, r)
 
