@@ -155,7 +155,7 @@ def _pretty_value(v) -> str:
 
 def _is_non_default(key: str, value) -> bool:
     """`*` marker test. True iff a known cfg-default exists and the current
-    scalar value differs from it. Skips non-scalars to avoid surprises."""
+    scalar value differs from it; None and "" count as equal (unset either way)."""
     cfg_key = _KWARG_TO_CFG.get(key)
     if not cfg_key:
         return False
