@@ -6,20 +6,11 @@ description comes from here via its _F() helper) and read by admin/routes.py
 as the fallback description source.
 """
 
-# =============================================================================
-# Single source of truth for field descriptions
-# =============================================================================
-# Surfaced everywhere a description is shown:
-#   - Pydantic Field(description=…) — see _F() helper below
-#   - /settings/state payload — admin/routes.py adds .description from the
-#     Pydantic model_fields
-#   - /settings admin WebUI — fieldRow() renders it as a <div class="help">
-#     line under each editor
-# Edit a string here, every consumer reflects it on next reload. Wording is
+# Single source of truth: schema._F, the /settings/state payload and the
+# /settings help line under each editor all read these strings. Wording is
 # cross-validated against upstream docs (faster-whisper, OpenAI Whisper,
 # Silero VAD, CTranslate2, uvicorn, Python logging) where authoritative.
 FIELD_DESCRIPTIONS: dict[str, str] = {
-    # --- Models ---
     "DEFAULT_MODEL":
         "Model loaded when a request sends 'whisper-1' or omits 'model'. "
         "Accepts any faster-whisper short name or HF repo id.",
@@ -56,7 +47,6 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
         "Backup precision used when the primary compute type isn't supported "
         "on the fallback device.",
 
-    # --- Decode params (transcribe-time) ---
     "DEFAULT_LANGUAGE":
         "Language code such as 'en' or 'de'. If empty, the language is "
         "detected in the first 30 seconds of audio. (faster-whisper)",
@@ -123,7 +113,6 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
         "for domain terms, drug names, person names. Ignored when prefix "
         "is set per-call. (faster-whisper)",
 
-    # --- Decode params (advanced) ---
     "TASK":
         "Whisper task when a request does not name one: 'transcribe' (source "
         "language) or 'translate' (into English — Whisper's only translation "
@@ -152,7 +141,6 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
         "the running text prompt to escape bad context. Default 0.5. "
         "Only relevant when CONDITION_ON_PREVIOUS_TEXT=True.",
 
-    # --- Language detection (active when DEFAULT_LANGUAGE is empty) ---
     "MULTILINGUAL":
         "Re-run language detection on every segment instead of once. "
         "Default false. Enable for code-switching audio. Applies only when "
@@ -165,7 +153,6 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
         "How many leading 30 s chunks to sample for language detection. "
         "Default 1. Bump to 2-5 if files start with silence/music.",
 
-    # --- Anti-hallucination & token control ---
     "HALLUCINATION_SILENCE_THRESHOLD":
         "With WORD_TIMESTAMPS_ENABLED=true, skip silent stretches longer "
         "than this many seconds when a possible hallucination is detected. "
@@ -271,7 +258,6 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
         "With WORD_TIMESTAMPS_ENABLED, glue these characters onto the "
         "PRECEDING word's timing. Add ؟ ، for Arabic, etc.",
 
-    # --- Output wrappers ---
     "OUTPUT_PREFIX":
         "Plain text prepended to the final transcript text after the "
         "post-processing pipeline runs (before final whitespace trim). "
@@ -281,7 +267,6 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
         "post-processing pipeline runs (before final whitespace trim). "
         "Empty / unset = no suffix. NOT a faster-whisper param.",
 
-    # --- Load-time, hardware (advanced) ---
     "DOWNLOAD_ROOT":
         "Directory where HuggingFace model snapshots are cached. Empty = "
         "standard HF cache dir (~/.cache/huggingface).",
@@ -322,7 +307,6 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
         "GPU index to bind to. Default 0. Set per-model on multi-GPU boxes "
         "to pin a model to a specific card.",
 
-    # --- Preload & warm cache (advanced) ---
     "MODEL_PRELOAD_ENABLED":
         "Serve POST /v1/models/preload and warm the NEXT pipeline stage's "
         "model while the current one runs. Off = the endpoint still answers "
@@ -347,7 +331,6 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
         "family to make room. Off = a preload that doesn't fit is simply "
         "deferred; nothing already loaded is ever disturbed.",
 
-    # --- Speaker diarization ---
     "DIARIZATION_ENABLED":
         "Allow clients to request speaker diarization (pyannote). The "
         "pipeline loads on first use, not at startup. Needs the optional "
@@ -384,7 +367,6 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
     "DIARIZATION_MAX_SPEAKERS":
         "Upper bound on the speaker count. Ignored when DIARIZATION_NUM_SPEAKERS is set.",
 
-    # --- Background-music separation ---
     "BGM_SEPARATION_ENABLED":
         "Allow clients to request background-music separation (UVR / "
         "MDX-Net) before transcription. Needs the optional `pip install -r "
@@ -418,7 +400,6 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
         "Load the separation model at startup instead of on first use, so "
         "the first separate_bgm request skips the download/warm-up.",
 
-    # --- Translation (T2T) ---
     "TRANSLATION_ENABLED":
         "Master switch for text-to-text translation (llama.cpp GGUF "
         "models). Off = requested translation runs decline softly with a "
@@ -493,7 +474,6 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
         "per line, passed to prompt families that support reference "
         "pairs.",
 
-    # --- Transcribe-from-URL (yt-dlp) ---
     "URL_DOWNLOAD_ENABLED":
         "Allow clients to transcribe from a pasted media link (YouTube, "
         "podcasts, direct audio/video URLs): the server downloads the audio "
@@ -566,7 +546,6 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
         "uploaded); oldest files are evicted first when the sum exceeds it. "
         "Size it for several videos at MEDIA_MAX_BYTES. Default 50 GB.",
 
-    # --- Media export ---
     "MEDIA_PACKAGE_ENABLED":
         "Let clients export a video WITH its subtitle tracks: the server "
         "muxes the client's SRT files into the retained video (a link's, or "
@@ -576,7 +555,6 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
         "Wall-clock ceiling for one packaging run (ffmpeg stream copy: "
         "minutes for a multi-GB file on slow disks). Default 900.",
 
-    # --- Pipeline ---
     "PIPELINE_RULES":
         "Ordered text-cleanup rules applied to the joined transcript. Each "
         "row is a regex or named-callback rule; drag to reorder, edit, "
@@ -621,7 +599,6 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
         "(Per-model only) HuggingFace git revision (branch, tag, commit) "
         "to pin the model snapshot to. Empty = HEAD of default branch.",
 
-    # --- Logging ---
     "TRACE_ENABLED":
         "Emit a multi-line trace block per transcription request. Disable "
         "on busy servers to control log volume.",
@@ -677,7 +654,6 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
         "debug output (console only). uvicorn's own lines follow "
         "SERVER_LOG_LEVEL. Applies immediately.",
 
-    # --- Server ---
     "SERVER_HOST":
         "uvicorn bind address. 0.0.0.0 = listen on all interfaces "
         "(LAN-reachable); 127.0.0.1 = loopback only.",
@@ -698,7 +674,6 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
         "MEDIA_MAX_BYTES so uploads hit their own cap first. Other non-JSON "
         "bodies keep a 256 MiB backstop regardless. Default 10 GiB.",
 
-    # --- Access & sessions ---
     "ADMIN_WEBUI_ALLOWED_HOSTS":
         "IP/CIDR allowlist for the admin pages (/settings, /settings/api-keys, "
         "/docs) — an admin API key is also required. Loopback (127.0.0.1, ::1) "
@@ -722,7 +697,6 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
         "origin, e.g. 'https://whisper.example.com'. Grants no cross-origin "
         "access: CORS is configured solely by CORS_ALLOW_ORIGINS. No '*'. "
         "Restart required.",
-    # --- Browser sessions ---
     "SESSION_COOKIE_SECURE":
         "Mark the WebUI session/CSRF cookies 'Secure' (sent only over HTTPS). "
         "Turn ON only when every access goes through HTTPS (e.g. a TLS reverse "
@@ -746,7 +720,6 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
         "Name of the JS-readable CSRF cookie echoed back as the X-CSRF-Token "
         "header on cookie-authenticated mutations. Letters, digits, '_', '-'. "
         "Must differ from SESSION_COOKIE_NAME.",
-    # --- Concurrency & request limits ---
     "TRANSLATE_MAX_INFLIGHT_PER_USER":
         "Max /v1/text/translations requests one identity (user, else API key, "
         "else client IP) may have decoding at once; further requests are "
@@ -797,7 +770,6 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
         "before further attempts are refused; a successful login clears the "
         "host's window immediately. 0 = unlimited.",
 
-    # --- Reports store ---
     "REPORTS_DB":
         "Path to the SQLite file holding transcription error reports. "
         "Contains plaintext dictation content — keep on an encrypted "
@@ -814,7 +786,6 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
         "Off = only admins can submit; the button stays visible but the "
         "endpoint returns 403 for non-admin callers.",
 
-    # --- Recent transcriptions store ---
     "RECENT_TRANSCRIPTIONS_DB":
         "Path to the SQLite file holding the persistent /quick-config "
         "trace panel + /stats \"Recent transcriptions\" widget data. "
@@ -829,7 +800,6 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
         "Auto-delete entries older than this many days. 0 = TTL "
         "disabled (count-cap only). Combined with the row cap: "
         "whichever bound is tighter wins.",
-    # --- Server jobs ---
     "JOBS_ENABLED":
         "Keep a durable record of every batch run posted with a "
         "progress_id — status and the verbatim result — behind "
@@ -850,7 +820,6 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
     "JOBS_RATE_PER_MIN":
         "GET/DELETE /v1/jobs* requests per identity per 60 s (a "
         "re-attached client polls once a second). 0 = unlimited.",
-    # --- Usage statistics ---
     "USAGE_DB":
         "Path to the SQLite file holding the usage ledger (per-job numbers "
         "and hourly rollups, no transcript text). Read at startup.",
@@ -916,7 +885,6 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
         "Days of machine samples to keep for the /stats history charts "
         "(pruned hourly). 0 keeps them forever.",
 
-    # --- Captures (fine-tuning data store) ---
     "CAPTURES_RECORDING_ENABLED":
         "Master switch for capturing audio + word-timestamps next to each "
         "transcription, for use as Whisper fine-tuning training data. "
@@ -1019,7 +987,6 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
     "CAPTURES_PROPOSER_MAX_PROPOSALS":
         "Maximum number of merge proposals returned per request "
         "(default 20).",
-    # --- Live streaming (WebSocket dictation) ---
     "STREAMING_ENABLED":
         "Enable the live dictation WebSocket at /v1/audio/transcriptions/stream. "
         "Off → the endpoint refuses connections (batch /transcribe is unaffected).",
