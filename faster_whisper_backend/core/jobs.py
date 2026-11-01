@@ -161,10 +161,8 @@ def jobs_snapshot(include_identity: bool = False, *,
                 row["detail"] = e["detail"]
             if include_identity or (viewer_user_id is not None
                                     and owner == viewer_user_id):
-                # Cancel handle: the id the cancel endpoint accepts, when the
-                # job's client registered one. Admins get it on every row;
-                # anyone else only on rows they own (the endpoint re-checks
-                # ownership anyway).
+                # Not the security boundary: the cancel endpoint re-checks
+                # ownership.
                 row["progress_id"] = e.get("progress_id")
             out.append(row)
         return out
