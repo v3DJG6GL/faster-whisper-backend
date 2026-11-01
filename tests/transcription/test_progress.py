@@ -1,5 +1,5 @@
-"""transcription/progress — the closed-id tombstone that keeps a straggling
-stage thread from re-creating a closed run's entry owner-less."""
+"""transcription/progress — no path (closed-id tombstone, stale sweep, cap
+eviction) lets a straggling tick re-create a run's entry owner-less."""
 
 import time
 
