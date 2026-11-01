@@ -2637,9 +2637,10 @@ function translationTemplateEditor(name, v) {
 // only) | delete (custom only). Body (visible when expanded) holds a
 // type-specific sub-editor + per-row live status badge.
 //
-// Drag-to-reorder uses HTML5 native DnD on the .drag-handle. Locked rules
-// (e.g. de-dictation-map → tidies → capitalize chain) trigger a confirm()
-// dialog when dropped to a position that breaks an ordering edge.
+// Drag-to-reorder uses HTML5 native DnD on the .drag-handle. A locked rule
+// can't be dragged or nudged (its grip and ▲/▼ are disabled); other rules
+// move freely around it, without a dialog: the lock protects the rule's own
+// content and position, not the whole list.
 
 const TEST_PRESETS = {
   'default':              "Hallo. Wie geht's? 10.23 Uhr! Bitte Frau, Müller. neuer Absatz. 1,000 EUR.",
