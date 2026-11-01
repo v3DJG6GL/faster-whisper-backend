@@ -106,8 +106,6 @@ def test_rendered_pages_carry_their_canvas_class(client):
         assert m and cls in m.group(1).split(), (path, m and m.group(1))
 
 
-# ---- floating layers stay inside the canvas -------------------------------
-
 def test_shared_popover_placer_is_loaded_on_pages_with_pick_lists(client):
     for path in ("/captures", "/stats"):
         t = client.get(path).text
@@ -168,15 +166,12 @@ def test_activity_popover_markup_is_a_native_popover(client):
     assert 'id="hact-pop" class="hact-pop" popover="manual" hidden' in t
 
 
-# ---- header height must not depend on the page's body line-height ---------
-
+# The header's height must not depend on the page's body line-height.
 def test_header_pins_its_own_line_height():
     css = web_common.NAV_CSS
     hdr = re.search(r"\nheader \{[^}]*\}", css).group(0)
     assert re.search(r"line-height: 1\.5;", hdr), hdr
 
-
-# ---- touch: the iOS no-zoom font floor must beat component input rules ----
 
 def test_coarse_pointer_input_font_floor_beats_component_rules():
     """The bare `input, select, textarea` selector lost to every more
