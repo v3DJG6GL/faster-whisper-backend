@@ -35,7 +35,6 @@ def test_locked_down_bad_bearer_is_401(client, make_user_key):
 def test_non_admin_403_on_admin_route(client, make_user_key):
     make_user_key("root", is_admin=True)
     _uid, raw = make_user_key("alice", is_admin=False)
-    # /settings/state requires admin -> 403 for a non-admin key.
     r = client.get("/settings/state", headers=bearer(raw))
     assert r.status_code == 403
 
@@ -45,7 +44,6 @@ def test_non_admin_200_on_permitted_page(client, make_user_key):
     _uid, raw = make_user_key(
         "alice", is_admin=False, pages={"quick_config": "own"}
     )
-    # quick_config page granted -> the /state JSON API is reachable.
     r = client.get("/quick-config/state", headers=bearer(raw))
     assert r.status_code == 200
 
@@ -62,21 +60,19 @@ def test_non_admin_403_on_unpermitted_page(client, make_user_key):
 
 
 def test_host_gate_rejects_non_loopback(app_module):
-    # Build a SEPARATE client from a non-loopback source IP. The host gate
-    # 403s before auth on host-gated routes.
+    # The host gate 403s before auth on host-gated routes.
     with TestClient(app_module.app, client=("8.8.8.8", 1)) as c:
         r = c.get("/settings/state")
         assert r.status_code == 403
 
 
 def test_host_gate_allows_loopback(client):
-    # The default loopback client is admitted by the host gate.
     assert client.get("/settings/state").status_code == 200
 
 
 def test_cross_user_report_read_is_404(client, make_user_key):
-    # Two non-admin users with reports scope=own; one cannot read the other's
-    # report by id -> 404 (anti-IDOR), not 403.
+    # Two non-admin users with reports scope=own; one cannot PATCH the
+    # other's report by id -> 404 (anti-IDOR), not 403.
     from faster_whisper_backend.reports import store as reports_store
 
     make_user_key("root", is_admin=True)
@@ -89,7 +85,6 @@ def test_cross_user_report_read_is_404(client, make_user_key):
         intended_text="x", user_comment="c", reporter_role="user",
         reporter_host="127.0.0.1",
     )
-    # Bob (scope=own) tries to PATCH Alice's report -> 404.
     r = client.patch(
         f"/reports/api/{rid_a}",
         headers=bearer(raw_b),
@@ -102,8 +97,7 @@ def test_cross_user_report_read_is_404(client, make_user_key):
 # so driving it over HTTP with TestClient hangs on close. The credential-
 # carrier logic lives entirely in require_user_or_admin_sse and runs BEFORE
 # any streaming — so we exercise that dependency directly with a constructed
-# ASGI scope. This is the documented "assert without consuming the stream"
-# approach.
+# ASGI scope.
 
 def _fake_request(headers=None, query=b""):
     from starlette.requests import Request
@@ -165,7 +159,7 @@ def test_sse_missing_key_rejected_when_locked(client, make_user_key):
         raise AssertionError("expected 401 HTTPException")
 
 
-# --- Tiered host gates -------------------------------------------------------
+# Tiered host gates.
 # Admin tier (ADMIN_WEBUI_ALLOWED_HOSTS, loopback default): /docs, /redoc are
 # host-only shells; /openapi.json adds an admin key; /settings* same shape.
 # User tier (USER_WEBUI_ALLOWED_HOSTS, OPEN default): /stats, /logs, … shells
@@ -177,7 +171,6 @@ _DOCS_SHELLS = ("/docs", "/redoc")  # host-only admin shells
 
 
 def test_docs_shells_loopback_ok(client, make_user_key):
-    # Admin-host shells: loopback always admitted (host-only, no key needed).
     make_user_key("root", is_admin=True)  # locked down
     for path in _DOCS_SHELLS:
         assert client.get(path).status_code == 200, path
@@ -308,12 +301,11 @@ def test_user_host_narrowing_blocks_shell(client, make_user_key, monkeypatch):
         assert c.get("/logs").status_code == 403
 
 
-# --- SSE streams re-authenticate on config-version bumps -------------------
-# Both live tails used to resolve auth ONCE at connect and then stream until
-# the browser closed the EventSource — a revoked user kept receiving every new
-# log line / trace. The generators are driven directly (no TestClient; the
-# bodies are infinite) with a request whose receive never resolves, so
-# is_disconnected() stays False and only the re-auth can end the stream.
+# Both live tails re-authenticate on config-version bumps, so a revoked user
+# stops receiving new log lines / traces. The generators are driven directly
+# (no TestClient; the bodies are infinite) with a request whose receive never
+# resolves, so is_disconnected() stays False and only the re-auth can end the
+# stream.
 
 def _sse_request(path, raw_key):
     import asyncio
