@@ -64,9 +64,8 @@ def test_reprocess_vad_job_lifecycle(client):
 
 
 def test_samples_route_not_swallowed_by_cid(client):
-    # Regression: /captures/api/samples must resolve to the sample-list handler,
-    # NOT the parameterized /captures/api/{cid} handler (which would 404 with
-    # cid="samples"). A 200 with a "samples" key proves correct route ordering.
+    # /captures/api/samples must resolve to the sample-list handler, NOT the
+    # parameterized /captures/api/{cid} one (which would 404 with cid="samples").
     r = client.get("/captures/api/samples")
     assert r.status_code == 200
     assert "samples" in r.json()
@@ -144,8 +143,8 @@ def test_merge_member_scope_guard_precedes_state_checks(
         language="de", audio_s=1.0, raw="r", final="f",
         words=[], segments=[], user_id="alice",
     )
-    # Delete the audio so the OLD ordering would raise 410 ("audio is missing"),
-    # leaking that the row exists; the fix must 404 for a non-owner first.
+    # Audio gone: the state check would 410 ("audio is missing") and leak that
+    # the row exists, so the scope guard must 404 a non-owner first.
     os.unlink(captures_store.abs_audio_path(captures_store.get_capture(cid)["audio_relpath"]))
 
     # bob: scope=own captures user, NOT the owner and NOT admin → uniform 404.
@@ -584,10 +583,9 @@ def test_propose_merges_audits_cross_user_read(client, make_user_key,
 
 def test_propose_merges_narrows_to_several_picked_speakers(client, make_user_key,
                                                           monkeypatch):
-    """With two or more speakers picked the page fetched the all-users sweep
-    and filtered it itself, but that sweep is already cut to the global top
-    proposals: a busy third speaker left the picked ones with none. The
-    route now hands the whole pick list to the proposer."""
+    """Two or more picked speakers go to the proposer as one pick list. The
+    all-users sweep is already cut to the global top proposals, so filtering
+    it afterwards lets a busy third speaker leave the picked ones with none."""
     from faster_whisper_backend.captures import routes as captures_routes
 
     _uid, raw_admin = make_user_key("root", is_admin=True)
@@ -759,8 +757,8 @@ def _ready_capture(captures_store, monkeypatch, tmp_path, *, language, translati
 
 def test_export_matches_english_track_by_base_subtag(
         captures_store_db, groups_store_db, monkeypatch, tmp_path):
-    """`en-US` is an accepted translate target and is stored under that key;
-    the exporter used to look for the literal "en" and never emit the row."""
+    """`en-US` is an accepted translate target and is stored under that key,
+    so the exporter matches the English track by its base subtag, not "en"."""
     _ready_capture(captures_store_db, monkeypatch, tmp_path,
                    language="de", translations={"en-US": "hi there"})
     rows = _export_manifest()
@@ -842,10 +840,9 @@ def test_export_duration_describes_the_trimmed_companion(
 
 def test_export_falls_back_to_the_original_when_the_trimmed_file_is_gone(
         captures_store_db, groups_store_db, monkeypatch, tmp_path):
-    """A stale audio_trimmed_relpath (partial restore, manual cleanup) used to
-    drop the whole row from the export without a word, while the audio
-    endpoint plays the original: the original is packed, at its full
-    length."""
+    """A stale audio_trimmed_relpath (partial restore, manual cleanup) must not
+    drop the row: like the audio endpoint, the export packs the original at
+    its full length."""
     import io
     import tarfile
 
@@ -1297,7 +1294,7 @@ def test_reprocess_vad_failure_fallback_counts_a_failed_flag_write_skipped(
 
 def test_create_sample_rejects_member_already_grouped(
         captures_store_db, groups_store_db, monkeypatch, tmp_path):
-    """create_sample_api now awaits between validation and insert, so a
+    """create_sample_api awaits between validation and insert, so a
     double-submitted Merge can validate twice. The member UPDATE's rowcount
     is the gate: the loser gets a 409 and its capture_samples row is rolled
     back instead of persisting member-less."""
@@ -1447,9 +1444,9 @@ def test_list_samples_projects_chip_offsets_without_hydrating_words(
 
 
 def test_list_samples_carries_what_the_filters_match_on(client, make_user_key):
-    """Merged groups used to ignore the page's model filter and search box
-    (they stayed on screen whatever was typed): a group has no model or
-    request of its own. The list now projects both from its members."""
+    """A group has no model or request of its own, so the list projects both
+    from its members; without them the page's model filter and search box
+    never hid a group."""
     from faster_whisper_backend.captures import samples_store as gs
     from faster_whisper_backend.captures import store as captures_store
 
@@ -2105,8 +2102,8 @@ def test_group_chip_save_keeps_a_members_anchorless_chip(
         client, make_user_key):
     """An anchorless chip (no idx — a PATCH that omitted it, or an idx the
     cleaner stripped) has no place in the group projection, so the split
-    cannot hand it back; the REPLACE fan-out used to delete it on any chip
-    save of the group, even one editing a different member."""
+    cannot hand it back: the REPLACE fan-out must keep it on any chip save
+    of the group, even one editing a different member."""
     from faster_whisper_backend.captures import samples_store as gs
     from faster_whisper_backend.captures import store as captures_store
 
@@ -2194,8 +2191,8 @@ def test_patch_keeps_every_chip_the_schema_accepts(client, make_user_key):
 @pytest.mark.parametrize("field", ["wrong", "correct"])
 def test_patch_refuses_chip_text_past_the_stored_cap(client, make_user_key, field):
     """The store keeps CAP_CORRECTION_FIELD chars of a chip's `wrong` and
-    `correct`; a longer one was saved cut with a 200 and "Saved.", and the
-    export then rewrote only part of the span. Now it is a 422."""
+    `correct`, so a longer one is a 422: saving it cut behind a 200 made the
+    export rewrite only part of the span."""
     from faster_whisper_backend.captures import store as captures_store
     from faster_whisper_backend.core import text_corrections
 
@@ -2293,9 +2290,9 @@ def test_reprocess_vad_adopts_the_global_join_strategy(client, monkeypatch):
 
 def test_reprocess_vad_started_mid_run_rebuilds_again_with_the_new_settings(
         client, monkeypatch):
-    """A second "Reprocess all · VAD silence" while a job runs was dropped:
-    samples rebuilt before a settings edit kept the old silence layout while
-    the job still ended "done". It now queues one more pass."""
+    """A second "Reprocess all · VAD silence" while a job runs queues one
+    more pass: otherwise samples rebuilt before a settings edit keep the old
+    silence layout while the job still ends "done"."""
     from faster_whisper_backend.captures import samples as capture_samples
     from faster_whisper_backend.captures import samples_store as gs
     from faster_whisper_backend.captures import vad_reprocess as vr
