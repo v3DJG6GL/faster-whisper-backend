@@ -47,13 +47,12 @@ _NOT_RESET = {
     "faster_whisper_backend.translation.gating": {},
     "faster_whisper_backend.captures.samples": {},
     "faster_whisper_backend.runtime.model_registry": {},
-    # Stateless since P16: the registry moved to model_registry. Listed so a
-    # container added back here is caught without a hook.
+    # No resettable state since the registry moved to model_registry. Listed
+    # so a container added back here is caught without a hook.
     "faster_whisper_backend.runtime.system_stats": {
         "_handles": "NVML handle per device index — process-constant once "
                     "bound (cleared by shutdown())",
     },
-    # P14: the route groups and helpers carved out of main.py.
     "faster_whisper_backend.media.video": {},
     "faster_whisper_backend.media.routes": {
         "_VIDEO_MIME": "constant container → mime map",
@@ -194,8 +193,8 @@ def test_every_container_lock_and_cache_is_reset(modname, monkeypatch):
         assert getattr(mod, name) is None, f"{modname}.{name}: not reset to None"
 
 
-# Names that moved out of main.py in the P7–P11 refactor phases. The modules
-# that now own them are scanned, so a name added there later is covered too.
+# Names that moved out of main.py. The modules that now own them are
+# scanned, so a name added there later is covered too.
 _P7_MOVED = ("cfg_for", "build_ident", "_NO_DEFAULT", "_resolve_request_knob")
 _OWNERS = (
     "faster_whisper_backend.pipeline.engine",
@@ -244,7 +243,7 @@ def test_translation_engine_left_audio():
     assert hooks["faster_whisper_backend.translation.engine"] == "_reset_for_tests"
 
 
-# P12: the config hot-apply helpers and the shared PIPELINE_RULES lock moved
+# The config hot-apply helpers and the shared PIPELINE_RULES lock moved
 # from admin/routes.py and quick_config/routes.py into pipeline/apply.py. A
 # stale twin left in a router would be what that router calls, while the tests
 # patch pipeline.apply — and a second lock would silently split the writers.
@@ -272,7 +271,7 @@ def test_routers_no_longer_define_apply_names(modname):
         assert hasattr(pl_apply, name), name
 
 
-# P15: the sample-building helpers and the per-sample rebuild lock moved from
+# The sample-building helpers and the per-sample rebuild lock moved from
 # captures/routes.py into captures/samples.py. The routes and both workers call
 # through capture_samples.X, so a stale twin left in routes would be what a
 # test patches while every caller runs the samples copy.
@@ -287,7 +286,7 @@ def test_captures_routes_no_longer_defines_sample_helpers():
         assert name in moved, name
 
 
-# P16: the loaded-model registry and the warm-lease predicate moved from
+# The loaded-model registry and the warm-lease predicate moved from
 # runtime/system_stats.py to runtime/model_registry.py. system_stats must not
 # keep (or re-export) them: a caller of the twin would read a second, empty
 # registry while the tests patch model_registry.
@@ -322,7 +321,7 @@ def test_model_registry_hook_clears_the_warm_predicate():
     assert not model_registry.is_warm("x")
 
 
-# P14: the remaining route groups left main.py — media/{video,routes},
+# The remaining route groups left main.py — media/{video,routes},
 # transcription/{jobs_routes,catalog_routes}, translation/routes,
 # admin/logs_routes, auth/{routes,hosts} — plus the bootstrap-admin ingest
 # (auth/api_keys_store.py) and the hard-restart TMPDIR sweep
@@ -440,7 +439,7 @@ def test_the_main_import_scan_sees_relative_and_lazy_spellings():
     assert _main_imports(tree, "faster_whisper_backend") == [1, 5]
 
 
-# P18: the decode/job-pipeline modules left core/ (shared infra only) for
+# The decode/job-pipeline modules left core/ (shared infra only) for
 # transcription/. No stale twin may stay importable under core — a patch on it
 # would silently miss every caller — and the receipt-hold hook follows it.
 _P18_MOVED = ("decode_trace", "segment_guards", "run_plan", "receipt_hold",
