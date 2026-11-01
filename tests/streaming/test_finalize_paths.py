@@ -181,9 +181,8 @@ def test_decoded_path_flags_decode_and_rebases_words():
 def test_empty_final_decode_takes_text_and_words_from_localagreement(trim):
     """A final decode that returns nothing (its own VAD trimmed the buffer)
     without dropping anything falls back to the partial-agreed transcript —
-    for the text AND the words. The words used to stay the decode's own empty
-    list (or, after a trim, only the banked prefix), so captures stored a
-    text/words pair that did not match."""
+    for the text AND the words (not the decode's empty list, nor only the
+    trim-banked prefix), so the captured text and words match."""
     cfg = StreamConfig(
         min_chunk_ms=96, vad_min_silence_ms=96, commit_silence_ms=192,
         min_speech_ms=64, forced_commit_sec=100,
@@ -283,8 +282,8 @@ def test_gate_skipped_utterance_carries_no_previous_decode_diagnostics(
 
 def test_gate_skipped_utterance_receipt_says_no_final_decode(
         client, app_module, monkeypatch, caplog):
-    """The receipt for the skipped utterance used to read "[!] empty output"
-    and blame the decode thresholds, though its RAW line held text."""
+    """The gate-skipped utterance's receipt says "no final decode", not
+    "[!] empty output" blaming the decode thresholds: its RAW line holds text."""
     monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
     with caplog.at_level(logging.INFO, logger="faster_whisper_backend.streaming.routes"):
         with client.websocket_connect(_STREAM_URL) as ws:
@@ -306,9 +305,9 @@ def test_gate_skipped_utterance_receipt_says_no_final_decode(
 
 def test_revoked_identity_gets_no_rows_through_the_gate_path(
         client, make_user_key, app_module, monkeypatch):
-    """decode_final's pre-model raise used to be the only revocation guard;
-    the gate path reaches on_final with no decode at all, so on_final has to
-    check for itself. A revoked identity must write no trace/usage row."""
+    """The gate path reaches on_final without decode_final's pre-model
+    revocation raise, so on_final checks for itself: a revoked identity must
+    write no trace/usage row."""
     from faster_whisper_backend.auth import api_keys_store
     from faster_whisper_backend.stats import recent_transcriptions_store
     from faster_whisper_backend.streaming.routes import _WS_UNAUTH
@@ -392,9 +391,9 @@ def _dictate_one(ws):
 
 def test_a_full_capture_store_still_records_and_leaves_eviction_to_the_store(
         client, app_module, monkeypatch):
-    """At CAPTURES_MAX the gate used to refuse before create_capture could run
-    its _evict_to_cap, so the documented oldest-first rotation never happened
-    and every later dictation silently recorded nothing."""
+    """At CAPTURES_MAX the gate still hands the utterance to create_capture:
+    its _evict_to_cap does the documented oldest-first rotation, and refusing
+    first would silently record nothing from then on."""
     from faster_whisper_backend.captures import store as captures_store
 
     monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
