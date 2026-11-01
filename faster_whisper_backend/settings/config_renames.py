@@ -204,20 +204,27 @@ UPGRADED_RULE_ENTRIES: dict[str, tuple[tuple[str, str], tuple[str, str]]] = {
         ('[\\"#$%&\'()*+;<=>@\\[\\\\\\]^_`{|}~„]', ''),
         ('[\\"#$%&\'()*+;<=>@\\[\\\\\\]^_`{|}~„“”‘’‹›«»]', ''),
     ),
-    # The old sentence-start group `[.!?…]\s*` consumed the previous
-    # sentence's terminator, so every second sentence got no opening mark
-    # ("Qué hora es? Dónde estás?" → "¿Qué hora es? Dónde estás?"); shipped
-    # c4fefe2..00fd42f. The new one looks behind instead (and keeps a decimal
-    # point inside the sentence).
+    # The sentence-start space run and the sentence itself could split a
+    # space run every way: a hallucinated "* * * *" loop after a terminator
+    # (a space run once strip-stray-symbols deleted the symbols) took
+    # quadratic time with language='es' (8000 spaces: 5 s), and every newline
+    # of a run of paragraph breaks started a scan to its end. The sentence now
+    # starts only at the first non-space after the run (or takes the run's
+    # last space when a "?" follows it right away), and a newline start only
+    # at the last newline of a run; the output is the same.
     "es-opening-question-mark": (
-        ('(^\\s*|[.!?…]\\s*|\\n\\s*)(?!¿)([^.!?…¿\\n]+\\?)', '\\1¿\\2'),
         ('(^\\s*|(?<=[.!?…])(?!(?<=\\d\\.)\\d)\\s*|(?<=\\n)\\s*)(?!¿)'
          '((?:[^.!?…¿\\n]|(?<=\\d)\\.(?=\\d))+\\?)', '\\1¿\\2'),
+        ('(^\\s*|(?<=[.!?…])(?!(?<=\\d\\.)\\d)\\s*|(?<=\\n)(?![^\\S\\n]*\\n)\\s*)'
+         '(?=[^\\s¿]|[^\\S\\n]\\?)((?:[^.!?…¿\\n]|(?<=\\d)\\.(?=\\d))+\\?)',
+         '\\1¿\\2'),
     ),
     "es-opening-exclamation-mark": (
-        ('(^\\s*|[.!?…]\\s*|\\n\\s*)(?!¡)([^.!?…¡\\n]+!)', '\\1¡\\2'),
         ('(^\\s*|(?<=[.!?…])(?!(?<=\\d\\.)\\d)\\s*|(?<=\\n)\\s*)(?!¡)'
          '((?:[^.!?…¡\\n]|(?<=\\d)\\.(?=\\d))+!)', '\\1¡\\2'),
+        ('(^\\s*|(?<=[.!?…])(?!(?<=\\d\\.)\\d)\\s*|(?<=\\n)(?![^\\S\\n]*\\n)\\s*)'
+         '(?=[^\\s¡]|[^\\S\\n]!)((?:[^.!?…¡\\n]|(?<=\\d)\\.(?=\\d))+!)',
+         '\\1¡\\2'),
     ),
 }
 
@@ -229,6 +236,15 @@ EARLIER_RULE_ENTRIES: dict[str, tuple[tuple[str, str], ...]] = {
     # `%` joined the class: just as quadratic on a space run.
     "space-before-closing-punct": (
         ('[ \\t]+([,.:;!?\\)\\]\\}])', '\\1'),
+    ),
+    # c4fefe2..00fd42f: the sentence-start group `[.!?…]\s*` consumed the
+    # previous sentence's terminator, so every second sentence got no opening
+    # mark ("Qué hora es? Dónde estás?" → "¿Qué hora es? Dónde estás?").
+    "es-opening-question-mark": (
+        ('(^\\s*|[.!?…]\\s*|\\n\\s*)(?!¿)([^.!?…¿\\n]+\\?)', '\\1¿\\2'),
+    ),
+    "es-opening-exclamation-mark": (
+        ('(^\\s*|[.!?…]\\s*|\\n\\s*)(?!¡)([^.!?…¡\\n]+!)', '\\1¡\\2'),
     ),
 }
 
