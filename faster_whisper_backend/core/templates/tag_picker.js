@@ -51,7 +51,6 @@
     el.appendChild(suggest);
     var sugPop = window._anchorPopover(suggest, pills, { gap: 2 });
 
-    // Suggestion-list state for keyboard navigation.
     var matchVals = [];     // string values currently shown
     var matchEls = [];      // their <div role=option> elements
     var activeIdx = -1;     // highlighted index, -1 = none
@@ -183,7 +182,7 @@
         e.preventDefault(); _setActive(n - 1);
       } else if (e.key === 'Enter' || e.key === ',') {
         // Enter on a highlighted suggestion picks it; otherwise (and for
-        // comma) commit the typed text — preserving the old behaviour.
+        // comma) commit the typed text.
         e.preventDefault();
         if (e.key === 'Enter' && activeIdx >= 0) _tryAdd(matchVals[activeIdx]);
         else _tryAdd(input.value);
