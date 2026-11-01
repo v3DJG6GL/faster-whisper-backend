@@ -194,11 +194,10 @@ RuleSlug = Annotated[str, Field(min_length=1, max_length=64,
                                 pattern=r"^[a-z0-9-]+$")]
 RuleLabel = Annotated[str, Field(min_length=1, max_length=80)]
 
-# Tag format — Kubernetes label-style: lowercase letters/digits/hyphens,
-# 1-32 chars, no leading hyphen. Tags filter which users see
-# which rules on /quick-config. Re-used by api_keys_store for the
-# per-user `quick_config_tags` validator so admins can't drift the two
-# schemas apart.
+# Tag format (Kubernetes label-style). Tags filter which users see which
+# rules on /quick-config; api_keys_store validates the per-user
+# `quick_config_tags` through normalize_tags too, so the two schemas cannot
+# drift apart.
 TAG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,31}\Z")   # \Z: `$` also matches before a trailing "\n"
 
 # Reserved override-profile name meaning "apply NO profile — plain server
@@ -509,9 +508,8 @@ _VIRTUAL_OVERRIDE_FIELDS: dict[str, dict[str, Any]] = {
 # validators, so each rule lives here once and both sides call it.
 def _language_code(v: str | None) -> str | None:
     """DEFAULT_LANGUAGE: empty (auto-detect) or one of Whisper's codes. The
-    field pattern only checks the shape, and an unknown code ("xx", "jp")
-    saved cleanly, then failed every request without an explicit language
-    at decode time (faster-whisper raises on it)."""
+    field pattern only checks the shape; an unknown code ("xx", "jp") would
+    make faster-whisper raise on every request without an explicit language."""
     if v and v not in WHISPER_LANGUAGE_CODES:
         raise ValueError(
             f"unknown language code {v!r} — must be empty (auto-detect) or "
@@ -1508,7 +1506,6 @@ class AdminConfig(BaseModel):
     CAPTURES_RECORDING_AUDIO_BYTES_HARD_LIMIT: Annotated[int, Field(ge=1024, le=10_000_000_000)] | None = _F(
         "CAPTURES_RECORDING_AUDIO_BYTES_HARD_LIMIT", scope="server",
         group="Captures", subgroup="Duration & size guards")
-    # Rule slugs skipped for the captures training-form transcript.
     CAPTURES_PIPELINE_RULES_EXCLUDE: Annotated[
         list[Annotated[str, Field(min_length=1, max_length=64)]],
         Field(max_length=64),
@@ -1548,9 +1545,9 @@ class AdminConfig(BaseModel):
 
     @model_validator(mode="after")
     def _validate_sample_sizing(self, info: ValidationInfo) -> "AdminConfig":
-        # Enforce MIN ≤ TARGET ≤ MAX ≤ 30 on the EFFECTIVE values (catches
-        # e.g. lowering MAX below the target); see _effective for why the
-        # default side is config._BASELINE.
+        # MIN ≤ TARGET ≤ MAX on the EFFECTIVE values (catches e.g. lowering
+        # MAX below the target); see _effective for why the default side is
+        # config._BASELINE.
         mn = float(_effective(self, "CAPTURES_SAMPLE_MIN_DURATION_S", info=info))
         tg = float(_effective(self, "CAPTURES_PROPOSER_TARGET_S", info=info))
         mx = float(_effective(self, "CAPTURES_SAMPLE_MAX_DURATION_S", info=info))
@@ -2022,10 +2019,7 @@ class AdminConfig(BaseModel):
     def _validate_profile_pipeline_slugs(self, info: ValidationInfo) -> "AdminConfig":
         """Reject any OVERRIDE_PROFILES EXCLUDE / INCLUDE that references a rule
         slug not present in the canonical PIPELINE_RULES list — same silent-typo
-        guard as the per-model check, applied to config profiles. Fires when
-        PIPELINE_RULES is in the payload, or when save_overrides() supplies
-        the live/factory slug set via the `canonical_slugs` validation
-        context; a bare partial validation with neither still skips."""
+        guard (and skip rule, see _canonical_slugs) as the per-model check."""
         if self.OVERRIDE_PROFILES is None:
             return self
         canonical = self._canonical_slugs(info)
@@ -2045,11 +2039,9 @@ class AdminConfig(BaseModel):
 
     @model_validator(mode="after")
     def _validate_captures_pipeline_slugs(self, info: ValidationInfo) -> "AdminConfig":
-        """Same silent-typo guard as the per-model and per-profile checks,
-        applied to CAPTURES_PIPELINE_RULES_EXCLUDE. Fires when PIPELINE_RULES
-        is in the payload, or when save_overrides() supplies the live/factory
-        slug set via the `canonical_slugs` validation context; a bare partial
-        validation with neither still skips."""
+        """Same silent-typo guard (and skip rule, see _canonical_slugs) as the
+        per-model and per-profile checks, applied to
+        CAPTURES_PIPELINE_RULES_EXCLUDE."""
         if self.CAPTURES_PIPELINE_RULES_EXCLUDE is None:
             return self
         canonical = self._canonical_slugs(info)
@@ -2077,7 +2069,7 @@ class AdminConfig(BaseModel):
     @classmethod
     def _empty_convert_quant_is_unset(cls, v: Any) -> Any:
         """Treat an explicit empty string as 'unset' (-> None = use the runtime
-        default). The allowed set itself is now enforced by the ConvertQuantLit
+        default). The allowed set itself is enforced by the ConvertQuantLit
         type, which mirrors CT2's ACCEPTED_MODEL_TYPES."""
         if isinstance(v, str) and not v.strip():
             return None
@@ -2210,9 +2202,8 @@ ENV_VAR_MAPPING: dict[str, str] = {
 
 # Cold settings — editing these requires a service restart for the new value
 # to take effect. The WebUI shows a 'restart' badge and offers to trigger a
-# self-restart after save. Note: MODEL_DEVICE / MODEL_COMPUTE_TYPE are hot —
-# admin save triggers drain-then-evict on the affected loaded models so they
-# reload with the new values.
+# self-restart after save. (MODEL_DEVICE / MODEL_COMPUTE_TYPE are hot: see
+# LOAD_TIME_FIELDS.)
 RESTART_REQUIRED_FIELDS: frozenset[str] = frozenset(
     name for name, reg in _REGISTRY.items() if reg["restart"]
 )
@@ -2228,17 +2219,17 @@ LOAD_TIME_FIELDS: frozenset[str] = frozenset(
     if spec.get("load_time")
 )
 
-# Hot settings whose derived caches need rebuild after edit. The admin route
-# calls pipeline.engine.rebuild_caches() when any of these change.
+# Hot settings whose derived caches need rebuild after edit:
+# pipeline.apply.apply_hot_changes rebuilds the pipeline.engine caches
+# (off the event loop) when any of these change.
 CACHE_REBUILD_FIELDS: frozenset[str] = frozenset(
     name for name, reg in _REGISTRY.items() if reg["cache_rebuild"]
 )
 
-# Types that don't survive JSON round-trip natively. Convert after model_dump
-# so consumers (config.py, main.py) get the same Python types as if the values
-# were defined inline in config.py. Mirrored by config._SET_FIELDS (kept there
-# too: config.py needs it before this module can be imported). The registry
-# stores the coercion by NAME (JSON-safe, see _F); mapped back here.
+# Types that don't survive a JSON round-trip (a set comes back as a list):
+# config_store converts them after model_dump. Mirrored by config._SET_FIELDS
+# (kept there too: config.py needs it before this module can be imported). The
+# registry stores the coercion by NAME (JSON-safe, see _F); mapped back here.
 _COERCERS_BY_NAME: dict[str, Any] = {"set": set}
 _POST_LOAD_COERCERS: dict[str, Any] = {
     name: _COERCERS_BY_NAME[reg["coerce"]] for name, reg in _REGISTRY.items()
