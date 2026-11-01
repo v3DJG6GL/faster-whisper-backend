@@ -1,10 +1,9 @@
 """Additive column migrations on the report store (job provenance).
 
-The store only ever ran `executescript(_SCHEMA)`, which is a no-op against an
-existing table — so it had no migration hook and could not grow a column
-without silently doing nothing. The hook runs against live databases on every
-startup, so what matters is that it is idempotent and leaves existing rows
-intact. The capture store's twin lives in tests/captures/test_store_migrations.py."""
+`executescript(_SCHEMA)` is a no-op against an existing table, so new columns
+come from a migration hook. It runs against live databases on every startup,
+so it must be idempotent and leave existing rows intact. The capture store's
+twin lives in tests/captures/test_store_migrations.py."""
 
 import contextlib
 import sqlite3
@@ -30,10 +29,6 @@ def _own_db(module):
         if hasattr(module, "_audio_dir"):
             module._audio_dir = None
 
-
-# ---------------------------------------------------------------------------
-# reports
-# ---------------------------------------------------------------------------
 
 def test_reports_migration_adds_columns_and_is_idempotent(tmp_path):
     from faster_whisper_backend.reports import store as reports_store
