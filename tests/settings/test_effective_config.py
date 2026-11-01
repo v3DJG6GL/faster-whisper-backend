@@ -120,7 +120,6 @@ def test_first_layer_owns_lock_surprise():
 
 
 def test_profiles_earlier_wins():
-    # user.profiles [a, b]: a is earlier → wins on a conflicting field.
     r = _resolve([_prof("user", "a", DEFAULT_LANGUAGE="de"),
                   _prof("user", "b", DEFAULT_LANGUAGE="fr")])
     assert r.values["DEFAULT_LANGUAGE"] == "de"
@@ -159,9 +158,8 @@ def test_value_setting_winner_shadows_lower_value_less_lock():
 
 def test_more_specific_value_less_lock_shadows_lower_value(monkeypatch):
     # Mirror of the above (most-specific-wins both ways): a MORE-specific
-    # value-less lock beats a LESS-specific value. The lock wins, so the value
-    # is pinned to inherited (here the per-model default), the lower layer's
-    # value is dropped, and the field is locked against client overrides.
+    # value-less lock beats a LESS-specific value, so the value is pinned to
+    # the inherited one (here the per-model default).
     monkeypatch.setattr(cfg, "MODEL_OVERRIDES",
                         {"m1": {"TEMPERATURE": "0.0"}}, raising=False)
     r = _resolve([_layer("key", locks=["TEMPERATURE"]),
@@ -459,8 +457,8 @@ def test_request_profile_cant_escape_lock_via_resolve(monkeypatch):
     r = ec.resolve("m", key_id="k", request_profile="fast",
                    request_overrides={"beam_size": 7})
     assert r.values["BEAM_SIZE"] == 10            # key value wins
-    assert "BEAM_SIZE" in r.locked                # still locked
-    assert "beam_size" in r.dropped               # client override refused
+    assert "BEAM_SIZE" in r.locked
+    assert "beam_size" in r.dropped
     assert r.request_profile_applied == "fast"    # applied, just shadowed
 
 
@@ -600,8 +598,8 @@ def test_none_sentinel_keeps_direct_identity_config(monkeypatch):
     _set_profiles(monkeypatch, {"clinic": {"DEFAULT_LANGUAGE": "de"}})
     _bindings(monkeypatch, key={"direct": {"BEAM_SIZE": 5}, "profiles": ["clinic"]})
     r = ec.resolve("m", key_id="k", request_profile=settings_schema.NO_PROFILE_SENTINEL)
-    assert r.values["BEAM_SIZE"] == 5             # direct config retained
-    assert "DEFAULT_LANGUAGE" not in r.values     # bound profile suppressed
+    assert r.values["BEAM_SIZE"] == 5
+    assert "DEFAULT_LANGUAGE" not in r.values
 
 
 def test_none_sentinel_refused_when_gated_off(monkeypatch):
@@ -639,8 +637,8 @@ def test_apply_no_profiles_suppresses_key_bound_profile_keeps_direct(monkeypatch
     _bindings(monkeypatch, key={"direct": {"BEAM_SIZE": 5}, "profiles": ["clinic"],
                                 "apply_no_profiles": True})
     r = ec.resolve("m", key_id="k")
-    assert r.values["BEAM_SIZE"] == 5            # direct config retained
-    assert "DEFAULT_LANGUAGE" not in r.values    # bound profile suppressed
+    assert r.values["BEAM_SIZE"] == 5
+    assert "DEFAULT_LANGUAGE" not in r.values
     assert r.profiles_applied == []
 
 
