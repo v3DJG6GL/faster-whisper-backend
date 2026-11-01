@@ -1578,7 +1578,8 @@ def test_page_filters_and_background_reloads_ask_before_dropping_edits(client):
     render() / load(), which rebuild open capture cards from a fresh GET and
     collapse group cards: they ask first and revert on a cancel. A finished
     background job or modal action skips its reload while a card is dirty,
-    and loadMoreSamples no longer renders unconditionally in `finally`."""
+    and loadMoreSamples renders only through that dirty-card check, never in
+    `finally`."""
     html = client.get("/captures").text
     helper = html[html.index("async function _filterChange(apply, revert)"):]
     helper = helper[:helper.index("function _loadUnlessDirty(msg, err)")]
