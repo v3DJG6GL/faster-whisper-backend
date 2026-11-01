@@ -9,10 +9,6 @@ import time
 from faster_whisper_backend.stats import metrics
 
 
-# ---------------------------------------------------------------------------
-# quantile (pure, nearest-rank)
-# ---------------------------------------------------------------------------
-
 def test_quantile_empty_is_zero():
     assert metrics.quantile([], 0.5) == 0.0
 
@@ -22,8 +18,8 @@ def test_quantile_single_element():
 
 
 def test_quantile_p50_p95_p99():
-    vals = [float(i) for i in range(1, 101)]  # 1..100 sorted
-    # Nearest rank: p50 lands on 51 (round(49.5) banker's-rounds to 50).
+    vals = [float(i) for i in range(1, 101)]
+    # Index round(q*(n-1)): p50 lands on 51 (round(49.5) banker's-rounds to index 50).
     assert metrics.quantile(vals, 0.50) == 51.0
     assert metrics.quantile(vals, 0.95) == 95.0
     assert metrics.quantile(vals, 0.99) == 99.0
@@ -33,10 +29,6 @@ def test_quantile_clamps_index():
     assert metrics.quantile([1.0, 2.0], 1.0) == 2.0
     assert metrics.quantile([1.0, 2.0], 0.0) == 1.0
 
-
-# ---------------------------------------------------------------------------
-# record_request
-# ---------------------------------------------------------------------------
 
 def test_record_request_counts_and_latency():
     metrics.record_request("/v1/models", 200, 12.5)
@@ -65,10 +57,8 @@ def test_sse_paths_excluded_from_latency():
 
 def test_error_window_prune():
     now = time.time()
-    # Inject an old error timestamp beyond the 15-min window.
     metrics._errors_ts.append(now - (metrics._ERROR_WINDOW_SEC + 100))
     metrics.record_request("/x", 500, 1.0)
-    # The stale ts must have been pruned, leaving only the fresh one.
     assert len(metrics._errors_ts) == 1
     assert metrics._errors_ts[0] >= now
 
@@ -79,10 +69,6 @@ def test_latency_ring_bounded():
     assert len(metrics._latency) == metrics._LATENCY_MAX
 
 
-# ---------------------------------------------------------------------------
-# _errors_in
-# ---------------------------------------------------------------------------
-
 def test_errors_in_window():
     now = time.time()
     # Append-ordered: oldest at the front, newest at the back.
@@ -92,32 +78,23 @@ def test_errors_in_window():
     assert metrics._errors_in(900) == 3    # all three
 
 
-# ---------------------------------------------------------------------------
-# record_model_load
-# ---------------------------------------------------------------------------
-
 def test_model_load_records():
     metrics.record_model_load("m", 3.0)
     assert metrics.model_loads["m"] == [3.0]
 
 
 def test_model_load_bucket0_survives_trim():
-    metrics.record_model_load("m", 1.0)  # canonical first
+    metrics.record_model_load("m", 1.0)
     for i in range(metrics._MODEL_LOAD_KEEP + 20):
         metrics.record_model_load("m", float(100 + i))
     bucket = metrics.model_loads["m"]
     assert len(bucket) == metrics._MODEL_LOAD_KEEP
-    assert bucket[0] == 1.0  # first cold-load preserved forever
+    assert bucket[0] == 1.0
 
-
-# ---------------------------------------------------------------------------
-# record_transcription
-# ---------------------------------------------------------------------------
 
 def test_record_transcription_falsy_request_id_noop(tx_store, usage_store_db):
-    # No request_id -> early return, nothing persisted, no raise. The stores
-    # are open, so a missing guard would show up as rows, not as a
-    # swallowed RuntimeError.
+    # The stores are open, so a missing request_id guard would show up as
+    # rows, not as a swallowed RuntimeError.
     metrics.record_transcription("m", 1.0, 0.5, "ok", 3, request_id=None)
     metrics.record_transcription("m", 1.0, 0.5, "ok", 3, request_id="")
     assert tx_store.count() == 0
@@ -141,15 +118,10 @@ def test_record_transcription_passes_the_session_job_to_the_usage_rollup(
 def test_record_transcription_swallows_store_errors():
     # Stores are not initialised here; the lazy record_timing/record_usage
     # calls raise RuntimeError internally but must be swallowed.
-    # Proves the call completes without raising despite uninitialised stores.
     metrics.record_transcription(
         "m", 1.0, 0.5, "ok", 3, request_id="req-1", user_id="u", key_id="k"
     )
 
-
-# ---------------------------------------------------------------------------
-# metrics_snapshot
-# ---------------------------------------------------------------------------
 
 def test_snapshot_shape_without_stores():
     metrics.record_request("/v1/models", 200, 10.0)
@@ -166,7 +138,6 @@ def test_snapshot_shape_without_stores():
     assert set(snap["errors_window"]) == {"1m", "5m", "15m"}
     assert snap["model_loads"]["large-v2"]["first"] == 4.0
     assert snap["model_loads"]["large-v2"]["count"] == 1
-    # recent_transcriptions_store not init -> recent=[]
     assert snap["recent_transcriptions"] == []
 
 
@@ -325,8 +296,8 @@ def test_snapshot_user_filter_returns_only_that_users_rows(tx_store):
 
 
 def test_record_transcription_fans_out_wait_and_error_class(tx_store, usage_store_db):
-    """The v2 ledger columns reach both stores through the one call the
-    handler makes, and the recent-jobs projection carries them."""
+    """wait_s / error_class / error_stage reach both stores through the one
+    call the handler makes, and the recent-jobs projection carries them."""
     metrics.record_transcription(
         "large-v3", 4.0, 2.0, "error", 0, request_id="e1", user_id="u1",
         key_id="k1", kind="transcribe", wait_s=1.25, error_class="cuda_oom",
