@@ -156,7 +156,6 @@ def test_register_oversized_file_returns_none_and_keeps_older(tmp_path,
                         user_id=None) is None
     assert ums.resolve(first, user_id=None) is not None
     assert set(ums._REG) == {first}
-    # the oversized file itself was unlinked, not left behind
     assert sorted(os.listdir(ums._dir())) == [
         os.path.basename(ums._REG[first]["path"])]
 
@@ -270,8 +269,6 @@ def test_expires_at_unix(tmp_path):
     assert exp is not None and exp > time.time()
     assert ums.expires_at_unix("f" * 32) is None
 
-
-# --- kind, entry accessor, protect set, staging ------------------------------
 
 def test_register_kind_and_resolve_entry(tmp_path):
     mid = ums.register(_make_src(tmp_path, name="v.mkv", size=40), user_id="u1",
