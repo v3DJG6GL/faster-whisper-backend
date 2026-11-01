@@ -2603,8 +2603,8 @@ def override_field_meta(
 ) -> dict[str, dict[str, Any]]:
     """Widget metadata (kind / min / max / maxlen / opts) for every field of an
     override model, derived from its JSON schema so it can never drift from
-    the Pydantic bounds. Shared by overrides_routes (OverrideProfile → the
-    profile editor + direct-override sub-editor) and admin_routes
+    the Pydantic bounds. Shared by admin/overrides_routes (OverrideProfile →
+    the profile editor + direct-override sub-editor) and admin/routes
     (ModelOverride → the /settings per-model pane's injected FIELD_META)."""
     schema = model.model_json_schema()
     out: dict[str, dict[str, Any]] = {}
