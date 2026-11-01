@@ -3,11 +3,16 @@ Admin WebUI for faster-whisper-backend.
 
 Mounted at /settings when WHISPER_ADMIN_UI=1. Endpoints:
 
-  GET  /settings               HTML page (loopback / ADMIN_WEBUI_ALLOWED_HOSTS)
-  GET  /settings/state         Resolved config + provenance + hot/cold tags
-  POST /settings/state         Save overrides (validation errors -> 422)
-  POST /settings/test-pipeline Dry-run PIPELINE_RULES against a sample
-  POST /settings/restart       Detach a self-restart helper (Windows only)
+  GET  /settings                             HTML page (loopback / ADMIN_WEBUI_ALLOWED_HOSTS)
+  GET  /settings/pipeline                    Same shell, Pipeline section only
+  GET  /settings/state                       Resolved config + provenance + hot/cold tags
+  POST /settings/state                       Save overrides (validation errors -> 422)
+  GET  /settings/factory-rules               Committed config.json PIPELINE_RULES
+  POST /settings/factory-rules               Write config.json PIPELINE_RULES (promote)
+  POST /settings/factory-rules/clear-local-override  Drop the local PIPELINE_RULES copy
+  POST /settings/test-pipeline               Dry-run PIPELINE_RULES against a sample
+  POST /settings/translation-test            Try a translation with the live settings
+  POST /settings/restart                     Self-restart (os.execve on POSIX, WinSW relaunch on Windows)
 
 Security model (layered):
   1. Allowlist gate:   require_admin_webui_host rejects callers not in
@@ -54,13 +59,10 @@ from faster_whisper_backend.core import templates
 
 logger = logging.getLogger("whisper-api")
 
-# ---------------------------------------------------------------------------
-# Per-model pane constants injected into the /settings page at render time
-# ---------------------------------------------------------------------------
-# The page JS needs the ModelOverride load-time field set (reload badge +
-# drain-then-evict hint) and per-field widget metadata. Both used to be
-# hand-maintained JS literals that mirrored config_store; they are now derived
-# from the schemas here and substituted into the {{MO_*_JSON}} placeholders.
+# Per-model pane constants for the /settings page JS: the ModelOverride
+# load-time field set (reload badge + drain-then-evict hint) and per-field
+# widget metadata, derived from the schemas and substituted into the
+# {{MO_*_JSON}} placeholders at render time.
 
 # Widget extras the JSON schema can't express, overlaid onto the schema-derived
 # metadata: richer widget kinds ('textarea' for prompt-length text,
@@ -105,7 +107,7 @@ def _mo_field_meta() -> dict[str, dict[str, Any]]:
     return meta
 
 
-# Both are static per process (schemas are fixed at import), so serialize once.
+# Static per process (schemas are fixed at import), so serialize once.
 _MO_LOAD_TIME_FIELDS_JSON: str = json.dumps(sorted(
     settings_schema.LOAD_TIME_FIELDS & set(settings_schema.ModelOverride.model_fields)
 ))
@@ -115,20 +117,17 @@ _MULTILINE_TEXT_FIELDS_JSON: str = json.dumps(
 _WHISPER_LANGS_JSON: str = json.dumps(
     [{"code": c, "name": n} for c, n in WHISPER_LANGUAGE_NAMES.items()])
 
-# Fields the WebUI is allowed to surface — drives section grouping in the HTML
-# and the /settings/state endpoint's provenance map. Generated in settings/schema.py
-# from the per-field registry metadata (group/subgroup/order on each
-# AdminConfig field); see settings_schema._GROUP_ORDER for the section layout.
-# Section groups: each section can have one or more SUB-groups. A subgroup
-# title of None means "no subheader" — fields render directly under the
-# section.
+# The fields the WebUI surfaces, as (section, [(subgroup title, names)]);
+# drives the HTML grouping and /settings/state's field map. Generated in
+# settings/schema.py from each AdminConfig field's group/subgroup/order
+# (section layout: settings_schema._GROUP_ORDER). A None subgroup title
+# renders its fields directly under the section, with no subheader.
 _FIELD_GROUPS: list[tuple[str, list[tuple[str | None, list[str]]]]] = (
     settings_schema.FIELD_GROUPS
 )
 
 def _all_fields() -> list[str]:
-    """Flat list of every field name across all sections + subgroups, in
-    display order. Used by the /state endpoint and post_state echo paths."""
+    """Every field name across all sections + subgroups, in display order."""
     out: list[str] = []
     for _section, subs in _FIELD_GROUPS:
         for _sub_title, names in subs:
@@ -136,17 +135,10 @@ def _all_fields() -> list[str]:
     return out
 
 
-# --- auth deps ---------------------------------------------------------------
-#
-# /settings is gated by an IP/CIDR allowlist (cfg.ADMIN_WEBUI_ALLOWED_HOSTS,
-# loopback always implicit) AND by `Depends(require_admin)` — an API key
-# resolving to is_admin=True. In open mode (no admin key configured yet)
-# require_admin yields the synthetic admin so the operator can bootstrap.
-# The concrete host gate lives in web_common (shared, always-loaded home).
+# Host allowlist gate (see the module docstring's security model); its
+# shared, always-loaded home is web_common.
 require_admin_webui_host = web_common.require_admin_webui_host
 
-
-# --- router ------------------------------------------------------------------
 
 router = APIRouter(prefix="/settings")
 
@@ -191,14 +183,11 @@ def _field_choices(field: str) -> list[str] | None:
 
 
 def _values_equal(a: Any, b: Any) -> bool:
-    """True if `a` and `b` are the same config value. Uses Python equality so
-    numbers compare numerically — JSON int 1 == baseline float 1.0, the
-    REPETITION_PENALTY case where the JS client submits a whole-number float
-    without its decimal. That matches the client, whose JS has no int/float
-    distinction (JSON.stringify(1.0) === JSON.stringify(1) === "1"). Containers
-    compare structurally (dict order-independent, list order-sensitive, with the
-    same numeric rule applied to nested values). json.dumps string comparison
-    can NOT be used here: it renders 1 as "1" but 1.0 as "1.0"."""
+    """True if `a` and `b` are the same config value. Python equality on
+    purpose: JSON int 1 == baseline float 1.0 (REPETITION_PENALTY, which the
+    JS client sends without its decimal; JS has no int/float split), also
+    inside containers. json.dumps string comparison can NOT be used: it
+    renders 1 as "1" but 1.0 as "1.0"."""
     return a == b
 
 
@@ -260,13 +249,10 @@ def _server_ident_fields() -> dict[str, str]:
     # model's observed device; fall back to the configured one before any
     # model has loaded.
     gpu = system_stats.gpu_name()
-    # The snapshot is shared by EVERY model family in load order; only a
-    # decode (whisper) model's observed device may drive the device word — a
-    # cuda pyannote pipeline on a MODEL_DEVICE=cpu box must not flip the card
-    # (and a cpu gguf translator loaded first must not hide a cuda decode).
-    # Each snapshot entry already carries its `role` (model_role() reads the
-    # family prefixes from their one home, model_registry.MODEL_ROLE_PREFIXES;
-    # whisper's bare names are "transcribing").
+    # The snapshot holds EVERY model family in load order; only a decode
+    # (role "transcribing") model may drive the word — a cuda pyannote
+    # pipeline on a MODEL_DEVICE=cpu box must not flip the card, nor a cpu
+    # gguf translator loaded first hide a cuda decode.
     loaded = model_registry.loaded_models_snapshot()
     _dec = next((e for e in loaded if e.get("role") == "transcribing"), None)
     device = str((_dec.get("device") if _dec else None)
@@ -281,10 +267,8 @@ def _server_ident_fields() -> dict[str, str]:
         f"{build_info.BOOT_ID[:8]} · started {build_info.STARTED_UTC}"
         f" · up {build_info.uptime_str()}"
     )
-    # Resolve once and reuse for both the card fields and the report line, so
-    # the two can never disagree: DOWNLOAD_ROOT is `str | None` (None = the
-    # standard HF cache), and f-stringing the raw value handed the copy button
-    # a literal "models None".
+    # Resolved once for both the card fields and the report line so they
+    # agree; DOWNLOAD_ROOT None means the standard HF cache, not "None".
     data_dir = cfg._DATA_DIR or "(unset)"
     db_dir = cfg._DB_DIR or "(unset)"
     models_dir = cfg.DOWNLOAD_ROOT or "(HF default cache)"
@@ -390,9 +374,8 @@ async def get_state(response: Response) -> dict[str, Any]:
 
     fields: dict[str, dict[str, Any]] = {}
     for name in _all_fields():
-        # Description preference: Pydantic schema > FIELD_DESCRIPTIONS dict
-        # (they're the same string in practice; schema wins so reload picks
-        # up live edits to FIELD_DESCRIPTIONS without a service restart).
+        # Schema description first (schema.py copies FIELD_DESCRIPTIONS into it
+        # at import); the dict covers a field whose Field() carries none.
         desc = ""
         if name in pyd_fields and pyd_fields[name].description:
             desc = pyd_fields[name].description
@@ -415,8 +398,6 @@ async def get_state(response: Response) -> dict[str, Any]:
         fields["PIPELINE_RULES"]["value"] = pl_apply.canon_rules(fields["PIPELINE_RULES"]["value"])
         fields["PIPELINE_RULES"]["default_value"] = pl_apply.canon_rules(fields["PIPELINE_RULES"]["default_value"])
 
-    # Surface the nested group structure to the client. Each group has a list
-    # of subgroups: {title, subgroups: [{title: str | None, fields: [...]}]}.
     groups_payload = [
         {
             "title": section,
@@ -452,9 +433,6 @@ async def post_state(payload: dict[str, Any], request: Request) -> JSONResponse:
     if "OVERRIDE_PROFILES" in payload:
         raise HTTPException(status.HTTP_400_BAD_REQUEST,
                             "edit OVERRIDE_PROFILES on /settings/overrides")
-    # A field submitted at its in-repo default is NOT an override — drop it from
-    # config.local.json instead of rewriting it with the default value, so the
-    # "↺ Reset to default" button actually clears the "local.json" badge.
     payload = _prune_defaults_to_removal(payload)
     # A PIPELINE_RULES save is a whole-key write racing /quick-config's
     # read-modify-write patches: hold the shared pipeline lock across the
@@ -469,8 +447,7 @@ async def post_state(payload: dict[str, Any], request: Request) -> JSONResponse:
             try:
                 # Off the loop: save_overrides validates PIPELINE_RULES through
                 # regex_guard, which spawns a child interpreter and waits up to
-                # _GUARD_TIMEOUT (2.0 s). test_pipeline next door already uses this
-                # idiom for the same reason; the save path was left behind.
+                # _GUARD_TIMEOUT (2.0 s).
                 written = await asyncio.to_thread(config_store.save_overrides, payload)
             except ValidationError as e:
                 return JSONResponse(
@@ -568,9 +545,7 @@ async def post_factory_rules(payload: dict[str, Any], request: Request) -> JSONR
             if isinstance(getattr(cfg, "_BASELINE", None), dict):
                 cfg._BASELINE["PIPELINE_RULES"] = [dict(r) for r in saved]
 
-            # Recompute the EFFECTIVE rule list. config.local.json's PIPELINE_RULES
-            # still wins if present (per-deployment local override — unchanged); only
-            # when there is no local override does the factory list run directly.
+            # Effective list: a config.local.json PIPELINE_RULES still shadows the factory one.
             overrides = await asyncio.to_thread(config_store.load_overrides)
             local_rules = overrides.get("PIPELINE_RULES")
             shadowed = isinstance(local_rules, list)
@@ -1298,15 +1273,17 @@ async def test_pipeline(payload: dict[str, Any]) -> JSONResponse:
                                 cur = ecre.sub(er, cur)
                         # IndexError: an unknown group name (`\g<nope>`);
                         # TypeError: a non-string replacement in a hand-rolled
-                        # body. The engine skips those entries too.
+                        # body. A save refuses both (the engine would raise on
+                        # them), so the dry run reports the entry and skips it.
                         except (re.error, IndexError, TypeError) as e:
                             if rank < 1:
                                 bad, rank = str(e), 1
                             continue
-                        # Engine parity: each entry is its own engine row and
-                        # the walk stops once the text passes the output bound
-                        # (the step shows the text before the entry that would
-                        # pass it).
+                        # As in the engine, each entry is its own row and the
+                        # walk stops at the output bound. Unlike the engine,
+                        # which keeps the oversized text, the step shows the
+                        # text from before the entry that would pass it: that
+                        # text is never built.
                         if size > pl_engine._POSTPROCESS_MAX_CHARS:
                             lout["capped"] = True
                             break
@@ -1329,8 +1306,6 @@ async def test_pipeline(payload: dict[str, Any]) -> JSONResponse:
             tl.join(timeout=2.0)
             if not lout["done"]:
                 return {**common, "after": text, "slow": True}
-            # A bad entry no longer blanks the card (the engine skips it per-entry),
-            # so show the valid entries' result + the bad pattern as an advisory.
             return {**common, "after": lout["after"], "matches": lout["matches"],
                     "error": lout.get("err"),
                     **({"not_run": True} if lout.get("not_run") else {}),
@@ -1379,14 +1354,11 @@ async def test_pipeline(payload: dict[str, Any]) -> JSONResponse:
                 else:
                     return {**common, "after": text, "skipped": True,
                             "error": f"unknown rule type: {rtype}"}
-        # TypeError/ValueError as well as re.error: the rule dicts arrive from
-        # the editor without going through pl_apply._PIPELINE_RULE_ADAPTER, so a non-string
-        # `pattern` (a half-typed row, or a hand-rolled request body) reaches
-        # re.compile as e.g. an int and raises TypeError — which re.error does not
-        # cover, turning a dry run into an unhandled 500 instead of a per-step
-        # error the panel already knows how to render. OverflowError /
-        # RecursionError: an over-large range repeat count or too-deep group
-        # nesting, as in the regex-list branch above.
+        # Editor rules skip pl_apply._PIPELINE_RULE_ADAPTER, so a hand-rolled
+        # body (a non-list wordlist, non-string wordlist items or map keys) can
+        # raise TypeError / AttributeError here; ValueError / OverflowError /
+        # RecursionError as in the regex-list branch. Each one becomes a
+        # per-step error, not an unhandled 500.
         except (re.error, AttributeError, TypeError, ValueError, OverflowError,
                 RecursionError) as e:
             return {**common, "after": text, "error": str(e)}
@@ -1444,7 +1416,8 @@ async def test_pipeline(payload: dict[str, Any]) -> JSONResponse:
             if cleared.get(idx, ("",))[0] != h and not probe["exhausted"]:
                 t0 = time.monotonic()
                 await asyncio.to_thread(_probe_from, idx, text, end)
-                # The probe strands no thread: its time is not the budget's.
+                # The probe strands no thread, so its time does not count
+                # against the 5 s request deadline (probe["left"] bounds it).
                 deadline += time.monotonic() - t0
             if probe["on"]:
                 got = cleared.get(idx)
@@ -1674,7 +1647,7 @@ async def post_restart(request: Request) -> JSONResponse:
 
     Windows: spawns `WhisperAPI.exe restart!` (WinSW's documented self-restart
     command) and schedules `os._exit(0)` ~1.5 s out. Other OSes: re-execs the
-    process in place (os.execv) ~1.5 s out — works bare, under systemd, or in
+    process in place (os.execve) ~1.5 s out — works bare, under systemd, or in
     a container. Either way this returns 200 first; the 1.5 s delay lets the
     response flush over loopback before the process restarts. End-to-end
     downtime is ~3-4 s for a no-preload deployment.
@@ -1708,10 +1681,5 @@ async def post_restart(request: Request) -> JSONResponse:
         "delay_sec": delay_sec,
     })
 
-
-# --- HTML template ------------------------------------------------------------
-# Vanilla JS, no build step. Mirrors the /logs viewer styling. Sections,
-# per-rule PIPELINE_RULES editor, textarea-per-line editors for list/set
-# fields, save flow with restart modal + post-restart polling.
 
 _SETTINGS_VIEWER_HTML = templates.load(__file__, "settings.html")
