@@ -79,7 +79,6 @@ def test_reports_migration_upgrades_a_pre_existing_table(tmp_path):
         # `_json`-suffixed ones are gone.
         assert {"steps", "corrections", "stages"} <= cols
         assert not ({"steps_json", "corrections_json", "stages_json"} & cols)
-        # The pre-existing row survives and reads back with empty provenance.
         row = reports_store.get_report("keep")
         assert row is not None
         assert row["raw"] == "r"
