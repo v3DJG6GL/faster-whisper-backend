@@ -7,7 +7,6 @@ from __future__ import annotations
 import time
 
 
-# ---------------------------------------------------------------------------
 # Config version — a monotonic counter bumped on every persisted change to
 # settings, override profiles, or per-user/per-key bindings. Long-lived
 # consumers that cache a resolved view (notably a streaming connection's
@@ -15,7 +14,6 @@ import time
 # re-resolve, so admin edits take effect without forcing a reconnect. The
 # counter itself is per-process; restart resets to 0, which is fine (a restart
 # re-resolves too).
-# ---------------------------------------------------------------------------
 _CONFIG_VERSION = 0
 
 # Last `PRAGMA data_version` observed on api_keys_store's connection. main.py
@@ -61,10 +59,12 @@ def _bump_if_sibling_committed() -> None:
     last check — the cross-worker stand-in for the bump_config_version() call
     every binding writer already makes in its own process. Also bumps when a
     sibling revoked a session (sessions_store.revocation_generation), which
-    is the cross-worker half of revoke_session's own bump. Mirrors
-    api_keys_store._refresh_if_sibling_committed(): `PRAGMA data_version` only
-    moves for commits made by a different connection, so a single-worker server
-    never bumps here. The first sample is adopted silently — the store opening
+    is the cross-worker half of revoke_session's own bump. The api_keys half
+    mirrors api_keys_store._refresh_if_sibling_committed(): `PRAGMA
+    data_version` only moves for commits made by a different connection, so
+    this process's own binding writes never bump here. The sessions counter
+    moves for a local logout too, which costs one extra (harmless) bump. The
+    first sample is adopted silently — the store opening
     is not a sibling write. Once a sample is adopted the PRAGMA runs at most
     every _KEYS_PROBE_MIN_INTERVAL_S — see the note on that constant."""
     global _KEYS_DATA_VERSION, _KEYS_LAST_PROBE, _SESSIONS_REV_GEN
