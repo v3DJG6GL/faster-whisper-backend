@@ -1,4 +1,5 @@
-"""transcription.segment_guards — the three tail-cut rules (pure, no app fixture).
+"""transcription.segment_guards — the three tail-cut rules and the prompt
+head-echo guard (pure, no app fixture).
 
 The loop fixture carries the REAL word timings the production server returned on
 2026-09-19 for capture 7a8db5d1 (large-v3, hotwords + previous sentence as
@@ -342,11 +343,10 @@ def test_describe_cut():
     assert s == "burst+zero_tail · 12 words from 5.54s: ' zu nehmen'"
 
 
-# ---- head echo of the decode prompt (SEGMENT_HEAD_ECHO_MIN_WORDS) -------------
-#
-# Live dictation sends the previous utterances as prompt; the decode sometimes
-# writes their last words again before the new speech. Those words have no audio
-# behind them — stacked on the first frames, zero-length or squeezed.
+# Head echo of the decode prompt (SEGMENT_HEAD_ECHO_MIN_WORDS): live dictation
+# sends the previous utterances as prompt; the decode sometimes writes their last
+# words again before the new speech. Those words have no audio behind them —
+# stacked on the first frames, zero-length or squeezed.
 
 _PROMPT = "Der Patient nimmt zwei Tabletten am Abend."
 _NEW = [(" Morgen", 0.52, 0.9, 0.97), (" kommt", 0.9, 1.2, 0.95), (" er", 1.2, 1.3, 0.9),
@@ -461,8 +461,10 @@ def test_describe_head_cut():
 
 
 def test_tail_guard_limits_read_one_as_off(monkeypatch):
-    """A count of 1 passes the schema but the guard ignores it: the limits
-    (and so the receipt's guard rows) say 0, not a rule that never fires."""
+    """The guards ignore a count of 1. The schema still accepts 1 for
+    SEGMENT_REPEAT_COLLAPSE_MIN_REPEATS and refuses it for the other two.
+    Either way the limits (and so the receipt's guard rows) say 0, not a rule
+    that never fires."""
     from faster_whisper_backend.settings import effective_config
     from faster_whisper_backend.transcription import guards as tx_guards
     vals = {"SEGMENT_MAX_WORD_BURST_PER_S": 8.0,
