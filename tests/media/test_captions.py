@@ -104,7 +104,7 @@ def _fake_ffmpeg(tmp_path, monkeypatch, body: str) -> None:
 
 def test_scan_time_limit_holds_while_a_read_is_blocked(tmp_path, monkeypatch):
     """ffmpeg writes a few bytes and stalls: the 1 MiB read blocks, so only
-    the watchdog can enforce the limit (it used to wait out the child)."""
+    the watchdog can enforce the limit."""
     # exec: the stalled child IS the process the watchdog kills, so the
     # pipe's write end closes with it.
     _fake_ffmpeg(tmp_path, monkeypatch, "printf abc\nexec sleep 30")
@@ -155,8 +155,6 @@ def test_clean_scan_without_captions_logs_no_empty_blocks(
     assert not any("empty caption block" in r.getMessage()
                    for r in caplog.records)
 
-
-# ── the whole path on a generated video ────────────────────────────────────
 
 def _ffmpeg():
     from faster_whisper_backend.audio.ffmpeg import ffmpeg_exe
