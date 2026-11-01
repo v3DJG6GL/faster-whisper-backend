@@ -32,9 +32,9 @@ logger = logging.getLogger("whisper-api")
 
 # Optional per-request progress for the file-upload path: a client that sends a
 # `progress_id` form field can poll GET /v1/audio/transcriptions/progress/<id>
-# while its POST is in flight. Entries live only for the request (popped in the
-# handler's finally); the cap + stale sweep below bound a client that invents
-# ids and never posts. Plain dict + GIL: every writer does a single dict-entry
+# while its POST is in flight. Entries live only for the request (retired by
+# _progress_close in the handler's finally); the cap below bounds many runs in
+# flight at once. Plain dict + GIL: every writer does a single dict-entry
 # update, and the poller only reads; the entry-creation sweep/eviction in
 # _progress_set iterates over a snapshot (list(...)) so a concurrent pop on
 # the loop thread can't blow up an executor-thread iteration.
