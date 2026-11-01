@@ -152,7 +152,7 @@ SCALE_BOOTSTRAP_HEAD = (
 )
 
 
-# Header dropdown HTML — placed just before the action cluster (logout etc.).
+# Header scale/width controls — placed just before the action cluster (reload, logout).
 SCALE_PICKER_HTML = (
     '<select id="scale-picker" class="scale-picker" title="UI scale">'
     '<option value="13">90%</option>'
@@ -565,7 +565,7 @@ def render_page(template: str, current: str) -> str:
       - {{NAV}}                  → primary nav links (left of global bar)
       - {{SEV_PILLS}}            → severity pills (right utility cluster)
       - {{NAV_CSS}}              → shared header/scale-token CSS
-      - {{SCALE_PICKER}}         → scale dropdown (header)
+      - {{SCALE_PICKER}}         → scale dropdown + scale-cycle and width-toggle buttons (header)
       - {{SCALE_PICKER_JS}}      → wire-up script (end of body); also carries
                                    POPOVER_JS (window._anchorPopover, the
                                    shared dropdown placement ladder),
