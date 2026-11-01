@@ -4,13 +4,6 @@ Whisper re-decodes the sub-second leftover after the last aligned word as its
 own zero-padded window and confidently replays its text context (prompt echo /
 self-repetition). Observed signature: 20+ words crammed into ~0.5 s at the
 buffer tail, high avg_logprob, T=0.0, nsp possibly below NO_SPEECH_THRESHOLD.
-
-Covers:
-  * transcription.guards.segment_exceeds_word_rate (SEGMENT_MAX_WORDS_PER_S) — unit
-  * batch POST /v1/audio/transcriptions drops word-rate-anomalous segments
-  * streaming.routes._trim_trailing_nonspeech (STREAMING_TAIL_TRIM_PAD_MS)
-  * streaming FINAL decode's condition_on_previous_text override
-    (STREAMING_FINAL_CONDITION_ON_PREVIOUS_TEXT), batch left untouched
 """
 
 import numpy as np
@@ -31,16 +24,12 @@ def _words(text: str, start: float, end: float) -> list:
 
 
 def _echo_segment() -> FakeSegment:
-    """Incident-2 shape: ~22 words in 0.54 s (~40 w/s), confident stats."""
+    """The observed echo shape: ~22 words in 0.54 s (~40 w/s), confident stats."""
     text = ("Punkt Neue Zeile Die Unterschenkel seien stark wenn er auf dem "
             "Fuss steht Punkt Neue Zeile Die Unterschenkel seien stark wenn "
             "er auf dem Fuss steht")
     return FakeSegment(text, 13.42, 13.96, words=_words(text, 13.42, 13.96))
 
-
-# ---------------------------------------------------------------------------
-# segment_exceeds_word_rate
-# ---------------------------------------------------------------------------
 
 def test_word_rate_normal_speech_passes(app_module):
     seg = FakeSegment("hallo schöne welt", 0.0, 1.0,
@@ -74,10 +63,6 @@ def test_word_rate_falls_back_to_text_when_no_words(app_module):
     seg = FakeSegment("eins zwei drei vier fünf sechs", 0.0, 0.3, words=[])
     assert tx_guards.segment_exceeds_word_rate(seg, 10.0) is True
 
-
-# ---------------------------------------------------------------------------
-# Batch endpoint integration
-# ---------------------------------------------------------------------------
 
 def test_batch_drops_echo_segment(client, fake_model):
     real = FakeSegment("hallo welt", 0.0, 1.0,
@@ -116,11 +101,7 @@ def test_batch_guard_disabled_keeps_everything(client, app_module, fake_model):
     assert len(body["segments"]) == 2
 
 
-# ---------------------------------------------------------------------------
-# Tail cuts inside a segment (transcription/segment_guards.py) — batch integration.
-# Timings are the real ones the production server returned on 2026-09-19.
-# ---------------------------------------------------------------------------
-
+# Word timings the production server really returned on 2026-09-19.
 _REAL = [(" Besser", 0.32, 0.74), (" wäre", 0.74, 1.0), (" wahrscheinlich", 1.0, 1.42),
          (" einmal", 1.42, 2.1), (" pro", 2.1, 2.5), (" Tag", 2.5, 2.86),
          (" zwei", 2.86, 3.52), (" Tabletten", 4.6, 5.54)]
@@ -215,10 +196,6 @@ def test_stats_page_has_the_guard_line(client):
     assert 'id="guard-meta"' in html and "snap.guard_hits" in html
     assert "head_echo: 'prompt echo'" in html
 
-
-# ---------------------------------------------------------------------------
-# Head cut: an echo of the decode prompt at the start (SEGMENT_HEAD_ECHO_MIN_WORDS)
-# ---------------------------------------------------------------------------
 
 _ECHO_PROMPT = "Der Patient nimmt zwei Tabletten am Abend."
 
@@ -330,10 +307,6 @@ def test_batch_conditioning_unchanged(client, fake_model):
     assert fake_model.last_kwargs["condition_on_previous_text"] is True
 
 
-# ---------------------------------------------------------------------------
-# _trim_trailing_nonspeech
-# ---------------------------------------------------------------------------
-
 def _speech_then_silence(speech_sec: float, silence_sec: float) -> np.ndarray:
     audio = np.zeros(int((speech_sec + silence_sec) * RATE), dtype=np.float32)
     audio[: int(speech_sec * RATE)] = 0.1
@@ -375,10 +348,6 @@ def test_tail_trim_vad_unavailable_returns_unchanged(no_vad):
     assert out is audio
 
 
-# ---------------------------------------------------------------------------
-# Streaming FINAL conditioning override
-# ---------------------------------------------------------------------------
-
 def test_streaming_final_conditioning_off_by_default(app_module, fake_model):
     from faster_whisper_backend.streaming import routes as sr
     kw = sr._build_transcribe_kwargs(
@@ -405,10 +374,6 @@ def test_streaming_partial_conditioning_unaffected(app_module, fake_model):
     assert kw["condition_on_previous_text"] is False
     assert kw["vad_filter"] is False
 
-
-# ---------------------------------------------------------------------------
-# Config plumbing
-# ---------------------------------------------------------------------------
 
 def test_admin_config_accepts_new_fields():
     from faster_whisper_backend.settings import schema as settings_schema
@@ -448,10 +413,6 @@ def test_defaults_present_in_config(app_module):
     assert app_module.cfg.SEGMENT_REPEAT_COLLAPSE_MIN_REPEATS == 3
     assert app_module.cfg.SEGMENT_HEAD_ECHO_MIN_WORDS == 3
 
-
-# ---------------------------------------------------------------------------
-# Log block: guards section + dropped-segment marker
-# ---------------------------------------------------------------------------
 
 def test_log_block_shows_guards_and_drop_marker(app_module):
     from tests.conftest import FakeInfo
@@ -497,10 +458,6 @@ def test_batch_request_logs_guard_setting(client, caplog):
     assert r.status_code == 200
     assert "segment_max_words_per_sec" in caplog.text
 
-
-# ---------------------------------------------------------------------------
-# /overrides: new settings are per-identity overridable + lockable
-# ---------------------------------------------------------------------------
 
 _NEW_FIELDS = ("SEGMENT_MAX_WORDS_PER_S", "STREAMING_TAIL_TRIM_PAD_MS",
                "STREAMING_FINAL_CONDITION_ON_PREVIOUS_TEXT",
