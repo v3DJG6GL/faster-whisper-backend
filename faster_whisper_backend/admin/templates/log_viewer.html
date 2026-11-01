@@ -12,15 +12,12 @@
     --red: #ff7b72; --magenta: #d2a8ff; --bold: #f0f6fc;
     --border: #30363d;
   }
-  /* Font tokens, --font-sans, --font-mono and html font-size live in
-     NAV_CSS (injected further down). Important: never embed the NAV_CSS
-     template placeholder inside another comment block — render_page() does
-     a naive string replace and would inject NAV_CSS into this comment,
-     prematurely closing it (NAV_CSS contains its own internal comments)
-     and silently dropping every CSS rule that follows. Header chrome
-     (title, pills, buttons) gets --font-sans by default; the log lines
-     themselves opt into --font-mono via .line so timestamps and tabular
-     fields stay aligned. */
+  /* Font tokens and the html font-size live in NAV_CSS (injected further
+     down). Never write the NAV_CSS placeholder inside a comment:
+     render_page() does a naive string replace, NAV_CSS's own comments would
+     close this one early, and every rule after it would be silently dropped.
+     Chrome uses --font-sans; #log opts into --font-mono so timestamps and
+     tabular fields stay aligned. */
   html { height: 100%; }
   body { background: var(--bg); color: var(--fg);
     font: 1rem/1.5 var(--font-sans);
@@ -98,9 +95,7 @@
   /* Per-stage hues for the request receipt: the shared --stage-* tokens
      (web_common.STAGE_COLORS, the desktop app's stage-rail values), so a
      stage reads the same color in the log as it did while the user watched
-     it run. Before this, every receipt line that described the job fell
-     through classify()'s last branch to .line.info and the whole block read
-     as one monochrome wall. */
+     it run. */
   .line.st-sep  { color: var(--stage-separating); }
   .line.st-whi  { color: var(--stage-transcribing); }
   .line.st-dia  { color: var(--stage-diarizing); }
@@ -110,14 +105,13 @@
      file / model header lines. Cyan like `meta`, so they stop being the one
      grey island in an otherwise colored receipt. */
   .line.st-id   { color: var(--cyan); }
-  /* F2: on a stage PARAM row only the key column takes the hue; the value
+  /* On a stage PARAM row only the key column takes the hue; the value
      stays --fg. Ten rows of solid pink drowns the numbers you opened the
      log to read, and a row scrolled away from its section header still
      needs to say which stage it belongs to. */
   .line .v      { color: var(--fg); }
-  /* Folded segment rows. The rows exist in the DOM (and in the log file) —
-     this is display only, which is the whole difference from the old inert
-     "(+610 more)" tail, where the rows were never written at all. */
+  /* Folded segment rows: display only — the rows stay in the DOM and in
+     the log file. */
   .line.folded  { display: none; }
   /* Controls, not log text: the selection highlight skips them, and the
      copy handler drops them from the clipboard. */
@@ -217,13 +211,12 @@
     if (/\/v1\/audio\/transcriptions/.test(line)) return 'title';
     if (/RAW WHISPER/.test(line)) return 'raw';
     if (/FINAL\s+'/.test(line)) return 'final';
-    // Step label: "▸ #1.1 …" / "▸ #18 …" (the leading # arrived with the
-    // card-position numbering) — and the older bare "▸ 8 …" rotated format.
+    // Step label: "▸ #1.1 …" / "▸ #18 …", or the bare "▸ 8 …" of older
+    // rotated logs.
     if (/▸\s+#?\d/.test(line)) return 'step';
     if (/^\s*→\s/.test(line)) return 'after';
-    // WARNING/ERROR must outrank `meta`: the meta test matches any line
-    // containing lang= or duration=, so a warning that happens to mention
-    // one used to render cyan and read as ordinary metadata.
+    // WARNING/ERROR must outrank `meta`, whose test matches any line that
+    // merely mentions lang= or duration=.
     if (/(WARNING|WARN)/.test(line)) return 'warning';
     if (/(ERROR|CRITICAL)/.test(line)) return 'error';
     if (/file=|lang=|duration=|segments=|words=|format=/.test(line)) return 'meta';
@@ -236,9 +229,7 @@
     return 'info';
   }
   // Receipt section headers: "  ─── Diarization  (* = non-default) ─────…".
-  // classify()'s `rule` branch only matches lines that are PURE box-drawing
-  // after trim, so these fell through to 'info' — which is why every section
-  // header in the block rendered the same grey as its body.
+  // classify()'s `rule` branch needs a PURE box-drawing line, so it misses them.
   const _SEC_RE = /^\s+─── ([A-Za-z][A-Za-z \-]*?)(?:\s\s|\s─)/;
   const _SEC_STAGE = {
     'Pipeline': '', 'Separation': 'st-sep', 'Diarization': 'st-dia',
@@ -289,11 +280,9 @@
     return cls + ' pipe folded';
   }
   function decorate(line, st) {
-    // Section scope. A bare row like "    min_speakers      2 *" carries
-    // nothing that identifies it as diarization, so no per-line regex can
-    // ever colour it — the section header has to set the scope and the rows
-    // inherit it. Same shape as the dimLeft group tracking below, which is
-    // the precedent for cross-line state on this render pass.
+    // Section scope: a bare row like "    min_speakers      2 *" carries
+    // nothing that identifies it as diarization, so the section header sets
+    // the scope and the rows inherit it.
     const sec = _SEC_RE.exec(line);
     if (sec) {
       const label = sec[1].trim();
@@ -368,11 +357,11 @@
     const txt = localizeLogTs(line);
     _lineText.set(el, txt);
     const stage = /\bst-\w+\b/.test(cls);
-    // F2: split at the receipt's fixed 32-char name column so the key takes
-    // the stage hue and the value stays readable. Fixed width, so no parsing.
-    // 4 spaces for a section key, 6 for a nested one (vad_parameters):
-    // the value column sits at 32 either way. Table rows (Pipeline,
-    // Segments) start with a digit or '#' and must stay whole.
+    // Split at the receipt's 32-char value column (_NAME_COL in receipt.py)
+    // so the key takes the stage hue and the value stays readable. 4 spaces
+    // for a section key, 6 for a nested one (vad_parameters): the column sits
+    // at 32 either way, except for a key long enough to overflow it. Table rows
+    // (Pipeline, Segments) start with a digit or '#' and must stay whole.
     if (stage && !/\brule\b/.test(cls) && /^ {4,6}[^\s\d#]/.test(txt) && txt.length > 32) {
       const k = document.createElement('span');
       k.textContent = txt.slice(0, 32);
@@ -488,15 +477,12 @@
     if (!hit) el.classList.remove('match-cur');
     el.classList.toggle('hidden', hideMode && !hit);
   }
-  // Copy what was selected, not what the viewer happens to show. Folded
-  // segment / pipeline rows (display:none) and the clamped tail of a long
-  // transcript line lie inside the selection's DOM range, but the browser's
-  // own copy drops or clips them — and copies the fold and "Show all" button
-  // labels instead. Cloning the range keeps every node in it (and the classes
-  // of the partly selected first and last rows, so those stay trimmed to the
-  // selection); the controls and the rows the search filter hides are then
-  // removed — hide mode means "not these". The range is clamped to #log, so
-  // Ctrl+A copies the log, not the header or this script. A selection that
+  // Copy what was selected, not what the viewer shows: the browser's own copy
+  // drops folded rows (display:none) and the clamped tail of a long line, and
+  // copies the fold / "Show all" button labels instead. Cloning the range keeps
+  // every node (partly selected first/last rows stay trimmed to the selection);
+  // controls and rows the filter hides are then removed. Clamped to #log so
+  // Ctrl+A copies the log, not the header or this script; a selection that
   // never touches the log keeps the browser's own copy.
   document.addEventListener('copy', (e) => {
     const sel = window.getSelection();
@@ -552,7 +538,6 @@
     matchCurEl = m[i];
     matchCurEl.classList.add('match-cur');
     if (matchCurEl.classList.contains('folded')) {
-      // A hit inside a folded block: open the block so the line can show.
       let c = matchCurEl.previousSibling;
       while (c && !(c.classList && c.classList.contains('fold-ctl'))) c = c.previousSibling;
       if (c) _unfold(c, 1e9);
@@ -592,9 +577,8 @@
     _liveDim.dimLeft = 0;
   }
   function append(line) {
-    // __LIVE_TAIL__ sentinel marks the boundary between backlog and the
-    // live poll loop. After it fires we know the freshest page is in the
-    // DOM and the "Load older" button can become active.
+    // The server sends __LIVE_TAIL__ after the replayed backlog: only then is
+    // the freshest page in the DOM, so "Load older" can start paging.
     if (line === '__LIVE_TAIL__') {
       const lo = document.getElementById('loadOlderBtn');
       if (lo) lo.style.display = '';
@@ -675,11 +659,9 @@
     matchCurEl = null;
     updateNav();
     // "Load older" resumes right behind what is on screen, so the cleared
-    // lines come back first. Keeping the old count instead left the cursor
-    // past a gap the live trim knows nothing about: every trimmed row
-    // stepped it back as if it bordered the cleared block, and the next
-    // batch skipped some lines and repeated others. A batch still in flight
-    // was read at the old cursor: drop it, as after a reconnect.
+    // lines come back first; the old count would leave the cursor past a gap
+    // the live trim knows nothing about. A batch still in flight was read at
+    // the old cursor: drop it, as after a reconnect.
     _logsSkip = 0;
     _logsGen++;
   });
@@ -702,7 +684,6 @@
       const prevLabel = loadOlderBtn.textContent;
       loadOlderBtn.textContent = 'Loading…';
       try {
-        // Session cookie is sent automatically with the fetch.
         const url = '/logs/older?skip=' + encodeURIComponent(_logsSkip)
                   + '&limit={{LOG_VIEWER_INITIAL_LINES}}';
         const r = await fetch(url);
@@ -715,10 +696,8 @@
         // offset was read from: drop it (the finally re-enables the button).
         if (gen !== _logsGen) return;
         const lines = (j && j.lines) || [];
-        // Prepend to top of #log, preserving line order (oldest-first
-        // batch → first inserted ends up at the very top, last inserted
-        // sits just above the existing content). Filter is reapplied per
-        // line so the new batch honors any active substring search.
+        // The oldest-first batch goes in above the existing rows; appendLine
+        // applies the active search filter to each line.
         const frag = document.createDocumentFragment();
         const olderDim = { dimLeft: 0 };   // batch-local; no leak to live tail
         for (const line of lines) appendLine(frag, line, olderDim);
@@ -769,11 +748,10 @@
       statusEl.textContent = 'reconnecting…';
       statusEl.className = 'pill paused';
       if (_logRecoveryTimer) return;
-      // The probe carries the stream's own gate (host + logs page): /v1/models
-      // 200s for any valid user, so an expired sign-in polled "reconnecting…"
-      // forever, and a user whose logs access was removed reopened a 403ing
-      // stream (blanking the pane) every 3 s. A skip past the paging cap is
-      // answered as chain-end without any disk I/O.
+      // The probe carries the stream's own gate (host + logs page), so an
+      // expired sign-in or removed logs access stops the loop on 401/403
+      // instead of polling or reopening a 403ing stream. A skip past the
+      // paging cap is answered as chain-end without any disk I/O.
       const probe = async () => {
         try {
           const r = await fetch('/logs/older?skip=999999999999&limit=1', { cache: 'no-store' });
@@ -810,9 +788,8 @@
   }
   openLogStream();
 
-  // --- Log-only zoom (independent of the global UI scale picker) ---------
-  // Multiplies on top of --fs-base via #log { font-size: calc(1rem * --log-zoom) }.
-  // Discrete steps so clicks "snap" to recognizable sizes like browser zoom.
+  // Log-only zoom, independent of the global UI scale picker. Discrete steps
+  // so clicks "snap" to recognizable sizes like browser zoom.
   (function(){
     const KEY='whisper-log-zoom';
     // Down to 40%: on a wide monitor a dense, small log fits far more
