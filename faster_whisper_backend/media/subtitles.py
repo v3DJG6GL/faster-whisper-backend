@@ -124,7 +124,6 @@ def list_tracks(info: dict) -> "tuple[list[dict], dict[str, dict]]":
     return public, sources
 
 
-# ── fetching ────────────────────────────────────────────────────────────────
 MAX_FETCH = 8                      # tracks per request
 TRACK_MAX_BYTES = 2 * 1024 * 1024  # one track
 TOTAL_MAX_BYTES = 8 * 1024 * 1024  # one request
@@ -206,7 +205,6 @@ async def fetch_tracks(info, ids: "list[str]") -> "tuple[list[dict], list[dict]]
     return tracks, failed
 
 
-# ── rendering ───────────────────────────────────────────────────────────────
 FORMATS = ("srt", "vtt")
 _ARROW_RE = re.compile(r"--+>")
 
