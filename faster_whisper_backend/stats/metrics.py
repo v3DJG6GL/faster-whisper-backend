@@ -465,7 +465,9 @@ def record_download(model: str, seconds: float, bytes_done: int, *,
 
 
 def record_model_load(model: str, load_seconds: float) -> None:
-    """Called once per WhisperModel(...) construction in _get_or_load_model."""
+    """Called once per model load: Whisper (_get_or_load_model) plus the
+    translation / BGM-separation / diarization loaders, whose `model` carries
+    a gguf: / uvr: / pyannote: prefix."""
     bucket = model_loads.setdefault(model, [])
     bucket.append(load_seconds)
     # Trim from the middle: bucket[0] is the first cold load, which the
