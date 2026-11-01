@@ -33,8 +33,6 @@ def _stub_turns(monkeypatch, turns, calls=None):
     monkeypatch.setattr(diarization, "diarize", _fake_diarize)
 
 
-# --- route behaviour ---------------------------------------------------------
-
 def test_diarize_labels_segments_and_lists_speakers(client, app_module, monkeypatch):
     app_module.cfg.DIARIZATION_ENABLED = True
     try:
@@ -158,8 +156,6 @@ def test_no_segments_skips_diarization_with_warning(client, app_module,
         app_module.cfg.DIARIZATION_ENABLED = False
 
 
-# --- assign_speakers (pure) --------------------------------------------------
-
 def _seg(start, end):
     return {"start": start, "end": end}
 
@@ -195,8 +191,6 @@ def test_assign_speakers_no_turns_is_noop():
     assert diarization.assign_speakers(segs, []) == []
     assert "speaker" not in segs[0]
 
-
-# --- progress hook -----------------------------------------------------------
 
 def test_hook_maps_steps_and_stays_monotone(caplog):
     seen = []
@@ -258,8 +252,6 @@ def test_hook_swallows_bad_callback():
     # the callback's OWN exception was swallowed, not a signature mismatch
     assert hits == [1]
 
-
-# --- offline env var is scoped to the load -----------------------------------
 
 def test_load_scopes_hf_hub_offline_to_the_load(monkeypatch):
     """LOCAL_FILES_ONLY is hot-editable: one offline pyannote load must not
@@ -357,8 +349,6 @@ def test_load_makes_hub_offline_mode_true_for_the_load(monkeypatch):
     assert huggingface_hub.constants.is_offline_mode() is False
 
 
-# --- lease key is resolved once ---------------------------------------------
-
 def test_diarize_releases_the_key_it_leased_after_a_config_edit(monkeypatch):
     """An admin edit of DIARIZATION_MODEL while a job is loading or running
     must not desynchronise the lease and release keys — the release would
@@ -381,8 +371,6 @@ def test_diarize_releases_the_key_it_leased_after_a_config_edit(monkeypatch):
     assert diarization._leases == {}
     assert diarization._orphans == {}
 
-
-# --- the release never suspends ----------------------------------------------
 
 def test_release_drops_the_lease_even_while_the_lock_is_held(monkeypatch):
     """_lock is held across a whole executor-long load; the release must not
@@ -466,12 +454,10 @@ def test_idle_drop_waits_for_a_same_id_orphan(monkeypatch):
     assert diarization._orphans == {}
 
 
-# --- the tail restamp is owned by the release --------------------------------
-
 def test_diarize_does_not_touch_a_model_it_never_leased(monkeypatch):
-    """_diarize_with used to restamp whatever _pipeline_key named when the
-    run ended — after a mid-job re-key to another model, that model's idle
-    clock / stats 'last used' moved for a job that never touched it."""
+    """The end-of-run restamp touches only the model this job leased: after
+    a mid-job re-key to another model, that model's idle clock / stats
+    'last used' must not move for a job that never touched it."""
     import asyncio
     from faster_whisper_backend.runtime import model_registry
     cfg = diarization.cfg
@@ -575,8 +561,6 @@ def test_placement_error_keeps_raw_torch_text_out_of_the_message(monkeypatch):
     assert "SECRET" not in str(ei.value)
     assert "/opt/path" not in str(ei.value)
 
-
-# --- the pipeline is cached before its stats row is registered ---------------
 
 def _blocked_register(monkeypatch):
     import threading
@@ -713,8 +697,6 @@ def test_orphan_release_mid_register_keeps_the_new_row(monkeypatch):
         diarization._free_locked("A")   # tidy the real registry row
 
 
-# --- a cancel that lands during the mutex wait skips the inference ----------
-
 def test_cancel_after_the_mutex_wait_skips_the_inference():
     """The _infer_mutex wait can be minutes (a zombie diarization); a request
     cancelled meanwhile must not start pipe() once it gets the mutex."""
@@ -733,8 +715,6 @@ def test_cancel_after_the_mutex_wait_skips_the_inference():
             cancel_check=lambda: next(answers, True)))
     assert calls == []
 
-
-# --- a cancelled job's zombie inference defers the idle drop ----------------
 
 def test_idle_drop_waits_for_a_zombie_inference(monkeypatch):
     """A cancelled diarize released its lease, but its executor thread is
@@ -769,8 +749,6 @@ def test_idle_drop_waits_for_a_zombie_inference(monkeypatch):
     assert asyncio.run(diarization.drop_pipeline(force=False)) is True
     assert unregistered == ["pyannote:m1"]
 
-
-# --- a preload re-checks busy() under the lock --------------------------------
 
 def test_preload_declines_under_the_lock_when_a_job_holds_another_pipeline(
         monkeypatch):
