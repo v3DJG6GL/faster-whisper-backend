@@ -59,6 +59,20 @@ def test_create_user_and_duplicate(api_keys_db):
         ak.create_user("alice", is_admin=False)  # duplicate
 
 
+def test_create_user_duplicate_of_revoked_user_names_the_revoke(api_keys_db):
+    """A revoked user drops off the keys page but keeps the name, so
+    re-adding it must not claim a user the admin can't see "already
+    exists"."""
+    ak = api_keys_db
+    ak.create_user("alice", is_admin=False)
+    ak.revoke_user(ak.create_user("bob", is_admin=False))
+    with pytest.raises(ValueError, match="'bob' belongs to a revoked account"):
+        ak.create_user("bob", is_admin=False)
+    with pytest.raises(ValueError, match="'alice' already exists"):
+        ak.create_user("alice", is_admin=False)
+    assert ak.create_user("Bob", is_admin=False)  # UNIQUE is case-sensitive
+
+
 def test_create_user_blank_and_too_long(api_keys_db):
     ak = api_keys_db
     with pytest.raises(ValueError):

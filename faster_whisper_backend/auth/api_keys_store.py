@@ -440,6 +440,18 @@ def create_user(username: str, is_admin: bool) -> str:
             _rebuild_index_locked()
     except sqlite3.IntegrityError as e:
         if "UNIQUE" in str(e):
+            # Revoke keeps the row (attribution), so the name stays taken
+            # though the keys page no longer lists it — say why.
+            with _lock:
+                held = conn.execute(
+                    "SELECT revoked_ts FROM users WHERE username = ?",
+                    (username,),
+                ).fetchone()
+            if held is not None and held["revoked_ts"] is not None:
+                raise ValueError(
+                    f"username {username!r} belongs to a revoked account"
+                    " — choose another name"
+                ) from e
             raise ValueError(f"username {username!r} already exists") from e
         raise
     logger.info(
