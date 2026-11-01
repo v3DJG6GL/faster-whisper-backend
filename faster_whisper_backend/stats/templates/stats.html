@@ -1495,7 +1495,6 @@ function setBar(barEl, pct) {
   barEl.classList.toggle('crit', pct >= 90);
 }
 
-// Scope-aware chrome.
 // The payload's `scope` ("own"|"all") and `machine` (bool) are decided
 // server-side (StatsScope). scope=own hides the per-user controls — the only
 // user is the viewer — and machine=false swaps the machine tiles for the
