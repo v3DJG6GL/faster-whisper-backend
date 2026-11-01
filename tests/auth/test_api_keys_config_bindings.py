@@ -107,7 +107,7 @@ def test_config_column_migration_on_legacy_db(tmp_path):
     conn.close()
 
     try:
-        ak.init_db(db)              # runs the additive migration
+        ak.init_db(db)
         cols = {r["name"] for r in ak._require_conn().execute(
             "PRAGMA table_info(api_keys)").fetchall()}
         assert "config" in cols
