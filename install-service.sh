@@ -295,7 +295,7 @@ $(unit_env "$MODELS_ENV_LINE")
 $(unit_env "$LOG_ENV_LINE")
 $(unit_env "$NVIDIA_ENV_LINE")
 # 'python main.py' is the shim over faster_whisper_backend/main.py; matches what the
-# cross-platform self-restart (os.execv) re-execs.
+# cross-platform self-restart (os.execve) re-execs.
 ExecStart=$(sd_q "$PY") $(sd_q "${REPO_DIR}/main.py")
 Restart=always
 RestartSec=2
@@ -305,9 +305,9 @@ WantedBy=multi-user.target
 EOF
 
 # Pre-create the state dirs the unit pins above, owned by the service user
-# (api_keys_store refuses to start when it cannot create its db dir; faster_whisper_backend/main.py
-# soft-fails to stderr-only logging when logs/ cannot be created). A .env-pinned
-# path is the operator's to provision.
+# (api_keys_store refuses to start when it cannot create its db dir;
+# core/log_setup.py soft-fails to stderr-only logging when logs/ cannot be
+# created). A .env-pinned path is the operator's to provision.
 if [ "${#STATE_DIRS[@]}" -gt 0 ]; then
   mkdir -p "${STATE_DIRS[@]}"
   chown -R "$RUN_USER" "${STATE_DIRS[@]}"
