@@ -162,10 +162,8 @@ _SHIPPED_BEFORE_ENTRY_UPGRADE = {
 
 
 def test_upgraded_rules_end_equal_to_the_factory_rule_notes_included():
-    """0a9403f8 changed the hyphen rule's note along with its pattern: the
-    upgraded copy kept the old note, so the pipeline editor showed a rule the
-    admin never touched as edited (diverged once stamped), and "promote"
-    would have written the old note back."""
+    """0a9403f8 changed the hyphen rule's note along with its pattern; an
+    upgrade that keeps the old note also lets "promote" write it back."""
     assert set(_SHIPPED_BEFORE_PATTERN_UPGRADE) == set(renames.UPGRADED_RULE_PATTERNS)
     for name, old in _SHIPPED_BEFORE_PATTERN_UPGRADE.items():
         raw = {"PIPELINE_RULES": [copy.deepcopy(old)]}
