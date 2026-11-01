@@ -326,7 +326,7 @@ def test_resolve_sim_reports_the_live_dictation_knobs_as_the_handshake_sets_them
 
 def test_resolve_reports_a_binding_store_fault(client, make_user_key, monkeypatch):
     # A binding-fetch fault locks every field fail-closed with no owning
-    # layer; the explorer showed "locked" everywhere and gave no reason.
+    # layer; binding_fault gives the explorer the reason.
     from faster_whisper_backend.auth import api_keys_store
     _, _, h = _admin(make_user_key)
     uid, _ = make_user_key("carol", is_admin=False)
@@ -573,7 +573,8 @@ def test_rename_profile_env_pinned_409(client, make_user_key, monkeypatch):
 
 def test_page_rename_409_shows_the_server_detail(client):
     """The rename route has two 409s (env-pinned library, name collision);
-    doRename mapped both to 'already exists', hiding the env pin."""
+    doRename shows the server detail so an env pin is not reported as
+    'already exists'."""
     html = client.get(OV).text
     body = html[html.index("async function doRename(oldName, newName) {"):]
     body = body[:body.index("\n  }\n")]
@@ -584,9 +585,9 @@ def test_page_rename_409_shows_the_server_detail(client):
 
 
 def test_state_save_env_pinned_409(client, make_user_key, monkeypatch):
-    """apply_hot_changes skips an env-pinned OVERRIDE_PROFILES, so a save
-    reported "saved" while the editor reloaded the env value and
-    config.local.json quietly diverged. Refused like rename, nothing written."""
+    """apply_hot_changes skips an env-pinned OVERRIDE_PROFILES, so an accepted
+    save would report "saved" while the editor reloads the env value and
+    config.local.json diverges. Refused like rename, nothing written."""
     from faster_whisper_backend.settings import config_store
     _, _, h = _admin(make_user_key)
     _make_profile(client, h, "clinic-de", BEAM_SIZE=8)
@@ -651,8 +652,8 @@ def test_rename_profile_old_name_case_insensitive(client, make_user_key):
 
 
 def test_page_save_rerenders_after_reloading_state(client):
-    """save() replaced `profiles` via loadState(true) without render(): every
-    widget still closed over the old profiles[sel], so the next edit landed
+    """After save() reloads `profiles` (adoptServerProfiles) it must render():
+    every widget closes over the old profiles[sel], so the next edit would land
     on an orphan (dropped, or never lighting Save)."""
     html = client.get(OV).text
     body = html[html.index("async function save() {"):]
@@ -670,9 +671,9 @@ def _page_save_body(client):
 
 def test_page_save_409_keeps_the_working_copy(client):
     """Both 409s (in-use guard, env-pinned OVERRIDE_PROFILES) refuse the WHOLE
-    save; loadState(true) then replaced `profiles`/`snapshot` with the server
-    copy, silently dropping every other unsaved edit. The branch refreshes
-    only the server state S and leaves the working copy dirty."""
+    save, so replacing `profiles`/`snapshot` with the server copy would silently
+    drop every other unsaved edit: the branch refreshes only the server state S
+    and leaves the working copy dirty."""
     body = _page_save_body(client)
     branch = body[body.index("if (r.status === 409) {"):]
     branch = branch[:branch.index("return;")]
@@ -704,8 +705,8 @@ def test_page_save_keeps_edits_made_while_in_flight(client):
 
 
 def test_page_explorer_drops_stale_answers(client):
-    """fillKeys / doResolve had no sequencing: a slower answer for an earlier
-    pick mixed keys from two users or overwrote the current waterfall."""
+    """fillKeys / doResolve drop a stale answer: a slower reply for an earlier
+    pick would mix keys from two users or overwrite the current waterfall."""
     html = client.get(OV).text
     fk = html[html.index("async function fillKeys() {"):]
     fk = fk[:fk.index("\n  }\n")]
@@ -720,9 +721,9 @@ def test_page_explorer_drops_stale_answers(client):
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node unavailable")
 def test_page_commit_rename_rechecks_dirty(client, tmp_path):
-    """startRename refused a dirty working copy, but the main pane stays
-    editable while the rename input is open; confirming then ran the server
-    rename, whose reload dropped those later edits without a warning."""
+    """startRename refuses a dirty working copy, but the main pane stays
+    editable while the rename input is open, so commitRename re-checks: the
+    server rename's reload would drop those later edits without a warning."""
     html = client.get(OV).text
 
     def fn(name):
