@@ -210,7 +210,7 @@
   /* white-space: pre-line preserves \n in description strings (so a
      description that enumerates values can render each on its own line)
      while still collapsing other whitespace and wrapping long lines. */
-  .input-col .help { color: var(--help); font-size: var(--fs-sm);
+  .input-col .help, .field-fullrow > .help { color: var(--help); font-size: var(--fs-sm);
     margin-top: 0.1875rem; white-space: pre-line; }
   /* Vertical checkbox list (PRELOAD_MODELS, etc.). Both gaps in rem so they
      scale with --fs-base — fixes "compressed checklist" at higher scales. */
@@ -1149,6 +1149,14 @@ function setHelpText(el, text) {
 // .group-fields grid (grid-column: 1 / -1, no label-col, no description).
 const FULLROW_FIELDS = new Set(['MODEL_OVERRIDES']);
 
+function envPinnedNote(name) {
+  const note = document.createElement('div');
+  note.className = 'help help-env-pinned';
+  note.textContent = 'Set by ' + fieldDef(name).env_var
+    + ' — read-only here; unset the environment variable to edit it in the UI.';
+  return note;
+}
+
 function fieldRow(name) {
   const row = document.createElement('div');
   row.className = 'field';
@@ -1157,7 +1165,13 @@ function fieldRow(name) {
   if (FULLROW_FIELDS.has(name)) {
     row.classList.add('field-fullrow');
     const fullEd = makeEditor(name);
-    if (isEnvPinned(name)) { row.classList.add('env-pinned'); disableEnvPinnedEditor(fullEd); }
+    if (isEnvPinned(name)) {
+      // No label column here, but a pinned widget still says why it is dead.
+      row.classList.add('env-pinned');
+      disableEnvPinnedEditor(fullEd);
+      row.appendChild(makeBadges(name));
+      row.appendChild(envPinnedNote(name));
+    }
     row.appendChild(fullEd);
     return row;
   }
@@ -1184,13 +1198,7 @@ function fieldRow(name) {
   // .label-col, CSS subgrid sizes the column to this prose's max-content
   // and blows the whole section's label track wide. .input-col .help
   // already has the right styling.
-  if (isEnvPinned(name)) {
-    const note = document.createElement('div');
-    note.className = 'help help-env-pinned';
-    note.textContent = 'Set by ' + fieldDef(name).env_var
-      + ' — read-only here; unset the environment variable to edit it in the UI.';
-    inputCol.appendChild(note);
-  }
+  if (isEnvPinned(name)) inputCol.appendChild(envPinnedNote(name));
 
   // Inline description from FIELD_DESCRIPTIONS (single source of truth).
   // Surfaced via /settings/state's per-field payload.

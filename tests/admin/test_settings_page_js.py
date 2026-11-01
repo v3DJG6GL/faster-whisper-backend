@@ -993,3 +993,41 @@ click.then(() => console.log(JSON.stringify(
   [expandBtn.disabled, row.classList.contains('expanded'), inp.disabled])));
 """)
     assert out == [False, True, True]
+
+
+@needs_node
+def test_env_pinned_full_row_field_says_why_it_is_read_only(client):
+    """fieldRow()'s full-row branch disabled an env-pinned MODEL_OVERRIDES but
+    skipped the env badge and the "Set by …" note every other pinned field
+    gets, so the whole editor just went dead with no reason given."""
+    html = _html(client)
+    src = "\n".join([
+        _block(html, "const FULLROW_FIELDS = ", ";\n"),
+        _block(html, "function makeBadges(name) {", "\n}\n"),
+        _block(html, "function envPinnedNote(name) {", "\n}\n"),
+        _block(html, "function fieldRow(name) {", "\n}\n"),
+    ])
+    out = _node(_FAKE_DOM + """
+const pinned = new Set();
+function isEnvPinned(n) { return pinned.has(n); }
+function fieldDef(n) {
+  return { provenance: pinned.has(n) ? 'env' : 'default', env_var: 'WHISPER_' + n };
+}
+function makeEditor(n) { return document.createElement('div'); }
+function disableEnvPinnedEditor(el) { el.disabled = true; }
+""" + src + """
+function paint() {
+  const row = fieldRow('MODEL_OVERRIDES');
+  const note = find(row, c => c.classList.contains('help-env-pinned'));
+  const badges = find(row, c => c.classList.contains('badges'));
+  return [row.classList.contains('env-pinned'), note && note.textContent,
+          badges && badges.innerHTML.includes('env: WHISPER_MODEL_OVERRIDES')];
+}
+const free = paint();
+pinned.add('MODEL_OVERRIDES');
+console.log(JSON.stringify([free, paint()]));
+""")
+    free, pin = out
+    assert free == [False, None, None]
+    assert pin[0] is True and pin[2] is True
+    assert pin[1].startswith("Set by WHISPER_MODEL_OVERRIDES — read-only here")
