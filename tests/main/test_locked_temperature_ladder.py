@@ -43,8 +43,8 @@ def test_temperature_ladder_helper(app_module):
 
 
 def test_profile_refuses_an_unparseable_temperature(client, make_user_key):
-    # A profile gets AdminConfig's TEMPERATURE rule (it used to accept
-    # "abc", a ladderless value the lock case below then had to absorb).
+    # A profile gets AdminConfig's TEMPERATURE rule, so a ladderless "abc"
+    # never reaches the lock path below.
     _, raw_admin = make_user_key("admin", is_admin=True)
     r = client.post(f"{OV}/state", headers=bearer(raw_admin),
                     json={"OVERRIDE_PROFILES": {"t0": {"TEMPERATURE": "abc"}}})
@@ -55,8 +55,7 @@ def test_profile_refuses_an_unparseable_temperature(client, make_user_key):
 def test_locked_ladderless_temperature_ignores_client_form_field(
         client, make_user_key, fake_model, ladder):
     # "," (every token blank) is a non-blank string that produces NO ladder
-    # in the assembler, so the Form field used to survive the lock exactly
-    # like the blank case did.
+    # in the assembler; the lock must still bind the Form field.
     raw_alice = _lock_temperature_for_alice(client, make_user_key, ladder)
     r = client.post(
         "/v1/audio/transcriptions", files=_FILE, headers=bearer(raw_alice),
