@@ -73,11 +73,12 @@ $ServiceName = "WhisperAPI"
 $WinSWExe    = Join-Path $RepoDir "$ServiceName.exe"
 $WinSWXml    = Join-Path $RepoDir "$ServiceName.xml"
 $LegacyNssm  = Join-Path $RepoDir "nssm.exe"
-# SHA-256 of each WinSW release asset at $WinSWVersion (set below). The wrapper is executed from
-# this already-elevated session and then runs as LocalSystem, so its bytes are
-# verified before they are ever run. These hashes MUST be updated together with
-# $WinSWVersion -- bumping the version alone makes every fresh install fail the
-# check (existing installs keep their already-downloaded WhisperAPI.exe).
+# SHA-256 of each WinSW release asset at $WinSWVersion (set below). The wrapper
+# is executed from this already-elevated session and then runs as LocalSystem,
+# so its bytes are verified before they are ever run. These hashes MUST be
+# updated together with $WinSWVersion -- bumping the version alone makes every
+# fresh install fail the check (existing installs keep their already-downloaded
+# WhisperAPI.exe).
 $WinSWHashes = @{
     "WinSW.NET461.exe" = "B5066B7BBDFBA1293E5D15CDA3CAAEA88FBEAB35BD5B38C41C913D492AADFC4F"
     "WinSW-x64.exe"    = "05B82D46AD331CC16BDC00DE5C6332C1EF818DF8CEEFCD49C726553209B3A0DA"
@@ -279,7 +280,8 @@ if (Test-Path $reqFile) {
 }
 
 # -Gpu: the NVIDIA CUDA 12 / cuDNN 9 runtime wheels ctranslate2 loads for GPU
-# inference. faster_whisper_backend/main.py's Windows DLL preloader finds them in the venv at startup.
+# inference. faster_whisper_backend/main.py's Windows DLL preloader finds them
+# in the venv at startup.
 if ($Gpu) {
     $gpuReq = Join-Path $RepoDir "requirements-gpu.txt"
     Write-Host "Installing/refreshing GPU wheels (CUDA 12 / cuDNN 9, ~1 GB)..." -ForegroundColor Cyan
@@ -407,14 +409,14 @@ function Test-FfmpegShared($cmd) {
     # Shared builds ship avutil-*.dll next to ffmpeg.exe; static builds don't.
     return [bool]($cmd -and (Get-ChildItem -Path (Split-Path $cmd.Source) -Filter "avutil-*.dll" -ErrorAction SilentlyContinue))
 }
-# Pinned BtbN shared build, ffmpeg 9.0. torchcodec supports ffmpeg majors
-# 4-9, but 9 only since torchcodec 0.16.0 -- requirements-diarize.txt floors
-# torchcodec at or above that release to match. (Docker/Linux stay on distro
-# apt ffmpeg -- 7.1 on Debian 13 -- which is inside the supported range; the
-# majors don't need to agree across deployment types.) URL and hash MUST be updated together,
-# like the WinSW pin above; Renovate does not manage either (it can't
-# recompute hashes). The extracted copy is stamped with the zip's SHA-256
-# (.pin) so a pin bump auto-reprovisions on the next -Full run.
+# Pinned BtbN shared build, ffmpeg 9.0. torchcodec supports ffmpeg majors 4-9,
+# but 9 only since torchcodec 0.16.0 -- requirements-diarize.txt floors
+# torchcodec at or above that release to match. (Docker/Linux stay on distro apt
+# ffmpeg -- 7.1 on Debian 13 -- which is inside the supported range; the majors
+# don't need to agree across deployment types.) URL and hash MUST be updated
+# together, like the WinSW pin above; Renovate does not manage either (it can't
+# recompute hashes). The extracted copy is stamped with the zip's SHA-256 (.pin)
+# so a pin bump auto-reprovisions on the next -Full run.
 $FfmpegZipUrl = "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-08-26-13-06/ffmpeg-n9.0.1-8-g16dfae5c88-win64-gpl-shared-9.0.zip"
 $FfmpegZipSha = "C7A8C2B7B4F857703D5F1A71C436172E9B772AC2DF34B8AF9D02EF952640D0EC"
 
