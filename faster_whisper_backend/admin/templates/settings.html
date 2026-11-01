@@ -609,7 +609,8 @@
   .field.env-pinned .env-pinned-editor input:disabled,
   .field.env-pinned .env-pinned-editor select:disabled,
   .field.env-pinned .env-pinned-editor textarea:disabled,
-  .field.env-pinned .env-pinned-editor button:disabled { cursor: not-allowed; }
+  .field.env-pinned .env-pinned-editor button:disabled,
+  .field.env-pinned .env-pinned-editor:disabled { cursor: not-allowed; }
   .help.help-env-pinned { color: var(--magenta); opacity: 1; }
   .modal { position: fixed; inset: 0; background: rgba(0,0,0,0.7); display: none;
     align-items: center; justify-content: center; z-index: 100; }
@@ -1041,7 +1042,11 @@ function disableEnvPinnedEditor(el) {
   el.classList.add('env-pinned-editor');
   // Read-only diagnostics hosted inside a pinned field's editor (the prompt
   // lab's sample/test controls) stay usable — they mutate nothing.
-  el.querySelectorAll('input, select, textarea, button').forEach(c => {
+  // Plain fields hand over the bare control, which querySelectorAll never
+  // matches, so disable `el` itself too.
+  const controls = [...el.querySelectorAll('input, select, textarea, button')];
+  if (el.matches('input, select, textarea, button')) controls.push(el);
+  controls.forEach(c => {
     if (c.dataset.diagnostic) return;
     c.disabled = true;
   });

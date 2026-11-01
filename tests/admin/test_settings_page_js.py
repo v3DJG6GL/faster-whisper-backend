@@ -665,6 +665,45 @@ function fieldDef(n) { return { value: state[n], default_value: '', choices: nul
     }
 
 
+@needs_node
+def test_env_pinned_plain_field_cannot_be_typed_into(client):
+    """disableEnvPinnedEditor() only disabled controls INSIDE the editor, but a
+    plain text/textarea field's editor is the bare control: an env-pinned
+    DEFAULT_PROMPT stayed editable and setDirty() dropped the edit unseen."""
+    html = _html(client)
+    src = "\n".join([
+        _block(html, "const NULLABLE_NUMBER_FIELDS = {", "\n};\n"),
+        _block(html, "const MULTILINE_TEXT_FIELDS = ", ";\n"),
+        _block(html, "function makeEditor(name) {", "\n}\n"),
+        _block(html, "function stringEditor(name, v) {", "\n}\n"),
+        _block(html, "function textareaEditor(name, v) {", "\n}\n"),
+        _block(html, "function disableEnvPinnedEditor(el) {", "\n}\n"),
+    ])
+    out = _node(_FAKE_DOM + """
+const CONTROL = ['INPUT', 'SELECT', 'TEXTAREA', 'BUTTON'];
+El.prototype.matches = function () { return CONTROL.includes(this.tagName); };
+El.prototype.querySelectorAll = function () {
+  const out = [];
+  (function walk(n) { n.children.forEach(c => { if (c.matches()) out.push(c); walk(c); }); })(this);
+  return out;
+};
+const state = { DEFAULT_PROMPT: 'p', DEFAULT_LANGUAGE: 'de' };
+function currentValue(n) { return state[n]; }
+function setDirty(n, v) { state[n] = v; }
+function fieldDef(n) { return { value: state[n], default_value: '', choices: null }; }
+""" + src + """
+const eds = ['DEFAULT_PROMPT', 'DEFAULT_LANGUAGE'].map(makeEditor);
+const wrap = document.createElement('div');
+const inner = wrap.appendChild(document.createElement('input'));
+const diag = wrap.appendChild(document.createElement('button'));
+diag.dataset.diagnostic = '1';
+[...eds, wrap].forEach(disableEnvPinnedEditor);
+console.log(JSON.stringify([...eds.map(e => [e.tagName, e.disabled]),
+                            inner.disabled, diag.disabled]));
+""")
+    assert out == [["TEXTAREA", True], ["INPUT", True], True, False]
+
+
 # ---- "↑ view" jump-link ---------------------------------------------------------
 
 @needs_node
