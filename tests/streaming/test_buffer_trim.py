@@ -169,8 +169,8 @@ def test_trim_folds_cut_words_into_rolling_prompt():
 
 
 def test_trim_keeps_base_prompt_when_capping_the_rolling_prompt():
-    """prompt_words caps only the carried words, as _make_prompt does: the trim
-    used to cap the whole prompt string, silently dropping the client's glossary
+    """prompt_words caps only the carried words, as _make_prompt does: capping
+    the whole prompt string would silently drop the client's glossary
     (base_prompt) for the rest of a long utterance."""
     cfg = StreamConfig(
         min_chunk_ms=96, vad_min_silence_ms=96, commit_silence_ms=192,
