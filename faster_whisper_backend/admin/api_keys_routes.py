@@ -6,9 +6,13 @@ Endpoints (all admin-only):
   GET    /settings/api-keys/api/users             list users + key counts
   POST   /settings/api-keys/api/users             { username, is_admin }
   DELETE /settings/api-keys/api/users/{uid}       soft-revoke (cascades to keys)
+  PATCH  /settings/api-keys/api/users/{uid}/permissions  page scopes, tags, config binding
   GET    /settings/api-keys/api/users/{uid}/keys  list keys for one user
   POST   /settings/api-keys/api/users/{uid}/keys  { label }   -> show-once raw key
   DELETE /settings/api-keys/api/users/{uid}/keys/{kid}        soft-revoke
+  PATCH  /settings/api-keys/api/users/{uid}/keys/{kid}/label  { label }
+  PATCH  /settings/api-keys/api/users/{uid}/keys/{kid}/config per-key config binding
+  GET    /settings/api-keys/api/usage             per-user / per-key usage rollup
   GET    /settings/api-keys/api/client-settings   per-account sync metadata map
   GET    /settings/api-keys/api/users/{uid}/client-settings/export   file download
   POST   /settings/api-keys/api/users/{uid}/client-settings/import   { blob }
@@ -48,18 +52,12 @@ from faster_whisper_backend.stats import usage_store
 logger = logging.getLogger("whisper-api")
 
 # Host gate on the router constructor so every present + future sub-route
-# inherits the check (the auth.require_page convention) — closes the
-# "forgot to gate this endpoint" hole. Router-level dependencies run before
-# route-level ones, so behaviour is identical to the per-route copies.
+# inherits the check (the auth.require_page convention).
 router = APIRouter(
     prefix="/settings/api-keys",
     dependencies=[Depends(require_admin_webui_host)],
 )
 
-
-# ---------------------------------------------------------------------
-# Payloads
-# ---------------------------------------------------------------------
 
 class CreateUserIn(BaseModel):
     model_config = {"extra": "forbid"}
@@ -143,10 +141,6 @@ class ImportClientSettingsIn(BaseModel):
     blob: dict[str, Any]
 
 
-# ---------------------------------------------------------------------
-# HTML page
-# ---------------------------------------------------------------------
-
 @router.get("", response_class=HTMLResponse)
 async def api_keys_page() -> HTMLResponse:
     return HTMLResponse(
@@ -155,15 +149,11 @@ async def api_keys_page() -> HTMLResponse:
     )
 
 
-# ---------------------------------------------------------------------
-# JSON APIs
-#
 # The store-backed handlers below are plain `def` so FastAPI runs them in its
 # threadpool: every api_keys_store call takes the store's threading _lock,
 # which rename_profile_refs holds for a whole users+keys scan. An admin page
 # load landing during that cascade must not block the event loop (and with it
 # every in-flight streaming WebSocket and SSE feed).
-# ---------------------------------------------------------------------
 
 @router.get(
     "/api/users",
@@ -184,7 +174,6 @@ def list_users_api() -> JSONResponse:
             continue
         exposed_rule_tags.append(list(rd.get("tags") or []))
     users = api_keys_store.list_users()
-    # Annotate each user with their active key count for the card header.
     # Batched: one GROUP BY query instead of N list_keys() roundtrips.
     counts = api_keys_store.active_key_counts()
     # Newest last_used_ts across each user's non-revoked keys — feeds the
@@ -198,27 +187,19 @@ def list_users_api() -> JSONResponse:
             **u,
             "active_key_count": counts.get(u["id"], 0),
             "last_used_ts": last_used.get(u["id"]),
-            # permissions is already in `u` via _row_to_user_dict — keep
-            # the canonical key name so the matrix UI can read it
-            # directly without a second roundtrip.
         }
         for u in users
     ]
     return JSONResponse({
         "users": out,
         "open_mode": not api_keys_store.is_locked_down(),
-        # Surface the page model so the front-end matrix can render
-        # column headers without hardcoding them — keeps server +
-        # client in sync when a new page is added.
+        # The page model, so the matrix's column headers are not hardcoded
+        # client-side.
         "pages": list(api_keys_store.PAGES),
         "scoped_pages": sorted(api_keys_store.SCOPED_PAGES),
         "access_only_pages": sorted(api_keys_store.ACCESS_ONLY_PAGES),
-        # Union of every tag currently used by any rule. The matrix's
-        # tag-picker uses this for autocomplete + "tags actually in
-        # use" hints. Empty list means no rule is tagged yet, which
-        # is the day-0 migration state.
+        # Every tag any rule uses: the matrix tag-picker's autocomplete.
         "available_tags": config_store.pipeline_rule_tags(cfg.PIPELINE_RULES),
-        # Tag list per exposed rule — for the "Will see: N of M" preview.
         "exposed_rule_tags": exposed_rule_tags,
     })
 
@@ -419,17 +400,11 @@ def patch_key_config_api(
     return JSONResponse({"ok": True, "config": binding})
 
 
-# ---------------------------------------------------------------------
-# Synced client settings (desktop sync) — per-account admin management.
-#
-# The desktop app syncs its settings through the user-tier
-# /v1/synced-client-settings endpoint (client_settings_routes). These admin
-# endpoints add per-account visibility + management on the keys page.
-# The stored blob is OPAQUE, SENSITIVE client JSON (by user choice it can
-# include the account's saved API keys), so the metadata endpoint never
-# returns blob contents — the blob itself only moves as an explicit
+# Synced client settings: admin view of the blobs the desktop app syncs via
+# the user-tier /v1/synced-client-settings. The blob is OPAQUE, SENSITIVE
+# client JSON (it can include the account's saved API keys), so the metadata
+# endpoint never returns its contents: the blob moves only as an explicit
 # export download or import upload, and the page warns before both.
-# ---------------------------------------------------------------------
 
 _FILENAME_SAFE = re.compile(r"[^A-Za-z0-9._-]+")
 
@@ -572,9 +547,5 @@ async def delete_client_settings_api(uid: str) -> JSONResponse:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(e)) from None
     return JSONResponse({"ok": True, "deleted": deleted})
 
-
-# ---------------------------------------------------------------------
-# HTML template
-# ---------------------------------------------------------------------
 
 _API_KEYS_HTML = templates.load(__file__, "api_keys.html")
