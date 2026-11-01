@@ -2,9 +2,10 @@
 user's plan id.
 
 A job binds whatever plan_id register_plan hands back and drives that plan's
-stage advances, so the paths that build no Plan (master switch off, every
-entry statically refused, a registration that raised) must re-key a
-colliding supplied id just like the Plan-building path does.
+stage advances, so the paths that build no Plan never echo a colliding
+supplied id: the early returns (master switch off, every entry statically
+refused) re-key it like the Plan-building path does, and a registration
+that raised answers an empty id unless the caller owns the supplied one.
 """
 
 from faster_whisper_backend.runtime import model_sizes
