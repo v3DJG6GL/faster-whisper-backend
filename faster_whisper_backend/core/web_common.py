@@ -202,9 +202,9 @@ RELOAD_BTN_HTML = (
 )
 
 
-# Wire-up JS — placed at the end of <body>. Restores the saved value into
-# the dropdown and persists future selections. Independent of the <head>
-# bootstrap (which only sets the inline style); this binds the change handler.
+# Wire-up JS (end of <body>) for the scale picker, its cycle button and the
+# width toggle: restores and persists the saved choices. The <head> bootstrap
+# only applies them pre-paint; this binds the handlers.
 SCALE_PICKER_JS = templates.load(__file__, "scale_picker.js")
 
 
@@ -606,9 +606,6 @@ def render_page(template: str, current: str) -> str:
                                    the .title span in the global bar
 
     Pages that don't include a given placeholder are returned unchanged."""
-    # LOG_VIEWER_DOM_MAX 0 means "auto = initial × 4"; resolved here so the
-    # JS gets a final integer. The cfg reads stay per-call and enter the memo
-    # key because the settings save path mutates them at runtime.
     _log_initial = int(getattr(cfg, "LOG_VIEWER_INITIAL_LINES", 2000))
     _log_dom = int(getattr(cfg, "LOG_VIEWER_DOM_MAX", 0)) or (_log_initial * 4)
     _admin_ui = bool(getattr(cfg, "ADMIN_UI_ENABLED", False))
@@ -639,11 +636,9 @@ _PAGE_KEY_BY_CURRENT: dict[str, str] = {
     "overrides":    "__admin_only__",
 }
 
-# Display-URL for each page, used as the heading slug in the no-access
-# landing. Keeps the rendered slug in lockstep with what the user typed
-# in the address bar (the permission-key alone is misleading for nested
-# routes like /settings/api-keys — without this, the landing would say
-# "No access to /api-keys").
+# Address-bar URL per page, the no-access landing's heading slug: the
+# permission key alone would say "No access to /api-keys" for
+# /settings/api-keys.
 _PAGE_PATH_BY_CURRENT: dict[str, str] = {
     "logs":         "/logs",
     "stats":        "/stats",
