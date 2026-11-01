@@ -947,9 +947,9 @@ async def check_url_policy(url: str, *, deadline: "float | None" = None) -> str:
             return key
         if getattr(cfg, "URL_ALLOW_DIRECT_MEDIA", True):
             # `user:pw@host`: our urllib probe reads `pw@host` as a port
-            # (InvalidURL), which surfaced as "could not be reached". Say
-            # what it is. yt-dlp sends userinfo as basic auth itself, so the
-            # URL_ALLOW_GENERIC path above takes such a link as it is.
+            # (InvalidURL) and would report "could not be reached". yt-dlp
+            # sends userinfo as basic auth itself, so the URL_ALLOW_GENERIC
+            # path above takes such a link as it is.
             if _has_userinfo(url):
                 raise UrlDownloadError(
                     "links with a user name or password in them are not "
