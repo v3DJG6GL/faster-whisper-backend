@@ -72,7 +72,6 @@ def url_enabled(app_module, tmp_path, monkeypatch):
 
     monkeypatch.setattr(url_download, "probe", _probe)
     monkeypatch.setattr(url_download, "download", _download)
-    # The preview never fetches a real thumbnail.
     monkeypatch.setattr(url_download, "fetch_thumbnail_data_uri", _no_thumb)
     return app_module
 
@@ -149,7 +148,7 @@ def test_url_verbose_json_carries_media_id(client, url_enabled):
     assert isinstance(mid, str) and len(mid) == 32
     assert body["source_media_expires_at"] > 0
 
-    # the retained audio is fetchable, with Range support, then gone at TTL 0
+    # the retained audio is fetchable, with Range support
     m = client.get(f"/v1/audio/url-media/{mid}")
     assert m.status_code == 200
     assert m.headers["cache-control"] == "no-store"
@@ -338,7 +337,6 @@ def test_preview_rate_limit_is_per_user(client, url_enabled, make_user_key):
                            headers=bearer(key_a)).status_code == 200
     assert client.post("/v1/audio/url-preview", json={"url": _URL},
                        headers=bearer(key_a)).status_code == 429
-    # bob's budget is untouched by alice spending hers.
     assert client.post("/v1/audio/url-preview", json={"url": _URL},
                        headers=bearer(key_b)).status_code == 200
 
@@ -478,7 +476,6 @@ def test_keep_video_pending_then_progress_reports_done(client, video_enabled):
         _time.sleep(0.01)
     assert prog.get("stage") == "unknown"
     assert _PID not in media_video._VIDEO_TASKS
-    # The retained video is fetchable with a video mime.
     ids = [m for m, e in url_media_store._REG.items() if e.get("kind") == "video"]
     assert len(ids) == 1
     r = client.get(f"/v1/audio/url-media/{ids[0]}")
@@ -660,7 +657,6 @@ def test_on_demand_video_route(client, video_enabled):
     assert body["expires_at"] > 0 and body["bytes"] == len(b"video-bytes" * 8)
     assert _PID not in tx_progress._BATCH_PROGRESS
     assert client.get(f"/v1/audio/url-media/{body['media_id']}").status_code == 200
-    # Validation and gates.
     assert client.post("/v1/audio/url-media/video", json={}).status_code == 422
     assert client.post("/v1/audio/url-media/video",
                        content=b"nope").status_code == 422
@@ -1283,7 +1279,6 @@ def test_prefetched_reuse_owns_its_copy(
     r = _post_url(client, prefetched_media_id=mid)
     assert r.status_code == 200, r.text
     assert downloads == []
-    # The retained file went away after the copy: no id whose GET would 404.
     assert "source_media_id" not in r.json()
     assert "source_media_expires_at" not in r.json()
 
