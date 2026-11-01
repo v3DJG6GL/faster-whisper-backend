@@ -80,7 +80,7 @@ def test_trim_wav_vad_unavailable(no_vad, wav_factory, tmp_path):
 
 
 def test_trim_wav_empty_source(fake_vad, wav_factory, tmp_path):
-    src = wav_factory(None, pcm=b"")  # 0-sample WAV
+    src = wav_factory(None, pcm=b"")
     dst = str(tmp_path / "out.wav")
     res = audio_vad_trim.trim_wav(src, dst)
     assert res["trimmed"] is False
@@ -101,8 +101,7 @@ def test_trim_wav_no_speech_identity(fake_vad, wav_factory, tmp_path):
 def test_trim_wav_tiny_trim_inplace_is_noop(fake_vad, wav_factory, tmp_path):
     # 20ms edges, margin 0 -> 40ms saved, under the 50ms guard.
     src = wav_factory([("sil", 20), ("speech", 500), ("sil", 20)])
-    res = audio_vad_trim.trim_wav(src, src, margin_ms=0)  # in place
-    # < 50 ms saved AND src == dst -> identity, source untouched.
+    res = audio_vad_trim.trim_wav(src, src, margin_ms=0)
     assert res["trimmed"] is False
     assert res["orig_duration_ms"] == 540
 
@@ -145,8 +144,7 @@ def test_trim_wav_real_silero_smoke(wav_factory, tmp_path):
     pytest.importorskip("faster_whisper.vad")
     import numpy as np
 
-    # sil | speech-like | sil with true digital-silence edges. threshold=0.2
-    # because our synthetic speech is harder to detect than real voice.
+    # threshold=0.2: synthetic speech is harder to detect than real voice.
     sr = RATE
     edge = np.zeros(int(0.8 * sr), dtype=np.int16)
     mid = _synth_speech_like(2.0)
