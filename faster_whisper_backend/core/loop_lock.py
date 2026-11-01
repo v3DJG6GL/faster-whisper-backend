@@ -2,13 +2,13 @@
 
 ``asyncio.Lock`` binds to the first loop that acquires it and raises
 ``RuntimeError: ... is bound to a different event loop`` from any other loop.
-The stage caches (diarization, BGM separation, translation) guard their
-pipeline with a module-level lock, and the process normally has one loop for
-its whole life, so that never mattered in production. Under the test suite
-every ``TestClient`` lifespan is its own loop: a lock a previous loop left
-held (worker cancelled while loading, loop torn down before the release ran)
-wedges the next lifespan's shutdown (observed on the Windows CI job from run
-997 on, ``drop_pipeline`` at shutdown). This lock keeps one ``asyncio.Lock``
+The stage caches (diarization, BGM separation, translation), the pipeline
+rules and the profile overrides each guard their state with a module-level
+lock, and the process normally has one loop for its whole life, so that never
+mattered in production. Under the test suite every ``TestClient`` lifespan is
+its own loop: a lock a previous loop left held (worker cancelled while
+loading, loop torn down before the release ran) wedges the next lifespan's
+shutdown (observed on the Windows CI job, ``drop_pipeline`` at shutdown). This lock keeps one ``asyncio.Lock``
 per event loop, so a stale lock from a dead loop can never be waited on, and
 a lock one live loop holds is never swapped out from under it by another
 (``release()`` always finds the object its own loop acquired). Closed loops
