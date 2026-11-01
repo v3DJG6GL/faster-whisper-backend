@@ -46,7 +46,6 @@ def test_reprocess_resolves_owner_not_caller(client, make_user_key, app_module,
         return orig(user, model_id, *a, **k)
     monkeypatch.setattr(effective_config, "build_ident", spy)
 
-    # Admin reprocesses alice's capture → ident must resolve ALICE's config.
     r = client.post(f"/captures/api/{cid}/reprocess", headers=bearer(raw_admin))
     assert r.status_code == 200, r.text
     assert calls, "reprocess did not resolve an ident"
