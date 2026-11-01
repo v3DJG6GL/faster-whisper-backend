@@ -437,7 +437,6 @@ def test_evictor_does_not_claim_an_unload_it_was_refused(monkeypatch, caplog):
         msgs = [r.getMessage() for r in caplog.records]
         assert not any("[idle-evict] unload" in m for m in msgs)
         assert any("eviction deferred" in m for m in msgs)
-        # Nothing was unloaded, so nothing to reclaim: no full gc on the loop.
         assert collected == []
     finally:
         tx_models._model_leases.pop("a", None)
