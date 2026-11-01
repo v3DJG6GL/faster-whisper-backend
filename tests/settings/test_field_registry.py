@@ -725,9 +725,9 @@ def test_every_field_has_registry_metadata_with_valid_scope():
 
 
 def test_registry_scope_membership():
-    """Scope buckets match the historical model memberships exactly. The
-    override mixins are generated from these same buckets, so per_request is
-    pinned against the frozen LOCKABLE_SNAPSHOT literal, not against them."""
+    """The override mixins are generated from these same scope buckets, so
+    per_request is pinned against the frozen LOCKABLE_SNAPSHOT literal, not
+    against the mixins."""
     per_request = {n for n, r in settings_schema._REGISTRY.items()
                    if r["scope"] == "per_request"}
     per_model = {n for n, r in settings_schema._REGISTRY.items()
