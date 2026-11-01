@@ -273,26 +273,22 @@
   .word-strip .word.selected.active {
     background: var(--selected-word-bg); color: var(--bold);
   }
-  /* Pipeline rules changed this word's text — dotted cyan underline
-     signals to the user. The raw form is on the title attribute. */
+  /* Pipeline rules changed this word's text; the raw form is on the title
+     attribute. */
   .word-strip .word.post-edited {
     border-bottom: 1px dotted var(--cyan);
   }
-  /* Pipeline rule deleted this raw token from `final`. Faded +
-     struck-through so the user sees what the rule cut, but the
-     span stays clickable so audio seek still works at this
-     timestamp. */
+  /* Pipeline rule deleted this raw token from `final`. Shown, not hidden,
+     so the user sees what the rule cut and the span still seeks the audio. */
   .word-strip .word.rule-removed {
     color: var(--dim);
     text-decoration: line-through;
     opacity: 0.55;
   }
   .word-strip .word.rule-removed:hover { opacity: 0.85; }
-  /* Keyboard-nav cursor — dashed accent outline on the cursored word.
-     The cursor persists even when focus leaves the strip (so the user
-     knows where ←/→ would resume). The accent tint behind the cursor
-     only appears when the strip itself is focused — that's the visual
-     cue that keystrokes will land here. */
+  /* Keyboard-nav cursor. It persists when focus leaves the strip (shows
+     where ←/→ resume); the tint behind it appears only while the strip has
+     focus, the cue that keystrokes land here. */
   .word-strip .word.cursor {
     outline: 1px dashed var(--accent, #58a6ff);
     outline-offset: -1px;
@@ -799,8 +795,8 @@
     transform: translateX(-120%) rotate(-8deg); opacity: 0;
   }
   #propose-batch .batch-card .proposal {
-    /* Reuse the proposal-card layout from list mode but hide its inline
-       Accept button — batch mode uses the big action row instead. */
+    /* Reuse the list-mode proposal layout without its own frame; the rule
+       below hides the inline Accept: batch mode uses the big action row. */
     border: none; padding: 0; margin: 0; background: transparent;
   }
   #propose-batch .batch-card .proposal .row1 .primary {
@@ -1614,7 +1610,6 @@
           meter.textContent = 'Σ ' + t.toFixed(2)
             + ' s / ' + capS.toFixed(2) + ' s';
           meter.classList.remove('amber', 'red');
-          // Amber = approaching the cap (80% of it).
           if (!j.fits) meter.classList.add('red');
           else if (t > capS * 0.8) meter.classList.add('amber');
           mergeBtn.disabled = !j.fits;
@@ -2427,12 +2422,10 @@
                                              : !!(w && w.removed);
   }
 
-  // Recompute a chip's denormalized `wrong` from the current display
-  // words at its idx..idx_end. Lets stored chips (whose `wrong` was
-  // the raw STT form before the karaoke band started showing
-  // post-pipeline words) self-heal — and ensures applyCorrectionsToGround
-  // can find the chip's `wrong` in finalText. A rule-removed word inside
-  // the span is not in that text, so it stays out of `wrong`.
+  // Lets a stored chip whose `wrong` is the raw STT form (saved before the
+  // strip showed post-pipeline words) self-heal, so applyCorrectionsToGround
+  // finds its `wrong` in finalText. A rule-removed word is not in that text,
+  // so it stays out of `wrong`.
   function recomputeWrong(state, chip) {
     if (typeof chip.idx !== 'number') return chip.wrong || '';
     var b = (typeof chip.idx_end === 'number') ? chip.idx_end : chip.idx;
@@ -2444,10 +2437,8 @@
     return parts.join('').replace(/^\s+/, '');
   }
 
-  // Build/update/clear an inline `.word-replacement` sibling next to
-  // the last word in a chip's span. Mirrors the .diff-ins green look
-  // used by /reports' renderDiff so the user sees the correction
-  // inline in the strip, not just in the chip panel below.
+  // Mirrors the .diff-ins green look of /reports' renderDiff, so the
+  // correction shows inline in the strip, not just in the chip panel below.
   function setReplacementInline(state, chip) {
     if (typeof chip.idx !== 'number') return;
     var lastIdx = (typeof chip.idx_end === 'number') ? chip.idx_end : chip.idx;
@@ -3038,7 +3029,7 @@
     var prog = document.getElementById('adv-progress');
     function tick() {
       api('GET', statusUrl).then(function(s) {
-        if (myToken !== _jobPollToken) return;  // superseded by a newer job
+        if (myToken !== _jobPollToken) return;
         if (prog) { prog.hidden = false; prog.textContent = render(s); }
         if (s && s.status === 'running') {
           _jobPollTimer = setTimeout(tick, 1000);
@@ -3307,19 +3298,11 @@
   function _applyChipsToText(text, corrections, words) {
     // Mirror of Python _apply_chips_to_text: substitute each chip's `wrong`
     // → `correct`. Same matching rules as the server: whole-word
-    // occurrences only, an anchored chip searches past the previous anchored replacement and takes the occurrence
-    // nearest its idx over the verbatim and the whitespace-flexible passes
-    // (any whitespace run in `wrong` matches any whitespace run in the
-    // text); an anchorless chip takes the first, verbatim before flexible.
-    // `words` (the aligned karaoke words the chips were made on) maps idx
-    // onto the text's token position, past removed words, and is searched
-    // next to a possibly stale stored `wrong` (the words at idx..idx_end,
-    // what renderChips heals `wrong` to; a tie keeps those words unless
-    // the stored `wrong` covers them).
-    // past the previous anchored replacement and takes the occurrence
-    // nearest its idx over the verbatim and the whitespace-flexible passes
-    // (any whitespace run in `wrong` matches any whitespace run in the
-    // text); an anchorless chip takes the first, verbatim before flexible.
+    // occurrences only, an anchored chip searches past the previous
+    // anchored replacement and takes the occurrence nearest its idx over
+    // the verbatim and the whitespace-flexible passes (any whitespace run
+    // in `wrong` matches any whitespace run in the text); an anchorless
+    // chip takes the first, verbatim before flexible.
     // `words` (the aligned karaoke words the chips were made on) maps idx
     // onto the text's token position, past removed words, and is searched
     // next to a possibly stale stored `wrong` (the words at idx..idx_end,
@@ -3670,9 +3653,9 @@
   // <audio controls> whose ancestor goes display:none. Each card has its
   // own toggle + panel (scrubber, time, word strip); a ▶ rebinds the shared
   // audio to that card.
-  var _previewAudio = null;        // singleton detached <audio>; lazy-init
+  var _previewAudio = null;
   var _previewBlobUrl = null;      // current blob URL (revoked on stop)
-  var _previewActivePanel = null;  // currently-active panel (or null)
+  var _previewActivePanel = null;
   var _previewBound = null;        // teardown fn for active karaoke + scrubber wiring
   // Bumped by every _stopAnyPreview: a ▶ load still in flight from before
   // (card switch, batch advance / close) sees it moved and never binds.
@@ -3926,9 +3909,8 @@
       var state = strip._kbState;
       strip.classList.add('has-focus');
       hint.classList.add('show');
-      // Initialize cursor on first focus if not set. Only the strip
-      // scrolls to it, and only on a keyboard focus: onWordClick sets the
-      // cursor of a click itself.
+      // Only the strip scrolls to the cursor, and only on a keyboard
+      // focus: onWordClick sets the cursor of a click itself.
       if (state.cursorIdx < 0 && state.words.length) {
         state.cursorIdx = 0;
         _redrawCursor(state, pointerFocus);
@@ -3980,10 +3962,8 @@
         !e.ctrlKey && !e.metaKey && !e.altKey &&
         typeof k === 'string' && k.length === 1
       ) {
-        // Printable single character — ensure chip exists + focus its
-        // input + replay the keystroke into the input (the browser
-        // won't auto-deliver it to the now-focused input because the
-        // original keydown fired on the strip).
+        // The keydown fired on the strip, so the browser won't deliver
+        // this key to the chip input focused now: replay it.
         var inp = _focusChipForCursor(state, true);
         if (inp) {
           e.preventDefault();
@@ -4120,7 +4100,6 @@
         var e = words[i].end || s;
         if (s <= t && t < e) { idx = i; break; }
       }
-      // Highlight in both the Corrections strip and the Final-result spans.
       if (panel._state) _setActiveWord(panel._state, idx);
     }
     function onLoaded() {
@@ -4233,9 +4212,8 @@
     controls.appendChild(sep);
     controls.appendChild(totalEl);
 
-    // Corrections section — mirrors the single-capture / group-expand
-    // layout so reviewers get the same word-strip + chip list + final-
-    // result preview affordances inside each proposal panel.
+    // Same word strip + chip list layout as the single-capture and
+    // group-expand Corrections section.
     var corrSec = document.createElement('div');
     corrSec.className = 'cc-section merge-preview-cc';
     corrSec.innerHTML = '<h3>Corrections</h3>'
@@ -4455,7 +4433,7 @@
 
   // Auto-propose merges (/captures/api/propose-merges). Accept merges
   // directly and the modal stays open, so several can be merged in a row.
-  var _proposals = [];   // current list (mutated locally on Accept)
+  var _proposals = [];   // current list (mutated locally on Accept / Dismiss / Revert)
 
   function _scoreTier(n) {
     if (n >= 70) return 'good';
@@ -4925,7 +4903,7 @@
 
   // Undo the last Dismiss/Accept (single level). Dismiss is a pure local
   // re-enqueue; Accept dissolves the server-side group it created and
-  // restores the spliced queue. Tolerant of a 404 (group already gone).
+  // restores the spliced queue.
   async function _revertBatch() {
     if (!_batchActive || _batchBusy) return;
     var u = _batchUndo;
@@ -5166,10 +5144,8 @@
       if (!(await _okToCollapse(open && open.state)) || _openSamples[g.id] !== open)
         return;
       card.classList.remove('open');
-      // Mirror singleton collapse(): pause + revoke the blob URL and
-      // wipe the body so the next expand re-fetches and re-binds —
-      // otherwise hidden audio keeps playing and the blob leaks until
-      // the next render() wipe.
+      // As singleton collapse(): otherwise hidden audio keeps playing, the
+      // blob leaks until the next render() wipe, and re-expand won't re-fetch.
       var st = _openSamples[g.id];
       if (st && st.audio) {
         try { st.audio.pause(); } catch(_) {}
@@ -5530,8 +5506,6 @@
           sampleState.words.forEach(function(w, i) {
             var sp = document.createElement('span');
             sp.className = 'word ' + ((w.member_idx % 2 === 0) ? 'mem-even' : 'mem-odd');
-            // Small horizontal breathing room at member boundaries (no
-            // hard rule — the tint shift does the work visually).
             if (w.member_idx !== prevMember && prevMember !== -1) {
               sp.style.marginLeft = '0.4rem';
             }
@@ -5927,10 +5901,8 @@
     _filterChange(function() { _syncUrl(); updateCounts(); render(); },
       function() { document.getElementById('filt-model').value = _shownModel; });
   });
-  // Debounce search input: render() does a full list rebuild AND each
-  // previously-open row re-runs toggleExpand → triggers a fresh
-  // /captures/api/{cid} GET. Per-keystroke firing storms the server
-  // when the user is typing.
+  // render() re-runs toggleExpand on every open row, a fresh
+  // /captures/api/{cid} GET each, so a per-keystroke render storms the server.
   var _searchTimer = null;
   document.getElementById('filt-search').addEventListener('input', function() {
     if (_searchTimer) clearTimeout(_searchTimer);
