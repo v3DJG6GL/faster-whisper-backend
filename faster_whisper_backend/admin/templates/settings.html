@@ -3927,7 +3927,8 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
             status.className = 'regex-status ok';
             const n = step.matches || 0;
             // A repeating rule's step spans its passes (test-pipeline
-            // `passes`: every pass run, the one that changed nothing too).
+            // `passes`: the passes that changed the text, so one that ran
+            // once or changed nothing reads like a non-repeating rule).
             status.textContent = '✓ valid · ' + n + ' match' + (n === 1 ? '' : 'es') + ' in sample'
               + (step.passes > 1 ? ' · ' + step.passes + ' passes' : '');
           }

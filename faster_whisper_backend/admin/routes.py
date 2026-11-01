@@ -1490,12 +1490,15 @@ async def test_pipeline(payload: dict[str, Any]) -> JSONResponse:
         step = await _run_pass(idx, rule, text, None)
         # Engine parity (pl_engine._postprocess_text): a repeating rule runs
         # on its own output again until a pass changes nothing, at most
-        # _REPEAT_MAX_PASSES passes; the step spans them all (`passes`, the
-        # matches summed). A pass that is slow, not run or stopped at the
-        # output bound ends it there: that pass is already not the engine's.
+        # _REPEAT_MAX_PASSES passes; the step spans them all (the matches
+        # summed). `passes` counts only the passes that changed the text: the
+        # last one that found nothing to change is how the walk knows to stop,
+        # not work the rule did. A pass that is slow, not run or stopped at
+        # the output bound ends it there: that pass is already not the engine's.
         if rule.get("repeat") is True and rule.get("type") != "terminal":
-            first, passes, matches = text, 1, step["matches"]
-            while (passes < pl_engine._REPEAT_MAX_PASSES
+            first, ran, matches = text, 1, step["matches"]
+            passes = int(step["after"] != step["before"])
+            while (ran < pl_engine._REPEAT_MAX_PASSES
                    and step["after"] != step["before"]
                    and not (step.get("slow") or step.get("not_run")
                             or step.get("capped"))
@@ -1507,7 +1510,8 @@ async def test_pipeline(payload: dict[str, Any]) -> JSONResponse:
                 # clear now; the rules after it are walked on the text the
                 # last pass leaves.
                 step = await _run_pass(idx, rule, step["after"], idx + 1)
-                passes += 1
+                ran += 1
+                passes += step["after"] != step["before"]
                 matches += step["matches"]
             step = {**step, "before": first, "matches": matches, "passes": passes}
         step["ordinal"] = idx + 1

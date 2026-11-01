@@ -73,7 +73,7 @@ def test_the_dry_run_of_the_factory_list_is_the_engine(client, app_module):
     # (The factory list drops Whisper's soft-pause commas.)
     assert r.json()["final"] == want == "Beim Hals-Nasen-Ohren-Arzt im Herz-Kreislauf-System"
     step = next(st for st in r.json()["steps"] if st["label"] == _rule(rules)["label"])
-    assert (step["passes"], step["matches"]) == (4, 5)
+    assert (step["passes"], step["matches"]) == (3, 5)
 
 
 def test_the_pattern_passes_the_regex_guard():

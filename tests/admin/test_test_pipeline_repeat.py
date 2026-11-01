@@ -1,7 +1,8 @@
 """POST /settings/test-pipeline gives a rule with `repeat` on exactly the
 engine's passes (pl_engine._postprocess_text): parity is the dry run's
 contract, so the panel and the per-card status show what a transcription
-gets. One step spans every pass (`passes`, the matches summed)."""
+gets. One step spans every pass (the matches summed); `passes` counts only
+the passes that changed the text, not the last one that found nothing."""
 
 import pytest
 
@@ -29,10 +30,10 @@ def _engine(app_module, rules, sample):
 
 
 @pytest.mark.parametrize("rule, sample, want, passes, matches", [
-    (_HYPHEN, "Hals-nasen-ohren-arzt", "Hals-Nasen-Ohren-Arzt", 4, 3),
-    (_HYPHEN, "Herz-kreislauf-system", "Herz-Kreislauf-System", 3, 2),
-    (_HYPHEN, "schwarz-weiß", "schwarz-weiß", 1, 0),
-    (_BATCH, "aaaa", "b", 4, 10),
+    (_HYPHEN, "Hals-nasen-ohren-arzt", "Hals-Nasen-Ohren-Arzt", 3, 3),
+    (_HYPHEN, "Herz-kreislauf-system", "Herz-Kreislauf-System", 2, 2),
+    (_HYPHEN, "schwarz-weiß", "schwarz-weiß", 0, 0),
+    (_BATCH, "aaaa", "b", 3, 10),
     # Never settles: cut at the engine's pass cap.
     (_GROW, "a", "a" + "x" * pl_engine._REPEAT_MAX_PASSES, pl_engine._REPEAT_MAX_PASSES,
      pl_engine._REPEAT_MAX_PASSES),
@@ -75,4 +76,4 @@ def test_a_disabled_repeating_rule_is_skipped_once(client):
     step = _dry(client, [dict(_HYPHEN, repeat=True, enabled=False)],
                 "Hals-nasen-ohren-arzt")["steps"][0]
     assert step["skipped"] and step["after"] == "Hals-nasen-ohren-arzt"
-    assert step["passes"] == 1
+    assert step["passes"] == 0

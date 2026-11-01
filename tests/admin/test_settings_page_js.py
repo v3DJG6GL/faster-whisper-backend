@@ -306,8 +306,9 @@ const tick = () => new Promise(r => setTimeout(r, 0));
 
 @needs_node
 def test_rule_status_names_the_passes_of_a_repeating_rule(client):
-    """A step of a rule with `repeat` on spans every pass the engine ran
-    (test-pipeline `passes`); a one-pass step says nothing about passes."""
+    """A step of a rule with `repeat` on names the passes that changed the
+    text (test-pipeline `passes`); one that changed it once or not at all
+    says nothing about passes, like a non-repeating rule's."""
     block = _block(_html(client, "/settings/pipeline"),
                    "      let timer = null;\n", "        }, 250);\n      };\n")
     out = _node(_FAKE_DOM + """
@@ -317,18 +318,19 @@ const tick = () => new Promise(r => setTimeout(r, 0));
   function clearTimeout() {}
   const status = document.createElement('div');
   const rule = { name: 'r', type: 'callback:upper', enabled: true, repeat: true };
-  const replies = [{ type: 'callback:upper', matches: 3, passes: 4 },
-                   { type: 'callback:upper', matches: 1 }];
+  const replies = [{ type: 'callback:upper', matches: 3, passes: 3 },
+                   { type: 'callback:upper', matches: 1, passes: 1 },
+                   { type: 'callback:upper', matches: 0, passes: 0 }];
   function _testOneRule() { return Promise.resolve(replies.shift()); }
   let refresh;
 """ + block + """
   const seen = [];
-  refresh(); await tick(); seen.push(status.textContent);
-  refresh(); await tick(); seen.push(status.textContent);
+  for (let i = 0; i < 3; i++) { refresh(); await tick(); seen.push(status.textContent); }
   console.log(JSON.stringify(seen));
 })();
 """)
-    assert out == ["✓ valid · 3 matches in sample · 4 passes", "✓ valid · 1 match in sample"]
+    assert out == ["✓ valid · 3 matches in sample · 3 passes", "✓ valid · 1 match in sample",
+                   "✓ valid · 0 matches in sample"]
 
 
 @needs_node
