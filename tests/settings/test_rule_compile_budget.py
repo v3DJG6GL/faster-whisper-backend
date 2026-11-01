@@ -5,8 +5,8 @@ killable out-of-process guard. Compiling is not cheap for every pattern: with
 IGNORECASE, CPython walks each code point of a character-class range, so
 each `[\\x00-\\U0010ffff]` costs ~4 ms and a 500-class pattern ~2 s. A
 quick-config user could submit 200 of them in one regex-list rule and pin a
-save thread for minutes
-— the guard's 2 s timeout never applied, because the child ran only after.
+save thread for minutes — the guard's 2 s timeout never applied, because the
+child ran only after.
 """
 
 import re
