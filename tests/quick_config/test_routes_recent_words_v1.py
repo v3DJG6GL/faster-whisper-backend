@@ -64,7 +64,7 @@ def test_v1_recent_words_limit_param_clamps(client, app_module):
     _seed("u1", ["a-word", "b-word", "c-word"], request_id="r1")
     # The client may request fewer than the cap...
     assert len(client.get("/v1/recent-words?limit=1").json()["words"]) == 1
-    # ...but `max` always echoes the server cap, and limit can't exceed it.
+    # ...but `max` always echoes the server cap.
     assert client.get("/v1/recent-words?limit=999").json()["max"] == 50
 
 
