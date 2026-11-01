@@ -104,8 +104,8 @@ def test_plain_json_translation_meta_kept_is_explicit_empty(client, app_module,
 
 def test_joined_translations_glue_unspaced_pieces(client, app_module,
                                                   fake_model, monkeypatch):
-    # A fluent zh group cut back across two cues, rejoined with " ", put a
-    # space inside 商店 ("store") in the joined field and the capture row.
+    # A fluent zh group cut back across two cues must rejoin with no space
+    # inside 商店 ("store"), in the joined field and the capture row.
     from faster_whisper_backend.captures import store as captures_store
     from tests.conftest import FakeSegment
     fake_model._segments = [FakeSegment("I went to the store", 0.0, 1.0),
