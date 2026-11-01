@@ -194,11 +194,11 @@ def test_hunyuan_prompt_plain_context_and_glossary():
     hant = _build("hunyuan", "Hallo", target="zh-Hant",
                   context="A: Guten Tag")[0]["content"]
     assert "把下面的文本翻译成繁体中文，" in hant
-    # No-context glossary stays in the English prompt style, as today.
+    # A glossary without context keeps the English prompt style.
     with_gl = _build("hunyuan", "Hallo",
                      glossary="Herz = heart\nbogus line")[0]["content"]
     assert with_gl.startswith("with reference to: Herz -> heart\n")
-    assert "bogus" not in with_gl                       # malformed line skipped
+    assert "bogus" not in with_gl
 
 
 def test_chatml_generic_prompt():
@@ -298,7 +298,7 @@ def test_guard_reasons():
     g = translation._guard_reason
     assert g("Hallo", "") == "empty output"
     # Ratio applies only past the 20-char floor.
-    assert g("Hi", "Hello there friend") is None        # short: no ratio check
+    assert g("Hi", "Hello there friend") is None
     long_src = "Dies ist ein deutlich laengerer Satz mit vielen Worten."
     assert "length ratio" in g(long_src, "ok")
     assert "length ratio" in g("Hi", "x" * 40)          # output side hits floor
@@ -423,7 +423,7 @@ def test_merge_sentences_closes_on_a_speaker_change():
             {"text": "so what I meant", "speaker": "B"},
             {"text": "was this", "speaker": "B"}]
     assert translation._merge_sentences(segs) == [[0], [1, 2]]
-    # No labels (or one side unlabelled): merged exactly as before.
+    # No labels (or one side unlabelled): no speaker change, so no break.
     assert translation._merge_sentences(_segs("yeah", "so what I meant")) == \
         [[0, 1]]
 
@@ -842,7 +842,6 @@ def test_faithful_batches_as_numbered_list(base_cfg, monkeypatch):
     assert warns == []
     assert [r["en"] for r in res] == \
         ["eRSTENS 1.", "zWEITENS.", "dRITTENS."]
-    # One batched call, numbered payload.
     assert len(calls) == 1
     assert calls[0].startswith(translation._NUMBERED_INSTRUCTION)
     assert "1. Erstens 1." in calls[0] and "3. Drittens." in calls[0]
@@ -1124,7 +1123,7 @@ def test_guards_keep_original_without_retry_for_greedy_family(
     _install_fake(monkeypatch, bad_out, calls)
     res, warns, meta = _run(translation.translate_segments(
         _segs(src), ["en"], source_lang="de", mode="faithful"))
-    assert res == [{"en": src}]                          # original kept
+    assert res == [{"en": src}]
     # Greedy family (chatml) + no context on the first attempt: the retry
     # would re-send a bit-identical prompt at temperature 0 — skipped.
     assert len(calls) == 1
@@ -1268,8 +1267,7 @@ def test_batch_guard_failure_retries_that_segment_alone(base_cfg, monkeypatch):
     calls = []
 
     def per_item(t):
-        # Sabotage only the second segment inside the batch; the standalone
-        # retry (payload without numbering) then succeeds.
+        # Sabotage only the second segment inside the batch.
         if t == "Zweitens kaputt.":
             return t                                     # copy → guard fails
         return _xlate(t)
@@ -1339,8 +1337,7 @@ def test_fluent_merges_translates_and_redistributes(base_cfg, monkeypatch):
 
 def test_fluent_zh_source_group_reaches_model_without_inner_space(
         base_cfg, monkeypatch):
-    # Whisper cut 商店 across two cues; the group used to reach the model
-    # as '我今天去商 店买一些面包。'.
+    # Whisper cut 商店 across two cues; the joined group must not read '商 店'.
     calls = []
     _install_fake(monkeypatch, lambda t: "I went to the shop to buy bread.",
                   calls)
@@ -1369,8 +1366,8 @@ def test_fluent_short_reply_reverts_group_instead_of_blank_cues(
 
 def test_fluent_reply_with_fewer_clusters_than_cues_reverts_group(
         base_cfg, monkeypatch):
-    """'ได้' is three chars but one cluster: over the two cues it was split
-    into a lone prevowel 'ไ' and 'ด้' instead of reverting the group."""
+    """'ได้' is three chars but one cluster: it cannot cover two cues, so
+    the group reverts instead of splitting into a lone prevowel 'ไ' + 'ด้'."""
     _install_fake(monkeypatch, lambda t: "ได้")
     segs = _segs("Ja,", "klar.")
     res, warns, meta = _run(translation.translate_segments(
@@ -1425,7 +1422,7 @@ def test_progress_carries_last_text_tail(base_cfg, monkeypatch):
         _segs("Eins.", "Zwei.", _LONG_LINE), ["en"], source_lang="de",
         mode="fluent",
         progress_cb=lambda f, s=None, last_text=None, **kw: tails.append(last_text)))
-    assert any(t for t in tails)                       # a tail arrived
+    assert any(t for t in tails)
     assert all(t is None or len(t) <= 160 for t in tails)
     assert any(t and len(t) == 160 for t in tails)     # the long one is capped
     # The tail is the (pseudo-)translated text — swapcased, not the source.
@@ -1488,10 +1485,6 @@ def test_greedy_context_blind_family_skips_context_retry(base_cfg,
     assert len(calls) == 2       # one per segment — NO context-free retry
     assert len(warns) == 2
 
-
-# ---------------------------------------------------------------------------
-# GGUF pre-download (progress-visible fetch) + from_pretrained fallback
-# ---------------------------------------------------------------------------
 
 def _install_fake_llama(monkeypatch, record):
     import types
@@ -1579,7 +1572,7 @@ def test_load_falls_back_on_an_error_raised_while_handling_a_timeout(
     """The hub resumes a timed-out download inside its except-timeout block:
     a disk-full error of that resume carries the timeout only as
     __context__ and is not a hub timeout."""
-    import httpx2 as httpx   # the declared dev dep; huggingface_hub 2.x speaks httpx2
+    import httpx2 as httpx
     record = []
     _install_fake_llama(monkeypatch, record)
     monkeypatch.setattr(cfg, "LOCAL_FILES_ONLY", False, raising=False)
@@ -1597,7 +1590,7 @@ def test_load_falls_back_on_an_error_raised_while_handling_a_timeout(
 def test_load_uses_the_cached_gguf_when_the_hub_times_out(monkeypatch):
     """model_info runs before hf_hub_download (which would serve the cache
     on a HEAD timeout): a GGUF already on disk must still load."""
-    import httpx2 as httpx   # the declared dev dep; huggingface_hub 2.x speaks httpx2
+    import httpx2 as httpx
     record = []
     _install_fake_llama(monkeypatch, record)
     monkeypatch.setattr(cfg, "LOCAL_FILES_ONLY", False, raising=False)
@@ -1613,7 +1606,7 @@ def test_load_uses_the_cached_gguf_when_the_hub_times_out(monkeypatch):
 
 
 def _hub_status_error(status):
-    import httpx2 as httpx   # the declared dev dep; huggingface_hub 2.x speaks httpx2
+    import httpx2 as httpx
     from huggingface_hub.errors import HfHubHTTPError
     req = httpx.Request("GET", "https://huggingface.co/api/models/org/repo")
     return HfHubHTTPError(f"{status}",
@@ -1621,7 +1614,7 @@ def _hub_status_error(status):
 
 
 def _connect_error():
-    import httpx2 as httpx   # the declared dev dep; huggingface_hub 2.x speaks httpx2
+    import httpx2 as httpx
     return httpx.ConnectError("Name or service not known")
 
 
@@ -1707,7 +1700,8 @@ def test_load_uses_the_cached_gguf_when_the_hub_refuses(
 
 def test_load_names_hf_token_when_the_hub_rejects_it_and_nothing_is_cached(
         monkeypatch):
-    """from_pretrained got the same 401 and the error blamed the model ref."""
+    """Nothing cached: the error names HF_TOKEN, not the model ref (which
+    from_pretrained's own 401 would blame)."""
     record = []
     _install_fake_llama(monkeypatch, record)
     monkeypatch.setattr(cfg, "LOCAL_FILES_ONLY", False, raising=False)
@@ -1830,9 +1824,7 @@ def test_load_blocking_threads_offline_flag_explicitly(monkeypatch):
     assert seen["offline"] is True
 
 
-# ---------------------------------------------------------------------------
-# HF cache dir is passed EXPLICITLY (the hub freezes HF_HOME at import)
-# ---------------------------------------------------------------------------
+# The HF cache dir is passed explicitly: huggingface_hub freezes HF_HOME at import.
 
 def _install_fake_hub(monkeypatch, record, files=("m.Q4.gguf",),
                       card_languages=None):
@@ -1877,7 +1869,7 @@ def test_predownload_logs_the_card_languages(monkeypatch, caplog):
 def test_predownload_bounds_the_model_listing_with_the_hub_timeout(
         monkeypatch, tmp_path):
     # model_info defaults to no deadline: a stalled hub would pin the loader
-    # thread and the model's load lock forever instead of falling back.
+    # thread and the model's load lock forever instead of failing the load.
     _install_fake_hub(monkeypatch, [])
     monkeypatch.setattr(cfg, "DOWNLOAD_ROOT", str(tmp_path), raising=False)
     translation._predownload_gguf("org/repo", "Q4")
@@ -1965,7 +1957,7 @@ def test_predownload_ambiguous_listing_returns_none(monkeypatch):
                       files=("m-00001.Q4.gguf", "m-00002.Q4.gguf"))
     rec = _install_fake_progress(monkeypatch)
     assert translation._predownload_gguf("org/repo", "Q4") is None
-    assert record == [] and rec["jobs"] == []      # from_pretrained speaks
+    assert record == [] and rec["jobs"] == []      # caller: cache or from_pretrained
 
 
 def test_predownload_no_quant_matches_any_gguf(monkeypatch):
@@ -2098,10 +2090,6 @@ def test_context_lines_prefix_speakers(base_cfg):
     assert translation._context_lines(segs, 0, 2) == ""
     assert translation._context_lines(segs, 2, 0) == ""
 
-
-# ---------------------------------------------------------------------------
-# LRU bookkeeping (monkeypatched _load_blocking; no llama_cpp involved)
-# ---------------------------------------------------------------------------
 
 class _FakeLlama:
     def __init__(self, ref):
@@ -2362,8 +2350,8 @@ def test_idle_evictor_zero_timeout_never_evicts(lru_env, monkeypatch):
 
 def test_warm_hit_does_not_block_on_cold_load(lru_env, monkeypatch):
     """A warm cache hit must return while ANOTHER ref's cold load is still
-    running — taking the module _lock before the hit check (as this once
-    did) parked every warm job behind any multi-GB load."""
+    running — taking the module _lock before the hit check would park
+    every warm job behind any multi-GB load."""
     made, stats = lru_env
 
     async def run():
@@ -2590,10 +2578,6 @@ def test_resolve_device_auto_follows_model_device(monkeypatch):
     assert translation._resolve_device() == "cpu"
 
 
-# ---------------------------------------------------------------------------
-# template_override (admin template-test path)
-# ---------------------------------------------------------------------------
-
 def test_template_override_forces_custom_family_and_renders_it(
         base_cfg, monkeypatch):
     """translate_segments(template_override=...) must render THAT template
@@ -2639,8 +2623,6 @@ def test_without_override_custom_family_still_reads_cfg(base_cfg, monkeypatch):
         _segs("Hallo Welt."), ["en"], source_lang="de", mode="faithful"))
     assert prompts[0] == [{"role": "user", "content": "SAVED Hallo Welt."}]
 
-
-# ── review-fix regressions ───────────────────────────────────────────────────
 
 def test_busy_model_is_never_evicted():
     """A leased model declines eviction (closing llama.cpp's context under a
@@ -2709,10 +2691,6 @@ def test_custom_template_is_single_pass():
         context="CTX", glossary="Rechnung = invoice")
     assert rendered == "say {glossary} verbatim -> English"
 
-
-# ---------------------------------------------------------------------------
-# render_prompt (admin prompt-lab preview — no model, no llama import)
-# ---------------------------------------------------------------------------
 
 class TestRenderPrompt:
     def test_hunyuan_chat_messages(self):
@@ -2963,8 +2941,6 @@ class TestComplete:
         assert any("kept original" in w for w in warns)
 
 
-# ── code-review run 8 regressions ───────────────────────────────────────────
-
 def test_redistribute_blank_source_member_gets_empty_piece():
     """A blank-source member must not steal a slice of its neighbour's
     translation: proportional cuts run only over members with source text."""
@@ -2994,8 +2970,8 @@ def test_join_translations_looks_past_quotes_on_both_sides():
 
 
 def test_join_translations_mark_only_piece_glues_in_zh():
-    # A lone '"' cue gets a mark-only piece; it used to get a space on both
-    # sides ('他说： “ 走开。”').
+    # A lone '"' cue gets a mark-only piece, glued on both sides (never
+    # '他说： “ 走开。”').
     pieces = translation._redistribute(["Er sagte:", "\"", "Geh weg.\""],
                                        "他说：“走开。”")
     assert pieces == ["他说：", "“", "走开。”"]
@@ -3458,7 +3434,7 @@ def test_run_plan_unit_clock_covers_the_whole_target(base_cfg, monkeypatch,
     inner["fake"] = translation._complete
 
     def slow(llm, family, prompt_or_msgs, max_tokens):
-        clock["t"] += 5.0            # every model call takes 5 s
+        clock["t"] += 5.0
         return inner["fake"](llm, family, prompt_or_msgs, max_tokens)
     monkeypatch.setattr(translation, "_complete", slow)
 
@@ -3499,12 +3475,12 @@ def test_blank_first_step_does_not_start_the_unit_before_the_load(
     inner = translation._complete
 
     def slow(llm, family, prompt_or_msgs, max_tokens):
-        clock["t"] += 5.0            # every model call takes 5 s
+        clock["t"] += 5.0
         return inner(llm, family, prompt_or_msgs, max_tokens)
     monkeypatch.setattr(translation, "_complete", slow)
 
     async def cold_load(ref, **kwargs):
-        clock["t"] += 10.0           # the cold load takes 10 s
+        clock["t"] += 10.0
         return "STUB-LLM"
     monkeypatch.setattr(translation, "_get_model", cold_load)
 
