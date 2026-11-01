@@ -14,22 +14,15 @@
     --red: #ff7b72; --magenta: #d2a8ff; --bold: #f0f6fc;
     --border: #30363d;
   }
-  /* Font tokens, --font-sans, --font-mono and html font-size live in
-     NAV_CSS (injected further down). Important: never embed the NAV_CSS
-     template placeholder inside another comment block — render_page() does
-     a naive string replace and would inject NAV_CSS into this comment,
-     prematurely closing it (NAV_CSS contains its own internal comments)
-     and silently dropping every CSS rule that follows. Chrome (titles,
-     buttons, badges, card headers) uses --font-sans; uPlot's axis labels
-     and the spark-head numeric readouts stay in --font-mono so digits
-     align (font-variant-numeric: tabular-nums hint relies on the mono
-     stack for crisp tabular alignment). */
+  /* Font tokens (--font-sans, --font-mono, html font-size) live in NAV_CSS.
+     Never write the NAV_CSS placeholder inside a comment: render_page() does a
+     naive string replace, NAV_CSS's own comments then close this one early and
+     every rule after it is silently dropped. Numeric readouts use --font-mono
+     so tabular digits align. */
   html, body { background: var(--bg); color: var(--fg);
     font: 1rem/1.5 var(--font-sans);
     margin: 0; padding: 0; min-height: 100%; }
   input, textarea, select, kbd, code, pre { font-family: var(--font-mono); }
-  /* header / .header-inner / .title / page-toolbar controls (buttons,
-     pills) are all centralized in NAV_CSS. */
   {{NAV_CSS}}
   .grid { padding: 0.875rem var(--gutter); max-width: var(--col); margin: 0 auto;
     box-sizing: border-box; min-height: 60vh; }
@@ -114,9 +107,9 @@
   .hidden { display: none !important; }
   .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden;
     clip: rect(0 0 0 0); white-space: nowrap; }
-  /* --- Scope bar (header rows). Each label + control pair is one
-     unsplittable .sb-group; the rows are whatever flex-wrap makes of the
-     page canvas (no hard line breaks), so a wide window gets fewer rows. --- */
+  /* Scope bar: each label + control pair is one unsplittable .sb-group; the
+     rows are whatever flex-wrap makes (no hard breaks), so a wide window gets
+     fewer rows. */
   header .subbar .seg-label { color: var(--dim); font-size: var(--fs-xs);
     text-transform: uppercase; letter-spacing: .04em; }
   header .sb-group { display: inline-flex; align-items: center; gap: 0.4rem;
@@ -157,15 +150,14 @@
   .sb-custom button.primary { color: var(--cyan); border-color: #1f3a5a; }
   .sb-custom button:disabled { opacity: .4; cursor: not-allowed; }
   .sb-custom .note { font: var(--fs-xs) var(--font-mono); color: var(--dim); }
-  /* --- Usage-fed cards: dim while a refetch is in flight (the previous
-     render stays; no skeleton, no jump). --- */
+  /* Usage-fed cards dim while a refetch is in flight: the previous render
+     stays (no skeleton, no jump). */
   .usage-fed.updating { opacity: .6; transition: opacity .15s ease; }
   .card h3 .tag { font-family: var(--font-mono); color: var(--cyan); text-transform: none;
     letter-spacing: 0; font-weight: 400; margin-left: 0.3rem; }
-  /* --- Window chip: every windowed card says which clock it obeys (the
-     scope bar's range for usage cards, the rings control for the machine
-     sparks), right-aligned in the title row like Grafana's time-override
-     note. Filled by renderWindowChips (stats.js) and refreshRingChips. --- */
+  /* Window chip: every windowed card says which clock it obeys (the scope
+     bar's range for usage cards, the rings control for the machine sparks).
+     Filled by renderWindowChips (stats.js) and refreshRingChips. */
   .card .win { float: right; margin-left: 0.5rem; font-family: var(--font-mono);
     font-size: var(--fs-xs); text-transform: none; letter-spacing: 0; font-weight: 400;
     line-height: 1.5; color: var(--dim); background: var(--bg); border: 1px solid var(--border);
@@ -224,7 +216,6 @@
     font: 0.667rem var(--font-mono); border: 1px solid var(--border); color: var(--dim); }
   .rtf.slow { color: var(--yellow); border-color: #4d3e1f; }
   .badge.est { color: var(--magenta); border-color: #3d2a5a; }
-  /* --- Headline strip --- */
   .hl-strip { display: grid; grid-template-columns: repeat(6, 1fr); gap: 0.4rem; }
   .hl { background: #21262d; border-radius: 4px; padding: 0.3rem 0.5rem; min-width: 0; }
   .hl .l { font: var(--fs-xs) var(--font-mono); color: var(--dim); text-transform: uppercase;
@@ -244,7 +235,6 @@
   .delta { display: block; font: var(--fs-xs) var(--font-mono); color: var(--dim); }
   .delta.good { color: var(--green); } .delta.bad { color: var(--red); }
   @media (max-width: 70em) { .hl-strip { grid-template-columns: repeat(3, 1fr); } }
-  /* --- Pipeline stages --- */
   .stages-bar { display: flex; height: 12px; border-radius: 4px; overflow: hidden; gap: 2px;
     background: #21262d; margin: 0.2rem 0 0.4rem; }
   .stages-bar > span { min-width: 2px; }
@@ -259,7 +249,6 @@
   .meter { display: inline-block; width: 3rem; height: 5px; border-radius: 3px;
     background: #21262d; vertical-align: middle; margin-right: 0.35rem; overflow: hidden; }
   .meter i { display: block; height: 100%; background: var(--cyan); }
-  /* --- Busy hours grid (one blue ramp toward the accent) --- */
   /* Rows stretch to the tile: the hour-label row is auto, the seven day
      rows share what is left, so the grid fills the card at any height. */
   .hours { display: grid; grid-template-columns: auto repeat(24, 1fr) 2.8rem;
@@ -285,12 +274,9 @@
   .hours.dense .hb::after { left: 1px; right: 1px; }
   .hours.dense .dl { font-size: 0.55rem; }
   .hours .hl.thin, .hours .dl.thin { visibility: hidden; }   /* thinned by fitHoursLabels() when the tile is too narrow */
-  /* The peak line and the rhythm switch share one row under the title,
-     the switch pinned right, so neither the title phrase nor the peak
-     text can push it around. */
-  /* The rhythm switch is a toolbar segment like the usage card's bucket
-     / by controls (same label, same size); the title keeps its phrase
-     on one line with an ellipsis. */
+  /* The rhythm switch is a toolbar segment like the usage card's bucket / by
+     controls; nowrap keeps the title, the switch and the window chip on one
+     row, with the peak line on its own row below. */
   .hours-toolbar { flex-wrap: nowrap; }
   /* The title is just the rhythm's name (Busy hours / days / months), the
      same width each time, so the controls after it never move; the
@@ -298,10 +284,9 @@
   .hours-toolbar h3 { flex: 0 0 auto; white-space: nowrap; min-width: 5.7rem; }  /* "Busy months", the widest name */
   .hours-sub .mostly { color: var(--cyan); }
   .hours-toolbar .spacer { flex: 1 1 0; min-width: 0.5rem; }
-  /* marginals: the measure per hour of day (top) and per weekday (right) */
-  /* Marginals share one scale: each bar is its hour's / weekday's total
-     relative to a flat week (1× = average), both tracks 2.4rem long, a
-     faint tick at 1× (--base, set per render). */
+  /* Marginals (per hour of day on top, per weekday on the right) share one
+     scale: each bar is its total relative to a flat week (1× = average), both
+     tracks 2.4rem long, a faint tick at 1× (--base, set per render). */
   .hours .hb { display: flex; align-items: flex-end; position: relative; }
   .hours .hb i { width: 100%; height: 0; min-height: 0; background: #3a4757; border-radius: 1px 1px 0 0; }
   .hours .hb::after { content: ""; position: absolute; left: 0; right: 0; bottom: var(--base, 0);
@@ -376,10 +361,9 @@
   .own-server .stat .badge.warm { color: var(--green); border-color: #1f4d2a; }
   .own-server .stat .badge.busy { color: var(--yellow); border-color: #4d3e1f; }
   header .pill.scope { color: #fff; background: #1f6feb; border: 1px solid #1f6feb; }
-  /* Usage-over-time tile — a full-width GridStack item. The card fills the
-     whole tile (height:100%) and the chart flexes to absorb any slack, so the
-     tile is never taller than the card (no dead clickable space below) and
-     resizing the tile grows/shrinks the chart. */
+  /* The usage card fills its tile and the chart flexes to absorb the slack,
+     so there is no dead clickable space below the card and resizing the tile
+     resizes the chart. */
   .usage-card { height: 100%; }
   .usage-toolbar { display: flex; flex-wrap: wrap; align-items: baseline;
     gap: 0.4rem 0.9rem; margin-bottom: 0.5rem; }
@@ -403,7 +387,6 @@
   .usage-plot { width: 100%; height: 100%; min-width: 0; }
   .usage-note { color: var(--dim); font-size: var(--fs-xs);
     margin: 0.15rem 0 0.5rem; }
-  /* Floating cursor tooltip over the multi-line usage chart. */
   .usage-tip { position: fixed; z-index: 5; pointer-events: none;
     background: var(--panel); border: 1px solid var(--border); border-radius: 5px;
     padding: 0.3rem 0.45rem; font: var(--fs-xs)/1.35 var(--font-mono);
@@ -422,8 +405,6 @@
   table.usage-board td.name .usage-swatch { margin-right: 0.4rem; }
   table.usage-board td.name .sub { color: var(--dim);
     font-size: var(--fs-xs); margin-left: 0.4rem; }
-  /* Recent-jobs table: kind chips, pipeline glyph strip, expandable
-     per-stage bars, pinned running rows. Colors reuse the page tokens. */
   .rj-flag { color: var(--dim); font-size: var(--fs-xs); white-space: nowrap;
     display: inline-flex; align-items: center; gap: 0.3rem; }
   .rj-x { width: 1.4rem; }
@@ -474,7 +455,6 @@
   .rj-stage-row .det .badge.err { margin-left: 0.3rem; }
   .rj-tl-axis { font: var(--fs-xs) var(--font-mono); color: var(--dim);
     margin: 0.15rem 0 0 7rem; }
-  /* --- Live rings: scrubber + range mode --- */
   header #ring-scrub { width: 7rem; accent-color: var(--cyan); vertical-align: middle; }
   /* Layout tools: pinned to the top-right corner of the scope sub-bar (not a
      row item, so wrapping never carries them to a lower row); the sub-bar
@@ -498,13 +478,11 @@
   /* ...and the 'ops' preset has no usage cards, so the measure control
      (and the usage sub-bar) is dimmed the same way. */
   body.preset-ops .subbar-usage { opacity: .35; pointer-events: none; }
-  /* Sized by its text: "live" is four letters, "paused · 43 s behind · back to
-     live" is the long form. No reserved width — on a narrow window a 13.5rem
-     floor pushed the layout tools onto a row of their own. Tabular digits keep
-     the paused form from wobbling as the seconds tick. */
+  /* Sized by its text, no min-width: a reserved width pushes the layout tools
+     onto a row of their own on narrow windows. Tabular digits keep "paused ·
+     43 s behind" from wobbling as the seconds tick. */
   header #status.pill { display: inline-block; text-align: center; box-sizing: border-box;
     white-space: nowrap; font-variant-numeric: tabular-nums; }
-  /* --- Turnaround histogram (inline SVG) --- */
   .ta-hist { flex: 1 1 0; min-height: 4rem; position: relative; overflow: hidden; }
   .ta-hist svg { width: 100%; height: 100%; display: block; overflow: visible; }
   .ta-hist text { font-family: var(--font-mono); font-size: 10px; fill: var(--dim); }
@@ -517,7 +495,6 @@
     min-width: 0; overflow: hidden; }
   .ta-wait span { white-space: nowrap; }
   .ta-wait svg { flex: 0 1 9rem; min-width: 3rem; height: 1.4rem; display: block; }
-  /* --- Failures list --- */
   .fl { display: flex; flex-direction: column; gap: 0.3rem; font-size: var(--fs-sm); overflow: auto; }
   .fl > div { display: grid; grid-template-columns: 1fr auto; gap: 0 0.6rem; align-items: center; }
   .fl .n { font-family: var(--font-mono); font-size: var(--fs-xs); color: var(--dim); }
@@ -547,7 +524,6 @@
     border-radius: 50%; animation: rj-spin 0.9s linear infinite;
     vertical-align: middle; }
   @keyframes rj-spin { to { transform: rotate(360deg); } }
-  /* GridStack integration — drag-to-reorder + click-to-resize tiles. */
   .grid-stack { background: transparent; }
   .grid-stack-item-content { background: transparent; padding: 0; overflow: visible; }
   .grid-stack-item .card { cursor: default; }
@@ -615,17 +591,12 @@
       <input type="range" id="ring-scrub" min="0" max="119" value="119" title="scrub the rings — the 2-minute ring or the history window (← → step, Space pauses, L returns to live)" aria-label="scrub the rings">
       <span id="status" class="pill live">live</span>
     </span>
-    <!-- Layout tools: icon-only, pinned to the top-right corner of this
-         sub-bar however many rows the scope groups wrap into. -->
     <div class="subbar-tools" id="layout-tools">
       <button id="edit-layout-btn" aria-pressed="false" aria-label="edit layout" title="edit layout (E): drag tile titles and resize corners; Alt+arrows move, Alt+Shift+arrows resize the focused tile">✎</button>
       <span id="layout-live" class="sr-only" aria-live="polite"></span>
       <button id="reset-layout-btn" aria-label="reset layout" title="reset this preset's tile layout to defaults">↺</button>
     </div>
   </div>
-  <!-- Usage scope rows: the measure every usage card shows, kind (client-side), "with stage" chips (server
-       narrows to jobs that ran every chosen stage), click-to-filter chips
-       from the leaderboard, and the resolved window. -->
   <div class="subbar subbar-usage">
     <span class="sb-group">
     <span class="seg-label measure-label" title="the number every usage card shows: the chart, its table and leaderboard, the busy-hours grid, the stages share bar and the highlighted headline tile">measure</span>
@@ -667,11 +638,8 @@
       <span class="chips" id="sb-filters"></span>
     </span>
   </div>
-  <!-- Window caption: its own band of the sticky header (separator above),
-       never an item in the filters row, so chips can't push it around. The
-       sentence describes the resulting window (dates, days, bucket, compare,
-       tz, and a truncation warning when a stage filter reads per-job rows
-       that do not reach back as far as the window). -->
+  <!-- Window caption: its own band of the sticky header, never an item in
+       the filters row, so chips can't push it around. -->
   <div class="subbar subbar-caption"><p id="sb-summary" class="sb-summary"></p></div>
 </header>
 
@@ -723,7 +691,6 @@
    </div></div>
   </div>
 
-  <!-- Host CPU -->
   <div class="grid-stack-item" gs-id="cpu" gs-x="6" gs-y="0" gs-w="6" gs-h="5">
    <div class="grid-stack-item-content"><div class="card">
     <h3>CPU (host) <span class="win" data-win="ring"></span></h3>
@@ -737,7 +704,6 @@
    </div></div>
   </div>
 
-  <!-- Host RAM -->
   <div class="grid-stack-item" gs-id="ram" gs-x="6" gs-y="5" gs-w="6" gs-h="4">
    <div class="grid-stack-item-content"><div class="card">
     <h3>RAM <span class="win" data-win="ring"></span></h3>
@@ -752,7 +718,6 @@
    </div></div>
   </div>
 
-  <!-- Process -->
   <div class="grid-stack-item" gs-id="process" gs-x="0" gs-y="9" gs-w="4" gs-h="3">
    <div class="grid-stack-item-content"><div class="card">
     <h3>Process</h3>
@@ -761,7 +726,6 @@
    </div></div>
   </div>
 
-  <!-- In-flight + uptime -->
   <div class="grid-stack-item" gs-id="activity" gs-x="4" gs-y="9" gs-w="4" gs-h="3">
    <div class="grid-stack-item-content"><div class="card">
     <h3>Activity</h3>
@@ -772,7 +736,6 @@
    </div></div>
   </div>
 
-  <!-- Errors window -->
   <div class="grid-stack-item" gs-id="errors" gs-x="8" gs-y="9" gs-w="4" gs-h="3">
    <div class="grid-stack-item-content"><div class="card">
     <h3>Errors (5xx) <span class="win" data-win="boot"></span></h3>
@@ -785,7 +748,6 @@
    </div></div>
   </div>
 
-  <!-- Latency -->
   <div class="grid-stack-item" gs-id="latency" gs-x="0" gs-y="12" gs-w="6" gs-h="5">
    <div class="grid-stack-item-content"><div class="card">
     <h3>Request latency (last <span id="lat-n">0</span>) <span class="win" data-win="ring" data-ring="live"></span></h3>
@@ -799,7 +761,6 @@
    </div></div>
   </div>
 
-  <!-- Endpoint counters -->
   <div class="grid-stack-item" gs-id="endpoints" gs-x="6" gs-y="12" gs-w="6" gs-h="5">
    <div class="grid-stack-item-content"><div class="card">
     <h3>Endpoint counters <span class="win" data-win="boot"></span></h3>
@@ -808,7 +769,6 @@
    </div></div>
   </div>
 
-  <!-- Loaded models -->
   <div class="grid-stack-item" gs-id="models" gs-x="0" gs-y="17" gs-w="12" gs-h="4">
    <div class="grid-stack-item-content"><div class="card">
     <h3>Loaded models <span class="tag">· audio duration and RTF over the usage window</span> <span class="win" data-win="usage"></span></h3>
@@ -823,8 +783,8 @@
    </div></div>
   </div>
 
-  <!-- Usage headline: five numbers for the scope bar's window, deltas vs
-       the compare window. Fed by the usage document (static/stats.js). -->
+  <!-- Usage headline: tiles for the scope bar's window with deltas vs the
+       compare window; fed by the usage document plus /stats/tail (static/stats.js). -->
   <div class="grid-stack-item" gs-id="headline" gs-x="0" gs-y="21" gs-w="12" gs-h="2">
    <div class="grid-stack-item-content"><div class="card usage-fed">
     <h3>Usage <span class="tag" id="headline-tag"></span> <span class="win" data-win="usage"></span></h3>
@@ -832,8 +792,6 @@
    </div></div>
   </div>
 
-  <!-- Usage over time: stacked bars by kind (lines for user/key/model/
-       stage), dashed compare line, legend, table twin, leaderboard. -->
   <div class="grid-stack-item" gs-id="usage" gs-x="0" gs-y="23" gs-w="12" gs-h="10">
    <div class="grid-stack-item-content"><div class="card usage-card usage-fed">
     <div class="usage-toolbar">
@@ -882,7 +840,6 @@
    </div></div>
   </div>
 
-  <!-- Pipeline stages: the whole pipeline in run order, share of eligible runs + speed. -->
   <div class="grid-stack-item" gs-id="stages" gs-x="0" gs-y="40" gs-w="12" gs-h="6">
    <div class="grid-stack-item-content"><div class="card usage-fed">
     <h3>Pipeline stages <span class="tag" id="stages-tag"></span> <span class="win" data-win="usage"></span></h3>
@@ -895,7 +852,6 @@
    </div></div>
   </div>
 
-  <!-- Busy hours: weekday × hour of the chosen measure with marginals. -->
   <div class="grid-stack-item" gs-id="hours" gs-x="0" gs-y="33" gs-w="12" gs-h="7">
    <div class="grid-stack-item-content"><div class="card usage-fed">
     <div class="usage-toolbar hours-toolbar">
@@ -914,9 +870,8 @@
    </div></div>
   </div>
 
-  <!-- Turnaround: end-to-end time per job bucketed on fixed edges, the
-       queue-wait share hatched inside each bar, p50 / p95 marked, and the
-       wait p50/p95 by day beneath. Fed by /stats/tail (static/stats.js). -->
+  <!-- Turnaround: end-to-end time per job (proc + queue wait), fed by
+       /stats/tail rather than the usage document (static/stats.js). -->
   <div class="grid-stack-item" gs-id="turnaround" gs-x="0" gs-y="46" gs-w="6" gs-h="5">
    <div class="grid-stack-item-content"><div class="card usage-fed">
     <h3>Turnaround <span class="tag" id="turnaround-tag"></span> <span class="win" data-win="usage" data-nostage></span></h3>
@@ -974,7 +929,6 @@
 (() => {
 'use strict';
 
-// --- per-metric history rings ----------------------------------------------
 const HISTORY_LEN = 120;     // 2 min @ 1 Hz
 const histX = [];            // shared time axis (epoch seconds)
 const hist = {
@@ -1017,22 +971,15 @@ function pushHistory(snap) {
   }
 }
 
-// --- uPlot factory ---------------------------------------------------------
-// Each spark gets:
-//   - explicit `splits` to force readable y-axis ticks (uPlot auto-picks one
-//     tick on flat/idle data, which renders as a lonely "0").
-//   - `unit` suffix on those ticks.
-//   - auto-padding (10% top/bottom) when no fixed range — keeps unbounded
-//     metrics like temperature / latency from pinning to the bottom.
+// Sparks (makeSpark) get explicit y `splits` (uPlot auto-picks one tick on
+// flat/idle data, a lonely "0") and 10% auto-padding when no fixed range, so
+// unbounded metrics like temperature / latency don't pin to the bottom.
 //
-// uPlot's canvas rendering needs px (not rem). These helpers read the
-// current --fs-base via getComputedStyle so axis sizing tracks the scale
-// picker. `--fs-base` is set by SCALE_BOOTSTRAP_HEAD BEFORE this script
-// runs, so on first load the axes match the saved scale. Live picker
-// changes don't refit the canvas — switching scale visibly updates HTML
-// chrome but axis labels stay at construction-time size until the next
-// page load. Acceptable trade-off vs destroying/rebuilding sparks (which
-// would blank the chart until the next SSE tick).
+// uPlot's canvas needs px, so these helpers read the root font size, which
+// follows --fs-base (set by SCALE_BOOTSTRAP_HEAD before this script runs). A
+// live scale change does not refit existing sparks (rebuilding would blank
+// them until the next SSE tick); their axis labels keep the construction-time
+// size until reload.
 function _remPx(n) {
   const base = parseFloat(getComputedStyle(document.documentElement).fontSize) || 15;
   return Math.round(n * base);
@@ -1040,7 +987,6 @@ function _remPx(n) {
 function _axisFontPx() { return _remPx(0.733); }   // matches --fs-xs
 const _MONO_STACK = 'Consolas, "Cascadia Code", "JetBrains Mono", Menlo, ui-monospace, monospace';
 const sparks = {};   // name -> uPlot instance
-// --- hover freeze -----------------------------------------------------------
 // While the pointer is on a ring the readouts show THAT sample with its
 // clock time, in yellow, so a frozen number cannot be mistaken for live.
 // The ring shifts left every second, so the frozen TIMESTAMP is kept (not
@@ -1113,7 +1059,6 @@ function nearestIdx(xs, ts) {
   for (let i = 0; i < xs.length; i++) { const d = Math.abs(xs[i] - ts); if (d < dist) { dist = d; best = i; } }
   return best;
 }
-// --- ring scrubber + live/range mode --------------------------------------
 // The scrubber drags the shared crosshair across the 2-minute ring (every
 // spark follows through the sync key) and freezes the readouts there; Space
 // pauses at the newest sample, L returns to live. In range mode the sparks
@@ -1404,19 +1349,10 @@ function makeSpark(elId, color, opts={}) {
   const yScale = opts.range
     ? { range: opts.range }
     : { range: { min: { pad: 0.1, mode: 1 }, max: { pad: 0.1, mode: 1 } } };
-  // uPlot's canvas API needs px values, not rem. Read them from --fs-base
-  // so axis labels track the scale picker — see _axisFontPx below.
   const axisFontPx = _axisFontPx();
   const inst = new uPlot({
     width: w, height: h,
-    // [top, right, bottom, left] in px. Top AND bottom both ≥ ½ axis-font
-    // height + a small breathing margin so the highest split label
-    // ("100%" / "60°") and the lowest ("0%" / "30°") render their full
-    // glyph height inside the canvas instead of being clipped by the
-    // canvas edges (uPlot draws tick labels centered on the data-area
-    // edge — half the glyph extends past the edge, so padding must
-    // exceed font-size/2). Left padding plus axis size gives uPlot room
-    // to draw "100%" without GridStack's overflow-x clipping the "1".
+    // [top, right, bottom, left] in px.
     padding: [_remPx(0.55), 4, _remPx(0.4), 4],
     // One crosshair for every live ring: the sparks share histX, so a
     // cursor on one lands on the same second in all of them (sync key
@@ -1433,7 +1369,7 @@ function makeSpark(elId, color, opts={}) {
       { show: false },
       // Zero-width axis: it only contributes the grid lines. The split
       // labels are painted inside the plot by drawInsetLabels so the
-      // series runs edge to edge (the mockup's sparks had no gutter).
+      // series runs edge to edge.
       { show: true, size: 0, gap: 0,
         font: axisFontPx + 'px ' + _MONO_STACK,
         stroke: '#6e7681',
@@ -1460,9 +1396,9 @@ function makeSpark(elId, color, opts={}) {
     ctx.fillStyle = '#6e7681';
     ctx.lineWidth = 3 * dpr; ctx.strokeStyle = '#161b22';
     // Range mode: time ticks along the bottom edge (absolute at both ends,
-    // clock-only between) — the live ring is 2 minutes and needs none.
+    // clock-only between). The 2-minute live ring needs none, and neither
+    // does the latency spark, which has no history and keeps its live ring.
     const x0 = u.scales.x.min, x1 = u.scales.x.max;
-    // (the latency spark has no history and keeps its 2-minute ring)
     if (liveMode !== 'live' && u.data[0] && u.data[0].length > 1 && x1 - x0 >= 600) {
       const n = u.bbox.width / dpr >= 420 ? 5 : 3;
       ctx.textBaseline = 'bottom';
@@ -1488,10 +1424,9 @@ function makeSpark(elId, color, opts={}) {
     });
     ctx.restore();
   }
-  // Responsive sizing. ResizeObserver on the spark element fires for any
-  // size source — GridStack drag-resize, window resize, scale-picker rem
-  // changes, .hidden toggle reflow. rAF coalescing avoids thrashing
-  // setSize() during a drag (it's a relatively expensive canvas rebuild).
+  // Catches every size source (GridStack drag-resize, window resize,
+  // scale-picker rem changes, .hidden reflow); rAF coalesces the costly
+  // setSize() canvas rebuild during a drag.
   let raf = 0;
   const ro = new ResizeObserver(() => {
     if (raf) return;
@@ -1515,15 +1450,13 @@ function makeSpark(elId, color, opts={}) {
 }
 
 function ensureSparks() {
-  if (sparks.cpu) return;     // already built
-  // Percentage sparks: fixed [0, 100] range with 0/50/100 ticks.
+  if (sparks.cpu) return;
   sparks.cpu      = makeSpark('cpu-spark',      '#79c0ff', { range: [0, 100], splits: [0, 50, 100], unit: '%' });
   sparks.ram      = makeSpark('ram-spark',      '#7ee787', { range: [0, 100], splits: [0, 50, 100], unit: '%' });
   sparks.gpu_util = makeSpark('gpu-spark-util', '#79c0ff', { range: [0, 100], splits: [0, 50, 100], unit: '%' });
   sparks.gpu_mem  = makeSpark('gpu-spark-mem',  '#d2a8ff', { range: [0, 100], splits: [0, 50, 100], unit: '%' });
   // Temperature: fixed coarse splits at 30/60/90 °C cover idle through hot.
   sparks.gpu_temp = makeSpark('gpu-spark-temp', '#f2cc60', { splits: [30, 60, 90], unit: '°' });
-  // Latency: unbounded, auto-range with 10% padding.
   sparks.lat      = makeSpark('lat-spark',      '#7ee787', { unit: ' ms' });
 }
 
@@ -1541,7 +1474,6 @@ function setData(u, ys) {
   u.setData([xs, yClean], true);
 }
 
-// --- DOM helpers -----------------------------------------------------------
 const $ = id => document.getElementById(id);
 function fmtBytes(mb) {
   if (mb == null) return '—';
@@ -1566,8 +1498,7 @@ function setBar(barEl, pct) {
   barEl.classList.toggle('crit', pct >= 90);
 }
 
-// --- Render ----------------------------------------------------------------
-// --- Scope-aware chrome (first snapshot only) --------------------------------
+// Scope-aware chrome, applied on the first snapshot only.
 // The payload's `scope` ("own"|"all") and `machine` (bool) are decided
 // server-side (StatsScope). scope=own hides the per-user controls — the only
 // user is the viewer — and machine=false swaps the machine tiles for the
@@ -1709,7 +1640,6 @@ function render(snap) {
   }
   ensureSparks();
 
-  // --- GPU ---
   if (snap.gpu) {
     // Swap inner content of the single GPU GridStack item (not the wrapper
     // — a hidden grid-stack-item still occupies a cell and breaks the row
@@ -1743,7 +1673,6 @@ function render(snap) {
     $('gpu-error').textContent = snap.gpu_error || '';
   }
 
-  // --- Host CPU ---
   $('cpu-pct').innerHTML = (snap.host.cpu_pct ?? 0).toFixed(1) + '<span class="sub">%</span>';
   const stripEl = $('cpu-cores');
   const cores = snap.host.cpu_per_core || [];
@@ -1757,7 +1686,6 @@ function render(snap) {
   setData(sparks.cpu, hist.cpu);
   $('cpu-now').textContent = (snap.host.cpu_pct ?? 0).toFixed(0) + '%';
 
-  // --- Host RAM ---
   $('ram-val').innerHTML = `${fmtBytes(snap.host.ram_used_mb)} ` +
     `<span class="sub">/ ${fmtBytes(snap.host.ram_total_mb)}</span>`;
   setBar($('ram-bar'), snap.host.ram_pct);
@@ -1766,7 +1694,6 @@ function render(snap) {
   setData(sparks.ram, hist.ram_pct);
   $('ram-now').textContent = (snap.host.ram_pct ?? 0).toFixed(0) + '%';
 
-  // --- Process ---
   $('proc-rss').innerHTML = (snap.process.rss_mb ?? 0).toFixed(0) +
     '<span class="sub">MB RSS</span>';
   $('proc-meta').innerHTML =
@@ -1775,7 +1702,6 @@ function render(snap) {
     `<b>threads</b> ${snap.process.threads ?? '—'} &nbsp; ` +
     `<b>uptime</b> ${fmtSec(snap.process.uptime_sec)}`;
 
-  // --- Activity / in-flight ---
   $('inflight-val').innerHTML = `${snap.in_flight_transcriptions}` +
     `<span class="sub">in flight</span>`;
   const gate = snap.gpu_gate || {};
@@ -1814,7 +1740,6 @@ function render(snap) {
     el.title = 'counted since the server process started';
   });
 
-  // --- Latency ---
   const lat = snap.latency_ms || { n: 0, p50: 0, p95: 0, p99: 0 };
   $('lat-n').textContent = lat.n;
   if (lat.n > 0) {
@@ -1830,7 +1755,6 @@ function render(snap) {
   }
   setData(sparks.lat, hist.lat_p50);
 
-  // --- Errors window ---
   const ew = snap.errors_window || { '1m': 0, '5m': 0, '15m': 0 };
   for (const k of ['1m', '5m', '15m']) {
     const seg = $('err-' + k);
@@ -1840,7 +1764,6 @@ function render(snap) {
   const errTotal = Object.values(snap.errors_total || {}).reduce((a, b) => a + b, 0);
   $('err-meta').innerHTML = `<b>total</b> ${errTotal} since startup`;
 
-  // --- Endpoint counters ---
   const rows = [];
   const paths = Array.from(new Set([
     ...Object.keys(snap.requests || {}),
@@ -1855,7 +1778,6 @@ function render(snap) {
   $('endpoints-rows').innerHTML = rows.length
     ? rows.join('') : '<tr><td colspan="3" class="empty">— none yet —</td></tr>';
 
-  // --- Loaded models ---
   renderModels(snap);
   // Preload diagnostics: the most likely failure of preloading is silence,
   // and "enabled but no worker" is exactly that — so it gets the red badge.
@@ -1873,7 +1795,6 @@ function render(snap) {
   if (frozenTs != null) { applyFreeze(); refreshStatusPill(); }
   if (liveMode !== 'live') applyRangeHeads();   // no-op while frozen
 
-  // --- Recent jobs (unified) ---
   renderJobs(snap);
 
   // Feed the header activity cluster from THIS page's stream — on /stats
@@ -1887,7 +1808,6 @@ function render(snap) {
   // (5-s poll of /sev), so no per-tick update needed here.
 }
 
-// --- Recent jobs table -------------------------------------------------------
 // One table for every job kind: running jobs (snap.jobs) pinned on top,
 // finished rows (snap.recent_transcriptions — the store keeps its historic
 // name) below. Filters re-render from the last snapshot without waiting for
@@ -1898,7 +1818,7 @@ const rjExpanded = new Set();
 // The sub-bar's kind / who filters (static/stats.js publishes them as
 // window.__statsFilter). The who filter carries user ids, matched against
 // a finished row's user_id (scrubbed viewers' rows carry none, so a pick
-// shows no rows, as before); running rows carry only a username, so those
+// shows no rows); running rows carry only a username, so those
 // match the picker's display names (userNames). Usage kinds map onto the
 // job kinds the snapshot rows carry: files and links are transcribe jobs,
 // dictation is dictate, text is translate. Preload and download jobs always
@@ -1943,7 +1863,7 @@ document.addEventListener('click', (e) => {
 });
 function segValRJ() {
   const k = rjFilter().kinds;
-  return k ? k.join(',') : '';   // every job kind the chips map to (preload included), so the server page matches the client filter
+  return k ? k.join(',') : '';   // every job kind the chips map to (preload and download included), so the server page matches the client filter
 }
 
 function jobSpeed(r) {
@@ -2021,8 +1941,8 @@ function stageRows(r) {
 }
 
 function stageColor(name) {
-  // The shared --stage-* tokens (web_common.STAGE_COLORS); main.py's stage
-  // vocabulary has two spellings for download and translate.
+  // The shared --stage-* tokens (web_common.STAGE_COLORS); receipts spell
+  // the download and translate stages two ways.
   const alias = { translate: 'translating', download: 'downloading' };
   const key = alias[name] || name;
   if (['vad', 'separating', 'transcribing', 'diarizing', 'translating', 'downloading'].includes(key)) {
@@ -2235,8 +2155,8 @@ function renderJobs(snap) {
     : (rt.length ? 'newest jobs from the live snapshot' : '');
 }
 
-// Filter wiring: kind segments, warnings-only, user select — all re-render
-// from the last snapshot immediately.
+// Jobs-table wiring: the view segments re-render from the last snapshot
+// immediately and restart paging.
 (() => {
   const viewCtl = $('rj-view');
   if (viewCtl) {
@@ -2254,7 +2174,7 @@ function renderJobs(snap) {
   // The sub-bar's filters changed (static/stats.js): re-render from the
   // last snapshot and start paging from the top again.
   window._fwRerenderJobs = () => { rjResetPages(); if (lastJobsSnap) renderJobs(lastJobsSnap); };
-  // Row expansion (event delegation — rows are re-rendered every tick).
+  // Cancel and row expansion are delegated: rows are re-rendered every tick.
   const body = $('rt-rows');
   if (body) body.addEventListener('click', (e) => {
     const c = e.target.closest('button.rj-cancel');
@@ -2271,7 +2191,6 @@ function renderJobs(snap) {
   });
 })();
 
-// --- SSE consumer ----------------------------------------------------------
 let es = null;
 // The stream state setStatus last painted when it is not live; null while
 // the stream delivers. refreshStatusPill reads it.
@@ -2315,12 +2234,11 @@ function openStream() {
   };
   es.onerror = () => {
     setStatus('reconnecting…', 'paused');
-    // Service may have restarted. Mirror /settings: poll a cheap idempotent
-    // endpoint until it 200s, then force-reopen the SSE. Back off on repeated
-    // failures (1.5s → ×1.7 → cap 30s) so a genuine outage doesn't hammer.
-    // The probe carries the stream's own gate (the stats page permission and
-    // host gate): /v1/models 200s for any valid user, so a viewer whose stats
-    // access was removed reopened a 403ing stream forever.
+    // Service may have restarted: poll until a 200 reopens the SSE or a
+    // 401/403 stops it, backing off 1.5s → ×1.7 → cap 30s so an outage isn't
+    // hammered. Probe /stats/snapshot, which carries the stream's own gate
+    // (stats permission + host gate); /v1/models 200s for any valid user and
+    // would reopen a 403ing stream forever.
     if (recoveryTimer) return;
     const probe = async () => {
       try {
@@ -2352,11 +2270,9 @@ function openStream() {
   };
 }
 
-// Visibility handler: closes the SSE on hidden tabs to defeat the browser's
-// 6-connection-per-origin cap. Reopens on visible. Also cancels any in-flight
-// recovery poll — otherwise a poll that succeeds in the background would
-// openStream() concurrently with the visibility re-open, racing two
-// EventSources for the same gid until one was orphaned.
+// Hidden tabs close the SSE (the browser caps an origin at 6 connections)
+// and cancel the recovery poll: one that succeeded in the background would
+// openStream() alongside the re-open on show and orphan one EventSource.
 const HIDE_CLEAR_MS = 30000;   // a few sample periods of gap
 let _hiddenAt = null;
 document.addEventListener('visibilitychange', () => {
@@ -2380,13 +2296,8 @@ document.addEventListener('visibilitychange', () => {
   }
 });
 
-// Auth rides the HttpOnly session cookie, sent automatically on both the
-// fetch and the EventSource (same-origin) — no manual header or ?key= param.
-
 // Initial fetch so the page renders before the first SSE tick arrives.
-// role-admin used to be added here unconditionally — that leaked admin
-// chrome to non-admins. OPEN_MODE_BANNER_JS is now the single source
-// of truth (it sets role-admin iff whoami.is_admin=true).
+// role-admin is not set here: OPEN_MODE_BANNER_JS owns it (iff whoami.is_admin).
 fetch('/stats/snapshot', { cache: 'no-store' })
   .then(r => r.ok ? r.json() : null)
   .then(snap => {
