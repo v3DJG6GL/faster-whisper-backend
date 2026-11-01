@@ -44,7 +44,6 @@ def test_list_users_surfaces_activity_fields(client):
 
 
 def test_create_user_and_key_flow(client):
-    # Create a user.
     r = client.post(
         "/settings/api-keys/api/users",
         json={"username": "carol", "is_admin": False},
@@ -64,14 +63,12 @@ def test_create_user_and_key_flow(client):
     assert r.status_code == 200
     keys = r.json()["keys"]
     assert any(k["id"] == kid for k in keys)
-    assert all("key" not in k for k in keys)  # no raw value leaks
+    assert all("key" not in k for k in keys)
 
-    # Delete the key.
     r = client.delete(f"/settings/api-keys/api/users/{uid}/keys/{kid}")
     assert r.status_code == 200
     assert r.json()["ok"] is True
 
-    # Delete the user.
     r = client.delete(f"/settings/api-keys/api/users/{uid}")
     assert r.status_code == 200
     assert r.json()["ok"] is True
@@ -147,8 +144,6 @@ def test_usage_api_ok(client):
     assert "by_user" in body and "by_key" in body
 
 
-# --- mandatory label on create ----------------------------------------
-
 def _new_user(client, username="zoe", is_admin=False):
     r = client.post(
         "/settings/api-keys/api/users",
@@ -181,7 +176,6 @@ def test_rename_key_flow(client):
     )
     assert r.status_code == 200
     assert r.json()["record"]["label"] == "new name"  # trimmed
-    # List reflects the new label and never leaks the raw key.
     keys = client.get(f"/settings/api-keys/api/users/{uid}/keys").json()["keys"]
     row = next(k for k in keys if k["id"] == kid)
     assert row["label"] == "new name"
@@ -227,7 +221,6 @@ def test_rename_key_wrong_user_404(client):
     uid_a = _new_user(client, "owner-a")
     kid = _new_key(client, uid_a, label="a-key")
     uid_b = _new_user(client, "owner-b")
-    # B cannot rename A's key.
     r = client.patch(
         f"/settings/api-keys/api/users/{uid_b}/keys/{kid}/label",
         json={"label": "stolen"},
