@@ -205,7 +205,6 @@ def _row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
 
 def _lazy_prune_if_due(prune_every: int, *, ttl_s: float, max_rows: int,
                        max_bytes: int) -> None:
-    """Bumps an in-process counter; calls prune() every Nth insert."""
     global _insert_counter
     _insert_counter += 1
     if prune_every <= 0 or _insert_counter % prune_every != 0:
@@ -292,8 +291,8 @@ def finish(
     request_id: str | None = None,
 ) -> bool:
     """Stamp the terminal state (+ the verbatim response payload on `done`).
-    `result` may be a dict (json / verbose_json) or a str (the `text`
-    format) — json.dumps serialises either, and the result route hands the
+    `result` may be a dict (json / verbose_json) or a str (`text`, `srt`,
+    `vtt`) — json.dumps serialises either, and the result route hands the
     decoded value back, so the client receives what the POST would have.
     `request_id` (the run's own, as start() stored it) scopes the stamp to
     that run: a same-id re-post that superseded the row after this run
@@ -405,8 +404,9 @@ def _owner_clause(user_id: str | None, key_id: str | None,
                   all_users: bool) -> tuple[str, list[Any]]:
     """Ownership predicate modelled on tx_progress._progress_entry_for: a row belongs
     to the caller when its user_id matches, or — for a key without a user —
-    when its key_id matches. A row with neither (open mode, no keys yet)
-    belongs to callers with neither — deliberately STRICTER than the live
+    when its key_id matches. A row with neither (no production caller writes
+    one; open mode stamps OPEN_MODE_USER's ids) belongs to callers with
+    neither — deliberately STRICTER than the live
     progress entry, which serves an owner-less entry to any authenticated
     caller: a durable row carries the transcript for days.
     `all_users` (admin) lifts the filter."""
