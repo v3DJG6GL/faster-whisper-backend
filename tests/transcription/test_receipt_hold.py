@@ -29,10 +29,6 @@ def _kwargs(n=1):
             "final": "f", "seg_diag": [], "kwargs": {}}
 
 
-# ---------------------------------------------------------------------------
-# Claim
-# ---------------------------------------------------------------------------
-
 def test_claim_returns_the_parked_kwargs_merged():
     receipt_hold.park("cap1", _kwargs(), hold_s=90)
     got = receipt_hold.claim("cap1", translation={"targets": ["en"]})
@@ -56,10 +52,6 @@ def test_claim_ignores_none_values_so_a_caller_can_pass_optionals():
     assert "translation" not in got
     assert got["stages"] == [{"n": 1}]
 
-
-# ---------------------------------------------------------------------------
-# Idle timer, not a deadline
-# ---------------------------------------------------------------------------
 
 def test_sweep_releases_only_after_silence():
     receipt_hold.park("cap1", _kwargs(), hold_s=0.05)
@@ -89,10 +81,6 @@ def test_touch_of_an_unheld_key_reports_false():
     assert receipt_hold.touch("nope") is False
 
 
-# ---------------------------------------------------------------------------
-# Nothing is ever silently lost
-# ---------------------------------------------------------------------------
-
 def test_release_returns_the_receipt_with_a_reason():
     receipt_hold.park("cap1", _kwargs(), hold_s=90)
     out = receipt_hold.release("cap1", "cancelled by client after 4.2s")
@@ -113,8 +101,8 @@ def test_release_preserves_existing_notes():
 def test_release_after_a_claim_is_a_no_op():
     """The translate handler's `finally` is a catch-all release for the paths
     no `except` arm covers (a dropped connection raises CancelledError, a
-    BaseException). It runs on the success path too, where the receipt has
-    already been claimed — so a release there must not manufacture a second,
+    BaseException), so it also runs after an arm already released the key.
+    A release of a claimed or released key must not manufacture a second,
     contradictory copy of the same receipt."""
     receipt_hold.park("cap1", _kwargs(), hold_s=90)
     assert receipt_hold.claim("cap1") is not None
@@ -182,10 +170,6 @@ def test_park_without_a_key_is_a_no_op():
     receipt_hold.park("", _kwargs(), hold_s=90)
     assert receipt_hold.pending() == 0
 
-
-# ---------------------------------------------------------------------------
-# Route: a rejected /v1/text/translations releases the parked receipt
-# ---------------------------------------------------------------------------
 
 def test_validation_reject_releases_the_parked_receipt(client, app_module,
                                                        monkeypatch):
