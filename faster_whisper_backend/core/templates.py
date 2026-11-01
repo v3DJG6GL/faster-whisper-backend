@@ -2,9 +2,9 @@
 
 Each sub-package keeps its big HTML pages / inline-script widgets in a
 ``templates/`` directory next to the module that serves them, and that module
-reads them ONCE at import into the same module-level constant it always had
-(``_STATS_VIEWER_HTML = templates.load(__file__, "stats.html")``). Keeping the
-constant names matters: tests pin them (and their values), and
+reads them ONCE at import into a module-level constant
+(``_STATS_VIEWER_HTML = templates.load(__file__, "stats.html")``). The
+constant names matter: tests pin them (and their values), and
 ``web_common.render_page`` caches by the template string's value, so the text
 must be loaded once and never re-read per request. Any import-time
 post-processing (``.replace("__ASSET_V__", ...)``, ``{{STAGE_TOKENS}}``,
@@ -13,10 +13,9 @@ post-processing (``.replace("__ASSET_V__", ...)``, ``{{STAGE_TOKENS}}``,
 These files deliberately do NOT live under ``static/``: that tree is served
 raw and publicly, while these are un-substituted server-side templates.
 
-Files are read as UTF-8 with ``newline=""`` so the bytes on disk are exactly
-the string the module used to hold; a ``\\r`` (a CRLF checkout, e.g. a Windows
-``core.autocrlf`` clone) would change every hash and the served page, so it
-fails the import loudly instead.
+Files are read as UTF-8 with ``newline=""`` so the string is exactly the bytes
+on disk; a ``\\r`` (a CRLF checkout, e.g. a Windows ``core.autocrlf`` clone)
+would change every hash and the served page, so it fails the import loudly.
 """
 from __future__ import annotations
 
