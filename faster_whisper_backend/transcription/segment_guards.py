@@ -123,7 +123,7 @@ def _burst_cut(words, limit: float) -> int | None:
     the first word of the pile: the first word in that window whose gap to the
     next word is below 1/limit s AND which is itself zero-length or squeezed
     below 0.07 s. Real words inside the look-back second stay — those with
-    normal gaps, and fast short ones too (a spoken word has a length). The
+    normal gaps, and fast ones too (a spoken word has a length). The
     cut is tail-anchored: a squeezed word with two or more spoken words
     (normal length AND normal gap) after it is a real one-frame word, not the
     pile's start — one such word is the absorber the leftover audio went to
@@ -194,7 +194,7 @@ def _zero_tail_cut(words, min_words: int) -> int | None:
               and i + 1 < len(words) and _is_zero(words[i]) and _is_zero(words[i + 1])
               and ((_end(w) - _start(w)) < _ABSORBER_MAX_S or _low_prob(w))):
             sandwiched_absorber_used = True
-            i -= 1                  # the sandwiched absorber
+            i -= 1
         elif _low_prob(w) and not unsure_absorber_used:
             unsure_absorber_used = True
             i -= 1
@@ -336,9 +336,6 @@ def describe_cut(info: dict) -> str:
     return f"{'+'.join(info.get('rules') or [])} · {info.get('n', 0)} words{where}: {removed!r}"
 
 
-# ---- head echo of the decode prompt ------------------------------------------
-
-
 def prompt_tail_text(kwargs) -> str:
     """The text the decoder was conditioned on, as far as an echo can come from
     it: ``initial_prompt`` when set (streaming sends the rolling dictation
@@ -470,7 +467,7 @@ def head_words_diag(seg, prompt_text: str, min_words: int) -> str | None:
 
 
 def describe_head_cut(info: dict) -> str:
-    """One receipt line for a head cut: n words up to t: 'removed…'."""
+    """One receipt line for a head cut: prompt echo · n words t0-t1s: 'removed…'."""
     removed = info.get("text") or ""
     if len(removed) > 60:
         removed = removed[:57] + "…"
