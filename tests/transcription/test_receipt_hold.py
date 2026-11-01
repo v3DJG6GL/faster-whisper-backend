@@ -122,7 +122,7 @@ def test_parking_twice_on_one_key_emits_the_displaced_receipt():
     assert receipt_hold.pending() == 1
     out = receipt_hold.sweep()
     assert len(out) == 1
-    assert out[0]["file_label"] == "utt#1"       # the displaced one
+    assert out[0]["file_label"] == "utt#1"
     assert any("superseded" in s for s in out[0]["skipped"])
     # The second park is still held and still claimable.
     got = receipt_hold.claim("cap1")
@@ -188,7 +188,7 @@ def test_validation_reject_releases_the_parked_receipt(client, app_module,
         "targets": "not-a-list",            # 422 in the validation ladder
         "captured_id": "capX"})
     assert r.status_code == 422
-    assert receipt_hold.pending() == 0      # released, not still parked
+    assert receipt_hold.pending() == 0
     assert [e["file_label"] for e in logged] == ["utt#1"]
     assert any("request rejected" in n for n in logged[0]["skipped"])
 
