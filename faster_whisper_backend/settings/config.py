@@ -943,9 +943,10 @@ TRUSTED_ORIGINS: "list[str]" = _D("TRUSTED_ORIGINS")
 # keep using `Authorization: Bearer` and never touch any of this.
 
 # Mark the session/CSRF cookies `Secure` (browser only sends them over HTTPS).
-# Default OFF so plain-HTTP LAN/VPN access works. Set True on any instance
-# served over HTTPS (e.g. behind a TLS-terminating reverse proxy), otherwise
-# the cookie is set but never sent back and login silently fails.
+# Default OFF: a non-Secure cookie works over both HTTP and HTTPS (they are
+# samesite=lax). Set True only when every access goes through HTTPS (e.g. a
+# TLS-terminating reverse proxy): a browser drops a Secure Set-Cookie from a
+# plain-HTTP origin (localhost excepted), so login over HTTP silently fails.
 SESSION_COOKIE_SECURE = _D("SESSION_COOKIE_SECURE")
 
 # Browser-session lifetime in seconds, counted from login: the cookie is set

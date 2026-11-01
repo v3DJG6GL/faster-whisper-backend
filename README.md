@@ -504,7 +504,7 @@ Two things change once the app is reached through a proxy:
 
 ```bash
 FORWARDED_ALLOW_IPS=172.16.0.0/12                    # proxy IP/subnet (uvicorn, no WHISPER_ prefix)
-WHISPER_SESSION_COOKIE_SECURE=1                      # required when the proxy serves HTTPS
+WHISPER_SESSION_COOKIE_SECURE=1                      # when every access goes through the HTTPS proxy
 WHISPER_TRUSTED_ORIGINS=https://whisper.example.com  # only if the proxy rewrites Host
 ```
 

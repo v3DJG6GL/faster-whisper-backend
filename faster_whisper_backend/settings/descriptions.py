@@ -725,8 +725,9 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
     # --- Browser sessions ---
     "SESSION_COOKIE_SECURE":
         "Mark the WebUI session/CSRF cookies 'Secure' (sent only over HTTPS). "
-        "Leave OFF for plain-HTTP LAN/VPN access; turn ON when serving over "
-        "HTTPS (e.g. behind a TLS reverse proxy), else login silently fails.",
+        "Turn ON only when every access goes through HTTPS (e.g. a TLS reverse "
+        "proxy); with ON, logging in over plain HTTP silently fails. OFF works "
+        "over both.",
     "API_KEYS_DB":
         "Path to the SQLite file holding user accounts and hashed API keys. "
         "Read at startup; a change takes effect after a restart.",
