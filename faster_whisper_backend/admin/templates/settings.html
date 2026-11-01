@@ -195,8 +195,7 @@
      while still collapsing other whitespace and wrapping long lines. */
   .input-col .help, .field-fullrow > .help { color: var(--help); font-size: var(--fs-sm);
     margin-top: 0.1875rem; white-space: pre-line; }
-  /* Vertical checkbox list (PRELOAD_MODELS, etc.). Gaps in rem so they scale
-     with --fs-base. */
+  /* Vertical checkbox list (PRELOAD_MODELS, etc.). */
   .cb-list { display: flex; flex-direction: column; gap: 0.4rem; }
   .cb-row  { display: flex; gap: 0.5rem; align-items: center; cursor: pointer; }
   .err { color: var(--red); font-size: var(--fs-xs); margin-top: 0.1875rem; }
@@ -232,9 +231,8 @@
   header .sec-chip:hover { background: #21262d; color: var(--fg); }
   header .sec-chip.active { color: var(--cyan); background: #1f2630;
     border-color: var(--border); font-weight: 600; }
-  /* Reset-to-default link button — small, italic, only visible when the
-     current value differs from the in-repo default. Sits below the help
-     text, so it doesn't crowd the editor itself. */
+  /* Reset-to-default link: shown only when the current value differs from
+     the in-repo default. */
   .reset-wrap { margin-top: 0.25rem; }
   .reset-link { background: none; border: none; padding: 0;
     color: var(--cyan); cursor: pointer; font: inherit; font-size: var(--fs-xs);
@@ -404,10 +402,8 @@
     font-size: var(--fs-sm); min-width: 1.6rem; height: 1.6rem; display: flex;
     align-items: center; justify-content: center; background: var(--bg);
     border: 1px solid var(--border); border-radius: 7px; }
-  /* Rank stepper — the ord chip grown into ▲/number/▼. The stepper IS the chip
-     (border + bg + rounded); the ord loses its own chrome and becomes the middle
-     segment with hairline dividers; ▲/▼ nudge one position without dragging
-     (drag the grip for big jumps). Direction maps to position: ▲ = toward top. */
+  /* Rank stepper (▲/number/▼): ▲/▼ nudge one position, ▲ = toward top;
+     the grip drag is for big jumps. */
   .rule-rail .rank-stepper { display: flex; flex-direction: column; align-items: stretch;
     background: var(--bg); border: 1px solid var(--border); border-radius: 7px; overflow: hidden; }
   .rule-rail .rank-stepper .ordinal { border: 0; border-radius: 0; background: none;
@@ -459,7 +455,6 @@
     font-size: var(--fs-xs); background: rgba(121,192,255,0.08); color: var(--cyan);
     border: 1px solid rgba(121,192,255,0.25); }
 
-  /* --- ONE ghost-button language for every card action --- */
   .rule-row .head-actions { display: flex; align-items: center; gap: 0.2rem;
     margin-left: auto; position: relative; }
   .rule-row .expand-btn, .rule-row .delete-btn, .rule-row .reset-link,
@@ -474,7 +469,6 @@
   .rule-row .delete-btn:hover { background: rgba(248,81,73,0.1); border-color: rgba(248,81,73,0.4); }
   .rule-row button:disabled { opacity: 0.5; cursor: default; }
 
-  /* --- colour swatch + popover (curated palette; secondary signal) --- */
   .rule-row .color-btn { padding: 0.25rem 0.4rem; }
   .rule-row .color-dot { width: 0.85rem; height: 0.85rem; border-radius: 3px;
     display: inline-block; border: 1px solid var(--border); background: transparent; }
@@ -601,11 +595,9 @@
     color: var(--fg); display: none; }
   #toast.show { display: block; }
   #toast.err { border-color: #5a2424; color: var(--red); }
-  /* MODEL_OVERRIDES master-detail editor: a full-row .field (no label-col /
-     help text). Inside, two columns:
-     a sidebar of models on the left and the detail pane on the right.
-     Below 56rem the sidebar collapses to a horizontal scroller above
-     the pane (KDE Linux narrow-viewport requirement).               */
+  /* MODEL_OVERRIDES master-detail editor (a full-row .field, no label-col):
+     model sidebar beside the detail pane; below 56rem the sidebar becomes a
+     horizontal scroller above the pane (KDE Linux narrow-viewport requirement). */
   .field-fullrow { grid-column: 1 / -1;
     grid-template-columns: none !important; }
   .mo-wrap { display: grid;
@@ -651,8 +643,6 @@
     text-align: left; }
   .mo-mainpane { display: flex; flex-direction: column; gap: 0.5rem;
     min-width: 0; }
-  /* Collapsed detail pane: form body hidden, sidebar still scrollable.
-     State stored in localStorage['mo.detail.<id>'] = '0' for collapsed. */
   .mo-mainpane.collapsed > .mo-detail-body { display: none; }
   .mo-mainpane.collapsed::before {
     content: 'detail collapsed — click the active model in the sidebar to expand';
@@ -664,9 +654,8 @@
     border: 1px solid var(--border); border-radius: 4px; }
   .mo-section > h4 { margin: 0 0 0.5rem 0; font-size: var(--fs-sm);
     color: var(--bold); display: flex; align-items: center; flex-wrap: wrap; }
-  /* Per-field row: ● label | input | ↶ button. Grid keeps columns aligned
-     across rows of the same section. Min-content on the label column so
-     long field names size the column to fit; rest goes to the input cell. */
+  /* Per-field row: ● | label | input | ↶ button. Each row is its own grid,
+     so the label column fits that row's name only. */
   .mo-row { display: grid;
     grid-template-columns: 0.75rem minmax(min-content, max-content) 1fr auto;
     gap: 0.5rem; align-items: center;
@@ -752,9 +741,6 @@
     color: var(--cyan); border: 1px solid rgba(121,192,255,0.3); background: rgba(121,192,255,0.08); }
   .rule-checklist-footer { color: var(--dim); margin-top: 0.4rem;
     font-size: var(--fs-sm); }
-  /* Narrow viewport: stack sidebar above main pane; let it scroll
-     horizontally so long lists stay accessible. Threshold 56rem matches
-     the existing scale-aware breakpoint convention elsewhere. */
   @media (max-width: 56rem) {
     .mo-wrap { grid-template-columns: 1fr; }
     .mo-sidebar { flex-direction: row; overflow-x: auto;
@@ -1139,15 +1125,12 @@ function fieldRow(name) {
     disableEnvPinnedEditor(editor);
   }
   inputCol.appendChild(editor);
-  // Env-override warning: lives in the input column (not the label column)
-  // so the long line wraps inside the value-column width. If it sits in
-  // .label-col, CSS subgrid sizes the column to this prose's max-content
-  // and blows the whole section's label track wide. .input-col .help
-  // already has the right styling.
+  // Env-override warning goes in the input column: in .label-col, CSS
+  // subgrid would size the column to this prose's max-content and blow the
+  // whole section's label track wide.
   if (isEnvPinned(name)) inputCol.appendChild(envPinnedNote(name));
 
-  // Inline description from FIELD_DESCRIPTIONS (single source of truth).
-  // Surfaced via /settings/state's per-field payload.
+  // Inline description: FIELD_DESCRIPTIONS, via /settings/state's per-field payload.
   const desc = fieldDef(name).description;
   if (desc) {
     const help = document.createElement('div');
@@ -1161,8 +1144,8 @@ function fieldRow(name) {
   // PIPELINE_RULES has none: its editor brings its own reset flows, and this
   // one would save a pinned local copy of the rev-less config.json list,
   // losing the record of which config.json version each rule matched.
-  // An env-pinned field has none either: it sits outside the disabled editor,
-  // stayed clickable and only repainted the row (setDirty() drops the reset).
+  // An env-pinned field has none either: it would sit outside the disabled
+  // editor, stay clickable and only repaint the row (setDirty() drops the reset).
   if (name === 'PIPELINE_RULES' || isEnvPinned(name)) {
     row.appendChild(inputCol);
     return row;
@@ -1231,9 +1214,7 @@ function makeEditor(name) {
   // (e.g. "↺ Reset to default" or list-editor mutations) reflect the
   // pending value immediately, not the stale server value.
   const v = currentValue(name);
-  // PIPELINE_RULES gets its own list-of-rules editor (mixed row types,
-  // drag-to-reorder, per-row test badge). Routed by name BEFORE shape checks
-  // since the value is a list.
+  // PIPELINE_RULES: routed by name BEFORE the shape checks, since its value is a list.
   if (name === 'PIPELINE_RULES') return makeRuleListEditor(name, v || [], 'full', {});
   // Captures-specific exclude list — same checklist widget as per-model
   // PIPELINE_RULES_EXCLUDE, sourced from the live PIPELINE_RULES. The
@@ -1261,7 +1242,6 @@ function makeEditor(name) {
           : Array.from(new Set([...cur, slug])).sort();
         setDirty(name, next);
       },
-      // "↑ view" jumps to the rule in the global PIPELINE_RULES editor.
       onJumpToGlobal: (slug) => jumpToGlobalRule(slug),
     });
   }
@@ -1269,9 +1249,9 @@ function makeEditor(name) {
   // for the standard editors: the master-detail modelOverridesEditor. Save
   // sends the whole object; pydantic validates server-side.
   if (name === 'MODEL_OVERRIDES') return modelOverridesEditor(name, v || {});
-  // Type dispatch — keep this strict. Order matters: check shape (object vs.
-  // array vs. boolean vs. number) BEFORE name-based heuristics, otherwise
-  // misses like MAX_LOADED_MODELS routing to a list editor sneak in.
+  // Type dispatch — keep it strict: the boolean / number shape checks run
+  // before the name-forced list fallback below, so a scalar field never lands
+  // in a list editor.
   if (typeof v === 'boolean') return boolEditor(name, v);
   // Numeric fields that can be null ("disabled" / "auto"): routed by name
   // BEFORE the number check. A null value has no runtime type, so it fell
@@ -1284,9 +1264,7 @@ function makeEditor(name) {
     return nullableNumberEditor(name, v, NULLABLE_NUMBER_FIELDS[name]);
   }
   if (typeof v === 'number') return numberEditor(name, v);
-  // Model-aware editors (must precede generic Array/list dispatch). Source
-  // their options from the current ALLOWED_MODELS state — typing in the
-  // allowlist textarea live-updates these.
+  // Model-aware editors: must precede the generic Array dispatch.
   if (name === 'DEFAULT_MODEL') return modelDropdownEditor(name, v);
   if (name === 'PRELOAD_MODELS') return modelMultiSelectEditor(name, v);
   // Translation model editors: same widgets, sourced from the translation
@@ -1389,9 +1367,8 @@ function modelOverridesEditor(name, v) {
       basic: ['OUTPUT_PREFIX','OUTPUT_SUFFIX'], adv: [] },
   ];
 
-  // LOAD_TIME_FIELDS subset that overlaps with ModelOverride. Editing any of
-  // these triggers drain-then-evict on save (no service restart). Injected at
-  // render time from settings_schema.LOAD_TIME_FIELDS ∩ ModelOverride fields.
+  // settings_schema.LOAD_TIME_FIELDS ∩ ModelOverride fields, injected at render
+  // time. Editing one drains and evicts the model on save (no service restart).
   const LOAD_TIME_FIELDS = new Set({{MO_LOAD_TIME_FIELDS_JSON}});
 
   // Per-field widget metadata. Injected at render time: derived server-side
@@ -1432,9 +1409,8 @@ function modelOverridesEditor(name, v) {
   function persist() {
     setDirty(name, JSON.parse(JSON.stringify(overrides)));
   }
-  // Resolve the global value for a given field. Reads via currentValue() so
-  // unsaved edits in the surrounding global field rows propagate live (the
-  // "inherits {global}" hint reflects the in-progress global edit).
+  // Via currentValue(), so the "inherits {global}" hint follows unsaved edits
+  // in the global field rows.
   function globalValue(field) {
     try { return currentValue(field); } catch (_) { return null; }
   }
@@ -1579,7 +1555,6 @@ function modelOverridesEditor(name, v) {
       item.replaceChildren(dot, lbl, cnt, ind);
       item.addEventListener('click', () => {
         if (selectedId === id) {
-          // Active row → toggle collapse for this model.
           const isCollapsed = (_lsGet('mo.detail.' + id) === '0');
           try {
             localStorage.setItem('mo.detail.' + id, isCollapsed ? '1' : '0');
@@ -1919,14 +1894,10 @@ function modelOverridesEditor(name, v) {
     const ruleOpts = {
       excludeSet,
       includeSet,
-      // Single callback for both lists. globallyEnabled is the rule's
-      // current global state; we mutate the appropriate list:
-      //   globallyEnabled=true  → toggle EXCLUDE (uncheck adds to EXCLUDE)
-      //   globallyEnabled=false → toggle INCLUDE (check adds to INCLUDE)
-      // The pydantic validator rejects a slug in both lists, and the global
-      // state can flip after an override was set (a still force-included rule
-      // that is now on globally), so each toggle also drops the slug from the
-      // other list.
+      // globallyEnabled (the rule's current global state) picks the list:
+      // on → EXCLUDE, off → INCLUDE. The pydantic validator rejects a slug in
+      // both lists, and the global state can flip after an override was set,
+      // so adding a slug to one list also drops it from the other.
       onToggle: (slug, wantActive, globallyEnabled) => {
         if (globallyEnabled) {
           if (wantActive) excludeSet.delete(slug);
@@ -1964,9 +1935,7 @@ function modelOverridesEditor(name, v) {
     renderMain();
   }
   renderAll();
-  // Re-render the sidebar on ALLOWED_MODELS changes (the "+ add model"
-  // dropdown sources from there). Same event the DEFAULT_MODEL dropdown
-  // and PRELOAD_MODELS multi-select listen for.
+  // The "+ add model" dropdown sources from ALLOWED_MODELS.
   _registerAdminListener('admin:model-lists-changed', 'modelOverrides:sidebar', renderSidebar);
   // Live diff: when a global field changes (in any other editor on the
   // page) the per-model rows' "matches global" / "inherits {x}" / dot
@@ -2141,18 +2110,11 @@ function modelMultiSelectEditor(name, v, lists) {
 }
 
 function translationTemplateEditor(name, v) {
-  // TRANSLATION_PROMPT_TEMPLATE hosts the PROMPT LAB — visible for EVERY
-  // family, not just custom:
-  //   left column   sample (model / from / to / text / glossary, the custom
-  //                 template textarea when family=custom) + "▶ Test this
-  //                 model" with staged cold-load status and stacked results
-  //                 (previous run kept dimmed for an implicit A/B)
-  //   right column  "what the model receives": a SERVER-rendered preview via
-  //                 POST /settings/translation-test {preview:true} (debounced;
-  //                 render_prompt shares the exact builder code with real
-  //                 requests, so the preview can never drift), the family's
-  //                 sampling line, and a collapsed raw-template reference.
-  // The textarea stays in the form for save/discard whatever the family.
+  // TRANSLATION_PROMPT_TEMPLATE hosts the prompt lab, shown for EVERY family
+  // (not just custom). The "what the model receives" preview is server-rendered
+  // (POST /settings/translation-test {preview:true}): render_prompt shares the
+  // builder with real requests, so it can't drift. The template textarea stays
+  // in the form for save/discard whatever the family.
   const wrap = document.createElement('div');
   wrap.className = 'prompt-lab';
 
@@ -2491,10 +2453,9 @@ function translationTemplateEditor(name, v) {
     testBtn.disabled = false;
   });
 
-  // Family/model-list edits re-render (the readout is family- AND
-  // model-aware — family=auto resolves from the picked model server-side).
-  // No refresh on unsaved model-list edits: the lab offers saved values only
-  // (see refreshModels); loadState() rebuilds it after a save. A glossary
+  // A family edit re-renders (family=auto resolves from the picked model
+  // server-side). Unsaved model-list edits don't: the lab offers saved values
+  // only (see refreshModels); loadState() rebuilds it after a save. A glossary
   // edit re-renders while the lab's own box is empty (labBody uses it then).
   _registerAdminListener('admin:dirty', 'translationLab', (e) => {
     if (!e.detail) return;
@@ -2620,10 +2581,7 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
 
   let dragSrcIdx = null;
   let dragSrcEl = null;     // the <div class="rule-row"> currently dragging
-  // One shared placeholder div — HTML5 DnD allows only one drag at a time
-  // per browser tab, so a single node is sufficient. Inserted on dragstart
-  // (after a setTimeout(0) so Chrome's drag-image snapshot captures the
-  // full row), moves around on dragenter, removed on dragend.
+  // One shared placeholder: HTML5 DnD allows only one drag at a time per tab.
   const placeholder = document.createElement('div');
   placeholder.className = 'rule-placeholder';
   // Expanded-row state, keyed by slug. Survives full repaints and, in full
@@ -2641,10 +2599,8 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
     try { localStorage.setItem('pipeline.expanded', JSON.stringify([...expandedNames])); } catch (_) {}
   };
 
-  // List-level (delegated) drag handlers. dragenter moves the placeholder
-  // around as the cursor crosses rows; drop fires once at the placeholder's
-  // final position. Per-row handlers only fire dragstart/dragend.
-  // Checklist mode is read-only — drag-to-reorder is meaningless there.
+  // Delegated list-level drag handlers; per-row handlers only do
+  // dragstart/dragend. Checklist mode is read-only, so it gets none.
   if (!isChecklist) {
   list.addEventListener('dragover', (e) => {
     if (!dragSrcEl) return;
@@ -2677,7 +2633,7 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
       if (child.classList.contains('rule-row') && child !== dragSrcEl) newIdx++;
     }
     const oldIdx = dragSrcIdx;
-    if (newIdx === oldIdx) return;     // dropped in place
+    if (newIdx === oldIdx) return;
     // No lock check: a locked rule's grip is disabled, and moving others around it is allowed.
     const [moved] = rules.splice(oldIdx, 1);
     rules.splice(newIdx, 0, moved);
@@ -3000,7 +2956,7 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
 
       const cb = document.createElement('input');
       cb.type = 'checkbox';
-      cb.className = 'switch';                 // reuse the shared toggle look
+      cb.className = 'switch';
       cb.setAttribute('role', 'switch');
       cb.checked = effective;
       // Per-model PIPELINE_RULES_EXCLUDE: the live /transcribe path
@@ -3192,7 +3148,7 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
       drag.addEventListener('dragstart', (e) => {
         dragSrcIdx = idx;
         dragSrcEl = row;
-        DRAG_AUTOSCROLL.begin(list);   // resolve scroll target for edge auto-scroll
+        DRAG_AUTOSCROLL.begin(list);
         // Firefox requires setData() — without it, the drag never fires.
         // A private type, not text/plain: every text field accepts a text
         // drop natively, so a release over an input outside this list
@@ -3584,9 +3540,7 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
     // × delete is rare + destructive, so it goes in the body footer
     // (appended further down), where mis-clicks are less likely.
     const _destructiveBtns = [];
-    // A rule present in config.json (factory / edited) can be reset to its
-    // committed value; a local-only rule (not in config.json) can be deleted.
-    // Membership in config.json — not the `seeded` flag — is authoritative.
+    // Reset vs delete: membership in config.json — not the `seeded` flag — is authoritative.
     const _canReset = rule.type !== 'terminal' && _factoryHas(rule.name);
     const _canDelete = rule.type !== 'terminal' && !_factoryHas(rule.name);
     if (_canReset) {
@@ -3925,7 +3879,6 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
   wrap.appendChild(ctrls);
 
   function _openAddCustomDialog() {
-    // Lightweight inline form, appended at the bottom of the rules list.
     const form = document.createElement('div');
     form.className = 'rule-row';
     form.style.borderColor = 'var(--green)';
@@ -4061,7 +4014,7 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
     document.addEventListener('keydown', _onKey);
     return close;
   }
-  // ---- review dialog: one diff + confirm for every sync action ----------
+  // Review dialog: one diff + confirm, shared by every sync action.
   // Rows of a rule diff, BEFORE -> AFTER: {key, kind, o, n}; kind is one of
   // added / removed / changed / moved; o / n are display strings (undefined =
   // not present on that side). Either side may be null (a rule that does not
@@ -4700,8 +4653,6 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
       onConfirm: async (ids) => {
         const promote = new Set(ids.filter(i => !i.startsWith('rm:')));
         const remove = new Set(ids.filter(i => i.startsWith('rm:')).map(i => i.slice(3)));
-        // keepAbsent=true: config.json rules missing here stay in config.json;
-        // only the explicitly ticked ones are dropped.
         const payload = _buildFactoryPayload(promote, true).filter(r => !remove.has(r.name));
         const out = await _postFactory(payload);
         if (out) { _afterPromoteStamp(); _afterPromoteAll(out); }
@@ -4811,8 +4762,6 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
       close();
       location.reload();
     };
-    // When clearing is destructive, make "Keep" the safe default and demote the
-    // clear button (no primary styling, explicit consequence in its label).
     _modal({
       title: 'Promoted to config.json',
       bodyEl: body,
@@ -5212,9 +5161,8 @@ function refreshSectionToggleAllLabel() {
   btn.title = anyOpen ? 'Collapse every section' : 'Expand every section';
 }
 
-// (Re)build the sticky section-nav chip row from the current section list.
-// Called at the end of render() (sections are rebuilt on every load/save/
-// discard, so the chips must be rebuilt to match).
+// Called at the end of render(): sections are rebuilt on every load/save/
+// discard, so the chips must be rebuilt to match.
 function buildSectionNav() {
   const navRow = $('section-nav');
   if (!navRow || !state) return;
@@ -5284,7 +5232,6 @@ function highlightNavChip(id) {
 }
 
 function pipelineMovedStub() {
-  // /settings replaces the (now relocated) global rule editor with this link.
   const box = document.createElement('div');
   box.className = 'pipeline-moved-stub';
   const txt = document.createElement('div');
