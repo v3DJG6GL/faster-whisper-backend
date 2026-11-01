@@ -83,8 +83,7 @@ def trigger_self_restart(delay_sec: float = 1.5) -> str:
         # flags; sys.argv[0] under -m is the __main__.py FILE path, and
         # re-running that as a script puts the package dir, not the repo
         # root, on sys.path[0] — ModuleNotFoundError after the exec, with
-        # no process left to report it). Sockets carry O_CLOEXEC so the
-        # port frees on exec; the new process re-binds it.
+        # no process left to report it).
         # The exec'd process inherits os.environ, where config wrote each
         # *_FILE secret's contents; with those left in place it would never
         # re-read the file, so a rotated bootstrap key / HF token would
@@ -174,10 +173,11 @@ def reclaim_hard_restart_orphans() -> None:
     `whisperup-` upload spools, `sepsrc-`/`vocals-` separation WAVs,
     `fwb-pkg-` subtitle-package workdirs and /captures `preview_merge_`
     WAVs (plus merge_wavs' `.tmp` sibling) with no finally to reclaim them —
-    url_media_store.startup_reset() wipes only URL_MEDIA_DIR (a same-fs `urlmedia-` copy is a hardlink whose retained
-    name that reset already dropped). Single-service
-    assumption (as documented for SERVER_WORKERS); a small age guard keeps
-    the sweep off files a just-overlapping process may still be writing."""
+    url_media_store.startup_reset() wipes only URL_MEDIA_DIR (a same-fs
+    `urlmedia-` copy is a hardlink whose retained name that reset already
+    dropped). Single-service assumption (as documented for SERVER_WORKERS);
+    a small age guard keeps the sweep off files a just-overlapping process
+    may still be writing."""
     tmp = tempfile.gettempdir()
     try:
         names = os.listdir(tmp)
