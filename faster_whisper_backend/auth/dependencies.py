@@ -1,9 +1,9 @@
-"""FastAPI auth dependencies — the bearer-token gate that resolves an
-incoming `Authorization: Bearer <api_key>` header to a `UserRecord`.
+"""FastAPI auth dependencies — resolve an incoming bearer API key or
+WebUI session cookie to a `UserRecord`.
 
 Three-level dependency layering (FastAPI idiomatic):
 
-  - `get_current_user`: hashes the bearer, looks up in api_keys_store,
+  - `get_current_user`: bearer key first, then the session cookie;
     raises 401 on miss. Attaches a `Permissions` policy object so
     callers can ask "can this user reach page X?" / "what data scope?".
     In OPEN mode (no admin key configured yet) returns the synthetic
@@ -18,10 +18,6 @@ Three-level dependency layering (FastAPI idiomatic):
     of API-only routers so every sub-route inherits the check; a router
     that also serves a navigable HTML page gates per route instead (see
     `require_page`'s docstring — a router-level gate 401s the page).
-
-Open-mode logging: a background asyncio task emits a WARNING every 60
-seconds while the server has no admin keys, so the operator sees the
-nag on every page-load AND in the logs.
 """
 from __future__ import annotations
 
@@ -68,7 +64,8 @@ _bearer = _AnyBearer(
 # ("Basic x, Bearer y" — a proxy folding the two headers into one): the comma
 # must be followed by an auth-scheme token and whitespace, so an auth-param
 # list (`realm="a", nonce="b"`) never splits. Minted keys are base64url and
-# carry no comma.
+# carry no comma; only an operator-chosen bootstrap key with ", <word> <x>"
+# inside it would split.
 _CREDENTIAL_SPLIT = re.compile(r",\s*(?=[A-Za-z][A-Za-z0-9!#$%&'*+.^_`|~-]*\s+\S)")
 
 _UNAUTH = HTTPException(
@@ -82,26 +79,10 @@ _FORBIDDEN = HTTPException(
 )
 
 
-# ---------------------------------------------------------------------
-# Permissions — policy object
-# ---------------------------------------------------------------------
-
 class Permissions:
-    """Read-side wrapper around a user's stored permissions JSON.
-
-    Built once per request by `get_current_user`. Routes ask four
-    questions:
-      - `can(page)`        — page-access gate (admin bypass).
-      - `scope(page)`      — "own" or "all" for visible pages.
-      - `effective_user_id_for(page, uid)` — store-layer filter contract:
-                              None  → no filter
-                              str   → WHERE user_id = ?
-      - `can_see_rule(rule)` — visibility for a single PIPELINE_RULES row
-                               via the user's quick_config_tags.
-    Plus `assert_can_read_row(row, page, uid)` for detail-by-id endpoints
-    — returns 404 (not 403) on scope miss to avoid leaking existence
-    (OWASP IDOR Prevention Cheat Sheet guidance).
-    """
+    """Read-side wrapper around a user's stored permissions JSON, built
+    once per request by `get_current_user`. Admins pass every page gate
+    with scope "all"."""
 
     __slots__ = ("_pages", "_is_admin", "_tags")
 
@@ -155,10 +136,9 @@ class Permissions:
             )
 
     def quick_config_tags(self) -> list[str]:
-        """The caller's per-user tag list. Admins return the empty list
-        here (they bypass tag filtering — see can_see_rule); the UI
-        should special-case admins separately rather than treating an
-        empty tag list as a permission signal."""
+        """The caller's stored per-user tag list, returned as stored for
+        admins too — can_see_rule ignores it for them, so never read the
+        list (empty or not) as a permission signal for an admin."""
         return list(self._tags)
 
     def can_see_rule(self, rule: dict[str, Any]) -> bool:
@@ -177,10 +157,10 @@ class Permissions:
         if not (rule or {}).get("exposed"):
             return False
         if self._is_admin:
-            return True  # exposed + admin = see it regardless of tags
+            return True
         rule_tags = set(rule.get("tags") or [])
         if not rule_tags:
-            return True  # untagged rule = permissive (migration path)
+            return True
         return bool(rule_tags & set(self._tags))
 
     def to_dict(self) -> dict[str, Any]:
@@ -190,10 +170,6 @@ class Permissions:
             "quick_config_tags": list(self._tags),
         }
 
-
-# ---------------------------------------------------------------------
-# Dependencies
-# ---------------------------------------------------------------------
 
 def open_mode_host_ok(conn: HTTPConnection) -> bool:
     """True when an OPEN-mode caller may be handed the synthetic admin.
@@ -398,10 +374,6 @@ def require_page(name: str):
         return user
     return _dep
 
-
-# ---------------------------------------------------------------------
-# Open-mode nag loop
-# ---------------------------------------------------------------------
 
 _OPEN_MODE_LOG_INTERVAL_S = 60.0
 
