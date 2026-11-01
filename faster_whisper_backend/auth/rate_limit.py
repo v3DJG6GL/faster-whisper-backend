@@ -16,17 +16,14 @@ SERVER_WORKERS > 1 each worker enforces its own copy and every budget here is
 effectively multiplied by the worker count. WITHIN a process the counters are
 thread-safe (each instance guards its state with a threading.Lock), so a
 `def` route or dependency running in the threadpool may call them alongside
-the async callers. That is the same honest caveat the
-hand-rolled limiter this module replaced carried: the threat model is "runaway
-script / accidental double-click / one client starving the others", not a
-motivated attacker spreading load across workers. Anything stronger needs
-shared state (Redis) and does not belong in-process.
+the async callers. The threat model is "runaway script / accidental
+double-click / one client starving the others", not a motivated attacker
+spreading load across workers. Anything stronger needs shared state (Redis)
+and does not belong in-process.
 
 Imports are deliberately limited to stdlib + fastapi + config: the route
-modules (captures/, reports/, media/, translation/, streaming/, stats/,
-transcription/ and auth/routes.py) and media/video.py import this module
-and `main` imports them, so importing `main` here would close a cycle and break the app at
-startup.
+modules import this one and `main` imports them, so importing `main` here
+would close a cycle and break the app at startup.
 """
 
 from __future__ import annotations
@@ -78,12 +75,11 @@ class RateLimited(HTTPException):
         """The JSON response body: an OpenAI-shaped `error` object naming the
         config field an admin would raise, plus a `detail` sibling.
 
-        `detail` is NOT redundant. Several toast handlers in this tree
-        (reports/routes.py, captures/routes.py, quick_config/routes.py) read
-        `j.detail` off a failed response — they are written against
-        FastAPI's default error shape, and without the sibling every one of
-        them would degrade to showing a bare status code instead of the
-        sentence explaining what to do about it.
+        `detail` is NOT redundant. The page templates' toast handlers
+        (reports, captures, quick-config, ...) read `j.detail` off a failed
+        response — they are written against FastAPI's default error shape,
+        and without the sibling they would show a bare status code instead
+        of the sentence explaining what to do about it.
         """
         return {
             "error": {
@@ -169,8 +165,6 @@ class FixedWindow:
             n += 1
             self._state[key] = (n, start)
             self._prune(key, now)
-        # Raise OUTSIDE the lock: _reject only does arithmetic, and holding
-        # the lock across an exception path buys nothing.
         if n > limit:
             raise self._reject(start, now, limit)
 
@@ -234,8 +228,6 @@ class FixedWindow:
         caller we are mid-decision about would silently reset their budget."""
         if len(self._state) <= _MAX_KEYS:
             return
-        # Same shape as tx_progress._progress_set's sweep: drop everything whose
-        # window has already rolled, then fall back to oldest-first.
         for k in [k for k, (_n, start) in self._state.items()
                   if k != live_key and now - start > self.window_s]:
             self._state.pop(k, None)
@@ -291,7 +283,6 @@ class InFlight:
             if n < limit:
                 self._counts[key] = n + 1
                 return True
-        # Lock released; build and raise the rejection outside it.
         raise RateLimited(
             message=self.message.format(limit=limit,
                                         retry_after=self.RETRY_AFTER_S),
