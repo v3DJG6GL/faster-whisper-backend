@@ -243,12 +243,9 @@ def build_package_argv(src: str, srt_paths: "list[str]", tracks: "list[SubtitleT
         argv += [f"-disposition:s:{i}", "+".join(flags) if flags else "0"]
     if audio_lang:
         a_title = audio_label or language_label(audio_lang)
-        # Only the transcribed (first) track: a second track (a commentary,
-        # a dub) keeps its own name and language instead of this label's.
         argv += ["-metadata:s:a:0", f"language={iso639_2t(audio_lang)}",
                  "-metadata:s:a:0", f"title={a_title}"]
         if container == "mp4":
-            # The hdlr name is the one name an MP4 player shows.
             argv += ["-metadata:s:a:0", f"handler_name={a_title}"]
     argv += ["-max_muxing_queue_size", "4096"]
     if container == "mp4":
@@ -471,7 +468,7 @@ def ffmpeg_capabilities() -> FfmpegCaps:
         if _caps_cache:
             return _caps_cache[0]
         if _caps_state["busy"]:
-            return _CAPS_PENDING             # a probe is already running
+            return _CAPS_PENDING
         retry = _caps_state["tried"]
         _caps_state.update(tried=True, busy=True)
         if retry:
