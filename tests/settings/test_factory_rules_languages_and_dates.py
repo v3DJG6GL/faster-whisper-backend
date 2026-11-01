@@ -1,14 +1,9 @@
-"""Factory PIPELINE_RULES (config.json): the digit guard on
-delete-punct-before-hyphen, the language tags on language-specific rules, the
-Spanish opening-mark rule, the dictation-map → de-dictation-map rename,
-tighten-digit-separators and normalize-digit-range on a digit chain
-(3/4/2026), capitalize-after-terminator, space-before-closing-punct and
-trim-trailing-period on a long run of paragraph breaks / spaces / dots, and
-tidy-newlines on a long space run.
+"""The shipped factory PIPELINE_RULES (config.json) and the stored-entry
+upgrades / renames in config_renames.
 
-2026-09-19: "vom 3.-10 Oktober" left the pipeline as "vom 310 Oktober" —
-final-cleanup deleted ".-" between two numbers. A silently changed date or
-dose is the worst kind of error in a medical dictation.
+"vom 3.-10 Oktober" once left the pipeline as "vom 310 Oktober" (final-cleanup
+deleted ".-" between two numbers). A silently changed date or dose is the
+worst kind of error in a medical dictation.
 """
 import copy
 import json
@@ -223,8 +218,6 @@ def test_no_factory_default_names_a_renamed_rule():
         assert f'"{old}"' not in text, f"config.json still names {old}"
 
 
-# ---- factory entries whose text changed: stored copies are upgraded -------
-
 def _quote_entry(rules):
     return next(e for r in rules for e in (r.get("entries") or [])
                 if e.get("label") == "tighten-quote-spacing")
@@ -248,7 +241,6 @@ def test_stored_old_factory_entry_is_upgraded_once():
     raw = {"PIPELINE_RULES": rules}
     assert renames.upgrade_rule_entries(raw) == ["digit-and-whitespace-tidy/tighten-quote-spacing"]
     assert raw["PIPELINE_RULES"] == _factory_rules()
-    # idempotent: a second pass finds nothing to do
     assert renames.upgrade_rule_entries(raw) == []
 
 
