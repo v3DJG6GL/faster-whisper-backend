@@ -72,14 +72,11 @@ def _cleanup_stub_files():
             pass
 
 
-# --- "vad" row bills the lead-pad pre-decode ----------------------------------
-
 def test_vad_row_bills_the_lead_pad_pre_decode(client, app_module,
                                                monkeypatch):
     """With LEADING_SILENCE_PAD_MS the handler decodes the upload itself and
-    hands transcribe() an ndarray, so the decode cost used to slide into the
-    "transcribing" row while the vad row's detail still claimed
-    "audio decode + Silero"."""
+    hands transcribe() an ndarray; that decode is billed to the vad row
+    ("audio decode + Silero"), not to "transcribing"."""
     import faster_whisper.audio as _fwa
     real_decode = _fwa.decode_audio
 
@@ -97,8 +94,6 @@ def test_vad_row_bills_the_lead_pad_pre_decode(client, app_module,
     assert vad["secs"] >= 0.05
     assert "decode" in (vad.get("detail") or "")
 
-
-# --- Diarization receipt block follows the stage, not the result -------------
 
 def test_diarization_block_present_when_stage_labels_nobody(
         client, app_module, monkeypatch):
@@ -119,8 +114,6 @@ def test_diarization_block_present_when_stage_labels_nobody(
     assert seen["diarization"]["result"].startswith("0 speakers")
     assert "─── Diarization" in seen["rendered"]
 
-
-# --- Separation row's "incl. transcode" detail --------------------------------
 
 def test_separation_row_has_no_transcode_detail_for_wav_input(
         client, app_module, monkeypatch):
@@ -192,8 +185,6 @@ def test_separation_row_drops_transcode_detail_when_transcode_failed(
     assert not row.get("detail")
 
 
-# --- inverted speaker range is reconciled, not forwarded ----------------------
-
 def test_min_speakers_above_max_is_clamped_down(client, app_module,
                                                 monkeypatch):
     app_module.cfg.DIARIZATION_ENABLED = True
@@ -235,8 +226,6 @@ def test_zero_speaker_hint_means_auto_not_one_speaker(client, app_module,
         app_module.cfg.DIARIZATION_ENABLED = False
     assert calls == [{"num": None, "min": None, "max": None}]
 
-
-# --- translation reports why it did not run -----------------------------------
 
 def test_translation_skipped_warning_without_speech_segments(
         client, app_module, monkeypatch):
