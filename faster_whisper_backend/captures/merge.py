@@ -286,9 +286,8 @@ def merge_wavs(
 
 
 def hash_wav_pcm(src_path: str) -> str:
-    """Return SHA-256 hex of just the PCM frame bytes (excluding the WAV
-    header) of a source file. Used by capture_samples_store to detect when
-    a member's audio content changed under a group (vs. an innocent
-    re-encoding of the header)."""
+    """SHA-256 hex of a source file's PCM frame bytes, WAV header excluded.
+    samples.py snapshots one per member into the sample's `member_hashes`
+    at merge time."""
     pcm, _ = read_pcm(src_path)
     return sha256(pcm).hexdigest()
