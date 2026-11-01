@@ -175,9 +175,7 @@ function _makeMapRow(rule, key, val, commitData, datalistId, onEnter, ts, showDa
 // of truth: add / delete / drag-reorder all reduce to "mutate the DOM, then
 // _readEntries + commit". Empty-pattern rows are skipped on read (kept in the
 // DOM so an in-progress row isn't lost), mirroring cb:map. Helpers live at
-// script top level so they survive strict-mode block scoping. Pattern and
-// replacement are regex source shown and read verbatim; only the label goes
-// through _esc/_unesc.
+// script top level so they survive strict-mode block scoping.
 let _rlDragSrc = null;
 
 // Shared reorder affordances: also used by the admin pipeline-rule list, a
@@ -265,7 +263,7 @@ function _readEntries(parent) {
     // _unesc would collapse \n/\t/\\ in the regex. Only cb:map (raw strings)
     // and the label escape.
     const pat = (en.querySelector('.e-pattern') || {}).value || '';
-    if (!pat) return;  // skip empty-pattern rows (no-op; stays in the DOM)
+    if (!pat) return;
     const lbl = _unesc((en.querySelector('.e-label') || {}).value || '');
     const note = (en.querySelector('.e-note') || {}).value || '';  // textarea: real text
     // Always emit label/note ("" when empty), like the server's schema dump.
