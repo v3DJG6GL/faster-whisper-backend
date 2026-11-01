@@ -50,7 +50,7 @@ def test_windows_leg_fails_when_node_or_ffmpeg_is_missing():
 def test_windows_leg_runs_in_its_own_venv():
     # The host-mode runner takes concurrent jobs: installing into the VM's
     # system python let a Renovate PR swap av 18 for 19 under a running main
-    # job (run 1373). Every pip/pytest call goes through the job's .venv.
+    # job (run 1373).
     ci = _read(".forgejo", "workflows", "ci.yml")
     leg = ci[ci.index("  test-windows:"):]
     leg = leg[:leg.index("\n  all-ci:")]
