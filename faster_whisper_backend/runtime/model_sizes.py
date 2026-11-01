@@ -229,10 +229,10 @@ def _record_locked(k: str, vram_bytes: int, measured: bool, src: str,
 
 def lookup(name: str, device: str, compute_type: str) -> dict | None:
     """Best known size WITH its provenance: `{bytes, src, n, ts}` where src is
-    "measured" (an NVML delta for exactly this placement), "disk" (the
-    on-disk prior recorded for this placement, or the live disk walk when
-    nothing was ever recorded), or "proxy" (a measurement of the same model
-    on another device / compute type). None when nothing is known at all.
+    "measured" (an NVML delta for exactly this placement), "disk" (the live
+    disk walk, or a stored disk-grade row only when the model is no longer
+    on disk), or "proxy" (a measurement of the same model on another device
+    / compute type). None when nothing is known at all.
     /stats shows the source so an estimate is never mistaken for a
     measurement."""
     models = _read()
@@ -287,11 +287,9 @@ def lookup(name: str, device: str, compute_type: str) -> dict | None:
     # never measured — the deadlock this fallback exists to break.
     #
     # Also ahead of a stored disk row of ANOTHER placement: disk_size() is
-    # name-only, so such a row can never be more accurate than a fresh
-    # walk, only staler — a pre-fix build's inflated prior (symlink double
-    # count, every GGUF quant) survives for any placement that is never
-    # loaded again. The stored row is kept only for a model no longer on
-    # disk.
+    # name-only, so such a row is never more accurate than a fresh walk,
+    # only staler (see the exact-row branch above). It is kept only for a
+    # model no longer on disk.
     size = disk_size(name)
     if size is None:
         if best is None:
@@ -303,8 +301,8 @@ def lookup(name: str, device: str, compute_type: str) -> dict | None:
 
 
 def estimate(name: str, device: str, compute_type: str) -> int | None:
-    """Best known size in bytes, or None when this model was never measured
-    (see lookup() for the provenance-carrying variant)."""
+    """lookup()'s bytes without the provenance, or None when nothing is known
+    (never measured and not found on disk)."""
     rec = lookup(name, device, compute_type)
     return None if rec is None else int(rec["bytes"])
 
@@ -428,7 +426,7 @@ def _model_path(name: str) -> "str | None":
         return os.path.join(os.path.expanduser(root) or tempfile.gettempdir(),
                             "audio-separator", model)
     # Where translation / diarization downloads land (hf_cache owns the
-    # precedence: HF_HUB_CACHE, else HF_HOME/hub, else <DOWNLOAD_ROOT>/hf,
+    # precedence: HF_HUB_CACHE, else HF_HOME/hub, else <DOWNLOAD_ROOT>/hf/hub,
     # else the hub default).
     hub = hf_cache.hub_lookup_dir()
     if name.startswith("gguf:"):
@@ -436,15 +434,13 @@ def _model_path(name: str) -> "str | None":
         return _hf_repo_dir(hub, repo)
     if name.startswith("pyannote:"):
         return _hf_repo_dir(hub, name[9:])
-    # Whisper: main resolves a bare id ('large-v3') through faster_whisper's
-    # _MODELS table and passes DOWNLOAD_ROOT itself as snapshot_download's
-    # cache_dir (no `/hf` sub-dir — that convention belongs to
-    # runtime.hf_cache.hub_cache_dir()), so the repo dir sits
-    # directly under the root; without a root the hub cache is used. A
-    # transformers checkpoint that main converts to CT2 lives under a
-    # separate root keyed by quantisation (see transcription.models._converted_dir_for),
-    # which this name-only lookup cannot address; the source repo is an
-    # adequate prior for it.
+    # Whisper: transcription.models resolves a bare id ('large-v3') through
+    # faster_whisper's _MODELS table and passes DOWNLOAD_ROOT itself as
+    # snapshot_download's cache_dir (no `/hf` sub-dir, unlike
+    # hf_cache.hub_cache_dir()), so the repo dir sits directly under the root;
+    # without a root the hub cache is used. A checkpoint converted to CT2
+    # lives under a quantisation-keyed root (_converted_dir_for) this
+    # name-only lookup cannot address; the source repo is an adequate prior.
     # DEFAULT_MODEL may be a local CT2 directory, which the loader opens in
     # place: size that directory, not a hub leaf that never exists.
     local = os.path.expanduser(name)
