@@ -17,9 +17,9 @@ from typing import Any
 # via Pydantic, but accept-then-trim is what protects against future code
 # paths that bypass the route (admin scripts, migrations).
 CAP_CORRECTION_FIELD = 200
-# Same as the captures PATCH schemas' list bound (max_length=200): a capture
-# runs up to 10 minutes, and a chip the route accepted must not be dropped
-# here without a word.
+# Also the captures schemas' list bound (max_length=CAP_CORRECTIONS), so a
+# chip the route accepted is never dropped here without a word; 200 because a
+# capture runs up to 10 minutes.
 CAP_CORRECTIONS = 200
 
 
