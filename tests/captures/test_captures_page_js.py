@@ -2575,7 +2575,8 @@ console.log(JSON.stringify([
 """)
     assert out == ["我们去北京你好", "他说「好」「是」", "我们上海你好",
                    "你好。 Hallo", "สวัสดี ครับ"]
-    # The same joins as the server's transcript.
+    # The same joins as the server's transcript (out[2] has a chip, which a
+    # bare join of finals lacks).
     assert out[:2] + out[3:] == [
         _build_default_transcript([{"final": a}, {"final": b}], "space")
         for a, b in (("我们去北京", "你好"), ("他说「好」", "「是」"),
