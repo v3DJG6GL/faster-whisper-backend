@@ -35,7 +35,7 @@ def test_sse_response_sets_proxy_safe_headers():
     assert "no-store" in cache, cache
 
 
-# (source file, snippet proving the stream endpoint is wired to the helper)
+# Modules that serve an SSE stream; each must route it through sse_response().
 _ROUTE_FILES = ["faster_whisper_backend/stats/routes.py",
                 "faster_whisper_backend/quick_config/routes.py",
                 "faster_whisper_backend/admin/logs_routes.py"]
@@ -45,10 +45,8 @@ _REPO = pathlib.Path(REPO_ROOT)
 @pytest.mark.parametrize("fname", _ROUTE_FILES)
 def test_sse_routes_use_helper_not_bare_streamingresponse(fname):
     src = pathlib.Path(_REPO, fname).read_text(encoding="utf-8")
-    # Routes the SSE stream through the proxy-safe helper...
     assert "web_common.sse_response(" in src, f"{fname} should use sse_response()"
-    # ...and no longer hands back a bare event-stream StreamingResponse (which
-    # would skip the X-Accel-Buffering header).
+    # A bare event-stream StreamingResponse would skip the X-Accel-Buffering header.
     assert 'media_type="text/event-stream"' not in src, (
         f"{fname} still constructs a bare event-stream response"
     )
@@ -60,7 +58,7 @@ _EVENT_STREAM_LITERAL = re.compile(r"""['"]text/event-stream['"]""")
 def test_no_module_builds_a_bare_event_stream_response():
     """Repo-wide half of the invariant: a NEW SSE route in a module nobody
     listed in _ROUTE_FILES must still go through web_common.sse_response.
-    The whole package (tests/ holds the literal itself, so it is excluded).
+    Scans the whole package (not tests/, which holds the literal itself);
     web_common.py is the one legitimate site. Any quoted spelling counts —
     single quotes, a module constant, a positional media type — not just the
     double-quoted keyword."""
