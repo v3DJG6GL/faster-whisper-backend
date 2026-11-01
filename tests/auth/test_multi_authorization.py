@@ -33,8 +33,6 @@ def _key(*values):
     return None if creds is None else creds.credentials
 
 
-# --- the parser ---------------------------------------------------------------
-
 def test_single_bearer_is_unchanged():
     assert _key("Bearer wk_abc") == "wk_abc"
     assert _key("bearer   wk_abc  ") == "wk_abc"
@@ -64,8 +62,6 @@ def test_auth_param_commas_do_not_split():
     assert _key('Digest realm="a", nonce="b"') is None
 
 
-# --- HTTP route (the Depends path) -------------------------------------------
-
 def test_http_route_basic_then_bearer_admits(client, make_user_key):
     _uid, raw = make_user_key("root", is_admin=True)
     r = client.get("/settings/state", headers=[
@@ -85,8 +81,6 @@ def test_http_route_only_basic_is_401(client, make_user_key):
     assert r.status_code == 401
 
 
-# --- SSE path (resolve_user_for_page_sse) ------------------------------------
-
 def test_sse_basic_then_bearer_admits(client, make_user_key):
     make_user_key("root", is_admin=True)
     _uid, raw = make_user_key("alice", pages={"stats": "all"})
@@ -94,8 +88,6 @@ def test_sse_basic_then_bearer_admits(client, make_user_key):
         _request(_BASIC, f"Bearer {raw}"), "stats")
     assert rec["username"] == "alice"
 
-
-# --- CSRF middleware: a dead cookie riding along with the second header ------
 
 def test_csrf_stale_cookie_with_basic_then_bearer_passes(client, make_user_key):
     _uid, raw = make_user_key("root", is_admin=True)
