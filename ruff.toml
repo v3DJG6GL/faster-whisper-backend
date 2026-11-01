@@ -7,12 +7,13 @@
 #         before importing the heavy modules (the order is load-bearing)
 #   E701/E702  compact one-line `if x: return` / `a = 1; b = 2` forms
 #   E731  named lambdas used as small local key / predicate functions
-#   E741  `l` / `I` loop names in the parsing helpers
+#   E741  short `l` / `I` names (mostly in tests)
 #
 # The `# noqa: BLE001 / PLC0415 / N802` markers in the code are review-time
-# annotations (broad except on purpose, lazy import on purpose — the package
-# breaks its documented import cycles that way). They are not enforced here;
-# audit them on demand with `ruff check --select BLE001,PLC0415 .`.
+# annotations (broad except on purpose; lazy import on purpose — the package
+# breaks its documented import cycles that way; a mirrored third-party API
+# name). They are not enforced here; audit them on demand with
+# `ruff check --select BLE001,PLC0415,N802 .`.
 target-version = "py312"
 extend-exclude = ["venv"]
 
