@@ -136,7 +136,8 @@ function showToast() {}
 def test_load_asks_before_discarding_dirty_override_drawers(client, tmp_path):
     """Every successful action (key rename, revoke, another drawer's save)
     calls load(), which rebuilt all cards and silently dropped the unsaved
-    edits of any other open overrides drawer."""
+    edits of any other open overrides drawer, or of a permission-matrix row
+    edited but not yet saved."""
     html = client.get("/settings/api-keys").text
     start = html.index("  var _loadGen = 0;")
     loadsrc = html[start:html.index("\n  }\n", start) + 4]
@@ -154,12 +155,13 @@ function renderUser() { rebuilt++; return {}; }
 function renderOpenModeCsCard() {}
 function renderOrphanCsCards() {}
 function confirm() { asked++; return answer; }
-var drawers = [];
+var drawers = [], dirtyRow = null;
 var ct = { innerHTML: 'old', appendChild: function () {},
   querySelectorAll: function () { return drawers; } };
+var matrix = { querySelector: function (sel) { return sel === 'tr.dirty' ? dirtyRow : null; } };
 var window = {};
 var document = { getElementById: function (id) {
-  return id === 'users-container' ? ct : { style: {} }; } };
+  return id === 'users-container' ? ct : id === 'perm-matrix-wrap' ? matrix : { style: {} }; } };
 (async function () {
   var out = {};
   drawers = [{ _ovDirty: function () { return false; } }, {}];   // clean + a sync drawer
@@ -172,6 +174,10 @@ var document = { getElementById: function (id) {
   asked = 0; rebuilt = 0; answer = true;
   await load();
   out.accepted = { asked: asked, rebuilt: rebuilt };
+  drawers = []; dirtyRow = {};                    // only a matrix row is dirty
+  asked = 0; rebuilt = 0; answer = false; ct.innerHTML = 'old';
+  await load();
+  out.matrixDeclined = { asked: asked, rebuilt: rebuilt, html: ct.innerHTML };
   console.log(JSON.stringify(out));
 })();
 """
@@ -179,6 +185,7 @@ var document = { getElementById: function (id) {
     assert out["clean"] == {"asked": 0, "rebuilt": 1}
     assert out["declined"] == {"asked": 1, "rebuilt": 0, "html": "old"}
     assert out["accepted"] == {"asked": 1, "rebuilt": 1}
+    assert out["matrixDeclined"] == {"asked": 1, "rebuilt": 0, "html": "old"}
     # The drawer's own save resets its baseline (to what it SENT) before
     # load(), so a successful save does not prompt about itself.
     assert "var sentSig = _sig(b);" in html
