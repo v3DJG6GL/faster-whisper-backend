@@ -577,7 +577,6 @@ def test_create_capture_skips_the_row_when_a_clear_wiped_its_audio(
 def test_evict_priority_dismissed_first(captures_store_db, monkeypatch, tmp_path):
     cs = captures_store_db
     from faster_whisper_backend.settings import config
-    # Eviction drops a dismissed row before any new/ready one (priority order).
     monkeypatch.setattr(config, "CAPTURES_MAX", 5000, raising=False)
     monkeypatch.setattr(config, "CAPTURES_MAX_MB", 5000, raising=False)
     c_dismissed = _make(cs, monkeypatch, tmp_path)
