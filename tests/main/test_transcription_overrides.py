@@ -1,5 +1,5 @@
-"""Phase 3: the batch /v1/audio/transcriptions path honours per-identity
-config. Asserts the kwargs the FakeModel receives + the overrides_ignored
+"""The batch /v1/audio/transcriptions path honours per-identity config.
+Asserts the kwargs the FakeModel receives + the overrides_ignored
 feedback. Driven through the real app; no faster-whisper needed."""
 
 import json
@@ -23,14 +23,12 @@ def _setup_profile(client, admin_h, name, **fields):
 def test_identity_profile_applies_to_decode_kwargs(client, make_user_key, fake_model):
     _, raw_admin = make_user_key("admin", is_admin=True)
     admin_h = bearer(raw_admin)
-    # profile: beam=8 (LOCKED), best_of=5 (unlocked)
     _setup_profile(client, admin_h, "p", BEAM_SIZE=8, BEST_OF=5, locks=["BEAM_SIZE"])
     uid, raw_alice = make_user_key("alice", is_admin=False)
     r = client.patch(f"{PERMS}/{uid}/permissions", headers=admin_h,
                      json={"pages": {}, "config": {"overrides": {}, "profiles": ["p"], "locks": []}})
     assert r.status_code == 200, r.text
 
-    # alice transcribes, trying to override BOTH beam_size (locked) and best_of.
     r = client.post(
         "/v1/audio/transcriptions", files=_FILE, headers=bearer(raw_alice),
         data={"model": "whisper-1", "response_format": "verbose_json",
@@ -84,11 +82,9 @@ def test_batch_language_reduces_to_a_whisper_code(client, make_user_key, fake_mo
 
 def test_unknown_language_is_a_422_before_the_decode(client, make_user_key,
                                                      fake_model):
-    # A value that reduces to no Whisper code made faster-whisper's tokenizer
-    # raise only once the decode started (after the URL download and BGM
-    # separation), which surfaced as 500 "transcription failed". It is the
-    # caller's input: an explicit 422 naming the code, on both routes, and
-    # the model is never called.
+    # A value that reduces to no Whisper code is the caller's input: a 422
+    # naming the code on both routes, never a tokenizer 500 from the decode,
+    # and the model is never called.
     _, raw = make_user_key("alice", is_admin=False)
     for route in ("/v1/audio/transcriptions", "/v1/audio/translations"):
         for sent in ("xx", "auto", "english"):
@@ -164,9 +160,7 @@ def test_decode_overrides_drop_non_finite_floats():
     (ignored) rather than clamped to the field's bound, matching the integer path.
     Shared by the batch route and the streaming FINAL decode via
     _apply_decode_overrides."""
-    # a valid float still applies
     assert tx_models._apply_decode_overrides({}, "whisper-1", {"temperature": 0.7})["temperature"] == 0.7
-    # NaN / +inf / -inf each dropped, never clamped to the field's max/min
     for literal in ("NaN", "Infinity", "-Infinity"):
         ov = json.loads('{"temperature": %s, "no_speech_threshold": %s}' % (literal, literal))
         kw = tx_models._apply_decode_overrides({}, "whisper-1", ov)
@@ -221,15 +215,13 @@ def test_decode_overrides_parse_bool_strings_instead_of_truthiness():
 def test_decode_overrides_drop_overflowing_suppress_tokens():
     """A suppress_tokens override whose member overflows int() is dropped, not
     500'd: a JSON 1e999 / Infinity literal parses to float('inf') and int(inf)
-    raises OverflowError. Sibling of the non-finite-float and integer-clamp
-    drops; covers the batch route and the streaming FINAL decode via the shared
-    _apply_decode_overrides."""
+    raises OverflowError. Covers the batch route and the streaming FINAL decode
+    via the shared _apply_decode_overrides."""
     # a valid list still applies (float members truncate through int())
     assert tx_models._apply_decode_overrides({}, "whisper-1",
         {"suppress_tokens": [1, 2]})["suppress_tokens"] == [1, 2]
     assert tx_models._apply_decode_overrides({}, "whisper-1",
         {"suppress_tokens": [1.9, 2.0]})["suppress_tokens"] == [1, 2]
-    # overflowing / non-finite / non-integral members are dropped, never raised
     for st in ([json.loads("1e999")], [float("inf")], [float("-inf")],
                [float("nan")], [None], [{}], "1,nan"):
         kw = tx_models._apply_decode_overrides({}, "whisper-1", {"suppress_tokens": st})
@@ -262,10 +254,8 @@ def test_request_block_identity_section():
 def test_request_block_pipeline_header_counts_only_changed_steps():
     """The PIPELINE header must count only steps that rewrote the text
     (before != after) as "changed" — skipped/EXCLUDED no-op rows are
-    "unchanged". Mirrors the /quick-config + /reports viewers, which split the
-    same trace the same way; the header used to print the total and label every
-    row "changed", overcounting skips (the user-reported /logs vs /quick-config
-    discrepancy)."""
+    "unchanged", the same split the /quick-config + /reports viewers make of
+    the same trace."""
     from types import SimpleNamespace
     info = SimpleNamespace(language="en", language_probability=1.0,
                            duration=1.0, duration_after_vad=1.0)
@@ -278,7 +268,7 @@ def test_request_block_pipeline_header_counts_only_changed_steps():
         file_label="x", model_name="m", info=info, kwargs={},
         seg_diag=seg, raw=" hi", final="hi", steps=steps)
     assert "PIPELINE  (1 step changed text, 7 unchanged)" in block
-    assert "8 step" not in block                            # no more total-as-changed
+    assert "8 step" not in block
 
     # All-changed → no "unchanged" tail, plural "steps".
     block2 = tx_receipt._format_request_block(
@@ -511,9 +501,8 @@ def test_echoing_a_pinned_translation_model_passes_the_allowlist_gate(
         client, app_module, make_user_key, monkeypatch):
     """A client that ECHOES (or is locked to) the identity-effective
     TRANSLATION_MODEL has not chosen anything: it must pass the allowlist
-    gate exactly like a request that sent no model. It used to be refused
-    (400 on /v1/text/translations) while sending a DIFFERENT value passed
-    with the locked model — the inverse of the intended policy."""
+    gate exactly like a request that sent no model, not get a 400 on
+    /v1/text/translations."""
     from faster_whisper_backend.translation import engine as translation
     calls = []
 
