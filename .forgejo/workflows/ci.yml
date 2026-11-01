@@ -62,7 +62,7 @@ env:
   # env), so a rename is a one-line edit, not a literal that only fails
   # mid-fetch.
   REGISTRY: forgejo.informethic.ch
-  # The Linux test legs run as root inside python:* job containers — that's
+  # The Linux test leg runs as root inside a python:* job container — that's
   # the whole environment, not a system Python worth protecting, so silence
   # pip's per-invocation "Running pip as the 'root' user" warning.
   PIP_ROOT_USER_ACTION: ignore
@@ -265,7 +265,7 @@ jobs:
       # copy, not hard links, so nothing a job does to its .venv can reach it.
       UV_LINK_MODE: copy
     steps:
-      # Same env indirection as the Linux legs above, in PowerShell spelling:
+      # Same env indirection as the Linux leg above, in PowerShell spelling:
       # host-mode `run:` steps default to pwsh (no `shell: bash` here), so the
       # step env is read as $env:NAME.
       - name: Checkout
