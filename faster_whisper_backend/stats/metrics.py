@@ -79,13 +79,12 @@ in_flight_transcriptions: int = 0
 
 
 # The inference semaphore, timed: transcription.models.get_inference_semaphore()
-# builds a GpuGate. `async with` calls exactly acquire()/release(), so no call
-# site changes; what
-# is added is the queue: how many tasks are waiting, for how long, and how
-# much of each REQUEST's time went to waiting. The per-request sum rides a
-# ContextVar so no acquire site has to know which request it serves — the
-# handler seeds WAIT_ACC once and reads it in its outer finally (a dictation
-# session reads and zeroes it per utterance).
+# builds a GpuGate. `async with` calls exactly acquire()/release(), so it drops
+# in for a plain Semaphore and adds the queue: how many tasks are waiting, for
+# how long, and how much of each REQUEST's time went to waiting. The per-request
+# sum rides a ContextVar so no acquire site has to know which request it serves
+# — the handler seeds WAIT_ACC once and reads it in its outer finally (a
+# dictation session reads and zeroes it per utterance).
 import asyncio
 import contextvars
 
@@ -165,7 +164,7 @@ class GpuGate(asyncio.Semaphore):
 gpu_gate: "GpuGate | None" = None
 
 
-# Why a job failed, in six words the failures card can group by. Message-
+# Why a job failed, in seven words the failures card can group by. Message-
 # based where the libraries give nothing better (CTranslate2 and onnxruntime
 # raise bare RuntimeErrors for an OOM), so `other` is the honest fallback
 # and the tests pin the exact strings matched. Classification is server-
