@@ -8,9 +8,9 @@ Covers:
   - captures_routes._remap_time_ms / _build_merged_words: word-timestamp
     re-placement onto the trimmed merged timeline (per-member + legacy).
 
-Silero VAD isn't installed in CI, so the planner tests inject a deterministic
-fake `faster_whisper.vad` that treats any non-zero PCM as speech. The
-route-layer tests are skipped unless fastapi (the full app stack) is present.
+The planner tests use the deterministic `fake_vad` fixture (tests/conftest.py),
+which treats any non-zero PCM as speech. The route-layer tests are skipped
+unless fastapi (the full app stack) is present.
 """
 
 import sys
@@ -27,10 +27,6 @@ from tests.conftest import _pcm_from_spec as _pcm
 RATE = 16000
 
 
-# --------------------------------------------------------------------------
-# Helpers
-# --------------------------------------------------------------------------
-
 def _write_wav(path, pcm):
     with wave.open(path, "wb") as w:
         w.setnchannels(1)
@@ -38,10 +34,6 @@ def _write_wav(path, pcm):
         w.setframerate(RATE)
         w.writeframes(pcm)
 
-
-# --------------------------------------------------------------------------
-# trim_pcm_for_merge
-# --------------------------------------------------------------------------
 
 def test_trim_collapses_internal_gap_and_edges(monkeypatch, fake_vad):
     # 200ms sil | 300ms speech | 1000ms sil (internal) | 300ms speech | 200ms sil
@@ -62,7 +54,6 @@ def test_trim_collapses_internal_gap_and_edges(monkeypatch, fake_vad):
     assert res["new_duration_ms"] == 1000
     # Leading silence fully removed (info only).
     assert res["lead_ms"] == 200
-    # new_start values are strictly increasing and the trimmed PCM matches.
     new_starts = [s[2] for s in res["segments"]]
     assert new_starts == sorted(new_starts)
     assert len(res["pcm"]) == res["new_n_samples"] * audio_merge.BYTES_PER_SAMPLE
@@ -86,17 +77,14 @@ def test_trim_all_speech_is_noop(monkeypatch, fake_vad):
 
 
 def test_trim_unavailable_vad_is_identity(monkeypatch):
-    # Ensure the real (absent) faster_whisper import path returns identity.
+    # Null faster_whisper so the VAD import fails -> identity. Only the
+    # package is nulled; see conftest's no_vad for why that is order-dependent.
     monkeypatch.setitem(sys.modules, "faster_whisper", None)
     pcm, n = _pcm([("sil", 100), ("speech", 100)])
     res = audio_vad_trim.trim_pcm_for_merge(pcm, n)
     assert res["trimmed"] is False
     assert res["new_n_samples"] == n
 
-
-# --------------------------------------------------------------------------
-# merge_wavs
-# --------------------------------------------------------------------------
 
 def test_merge_trims_each_member(monkeypatch, fake_vad):
     m1, _ = _pcm([("sil", 200), ("speech", 300), ("sil", 200)])
@@ -122,9 +110,9 @@ def test_merge_trims_each_member(monkeypatch, fake_vad):
 
 
 def test_merge_accepts_raw_over_cap_when_trimmed_fits(monkeypatch, fake_vad):
-    # Two members of ~15 s raw each (mostly silence) → raw sum ~30 s exceeds the
-    # 28 s cap, but each trims to ~13 s so the merged WAV (~26.5 s) fits. This is
-    # exactly the proposer/batch case that used to be rejected by the raw cap.
+    # Two members of ~15 s raw each (mostly silence): the raw sum (~30 s) exceeds
+    # the 28 s cap, but each trims to 13 s so the merged WAV fits (the proposer /
+    # batch case).
     m1, _ = _pcm([("sil", 1000), ("speech", 13000), ("sil", 1000)])
     m2, _ = _pcm([("sil", 1000), ("speech", 13000), ("sil", 1000)])
     with tempfile.TemporaryDirectory() as d:
@@ -157,10 +145,6 @@ def test_merge_trim_false_is_identity(monkeypatch):
     # 200 + 300 gap + 200 = 700ms.
     assert res["duration_ms"] == 700
 
-
-# --------------------------------------------------------------------------
-# Route-layer timestamp re-placement (full app stack only)
-# --------------------------------------------------------------------------
 
 def _routes():
     pytest.importorskip("fastapi")
@@ -213,7 +197,7 @@ def test_build_merged_words_per_member(monkeypatch):
 
 
 def test_build_merged_words_uniform_offset(monkeypatch):
-    # New uniform-silence layout: each member carries an absolute `offset_ms`,
+    # Uniform-silence layout: each member carries an absolute `offset_ms`,
     # so word times are offset_ms + remapped-local (NOT cum+i*silence).
     cr = _routes()
     monkeypatch.setattr(
@@ -257,7 +241,8 @@ def test_align_member_words_attaches_training_tokens(monkeypatch):
         ]
     monkeypatch.setattr(capture_samples, "_align_words_to_final", fake_align)
 
-    # final applies de-dictation-map ("Komma"→"Komma"); training excludes it.
+    # final and text_for_training differ (a rule excluded from training), so
+    # each word carries its training token as train_word.
     m = {
         "words": [{"start": 0, "end": 1}, {"start": 1, "end": 2}],
         "final": "Komma World", "text_for_training": "comma world", "model": None,
@@ -295,15 +280,11 @@ def test_build_merged_words_legacy(monkeypatch):
     assert out[1]["start"] == pytest.approx(2.4)
 
 
-# --------------------------------------------------------------------------
-# Proposer trimmed durations + caching
-# --------------------------------------------------------------------------
-
 def test_proposer_trimmed_duration_and_caching(monkeypatch, tmp_path, fake_vad):
     from faster_whisper_backend.captures import merge_proposer as P
     from faster_whisper_backend.captures import store as captures_store
 
-    # 200ms sil | 600ms speech | 200ms sil → trimmed to speech ± 50ms pad.
+    # 200ms sil | 600ms speech | 200ms sil.
     pcm, _ = _pcm([("sil", 200), ("speech", 600), ("sil", 200)])
     wav = tmp_path / "a.wav"
     _write_wav(str(wav), pcm)
