@@ -75,6 +75,30 @@ def _shape(key: str) -> tuple[int, str, str]:
     return len(key), _edge(key[:1]), _edge(key[-1:])
 
 
+def _prefix_tree(keys: list[str]) -> str:
+    """Keys of one length as a prefix tree ("K(?:omma|olon)").
+
+    sre has no trie: a flat ``(?:k1|...|kN)`` is walked branch by branch at
+    every text position, so a 10 000-key map cost up to ~1 s per 20 KB
+    transcript. Here each position tries one branch per distinct next char.
+    Chars are bucketed by ``str.lower()`` when that is one char: sre's
+    IGNORECASE compiles a cased literal from its simple lowercase alone, and
+    the two agree on every such char (a test pins that), so any member
+    stands for the whole bucket.
+    "İ" (lowers to two chars) keeps its own bucket; "ſ" and "s", which
+    sre folds together but ``lower()`` keeps apart, stay two buckets that
+    are each tried — same span either way."""
+    if not keys[0]:
+        return ""
+    buckets: dict[str, list[str]] = {}
+    for k in keys:
+        fold = k[0].lower()
+        buckets.setdefault(fold if len(fold) == 1 else k[0], []).append(k)
+    branches = [re.escape(run[0][0]) + _prefix_tree([k[1:] for k in run])
+                for run in buckets.values()]
+    return branches[0] if len(branches) == 1 else "(?:" + "|".join(branches) + ")"
+
+
 def _alternation(keys: list[str]) -> str:
     """``keys`` as one alternation, longest first, each word-bounded on
     every edge that is not whitespace.
@@ -98,11 +122,13 @@ def _alternation(keys: list[str]) -> str:
     and stays in front: after the group, every branch was walked at every
     text position, mid-word included, before it could refuse — a 2000-key
     map ran ~4x slower. Reordering keys of one length is safe: at a given
-    position they match the same span, so the same replacement."""
+    position they match the same span, so the same replacement — which is
+    also why a group may be a prefix tree (``_prefix_tree``) instead of a
+    flat list."""
     parts = []
     for (n, lead, tail), run in itertools.groupby(
             sorted(keys, key=_shape, reverse=True), key=_shape):
-        out = "(?:" + "|".join(re.escape(k) for k in run) + ")"
+        out = "(?:" + _prefix_tree(list(run)) + ")"
         if lead == "ascii":
             out = r"(?<!\w)" + out
         elif lead:
