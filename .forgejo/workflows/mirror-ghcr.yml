@@ -175,8 +175,7 @@ jobs:
 
           # List first, fail loudly: `for tag in $(...)` swallows the
           # substitution's exit code — a stale token would otherwise turn an
-          # UNAUTHORIZED listing into a green "0 copied" run (seen on
-          # nextcloud-fpm-nginx run 47).
+          # UNAUTHORIZED listing into a green "0 copied" run.
           all_tags=$(crane ls "$SRC_IMAGE")
           # Runnable tags only, each with optional -gpu / -full /
           # -gpu-full variants: vN[.N[.N]], latest, sha-<short> — not
