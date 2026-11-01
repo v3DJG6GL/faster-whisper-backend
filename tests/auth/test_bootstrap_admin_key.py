@@ -46,9 +46,9 @@ def test_revoked_key_raises_bootstrap_admin_error(api_keys_db):
 
 
 def test_revoked_bootstrap_user_with_new_key_raises_bootstrap_admin_error(api_keys_db):
-    # list_users() hides revoked rows, so a revoked bootstrap-admin used to
-    # fall through to create_user, hit UNIQUE(username) and surface as a
-    # bare ValueError that the lifespan relabels as a store-init failure.
+    # list_users() hides revoked rows: a revoked bootstrap-admin must not fall
+    # through to create_user, hit UNIQUE(username) and surface as a bare
+    # ValueError that the lifespan relabels as a store-init failure.
     api_keys_store.bootstrap_admin_from_env(_KEY)
     uid2 = api_keys_db.create_user("second-admin", is_admin=True)
     api_keys_db.create_key(uid2)
