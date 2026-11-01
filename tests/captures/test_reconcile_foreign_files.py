@@ -1,5 +1,6 @@
-"""reconcile_on_startup only removes orphans inside the capture fanout layout:
-a CAPTURES_DIR mis-set to the data dir (or a parent of it) must not delete the
+"""reconcile_on_startup and clear_all only remove what lives inside the
+capture fanout layout (clear_all also the samples' groups/ dir): a
+CAPTURES_DIR mis-set to the data dir (or a parent of it) must not delete the
 config, the SQLite stores or the logs that live there."""
 
 import os
