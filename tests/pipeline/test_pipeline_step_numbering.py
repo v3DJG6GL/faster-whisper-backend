@@ -24,7 +24,6 @@ def _set(app_module, rules):
 
 
 def _labels(app_module, text, **kw):
-    """Run the pipeline with tracing and return the per-step label strings."""
     trace: list = []
     pl_engine._postprocess_text(text, model_name="", trace=trace, **kw)
     return [s[0] for s in trace]
@@ -38,7 +37,6 @@ def test_rule_ordinal_helper(app_module):
 
 
 def test_regex_list_entries_numbered_card_dot_sub(app_module):
-    # Card #1 with three entries, each changing the text -> #1.1 / #1.2 / #1.3.
     _set(app_module, [
         _regex_list("rl", "RL", [
             {"pattern": "a", "replacement": "b"},
@@ -62,12 +60,11 @@ def test_single_compile_rule_numbered_card_only(app_module):
         {"name": "m", "label": "Map", "type": "callback:map", "map": {"foo": "bar"}},
         _term(),
     ])
-    labels = _labels(app_module, "foo")  # leading no-ops don't fire; map -> #4
+    labels = _labels(app_module, "foo")
     assert labels == ["#4 Map"]
 
 
 def test_terminal_trim_uses_card_position(app_module):
-    # Terminal is the last card (#2) -> the trim step number is its card position.
     _set(app_module, [
         _regex_list("rl", "RL", [{"pattern": "a", "replacement": "b"}]),
         _term(),
