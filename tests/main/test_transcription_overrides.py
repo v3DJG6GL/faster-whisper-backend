@@ -59,14 +59,11 @@ def test_locked_language_ignores_client_param(client, make_user_key, fake_model)
 
 
 def test_batch_language_reduces_to_a_whisper_code(client, make_user_key, fake_model):
-    # /dictate sends one language box to both modes; the streaming handshake
-    # folds "DE" / "de-DE" to "de", so batch must too (faster-whisper's
-    # tokenizer raises on either, a 500). An underscore locale ("de_DE", what
-    # POSIX LANG and Java's Locale produce) is the same tag, and a withdrawn
-    # ISO 639-1 code (what old Java / Android locales and YouTube send: "iw"
-    # Hebrew, "in" Indonesian; the standard "jv" for Whisper's "jw") folds to
-    # Whisper's spelling, which the tokenizer also raises without. Blank is
-    # auto-detect; a value that reduces to no code is a 422 (below).
+    # /dictate sends one language box to both modes and the streaming handshake
+    # folds it to a Whisper code, so batch must too: faster-whisper's tokenizer
+    # raises (a 500) on a region tag, an underscore locale or a withdrawn
+    # ISO 639-1 code ("iw", "in", "jv"). Blank is auto-detect; a value that
+    # reduces to no code is a 422 (below).
     _, raw = make_user_key("alice", is_admin=False)
     for sent, expected in (("DE", "de"), ("de-DE", "de"), (" pt-BR ", "pt"),
                            ("de_DE", "de"), ("pt_BR", "pt"),
@@ -335,7 +332,6 @@ def test_per_key_override_beats_user(client, make_user_key, fake_model):
     _, raw_admin = make_user_key("admin", is_admin=True)
     admin_h = bearer(raw_admin)
     uid, raw_alice = make_user_key("alice", is_admin=False)
-    # user-level beam 8; alice's key forces beam 4
     client.patch(f"{PERMS}/{uid}/permissions", headers=admin_h,
                  json={"pages": {}, "config": {"overrides": {"BEAM_SIZE": 8}, "profiles": [], "locks": []}})
     kid = client.get(f"{PERMS}/{uid}/keys", headers=admin_h).json()["keys"][0]["id"]
