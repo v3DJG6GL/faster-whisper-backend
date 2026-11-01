@@ -559,9 +559,9 @@ async def diarize(path: str, *, num_speakers: "int | None" = None,
     cfg.DIARIZATION_MODEL for this call (per-request stage models — the
     caller has already applied its allowlist). ``progress_cb(frac, step,
     target=, target_progress=)`` (called from the executor thread, frac 0..1)
-    reports pipeline step progress via pyannote's hook kwarg — best-effort. ``cancel_check`` (no-arg, truthy =
-    abort) is polled from the same hook; a positive answer raises
-    :class:`DiarizeCancelled` out of this coroutine.
+    reports pipeline step progress via pyannote's hook kwarg — best-effort.
+    ``cancel_check`` (no-arg, truthy = abort) is polled from the same hook;
+    a positive answer raises :class:`DiarizeCancelled` out of this coroutine.
 
     The job lease is taken HERE, not in the caller — deliberately asymmetric
     with translation/engine.py, whose lease spans many completions and
@@ -769,7 +769,7 @@ async def load_unleased(model_id: str) -> bool:
 async def idle_evictor_loop() -> None:
     """Unload the pipeline after DIARIZATION_IDLE_TIMEOUT_S idle seconds.
     Reads the timeout live (an admin edit applies without restart), like
-    transcription.models._idle_evictor for whisper models. Started/cancelled by lifespan."""
+    transcription.models._idle_evictor. Started/cancelled by lifespan."""
     while True:
         await asyncio.sleep(_EVICTOR_WAKE_S)
         try:
