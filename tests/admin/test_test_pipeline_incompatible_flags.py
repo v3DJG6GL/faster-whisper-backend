@@ -28,7 +28,6 @@ def test_test_pipeline_regex_list_skips_incompatible_flags_entry(client):
     })
     assert r.status_code == 200, r.text
     step = r.json()["steps"][0]
-    # Only the bad entry is skipped; the valid sibling still applies.
     assert step["after"] == "FOO bar"
     assert step["matches"] == 1
     assert "incompatible" in (step["error"] or "")
