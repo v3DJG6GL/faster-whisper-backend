@@ -5,8 +5,7 @@ trim_pcm_for_merge is the sample path: with
 cfg.CAPTURES_VAD_TRIM_ENABLED_FOR_SAMPLES, merge_wavs runs it on every member
 before concatenation. It drops the outer silence and caps internal gaps, so
 all silence in a sample is uniform. trim_wav (whole-file leading/trailing
-trim) lost its only production caller when the singleton "Trim silence"
-button was retired.
+trim) has no production caller; only the tests exercise it.
 
 Output keeps the captures/merge.py format (16 kHz mono signed-16-bit PCM
 RIFF/WAVE), so a Whisper fine-tune loader sees the same audio shape for
@@ -58,8 +57,7 @@ def trim_wav(
     cut-off; 0.5 is the library default.
 
     Format requirements: src must be 16 kHz mono signed-16-bit PCM
-    (audio_merge.read_pcm enforces this — same RIFF/WAVE shape every
-    other capture pipeline uses). Same format is written out.
+    (audio_merge.read_pcm raises otherwise); dst is written in the same format.
 
     Failure modes:
       - import of faster_whisper.vad fails → log warning, return a dict
@@ -327,7 +325,6 @@ def trim_pcm_for_merge(
     out_pcm = b"".join(out_chunks)
     new_n = new_pos
     new_duration_ms = _samples_to_ms(new_n)
-    # Info only: the merge layer owns the outer margins.
     lead_ms = _samples_to_ms(int(speeches[0]["start"]))
 
     # Nothing meaningfully removed (under ~50 ms total) → identity, so the
