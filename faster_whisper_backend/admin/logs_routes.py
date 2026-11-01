@@ -21,12 +21,8 @@ from faster_whisper_backend.core import web_common
 router = APIRouter()
 
 
-# =============================================================================
-# /logs - live log viewer
-# =============================================================================
-# A self-contained dark-theme log tailer. Loads recent context from the log
-# file, then streams new lines via Server-Sent Events. Color is reapplied
-# client-side based on content (since we strip ANSI before writing the file).
+# The log file is ANSI-stripped (core/log_setup.py), so the viewer re-colours
+# lines client-side from their content.
 
 
 def _rotated_chain(active_path: str) -> list[str]:
@@ -68,10 +64,7 @@ def _read_chain_window(active_path: str, skip: int, want: int) -> "tuple[list[st
     rotation chain into memory, and each further click re-reads it from
     the chain head."""
     target = skip + want
-    # `collected` is built in oldest→newest order: each older file's
-    # tail is prepended to the running list as we walk the chain
-    # newest→oldest. By construction the OLDEST line in the chain
-    # window we've seen so far sits at collected[0].
+    # Oldest-first: each older file's lines are prepended as the walk goes back.
     collected: list[str] = []
     chain = _rotated_chain(active_path)
     # When we break out of the file loop because `target` is satisfied
@@ -181,9 +174,8 @@ async def _stream_log_lines(request: Request):
     for line in backlog:
         yield f"data: {line}\n\n"
 
-    # Sentinel — marks the boundary between backlog and the live poll
-    # loop. The client's append() early-returns on this line; pill counts
-    # are driven entirely by SEV_POLLER_JS against severity_counts().
+    # Backlog/live boundary: the client's append() shows "Load older" on it
+    # and does not render or count it as a log line.
     yield "data: __LIVE_TAIL__\n\n"
 
     # Live tail: poll for new lines from the offset sampled above. Reopen on
@@ -263,11 +255,9 @@ def _require_logs_page_sse(user: dict = Depends(_get_current_user_dep)) -> dict:
 
 @router.get("/logs", response_class=HTMLResponse, dependencies=[Depends(require_user_webui_host)])
 async def logs_viewer():
-    # User-tier page. Shell gated by USER_WEBUI_ALLOWED_HOSTS (loopback always);
-    # a keyless browser navigation loads the shell + login popup. The SSE
-    # /logs/stream + /logs/older endpoints stack the host gate with their own
-    # require_page("logs") check (bearer header or session cookie — EventSource
-    # sends the cookie), so the data layer requires a "logs" API key.
+    # Shell gated only by USER_WEBUI_ALLOWED_HOSTS (loopback always), so a
+    # keyless navigation still gets the shell + login popup; the data endpoints
+    # add _require_logs_page_sse (scope("logs") == "all").
     return HTMLResponse(
         web_common.render_page(_LOG_VIEWER_HTML, current="logs"),
         headers={"Cache-Control": "no-store"},
