@@ -89,7 +89,7 @@ video/480.m3u8
 """
     assert seg.parse_hls(text, "https://cdn.test/master.m3u8") == \
         "https://cdn.test/video/480.m3u8"
-    # No default at all: the first listed rendition.
+    # No default at all: the first rendition that has a URI.
     assert seg.parse_hls(text.replace("DEFAULT=YES,", ""),
                          "https://cdn.test/master.m3u8") == \
         "https://cdn.test/ad/index.m3u8"
