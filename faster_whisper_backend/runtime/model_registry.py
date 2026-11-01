@@ -33,10 +33,8 @@ from threading import Lock
 from typing import Any, Callable
 
 
-# --- Per-model VRAM tracking -------------------------------------------------
-# Populated by each model cache around its load. Removed on LRU eviction.
-# NOT a measurement loop — this is a registry of what the delta sample said at
-# construction time.
+# Populated by each model cache after its load, removed when it evicts. NOT a
+# measurement loop: it holds what the delta sample said at construction time.
 _loaded_models_lock = Lock()
 _loaded_models: dict[str, dict[str, Any]] = {}
 
@@ -44,9 +42,9 @@ _loaded_models: dict[str, dict[str, Any]] = {}
 def register_loaded_model(name: str, vram_bytes: int | None,
                           device: str, compute_type: str,
                           load_secs: float | None = None) -> None:
-    """Called from transcription.models._get_or_load_model after a successful load. The VRAM
-    delta sample comes from the caller — see transcription.models for the
-    before/after dance under _model_load_lock.
+    """Called by every family's model cache after a successful load. The VRAM
+    delta sample comes from the caller (whisper's: the before/after dance
+    under transcription.models._model_load_lock).
 
     `load_secs` is how long the load itself took. Every family already
     measures this for its "loaded on %s in %.1fs" line; recording it here
@@ -78,25 +76,17 @@ def register_loaded_model(name: str, vram_bytes: int | None,
             # (wall-clock can jump on NTP correction; monotonic cannot).
             "last_used_monotonic": time.monotonic(),
         }
-    # Persist the measurement so a fresh process can size this model BEFORE
-    # loading it. All four families (whisper, pyannote, UVR, GGUF) come through
-    # here, so this one hook covers the lot; `device` is the ACTUAL placement
-    # (whisper's cuda->cpu fallback in transcription.models._get_or_load_model passes the real
-    # one), so the ledger inherits that correctness for free. Imported lazily:
-    # model_sizes imports system_stats, which imports this module. Never fatal
-    # to a load.
-    # `if vram_bytes:` used to guard this, which quietly excluded every CPU
-    # load and every load whose NVML delta came back 0 or None — those models
-    # then had no ledger row, so preload could not size them, so it refused
-    # to load them, so they were never measured. Fall back to the on-disk
-    # footprint instead: a rough number that lets an admission decision be
-    # made beats no row at all, and a real measurement supersedes it (record
-    # replaces a disk-sourced row outright — the disk walk can over-count).
+    # Persist the size so a fresh process can size this model BEFORE loading
+    # it. `device` is the ACTUAL placement (whisper's cuda->cpu fallback passes
+    # the real one). Imported lazily: model_sizes imports system_stats, which
+    # imports this module. Never fatal to a load.
+    # No usable delta (cpu, 0, None) falls back to the on-disk footprint:
+    # without a row preload cannot size the model, so it would refuse to load
+    # it and it would never get measured. A real measurement later replaces a
+    # disk-sourced row outright (the disk walk can over-count).
     try:
         from faster_whisper_backend.runtime import model_sizes
-        # vram_bytes is None or >= 0 here (the guards above null a negative
-        # or non-cuda delta); 0 is no measurement either.
-        measured = bool(vram_bytes)
+        measured = bool(vram_bytes)  # 0 is no measurement either
         size = vram_bytes or model_sizes.disk_size(name)
         if size:
             model_sizes.record(name, device, compute_type, size,
@@ -132,12 +122,11 @@ def touch_loaded_model(name: str) -> None:
 
 
 def unregister_loaded_model(name: str) -> None:
-    """Called from transcription.models._get_or_load_model when LRU eviction happens."""
+    """Called by every family's model cache when it evicts or drops a model."""
     with _loaded_models_lock:
         _loaded_models.pop(name, None)
 
 
-# --- Warm-lease predicate (dependency inversion for preload.py) --------------
 # preload.py holds "warm leases": a model that some live plan expects to use
 # soon and that the idle evictors must therefore leave alone. All four evictors
 # live in modules preload itself imports (transcription.models, diarization,
