@@ -66,7 +66,7 @@ def test_validate_url_rejects_a_lone_surrogate():
 
 
 def test_validate_url_rejects_a_malformed_port():
-    """urlsplit accepts these; they used to pass and fail in the probe as
+    """urlsplit accepts these; unchecked, they fail late in the probe as
     "the site could not be reached"."""
     for url in ("https://example.com:abc/a.mp3",
                 "https://example.com:99999/a.mp3",
@@ -1869,7 +1869,7 @@ def test_video_ladder_audio_leg_prefers_the_original_language_over_bitrate():
         ladder = udl.build_video_ladder({"duration": 100.0, "formats": formats},
                                         max_bytes=100_000_000)
         assert ladder[0]["audio_format_id"] == "251-0"
-    # A tie on language falls to bitrate, as before.
+    # A tie on language falls to bitrate.
     a = _fmt(format_id="a-lo", vcodec="none", acodec="opus", abr=96,
              language_preference=10)
     b = _fmt(format_id="a-hi", vcodec="none", acodec="opus", abr=128,
