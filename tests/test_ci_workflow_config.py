@@ -1,10 +1,10 @@
-"""Pin the CI/release workflow invariants fixed in the code review.
+"""Pin the invariants of the CI/release workflows, renovate.json, the
+ignore files and the Dockerfiles.
 
-The workflows and renovate.json have no runtime under test, so these tests
-grep the files for the load-bearing lines instead (same approach as
-test_installer_scripts.py): a regression that drops one of them silently
-brings back a guard that never runs, an unbounded registry scan, or a
-release that can never be repaired. The CI itself cannot be executed here.
+None of these has a runtime under test, so the tests grep the files for the
+load-bearing lines (same approach as test_installer_scripts.py): a
+regression that drops one of them silently brings back a guard that never
+runs, an unbounded registry scan, or a release that can never be repaired.
 """
 import json
 import os
@@ -167,8 +167,6 @@ def test_all_release_tag_runs_share_one_concurrency_group():
     assert "startsWith(github.ref, 'refs/tags/v') && 'ci-release'" in ci
 
 
-# --- .forgejo/workflows/mirror-ghcr.yml -------------------------------------
-
 def test_only_the_newest_release_tag_moves_latest():
     # A workflow_dispatch on an OLD v* tag publishes like a tag push; with
     # only the startsWith(refs/tags/v) check it moved :latest (and, through
@@ -191,6 +189,8 @@ def test_only_the_newest_release_tag_moves_latest():
     assert "startsWith(github.ref, 'refs/tags/v')" in latest[0]
     assert "steps.newest.outputs.is_newest == 'true'" in latest[0]
 
+
+# --- .forgejo/workflows/mirror-ghcr.yml -------------------------------------
 
 def test_mirror_skips_already_mirrored_sha_tags():
     # The growing history of sha-<short> tags must not cost two digest
@@ -298,7 +298,7 @@ def test_manual_same_boundary_rerun_repairs_instead_of_minting():
             'same_boundary=1; fi') in rel
     assert ('if [ "$latest_commit" = "$target" ] && [ -n "$same_boundary" ]; '
             'then') in rel
-    # ...and it reaches the idempotence branch below, which comes after it.
+    # The gate rewrites BUMP=patch before the idempotence branch tests it.
     gate = rel.index('[ -n "$same_boundary" ]; then')
     assert rel.index("BUMP=patch", gate) < rel.index(
         '{ [ -n "$TARGET_SHA" ] || [ "$BUMP" = patch ]; }; then', gate)
@@ -325,9 +325,8 @@ def test_ytdlp_fast_lane_outranks_the_blanket_major_rule():
 
 
 def test_vulnerability_alert_automerge_records_the_major_override():
-    # The value itself is a maintainer policy call and is left as-is; what
-    # the review requires is that the override is written down where the
-    # flag lives.
+    # automerge itself is a maintainer policy call; this pins only that the
+    # major-update override is documented next to the flag.
     alerts = json.loads(_read("renovate.json"))["vulnerabilityAlerts"]
     assert alerts["automerge"] is True
     assert "major" in alerts["description"].lower()
@@ -342,8 +341,9 @@ def test_ignore_files_do_not_swallow_package_dirs():
     and tests/captures/ (git would refuse their __init__.py); in
     .dockerignore the dangerous form was `**/captures/` (a bare `captures/`
     is already root-relative there, and a leading slash is disregarded —
-    kept for symmetry). Either would drop the package silently, because
-    main wraps the router import in try/except."""
+    kept for symmetry). Either would drop the package from the checkout or
+    the image, and main imports captures.store at top level, so the app
+    would not start."""
     for fname in (".gitignore", ".dockerignore"):
         lines = [ln.strip() for ln in _read(fname).splitlines()]
         assert "/captures/" in lines, f"{fname}: anchor the captures/ ignore to the root"
