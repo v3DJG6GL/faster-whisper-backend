@@ -47,7 +47,6 @@ def test_stats_usage_ok(client):
     assert r.status_code == 200
     body = r.json()
     assert set(body) >= {"days", "metric", "by", "bucket", "lines", "leaderboard"}
-    # v2 superset
     assert body["v"] == 2
     assert set(body) >= {"tz", "range", "filter", "totals", "today", "stages",
                          "hours", "breakdown", "models", "compare",
@@ -929,7 +928,6 @@ def test_stats_layout_presets_edit_mode_and_ring_freeze(client):
         assert f'gs-id="{gs_id}"' in html, gs_id
     # Own scope forces the full preset before the machine tiles leave.
     assert "window._fwSetPreset('both', false)" in html
-    # Rings: one sync key, a freeze hook, timestamp-based re-find each tick.
     assert "sync: { key: 'live'" in html
     assert "hooks: { setCursor: [onSparkHover], draw: [drawInsetLabels] }" in html
     assert "histX.indexOf(frozenTs)" in html
@@ -995,8 +993,8 @@ def test_stats_history_shape_step_cap_and_gate(client, make_user_key):
 
 
 def test_stats_history_503_when_store_failed_to_open(client, monkeypatch):
-    """init_db failing at startup is logged and non-fatal; the history route
-    answered every spark fetch with a bare 500 from _require_conn()."""
+    """init_db failing at startup is logged and non-fatal, so the history
+    route must answer 503, not a bare 500 from _require_conn()."""
     from faster_whisper_backend.stats import system_metrics_store
     monkeypatch.setattr(system_metrics_store, "_conn", None)
     r = client.get("/stats/history?metric=cpu_pct")
@@ -1199,8 +1197,8 @@ def test_stats_page_jobs_table_v2(client):
     assert 'data-label="wait"' in html
     assert "window._fwCancelJob(c.dataset.pid, c)" in html
     assert "fetch('/stats/jobs?' + p.toString()" in html
-    # The users filter must come from the published window.__statsFilter —
-    # `Q` is closure-private to static/stats.js and the click threw on it.
+    # The users filter must come from the published window.__statsFilter:
+    # `Q` is closure-private to static/stats.js, so reading it here throws.
     assert "rjFilter().users" in html and "Q.users" not in html
     assert "rj-stage-row wait" in html and "end to end" in html
     assert "colspan=\"11\"" in html
@@ -1266,9 +1264,10 @@ def test_stats_page_ring_resume_range_chips_and_background_tab(client):
 
 
 def test_stats_page_range_mode_freeze_owns_only_the_range_readouts(client):
-    """Switching from a frozen live ring to 1h/24h/7d left lat-now (no
-    range series, still live) painted frozen; the minute range refresh
-    overwrote a frozen readout with the window summary in yellow."""
+    """Range-mode freeze owns only the readouts that have a range series:
+    lat-now (no range series, still live) is never left painted frozen, and
+    the minute range refresh never overwrites a frozen readout with the
+    window summary."""
     html = client.get("/stats").text
     rf = html[html.index("function applyRangeFreeze() {"):html.index("function makeSpark(")]
     assert "const owned = Object.values(SPARK_HEAD);" in rf
@@ -1677,9 +1676,9 @@ def test_stats_stream_onopen_cancels_recovery(client):
 
 
 def test_stats_toolbar_reflows_without_hard_breaks(client):
-    """The scope bar has no forced line breaks: each label +
-    control pair is one unsplittable .sb-group and the rows are whatever
-    flex-wrap makes of the page canvas (wide window = fewer rows)."""
+    """The scope bar has no forced line breaks: each label + control pair is
+    one unsplittable .sb-group and the rows are whatever flex-wrap makes of
+    the page canvas (wide window = fewer rows)."""
     html = client.get("/stats").text
     assert "subbar-break" not in html
     assert "subbar-row2" not in html
@@ -1734,13 +1733,13 @@ def test_stats_js_turnaround_overlays_and_rhythm_compare_total(client):
 
 
 def test_stats_page_stream_recovery_jobs_gap_and_hidden_range_refresh(client):
-    """The recovery probe hits an endpoint behind the stream's own gate
-    and stops on 401 / 403 (a /v1/models 200
-    reopened a 403ing stream every 1.5 s forever), with a back-off that
-    survives repeated failures; a server restart (uptime going backwards)
-    clears the rings whichever reconnect wins; an anchored jobs table with
-    no row in common with the previous snapshot drops its pages instead of
-    hiding the gap; a hidden tab skips the range-mode minute refresh."""
+    """The recovery probe hits an endpoint behind the stream's own gate and
+    stops on 401 / 403 (a /v1/models 200 reopened a 403ing stream every
+    1.5 s forever), with a back-off that survives repeated failures; a server
+    restart (uptime going backwards) clears the rings whichever reconnect
+    wins; an anchored jobs table with no row in common with the previous
+    snapshot drops its pages instead of hiding the gap; a hidden tab skips
+    the range-mode minute refresh."""
     html = client.get("/stats").text
     sse = html[html.index("function openStream() {"):html.index("const HIDE_CLEAR_MS")]
     assert "fetch('/stats/snapshot?lite=1'" in sse
@@ -1762,13 +1761,13 @@ def test_stats_page_stream_recovery_jobs_gap_and_hidden_range_refresh(client):
 
 
 def test_stats_page_status_pill_keeps_the_stream_state(client):
-    """refreshStatusPill painted from ring state alone, so a spark hover
-    or L on a page whose stream was
-    reconnecting, or ended for good by the probe's 401 / 403, turned the
-    pill green "live". setStatus records the non-live state, the stream
-    clears it, and the pill consults it before painting 'pill live'. Two
-    samples sharing a second (the initial snapshot + the first frame)
-    trapped the keyboard scrub on the pair: the newer one replaces it."""
+    """refreshStatusPill painted from ring state alone, so a spark hover or L
+    on a page whose stream was reconnecting, or ended for good by the
+    probe's 401 / 403, turned the pill green "live". setStatus records the
+    non-live state, the stream clears it, and the pill consults it before
+    painting 'pill live'. Two samples sharing a second (the initial
+    snapshot + the first frame) trapped the keyboard scrub on the pair: the
+    newer one replaces it."""
     html = client.get("/stats").text
     pill = html[html.index("function refreshStatusPill() {"):]
     pill = pill[:pill.index("\n}\n")]
