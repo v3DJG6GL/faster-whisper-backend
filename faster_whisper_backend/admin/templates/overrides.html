@@ -39,7 +39,7 @@
   .hint { color: var(--help); font-size: var(--fs-sm); margin: 0.3rem 0 0; }
   .status { font-size: var(--fs-sm); color: var(--dim); margin-left: 0.5rem; }
   .status.ok { color: var(--green); } .status.err { color: var(--red); }
-  /* contained intro / help banner (was bare floating text) */
+  /* intro / help banner */
   .ov-intro { border: 1px solid var(--border); border-radius: 9px;
     background: linear-gradient(180deg, #12171f, var(--panel));
     padding: 0.6rem 0.85rem; margin-bottom: 1rem; color: var(--help);
@@ -47,12 +47,10 @@
   .ov-intro p { margin: 0; }
   .ov-intro #ov-globals { margin-top: 0.3rem; }
   .ov-intro .lk { width: 0.9em; height: 0.9em; vertical-align: -0.12em; color: var(--yellow); }
-  /* subbar tabs */
   .ov-tab { background: transparent; border: 1px solid var(--border);
     color: var(--dim); padding: 0.2rem 0.7rem; border-radius: 999px;
     cursor: pointer; font: inherit; font-size: var(--fs-sm); }
   .ov-tab.active { color: var(--bold); border-color: var(--cyan); }
-  /* master-detail */
   .ov-wrap { display: grid; grid-template-columns: 17rem 1fr; gap: 1rem; align-items: start; }
   .ov-side { display: flex; flex-direction: column; gap: 0.15rem;
     border: 1px solid var(--border); border-radius: 9px; padding: 0.5rem;
@@ -79,7 +77,6 @@
   .ov-side-actions button { padding: 0.25rem 0.5rem; font-size: var(--fs-xs); }
   .ov-confirm { display: inline-flex; align-items: center; gap: 0.3rem;
     font-size: var(--fs-xs); color: var(--red); }
-  /* inline add / rename (replaces prompt) */
   .ov-inline { display: flex; align-items: center; padding: 0.3rem 0.1rem 0; }
   .ov-inline-edit { display: flex; align-items: center; gap: 0.25rem; flex: 1; min-width: 0; }
   .ov-edit-input { flex: 1; min-width: 4rem; box-sizing: border-box;
@@ -97,7 +94,6 @@
   .ov-pane-head { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.85rem; }
   .ov-pane-head .pname { font-family: var(--font-mono); color: var(--bold);
     font-size: var(--fs-lg); }
-  /* section cards */
   .ov-sec { border: 1px solid var(--border); border-radius: 9px;
     background: var(--panel); overflow: hidden; margin-bottom: 0.9rem; }
   .ov-sec:last-child { margin-bottom: 0; }
@@ -111,7 +107,7 @@
     margin-top: 0.15rem; }
   .ov-access-row { display: flex; align-items: center; gap: 0.6rem; padding: 0.35rem 0 0.2rem; }
   .ov-access-row label { font-size: var(--fs-sm); color: var(--fg); cursor: pointer; }
-  /* field row: dot | name | value | lock | ctrl — hairline dividers + hover */
+  /* field row columns: dot | name | value | lock | ctrl */
   .ov-row { display: grid;
     grid-template-columns: 0.8rem minmax(11rem, 1fr) minmax(8rem, 1.4fr) 2rem 5.2rem;
     align-items: center; gap: 0.4rem; padding: 0.32rem 0;
@@ -185,7 +181,6 @@
   .ex-row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0.55rem; }
   .ov-sim.err { border-color: var(--red); }
   @media (max-width: 56rem) { .ex-grid { grid-template-columns: 1fr; } }
-  /* waterfall */
   .ov-wf { border: 1px solid var(--border); border-radius: 4px;
     margin: 0.4rem 0; background: var(--bg); }
   .ov-wf-head { display: flex; align-items: baseline; gap: 0.5rem;
@@ -305,9 +300,8 @@
 {{SCALE_PICKER_JS}}
 {{SEV_POLLER_JS}}
 <script>
-/* Standalone resolution-waterfall renderer — its own esc() scope so both the
-   Explorer and (later) the api-keys inline preview can call it. Pure: takes a
-   per-field /resolve object and returns a DOM node. */
+/* Standalone resolution-waterfall renderer with its own esc() scope. Pure:
+   takes a per-field /resolve object and returns a DOM node. */
 window._renderWaterfall = (function () {
   'use strict';
   function esc(s) {
@@ -404,19 +398,16 @@ window._renderWaterfall = (function () {
     return false;
   }
 
-  // ---- state ----
   var S = null;                 // /state payload
   var profiles = {};            // editable working copy
   var snapshot = '{}';          // JSON snapshot for dirty compare
-  var sel = null;               // selected profile name
+  var sel = null;
   var PIPE_FIELDS = ['PIPELINE_RULES_EXCLUDE', 'PIPELINE_RULES_INCLUDE'];
   var NAME_RE = /^[a-z0-9][a-z0-9-]{0,31}$/;
-  // inline-UI flags (replace the old prompt/confirm/alert dialogs)
   var uiAdding = false;         // sidebar "new profile" input showing
   var uiRenaming = false;       // selected profile in inline-rename mode
   var uiConfirmDel = false;     // delete confirmation showing
 
-  // ---- dom refs ----
   var listEl, mainEl, saveBtn, discardBtn, statusEl;
 
   function dirty() { return JSON.stringify(profiles) !== snapshot; }
@@ -445,9 +436,7 @@ window._renderWaterfall = (function () {
     return n;
   }
 
-  // ---- sidebar ----
-  // Inline editor (input + ✓ / ✕) for both create and rename, replacing the old
-  // browser prompt(). Enter commits, Esc cancels; the field auto-focuses.
+  // Inline editor (input + ✓ / ✕) shared by create and rename.
   function inlineInput(value, onCommit, onCancel) {
     var wrap = document.createElement('span'); wrap.className = 'ov-inline-edit';
     var inp = document.createElement('input'); inp.type = 'text';
@@ -628,7 +617,6 @@ window._renderWaterfall = (function () {
     delete profiles[sel]; sel = null; uiConfirmDel = false; render(); refreshButtons();
   }
 
-  // ---- global gates (read-only echo; edited on /settings) ----
   function renderGlobals() {
     var el = document.getElementById('ov-globals');
     if (!el) return;
@@ -645,10 +633,8 @@ window._renderWaterfall = (function () {
       + '&#9881; overrides drawer on the <a href="/settings/api-keys">API keys</a> page.';
   }
 
-  // ---- main pane ----
   function render() { renderGlobals(); renderSide(); renderMain(); }
 
-  // A titled section card (header strip + padded body). Returns { sec, body }.
   function makeSection(title, sub) {
     var sec = document.createElement('div'); sec.className = 'ov-sec';
     sec.innerHTML = '<h4>' + esc(title)
@@ -692,7 +678,7 @@ window._renderWaterfall = (function () {
     var cb = document.createElement('input');
     cb.type = 'checkbox'; cb.className = 'switch'; cb.setAttribute('role', 'switch');
     cb.id = 'ov-requestable';
-    cb.checked = p.requestable !== false;       // absent / true = requestable
+    cb.checked = p.requestable !== false;
     cb.onchange = function () {
       if (cb.checked) delete p.requestable; else p.requestable = false;
       refreshButtons(); renderSide();
@@ -784,8 +770,9 @@ window._renderWaterfall = (function () {
       inh.appendChild(inhLbl); inh.appendChild(inhVal);
       valCell.appendChild(inh);
       var ab = document.createElement('button'); ab.textContent = '+ override';
-      // Seed from the inherited value (not a zero/empty default) so starting an
-      // override doesn't silently change behaviour — matches the per-model page.
+      // Seed from the inherited value so starting an override doesn't silently
+      // change behaviour; with nothing inherited, fall back to the type default
+      // (true / min / first option) — matches the per-model page.
       ab.onclick = function () {
         setVal(p, name, (dv === null || dv === undefined) ? defaultFor(meta) : dv);
       };
@@ -858,7 +845,6 @@ window._renderWaterfall = (function () {
     render(); refreshButtons();
   }
 
-  // ---- pipeline tri-state ----
   function pipelineSection(p) {
     var s = makeSection('Pipeline rules', 'enable / disable text rules for this profile');
     var exc = p.PIPELINE_RULES_EXCLUDE || [];
@@ -889,7 +875,6 @@ window._renderWaterfall = (function () {
         + tagChips + langBadge + '</span>';
       var grp = document.createElement('span'); grp.className = 'status-btn-group';
       grp.setAttribute('role', 'radiogroup');
-      // inherit label carries the resolved global default, as the old select did
       [['inherit', 'Inherit (' + (r.enabled ? 'on' : 'off') + ')', 'inherit'],
        ['on', 'On', 'allow'], ['off', 'Off', 'deny']].forEach(function (o) {
         var btn = document.createElement('button'); btn.type = 'button';
@@ -928,7 +913,6 @@ window._renderWaterfall = (function () {
     refreshButtons();
   }
 
-  // ---- save / discard ----
   // Refresh only the server-side state S (usage map, saved profiles, rules…)
   // and leave the working copy `profiles` / `snapshot` alone: a refused save
   // or an edit made while the POST was in flight must not be thrown away.
@@ -996,7 +980,6 @@ window._renderWaterfall = (function () {
     render(); refreshButtons(); setStatus('');
   }
 
-  // ---- explorer ----
   var exUser, exKey, exModel, exSim, exOut, usersCache = [];
   function buildExplorer() {
     exUser = document.getElementById('ex-user');
@@ -1063,7 +1046,6 @@ window._renderWaterfall = (function () {
     if (seq !== _resolveSeq) return;
     exOut.innerHTML = '';
     if (j.binding_fault) {
-      // Fail-closed lock with no owning layer: name the reason.
       var bf = document.createElement('p'); bf.className = 'status err';
       bf.textContent = 'Binding store unreadable — every field is locked '
         + '(fail-closed) until it can be read again.';
@@ -1079,7 +1061,6 @@ window._renderWaterfall = (function () {
     if (!names.length) exOut.appendChild(document.createTextNode('no resolvable fields'));
   }
 
-  // ---- tabs ----
   function showTab(which) {
     var prof = which === 'profiles';
     document.getElementById('panel-profiles').hidden = !prof;
@@ -1091,7 +1072,6 @@ window._renderWaterfall = (function () {
     if (!prof && !exUser) buildExplorer();
   }
 
-  // ---- boot ----
   async function loadState(keepSel) {
     var r = await fetch('/settings/overrides/state');
     if (await guard403(r)) return false;
