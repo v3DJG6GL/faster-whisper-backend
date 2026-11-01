@@ -110,8 +110,9 @@ _last_used: "dict[str, float]" = {}
 # ref → LoopLock serializing that one ref's cold load, so a warm hit on
 # any OTHER ref never waits behind a multi-GB download (see _get_model).
 # Entries persist for the process — one tiny Lock per distinct ref ever
-# loaded; popping them on release would open a re-create race that lets two
-# jobs load the same model concurrently.
+# requested (a failed load keeps its entry too); popping them on release
+# would open a re-create race that lets two jobs load the same model
+# concurrently.
 _loading: "dict[str, LoopLock]" = {}
 # Loads currently inside _load_blocking, and how many times a load has
 # started while another was already running — a VRAM delta measured across
@@ -145,10 +146,6 @@ def _parse_model_ref(ref: str) -> "tuple[str, str | None]":
         return ref, None
     return repo, (quant or None)
 
-
-# =============================================================================
-# Prompt families
-# =============================================================================
 
 # Chinese language names for HY-MT's official contextual template (the
 # instruction that carries them is Chinese — see _build_hunyuan): the 38
@@ -454,9 +451,8 @@ def render_prompt(text: str, target: str, *, source: "str | None" = None,
     if fam_name not in _FAMILIES:
         fam_name = "custom" if template is not None else resolve_family(ref)
     # An unknown source stays EMPTY, exactly as translate_segments passes
-    # it — only _build_gemma defaults to "en" itself (its wire format
-    # needs a code); every other builder drops the "from X" clause. Both
-    # codes take the run's fold (_prompt_target).
+    # it (each builder handles that itself). Both codes take the run's fold
+    # (_prompt_target).
     source_code = _prompt_target((source or "").strip())
     target = _prompt_target(target)
     fam = _FAMILIES[fam_name]
@@ -484,10 +480,6 @@ def render_prompt(text: str, target: str, *, source: "str | None" = None,
         out["text"] = prompt
     return out
 
-
-# =============================================================================
-# Model loading / LRU cache
-# =============================================================================
 
 def _load_blocking(ref: str, device: str, family: str, download_cb=None):
     """Import llama_cpp and load the GGUF model. Runs in the default
@@ -540,7 +532,6 @@ def _load_blocking_inner(ref: str, device: str, family: str,
     # Pre-download under a progress capture so the server log / jobs
     # registry / a waiting client see the multi-GB fetch move —
     # Llama.from_pretrained downloads through hf_hub_download silently.
-    # ANY pre-download failure falls back to the stock path below.
     local_path = None
     if offline:
         # from_pretrained ALWAYS lists the repo over the network
@@ -636,9 +627,8 @@ def _load_blocking_inner(ref: str, device: str, family: str,
 
 def _hub_http_errors(name: str) -> "tuple[type, ...]":
     """The hub HTTP client's exception class `name`: huggingface_hub 2.x
-    speaks httpx2, 1.x httpx, and either one may be the only one installed
-    — a bare `import httpx` raised ModuleNotFoundError out of the very
-    error path it was classifying."""
+    speaks httpx2, 1.x httpx, and either one may be the only one installed.
+    Runs inside error classification, so a missing module must never raise."""
     classes = []
     for module in ("httpx2", "httpx"):
         try:
@@ -714,9 +704,9 @@ def _predownload_gguf(repo: str, quant: "str | None",
     """Resolve the concrete .gguf filename (the same glob
     Llama.from_pretrained applies) and fetch it under a download_progress
     capture + a "download" jobs entry. Returns the local path, or None when
-    the listing is empty/ambiguous (from_pretrained then produces its own,
-    familiar error). Raises on listing/download failures — the caller falls
-    back. Runs in the executor (blocking network I/O)."""
+    the listing is empty/ambiguous (the caller then loads a cached copy, else
+    lets from_pretrained refuse). Raises on listing/download failures for the
+    caller to classify. Runs in the executor (blocking network I/O)."""
     import fnmatch
 
     from huggingface_hub import HfApi, constants as hf_constants, hf_hub_download
@@ -741,7 +731,6 @@ def _predownload_gguf(repo: str, quant: "str | None",
     matches = sorted(f for f in files
                      if fnmatch.fnmatch(f.lower(), pattern))
     if len(matches) != 1:
-        # 0 or ambiguous: let from_pretrained's own resolver speak.
         return None
     label = _STATS_PREFIX + repo + (f":{quant}" if quant else "")
     job_id = jobs.job_start("download", model=label, detail=matches[0])
@@ -856,17 +845,18 @@ def _trim_locked(cap: int) -> None:
             (r for r in _models
              if not _active.get(r, 0) and not _draining(r)), None)
         if victim is None:
-            # Every cached model is mid-job — overflow the cap rather
-            # than free a context under a running decode; the idle
-            # evictor trims the excess once the jobs release.
+            # Every cached model is leased or still decoding — overflow
+            # the cap rather than free a context under a running decode;
+            # the next load re-trims (the idle evictor only drops a model
+            # once it has idled past TRANSLATION_IDLE_TIMEOUT_S).
             logger.warning(
                 "[translate] all %d cached models are in use — "
                 "temporarily exceeding TRANSLATION_MAX_LOADED_MODELS",
                 len(_models))
             break
         if not _drop_locked(victim):
-            # decode still draining on it — overflow the cap this round,
-            # the idle evictor retries
+            # Defensive: the victim filter mirrors _drop_locked's refusals;
+            # stop rather than spin if the two ever diverge.
             break
 
 
@@ -890,11 +880,9 @@ async def _get_model(ref: str, *, lease: bool = False, download_cb=None):
             _active[ref] = _active.get(ref, 0) + 1
         return llm
 
-    # Lock-free cache hit. Read the model into a LOCAL first so a concurrent
-    # _drop_locked cannot pop it between the check and the return. Taking
-    # _lock before the hit check (as this did) made every job on a warm model
-    # block for the full duration of any other job's cold load — the same
-    # lesson diarization._get_pipeline already carries.
+    # Lock-free cache hit, read into a LOCAL so a concurrent _drop_locked
+    # cannot pop it between the check and the return. No _lock here: it
+    # would block every warm hit for the whole of another job's cold load.
     llm = _models.get(ref)
     if llm is not None and (_params.get(ref) == params
                             or _active.get(ref, 0) > 0):
@@ -912,8 +900,7 @@ async def _get_model(ref: str, *, lease: bool = False, download_cb=None):
             if _params.get(ref) == params or _active.get(ref, 0) > 0:
                 return _hit(llm)   # a waiter arrived after another's load
             # Load params changed (TRANSLATION_DEVICE, or the prompt family's
-            # n_ctx) and no lease pins the model: genuinely re-key — drop the
-            # stale instance and reload with the current parameters.
+            # n_ctx) and no lease pins the model: drop it and reload.
             async with _lock:
                 if not _drop_locked(ref):
                     return _hit(llm)   # decode draining — keep serving, re-key next time
@@ -1187,7 +1174,6 @@ _SENTENCE_FINAL = ".!?…。！？।॥။។៕؟۔։።‼⁇⁈⁉"
 # Closing quotes / brackets that may follow the sentence end ('."', '?»', '」',
 # German '.“' / '.‘', Swiss '.›'). Source side only: in Chinese “ opens.
 _CLOSERS = "\"'”’»«“‘›‹」』）)]】}］｝》〉"
-# Max segments merged into one fluent group.
 _MAX_GROUP_SEGMENTS = 6
 
 
@@ -1251,8 +1237,8 @@ def _redistribute(group_texts: "list[str]", translated: str) -> "list[str]":
     boundaries — its spaces sit around a Latin name or between phrases —
     so it is cut after the nearest clause punctuation, else the nearest
     space, and only when that boundary lies within a quarter of the member's
-    share of the ideal cut; else at the raw proportional position (moved
-    off a vowel/tone mark it would orphan). Members whose source is blank
+    share of the ideal cut; else at the raw proportional position (stepped
+    past combining marks and Thai/Lao leading vowels). Members whose source is blank
     get an empty piece; a reply with fewer character clusters than members
     is unsplittable and comes back with blank pieces, which the caller
     reverts."""
@@ -1390,9 +1376,11 @@ def _redistribute(group_texts: "list[str]", translated: str) -> "list[str]":
 
 
 # Han and kana plus CJK / full-width punctuation: where two of these meet,
-# the text has no space. Same script ranges as captures/samples.py's
-# _CJK_SCRIPT; Thai, Lao, Khmer and Burmese stay out, as they put a space
-# between sentences and _redistribute cuts them at one.
+# the text has no space. Han/kana ranges as in captures/samples.py's
+# _CJK_SCRIPT, widened to the whole CJK-symbol and full-width blocks.
+# Thai, Lao, Khmer and Burmese stay out: they put a space between
+# sentences, so gluing would eat it (a raw cut inside a word there still
+# rejoins with a space).
 _GLUED_SCRIPT_RE = re.compile(
     "[\u3000-\u303f\u3040-\u30ff\u31f0-\u31ff\u3400-\u4dbf\u4e00-\u9fff"
     "\uf900-\ufaff\uff01-\uff9f\U00020000-\U0003134f]")
@@ -1600,10 +1588,6 @@ def _guard_reason(src: str, out: str, *,
     return None
 
 
-# =============================================================================
-# Main entry
-# =============================================================================
-
 def _context_lines(segments: "list[dict]", upto: int, count: int) -> str:
     """The previous ``count`` SOURCE segment texts before index ``upto``,
     speaker labels prefixed (context lines only — never the payload)."""
@@ -1755,8 +1739,9 @@ async def translate_segments(
     legitimate translation, never flagged).
 
     ``model_ref`` empty → ``TRANSLATION_DEFAULT_MODEL``; both empty →
-    :class:`TranslationError`. A target equal to ``source_lang`` is copied
-    verbatim without a model call. ``mode``: see the module docstring.
+    :class:`TranslationError`, even for a same-language-only request. A
+    target equal to ``source_lang`` is copied verbatim without a model call.
+    ``mode``: see the module docstring.
     ``context_segments`` overrides ``TRANSLATION_CONTEXT_SEGMENTS`` when not
     None. ``progress_cb(done_fraction, step_str, last_text, target=...,
     target_progress=...)`` fires after each batch — ``last_text`` is the tail
@@ -1777,8 +1762,7 @@ async def translate_segments(
     if not ref:
         raise TranslationError(
             "no translation model configured (TRANSLATION_DEFAULT_MODEL)")
-    # family_override (the admin prompt lab's UNSAVED family select) wins,
-    # then a template override forces custom, then the configured/auto chain.
+    # family_override is the admin prompt lab's UNSAVED family select.
     if family_override and family_override in _FAMILIES:
         family = family_override
     elif template_override is not None:
@@ -1797,10 +1781,6 @@ async def translate_segments(
 
     results: "list[dict[str, str]]" = [{} for _ in segments]
     warnings: "list[str]" = []
-    # Segment index → target codes whose guard fallback kept the source text.
-    # Exposed via meta["kept"] so clients can tell a kept-original apart from
-    # a real translation (the source text under translations[lang] is
-    # otherwise indistinguishable).
     kept: "dict[int, list[str]]" = {}
     meta = {"model": ref, "source": source_lang or "", "mode": mode,
             "kept": kept}
@@ -1816,7 +1796,7 @@ async def translate_segments(
 
     # Progress within the CURRENT target: reset at every target boundary so
     # the run panel can show one bar per language on top of the global
-    # fraction. Plain ints; the loop is single-threaded.
+    # fraction. A plain dict is enough: the loop is single-threaded.
     unit_state = {"target": None, "done": 0, "bucket": 0, "t0": 0.0,
                   "instant": False, "started": False, "steps": 1}
 
@@ -1967,7 +1947,6 @@ async def translate_segments(
         unit_state["t0"] = time.perf_counter()
         unit_state["instant"] = same_language(target, source_lang)
         if unit_state["instant"]:
-            # Same-language short-circuit: copy each text verbatim.
             for i, seg in enumerate(segments):
                 results[i][target] = (seg.get("text") or "")
             done_units += len(segments)
@@ -1982,9 +1961,9 @@ async def translate_segments(
             k = k_cfg
             # Growing back after a halving re-tries a size that just failed.
             # A grown size that fails a SECOND time with no batch of that
-            # size numbered in between marks it as one the model cannot
-            # number (not one bad cue): k never grows to it again in this
-            # target, or every few cues would pay a failed decode.
+            # size or larger numbered in between marks it as one the model
+            # cannot number (not one bad cue): k never grows to it again in
+            # this target, or every few cues would pay a failed decode.
             k_ceil = k_cfg
             grown = False
             failed_grown: set = set()
@@ -2103,10 +2082,7 @@ async def translate_segments(
                 reason = reason or _guard(joined, translated, target)
                 if reason is not None and \
                         ((context and ctx_changes) or not greedy):
-                    # ONE retry WITHOUT context (see _guarded_single); greedy
-                    # families skip it when dropping the context cannot
-                    # change the prompt — an identical prompt at temperature
-                    # 0 cannot produce a different output.
+                    # ONE retry WITHOUT context (see _guarded_single).
                     translated, reason = await _retry_context_free(
                         joined, target)
                 pieces: "list[str]" = []
@@ -2119,7 +2095,7 @@ async def translate_segments(
                         # source text — revert the group like a guard hit.
                         reason = "redistribution left empty cues"
                 if reason is not None:
-                    # Whole-group revert: every member is a kept-original.
+                    # Whole-group revert to the source text.
                     for j in group:
                         results[j][target] = segments[j].get("text") or ""
                     span = (f"segment {group[0] + 1}" if len(group) == 1 else
