@@ -18,9 +18,8 @@
   /* header / .header-inner / .title / page-toolbar controls (buttons,
      pills, the #status text) are all centralized in NAV_CSS. */
   main { padding: 1rem var(--gutter); max-width: var(--col); margin: 0 auto; box-sizing: border-box; }
-  /* Personal self-usage banner in the subbar's empty middle. Grows to fill,
-     truncates on narrow screens; the subbar's own flex-wrap drops it to its
-     own line when space is tight. */
+  /* Personal self-usage banner in the subbar's empty middle; the subbar's
+     own flex-wrap drops it to its own line when space is tight. */
   header .subbar .qc-usage { flex: 1 1 auto; min-width: 0; text-align: center;
     font-size: var(--fs-sm); color: var(--dim); white-space: nowrap;
     overflow: hidden; text-overflow: ellipsis; }
@@ -47,10 +46,9 @@
   .card .type-pill { display: inline-block; padding: 0 0.375rem;
     border-radius: 3px; font-size: var(--fs-xs); background: #21262d;
     color: var(--cyan); font-weight: normal; }
-  /* Admin-locked rule (non-admin view): a yellow lock chip in the heading —
-     same pill geometry as the type pill, same yellow the admin pipeline page
-     uses for its padlock — plus not-allowed cursors on the frozen controls.
-     Contrast is left untouched: locked means protected, not deactivated. */
+  /* Admin-locked rule (non-admin view): the same yellow the admin pipeline
+     page uses for its padlock. Contrast is left untouched: locked means
+     protected, not deactivated. */
   .card .type-pill.lock-pill { background: rgba(242, 204, 96, 0.14);
     color: var(--yellow); }
   .card.locked .enabled-row input:disabled,
@@ -82,8 +80,8 @@
   .card .rule-editor textarea { width: 100%; resize: vertical; }
   .card .rule-editor .map-table { width: 100%; }
   .card .rule-editor .map-table input { width: 100%; }
-  /* Inline "added / last-updated" date column (last cell). Dim + mono, fixed
-     width so the key/value inputs keep their space. */
+  /* "added / last-updated" date column: fixed width so the key/value inputs
+     keep their space. */
   .card .rule-editor .map-table td.map-date-cell {
     width: 11rem; padding-left: 0.4rem; text-align: right;
     white-space: nowrap; vertical-align: middle; }
@@ -126,7 +124,6 @@
   #toast.err { border-color: var(--red); color: var(--red); }
   #toast.ok { border-color: var(--green); color: var(--green); }
 
-  /* Recent transcriptions panel */
   #recent-panel { margin-top: 1.5rem; border-top: 1px solid var(--border);
     padding-top: 1rem; }
   .recent-header { display: flex; align-items: center; gap: 0.5rem;
@@ -135,10 +132,9 @@
   .recent-header .recent-label { font-size: var(--fs-xs); color: var(--dim);
     font-style: italic; }
   .recent-header .spacer { flex: 1; }
-  /* Free-text search for the recent list — mirrors the /captures subbar
-     search. margin-left:auto pushes it to the right edge of the header;
-     the magnifier replaces a "search" label to save width. Sized in
-     em/rem so it tracks the scale picker. */
+  /* Recent-list search — mirrors the /captures subbar search; the magnifier
+     replaces a "search" label to save width. Sized in em/rem so it tracks
+     the scale picker. */
   .recent-header .subbar-search { flex: 1 1 auto; min-width: 8rem;
     max-width: 28rem; margin-left: auto; display: inline-flex;
     align-items: center; gap: 0.35rem; }
@@ -159,8 +155,8 @@
     border-radius: 4px; padding: 0.5rem 0.75rem; margin-bottom: 0.5rem; }
   .trace-meta { display: flex; gap: 0.5rem; color: var(--dim);
     font-size: var(--fs-xs); margin-bottom: 0.375rem; align-items: center;
-    /* The row now carries source + kind + model + language + speaker + key +
-       three numbers; without wrapping it overflows on a narrow window. */
+    /* Up to six chips plus three numbers: without wrapping the row overflows
+       a narrow window. */
     flex-wrap: wrap; }
   .trace-meta .pill { background: var(--panel-alt, rgba(255,255,255,0.04));
     border: 1px solid var(--border); border-radius: 999rem;
@@ -170,8 +166,7 @@
   /* Two chips, two questions, deliberately kept apart: the SOURCE chip says
      where the audio came from (live mic / uploaded file / fetched URL), the
      KIND chip says what the job was (batch decode / dictation / text
-     translation / model download). One binary chip used to answer both, which
-     is why a URL fetch was indistinguishable from an upload. */
+     translation / model download). */
   .trace-meta .src-chip { text-transform: uppercase; letter-spacing: 0.04em; }
   .trace-meta .src-chip.src-stream { background: rgba(79,140,255,0.18);
     border-color: rgba(79,140,255,0.55); }
@@ -187,8 +182,6 @@
     border-color: color-mix(in srgb, var(--stage-translating) 50%, transparent); }
   .trace-meta .kind-chip.kind-download { color: var(--stage-downloading);
     border-color: color-mix(in srgb, var(--stage-downloading) 50%, transparent); }
-  /* Model gets a pill like every other attribute — it was a bare <span>, the
-     one unstyled item in a row of chips. */
   .trace-meta .model-chip { font-family: var(--font-mono); }
   .trace-meta .lang-chip { font-family: var(--font-mono);
     text-transform: uppercase; letter-spacing: 0.06em; }
@@ -200,7 +193,6 @@
   .trace-meta .num.rtf-ok   { color: var(--green); }
   .trace-meta .num.rtf-warn { color: var(--yellow); }
   .trace-meta .num.rtf-bad  { color: var(--red); }
-  /* A failed job used to render as a row with nothing in it. */
   .trace-item.st-error { border-left: 3px solid var(--red); }
   .trace-meta .err-chip { font-family: var(--font-mono); color: var(--red);
     border-color: rgba(255,123,114,0.5); background: rgba(255,123,114,0.12);
@@ -324,7 +316,6 @@
   .step-excerpt .dx-full { color: var(--dim); text-decoration: underline;
     cursor: pointer; }
 
-  /* Per-trace report row + inline form */
   .trace-actions { display: flex; align-items: center; gap: 0.5rem;
     margin-top: 0.5rem; flex-wrap: wrap; }
   .trace-report-btn { background: var(--input-bg); color: var(--fg);
@@ -399,9 +390,8 @@
   .rep-actions button.primary { color: var(--green); border-color: var(--green); }
   .rep-actions button:disabled { opacity: 0.4; cursor: not-allowed; }
 
-  /* Non-modal silent-reapply strip — shown under the header bar after
-     Save kicks off the reapply job automatically. Fades out 3s after
-     completion. */
+  /* Silent-reapply strip: Save starts the reapply job automatically. Fades
+     out on completion; stays up on error. */
   #reapply-strip {
     display: flex; align-items: center; gap: 0.6rem;
     padding: 0.35rem 0.75rem;
@@ -625,7 +615,6 @@ function renderCards() {
   for (const rule of liveRules) {
     const card = document.createElement('div');
     card.className = 'card';
-    // Mirror the per-rule colour token set on /settings/pipeline (admin).
     if (rule.color) card.dataset.color = rule.color;
     const h3 = document.createElement('h3');
     const labelText = document.createTextNode(rule.label || rule.name);
@@ -682,15 +671,11 @@ function renderCards() {
   }
 }
 
-// ---------- Recent transcriptions panel + autocomplete -------------------
-//
-// SSE-driven for the freshest page; durable store backs the "Load older"
-// pagination cursor. /quick-config/stream replays the freshest server-
-// configured page on connect (oldest-first), then pushes new traces as
-// `event: trace`. EventSource auto-reconnects with a 3 s backoff per
-// the WHATWG spec — no custom retry logic needed. _oldestLoadedTs tracks
-// the bottom edge of the in-DOM list so "Load older" can issue a
-// before_ts cursor.
+// Recent transcriptions panel + autocomplete. /quick-config/stream replays
+// the freshest server-configured page on connect (oldest-first), then pushes
+// new traces as `event: trace`; the durable store backs the "Load older"
+// before_ts cursor, taken from _oldestLoadedTs (the bottom edge of the in-DOM
+// list). An HTTP error ends EventSource for good — see startStream's onerror.
 const _MAX_DATALIST = 200;
 let _es = null;
 let _oldestLoadedTs = null;
@@ -722,9 +707,6 @@ function _entryKey(entry) {
   if (entry.id != null) return 'i:' + entry.id;
   return '';
 }
-// Returns true if this entry was already rendered (and should be skipped);
-// otherwise records it as seen and returns false. Entries without any id are
-// never deduped (always allowed through).
 function _seenTrace(entry) {
   const k = _entryKey(entry);
   if (!k) return false;
@@ -748,11 +730,10 @@ function escapeHtml(s) {
 }
 // absTime is injected via TIME_HELPERS_JS.
 
-// ── Long-text folding + step diffs (file transcriptions) ────────────────────
-// A file transcript used to render in FULL three-plus times per trace (raw,
-// final, and once per changed step's before AND after). Fold it instead:
-// clamp raw/final with a size-honest "Show all", and render changed steps as
-// word-diff excerpts. Live dictation snippets are short and stay as-is.
+// Long file transcripts would otherwise render in full for raw, final and
+// every changed step's before/after: clamp raw/final behind a size-honest
+// "Show all" and render long changed steps as word-diff excerpts. Live
+// dictation snippets are short and stay as-is.
 var TRACE_CLAMP_CHARS = 400;   // raw/final fold threshold
 var TRACE_DIFF_CHARS = 300;    // steps switch to excerpt diffs past this
 var TRACE_DIFF_SAMPLE = 3;     // excerpts shown per step
@@ -849,7 +830,7 @@ function diffExcerpt(A, B, region) {
 }
 
 // Audio/processing seconds in the row's compact form: "42 s", "7 min",
-// "1 h 12 min". Was inline in the size pill; the rail's tick title wants it too.
+// "1 h 12 min".
 function traceDur(secs) {
   const s = Number(secs);
   if (!Number.isFinite(s) || s <= 0) return '';
@@ -924,8 +905,6 @@ const TRACE_KIND_TITLES = {
 
 function renderTrace(entry) {
   const item = document.createElement('div');
-  // A failed job used to render as a row with nothing in it — no chip, no
-  // stripe, just empty raw/final blocks.
   // A client cancel is recorded as 'cancelled', explicitly NOT an error
   // (main.py, metrics._USAGE_NON_ERROR_STATUSES): neutral chip, no stripe.
   const cancelled = entry.status === 'cancelled';
@@ -966,11 +945,8 @@ function renderTrace(entry) {
   // anything else is a batch decode.
   {
     const kind = entry.kind || (entry.source === 'stream' ? 'dictate' : 'batch');
-    // Source chip. Three values, not two: a URL fetch used to be
-    // indistinguishable from an upload because main.py knew the difference
-    // but wrote it only to the log line, never to the row. Suppressed
-    // entirely for kinds that consume no audio — the source column still
-    // says 'file' on those rows, and repeating it would be a lie.
+    // Source chip. Suppressed for kinds that consume no audio: their source
+    // column still says 'file', which would be a lie.
     // Error rows go through record_timing(), which writes no source, so the
     // column holds its 'file' default: a failed live session reads its
     // source off the kind, and any other failed row with no text has no
@@ -989,11 +965,8 @@ function renderTrace(entry) {
   if (entry.model) {
     addPill(entry.model, 'model-chip', 'model');
   }
-  // Language. The column has existed on the row since record_trace was
-  // written and reaches the browser already decoded — it was simply never
-  // rendered, so this viewer showed fewer job attributes than the DB row
-  // behind it. Sits left of the speaker chip because it is a property of
-  // the decode, like model and source, not of the person.
+  // Language sits left of the speaker chip: it is a property of the decode,
+  // like model and source, not of the person.
   if (entry.language) {
     addPill(String(entry.language).slice(0, 12), 'lang-chip',
             'detected / requested language');
@@ -1015,10 +988,6 @@ function renderTrace(entry) {
   } else if (cancelled) {
     addPill('cancelled', 'cancel-chip', 'cancelled by the client');
   }
-  // Size readout. Used to render only when the text was longer than
-  // TRACE_CLAMP_CHARS, which meant a short dictation showed neither its
-  // duration nor its word count. Both are columns on the row — show them
-  // whenever the row actually carries them.
   {
     const secs = Number(entry.audio_s);
     if (Number.isFinite(secs) && secs > 0) {
@@ -1032,8 +1001,8 @@ function renderTrace(entry) {
       ? stored
       : (t.trim() ? t.trim().split(/\s+/).length : 0);
     if (words) addPill(fmtCount(words) + ' words', 'num', 'words produced');
-    // rtf is computed server-side in _row_to_dict precisely so consumers do
-    // not repeat audio_s / processing_s — this one never read it.
+    // rtf is computed server-side (_row_to_dict) so consumers do not redo
+    // audio_s / processing_s.
     const rtf = Number(entry.rtf);
     if (Number.isFinite(rtf) && rtf > 0) {
       addPill(rtf.toFixed(1) + '\u00d7',
@@ -1044,9 +1013,7 @@ function renderTrace(entry) {
   item.appendChild(meta);
 
   // Stage chips: what this run actually DID, and what each stage cost.
-  // stages has been on the row since the preload work and reaches the
-  // browser already decoded; the viewer just never looked at it. Placed
-  // above `raw` so "how this run executed" precedes "what it produced".
+  // Placed above `raw` so "how this run executed" precedes "what it produced".
   // Rows pushed live over SSE carry no stages until a reload (the push
   // precedes record_timing); a report on one gets them server-side.
   {
@@ -1235,29 +1202,20 @@ function renderTrace(entry) {
   return item;
 }
 
-// ---------- "Report a problem" inline form -------------------------------
-//
-// Each trace gets a lazy form: built on the first "Report" click and
-// kept in DOM thereafter. The form supports three complementary inputs:
-//   (a) per-word corrections — click a word chip in `final` to mark it
-//       wrong, then type the replacement. Multiple corrections allowed.
-//   (b) "what you meant to say" — free-text rewrite for full rephrases.
-//   (c) free-text comment — anything else for the admin.
-// At least one of (a-with-non-empty-correct), (b), or (c) must be
-// non-empty for the server to accept the submission.
+// "Report a problem" form: built on the first click, then kept in the DOM.
+// Two inputs: per-word corrections (click a word in `final`, type the
+// replacement; several allowed) and a free-text comment. The server refuses
+// a submission with no non-empty correction and no comment.
 
 const _REPORTED_KEY = 'whisper-reported-ids';
 const _REPORTED_MAX = 200;
-// Server-authoritative set, refreshed on every load() of /state.
-// Survives across browsers/devices. localStorage is a per-tab UX hint
-// that lets a freshly submitted badge show instantly without waiting
-// for the next /state poll.
+// Server-authoritative set, refreshed on every /state load. The
+// localStorage hint (per user, see _reportedOwner) is the fallback for ids
+// it misses; applyState lists the cases.
 let _serverReportedSet = new Set();
-// Per-request_id chip corrections previously submitted by THIS user,
-// keyed on request_id. Populated from /state.reported_chips. Lets the
-// report form re-render chips on form-open instead of starting empty.
-// Filtered server-side to caller's user_id; never contains other
-// users' chips.
+// This user's previously submitted chip corrections per request_id, from
+// /state.reported_chips (filtered server-side to the caller), so a reopened
+// report form starts with them instead of empty.
 let _serverReportedChips = {};
 // The hint is stored per signed-in user (/state.user_id), so on a shared
 // browser one account never reads another's. Null until the first /state:
@@ -1290,9 +1248,8 @@ function markReported(rid) {
   catch (_) { /* quota — accept that the badge won't survive a reload */ }
 }
 function unmarkReported(rid) {
-  // Called when the user explicitly removes their report. Drops the rid
-  // from the localStorage hint AND the in-memory server set so the
-  // badge clears immediately, without waiting for the next /state poll.
+  // The user removed their report: clear the hint AND the server set so the
+  // badge drops now, not at the next /state poll.
   if (!rid) return;
   const ids = getReportedIds().filter((x) => x !== rid);
   const key = _reportedKey();
@@ -1304,10 +1261,8 @@ function unmarkReported(rid) {
 }
 
 function syncReportedBadges() {
-  // Called after /state load to flip badges visible/hidden on every
-  // trace item currently in the DOM, using the freshly fetched server
-  // list. Cheap: each row's stash is a few small fields. Also flips
-  // the "Remove report" button visibility per open report form.
+  // Runs after each /state load over every rendered row (badge + any open
+  // form's Remove button). Cheap: each row's stash is a few small fields.
   document.querySelectorAll('.trace-item').forEach((item) => {
     let rid = '';
     try { rid = (JSON.parse(item.dataset.entry || '{}') || {}).request_id || ''; }
@@ -1320,18 +1275,11 @@ function syncReportedBadges() {
   });
 }
 
-// Tokenization for the clickable-chip layer. We anchor on any word-char
-// (`\w` = [A-Za-z0-9_]) plus the Latin-Extended range À-ɏ so numeric
-// tokens like "123" and digit-leading mixed tokens ("3D", "5mg") are
-// also selectable — matching /captures' "every Whisper token is
-// clickable" behaviour. Punctuation runs are emitted as plain-text
-// nodes between word spans.
-//
-// We deliberately diverge from quick_config/recent_feed.py _TOKEN_RE here.
-// That server-side regex extracts autocomplete candidates and
-// intentionally rejects digit-only tokens (rule candidates shouldn't
-// be raw numbers). The clickable-chip layer has a different purpose:
-// the user must be able to point at any visible token to correct it.
+// Clickable-chip tokens: `\w` ([A-Za-z0-9_]) plus Latin-Extended À-ɏ, so
+// digit tokens ("123", "3D", "5mg") are selectable, as on /captures.
+// Deliberately broader than recent_feed._TOKEN_RE, which rejects digit-led
+// tokens because they make poor rule candidates. Words in non-Latin scripts
+// get no span.
 const _WORD_RE = /[\wÀ-ɏ][\wÀ-ɏ\-]*/g;
 
 function _wordifyFinal(form, finalText) {
@@ -1416,23 +1364,18 @@ function _buildReportForm(entry) {
   // What the server held when the form was seeded: sent as the merge
   // baseline so a chip the user removes or re-ranges is dropped on resubmit.
   form._baseline = JSON.parse(JSON.stringify(form._corrections));
-  // idx_end is the inclusive range end; single-word chips set
-  // idx_end === idx so range-aware code doesn't need to special-case.
   form._entry = entry;
   _wordifyFinal(form, entry.final || '');
-  // The server stores idx_end only when it differs from idx
-  // (core/text_corrections.clean_corrections), so seeded single-word
-  // chips arrive without it — restore the invariant before any range
-  // helper reads it, and strike through the seeded words.
+  // idx_end is the inclusive range end, set on every chip (idx_end === idx
+  // for one word) so range helpers need no special case. The server stores
+  // it only when it differs from idx (core/text_corrections.clean_corrections):
+  // restore it on seeded chips, and strike through the seeded words.
   form._corrections.forEach((c) => {
     if (typeof c.idx !== 'number') return;
     if (typeof c.idx_end !== 'number') c.idx_end = c.idx;
     for (let j = c.idx; j <= c.idx_end; j++) _selectWord(form, j, true);
   });
-  // Render chips + struck-through + inline replacements immediately so
-  // the user sees what they previously submitted. Skipped when there
-  // are no seeded chips — empty render is a no-op but a needless
-  // reflow.
+  // Show what the user previously submitted right away.
   if (form._corrections.length) {
     _renderCorrections(form);
   }
@@ -1443,8 +1386,6 @@ function _buildReportForm(entry) {
     submitReport(form);
   });
   const removeBtn = form.querySelector('.rep-remove');
-  // Visible only when the trace has already been reported. Lives in
-  // the actions row so its placement matches Cancel/Submit.
   removeBtn.style.display =
     isReported(entry.request_id) ? 'inline-flex' : 'none';
   removeBtn.addEventListener('click', () => {
@@ -1461,19 +1402,14 @@ function toggleReportForm(item, entry) {
   }
   form.classList.toggle('open');
   if (form.classList.contains('open')) {
-    // Focus the first correction input if any chips are present (e.g.
-    // rehydrated from a previous submission or freshly added). With
-    // no chips yet the user's next action is clicking a word in the
-    // strip, so leave focus where it is.
+    // No chips yet: the next action is clicking a word, so focus stays put.
     const firstCorr = form.querySelector('.rep-correct');
     if (firstCorr) firstCorr.focus();
   }
 }
 
-// Range-aware chip helpers ------------------------------------------------
-//
-// A chip spans [chip.idx … chip.idx_end] inclusive. Single-word chips set
-// idx_end === idx so every helper can iterate the range uniformly.
+// A chip spans [chip.idx … chip.idx_end] inclusive; a single-word chip sets
+// idx_end === idx so every helper iterates the range uniformly.
 function _chipCovers(chip, idx) {
   return chip.idx <= idx && idx <= chip.idx_end;
 }
@@ -1485,10 +1421,8 @@ function _selectWord(form, idx, on) {
   if (span) span.classList.toggle('selected', !!on);
 }
 
-// Inline replacement next to a struck-through word — mirrors the
-// .diff-ins green look from /reports' renderDiff so the user sees
-// the correction inline in the words strip, not just in the chip
-// panel below.
+// The correction, shown after the chip's last word in the words strip with
+// the .diff-ins look of /reports' renderDiff.
 function _setReplacementInline(form, chip) {
   if (typeof chip.idx !== 'number') return;
   const lastIdx = (typeof chip.idx_end === 'number') ? chip.idx_end : chip.idx;
@@ -1533,7 +1467,6 @@ function _spanText(form, a, b) {
   const pos = form._wordPositions || [];
   const finalText = form._finalText || '';
   if (!pos[a] || !pos[b]) {
-    // Fallback: join textContent of the matching spans.
     const parts = [];
     for (let i = a; i <= b; i++) {
       const s = form.querySelector(
@@ -1614,8 +1547,6 @@ function toggleCorrection(form, idx, word, shiftKey) {
 function _renderCorrections(form) {
   const box = form.querySelector('.rep-corrections');
   box.innerHTML = '';
-  // Refresh inline replacement siblings for all current chips so
-  // re-renders keep the strip in sync with the chip-panel state.
   form._corrections.forEach(c => _setReplacementInline(form, c));
   form._corrections.forEach((c, i) => {
     const chip = document.createElement('div');
@@ -1639,10 +1570,7 @@ function _renderCorrections(form) {
     inp.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') {
         e.preventDefault();
-        // Move focus to the next chip input if any, else to the
-        // comment textarea so the user can add context. No more
-        // chips + no comment yet = a deliberate done signal; we
-        // don't auto-submit here, the user still clicks the button.
+        // Enter moves on (next chip, then the comment) but never submits.
         const inputs = Array.from(form.querySelectorAll('.rep-correct'));
         const next = inputs[i + 1];
         if (next) next.focus();
@@ -1719,12 +1647,9 @@ async function submitReport(form) {
     if (entry.request_id) {
       markReported(entry.request_id);
       _serverReportedSet.add(entry.request_id);
-      // Snapshot the just-submitted chips so any re-render that calls
-      // _buildReportForm(entry) again (e.g. a future SSE-driven refresh)
-      // re-seeds correctly. What was SENT, not the live form: edits made
-      // while the POST ran never reached the server. Slight skew if a
-      // concurrent submit from another tab landed in between; the next
-      // /state load reconciles.
+      // Seeds a form rebuilt for this trace (e.g. after reloadRecent) until the
+      // next /state load. What was SENT, not the live form: edits made while
+      // the POST ran never reached the server.
       _serverReportedChips[entry.request_id] = {
         corrections: JSON.parse(JSON.stringify(corrections)),
         user_comment: comment,
@@ -1733,8 +1658,7 @@ async function submitReport(form) {
     // The server now holds what was just sent: a second submit from this
     // still-open form must diff against that, not the original seed.
     form._baseline = JSON.parse(JSON.stringify(corrections));
-    // Update the badge + collapse the form. Keep the form's filled-in
-    // values intact so the user can re-open it if they want to add more.
+    // The form keeps its values when it collapses below, so reopening it can add more.
     const item = form.closest('.trace-item');
     if (item) {
       const badge = item.querySelector('.trace-reported-badge');
@@ -1796,13 +1720,8 @@ async function removeReport(form) {
       return;
     }
     unmarkReported(rid);
-    // Drop the seed entry so a fresh _buildReportForm call after this
-    // remove starts empty (matches the server-side state). The form
-    // we hold open here keeps form._corrections in-memory; that's
-    // fine — closing the form below means the next open re-uses this
-    // form node, which still has its in-memory chips. The user can
-    // re-submit those by re-clicking Submit. They can also click
-    // each chip's × to clear them.
+    // A form built for this trace from now on starts empty. This node is
+    // reused on the next open and keeps its chips, so they can be resubmitted.
     delete _serverReportedChips[rid];
     syncReportedBadges();
     form.classList.remove('open');
@@ -1828,9 +1747,8 @@ function pushTrace(entry) {
   if (empty) empty.remove();
   list.insertBefore(renderTrace(entry), list.firstChild);
   if (_pushedDuringReload) _pushedDuringReload.push(entry);
-  // Server caps row count via RECENT_TRANSCRIPTIONS_MAX + TTL prune; no
-  // client-side trim. The "Load older" cursor walks back through the
-  // store from whatever the user has on screen.
+  // No client-side trim: RECENT_TRANSCRIPTIONS_MAX bounds the store, not this
+  // list, which only reloadRecent() resets.
   if (_oldestLoadedTs == null || (entry.ts && entry.ts < _oldestLoadedTs)) {
     // First SSE event after a fresh connect seeds the cursor; subsequent
     // pushes are newer than the current bottom and don't move it.
@@ -1843,18 +1761,15 @@ function appendTraceAtBottom(entry) {
   const list = document.getElementById('recent-list');
   if (!list) return;
   if (_seenTrace(entry)) return;
-  // #recent-pager is a SIBLING of #recent-list (it sits below the list as a
-  // separate footer bar), not a child — so insertBefore(node, pager) throws
-  // NotFoundError. Older entries belong at the end of the list, so just
-  // append them there (they land above the pager, which follows the list).
+  // Not insertBefore(node, #recent-pager): the pager is a sibling of the
+  // list, not a child, so that throws NotFoundError.
   list.appendChild(renderTrace(entry));
 }
 
-// Clear the list and (re)load the freshest page from the durable store for
-// the current _searchQuery. Used for the initial population (so the panel no
-// longer depends on the SSE replay succeeding), on every search change, and
-// to catch up after a stream reconnect. Resets the dedupe set + pagination
-// cursor so "Load older" walks back through the (optionally filtered) set.
+// (Re)load the freshest page for _searchQuery from the durable store: the
+// initial population (not reliant on the SSE replay), every search change and
+// the catch-up after a stream reconnect. Only a successful load replaces the
+// list and resets the dedupe set and the "Load older" cursor.
 async function reloadRecent() {
   const list = document.getElementById('recent-list');
   const btn = document.getElementById('btn-load-older');
@@ -2010,7 +1925,6 @@ function startStream() {
     try { pushTrace(JSON.parse(e.data)); } catch (_) {}
   });
   _es.onopen = () => {
-    // A successful (re)connect ends any recovery polling and restores the label.
     if (_recoveryTimer) { clearTimeout(_recoveryTimer); _recoveryTimer = null; }
     _setRecentLabel('persistent · paginated');
   };
@@ -2060,15 +1974,13 @@ function startStream() {
 
 // --- Field-level diff helpers (used for both build-patch and conflict re-merge) ---
 //
-// For each editable field we represent the user's change as a typed diff
-// vs. their original baseline (initialRules at load time):
-//   dict   (cb:map.map)                    → {kind:'dict', added, changed, removed[]}
-//   list   (cb:lowercase-wordlist.wordlist)→ {kind:'list', added[], removed[]}
-//   olist  (regex-list.entries)            → {kind:'olist', base[], value[]}
-//   scalar (everything else)               → {kind:'scalar', value}
-// On a conflict we re-apply the diff to the FRESH server state, so the
-// other user's entries survive — only the cells the user actually
-// touched get overlaid.
+// Each editable field's change is a typed diff vs. initialRules (the last /state load):
+//   dict   (cb:map.map)                     → {kind:'dict', added, changed, prior, removed[]}
+//   list   (cb:lowercase-wordlist.wordlist) → {kind:'list', added[], removed[]}
+//   olist  (regex-list.entries)             → {kind:'olist', base[], value[]}
+//   scalar (everything else)                → {kind:'scalar', base, value}
+// On a conflict the diff is re-applied to the FRESH server state, so the other
+// writer's entries survive — only the cells the user touched are overlaid.
 const _DICT_FIELDS = new Set(['map']);
 const _LIST_FIELDS = new Set(['wordlist']);
 // Ordered lists: entry order is the apply order, so the merge keeps the
@@ -2165,15 +2077,13 @@ function _fieldDiff(baseline, edited, kind) {
     if (_stringify(baseline || []) === _stringify(edited || [])) return null;
     return { kind: 'olist', base: (baseline || []).slice(), value: edited || [] };
   }
-  // scalar
   if (_stringify(baseline) === _stringify(edited)) return null;
   return { kind: 'scalar', base: baseline, value: edited };
 }
 
 // An olist entry (or dict key) both writers changed differently keeps the
 // user's version (their unsaved work is never dropped) and its pattern (or
-// key) is pushed onto `clashes`, so the caller can tell the user to review
-// it before saving.
+// key) is pushed onto `clashes`; the caller counts them to flag the rule.
 // An entry the user deleted but the other writer fixed the pattern of (a
 // dict key the other writer changed the value of) comes back in their
 // version: a clash too, its pattern (or key) also pushed onto `restored`, as
@@ -2240,15 +2150,14 @@ function _applyFieldDiff(serverValue, diff, clashes, restored) {
   }
   if (diff.kind === 'olist') {
     // Three-way merge keyed by entry identity (_olistKeyed): an entry only
-    // one side changed takes that side's version in place, and one both
-    // sides changed differently is a clash (user's version kept, reported
-    // through `clashes`). The user's deletions
-    // win (bar one the other writer fixed the pattern of: theirs is back,
-    // a clash also reported through `restored`)
-    // and an entry the user edited survives the other writer deleting
-    // it, as for dict keys. The other writer's new entries go in after
-    // their nearest server-side predecessor still present (or at the top),
-    // so the user's apply order holds.
+    // one side changed takes that side's version in place, and one both sides
+    // changed differently is a clash (user's version kept, reported through
+    // `clashes`). The user's deletions win, bar one the other writer fixed the
+    // pattern of (theirs is back, a clash also reported through `restored`),
+    // and an entry the user edited survives the other writer deleting it, as
+    // for dict keys. The other writer's new entries go in after their nearest
+    // server-side predecessor still present (or at the top), so the user's
+    // apply order holds.
     const baseKeyed = _olistKeyed(diff.base);
     const base = new Map(baseKeyed.map(([k, x]) => [k, _stringify(x)]));
     const serverOwn = _olistKeyed(serverValue);
@@ -2332,10 +2241,9 @@ function _diffKindFor(field) {
   return 'scalar';
 }
 
-// Build the rules_patch dict + per-rule fingerprints by diffing live vs initial.
-// The fingerprint is the `_fp` field the server stamped on each rule at /state
-// load — sending it back lets the server detect that another writer changed
-// this rule since we loaded, instead of silently overwriting their edit.
+// Each fingerprint is the `_fp` the server stamped on the rule at /state load:
+// sending it back lets the server detect that another writer changed the rule
+// since we loaded, instead of silently overwriting their edit.
 function buildPatchAndFingerprints() {
   const patch = {};
   const fingerprints = {};
@@ -2397,26 +2305,20 @@ async function load() {
 
 function applyState(j) {
   initialRules = j.rules || [];
-  // Newest-cb:map-entries-shown threshold, sourced from the backend config
-  // (QUICK_CONFIG_MAP_COLLAPSE_AFTER) so the page + desktop client agree.
+  // Server-sourced so the page and the desktop client agree: __mca = cb:map
+  // newest entries shown (QUICK_CONFIG_MAP_COLLAPSE_AFTER), __wsm = recent-word
+  // autocomplete cap (QUICK_CONFIG_WORD_SUGGESTIONS_MAX), __mme = map entry cap
+  // for web_common's "n / cap" readout, so a full dictionary shows before Save.
   window.__mca = (typeof j.map_collapse_after === 'number') ? j.map_collapse_after : 15;
-  // Recent-word autocomplete cap, sourced from the backend config
-  // (QUICK_CONFIG_WORD_SUGGESTIONS_MAX) so the page + desktop client agree.
   window.__wsm = (typeof j.word_suggestions_max === 'number') ? j.word_suggestions_max : 200;
-  // Schema cap on map entries — feeds the "n / cap" readout in the map
-  // editor (web_common) so a full dictionary is visible before Save bounces.
   window.__mme = (typeof j.map_max_entries === 'number') ? j.map_max_entries : 0;
   liveRules = JSON.parse(JSON.stringify(initialRules));
   dirty = new Set();
-  // role: "admin" reveals .admin-only nav links + sev pills. Non-admin keys
-  // sessions never get the class so admin chrome stays hidden.
+  // role-admin reveals the .admin-only nav links + sev pills.
   if (j.role === 'admin') document.body.classList.add('role-admin');
   else document.body.classList.remove('role-admin');
-  // Server-authoritative "reported" set + chip-corrections map. The
-  // ids feed the badge visibility; the chips feed form rehydration on
-  // form-open. Badges in already-rendered .trace-item nodes update
-  // in-place via syncReportedBadges; chip rehydration is lazy (only
-  // applied when the user opens a report form).
+  // Server-authoritative "reported" ids (badges, refreshed in place by
+  // syncReportedBadges) + chip corrections (applied only when a report form opens).
   _serverReportedChips = j.reported_chips || {};
   _serverReportedSet = new Set(Object.keys(_serverReportedChips));
   // The hint stays a fallback for what the server set misses (it holds only
@@ -2443,7 +2345,6 @@ function applyState(j) {
   loadMyUsage();   // fire-and-forget; populates the subbar self-usage banner
 }
 
-// --- personal self-usage banner (subbar middle) ---------------------------
 function _uCount(n) {
   n = Number(n || 0);
   if (n >= 1e9) return (n / 1e9).toFixed(1).replace(/\.0$/, '') + 'B';
@@ -2566,18 +2467,15 @@ async function _doSave(patch, fingerprints) {
   if (r.status === 422) {
     // Validation error. Errors naming rules this user can't see arrive
     // redacted ('<hidden rule>') and stay behind the generic "contact admin"
-    // message. But an error on one of the USER'S OWN rules — their dictionary
-    // hitting the server's entry cap, a key the schema refuses — is legible
-    // and actionable, so surface it instead of blaming the admin pipeline.
+    // message. But an error on one of the USER'S OWN rules (a key the schema
+    // refuses; a full dictionary is a 400 from the ingress guard, not this) is
+    // legible and actionable, so surface it instead of blaming the admin pipeline.
     let errs = [];
     try { const j = await r.json(); errs = (j && j.errors) || []; } catch (_) {}
     let msg = '';
     for (const e of errs) {
       const loc = String((e && e.loc) || ''), m = String((e && e.msg) || '');
       if (m.indexOf('<hidden rule>') !== -1) continue;
-      // The full-dictionary case never reaches this 422 path any more: the
-      // ingress guard 400s first with a user-facing detail (shown by the
-      // generic !r.ok branch below), so no map-cap translation is needed.
       msg = (loc ? loc + ': ' : '') + m.slice(0, 200);
       break;
     }
@@ -2624,16 +2522,10 @@ async function _doSave(patch, fingerprints) {
   const conflicts = result.conflicts || [];
   const saved = result.saved || [];
   if (conflicts.length) {
-    // Another writer changed one or more rules between our load and save.
-    // We preserve the user's intent by computing their per-field DIFF
-    // against the baseline they saw at load time, refetching the fresh
-    // server state, and re-applying that diff on top. For cb:map this
-    // means only the keys the user added/changed/removed get overlaid —
-    // the other user's keys survive; regex-list entries merge per entry
-    // (by pattern), and an entry both writers edited keeps the user's
-    // version, named in the toast. For scalars (enabled, pattern) the user's
-    // new value still wins (no way to merge two scalar edits); one the other
-    // writer also changed to another value is a clash, named in the toast.
+    // Another writer changed these rules since our load: the user's per-field
+    // diff against the baseline they loaded is re-applied onto the fresh
+    // server state (_applyFieldDiff says how each field kind merges and what
+    // is a clash or a restored entry, both named in the toast).
     const conflictSlugs = conflicts.map(c => c.slug);
     const conflictSet = new Set(conflictSlugs);
     // The non-conflicting rules ARE saved (the server only sends
@@ -2653,10 +2545,8 @@ async function _doSave(patch, fingerprints) {
 
     applyState(j);   // clears dirty; renders fresh server state
 
-    // Re-apply each user diff onto the fresh server state. dirty gets
-    // re-populated so the next Save sends an updated patch with the
-    // FRESH fingerprint (which now matches the server) plus the
-    // user's intent overlaid.
+    // Re-marks the rules dirty, so the next Save sends the user's edits with
+    // the FRESH fingerprint, which now matches the server.
     const clashed = [];
     const restored = [];
     const merged = _reapplyDiffs(diffsBySlug, clashed, restored);
@@ -2698,9 +2588,7 @@ async function _doSave(patch, fingerprints) {
     ? ('saved ' + saved.length + ' rule' + (saved.length === 1 ? '' : 's'))
     : 'nothing to save', 'ok');
   if (result.captures_count > 0) {
-    // Auto-trigger the reapply job silently — admins shouldn't have to
-    // click twice. The header strip shows progress; there's no manual
-    // re-apply button anymore.
+    // Re-apply silently (no second click); the header strip shows progress.
     startReapplyJobSilent(result.captures_count);
   }
   const j = await fetchState();
@@ -2727,11 +2615,8 @@ async function _doSave(patch, fingerprints) {
 }
 
 
-// --- Silent reapply strip (auto-triggered after Save) ---
-//
-// Same /reapply-rules POST + status-polling as the manual modal, but
-// rendered as an inline header strip so the admin keeps editing.
-// Fades out 3s after completion; sticks (red-tinted) on error so the
+// Silent re-apply after Save: an inline header strip, so the admin keeps
+// editing. Fades out on completion; sticks (red-tinted) on error so the
 // failure isn't missed.
 let _stripPoll = null;
 let _stripFadeTimer = null;
@@ -2796,7 +2681,6 @@ async function _pollStripOnce() {
     label.textContent = 'Re-apply failed: ' + (s.error || 'unknown');
     strip.classList.add('err');
     if (_stripPoll) { clearInterval(_stripPoll); _stripPoll = null; }
-    // Don't auto-hide on error — the user needs to see it.
   } else if (s.status === 'idle') {
     // The job state lives in memory: 'idle' while a job was being polled
     // means the server restarted mid-job (or captures were turned off).
