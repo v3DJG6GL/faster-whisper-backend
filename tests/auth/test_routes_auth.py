@@ -127,7 +127,7 @@ def test_sse_bearer_header_admits(client, make_user_key):
 
 
 def test_sse_key_query_param_rejected(client, make_user_key):
-    # ?key= is no longer a credential carrier: the raw key would land in every
+    # ?key= is not a credential carrier: the raw key would land in every
     # access log that records the request line.
     from faster_whisper_backend.quick_config import routes as quick_config_routes
     from fastapi import HTTPException
@@ -164,7 +164,7 @@ def test_sse_missing_key_rejected_when_locked(client, make_user_key):
 # adds "any authenticated user". Loopback always passes either list.
 
 _REMOTE = ("203.0.113.9", 1234)  # TEST-NET-3, not in the admin allowlist
-_DOCS_SHELLS = ("/docs", "/redoc")  # host-only admin shells
+_DOCS_SHELLS = ("/docs", "/redoc")
 
 
 def test_docs_shells_loopback_ok(client, make_user_key):
