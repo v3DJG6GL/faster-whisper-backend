@@ -268,9 +268,9 @@ def init_db(path: str) -> None:
     once on service startup before any other function."""
     global _conn, _path
     # Published only once every migration step succeeded: main.py logs a
-    # failed init as "store down" and never starts the sweep, so a
-    # half-migrated handle left behind would keep taking writes (and fail
-    # reads with a bare OperationalError instead of the routes' 503).
+    # failed init and never starts the sweep, so a half-migrated handle
+    # left behind would keep taking writes (and fail reads with a bare
+    # OperationalError instead of the routes' 503).
     conn = store_common.open_wal_db(path)
     try:
         conn.execute("PRAGMA temp_store=MEMORY;")
@@ -1405,7 +1405,7 @@ def resolve_window(
 ) -> tuple[int, int]:
     """The inclusive [from, to] window in days-since-epoch. `to` defaults to
     today, `from` to `to - days + 1` (days defaults to 30); `all_time` starts
-    at the first day with usage (or today when there is none). The span is
+    at the first day with usage (or at `to` when there is none). The span is
     clamped to MAX_WINDOW_DAYS by moving `from` forward. Raises ValueError
     when from > to — the route turns that into a 422."""
     t = _epoch_day(today) if to_day is None else int(to_day)
