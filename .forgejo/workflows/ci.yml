@@ -138,10 +138,8 @@ jobs:
     # servers hang the run (forgejo#12937).
     if: ${{ !cancelled() && !startsWith(github.ref, 'refs/tags/') }}
     runs-on: ubuntu-latest
-    # Exact interpreter via the official image — replaces setup-python (see
-    # header). One leg, on the interpreter the images ship (python:3.14-slim)
-    # and the installers require; windows (below) is a portability parity
-    # guard.
+    # One leg, on the interpreter the images ship (python:3.14-slim) and the
+    # installers require; windows (below) is a portability parity guard.
     #
     # /persistent/uv is the runner's shared download cache (interlinea's
     # docs/ops/ci.md "Download cache"; listed in the runner config's
@@ -162,12 +160,11 @@ jobs:
       # container is the environment, there is no venv to build.
       UV_SYSTEM_PYTHON: "1"
     steps:
-      # Manual checkout — no node in the python image, so actions/checkout
-      # (a JS action) cannot run. The run-scoped actions token authenticates
-      # the fetch, so this works regardless of repo visibility. Ref and token
-      # reach git through the step env instead of being expanded into the
-      # script text: `git check-ref-format` permits $ ( ) ` ; & | in a tag
-      # name, and this workflow triggers on v* tags.
+      # Manual checkout (no node here — see header). The run-scoped actions
+      # token authenticates the fetch, so this works regardless of repo
+      # visibility. Ref and token reach git through the step env instead of
+      # being expanded into the script text: `git check-ref-format` permits
+      # $ ( ) ` ; & | in a tag name, and this workflow triggers on v* tags.
       - name: Checkout
         env:
           GIT_REF: ${{ github.ref }}
@@ -244,8 +241,6 @@ jobs:
       # runs) and starved the wall-clock tests — probe deadlines, the GPU
       # gate's wait (runs 1642-1646). 24 here and 16 on Windows leave the
       # host half free; lower them if timing tests start failing.
-      # A Dockerfile-only PR (changes.suite false) runs only the tests that
-      # read the Dockerfiles.
       - name: Run tests (with coverage gate)
         if: needs.changes.outputs.suite == 'true'
         run: pytest -n 24 -q --cov-fail-under=84
@@ -414,7 +409,6 @@ jobs:
   build:
     name: build image (${{ matrix.variant }})
     needs: [changes, all-ci]
-    # A PR builds only when the images' named inputs changed (changes.image).
     if: ${{ !cancelled() && needs.all-ci.result == 'success' && (github.event_name != 'push' || startsWith(github.ref, 'refs/tags/')) && (github.event_name != 'pull_request' || needs.changes.outputs.image == 'true') }}
     runs-on: ubuntu-latest
     strategy:
