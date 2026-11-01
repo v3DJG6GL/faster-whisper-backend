@@ -64,7 +64,6 @@ def test_translation_stage_populates_segments_and_response(
     assert body["translation"]["targets"] == ["en", "fr"]
     assert body["translation"]["mode"] == "fluent"
     assert "warnings" not in body
-    # The stage saw the raw segment texts + the detected source language.
     assert calls[0]["segments"] == [{"text": "hallo welt", "speaker": None}]
     assert calls[0]["source_lang"] == "de"
     assert "XLATED" not in body["text"]
@@ -331,7 +330,6 @@ def test_translation_progress_forwards_target_fields_into_plan_units(
     by = {u["target"]: u for u in tr["units"]}
     assert by["en"]["state"] == "done"
     assert by["fr"]["state"] == "running" and by["fr"]["progress"] == 0.5
-    # The receipt in the response has every unit done.
     receipt = next(s for s in r.json()["plan"] if s["stage"] == "translating")
     assert {u["state"] for u in receipt["units"]} == {"done"}
     assert receipt["compute"] == "fluent"
