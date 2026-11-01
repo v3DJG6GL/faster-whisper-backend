@@ -731,7 +731,7 @@
           "note": "Removes space after an opening bracket: ( [ {."
         },
         {
-          "pattern": "\"[ \\t]*([^\"]*?)[ \\t]*(\"|\\Z)",
+          "pattern": "\"[ \\t]*((?:[^\"]*?[^\" \\t])?)[ \\t]*(\"|\\Z)",
           "replacement": "\"\\1\\2",
           "label": "tighten-quote-spacing",
           "note": "Removes spaces just inside a quote pair: \" text \" → \"text\". Pairs quotes left to right: an opening quote drops the spaces after it, a closing one the spaces before it; an unclosed quote at the end is already treated as opening."

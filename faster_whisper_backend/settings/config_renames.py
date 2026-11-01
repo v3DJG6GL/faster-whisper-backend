@@ -119,15 +119,17 @@ MERGED_RULES: dict[str, str] = {
 # (RELABELLED_RULE_ENTRIES); one saved before an earlier change of the text
 # holds that text (EARLIER_RULE_ENTRIES).
 UPGRADED_RULE_ENTRIES: dict[str, tuple[tuple[str, str], tuple[str, str]]] = {
-    # The old pair matched `"…"` greedily from any quote, so a quote that was
-    # still open at the end of one utterance's text was paired differently
-    # once the next utterance closed it — already-typed text changed and live
-    # dictation wrote the quoted words twice. The new one pairs quotes left to
-    # right (an unclosed quote at the end already counts as opening) and may
-    # span a line break.
+    # The lazy quoted text tried the closing space run at every character it
+    # grew by, so a space run inside a quote (a dictated Gänsefüßchen before a
+    # hallucinated "* * * *" loop, a space run once strip-stray-symbols
+    # deleted the symbols) took quadratic time on /transcribe (20000 items:
+    # 4 s). The quoted text now ends only on a non-space, so a space run is
+    # tried once, from the character before it; the output is the same (a
+    # quote that holds only spaces still empties). A repeat-free rewrite: the
+    # save-path guard refuses a space-run repeat inside a repeated group.
     "tighten-quote-spacing": (
-        ('"[ \\t]*([^"\\n]+?)[ \\t]*"', '"\\1"'),
         ('"[ \\t]*([^"]*?)[ \\t]*("|\\Z)', '"\\1\\2'),
+        ('"[ \\t]*((?:[^"]*?[^" \\t])?)[ \\t]*("|\\Z)', '"\\1\\2'),
     ),
     # The old pattern also fired right after a digit, so "vom 3.-10 Oktober"
     # became "vom 310 Oktober" ("12.-14.03." → "1214.03.", "2,-5 mg" →
@@ -236,6 +238,14 @@ EARLIER_RULE_ENTRIES: dict[str, tuple[tuple[str, str], ...]] = {
     # `%` joined the class: just as quadratic on a space run.
     "space-before-closing-punct": (
         ('[ \\t]+([,.:;!?\\)\\]\\}])', '\\1'),
+    ),
+    # Up to the left-to-right pairing, the pair matched `"…"` greedily from
+    # any quote, so a quote that was still open at the end of one utterance's
+    # text was paired differently once the next utterance closed it —
+    # already-typed text changed and live dictation wrote the quoted words
+    # twice.
+    "tighten-quote-spacing": (
+        ('"[ \\t]*([^"\\n]+?)[ \\t]*"', '"\\1"'),
     ),
     # c4fefe2..00fd42f: the sentence-start group `[.!?…]\s*` consumed the
     # previous sentence's terminator, so every second sentence got no opening
