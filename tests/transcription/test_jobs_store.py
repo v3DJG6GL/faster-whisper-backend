@@ -221,8 +221,7 @@ def test_prune_ttl_rows_and_bytes(db):
         db.finish(job_id=jid, state="done", result={"t": "x" * 100}, ttl_s=_TTL)
         time.sleep(0.01)
     assert db.count() == 5
-    # Newest two (done 3, done 2) stay; done 0/1 go; the running row is
-    # older than all of them and still survives.
+    # The running row is the oldest: it survives for being running, not new.
     assert db.prune(ttl_s=_TTL, max_rows=2, max_bytes=0) == 2
     assert db.get(running) is not None
     assert db.get("3" * 32) is not None and db.get("2" * 32) is not None
