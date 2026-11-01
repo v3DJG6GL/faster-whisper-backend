@@ -1,7 +1,7 @@
 """Durable store for user-submitted transcription error reports.
 
 SQLite (stdlib) in WAL mode — single-file, crash-safe, indexed. Lives at
-cfg.REPORTS_DB (defaults to reports.local.sqlite3 alongside config.local.json).
+cfg.REPORTS_DB (defaults to {DB_DIR}/reports.local.sqlite3).
 
 Reports hold dictation content in plaintext on disk; whole-disk encryption
 is the deployment's responsibility.
@@ -319,7 +319,7 @@ def upsert_report(
     # NULL, not "[]", when the blob cannot be stored: the UPDATE below
     # COALESCEs stages, so an oversized resubmission must keep what the
     # first submission recorded rather than blank it (recent_transcriptions_store
-    # .record does the same). _row_to_dict maps NULL to [] on read.
+    # .record_timing does the same). _row_to_dict maps NULL to [] on read.
     # Stored whole or not at all: a sliced JSON array is never valid JSON.
     # allow_nan=False: `stages` is list[Any], so the route's allow_inf_nan
     # never reaches a float inside it, and a stored bare Infinity made every
