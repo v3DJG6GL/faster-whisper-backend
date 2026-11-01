@@ -1,19 +1,10 @@
-"""Tests for capture_samples_store: _relpath_for, abs_path_for traversal
-defense, _row_to_dict decoding, get_sample, list_samples (status filter only
-when valid), get_members (corrections decode + bad-JSON fallback),
-update_sample (whitelist + status validation + admin_notes cap), dissolve_sample
-(NULLs member FKs + unlinks WAV), clear_all_samples, and reconcile_on_startup
-(missing WAV count, orphan file unlink, orphan-FK sweep)."""
+"""Tests for captures.samples_store."""
 
 import json
 import os
 
 import pytest
 
-
-# ---------------------------------------------------------------------------
-# Helpers — insert group rows + member captures directly via the shared conn.
-# ---------------------------------------------------------------------------
 
 def _insert_group(gs, sid, *, user_id="u1", created_ts=1.0, status="new",
                   language="de", transcript="hello", member_hashes="{}",
@@ -48,10 +39,6 @@ def _insert_capture(cs, cid, *, sample_id=None, sample_order=None, language="de"
     )
 
 
-# ---------------------------------------------------------------------------
-# _relpath_for / abs_path_for
-# ---------------------------------------------------------------------------
-
 def test_relpath_for_fanout(groups_store_db):
     rel = groups_store_db._relpath_for("abcdef0123")
     assert rel == os.path.join("groups", "ab", "cd", "abcdef0123.wav")
@@ -72,10 +59,6 @@ def test_abs_path_for_rejects_escape(groups_store_db, captures_store_db, bad):
         groups_store_db.abs_path_for(bad)
 
 
-# ---------------------------------------------------------------------------
-# _row_to_dict / get_sample
-# ---------------------------------------------------------------------------
-
 def test_get_group_missing(groups_store_db):
     assert groups_store_db.get_sample("nope") is None
 
@@ -92,10 +75,6 @@ def test_row_to_dict_decodes_and_coerces(groups_store_db):
     assert g["language"] == "de"
     assert isinstance(g["created_ts"], float)
 
-
-# ---------------------------------------------------------------------------
-# list_samples
-# ---------------------------------------------------------------------------
 
 def test_list_groups_user_filter(groups_store_db):
     gs = groups_store_db
@@ -116,7 +95,6 @@ def test_list_groups_invalid_status_ignored(groups_store_db):
     gs = groups_store_db
     _insert_group(gs, "g000000000000aaa", status="new")
     _insert_group(gs, "g000000000000bbb", status="ready")
-    # An invalid status is silently ignored → no filter applied.
     assert len(gs.list_samples(status="garbage")) == 2
 
 
@@ -127,10 +105,6 @@ def test_list_groups_newest_first(groups_store_db):
     ids = [g["id"] for g in gs.list_samples()]
     assert ids == ["g0000000000new00", "g0000000000old00"]
 
-
-# ---------------------------------------------------------------------------
-# get_members
-# ---------------------------------------------------------------------------
 
 def test_get_members_ordered_and_decodes_corrections(captures_store_db, groups_store_db):
     cs = captures_store_db
@@ -173,10 +147,6 @@ def test_get_members_empty(groups_store_db):
     _insert_group(groups_store_db, "gempty0000000000")
     assert groups_store_db.get_members("gempty0000000000") == []
 
-
-# ---------------------------------------------------------------------------
-# update_sample
-# ---------------------------------------------------------------------------
 
 def test_update_group_whitelist_fields(groups_store_db):
     gs = groups_store_db
@@ -234,10 +204,6 @@ def test_update_group_empty_patch_returns_current(groups_store_db):
     assert gs.update_sample(sid, {})["id"] == sid
 
 
-# ---------------------------------------------------------------------------
-# dissolve_sample
-# ---------------------------------------------------------------------------
-
 def test_dissolve_group_nulls_members_and_unlinks(captures_store_db, groups_store_db):
     cs = captures_store_db
     gs = groups_store_db
@@ -253,13 +219,11 @@ def test_dissolve_group_nulls_members_and_unlinks(captures_store_db, groups_stor
     gs.dissolve_sample(sid)
     assert gs.get_sample(sid) is None
     assert not os.path.isfile(abs_p)
-    # Member returned to flat list (sample_id/order NULLed).
     row = cs.get_capture("capdissolve00001")
     assert row["sample_id"] is None and row["sample_order"] is None
 
 
 def test_dissolve_missing_group_is_noop(groups_store_db):
-    # No exception, no-op.
     groups_store_db.dissolve_sample("does-not-exist")
 
 
@@ -339,15 +303,12 @@ def test_racing_dissolves_drop_the_lock_entry(captures_store_db,
     assert sid not in capture_samples._rebuild_inflight
 
 
-# ---------------------------------------------------------------------------
-# expire_samples_older_than
-# ---------------------------------------------------------------------------
-
 def test_expire_samples_one_failing_dissolve_does_not_stop_the_pass(
         groups_store_db, monkeypatch):
     gs = groups_store_db
     first, second = "gexpirefail00001", "gexpirefail00002"
-    # created_ts orders the SELECT on insertion; both sit below the cutoff.
+    # Both sit below the cutoff. The SELECT has no ORDER BY, so read back
+    # the order it actually returns before picking which dissolve fails.
     _insert_group(gs, first, created_ts=1.0)
     _insert_group(gs, second, created_ts=2.0)
     real = gs.dissolve_sample
@@ -365,10 +326,6 @@ def test_expire_samples_one_failing_dissolve_does_not_stop_the_pass(
     assert gs.get_sample(good) is None
     assert gs.get_sample(bad) is not None
 
-
-# ---------------------------------------------------------------------------
-# clear_all_samples
-# ---------------------------------------------------------------------------
 
 def test_clear_all_groups(groups_store_db):
     gs = groups_store_db
@@ -401,10 +358,6 @@ def test_clear_all_waits_for_an_in_flight_rebuild(captures_store_db,
     assert gs.get_sample(sid) is None
     assert sid not in capture_samples._rebuild_locks
 
-
-# ---------------------------------------------------------------------------
-# reconcile_on_startup
-# ---------------------------------------------------------------------------
 
 def test_reconcile_counts_missing_wav(captures_store_db, groups_store_db):
     gs = groups_store_db
@@ -465,10 +418,6 @@ def test_reconcile_keeps_valid_fk(captures_store_db, groups_store_db):
     assert orphan_fks == 0
     assert cs.get_capture("capvalidfk000001")["sample_id"] == sid
 
-
-# ---------------------------------------------------------------------------
-# get_members carries `task` → the group manifest row can say "translate"
-# ---------------------------------------------------------------------------
 
 def test_get_members_carries_task_and_group_manifest_row_says_translate(
         captures_store_db, groups_store_db):
