@@ -20,8 +20,9 @@ always had, two things are decided here:
   "12. Komma 5", became "12. , 5" and the dedup rule kept the period — the
   dictated comma lost. A run of ``. , : ; ! ? …`` (plus spaces) directly
   before a word whose value is punctuation is now consumed by the match and
-  replaced together with it: "12... Komma 5" → "12,5", "1, Komma, 5" →
-  "1,5". A mark between two digits ("12.5", "12,5") is never followed by a
+  replaced together with it, so once the later spacing / dedup rules have
+  run, "12... Komma 5" ends up "12,5" and "1, Komma, 5" "1,5". A mark
+  between two digits ("12.5", "12,5") is never followed by a
   dictation word and is untouched.
 
 Pure module: no import of ``main``.
@@ -183,11 +184,9 @@ def compile_map(m: dict) -> tuple["re.Pattern[str]", Callable[["re.Match[str]"],
     ``lookup`` is keyed by the lower-cased key and holds the derived ss
     variants too, so a caller can reason about the effective key set (the
     streaming hold-back does). ``pattern.sub(replacer, text)`` applies the
-    map. Keys are matched as whole tokens (no word character directly outside
-    an edge that is itself a word character, so "z.B." and " Prozent" match
-    too), case-insensitively, longest first —
-    the historic behaviour; the optional punctuation prefix only ever
-    precedes a key whose value is punctuation."""
+    map: case-insensitively, longest key first, each key word-bounded on
+    every edge that is not whitespace (``_alternation``). The optional
+    punctuation prefix only ever precedes a key whose value is punctuation."""
     # A whitespace-only key has no word edge to bound it, so it would match
     # every space in every transcript; the schema refuses it and the stored-
     # config migration (config_store) drops it — this is the backstop.
