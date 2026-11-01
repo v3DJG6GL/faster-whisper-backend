@@ -371,10 +371,11 @@ def test_js_twin_with_many_chips_on_a_long_spaced_text_stays_fast():
     assert out == _LONG_EXPECTED
 
 
-# Words as production passes them: the output of _align_words_to_final, whose
-# tokens carry no leading space. A rule that puts a line break or a ", "
-# between two words, or a real space in the final text, starts a new token:
-# a chip on a repeated word there must not rewrite the earlier occurrence.
+# Words straight out of _align_words_to_final, whose tokens carry no leading
+# space (routes._align_member_words puts the raw lead back in production). A
+# rule that puts a line break or a ", " between two words, or a real space in
+# the final text, starts a new token: a chip on a repeated word there must not
+# rewrite the earlier occurrence.
 # (raw words, per-word rule map, final, chip, expected)
 _ALIGNED_CASES = [
     (["世界", "你好", "世界"], {}, "世界 你好 世界",
