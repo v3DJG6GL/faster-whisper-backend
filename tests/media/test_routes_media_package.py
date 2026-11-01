@@ -94,8 +94,6 @@ def _tracks():
             {"lang": "de", "srt": "1\n00:00:00,000 --> 00:00:01,000\nHallo\n"}]
 
 
-# --- upload -------------------------------------------------------------------
-
 def test_upload_streams_to_the_store_and_is_fetchable(client, package_enabled):
     r = _upload(client)
     assert r.status_code == 200, r.text
@@ -108,7 +106,6 @@ def test_upload_streams_to_the_store_and_is_fetchable(client, package_enabled):
     assert r.status_code == 200
     assert r.headers["content-type"].startswith("video/mp4")
     assert r.content == b"video-bytes" * 16
-    # No .part left in staging.
     assert not any(n.endswith(".part") for n in os.listdir(ums.staging_dir()))
 
 
@@ -220,8 +217,6 @@ def test_upload_is_exempt_from_the_request_body_cap(client, package_enabled, mon
     assert _upload(client, data=b"x" * 500).status_code == 200
 
 
-# --- streams ------------------------------------------------------------------
-
 def test_streams_reports_the_probe_and_caches_it(client, package_enabled):
     mid = _upload(client).json()["media_id"]
     r = client.get(f"/v1/audio/media/{mid}/streams")
@@ -258,8 +253,6 @@ def test_ffconcat_upload_naming_a_retained_video_is_unreadable(
     assert r.status_code == 422 and r.json()["detail"]["code"] == "unreadable"
 
 
-# --- package ------------------------------------------------------------------
-
 def test_package_forwards_original_track_and_audio_language(client, package_enabled, monkeypatch):
     seen = {}
 
@@ -274,7 +267,6 @@ def test_package_forwards_original_track_and_audio_language(client, package_enab
     assert r.status_code == 200, r.text
     assert seen == {"default_track": 0, "original_track": 0,
                     "audio_lang": "de", "audio_label": "German"}
-    # Out-of-range / malformed values are refused, not silently dropped.
     for bad in ({"original_track": 5}, {"original_track": True}, {"audio_lang": "German"}):
         r = client.post(f"/v1/audio/media/{mid}/package",
                         json={"container": "mkv", "subtitles": _tracks(), **bad})
@@ -363,7 +355,6 @@ def test_package_mp4_when_the_streams_fit_else_422_with_code(client, package_ena
     assert r.status_code == 200, r.text
     assert r.headers["content-type"].startswith("video/mp4")
     assert r.content.endswith(b"|muxed:mp4:1")
-    # A VP9 source: MP4 refused with the reason, MKV still fine.
     monkeypatch.setattr(pk, "probe_streams", lambda p: _streams(
         video_codec="vp9", audio_codec="opus", mp4_ok=False,
         mp4_reason="MP4 can't carry VP9 video without re-encoding — choose MKV"))
@@ -425,8 +416,8 @@ def test_package_maps_the_probed_video_index(client, package_enabled, monkeypatc
 
 def test_package_body_cap_covers_every_limit_compliant_request(
         client, package_enabled, monkeypatch):
-    # MAX_TRACKS tracks of MAX_SRT_BYTES each (24 MiB, past the old 16 MiB
-    # cap) must reach the route, not the middleware's bare 413.
+    # MAX_TRACKS tracks of MAX_SRT_BYTES each (24 MiB) must reach the
+    # route, not the middleware's bare 413.
     def _argv(src, srt_paths, tracks, *, container, out_path, **kw):
         return [sys.executable, "-c", f"open({out_path!r}, 'wb').write(b'video-bytes')"]
     monkeypatch.setattr(pk, "build_package_argv", _argv)
