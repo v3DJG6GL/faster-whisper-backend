@@ -34,8 +34,7 @@ def test_v1_models_shape(client):
         assert "id" in entry
         assert "loaded" in entry
         assert isinstance(entry["loaded"], bool)
-    # No model is loaded in the harness (preload neutralised), so every
-    # listed model reports loaded=False.
+    # No model is loaded in the harness (preload neutralised).
     assert all(e["loaded"] is False for e in body["data"])
 
 
