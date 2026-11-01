@@ -21,7 +21,7 @@ import pytest
 
 def _expose_first_regex_list_rule(app_module, color=None):
     """Expose (and optionally colour) the first regex-list rule so it shows on
-    /quick-config. Mirrors the helper in test_routes_quick_config.py."""
+    /quick-config."""
     rules = copy.deepcopy(list(app_module.cfg.PIPELINE_RULES))
     slug = None
     for r in rules:
@@ -90,9 +90,8 @@ def test_pipeline_color_palette_hidden_until_opened(client):
 
 def test_pipeline_lock_icon_is_svg_not_emoji(client):
     t = client.get("/settings/pipeline").text
-    # verbatim Bootstrap 'lock' path fragment replaces the emoji …
+    # Fragment of the Bootstrap 'lock' icon's SVG path.
     assert "M8 0a4 4 0 0 1 4 4v2.05" in t
-    # … and no lock emoji survive anywhere on the page.
     assert "🔒" not in t and "🔓" not in t
 
 
