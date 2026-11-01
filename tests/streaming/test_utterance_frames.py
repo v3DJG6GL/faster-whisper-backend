@@ -91,9 +91,6 @@ def _assert_every_announced_utterance_closed_once(msgs):
         assert closed.get(n) == 1, f"utterance {n}: {closed.get(n)} terminal frames in {_lifecycle(msgs)}"
 
 
-# ---- open -------------------------------------------------------------------
-
-
 def test_open_is_emitted_once_at_the_min_speech_threshold():
     s, msgs = _session(cfg=_cfg(min_speech_ms=128))
 
@@ -130,9 +127,6 @@ def test_a_blip_below_min_speech_is_never_announced():
     asyncio.run(run())
     assert msgs == []
     assert s._utterance_index == 0           # nothing reached the wire → the ordinal is not spent
-
-
-# ---- the normal cycle ---------------------------------------------------------
 
 
 def test_open_then_decoding_then_final_share_one_ordinal():
@@ -176,9 +170,6 @@ def test_forced_commit_closes_the_utterance_and_the_next_one_reopens():
     assert [m for m in msgs if m["type"] == "final"][0].get("forced") is True
 
 
-# ---- dropped ------------------------------------------------------------------
-
-
 def test_gate_with_no_text_emits_dropped_no_speech_and_spends_the_ordinal():
     """Enough 'speech' to be announced, but the whole buffer sits under the RMS
     gate and no partial ever committed a word: no decode, no final — the client
@@ -220,9 +211,6 @@ def test_close_on_an_empty_document_never_emits_dropped():
     s, msgs = _session()
     asyncio.run(s.close())
     assert msgs == []
-
-
-# ---- a failing final decode ------------------------------------------------------
 
 
 def test_failed_final_decode_falls_back_to_the_partial_transcript():
@@ -406,9 +394,6 @@ def test_close_abort_emits_no_terminal_frame():
     assert [m for m in msgs if m["type"] == "final"] == []
 
 
-# ---- the invariant, over a mixed script ------------------------------------------
-
-
 def test_every_announced_utterance_has_exactly_one_terminal_frame():
     script = iter([
         ("eins.", [], False),                 # a normal final
@@ -434,8 +419,7 @@ def test_every_announced_utterance_has_exactly_one_terminal_frame():
     asyncio.run(run())
     _assert_every_announced_utterance_closed_once(msgs)
     ordinals = [n for kind, n in _lifecycle(msgs) if kind == "open"]
-    assert ordinals == [0, 1, 2, 3]           # unique and only ever growing
-    # Each step closes the way the script above says it does.
+    assert ordinals == [0, 1, 2, 3]
     terminals = [(kind, n) for kind, n in _lifecycle(msgs) if kind in ("final", "dropped")]
     assert terminals == [("final", 0), ("dropped", 1), ("final", 2), ("final", 3)]
     assert [m.get("reason") for m in msgs
