@@ -1,9 +1,6 @@
-"""Tests for audio_merge low-level helpers and merge_wavs error paths.
+"""Tests for captures.merge helpers, merge_wavs guards and its output file.
 
-The trim-wiring / happy concatenation paths (per-member trim, over-cap-but-
-fits, trim=False identity) are covered by test_group_trim.py; this file covers
-the gaps: read_pcm format validation, silence_bytes, hash_wav_pcm, the
-merge_wavs ValueError guards, and the clean 2-file merge dict shape.
+The trim wiring and trimmed concatenation paths live in test_group_trim.py.
 """
 
 import os
@@ -32,10 +29,6 @@ def _pcm(ms, val=4000):
     return np.full(n, val, dtype=np.int16).tobytes(), n
 
 
-# ---------------------------------------------------------------------------
-# read_pcm
-# ---------------------------------------------------------------------------
-
 def test_read_pcm_valid(tmp_path):
     pcm, n = _pcm(100)
     p = _write_wav(str(tmp_path / "ok.wav"), pcm)
@@ -45,7 +38,7 @@ def test_read_pcm_valid(tmp_path):
 
 
 def test_read_pcm_wrong_channels(tmp_path):
-    # 2 channels, each sample 2 bytes -> need an even byte count per frame.
+    # Stereo int16 frames are 4 bytes; 400 bytes is a whole number of frames.
     pcm = (np.zeros(200, dtype=np.int16)).tobytes()
     p = _write_wav(str(tmp_path / "stereo.wav"), pcm, nchannels=2)
     with pytest.raises(audio_merge.WavFormatError):
@@ -53,7 +46,7 @@ def test_read_pcm_wrong_channels(tmp_path):
 
 
 def test_read_pcm_wrong_sampwidth(tmp_path):
-    pcm = bytes(400)  # 8-bit samples
+    pcm = bytes(400)
     p = _write_wav(str(tmp_path / "s8.wav"), pcm, sampwidth=1)
     with pytest.raises(audio_merge.WavFormatError):
         audio_merge.read_pcm(p)
@@ -66,10 +59,6 @@ def test_read_pcm_wrong_rate(tmp_path):
         audio_merge.read_pcm(p)
 
 
-# ---------------------------------------------------------------------------
-# silence_bytes
-# ---------------------------------------------------------------------------
-
 @pytest.mark.parametrize("ms,expected_samples", [
     (0, 0),
     (1, 16),
@@ -79,18 +68,14 @@ def test_read_pcm_wrong_rate(tmp_path):
 def test_silence_bytes_lengths(ms, expected_samples):
     b = audio_merge.silence_bytes(ms)
     assert len(b) == expected_samples * audio_merge.BYTES_PER_SAMPLE
-    assert b == bytes(len(b))  # all zero
+    assert b == bytes(len(b))
 
 
 def test_silence_bytes_rounds_to_nearest_sample():
-    # 0.5 sample at 16k for a fractional ms boundary -> round() not trunc.
-    # 0.03125 ms = 0.5 samples -> rounds to 0 (banker's rounding to even).
+    # silence_bytes takes whole ms and 1 ms is exactly 16 samples at 16 kHz,
+    # so round() never sees a fraction here; this only pins ms=0.
     assert len(audio_merge.silence_bytes(0)) == 0
 
-
-# ---------------------------------------------------------------------------
-# hash_wav_pcm
-# ---------------------------------------------------------------------------
 
 def test_hash_wav_pcm_is_pcm_only(tmp_path):
     pcm, _ = _pcm(50, val=1234)
@@ -99,7 +84,6 @@ def test_hash_wav_pcm_is_pcm_only(tmp_path):
 
 
 def test_hash_wav_pcm_header_independent(tmp_path):
-    # Same PCM, written twice (independent headers) -> identical hash.
     pcm, _ = _pcm(50, val=777)
     p1 = _write_wav(str(tmp_path / "h1.wav"), pcm)
     p2 = _write_wav(str(tmp_path / "h2.wav"), pcm)
@@ -112,12 +96,8 @@ def test_hash_wav_pcm_differs_on_content(tmp_path):
     assert audio_merge.hash_wav_pcm(p1) != audio_merge.hash_wav_pcm(p2)
 
 
-# ---------------------------------------------------------------------------
-# merge_wavs error paths
-# ---------------------------------------------------------------------------
-
 def test_merge_requires_at_least_one_source(tmp_path):
-    # Single-capture samples are allowed now (group-of-one); only 0 is invalid.
+    # Group-of-one samples are valid; only an empty source list is rejected.
     with pytest.raises(ValueError, match="at least 1"):
         audio_merge.merge_wavs([], str(tmp_path / "out.wav"))
 
@@ -153,10 +133,6 @@ def test_merge_over_cap_rejected(tmp_path):
                                gap_ms=300, trim=False)
 
 
-# ---------------------------------------------------------------------------
-# merge_wavs happy path: dict shape + atomic write
-# ---------------------------------------------------------------------------
-
 def test_merge_clean_two_file_shape(tmp_path):
     p1 = _write_wav(str(tmp_path / "a.wav"), _pcm(200)[0])
     p2 = _write_wav(str(tmp_path / "b.wav"), _pcm(300)[0])
@@ -166,7 +142,6 @@ def test_merge_clean_two_file_shape(tmp_path):
     assert set(res.keys()) == {"bytes", "n_samples", "duration_ms", "members"}
     # 200 + 300 gap + 300 = 800 ms.
     assert res["duration_ms"] == 800
-    # samples: (200+300+300) ms * 16 = 12800.
     assert res["n_samples"] == int(800 * RATE / 1000)
     assert len(res["members"]) == 2
     assert res["members"][0] == {"lead_ms": 0, "new_duration_ms": 200,
