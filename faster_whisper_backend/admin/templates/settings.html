@@ -1217,7 +1217,12 @@ function fieldRow(name) {
   // PIPELINE_RULES has none: its editor brings its own reset flows, and this
   // one would save a pinned local copy of the rev-less config.json list,
   // losing the record of which config.json version each rule matched.
-  if (name === 'PIPELINE_RULES') { row.appendChild(inputCol); return row; }
+  // An env-pinned field has none either: it sits outside the disabled editor,
+  // stayed clickable and only repainted the row (setDirty() drops the reset).
+  if (name === 'PIPELINE_RULES' || isEnvPinned(name)) {
+    row.appendChild(inputCol);
+    return row;
+  }
   const resetWrap = document.createElement('div');
   resetWrap.className = 'reset-wrap';
   const resetBtn = document.createElement('button');
@@ -1620,6 +1625,8 @@ function modelOverridesEditor(name, v) {
     toggleCb.type = 'checkbox'; toggleCb.className = 'switch';
     toggleCb.setAttribute('role', 'switch');
     toggleCb.checked = diffMode;
+    // Display-only (dims rows, saves nothing): stays live on a pinned field.
+    toggleCb.dataset.diagnostic = '1';
     toggleCb.addEventListener('change', () => {
       diffMode = toggleCb.checked;
       mainpane.classList.toggle('diff-mode', diffMode);
@@ -3234,6 +3241,8 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
         view.className = 'reset-link';
         view.textContent = '↑ view';
         view.title = 'Scroll to global PIPELINE_RULES editor and expand this rule';
+        // Navigation only: stays live inside an env-pinned editor.
+        view.dataset.diagnostic = '1';
         view.addEventListener('click', () => {
           if (opts.onJumpToGlobal) opts.onJumpToGlobal(rule.name);
         });
@@ -3537,8 +3546,10 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
     // Opening a card only shows its body, so an env-pinned list keeps this
     // live for reading; the body's own controls stay disabled.
     expandBtn.dataset.diagnostic = '1';
+    // …and says "view" there: nothing inside the opened card can be edited.
+    const verb = !isChecklist && isEnvPinned(name) ? 'view' : 'edit';
     const _setExpandLabel = () => {
-      expandBtn.textContent = row.classList.contains('expanded') ? 'edit ▴' : 'edit ▾';
+      expandBtn.textContent = verb + (row.classList.contains('expanded') ? ' ▴' : ' ▾');
     };
     _setExpandLabel();
     expandBtn.addEventListener('click', () => {

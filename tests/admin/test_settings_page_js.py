@@ -1009,7 +1009,8 @@ console.log(JSON.stringify([paint(false), paint(true)]));
 def test_env_pinned_rule_list_cards_still_open_for_reading(client):
     """disableEnvPinnedEditor() disabled each card's "edit ▾" toggle too, so on
     an env-pinned PIPELINE_RULES no rule body could be opened to read it, and
-    the "↑ view" jump link's click on that toggle did nothing."""
+    the "↑ view" jump link's click on that toggle did nothing. Once live, the
+    toggle still offered to "edit" a card whose controls were all dead."""
     html = _html(client, "/settings/pipeline")
     src = "\n".join([
         _block(html, "    const expandBtn = document.createElement('button');",
@@ -1025,21 +1026,36 @@ El.prototype.querySelectorAll = function () {
   return out;
 };
 const rule = { name: 'a', type: 'regex' };
-const row = document.createElement('div');
+const name = 'PIPELINE_RULES';
+const isChecklist = false;
+let pinned = true;
+function isEnvPinned(n) { return pinned && n === 'PIPELINE_RULES'; }
 const expandedNames = new Set();
 function _saveExpanded() {}
 let refresh = null;
+function card() {
+  const row = document.createElement('div');
 """ + src + """
-const body = row.appendChild(document.createElement('div'));
-const inp = body.appendChild(document.createElement('input'));
-row.appendChild(expandBtn);
-disableEnvPinnedEditor(row);
-// A disabled button never sees the click, so only fire it when live.
-const click = expandBtn.disabled ? Promise.resolve() : fire(expandBtn, 'click');
-click.then(() => console.log(JSON.stringify(
-  [expandBtn.disabled, row.classList.contains('expanded'), inp.disabled])));
+  const body = row.appendChild(document.createElement('div'));
+  const inp = body.appendChild(document.createElement('input'));
+  row.appendChild(expandBtn);
+  if (pinned) disableEnvPinnedEditor(row);
+  return { row, expandBtn, inp };
+}
+(async () => {
+  const { row, expandBtn, inp } = card();
+  const label = expandBtn.textContent;
+  // A disabled button never sees the click, so only fire it when live.
+  if (!expandBtn.disabled) await fire(expandBtn, 'click');
+  const pin = [expandBtn.disabled, row.classList.contains('expanded'), inp.disabled,
+               label, expandBtn.textContent];
+  pinned = false;
+  console.log(JSON.stringify([pin, card().expandBtn.textContent]));
+})();
 """)
-    assert out == [False, True, True]
+    pin, free_label = out
+    assert pin == [False, True, True, "view ▾", "view ▴"]
+    assert free_label == "edit ▾"
 
 
 @needs_node
@@ -1078,3 +1094,68 @@ console.log(JSON.stringify([free, paint()]));
     assert free == [False, None, None]
     assert pin[0] is True and pin[2] is True
     assert pin[1].startswith("Set by WHISPER_MODEL_OVERRIDES — read-only here")
+
+
+@needs_node
+def test_env_pinned_field_offers_no_reset_to_default(client):
+    """The "↺ Reset to default" link sits outside the editor that
+    disableEnvPinnedEditor() locks, so on an env-pinned field it stayed
+    clickable and only repainted the row (setDirty() drops the reset)."""
+    html = _html(client)
+    src = "\n".join([
+        _block(html, "const FULLROW_FIELDS = ", ";\n"),
+        _block(html, "function makeBadges(name) {", "\n}\n"),
+        _block(html, "function envPinnedNote(name) {", "\n}\n"),
+        _block(html, "function fieldRow(name) {", "\n}\n"),
+    ])
+    out = _node(_FAKE_DOM + """
+const pinned = new Set();
+function isEnvPinned(n) { return pinned.has(n); }
+function fieldDef(n) {
+  return { provenance: pinned.has(n) ? 'env' : 'default', env_var: 'WHISPER_' + n,
+           value: 'env value', default_value: '' };
+}
+function currentValue(n) { return fieldDef(n).value; }
+function makeEditor(n) { return document.createElement('input'); }
+function disableEnvPinnedEditor(el) { el.disabled = true; }
+""" + src + """
+function reset() {
+  const btn = find(fieldRow('DEFAULT_PROMPT'), c => c.textContent === '↺ Reset to default');
+  return btn && btn.parentElement.style.display !== 'none' && !btn.disabled;
+}
+const free = reset();
+pinned.add('DEFAULT_PROMPT');
+console.log(JSON.stringify([free, reset()]));
+""")
+    assert out == [True, None]
+
+
+@needs_node
+def test_env_pinned_editor_keeps_its_view_only_controls_live(client):
+    """The checklist "↑ view" jump link and the MODEL_OVERRIDES "Global — dim
+    what matches" switch change no value, but disableEnvPinnedEditor() disabled
+    them too, so a pinned field could not even be inspected."""
+    html = _html(client)
+    out = _node(_captures_harness(html, """
+const CONTROL = ['INPUT', 'SELECT', 'TEXTAREA', 'BUTTON'];
+El.prototype.matches = function () { return CONTROL.includes(this.tagName); };
+El.prototype.querySelectorAll = function () {
+  const out = [];
+  (function walk(n) { n.children.forEach(c => { if (c.matches()) out.push(c); walk(c); }); })(this);
+  return out;
+};
+""" + _block(html, "function disableEnvPinnedEditor(el) {", "\n}\n") + """
+state.PIPELINE_RULES = [{ name: 'a', type: 'regex', enabled: true }];
+state.CAPTURES_PIPELINE_RULES_EXCLUDE = [];
+const wrap = makeEditor('CAPTURES_PIPELINE_RULES_EXCLUDE');
+disableEnvPinnedEditor(wrap);
+const view = find(wrap, e => e.textContent === '↑ view');
+const cb = find(find(wrap, e => e.dataset.slug === 'a'), e => e.tagName === 'INPUT');
+console.log(JSON.stringify([view.disabled, cb.disabled]));
+""", real_list=True))
+    assert out == [False, True]
+    # The dim switch lives in the big MODEL_OVERRIDES builder: pin its marker.
+    side = _block(html, "    const toggleCb = document.createElement('input');",
+                  "toggleWrap.appendChild(toggleCb);\n")
+    assert "toggleCb.dataset.diagnostic = '1';" in side
+    assert "setDirty" not in side
