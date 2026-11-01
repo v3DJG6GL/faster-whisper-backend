@@ -141,7 +141,7 @@ header .scale-picker {
      Full-bleed SURFACE, but its content sits on the page canvas: the wider
      of the page's own column and the data canvas (100rem: the width one row
      needs, so form pages don't fold it), so on data / fluid pages brand and
-     status rail end exactly where the cards end. Single-row. When the
+     status rail end exactly where the cards end. When the
      links don't fit, NAV_OVERFLOW_JS drops them to a second row / tucks them
      into the .nav-more disclosure; the compaction ladder sheds labels and
      metrics in a designed order before that.
