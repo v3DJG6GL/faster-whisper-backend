@@ -67,13 +67,6 @@ logger = logging.getLogger("whisper-api")
 router = APIRouter(prefix="/quick-config")
 
 
-# Per-type allow-list of fields an end-user is allowed to patch on an
-# already-existing exposed rule. Anything else in a patch dict triggers a
-# 400. `name`, `label`, `type`, `exposed`, `locked`, `seeded` are NEVER
-# editable from /quick-config (admin-only). Nor is `repeat`: it changes how
-# the rule runs, not its body, like `note` / `color` it is set on /settings.
-# Adding a new rule, deleting a rule, or reordering is also admin-only.
-
 # Dedicated, deliberately tiny pool for config_store.save_overrides: its ReDoS
 # guard waits on a `sys.executable` child for up to the whole-validation budget
 # (regex_guard._GUARD_TIMEOUT_MAX). Kept off asyncio's DEFAULT executor (which
@@ -100,6 +93,12 @@ _MAP_MAX_ENTRIES: int = web_common._MAP_MAX_ENTRIES
 _MAP_MAX_TOTAL_ENTRIES: int = 4 * _MAP_MAX_ENTRIES
 
 
+# Per-type allow-list of fields an end-user is allowed to patch on an
+# already-existing exposed rule. Anything else in a patch dict triggers a
+# 400. `name`, `label`, `type`, `exposed`, `locked`, `seeded` are NEVER
+# editable from /quick-config (admin-only). Nor is `repeat`: it changes how
+# the rule runs, not its body, like `note` / `color` it is set on /settings.
+# Adding a new rule, deleting a rule, or reordering is also admin-only.
 _PATCH_ALLOWED_FIELDS: dict[str, frozenset[str]] = {
     "regex-list":                  frozenset({"enabled", "entries"}),
     "callback:map":                frozenset({"enabled", "map"}),
@@ -298,11 +297,10 @@ def _redact_invisible_slugs(
             for slug in hidden:
                 # Only the two slug-bearing forms settings/schema.py emits:
                 # `rule {idx} ({slug!r})` and `duplicate rule name '{slug}'`.
-                # A bare `'{slug}'` also matched the caller's own map keys,
-                # which the collision message echoes in quotes — a key equal
-                # to a hidden slug blanked their own error and answered
-                # "does this hidden rule exist?" one save at a time. Map
-                # keys can hold neither parentheses nor quotes.
+                # Never a bare `'{slug}'`: the collision message quotes the
+                # caller's own map keys, so a key equal to a hidden slug would
+                # turn each save into an existence oracle. Map keys can hold
+                # neither parentheses nor quotes.
                 val = val.replace(f"('{slug}')", "('<hidden rule>')")
                 val = val.replace(
                     f"rule name '{slug}'", "rule name '<hidden rule>'")
@@ -1120,9 +1118,10 @@ async def stream_recent(
 
     Scope-aware: `scope=own` filters replay AND live items to the
     caller's user_id; `scope=all` lets everything through. Live items
-    flow through qc_recent_feed.subscribe()'s shared queue — every
-    subscriber gets every event — so filtering happens here per
-    subscriber rather than at the publisher (no extra queue infra)."""
+    arrive on this connection's qc_recent_feed.subscribe() queue, and the
+    publisher broadcasts every event to every subscriber, so filtering
+    happens here per subscriber rather than at the publisher (no extra
+    queue infra)."""
     perms = user["permissions"]
     caller_uid = user.get("user_id") or ""
     sees_all = perms.scope("quick_config") == "all"
