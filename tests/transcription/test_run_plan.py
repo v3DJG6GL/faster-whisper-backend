@@ -494,8 +494,7 @@ def test_diarizing_units_split_the_stage_and_learn_per_step(ledger, clock):
     assert seg == {"target": "segmentation", "state": "done", "took_s": 1.0}
     assert emb["state"] == "running" and emb["progress"] == 0.25
     assert clu["state"] == "queued"
-    # Unit-weighted stage fraction: segmentation's 1 s + a quarter of the
-    # embeddings estimate over the three estimates.
+    # Unit-weighted: a done unit weighs its took_s, an open one its estimate.
     st = p._get("diarizing")
     emb_est, clu_est = st.units[1].est_s, st.units[2].est_s
     assert p._fraction(st, clock()) == pytest.approx(
