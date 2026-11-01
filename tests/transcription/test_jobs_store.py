@@ -31,7 +31,8 @@ def _start(db, job_id="a" * 32, **kw):
 
 def test_schema_and_migration_are_idempotent(tmp_path):
     path = str(tmp_path / "old.sqlite3")
-    # A DB from a build that predated the side-blob columns.
+    # A DB from a build that predated the task / response_format and
+    # side-blob (stages / plan) columns.
     conn = sqlite3.connect(path)
     conn.executescript(
         "CREATE TABLE jobs (job_id TEXT PRIMARY KEY, request_id TEXT NOT NULL,"
