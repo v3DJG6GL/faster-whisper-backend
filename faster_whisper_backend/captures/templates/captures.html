@@ -460,9 +460,6 @@
   #toast.show { opacity: 1; }
   #toast.err { border-color: var(--red); color: var(--red); }
 
-  /* Capture grouping. The Σ meter turns red when the merge-estimate says
-   * the selection overflows CAPTURES_SAMPLE_MAX_DURATION_S (≤30 s, the
-   * Whisper-encoder window) and amber above 80% of it. */
   .cc-head .sel-checkbox {
     margin: 0 0.4rem 0 0; cursor: pointer;
   }
@@ -504,6 +501,8 @@
     color: var(--bold); padding: 0.15rem 0.5rem;
     border: 1px solid var(--border); border-radius: 4px;
   }
+  /* Red when the merge-estimate overflows CAPTURES_SAMPLE_MAX_DURATION_S
+     (≤30 s, the Whisper-encoder window), amber above 80% of it. */
   #action-bar .meter.amber { color: var(--yellow); border-color: #4d3e1f; }
   #action-bar .meter.red   { color: var(--red);    border-color: #5a2424; }
   #action-bar .summary { color: var(--help); font-size: var(--fs-sm); }
@@ -2608,13 +2607,14 @@
     var box = state.chipBox;
     box.innerHTML = '';
     // Self-heal each chip's `wrong` (see recomputeWrong). A heal is an
-    // edit: the stored chip still carries the old `wrong` (the export finds it only through the
-    // same words at its idx, see _applyChipsToText). It marks the card unsaved
-    // only when the server would store something new (it keeps `wrong`
-    // trimmed and cut at CHIP_TEXT_MAX) and the user saves by hand: a
-    // locked sample refuses a non-admin's Save (saveBlocked), and on an
-    // auto-saving proposal preview markDirty would write the members' chips
-    // without any user edit. There the heal rides along with the next edit.
+    // edit: the stored chip still carries the old `wrong` (the export finds
+    // it only through the same words at its idx, see _applyChipsToText). It
+    // marks the card unsaved only when the server would store something new
+    // (it keeps `wrong` trimmed and cut at CHIP_TEXT_MAX) and the user saves
+    // by hand: a locked sample refuses a non-admin's Save (saveBlocked), and
+    // on an auto-saving proposal preview markDirty would write the members'
+    // chips without any user edit. There the heal rides along with the next
+    // edit.
     var healed = false;
     state.corrections.forEach(function(c) {
       var w = recomputeWrong(state, c) || c.wrong;
