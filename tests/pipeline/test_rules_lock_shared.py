@@ -3,10 +3,8 @@
 /quick-config's apply_rules_patch snapshots cfg.PIPELINE_RULES, holds it across
 the offloaded save and writes the whole key back; an admin save landing inside
 that window would be persisted, applied, answered 200 and then silently
-reverted. Before pipeline/apply.py existed the routers shared the lock by
-importing each other (admin borrowed quick_config's _patch_lock). These tests
-pin the property that cross-import provided: while the shared lock is held,
-neither router's writer gets past it.
+reverted. These tests pin that while the shared lock is held, neither
+router's writer gets past it.
 """
 
 import asyncio
