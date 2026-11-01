@@ -291,9 +291,8 @@ async def translate_text(request: Request,
     except BaseException:
         # Any rejection above (422/413/429/400) — or a client disconnect
         # mid-validation — must hand the parked receipt back NOW, or the
-        # sweeper logs it ~90 s later as "no result and no progress for
-        # 90s", out of order and with the wrong reason. Mirrors the acquire-refusal
-        # release below.
+        # sweeper logs it LOG_RECEIPT_HOLD_S later as "no result and no
+        # progress", out of order and with the wrong reason.
         tx_receipt._release_held_receipt(_held_key, "request rejected")
         raise
 
@@ -320,11 +319,9 @@ async def translate_text(request: Request,
     try:
         _took_slot = _translate_inflight.acquire(_inflight_key)
     except HTTPException:
-        # Outside the try below, so the generic `except HTTPException`
-        # release there never sees this refusal — without this the parked
-        # dictation receipt would sit until the sweeper logged it as
-        # "no result and no progress for 90s" instead of the rejection it
-        # actually was.
+        # Outside the try below, so its `except HTTPException` release
+        # never sees this refusal — release the parked receipt here, for the
+        # same sweeper reason as the validation bracket above.
         tx_receipt._release_held_receipt(_held_key, "request rejected — too many in flight")
         raise
     # Set only AFTER a successful acquire — the acquire itself sits
