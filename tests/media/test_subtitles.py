@@ -115,8 +115,6 @@ def test_caps_and_id_shape():
     assert subs.list_tracks({"subtitles": None, "automatic_captions": None}) == ([], {})
 
 
-# ── fetching ────────────────────────────────────────────────────────────────
-
 import asyncio  # noqa: E402
 
 import pytest  # noqa: E402
