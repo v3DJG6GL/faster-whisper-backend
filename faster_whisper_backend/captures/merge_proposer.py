@@ -21,9 +21,9 @@ Heuristic rationale (see docs/captures-finetune-findings.md + research notes):
 Outputs are RANKED, never auto-executed. The /captures UI hands the user
 the existing merge-modal preview before any write.
 
-In-memory cache: results are cached per (user_id) with a TTL and are
-invalidated explicitly by capture writes (see invalidate() callers in
-captures_store + capture_samples_store).
+In-memory cache: results are cached per view (one user, all users, or a
+speaker set) with a TTL and are invalidated explicitly by capture and
+sample writes (see invalidate()).
 """
 from __future__ import annotations
 
