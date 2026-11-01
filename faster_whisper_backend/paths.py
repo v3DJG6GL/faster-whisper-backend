@@ -2,11 +2,10 @@
 
 The package lives one level below the checkout; config.json, static/,
 ytdlp_plugins/, ffmpeg/bin and the Windows data/ + models/ defaults all live
-AT the checkout. Every module that used to say dirname(__file__) (which
-meant the repo root while the modules were flat) reads REPO_ROOT instead.
+AT the checkout; modules read REPO_ROOT instead of their own dirname(__file__).
 
-os.path.abspath, not Path.resolve(): the flat layout never followed symlinks
-and a symlinked checkout must keep resolving the same paths.
+os.path.abspath, not Path.resolve(): symlinks are deliberately not followed,
+so a symlinked checkout keeps resolving the same paths.
 """
 import os
 
