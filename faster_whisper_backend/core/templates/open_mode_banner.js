@@ -1,12 +1,10 @@
 
 <script>(function(){
-  // Read the page-key carrier ONCE so any helper (the no-access landing,
-  // the SCALE_PICKER, future scope-hint UI) can ask "what page am I on?"
-  // without re-querying the DOM.
+  // Read the page-key meta once for every helper (no-access landing,
+  // SCALE_PICKER):
   //   * __current_page = permission key (for can()/scope() lookups)
-  //   * __current_page_path = full URL path (for display in the landing
-  //     heading, so a nested page like /settings/api-keys reads correctly
-  //     instead of showing just the permission key '/api-keys').
+  //   * __current_page_path = full URL path, so the landing heading of a
+  //     nested page reads /settings/api-keys, not one derived from the key.
   try {
     var meta = document.querySelector('meta[name=page-key]');
     window.__current_page = meta ? (meta.getAttribute('content') || '') : '';
@@ -18,9 +16,7 @@
   }
 
   var BANNER_ID = 'open-mode-banner';
-  var landingRenderedFor = null;   // page-load-only — once a no-access
-                                   // landing is rendered, subsequent
-                                   // refreshes (post-login) don't re-render.
+  var landingRenderedFor = null;   // set once; see the no-access landing below
 
   // CSRF token for cookie-authenticated mutations (double-submit). Prefer the
   // readable CSRF cookie: it is set together with the session cookie, so it
@@ -53,14 +49,12 @@
     return '';
   };
 
-  // Global sign-out: revoke the server session (CSRF-protected), announce the
-  // change, then reload (re-shows the login card / no-access landing). Shared
-  // by the header logout button and the no-access landing's Sign-out button.
+  // Global sign-out (header logout button + no-access landing): revoke the
+  // server session (CSRF-protected), announce the change, then reload.
   // Reloads only once the server ended the session (a dead session's cookie
-  // is cleared with a 200 too); a refused or failed logout used to reload
-  // into the same signed-in page. One sign-out at a time: a double-click's
-  // second POST lands after the first revoked the session and its 403 popped
-  // "Sign-out failed" over a sign-out that had succeeded.
+  // is cleared with a 200 too), never after a refused or failed logout. One
+  // sign-out at a time: a double-click's second POST would 403 on the revoked
+  // session and pop "Sign-out failed" over a success.
   var signingOut = false;
   window._signOut = function() {
     if (signingOut) return;
@@ -92,12 +86,10 @@
     try { send(window._csrfToken(), false); } catch(_) { failed(); }
   };
 
-  // ---- Unified login gate ----
-  // One full-screen auth screen shared by every page (replaces the old
-  // per-page #token-modal / #login-wrap). Lazily injected on first show; its
-  // opaque cover hides the page until the user authenticates. _showLoginGate
-  // is called by _refreshAuthChrome on a whoami-401 and by per-page 401
-  // handlers; on success we reload so the page re-renders authenticated.
+  // One full-screen login gate shared by every page, lazily injected on
+  // first show; its opaque cover hides the page until the user
+  // authenticates. Shown by _refreshAuthChrome on a whoami-401/403 and by
+  // per-page 401 handlers; on success we reload so the page re-renders.
   var LG_HTML =
     '<div id="login-gate" role="dialog" aria-modal="true" aria-label="Sign in" hidden>'
   +   '<div class="lg-card">'
@@ -257,14 +249,11 @@
   }
 
   // Single source of truth for "what does the current bearer let me see?".
-  // Idempotent: clears nav chrome first, then re-applies based on a fresh
-  // /auth/whoami. Called once on page load AND on every `whisper:auth-changed`
-  // event dispatched by login/logout sites (admin_routes, api_keys_routes,
-  // quick_config_routes, reports_routes, captures_routes).
+  // Idempotent: clears nav chrome first, then re-applies from a fresh
+  // /auth/whoami. Runs on page load and on every `whisper:auth-changed`.
   window._refreshAuthChrome = function() {
-    // Clear state before the fetch so logout (401 / removed token) leaves
-    // the chrome hidden by default. The old IIFE only ADDed classes — it
-    // had no way to recover from a transition admin → non-admin.
+    // Clear before the fetch so a logout or an admin → non-admin switch
+    // leaves the chrome hidden by default.
     try { document.body.classList.remove('role-admin'); } catch(_) {}
     try {
       var _chip = document.getElementById('hdr-vtag');
@@ -299,9 +288,7 @@
         if (j === undefined) { _whoamiUnavailable(); return; }
         _whoamiAnswered();
         if (!j) {
-          // 401 (locked-down + no/invalid session). Leave chrome cleared
-          // and drop the cached whoami so stale permissions don't linger,
-          // then show the shared login gate so the user can authenticate.
+          // 401/403: drop the cached whoami so stale permissions don't linger.
           try { delete window.__whoami; } catch(_) {}
           _syncAuthActions();
           try { window._showLoginGate(); } catch(_) {}
@@ -313,18 +300,13 @@
         // Lets a page's own whoami pass that is still backing off (the hub)
         // paint from this answer instead of waiting for its next retry.
         try { window.dispatchEvent(new Event('whisper:whoami')); } catch(_) {}
-        // Authenticated (or open mode): make sure the login gate is gone.
         try { window._hideLoginGate(); } catch(_) {}
-        // Logout-button visibility tracks login state; the HttpOnly cookie
-        // isn't JS-readable, so this is driven by whoami, not storage.
         _syncAuthActions();
         try { _fillBuildChip(j.build); } catch(_) {}
 
-        // OPEN-mode warning banner — only when no admin key configured.
-        // Idempotent: the banner gets a stable id so re-runs don't stack.
-        // In normal flow (not sticky): the header below it is sticky at
-        // top:0, so a sticky banner would sit on top of the brand row as
-        // soon as the page scrolls. The banner is seen on every page load.
+        // OPEN-mode banner, in normal flow on purpose: the header below is
+        // sticky at top:0, so a sticky banner would cover the brand row on
+        // scroll.
         if (j.open_mode && !document.getElementById(BANNER_ID)) {
           var b = document.createElement('div');
           b.id = BANNER_ID;
@@ -343,9 +325,7 @@
 
         // `body.role-admin` reveals admin-only chrome (/settings +
         // /settings/api-keys nav links, severity pills, in-page admin
-        // buttons). Pages used to add it unconditionally after a successful
-        // state fetch, which leaked admin chrome to non-admins on /stats,
-        // /logs and /reports.
+        // buttons); only this whoami pass may set it.
         if (isAdmin) document.body.classList.add('role-admin');
 
         // Per-page nav-link visibility. The nav renders every link with
@@ -361,11 +341,10 @@
           }
         );
 
-        // No-access landing — page-load only. The landing replaces <main>
-        // content; re-rendering it on every refresh would clobber a page
-        // the user just successfully logged into. The per-page 403
-        // handlers (admin_routes loadState, quick_config_routes loadState)
-        // cover the "valid bearer, wrong scope" case after login.
+        // No-access landing — page-load only: it replaces <main>, so
+        // re-rendering on a later refresh would clobber a page the user just
+        // logged into. After login, each page's own 403 handler covers the
+        // "valid bearer, wrong scope" case.
         var current = window.__current_page;
         if (
           landingRenderedFor === null
@@ -381,15 +360,11 @@
       .catch(function(){});
   };
 
-  // Refresh on every login/logout. Each login/logout site dispatches
-  // `whisper:auth-changed` after the server sets/clears the session cookie.
   window.addEventListener('whisper:auth-changed', window._refreshAuthChrome);
 
-  // ---- Global sign-out ----
-  // Every page renders #logout-btn (.auth-action) in the header utility
-  // cluster. The HttpOnly session cookie isn't JS-readable, so visibility is
-  // driven by the cached whoami: shown only when locked-down AND logged in
-  // (open mode has no session to end). Clicking hits the server /auth/logout.
+  // .auth-action (the header #logout-btn) shows only when locked-down AND
+  // logged in (open mode has no session to end). The HttpOnly session
+  // cookie isn't JS-readable, so this is driven by the cached whoami.
   function _syncAuthActions() {
     var loggedIn = false;
     try {
@@ -406,10 +381,8 @@
   window.addEventListener('whisper:auth-changed', _syncAuthActions);
   _syncAuthActions();
 
-  // ---- Global reload ----
-  // Every page renders #reload-btn in the header utility cluster. Pages that
-  // can refresh in place set `window._pageReload` (e.g. /settings + /settings/api-
-  // keys re-fetch their data); elsewhere we do a full page reload. Read at
+  // Pages that can refresh in place set `window._pageReload` (/settings,
+  // /settings/api-keys); elsewhere #reload-btn does a full reload. Read at
   // click time so the page's init can register the hook after this runs.
   var _reloadBtn = document.getElementById('reload-btn');
   if (_reloadBtn) {
@@ -419,6 +392,5 @@
     });
   }
 
-  // Initial page-load pass — replaces the old IIFE body.
   window._refreshAuthChrome();
 })();</script>
