@@ -15,10 +15,6 @@ def _submit(rs, **over):
     return rs.upsert_report(**kw)
 
 
-# ---------------------------------------------------------------------------
-# upsert insert vs update
-# ---------------------------------------------------------------------------
-
 def test_insert_returns_not_updated(reports_store_db):
     rid, was_updated = _submit(reports_store_db)
     assert was_updated is False
@@ -37,13 +33,12 @@ def test_reporter_role_normalised(reports_store_db):
 def test_resubmit_updates_same_row_and_merges(reports_store_db):
     rs = reports_store_db
     rid1, _ = _submit(rs, corrections=[{"wrong": "a", "correct": "b", "idx": 0}])
-    # Resolve it, then resubmit -> reopens + merges corrections.
     rs.update_report(rid1, {"status": "resolved"})
     rid2, was_updated = _submit(
         rs, corrections=[{"wrong": "c", "correct": "d", "idx": 1}])
     assert was_updated is True and rid2 == rid1
     row = rs.get_report(rid1)
-    assert row["status"] == "open"  # reset on resubmit
+    assert row["status"] == "open"
     idxs = {c.get("idx") for c in row["corrections"]}
     assert idxs == {0, 1}
 
@@ -52,7 +47,6 @@ def test_missing_request_id_always_inserts(reports_store_db):
     rs = reports_store_db
     rid1, u1 = _submit(rs, request_id=None)
     rid2, u2 = _submit(rs, request_id=None)
-    # find_by_request_user returns None when request_id falsy -> two rows.
     assert u1 is False and u2 is False and rid1 != rid2
 
 
@@ -63,10 +57,6 @@ def test_missing_user_id_always_inserts(reports_store_db):
     assert u1 is False and u2 is False and rid1 != rid2
 
 
-# ---------------------------------------------------------------------------
-# find_by_request_user
-# ---------------------------------------------------------------------------
-
 def test_find_by_request_user_requires_both(reports_store_db):
     rs = reports_store_db
     _submit(rs, user_id="u1", request_id="req1")
@@ -76,15 +66,11 @@ def test_find_by_request_user_requires_both(reports_store_db):
     assert rs.find_by_request_user("nope", "u1") is None
 
 
-# ---------------------------------------------------------------------------
-# list / get / recent
-# ---------------------------------------------------------------------------
-
 def test_list_reports_filter(reports_store_db):
     rs = reports_store_db
     _submit(rs, user_id="a", request_id="r1")
     _submit(rs, user_id="b", request_id="r2")
-    assert len(rs.list_reports()) == 2          # None = all
+    assert len(rs.list_reports()) == 2
     assert len(rs.list_reports(user_id="a")) == 1
 
 
@@ -186,7 +172,7 @@ def test_recent_reports_for_user(reports_store_db):
     _submit(rs, user_id="u", request_id=None)
     recent = rs.recent_reports_for_user("u")
     ids = {r["id"] for r in recent}
-    assert ids == {rid_open}                    # only open + request_id present
+    assert ids == {rid_open}
     assert rs.recent_reports_for_user("") == []
 
 
@@ -198,10 +184,6 @@ def test_counts_by_status(reports_store_db):
     counts = rs.counts_by_status()
     assert counts == {"open": 1, "resolved": 0, "dismissed": 1}
 
-
-# ---------------------------------------------------------------------------
-# update_report
-# ---------------------------------------------------------------------------
 
 def test_update_status_toggles_resolved_ts(reports_store_db):
     rs = reports_store_db
@@ -236,10 +218,6 @@ def test_update_empty_patch_returns_current(reports_store_db):
     assert rs.update_report(rid, {})["id"] == rid
 
 
-# ---------------------------------------------------------------------------
-# delete / clear_all
-# ---------------------------------------------------------------------------
-
 def test_delete_report(reports_store_db):
     rs = reports_store_db
     rid, _ = _submit(rs)
@@ -256,9 +234,10 @@ def test_clear_all(reports_store_db):
 
 
 def test_clear_all_survives_a_reader_mid_statement(reports_store_db, caplog):
-    """Readers on the shared connection do not take _lock; SQLite refuses
-    VACUUM while one of their statements is open. The DELETE had already
-    committed, so the raise 500'd the route and skipped the audit line."""
+    """clear_all runs VACUUM outside _lock, so a reader's statement can be
+    open on the shared connection, and SQLite refuses VACUUM then. The DELETE
+    had already committed, so the raise 500'd the route and skipped the audit
+    line."""
     import logging
     rs = reports_store_db
     for i in range(3):
@@ -275,17 +254,13 @@ def test_clear_all_survives_a_reader_mid_statement(reports_store_db, caplog):
     assert "admin from 1.2.3.4 cleared 3 reports" in caplog.text
 
 
-# ---------------------------------------------------------------------------
-# _evict_to_cap (closed before open)
-# ---------------------------------------------------------------------------
-
 def test_evict_closed_before_open(reports_store_db, monkeypatch):
     from faster_whisper_backend.settings import config
     monkeypatch.setattr(config, "REPORTS_MAX", 2, raising=False)
     rs = reports_store_db
     r1, _ = _submit(rs, request_id="r1")
     r2, _ = _submit(rs, request_id="r2")
-    rs.update_report(r1, {"status": "resolved"})   # r1 is the only closed one
+    rs.update_report(r1, {"status": "resolved"})
     # Inserting r3 pushes total to 3 > cap 2 -> evict 1 closed first (r1).
     r3, _ = _submit(rs, request_id="r3")
     assert rs.get_report(r1) is None
@@ -301,10 +276,6 @@ def test_evict_cap_disabled(reports_store_db, monkeypatch):
     assert len(rs.list_reports()) == 5  # cap<1 disables eviction
 
 
-# ---------------------------------------------------------------------------
-# retention sweep
-# ---------------------------------------------------------------------------
-
 def test_sweep_retention_disabled(reports_store_db, monkeypatch):
     from faster_whisper_backend.settings import config
     monkeypatch.setattr(config, "REPORTS_RETENTION_DAYS", 0, raising=False)
@@ -317,7 +288,6 @@ def test_sweep_retention_deletes_old(reports_store_db, monkeypatch):
     monkeypatch.setattr(config, "REPORTS_RETENTION_DAYS", 30, raising=False)
     rs = reports_store_db
     rid, _ = _submit(rs, request_id="old", trace_ts=1.0)
-    # Backdate created_ts directly.
     rs._require_conn().execute(
         "UPDATE reports SET created_ts = ? WHERE id = ?",
         (time.time() - 40 * 86400, rid),
@@ -325,10 +295,6 @@ def test_sweep_retention_deletes_old(reports_store_db, monkeypatch):
     _submit(rs, request_id="new")
     assert rs.sweep_retention() == 1
 
-
-# ---------------------------------------------------------------------------
-# helpers
-# ---------------------------------------------------------------------------
 
 def test_truncate_steps_front_trim(reports_store_db, monkeypatch):
     from faster_whisper_backend.reports import store as rs
@@ -374,10 +340,6 @@ def test_oversized_stages_resubmission_keeps_first_provenance(reports_store_db):
     assert was_updated is True and rid2 == rid
     assert rs.get_report(rid)["stages"] == first
 
-
-# ---------------------------------------------------------------------------
-# input bounds that keep the list route renderable (security review)
-# ---------------------------------------------------------------------------
 
 def test_non_finite_trace_ts_never_reaches_the_row(reports_store_db):
     """inf/NaN survive json.loads, pydantic's bare float and a REAL column,
