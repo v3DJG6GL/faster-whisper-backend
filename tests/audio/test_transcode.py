@@ -1,10 +1,6 @@
 """Tests for audio/transcode.py (PyAV in-process).
 
-Real PyAV is installed, so the happy path is a true round-trip. Also here:
-the error paths (PyAV missing, no audio stream, dst cleanup after a
-mid-stream failure), the demuxer SSRF guard (protocol_whitelist=file pin,
-ffconcat/multi-input refusal, refuse_multi_input), non-UTF-8 tags,
-decode_pieces_16k seeking / start_time offset and damaged-frame skipping.
+Real PyAV is installed (no stub), so the happy paths are true round-trips.
 """
 
 import fractions
@@ -21,7 +17,6 @@ RATE = 16000
 
 
 def _write_src_wav(path, *, rate, nchannels, freq=440.0, dur_s=0.5):
-    """Write a simple sine-tone WAV at an arbitrary rate/channel count."""
     t = np.linspace(0, dur_s, int(rate * dur_s), endpoint=False)
     tone = (np.sin(2 * np.pi * freq * t) * 8000).astype(np.int16)
     if nchannels == 2:
@@ -36,10 +31,6 @@ def _write_src_wav(path, *, rate, nchannels, freq=440.0, dur_s=0.5):
         w.writeframes(frames)
     return path
 
-
-# ---------------------------------------------------------------------------
-# Happy path round-trips
-# ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("in_rate,in_ch", [
     (16000, 1),
@@ -61,10 +52,6 @@ def test_transcode_roundtrip(in_rate, in_ch, tmp_path):
         assert w.getnframes() > 0
 
 
-# ---------------------------------------------------------------------------
-# Error: PyAV missing
-# ---------------------------------------------------------------------------
-
 def test_transcode_pyav_missing(tmp_path, monkeypatch):
     src = _write_src_wav(str(tmp_path / "in.wav"), rate=RATE, nchannels=1)
     dst = str(tmp_path / "out.wav")
@@ -74,12 +61,7 @@ def test_transcode_pyav_missing(tmp_path, monkeypatch):
         audio_transcode.transcode_to_wav_16k_mono(src, dst)
 
 
-# ---------------------------------------------------------------------------
-# Error: no audio stream
-# ---------------------------------------------------------------------------
-
 def _write_video_only(path):
-    """Encode a tiny video-only mp4 (no audio stream)."""
     import av
     c = av.open(path, "w")
     st = c.add_stream("mpeg4", rate=5)
@@ -98,18 +80,14 @@ def _write_video_only(path):
 
 
 def test_transcode_no_audio_stream(tmp_path):
-    # A valid container with only a video stream -> the explicit
-    # ValueError("source has no audio stream") branch.
     src = _write_video_only(str(tmp_path / "videoonly.mp4"))
     dst = str(tmp_path / "out.wav")
     with pytest.raises(ValueError, match="no audio stream"):
         audio_transcode.transcode_to_wav_16k_mono(src, dst)
-    # Destination must not linger on failure.
     assert not os.path.exists(dst)
 
 
 def test_transcode_unreadable_input_cleans_up(tmp_path):
-    # Garbage that PyAV can't even open: error propagates, dst not left behind.
     bad = tmp_path / "garbage.bin"
     bad.write_bytes(b"this is definitely not audio data" * 100)
     dst = str(tmp_path / "out.wav")
@@ -197,10 +175,6 @@ def test_transcode_close_failure_raises_and_unlinks_dst(tmp_path, monkeypatch):
     assert not os.path.exists(dst)
 
 
-# ---------------------------------------------------------------------------
-# The input open pins protocol_whitelist=file (concat/HLS/SDP SSRF guard)
-# ---------------------------------------------------------------------------
-
 def test_transcode_input_open_pins_file_protocol_whitelist(tmp_path, monkeypatch):
     """A PyAV upgrade or an av.open refactor must not silently drop the
     ``protocol_whitelist: file`` option — it is what stops a crafted
@@ -239,9 +213,7 @@ def test_transcode_rejects_ffconcat_playlist_referencing_a_file(tmp_path):
     assert not os.path.exists(dst)
 
 
-# ---------------------------------------------------------------------------
-# decode_pieces_16k (the link language check)
-# ---------------------------------------------------------------------------
+# decode_pieces_16k feeds the link language check.
 
 def _two_tone(path, *, rate=44100, pts_offset_s=0):
     """60 s stereo: 440 Hz for the first 30 s, 880 Hz after — a piece's
@@ -328,9 +300,7 @@ def test_decode_pieces_refuses_an_ffconcat_sibling(tmp_path):
         audio_transcode.decode_pieces_16k(str(playlist), [0.0], 1.0)
 
 
-# ---------------------------------------------------------------------------
-# refuse_multi_input (the raw-upload check before a non-PyAV decoder)
-# ---------------------------------------------------------------------------
+# refuse_multi_input: the raw-upload check before a non-PyAV decoder.
 
 def test_refuse_multi_input_refuses_an_ffconcat_sibling(tmp_path):
     _write_src_wav(str(tmp_path / "real.wav"), rate=RATE, nchannels=1)
@@ -351,10 +321,6 @@ def test_refuse_multi_input_passes_a_clip_and_leaves_av_errors_to_the_decoder(
     junk.write_bytes(b"not media at all\x00\x01")
     assert audio_transcode.refuse_multi_input(str(junk)) is None
 
-
-# ---------------------------------------------------------------------------
-# A damaged frame mid-file is skipped, not a refusal
-# ---------------------------------------------------------------------------
 
 def _damaged_mp3(path, *, seconds=8):
     """An 8 s 440 Hz mp3 with 400 random bytes in the middle — still
@@ -401,10 +367,6 @@ def test_decode_pieces_skip_a_damaged_frame(tmp_path):
     pieces = audio_transcode.decode_pieces_16k(src, [0.0, 3.5, 6.0], 1.0)
     assert [len(p) for p in pieces] == [RATE] * 3
 
-
-# ---------------------------------------------------------------------------
-# Sample rate / channel layout changing mid-stream
-# ---------------------------------------------------------------------------
 
 def _concat_mp3(tmp_path):
     """2 s of 44.1 kHz stereo mp3 followed by 2 s of 22.05 kHz mono, as
