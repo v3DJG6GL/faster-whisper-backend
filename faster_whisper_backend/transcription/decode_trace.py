@@ -161,7 +161,7 @@ class DecodeTrace:
         self.token_cap_per_s = float(token_cap_per_s or 0.0)
         self.extra_encodes = 0          # encoder passes not followed by a decode (language detection)
         self.skip_residual = bool(skip_residual)
-        self.reached_end = False        # a DECODED window was shorter than 30 s
+        self.reached_end = False        # a DECODED window was shorter than a full one
         self.skipped_windows = 0
         self.n_frames = _N_FRAMES       # frames of a full window; set by the hook
         self.pending_len_frames: int | None = None
@@ -172,7 +172,6 @@ class DecodeTrace:
         self.length_penalty = float(length_penalty or 1.0)
         self.t0 = time.perf_counter()
 
-    # -- hooks -------------------------------------------------------------
     def note_window_len(self, frames: int) -> None:
         """A window is about to be padded for the encoder. When a decoded
         window already reached the end of the audio, this one is the residual
@@ -277,8 +276,8 @@ def capture(kwargs: "dict | None" = None, *, skip_residual: bool = False,
     which absorbs the ``ResidualWindowSkipped`` stop. ``token_cap_per_s``
     (DECODE_TOKEN_CAP_PER_SECOND, 0 = off) bounds every rung's token count by
     the window's length; see the module docstring. An active
-    hallucination_silence_threshold turns ``skip_residual`` off (its re-seek
-    starts a window after a short one; module docstring)."""
+    hallucination_silence_threshold turns ``skip_residual`` off
+    (residual_stop_active)."""
     kw = kwargs or {}
     skip_residual = residual_stop_active(kw, skip_residual)
     tr = DecodeTrace(
@@ -297,12 +296,9 @@ def capture(kwargs: "dict | None" = None, *, skip_residual: bool = False,
         _tls.trace = prev
 
 
-# ---------------------------------------------------------------------------
-# Installation
-# ---------------------------------------------------------------------------
-
 class _GenerateProxy:
-    """Delegates everything to the CT2 Whisper object; times ``generate``."""
+    """Delegates everything to the CT2 Whisper object; times ``generate``
+    and applies the token cap."""
 
     def __init__(self, inner):
         object.__setattr__(self, "_inner", inner)
@@ -522,11 +518,6 @@ def _install_pad_hook() -> None:
 
     fwt.pad_or_trim = pad_or_trim
     _pad_hooked = True
-
-
-# ---------------------------------------------------------------------------
-# Post-decode summary
-# ---------------------------------------------------------------------------
 
 
 def finish(tr: "DecodeTrace | None", segments, info=None) -> "dict | None":
