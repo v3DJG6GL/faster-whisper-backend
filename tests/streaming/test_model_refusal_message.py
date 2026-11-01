@@ -49,8 +49,8 @@ def test_server_side_http_failure_keeps_the_generic_message(
 
 
 def test_long_refusal_detail_reaches_the_client_whole(client, make_user_key, monkeypatch):
-    """A long allowlist used to be cut at the 120-char log-field cap, leaving
-    the client a broken model name and a missing entry."""
+    """The 120-char log-field cap must not cut the client's detail: a cut
+    allowlist leaves a broken model name and a missing entry."""
     _, raw_alice = make_user_key("alice")
     detail = ("Model 'large-v3' is not in the allowed list. Allowed: "
               "['Systran/faster-whisper-large-v3', "
