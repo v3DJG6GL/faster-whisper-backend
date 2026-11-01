@@ -21,13 +21,10 @@ from faster_whisper_backend.stats import metrics
 logger = logging.getLogger("whisper-api")
 
 
-# =============================================================================
-# Per-request log block
-# =============================================================================
-# Always emitted (regardless of cfg.TRACE_ENABLED) — surfaces the decode
-# params actually applied + per-segment metadata so empty-output failures
-# can be diagnosed from the log alone. The per-pipeline transformation
-# trace is folded in only when TRACE_ENABLED.
+# Per-request log block: always emitted (regardless of cfg.TRACE_ENABLED) —
+# surfaces the decode params actually applied + per-segment metadata so
+# empty-output failures can be diagnosed from the log alone. The per-pipeline
+# transformation trace is folded in only when TRACE_ENABLED.
 #
 # ANSI color is intentionally dropped: the service runs under WinSW (no TTY)
 # and the SSE log viewer reads raw bytes — escape codes hurt both consumers.
@@ -40,8 +37,6 @@ _SEG_TEXT_MAX = 80    # truncate per-segment text in the table (full text in FIN
 # num_speakers genuinely means "auto" and is worth showing.
 _OMIT = object()
 
-# Single implementation lives in store_common so the stores can sanitise their
-# own audit lines without importing main (which imports them).
 _log_safe = store_common.log_safe
 
 
@@ -51,9 +46,7 @@ _log_safe = store_common.log_safe
 # baselines are strings ("0.0,0.2,…", "-1") while the kwargs are tuples/lists,
 # so equality comparison is meaningless without parsing both sides.
 _KWARG_TO_CFG = {
-    # Task
     "task": "TASK",
-    # Search / sampling
     "beam_size": "BEAM_SIZE",
     "best_of": "BEST_OF",
     "patience": "PATIENCE",
@@ -61,27 +54,21 @@ _KWARG_TO_CFG = {
     "repetition_penalty": "REPETITION_PENALTY",
     "no_repeat_ngram_size": "NO_REPEAT_NGRAM_SIZE",
     "prompt_reset_on_temperature": "PROMPT_RESET_ON_TEMPERATURE",
-    # VAD
     "vad_filter": "VAD_FILTER",
     "min_silence_duration_ms": "VAD_MIN_SILENCE_MS",
     "speech_pad_ms": "VAD_SPEECH_PAD_MS",
     "threshold": "VAD_THRESHOLD",
-    # Output shape
     "word_timestamps": "WORD_TIMESTAMPS_ENABLED",
-    # Prompt context
     "condition_on_previous_text": "CONDITION_ON_PREVIOUS_TEXT",
     "initial_prompt": "DEFAULT_PROMPT",
     "hotwords": "DEFAULT_HOTWORDS",
-    # Safety / thresholds
     "no_speech_threshold": "NO_SPEECH_THRESHOLD",
     "log_prob_threshold": "LOG_PROB_THRESHOLD",
     "compression_ratio_threshold": "COMPRESSION_RATIO_THRESHOLD",
     "hallucination_silence_threshold": "HALLUCINATION_SILENCE_THRESHOLD",
-    # Language detection
     "multilingual": "MULTILINGUAL",
     "language_detection_threshold": "LANGUAGE_DETECTION_THRESHOLD",
     "language_detection_segments": "LANGUAGE_DETECTION_SEGMENTS",
-    # Token suppression / punctuation
     "suppress_blank": "SUPPRESS_BLANK",
     "prepend_punctuations": "PREPEND_PUNCTUATIONS",
     "append_punctuations": "APPEND_PUNCTUATIONS",
@@ -98,10 +85,8 @@ _KWARG_TO_CFG = {
     "final_drop_min_avg_logprob": "STREAMING_FINAL_DROP_MIN_AVG_LOGPROB",
     "final_drop_temperature": "STREAMING_FINAL_DROP_TEMPERATURE",
     # Post-decode STAGE params (pseudo-kwargs too: rendered in the block's
-    # Separation / Diarization / Translation sections). Listing them here is
-    # the whole wiring the `*` marker needs — _is_non_default is a whitelist
-    # keyed by this dict, so without an entry a stage param can never be
-    # marked non-default no matter how far it strays from the config.
+    # Separation / Diarization / Translation sections). _is_non_default only
+    # stars keys listed here, so a stage param without an entry is never starred.
     "num_speakers": "DIARIZATION_NUM_SPEAKERS",
     "min_speakers": "DIARIZATION_MIN_SPEAKERS",
     "max_speakers": "DIARIZATION_MAX_SPEAKERS",
@@ -279,9 +264,7 @@ def _format_decode_params(kwargs: dict) -> list[str]:
     under vad_filter to show the relationship visually. Fields are only
     printed when present in `kwargs` — most non-default knobs (patience,
     repetition_penalty, etc.) are conditionally added at request build
-    time, so absence here means "at faster-whisper / config default".
-    Order is grouped by intent (search → sampling → VAD → output → context
-    → thresholds → language detection → suppression)."""
+    time, so absence here means "at faster-whisper / config default"."""
     out: list[str] = []
     order = (
         # Task (transcribe vs translate-to-English) — the most consequential
@@ -318,7 +301,7 @@ def _format_decode_params(kwargs: dict) -> list[str]:
 
 
 def _short_speaker(label: str) -> str:
-    """`SPEAKER_00` → `S0`. Keeps the segments table's new speaker column to
+    """`SPEAKER_00` → `S0`. Keeps the segments table's speaker column to
     the 5 characters the row budget can spare; anything unrecognised is just
     truncated."""
     m = re.search(r"(\d+)\s*$", label or "")
@@ -412,9 +395,8 @@ def _format_segments_section(seg_diag: list[dict], info, kwargs: dict,
     banner whose hint depends on `info.duration_after_vad` and `kwargs`.
 
     `speakers` (per-segment labels, when diarization ran) adds a `spk`
-    column. It costs 5 of the text budget, so it is only ever added for runs
-    that actually diarized — a decode-only receipt keeps the shape it has
-    always had, and no existing log looks different.
+    column. It costs 5 of the text budget, so it is only added for runs that
+    diarized; a decode-only receipt keeps the plain shape.
 
     `no_decode` says why NO decode produced these (empty) segments — a live
     utterance whose final decode failed or was skipped by the near-silence
@@ -461,10 +443,8 @@ def _format_segments_section(seg_diag: list[dict], info, kwargs: dict,
         f"    {'#':>3}  {'start':>7}  {'end':>7}  {spk_head}"
         f"{'alp':>6}  {'nsp':>5}  {'cr':>5}  {'T':>4}    text"
     )
-    # The FILE keeps up to LOG_SEGMENT_ROWS_MAX rows (0 = unlimited). The
-    # /logs viewer folds them for display — but it can only ever reveal rows
-    # that were written, which is exactly why the old inert "(+610 more)"
-    # tail could never expand into anything.
+    # The FILE keeps up to LOG_SEGMENT_ROWS_MAX rows (0 = unlimited); the
+    # /logs viewer folds them for display but can only reveal rows written here.
     cap = int(getattr(cfg, "LOG_SEGMENT_ROWS_MAX", 0) or 0)
     rows = n if cap <= 0 else min(n, cap)
     text_max = _SEG_TEXT_MAX - 5 if has_spk else _SEG_TEXT_MAX
@@ -515,7 +495,7 @@ def _stage_extras(stats_key: "str | None", t0_perf: float) -> dict:
     The stage's wall-clock start is reconstructed from its perf_counter
     origin so `load_secs_since` can tell "this stage paid for the load" from
     "it was already resident", without threading a second clock through
-    four call sites."""
+    every call site."""
     out: dict = {}
     if not stats_key:
         return out
@@ -594,7 +574,8 @@ def _fmt_secs(v) -> str:
 
 
 def _format_pipeline_section(stages: "list[dict] | None") -> list[str]:
-    """`─── Pipeline ───`: one row per stage that actually ran.
+    """`─── Pipeline ───`: one row per stage timing entry (soft-failed
+    stages included; their detail line says so).
 
     Answers the question an operator opens the log with — where did the six
     minutes go — which no amount of per-stage params answers. The `load`
@@ -722,16 +703,13 @@ def _format_request_block(
     section (the model itself always decodes at 16 kHz mono).
 
     `stages` / `separation` / `diarization` / `translation` / `speakers` /
-    `warnings` / `skipped` describe the post-decode pipeline. All optional:
-    this renderer was written when the pipeline was decode and nothing else,
-    and a caller that passes none of them gets exactly that block. Live
-    dictation is not such a caller: it passes `stages`, `guards` and
-    `decode_trace`, a held receipt is parked with a `translation`
-    placeholder, and the translate request that claims it fills that in and
-    appends a translating stage — a change to those sections shows in
-    dictation receipts too. A stage section is emitted only when
-    that stage actually ran, so a decode-only receipt is unchanged and a
-    four-stage one finally says what it did.
+    `warnings` / `skipped` describe the post-decode pipeline. All optional;
+    a section is emitted only for an argument the caller passes, so a
+    decode-only caller gets a decode-only block. Live dictation passes
+    `stages`, `guards` and `decode_trace`, and a held receipt is parked with
+    a `translation` placeholder that the claiming translate request fills
+    in (plus a translating stage) — a change to those sections shows in
+    dictation receipts too.
 
     `no_decode` (live dictation only) names why the utterance had no final
     decode — failed, or skipped by the near-silence gate. The title and the
@@ -784,8 +762,7 @@ def _format_request_block(
             f"{float(dav):.2f}s   ({retained:.0f} % retained)"
         )
 
-    # Post-decode stage params, in pipeline order. Every one of these was in
-    # scope at the call site all along; the block simply never asked for them.
+    # Post-decode stage params, in pipeline order.
     if separation:
         lines.extend(_format_stage_section("Separation", [
             ("separation_model", separation.get("model")),
@@ -843,10 +820,9 @@ def _format_request_block(
 
     lines.extend(_format_notes_section(warnings, skipped))
 
-    # Identity section — always shown when the caller is known, so the resolved
-    # user/key (and any applied per-identity overrides, or their ABSENCE) is
-    # visible at a glance. This was previously suppressed for no-config
-    # requests, which made per-identity mismatches invisible in the log.
+    # Identity section — shown whenever the caller is known, even with no
+    # override applied: the ABSENCE of an override is what a per-identity
+    # mismatch looks like in the log.
     _ident_detail = ident is not None and (getattr(ident, "layers", None)
                                            or getattr(ident, "locked", None)
                                            or overrides_ignored)
@@ -887,11 +863,9 @@ def _format_request_block(
     lines.append(f"  RAW WHISPER  {raw!r}")
     lines.append(rule)
     if steps:
-        # Count only steps that actually rewrote the text (before != after) as
-        # "changed"; the rest (EXCLUDED for this model, globally disabled, no-op)
-        # are "unchanged". This matches the /quick-config and /reports viewers,
-        # which render the same trace and split it the same way — the header used
-        # to print len(steps) and label them all "changed", overcounting skips.
+        # Steps that did not rewrite the text (EXCLUDED for this model, globally
+        # disabled, no-op) count as "unchanged" — the same split the
+        # /quick-config and /reports viewers apply to this trace.
         changed = sum(1 for _, before, after in steps if before != after)
         unchanged = len(steps) - changed
         plural = "s" if changed != 1 else ""
