@@ -1,6 +1,6 @@
 """Decode trace: what faster-whisper did INSIDE model.transcribe.
 
-Pins the three halves of faster_whisper_backend.transcription.decode_trace:
+Pins the three parts of faster_whisper_backend.transcription.decode_trace:
 
   * install() hooks a WhisperModel-shaped object (encode, generate_with_fallback,
     the CT2 `model.generate` behind a proxy) and is a no-op for test fakes;
@@ -20,10 +20,6 @@ from faster_whisper_backend.transcription import decode_trace as dt
 from tests.conftest import FakeInfo
 from faster_whisper_backend.transcription import receipt as tx_receipt
 
-
-# ---------------------------------------------------------------------------
-# A WhisperModel-shaped fake with the CT2 seam the hooks attach to
-# ---------------------------------------------------------------------------
 
 class _Result:
     def __init__(self, tokens, score, nsp):
@@ -149,10 +145,6 @@ def _incident_model():
     return m
 
 
-# ---------------------------------------------------------------------------
-# install()
-# ---------------------------------------------------------------------------
-
 def test_install_is_noop_for_fakes_and_idempotent():
     class Bare:
         def transcribe(self, *a, **k):
@@ -191,10 +183,6 @@ def test_installed_model_is_freed_by_refcount_alone():
     finally:
         gc.enable()
 
-
-# ---------------------------------------------------------------------------
-# capture() / finish()
-# ---------------------------------------------------------------------------
 
 def _run(m):
     with dt.capture(_KW) as tr:
@@ -275,10 +263,6 @@ def test_finish_without_trace_is_none():
     assert dt.finish(None, [], FakeInfo()) is None
 
 
-# ---------------------------------------------------------------------------
-# Receipt section
-# ---------------------------------------------------------------------------
-
 def test_receipt_renders_the_section_and_stays_unchanged_without_it(app_module):
     seg = [{"id": 0, "start": 0.02, "end": 1.72, "alp": -0.44, "nsp": 0.01,
             "cr": 0.64, "temp": 0.0, "text": "Erzinkontinenz", "dropped": False}]
@@ -296,7 +280,6 @@ def test_receipt_renders_the_section_and_stays_unchanged_without_it(app_module):
     assert "retry · cr " in block and "> 2.4" in block
     assert "skipped · no-speech" in block
     assert "beam10" in block and "best5" in block
-    # Section order: after the decode params, before the segments table.
     assert block.index("Decode params") < block.index("Decode trace") < block.index("Segments  (n=1)")
 
 
@@ -324,10 +307,6 @@ def test_plain_text_guard_value_renders_without_quotes(app_module):
     assert row.endswith("1.52s  (3.74s → 2.22s)")
     assert "'" not in row
 
-
-# ---------------------------------------------------------------------------
-# Residual-window stop (DECODE_SKIP_RESIDUAL_WINDOWS)
-# ---------------------------------------------------------------------------
 
 def _run_stop(m, **kw):
     with dt.capture(_KW, **kw) as tr:
@@ -532,10 +511,6 @@ def test_receipt_shows_the_refused_window_and_the_guard_row(app_module):
     assert next(l for l in off.splitlines()
                 if "skip_residual_windows" in l).rstrip().endswith("false *")
 
-
-# ---------------------------------------------------------------------------
-# Token cap (DECODE_TOKEN_CAP_PER_SECOND)
-# ---------------------------------------------------------------------------
 
 def _ct2_decodes(max_length, prompt_len):
     """Tokens CTranslate2 really decodes for a given max_length (whisper.cc)."""
