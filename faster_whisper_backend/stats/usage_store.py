@@ -30,8 +30,7 @@ to the all-kinds totals.
 
 Each /transcribe request (and each dictation utterance, and each text
 translation) bumps the rollups via record_usage, called from
-metrics.record_transcription (which already runs inside a try/except on the
-outer finally of the transcribe handler, on both success and error paths).
+metrics.record_transcription on both success and error paths.
 A dictation SESSION is many utterances under one job_id; `sessions` is bumped
 only for the utterance that creates the job row, so "Runs" counts sessions,
 not phrases.
@@ -61,13 +60,10 @@ join to the api-keys DB.
 
 Module-level connection: WAL mode lets us share one connection across
 threads (check_same_thread=False); _lock serialises the writers. Each public
-reader opens its own short-lived connection instead (see _reads_own_conn):
-concurrent identical SELECTs on the shared one share a cached statement, and
-holding _lock for a whole /stats document would stall the writers, which run
-on the event loop. The shared connection
-is in autocommit mode, so the multi-table writes below open an explicit
-transaction — a job row without its rollup (or vice versa) would make the
-session and utterance counts disagree forever.
+reader opens its own short-lived connection instead (see _reads_own_conn for
+why). The shared connection is in autocommit mode, so the multi-table writes
+below open an explicit transaction — a job row without its rollup (or vice
+versa) would make the session and utterance counts disagree forever.
 
 Do not log row content — dictation data can be sensitive (an app_id names
 the program a user dictated into). Module log lines carry only counts and id
@@ -739,16 +735,13 @@ def _record_stage(conn: sqlite3.Connection, hour: int, uid: str,
     earlier language).
 
     A stage counts a run only on its job's first row of that stage, and a
-    target only when it is new to the job (and still fits the stored
-    union): a dictation's own "transcribing" stage arrives once per
-    utterance, and a follow-up attached to the session (record_usage's
-    session_job_id: per-utterance translation) once per utterance too. The
-    meter's denominator is sessions, and the per-job (with=) path reads one
-    row per session; a batch job writes each stage once, so nothing changes
-    for it. The hourly speakers / retained sums are averaged over those runs,
-    so they too take only the run's first row (the per-job row keeps the
-    first non-NULL value): a dictation's per-utterance "vad" stage
-    summed every utterance's ratio over one run and read 4.5 for 0.9."""
+    target only when it is new to the job: a dictation's "transcribing"
+    stage and its per-utterance translation (record_usage's session_job_id)
+    arrive once per utterance, but the meter's denominator is sessions and
+    the with= path reads one row per session. The hourly speakers /
+    retained sums are averaged over those runs, so they too take only the
+    run's first row (the per-job row keeps the first non-NULL value);
+    summed, five per-utterance "vad" ratios of 0.9 would read 4.5."""
     err = st.get("error")
     new_targets = st["targets"]
     count_run = True
@@ -1051,8 +1044,6 @@ def sweep(
     return {"marked": marked, "jobs": pruned_jobs, "apps": pruned_apps,
             "hourly": pruned_hourly}
 
-
-# --- read path (admin dashboards) -----------------------------------------
 
 def _window_clause(start_hour: int | None, end_hour: int | None,
                    ) -> tuple[str, list[Any]]:
@@ -1621,8 +1612,8 @@ MAX_BUCKETS = 1500
 
 
 def bucket_mode(days: int) -> str:
-    """The frontend's bucketMode(): day up to 120 days, ISO week up to two
-    years, month beyond."""
+    """The bucket=auto rule: day up to 120 days, ISO week up to two years,
+    month beyond."""
     if days <= 120:
         return "day"
     if days <= 730:
@@ -2129,7 +2120,7 @@ def turnaround_histogram(*, start_ts: float, end_ts: float,
     """Jobs bucketed by end-to-end time (processing_s + wait_s) into fixed edges;
     `wait_share` per bucket is the fraction of that bucket's turnaround that
     was queue wait (what the chart hatches); `by_kind` splits each bucket's
-    count per job kind (the chart stacks them). Also p50/p95 of turnaround."""
+    count per job kind (the chart stacks them). Also n, p50/p95 and max of turnaround."""
     conn = _require_conn()
     where, params = _jobs_where(user_id, key_id, kind, start_ts, end_ts)
     counts = [0] * len(edges)
@@ -2168,8 +2159,8 @@ def failures(*, start_ts: float, end_ts: float, user_id: str | None = None,
              key_id: str | None = None, kind: str | None = None) -> dict[str, Any]:
     """Failures grouped by stage and class: the terminal ones from the job
     rows (status ≠ ok; class/stage as classified, `other` / `(job)` when a
-    pre-v2 row has none) unioned with the soft-failed stage rows (the job
-    went on without the stage). `jobs` and `failed` count job rows."""
+    row from before error classification has none) unioned with the
+    soft-failed stage rows (the job went on without the stage). `jobs` and `failed` count job rows."""
     conn = _require_conn()
     where, params = _jobs_where(user_id, key_id, kind, start_ts, end_ts)
     by_stage: dict[str, dict[str, int]] = {}
@@ -2364,8 +2355,7 @@ def _finish(doc: dict[str, Any], *, by_day, words_by_day, words_by_slot,
     """Shared by _fill_from_rollups and _fill_from_jobs: the sparse arrays
     and the per-kind streaks. A slot in `hours` carries its words flat (the
     desktop app reads `h[kind]`) plus nested SLOT_MEASURES splits, so the
-    busy-hours grid can show whichever measure the console has picked. A slot is emitted when it saw any
-    words, any request or any processing time."""
+    busy-hours grid can show whichever measure the console has picked."""
     extra_by_slot = extra_by_slot or {}
     doc["series"] = [{"day": _epoch_day(d), **_rounded(by_day[d])}
                      for d in sorted(by_day)]
