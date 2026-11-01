@@ -35,14 +35,14 @@ async def whoami(
     csrf_token?}`. `build` carries the header chip's facts (version, boot,
     start) — the shared header ships as an empty shell because its pages are
     only host-gated, so the facts ride this authenticated route instead. The
-    `permissions` object is `{pages: {logs:
-    'own'|'all'|'none', ...}}` — used by each page's JS to hide nav links
-    the user can't reach and to render scope hints. `csrf_token` is
-    present only for cookie-authenticated callers (set by
-    user_from_session_cookie on request.state) so the client can attach
-    X-CSRF-Token without parsing the cookie; `csrf_cookie` rides with it
-    (SESSION_CSRF_COOKIE_NAME) so the client's live-cookie fallback reads a
-    renamed cookie too. A 401 means no valid
+    `permissions` object is `{pages: {<page>: 'own'|'all'|'none', ...}}`
+    (access-only pages such as logs are 'all'|'none') — used by each page's
+    JS to hide nav links the user can't reach and to render scope hints.
+    `csrf_token` and `csrf_cookie` (SESSION_CSRF_COOKIE_NAME) are present
+    only for cookie-authenticated callers (set by user_from_session_cookie
+    on request.state): the client reads the CSRF cookie of that name first,
+    so a renamed cookie is found, and falls back to `csrf_token` when no
+    cookie is readable. A 401 means no valid
     credential AND no synthetic admin for this caller: the server is locked
     down, or it is in open mode but the host is outside
     ADMIN_WEBUI_ALLOWED_HOSTS (open_mode_host_ok) — either way the WebUI
@@ -69,13 +69,10 @@ async def whoami(
     if csrf:
         out["csrf_token"] = csrf
         out["csrf_cookie"] = cfg.SESSION_CSRF_COOKIE_NAME
-    # Per-identity, and it carries the session's CSRF token. A 200 GET with no
-    # Cache-Control and no Vary is heuristically cacheable under RFC 9111, and
-    # this deployment expects a reverse proxy in front (TRUSTED_ORIGINS exists
-    # for exactly that) — a shared cache could otherwise hand one user's
-    # identity payload, admin flag and CSRF token to the next caller. The page
-    # JS already sends cache:'no-store', but that binds only the browser's own
-    # cache, not an intermediary's.
+    # Per-identity and carries the CSRF token, yet a 200 GET with no
+    # Cache-Control and no Vary is heuristically cacheable (RFC 9111): a shared
+    # cache in the expected reverse proxy could hand it to the next caller. The
+    # page JS's cache:'no-store' binds only the browser's own cache.
     return _JSONResponse(out, headers={"Cache-Control": "no-store"})
 
 
