@@ -9,20 +9,12 @@ TZ control.
 import time
 
 
-# ---------------------------------------------------------------------------
-# Pure UTC-hour helpers
-# ---------------------------------------------------------------------------
-
 def test_now_hour_and_hour_for_ts():
     from faster_whisper_backend.stats import usage_store as us
     assert us.hour_for_ts(7200) == 2
     assert us.hour_for_ts(7199.9) == 1
     assert abs(us.now_hour() - int(time.time() // 3600)) <= 1
 
-
-# ---------------------------------------------------------------------------
-# record_usage
-# ---------------------------------------------------------------------------
 
 def test_record_usage_accumulates_same_hour(usage_store_db):
     us = usage_store_db
@@ -51,15 +43,10 @@ def test_record_usage_open_mode_sentinel(usage_store_db):
 
 
 def test_record_usage_never_raises_uninitialised():
-    # No init_db here; _require_conn raises internally but record_usage swallows.
     from faster_whisper_backend.stats import usage_store as us
     us._conn = None
     us.record_usage(key_id="k", user_id="u", audio_s=1.0, words=1, status="ok")
 
-
-# ---------------------------------------------------------------------------
-# totals aggregations
-# ---------------------------------------------------------------------------
 
 def test_totals_by_key_ordered_by_audio_desc(usage_store_db):
     us = usage_store_db
@@ -94,10 +81,6 @@ def test_totals_window_filtering(usage_store_db):
     assert rows[0]["requests"] == 1
 
 
-# ---------------------------------------------------------------------------
-# leaderboard (SQL-injection guard on metric)
-# ---------------------------------------------------------------------------
-
 def test_leaderboard_invalid_metric_falls_back(usage_store_db):
     us = usage_store_db
     us.record_usage(key_id="k", user_id="u", audio_s=5.0, words=1, status="ok", hour=1)
@@ -114,10 +97,6 @@ def test_leaderboard_by_key_vs_user(usage_store_db):
     assert len(us.leaderboard(by="key")) == 2
     assert len(us.leaderboard(by="user")) == 1
 
-
-# ---------------------------------------------------------------------------
-# prune
-# ---------------------------------------------------------------------------
 
 def _is_empty(us) -> bool:
     return us._require_conn().execute(
@@ -146,10 +125,6 @@ def test_prune_drops_old(usage_store_db):
     deleted = us.prune(retention_days=30)
     assert deleted == 1
 
-
-# ---------------------------------------------------------------------------
-# series (server-local day/week bucketing)
-# ---------------------------------------------------------------------------
 
 def test_series_day_buckets_utc(usage_store_db, set_tz):
     set_tz("UTC")
