@@ -448,8 +448,6 @@ def _build_merged_wav(
     except ValueError as e:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e))
     duration_ms = int(res["duration_ms"])
-    # Re-key the order-parallel per-member trims onto member ids so
-    # _build_merged_words can look each member up regardless of ordering.
     member_trims = {
         mid: res["members"][i]
         for i, mid in enumerate(member_ids)
@@ -603,9 +601,6 @@ def _align_words_to_final(
             else:
                 j += 1
 
-    # Assign every final token to exactly one raw word so the per-word band
-    # reconstructs `final` losslessly — even when a rule expands one raw word
-    # into several tokens ("Nurtax" → "nur tags") or contracts several into one.
     # The matched raw words are monotonic anchors that split `fin_tokens` into
     # segments; the inserted (unmatched) tokens in a segment go to the unmatched
     # raw words sharing that segment, apportioned by each raw word's isolated
@@ -746,9 +741,7 @@ def _get_rebuild_lock(sid: str) -> threading.Lock:
         if lock is None:
             # Opportunistic prune before growing. Sample ids are random and a
             # dissolved sample's id never returns, so without this the dict is
-            # an unbounded create/regenerate/dissolve leak. Only idle locks
-            # that are not in flight (handed out but not yet acquired) are
-            # dropped, so a rebuild in flight is never orphaned.
+            # an unbounded create/regenerate/dissolve leak.
             if len(_rebuild_locks) >= _REBUILD_LOCKS_MAX:
                 for k in [k for k, v in _rebuild_locks.items()
                           if not v.locked() and k not in _rebuild_inflight]:
