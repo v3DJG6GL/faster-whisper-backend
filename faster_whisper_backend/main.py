@@ -22,9 +22,6 @@ import time
 import uuid
 from contextlib import asynccontextmanager
 
-# BOOT_ID (the per-process restart marker surfaced via /v1/models) lives in
-# build_info with the rest of the server identity; imported this early —
-# before config — so it exists exactly as soon as it used to.
 from faster_whisper_backend.build_info import APP_VERSION, BOOT_ID, SERVER_NAME
 from faster_whisper_backend.transcription import decode_trace as _decode_trace
 from faster_whisper_backend.transcription import segment_guards
@@ -37,7 +34,6 @@ from faster_whisper_backend.settings import schema as settings_schema
 # non-blocking counters. Imported here (early) so the priming happens before
 # any request handler runs.
 from faster_whisper_backend.runtime import system_stats
-# log_safe (below); module-level cost is nil (os).
 from faster_whisper_backend.core import store_common
 # Text-to-text translation stage (llama.cpp GGUF). Module-level import is
 # deliberate and cheap — like diarization/bgm_separation the module is
@@ -48,8 +44,7 @@ from faster_whisper_backend.translation import gating as tr_gating
 # Shared per-identity limiters. Imports only stdlib + fastapi + config, so it
 # is safe this early and cannot close an import cycle back through main.
 from faster_whisper_backend.auth import rate_limit as _rl
-# The media-id regex (MEDIA_ID_RE / MEDIA_ID_PATTERN) is defined once there.
-# Imports only stdlib + config + store_common.
+# Imports only stdlib + config + store_common, so it is safe this early.
 from faster_whisper_backend.media import media_store as url_media_store
 
 # Logging: root handlers (stderr console, rotating owner-only file, severity
@@ -68,9 +63,6 @@ for _msg in getattr(cfg, "_ENV_WARNINGS", ()):
     logger.warning("config env override ignored: %s", _msg)
 
 
-# =============================================================================
-# Hugging Face token propagation
-# =============================================================================
 # faster-whisper accepts `use_auth_token=` per-WhisperModel-call and forwards
 # it to huggingface_hub.snapshot_download(token=...). That covers the model
 # weights download. But OTHER HF calls in the process — Silero VAD model
@@ -191,7 +183,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 # on missing/invalid bearer.
 from faster_whisper_backend.auth.dependencies import get_current_user as _get_current_user_dep
 # The API-keys store: opened (fatally) by the lifespan, which also ingests
-# WHISPER_BOOTSTRAP_ADMIN_KEY through it. Already imported by auth.dependencies.
+# WHISPER_BOOTSTRAP_ADMIN_KEY through it.
 from faster_whisper_backend.auth import api_keys_store
 # Request-origin gates: the host allowlist tiers (the /docs shells) and the
 # same-origin guard _csrf_mw runs on every unsafe method — see auth/hosts.py.
@@ -404,14 +396,11 @@ async def _preload_extras() -> None:
 async def lifespan(app: FastAPI):
     logger.info("%s %s starting (boot %s)", SERVER_NAME, APP_VERSION, BOOT_ID[:8])
 
-    # Open the durable recent-transcriptions store. Replaces the legacy
-    # in-memory ring buffers (quick_config_state.recent_traces +
-    # metrics.recent_tx) so the /quick-config trace panel + /stats
-    # dashboard widget survive service restart and scale beyond 20 rows.
-    # Opened BEFORE the preload loop: every startup download (whisper,
-    # translation GGUF, pyannote) persists its 'download' recent-jobs row
-    # through this store, and with it still closed those rows were lost
-    # with a "persist failed" warning. Needs only cfg + store_common.
+    # The durable recent-transcriptions store (the /quick-config trace panel
+    # and the /stats widget). Opened BEFORE the preload loop: every startup
+    # download (whisper, translation GGUF, pyannote) persists its 'download'
+    # recent-jobs row through this store, and with it still closed those rows
+    # are lost with a "persist failed" warning. Needs only cfg + store_common.
     # Its hourly sweep task starts after the fatal api-keys init, like usage's.
     recent_tx_ready = False
     try:
@@ -474,31 +463,26 @@ async def lifespan(app: FastAPI):
         except Exception as _ue:
             logger.warning("Startup usage sweep failed: %s", _ue)
 
-    # Open the API-keys SQLite store and start the open-mode warning loop.
     # Placed BEFORE the preload loop and before any long-lived task is
     # created: its failure is fatal, and @asynccontextmanager never reaches
     # the post-yield teardown when startup raises, so anything already
     # running would be orphaned — and burning a cold-start multi-GB model
     # download before refusing to start would turn one misconfiguration into
     # a multi-minute crash loop under restart=always.
-    # In OPEN mode (no admin key exists yet) the loop nags every 60 s; this
-    # is the operator's prompt to bootstrap an admin via /settings/api-keys.
-    # Optional WHISPER_BOOTSTRAP_ADMIN_KEY env var creates the very first
-    # admin in one shot without any UI.
     #
     # FATAL, unlike every other store below: without it auth can resolve
     # nobody, so the service answers 401 to everything while still looking
-    # healthy. Raising here aborts startup — uvicorn logs the failure and
-    # exits non-zero, so the container/unit restarts instead of running as a
-    # black hole. A failed bootstrap-admin ingest is fatal for the mirror
-    # image of that reason: it would leave the server in OPEN mode with the
-    # operator believing the env key locked it down.
+    # healthy; exiting non-zero lets the container/unit restart instead. A
+    # bootstrap key matching a revoked or non-admin key (or one that cannot
+    # be registered) is fatal for the mirror-image reason: the server would
+    # stay in OPEN mode with the operator believing the env key locked it
+    # down (a too-weak key is only logged). In OPEN mode
+    # open_mode_warning_loop nags every 60 s until an admin exists.
     open_mode_task = None
     try:
         api_keys_store.init_db(cfg.API_KEYS_DB)
         bootstrap_key = getattr(cfg, "BOOTSTRAP_ADMIN_KEY", None)
         if bootstrap_key:
-            # Only inserts if hash isn't already in api_keys. Idempotent.
             api_keys_store.bootstrap_admin_from_env(bootstrap_key)
         logger.info(
             "API keys store initialized at %s (locked_down=%s)",
@@ -508,10 +492,9 @@ async def lifespan(app: FastAPI):
             _auth.open_mode_warning_loop()
         )
     except api_keys_store.BootstrapAdminError as _be:
-        # Its own wording names the real cause (a revoked/raced env key);
-        # the store-unavailable text below would send the operator to check
-        # filesystem permissions for a problem that has nothing to do with
-        # them.
+        # Its own wording names the real cause (a revoked, non-admin or
+        # unregistrable env key); the store-unavailable text below would send
+        # the operator to check filesystem permissions instead.
         logger.critical("[auth] %s", _be)
         raise
     except Exception as _ae:
@@ -559,8 +542,8 @@ async def lifespan(app: FastAPI):
         _diarization.idle_evictor_loop())
     bgm_evictor_task = asyncio.create_task(
         _bgm_separation.idle_evictor_loop())
-    # The translation LRU gets its own idle unloader too (module-level
-    # import at the top of the file; TRANSLATION_IDLE_TIMEOUT_S read live).
+    # The translation LRU gets its own idle unloader too
+    # (TRANSLATION_IDLE_TIMEOUT_S read live).
     translation_evictor_task = asyncio.create_task(
         _tr.idle_evictor_loop())
     # Model preloading: bind the worker to THIS loop (on_stage_start hands
@@ -570,8 +553,6 @@ async def lifespan(app: FastAPI):
     preload_sweeper_task = asyncio.create_task(preload.sweeper_loop())
     receipt_sweeper_task = asyncio.create_task(tx_receipt._receipt_sweeper())
 
-    # Best-effort preloads for the optional stages (translation GGUFs,
-    # diarization pipeline, BGM separator).
     await _preload_extras()
 
     # Transcribe-from-URL retention: wipe the dir (ids die with the process,
@@ -808,8 +789,8 @@ if _trusted_origins:
 # build, so a reload of this module re-arms the guard with the reloaded config.
 auth_hosts.configure_origins(_cors_origins, _trusted_origins)
 
-# Static assets for the /stats dashboard (vendored uPlot, etc). Local-only —
-# do not put anything sensitive under static/.
+# Static WebUI assets (vendored uPlot, GridStack, swagger-ui, redoc, fonts;
+# favicons), served without auth — do not put anything sensitive under static/.
 from fastapi.staticfiles import StaticFiles
 app.mount(
     "/static",
@@ -877,8 +858,8 @@ async def _redoc_ui():
         with_google_fonts=False,
     )
 
-# Per-request metrics middleware. Records (path, status, duration) for every
-# HTTP request — bumps in_flight tracked separately by the transcribe handler.
+# The /stats counters: _metrics_mw below records (path, status, duration)
+# per request; the transcribe handler bumps in_flight_transcriptions itself.
 from faster_whisper_backend.stats import metrics
 
 # Central running-jobs registry (transcribe/dictate/translate/download/preload)
@@ -886,10 +867,9 @@ from faster_whisper_backend.stats import metrics
 from faster_whisper_backend.core import jobs
 from faster_whisper_backend.transcription import jobs_store as _jobs_store
 
-# Model preloading. Imported here rather than lazily because call sites below
-# (the two `loaded` flag endpoints) and tx_progress._progress_set reach it on
-# hot paths. preload never imports main (it reaches the whisper cache through
-# transcription.models), so no cycle.
+# Model preloading (the lifespan runs its worker + sweeper; the handler
+# registers plans). preload never imports main (it reaches the whisper cache
+# through transcription.models), so a module-level import closes no cycle.
 from faster_whisper_backend.runtime import preload
 from faster_whisper_backend.transcription import run_plan as _run_plan
 
@@ -1039,32 +1019,22 @@ async def _max_body_mw(request: Request, call_next):
     the router, inside _metrics_mw so these rejections still get recorded.
     """
     max_body = int(getattr(cfg, "MAX_REQUEST_BYTES", 268_435_456))
-    # A JSON body gets a much tighter ceiling than the service-wide one. FastAPI
-    # calls `await request.json()` BEFORE solve_dependencies (fastapi/routing.py
-    # 0.141.x), so the payload is buffered AND json.loads-expanded ahead of the
-    # host gate, get_current_user and every in-handler rate limiter — measured
-    # ~24x RSS amplification on nested empty lists, i.e. ~6 GB from one
-    # unauthenticated request at the 256 MB ceiling. Route-level or pydantic
-    # max_length cannot help: pydantic never sees the payload until the parse
-    # has already built it. 4 MiB is ~2.5x the largest legitimate JSON body (a
-    # full 10 000-entry callback:map patch at ~1.5 MiB worst case — 64-char
-    # keys + values; a max-config client_settings blob is ~1.5 MB too, and
-    # its store cap sits just under this clamp, at the desktop client's
-    # 4 MiB sync ceiling less 4 KiB).
-    # getattr default, so no config-schema change is required. The media type
-    # is parsed, not prefix-matched: FastAPI treats `application/*+json`
-    # (merge-patch+json, ld+json, ...) as JSON and calls request.json() on
-    # it. A request with NO Content-Type at all is buffered whole (FastAPI
-    # only JSON-parses it if strict_content_type is ever turned off), and the
-    # routes that call request.json() themselves parse it whatever the
-    # header says. Both must share the ceiling or they bypass it (the
-    # self-parsing routes get it by path below, _SELF_PARSED_JSON_PATHS,
-    # whatever they declare). multipart media uploads to the upload routes
-    # (_MULTIPART_UPLOAD_PATHS) keep the full MAX_REQUEST_BYTES — sized for
-    # a MEDIA_MAX_BYTES video, i.e. gigabytes. Every OTHER non-JSON body,
-    # multipart-labelled ones to any other route included, keeps the old
-    # 256 MiB backstop: nothing but an upload has business being larger,
-    # and the media cap must not silently widen text/plain PUTs.
+    # A JSON body gets a much tighter ceiling. FastAPI calls
+    # `await request.json()` BEFORE solve_dependencies (fastapi/routing.py), so
+    # the payload is buffered AND json.loads-expanded ahead of the host gate,
+    # get_current_user and every rate limiter — measured ~24x RSS amplification
+    # on nested empty lists, ~6 GB from one unauthenticated request at 256 MB.
+    # pydantic max_length cannot help: it only sees the already-built payload.
+    # 4 MiB is ~2.5x the largest legitimate JSON body (a full 10 000-entry
+    # callback:map patch, ~1.5 MiB worst case; a max-config client_settings
+    # blob is ~1.5 MB, its store cap just under the desktop client's 4 MiB sync
+    # ceiling less 4 KiB). The media type is parsed, not prefix-matched:
+    # FastAPI treats `application/*+json` as JSON. A body with NO Content-Type
+    # is buffered whole, and the self-parsing routes (_SELF_PARSED_JSON_PATHS,
+    # below) ignore the header, so both share the ceiling. Only multipart to
+    # _MULTIPART_UPLOAD_PATHS keeps the full MAX_REQUEST_BYTES; every other
+    # non-JSON body keeps the 256 MiB backstop, so the media cap never widens
+    # text/plain PUTs.
     _ctype = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
     _main, _, _sub = _ctype.partition("/")
     if not _ctype or (_main == "application"
@@ -1095,8 +1065,8 @@ async def _max_body_mw(request: Request, call_next):
     # Count bytes as they stream in. Past the cap the receive channel reports
     # the client as disconnected, which unwinds whatever is consuming the body
     # (Starlette raises ClientDisconnect out of Request.body()/form()) instead
-    # of letting it accumulate. Legitimate requests are unaffected: the cap is
-    # MAX_REQUEST_BYTES, well above every route-level limit.
+    # of letting it accumulate. The cap is the same max_body the
+    # Content-Length check above used, so a request under it is unaffected.
     _received = 0
     _orig_receive = request.receive
 
@@ -1218,10 +1188,9 @@ async def _security_headers_mw(request: Request, call_next):
     also stamps their early 403/413 returns.
 
     Cache-Control is set as a DEFAULT, not an override — a handler that already
-    chose its own value keeps it. Before this, the tree set no-store on seven
-    responses by hand and left the rest bare, including /reports/api/list, whose
-    body is scope-filtered per caller: a shared cache keyed on URL alone could
-    hand an admin's full-corpus response to a scope="own" user. A 200 GET with
+    chose its own value keeps it. Some bodies are scope-filtered per caller
+    (/reports/api/list, say): a shared cache keyed on URL alone could hand an
+    admin's full-corpus response to a scope="own" user. A 200 GET with
     no Cache-Control, no Expires and no Vary is heuristically cacheable under
     RFC 9111, and this deployment expects a reverse proxy in front
     (TRUSTED_ORIGINS exists for exactly that). Defaulting to no-store everywhere
@@ -1287,8 +1256,9 @@ def _encodable_json_response(content, status_code: int, headers=None):
     JSONResponse encodes with ensure_ascii=False and allow_nan=False, so a lone
     UTF-16 surrogate (a JSON "\\ud800" escape) or a NaN / Infinity literal
     (json.loads accepts both) makes it raise and the client gets a 500 instead
-    of the 4xx. Only that case falls back to an ASCII-escaped body with each
-    non-finite float as a string — both sent back as the literal they arrived as.
+    of the 4xx. Only that case falls back to an ASCII-escaped body (a lone
+    surrogate goes back as its \\udXXX escape) with each non-finite float as
+    the string "NaN", "Infinity" or "-Infinity".
     """
     from fastapi.responses import JSONResponse, Response
     try:
@@ -1523,9 +1493,8 @@ async def transcribe(
     # Bracket the entire request with metrics.in_flight_transcriptions +
     # record_transcription so failed loads / failed transcriptions still
     # surface in the dashboard.
-    # request_id is generated up-front (was deferred to post-transcribe) so
-    # the outer finally can correlate timing-only writes to the SQLite store
-    # on the error path too.
+    # request_id is minted before the outer try so its finally can correlate
+    # timing-only writes to the SQLite store on the error path too.
     metrics.in_flight_transcriptions += 1
     # GPU-gate wait for this request accumulates here (every acquire in
     # this task, and in tasks it spawns, charges it); read in the finally.
@@ -1552,9 +1521,8 @@ async def transcribe(
     # Detected (or requested) language for the usage job row; None until the
     # decode has run, and stays None on the error path.
     _language: "str | None" = None
-    # Per-stage wall-clock receipts ({name, secs, model?, detail?}) — the
-    # durations were previously computed for log lines and discarded; now
-    # they also persist as the recent-jobs row's stages.
+    # Per-stage wall-clock receipts ({name, secs, model?, detail?}), persisted
+    # as the recent-jobs row's stages.
     _stage_timings: "list[dict]" = []
     # The server-owned plan behind the progress route (transcription/run_plan.py):
     # seeded with the stages the Form args imply, refined as facts land,
@@ -1709,7 +1677,7 @@ async def transcribe(
 
         # Perf origin for the whisper load: the transcribing row's decode t0
         # is taken long after this, so `load_secs_since` from there could
-        # never see a cold load — the receipt reported `load 0.0s` always.
+        # never see a cold load.
         _model_t0 = time.perf_counter()
         model = await tx_models._get_or_load_model(resolved_model, lease=True)
         _leased_model = (resolved_model, model)
@@ -1720,7 +1688,7 @@ async def transcribe(
         # Resolve the caller's effective per-identity config ONCE for this
         # request: layered decode params, pipeline include/exclude, output
         # wrappers, and which fields are locked against client overrides.
-        # Open mode / no per-identity config → no identity layers (≡ today).
+        # Open mode / no per-identity config → no identity layers.
         # `override_profile` (if sent + allowed) joins as the least-specific layer.
         ident = effective_config.build_ident(user, resolved_model, request_profile=override_profile)
 
@@ -1759,9 +1727,8 @@ async def transcribe(
         translate_to = _tt_field if isinstance(_tt_field, str) else None
         _tg_field = form_data.get("translation_glossary")
         translation_glossary = _tg_field if isinstance(_tg_field, str) else None
-        # Re-apply the clamp from above: this re-read overwrote the bounded
-        # Form value with the raw one, so the cap was dead code and the field
-        # reached the tokenizer at whatever size the multipart parser allowed.
+        # Re-apply the clamp from above: the raw form re-read replaced the
+        # bounded Form value.
         if prompt is not None:
             prompt = prompt[:tx_models._DECODE_STR_CAPS.get("prompt", 2048)]
 
@@ -1925,11 +1892,10 @@ async def transcribe(
                         # keep_video is refused without a progress_id.
                         media_video._VIDEO_TASKS[_pid] = _video_task
             else:
-                # Stream the part to the temp file in chunks, counting bytes as
-                # we go: the upload is never fully resident, and an oversized
-                # body is cut off mid-read instead of after it has been
-                # materialised. Only the SIZE is needed downstream (capture
-                # size guard + log block).
+                # Copy the part Starlette already spooled into our own temp
+                # file in chunks, counting bytes as we go: never one read of
+                # the whole upload into memory. Only the SIZE is needed
+                # downstream (capture size guard + log block).
                 audio_bytes = 0
                 # "whisperup-" marks the file for restart_service.reclaim_hard_restart_orphans
                 # — tempfile's default "tmp" prefix is every process's.
@@ -1981,23 +1947,16 @@ async def transcribe(
             except ValueError as _ce:
                 raise HTTPException(status_code=400, detail=str(_ce))
 
-            # word_timestamps: AND of the (per-model-overrideable) global
-            # config knob and the per-request ask. Disabled (False) bypasses
-            # the DTW alignment path entirely — required for primeline-style
-            # finetunes that hit faster-whisper#1212.
+            # WORD_TIMESTAMPS_ENABLED=False skips DTW alignment entirely —
+            # required for primeline-style finetunes that hit faster-whisper#1212.
             gate_word_ts = effective_config.cfg_for(resolved_model, "WORD_TIMESTAMPS_ENABLED", ident)
             want_word_ts = gate_word_ts and include_words
 
-            # Capture-for-fine-tuning decision. We gate via gate_word_ts
-            # (NOT override): per-model WORD_TIMESTAMPS_ENABLED=False is
-            # used on primeline/tnfru-family fine-tunes where DTW is
-            # broken — forcing word_timestamps=True there produces empty
-            # transcripts. Skip capture instead.
-            #
-            # Sampling roll + size guard happen at handler
-            # entry so we don't waste DTW CPU on requests that won't
-            # land. Duration filter is post-transcribe (we don't know
-            # the duration yet).
+            # Capture gates on gate_word_ts instead of overriding it: forcing
+            # DTW on a WORD_TIMESTAMPS_ENABLED=False model (primeline/tnfru
+            # finetunes) yields empty transcripts. The sampling roll and size
+            # guard run before the decode so DTW is forced only for a capture
+            # that will land; the duration filter has to wait for the decode.
             will_capture = False
             captured_id: str | None = None
             if (getattr(cfg, "CAPTURES_RECORDING_ENABLED", False)
@@ -2031,17 +1990,12 @@ async def transcribe(
                 except Exception as _ce:
                     logger.warning("[capture] eligibility check failed: %s", _ce)
 
-            # Empty string is NOT equivalent to None for tnfru / primeline
-            # finetunes — passing "" to model.transcribe(initial_prompt=...)
-            # triggers the failure mode their model card warns about. Coerce.
-            # Prompt: a LOCKED DEFAULT_PROMPT forbids the client's `prompt`
-            # param — the admin value stands. `ignored` collects what we drop
-            # so the verbose_json response can surface it (never silent).
-            # prompt sentinel: None (field absent) = inherit DEFAULT_PROMPT; an
-            # explicit "" (field present-but-empty) = CLEAR (no initial_prompt); a
-            # value is used verbatim. The `if _prompt else None` coerce below turns
-            # an explicit "" into None for model.transcribe (passing "" trips the
-            # tnfru/primeline finetunes' documented failure mode).
+            # Prompt: an absent field inherits DEFAULT_PROMPT, an explicit ""
+            # clears it, a value is used verbatim; a LOCKED DEFAULT_PROMPT beats
+            # the client. `ignored` collects every dropped client knob so the
+            # verbose_json response can surface it (never silent). "" goes to
+            # model.transcribe as None: an empty initial_prompt triggers the
+            # failure mode the tnfru/primeline model cards warn about.
             ignored: "list[str]" = []
             _prompt = effective_config._resolve_request_knob(
                 resolved_model, ident, ignored,
@@ -2058,23 +2012,18 @@ async def transcribe(
 
             _lead_pad_ms = int(effective_config.cfg_for(resolved_model, "LEADING_SILENCE_PAD_MS", ident) or 0)
 
-            # Coerce empty to None — faster-whisper validates the value against
-            # its accepted-codes list, so "" raises ValueError; None triggers
-            # the first-30s auto-detect path, which is what an empty
-            # DEFAULT_LANGUAGE is documented to mean. A LOCKED DEFAULT_LANGUAGE
-            # likewise forbids the client's `language` param.
-            # (`_decode_language`, not the `_language` ledger field above:
+            # Language: an ABSENT field inherits DEFAULT_LANGUAGE; present-but-
+            # empty is an explicit auto-detect (the client's cleared state); a
+            # LOCKED DEFAULT_LANGUAGE beats the client. assemble_transcribe_kwargs
+            # turns "" into None — faster-whisper raises on "", None runs the
+            # first-30s auto-detect an empty DEFAULT_LANGUAGE is documented to
+            # mean. (`_decode_language`, not the `_language` ledger field above:
             # that one stays None until the decode has actually run.)
-            # Present-but-empty is an explicit "auto-detect" (the client's
-            # cleared state); only an ABSENT field inherits the config.
             _decode_language = effective_config._resolve_request_knob(
                 resolved_model, ident, ignored,
                 "DEFAULT_LANGUAGE", "language", language,
                 default=effective_config._NO_DEFAULT)
-            # Task: absent field inherits the resolved TASK config (per-identity
-            # > per-model > global, default "transcribe"); a LOCKED TASK forbids
-            # the client's `task` param the way a locked DEFAULT_LANGUAGE binds
-            # `language` above.
+            # Task: the same absent-inherits / locked-wins ladder as `language`.
             _task = effective_config._resolve_request_knob(
                 resolved_model, ident, ignored,
                 "TASK", "task", task, default="transcribe")
@@ -2172,8 +2121,8 @@ async def transcribe(
                     _spk[_loser] = None
                 else:
                     _spk["min_speakers"] = _spk["max_speakers"]
-            # Music separation: same shape again. Soft-failed optional stages
-            # (this and diarization) collect their explanations in _warnings.
+            # Soft-failed optional stages (separation, diarization,
+            # translation) collect their explanations in _warnings.
             _warnings: "list[str]" = []
             if _retain_warning:
                 _warnings.append(_retain_warning)
@@ -2185,9 +2134,6 @@ async def transcribe(
             _skipped: "list[str]" = []
 
             def _skip(stage: str) -> None:
-                """Record a declined stage + mirror it into the progress
-                entry — the second half is pure bookkeeping whose omission
-                would silently stop the client's rail from showing it."""
                 _skipped.append(stage)
                 _rplan.skip(stage)
                 _ps(skipped=list(_skipped))
@@ -2366,10 +2312,8 @@ async def transcribe(
                 _bound_plan_id = _plan["plan_id"]
                 tx_progress._PLAN_BY_PID[_pid] = _bound_plan_id
 
-            # Now that the stage plan is resolved, tell the running-jobs
-            # registry what this job is going to DO. job_start fires before
-            # the plan exists, so /stats showed a bare "—" for the whole life
-            # of a job that was about to separate, diarize and translate.
+            # job_start fired before the stage plan existed: tell the
+            # running-jobs registry (/stats) what this job is going to do.
             _plan_names = [n for n, on in (("separate", _separate),
                                            ("diarize", _diarize),
                                            ("translate", bool(_translate_to)))
@@ -2394,12 +2338,10 @@ async def transcribe(
                         _overrides = {k: (_LONE_SURROGATE_RE.sub("", v) if isinstance(v, str) else v)
                                       for k, v in _parsed.items()}
                 except (ValueError, TypeError, RecursionError):
-                    # RecursionError (a RuntimeError, NOT a ValueError) is what
-                    # json.loads raises on a deeply nested array/object, so
-                    # without it here a malformed value escapes to the handler's
-                    # generic `except Exception` and becomes a logged 500 plus a
-                    # permanent err_count bump — breaking the documented
-                    # "malformed → ignored" contract. Matches the streaming twin.
+                    # json.loads raises RecursionError (not a ValueError) on
+                    # deep nesting; uncaught it would become a logged 500 and an
+                    # err_count bump instead of "malformed → ignored". Matches
+                    # the streaming twin.
                     _overrides = {}
             # Per-request decode keys dropped by a lock (assemble_transcribe_
             # kwargs enforces the drop; we record it here for the response).
@@ -2408,15 +2350,12 @@ async def transcribe(
             ignored.extend(sorted(
                 k for k in _overrides if k in ident.locked_client_keys
                 and k not in settings_schema.STREAM_ONLY_CLIENT_KEYS))
-            # A locked TEMPERATURE has to bind the OpenAI-compat `temperature`
-            # Form field too, the way a locked DEFAULT_PROMPT/DEFAULT_LANGUAGE
-            # binds `prompt`/`language` above. assemble_transcribe_kwargs only
-            # drops the LOCKED CLIENT KEY, i.e. `temperature` inside
-            # decode_overrides; the Form field is threaded straight through and
-            # is normally masked only because a non-empty resolved ladder
-            # overwrites it. Blank the ladder at the winning layer (a supported
-            # shape — effective_config documents value-less locks) and the Form
-            # field became the one way past the lock.
+            # A locked TEMPERATURE must bind the `temperature` Form field too.
+            # assemble_transcribe_kwargs drops only `temperature` inside
+            # decode_overrides; the Form field passes straight through and is
+            # masked only by a non-empty resolved ladder. A value-less lock
+            # (supported, see effective_config) would leave it as the way past
+            # the lock, so pin it to the ladder floor here.
             _temperature = temperature
             if "TEMPERATURE" in ident.locked:
                 _locked_ladder = effective_config.cfg_for(resolved_model, "TEMPERATURE", ident)
@@ -2597,12 +2536,10 @@ async def transcribe(
                             "separating", _sep_t0, _separation_model, _se))
                         _rplan.stage_failed("separating")
 
-            # Run the synchronous CTranslate2 inference in a thread executor
-            # so the event loop stays responsive. CT2 releases the GIL
-            # internally, so two concurrent requests on different models can
-            # decode in parallel (subject to GPU compute scheduling). The
-            # generator returned by transcribe() does its work lazily on
-            # iteration, so we materialize it inside the executor too.
+            # CT2 releases the GIL, so concurrent requests on different models
+            # decode in parallel threads (subject to GPU compute scheduling).
+            # transcribe()'s segment generator works lazily on iteration, so it
+            # is materialized inside the executor too.
             #
             # LEADING_SILENCE_PAD_MS: decode to 16 kHz mono ourselves (the
             # exact call transcribe() makes internally for a path input),
@@ -2700,10 +2637,9 @@ async def transcribe(
                         # far is the complete output.
                         pass
                     return _out
-                # This executor thread has the semaphore slot now: everything
-                # until _collect's first entry (lead-pad decode, transcribe()'s
-                # eager audio decode + Silero VAD pass) used to be misreported
-                # as "waiting". Own stage so the client can label it honestly.
+                # The semaphore slot is held from here: the lead-pad decode and
+                # transcribe()'s eager audio decode + Silero VAD pass run before
+                # _collect, so they get their own stage instead of "waiting".
                 _ps(stage="analyzing", progress=None,
                     position=None, last_text=None, step=None,
                     model=None, device=None, compute=None)
@@ -2758,11 +2694,9 @@ async def transcribe(
                 segments_iter, info, _pad_applied = await loop.run_in_executor(
                     None, _do_transcribe)
                 _total_secs = time.perf_counter() - _dec_t0
-                # VAD is the stage that most often eats the user's audio and
-                # it was the only one with no row anywhere — /stats, the
-                # receipt and the trace viewer were all blind to it. Its cost
-                # is the eager pre-roll, so bill it separately and leave the
-                # decode row showing decode only, rather than double-counting.
+                # VAD's cost is the eager pre-roll: bill it as its own row and
+                # leave the decode row showing decode only, rather than
+                # double-counting.
                 _pre_secs = float(_decode_timing.get("pre_secs") or 0.0)
                 if transcribe_kwargs.get("vad_filter") and _pre_secs > 0:
                     _dav_v = getattr(info, "duration_after_vad", None)
@@ -2801,9 +2735,9 @@ async def transcribe(
 
             all_words = []
             segments_list = []
-            # Compact per-segment metadata for the log block. Separate from
-            # segments_list (the API response shape) so we can include it in
-            # the diagnostic output without mutating the wire format.
+            # Per-segment diagnostics (incl. dropped / cut rows) for the log
+            # block and the capture row; kept apart from segments_list, the
+            # API response shape.
             seg_diag: list[dict] = []
             # We collect raw segment text so the full transcription can be
             # post-processed in ONE pass — multi-word dictation phrases like
@@ -2831,13 +2765,11 @@ async def transcribe(
             _head_cut: "dict | None" = None
 
             for i, segment in enumerate(segments_iter):
-                # segment.temperature reflects CT2's actual after-fallback
-                # value (may differ from the request `temperature` if fallback
-                # kicked in); the fallback is `_temperature`, the value that
-                # was actually handed to the decoder (a locked TEMPERATURE may
+                # segment.temperature is CT2's after-fallback value (may differ
+                # from the request's); the default `_temperature` is what was
+                # actually handed to the decoder (a locked TEMPERATURE may
                 # have reset it). segment.compression_ratio is the real gzip
-                # ratio used by the suppression check — was previously
-                # hardcoded 1.0.
+                # ratio the suppression check used.
                 seg_temp = getattr(segment, "temperature", _temperature)
                 seg_cr = getattr(segment, "compression_ratio", 1.0)
 
@@ -2918,13 +2850,10 @@ async def transcribe(
 
                 raw_full_text_parts.append(segment.text)
 
-                # NOTE: segments[].text and words[].word carry RAW Whisper
-                # output. Only the joined `text` field below is post-processed.
-                # Multi-word dictation phrases ("neue Zeile") frequently get
-                # split across VAD segment boundaries, so per-segment post-
-                # processing would produce inconsistent results — the joined
-                # pass is the authoritative one. Clients that need cleaned
-                # per-segment text should read `text` (joined) and split it.
+                # segments[].text and words[].word carry RAW Whisper output;
+                # only the joined `text` is post-processed (see
+                # raw_full_text_parts). Clients that need cleaned per-segment
+                # text should split the joined `text`.
                 segments_list.append({
                     "id": len(segments_list),
                     "seek": 0,
@@ -3037,9 +2966,10 @@ async def transcribe(
                 _skip("diarizing")
 
             # Post-decode translation stage (soft-fail). CRITICAL invariant:
-            # translated text lives ONLY in seg["translations"] and the
-            # top-level `translations`/`translation` response blocks — it must
-            # never reach captures, raw_full_text, full_text_str or the
+            # translated text lives ONLY in seg["translations"], the top-level
+            # `translations`/`translation` response blocks and the capture's
+            # keyed `translations` map — it must never reach raw_full_text,
+            # full_text_str, the capture's raw/final/training text or the
             # quick-config trace, which all carry source-language dictation.
             _translation_meta: "dict | None" = None
             if _translate_to and segments_list:
@@ -3142,9 +3072,8 @@ async def transcribe(
                             for _i, _seg_tr in enumerate(_per_seg):
                                 # Unconditional: an untranslated segment
                                 # carries an explicit empty map, not a
-                                # missing key. translations_kept names the
-                                # targets whose guard fallback kept the
-                                # SOURCE text (absent when clean).
+                                # missing key; translations_kept is absent
+                                # when clean.
                                 segments_list[_i]["translations"] = _seg_tr
                                 if _tr_kept.get(_i):
                                     segments_list[_i]["translations_kept"] = \
@@ -3215,13 +3144,10 @@ async def transcribe(
             # Captures-form text — same pipeline minus the captures-specific
             # exclude set (default-skips `de-dictation-map` + `capitalize-after-
             # terminator` so the stored text matches Whisper's raw output
-            # under SUPPRESS_CHARS for fine-tune training). Only computed when
-            # the capture eligibility gate has already passed at handler
-            # entry — sampling missed / captures disabled / count cap full
-            # are the common case and shouldn't pay for a second pipeline
-            # walk per request. No trace participation: the runtime trace
-            # describes the user-facing pipeline, not the training-form
-            # variant.
+            # under SUPPRESS_CHARS for fine-tune training). Only when the
+            # capture gate passed before the decode: the common no-capture
+            # case shouldn't pay a second pipeline walk. No trace: the trace
+            # describes the user-facing pipeline.
             if will_capture:
                 training_text_str = pl_engine._postprocess_text(
                     raw_full_text,
@@ -3253,7 +3179,7 @@ async def transcribe(
                 }
                 _capture_translations = {
                     k: v for k, v in _capture_translations.items() if v}
-            # Output wrappers (G/PM): plain prefix/suffix concatenated to
+            # Output wrappers: plain prefix/suffix concatenated to
             # the final transcript text after the pipeline runs (including
             # the in-pipeline terminal trim) and BEFORE a defensive
             # post-wrapper trim. Per-model overrides win; the client's
@@ -3282,30 +3208,20 @@ async def transcribe(
                 trace.append(("Trim edges (post-wrapper)",
                               before_trim, full_text_str))
 
-            # request_id was generated at handler entry (so the outer
-            # finally can record_timing() on the error path too); it is
-            # stamped on the log block (req=<id[:8]> in the title line),
-            # on each /reports submission, and on the recent-transcriptions
-            # store row for the /quick-config trace panel.
-
-            # Persist the capture if eligibility passed at handler entry
+            # Persist the capture if eligibility passed before the decode
             # AND duration falls in the configured window AND we have
             # enough disk free. Done BEFORE the log block so the block
-            # can record `captured=<id_prefix>` for traceability. The
-            # tmp_path is still on disk — the finally block unlinks it
-            # AFTER this. We copy (not move) so the existing cleanup
-            # path is unchanged.
+            # can record `captured=<id_prefix>` for traceability. We copy
+            # (not move) tmp_path so the outer finally's cleanup is unchanged.
             if will_capture:
                 try:
                     audio_dur_s = float(getattr(info, "duration", 0.0) or 0.0)
                     min_s = float(getattr(cfg, "CAPTURES_RECORDING_MIN_DURATION_S", 0.5))
                     max_s = float(getattr(cfg, "CAPTURES_RECORDING_MAX_DURATION_S", 600.0))
                     if not raw_full_text.strip():
-                        # Pure-silence clip: Whisper returned no speech, so the
-                        # capture would store as "(empty)" with zero training
-                        # value. Skip it. The tmp audio is unlinked by the outer
-                        # finally, so nothing is orphaned. raw_full_text is the
-                        # exact text that would be passed as raw= below.
+                        # Pure-silence clip: it would store as "(empty)" with
+                        # zero training value. The outer finally still unlinks
+                        # the tmp audio.
                         logger.info(
                             "[capture] skipped empty transcription (no speech) req=%s",
                             request_id[:8],
@@ -3323,15 +3239,13 @@ async def transcribe(
                             _free = 1 << 40  # large enough to proceed
                         if _free > 1_000_000_000:
                             # OFF the loop: create_capture runs a full PyAV
-                            # demux/decode/resample/encode of the uploaded
-                            # clip, a multi-MB write and an os.replace retry
-                            # loop that time.sleep()s. Measured 1.2-1.4 s of
-                            # frozen event loop for a 10-minute upload — the
-                            # decode above is already offloaded, this was the
-                            # last blocking step left inline. captures_store
-                            # opens with check_same_thread=False and guards
-                            # writes with its own lock; the outer finally still
-                            # unlinks tmp_path after this returns.
+                            # demux/decode/resample/encode, a multi-MB write and
+                            # an os.replace retry loop that time.sleep()s (over a
+                            # second of frozen loop for a 10-minute upload).
+                            # captures_store opens with check_same_thread=False
+                            # and guards writes with its own lock. A cancelled
+                            # await does not stop the thread, so the outer
+                            # finally may unlink tmp_path while it still reads.
                             captured_id = await asyncio.to_thread(
                                 functools.partial(
                                     captures_store.create_capture,
@@ -3346,12 +3260,8 @@ async def transcribe(
                                     words=all_words,
                                     segments=seg_diag,
                                     user_id=user.get("user_id"),
-                                    # _task has existed since the translate
-                                    # endpoint landed and is echoed in the
-                                    # response, but never reached the store —
-                                    # so the finetuning manifest could not say
-                                    # whether a row trains transcribe or
-                                    # translate.
+                                    # Lets the finetuning manifest tell a
+                                    # transcribe row from a translate row.
                                     task=_task,
                                     translations=_capture_translations,
                                     translation_model=(
@@ -3486,11 +3396,7 @@ async def transcribe(
                     steps=trace if trace is not None else [],
                     final=full_text_str,
                     language=info.language,
-                    # A URL fetch and an uploaded file are different jobs, and
-                    # this branch already knows which one ran (see the
-                    # url:<host> label built for the request block above). The
-                    # distinction used to reach the log and stop there, so
-                    # /quick-config chipped every URL download as "file".
+                    # /quick-config chips a URL download apart from an upload.
                     source="url" if source_url is not None else "file",
                     user_id=_user_id,
                 )
@@ -3604,24 +3510,20 @@ async def transcribe(
                     response["words"] = all_words
                 if speakers_list:
                     response["speakers"] = speakers_list
-                    # `speakers` gives labels but never said WHICH pipeline
-                    # produced them — unlike translation, which has always
-                    # reported its model. Same shape, so a client can render
-                    # both provenances identically.
+                    # Which pipeline produced the labels, in the same shape
+                    # translation reports its model, so a client renders both
+                    # provenances identically.
                     response["diarization"] = {
                         "model": _diarization_model or None,
                         "speakers": len(set(speakers_list)),
                     }
-                # Separation left no trace in the response at all, so a client
-                # could not tell a vocals-only transcript from a raw one.
+                # Lets a client tell a vocals-only transcript from a raw one.
                 if tx_receipt._stage_ran(_stage_timings, "separating"):
                     response["separation"] = {
                         "model": _separation_model or None,
                         "stem": "vocals",
                     }
-                # Per-stage timings were built for the log and the client's
-                # progress rail and then dropped from the response, so a
-                # caller could see WHAT ran but never what it cost.
+                # What each stage cost, not just which stages ran.
                 if _stage_timings:
                     response["stages"] = _stage_timings
                 if _translations_joined is not None:
@@ -3711,13 +3613,10 @@ async def transcribe(
                     status_code=400,
                     detail="the file could not be decoded as audio")
                 raise _exc
-            # Log the raw exception server-side, but return a GENERIC detail to
-            # the client: str(e) here can carry model-dir / filesystem (temp)
-            # paths (av/ffmpeg decode + model-load errors). Mirrors the
-            # streaming WS hardening — never forward raw str(exc) to a caller.
-            # _log_safe: str(e) can echo caller-supplied text verbatim (the
-            # `language` Form field is an unvalidated str and faster-whisper's
-            # tokenizer quotes an unknown code back into its ValueError), and
+            # Log the raw exception, but return a GENERIC detail: str(e) can
+            # carry model-dir / temp-file paths (av/ffmpeg decode, model load),
+            # the same reason the streaming WS never forwards raw str(exc).
+            # _log_safe: str(e) can echo caller-supplied text verbatim, and
             # multipart values are binary-safe, so raw CR/LF would otherwise
             # forge extra lines in the /logs viewer.
             logger.error("Transcription error: %s", _log_safe(str(e)))
@@ -3767,11 +3666,9 @@ async def transcribe(
             _status = "cancelled"
         raise
     except Exception as _oe:
-        # Catches failures BEFORE the inner try (e.g. _get_or_load_model
-        # raising HTTPException, await request.form() blowing up), which
-        # previously bypassed `_status = "error"` and inflated the success
-        # counter with failed requests. The inner _ClientCancelled arm's 499
-        # also lands here (its own sibling arms can't see it) — that one is
+        # Failures BEFORE the inner try (model load, request.form()) must be
+        # recorded as errors, not successes. The inner _ClientCancelled arm's
+        # 499 also lands here (its sibling arms can't see it) — that one is
         # NOT an error, so "cancelled" must survive into the recorded row.
         if _status != "cancelled":
             _status = "error"
@@ -3965,9 +3862,6 @@ def _include_router(label: str, module: str, attr: str = "router") -> bool:
     return True
 
 
-# =============================================================================
-# The always-on API routers that used to live in this file
-# =============================================================================
 # POST /v1/text/translations (text→text; /v1/audio/translations stays above
 # next to the transcription handler) — translation/routes.py.
 _include_router("text translations", "faster_whisper_backend.translation.routes")
@@ -3990,12 +3884,10 @@ from faster_whisper_backend.auth import routes as auth_routes
 app.include_router(auth_routes.router)
 
 
-# =============================================================================
-# /stats - system overview dashboard (always on, user-tier allowlist-gated)
-# =============================================================================
-# Always registered. The route's host gate reads cfg.USER_WEBUI_ALLOWED_HOSTS
-# at request time, so the admin UI can broaden/narrow access without a service
-# restart. Loopback is always allowed; the data endpoints require a "stats" key.
+# /stats dashboard (user-tier allowlist-gated). Always registered. The route's
+# host gate reads cfg.USER_WEBUI_ALLOWED_HOSTS at request time, so the admin UI
+# can broaden/narrow access without a service restart. Loopback is always
+# allowed; the data endpoints require a "stats" key.
 if _include_router("stats", "faster_whisper_backend.stats.routes"):
     logger.info(
         "Stats dashboard at /stats (allowlist=%s; loopback always permitted)",
@@ -4003,13 +3895,11 @@ if _include_router("stats", "faster_whisper_backend.stats.routes"):
     )
 
 
-# =============================================================================
-# / - landing hub (always on, user-tier allowlist-gated)
-# =============================================================================
-# The WebUI's front door: signed-out visitors get the shared login gate,
-# signed-in ones a launcher filtered to the pages their key can reach (plus
-# the admin section for admins). Same host tier as the other user page
-# shells; nothing sensitive is rendered server-side. See core/home_routes.py.
+# / landing hub (always on, user-tier allowlist-gated) — the WebUI's front
+# door: signed-out visitors get the shared login gate, signed-in ones a
+# launcher filtered to the pages their key can reach (plus the admin section
+# for admins). Same host tier as the other user page shells; nothing sensitive
+# is rendered server-side. See core/home_routes.py.
 if _include_router("home", "faster_whisper_backend.core.home_routes"):
     logger.info(
         "Landing hub at / (allowlist=%s; loopback always permitted)",
@@ -4017,12 +3907,11 @@ if _include_router("home", "faster_whisper_backend.core.home_routes"):
     )
 
 
-# =============================================================================
-# /v1/audio/transcriptions/stream - live (streaming) dictation WebSocket
-# =============================================================================
-# Always registered; the handler self-gates on cfg.STREAMING_ENABLED (toggleable
-# at runtime) and resolves auth per connection (same user records as the batch
-# route). Reuses the model cache + pl_engine._postprocess_text; see streaming/routes.py.
+# /v1/audio/transcriptions/stream (live dictation WebSocket). Always
+# registered; the handler self-gates on cfg.STREAMING_ENABLED (toggleable at
+# runtime) and resolves auth per connection (same user records as the batch
+# route). Reuses the model cache + pl_engine._postprocess_text; see
+# streaming/routes.py.
 if _include_router("streaming", "faster_whisper_backend.streaming.routes"):
     logger.info(
         "Streaming transcription at /v1/audio/transcriptions/stream "
@@ -4032,23 +3921,19 @@ if _include_router("streaming", "faster_whisper_backend.streaming.routes"):
     )
 
 
-# =============================================================================
-# /v1/pipeline-rules - client API for the desktop "Dictionary" editor
-# =============================================================================
-# Always registered (unlike the /quick-config WebUI, which rides
-# ADMIN_UI_ENABLED). Same tag/exposed gating + per-type field allow-list +
-# validation as /quick-config (shared build_visible_rules / apply_rules_patch in
-# quick_config_routes), but in the /v1 namespace with NO host allowlist — auth is
-# the per-user API key (bearer) plus the quick_config page permission. Lets the
-# desktop client view + edit the post-processing rules the caller is permitted to.
+# /v1/pipeline-rules, the desktop "Dictionary" editor's API. Always registered
+# (unlike the /quick-config WebUI, which rides ADMIN_UI_ENABLED). Same
+# tag/exposed gating + per-type field allow-list + validation as /quick-config
+# (shared build_visible_rules / apply_rules_patch in quick_config/routes.py),
+# but in the /v1 namespace with NO host allowlist — auth is the per-user API
+# key (bearer) plus the quick_config page permission. Lets the desktop client
+# view + edit the post-processing rules the caller is permitted to.
 if _include_router("pipeline-rules v1", "faster_whisper_backend.quick_config.routes", "v1_router"):
     logger.info("Pipeline-rules client API at GET/PATCH /v1/pipeline-rules")
 
 
-# =============================================================================
-# /v1/synced-client-settings - desktop-client settings sync
-# =============================================================================
-# (the old /v1/client-settings path is a deprecated alias, see _LEGACY_PATHS)
+# /v1/synced-client-settings: desktop-client settings sync (the old
+# /v1/client-settings path is a deprecated alias, see _LEGACY_PATHS).
 # Always registered (a route-level 404 must keep meaning "backend build too
 # old for sync"). User-tier bearer auth only — deliberately NO page gate and
 # NO host allowlist: settings sync is account infrastructure for remote
@@ -4067,12 +3952,10 @@ if _include_router("usage", "faster_whisper_backend.stats.usage_routes"):
     logger.info("Usage outcomes at POST /v1/usage/outcome")
 
 
-# =============================================================================
-# /v1/models/preload - ask the server to warm the models a job will need
-# =============================================================================
-# Always registered, same rationale as /v1/synced-client-settings above: a
-# route-level 404 must keep meaning "backend build too old for preloading", never
-# "preloading is off here" — the latter is a 202 with every entry `deferred`.
+# /v1/models/preload warms the models a job will need. Always registered, same
+# rationale as /v1/synced-client-settings above: a route-level 404 must keep
+# meaning "backend build too old for preloading", never "preloading is off
+# here" — the latter is a 202 with every entry `deferred`.
 # User-tier bearer auth only (the tier /v1/models and /v1/me already use to
 # publish `loaded` flags for these exact models); no page gate, no host
 # allowlist. See preload_routes.py.
@@ -4081,12 +3964,10 @@ if _include_router("preload", "faster_whisper_backend.runtime.preload_routes"):
                 bool(getattr(cfg, "MODEL_PRELOAD_ENABLED", True)))
 
 
-# =============================================================================
-# /settings - admin WebUI (opt-in)
-# =============================================================================
-# Off by default: registered only when cfg.ADMIN_UI_ENABLED is True (set in
-# config.py or via WHISPER_ADMIN_UI=1). Auth on the endpoints themselves is
-# per-user API keys (require_admin) layered on top of cfg.ADMIN_WEBUI_ALLOWED_HOSTS.
+# /settings admin WebUI. Off by default: registered only when
+# cfg.ADMIN_UI_ENABLED is True (set in config.py or via WHISPER_ADMIN_UI=1).
+# Auth on the endpoints themselves is per-user API keys (require_admin) layered
+# on top of cfg.ADMIN_WEBUI_ALLOWED_HOSTS.
 # In OPEN mode (no admin key in DB) every caller is the synthetic admin so the
 # operator can bootstrap.
 if cfg.ADMIN_UI_ENABLED:
@@ -4138,9 +4019,9 @@ def run() -> None:
                 port=cfg.SERVER_PORT,
                 workers=cfg.SERVER_WORKERS,
                 log_level=cfg.SERVER_LOG_LEVEL,
-                # WS keepalive: a live decode no longer blocks the receive loop, so
-                # pings stay answered; a generous timeout tolerates a momentary
-                # stall. `or None` lets an admin disable either knob with 0.
+                # WS keepalive: a live decode runs off the receive loop, so pings
+                # stay answered; a generous timeout tolerates a momentary stall.
+                # `or None` lets an admin disable either knob with 0.
                 ws_ping_interval=getattr(cfg, "STREAMING_WS_PING_INTERVAL_S", 20.0) or None,
                 ws_ping_timeout=getattr(cfg, "STREAMING_WS_PING_TIMEOUT_S", 60.0) or None,
                 # Per-message ceiling on the streaming socket. MAX_REQUEST_BYTES
