@@ -150,14 +150,13 @@ def test_delete_guard_counts_allowlist_only_reference(client, make_user_key):
     _make_profile(client, h, "clinic-de", DEFAULT_LANGUAGE="de")
     uid, _ = make_user_key("alice", is_admin=False)
     kid = client.get(f"{PERMS}/{uid}/keys", headers=h).json()["keys"][0]["id"]
-    # bind the profile ONLY via the allowlist — NOT forced in `profiles`
     r = client.patch(f"{PERMS}/{uid}/keys/{kid}/config", headers=h, json={
         "overrides": {}, "profiles": [], "locks": [],
         "allowed_override_profiles": ["clinic-de"]})
     assert r.status_code == 200, r.text
 
     usage = client.get(f"{OV}/state", headers=h).json()["usage"]["clinic-de"]
-    assert kid in usage["keys"]          # allowlist-only ref now counted
+    assert kid in usage["keys"]
     assert usage["users"] == []          # not forced/allowed on any user
 
 
@@ -177,7 +176,6 @@ def test_delete_guard_refuses_null_profiles_payload(client, make_user_key):
     r = client.post(f"{OV}/state", headers=h, json={"OVERRIDE_PROFILES": None})
     assert r.status_code == 409
     assert "clinic-de" in r.json()["detail"]
-    # the profile survived the attempt
     j = client.get(f"{OV}/state", headers=h).json()
     assert "clinic-de" in j["profiles"]
 
@@ -219,7 +217,6 @@ def test_bind_user_and_resolve(client, make_user_key):
     _make_profile(client, h, "clinic-de", DEFAULT_LANGUAGE="de", BEAM_SIZE=8,
                   locks=["DEFAULT_LANGUAGE"], TEMPERATURE="0.0")
     uid, _ = make_user_key("alice", is_admin=False)
-    # bind alice to the profile + a direct BEST_OF override + lock TEMPERATURE
     r = client.patch(f"{PERMS}/{uid}/permissions", headers=h, json={
         "pages": {}, "config": {"overrides": {"BEST_OF": 7, "TEMPERATURE": "0.0"},
                                 "profiles": ["clinic-de"], "locks": ["TEMPERATURE"]}})
@@ -262,10 +259,9 @@ def test_resolve_decode_master_gate_off_reports_ignored(client, make_user_key):
 
 
 def test_resolve_sim_reports_the_value_the_decode_path_uses(client, make_user_key):
-    # The What-if row labelled every unlocked client value "applied" with the
-    # raw value, while the live decode path (_apply_decode_overrides) clamps to
-    # the client bounds and drops what it cannot parse: beam_size 500 runs as
-    # 20, "abc" is ignored. Report what production would do.
+    # The What-if row reports what the live decode path (_apply_decode_overrides)
+    # would use, not the raw value: clamped to the client bounds (beam_size 500
+    # runs as 20), unparsable values ignored ("abc").
     _, _, h = _admin(make_user_key)
     uid, _ = make_user_key("dora", is_admin=False)
     sim = {"beam_size": 500, "temperature": "abc", "best_of": "3",
@@ -289,11 +285,10 @@ def test_resolve_sim_reports_the_value_the_decode_path_uses(client, make_user_ke
 
 def test_resolve_sim_reports_the_live_dictation_knobs_as_the_handshake_sets_them(
         client, make_user_key):
-    # The live-dictation client keys fell through to "applied" with the raw
-    # value, while the streaming handshake (_client_stream_values) clamps them,
-    # drops what it cannot parse, fits the silence-gate pair and drops an outer
-    # that a LOCKED partner cannot fit: outer 99999 runs as 10000 and moves the
-    # hard break 5000 -> 11000. Report what the dictation client would get.
+    # Live-dictation keys report what the streaming handshake
+    # (_client_stream_values) would set: clamped, unparsable dropped, the
+    # silence-gate pair fitted, and an outer a LOCKED partner cannot fit dropped.
+    # Outer 99999 runs as 10000 and moves the hard break 5000 -> 11000.
     _, _, h = _admin(make_user_key)
     uid, _ = make_user_key("erin", is_admin=False)
 
@@ -361,7 +356,6 @@ def test_page_explorer_names_a_binding_fault(client):
 def test_per_key_config_overrides_user(client, make_user_key):
     _, _, h = _admin(make_user_key)
     uid, _ = make_user_key("alice", is_admin=False)
-    # alice (user) gets BEAM_SIZE 8; her laptop key forces BEAM_SIZE 4
     client.patch(f"{PERMS}/{uid}/permissions", headers=h, json={
         "pages": {}, "config": {"overrides": {"BEAM_SIZE": 8}, "profiles": [], "locks": []}})
     keys = client.get(f"{PERMS}/{uid}/keys", headers=h).json()["keys"]
@@ -385,8 +379,6 @@ def test_per_key_config_unknown_profile_400(client, make_user_key):
                      json={"overrides": {}, "profiles": ["ghost"], "locks": []})
     assert r.status_code == 400
 
-
-# --- profile rename (key migration + reference cascade) --------------------
 
 def test_rename_profile_cascades_to_user_and_key(client, make_user_key):
     from faster_whisper_backend.auth import api_keys_store
@@ -418,7 +410,6 @@ def test_rename_profile_cascades_to_user_and_key(client, make_user_key):
     assert uc["allowed_override_profiles"] == ["clinic-deutsch"]
     assert api_keys_store.get_key_config(kid)["profiles"] == ["clinic-deutsch"]
 
-    # The renamed profile still resolves end-to-end under its new name.
     rj = client.get(f"{OV}/resolve", headers=h,
                     params={"user_id": uid, "model": "whisper-1"}).json()
     assert rj["fields"]["DEFAULT_LANGUAGE"]["winner_layer"] \
@@ -630,19 +621,16 @@ def test_rename_profile_collision_409(client, make_user_key):
 def test_rename_profile_bad_name_and_noop_400(client, make_user_key):
     _, _, h = _admin(make_user_key)
     _make_profile(client, h, "good", BEAM_SIZE=5)
-    # invalid characters / shape
     assert client.post(f"{OV}/profiles/rename", headers=h,
                        json={"old": "good", "new": "Bad Name!"}).status_code == 400
-    # renaming to the current name is a no-op error
     assert client.post(f"{OV}/profiles/rename", headers=h,
                        json={"old": "good", "new": "good"}).status_code == 400
 
 
 def test_rename_profile_old_name_case_insensitive(client, make_user_key):
-    """Profile keys are always stored lowercase, so the endpoint lowercases `old`
-    before both the lookup and the binding cascade. A direct API caller passing
-    `old` in mixed case must still match (200, not a spurious 404) and the same
-    lowercased name must flow to the reference cascade."""
+    """Profile keys are stored lowercase, so a mixed-case `old` from a direct
+    API caller must still match (200, not a spurious 404) and reach the binding
+    cascade lowercased."""
     from faster_whisper_backend.auth import api_keys_store
     _, _, h = _admin(make_user_key)
     _make_profile(client, h, "clinic-de", DEFAULT_LANGUAGE="de")
@@ -651,7 +639,6 @@ def test_rename_profile_old_name_case_insensitive(client, make_user_key):
         "pages": {}, "config": {"overrides": {}, "profiles": ["clinic-de"],
                                 "locks": [], "allowed_override_profiles": []}})
     assert r.status_code == 200, r.text
-    # `old` sent upper-case; stored key is lowercase "clinic-de".
     r = client.post(f"{OV}/profiles/rename", headers=h,
                     json={"old": "CLINIC-DE", "new": "clinic-deutsch"})
     assert r.status_code == 200, r.text
