@@ -23,9 +23,8 @@ def _off_below_two(n: int) -> int:
 
 
 def tail_guard_limits(model_name, ident) -> dict:
-    """The three tail-cut settings (transcription/segment_guards.py) resolved for this
-    model + identity, as apply_tail_guards kwargs. Shared by the batch route and
-    both streaming decodes. The two counts treat 1 as off, like the guard does."""
+    """The three tail-cut settings resolved for this model + identity, as
+    apply_tail_guards kwargs. The two counts treat 1 as off, like the guard does."""
     return {
         "burst": float(effective_config.cfg_for(model_name, "SEGMENT_MAX_WORD_BURST_PER_S", ident) or 0),
         "zero_tail": _off_below_two(int(effective_config.cfg_for(model_name, "SEGMENT_ZERO_LENGTH_TAIL_MIN_WORDS", ident) or 0)),
