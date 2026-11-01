@@ -1,8 +1,8 @@
 """Tests for the streaming audio transports (raw PCM passthrough + ffmpeg decode).
 
-The ffmpeg tests generate a real WebM/Opus clip with the system ffmpeg and decode
-it back to PCM, so they exercise the actual MediaRecorder-style path. Skipped if
-ffmpeg (or libopus) is unavailable.
+The WebM tests generate a real WebM/Opus clip with the system ffmpeg and decode
+it back to PCM, so they exercise the actual MediaRecorder-style path; they skip
+if ffmpeg (or its libopus encoder) is unavailable.
 """
 
 import asyncio
