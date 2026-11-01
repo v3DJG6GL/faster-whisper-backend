@@ -42,8 +42,7 @@ def _ends_sentence(text: str) -> bool:
 
 
 def _global_silence_ms() -> int:
-    """Inter-member silence, sourced from the global VAD-internal knob
-    (was a per-merge `silence_ms` payload field)."""
+    """Inter-member silence, sourced from the global VAD-internal knob."""
     try:
         return int(getattr(cfg, "CAPTURES_VAD_MARGIN_SAMPLE_INTERNAL_MS", 300))
     except (TypeError, ValueError):
@@ -52,8 +51,7 @@ def _global_silence_ms() -> int:
 
 def _global_edge_ms() -> int:
     """Outer-margin silence (both ends of the merged WAV), sourced from the
-    global VAD edge knob. Mirrors `_global_silence_ms()` so the edge default
-    lives in one place instead of being repeated at each merge/preview site."""
+    global VAD edge knob."""
     try:
         return int(getattr(cfg, "CAPTURES_VAD_MARGIN_SAMPLE_EDGE_MS", 300))
     except (TypeError, ValueError):
@@ -72,7 +70,7 @@ _NO_SPACE_SCRIPT = re.compile(
 
 # Han and kana, the part of _NO_SPACE_SCRIPT whose sentences meet with no
 # space and end in "。" (Thai, Lao, Khmer and Burmese put a space between
-# sentences). Same ranges in the JS twin _buildDefaultTranscript.
+# sentences). Same ranges in the JS twin _cjkEdge.
 _CJK_SCRIPT = re.compile(
     "[\u3005-\u3007\u3040-\u30ff\u31f0-\u31ff\u3400-\u4dbf\u4e00-\u9fff"
     "\uf900-\ufaff\uff66-\uff9f\U00020000-\U0003134f]")
@@ -147,8 +145,8 @@ def _apply_chips_to_text(
     `wrong` joins its words with spaces, the text may have a dictated line
     break there); an anchorless chip takes the first occurrence, verbatim
     before flexible. If `wrong` still isn't found, a chip is left alone.
-    Mirrored byte-for-byte by the JS twin `_applyChipsToText` so server- and
-    client-derived transcripts agree.
+    Mirrored by the JS twin `_applyChipsToText` (pinned by test_apply_chips)
+    so server- and client-derived transcripts agree.
 
     Only a whole-word occurrence counts: a chip on "cat" must not rewrite
     the "cat" inside "scat" (in a script written without spaces a word may
@@ -483,7 +481,7 @@ def _align_key(s: str) -> str:
     """Normalise a token for LCS comparison: strip surrounding whitespace
     AND leading/trailing non-word punctuation, then casefold. Internal
     punctuation (apostrophes, internal hyphens) is preserved so "don't"
-    or "Sciene-fiction" still compare faithfully.
+    or "Science-fiction" still compare faithfully.
 
     Stripping edge punctuation is necessary because the inference pipeline
     (callback:map: "Komma" → ",", "Punkt" → ".") attaches the symbol to
@@ -513,9 +511,8 @@ def _align_words_to_final(
     language: "str | None" = None,
 ) -> list[dict[str, Any]]:
     """Project raw STT words onto post-pipeline `final` via LCS
-    alignment. Replaces the all-or-nothing fallback that came before
-    — most rule output IS faithfully attributable per word even when
-    a cross-word rule (dedup, "Neue Zeile → \\n", etc.) also fires.
+    alignment: most rule output is attributable per word even when a
+    cross-word rule (dedup, "Neue Zeile → \\n", etc.) also fires.
 
     Output items (one per raw word) carry:
       - `word`: the final token(s) attributed to this raw word — the
@@ -718,10 +715,8 @@ def _split_unspaced(texts: list[str], toks: list[str]) -> list[list[str]] | None
 
 
 def _clone_word(w: dict[str, Any]) -> dict[str, Any]:
-    """Return a shallow copy of a words item with only the keys
-    we care about preserved (word / start / end). Other fields
-    (probability, etc.) are dropped — the UI doesn't use them and
-    they bloat the JSON payload."""
+    """Copy only word / start / end of a words item: the rest (probability,
+    …) is unused by the UI and bloats the JSON payload."""
     return {
         "word":  w.get("word") or "",
         "start": w.get("start"),
