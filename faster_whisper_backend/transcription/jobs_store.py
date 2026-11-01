@@ -52,7 +52,7 @@ from faster_whisper_backend.core import store_common
 
 logger = logging.getLogger("whisper-api")
 
-_lock = threading.RLock()  # reentrant: start() holds it and may call prune()
+_lock = threading.RLock()  # reentrant: prune() calls total_result_bytes(), start() may call prune()
 _conn: sqlite3.Connection | None = None
 _insert_counter = 0
 
