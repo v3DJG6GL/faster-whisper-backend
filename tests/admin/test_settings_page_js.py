@@ -716,6 +716,53 @@ def test_prompt_lab_glossary_box_keeps_newlines(client):
     assert out == "TEXTAREA"
 
 
+@needs_node
+def test_prompt_lab_empty_glossary_box_uses_the_glossary_setting(client):
+    """The lab's glossary box starts empty and labBody sent null, so the
+    preview and the test run left out the TRANSLATION_GLOSSARY every real
+    request inherits; a glossary edit on the page did not re-render either."""
+    ed = _block(_html(client), "function translationTemplateEditor(name, v) {",
+                "\n}\n")
+    out = _node(_FAKE_DOM + """
+const state = { TRANSLATION_PROMPT_FAMILY: 'hunyuan',
+                TRANSLATION_GLOSSARY: 'Niere = kidney',
+                TRANSLATION_DEFAULT_MODEL: 'm', TRANSLATION_ALLOWED_MODELS: [] };
+function fieldDef(n) { return { value: state[n] }; }
+function currentValue(n) { return state[n]; }
+function setDirty(n, val) { state[n] = val; }
+const listeners = {};
+function _registerAdminListener(ev, key, fn) { listeners[ev + '|' + key] = fn; }
+let timers = [];
+function setTimeout(f) { timers.push(f); return timers.length; }
+function clearTimeout() {}
+const sent = [];
+async function api(m, url, body) {
+  sent.push(body.glossary);
+  return { ok: false, status: 503, json: async () => ({}) };
+}
+async function flush() { const t = timers; timers = []; for (const f of t) await f(); }
+""" + ed + """
+(async () => {
+  const wrap = translationTemplateEditor('TRANSLATION_PROMPT_TEMPLATE', '');
+  const gloss = find(wrap, c => c.tagName === 'TEXTAREA'
+                     && c.attrs['aria-label'] === 'glossary line');
+  await flush();
+  // An unsaved glossary edit on the page re-renders with the new value …
+  state.TRANSLATION_GLOSSARY = 'Leber = liver';
+  listeners['admin:dirty|translationLab']({ detail: { name: 'TRANSLATION_GLOSSARY' } });
+  await flush();
+  // … and a glossary typed into the lab box wins over the setting.
+  gloss.value = 'Milz = spleen';
+  await fire(gloss, 'input');
+  await flush();
+  console.log(JSON.stringify([sent, gloss.placeholder]));
+})();
+""")
+    sent, placeholder = out
+    assert sent == ["Niere = kidney", "Leber = liver", "Milz = spleen"]
+    assert "empty uses the Translation glossary setting" in placeholder
+
+
 # ---- "↑ view" jump-link ---------------------------------------------------------
 
 @needs_node

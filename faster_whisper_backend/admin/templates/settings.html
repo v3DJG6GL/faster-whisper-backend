@@ -2318,9 +2318,10 @@ function translationTemplateEditor(name, v) {
 
   // A textarea, not an <input>: a text input strips the newlines of a pasted
   // glossary (one pair per line), so the lab tested one garbled pair.
+  // Left empty, the lab uses the page's TRANSLATION_GLOSSARY (see labBody).
   const gloss = document.createElement('textarea');
   gloss.rows = 2;
-  gloss.placeholder = 'glossary: Messung = measurement';
+  gloss.placeholder = 'glossary — empty uses the Translation glossary setting';
   gloss.setAttribute('aria-label', 'glossary line');
   left.appendChild(gloss);
 
@@ -2414,7 +2415,10 @@ function translationTemplateEditor(name, v) {
       model: modelSel.value || null,
       // 'auto' is sent as-is: null would fall back to the SAVED family.
       family: currentValue('TRANSLATION_PROMPT_FAMILY') || 'auto',
-      glossary: gloss.value || null,
+      // An empty box falls back to the page's TRANSLATION_GLOSSARY (unsaved
+      // edits included) — real requests inherit it, so a preview/test
+      // without it showed a prompt no request gets.
+      glossary: gloss.value || currentValue('TRANSLATION_GLOSSARY') || null,
       // A cleared textarea sends '' — null would fall back to the SAVED
       // template (the server drops it for non-custom families anyway).
       template: t.value,
@@ -2599,11 +2603,14 @@ function translationTemplateEditor(name, v) {
   // Family/model-list edits re-render (the readout is family- AND
   // model-aware — family=auto resolves from the picked model server-side).
   // No refresh on unsaved model-list edits: the lab offers saved values only
-  // (see refreshModels); loadState() rebuilds it after a save.
+  // (see refreshModels); loadState() rebuilds it after a save. A glossary
+  // edit re-renders while the lab's own box is empty (labBody uses it then).
   _registerAdminListener('admin:dirty', 'translationLab', (e) => {
     if (!e.detail) return;
     if (e.detail.name === 'TRANSLATION_PROMPT_FAMILY') {
       showFamily(currentValue('TRANSLATION_PROMPT_FAMILY'));
+      schedulePreview();
+    } else if (e.detail.name === 'TRANSLATION_GLOSSARY' && !gloss.value) {
       schedulePreview();
     }
   });
