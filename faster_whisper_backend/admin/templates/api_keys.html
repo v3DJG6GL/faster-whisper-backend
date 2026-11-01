@@ -19,9 +19,6 @@
     color: var(--fg); padding: 0.25rem 0.625rem; border-radius: 4px;
     cursor: pointer; font: inherit; font-size: var(--fs-sm); }
   header button.primary { color: var(--green); border-color: var(--green); }
-  /* Widened from 56rem to claim the unused right gutter on the user-key
-     cards — admin keys + permissions matrix benefit from extra horizontal
-     space and the per-row layout reads better without forced wrapping. */
   main { padding: 1rem var(--gutter); max-width: var(--col); margin: 0 auto; box-sizing: border-box; }
   .banner-open {
     background: #5a2424; color: #fff; padding: 0.6rem 1rem;
@@ -39,7 +36,6 @@
   .pill.revoked { color: var(--red); border-color: #5a2424;
     background: #2d1414; }
   .pill.live { color: var(--green); border-color: #1d4f2c; }
-  /* ---- collapsible per-user section ---- */
   .card.user { padding: 0; overflow: hidden; }
   .card.user .user-head { margin: 0; padding: 0.7rem 1rem; cursor: pointer;
     user-select: none; }
@@ -51,7 +47,7 @@
     border-top: 1px solid var(--border); }
   .card.user.open .user-body { display: block; }
 
-  /* ---- rule-card key row (mirrors the /settings/pipeline rule cards) ---- */
+  /* Key row: mirrors the /settings/pipeline rule cards. */
   .kcard { display: grid; grid-template-columns: 2.4rem 1fr auto;
     border: 1px solid var(--border); border-radius: 9px; background: var(--panel);
     margin-top: 0.55rem; overflow: hidden;
@@ -63,10 +59,8 @@
     justify-content: center; gap: 0.3rem; font-size: 1rem; color: var(--dim);
     background: linear-gradient(180deg, #1b222c, var(--panel));
     border-right: 1px solid var(--border); }
-  /* Status dot: green = used within the recent window, dim-grey = idle,
-     red = revoked. Decays green->grey live via _refreshApiKeyDots on a timer.
-     Colour is a secondary cue only — the active/revoked pill + tooltip carry
-     the meaning (WCAG 1.4.1). */
+  /* Colour is a secondary cue only — the active/revoked pill + tooltip carry
+     the meaning (WCAG 1.4.1). _refreshApiKeyDots decays green->grey on a timer. */
   .kdot { width: 0.5rem; height: 0.5rem; border-radius: 50%;
     background: var(--dim); }
   .kdot.live { background: var(--green); box-shadow: 0 0 6px var(--green); }
@@ -90,7 +84,6 @@
   .ktimes .kt-val { color: var(--fg); font-family: var(--font-mono); }
   .kacts { display: flex; align-items: center; gap: 0.4rem;
     padding: 0.55rem 0.6rem; flex-wrap: wrap; justify-content: flex-end; }
-  /* inline rename editor under the key title */
   .krename { display: flex; align-items: center; gap: 0.4rem;
     margin-top: 0.35rem; flex-wrap: wrap; }
   .krename input[type=text] { width: auto; flex: 1; min-width: 8rem;
@@ -101,13 +94,10 @@
     .kacts { grid-column: 1 / -1; justify-content: flex-start;
       border-top: 1px solid var(--border); }
   }
-  /* Per-key usage: a row of compact stat chips (value over caption). Mono
-     values so digits stay tabular; dim captions. Wraps gracefully on narrow
-     viewports. */
-  /* Two-row grid: every stat's value lands on row 1, its caption on row 2,
-     so values align across stats no matter their text width/content (a
-     plain flex row left the % stat baseline-drifting). .stat is display:
-     contents so its value+caption become direct grid items. */
+  /* Per-key usage: a two-row grid (values on row 1, captions on row 2) so
+     values align across stats whatever their width — a flex row left the %
+     stat baseline-drifting. .stat is display: contents so value + caption
+     become direct grid items. */
   .usage-cell { display: inline-grid; grid-auto-flow: column;
     grid-template-rows: auto auto; align-items: start; justify-content: start;
     gap: 0.05rem 0.9rem; line-height: 1.15; }
@@ -119,9 +109,8 @@
   .usage-cell .stat.err .v { color: var(--yellow); }
   .usage-cell.empty { display: block; color: var(--dim); font-style: italic;
     font-size: var(--fs-xs); }
-  /* Per-user summary strip under the card header: one mono line of the
-     user's lifetime totals across all their keys. Sits in the card header,
-     pushed right (margin-left:auto); doesn't wrap internally. */
+  /* Per-user strip in the card header (pushed right): last active + the
+     user's lifetime totals across all their keys. */
   .user-usage { display: flex; flex-wrap: wrap; gap: 0.15rem 1.1rem;
     margin-left: auto; }
   .user-usage .stat { display: flex; align-items: baseline; gap: 0.3rem; }
@@ -129,19 +118,16 @@
     font-size: var(--fs-md); }
   .user-usage .stat .k { color: var(--dim); font-size: var(--fs-xs);
     text-transform: lowercase; }
-  /* "last active" leads the strip: neutral mono timestamp (the cyan stays a
-     cue for the numeric aggregates), label first so it reads "last active
-     <when>". Updated live by timeTick() via the [data-ts] span metaWhen emits. */
+  /* "last active" stays neutral — cyan is the cue for the numeric aggregates.
+     timeTick() ages it live via the [data-ts] span metaWhen emits. */
   .user-usage .stat.lastact .v { color: var(--fg); font-size: var(--fs-sm); }
-  /* User-level activity dot in the header: reuses .kdot (green = any non-
-     revoked key used in the last 15 min, grey = idle), decayed by the same
-     30s _refreshApiKeyDots timer via data-used-ts. flex:none keeps its size
-     as a flex child of the h3 header row (.card h3 is display:flex). */
+  /* User-level .kdot: .card h3 is display:flex, so flex:none keeps the dot
+     from shrinking. */
   .user-head .kdot { flex: none; }
   /* Buttons inside <main>: a quiet ghost baseline so nothing is ever browser-
      default, plus filled .primary and red .danger — mirrors the /pipeline
-     button language. (Modal + header + matrix buttons carry their own,
-     higher-specificity rules and are unaffected.) */
+     button language. (Modal + header buttons sit outside <main> and are
+     unaffected.) */
   main button { font: inherit; font-size: var(--fs-sm); cursor: pointer;
     line-height: 1.3; white-space: nowrap; border-radius: 6px;
     padding: 0.3rem 0.65rem; display: inline-flex; align-items: center;
@@ -227,16 +213,13 @@
   .modal .warn.guard { display: none; background: rgba(255, 123, 114, 0.08);
     border-color: #5a2424; color: var(--red); }
   .modal .warn.guard.on { display: flex; }
-  /* Uniform action-button sizing: same line-height, same padding, same
-     min-height — so Cancel and Save render identical regardless of which
-     border colour they carry. Avoid `padding: …` redeclaration in
-     button.primary etc. so heights stay in sync. */
+  /* Footer buttons share one padding / line-height / min-height so Cancel and
+     Save match; never redeclare padding in button.primary / .danger. */
   .modal .actions {
     display: flex; gap: 0.6rem; align-items: center; justify-content: flex-end;
     margin-top: 1.1rem; padding-top: 0.85rem;
     border-top: 1px solid var(--border);
   }
-  /* Copy-state note sits on the left of the footer; turns green once copied. */
   .modal .actions .copystate { margin-right: auto; color: var(--dim);
     font-size: var(--fs-xs); }
   .modal .actions .copystate.done { color: var(--green); }
@@ -267,11 +250,9 @@
   .modal .err:empty { display: none; }
   .hint { color: var(--help); font-size: var(--fs-sm); }
 
-  /* Per-user × per-page permission matrix.
-     User-rows × page-columns, each cell a tri-state select (none/own/all).
-     Admin rows are greyed out and disabled — they bypass page checks at
-     request time but we still render the row so a future demote path
-     stays predictable. Dirty rows tint yellow until Save flushes. */
+  /* Users × pages permission matrix: each cell is a none/own/all segment
+     (none/all for access-only pages). Admin rows show a dim "—" — admins
+     bypass page checks. Dirty rows tint yellow until Save. */
   .perm-matrix { width: 100%; border-collapse: collapse;
     font-size: var(--fs-sm); margin-top: 0.35rem; }
   .perm-matrix th, .perm-matrix td {
@@ -317,16 +298,14 @@
   .perm-empty {
     color: var(--dim); padding: 0.6rem 0; font-style: italic;
     font-size: var(--fs-sm); }
-  /* Visibility preview under each user's tag picker: "Will see: N of M".
-     Caption-sized, dim. Goes muted when there are no exposed rules at
-     all so the admin understands the preview is unactionable. */
+  /* "Will see: N of M" preview under each tag picker; .muted = no exposed
+     rules at all, so the preview is unactionable. */
   .perm-matrix .tag-preview {
     margin-top: 0.2rem; font-size: var(--fs-xs);
     color: var(--dim); font-family: var(--font-sans);
   }
   .perm-matrix .tag-preview.muted { font-style: italic; opacity: 0.7; }
-  /* Per-identity config binding drawer (overrides) — three titled cards in a
-     bordered container + a footer holding the actions. */
+  /* ⚙ Overrides drawer (per-identity config binding). */
   .cfg-drawer { border: 1px solid var(--border); border-radius: 0.5rem;
     background: var(--bg); margin: 0.5rem 0; overflow: hidden; }
   .cfg-drawer .lbl { font-size: var(--fs-xs); color: var(--dim); }
@@ -345,7 +324,7 @@
   .gaterow .gl .sub { display: block; font-family: var(--font-mono);
     font-size: var(--fs-xs); color: var(--dim); }
   .gaterow .eff { font-size: var(--fs-xs); color: var(--dim); justify-self: end; }
-  /* restrict-to checkbox grid (replaces the former inline-style px) */
+  /* restrict-to checkbox grid */
   .ov-checks { display: flex; flex-wrap: wrap; gap: 0.5rem 0.9rem; margin-top: 0.5rem; }
   .ov-checks label { display: inline-flex; align-items: center; gap: 0.25rem;
     font-size: var(--fs-sm); }
@@ -377,7 +356,7 @@
   .cfg-ovr-row .lk { background: none; border: 0; cursor: pointer; color: var(--dim); }
   .cfg-ovr-row .lk.on { color: var(--yellow); }
   .cfg-ovr-row .rm { background: none; border: 0; cursor: pointer; color: var(--dim); }
-  /* footer: exactly one primary (Save) on the right, Preview ghost on the left */
+  /* Drawer footer (overrides: Preview ghost left, the one primary Save right) */
   .ov-footer { display: flex; align-items: center; gap: 0.5rem;
     padding: 0.65rem 0.95rem; background: var(--panel); }
   .ov-footer .spacer { flex: 1; }
@@ -386,11 +365,9 @@
   .cfg-eff .ef { display: flex; gap: 0.5rem; }
   .cfg-eff .ef .v { color: var(--green); } .cfg-eff .ef .src { color: var(--dim); }
   .cfg-eff .ef .lk { color: var(--yellow); }
-  /* ---- synced client settings (per-account chip + drawer) ----
-     The header chip answers "is this account syncing?" while the card is
-     collapsed; the drawer (same idiom as ⚙ Overrides) carries metadata +
-     export/import/delete. Metadata only — the stored blob can include the
-     account's saved API keys and never renders on this page. */
+  /* Synced client settings: the header chip answers "is this account
+     syncing?" while collapsed; the drawer shows metadata only — the stored
+     blob can include the account's saved API keys and never renders here. */
   .pill.sync { color: var(--cyan); border-color: #1f4a6b;
     font-family: var(--font-mono); }
   .cs-meta { display: grid; grid-template-columns: repeat(4, minmax(6rem, 1fr));
@@ -687,19 +664,10 @@
     logs:         'server-wide log stream — no per-user view (none|all only)'
   };
 
-  // Build the segmented none/own/all (or none/all for access-only pages)
-  // control for one page cell — replaces the old <select>. role=radiogroup +
-  // role=radio/aria-checked; the active segment carries a semantic data-tone
-  // fill (none=grey, own=blue, all=amber). Clicking sets active + marks the
-  // row dirty (same effect the old select.change had). Shared .status-btn-group
-  // styling comes from web_common.NAV_CSS.
-  // Saved-state signature for one permission row: the segmented page scopes
-  // plus the (order-insensitive) quick-config tag set, canonicalised to a
-  // string. recomputePermDirty() compares the live row against the baseline
-  // captured at render / after a successful save — so reverting an edit back
-  // to the saved value clears the dirty tint + Save affordance, instead of
-  // latching dirty on the first change (which left Save lit even when nothing
-  // actually differed from what was saved).
+  // Saved-state signature for one permission row: page scopes plus the
+  // order-insensitive quick-config tag set, canonicalised to a string.
+  // recomputePermDirty() diffs it against the baseline taken at render / after
+  // a successful save, so reverting an edit to the saved value clears dirty.
   function permRowState(tr) {
     var pages = {};
     tr.querySelectorAll('.status-btn-group[data-page]').forEach(function(g) {
@@ -715,6 +683,9 @@
     tr.classList.toggle('dirty', permRowState(tr) !== tr._permBaseline);
   }
 
+  // Segmented none/own/all (none/all for access-only pages) scope control for
+  // one page cell; data-tone picks the active fill (none=grey, own=blue,
+  // all=amber), .status-btn-group styling comes from web_common.NAV_CSS.
   var SCOPE_LABEL = { none: 'None', own: 'Own', all: 'All' };
   function _permSeg(page, allowed, cur, tr) {
     var grp = document.createElement('span');
@@ -765,14 +736,10 @@
       return;
     }
 
-    // Tag-picker autocomplete source: union of every tag currently set
-    // on any pipeline rule. Computed server-side (list_users_api) so
-    // an admin tagging a rule on /settings sees the new tag in the
-    // matrix autocomplete after a reload.
+    // Autocomplete source: union of every tag on any pipeline rule
+    // (server-side, list_users_api).
     var availableTags = j.available_tags || [];
-    // Per-exposed-rule tag list, used by the per-row "Will see: N of M"
-    // visibility preview. Computed live as the admin edits a user's
-    // tags — no extra roundtrip.
+    // Per-exposed-rule tag lists for the client-side "Will see: N of M" preview.
     var exposedRuleTags = j.exposed_rule_tags || [];
 
     var table = document.createElement('table');
@@ -793,8 +760,6 @@
       th.appendChild(tip);
       headRow.appendChild(th);
     });
-    // Quick-config tag picker column. Tooltip explains the asymmetric
-    // empty-list semantics (user with no tags sees only untagged rules).
     var thTags = document.createElement('th');
     thTags.textContent = 'quick-config tags';
     var tagsTip = document.createElement('span');
@@ -841,9 +806,8 @@
         tr.appendChild(td);
       });
 
-      // Per-user quick-config tag picker. Stash the controller on the
-      // row so savePerms() can read the current tag list at submit time
-      // without scanning DOM. Admins get a greyed-out "—" cell.
+      // The picker controller is stashed on the row (tr._tagPicker) for
+      // permRowState() and savePerms().
       var tdTags = document.createElement('td');
       if (u.is_admin) {
         tdTags.className = 'admin-cell';
@@ -921,7 +885,6 @@
       pages[g.dataset.page] = act ? act.dataset.val : 'none';
     });
     var body = { pages: pages };
-    // Tag picker is row-scoped; the controller was stashed at render.
     if (tr._tagPicker) body.quick_config_tags = tr._tagPicker.getTags();
     // Only Save is disabled in flight; cells stay editable, so the baseline
     // must be what was sent, not the row as it looks when the PATCH resolves.
@@ -940,7 +903,6 @@
         return r.json();
       })
       .then(function() {
-        // The just-saved state is the new baseline; recompute clears dirty.
         tr._permBaseline = sent;
         recomputePermDirty(tr);
         showToast('Permissions saved', 'ok');
@@ -956,7 +918,6 @@
       });
   }
 
-  // ---- small render helpers (status dot + relative-time + collapse state) ----
   function metaWhen(ts) {
     if (!ts) return '—';
     return '<span data-ts="' + ts + '" title="' + escapeHtml(absTime(ts)) + '">'
@@ -1000,16 +961,14 @@
     card.className = 'card user';
     if (isUserOpen(u.id, nUsers)) card.classList.add('open');
 
-    // ---- clickable collapsible header ----
     var head = document.createElement('h3');
     head.className = 'user-head';
     var chev = document.createElement('span');
     chev.className = 'uchev'; chev.textContent = '▸';
     head.appendChild(chev);
-    // User-level activity dot: green if ANY non-revoked key was used in the
-    // last 15 min (max last_used_ts over the user's keys, server-computed).
-    // data-used-ts opts it into the same 30s refreshKeyDots() decay timer as
-    // the per-key dots; dotClassFor() never returns 'dead' here (no ts → idle).
+    // User-level dot: u.last_used_ts is the server-computed max over the
+    // user's non-revoked keys; data-used-ts opts it into the refreshKeyDots()
+    // decay timer like the per-key dots.
     var udotCls = dotClassFor(u.last_used_ts);
     var udot = document.createElement('span');
     udot.className = 'kdot ' + udotCls;
@@ -1059,7 +1018,6 @@
     userBody.className = 'user-body';
     card.appendChild(userBody);
 
-    // ---- generate / overrides / revoke-user toolbar ----
     var tb = document.createElement('div');
     tb.className = 'toolbar';
     var labelInp = document.createElement('input');
@@ -1071,7 +1029,7 @@
     var addBtn = document.createElement('button');
     addBtn.className = 'primary';
     addBtn.textContent = '+ generate key';
-    addBtn.disabled = true;                 // labels are mandatory
+    addBtn.disabled = true;
     addBtn.title = 'Enter a label first';
     // Set while the POST runs and kept until the key modal closes: editing
     // the label must not re-enable the button, or a second click/Enter
@@ -1179,7 +1137,6 @@
     userBody.appendChild(ovrWrap);
     userBody.appendChild(csWrap);
 
-    // ---- key list (rule cards) ----
     var listEl = document.createElement('div');
     userBody.appendChild(listEl);
     api('GET', '/settings/api-keys/api/users/' + encodeURIComponent(u.id) + '/keys')
@@ -1206,7 +1163,6 @@
     var kc = document.createElement('div');
     kc.className = 'kcard' + (revoked ? ' revoked' : '');
 
-    // rail with status dot
     var dotCls = revoked ? 'dead' : dotClassFor(k.last_used_ts);
     var dotTitle = revoked ? 'revoked'
       : (dotCls === 'live' ? 'used in the last 15 min' : 'no recent use');
@@ -1218,7 +1174,6 @@
       + ' title="' + dotTitle + '"></span>';
     kc.appendChild(rail);
 
-    // body: title + meta
     var body = document.createElement('div');
     body.className = 'kbody';
     body.innerHTML =
@@ -1243,7 +1198,6 @@
     body.querySelector('.kmeta').appendChild(usageWrap.firstChild);
     kc.appendChild(body);
 
-    // actions
     var acts = document.createElement('div');
     acts.className = 'kacts';
     var kdraw = document.createElement('div');  // overrides drawer holder
@@ -1290,7 +1244,6 @@
       };
       acts.appendChild(renameBtn);
 
-      // Overrides — same drawer + label as the per-user button
       var kcfgBtn = document.createElement('button');
       kcfgBtn.className = 'ghost';
       kcfgBtn.textContent = '⚙ Overrides';
@@ -1304,13 +1257,12 @@
             return api('PATCH', '/settings/api-keys/api/users/' + encodeURIComponent(u.id) +
                        '/keys/' + encodeURIComponent(k.id) + '/config', body2)
               .then(function (r) { if (!r.ok) return r.text().then(function (t) { throw new Error(t); }); return r.json(); })
-              .then(function (j) { k.config = j.config; return j; });   // as in the user drawer
+              .then(function (j) { k.config = j.config; return j; });
           },
         }));
       };
       acts.appendChild(kcfgBtn);
 
-      // Revoke (destructive)
       var b = document.createElement('button');
       b.className = 'danger';
       b.textContent = 'Revoke';
@@ -1345,7 +1297,6 @@
       .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
   }
 
-  // --- usage formatting + rendering helpers --------------------------
   function fmtCount(n) {
     n = Number(n || 0);
     if (n >= 1e9) return (n / 1e9).toFixed(1).replace(/\.0$/, '') + 'B';
@@ -1371,7 +1322,6 @@
          + '<span class="v">' + value + '</span>'
          + '<span class="k">' + caption + '</span></div>';
   }
-  // Compact per-key stat block for a key card's meta row.
   function usageUnavailable() {
     return !!(window.__usage && window.__usage.unavailable);
   }
@@ -1391,10 +1341,8 @@
               stat.errors ? 'err' : '')
       + '</div>';
   }
-  // One-line activity + lifetime summary strip under a user card header.
-  // "last active" leads (always shown, even before any usage is rolled up);
-  // the lifetime aggregates follow when present. lastUsedTs is the newest
-  // last_used_ts across the user's non-revoked keys (server-computed).
+  // "last active" shows even before any usage is rolled up. lastUsedTs is
+  // the newest last_used_ts across the user's non-revoked keys (server-computed).
   function userUsageHtml(stat, lastUsedTs) {
     var lastact = '<span class="stat lastact"><span class="k">last active</span>'
       + '<span class="v">' + metaWhen(lastUsedTs) + '</span></span>';
@@ -1409,7 +1357,6 @@
     return '<div class="user-usage">' + lastact + rest + '</div>';
   }
 
-  // ---- per-identity config binding drawer (overrides) ----
   function ovState() { return window.__ovstate || { profiles: {}, field_meta: {}, rules: [] }; }
 
   function bindingFromConfig(cfg) {
@@ -1562,10 +1509,6 @@
     // names) would never show — making restrict mode unreachable from the UI.
     var restrictOpen = false;
 
-    // Per-identity REQUEST GATES — whether this identity may request override-
-    // profiles / decode tweaks, and which profiles it may name. These can only
-    // NARROW the global gates (set on /settings); the server enforces this.
-    // Build a card shell: title (+ optional caption) header and optional hint.
     function _ovCard(title, caption, hintText) {
       var card = document.createElement('div'); card.className = 'ov-card';
       var head = document.createElement('div'); head.className = 'ohead';
@@ -1597,6 +1540,7 @@
       return row;
     }
 
+    // These can only NARROW the global gates (set on /settings); the server enforces it.
     function requestGatesSection(b) {
       var sec = _ovCard('Request gates', null,
         'Narrow the global gates for this identity only — can never widen them.');
@@ -1681,7 +1625,6 @@
         ua.textContent = 'Override state unavailable — reload the page before editing.';
         root.appendChild(ua);
       }
-      // --- Profiles card ---
       var pcard = _ovCard('Profiles', 'ordered · earlier wins',
         'Applied in order, before the direct overrides below.');
       // Admin force, per-KEY only: suppress all profiles → plain defaults. Not a
@@ -1732,10 +1675,8 @@
       pcard.appendChild(chips);
       root.appendChild(pcard);
 
-      // --- Request gates card ---
       root.appendChild(requestGatesSection(b));
 
-      // --- Direct overrides card ---
       var dcard = _ovCard('Direct overrides', 'pin a field value',
         'Force a config value for this identity; lock to stop clients overriding it.');
       Object.keys(b.overrides).sort().forEach(function (name) {
@@ -1761,13 +1702,12 @@
       addwrap.appendChild(addsel); dcard.appendChild(addwrap);
       root.appendChild(dcard);
 
-      // --- footer: Preview (ghost, left) + Save (primary, right) ---
       var foot = document.createElement('div'); foot.className = 'ov-footer';
       var prev = document.createElement('button'); prev.className = 'ghost'; prev.textContent = '⟲ Preview effective';
       var spacer = document.createElement('span'); spacer.className = 'spacer';
       var save = document.createElement('button'); save.className = 'primary'; save.textContent = 'Save overrides';
       _saveBtn = save;
-      save.disabled = _ovUnavailable() || (_sig(b) === _baseline);   // nothing changed yet → off
+      save.disabled = _ovUnavailable() || (_sig(b) === _baseline);
       save.onclick = function () {
         save.disabled = true;
         var sentSig = _sig(b);
@@ -1815,7 +1755,6 @@
     return root;
   }
 
-  // ---- per-account synced client settings (chip + drawer) ----
   // The desktop app syncs its settings per account via /v1/synced-client-settings;
   // this page surfaces METADATA (version/size/device/updated) + management.
   // The stored blob can include the account's saved API keys, so it never
@@ -2130,7 +2069,6 @@
     foot.appendChild(imp);
     foot.appendChild(fileInp);
 
-    // Delete (destructive) — server copy only; devices keep local settings.
     var del = document.createElement('button');
     del.className = 'danger';
     del.textContent = 'Delete';
@@ -2142,8 +2080,6 @@
         + 're-uploads its own copy.')) return;
       api('DELETE', csApiBase(u.id))
         .then(function (r) {
-          // Same handling as Import: 401 opens the login gate, otherwise the
-          // route's `detail` (store unavailable, user not found) is shown.
           if (r.status === 401) {
             if (window._showLoginGate) window._showLoginGate();
             throw new Error('signed out');
@@ -2249,9 +2185,6 @@
     }
     var j = await r.json();
     if (gen !== _loadGen) return;
-    // role-admin is set by OPEN_MODE_BANNER_JS (single source of truth)
-    // when whoami.is_admin=true. This page used to add it here
-    // unconditionally; redundant now that the central script owns it.
     var banner = document.getElementById('open-banner');
     banner.style.display = j.open_mode ? 'block' : 'none';
     var ct = document.getElementById('users-container');
@@ -2275,11 +2208,9 @@
       renderOrphanCsCards(ct, j.users);
       return;
     }
-    // Pull the usage rollup once (lifetime) so per-user strips and per-key
-    // cells can join against it client-side. Best-effort — a usage failure
-    // must never blank the key-management UI.
-    // A failed fetch is flagged `unavailable` so cards say "usage
-    // unavailable" instead of "no usage yet".
+    // Lifetime usage rollup, joined client-side by the per-user strips and
+    // per-key cells. Best-effort: a failure must never blank the key UI; it is
+    // flagged `unavailable` so cards say "usage unavailable", not "no usage yet".
     var usage;
     try {
       var ur = await api('GET', '/settings/api-keys/api/usage');
@@ -2344,14 +2275,10 @@
 })();
 </script>
 <script>
-// Runs AFTER TIME_HELPERS_JS defines timeTick. Ages the relative suffix on the
-// per-key created/last-used cells in place; the cells already carry static
-// fmtWhen() text at render time, and timeTick re-queries [data-ts] each tick so
-// it also catches cells added by later list reloads.
+// Runs after TIME_HELPERS_JS defines timeTick. Both tickers re-query their
+// selector ([data-ts], [data-used-ts]) every tick, so the relative times and
+// the green -> grey status dots also age on rows added by later reloads.
 timeTick();
-// Decay the per-key status dots (green -> grey) as keys cross the recent-use
-// window, without a reload. _refreshApiKeyDots re-queries [data-used-ts] each
-// tick so it also catches dots added by later list reloads.
 if (window._refreshApiKeyDots) {
   window._refreshApiKeyDots();
   setInterval(window._refreshApiKeyDots, 30000);
