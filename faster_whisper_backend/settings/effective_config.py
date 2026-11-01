@@ -7,20 +7,17 @@ pipeline setting for a given caller, walking the precedence stack
     per-key direct → per-key profiles → per-user direct → per-user profiles
     → per-model → global → (faster-whisper builtin)
 
-The FIRST identity layer that sets a scalar field owns BOTH its value and its
+The FIRST identity layer with an opinion on a scalar field (a value or a
+lock; a value-less lock pins the inherited value) owns BOTH its value and its
 lock state. A locked field cannot be replaced by the client's per-request
 ``decode_overrides``. Pipeline-rule enable/disable resolves analogously (first
 layer mentioning a slug in include/exclude decides; exclude wins within a
 layer), folding the per-model layer in too — locking does not apply to rules.
 
 This is a LEAF module: it imports only ``config``, ``config_renames``,
-``config_store``, ``schema`` and (lazily) ``auth.api_keys_store``, and is
-itself imported by the request-path packages (``main``, ``streaming.routes``,
-``transcription.*``, ``translation.routes``, ``captures.*``,
-``admin.overrides_routes``). It never imports ``main`` (no cycles).
-The runtime reader ``cfg_for(model_id, field, ident)`` (bottom of this module)
-consults a resolved object's ``values`` first, so threading ``ident=None``
-anywhere is byte-identical to the pre-feature behaviour.
+``config_store``, ``schema`` and (lazily) ``auth.api_keys_store``, and never
+``main`` (no cycles). ``cfg_for(model_id, field, ident)`` consults a resolved
+object's ``values`` first, so ``ident=None`` reads plain per-model / global.
 """
 
 from __future__ import annotations
@@ -37,8 +34,7 @@ from faster_whisper_backend.settings import schema as settings_schema
 
 logger = logging.getLogger("whisper-api")
 
-# Sentinel: "this layer does not set this field" (distinct from a legitimate
-# None override such as SUPPRESS_TOKENS=None meaning "clear the suppression").
+# Sentinel: the per-model layer does not set this field (_per_model_value).
 UNSET = object()
 
 # Sentinel: the per-identity binding could NOT be read (store fault), which is
@@ -49,15 +45,10 @@ _FETCH_FAILED = object()
 
 # Overridable scalar fields = every call-time + streaming field EXCEPT the
 # pipeline include/exclude lists (those resolve via the rule path, not here).
-# Single-sourced from the schema so it cannot drift.
 SCALAR_OVERRIDE_FIELDS: frozenset[str] = settings_schema.LOCKABLE_FIELDS
 
-# Map an UPPER_CASE config field → the lowercase client decode_override key it
-# governs. Mirrors the allow-list enforced by transcription.models._apply_decode_overrides, so
-# a lock on the config field blocks the matching client key. Fields absent here
-# are not client-overridable, so a lock on them is a no-op for the client gate.
-# Generated from the per-field `client_key` registry metadata in settings/schema.py;
-# the historical module-level alias name is kept for existing consumers.
+# Alias of schema.CONFIG_TO_CLIENT_KEY (config field → client decode_override
+# key; see there), kept under this name for existing consumers.
 _CONFIG_TO_CLIENT_KEY: dict[str, str] = settings_schema.CONFIG_TO_CLIENT_KEY
 
 # Identity carriers that have no per-identity config: the synthetic open-mode
@@ -113,10 +104,6 @@ class Resolved:
         return bool(self.layers)
 
 
-# ---------------------------------------------------------------------------
-# Layer extraction
-# ---------------------------------------------------------------------------
-
 def _blob_to_layer(layer_id: str, label: str, profile_name: str | None,
                    blob: Any) -> dict[str, Any] | None:
     """Normalise an OverrideProfile-shaped dict (a direct blob or a profile)
@@ -163,9 +150,6 @@ def _safe_binding(getter: Any, ident_id: str | None) -> Any:
     try:
         return getter(ident_id) or {}
     except Exception as e:
-        # Returning {} here would be indistinguishable from "this identity has
-        # no restrictions" and would silently drop its gates / allowlist / locks
-        # for the duration of the fault, so signal the failure instead.
         now = time.monotonic()
         if now - _last_warn.get(ident_id, float("-inf")) >= _WARN_EVERY_S:
             if len(_last_warn) > 512:
@@ -261,9 +245,7 @@ def _gather_identity_layers(key_binding: Any,
        it directly) and is read off the key binding only."""
     profiles = getattr(cfg, "OVERRIDE_PROFILES", None) or {}
     layers: list[dict[str, Any]] = []
-    # Admin force, ungated, key-scoped: this key always resolves to plain defaults.
     admin_force = bool(key_binding.get("apply_no_profiles")) if isinstance(key_binding, dict) else False
-    # Client opt-out, gated like any profile request.
     request_none = (request_profile == settings_schema.NO_PROFILE_SENTINEL
                     and getattr(cfg, "ALLOW_REQUEST_OVERRIDE_PROFILE", True)
                     and request_allowed)
@@ -277,7 +259,7 @@ def _gather_identity_layers(key_binding: Any,
         if direct is not None:
             layers.append(direct)
         if suppress:
-            return  # "no profile": skip this identity's bound profile layers
+            return
         for pname in (binding.get("profiles") or []):
             prof = profiles.get(pname)
             lyr = _blob_to_layer(f"{scope}.profile:{pname}",
@@ -367,10 +349,6 @@ def _per_model_rule_layer(model_id: str | None) -> dict[str, Any] | None:
         "fields": {}, "locks": set(), "exclude": exclude, "include": include,
     }
 
-
-# ---------------------------------------------------------------------------
-# Core resolution
-# ---------------------------------------------------------------------------
 
 def _resolve_from_layers(model_id: str | None, layers: list[dict[str, Any]],
                          request_overrides: dict[str, Any],
@@ -462,8 +440,6 @@ def _scalar_provenance(fname: str, layers: list[dict[str, Any]],
     declares one) and the value (if it sets one). A value-less winner locks the
     field but leaves the value to per-model/global, shadowing any lower layer's
     value — so the lock badge and the value-winner row can be different rows."""
-    # A value-less lock-to-inherited winner owns the lock but supplies no value,
-    # so the value still falls through to per-model/global.
     winner_sets = (identity_winner is not None
                    and fname in identity_winner["fields"])
     hits: list[dict[str, Any]] = []
@@ -496,10 +472,6 @@ def _scalar_provenance(fname: str, layers: list[dict[str, Any]],
     return hits
 
 
-# ---------------------------------------------------------------------------
-# Public entry point
-# ---------------------------------------------------------------------------
-
 def resolve(model_id: str | None, *, user_id: str | None = None,
             key_id: str | None = None,
             request_overrides: dict[str, Any] | None = None,
@@ -514,7 +486,7 @@ def resolve(model_id: str | None, *, user_id: str | None = None,
 
     A caller with no per-identity config (or open mode) yields a Resolved whose
     identity layers are empty but whose pipeline_include/exclude still fold the
-    per-model rules — so threading it through behaves exactly like today.
+    per-model rules — threading it through equals passing ident=None.
 
     ``request_profile`` (optional) names an OVERRIDE_PROFILES entry to apply as
     the least-specific identity layer; gated by ALLOW_REQUEST_OVERRIDE_PROFILE
@@ -528,9 +500,10 @@ def resolve(model_id: str | None, *, user_id: str | None = None,
     unknown, so everything fails CLOSED: both gates resolve off, the allowlist
     resolves empty, and EVERY lockable field resolves as locked (``locked`` =
     SCALAR_OVERRIDE_FIELDS, ``locked_client_keys`` = every client key) so client
-    Form fields and decode_overrides alike are refused. The honest caveat: the
-    identity's own ``direct`` values and profile layers are unavailable too, so
-    the decode falls back to the per-model / global defaults.
+    Form fields and decode_overrides alike are refused. Caveat: the FAULTED
+    binding's ``direct`` values and profiles are unavailable too, so its fields
+    fall back to the other (readable) binding's layers or the per-model / global
+    defaults.
     """
     from faster_whisper_backend.auth import api_keys_store  # local import keeps module import order flexible
     key_binding = _safe_binding(api_keys_store.get_key_config, key_id)
@@ -572,10 +545,7 @@ def resolve(model_id: str | None, *, user_id: str | None = None,
     return resolved
 
 
-# ---------------------------------------------------------------------------
-# Capabilities — what a caller may do (drives the client UI; the server still
-# enforces everything in resolve(), the client UI is convenience only).
-# ---------------------------------------------------------------------------
+# Capabilities drive the client UI only; resolve() still enforces everything.
 
 def _caller_gates(user_id: str | None,
                   key_id: str | None) -> tuple[bool, bool, list[str] | None]:
@@ -653,28 +623,19 @@ def project_profile_to_client(blob: Any) -> tuple[dict[str, Any], list[str]]:
     return values, locked
 
 
-# =============================================================================
-# Per-model config resolution (per-model override > global default)
-# =============================================================================
-# cfg_for(model_id, field) is the canonical reader for any G/PM-scoped setting.
-# It walks: cfg.MODEL_OVERRIDES[model_id][field] (if set and not None) → cfg.X
-# (global default). Pure-G fields (DEFAULT_MODEL, ALLOWED_MODELS, server, log)
-# are read with plain cfg.X — they have no per-model meaning.
-#
-# Precedence (highest to lowest):
-#   request-arg  >  per-model override  >  global default  >  faster-whisper
-# The first three are this function's business; the last is whatever
-# faster-whisper itself defaults to when we omit a kwarg.
+# cfg_for is the canonical reader for any G/PM-scoped setting. Pure-G fields
+# (DEFAULT_MODEL, ALLOWED_MODELS, server, log) are read with plain cfg.X — they
+# have no per-model meaning. A per-request argument is layered on top by
+# _resolve_request_knob, not here.
 
 def cfg_for(model_id: "str | None", field: str, ident=None):
     """Resolve a G/PM config field for the given model_id (and optional caller
     identity).
 
-    Precedence: per-identity override (``ident``) > per-model override >
-    global cfg.X. ``ident`` is an effective_config.Resolved whose ``values``
-    already merged the key/user/profile layers; passing ``ident=None`` (the
-    default everywhere except the request paths) is byte-identical to the
-    pre-feature behaviour. Pass model_id=None to skip the per-model layer.
+    Precedence: per-identity override (``ident``) > per-model override (if
+    not None) > global cfg.X. ``ident`` is a Resolved whose ``values`` already
+    merged the key/user/profile layers; ``ident=None`` skips the identity layer,
+    ``model_id=None`` the per-model one.
     """
     if ident is not None and field in ident.values:
         return ident.values[field]
@@ -697,7 +658,7 @@ def _resolve_request_knob(resolved_model, ident, ignored: "list[str]",
                           cfg_name: str, client_name: str, req_val,
                           default=""):
     """The locked-wins / request-wins / config-inherits ladder every
-    per-request string knob shares (the speaker counts use the numeric tuple
+    per-request scalar knob shares (the speaker counts use the numeric tuple
     loop next to their form parsing). Locked: the resolved server value wins
     and a differing request lands in ``ignored`` under its client name.
     `default=_NO_DEFAULT` returns the resolved value raw (no falsy coercion)."""
@@ -737,11 +698,9 @@ def build_ident(user: "dict | None", model_id: "str | None",
     )
 
 
-# ---------------------------------------------------------------------------
-# Live-dictation silence gates
-# ---------------------------------------------------------------------------
-# The three gates only work as a set: inner >= outer stretches the commit wait
-# to the forced-commit cap (streaming/session.py), and a hard break that is on
+# Live-dictation silence gates. The three gates only work as a set: inner >=
+# outer stretches the commit wait to the forced-commit cap
+# (streaming/session.py), and a hard break that is on
 # but fires by the first frame after the finalize (schema.hard_break_floor_ms)
 # breaks after EVERY utterance, because the idle-silence clock survives the
 # finalize. AdminConfig refuses only a GLOBAL set that does not fit; a profile,
