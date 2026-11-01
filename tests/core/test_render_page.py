@@ -8,11 +8,6 @@ def test_header_brand_lockup_links_home(client):
     assert '<a class="brand-link" href="/"' in r.text
 
 
-# The substitution chain rebuilds a ~270 KB shell per request and these pages
-# render before any credential is examined, so it is memoized. The contract
-# worth pinning is the CACHE KEY: nothing per-user may be substituted, and the
-# hot-mutable cfg reads must invalidate.
-
 _TPL = (
     "<title>{{HEADER_TITLE}}</title>{{NAV}}{{PAGE_META}}"
     "{{LOG_VIEWER_INITIAL_LINES}}/{{LOG_VIEWER_DOM_MAX}}"
@@ -30,8 +25,7 @@ def test_render_page_is_memoized_per_key():
 
 def test_render_page_key_tracks_hot_mutable_cfg(monkeypatch):
     """The settings save path mutates cfg at runtime, so the hot-mutable
-    values are part of the key rather than read at import. Samples three of
-    them: ADMIN_UI_ENABLED and the two LOG_VIEWER_* values."""
+    values are part of the key rather than read at import."""
     from faster_whisper_backend.settings import config as cfg
     from faster_whisper_backend.core import web_common
 
@@ -53,9 +47,8 @@ def test_render_page_substitutes_no_per_user_value():
     """Guard against a future per-user substitution silently entering a shared
     cache. Every placeholder must be resolved, and none from a request.
 
-    The template is DERIVED from _render_page_cached's own substitution list
-    rather than hand-written, so a placeholder added there is covered
-    automatically instead of leaving a 4-placeholder stub green."""
+    The template is DERIVED from _render_page_cached's own substitution list,
+    so a placeholder added there is covered automatically."""
     import inspect
     import re
     from faster_whisper_backend.core import web_common
