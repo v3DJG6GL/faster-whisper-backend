@@ -669,8 +669,8 @@ def test_revocation_during_the_handshake_still_closes_with_4401(
         ws.send_bytes(_pcm(8000, 2500))        # first decode re-auths → revoked
         time.sleep(0.5)
         try:
-            # Safety net only: without the fix the session stays live, and the
-            # stop lets the drain finish and fail the assertions, not hang.
+            # Safety net only: if the session stays live, the stop lets the
+            # drain finish and fail the assertions instead of hanging.
             ws.send_bytes(_pcm(0, 1500))
             ws.send_json({"type": "stop"})
         except Exception:  # noqa: BLE001 — already closed, as expected
@@ -783,10 +783,9 @@ def test_revocation_during_the_closing_drain_still_closes_with_4401(
         client, make_user_key, app_module, monkeypatch):
     """Revoke AFTER the pump's last decode but BEFORE the client's stop, with
     an utterance still in flight: the drain in session.close() runs
-    decode_final → _refresh_ident → _CredentialRevoked outside the pump. That
-    used to escape to the blanket handler (traceback, an error ledger row, an
-    "internal error" frame, close 1000); it must close with 4401 like every
-    other revocation path."""
+    decode_final → _refresh_ident → _CredentialRevoked outside the pump. It
+    must still close with 4401 like every other revocation path, with no
+    "internal" error frame, no last final and no error ledger row."""
     from faster_whisper_backend.auth import api_keys_store
     from faster_whisper_backend.stats import metrics
     from faster_whisper_backend.streaming.routes import _WS_UNAUTH
