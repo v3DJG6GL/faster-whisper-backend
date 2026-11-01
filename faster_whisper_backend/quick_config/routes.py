@@ -8,6 +8,7 @@ Mounted at /quick-config. Endpoints:
   POST /quick-config/state                Patch enabled / body fields on exposed rules
   POST /quick-config/reapply-rules        Kick off bulk-reapply job over existing captures
   GET  /quick-config/reapply-rules/status Poll bulk-reapply job state
+  GET  /quick-config/usage                The caller's own usage (subbar banner)
   GET  /quick-config/recent               Snapshot of the recent traces
   POST /quick-config/recent/search        Free-text search over recent traces
   GET  /quick-config/stream               SSE stream of recent traces (live updates)
@@ -73,17 +74,14 @@ router = APIRouter(prefix="/quick-config")
 # the rule runs, not its body, like `note` / `color` it is set on /settings.
 # Adding a new rule, deleting a rule, or reordering is also admin-only.
 
-# Dedicated, deliberately tiny pool for the one blocking call that can hold a
-# thread for seconds: config_store.save_overrides runs the ReDoS guard, which
-# forks a `sys.executable` child and waits up to _GUARD_TIMEOUT (2 s) per
-# catastrophic pattern. Running that on asyncio's DEFAULT executor (which
-# to_thread uses) lets a caller with only the `quick_config` page scope — no
-# admin, no host gate, no rate limit — occupy every one of its
-# min(32, cpu_count+4) threads and add seconds of scheduling latency to every
-# unrelated to_thread call in the app. Bounding it at 2 confines the damage to
-# this endpoint. Legitimate saves take ~25 ms, so queueing at 2 is not
-# observable. Created once at import; never per-request (a per-request executor
-# would leak threads and defeat the bound).
+# Dedicated, deliberately tiny pool for config_store.save_overrides: its ReDoS
+# guard waits on a `sys.executable` child for up to the whole-validation budget
+# (regex_guard._GUARD_TIMEOUT_MAX). Kept off asyncio's DEFAULT executor (which
+# to_thread uses) so a non-admin, unrate-limited caller's multi-second guard
+# waits never add latency to unrelated to_thread calls. Bounded at 2: saves
+# are serialized under pl_apply.rules_lock() anyway and legitimate ones take
+# ~25 ms. Created once at import; a per-request executor would leak threads
+# and defeat the bound.
 _GUARDED_SAVE_EXECUTOR = ThreadPoolExecutor(
     max_workers=2, thread_name_prefix="regex-guard",
 )
@@ -164,24 +162,17 @@ class QuickPatchPayload(BaseModel):
 
 
 def _rule_fingerprint(rule: dict[str, Any]) -> str:
-    """Stable short hash of a rule dict for optimistic concurrency
-    control (HTTP-ETag style). Order-insensitive on dict fields. Uses
-    sha1 because it's fast and we don't need cryptographic strength —
-    the worst case of a collision is "two different rule states hash
-    the same" which is statistically irrelevant at our buffer cap. Cut
-    to 12 hex chars (~48 bits) to keep the wire payload small."""
+    """Order-insensitive ETag-style hash of a rule dict for optimistic
+    concurrency. sha1 cut to 12 hex chars (~48 bits) for a small payload: not
+    a security hash; a collision would at worst hide one conflict."""
     canonical = json.dumps(
         rule, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
     )
     return hashlib.sha1(canonical.encode("utf-8")).hexdigest()[:12]
 
 
-# ---------------------------------------------------------------------------
-# Shared view/edit helpers — single home for the pipeline-rule policy, reused
-# by the /quick-config WebUI routes below AND the /v1/pipeline-rules client API
-# (v1_router, further down). Keeping these in one place means the desktop
-# client and the browser behave identically.
-# ---------------------------------------------------------------------------
+# Pipeline-rule view/edit policy, shared by the /quick-config routes and the
+# /v1/pipeline-rules client API (v1_router) so desktop and browser agree.
 
 def build_visible_rules(user: dict[str, Any]) -> tuple[list[dict[str, Any]], str]:
     """The pipeline rules `user` may see (canonical + fingerprinted) and their
@@ -259,12 +250,11 @@ def _redact_invisible_slugs(
     builds its messages as `rule {idx} ({slug!r}) ...` regardless of who asked.
     Rule visibility is a real authorization boundary — the GET path filters on
     `can_see_rule` and the PATCH path answers an invisible slug with the same
-    400 as an unknown one — so returning
-    those messages verbatim to a non-admin leaks the names (and list positions)
-    of rules they cannot otherwise learn exist. Two ways that fires: a rule that
-    compiles but fails the guard (the load path validates without `guard_regex`,
-    so it can sit on disk), or the shared guard budget expiring while the child
-    is on a later hidden rule.
+    400 as an unknown one — so returning those messages verbatim to a
+    non-admin leaks the names (and list positions) of rules they cannot
+    otherwise learn exist. The guard is scoped to guard_slugs, but compile /
+    template / duplicate-name / stale-slug validation still covers every rule,
+    hidden ones included.
 
     The caller's OWN rules are always visible to them — the PATCH path rejected
     anything else before we got here — so their real errors stay legible.
@@ -275,13 +265,10 @@ def _redact_invisible_slugs(
     perms = user.get("permissions")
     if perms is None:
         return errors
-    # The slug lives under "name" on a rule dict (see by_slug below); _RuleBase
-    # forbids extras, so no rule ever carries a "slug" key and keying on one
-    # made this a silent no-op.
-    # Also collect list POSITIONS of hidden rules: a plain Pydantic field
-    # error carries no slug at all, only a dotted loc like
-    # `PIPELINE_RULES.7.regex-list...` — the index (and rule type) leak the
-    # same existence information the slug substitution below exists to hide.
+    # The slug lives under "name" (_RuleBase forbids a "slug" key). Also collect
+    # list POSITIONS of hidden rules: a plain Pydantic field error carries no
+    # slug, only a dotted loc like `PIPELINE_RULES.7.regex-list...`, and the
+    # index (and rule type) leak the same existence the slug swap hides.
     hidden: list[str] = []
     hidden_idx: set[int] = set()
     for i, r in enumerate(rules):
@@ -291,8 +278,6 @@ def _redact_invisible_slugs(
             hidden_idx.add(i)
     if not hidden:
         return errors
-    # format_validation_errors returns {"loc": ..., "msg": ...} dicts, not
-    # bare strings — redact each field rather than the mapping.
     out: list[dict[str, str]] = []
     for entry in errors:
         red = dict(entry)
@@ -366,7 +351,7 @@ async def apply_rules_patch(
     lives in one home: per-type field allow-list, the same can_see_rule
     re-check the GET uses, terminal + locked guards, optimistic-concurrency by
     fingerprint, server-owned map_meta stamping, then the full Pydantic
-    re-validation (incl. the 2 s ReDoS guard) via save_overrides.
+    re-validation (ReDoS guard scoped to the changed rules) via save_overrides.
 
     Returns (status_code, body): 200 on success or conflict-only; 422
     {"errors": [...]} when save validation fails (an error may name a rule the
@@ -380,12 +365,8 @@ async def apply_rules_patch(
                 user, rules_patch, fingerprints, client_host=client_host,
             )
 
-    # Shielded: a dropped connection unwinds the handler as a cancellation,
-    # but the offloaded save keeps writing config.local.json on its thread.
-    # Unshielded, the in-memory apply_hot_changes() was skipped and the lock
-    # released mid-write, so the next PIPELINE_RULES save copied the stale
-    # cfg list and reverted this edit on disk. The task finishes save +
-    # apply under the lock whether or not anyone still awaits it.
+    # Shielded (same reason as pl_apply.run_to_end): a dropped connection must
+    # not skip the hot-apply or release the lock while the save still writes.
     return await asyncio.shield(asyncio.ensure_future(_locked()))
 
 
@@ -421,17 +402,12 @@ async def _apply_rules_patch_locked(
     canonical_now = {r["name"]: r for r in pl_apply.canon_rules(current_rules)
                      if isinstance(r, dict) and r.get("name")}
 
-    # Bound every map BEFORE walking any of them: the stamping loop and the
-    # comprehension in the per-slug loop below both iterate a caller-supplied
-    # dict on the event loop, and the only other cap (MapRule.map's
-    # max_length) is not reached until save_overrides, which runs after.
-    # Anything over the cap was already destined for a 422 there, so only the
-    # shape of the rejection changes.
-    # User-facing wording: this 400 fires BEFORE save_overrides, so Pydantic's
-    # "...at most N items..." 422 (which the page used to translate) is
-    # unreachable and this detail lands in the toast verbatim. The
-    # per-dictionary check runs first so a single full dictionary gets the
-    # actionable message rather than the request-wide one.
+    # Bound every map BEFORE walking any: the stamping loop and the per-slug
+    # comprehension iterate caller dicts on the event loop, and MapRule.map's
+    # max_length only runs later in save_overrides (anything over was a 422
+    # there anyway). This 400 pre-empts that 422, so its detail lands in the
+    # toast verbatim; the per-dictionary check runs first so one full
+    # dictionary gets the actionable message, not the request-wide one.
     total_map_entries = 0
     for p in rules_patch.values():
         if isinstance(p, dict) and isinstance(p.get("map"), dict):
@@ -442,9 +418,6 @@ async def _apply_rules_patch_locked(
                     "entries) — delete some entries before adding new ones",
                 )
             total_map_entries += len(p["map"])
-    # Whole-request bound: the per-dictionary cap limits ONE map, but a patch
-    # naming several map rules could still walk a multiple of it on the event
-    # loop. Bounded against the (larger) request-wide cap, not the per-map one.
     if total_map_entries > _MAP_MAX_TOTAL_ENTRIES:
         raise HTTPException(
             status.HTTP_400_BAD_REQUEST,
@@ -463,20 +436,13 @@ async def _apply_rules_patch_locked(
                 status.HTTP_400_BAD_REQUEST,
                 f"rules_patch['{slug}'] must be an object",
             )
-        # Must pass the same can_see_rule check the GET uses, so a user can't
-        # PATCH a rule their tag set forbids them from seeing. The exposed +
-        # terminal + admin checks all live inside can_see_rule.
-        #
-        # `by_slug` is built from the FULL rule list, so answering "no such
-        # rule" and "a rule you may not see" differently was an existence
-        # oracle: a non-admin could enumerate the slugs the admin curated out
-        # of their view, one guess per request, with no rate limit. For a
-        # non-admin the two collapse into the same 400 — the doctrine
-        # auth.Permissions.assert_can_read_row states in its own comment
-        # ("404, not 403 — a 403 would confirm the row exists").
-        #
-        # Rules that ARE exposed to the caller are unaffected: they resolve
-        # normally here and keep their precise errors. Admins keep both.
+        # Same can_see_rule check the GET uses (`exposed`, then tags; admins
+        # skip only the tag check). The terminal check is separate, below.
+        # by_slug covers the FULL rule list, so for a non-admin "no such rule"
+        # and "a rule you may not see" must be one 400: distinct answers are
+        # an unrate-limited existence oracle (auth.Permissions.
+        # assert_can_read_row's doctrine: 404, not 403). Visible rules keep
+        # their precise errors; admins keep the 403.
         idx = by_slug.get(slug)
         visible = (
             idx is not None
@@ -541,12 +507,9 @@ async def _apply_rules_patch_locked(
         if rtype == "callback:map" and "map" in patch:
             old_map = target.get("map") or {}
             new_map = patch["map"]
-            # rules_patch is typed dict[str, dict[str, Any]], so the per-FIELD
-            # value is unconstrained and Pydantic only sees it later, inside
-            # save_overrides. A non-dict here reached .items() below as an
-            # unhandled AttributeError -> bare 500. Checked on the RAW value:
-            # an `or {}` coercion first let every falsy non-dict (None, [],
-            # "") slip past this guard into a generic 422 from Pydantic.
+            # Per-field values are untyped here (Pydantic sees them only inside
+            # save_overrides): a non-dict would 500 on .items() below. Check the
+            # RAW value — an `or {}` coercion would let None / [] / "" through.
             if not isinstance(new_map, dict):
                 raise HTTPException(
                     status.HTTP_400_BAD_REQUEST,
@@ -579,28 +542,21 @@ async def _apply_rules_patch_locked(
             "requires_restart": False,
         }
 
-    # Hand the merged list to the same save path the admin uses: full Pydantic
-    # re-validation, with the 2 s ReDoS guard scoped (guard_slugs) to the rules
-    # THIS patch changed. Unscoped, every user save re-probed every admin rule:
-    # one pre-existing rule the current guard refuses — saved before a guard
-    # tightening, loading fine ever since — 422'd every save of any rule, and a
-    # large rule set could burn the shared guard budget on its own. An error
-    # may still name an untouched rule (non-guard validation covers the whole
-    # merged list) — the client surfaces this gracefully. An enabled-only
-    # patch that switches a rule OFF (or changes nothing) leaves the rule's
-    # body as it was, so it is not in guard_slugs: the guard (and the map-key
-    # collision check) would otherwise refuse switching OFF exactly such a
-    # pre-existing rule until its body was rewritten. Switching a rule ON is
-    # guarded: the load path runs no guard, so a refused body would go live.
-    # Off the event loop. The guard runs the candidate patterns in a child
-    # process and waits up to _GUARD_TIMEOUT for it, so calling save_overrides
-    # inline freezes the whole worker — every HTTP request, SSE stream and
-    # WebSocket on it — for the duration, and this endpoint is reachable by a
-    # non-admin with no rate limit. admin_routes' rule dry-run already offloads
-    # the same hazard the same way.
-    # It rides a dedicated 2-thread pool rather than asyncio's default executor
-    # so a flood of guard-tripping saves here cannot starve every other
-    # to_thread call in the app — see _GUARDED_SAVE_EXECUTOR.
+    # Same save path as the admin: full Pydantic re-validation, with the ReDoS
+    # guard scoped (guard_slugs) to the rules THIS patch changed. Unscoped, one
+    # pre-existing rule the current guard refuses (saved before a guard
+    # tightening, loading fine since) 422'd every save of any rule, and a large
+    # rule set could burn the shared guard budget alone. Non-guard validation
+    # still covers the whole merged list, so an error may name an untouched rule.
+    # Switching a rule OFF leaves its body as-is and is not guarded (else the
+    # guard and the map-key collision check would refuse switching such a rule
+    # off until rewritten); switching it ON is, because the load path runs no
+    # guard and a refused body would go live.
+    # Off the event loop: the guard waits on a child process for up to its
+    # whole-validation budget, which inline would freeze every request and
+    # stream on this worker — and this endpoint is non-admin-reachable with no
+    # rate limit. The dedicated pool keeps a flood of guard-tripping saves from
+    # starving every other to_thread call — see _GUARDED_SAVE_EXECUTOR.
     try:
         written = await asyncio.get_running_loop().run_in_executor(
             _GUARDED_SAVE_EXECUTOR,
@@ -611,11 +567,8 @@ async def _apply_rules_patch_locked(
         )
     except ValidationError as e:
         errs = settings_schema.format_validation_errors(e)
-        # Unlike the success line below, this branch used to return with NO
-        # log at all — a save could fail for every user while the log showed
-        # only interleaved successes. Full (unredacted) detail is fine here:
-        # the log is admin-eyes-only. log_safe for the same CR/LF-forgery
-        # reason as the success line.
+        # Full (unredacted) detail is fine: the log is admin-eyes-only.
+        # log_safe for the same CR/LF-forgery reason as the success line.
         logger.warning(
             "[pipeline-rules] save validation failed from=%s user=%s admin=%s "
             "patched=%s errors=%s",
@@ -646,14 +599,12 @@ async def _apply_rules_patch_locked(
         saved, [c["slug"] for c in conflicts],
     )
 
-    # Admin-only: captures_store.count() with no argument is the unfiltered
-    # "admin / scope=all" query, and a caller holding only the quick_config
-    # page has captures scope "none" — the global total is not theirs to see.
-    # It is also useless to them: the page fires the silent re-apply job on
-    # captures_count > 0, and POST /quick-config/reapply-rules is admin-only,
-    # so a non-admin save on a server with any capture ended in a permanent
-    # red "Re-apply failed: HTTP 403" strip. Reporting 0 keeps that branch shut
-    # and takes the blocking SQLite COUNT(*) off the non-admin path entirely.
+    # Admin-only: count() with no argument is the unscoped global total, which
+    # a quick_config-only caller (captures scope "none") may not see. It is
+    # also useless to them: the page starts the admin-only re-apply job on
+    # captures_count > 0, so a non-admin save would get a permanent
+    # "Re-apply failed: HTTP 403" strip. 0 keeps that branch shut and skips
+    # the blocking COUNT(*).
     captures_count = 0
     if user.get("is_admin") and getattr(cfg, "CAPTURES_RECORDING_ENABLED", False):
         try:
@@ -671,18 +622,16 @@ async def _apply_rules_patch_locked(
     }
 
 
-# ---------------------------------------------------------------------------
-# /v1/pipeline-rules — client API (desktop app). NOT host-gated.
-# ---------------------------------------------------------------------------
+# /v1 client API (desktop app). NOT host-gated.
 # Same tag/exposed gating + per-type field allow-list + validation as the
 # /quick-config WebUI below (shared build_visible_rules / apply_rules_patch),
 # but in the /v1 namespace with NO host allowlist — auth is the per-user API
 # key (bearer) plus the quick_config page permission. Mounted always-on in
 # main.py alongside /v1/me, so the desktop client can manage rules regardless
 # of the ADMIN_UI_ENABLED WebUI switch.
-# Gate on the router constructor so every present + future sub-route inherits
-# the quick_config page check (the auth.require_page convention — "closes the
-# 'forgot to gate this endpoint' hole"). Both routes below are user-tier.
+# Gated on the router constructor so every present + future sub-route inherits
+# the quick_config page check (the auth.require_page convention). Every route
+# on it is user-tier.
 v1_router = APIRouter(
     prefix="/v1",
     dependencies=[Depends(require_page("quick_config"))],
@@ -695,8 +644,8 @@ async def v1_get_pipeline_rules(
 ) -> dict[str, Any]:
     """The post-processing (pipeline) rules THIS caller may view + edit, with
     the same `exposed` + tag gating as /quick-config. Returns
-    `{rules, role, editable_fields}`; each rule carries an `_fp` to echo back on
-    PATCH. User-tier auth (any valid key); 403 if the caller's quick_config page
+    `{rules, role, editable_fields, map_collapse_after, map_max_entries}`; each
+    rule carries an `_fp` to echo back on PATCH. User-tier auth (any valid key); 403 if the caller's quick_config page
     scope is "none". No host allowlist (unlike the /quick-config WebUI)."""
     rules, role = build_visible_rules(user)
     return {
@@ -849,13 +798,11 @@ async def get_state(
     Visibility is a triple-AND: (a) the rule must not be the terminal
     sentinel, (b) it must be `exposed=True`, (c) the caller's
     `quick_config_tags` must intersect `rule.tags` (or `rule.tags` must
-    be empty = visible-to-all). Admins bypass (b)+(c).
+    be empty = visible-to-all). Admins bypass (c) only.
 
-    All three checks live behind `perms.can_see_rule()` (auth/dependencies.py) so the
-    policy lives in exactly one place — same pattern as the existing
-    page-permission gates."""
-    # Visibility + fingerprinting lives in build_visible_rules (shared with
-    # GET /v1/pipeline-rules) so the policy has exactly one home.
+    The policy lives in build_visible_rules (shared with GET
+    /v1/pipeline-rules): it applies (a) and delegates (b)+(c) to
+    `perms.can_see_rule()` (auth/dependencies.py)."""
     canonical, role = build_visible_rules(user)
     # Server-authoritative "this transcription has been reported" set
     # + the user's previously-submitted chip corrections per request_id.
@@ -871,11 +818,9 @@ async def get_state(
         from faster_whisper_backend.reports import store as reports_store
         uid = user.get("user_id") or ""
         if uid:
-            # Off the loop like every sibling read in this file (_recent_page,
-            # the SSE replay, /v1/recent-words): this is a SELECT * returning
-            # full transcript rows plus a json.loads per row, and /state is the
-            # page's auth probe — re-issued on every save and every
-            # optimistic-concurrency conflict.
+            # Off the loop: a SELECT * of full transcript rows plus a json.loads
+            # per row, and /state is the page's auth probe — re-issued on every
+            # save and every optimistic-concurrency conflict.
             my_reports = await asyncio.to_thread(
                 reports_store.recent_reports_for_user, uid, limit=100,
             )
@@ -997,16 +942,10 @@ async def post_state(
     return JSONResponse(body, status_code=code)
 
 
-# --- Re-apply current pipeline rules to existing captures ------------
-#
-# Quick-config rules are only baked into a capture's `final` at
-# transcription time. After a rule edit, historical captures are
-# frozen against the rule set at their time of capture. These two
-# endpoints drive a background backfill job that re-runs the current
-# pipeline over every capture's raw text, updates `final`, and
-# rebuilds affected (unlocked) group transcript snapshots from the
-# now-refreshed member text. `corrected_text` and chip corrections
-# are admin-authoritative — preserved untouched.
+# Rules are baked into a capture's `final` only at transcription time, so a
+# rule edit leaves historical captures on the old rules. These two endpoints
+# drive the captures/reapply backfill job (see its docstring for what it
+# rewrites and what it preserves).
 
 @router.post(
     "/reapply-rules",
@@ -1040,12 +979,11 @@ async def get_reapply_rules_status(
     return JSONResponse(captures_reapply.status())
 
 
-# --- Recent transcription traces (panel + autocomplete source) -------------
-#
-# Traces live in stats.recent_transcriptions_store (SQLite); main.py's
-# transcribe handler records one row per completed transcription. Both endpoints below are
-# token-gated so end-users without a valid token can't enumerate recent
-# dictation snippets.
+# Recent transcription traces (panel + autocomplete source) live in
+# stats.recent_transcriptions_store (SQLite); the /transcribe handler and the
+# streaming final each record one row per completed transcription. Every
+# endpoint below is token-gated so end-users without a valid token can't
+# enumerate recent dictation snippets.
 
 @router.get(
     "/recent",
@@ -1188,10 +1126,9 @@ async def stream_recent(
     perms = user["permissions"]
     caller_uid = user.get("user_id") or ""
     sees_all = perms.scope("quick_config") == "all"
-    # -1 never equals a real version, so the check before the replay always
-    # re-resolves: a snapshot taken here, after the Depends, absorbed a
-    # revoke or downgrade to own landing in between and the stream kept the
-    # old scope until _REAUTH_INTERVAL_S.
+    # -1 never equals a real version, so _rescope() before the replay always
+    # re-resolves: a revoke or downgrade to own that lands after the Depends
+    # applies at once, not only after _REAUTH_INTERVAL_S.
     seen = -1
     resolved_at = time.monotonic()
 
@@ -1225,9 +1162,8 @@ async def stream_recent(
         try:
             if not await _rescope():
                 return
-            # Replay the freshest page from the durable store (oldest-
-            # first so the client receives them in chronological order,
-            # matching the prior in-memory deque iteration semantics).
+            # Replay the freshest page oldest-first, so the client receives it
+            # in chronological order.
             page_size = int(getattr(cfg, "RECENT_TRANSCRIPTIONS_PAGE_SIZE", 100))
             # Off the loop with its siblings — this runs once per SSE connect.
             replay = await asyncio.to_thread(
