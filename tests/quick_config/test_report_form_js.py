@@ -1,11 +1,11 @@
-"""Behaviour of /quick-config client JS: the report form's chip editor and
-the rule-save flow.
+"""Behaviour of /quick-config client JS: the report form (chip editor,
+submit / remove, the "reported" hint and badges) and the rule-save flow.
 
 The functions are pulled out of the served page and run under node against a
 tiny fake DOM — just enough element API (classList, children/nextSibling,
 querySelector on `.class` / `[data-idx="N"]` / descendant selectors) for the
-chip helpers; anything else a test needs it stubs on globalThis. Anything the page's code touches beyond that is a bug in this
-harness, not in the page."""
+chip helpers; anything else a test needs it stubs on globalThis. Anything the
+page's code touches beyond that is a bug in this harness, not in the page."""
 
 import json
 import re
@@ -981,9 +981,8 @@ def test_save_toasts_say_an_entry_the_user_deleted_is_back(client, tmp_path):
 def test_reapply_keeps_the_users_edits_on_a_rule_whose_entry_both_writers_edited(client, tmp_path):
     # One entry both writers edited made _reapplyDiffs skip the whole rule:
     # every other unsaved edit on it (added entries, the enabled toggle, other
-    # entries) vanished with no undo. The rule now takes all the user's diffs,
-    # keeps the user's version of the clashing entry, stays dirty, and its slug
-    # is reported so the toast can name it.
+    # entries) vanished with no undo. Its slug is reported so the toast can
+    # name the rule.
     page = client.get("/quick-config").text
     res = _run_js(client, tmp_path, _olist_consts(page) + r"""
       const e = (p, r) => ({ pattern: p, replacement: r });
