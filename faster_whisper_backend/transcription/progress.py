@@ -30,7 +30,6 @@ from faster_whisper_backend.settings import config as cfg
 logger = logging.getLogger("whisper-api")
 
 
-# ── Batch progress registry ──────────────────────────────────────────────────
 # Optional per-request progress for the file-upload path: a client that sends a
 # `progress_id` form field can poll GET /v1/audio/transcriptions/progress/<id>
 # while its POST is in flight. Entries live only for the request (popped in the
@@ -43,7 +42,7 @@ _BATCH_PROGRESS: "dict[str, dict]" = {}
 # progress_id → owner, remembered from the handler's seed so an entry that an
 # executor-thread stage re-creates after a cap eviction keeps its owner stamp
 # instead of coming back owner-less and readable/cancellable by any caller.
-# Popped in the handlers' finally (alongside _BATCH_PROGRESS).  Deliberately
+# Popped by _progress_close (alongside _BATCH_PROGRESS).  Deliberately
 # NOT popped in the cap eviction — that is exactly the moment an executor
 # thread can re-create the entry and needs the stamp — and an owner-stamped
 # entry is never stale-swept: a run waiting on the GPU gate ticks nothing
@@ -69,8 +68,7 @@ _PROGRESS_CLOSED_TTL_S = _BATCH_PROGRESS_STALE_S
 
 def _progress_close(pid: "str | None") -> None:
     """Retire `pid`'s live progress entry: pop the three registries and
-    tombstone the id so a straggling stage-thread tick cannot resurrect it.
-    Every handler finally that used to pop the trio calls this instead."""
+    tombstone the id so a straggling stage-thread tick cannot resurrect it."""
     if not pid:
         return
     _BATCH_PROGRESS.pop(pid, None)
@@ -152,8 +150,8 @@ def _plan_fields(pid: str) -> dict:
     }
 
 
-# ── Server jobs (durable job resource, transcription/jobs_store.py) ──────────────────
-# Every batch run posted WITH a progress_id gets a row: `running` right after
+# Server jobs (transcription/jobs_store.py): every batch run posted WITH a
+# progress_id gets a row: `running` right after
 # the progress seed, then its terminal state + the verbatim response payload
 # from the handler's outer finally, so a client that lost its connection can
 # list / re-attach to / fetch the run via GET /v1/jobs*. A ledger write never
@@ -288,7 +286,9 @@ def _provisional_stages(*, is_url: bool, separate: "bool | None",
 
 
 def _progress_set(pid: "str | None", **fields) -> None:
-    """Merge `fields` into the progress entry for `pid` (no-op without one)."""
+    """Merge `fields` into `pid`'s progress entry, creating it unless the id
+    is closed (no-op without a pid), and mirror the tick into the job row,
+    the preload plan and the run plan."""
     if not pid:
         return
     if fields.get("owner") is not None:
@@ -306,24 +306,19 @@ def _progress_set(pid: "str | None", **fields) -> None:
         _new_stage = fields.get("stage")
         _prev = _BATCH_PROGRESS.get(pid, {}).get("stage")
         if _new_stage and _prev and _new_stage != _prev:
-            # A stage TRANSITION resets the derived columns the new stage did
-            # not (yet) report — without this the job row keeps the previous
-            # stage's last progress/step/model/total_bytes (a stale ~100%
-            # bar, the decode model shown for the whole of diarizing/
-            # translating, the download's byte total for the rest of the
-            # request), because both this mirror and jobs.job_update skip
-            # plain Nones. The first seed is NOT a transition: there is no
-            # previous stage's stale state to clear, only job_start's model
-            # to preserve.
+            # A stage TRANSITION clears the derived columns the new stage did
+            # not report: this mirror and jobs.job_update both skip None, so the
+            # row would keep the previous stage's progress/step/model/total_bytes
+            # (a stale ~100% bar). The first seed is not a transition — it must
+            # keep job_start's model.
             for k in ("progress", "step", "model", "total_bytes"):
                 _mirror.setdefault(k, jobs.CLEAR)
         jobs.job_update(_job_id, **_mirror)
     _stage = fields.get("stage") or _BATCH_PROGRESS.get(pid, {}).get("stage")
     if _stage and pid in _PLAN_BY_PID:
-        # Advances the plan's cursor and warms the next stage's model. Sync,
-        # never awaits, and swallows everything internally — this runs on
-        # executor threads (the decode, the demix, the pyannote hook) and
-        # progress must never break a request.
+        # Advances the plan's cursor and warms the next stage's model (never
+        # awaits, swallows its own errors: this runs on executor threads and
+        # progress must never break a request).
         # Every tick, not only transitions: on_stage_start restamps the TTL
         # before its monotone-cursor check, so a stage longer than
         # MODEL_PRELOAD_WARM_TTL_S keeps the plan alive without enqueueing
@@ -338,13 +333,9 @@ def _progress_set(pid: "str | None", **fields) -> None:
             # tick ran job_update / on_stage_start on an executor thread in
             # between): same no-op, never an owner-less resurrection.
             return
-        # Snapshot (list(...)) before iterating: this branch runs on executor
-        # threads too, and the handler's finally pops entries on the loop
-        # thread — iterating the live dict would raise "dictionary changed
-        # size during iteration" out of a healthy stage callback.
-        # Owner-stamped entries are skipped (see _PROGRESS_OWNER): sweeping
-        # a live run that is only waiting would 404 its owner and let its
-        # next tick re-create the entry owner-less.
+        # Snapshot (list(...)): this runs on executor threads while the loop
+        # thread pops entries. Owner-stamped entries are never stale-swept
+        # (see _PROGRESS_OWNER).
         now = time.monotonic()
         for k in [k for k, v in list(_BATCH_PROGRESS.items())
                   if now - v.get("updated", 0) > _BATCH_PROGRESS_STALE_S
@@ -383,7 +374,7 @@ def _progress_set(pid: "str | None", **fields) -> None:
 # pyannote step) poll the flag and abort. Closing the HTTP connection alone
 # does NOT stop the work — the stages run in executor threads that outlive a
 # cancelled handler task. Only ids with a live _BATCH_PROGRESS entry can be
-# flagged, and the handler's finally discards, so the set stays bounded by
+# flagged, and _progress_close discards, so the set stays bounded by
 # the number of in-flight requests.
 _BATCH_CANCELLED: "set[str]" = set()
 
