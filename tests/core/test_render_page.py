@@ -8,13 +8,10 @@ def test_header_brand_lockup_links_home(client):
     assert '<a class="brand-link" href="/"' in r.text
 
 
-# ---------------------------------------------------------------------------
-# render_page memoization (web_common)
-# ---------------------------------------------------------------------------
 # The substitution chain rebuilds a ~270 KB shell per request and these pages
 # render before any credential is examined, so it is memoized. The contract
 # worth pinning is the CACHE KEY: nothing per-user may be substituted, and the
-# three hot-mutable cfg reads must invalidate.
+# hot-mutable cfg reads must invalidate.
 
 _TPL = (
     "<title>{{HEADER_TITLE}}</title>{{NAV}}{{PAGE_META}}"
@@ -28,15 +25,13 @@ def test_render_page_is_memoized_per_key():
     b = web_common.render_page(_TPL, "logs")
     # Same key -> the identical (immutable) str object, i.e. no rebuild.
     assert a is b
-    # A different `current` is a different key and must not be served the
-    # cached body.
     assert web_common.render_page(_TPL, "stats") != a
 
 
 def test_render_page_key_tracks_hot_mutable_cfg(monkeypatch):
-    """ADMIN_UI_ENABLED and the two LOG_VIEWER_* values are mutated at runtime
-    by the settings save path, so they are part of the key rather than read at
-    import."""
+    """The settings save path mutates cfg at runtime, so the hot-mutable
+    values are part of the key rather than read at import. Samples three of
+    them: ADMIN_UI_ENABLED and the two LOG_VIEWER_* values."""
     from faster_whisper_backend.settings import config as cfg
     from faster_whisper_backend.core import web_common
 
