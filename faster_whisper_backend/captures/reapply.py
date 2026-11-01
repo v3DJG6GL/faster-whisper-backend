@@ -93,8 +93,9 @@ def status() -> dict[str, Any]:
 
 
 def start() -> dict[str, Any]:
-    """Idempotent: if a job is running, return its current state
-    instead of spawning a second worker."""
+    """Start the job. If one is running, queue ONE more full pass (see
+    _rerun_requested) and return its current state instead of spawning a
+    second worker."""
     global _worker, _rerun_requested
     with _state_lock:
         if _state["status"] == "running":
