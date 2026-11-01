@@ -140,8 +140,8 @@ def _nested(depth):
 
 def test_over_deep_blob_422_and_nothing_stored(client, monkeypatch):
     """GET renders through pydantic's serializer, which 500s from ~255
-    levels; PUT used to store such a blob with a 200, leaving every later
-    pull of the account a bare 500 until the row was replaced."""
+    levels: a stored over-deep blob would make every later pull of the
+    account a bare 500 until the row is replaced, so PUT refuses it."""
     from faster_whisper_backend.client_settings import routes
     monkeypatch.setattr(routes, "_MAX_BLOB_DEPTH", 8)
     r = _put(client, {"a": _nested(8)}, 0)  # cap + 1
@@ -228,7 +228,7 @@ def test_two_keys_same_user_share_one_blob(client, make_user_key):
 def test_store_unavailable_maps_to_503_not_500(client, monkeypatch):
     """init_db failing at startup (e.g. an unwritable CLIENT_SETTINGS_DB in a
     containerized deployment) must surface as an actionable 503 pointing at
-    the config knob — not the bare 500 it used to be."""
+    the config knob, not a bare 500."""
     from faster_whisper_backend.client_settings import store as client_settings_store
 
     monkeypatch.setattr(client_settings_store, "_conn", None)
