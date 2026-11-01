@@ -42,7 +42,7 @@ logger = logging.getLogger(__name__)
 
 
 # Hard cap on members per proposal — must not exceed the merge endpoints'
-# CreateSampleIn/PreviewMergeIn `member_ids` Field(max_length=30), or an
+# `member_ids` max_length (routes._MAX_GROUP_MEMBERS), or an
 # accepted proposal would 422 on POST. Packing is by trimmed duration, so a
 # bucket of silence-heavy captures (raw above the eligibility floor but VAD-
 # trimmed to a fraction of a second) can otherwise pack far more than 30 under
@@ -196,7 +196,7 @@ def _build_sample_score(members: list[dict[str, Any]], gap_s: float,
 
     # Peak at target_s, decays linearly to 0 at 0 or 2*target_s.
     fill_score = max(0.0, 1.0 - abs(total_dur - target_s) / target_s)
-    # Density = packed audio / wall-clock span. n=2 trivially ~1.0 so neutralize.
+    # Neutral for solos and pairs: their packed/wall ratio is trivially ~1.0.
     density_score = 0.5 if n < 3 else max(0.0, min(1.0, total_dur / wall_dur))
     # Peak at 4 members, decays by 1/8 per step in either direction.
     member_score = max(0.0, 1.0 - abs(n - 4) / 8.0)
