@@ -615,10 +615,15 @@
   .modal { position: fixed; inset: 0; background: rgba(0,0,0,0.7); display: none;
     align-items: center; justify-content: center; z-index: 100; }
   .modal.show { display: flex; }
+  /* Capped like .rule-modal: a long restart-field list on a small screen
+     pushed Cancel / "Restart now" off it. The list scrolls first, so the
+     buttons stay in view; the box scrolls only when even that is too tall. */
   .modal-box { background: var(--panel); border: 1px solid var(--border); border-radius: 6px;
-    padding: 1rem 1.25rem; max-width: min(32.5rem, 95vw); }
+    padding: 1rem 1.25rem; max-width: min(32.5rem, 95vw);
+    box-sizing: border-box; max-height: calc(100vh - 2rem); overflow: auto; }
   .modal-box h3 { margin: 0 0 0.625rem; color: var(--bold); }
   .modal-box ul { margin: 0.375rem 0 0.75rem; padding-left: 1.25rem; }
+  #restart-fields { max-height: 40vh; overflow: auto; }
   .modal-actions { display: flex; gap: 0.5rem; justify-content: flex-end;
     margin-top: 0.875rem; flex-wrap: wrap; }
   .modal-actions button { padding: 0.3125rem 0.75rem; }

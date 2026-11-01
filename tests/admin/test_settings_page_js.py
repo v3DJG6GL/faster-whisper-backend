@@ -880,6 +880,25 @@ doRestart().catch(e => toasts.push(['escaped: ' + e, true])).then(() => {
     assert out == [False, [["restart request failed: TypeError: Failed to fetch", True]]]
 
 
+def test_restart_dialog_fits_a_small_screen(client):
+    """.modal-box set no max-height or overflow, so many restart-required
+    fields on a small viewport pushed Cancel / "Restart now" off screen."""
+    html = _html(client)
+    box = _block(html, "  .modal-box { ", "}")
+    assert "max-height: calc(100vh - 2rem)" in box
+    assert "overflow: auto" in box
+    assert "box-sizing: border-box" in box
+    # The field list scrolls on its own, keeping the buttons in view.
+    lst = _block(html, "  #restart-fields { ", "}")
+    assert "max-height: 40vh" in lst and "overflow: auto" in lst
+    # Both dialogs use that box, and the buttons sit inside it.
+    for dlg in ('<div id="restart-modal" class="modal">',
+                '<div id="restart-progress" class="modal">'):
+        assert dlg + '\n  <div class="modal-box">' in html
+    modal = _block(html, '<div id="restart-modal" class="modal">', "\n</div>\n")
+    assert modal.index('<ul id="restart-fields">') < modal.index('id="restart-now"')
+
+
 # ---- plain checkboxes in a field's input column -------------------------------
 
 def test_plain_checkbox_in_input_col_keeps_its_themed_width(client):
