@@ -1,5 +1,6 @@
-"""Phase 5: per-capture reprocess resolves the CAPTURE OWNER's effective
-pipeline (not the caller's), and tolerates owner-less captures."""
+"""Per-capture reprocess resolves the CAPTURE OWNER's effective pipeline
+(not the caller's), tolerates owner-less captures, and runs the pipeline off
+the event loop."""
 
 import wave
 
