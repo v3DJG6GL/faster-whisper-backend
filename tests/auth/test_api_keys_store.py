@@ -279,7 +279,7 @@ def test_set_user_permissions_does_not_undo_a_concurrent_profile_rename(
                 target=ak.rename_profile_refs, args=("clinic-de", "clinic-deutsch"))
             renamer.append(t)
             t.start()
-            t.join(timeout=0.5)    # pre-fix it completes; post-fix it waits on _lock
+            t.join(timeout=0.5)    # an unlocked rename would finish here; it must block on _lock
         return out
     monkeypatch.setattr(ak, "_parse_permissions", _parse_then_rename)
     ak.set_user_permissions(u, {"pages": {"logs": "all"}})
@@ -791,8 +791,8 @@ def test_first_admin_key_bumps_the_config_version(api_keys_db):
 
 def test_last_used_debounce_survives_a_backwards_wall_clock_step(
         api_keys_db, monkeypatch):
-    # The debounce compared wall-clock times: after a backwards step no
-    # last_used_ts write happened for the step plus 60 s.
+    # The debounce runs on the monotonic clock: a backwards wall-clock step
+    # must not hold back last_used_ts writes for the step plus 60 s.
     ak = api_keys_db
     uid = ak.create_user("u", is_admin=False)
     raw, rec = ak.create_key(uid)
@@ -838,9 +838,9 @@ def test_binding_saves_keep_a_stored_profile_name_that_vanished(
 
 def test_sibling_revoke_still_seen_after_a_failed_rebuild(api_keys_db,
                                                           monkeypatch):
-    """A rebuild SELECT that fails must leave the sibling commit unseen: the
-    version used to be recorded first, so the next lookup skipped the rebuild
-    and kept authenticating the revoked key from the stale index."""
+    """A rebuild SELECT that fails must leave the sibling commit unseen, so
+    the next lookup retries the rebuild instead of authenticating the revoked
+    key from the stale index."""
     ak = api_keys_db
     uid = ak.create_user("root", is_admin=True)
     raw, rec = ak.create_key(uid)
