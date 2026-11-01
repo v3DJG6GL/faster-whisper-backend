@@ -64,8 +64,8 @@ def test_every_nth_tick_takes_a_sample_on_the_grid(sampler, monkeypatch):
 
 def test_slot_busy_covers_a_sample_window_longer_than_the_ring(sampler, monkeypatch):
     """STATS_SYSTEM_METRICS_SAMPLE_S may be up to 3600 but busy_ring holds
-    900 ticks: slicing the ring gave the last 15 minutes' share, not the
-    sample window's (0.333 here instead of 0.5)."""
+    900 ticks: slot_busy is the whole sample window's share (0.5 here), not
+    the ring's last 15 minutes (0.333)."""
     monkeypatch.setattr(sampler.cfg, "STATS_SYSTEM_METRICS_SAMPLE_S", 1200, raising=False)
     gate = metrics.GpuGate(2)
     monkeypatch.setattr(metrics, "gpu_gate", gate)
