@@ -43,8 +43,8 @@ summing the hours that fall inside that timezone's local day:
     (`tz` param → zoneinfo), falling back to the server's local zone;
   - the /stats dashboard reckons in the viewer's `tz` the same way (server-
     local when absent);
-  - the admin /api-keys usage window reckons in the SERVER's local
-    timezone (the operator's perspective), via local_day_start_hour().
+  - the admin /settings/api-keys usage window reckons in the SERVER's
+    local timezone (the operator's perspective), via local_day_start_hour().
 
 `series()` aggregates hours into server-local days and returns days-since-epoch,
 so `day * 86400` is still UTC midnight of that calendar date and the WebUI's
