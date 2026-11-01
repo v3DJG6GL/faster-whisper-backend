@@ -1,7 +1,5 @@
-"""The dedicated /settings/pipeline page reuses the /settings shell with a
-`settings-view` meta flag. These guard the route wiring + view branching:
-the page loads, advertises the right view, links from the nav, and /settings
-advertises the complementary view."""
+"""The dedicated /settings/pipeline page reuses the /settings shell; a
+`settings-view` meta flag picks which sections the page renders."""
 
 
 def test_pipeline_page_loopback(client):
