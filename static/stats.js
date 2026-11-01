@@ -10,7 +10,7 @@
 // /static answers with ETag/Last-Modified and no no-store, so a new build
 // is what fetches a new copy.
 
-// --- GridStack: layout presets, explicit edit mode, keyboard move/resize ---
+// GridStack: layout presets, explicit edit mode, keyboard move/resize.
 // Layout state persists in localStorage PER PRESET (ops / usage / both); the
 // active preset is remembered too. Tiles never move unless "edit layout" is
 // on — a hover-paused chart must not turn into an accidental drag. GridStack
@@ -447,11 +447,9 @@ function renderChips() {
     if (lastDoc.tz && lastDoc.tz !== 'local') s += ' · ' + lastDoc.tz;
     // Retention disclosure: with a stage filter the document is recomputed
     // from the per-job rows, which USAGE_JOBS_RETENTION_DAYS prunes (0 =
-    // keep forever). Only a window that starts before that cutoff is cut
-    // short, so only then say so — "30 d" inside retention needs no note.
+    // keep forever), so only a window starting before that cutoff is cut short.
     const ret = Number(rg.jobs_retention_days) || 0;
-    // todayDay(): the caller-local epoch day rg.from is counted in (a UTC
-    // day here was off by one around local midnight).
+    // todayDay(), not a UTC day: rg.from counts caller-local epoch days.
     const truncated = rg.source === 'jobs' && ret > 0 && Number(rg.from) < todayDay() - ret;
     summary.textContent = s;
     summary.title = s;
@@ -1091,9 +1089,9 @@ function prepareLines() {
         : (j.by === 'stage' && STAGE_COLOR[ln.id]) || PALETTE[i % PALETTE.length],
     }));
   }
-  // Prune BEFORE the compare total and before renderAll draws the legend:
-  // narrowing the kinds to a hidden series used to zero the compare line
-  // and show its legend button "off" while the chart drew it.
+  // Prune BEFORE the compare total and before renderAll draws the legend,
+  // or a kind filter that drops a hidden series zeroes the compare line and
+  // shows its legend button "off" while the chart draws it.
   hidden = new Set([...hidden].filter(id => curLines.some(ln => ln.id === id)));
   if (hidden.size && hidden.size === curLines.length) hidden.clear();   // a reload can never land on an all-hidden set
   cmpTotal = null;
@@ -1645,9 +1643,9 @@ function rhythmLayout(mode, rg) {
 
 // Every column and row carries its label; only when the tile is too
 // narrow (or too short) for them all does the density drop, to the
-// coarsest step the rhythm allows (every 2nd / 3rd / 6th hour, every 5th
-// day) at which neighbouring labels no longer touch. Measured, not
-// guessed, and re-run on tile resize.
+// finest step the rhythm allows (every 2nd / 3rd / 6th hour, every 2nd /
+// 5th day) at which neighbouring labels no longer touch, else the
+// coarsest. Measured from the DOM and re-run on tile resize.
 function fitHoursLabels(el) {
   const steps = el._labelSteps || { col: [1], row: [1] };
   const cell = el.querySelector('i[data-i]'); if (!cell) return;
