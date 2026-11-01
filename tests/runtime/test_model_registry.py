@@ -24,10 +24,6 @@ def _reset_registry(model_sizes_ledger):
         model_registry._loaded_models.clear()
 
 
-# ---------------------------------------------------------------------------
-# Loaded-model registry round-trip
-# ---------------------------------------------------------------------------
-
 def test_register_and_snapshot():
     model_registry.register_loaded_model("m1", 512 * 1024 * 1024, "cuda", "float16")
     snap = model_registry.loaded_models_snapshot()
@@ -76,7 +72,6 @@ def test_touch_updates_last_used():
 
 
 def test_touch_unknown_model_noop():
-    # Touching a name that was never registered must not raise or create it.
     model_registry.touch_loaded_model("nope")
     assert model_registry.loaded_models_snapshot() == []
 
@@ -97,10 +92,6 @@ def test_snapshot_ordered_by_insertion():
     names = [m["name"] for m in model_registry.loaded_models_snapshot()]
     assert names == ["a", "b"]
 
-
-# ---------------------------------------------------------------------------
-# register_loaded_model regressions
-# ---------------------------------------------------------------------------
 
 def test_negative_vram_delta_is_not_displayed(monkeypatch):
     """A concurrent free elsewhere on the GPU makes after < before; that is
