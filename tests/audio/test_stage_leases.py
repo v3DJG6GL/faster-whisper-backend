@@ -409,9 +409,9 @@ def test_diarize_live_release_is_not_charged_to_a_same_id_orphan(
     with caplog.at_level(logging.INFO, logger="whisper-server"):
         asyncio.run(diarization._release_pipeline("m1", live))
 
-    assert diarization._orphans == {"m1": 1}      # the orphan is still draining
+    assert diarization._orphans == {"m1": 1}
     assert diarization._leases == {}
-    assert diarization._last_used_monotonic > 0.0  # idle clock restamped
+    assert diarization._last_used_monotonic > 0.0
     assert not any("unloaded" in r.getMessage() for r in caplog.records)
     assert diarization._pipeline is live
 
