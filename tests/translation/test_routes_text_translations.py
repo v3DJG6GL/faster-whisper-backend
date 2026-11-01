@@ -1,7 +1,6 @@
 """POST /v1/text/translations — standalone text→text translation of an
 already-held transcript. llama_cpp is never imported: the tests stub
-`translation.translate_segments` at the handler boundary (the
-test_diarization pattern)."""
+`translation.translate_segments` at the handler boundary."""
 
 import logging
 import re
@@ -32,8 +31,6 @@ def _park(key, *, hold_s, **extra):
     payload.update(extra)
     receipt_hold.park(key, payload, hold_s=hold_s)
 
-
-# --- happy path --------------------------------------------------------------
 
 def test_translates_and_echoes_ids_in_input_order(client, app_module,
                                                   monkeypatch):
@@ -107,8 +104,6 @@ def test_segment_without_id_echoes_its_index(client, app_module, monkeypatch):
     assert [s["id"] for s in r.json()["segments"]] == [0, 1]
 
 
-# --- gates -------------------------------------------------------------------
-
 def test_401_when_locked_down(client, app_module, make_user_key, monkeypatch):
     _enable(app_module, monkeypatch)
     _stub_translate(monkeypatch)
@@ -176,8 +171,6 @@ def test_per_minute_backstop_429s_and_releases_the_held_receipt(
         window._state.clear()
         receipt_hold._reset_for_tests()
 
-
-# --- in-flight cap -----------------------------------------------------------
 
 def _open_key():
     """The identity a request from the open-mode `client` fixture resolves to
@@ -337,8 +330,6 @@ def test_400_on_allowlist_miss(client, app_module, monkeypatch):
     r = client.post(URL, json=_body(translation_model="org/allowed-GGUF:Q4"))
     assert r.status_code == 200
 
-
-# --- shape validation --------------------------------------------------------
 
 def test_413_over_total_char_cap(client, app_module, monkeypatch):
     _enable(app_module, monkeypatch)
@@ -740,8 +731,6 @@ def test_unexpected_error_maps_to_generic_500(client, app_module, monkeypatch):
     assert r.json()["detail"] == "translation failed"     # never the raw text
 
 
-# --- progress / cancel plumbing ----------------------------------------------
-
 def test_progress_visible_and_cancel_honored(client, app_module, monkeypatch):
     # The stub runs mid-stage: it observes the live progress entry (proving
     # GET progress / POST cancel can see the id) and then flags the id in
@@ -763,7 +752,6 @@ def test_progress_visible_and_cancel_honored(client, app_module, monkeypatch):
     assert r.status_code == 499, r.text
     assert seen["entry"].get("stage") == "translating"
     assert seen["entry"].get("progress") == 0.0
-    # The finally cleaned both registries.
     assert _PID not in tx_progress._BATCH_PROGRESS
     assert _PID not in tx_progress._BATCH_CANCELLED
 
@@ -827,7 +815,7 @@ def test_download_progress_is_published(client, app_module, monkeypatch):
 
 
 def test_progress_endpoint_serves_last_text(client, app_module):
-    """The GET progress endpoint already whitelists last_text — verify."""
+    """last_text is on the GET progress endpoint's field whitelist."""
     tx_progress._progress_set(_PID, stage="translating", last_text="the tail")
     try:
         r = client.get(f"/v1/audio/transcriptions/progress/{_PID}")
@@ -853,11 +841,11 @@ def test_failure_logs_terminal_line(client, app_module, monkeypatch, caplog):
 def test_locked_translation_model_applies_to_the_text_endpoint(
         client, app_module, make_user_key, monkeypatch):
     """Per-identity locks bind HERE too — otherwise a key locked to a small
-    model on the batch path just switches endpoints (review finding)."""
+    model on the batch path just switches endpoints."""
     monkeypatch.setattr(app_module.cfg, "TRANSLATION_ENABLED", True,
                         raising=False)
     # Open allowlist: this test is about the lock, not the allowlist gate
-    # (the shipped config now allowlists two real models by default).
+    # (the shipped config allowlists two real models).
     monkeypatch.setattr(app_module.cfg, "TRANSLATION_ALLOWED_MODELS", set(),
                         raising=False)
     calls = []
@@ -942,9 +930,7 @@ def test_admin_pinned_model_passes_the_allowlist_gate(
         client, app_module, make_user_key, monkeypatch):
     """The allowlist constrains only the CLIENT-requested value (the
     diarization/separation stance): an admin who pins TRANSLATION_MODEL in a
-    profile need not also add it to the global allowlist — the pinned
-    identity used to 400 on every request even with no translation_model
-    sent at all."""
+    profile need not also add it to the global allowlist."""
     monkeypatch.setattr(app_module.cfg, "TRANSLATION_ENABLED", True,
                         raising=False)
     monkeypatch.setattr(app_module.cfg, "TRANSLATION_ALLOWED_MODELS",
@@ -1017,8 +1003,8 @@ def test_translation_error_records_status_error(client, app_module,
 
 def test_empty_translation_allowlist_admits_any_well_formed_ref(app_module,
                                                                 monkeypatch):
-    # Documented (config_store TRANSLATION_ALLOWED_MODELS help): an EMPTY
-    # allowlist is permissive — unlike the diarization/separation gates.
+    # Documented (settings/descriptions.py TRANSLATION_ALLOWED_MODELS help):
+    # an EMPTY allowlist is permissive — unlike the diarization/separation gates.
     monkeypatch.setattr(app_module.cfg, "TRANSLATION_ALLOWED_MODELS", set(),
                         raising=False)
     assert tr_gating._translation_model_allowed(
