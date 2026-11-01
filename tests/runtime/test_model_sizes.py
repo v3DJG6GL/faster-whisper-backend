@@ -558,9 +558,10 @@ def test_proxy_prefers_a_same_device_measurement_over_a_disk_row(ledger):
 def test_a_live_disk_walk_beats_the_exact_placements_disk_row(
         ledger, tmp_path, monkeypatch):
     """The exact placement's disk prior is no better than a fresh walk
-    either: an inflated pre-fix row must not stand in for the real size
-    (preload would defer a model that fits). It is kept only for a model
-    no longer on disk; a measurement still wins outright."""
+    either: an inflated row an older build wrote must not stand in for
+    the real size (preload would defer a model that fits). It is kept
+    only for a model no longer on disk; a measurement still wins
+    outright."""
     import shutil
     hf = tmp_path / "hf"
     blobs = hf / "hub" / "models--org--repo" / "blobs"
@@ -582,10 +583,10 @@ def test_a_live_disk_walk_beats_the_exact_placements_disk_row(
 def test_a_live_disk_walk_beats_another_placements_disk_row(ledger,
                                                              monkeypatch):
     """disk_size() is name-only, so a stored disk row of ANOTHER placement
-    is never better than a fresh walk, only staler: an inflated pre-fix
-    prior under a placement that is never loaded again must not defer a
-    model that fits. The stored row stands in only when the walk finds
-    nothing."""
+    is never better than a fresh walk, only staler: an inflated prior an
+    older build wrote under a placement that is never loaded again must
+    not defer a model that fits. The stored row stands in only when the
+    walk finds nothing."""
     model_sizes.record("m", "cpu", "int8", 2 * GB, measured=False)
     monkeypatch.setattr(model_sizes, "disk_size", lambda name: 1 * GB)
     got = model_sizes.lookup("m", "cuda", "float16")
@@ -596,9 +597,9 @@ def test_a_live_disk_walk_beats_another_placements_disk_row(ledger,
 
 
 def test_a_newer_disk_prior_replaces_an_older_one(ledger):
-    """A disk walk is deterministic: an inflated pre-fix prior (symlink
-    double count, every GGUF quant) must give way to the corrected walk,
-    not survive as a high-water mark."""
+    """A disk walk is deterministic: an inflated prior an older build wrote
+    (symlink double count, every GGUF quant) must give way to the
+    corrected walk, not survive as a high-water mark."""
     model_sizes.record("x", "cpu", "int8", 2000, measured=False)
     model_sizes.record("x", "cpu", "int8", 1000, measured=False)
     got = model_sizes.lookup("x", "cpu", "int8")
