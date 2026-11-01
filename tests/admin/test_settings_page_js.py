@@ -86,8 +86,6 @@ function find(el, pred) {
 """
 
 
-# ---- CAPTURES_PIPELINE_RULES_EXCLUDE checklist --------------------------------
-
 def _captures_harness(html, body, real_list=False):
     """makeEditor()'s captures branch. By default makeRuleListEditor is
     stubbed out and `editor` holds the opts the checklist was built with;
@@ -182,8 +180,6 @@ fire(cb, 'change').then(() => {
                    "2 rules total · 1 active for this model", ["a"]]
 
 
-# ---- MODEL_OVERRIDES editor -----------------------------------------------------
-
 def test_model_overrides_rerender_keeps_env_pinned_editor_disabled(client):
     """fieldRow() disabled an env-pinned MODEL_OVERRIDES editor once; a sidebar
     click, a model-list change or a PIPELINE_RULES edit rebuilt enabled
@@ -271,8 +267,6 @@ console.log(JSON.stringify(overrides.m));
 """))
     assert out == expect
 
-
-# ---- PIPELINE_RULES editor (/settings/pipeline) ---------------------------------
 
 @needs_node
 def test_rule_status_badge_ignores_a_stale_reply(client):
@@ -618,8 +612,6 @@ document.getElementById = id => id === 'pipeline-test-language' ? { value: 'en' 
                    "the test sample is en")
 
 
-# ---- scalar editors -------------------------------------------------------------
-
 @needs_node
 def test_nullable_number_survives_a_partial_number(client):
     """A number input reads '' while it holds '-' (LOG_PROB_THRESHOLD is
@@ -861,8 +853,6 @@ async function flush() { const t = timers; timers = []; for (const f of t) await
     assert "empty uses the Translation glossary setting" in placeholder
 
 
-# ---- "↑ view" jump-link ---------------------------------------------------------
-
 @needs_node
 def test_view_link_on_settings_opens_the_pipeline_page(client):
     """The per-model and captures checklists live on /settings, which has no
@@ -885,8 +875,6 @@ console.log(JSON.stringify(opened));
     assert "/^#rule=(.+)$/.exec(location.hash)" in boot
     assert "jumpToGlobalRule(decodeURIComponent(jump[1]))" in boot
 
-
-# ---- restart --------------------------------------------------------------------
 
 @needs_node
 def test_restart_network_error_takes_the_progress_modal_down(client):
@@ -928,8 +916,6 @@ def test_restart_dialog_fits_a_small_screen(client):
     assert modal.index('<ul id="restart-fields">') < modal.index('id="restart-now"')
 
 
-# ---- plain checkboxes in a field's input column -------------------------------
-
 def test_plain_checkbox_in_input_col_keeps_its_themed_width(client):
     """`.input-col input[type=checkbox] { width: auto }` out-ranks the themed
     `input[type="checkbox"] { appearance: none; width: 1rem }`, and an
@@ -940,8 +926,6 @@ def test_plain_checkbox_in_input_col_keeps_its_themed_width(client):
     assert "width: 1rem" in rule
     assert "auto" not in rule
 
-
-# ---- "↑ view" on the pipeline page expands the rule -----------------------------
 
 # Minimal querySelector for the `:scope > a > b .c` selectors jumpToGlobalRule
 # uses: compound class selectors joined by '>' (child) or ' ' (descendant).
