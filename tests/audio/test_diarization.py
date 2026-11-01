@@ -1,6 +1,7 @@
-"""Diarization stage on POST /v1/audio/transcriptions (soft-fail contract) +
-the pure segment-assignment helper. pyannote is never imported — the module's
-`diarize` coroutine is monkeypatched, exactly the boundary the handler uses."""
+"""Diarization stage on POST /v1/audio/transcriptions (soft-fail contract),
+the segment-assignment helper, and the pipeline's load / lease / registry
+lifecycle. Real pyannote is never imported: handler tests stub `diarize`,
+lifecycle tests stub the load and inference below it."""
 
 import logging
 import os
