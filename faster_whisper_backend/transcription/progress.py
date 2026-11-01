@@ -176,8 +176,8 @@ def _jobs_start(pid: "str | None", *, request_id: str, kind: str,
     if not pid or not _jobs_enabled():
         return False
     try:
-        # prune_every=0: retention is `_jobs_retention_loop`'s job (hourly,
-        # off the loop); the store's lazy prune would run on the event loop.
+        # prune_every=0: retention is `_jobs_retention_loop`'s job (hourly);
+        # a lazy prune would run a full sweep under the store lock in this start.
         return bool(_jobs_store.start(
             job_id=pid, request_id=request_id, kind=kind,
             user_id=user_id, key_id=key_id, model=model,
