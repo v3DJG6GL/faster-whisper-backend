@@ -6,7 +6,7 @@ The session always consumes 16 kHz mono s16le PCM. Clients may send that raw
 stdin→stdout pipe.
 
 Both transports push decoded PCM to an async ``sink(bytes)`` callback (the
-session's feed, serialized under a lock by the caller).
+route's sink, which queues it for the session's single consumer task).
 """
 
 import asyncio
