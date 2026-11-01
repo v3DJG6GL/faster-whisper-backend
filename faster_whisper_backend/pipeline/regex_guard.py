@@ -1304,11 +1304,11 @@ def _branch_matcher(b: str, icase: bool = False):
     or a branch that does not compile on its own (a group reference, an
     inline flag), never counts as an overlap. This runs IN-PROCESS on a
     user-supplied fragment, so ``b`` is matched only when that match is
-    linear: never when it holds a nested
-    alternation — unquantified ``(?:x|xx)(?:x|xx)…`` backtracks exponentially
-    even on a 64-character witness — and never when it holds any quantifier
-    but a fixed count: optional atoms backtrack exponentially too
-    (``a?a?…aa…`` against ``aa…``). A group without ``|`` and with only
+    linear: never when it holds a nested alternation — unquantified
+    ``(?:x|xx)(?:x|xx)…`` backtracks exponentially even on a 64-character
+    witness — and never when it holds any quantifier but a fixed count:
+    optional atoms backtrack exponentially too (``a?a?…aa…`` against
+    ``aa…``). A group without ``|`` and with only
     fixed counts, like ``(?:h)a``, matches one way and is still checked —
     unless its nested counts multiply past ``_MAX_FIXED_COUNT``:
     ``(?:(?:a{0}){N}){N}`` loops N*N times however short the witness is.
@@ -2065,8 +2065,8 @@ def _probe(checks: list):
             _t_base = time.process_time() - _t0
             # Scaling probe, measured back-to-back with the baseline so the
             # ratio reflects the pattern and not whatever the machine did in
-            # between. The VERDICT stays below, after the growth checks, so
-            # rejection priority is unchanged. See the comment there.
+            # between. Its verdict waits until after the growth checks below,
+            # so a growth refusal is reported first.
             _t0 = time.process_time()
             rx.sub(item[1], _SCALE_FIXTURE)
             _t_scaled = time.process_time() - _t0
