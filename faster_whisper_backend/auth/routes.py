@@ -124,10 +124,10 @@ async def login(request: Request, response: Response):
     if not isinstance(key, str):
         key = ""
     # guard → lookup → penalize must have NO await between them: guard only
-    # reads the counter, so with the body read in between, N concurrent
-    # attempts all passed guard before any of them penalized, and one window
-    # admitted ~N guesses instead of LOGIN_FAILURE_RATE. All three are sync,
-    # so after the body read they run atomically on the event loop.
+    # reads the counter, so with an await in between, N concurrent attempts
+    # would all pass guard before any of them penalized, and one window would
+    # admit ~N guesses instead of LOGIN_FAILURE_RATE. All three are sync, so
+    # after the body read they run atomically on the event loop.
     _login_failures.guard(host)
     rec = _ak.lookup_by_raw_key(key)
     if rec is None:
@@ -178,11 +178,11 @@ async def logout(request: Request, response: Response):
             sessions_store.revoke_session(raw)
         except Exception:
             # The revoke rolled back, so the row is still live. Keep both
-            # cookies: clearing them made the client's retry a cookie-less
-            # no-op "success" while the session stayed valid for its TTL;
-            # with them, the retry runs the revoke again. (The middleware
-            # lets a logout through when this worker no longer resolves the
-            # cookie, which revoke_session's index pop causes.)
+            # cookies: clearing them would make the client's retry a
+            # cookie-less no-op "success" while the session stays valid for
+            # its TTL; with them, the retry runs the revoke again. (The
+            # middleware lets a logout through when this worker no longer
+            # resolves the cookie, which revoke_session's index pop causes.)
             logger.exception("logout: revoking the session failed")
             return _JSONResponse(
                 {"ok": False, "detail": "sign-out could not be recorded"},
