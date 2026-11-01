@@ -44,8 +44,8 @@ def test_failed_final_decode_is_recorded_as_a_classified_error(
 
 def test_failed_final_decode_receipt_says_the_decode_failed(
         client, app_module, monkeypatch, caplog):
-    """The receipt used to call the fallback utterance "[!] empty output" and
-    advise loosening the thresholds for a decode that never ran."""
+    """The decode never ran, so the receipt must not call the fallback
+    utterance "[!] empty output" or advise loosening the thresholds."""
     import logging
 
     from faster_whisper_backend.streaming import routes as s_routes
