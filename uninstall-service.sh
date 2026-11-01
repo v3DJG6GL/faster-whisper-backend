@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Linux (systemd) uninstaller — counterpart to uninstall-service.ps1. Stops and
-# removes the service unit. Leaves the venv, the HuggingFace model cache, and
-# the runtime data (DBs, captures, logs) in place — same policy as the .ps1.
+# removes the service unit. Leaves the venv, the models/ downloads, and the
+# runtime data (data/: DBs, captures; logs/) in place — same policy as the .ps1.
 set -euo pipefail
 
 SERVICE_NAME="whisper-api"
