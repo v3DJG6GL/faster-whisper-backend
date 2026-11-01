@@ -21,10 +21,9 @@ from faster_whisper_backend.stats import metrics
 logger = logging.getLogger("whisper-api")
 
 
-# Per-request log block: always emitted (regardless of cfg.TRACE_ENABLED) —
-# surfaces the decode params actually applied + per-segment metadata so
-# empty-output failures can be diagnosed from the log alone. The per-pipeline
-# transformation trace is folded in only when TRACE_ENABLED.
+# Per-request log block, emitted regardless of cfg.TRACE_ENABLED: the
+# decode params actually applied + per-segment metadata let an empty-output
+# failure be diagnosed from the log alone.
 #
 # ANSI color is intentionally dropped: the service runs under WinSW (no TTY)
 # and the SSE log viewer reads raw bytes — escape codes hurt both consumers.
@@ -762,7 +761,6 @@ def _format_request_block(
             f"{float(dav):.2f}s   ({retained:.0f} % retained)"
         )
 
-    # Post-decode stage params, in pipeline order.
     if separation:
         lines.extend(_format_stage_section("Separation", [
             ("separation_model", separation.get("model")),
