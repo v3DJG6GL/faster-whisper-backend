@@ -178,10 +178,10 @@ fi
 
 # GPU: ctranslate2 (and, with --full, onnxruntime-gpu's CUDA provider) dlopen
 # the pip-installed NVIDIA .so libs but do not search site-packages, and
-# faster_whisper_backend/main.py's CUDA-lib preloader is Windows-only — put the lib dirs on the
-# loader path via the unit, mirroring Dockerfile.gpu's LD_LIBRARY_PATH.
-# Dirs that don't exist (lean GPU install ships only cublas+cudnn) are
-# skipped by the loader.
+# faster_whisper_backend/main.py's CUDA-lib preloader is Windows-only — put
+# the lib dirs on the loader path via the unit, mirroring Dockerfile.gpu's
+# LD_LIBRARY_PATH. Dirs that don't exist (lean GPU install ships only
+# cublas+cudnn) are skipped by the loader.
 NVIDIA_ENV_LINE=""
 if [ "$GPU" -eq 1 ]; then
   SITE_PKGS="$(as_user "$PY" -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])')"
