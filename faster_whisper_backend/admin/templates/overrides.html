@@ -39,7 +39,6 @@
   .hint { color: var(--help); font-size: var(--fs-sm); margin: 0.3rem 0 0; }
   .status { font-size: var(--fs-sm); color: var(--dim); margin-left: 0.5rem; }
   .status.ok { color: var(--green); } .status.err { color: var(--red); }
-  /* intro / help banner */
   .ov-intro { border: 1px solid var(--border); border-radius: 9px;
     background: linear-gradient(180deg, #12171f, var(--panel));
     padding: 0.6rem 0.85rem; margin-bottom: 1rem; color: var(--help);
@@ -144,8 +143,8 @@
   .ov-ctrl button { background: none; border: 0; cursor: pointer;
     font-size: var(--fs-xs); color: var(--cyan); padding: 0.15rem 0.2rem; border-radius: 0; }
   .ov-ctrl .reset { color: var(--dim); }
-  /* pipeline tri-state — label left, shared segmented control (inherit/on/off)
-     right; .status-btn-group styling comes from web_common.NAV_CSS. */
+  /* pipeline tri-state row columns: card # | label | segmented control
+     (inherit/on/off); .status-btn-group styling comes from web_common.NAV_CSS. */
   .ov-rule { display: grid; grid-template-columns: auto 1fr auto; align-items: center;
     gap: 0.4rem; padding: 0.32rem 0; border-bottom: 1px solid rgba(255,255,255,0.055); }
   .ov-rule:hover { background: rgba(255,255,255,0.025); }
@@ -1080,7 +1079,6 @@ window._renderWaterfall = (function () {
     adoptServerProfiles(keepSel);
     return true;
   }
-  // Replace the working copy with the saved profiles in S.
   function adoptServerProfiles(keepSel) {
     profiles = JSON.parse(JSON.stringify(S.profiles || {}));
     snapshot = JSON.stringify(profiles);
