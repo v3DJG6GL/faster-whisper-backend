@@ -941,8 +941,6 @@ function renderTrace(entry) {
   // anything else is a batch decode.
   {
     const kind = entry.kind || (entry.source === 'stream' ? 'dictate' : 'batch');
-    // Source chip. Suppressed for kinds that consume no audio: their source
-    // column still says 'file', which would be a lie.
     // Error rows go through record_timing(), which writes no source, so the
     // column holds its 'file' default: a failed live session reads its
     // source off the kind, and any other failed row with no text has no
@@ -1996,8 +1994,8 @@ function _olistKeyed(list) {
 }
 
 // An entry whose PATTERN one side edited keys as a new entry, so the merge
-// saw a delete plus an add (a duplicate, or the other writer's edit to it
-// lost with no clash). Where a side has as many new entries in a gap
+// would see a delete plus an add (a duplicate, or the other writer's edit to
+// it lost with no clash). Where a side has as many new entries in a gap
 // between surviving entries as it dropped base entries from that same gap,
 // those are entries edited in place: each takes the dropped id, in order.
 function _olistAlign(base, side) {
