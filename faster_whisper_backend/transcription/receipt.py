@@ -644,8 +644,8 @@ def _format_notes_section(warnings: "list | None",
 
 
 def _model_compute_device(name: str) -> "tuple[str | None, str | None]":
-    """Look up the actual device + compute_type a model was loaded with —
-    these may differ from cfg.MODEL_* if the fallback path was taken."""
+    """`(compute_type, device)` a model was actually loaded with — these
+    may differ from cfg.MODEL_* if the fallback path was taken."""
     for entry in model_registry.loaded_models_snapshot():
         if entry.get("name") == name:
             return entry.get("compute_type"), entry.get("device")
