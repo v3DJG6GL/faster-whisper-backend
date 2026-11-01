@@ -616,10 +616,10 @@ async def translate_text(request: Request,
             _hold_beat.cancel()      # synchronous: no await in this finally
         # Catch-all for the held dictation receipt: the CancelledError arm (a
         # dropped connection) releases nothing, and the receipt would then
-        # survive until the 90 s idle sweep. Releasing an already-released or
-        # already-claimed key is a no-op, so the arms that release keep their
-        # more specific notes. The success path claims the receipt AFTER this
-        # finally runs, which is what the flag guards.
+        # survive until the LOG_RECEIPT_HOLD_S idle sweep. Releasing an
+        # already-released or already-claimed key is a no-op, so the arms that
+        # release keep their more specific notes. The success path claims the
+        # receipt AFTER this finally runs, which is what the flag guards.
         if _held_key and not _receipt_claimed_below:
             tx_receipt._release_held_receipt(
                 _held_key,
