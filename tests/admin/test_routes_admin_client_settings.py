@@ -123,7 +123,6 @@ def test_export_download(client, make_user_key):
     # The blob may carry the account's saved API keys — no browser or
     # intermediary may cache it.
     assert r.headers["cache-control"] == "no-store"
-    # Filename carries a sanitized username + the stored version.
     assert (
         'filename="client-settings_Dr.-Mueller_v1.json"'
         in r.headers["content-disposition"]
@@ -185,7 +184,6 @@ def test_import_bumps_and_devices_converge(client, make_user_key):
     assert r.json()["ok"] is True
     assert r.json()["version"] == 2
 
-    # Metadata reflects the import (device tag included).
     m = client.get(f"{_API}/client-settings", headers=bearer(key)).json()
     assert m["by_user"][uid]["version"] == 2
     assert m["by_user"][uid]["device"] == "WebUI import"
@@ -245,7 +243,6 @@ def test_import_non_finite_float_422(client, make_user_key):
 def test_import_malformed_422(client, make_user_key):
     uid, key = make_user_key("mal", is_admin=True)
     base = f"{_API}/users/{uid}/client-settings/import"
-    # Non-object blob.
     r = client.post(base, json={"blob": "a string"}, headers=bearer(key))
     assert r.status_code == 422
     # Unknown extra field (extra="forbid").
@@ -270,7 +267,6 @@ def test_delete_then_meta_empty(client, make_user_key):
     )
     assert r.status_code == 200
     assert r.json() == {"ok": True, "deleted": True}
-    # Idempotent second delete reports deleted=False.
     r = client.delete(
         f"{_API}/users/{uid}/client-settings", headers=bearer(key)
     )
