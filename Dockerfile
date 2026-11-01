@@ -8,7 +8,7 @@
 #
 # Base pinned by digest (supply chain: a retagged or tampered upstream image
 # can't slip in unnoticed). Digest = the multi-arch index of python:3.14-slim
-# (Python 3.14.6, Debian 13). To bump:
+# (Debian 13). To bump:
 #   docker buildx imagetools inspect python:3.14-slim
 FROM python:3.14-slim@sha256:cd89c30eda26ee911a4611b18680086e0ea42e6f5f8cbe653d07fa7958c9cec8
 
@@ -18,8 +18,8 @@ ENV PYTHONUNBUFFERED=1 \
 WORKDIR /app
 
 # Deps in three layers ordered by how often they change, so the commonest
-# change (Renovate bumping a small pin in requirements.txt) no longer
-# re-downloads the whole compiled stack and re-runs the extras install:
+# change (Renovate bumping a small pin in requirements.txt) does not
+# re-download the whole compiled stack or re-run the extras install:
 #   1. heavy  — the big compiled wheels (requirements-heavy.txt)
 #   2. extras — the optional -full stack, before the light layer so a light
 #               bump cannot invalidate this 5-minute layer
@@ -91,8 +91,8 @@ EXPOSE 8000
 
 # Numeric USER so runAsNonRoot-style checks can verify it. HOME=/tmp: a
 # compose-set arbitrary UID has no passwd entry (HOME=/ is unwritable) and
-# stray ~/.cache writers need somewhere writable — the model cache itself is
-# pinned to the persistent volume via HF_HOME/WHISPER_DOWNLOAD_ROOT in compose.
+# stray ~/.cache writers need somewhere writable — the model cache itself
+# lands on the persistent /models volume (config defaults + compose's HF_HOME).
 USER ${PUID}:${PGID}
 ENV HOME=/tmp
 
