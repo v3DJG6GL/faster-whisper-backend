@@ -36,12 +36,10 @@ _REQ_CHANNELS = 1
 _REQ_SAMPWIDTH_BYTES = 2     # signed 16-bit
 _REQ_RATE = 16000
 
-# Hard cap on the merged WAV duration. The LIVE value is
-# cfg.CAPTURES_SAMPLE_MAX_DURATION_S (read per-merge by _max_merged_samples()
-# so an admin change applies immediately); MAX_MERGED_SAMPLES below is only a
-# fallback when config is unavailable. Whisper truncates >30 s; the configured
-# value keeps a margin.
-MAX_MERGED_SAMPLES = 448_000  # 28 s × 16 kHz (fallback default)
+# Merged-WAV sample cap used only when config can't be read. The live cap
+# is cfg.CAPTURES_SAMPLE_MAX_DURATION_S, re-read per merge by
+# _max_merged_samples() so an admin change applies immediately.
+MAX_MERGED_SAMPLES = 448_000  # 28 s × 16 kHz
 
 
 def _max_merged_samples() -> int:
@@ -53,7 +51,6 @@ def _max_merged_samples() -> int:
     except Exception:
         return MAX_MERGED_SAMPLES
 
-# Bytes per sample of audio at our fixed format (channels * sampwidth).
 BYTES_PER_SAMPLE = _REQ_CHANNELS * _REQ_SAMPWIDTH_BYTES
 
 
@@ -106,10 +103,10 @@ def merge_wavs(
     `max_internal_gap_ms`), then concatenated as
     `[edge_pad_ms] body0 [gap_ms] body1 [gap_ms] … bodyN [edge_pad_ms]`.
     So every member join carries exactly `gap_ms` of silence and both outer
-    ends carry `edge_pad_ms` — replacing the old additive layout where a join
-    stacked member-i-trailing + gap + member-i+1-leading into multi-second
-    dead air. Each member dict carries `offset_ms`, its absolute start in the
-    merged WAV, so the route layer can re-place per-word karaoke timestamps.
+    ends carry `edge_pad_ms`; a member's own trailing + leading silence never
+    stacks onto the gap into multi-second dead air. Each member dict carries
+    `offset_ms`, its absolute start in the merged WAV, so the route layer can
+    re-place per-word karaoke timestamps.
 
     When `trim` is False (VAD unavailable / disabled), falls back to the
     legacy layout: full members joined by `gap_ms`, no outer margin.
@@ -165,12 +162,6 @@ def merge_wavs(
             )
 
     if trimmer is not None:
-        # Uniform-silence layout. Per-member bodies carry NO edge padding (the
-        # trim returns speech-only). We add a uniform outer margin
-        # (edge_pad_ms) at both ends and `gap_ms` of silence at each join, so
-        # every join == gap_ms and both outer ends == edge_pad_ms — all silence
-        # in the merged clip is uniform and bounded. Each member records its
-        # absolute offset (ms) in the merged WAV for word-timestamp re-placement.
         edge = silence_bytes(edge_pad_ms)
         edge_samples = len(edge) // BYTES_PER_SAMPLE
         join = silence_bytes(gap_ms)
@@ -205,8 +196,7 @@ def merge_wavs(
         pieces.append(edge)                  # trailing outer margin
         total_samples += edge_samples
     else:
-        # Legacy / no-VAD path: full members joined by gap_ms, no outer margin
-        # (unchanged behaviour for groups built without per-member trimming).
+        # No-trim path: full members joined by gap_ms, no outer margin.
         gap = silence_bytes(gap_ms)
         gap_samples = len(gap) // BYTES_PER_SAMPLE
         for i, sp in enumerate(src_paths):
@@ -288,10 +278,8 @@ def merge_wavs(
             pass
         raise
 
-    # Silence trimming now happens per-member BEFORE concatenation (above),
-    # so the merged WAV needs no separate outer trim: member 0's leading and
-    # the last member's trailing silence were already cut, and internal joins
-    # carry only the bounded inter-segment gap.
+    # No outer trim of the merged WAV: each member was trimmed before the join,
+    # so its edges and internal gaps are already bounded.
     return {
         "bytes": os.path.getsize(dst_path),
         "n_samples": total_samples,
