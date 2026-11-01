@@ -11,8 +11,8 @@ def _yt_formats(lang, name):
             for e in ("json3", "srv1", "srv2", "srv3", "ttml", "srt", "vtt")]
 
 
-# YouTube Dz_3b8WAWw4: one manual de-CH track; the ASR original de-orig
-# among ~158 machine translations; info.language "de".
+# YouTube Dz_3b8WAWw4, trimmed: one manual de-CH track; the ASR original
+# de-orig among machine translations (~158 on the real video); info.language "de".
 _YOUTUBE = {
     "language": "de",
     "subtitles": {
