@@ -3,7 +3,7 @@
 
 Routes (all gated by web_common.require_user_webui_host):
 
-  GET /stats           HTML page (single-file inline-HTML+CSS+JS, mirrors /logs)
+  GET /stats           HTML page (templates/stats.html + static/stats.js, mirrors /logs)
   GET /stats/snapshot  one-shot JSON (_build_payload): ts + metrics + system +
                        severity counts, cut to the viewer's StatsScope (scope /
                        machine / server for own scope); `lite=1` is the
@@ -221,11 +221,9 @@ def _build_payload(scope: StatsScope = ADMIN_SCOPE, *,
             include_identity=scope.include_identity,
             user_id=scope.user_id)["recent_transcriptions"]
         return {**base, "server": server, "recent_transcriptions": recent}
-    # Beside the loaded-model list, and in the lite payload too: the most
-    # likely failure of model preloading is SILENCE (no worker, no plans,
-    # no loads), which is invisible everywhere else. Five cheap scalars,
-    # no identities — assembled here rather than in system_stats so that
-    # import-light module needn't reach preload.
+    # In the lite payload too: preloading's likeliest failure is SILENCE (no
+    # worker, no plans, no loads), invisible everywhere else. Built here so
+    # the import-light system_stats needn't reach preload.
     base["preload"] = preload.diagnostics()
     if lite:
         host = sysnap.get("host") or {}
@@ -254,7 +252,7 @@ def _build_payload(scope: StatsScope = ADMIN_SCOPE, *,
 
 # Wall-clock ceiling between re-resolves when the config version does not
 # move: a cookie session reaching SESSION_TTL_S bumps nothing (expiry is only
-# checked at lookup), so a version-only check streamed past it forever.
+# checked at lookup), so a version-only check would stream past it forever.
 _REAUTH_INTERVAL_S = 60.0
 
 
@@ -283,14 +281,13 @@ def _rescope_on_version_change(request: Request, seen_version: int,
 @router.get(
     "",
     response_class=HTMLResponse,
-    # HTML page is host-only — the bearer isn't available on initial
-    # navigation. API endpoints below gate by `require_page("stats")`;
-    # the page's first snapshot fetch 403s for non-permitted users.
+    # Host-only: the bearer isn't sent on initial navigation, so the page's
+    # first snapshot fetch is where a non-permitted user gets the 403.
     dependencies=[Depends(_require_stats_host)],
 )
 async def stats_page() -> HTMLResponse:
-    """Single-file inline HTML page. `no-store` so a browser never serves a
-    stale build after a service restart."""
+    """The stats.html shell (JS from /static/stats.js). `no-store` so a
+    browser never serves a stale build after a service restart."""
     return HTMLResponse(
         web_common.render_page(_STATS_VIEWER_HTML, current="stats"),
         headers={
@@ -770,8 +767,8 @@ async def stats_history(
     t0 = float(from_) if from_ is not None else t1 - 3600
     if not (math.isfinite(t0) and math.isfinite(t1)):
         raise HTTPException(422, detail="'from'/'to' must be finite numbers")
-    # Finite is not enough: int() of 1e300 (or of a huge `step`) overflows
-    # SQLite's 64-bit INTEGER in list_series, a 500 instead of a 422.
+    # Finite is not enough: int() of 1e300 overflows SQLite's 64-bit
+    # INTEGER in list_series, a 500 instead of a 422.
     if t0 < 0 or t1 > now + 86400:
         raise HTTPException(422, detail="'from'/'to' out of range")
     if t0 >= t1:
@@ -821,9 +818,9 @@ async def stats_stream(
     at least every _REAUTH_INTERVAL_S, so an expired session ends it."""
     _lite = bool(lite)
     # -1 never equals a real version, so the check before the first frame
-    # always re-resolves and sets all three: seeding them here, after the
-    # Depends, absorbed a revoke or narrowing landing in between and the
-    # stream kept the old scope until _REAUTH_INTERVAL_S.
+    # always re-resolves and sets all three. Values seeded here from the
+    # Depends would miss a revoke or narrowing landing in between and keep
+    # the old scope until _REAUTH_INTERVAL_S.
     scope: StatsScope | None = None
     seen = -1
     resolved_at = 0.0
@@ -852,8 +849,8 @@ async def stats_stream(
 _STATS_VIEWER_HTML = templates.load(__file__, "stats.html")
 # /static is cacheable (ETag), the page is not: the version in the query
 # string is what makes a new build fetch a new stats.js. It is a content
-# hash of the file (APP_VERSION alone is unchanged between dev restarts,
-# so browsers kept serving a stale copy). Substituted once at import —
+# hash of the file (APP_VERSION alone does not change between dev
+# restarts, so browsers would keep a stale copy). Substituted once at import —
 # render_page() has a fixed placeholder list and caches by template string.
 def _asset_version() -> str:
     from pathlib import Path
