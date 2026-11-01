@@ -523,7 +523,6 @@ def resolve(model_id: str | None, *, user_id: str | None = None,
     req_overrides = request_overrides or {}
     resolved = _resolve_from_layers(model_id, layers, req_overrides, with_provenance)
 
-    # The request profile "applied" iff its layer actually contributed.
     req_id = f"request.profile:{request_profile}" if request_profile else None
     resolved.request_profile_applied = (
         request_profile if (req_id is not None and req_id in resolved.layers) else None
@@ -534,8 +533,9 @@ def resolve(model_id: str | None, *, user_id: str | None = None,
     # `overrides_ignored` (batch + streaming) reports them — one enforcement point.
     resolved.allow_request_decode_overrides = do_allowed
     if faulted:
-        # Unknown locks must read as "all locked": the Form-field sites in
-        # main.py gate on `locked` (config-field names), not locked_client_keys.
+        # Unknown locks must read as "all locked": the Form-field sites
+        # (_resolve_request_knob) gate on `locked` (config-field names), not
+        # locked_client_keys.
         resolved.locked = set(SCALAR_OVERRIDE_FIELDS)
         resolved.binding_fault = True
     if not do_allowed:
