@@ -10,10 +10,10 @@
 #   PYTHON=/path/to/python3.14 ./install-service.sh  # build the venv on that one
 #
 # --full mirrors the Docker "-full" tags (Dockerfile / Dockerfile.gpu with
-# INCLUDE_EXTRAS=1): speaker diarization (pyannote) + background-music
-# separation (audio-separator), plus a system ffmpeg. The lean install stays
-# fully functional — those requests just soft-fail with a warning naming the
-# missing requirements file.
+# INCLUDE_EXTRAS=1): speaker diarization (pyannote), background-music
+# separation (audio-separator) and translation (llama-cpp-python), plus a
+# system ffmpeg. The lean install stays fully functional — those requests just
+# soft-fail with a warning naming the missing requirements file.
 #
 # Re-runs are safe (idempotent): it refreshes deps and the unit, then restarts.
 # Pass the SAME flags on every re-run — a re-run without --full leaves already-
@@ -314,9 +314,9 @@ if [ "${#STATE_DIRS[@]}" -gt 0 ]; then
 fi
 
 # Upgrade check, warn only (never moves anything — a .env may pin the old
-# paths on purpose): an older checkout kept the SQLite stores and
-# config.local.json in the repo root, the unit above roots them in data/db
-# and data/. Restarting over that comes up with an EMPTY api_keys store —
+# paths on purpose): an older checkout kept the SQLite stores in the repo
+# root or data/ and config.local.json in the repo root; the unit above roots
+# them in data/db and data/. Restarting over that comes up with an EMPTY api_keys store —
 # issued keys stop working and the server drops into OPEN mode.
 warn_legacy() { printf '\033[33mWARNING: %s\033[0m\n' "$*" >&2; }
 # Warn while a legacy store EXISTS, not only while data/db/<name> is missing:
