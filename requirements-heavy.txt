@@ -7,7 +7,7 @@
 # a routine pin bump (pydantic, yt-dlp, fastapi) rebuilds a ~30 s layer instead
 # of re-downloading ~200 MB here — ~1.2 GB on the GPU image, whose CUDA wheels
 # (requirements-gpu.txt) share this layer. Before the split, a one-line
-# pydantic bump cost the release build 6-9 minutes per variant (run 624).
+# pydantic bump cost the release build 6-9 minutes per variant.
 #
 # You do not install this file directly: requirements.txt `-r`-includes it, so
 # `pip install -r requirements.txt` still installs everything in one command.
