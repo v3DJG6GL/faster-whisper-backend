@@ -8,7 +8,7 @@ import logging
 import time
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from fastapi.responses import JSONResponse as _JSONResponse
+from fastapi.responses import JSONResponse as _JSONResponse, PlainTextResponse
 
 from faster_whisper_backend.auth import rate_limit as _rl
 from faster_whisper_backend.auth.dependencies import get_current_user as _get_current_user_dep
@@ -195,8 +195,8 @@ async def job_get(job_id: str, request: Request,
 async def job_result(job_id: str, request: Request,
                      user: dict = Depends(_get_current_user_dep)):
     """The run's response payload, byte-for-byte what the POST returned
-    (the `text` format comes back as the JSON string it was). 409 while the
-    run is still going; 404 when there is none (failed / cancelled)."""
+    (the `text` format comes back as text/plain, as it did there). 409 while
+    the run is still going; 404 when there is none (failed / cancelled)."""
     row = await _job_for_caller(job_id, user, request)
     if row.get("state") == "running":
         raise HTTPException(status_code=409, detail="job still running")
@@ -210,6 +210,9 @@ async def job_result(job_id: str, request: Request,
     payload = await asyncio.to_thread(_jobs_store.get_result, job_id)
     if payload is None:
         raise HTTPException(status_code=404, detail="no result for this job")
+    if isinstance(payload, str):
+        # Only the `text` format stores a bare str (jobs_store.finish).
+        return PlainTextResponse(payload, headers={"Cache-Control": "no-store"})
     if isinstance(payload, dict):
         payload = _scrub_media_refs(
             payload, user_id=user.get("user_id"), run_open=run_open)

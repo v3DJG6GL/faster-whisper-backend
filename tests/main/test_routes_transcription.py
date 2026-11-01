@@ -28,8 +28,17 @@ def test_default_json_returns_text_object(client):
 def test_text_format_returns_plain_string(client):
     r = _post(client, response_format="text")
     assert r.status_code == 200
-    # response_format="text" returns the bare string (JSON-encoded string body).
-    assert r.json() == "hallo welt"
+    # Like OpenAI: the raw transcript as text/plain, not a JSON string literal.
+    assert r.text == "hallo welt"
+    assert r.headers["content-type"] == "text/plain; charset=utf-8"
+
+
+def test_translations_text_format_returns_plain_string(client):
+    r = client.post("/v1/audio/translations", files=_FILE,
+                    data={"model": "whisper-1", "response_format": "text"})
+    assert r.status_code == 200, r.text
+    assert r.text == "hallo welt"
+    assert r.headers["content-type"].startswith("text/plain")
 
 
 def test_verbose_json_shape(client):
@@ -118,7 +127,7 @@ def test_output_prefix_suffix_wrap(client, app_module):
     assert r.status_code == 200
     # Wrappers applied, then a defensive outer trim (leading/trailing spaces of
     # the *whole* string are stripped). Inner content keeps the wrapper text.
-    assert r.json() == "[de] hallo welt (end)"
+    assert r.text == "[de] hallo welt (end)"
 
 
 def test_missing_file_is_422(client):

@@ -37,7 +37,9 @@ def test_post_with_progress_id_stores_the_verbatim_payload(client, fmt):
     res = client.get(f"/v1/jobs/{_PID}/result")
     assert res.status_code == 200
     assert res.headers.get("cache-control") == "no-store"
-    assert res.json() == r.json()
+    # Same body AND media type as the POST: the text format is text/plain.
+    assert res.content == r.content
+    assert res.headers["content-type"] == r.headers["content-type"]
 
 
 def test_post_without_progress_id_creates_no_row(client):

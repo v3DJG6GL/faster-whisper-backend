@@ -3486,8 +3486,11 @@ async def transcribe(
             _words = len(full_text_str.split())
 
             if response_format == "text":
+                # A bare str return is JSON-encoded by FastAPI (quotes, \n
+                # escapes, application/json); OpenAI answers the raw text.
+                from fastapi.responses import PlainTextResponse
                 _response_payload = full_text_str
-                return full_text_str
+                return PlainTextResponse(full_text_str)
 
             # Joined per-language transcripts, shared by verbose_json AND the
             # default json shape below. Deliberately NOT run through

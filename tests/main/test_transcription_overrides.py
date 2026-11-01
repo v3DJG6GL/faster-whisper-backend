@@ -576,13 +576,13 @@ def test_client_output_wrappers_in_batch(client, app_module):
               "decode_overrides": json.dumps({"output_prefix": ">> ",
                                               "output_suffix": " <<"})})
     assert r.status_code == 200, r.text
-    assert r.json() == ">> hallo welt <<"
+    assert r.text == ">> hallo welt <<"
     # "" is an explicit "no prefix" over the configured one.
     r = client.post(
         "/v1/audio/transcriptions", files=_FILE,
         data={"model": "whisper-1", "response_format": "text",
               "decode_overrides": json.dumps({"output_prefix": ""})})
-    assert r.json() == "hallo welt"
+    assert r.text == "hallo welt"
 
 
 def test_batch_decode_overrides_drop_lone_surrogates(client, fake_model):
