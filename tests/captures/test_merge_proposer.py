@@ -1,12 +1,8 @@
-"""Tests for captures_merge_proposer parts NOT covered by test_group_trim.py.
+"""Tests for captures.merge_proposer.
 
-Already covered there: trimmed_duration_s (cache hit/miss + trim-disabled) and
-_build_proposal trimmed durations. Here we cover: _bcp47_primary,
-_normalize_text, _pick_text, _dur, _ratio, _build_sample_score boundaries,
-_format_reason, _generate_candidates_for_bucket (dup-skip / <2 reject /
-over-cap), _eligible (every rejection branch + boundaries), and propose_merges
-(admin vs non-admin cache keys, per-(user,lang) partition, greedy
-non-overlapping claim, TTL cache copy + was_cached)."""
+trimmed_duration_s and _build_proposal's trimmed durations are covered in
+test_group_trim.py.
+"""
 
 import difflib
 import os
@@ -16,10 +12,6 @@ import pytest
 
 from faster_whisper_backend.captures import merge_proposer as P
 
-
-# ---------------------------------------------------------------------------
-# Pure helpers
-# ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("inp,out", [
     (None, ""),
@@ -81,10 +73,6 @@ def test_ratio_bounds():
     assert 0.0 < P._ratio("hello", "hallo") < 1.0
 
 
-# ---------------------------------------------------------------------------
-# _build_sample_score
-# ---------------------------------------------------------------------------
-
 def _member(ts, dur, status="", trim=None):
     m = {"created_ts": ts, "audio_s": dur, "status": status}
     if trim is not None:
@@ -93,7 +81,6 @@ def _member(ts, dur, status="", trim=None):
 
 
 def test_score_fill_peaks_at_target():
-    # total_dur == target → fill_score 1.0.
     members = [_member(0, 13.0), _member(1, 12.7)]  # 25.7 + 0.3 gap = 26.0
     s = P._build_sample_score(members, 0.3, 26.0)
     assert s["fill_score"] == pytest.approx(1.0)
@@ -102,7 +89,7 @@ def test_score_fill_peaks_at_target():
 def test_score_density_neutral_below_three_members():
     members = [_member(0, 5.0), _member(1, 5.0)]
     s = P._build_sample_score(members, 0.3, 26.0)
-    assert s["density_score"] == 0.5  # n<3 neutralized
+    assert s["density_score"] == 0.5
 
 
 def test_score_density_clamped_for_three_plus():
@@ -138,10 +125,6 @@ def test_score_uses_trimmed_durations():
     assert s["total_dur"] == pytest.approx(4.3)
 
 
-# ---------------------------------------------------------------------------
-# _format_reason
-# ---------------------------------------------------------------------------
-
 def test_format_reason_short_session():
     s = {"total_dur": 20.0, "wall_dur": 25.0}
     r = P._format_reason(s, 3)
@@ -161,10 +144,6 @@ def test_format_reason_long_session_seconds_only():
     assert "1 min 30 s session" in r
 
 
-# ---------------------------------------------------------------------------
-# _generate_candidates_for_bucket
-# ---------------------------------------------------------------------------
-
 def _bkt_member(i, dur, text, ts=None):
     return {
         "id": f"c{i}", "created_ts": float(ts if ts is not None else i),
@@ -174,8 +153,8 @@ def _bkt_member(i, dur, text, ts=None):
 
 
 def test_bucket_single_over_cap_dropped():
-    # Single-capture samples are allowed now. The 5 s member becomes a valid
-    # solo candidate; the 30 s member is over the cap (alone or paired) → dropped.
+    # The 5 s member is a valid solo candidate; the 30 s member is over the
+    # cap alone or paired, so it is dropped.
     bucket = [_bkt_member(0, 5.0, "alpha"), _bkt_member(1, 30.0, "beta")]
     cands = P._generate_candidates_for_bucket(bucket, 0.3, 0.85, 26.0, 28.0)
     assert len(cands) == 1
@@ -215,7 +194,7 @@ def test_bucket_over_cap_skipped_smaller_packed():
     cands = P._generate_candidates_for_bucket(bucket, 0.3, 0.85, 26.0, 28.0)
     top = next(c for c in cands if c[1][0]["id"] == "c0")
     ids = [m["id"] for m in top[1]]
-    assert ids == ["c0", "c2"]  # big member skipped, small one packed
+    assert ids == ["c0", "c2"]
 
 
 def test_bucket_packs_no_more_than_api_member_cap():
@@ -286,10 +265,6 @@ def test_bucket_dup_check_skips_full_ratio_below_the_quick_bounds(monkeypatch):
     assert all(q > 0.85 for q in full_calls)
 
 
-# ---------------------------------------------------------------------------
-# _eligible
-# ---------------------------------------------------------------------------
-
 def _row(**over):
     r = {
         "id": "x", "status": "new", "sample_id": None,
@@ -322,7 +297,6 @@ def test_eligible_rejects_too_long():
 
 
 def test_eligible_boundary_min_clip_inclusive():
-    # dur == min_clip_s passes (not < min).
     assert P._eligible(_row(audio_s=1.0), 1.0, 28.0) is True
 
 
@@ -344,10 +318,6 @@ def test_eligible_accepts_raw_only_text():
     assert P._eligible(
         _row(text_for_training="", final="", raw="r"), 1.0, 28.0) is True
 
-
-# ---------------------------------------------------------------------------
-# propose_merges
-# ---------------------------------------------------------------------------
 
 def _insert_eligible(cs, cid, *, ts, dur=10.0, text="some words here",
                      language="de", user_id="u1", status="new", task=None):
@@ -418,8 +388,9 @@ def test_propose_admin_specific_user_cache_key(captures_store_db, monkeypatch, t
 def test_propose_admin_unknown_user_returns_nothing_uncached(
         captures_store_db, monkeypatch, trim_disabled):
     """With the key store up, an unknown ?user_id= is rejected before it can
-    mint a cache key; a known one sweeps and caches. (The test above runs
-    with the store uninitialised, so it only reaches the fallback.)"""
+    mint a cache key; a known one sweeps and caches.
+    (test_propose_admin_specific_user_cache_key runs with the store
+    uninitialised, so it only reaches the fallback.)"""
     from faster_whisper_backend.auth import api_keys_store
     cs = captures_store_db
     _insert_eligible(cs, "cap0000000000k1", ts=1000.0, user_id="u1",
@@ -552,7 +523,6 @@ def test_propose_partitions_by_user_and_language(captures_store_db, monkeypatch,
     _insert_eligible(cs, "capu2en00000002", ts=1003.0, user_id="u2", language="en")
     proposals, _ = P.propose_merges(
         user_id_filter=None, is_admin=True, caller_user_id="admin")
-    # Every proposal is single-user, single-language.
     for p in proposals:
         ids = p["member_ids"]
         assert p["user_id"] in ("u1", "u2")
@@ -644,8 +614,7 @@ def test_retention_sweep_drops_cached_proposals(
 
 def test_propose_greedy_non_overlap_claim(captures_store_db, monkeypatch, trim_disabled):
     cs = captures_store_db
-    # Three eligible clips; cap proposals to enforce one claim, ensure no
-    # member appears in two proposals.
+    # Three clips in one session, so their candidates overlap.
     for i, cid in enumerate(["capclaim0000001", "capclaim0000002", "capclaim0000003"]):
         _insert_eligible(cs, cid, ts=1000.0 + i, text=f"text variant {i}")
     proposals, _ = P.propose_merges(
@@ -653,7 +622,7 @@ def test_propose_greedy_non_overlap_claim(captures_store_db, monkeypatch, trim_d
     seen = set()
     for p in proposals:
         for mid in p["member_ids"]:
-            assert mid not in seen  # no member claimed twice
+            assert mid not in seen
             seen.add(mid)
 
 
@@ -685,9 +654,8 @@ def test_propose_no_eligible_returns_empty(captures_store_db, monkeypatch, trim_
 def test_propose_session_gap_splits(captures_store_db, monkeypatch, trim_disabled):
     cs = captures_store_db
     monkeypatch.setattr(P.cfg, "CAPTURES_PROPOSER_SESSION_GAP_S", 100, raising=False)
-    # Clip 1 and 2 are far apart in time (> gap) → different sessions → can't be
-    # grouped TOGETHER. With single-capture samples allowed, each isolated clip
-    # is proposed as its own one-member sample (never a cross-session pair).
+    # The clips are farther apart than the gap, so they are separate sessions:
+    # each is proposed as a one-member sample, never as a cross-session pair.
     _insert_eligible(cs, "capgap000000001", ts=1000.0, text="lonely one")
     _insert_eligible(cs, "capgap000000002", ts=9000.0, text="lonely two")
     proposals, _ = P.propose_merges(
