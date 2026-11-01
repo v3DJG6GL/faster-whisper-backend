@@ -28,7 +28,8 @@ def test_timing_without_kind_keeps_earlier_values(tx_store):
                      processing_s=1.0, status="ok", words=0,
                      kind="download", stages=[{"name": "download", "secs": 1}],
                      key_label="lbl")
-    # A later kwarg-less write (e.g. legacy caller) must not blank them.
+    # A later write without kind / stages / key_label must not blank them:
+    # the ON CONFLICT clause COALESCEs those columns.
     ts.record_timing(request_id="k1", model="m", audio_s=None,
                      processing_s=2.0, status="ok", words=0)
     row = ts.list_recent(limit=10)[0]
@@ -300,7 +301,7 @@ def test_truncate_steps_front_trim(monkeypatch):
     assert 0 < len(out) < 10
     import json
     assert len(json.dumps(out)) <= 80
-    assert out[-1][0] == "label9"  # newest preserved
+    assert out[-1][0] == "label9"
 
 
 # ---------------------------------------------------------------------------
