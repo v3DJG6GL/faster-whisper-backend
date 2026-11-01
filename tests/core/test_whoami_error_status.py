@@ -1,8 +1,7 @@
-"""Shared chrome whoami pass (OPEN_MODE_BANNER_JS): every non-ok
-/auth/whoami used to read as "not signed in", so a 500 (session store briefly
-locked), a proxy 502/503 or a 429 asked a signed-in user for their API key.
-Only a 401/403 is a verdict on the session now; any other status re-applies
-the last known whoami.
+"""Shared chrome whoami pass (OPEN_MODE_BANNER_JS): only a 401/403 is a
+verdict on the session. Any other non-ok /auth/whoami (a 500 while the session
+store is briefly locked, a proxy 502/503, a 429) re-applies the last known
+whoami instead of asking a signed-in user for their API key.
 
 The script runs under node against a minimal DOM stub and a fetch stub that
 answers whoami with a chosen status, no browser needed."""
