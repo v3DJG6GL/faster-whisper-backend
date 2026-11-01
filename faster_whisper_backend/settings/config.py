@@ -149,9 +149,6 @@ def _load_defaults() -> "dict[str, object]":
         if isinstance(_val, str) and (
             "{DATA_DIR}" in _val or "{DB_DIR}" in _val or "{MODELS_DIR}" in _val
         ):
-            # Path defaults are runtime STATE: they resolve against the data
-            # layout knobs above (container-first on Linux, in-checkout on
-            # Windows), never against the repo dir directly.
             _val = os.path.normpath(
                 _val.replace("{DATA_DIR}", _DATA_DIR)
                 .replace("{DB_DIR}", _DB_DIR)
@@ -367,7 +364,7 @@ MEDIA_MAX_BYTES = _D("MEDIA_MAX_BYTES")
 # before the body is read. Deliberately ABOVE MEDIA_MAX_BYTES so the more
 # specific media cap is what an oversized upload hits. Only multipart bodies
 # get this full ceiling: every other non-JSON body keeps a 256 MiB backstop
-# in main._max_body_mw, and JSON bodies MAX_JSON_BODY_BYTES. 10 GiB.
+# in main._max_body_mw, and JSON bodies a 4 MiB one. 10 GiB.
 MAX_REQUEST_BYTES = _D("MAX_REQUEST_BYTES")
 
 
@@ -455,21 +452,21 @@ TEMPERATURE: "str | None" = _D("TEMPERATURE")
 # overrides; this is the default when the field is absent.
 TASK: str = _D("TASK")
 
-# Beam search patience; >1 keeps the beam alive longer. Default 1.0.
+# Beam search patience; >1 keeps the beam alive longer.
 PATIENCE: float = _D("PATIENCE")
 
-# Beam scoring length-norm exponent. >1 favors longer outputs. Default 1.0.
+# Beam scoring length-norm exponent. >1 favors longer outputs.
 LENGTH_PENALTY: float = _D("LENGTH_PENALTY")
 
 # Multiplies logit of already-emitted tokens by 1/penalty. >1 discourages
-# repetition loops. Default 1.0 (off). Try 1.05–1.2 for stutter audio.
+# repetition loops; 1.0 = off. Try 1.05–1.2 for stutter audio.
 REPETITION_PENALTY: float = _D("REPETITION_PENALTY")
 
 # Hard ban on n-grams of this size repeating. 0 = off.
 NO_REPEAT_NGRAM_SIZE: int = _D("NO_REPEAT_NGRAM_SIZE")
 
 # Drop the running text prompt when temperature ladder fallback exceeds this
-# value. Default 0.5. Only relevant when CONDITION_ON_PREVIOUS_TEXT=True.
+# value. Only relevant when CONDITION_ON_PREVIOUS_TEXT=True.
 PROMPT_RESET_ON_TEMPERATURE: float = _D("PROMPT_RESET_ON_TEMPERATURE")
 
 
@@ -564,8 +561,8 @@ DECODE_SKIP_RESIDUAL_WINDOWS: bool = _D("DECODE_SKIP_RESIDUAL_WINDOWS")
 # Applies to batch files and streaming finals. 0 = off.
 DECODE_TOKEN_CAP_PER_SECOND: float = _D("DECODE_TOKEN_CAP_PER_SECOND")
 
-# Suppress blank token at start of decoder sampling. Default True. Almost
-# never disable; only useful when debugging tokenizer behavior.
+# Suppress blank token at start of decoder sampling. Almost never disable;
+# only useful when debugging tokenizer behavior.
 SUPPRESS_BLANK: bool = _D("SUPPRESS_BLANK")
 
 # Comma-separated token IDs to ban from output. "-1" = expand to model's
@@ -997,10 +994,10 @@ LOGIN_FAILURE_RATE: int = _D("LOGIN_FAILURE_RATE")
 # Transcription error reports
 # =============================================================================
 # Users can flag a wrong transcription from /quick-config; admins triage on
-# /reports. The store holds durable dictation content: plaintext SQLite next
-# to config.local.json. Whole-disk encryption is the deployment's responsibility.
+# /reports. The store holds durable dictation content: plaintext SQLite under
+# DB_DIR. Whole-disk encryption is the deployment's responsibility.
 
-# DB file path. Default sits next to config.local.json. SQLite uses three
+# DB file path, default {DB_DIR}/reports.local.sqlite3. SQLite uses three
 # files at runtime (.sqlite3, -wal, -shm); .gitignore matches all three.
 REPORTS_DB = _D("REPORTS_DB")
 
@@ -1029,8 +1026,8 @@ REPORTS_ALLOW_USER_SUBMIT = _D("REPORTS_ALLOW_USER_SUBMIT")
 # "Recent transcriptions" widget (timing-only projection). Survives
 # service restart; pruned lazily by row-cap AND TTL.
 
-# DB file path. Default sits next to config.local.json. SQLite uses three
-# runtime files (.sqlite3, -wal, -shm); .gitignore matches all three.
+# DB file path, default {DB_DIR}/recent_transcriptions.local.sqlite3. SQLite
+# uses three runtime files (.sqlite3, -wal, -shm); .gitignore matches all three.
 RECENT_TRANSCRIPTIONS_DB = _D("RECENT_TRANSCRIPTIONS_DB")
 
 # Hard row-count cap. 0 = unbounded (TTL-only pruning). Lazy pruning runs
@@ -1120,7 +1117,7 @@ STATS_SYSTEM_METRICS_RETENTION_DAYS = _D("STATS_SYSTEM_METRICS_RETENTION_DAYS")
 # dashboards). Kept separate from RECENT_TRANSCRIPTIONS because that store prunes
 # to a rolling window and so can't back lifetime totals. See usage_store.py.
 
-# DB file path. Default sits next to config.local.json. SQLite uses three
+# DB file path, default {DB_DIR}/usage.local.sqlite3. SQLite uses three
 # runtime files (.sqlite3, -wal, -shm); .gitignore matches all three.
 USAGE_DB = _D("USAGE_DB")
 
@@ -1175,7 +1172,7 @@ BOOTSTRAP_ADMIN_KEY: "str | None" = _D("BOOTSTRAP_ADMIN_KEY")
 # (user_id), PUT/GET by the desktop client at /v1/synced-client-settings so
 # every machine authenticating as the same account shares one configuration.
 # The blob may contain the client's own backend API keys — sensitive; never
-# logged. SQLite (WAL) next to config.local.json; three runtime files
+# logged. SQLite (WAL) under DB_DIR; three runtime files
 # (.sqlite3, -wal, -shm), all gitignored. See client_settings/store.py.
 CLIENT_SETTINGS_DB = _D("CLIENT_SETTINGS_DB")
 
@@ -1650,8 +1647,6 @@ for _secret in ("WHISPER_" + _f for _f in _SECRET_FIELDS):
 
 
 # --- Non-AdminConfig constants (no WebUI row → not in ENV_VAR_MAPPING) -------
-# The *_DB paths are AdminConfig fields (restart-required) and reach
-# their env vars through the generic loop below, like every other field.
 ADMIN_UI_ENABLED = _env_bool("WHISPER_ADMIN_UI", ADMIN_UI_ENABLED)
 BOOTSTRAP_ADMIN_KEY = _env_str("WHISPER_BOOTSTRAP_ADMIN_KEY", BOOTSTRAP_ADMIN_KEY)
 # CAPTURES_PROPOSER_CACHE_TTL_S only: it is absent from ENV_VAR_MAPPING, so
@@ -1665,14 +1660,14 @@ CAPTURES_PROPOSER_CACHE_TTL_S = _env_int(
 # --- Schema-driven env application for every AdminConfig field ---------------
 # ENV_VAR_MAPPING (settings/schema.py) is the single source of truth for which
 # AdminConfig field maps to which WHISPER_* var; the WebUI badges / greys out a
-# field iff its var is set. Here we apply each mapped var to the matching module
-# constant, coercing by the field's pydantic annotation so a new field becomes
-# env-configurable automatically (a test asserts the mapping stays complete).
+# field iff its var is set. Each mapped var is applied to its module constant,
+# coerced by the type of the current value (_env_reader_kind), so a new field
+# becomes env-configurable automatically (a test asserts the mapping stays
+# complete).
 #
-# A few fields need bespoke handling and are skipped by the generic loop:
-#   _ENV_SPECIAL_CASES — set/list-with-keep-current / custom-default semantics
-#   _ENV_JSON_FIELDS    — structured values supplied as a JSON string
-# and a handful of string fields override the default empty-string behaviour
+# The generic loop skips _ENV_SPECIAL_CASES (set/list-with-keep-current /
+# custom-default semantics) and _ENV_JSON_FIELDS (JSON-string values);
+# _ENV_READER_OVERRIDES gives some fields a different empty-string meaning
 # (the generic default for str is "empty → keep current").
 _ENV_SPECIAL_CASES = {
     "ALLOWED_MODELS", "ADMIN_WEBUI_ALLOWED_HOSTS", "USER_WEBUI_ALLOWED_HOSTS",
@@ -1795,11 +1790,11 @@ def rule_slugs_in_force() -> "frozenset[str] | None":
 
 
 def _env_guard_off(var: str, field: str, value: object) -> object:
-    """A segment guard at 1 is refused since older releases accepted it, and 1
-    already behaved as off: an env value of 1 becomes 0 with a note, the
-    migration a stored or bundle value gets (config_store.
-    _migrate_segment_guards), instead of being reverted to the factory
-    threshold, which would turn the guard ON."""
+    """The schema refuses a segment guard at 1, which older releases accepted
+    and which already behaved as off: an env value of 1 becomes 0 with a note
+    (the migration a stored or bundle value gets,
+    config_store._migrate_segment_guards) instead of being reverted to the
+    factory threshold, which would turn the guard ON."""
     from faster_whisper_backend.settings import config_store as _cs
     _d = {field: value}
     if _cs._migrate_segment_guards(_d, ""):
@@ -1990,9 +1985,9 @@ def _canonical_env_model_id(model_id: str) -> str:
     return model_id if "/" in model_id else model_id.lower()
 
 
-# Module-level field-type lookup for _coerce_override_value. Names track
-# ModelOverride (settings/schema.py) — fields not in this class are pure
-# string passthroughs (TEMPERATURE) or rejected by pydantic at save time.
+# Field-type sets for _coerce_override_value. Names track ModelOverride
+# (settings/schema.py); a field in none of these sets stays the raw string
+# (TEMPERATURE), and the validation pass below rejects one that does not fit.
 _OVERRIDE_BOOL_FIELDS = frozenset({
     "CONDITION_ON_PREVIOUS_TEXT", "WORD_TIMESTAMPS_ENABLED",
     "VAD_FILTER", "MULTILINGUAL", "SUPPRESS_BLANK",
@@ -2030,8 +2025,9 @@ _UNPARSED = object()
 
 def _coerce_override_value(field: str, raw: str) -> object:
     """Coerce a raw env-var string to the right type for a ModelOverride field.
-    Falls back to the raw string for fields we can't easily classify (the
-    pydantic validator will catch type mismatches at save-merge time)."""
+    An unparseable int/float, or a field in none of the type sets, stays the
+    raw string for the validation pass below to reject; an unparseable bool
+    returns _UNPARSED."""
     if field in _OVERRIDE_BOOL_FIELDS:
         if raw.strip().lower() in _FALSY:
             return False
@@ -2427,12 +2423,12 @@ try:
                 _reverted = None
                 _err: BaseException = _verr
                 # Revert only the env fields the errors name, a round at a
-                # time: reverting every env field of the model together threw
-                # the valid ones out (and blamed them) with the bad one, which
-                # _revert_env_field never does to a scalar. An error that names
-                # none (the slug and allowlist model validators) reverts the
-                # fields whose single revert clears it, and all of them only
-                # when no single revert helps, as the scalar backstop does.
+                # time, so a valid env field is never reverted (or blamed)
+                # with the bad one, as _revert_env_field does for a scalar.
+                # An error that names none (the slug and allowlist model
+                # validators) reverts the fields whose single revert clears
+                # it, and all of them only when no single revert helps, as
+                # the scalar backstop does.
                 while _standing:
                     _named = {
                         str(_loc[2]) for _loc, _ in _error_sigs(_err)
@@ -2517,7 +2513,8 @@ if not SESSION_COOKIE_SECURE:
 # WHISPER_DATA_DIR (see the data-layout comment at the top). An in-place
 # upgrade that still has the old files but nothing at the new locations would
 # otherwise silently start with factory config / an empty key store — warn so
-# the operator knows to move the files or point WHISPER_DATA_DIR at them.
+# the operator knows to move the files or point WHISPER_DATA_DIR (the SQLite
+# stores: WHISPER_DB_DIR) at them.
 # (main drains _ENV_WARNINGS into the logger once logging is up.)
 def _looks_fresh(configured: str, legacy: str) -> bool:
     """The configured store was created AFTER the legacy one, is smaller and
