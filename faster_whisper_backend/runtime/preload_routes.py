@@ -54,9 +54,7 @@ from faster_whisper_backend.translation import gating as tr_gating
 from faster_whisper_backend.auth.dependencies import get_current_user
 
 # Same logger name the rest of the model machinery uses, so a preload and the
-# load it causes sit under one name in the log. This module had no logging at
-# all, which meant a POST that landed left no trace and was indistinguishable
-# from one that was never sent.
+# load it causes sit under one name in the log.
 logger = logging.getLogger("whisper-server")
 
 router = APIRouter(prefix="/v1")
@@ -112,14 +110,15 @@ def _allowed(family: str, model_id: str,
     """The batch handler's allowlist rules.
 
     whisper: judged on the RESOLVED id (`whisper-1` → DEFAULT_MODEL, the
-    same mapping the transcribe route applies before its gate). An EMPTY
-    ALLOWED_MODELS admits the configured default plus any WELL-FORMED id
-    that is a repo id, a local dir or a faster-whisper size —
+    same mapping the transcribe route applies before its gate) by
     `tx_models._check_model_name`, the gates `_get_or_load_model` applies
-    before the Hub, so a path-shaped id or a typo'd size is deferred here
-    instead of wasting a queue slot on a load the guard rejects anyway. A
-    non-empty one admits exactly its members, as that gate does (the default
-    is NOT implied: a load of it would 400 there).
+    before the Hub. An EMPTY ALLOWED_MODELS admits the configured default
+    plus any well-formed repo id or faster-whisper size, and a local dir
+    only when the operator configured it. A non-empty one admits only its
+    members (the default is NOT implied: a load of it would 400 there).
+    So a path-shaped id, a typo'd size or an unconfigured local dir is
+    deferred here instead of wasting a queue slot on a load the guard
+    rejects anyway.
     diarization/separation: the allowlist plus the configured model (global
     AND the caller's effective value), and an empty allowlist therefore means
     "the configured model only", never "anything". translation:
@@ -174,10 +173,9 @@ def _effective_stage_models(
 ) -> "tuple[dict[str, str], frozenset[str]]":
     """The caller's identity/per-model effective stage models, resolved
     against the whisper model the plan names (else DEFAULT_MODEL) and the
-    body's override_profile — the ident the batch handler builds for the same
-    job — plus which of those fields
-    the ident locks. ({}, empty) on any failure, which degrades to the
-    global-only rule."""
+    body's override_profile — the ident the batch handler builds for the
+    same job — plus which of those fields the ident locks. ({}, empty) on
+    any failure, which degrades to the global-only rule."""
     # Only a whisper id the server ADMITS picks the per-model layer: the
     # batch handler refuses any other before a stage runs, so its
     # MODEL_OVERRIDES stage models are ones no real job could use. A refused
