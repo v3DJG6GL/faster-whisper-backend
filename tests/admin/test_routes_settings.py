@@ -261,8 +261,8 @@ def test_preload_editor_skips_its_own_model_list_event(client):
 
 
 def test_model_editors_stay_disabled_when_env_pinned_after_a_rerender(client):
-    """disableEnvPinnedEditor ran once at row build; a re-render on a source
-    list change built fresh, enabled controls for an env-pinned field."""
+    """A re-render on a source-list change builds fresh, enabled controls, so
+    each model editor must re-apply the env-pin disable after it re-renders."""
     page = client.get("/settings").text
     for fn in ("function modelDropdownEditor(", "function modelMultiSelectEditor("):
         body = page[page.index(fn):]
@@ -1608,8 +1608,8 @@ def test_pipeline_test_panel_badges_a_step_that_hit_the_output_limit(client):
 
 def test_clear_local_override_puts_split_card_refs_live(
         client, app_module, monkeypatch):
-    """A local copy from before June still runs strip-whisper-punctuation and
-    the stored excludes name it (boot kept them, the copy has the card). The
+    """A local copy from before the split still runs strip-whisper-punctuation
+    and the stored excludes name it (boot kept them, the copy has the card). The
     clear writes them as the successor cards; the running cfg must get the
     same, or until a restart they name a card the live list no longer has and
     the excluded successors run everywhere."""
