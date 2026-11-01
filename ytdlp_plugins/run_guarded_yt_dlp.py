@@ -15,9 +15,8 @@ faster_whisper_backend/media/download.py download() runs `python <this file> <yt
      ``secrets/``, …) shadow stdlib modules for ~2000 third-party extractors.
      The guard reaches net_policy.py by path instead; see fwb_ssrf_guard.py.
 
-Everything after the script path is passed to yt-dlp verbatim, so
-build_download_argv's argument order (and the trailing `-- <url>`) is
-unchanged.
+Everything after the script path (the trailing `-- <url>` included) is
+passed to yt-dlp verbatim.
 """
 from __future__ import annotations
 
