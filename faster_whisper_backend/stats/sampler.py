@@ -1,9 +1,9 @@
 """1 Hz sampler behind the /stats "GPU busy" share and the range-mode
 machine history.
 
-Nothing on the server ticked without a client before this: /stats/stream
-builds a payload only while an EventSource is open, so "how busy was the
-GPU this afternoon" had no source. The lifespan runs loop(); each second
+/stats/stream builds a payload only while an EventSource is open, so
+without this loop "how busy was the GPU this afternoon" has no source.
+The lifespan runs loop(); each second
 tick() appends 1/0 ("an inference slot is held") to metrics.busy_ring, and
 every STATS_SYSTEM_METRICS_SAMPLE_S seconds it takes one machine sample (NVML +
 psutil, blocking — hence to_thread) into a small queue that flush() writes
@@ -56,9 +56,8 @@ def slot_busy_now() -> int:
 
 
 def tick(now: float | None = None) -> dict[str, Any] | None:
-    """One second: append to the busy ring; on the sample cadence take a
-    machine sample and queue it. Returns the sample when one was taken.
-    Blocking (NVML / psutil) on sample ticks — run via to_thread."""
+    """One 1 Hz tick. Returns the machine sample when this tick took one.
+    Blocks on NVML / psutil on sample ticks — run via to_thread."""
     global _ticks, _busy_sum, _busy_n
     now = time.time() if now is None else float(now)
     busy = slot_busy_now()
