@@ -119,7 +119,7 @@ def test_timing_only_inserts_minimal_row(tx_store):
     assert row["status"] == "error"
     # NULL text coerced to empty strings.
     assert row["raw"] == "" and row["final"] == ""
-    assert row["rtf"] is None  # audio_dur_s None -> no rtf
+    assert row["rtf"] is None
 
 
 def test_falsy_request_id_skipped(tx_store):
@@ -133,7 +133,8 @@ def test_falsy_request_id_skipped(tx_store):
 def test_trace_coalesce_preserves_user_on_timing(tx_store):
     ts = tx_store
     ts.record_trace(request_id="r", model="m", raw="a", final="b", user_id="alice")
-    # timing with user_id None must not wipe the existing user (COALESCE).
+    # timing with user_id None must not wipe the existing user: record_timing's
+    # ON CONFLICT clause never assigns user_id.
     ts.record_timing(request_id="r", model="m", audio_s=1.0, processing_s=1.0,
                      status="ok", words=1, user_id=None)
     row = ts.list_recent(limit=1)[0]
@@ -202,7 +203,6 @@ def test_list_recent_query_composes_with_user_and_cursor(tx_store):
                     user_id="u2", created_ts=2.0)
     ts.record_trace(request_id="c", model="m", raw="alpha note", final="x",
                     user_id="u1", created_ts=3.0)
-    # query AND user_id_filter AND before_ts all compose.
     rows = ts.list_recent(query="alpha", user_id_filter="u1", before_ts=3.0, limit=10)
     assert [r["request_id"] for r in rows] == ["a"]
 
@@ -213,7 +213,6 @@ def test_list_recent_query_escapes_like_wildcards(tx_store):
                     created_ts=1.0)
     ts.record_trace(request_id="other", model="m", raw="50 percent", final="x",
                     created_ts=2.0)
-    # A literal "%" must match only the row containing it, not act as a wildcard.
     assert {r["request_id"] for r in ts.list_recent(query="50%", limit=10)} == {"lit"}
 
 
@@ -313,12 +312,8 @@ def test_row_to_dict_rtf_guard_proc_zero(tx_store):
     ts.record_timing(request_id="z", model="m", audio_s=5.0, processing_s=0.0,
                      status="ok", words=1)
     row = ts.list_recent(limit=1)[0]
-    assert row["rtf"] is None  # proc 0 -> guarded
+    assert row["rtf"] is None
 
-
-# ---------------------------------------------------------------------------
-# _SCHEMA describes the whole table; JSON-column normalisation
-# ---------------------------------------------------------------------------
 
 def test_schema_is_canonical_no_migration_on_fresh_db(tx_store):
     """A fresh DB gets kind/stages/key_label from _SCHEMA itself: the
@@ -347,8 +342,7 @@ def _raw_insert(ts, request_id, **cols):
 
 def test_row_to_dict_json_columns_normalised_to_list(tx_store):
     """NULL, a JSON object and malformed text all read back as [] for both
-    the recent-jobs `stages` column and the legacy `steps` column: the
-    isinstance-list guard now covers every JSON column, not just stages."""
+    the recent-jobs `stages` column and the legacy `steps` column."""
     ts = tx_store
     _raw_insert(ts, "null", stages=None, steps=None)
     _raw_insert(ts, "obj", stages='{"a": 1}', steps='{"a": 1}')
@@ -427,9 +421,10 @@ def test_list_recent_kind_filter_resolves_null_kind_like_projection(tx_store):
 
 
 def test_list_recent_kind_accepts_a_sequence(tx_store):
-    """The /stats jobs page's "links" chip maps onto transcribe + download
-    (+ preload): list_recent takes the set as an IN-style OR, each member
-    resolved like the single-kind filter (NULL-kind batch rows included)."""
+    """The /stats jobs page sends its kind chips as a set (the chosen kinds
+    plus preload + download, which always show): list_recent takes it as an
+    IN-style OR, each member resolved like the single-kind filter (NULL-kind
+    batch rows included)."""
     ts = tx_store
     ts.record_trace(request_id="b1", model="m", raw="x", final="y", source="file",
                     created_ts=1001.0)
