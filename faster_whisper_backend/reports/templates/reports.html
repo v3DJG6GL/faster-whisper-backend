@@ -269,10 +269,6 @@
 (function() {
   'use strict';
 
-  // Sign-in is handled by the shared full-screen login gate (web_common):
-  // on a 401 we call window._showLoginGate(), which prompts for a key and
-  // reloads the page on success.
-
   var _toastTimer = null;
   function toast(msg, err) {
     var el = document.getElementById('toast');
