@@ -3,14 +3,11 @@
 settings/schema.py GENERATES its module-level tables (ENV_VAR_MAPPING,
 RESTART_REQUIRED_FIELDS, LOAD_TIME_FIELDS, CACHE_REBUILD_FIELDS,
 _POST_LOAD_COERCERS, FIELD_GROUPS, CONFIG_TO_CLIENT_KEY, LOCKABLE_FIELDS)
-from per-field metadata declared on each AdminConfig field via _F(...);
-config_store only consumes them.
+from per-field metadata declared on each AdminConfig field via _F(...).
 
-The literals below were computed from the PRE-refactor hand-written tables
-(the values shipped before the registry existed) and are deliberately frozen:
-a change to any generated table must show up here as an explicit,
-reviewed edit of the matching snapshot — never as silent drift from a
-metadata typo. Update a snapshot only when the change is intentional.
+The literals below are deliberately frozen: a change to any generated table
+must show up here as an explicit, reviewed edit of the matching snapshot —
+never as silent drift from a metadata typo.
 """
 
 from faster_whisper_backend.settings import config
@@ -715,10 +712,6 @@ FIELD_GROUPS_SNAPSHOT = (
 )
 
 
-# ---------------------------------------------------------------------------
-# Metadata presence & validity
-# ---------------------------------------------------------------------------
-
 def test_every_field_has_registry_metadata_with_valid_scope():
     """Every AdminConfig field must carry x_registry metadata declaring a
     valid scope — _F() enforces this at import, this guards against a field
@@ -745,10 +738,6 @@ def test_registry_scope_membership():
                          "NUM_WORKERS", "DEVICE_INDEX"}
 
 
-# ---------------------------------------------------------------------------
-# Generated tables == frozen pre-refactor snapshots
-# ---------------------------------------------------------------------------
-
 def test_env_var_mapping_matches_snapshot():
     assert settings_schema.ENV_VAR_MAPPING == ENV_VAR_MAPPING_SNAPSHOT
 
@@ -767,7 +756,6 @@ def test_cache_rebuild_matches_snapshot():
 
 def test_config_to_client_key_matches_snapshot():
     assert settings_schema.CONFIG_TO_CLIENT_KEY == CONFIG_TO_CLIENT_KEY_SNAPSHOT
-    # effective_config keeps its historical alias pointing at the same dict.
     assert effective_config._CONFIG_TO_CLIENT_KEY is settings_schema.CONFIG_TO_CLIENT_KEY
 
 
@@ -807,10 +795,6 @@ def test_field_groups_cover_every_admin_config_field():
     assert set(settings_schema.AdminConfig.model_fields) - grouped == {"OVERRIDE_PROFILES"}
     assert grouped - set(settings_schema.AdminConfig.model_fields) == set()
 
-
-# ---------------------------------------------------------------------------
-# Cross-module mirrors
-# ---------------------------------------------------------------------------
 
 def test_config_set_fields_mirror_post_load_coercers():
     """config._SET_FIELDS is a hand-kept mirror of _POST_LOAD_COERCERS
@@ -970,9 +954,6 @@ OVERRIDE_PROFILE_FIELDS_SNAPSHOT = frozenset(
  'requestable']
 )
 
-# ---------------------------------------------------------------------------
-# Generated override schemas == frozen pre-refactor field sets
-# ---------------------------------------------------------------------------
 
 def test_model_override_fields_match_snapshot():
     assert frozenset(settings_schema.ModelOverride.model_fields) == \
