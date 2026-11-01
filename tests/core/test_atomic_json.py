@@ -46,6 +46,6 @@ def test_atomic_write_gives_up_after_retries(tmp_path, monkeypatch):
     monkeypatch.setattr(atomic_json.time, "sleep", lambda *_: None)
     with pytest.raises(PermissionError):
         atomic_json.atomic_write_json({"ok": 1}, p, sort_keys=True, tmp_prefix=".t")
-    # The temp file is cleaned up in finally; only the (untouched) dir remains.
+    # The temp file is removed even though every replace attempt failed.
     leftovers = [f for f in os.listdir(tmp_path) if f != "x.json"]
     assert leftovers == []
