@@ -276,7 +276,6 @@ def test_translation_prompt_template_placeholders():
     _ok(TRANSLATION_PROMPT_TEMPLATE="")
     _ok(TRANSLATION_PROMPT_TEMPLATE=(
         "Translate into {target_language}:\n\n{text}"))
-    # Non-empty without the mandatory slots must be a 422 at save.
     _bad(TRANSLATION_PROMPT_TEMPLATE="Translate into {target_language}: hi")
     _bad(TRANSLATION_PROMPT_TEMPLATE="Just do it: {text}")
     _bad(TRANSLATION_PROMPT_TEMPLATE="no placeholders at all")
@@ -503,7 +502,6 @@ def _ok_on_save(**fields):
 
 
 def test_pipeline_bad_backref_reported():
-    # Replacement \3 with one group -> "regex test failed".
     with pytest.raises(ValidationError) as ei:
         _ok_on_save(PIPELINE_RULES=[_regex("b", pattern="(a)", replacement=r"\3"),
                                     _terminal()])
@@ -601,7 +599,7 @@ def test_pipeline_guard_scoped_to_guard_slugs():
             context={"guard_regex": True, "guard_slugs": frozenset(slugs)},
         )
 
-    _save({"harmless"})  # bad rule not probed -> save succeeds
+    _save({"harmless"})
     with pytest.raises(ValidationError) as ei:
         _save({"harmless", "legacy-boom"})
     assert "catastrophic backtracking" in str(ei.value)
@@ -782,7 +780,7 @@ def test_map_key_collision_check_is_scoped_to_guard_slugs():
 
 
 def test_rule_scoped_to_every_whisper_language_validates():
-    # The languages cap tracks the code table (100 with yue), not a stale 99.
+    # The languages cap tracks the code table (100 with yue).
     langs = sorted(settings_schema.WHISPER_LANGUAGE_CODES)
     rule = {"name": "rl", "label": "RL", "type": "regex-list",
             "entries": [{"pattern": "a"}], "languages": langs}
@@ -1249,7 +1247,6 @@ def test_save_overrides_roundtrip_and_merge(tmp_path):
     p = str(tmp_path / "config.local.json")
     changed = cs.save_overrides({"BEAM_SIZE": 5}, p)
     assert changed == {"BEAM_SIZE": 5}
-    # Merge: a second partial save keeps the first field.
     cs.save_overrides({"BEST_OF": 3}, p)
     on_disk = json.loads(open(p, encoding="utf-8").read())
     assert on_disk["BEAM_SIZE"] == 5 and on_disk["BEST_OF"] == 3
@@ -1294,13 +1291,10 @@ def test_sample_sizing_absent_field_uses_baseline_not_live_override(monkeypatch)
     # EVERY override on disk.
     from faster_whisper_backend.settings import config as _cfg
 
-    # Simulate a server running with a previously-applied TARGET override of 5.
     monkeypatch.setattr(_cfg, "CAPTURES_PROPOSER_TARGET_S", 5.0, raising=False)
-    # _BASELINE keeps the real in-repo default (26.0), which exceeds MAX=6.
     assert _cfg._BASELINE["CAPTURES_PROPOSER_TARGET_S"] > 6.0
 
-    # Removing TARGET reverts it to the 26.0 baseline → 1 ≤ 26 ≤ 6 is false.
-    # Must reject regardless of the stale live value of 5.0.
+    # TARGET absent: the 26.0 baseline is outside 1..6; the live 5.0 would pass.
     _bad(CAPTURES_SAMPLE_MIN_DURATION_S=1.0, CAPTURES_SAMPLE_MAX_DURATION_S=6.0)
 
 
@@ -1451,7 +1445,7 @@ def test_save_overrides_invalid_raises(tmp_path):
     p = str(tmp_path / "config.local.json")
     with pytest.raises(ValidationError):
         cs.save_overrides({"BEAM_SIZE": 999}, p)
-    assert not os.path.exists(p)  # nothing written
+    assert not os.path.exists(p)
 
 
 # ---------------------------------------------------------------------------
