@@ -1,11 +1,9 @@
-"""Additive column migrations on the capture store (per-language translations,
-job provenance).
+"""Column migrations on the capture and sample stores (added columns and the
+in-place `_json` renames).
 
-The store only ever ran `executescript(_SCHEMA)`, which is a no-op against an
-existing table — so it had no migration hook and could not grow a column
-without silently doing nothing. The hook runs against live databases on every
-startup, so what matters is that it is idempotent and leaves existing rows
-intact. The report store's twin lives in tests/reports/test_reports_store_migrations.py."""
+The hook runs against live databases on every startup, so it must be
+idempotent and leave existing rows intact. The report store's twin lives in
+tests/reports/test_reports_store_migrations.py."""
 
 import contextlib
 import sqlite3
@@ -41,10 +39,6 @@ def _fake_wav_transcode(src_path, dst_path):
         w.writeframes(b"\x00\x00" * 100)
     return 1234
 
-
-# ---------------------------------------------------------------------------
-# captures
-# ---------------------------------------------------------------------------
 
 def test_captures_migration_adds_columns_and_is_idempotent(tmp_path):
     from faster_whisper_backend.captures import store as captures_store
@@ -153,9 +147,8 @@ def test_captures_translations_round_trip_as_a_keyed_map(
 
 def test_captures_list_projection_carries_the_new_columns(
         tmp_path, monkeypatch, captures_store_db):
-    """_LIST_COLUMNS is a hand-maintained projection whose own comment exists
-    to stop exactly this drift: a column missing from it vanishes from
-    /captures/api/list while still being present in the table."""
+    """_LIST_COLUMNS is a hand-maintained projection: a column missing from it
+    vanishes from /captures/api/list while still being present in the table."""
     from faster_whisper_backend.audio import transcode as audio_transcode
 
     captures_store = captures_store_db
@@ -181,10 +174,6 @@ def test_captures_list_projection_carries_the_new_columns(
     assert listed["translation_source"] == "cascade-mt"
     assert listed["task"] == "transcribe"
 
-
-# ---------------------------------------------------------------------------
-# capture_samples
-# ---------------------------------------------------------------------------
 
 def test_capture_samples_migration_renames_the_json_columns(tmp_path):
     """A pre-cddbf13 install carries member_hashes_json / member_trims_json.
