@@ -27,9 +27,8 @@
     .replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
   function onStats(){ return window.__current_page === 'stats'; }
   function gb(mb){ return ((mb || 0) / 1024).toFixed(1); }
-  // Job-kind → accent class (mockup palette: transcribe cyan, translate
-  // magenta, dictate green, download yellow, preload muted). Keep in step
-  // with jobs.KINDS and the /stats kindchip CSS (stats/templates/stats.html).
+  // Job-kind → accent class. Keep in step with jobs.KINDS and the /stats
+  // kindchip CSS (stats/templates/stats.html).
   function kindCls(k){
     return {transcribe:'tr', stream:'tr', translate:'tl',
             dictate:'dc', download:'dl', preload:'pl'}[k] || '';
@@ -168,7 +167,8 @@
     if (h === pop._lastH) return;
     // The swap also detaches a control a keyboard user Tabbed onto, dropping
     // focus to <body>: put it back on the same job's cancel (or the footer
-    // link), or on the opener when that job has left.
+    // link), or on the opener when that job has left or its cancel is
+    // disabled (a disabled button cannot take focus).
     var a = document.activeElement, had = a !== pop && pop.contains(a);
     var pid = had ? a.getAttribute('data-pid') : null;
     pop.innerHTML = h; pop._lastH = h;
@@ -310,10 +310,8 @@
     else openStream();
   });
 
-  // Gate: mirror the stats nav-link's `.allowed` (set async by
-  // _refreshAuthChrome after /auth/whoami resolves) onto the button. A
-  // MutationObserver catches the async class flip; an initial sync covers
-  // the already-resolved case.
+  // Mirror the stats nav-link's `.allowed` (set async by _refreshAuthChrome
+  // after /auth/whoami resolves) onto the button.
   function syncAllowed(){
     var link = document.querySelector('header a.page-link[data-page="stats"]');
     var ok = !!(link && link.classList.contains('allowed'));
