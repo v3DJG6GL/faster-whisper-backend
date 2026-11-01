@@ -30,21 +30,16 @@
     margin: 0; padding: 0; }
   main { max-width: var(--col); margin: 0 auto; padding: 1rem var(--gutter) 4rem; box-sizing: border-box; }
   h2 { font-size: var(--fs-xl); margin: 0 0 0.5rem; color: var(--bold); }
-  /* The page toolbar (status/model/search filters, capture-state badge +
-     actions) now lives in the sticky header subbar — styled by NAV_CSS,
-     consistent with every other page. The proposer-action status label is
-     the only piece that keeps a page-local rule. */
+  /* Toolbar (filters, capture-state badge, actions) is styled by NAV_CSS in
+     the header subbar. Below: the per-card "status" label in action rows. */
   .cc-actions .cc-status-label {
     font-size: var(--fs-sm); color: var(--help);
     display: inline-flex; align-items: center; gap: 0.35rem;
   }
 
-  /* Merge-proposer entry points (Batch review / Auto-propose) live in the
-     header's row-3 action bar. They keep a blue accent so they read as the
-     prominent fast-path workflow, distinct from the grey utility buttons
-     beside them. A single class selector (.proposer-action) already outranks
-     the centralized `header button` rule on specificity, so these win the
-     cascade wherever they sit. */
+  /* Blue accent marks the merge proposers as the fast-path workflow, apart
+     from the grey utility buttons. One class already outranks NAV_CSS's
+     `header button`, so these win wherever they sit. */
   .proposer-action {
     background: rgba(88, 166, 255, 0.12); color: var(--accent, #58a6ff);
     border: 1px solid rgba(88, 166, 255, 0.5); border-radius: 4px;
@@ -56,12 +51,9 @@
   .proposer-action:active:not(:disabled) { transform: translateY(1px); }
   .proposer-action:disabled { opacity: 0.4; cursor: not-allowed; }
 
-  /* Row-3 search sits in the MIDDLE of the action bar, growing to fill the
-     gap between the left merge buttons and the right utility cluster (so its
-     long placeholder never truncates — the reason it moved off row 2). The
-     left cluster shrinks to content width so the search, not the cluster,
-     absorbs the free space. input[type="text"] in the selector beats the
-     equal-specificity NAV_CSS rule so min-width can drop below its 10rem. */
+  /* Search fills the middle of row 3 so its long placeholder never
+     truncates; the left cluster stays content-width so search, not the
+     cluster, absorbs the free space. */
   header .subbar-actions .subbar-left { flex: 0 0 auto; }
   header .subbar-actions .subbar-search { flex: 1 1 auto; min-width: 0;
     display: inline-flex; align-items: center; gap: 0.35rem; }
@@ -70,26 +62,19 @@
      for assistive tech. Sized in em so it tracks the scale picker. */
   header .subbar-search .search-ico { flex: 0 0 auto; width: 0.95em; height: 0.95em;
     stroke: var(--help); fill: none; stroke-width: 2; }
-  /* Search shrinks down to a small floor (input[type="text"] in the selector
-     beats the equal-specificity NAV_CSS min-width:10rem) so the buttons keep
-     their one-line layout as the viewport narrows. */
+  /* Small floor so the buttons stay on one line as the viewport narrows.
+     [type="text"] is needed to out-rank NAV_CSS's later min-width:10rem. */
   header .subbar-actions .subbar-search input[type="text"] {
     flex: 1 1 auto; min-width: 2rem; max-width: none; }
-  /* Safety net for narrow windows: once the two button clusters can no longer
-     share a line even with search at its floor, shrinking just orphans the
-     utility cluster under a stretched search. Below the breakpoint we instead
-     stack cleanly — both clusters on line 1 (merge left, utility pushed
-     right), search dropped to its own full-width line (`order:1` +
-     `flex-basis:100%`). Root font is --fs-base (15px), so 1rem = 15px.
-     Measured one-line cutoff with these labels: ~960px holds, ~940px orphans,
-     so we stack at/below 64rem (960px) — just above the orphan onset, no gap. */
+  /* Once both button clusters no longer fit on one line even with search at
+     its floor, shrinking orphans the utility cluster under a stretched search,
+     so stack instead: clusters on line 1, search on its own line. Measured
+     with these labels (1rem = 15px --fs-base): ~960px holds, ~940px orphans,
+     hence 64rem. */
   @container hdr (max-width: 64rem) {
     header .subbar-actions .subbar-left { flex: 1 1 auto; }
     header .subbar-actions .subbar-search { order: 1; flex-basis: 100%; }
   }
-  /* Counts get their own line below the status/model/capture-state row: the
-     live string ("667 new · 0 reviewed · 5 ready · 0 dismissed") is long and
-     would otherwise push the capture-state badge to wrap on its own. */
   /* status-button counts (server counts, speaker- and search-aware) */
   .status-btn .cnt { font-family: var(--font-mono); font-size: 0.85em; color: var(--help);
     margin-left: 0.35em; font-variant-numeric: tabular-nums; }
@@ -97,7 +82,6 @@
   /* per-card status groups never fill it: no trailing gap off-centring the label */
   .status-btn .cnt:empty { display: none; }
 
-  /* ---- summary strip ---- */
   #stats-strip { border: 1px solid var(--border); border-radius: 6px; background: var(--panel);
     margin-bottom: 0.75rem; overflow: hidden; }
   #stats-strip[hidden] { display: none; }
@@ -135,7 +119,7 @@
   .ss-bars .row .d { text-align: right; color: var(--help); }
   @media (max-width: 52em) { .ss-body { grid-template-columns: 1fr 1fr; } }
 
-  /* ---- select-all row above the list ---- */
+  /* Select-all row above the list. */
   #list-head { display: flex; align-items: center; gap: 1rem; padding: 0.2rem 0.6rem 0.45rem;
     font-size: var(--fs-sm); color: var(--help); }
   #list-head[hidden] { display: none; }
@@ -178,11 +162,6 @@
     white-space: normal;
   }
   .adv-progress[hidden] { display: none; }
-
-  /* The radio-style status button group (.status-btn-group / .status-btn) is
-     now shared from web_common.NAV_CSS (injected after this <style>), so the
-     local copy was removed. Captures' buttons carry no data-tone, so they keep
-     the default cyan .active. */
 
   button {
     background: var(--input-bg); color: var(--fg);
@@ -276,12 +255,10 @@
     white-space: pre;
   }
   .word-strip .word:hover { background: #21262d; }
-  /* Alternating per-member tints inside a GROUP's karaoke band. The hue
-     is deliberately subtle — must read as "same row, different segment",
-     not "different speaker". Single-capture word strips don't add either
-     class, so they look unchanged. The .active / .selected rules below
-     override these via their own background, so the karaoke + selection
-     highlights always win visually over the segment tint. */
+  /* Alternating per-member tints inside a GROUP's karaoke band (single
+     captures get neither class). Deliberately subtle: "same row, different
+     segment", not "different speaker". The .active / .selected backgrounds
+     below beat the plain tint, but not the :hover tint (higher specificity). */
   .word-strip .word.mem-even { background: rgba(80, 160, 220, 0.10); }
   .word-strip .word.mem-odd  { background: rgba(220, 180, 100, 0.10); }
   .word-strip .word.mem-even:hover { background: rgba(80, 160, 220, 0.22); }
@@ -488,12 +465,9 @@
   #toast.show { opacity: 1; }
   #toast.err { border-color: var(--red); color: var(--red); }
 
-  /* ---- Capture grouping ----
-   * Selection state lives in JS and projects to per-row .selected CSS.
-   * The sticky action bar appears when ≥1 row is selected; Σ duration
-   * turns red when the server reports the selection exceeds the
-   * configured sample cap (CAPTURES_SAMPLE_MAX_DURATION_S, ≤30 s — the
-   * Whisper-encoder window), with an amber near-cap warning below that. */
+  /* Capture grouping. The Σ meter turns red when the merge-estimate says
+   * the selection overflows CAPTURES_SAMPLE_MAX_DURATION_S (≤30 s, the
+   * Whisper-encoder window) and amber above 80% of it. */
   .cc-head .sel-checkbox {
     margin: 0 0.4rem 0 0; cursor: pointer;
   }
@@ -540,7 +514,6 @@
   #action-bar .summary { color: var(--help); font-size: var(--fs-sm); }
   #action-bar .spacer { flex: 1; }
 
-  /* Merge modal */
   #merge-modal {
     position: fixed; inset: 0; background: rgba(0,0,0,0.6);
     z-index: 1000; align-items: center; justify-content: center;
@@ -584,7 +557,6 @@
     font-size: var(--fs-xs); margin-right: 0.4rem;
   }
 
-  /* Auto-propose merges modal */
   #propose-modal {
     position: fixed; inset: 0; background: rgba(0,0,0,0.6);
     z-index: 1000; align-items: center; justify-content: center;
@@ -800,7 +772,6 @@
     max-height: 6rem; overflow: auto;
   }
 
-  /* Batch / Tinder-style review mode */
   #propose-batch {
     margin: 0.5rem 0;
   }
@@ -817,7 +788,6 @@
     padding: 0.75rem 0.9rem; background: var(--input-bg);
     transition: transform 0.25s ease-out, opacity 0.25s ease-out;
     will-change: transform, opacity;
-    /* Inner proposal renders identically to a list-mode card. */
   }
   #propose-batch .batch-card.swiping {
     transition: none;
@@ -904,9 +874,9 @@
     <span class="spacer"></span>
     <span class="hdr-right">{{SEV_PILLS}}{{SCALE_PICKER}}{{RELOAD}}{{LOGOUT}}</span>
   </div>
-  <!-- Row 2 — quick filters + indicators only (status switch, model, counts,
-       capture-state). Search lives on row 3 so its long placeholder has room
-       and this row never truncates. -->
+  <!-- Row 2 — quick filters + indicators only (status switch with counts,
+       model, speaker, capture-state). Search lives on row 3 so this row never
+       truncates. -->
   <div class="subbar">
     <span class="subbar-title">Captures</span>
     <span id="capture-state" class="capture-state off">capture OFF</span>
@@ -1072,9 +1042,7 @@
 (function() {
   'use strict';
 
-  // Merged-sample duration cap (s), injected server-side from
-  // CAPTURES_SAMPLE_MAX_DURATION_S so the selection/proposal meters show the
-  // real cap instead of a stale literal.
+  // Merged-sample duration cap (s), injected from CAPTURES_SAMPLE_MAX_DURATION_S.
   var SAMPLE_CAP_S = {{SAMPLE_CAP_S}};
   // Most members one merge may hold: the server's member_ids max_length and
   // the proposer's _MAX_MEMBERS.
@@ -1083,17 +1051,9 @@
   // (text_corrections.CAP_CORRECTION_FIELD; it trims, then cuts there).
   var CHIP_TEXT_MAX = 200;
 
-  // Sign-in is handled by the shared full-screen login gate (web_common):
-  // on a 401 we call window._showLoginGate(), which prompts for a key and
-  // reloads the page on success.
-
-  // -------------------------------------------------------------------
-  // Toast
-  // -------------------------------------------------------------------
   var _toastTimer = null;
-  // toast(msg, err, action?) — action = {label, fn, ms}: renders a button
-  // (Undo) and keeps the toast up for `ms` (default 8 s). Existing callers
-  // pass two args and are unchanged.
+  // action = {label, fn, ms}: adds a button (label defaults to Undo) and
+  // keeps the toast up for `ms` (default 8 s).
   function toast(msg, err, action) {
     var el = document.getElementById('toast');
     var msgEl = document.getElementById('toast-msg');
@@ -1119,7 +1079,7 @@
     }, action ? (action.ms || 8000) : (err ? 5000 : 2500));
   }
 
-  // Themed yes/no confirm dialog (replaces the browser-native confirm()).
+  // Themed yes/no confirm dialog.
   // Returns a Promise<bool>. opts: {title, body, confirmLabel, danger,
   // focusCancel}. Enter in the dialog confirms (unless Cancel has focus),
   // Esc / Cancel / backdrop-click reject. focusCancel is for a prompt the
@@ -1168,9 +1128,6 @@
     });
   }
 
-  // -------------------------------------------------------------------
-  // API
-  // -------------------------------------------------------------------
   async function api(method, url, body) {
     // Session cookie sent automatically; mutations carry the CSRF token.
     var headers = { 'Content-Type': 'application/json' };
@@ -1212,19 +1169,13 @@
   {{NOT_ADMIN_LANDING_JS}}
 
   async function _renderAdminOnlyIfNonAdmin() {
-    // A 403 here does NOT prove the caller lacks the captures page: six
-    // endpoints (export, clear, reprocess-all, reprocess-vad and the two
-    // status routes) carry a second require_admin. Keying the landing on
-    // is_admin===false therefore wiped <main> for a legitimate non-admin
-    // captures user who clicked "Reprocess all", telling them their key
-    // grants no access to a page they do have — recoverable only by
-    // reloading. Render it only when whoami actually shows no captures
-    // scope; fall back to the old test only if permissions are absent.
-    // Admins are stored with permissions '{}' (they bypass the policy), so
-    // whoami hands them pages = {} — truthy in JS, with no `captures` key.
-    // Reading that as "no scope" wiped <main> for every admin who hit a
-    // 403 (stale CSRF token, host gate). An admin can never lack the page,
-    // and an EMPTY map means "permissions absent", not "no scope".
+    // A 403 does NOT prove the caller lacks the captures page: six endpoints
+    // (export, clear, reprocess-all, reprocess-vad and the two status routes)
+    // also require admin. So render the landing only when whoami shows no
+    // captures scope, and fall back to is_admin===false only when permissions
+    // are absent. Admins are stored with permissions '{}', so whoami hands
+    // them pages = {} (truthy, no `captures` key): an EMPTY map means
+    // "permissions absent", and an admin never lacks the page.
     try {
       var r = await fetch('/auth/whoami');
       if (r.ok) {
@@ -1246,13 +1197,10 @@
     return false;
   }
 
-  // -------------------------------------------------------------------
-  // Status button group (radio-style)
-  // -------------------------------------------------------------------
-  // Replaces the per-row <select> + the filter-bar dropdown with a
-  // 1-click switch. Returns { root, setValue }: setValue(v) updates the
-  // visible selection WITHOUT firing onChange (used on server round-trip
-  // echo so the user's click doesn't trigger a second save).
+  // Radio-style status switch. Returns { root, setValue, setCounts }:
+  // setValue(v) updates the visible selection WITHOUT firing onChange (used
+  // on server round-trip echo so the user's click doesn't trigger a second
+  // save).
   function buildStatusButtonGroup(options, current, onChange) {
     var root = document.createElement('div');
     root.className = 'status-btn-group';
@@ -1302,9 +1250,6 @@
     return { root: root, setValue: setValue, setCounts: setCounts };
   }
 
-  // -------------------------------------------------------------------
-  // State
-  // -------------------------------------------------------------------
   var _allCaptures = [];
   var _allSamples = [];
   // Cursor for the next page of groups, or null when they are all loaded.
@@ -1319,13 +1264,10 @@
   var _loadSeq = 0;
   var _counts = {};
   var _openRows = {};   // cid -> { audio, blobUrl, wordEls, words, finalText, dirty, corrections, ... }
-  var _openSamples = {}; // sid -> { audio } — for blob-URL cleanup on render() / beforeunload
+  var _openSamples = {}; // sid -> { audio, state } — blob-URL cleanup on render() / beforeunload, dirty checks
   var _selection = new Set();   // capture ids currently selected for merge
   var _lastSelectId = null;     // anchor for shift-range select
 
-  // -------------------------------------------------------------------
-  // Selection helpers
-  // -------------------------------------------------------------------
   function _handleSelectionClick(row, shift) {
     var visibleIds = applyFilters(_allCaptures)
       .filter(function(r) { return !r.sample_id; })
@@ -1598,10 +1540,9 @@
     var meter = document.getElementById('ab-meter');
     var gap_ms = 300;
     var totalWithGaps = totalSec + (gap_ms / 1000) * Math.max(0, n - 1);
-    // Instant raw estimate (prefixed ~), refined to the trimmed total by a
-    // debounced merge-estimate fetch below. The cap is on TRIMMED audio now,
-    // so the raw sum must not hard-gate Merge — a selection that trims to
-    // within the cap is valid even if its raw sum is larger.
+    // Instant raw estimate (prefixed ~), refined to the trimmed total by the
+    // debounced merge-estimate fetch below. The cap applies to TRIMMED audio,
+    // so the raw sum must not gate Merge.
     meter.textContent = 'Σ ~' + totalWithGaps.toFixed(2)
       + ' s / ' + SAMPLE_CAP_S.toFixed(2) + ' s';
     meter.classList.remove('amber', 'red');
@@ -1651,9 +1592,8 @@
     }
   }
 
-  // Debounced trimmed-duration estimate for the manual-selection meter. Mirrors
-  // batch mode (server computes the trimmed total via the same cached helper);
-  // here it's fetched lazily for the current selection. A token guards against
+  // Debounced trimmed-duration estimate for the manual-selection meter (the
+  // server reuses the proposer's cached per-capture trim). A token drops
   // out-of-order responses when the selection changes mid-flight.
   var _meterEstimateTimer = null;
   var _meterEstimateToken = 0;
@@ -1674,8 +1614,7 @@
           meter.textContent = 'Σ ' + t.toFixed(2)
             + ' s / ' + capS.toFixed(2) + ' s';
           meter.classList.remove('amber', 'red');
-          // Amber = "approaching cap"; derive it from the configurable cap
-          // (80%) instead of a literal 24 s tied to the old 30 s default.
+          // Amber = approaching the cap (80% of it).
           if (!j.fits) meter.classList.add('red');
           else if (t > capS * 0.8) meter.classList.add('amber');
           mergeBtn.disabled = !j.fits;
@@ -1702,15 +1641,13 @@
     var d = document.createElement('div');
     d.textContent = s == null ? '' : String(s);
     // textContent->innerHTML escapes & < > but NOT quotes; escape those too so
-    // the result is safe in a double-/single-quoted attribute (the model
-    // filter renders model ids into option value="..."). Mirrors the reports
-    // page, which was hardened for this same sink.
+    // the result is safe in a quoted attribute (the model filter renders
+    // model ids into option value="...").
     return d.innerHTML.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
   }
 
-  // Filter state — replaces the previous <select id="filt-status">.
-  // Initialised to 'new' to preserve the original page default. The
-  // status filter button-group bootstrap below mirrors this value.
+  // Status filter. 'new' is the page default (left out of the URL by
+  // _syncUrl); the status button-group bootstrap below starts from it.
   var _filtStatus = 'new';
   // Speaker filter (admins): user ids picked in the shared pick-list; sent
   // to the list API as a comma-separated user_id so the server narrows.
@@ -1862,7 +1799,6 @@
     _statusGroup.setCounts(c);
   }
 
-  // ---- summary strip ------------------------------------------------
   var STRIP_KEY = 'captures-strip-collapsed';
   function _stripCollapsed() { try { return localStorage.getItem(STRIP_KEY) === '1'; } catch (_) { return false; } }
   function _setStripCollapsed(on) {
@@ -1890,7 +1826,6 @@
     var body = document.getElementById('ss-body');
     body.innerHTML = '';
 
-    // 1 · recorded, with the duration-by-status bar
     var t1 = _el('div');
     t1.appendChild(_el('div', 'ss-k', 'recorded' + (_isAdmin ? ', all speakers' : '')));
     var v1 = _el('div', 'ss-v', fmtHours(total.s));
@@ -1912,7 +1847,6 @@
     t1.appendChild(stack); t1.appendChild(leg);
     body.appendChild(t1);
 
-    // 2 · review progress
     var t2 = _el('div');
     t2.appendChild(_el('div', 'ss-k', 'review progress'));
     var pct = total.n ? Math.round((rv.handled_n || 0) / total.n * 100) : 0;
@@ -1923,7 +1857,6 @@
     t2.appendChild(_el('div', 'ss-sub', nn + ' new' + (nn && rv.oldest_new_ts ? ' · oldest ' + fmtAge(rv.oldest_new_ts) : '')));
     body.appendChild(t2);
 
-    // 3 · ready for training
     var t3 = _el('div');
     t3.appendChild(_el('div', 'ss-k', 'ready for training'));
     var v3 = _el('div', 'ss-v', fmtHours(rd.s));
@@ -1932,7 +1865,6 @@
     t3.appendChild(_el('div', 'ss-sub', rd.week_n ? '+' + fmtHours(rd.week_s) + ' this week (' + rd.week_n + ')' : 'nothing new this week'));
     body.appendChild(t3);
 
-    // 4 · by speaker
     var t4 = _el('div');
     t4.appendChild(_el('div', 'ss-k', 'by speaker'));
     var users = st.by_user || [];
@@ -1965,9 +1897,6 @@
     el.classList.toggle('off', !enabled);
   }
 
-  // -------------------------------------------------------------------
-  // List card (collapsed)
-  // -------------------------------------------------------------------
   // The card's one-line text preview. `words` are the aligned karaoke words
   // (from the detail GET, so only once the card was expanded); without them
   // an anchored chip falls back to the unaligned nearest match.
@@ -1995,8 +1924,6 @@
 
     var head = document.createElement('div');
     head.className = 'cc-head';
-    // Checkbox is OUTSIDE the click-to-expand zone semantically (we
-    // stopPropagation on it).
     var cb = document.createElement('input');
     cb.type = 'checkbox';
     cb.className = 'sel-checkbox';
@@ -2016,10 +1943,8 @@
         escapeHtml(r.status || 'new') + '</span>' +
       (r.model ? '<span class="pill">' + escapeHtml(r.model) + '</span>' : '') +
       (r.language ? '<span class="pill">' + escapeHtml(r.language) + '</span>' : '') +
-      // Translation tracks this capture carries. Only the English one is
-      // ever training data (Whisper's translate task targets English and
-      // nothing else); the rest are review context, so the chip says which
-      // languages exist rather than implying they are all usable.
+      // Lists which languages exist; only EN is ever training data
+      // (Whisper's translate task targets English only).
       (r.translations && Object.keys(r.translations).length
         ? '<span class="pill pill-mt" title="translations on this capture'
           + ' (only EN, on non-English transcribe captures, is eligible as'
@@ -2067,9 +1992,6 @@
     return card;
   }
 
-  // -------------------------------------------------------------------
-  // Expanded body (lazy: built on first open)
-  // -------------------------------------------------------------------
   // A header click collapses an open card, which wipes its body and state:
   // ask first when that card (`st`) holds unsaved edits.
   async function _okToCollapse(st) {
@@ -2179,7 +2101,6 @@
     };
     _openRows[r.id] = state;
 
-    // --- audio player ---
     var audio = document.createElement('audio');
     audio.preload = 'metadata';
     body.appendChild(_attachCompactPlayer(audio));
@@ -2219,9 +2140,7 @@
       return resp.blob();
     }).then(function(blob) {
       var url = URL.createObjectURL(blob);
-      // If the row was collapsed mid-fetch, `state` is no longer in
-      // _openRows — assigning blobUrl to it would orphan the URL
-      // (no later cleanup sees it). Revoke immediately in that case.
+      // Collapsed mid-fetch: no later cleanup would revoke this URL.
       if (_openRows[r.id] !== state) { URL.revokeObjectURL(url); return; }
       state.blobUrl = url;
       audio.src = url;
@@ -2231,7 +2150,6 @@
       }
     });
 
-    // --- Corrections section: karaoke band + chip list inside one card. ---
     var corrSec = document.createElement('div');
     corrSec.className = 'cc-section';
     corrSec.innerHTML = '<h3>Corrections</h3>'
@@ -2266,9 +2184,7 @@
     function onTimeUpdate() {
       var t = audio.currentTime;
       var idx = -1;
-      // Linear scan is fine for ≤ a few hundred words. If we ever blow
-      // past that, a binary search keyed on word.start would still be
-      // under 1 ms per tick.
+      // Linear scan: fine for the few hundred words a capture holds.
       for (var i = 0; i < state.words.length; i++) {
         var s = state.words[i].start || 0;
         var e = state.words[i].end || 0;
@@ -2278,7 +2194,6 @@
     }
     audio.addEventListener('timeupdate', onTimeUpdate);
 
-    // --- raw / final reference lines ---
     function textLine(klass, label, value) {
       var row = document.createElement('div');
       row.className = 'cc-textline ' + klass;
@@ -2296,18 +2211,15 @@
     body.appendChild(textLine(
       'post-processing', 'post-processing (training)',
       state.finalText));
-    // Runtime/symbol-form `final` shown as a secondary line so reviewers
-    // can compare against what the dictation client sees in real time.
-    // Tagged with the rule-difference so the relationship is explicit.
+    // Runtime/symbol-form `final`, so reviewers can compare against what
+    // the dictation client sees in real time.
     if (r.final && r.final !== state.finalText) {
       body.appendChild(textLine(
         'post-processing runtime',
         'runtime (dictation-map applied)', r.final));
     }
 
-    // Chip list nests inside the same Corrections section started above,
-    // so the word band and its chip editors render as one harmonized
-    // surface (matches the group view's layout).
+    // Chips join the Corrections section above, as in the group view.
     var chipBox = document.createElement('div');
     chipBox.className = 'cc-corrections';
     corrSec.appendChild(chipBox);
@@ -2315,11 +2227,6 @@
     state.chipBox = chipBox;
     renderChips(state);
 
-    // --- Final result (read-only preview) ---
-    // Locked output preview: shows what Whisper would learn to emit
-    // for this audio = post-processing text + word-chip corrections.
-    // Not editable — to change it, edit chips above or change pipeline
-    // rules on /quick-config.
     var gtSec = document.createElement('div');
     gtSec.className = 'cc-section';
     gtSec.innerHTML = '<h3>Final result</h3>'
@@ -2334,16 +2241,11 @@
     gtSec.appendChild(gtArea);
     body.appendChild(gtSec);
     state.gtArea = gtArea;
-    // Initial paint: layer existing chip corrections onto finalText so
-    // the preview matches what would be exported right now.
     applyCorrectionsToGround(state);
 
-    // --- translations ---
-    // One track per language, so a reviewer can read them apart. Only the
-    // English one is exportable as translate-task training data, and only
-    // once the capture is marked `ready` — an unreviewed line is a cascade
-    // pseudo-label (Whisper → HY-MT) whose errors compound, which is
-    // exactly the material a finetuning run should not be fed silently.
+    // Only the English track is exported (as translate-task data), and only
+    // once the capture is `ready`: an unreviewed line is a cascade
+    // pseudo-label (Whisper → HY-MT) whose errors compound.
     var trs = r.translations || {};
     var trLangs = Object.keys(trs);
     if (trLangs.length) {
@@ -2399,7 +2301,6 @@
       body.appendChild(trSec);
     }
 
-    // --- notes ---
     var notesSec = document.createElement('div');
     notesSec.className = 'cc-section cc-notes';
     notesSec.innerHTML = '<h3>Admin notes</h3>';
@@ -2412,7 +2313,6 @@
     notesSec.appendChild(notesArea);
     body.appendChild(notesSec);
 
-    // --- action row ---
     var actions = document.createElement('div');
     actions.className = 'cc-actions';
     var statusLbl = document.createElement('span');
@@ -2425,11 +2325,8 @@
        {value: 'dismissed', label: 'Dismissed'}],
       state.newStatus,
       async function(v) {
-        // Auto-save on click. Narrow PATCH: status only — does NOT
-        // include corrections or baseline_corrections, so an unsaved
-        // chip edit stays dirty and only persists when the user clicks
-        // Save. Also avoids the three-way-merge path; status has no
-        // concurrency hazard.
+        // Status-only PATCH: an unsaved chip edit stays dirty until Save,
+        // and status needs no three-way merge.
         var prev = state.newStatus;
         state.newStatus = v;
         // Lets a Save reply sent before this click keep it instead of
@@ -2480,13 +2377,7 @@
     spc.className = 'spacer';
     actions.appendChild(spc);
 
-    // (The manual per-capture silence-trim button was retired — trimming is
-    // now applied uniformly when a capture is merged into a sample. A single
-    // long capture can be turned into a trimmed sample via "Merge into sample".)
-
-    // Reprocess — re-runs PIPELINE_RULES on the stored `raw` so the
-    // training-form text reflects current rule edits without waiting
-    // for the bulk reapply job.
+    // Picks up rule edits without waiting for the bulk reapply job.
     var reBtn = document.createElement('button');
     reBtn.type = 'button';
     reBtn.textContent = 'Reprocess';
@@ -2510,7 +2401,6 @@
 
     body.appendChild(actions);
 
-    // Initial selection paint from existing corrections
     state.corrections.forEach(function(c) {
       if (typeof c.idx !== 'number') return;
       var end = (typeof c.idx_end === 'number') ? c.idx_end : c.idx;
@@ -2518,9 +2408,6 @@
     });
   }
 
-  // -------------------------------------------------------------------
-  // Word selection / chip helpers (shift-click range extends last chip)
-  // -------------------------------------------------------------------
   function selectWord(state, idx, on) {
     var el = state.wordEls[idx];
     if (el) el.classList.toggle('selected', on);
@@ -2618,11 +2505,8 @@
 
   function onWordClick(state, idx, shiftKey) {
     var clicked = state.words[idx];
-    // Mirror the keyboard cursor on every click so a mouse user can
-    // grab the keyboard mid-flow and resume navigation from where they
-    // clicked. _redrawCursor is defined further down (function decl
-    // hoisted inside the IIFE) — call only if the strip is keyboard-
-    // wired (older code paths leave state.stripEl unset).
+    // Mirror the keyboard cursor on every click, so keyboard navigation
+    // resumes from the clicked word.
     if (state.stripEl && typeof _redrawCursor === 'function') {
       state.cursorIdx = idx;
       _redrawCursor(state);
@@ -2669,7 +2553,6 @@
   }
 
   function refreshAllReplacementsInline(state) {
-    // Walk every chip; rebuild its inline sibling. Cheap (≤ chip count).
     state.corrections.forEach(function(c) { setReplacementInline(state, c); });
   }
 
@@ -2735,12 +2618,8 @@
   function renderChips(state) {
     var box = state.chipBox;
     box.innerHTML = '';
-    // Self-heal: chips may have been saved with `wrong` = the raw STT
-    // form before the karaoke band started showing post-pipeline
-    // words. Recompute from the current display words so the chip,
-    // strike-through, and applyCorrectionsToGround all agree on what
-    // text the chip is replacing. A heal is an edit: the stored chip
-    // still carries the old `wrong` (the export finds it only through the
+    // Self-heal each chip's `wrong` (see recomputeWrong). A heal is an
+    // edit: the stored chip still carries the old `wrong` (the export finds it only through the
     // same words at its idx, see _applyChipsToText). It marks the card unsaved
     // only when the server would store something new (it keeps `wrong`
     // trimmed and cut at CHIP_TEXT_MAX) and the user saves by hand: a
@@ -2807,18 +2686,13 @@
       inp.addEventListener('keydown', function(ev) {
         if (ev.key === 'Enter') {
           ev.preventDefault();
-          // Empty input + Enter = remove the chip (per the keyboard
-          // spec — "Removing all letters from a edited word + enter
-          // removes correction").
           if (!(inp.value || '').trim()) {
             removeChip(state, i);
           } else {
             applyCorrectionsToGround(state);
             inp.blur();
           }
-          // Return focus to the word-strip so navigation resumes
-          // immediately. No-op if state.stripEl wasn't wired up (e.g.,
-          // older code paths that don't use the keyboard binder).
+          // Back to the word strip, so keyboard navigation resumes.
           if (state.stripEl) {
             try { state.stripEl.focus({ preventScroll: true }); } catch (_) {}
           }
@@ -2857,9 +2731,8 @@
     var area = state.gtArea;
     if (!area) return;
     var words = state.words || [];
-    // First chip covering each word index (chips are word-indexed; idx_end
-    // optional). idx-less chips can't be placed positionally — they're shown
-    // in the Corrections list and skipped here (rare; word-click chips have idx).
+    // First chip covering each word index. An idx-less chip can't be placed
+    // by position: it shows only in the Corrections list.
     var cover = new Array(words.length);
     (state.corrections || []).forEach(function(c) {
       // A blank correction is dropped on save, so it changes nothing here.
@@ -2942,16 +2815,10 @@
   }
 
   function applyCorrectionsToGround(state) {
-    // Karaoke-enabled surfaces (group + proposal preview) render the ground as
-    // per-word spans; the single-capture card keeps the original plain-text
-    // substitution preview.
     if (state.karaokeGround) { _renderGroundSpans(state); return; }
-    // Substitute each chip's wrong text with its correct text in
-    // state.finalText, through the same helper the export mirrors so this
-    // preview shows exactly the text the manifest will carry.
-    //
-    // The GT element is a read-only preview (textContent, not value) — markDirty
-    // stays off here because the user changes GT only indirectly via a chip.
+    // The helper the export mirrors, so this shows the text the manifest
+    // will carry. Read-only: the user changes it only through a chip, so no
+    // markDirty here.
     state.gtArea.textContent =
       _applyChipsToText(state.finalText, state.corrections, state.words);
   }
@@ -2961,10 +2828,8 @@
     // Lets a Save tell whether the user edited while its request ran.
     state.editGen = (state.editGen || 0) + 1;
     if (state.dirtyEl) state.dirtyEl.classList.remove('hidden');
-    // Optional auto-save hook — proposal panels use this to debounce a
-    // PATCH to the affected member captures whenever the chip set
-    // changes. The capture/group flows leave this unset and rely on
-    // their explicit Save button instead.
+    // Proposal previews auto-save through this hook; the capture and group
+    // cards leave it unset and save by button.
     if (typeof state.onMarkDirty === 'function') {
       try { state.onMarkDirty(); } catch (_) {}
     }
@@ -2974,9 +2839,6 @@
     if (state.dirtyEl) state.dirtyEl.classList.add('hidden');
   }
 
-  // -------------------------------------------------------------------
-  // Save / Delete
-  // -------------------------------------------------------------------
   async function onSave(state, r, btn) {
     // One Save at a time, as on the group card: a second one sent before
     // the first reply carries the stale baseline, and the server's merge
@@ -3088,7 +2950,6 @@
           if (k in fresh) r[k] = fresh[k];
         });
         _syncCapturePreview(state, r);
-        // Update local state.finalText so chips/preview reflect new text.
         state.finalText = (fresh.text_for_training ?? fresh.final ?? fresh.raw) || '';
         if (state.gtArea) {
           state.gtArea.textContent = state.finalText;
@@ -3110,9 +2971,6 @@
     }
   }
 
-  // -------------------------------------------------------------------
-  // Clear-all (typed confirmation)
-  // -------------------------------------------------------------------
   function onClearAll() {
     _closeAdvMenu();
     var m = document.getElementById('confirm-modal');
@@ -3153,10 +3011,6 @@
     };
   }
 
-  // -------------------------------------------------------------------
-  // Export
-  // -------------------------------------------------------------------
-  // --- Advanced menu (bulk reprocess + destructive actions) ---
   function _closeAdvMenu() {
     var m = document.getElementById('adv-menu');
     var b = document.getElementById('btn-advanced');
@@ -3172,8 +3026,8 @@
     if (b) b.setAttribute('aria-expanded', open ? 'true' : 'false');
   }
 
-  // Shared progress poller for the two background jobs. Polls the job's
-  // status endpoint into the Advanced menu's progress line until it finishes.
+  // Shared progress poller for the two background jobs (reprocess-all,
+  // reprocess-vad).
   var _jobPollTimer = null;
   var _jobPollToken = 0;
   function _pollJob(statusUrl, render) {
@@ -3191,27 +3045,19 @@
         } else {
           _jobPollTimer = null;
           var failed = !!(s && s.status === 'error');
-          // Refresh the list (durations / stale pills may have changed) —
-          // unless the reviewer is mid-edit: this finish is not their action.
+          // Durations / stale pills may have changed.
           _loadUnlessDirty(failed ? 'Reprocess failed: ' + (s.error || '') : 'Reprocess done.', failed);
-          // The progress popover is a sibling of (not inside) #adv-menu so it
-          // stays visible during the run; closing the menu does NOT dismiss it.
-          // Leave the final summary up briefly, then hide it — unless a newer
-          // job has since taken over the popover.
+          // #adv-progress sits outside #adv-menu, so closing the menu leaves
+          // it up: hide the summary after a while, unless a newer job took it.
           setTimeout(function() {
             if (prog && myToken === _jobPollToken) prog.hidden = true;
           }, 6000);
         }
       }).catch(function(e) {
-        // A transient status fetch failure (network blip, momentary 5xx) must
-        // not permanently strand the poller while the job keeps running
-        // server-side — retry on the same cadence until a newer job supersedes
-        // this one (token guard) or the status resolves terminal. An auth
-        // rejection is terminal, NOT transient: api() already re-opened the
-        // token modal (401) or rendered the no-access landing (403), and
-        // retrying would re-fire that side effect every second — clearing the
-        // modal's key input (locking the user out) or re-rendering the landing
-        // — so stop polling on those.
+        // A transient failure (network blip, 5xx) retries, as the job runs on
+        // server-side. An auth rejection stops: api() already opened the token
+        // modal (401) or the no-access landing (403), and a retry each second
+        // would re-fire that, clearing the modal's key input.
         if (e && (e.message === 'unauthorized' || e.message === 'not-admin')) {
           if (myToken === _jobPollToken) _jobPollTimer = null;
           return;
@@ -3222,9 +3068,7 @@
     tick();
   }
 
-  // Bulk-reprocess (text): re-run PIPELINE_RULES on every capture's `raw`,
-  // updating final + training text (and unlocked sample transcripts). Audio
-  // is NOT rebuilt. Idempotent background job; progress shown in the menu.
+  // Idempotent server job; it also updates unlocked samples' transcripts.
   async function onReprocessAll() {
     _closeAdvMenu();
     if (!(await _confirm({
@@ -3246,8 +3090,6 @@
     }
   }
 
-  // Bulk-reprocess (audio): rebuild every sample's merged WAV with the current
-  // global silence settings. Skips locked samples; over-cap → flagged stale.
   async function onReprocessVad() {
     _closeAdvMenu();
     if (!(await _confirm({
@@ -3297,16 +3139,10 @@
     });
   }
 
-  // -------------------------------------------------------------------
-  // Render loop — assigned (not function-declared) so the groups-aware
-  // override further down replaces it without leaving a dead shadowed
-  // singleton-only definition in the file.
-  // -------------------------------------------------------------------
+  // Assigned, not function-declared: the groups-aware render further down
+  // sets it, with no dead shadowed definition left behind.
   var render;
 
-  // -------------------------------------------------------------------
-  // Load
-  // -------------------------------------------------------------------
   async function load(agreed) {
     var seq = ++_loadSeq;
     // The edits the caller already agreed to drop (none when it found no
@@ -3334,7 +3170,7 @@
       _me = j.user_id || null;
       _isAdmin = !!j.is_admin;
       if (!_isAdmin && _filtSpeakers.length) { _filtSpeakers = []; }
-      // Pull groups in parallel-shape; failure is non-fatal (admin sees no groups).
+      // A failed groups GET is non-fatal: the list just shows no groups.
       var qs = _speakerQs(), jg = null;
       try {
         jg = await api('GET', '/captures/api/samples?limit=200' + qs);
@@ -3458,9 +3294,6 @@
     reloadStats();
   }
 
-  // -------------------------------------------------------------------
-  // Merge modal
-  // -------------------------------------------------------------------
   function _endsSentence(text) {
     // Mirror of Python _ends_sentence: sentence-final punctuation before
     // any closing quotes/brackets (and the space French puts before »),
@@ -3472,11 +3305,17 @@
   }
 
   function _applyChipsToText(text, corrections, words) {
-    // Mirror of Python _apply_chips_to_text — walk chips in idx order
-    // and substitute `wrong` → `correct` in the text. Used to layer
-    // each member's chip corrections on top of post-processing before
-    // joining into the group's final-result preview. Same matching rules
-    // as the server: whole-word occurrences only, an anchored chip searches
+    // Mirror of Python _apply_chips_to_text: substitute each chip's `wrong`
+    // → `correct`. Same matching rules as the server: whole-word
+    // occurrences only, an anchored chip searches past the previous anchored replacement and takes the occurrence
+    // nearest its idx over the verbatim and the whitespace-flexible passes
+    // (any whitespace run in `wrong` matches any whitespace run in the
+    // text); an anchorless chip takes the first, verbatim before flexible.
+    // `words` (the aligned karaoke words the chips were made on) maps idx
+    // onto the text's token position, past removed words, and is searched
+    // next to a possibly stale stored `wrong` (the words at idx..idx_end,
+    // what renderChips heals `wrong` to; a tie keeps those words unless
+    // the stored `wrong` covers them).
     // past the previous anchored replacement and takes the occurrence
     // nearest its idx over the verbatim and the whitespace-flexible passes
     // (any whitespace run in `wrong` matches any whitespace run in the
@@ -3750,9 +3589,8 @@
     if (rows.length < 1 || document.getElementById('ab-merge').disabled) return;
     var modal = document.getElementById('merge-modal');
     _renderMergePreview(rows);
-    // Join style + inter-member silence are global settings now; the local
-    // estimate uses a nominal 300 ms gap (the server is authoritative for the
-    // real merge + the refined merge-estimate total).
+    // Join style and inter-member silence are global settings; the local
+    // estimate assumes a nominal 300 ms gap (merge-estimate refines it).
     var GAP_EST_MS = 300;
     var ta = document.getElementById('merge-transcript');
     // Initial static transcript (space-joined); the karaoke preview replaces
@@ -3792,9 +3630,6 @@
         var gap = GAP_EST_MS / 1000;
         return totalAudio + gap * Math.max(0, rows.length - 1);
       },
-      // Render the karaoke Final result into the modal's prominent
-      // #merge-transcript box (no duplicate in-panel Final result), so it
-      // highlights word-by-word on playback like the batch view.
       { groundEl: document.getElementById('merge-transcript') }
     );
     slot.appendChild(previewCtl.toggleBtn);
@@ -3829,24 +3664,12 @@
     modal.classList.add('show');
   }
 
-  // -------------------------------------------------------------------
-  // Merge preview audio + karaoke — shared component used by both the
-  // propose-modal proposal cards and the manual merge-modal.
-  //
-  // Architecture (matches the proven a669f05 play/pause pattern):
-  //   - ONE module-global detached <audio> (`_previewAudio`) — Firefox
-  //     hates per-card attached <audio controls> elements and aborts
-  //     the media load on ancestor display:none, surfacing as
-  //     "NS_ERROR_DOM_MEDIA_ABORT_ERR". A single shared detached
-  //     element bypasses that whole class of failures.
-  //   - Per card: a toggle button + a compact panel containing a small
-  //     custom scrubber, a "0:00 / 0:00" time label, and the karaoke
-  //     word-strip. The shared audio is rebound to whichever card is
-  //     currently active.
-  //   - Each Activation rebinds the shared audio: revoke old blob,
-  //     fetch audio + words in parallel, set new src, swap karaoke
-  //     binding to this card's word-strip, play.
-  // -------------------------------------------------------------------
+  // Merge preview audio + karaoke, shared by the proposal cards and the
+  // manual merge modal. ONE detached <audio> serves every card: Firefox
+  // aborts the media load (NS_ERROR_DOM_MEDIA_ABORT_ERR) of an attached
+  // <audio controls> whose ancestor goes display:none. Each card has its
+  // own toggle + panel (scrubber, time, word strip); a ▶ rebinds the shared
+  // audio to that card.
   var _previewAudio = null;        // singleton detached <audio>; lazy-init
   var _previewBlobUrl = null;      // current blob URL (revoked on stop)
   var _previewActivePanel = null;  // currently-active panel (or null)
@@ -3863,8 +3686,6 @@
   function _getPreviewAudio() {
     if (_previewAudio) return _previewAudio;
     _previewAudio = document.createElement('audio');
-    // Intentionally NOT appended to DOM, NOT controls=true — the prior
-    // attached + controls implementation broke Firefox's media fetch.
     _previewAudio.preload = 'auto';
     return _previewAudio;
   }
@@ -3898,9 +3719,8 @@
     }
   }
 
-  // onClick (optional): function(idx, shiftKey) called when a word span
-  // is clicked. Used by proposal panels to wire onWordClick(state, …)
-  // for chip creation; merge-modal (read-only word-strip) passes nothing.
+  // onClick (optional): function(idx, shiftKey), called on a click on a
+  // word span.
   function _renderWordStrip(stripEl, words, onClick) {
     stripEl.innerHTML = '';
     var els = [];
@@ -3946,11 +3766,9 @@
     else if (w.bottom > bottom) strip.scrollTop += w.bottom - bottom;
   }
 
-  // Karaoke highlight shared by every surface (single-capture, group expand,
-  // proposal preview): toggles `.active` on both the Corrections word-strip
-  // span AND the matching Final-result span (state.wordToGround), so the
-  // current word lights up in both places as audio plays. `idx` is an index
-  // into state.words; -1 clears.
+  // Karaoke highlight: `.active` on the strip span AND the matching
+  // Final-result span (state.wordToGround). `idx` indexes state.words; -1
+  // clears.
   function _setActiveWord(state, idx) {
     if (state._activeWordIdx === idx) return;
     var prev = state._activeWordIdx;
@@ -3972,13 +3790,9 @@
     }
   }
 
-  // -------------------------------------------------------------------
-  // Word-strip keyboard navigation — cursor + arrow keys + type-to-edit
-  // for chip corrections. Applied wherever a chip-correction word-strip
-  // renders: single-capture expand, group-expand, proposal preview, and
-  // batch-review card. Callers set state.stripEl + state.cursorIdx then
-  // call _bindStripKeyboard(state).
-  // -------------------------------------------------------------------
+  // Word-strip keyboard navigation (cursor, arrows, type-to-edit) for chip
+  // corrections. Callers set state.stripEl + state.cursorIdx, then call
+  // _bindStripKeyboard(state).
   function _redrawCursor(state, noScroll) {
     if (!state.wordEls) return;
     for (var i = 0; i < state.wordEls.length; i++) {
@@ -4003,11 +3817,9 @@
       try { el.scrollIntoView({ block: 'nearest', inline: 'nearest' }); } catch (_) {}
     }
   }
-  // Move cursor by one VISUAL line up or down in the wrapped word-strip.
-  // Uses getBoundingClientRect to first locate the nearest line in the
-  // target direction, then picks the word on that line whose horizontal
-  // center is closest to the current cursor's. Falls back to first/last
-  // word when there's no line in the chosen direction.
+  // Move the cursor one VISUAL line up / down in the wrapped strip, to the
+  // word whose centre is nearest the cursor's; no line that way → the
+  // first / last word.
   function _moveCursorLine(state, direction) {
     if (!state.wordEls || state.wordEls.length === 0) return;
     if (state.cursorIdx < 0) {
@@ -4037,7 +3849,6 @@
       }
     }
     if (nextLineTop === null) {
-      // No line in that direction → clamp to first / last word.
       _moveCursor(state, ahead ? state.words.length - 1 : 0);
       return;
     }
@@ -4183,13 +3994,10 @@
     });
   }
 
-  // Inline-SVG icon factory. Glyphs (▶ ⏸ ⏮ ↶) used to be Unicode text,
-  // but the play/pause triangles have asymmetric advance widths (icon
-  // drifted off-center + nudged on toggle), and the curved-arrow family
-  // (rewind/replay/undo) is visually overloaded. SVG paths render
-  // identically everywhere and let us split "replay audio" (media
-  // transport ⏮) from "revert action" (undo arrow ↶) into distinct
-  // glyph families. Sized in em so they scale with --fs-*.
+  // SVG, not Unicode ▶ ⏸ ⏮ ↶: the text triangles have asymmetric advance
+  // widths (off-centre, nudge on toggle), and SVG keeps "replay audio" (⏮)
+  // and "revert action" (↶) visibly distinct. Sized in em to scale with
+  // --fs-*.
   var _SVG_NS = 'http://www.w3.org/2000/svg';
   var _SVG_PATHS = {
     play:     'M8 5v14l11-7z',
@@ -4213,20 +4021,16 @@
     svg.appendChild(p);
     return svg;
   }
-  // Replace an element's contents with a single SVG glyph.
   function _setBtnIcon(el, name) {
     if (!el) return;
     el.textContent = '';
     el.appendChild(_svgIcon(name));
   }
 
-  // Wrap an <audio> element in a compact play/pause + scrubber + time
-  // strip. Replaces native <audio controls> in single-capture and group-
-  // expand panels for visual consistency with the merge-preview controls.
-  // The audio stays in the DOM (inside the wrapper, hidden) so it can
-  // load + play normally; the wrapper exposes the same affordances.
-  // Returns the wrapper element; caller still owns the audio reference
-  // for setting .src etc.
+  // Compact play/pause + scrubber + time strip in place of native
+  // <audio controls>, to match the merge-preview controls. The audio stays
+  // in the DOM, hidden inside the returned wrapper, so it loads and plays
+  // normally.
   function _attachCompactPlayer(audio) {
     audio.removeAttribute('controls');
     audio.classList.add('audio-hidden');
@@ -4445,8 +4249,6 @@
     chipBox.className = 'cc-corrections';
     corrSec.appendChild(chipBox);
 
-    // Final result: an external element (manual modal's #merge-transcript) or
-    // an in-panel section (batch/proposal cards).
     var gtArea;
     if (externalGround) {
       gtArea = externalGround;
@@ -4468,8 +4270,6 @@
     if (!externalGround) panel.appendChild(gtSec);
 
     if (opts.inlinePlayer) {
-      // Keep the editing surfaces collapsed until the first play fetches the
-      // words; the inline player row stays visible from the start.
       corrSec.hidden = true;
       if (!externalGround) gtSec.hidden = true;
     }
@@ -4539,12 +4339,10 @@
         var wordsArr = wordsJ.words || [];
         var seededChips = wordsJ.corrections || [];
         var transcript = wordsJ.transcript || '';
-        // Build a synthetic state object the existing chip helpers
-        // (renderChips, onWordClick, applyCorrectionsToGround, etc.) can
-        // operate on. baselineCorrections snapshots the server's view so
-        // the debounced save sends the user's intent against a stable
-        // baseline; the server REPLACES per-member chips on save, so
-        // baseline + edits = final state in one round-trip.
+        // A synthetic state the shared chip helpers (renderChips,
+        // onWordClick, applyCorrectionsToGround) work on. The proposal save
+        // sends no baseline: the route REPLACES the members' chips with the
+        // full set.
         var state = {
           words: wordsArr,
           corrections: JSON.parse(JSON.stringify(seededChips)),
@@ -4569,15 +4367,12 @@
           onWordClick(state, i, sh);
         });
         _bindStripKeyboard(state);
-        // Stash state on the panel so the batch-card auto-focus can find
-        // it without walking the DOM tree.
+        // Read by the karaoke binding and the batch-card keyboard/focus code.
         panel._state = state;
-        // Debounced save — fires whenever markDirty is invoked (chip
-        // input, chip removal, chip extend). 250 ms matches the cadence
-        // the rest of /captures uses informally.
-        // Each save REPLACES the members' chips with the full set, and two
-        // in flight can land in either order: chain them, so one runs at a
-        // time and each sends the chips as they are when it starts.
+        // Debounced on markDirty. Each save REPLACES the members' chips with
+        // the full set, and two in flight can land in either order: chain
+        // them, so one runs at a time and each sends the chips as they are
+        // when it starts.
         var saveTimer = null;
         var runSave = function() {
           saveTimer = null;
@@ -4613,10 +4408,8 @@
     return { toggleBtn: toggleBtn, panel: panel };
   }
 
-  // Persist proposal chips: POSTs to /preview-save-chips which fans the
-  // global-indexed chips to per-member captures. On success, refresh
-  // baselineCorrections so the next save sends the user's current
-  // intent against the now-canonical server state.
+  // Chip idx values index the merged word list; /preview-save-chips fans
+  // them out to the member captures. The baseline then tracks server state.
   async function _saveProposalChips(state, memberIds) {
     var headers = {
       'Content-Type': 'application/json',
@@ -4660,12 +4453,8 @@
     });
   }
 
-  // -------------------------------------------------------------------
-  // Auto-propose merges — calls /captures/api/propose-merges, renders a
-  // ranked list of candidate groups. Accept commits the merge directly
-  // using the join/silence settings at the top of the modal; the modal
-  // stays open so the user can rapidly merge several in a row.
-  // -------------------------------------------------------------------
+  // Auto-propose merges (/captures/api/propose-merges). Accept merges
+  // directly and the modal stays open, so several can be merged in a row.
   var _proposals = [];   // current list (mutated locally on Accept)
 
   function _scoreTier(n) {
@@ -4750,8 +4539,7 @@
     var previewCtl = _makeMergePreviewBtn(
       function() { return p.member_ids; },
       function() { return p.total_duration_s; },
-      // Inline player: the ▶ lives at the left edge of the seek bar inside the
-      // panel (mirrors the single-capture player), not in this meta row.
+      // The ▶ sits in the panel's seek bar, not in this row.
       { inlinePlayer: true }
     );
 
@@ -4772,16 +4560,12 @@
     reason.textContent = p.reason || '';
     card.appendChild(reason);
 
-    // Preview panel host: full-width inline player below the card head. The
-    // seek bar (with its left-edge ▶) shows up front; the Corrections/Final
-    // sections appear once the user clicks ▶ and the words load.
     card.appendChild(previewCtl.panel);
 
     var members = document.createElement('div');
     members.className = 'members';
-    // Suppress per-line speaker chip when every member shares the proposal's
-    // speaker — keeps the line concise. Show it otherwise (mixed-speaker
-    // case is currently impossible by construction but we handle defensively).
+    // Per-line speaker only when it differs from the proposal's (cannot
+    // happen today: proposals are per speaker; defensive).
     var allSameSpeaker = (p.member_previews || []).every(function(m) {
       return (m.user_id || '') === (p.user_id || '');
     });
@@ -4871,10 +4655,9 @@
   }
 
   async function _acceptProposal(p, btn) {
-    // No check against the loaded captures list: the proposer is fresh and
-    // the server refuses a member that is grouped or deleted, while the
-    // list may predate a sample dissolved since (in another tab), and the
-    // modal's Refresh does not reload it — Accept was refused every time.
+    // No check against _allCaptures: it may predate a sample dissolved in
+    // another tab (the modal's Refresh does not reload it). The server
+    // refuses a grouped or deleted member itself.
     _stopAnyPreview();
     var origText = btn ? btn.textContent : '';
     if (btn) { btn.disabled = true; btn.textContent = 'Merging…'; }
@@ -4882,9 +4665,7 @@
       await api('POST', '/captures/api/samples', {
         member_ids: p.member_ids,
       });
-      // Drop the accepted proposal + any overlapping ones from the visible
-      // list. Now-grouped members invalidate any other proposal that
-      // contained them.
+      // Drop every proposal that shares a now-grouped member.
       var consumed = {};
       p.member_ids.forEach(function(id) { consumed[id] = true; });
       _proposals = _proposals.filter(function(other) {
@@ -4895,9 +4676,8 @@
       // detaches, with no control left to pause it: stop it again.
       _stopAnyPreview();
       _redrawProposalList();
-      // Refresh the main captures list so the new group appears outside
-      // the modal. We do NOT re-fetch the proposals (per the user's
-      // preferred UX); a manual Refresh re-ranks against current state.
+      // Reload the captures list but not the proposals: the queue stays
+      // until a manual Refresh re-ranks it.
       _loadUnlessDirty('Sample created (' + (p.member_count || p.member_ids.length) + ' clips)');
     } catch (e) {
       if (btn) { btn.disabled = false; btn.textContent = origText || 'Accept'; }
@@ -4907,12 +4687,9 @@
     }
   }
 
-  // -------------------------------------------------------------------
-  // Batch (Tinder-swipe) review mode — focused single-card review with
-  // keyboard + touch shortcuts so the reviewer can blow through a stack
-  // of proposals without mouse-hopping. Dismiss is local-only per UX
-  // decision; accept fires the same /groups POST as list-mode Accept.
-  // -------------------------------------------------------------------
+  // Batch review: one proposal at a time, with keyboard and swipe
+  // shortcuts. Dismiss is local only; Accept POSTs /captures/api/samples
+  // like list-mode Accept.
   var _batchActive = false;
   var _batchAccepted = 0;
   var _batchDismissed = 0;
@@ -4945,10 +4722,8 @@
     _renderBatchCard();
   }
 
-  // Batch mode is always entered directly from the /captures page (via
-  // the ⚡ Batch review merges button), so exiting always closes the
-  // modal. Esc, the modal's Close button, and the end-of-batch "Close"
-  // button all route through here.
+  // Batch mode is entered only via the ✨ Batch propose merges button,
+  // so exiting (Esc or any Close) also closes the modal.
   function _exitBatchMode() {
     if (!_batchActive) return;
     _batchActive = false;
@@ -4989,18 +4764,13 @@
 
     var card = document.createElement('div');
     card.className = 'batch-card';
-    // Reuse the same per-proposal card render as list mode. CSS hides
-    // the inline Accept (we use the batch action row below).
+    // CSS hides this card's own Accept; the action row below replaces it.
     card.appendChild(_buildProposalCard(p));
     host.appendChild(card);
     _batchCurrentCard = card;
 
-    // Action row, left→right: ↶ Revert · ✗ Dismiss · ⏮ Replay · ✓ Accept.
-    // Tinder geometry — the undo (Revert) sits at the far-left edge as a
-    // small amber secondary control, away from the primary Dismiss/Accept
-    // pair so it can't be mis-tapped; Replay is the interior media control
-    // (skip-to-start ⏮, deliberately NOT a curved arrow so it can't read
-    // as "undo").
+    // Revert sits far left, away from Dismiss/Accept, so it is not
+    // mis-tapped. Replay is ⏮, not a curved arrow, so it cannot read as undo.
     var actions = document.createElement('div');
     actions.className = 'batch-actions';
     var revertBtn = document.createElement('button');
@@ -5036,22 +4806,17 @@
       + 'Ctrl+Space pause · Ctrl+↑ Replay · Esc Exit';
     host.appendChild(hint);
 
-    // Touch swipe gestures on the card itself.
     card.addEventListener('touchstart', _onBatchTouchStart, { passive: true });
     card.addEventListener('touchmove',  _onBatchTouchMove,  { passive: true });
     card.addEventListener('touchend',   _onBatchTouchEnd,   { passive: true });
 
-    // Auto-play: click the preview toggle inside the rendered card so
-    // audio + karaoke + chip box all wire up. Synchronous click in
-    // response to a user gesture (the click that triggered render via
-    // _enterBatchMode or _advanceBatch) is allowed by autoplay policy.
+    // Auto-play through the card's own ▶, so audio, karaoke and chips
+    // wire up exactly as on a manual click.
     setTimeout(function() {
       var tBtn = card.querySelector('.merge-preview-btn');
       if (tBtn) tBtn.click();
-      // Auto-focus the word-strip so keyboard nav (← / →, type to edit)
-      // works immediately without a click. Wait for the preview panel
-      // to render its strip — _saveProposalChips and the audio fetch
-      // both await, so poll briefly.
+      // Focus the word strip once the async preview has drawn it, so
+      // arrows and typing work without a click.
       var tries = 0;
       var focusTimer = setInterval(function() {
         tries++;
@@ -5106,27 +4871,21 @@
     _batchBusy = true;
 
     if (action === 'accept') {
-      // Mirror _acceptProposal's behavior but adapted for batch — we
-      // don't have a per-card Accept button to flip into "Merging…".
       _stopAnyPreview();
-      // Snapshot the proposal queue BEFORE we splice it so Revert can
-      // restore the accepted proposal + any overlapping ones it removed.
+      // Pre-splice queue, so Revert also restores the overlapping proposals.
       var acceptSnap = _proposals.slice();
       try {
         var resp = await api('POST', '/captures/api/samples', {
           member_ids: p.member_ids,
         });
         _batchAccepted++;
-        // Splice accepted + any overlapping proposals (their members are
-        // now grouped, so they'd be invalid anyway).
+        // Drop every proposal that shares a now-grouped member.
         var consumed = {};
         p.member_ids.forEach(function(id) { consumed[id] = true; });
         _proposals = _proposals.filter(function(other) {
           if (other === p) return false;
           return !(other.member_ids || []).some(function(id) { return consumed[id]; });
         });
-        // Remember how to undo this accept: dissolve the created group +
-        // restore the pre-splice queue. sample_id comes from create_sample_api.
         _batchUndo = {
           action: 'accept',
           proposals: acceptSnap,
@@ -5179,8 +4938,6 @@
       _renderBatchCard();
       return;
     }
-    // accept → dissolve the created group, then restore the queue.
-    // Disable the button while the DELETE is in flight (no double-fire).
     var btn = _batchCurrentCard
       && _batchCurrentCard.parentNode
       && _batchCurrentCard.parentNode.querySelector('.batch-actions .revert');
@@ -5274,11 +5031,8 @@
 
   function _onBatchTouchStart(e) {
     if (!e.touches || !e.touches.length) return;
-    // Don't start a card swipe when the gesture begins on an interactive
-    // control — otherwise dragging the seek bar, opening a dropdown, editing a
-    // correction chip, or marking a word would also fling the card to the next
-    // proposal. The browser handles those drags natively; swipe-navigation only
-    // arms on neutral card surface.
+    // No swipe from a control: dragging the seek bar, editing a chip or
+    // marking a word must not also fling the card to the next proposal.
     var t = e.target;
     if (t && t.closest && t.closest(
         'input, select, textarea, button, [contenteditable], ' +
@@ -5330,9 +5084,7 @@
   }
   function _openProposeBatch() { _openProposeModal({ startInBatch: true }); }
 
-  // -------------------------------------------------------------------
-  // Group row rendering — packed-for-fine-tune training samples
-  // -------------------------------------------------------------------
+  // Sample cards: packed fine-tune training samples.
   function _renderSampleCard(g) {
     var card = document.createElement('div');
     card.className = 'capture-card is-group';
@@ -5443,10 +5195,7 @@
       .then(function(j) {
         var detail = j.sample || g;
 
-        // --- Skeleton: audio slot, transcript textarea, karaoke band,
-        // chip box, settings row, button row, members list. All built
-        // once; their CONTENT is filled (and refilled) by
-        // applyServerSample() below. ---
+        // Built once; applyServerSample() below fills (and refills) the content.
         var audio = document.createElement('audio');
         audio.preload = 'metadata';
         var audioPlayerWrap = _attachCompactPlayer(audio);
@@ -5454,9 +5203,7 @@
         audioSlot.appendChild(audioPlayerWrap);
         body.appendChild(audioSlot);
 
-        // Per-member raw + post-processing reference rows. Same shape
-        // as the single-capture textLine, but iterated per member so
-        // the group surface mirrors what each captured segment carried.
+        // Per-member raw / post-processing rows (single-capture textLine shape).
         function _textLine(klass, label, value) {
           var row = document.createElement('div');
           row.className = 'cc-textline ' + klass;
@@ -5473,9 +5220,8 @@
         var refsWrap = document.createElement('div');
         body.appendChild(refsWrap);
 
-        // Group "Final result" read-only preview (the gtArea).
-        // Identical lock-down to single-capture GT: this is a derived
-        // view of (members + chips). To change it, edit chips above.
+        // Read-only Final result (gtArea): derived from members + chips, so
+        // it changes only through the chips.
         var ta = document.createElement('div');
         ta.className = 'cc-ground';
         ta.setAttribute('role', 'textbox');
@@ -5501,7 +5247,6 @@
           dirtyEl: null,
         };
 
-        // ---- Corrections section: karaoke band + chip list together. ----
         var corrSec = document.createElement('div');
         corrSec.className = 'cc-section';
         corrSec.innerHTML = '<h3>Corrections</h3>'
@@ -5532,15 +5277,12 @@
           _setActiveWord(sampleState, idx);
         });
 
-        // Chip list nests inside the same Corrections section so the
-        // word strip and its chips read as one harmonized surface.
         var chipBox = document.createElement('div');
         chipBox.className = 'cc-corrections';
         corrSec.appendChild(chipBox);
         body.appendChild(corrSec);
         sampleState.chipBox = chipBox;
 
-        // ---- Final result section (read-only preview). ----
         var gtSec = document.createElement('div');
         gtSec.className = 'cc-section';
         gtSec.innerHTML = '<h3>Final result</h3>'
@@ -5550,10 +5292,6 @@
         gtSec.appendChild(ta);
         body.appendChild(gtSec);
 
-        // --- Merge settings (read-only). Join style + inter-member silence
-        // are GLOBAL now (Settings → Sample sizing); this row just shows what
-        // this sample was built with. Regenerate rebuilds it with the current
-        // global silence. ---
         var settingsSec = document.createElement('div');
         settingsSec.className = 'cc-section';
         settingsSec.style.cssText = 'display:flex;gap:1rem;align-items:center;'
@@ -5574,7 +5312,6 @@
           settingsHint.style.color = 'var(--help)';
         }
 
-        // --- Admin notes (matches single-capture layout). ---
         var notesSec = document.createElement('div');
         notesSec.className = 'cc-section cc-notes';
         notesSec.innerHTML = '<h3>Admin notes</h3>';
@@ -5586,7 +5323,6 @@
         notesSec.appendChild(notesArea);
         body.appendChild(notesSec);
 
-        // --- Action row: status + save / regenerate / lock / dissolve ---
         var actions = document.createElement('div');
         actions.className = 'cc-actions';
         var statusLbl = document.createElement('span');
@@ -5605,17 +5341,13 @@
             // keep it instead of painting its older status back.
             sampleState.statusGen = (sampleState.statusGen || 0) + 1;
             try {
-              // Narrow PATCH — status only. Concurrent transcript or
-              // chip edits in this view stay dirty and persist only on
-              // Save click; the three-way-merge path isn't engaged.
+              // Status only: unsaved chip / notes edits stay dirty for Save.
               await api('PATCH',
                 '/captures/api/samples/' + encodeURIComponent(g.id),
                 { status: v });
-              // Sync the collapsed-list header so the next render() /
-              // status-filter sees the new status without a full reload.
-              // Status-only PATCH doesn't need (and must not run) the
-              // full applyServerSample — it would rebuild word strip,
-              // chips, audio, etc. for a single-pill change.
+              // Sync the list entry and header in place; applyServerSample
+              // must not run: it rebuilds strip, chips and audio and drops
+              // unsaved edits.
               var idx = _allSamples.findIndex(function(x) { return x.id === g.id; });
               if (idx >= 0) _allSamples[idx].status = v;
               _syncSampleHead(card, { status: v });
@@ -5654,15 +5386,12 @@
         actions.appendChild(dissolveBtn);
         body.appendChild(actions);
 
-        // --- Members list (replaced on each applyServerSample) ---
         var membersDiv = document.createElement('div');
         membersDiv.className = 'group-members';
         body.appendChild(membersDiv);
 
-        // --- refreshAudio: re-fetches the blob; on failure shows the
-        // missing-audio banner in place of the <audio> element. The
-        // banner's button hits applyServerSample so success heals the
-        // open card without a load() wipe. ---
+        // On a failed fetch a missing-audio banner replaces the player; its
+        // button heals the open card via applyServerSample, not a load() wipe.
         var audioSeq = 0;
         function refreshAudio() {
           // A fetch that a newer refresh superseded (Save / Regenerate /
@@ -5674,7 +5403,6 @@
             var st = _openSamples[g.id];
             return seq !== audioSeq || !st || st.audio !== audio;
           }
-          // Reclaim the <audio> element if the banner replaced it.
           if (audio.src && audio.src.indexOf('blob:') === 0) {
             try { URL.revokeObjectURL(audio.src); } catch (_) {}
           }
@@ -5726,11 +5454,8 @@
             });
         }
 
-        // --- applyServerSample: the single source of truth for "the
-        // server told us the group looks like X, now reflect X in the
-        // open card." Called once on initial expand and again after
-        // every Save / Regenerate. Replaces the previous load()-wipe
-        // pattern. ---
+        // Repaints the open card from a server sample (expand, Save,
+        // Regenerate, Lock) in place, without a load() wipe.
         // `statusGen` is sampleState.statusGen when the request was sent:
         // a status click made since auto-saved on its own, so d.status is
         // older than what the buttons show.
@@ -5739,7 +5464,6 @@
               && statusGen !== (sampleState.statusGen || 0)) {
             d = Object.assign({}, d, { status: sampleState.newStatus });
           }
-          // 1. sampleState data.
           sampleState.words = d.merged_words || [];
           sampleState.corrections = (d.corrections || []).map(function(c) {
             return {
@@ -5749,11 +5473,9 @@
               idx_end: typeof c.idx_end === 'number' ? c.idx_end : null,
             };
           });
-          // Frozen snapshot of the server's chip set at THIS moment.
-          // Sent back with the next PATCH so the server can apply the
-          // user's deltas on top of any concurrent member-chip writes
-          // (cross-tab admin saves, or a member edited from its singleton
-          // /captures card).
+          // The server's chip set as of now, sent back with the next PATCH so
+          // the server can three-way-merge our deltas over concurrent
+          // member-chip writes (another tab, or a member's own /captures card).
           sampleState.baselineCorrections =
             JSON.parse(JSON.stringify(d.corrections || []));
           sampleState.finalText = d.transcript || '';
@@ -5762,14 +5484,12 @@
           sampleState.newStatus = d.status || 'new';
           sampleState.wordEls = [];
           sampleState._activeWordIdx = -1;
-          // Render Final result as karaoke spans (from merged words + chips)
-          // instead of plain transcript text, so it highlights in sync with
-          // the Corrections strip as the merged audio plays.
+          // Final result as karaoke spans, not plain text, so it highlights
+          // in sync with the Corrections strip.
           applyCorrectionsToGround(sampleState);
 
-          // Per-member raw + post-processing reference rows.
-          // "post-processing" line sources from the training-form text
-          // so the displayed member transcript matches the export.
+          // The post-processing line shows the training-form text, so it
+          // matches the export.
           refsWrap.innerHTML = '';
           (d.members || []).forEach(function(m, i) {
             var prefix = '[' + (i + 1) + '] ';
@@ -5780,17 +5500,14 @@
               prefix + 'post-processing (training)', training));
           });
 
-          // Status button-group + admin notes (sync from server snapshot).
           statusGrp.setValue(d.status || 'new');
           notesArea.value = d.admin_notes || '';
           clearDirty(sampleState);
 
-          // 2. Refresh the read-only settings line from the server snapshot.
           detail.transcript_join_strategy = d.transcript_join_strategy || 'space';
           detail.inter_segment_silence_ms = d.inter_segment_silence_ms;
           refreshSettingsHint();
 
-          // 3. Stale hint + regen label.
           staleHint.textContent = d.is_stale
             ? '⚠ audio drift detected — regenerate to realign timings'
             : '';
@@ -5798,10 +5515,9 @@
             ? 'Regenerate audio (clear stale)'
             : 'Regenerate audio';
 
-          // 4. Lock / Dissolve / Regenerate label & visibility. A locked
-          // sample is admin-frozen exported data: the server 409s a non-admin
-          // regenerate (mirrors dissolve), so hide both rather than surface a
-          // confusing error toast.
+          // A locked sample is admin-frozen exported data: the server 409s a
+          // non-admin regenerate (mirrors dissolve), so hide both rather than
+          // surface a confusing error toast.
           lockBtn.textContent = d.is_locked ? 'Unlock' : 'Lock';
           dissolveBtn.style.display = d.is_locked ? 'none' : '';
           regenBtn.style.display = d.is_locked ? 'none' : '';
@@ -5809,8 +5525,6 @@
           // below must not leave the card "unsaved" for a heal.
           sampleState.saveBlocked = !!d.is_locked && !_isAdmin;
 
-          // 5. Word strip (alternating per-member tints via mem-even /
-          // mem-odd classes; styles in the .word-strip CSS block).
           strip.innerHTML = '';
           var prevMember = -1;
           sampleState.words.forEach(function(w, i) {
@@ -5837,11 +5551,9 @@
             strip.appendChild(sp);
             sampleState.wordEls.push(sp);
           });
-          // Word DOM was rebuilt — re-paint the keyboard cursor on the
-          // new spans so a mid-edit reload doesn't lose the cursor.
+          // Repaint the keyboard cursor on the new spans: a mid-edit reload keeps it.
           if (typeof _redrawCursor === 'function') _redrawCursor(sampleState);
 
-          // 6. Chips + pre-marked word selections from saved corrections.
           renderChips(sampleState);
           sampleState.corrections.forEach(function(c) {
             if (typeof c.idx !== 'number') return;
@@ -5849,14 +5561,13 @@
             for (var j = c.idx; j <= end; j++) selectWord(sampleState, j, true);
           });
 
-          // 7. Members list.
           membersDiv.innerHTML = '<p style="font-size:var(--fs-sm);'
             + 'color:var(--help);margin:0.4rem 0;">Members ('
             + (d.members || []).length + ')</p>';
           // A member's aligned words are its slice of merged_words (the
           // members carry only their raw words); they place anchored chips
-          // the way the export does. A slice that lost words to the trim
-          // no longer lines up with chip idx: unaligned fallback then.
+          // the way the export does. A slice whose length differs from the
+          // member's words would shift chip idx: unaligned fallback then.
           (d.members || []).forEach(function(m, mi) {
             var line = document.createElement('div');
             line.style.cssText = 'font-size:var(--fs-sm);color:var(--dim);padding:0.2rem 0;';
@@ -5876,18 +5587,16 @@
             membersDiv.appendChild(line);
           });
 
-          // 8. Audio (re-fetch; merged WAV may have been rebuilt).
+          // Re-fetch: the merged WAV may have been rebuilt.
           refreshAudio();
 
-          // 9. Keep the in-memory list entry (read by the next render())
-          // and this card's header pills (status, stale, locked) in sync
-          // without a full render.
+          // Sync the list entry (read by the next render()) and the header
+          // pills without a full render.
           var idx = _allSamples.findIndex(function(x) { return x.id === d.id; });
           if (idx >= 0) Object.assign(_allSamples[idx], d);
           _syncSampleHead(card, d);
         }
 
-        // --- Save handler: PATCH everything; mutate the card in place. ---
         saveTBtn.onclick = function() {
           // No `status`, as in the capture card's Save: the status buttons
           // auto-save their own narrow PATCH, and resending it here would
@@ -5901,10 +5610,6 @@
                 idx_end: typeof c.idx_end === 'number' ? c.idx_end : null,
               };
             }),
-            // Snapshot the server returned when we loaded; pairs with
-            // `corrections` so the server can three-way-merge our
-            // deltas against any concurrent member-chip writes that
-            // landed in between.
             baseline_corrections: sampleState.baselineCorrections || [],
           };
           // Unchanged notes stay out: resending the GET's copy would erase
@@ -5939,12 +5644,9 @@
             .then(function() { saveTBtn.disabled = false; });
         };
 
-        // --- Regenerate handler: rebuild the merged WAV from current members
-        // using the CURRENT global silence (the dedicated /regenerate
-        // endpoint). In-place refresh via applyServerSample. ---
-        // That refresh replaces the card's chips and notes with the server
-        // copy, so ask before dropping unsaved ones (the lock toggle below
-        // sidesteps it the same way).
+        // Regenerate rebuilds the merged WAV with the current global silence;
+        // the applyServerSample after it replaces the card's chips and notes
+        // with the server copy, so ask before dropping unsaved ones.
         async function okToRegenerate() {
           if (!sampleState.dirty) return true;
           return !!(await _confirm({
@@ -5984,15 +5686,14 @@
             .then(function() { regenBtn.disabled = false; });
         };
 
-        // --- Lock toggle ---
         lockBtn.onclick = function() {
           var sgen = sampleState.statusGen || 0;
           api('PATCH', '/captures/api/samples/' + encodeURIComponent(g.id),
               { is_locked: !(lockBtn.textContent === 'Unlock') })
             .then(function(j) {
               var d = j.sample || {};
-              // applyServerSample would clobber unsaved chip/notes/settings
-              // edits. When dirty, apply only the lock-related visuals.
+              // applyServerSample would clobber unsaved chip / notes edits.
+              // When dirty, apply only the lock-related visuals.
               if (!sampleState.dirty) {
                 applyServerSample(d, sgen);
               } else {
@@ -6012,7 +5713,6 @@
             });
         };
 
-        // --- Dissolve (full reload — the group disappears from the list). ---
         dissolveBtn.onclick = async function() {
           // The load() after it rebuilds the list (like _bulkDelete: this
           // prompt, then the action's own confirm).
@@ -6034,7 +5734,6 @@
             });
         };
 
-        // Initial fill.
         applyServerSample(detail);
         body.dataset.built = '1';
         body.dataset.fetching = '';
@@ -6080,14 +5779,10 @@
     });
     _openSamples = {};
     list.innerHTML = '';
-    // Build a merged timeline: ungrouped captures + group cards (members
-    // are nested inside group cards, so we exclude them from the flat list).
+    // Members render inside their group card, so leave them out of the flat list.
     var ungrouped = rows.filter(function(r) { return !r.sample_id; });
-    // Apply the same status, model and search filters to groups (they used
-    // to skip model + search and stayed on screen whatever was typed).
-    // `audio_missing` is a
-    // captures-only system status — groups don't have it, so the
-    // groups section renders empty when that filter is active.
+    // Groups take the same status, model and search filters. `audio_missing`
+    // is a captures-only status, so no group shows under that filter.
     var filteredSamples = _allSamples.filter(function(g) {
       if (_filtStatus !== 'all' && g.status !== _filtStatus) return false;
       return sampleMatchesFilters(g);
@@ -6104,10 +5799,8 @@
       // in more of them under that filter would only fetch for nothing (an
       // empty list keeps the footer in view and re-triggers every page).
       if (!_samplesNext || _filtStatus === 'audio_missing') return;
-      // Footer for the remaining group pages. Built with DOM APIs (no
-      // innerHTML) and auto-triggered when it scrolls into view, with the
-      // button as the fallback for browsers without IntersectionObserver
-      // and for when the list is short enough that it never scrolls.
+      // Auto-triggers when scrolled into view; the button covers browsers
+      // without IntersectionObserver and lists too short to scroll.
       var more = document.createElement('div');
       more.className = 'load-more-wrap';
       var btn = document.createElement('button');
@@ -6168,9 +5861,6 @@
     _syncSelectAll();
   };
 
-  // -------------------------------------------------------------------
-  // Wire up
-  // -------------------------------------------------------------------
   _readUrl();
   (function() {
     var opts = [
