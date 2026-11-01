@@ -249,9 +249,9 @@ def _install_shims() -> None:
 # holds the shared inference semaphore, but a CANCELLED request's separation
 # keeps running in its executor thread (threads can't be aborted) — and
 # Separator is a singleton whose per-file state (audio_file_path, sources)
-# is cleared at the end of each run. A zombie finishing mid-way through a
-# live run wiped that state under it (write_audio saw audio_file_path=None
-# → "separator returned no output files"). A plain
+# is cleared at the end of each run, so a zombie finishing mid-way through
+# a live run would wipe that state under it (write_audio then sees
+# audio_file_path=None → "separator returned no output files"). A plain
 # threading.Lock in the executor thread covers zombies too.
 _separate_mutex = threading.Lock()
 
@@ -398,9 +398,9 @@ def _load_blocking(model_filename: str, device: str):
     # build the secondary stem — but with invert_using_spec off (the default,
     # and ours) its result is never read: the secondary comes from
     # `mix - primary` instead. Skip the dead pass; on an hour of audio that
-    # is minutes of work for nothing. Version-pinned internals (>=0.44.5),
-    # so every step is defensive; the timing wrapper doubles as per-pass
-    # evidence in the log.
+    # is minutes of work for nothing. These are audio-separator internals, not
+    # public API, so every step is defensive; the timing wrapper doubles as
+    # per-pass evidence in the log.
     global _single_pass
     _single_pass = False
     inst = getattr(sep, "model_instance", None)
@@ -497,7 +497,7 @@ def _drop_locked(*, force: bool = False) -> bool:
     # now would unregister the stats row and "unload" a session that is still
     # allocated, and the next request would load a second copy beside it. The
     # mutex is the one lock that tracks a running separation (same guard as
-    # translation.engine._drop_locked).
+    # diarization._drop_locked).
     if not force:
         if not _separate_mutex.acquire(blocking=False):
             logger.info("[bgm] a separation is still running — eviction of "
