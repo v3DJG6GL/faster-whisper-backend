@@ -52,7 +52,7 @@ _CAP_RAW = 50_000
 _CAP_FINAL = 50_000
 _CAP_CORRECTED = 100_000  # admin-edited free-form ground truth
 _CAP_ADMIN_NOTES = 8_000
-_CAP_WORDS_JSON = 1_000_000  # ~10k words at ~100 bytes/word; fine-grained
+_CAP_WORDS_JSON = 1_000_000  # ~10k words at ~100 bytes/word
 _CAP_SEGMENTS_JSON = 200_000
 _CAP_AUDIO_FORMAT = 16  # "wav", "m4a", "webm" — short extensions only
 
@@ -113,7 +113,7 @@ def init_db(db_path: str, audio_dir: str) -> None:
 
 
 def _rename_columns(conn: sqlite3.Connection) -> None:
-    """Column renames (2026-09): the audio length is audio_s and the two
+    """Column renames: the audio length is audio_s and the two
     transcript columns are raw_text / final_text in every store (the wire
     keeps the short raw / final keys, see _row_to_dict).
     Runs before _SCHEMA_CORE so CREATE TABLE IF NOT EXISTS never sees the
@@ -620,8 +620,7 @@ def _evict_to_cap(conn: sqlite3.Connection) -> bool:
     ).fetchone()
     total = int(row[0]) if row else 0
 
-    # Row-count overflow first (cheap). Audio-byte overflow is more
-    # expensive (os.path.getsize per row), so we walk that pass second.
+    # Row-count pass first: it is cheap, unlike the byte pass's getsize walk.
     excess = max(0, total - row_cap) if row_cap >= 1 else 0
     evicted = 0
     if excess > 0:
@@ -785,9 +784,7 @@ def _drop_oldest_by_bytes(
     return freed
 
 
-# Column projection for list/find queries that don't need words/segments.
-# Hoisted to a constant so list_captures and find_by_request_id can't
-# silently drift apart when a new column is added.
+# list/find projection: every column except the heavy words/segments.
 _LIST_COLUMNS = (
     "id, created_ts, request_id, model, language,"
     " audio_s, audio_relpath, audio_format,"
@@ -807,16 +804,12 @@ def list_captures(
     before_ts: float | None = None,
     user_id: "str | list[str] | None" = None,
 ) -> list[dict[str, Any]]:
-    """Newest-first listing, optionally filtered by status and user_id.
-    Heavy fields (words / segments) are dropped to keep the wire payload
-    light.
+    """Newest-first listing without words / segments, optionally filtered
+    by status and owner (`user_id` as in _user_clause; per-user contexts
+    pass the caller's id).
 
-    `user_id=None` means "do not filter" — callers in admin contexts pass
-    None; per-user contexts pass the caller's id so the user can only see
-    their own captures.
-
-    Use `before_ts` for cursor pagination — repeat the call passing the
-    oldest created_ts from the previous page."""
+    Cursor pagination: pass the oldest created_ts of the previous page as
+    `before_ts`."""
     conn = _require_conn()
     clauses: list[str] = []
     params: list[Any] = []
@@ -913,9 +906,8 @@ def get_captures_light(ids: list[str]) -> dict[str, dict[str, Any]]:
 
 @_read_under_lock
 def find_by_request_id(request_id: str) -> list[dict[str, Any]]:
-    """Cross-link from /reports → captures matching a request_id. Used
-    by the /captures `by-request` jump endpoint to surface every capture
-    that shares a transcription request_id."""
+    """Every capture of one transcription request_id, newest first, without
+    words/segments: the /reports → /captures `by-request` jump."""
     conn = _require_conn()
     cur = conn.execute(
         f"SELECT {_LIST_COLUMNS} FROM captures WHERE request_id = ?"
@@ -927,10 +919,9 @@ def find_by_request_id(request_id: str) -> list[dict[str, Any]]:
 
 @_read_under_lock
 def counts_by_status(user_id: "str | list[str] | None" = None) -> dict[str, int]:
-    """Status breakdown for the page toolbar. `user_id=None` → all users
-    (admin / scope=all); a string narrows to a single owner so a scope=own
-    caller's toolbar counts match the rows they can see (and don't leak the
-    global cross-user breakdown)."""
+    """Status breakdown for the page toolbar. `user_id` scopes as in
+    _user_clause, so a scope=own caller's toolbar counts match the rows they
+    can see (and don't leak the global cross-user breakdown)."""
     conn = _require_conn()
     out = {s: 0 for s in _VALID_STATUS}
     clause, params = _user_clause(user_id)
@@ -1249,7 +1240,7 @@ def clear_all(reporter_host: str = "") -> int:
     Also wipes capture_samples — the filesystem rmtree below clears
     the groups/ subtree along with the hex fanout dirs, so leaving
     capture_samples rows alive would leave them pointing at vanished
-    files (the user's '404 merged audio missing' symptom)."""
+    files."""
     conn = _require_conn()
     audio_dir = _require_audio_dir()
     n_groups = 0
@@ -1400,7 +1391,6 @@ def reconcile_on_startup() -> tuple[int, int]:
                 continue
             for name in files:
                 if name.endswith(".tmp"):
-                    # Crash mid-write — delete the partial.
                     if _safe_unlink(os.path.join(root, name)):
                         files_unlinked += 1
                     continue
@@ -1435,9 +1425,8 @@ def sweep_retention() -> int:
     if days <= 0:
         return 0
     cutoff = time.time() - days * 86400
-    # Before taking _lock: dissolve_sample takes capture_samples_store's own
-    # lock, and holding both in a fixed order here would invert the order used
-    # on the write paths.
+    # Before taking _lock: dissolve_sample takes the samples lock and then
+    # this module's, so calling it under _lock would invert that order.
     try:
         from faster_whisper_backend.captures import samples_store as capture_samples_store
         capture_samples_store.expire_samples_older_than(cutoff)
