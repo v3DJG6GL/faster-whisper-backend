@@ -88,8 +88,8 @@ def host_in_allowlist(request: HTTPConnection, allowlist: list[str]) -> bool:
     the boolean core behind `require_allowed_host` (which turns False into a
     403). Loopback is always allowed, matching require_allowed_host's contract.
 
-    Typed on HTTPConnection, not Request: auth.open_mode_host_ok also passes
-    the streaming WebSocket, and `.client` is all this reads.
+    Typed on HTTPConnection, not Request: dependencies.open_mode_host_ok
+    also passes the streaming WebSocket, and `.client` is all this reads.
     """
     client = request.client
     if client is None:
@@ -102,13 +102,12 @@ def host_in_allowlist(request: HTTPConnection, allowlist: list[str]) -> bool:
     return any(ip in net for net in _build_networks(allowlist))
 
 
-# Concrete tier gates, bucketed by privilege (loopback always allowed). The
-# lambdas re-read cfg per request so the admin WebUI can broaden/narrow access
-# without a restart. Both are the OUTER host layer; the INNER key layer
-# (require_page(...) / require_admin) is stacked on the data endpoints.
-#   require_admin_webui_host — /settings, /settings/api-keys, /docs.
-#   require_user_webui_host  — /quick-config, /captures, /reports, /stats,
-#                              /logs, /dictate, /sev (default-open allowlist).
+# Concrete tier gates (loopback always allowed). The lambdas re-read cfg per
+# request so the admin WebUI can broaden/narrow access without a restart. Both
+# are the OUTER host layer; the INNER key layer (require_page(...) /
+# require_admin) is stacked on the data endpoints. The admin gate fronts
+# /settings* and the API docs; the user gate (default-open allowlist) fronts
+# every other WebUI page.
 require_admin_webui_host = require_allowed_host(lambda: cfg.ADMIN_WEBUI_ALLOWED_HOSTS)
 require_user_webui_host = require_allowed_host(lambda: cfg.USER_WEBUI_ALLOWED_HOSTS)
 
@@ -158,13 +157,11 @@ def _origin_is_allowed(request) -> bool:
     TRUSTED_ORIGINS is for (CORS_ALLOW_ORIGINS also counts, for compatibility
     — but it additionally switches CORS on, so it is the wrong knob here).
 
-    CORS_ALLOW_ORIGINS="*" does NOT satisfy this check. The two answer
-    different questions: CORS decides whether a cross-origin page may READ a
-    response, this decides whether it may PERFORM a state change — and the
-    wildcard used to short-circuit here, silently disabling the guard for every
-    unsafe method app-wide (and for the WebSocket handshake, which calls this
-    directly). A deployment that genuinely needs cross-origin writes lists its
-    real origins in TRUSTED_ORIGINS, which exists for exactly that.
+    CORS_ALLOW_ORIGINS="*" does NOT satisfy this check: CORS decides whether
+    a cross-origin page may READ a response, this decides whether it may
+    PERFORM a state change (for every unsafe method and the WebSocket
+    handshake, which calls this directly). A deployment that genuinely needs
+    cross-origin writes lists its real origins in TRUSTED_ORIGINS.
     """
     origin = request.headers.get("origin")
     if not origin:
