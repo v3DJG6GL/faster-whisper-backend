@@ -75,7 +75,6 @@ _DB_READY: bool = False
 # revoke / permission change. With SERVER_WORKERS=1 it never changes.
 _DATA_VERSION: int = -1
 
-# Debounce window for last_used_ts writes (seconds).
 _LAST_USED_DEBOUNCE_S = 60.0
 
 # Raw-key format. Prefix is cosmetic but aids leak-detection (Stripe pattern).
@@ -108,9 +107,7 @@ _ALLOWED_SCOPES: dict[str, tuple[str, ...]] = {
 }
 
 # Safe-by-default for NEW non-admin users (existing rows keep whatever they
-# have — set_user_permissions() merges, it never re-reads this):
-#   per-data pages → "own" (see their own records, stats included),
-#   logs           → "none" (server-wide stream, not user-partitionable).
+# have — set_user_permissions() merges, it never re-reads this).
 DEFAULT_NONADMIN_PERMS: dict[str, Any] = {
     "pages": {
         "quick_config": "own",
@@ -209,11 +206,8 @@ def generate_raw_key() -> str:
 
 
 def _split_display_parts(raw_key: str) -> tuple[str, str]:
-    """Return (key_prefix, key_last4) for display.
-
-    prefix is the first 8 chars (e.g. `wk_a1b2c`); last4 is the trailing
-    4 chars. Stored in plaintext so the admin UI can render
-    `wk_a1b2c…d4e5` without retaining the raw key."""
+    """Return (key_prefix, key_last4), stored in plaintext so the admin UI
+    can render `wk_a1b2c…d4e5` without retaining the raw key."""
     prefix = raw_key[:8]
     last4 = raw_key[-4:]
     return prefix, last4
@@ -299,7 +293,7 @@ def _parse_binding(raw: "str | dict | None") -> dict[str, Any]:
         # direct blob, so without this ANY later edit of the key or user —
         # even one that only changes its profiles — 422s on a field the admin
         # never touched. Notes are dropped: this runs on every decode.
-        from faster_whisper_backend.settings import config_store  # deferred, as the other config_store uses here (pydantic schema)
+        from faster_whisper_backend.settings import config_store  # deferred, like the other config_store imports in this module
         config_store.migrate_tightened_bundle(direct, "direct")
     profiles = v.get("profiles")
     out: dict[str, Any] = {
@@ -400,9 +394,7 @@ def create_user(username: str, is_admin: bool) -> str:
         raise ValueError("username too long (max 128 chars)")
     uid = uuid.uuid4().hex
     now = time.time()
-    # Admin users get '{}' — they bypass the policy anyway. Non-admins
-    # get the safe default so they can immediately review their own data
-    # on /captures, /reports, /quick-config and /stats (logs stays off).
+    # Admin users get '{}' — they bypass the policy anyway.
     perms_json = "{}" if is_admin else json.dumps(DEFAULT_NONADMIN_PERMS)
     conn = _require_conn()
     try:
@@ -1119,9 +1111,10 @@ def _bootstrap_admin_uid() -> str | None:
 
 def bootstrap_admin_from_env(raw_key: str) -> None:
     """If WHISPER_BOOTSTRAP_ADMIN_KEY is set, ensure a `bootstrap-admin`
-    user holds that exact key. Idempotent — if the key hash is already in
-    the DB we no-op. The raw key never gets persisted in plaintext;
-    only the SHA-256 hash hits disk.
+    user holds that exact key. Idempotent — if the hash is already a live
+    admin key we no-op (a live non-admin or a revoked match is fatal). The
+    raw key never gets persisted in plaintext; only the SHA-256 hash hits
+    disk.
 
     A minimum strength is enforced before the key is ever created. Keys are
     stored as an unsalted single-round SHA-256, which this module justifies
