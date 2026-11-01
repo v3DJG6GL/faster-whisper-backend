@@ -17,7 +17,6 @@ def _set(app_module, card):
 
 
 def test_regex_list_entries_apply_in_order(app_module):
-    # entry N's output feeds N+1 : a -> b -> c
     _set(app_module, {"name": "rl", "label": "RL", "type": "regex-list", "enabled": True,
                       "entries": [{"pattern": "a", "replacement": "b"},
                                   {"pattern": "b", "replacement": "c"}]})
