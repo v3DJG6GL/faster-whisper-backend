@@ -236,10 +236,11 @@ NAV_OVERFLOW_JS = templates.load(__file__, "nav_overflow.js")
 
 POPOVER_JS = templates.load(__file__, "popover.js")
 
-# Open-mode warning banner — JS-injected at the top of <body> on every
-# WebUI page. Fetches /auth/whoami; if open_mode=true, prepends a red
-# banner reminding the operator to bootstrap an admin key. Auth rides the
-# HttpOnly session cookie, sent automatically (no manual header).
+# The central whoami script on every WebUI page (end of <body>, via
+# {{SEV_POLLER_JS}}). Fetches /auth/whoami on the HttpOnly session cookie and
+# from it sets window.__whoami, the nav gating (.allowed, body.role-admin),
+# the logout/reload wiring and the no-access landing. With open_mode=true it
+# also prepends a red banner telling the operator to bootstrap an admin key.
 OPEN_MODE_BANNER_JS = templates.load(__file__, "open_mode_banner.js")
 
 
