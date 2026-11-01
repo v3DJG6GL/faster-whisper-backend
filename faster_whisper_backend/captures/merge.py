@@ -241,13 +241,10 @@ def merge_wavs(
             w.setsampwidth(_REQ_SAMPWIDTH_BYTES)
             w.setframerate(_REQ_RATE)
             w.writeframes(out_pcm)
-        # Belt-and-braces (mkstemp already made the tmp 0600; this also
-        # covers Windows / foreign-umask oddities): os.replace below carries
-        # THAT inode's mode onto dst_path, which would silently widen a 0600
-        # destination such as tempfile.mkstemp's preview file in the
-        # world-writable system temp dir. Pin owner-only before the swap.
-        # No-op semantically for the captures store (its directory is
-        # already 0700).
+        # Belt-and-braces over mkstemp's 0600 (Windows / foreign umask):
+        # os.replace carries THIS inode's mode onto dst_path, which would
+        # widen a 0600 destination such as the mkstemp preview file in the
+        # world-writable system temp dir.
         store_common.secure_file(tmp_path)
         try:
             with open(tmp_path, "rb") as fp:
@@ -278,8 +275,8 @@ def merge_wavs(
             pass
         raise
 
-    # No outer trim of the merged WAV: each member was trimmed before the join,
-    # so its edges and internal gaps are already bounded.
+    # No outer trim of the merged WAV: with a trimmer each member was trimmed
+    # before the join, so its edges and internal gaps are already bounded.
     return {
         "bytes": os.path.getsize(dst_path),
         "n_samples": total_samples,
