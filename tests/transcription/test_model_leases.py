@@ -23,7 +23,7 @@ _FILE = {"file": ("a.wav", b"RIFFxxxxWAVE", "audio/wav")}
 
 @pytest.fixture(autouse=True)
 def _clean_cache():
-    """These cases seed the model cache directly; leave it as we found it."""
+    """These cases seed the model cache directly; each starts and ends with it empty."""
     tx_models._loaded_models.clear()
     model_registry._loaded_models.clear()
     yield
