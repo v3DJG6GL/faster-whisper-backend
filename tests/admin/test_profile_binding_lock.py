@@ -1,9 +1,9 @@
 """The per-user / per-key binding saves on /settings/api-keys check profile
 names against the running cfg. A profile delete (/settings/overrides/state)
 and a rename keep the outgoing name in cfg until their hot-apply, so a binding
-save inside that window used to pass and land after the in-use guard or the
+save inside that window would pass and land after the in-use guard or the
 cascade, leaving the binding naming a profile the apply then removed (its
-layer and locks dropped, fail-open). The binding routes now wait for the
+layer and locks dropped, fail-open). The binding routes therefore wait for the
 profile writer and then meet the normal unknown-profile 400."""
 
 import asyncio
