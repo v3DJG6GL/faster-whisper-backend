@@ -17,8 +17,8 @@ can pick the phrase as a cb:map key in one step.
 
 The trace + tokens carry literal dictation snippets, which can be
 sensitive personal data — DO NOT log buffer contents. The on-disk log
-file already holds the same trace via transcription.receipt._format_request_block; the
-new SQLite store is the canonical structured durable record.
+file already holds the same trace via transcription.receipt._format_request_block;
+the SQLite store is the canonical structured durable record.
 """
 from __future__ import annotations
 
@@ -88,9 +88,8 @@ _SUBSCRIBER_QUEUE_MAX = 64
 
 
 def _tokenize(text: str) -> list[str]:
-    """Whitespace + punctuation split. Drop stopwords and out-of-range
-    tokens. Preserve original casing of FIRST occurrence per lowercased
-    key. Cap at _TOKEN_CAP candidates. Returns insertion-ordered list."""
+    """Content tokens, de-duped case-insensitively (first-seen casing wins),
+    insertion-ordered, capped at _TOKEN_CAP."""
     seen: dict[str, str] = {}
     for m in _TOKEN_RE.finditer(text or ""):
         tok = m.group(0)
@@ -150,28 +149,24 @@ def record_trace(
     status: str = "ok",
 ) -> None:
     """Persist a finished trace to the durable store and broadcast it to
-    every live SSE subscriber. Called from main.py's transcribe handler
-    after the existing logger.info(_format_request_block(...)) line.
+    every live SSE subscriber. Called by main.py's transcribe handler and by
+    streaming/routes.py for each live-dictation final.
 
-    `request_id` is the uuid4 hex stamped on the request by main.py;
-    surfaced on each entry so /quick-config can correlate a user-
-    submitted report with the durable text log (`req=<id[:8]>` in the
-    per-request block) AND so the later metrics.record_transcription()
-    call can patch timing fields onto the same row via UPSERT.
+    `request_id` is the request's id: it lets /quick-config correlate a
+    user-submitted report with the text log (`req=<id[:8]>`), and lets the
+    later metrics.record_transcription() call UPSERT timing fields onto the
+    same row.
 
-    `steps` is a list of (label, before, after) tuples — same shape
-    main.py builds when cfg.TRACE_ENABLED. Pass [] when tracing is off
-    so the autocomplete feature still works (raw + final + tokens are
-    the only fields the autocomplete needs).
+    `steps` is a list of (label, before, after) tuples; pass [] when tracing
+    is off (autocomplete needs only raw + final + tokens).
 
     `status` only labels the live entry: the durable row's status is the
     one the later record_transcription() UPSERT writes, so a caller that
     will record an error passes it here too, or the live list disagrees
     with a reload."""
     if not request_id:
-        # No request_id means we cannot key the UPSERT and the entry
-        # cannot be jumped-to from /reports. Skip silently — the live
-        # SSE broadcast still fires below.
+        # No request_id: nothing to key the UPSERT on, so only the live
+        # SSE broadcast below runs.
         pass
     try:
         from faster_whisper_backend.auth import api_keys_store
@@ -250,7 +245,4 @@ def _broadcast(item: dict[str, Any]) -> None:
         try:
             q.put_nowait(item)
         except asyncio.QueueFull:
-            # Subscriber too slow; drop this event for them. They stay
-            # subscribed; next event may succeed if their consumer
-            # caught up.
             pass
