@@ -321,11 +321,9 @@ def test_model_registry_hook_clears_the_warm_predicate():
     assert not model_registry.is_warm("x")
 
 
-# The remaining route groups left main.py — media/{video,routes},
-# transcription/{jobs_routes,catalog_routes}, translation/routes,
-# admin/logs_routes, auth/{routes,hosts} — plus the bootstrap-admin ingest
-# (auth/api_keys_store.py) and the hard-restart TMPDIR sweep
-# (admin/restart_service.py). A stale twin in main would be what a test
+# The remaining route groups (_P14_OWNERS) left main.py, plus the
+# bootstrap-admin ingest (auth/api_keys_store.py) and the hard-restart TMPDIR
+# sweep (admin/restart_service.py). A stale twin in main would be what a test
 # patches while every caller runs the moved copy.
 _P14_OWNERS = (
     "faster_whisper_backend.media.video",
