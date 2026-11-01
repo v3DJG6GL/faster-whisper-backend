@@ -30,9 +30,8 @@ def gauge(monkeypatch):
     rate_limit._ALL.remove(g)
 
 
-# ---------------------------------------------------------------------------
-# Thread safety (a `def` route/dependency runs in the threadpool)
-# ---------------------------------------------------------------------------
+# A `def` route/dependency runs in the threadpool, so the limiters see real
+# thread contention.
 
 def test_inflight_is_thread_safe_under_contention(monkeypatch):
     import threading
@@ -84,10 +83,6 @@ def test_inflight_is_thread_safe_under_contention(monkeypatch):
     finally:
         rate_limit._ALL.remove(g)
 
-
-# ---------------------------------------------------------------------------
-# FixedWindow
-# ---------------------------------------------------------------------------
 
 def test_hit_counts_then_raises_the_full_envelope(window):
     for _ in range(3):
@@ -189,10 +184,6 @@ def test_reset_all_clears_registered_limiters(window, gauge):
     assert gauge._counts == {}
 
 
-# ---------------------------------------------------------------------------
-# InFlight
-# ---------------------------------------------------------------------------
-
 def test_inflight_acquire_release_balance(gauge):
     gauge.acquire("alice")
     gauge.acquire("alice")
@@ -238,14 +229,10 @@ def test_inflight_acquire_with_cap_off_takes_no_slot(gauge, monkeypatch):
     monkeypatch.setattr(cfg, "TRANSLATE_MAX_INFLIGHT_PER_USER", 0)
     assert gauge.acquire("alice") is False
     monkeypatch.setattr(cfg, "TRANSLATE_MAX_INFLIGHT_PER_USER", 1)
-    assert gauge.acquire("alice") is True  # B holds the only slot
+    assert gauge.acquire("alice") is True  # the next caller holds the only slot
     with pytest.raises(rate_limit.RateLimited):
-        gauge.acquire("alice")  # C must still be refused
+        gauge.acquire("alice")  # the one after must still be refused
 
-
-# ---------------------------------------------------------------------------
-# identity_key
-# ---------------------------------------------------------------------------
 
 class _Client:
     def __init__(self, host):
