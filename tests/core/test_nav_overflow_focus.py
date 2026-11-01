@@ -4,8 +4,8 @@ re-append every nav link, and moving a focused node blurs it, so a keyboard
 user's focus jumped to <body> mid-Tab.
 
 The script runs under node against a minimal DOM stub whose node moves blur
-a focused node like a browser does; widths are faked so three 10px links fit
-a 25px nav only when one is tucked into the "more" list."""
+a focused node like a browser does; widths are faked (10px per link, nav
+10*navCap+5px) so lowering navCap tucks links into the "more" list."""
 
 import json
 import shutil
