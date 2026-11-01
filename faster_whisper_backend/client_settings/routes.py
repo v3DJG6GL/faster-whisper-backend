@@ -121,9 +121,7 @@ async def get_client_settings(
     `{version: 0, blob: null}` — NOT 404/204, because the desktop client
     reads a route-level 404 as "backend too old for sync" and a 204 would
     force a bodyless special case."""
-    # The blob is this module's own "opaque, sensitive client JSON (may contain
-    # the client's own backend API keys)" — it must not sit in a shared cache.
-    # The admin export of the same blob already sends this.
+    # Sensitive blob (may hold the client's API keys): never in a shared cache.
     response.headers["Cache-Control"] = "no-store"
     try:
         return _state_body(
@@ -147,12 +145,9 @@ async def put_client_settings(
     Force-push is just a PUT echoing the version fetched a moment ago;
     there is no bypass flag."""
     try:
-        # Off the loop: put() re-serialises the caller's already-parsed dict
-        # with json.dumps + encode BEFORE the blob cap can reject it. The
-        # body is already clamped to MAX_JSON_BODY_BYTES (4 MiB default) by
-        # main.py's _max_body_mw before the router runs, so the cost is
-        # bounded by that knob — not MAX_REQUEST_BYTES — but a 4 MiB
-        # re-serialise is still real work that must not freeze the loop.
+        # Off the loop: the depth walk and put()'s json.dumps + encode both
+        # touch the whole blob BEFORE the cap can reject it — up to
+        # MAX_JSON_BODY_BYTES (4 MiB default, main.py's _max_body_mw).
         ok, row = await asyncio.to_thread(
             _put_checked,
             user["user_id"],
