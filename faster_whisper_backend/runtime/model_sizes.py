@@ -199,8 +199,8 @@ def _record_locked(k: str, vram_bytes: int, measured: bool, src: str,
         elif not measured:
             # Disk vs disk: last write. A disk walk is deterministic, so a
             # newer prior replaces an older one — a high-water mark here
-            # would keep an inflated pre-fix walk (symlink double count,
-            # every GGUF quant) forever.
+            # would keep an older build's inflated walk (symlink double
+            # count, every GGUF quant) forever.
             if prev and abs(vram_bytes - prev) <= prev * _REWRITE_THRESHOLD:
                 return
             size = int(vram_bytes)
@@ -241,7 +241,7 @@ def lookup(name: str, device: str, compute_type: str) -> dict | None:
         # The same provenance rule as the fallback below: a stray non-cuda
         # "measured" row is only a disk-grade prior, never a measurement —
         # and, like a disk row of another placement there, never more
-        # accurate than a fresh walk, only staler (a pre-fix build's
+        # accurate than a fresh walk, only staler (an older build's
         # inflated prior survives for a placement no request loads again).
         # The stored row is kept only for a model no longer on disk.
         if not _is_measured(exact, rec):
