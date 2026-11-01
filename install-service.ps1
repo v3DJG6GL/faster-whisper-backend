@@ -138,7 +138,6 @@ function Test-VenvUsable {
 if (-not (Test-VenvUsable)) {
     Write-Host "Python venv not found or not usable - bootstrapping..." -ForegroundColor Cyan
 
-    # Prefer the PEP 397 launcher (py.exe), fall back to python / python3.
     $sysPy = $null
     foreach ($cand in @("py", "python", "python3")) {
         $cmd = Get-Command $cand -ErrorAction SilentlyContinue
@@ -257,21 +256,19 @@ $orphans = Get-Process -ErrorAction SilentlyContinue |
 if ($orphans) {
     Write-Host "Killing $($orphans.Count) orphan python.exe process(es) from $RepoDir..." -ForegroundColor Yellow
     $orphans | Stop-Process -Force -ErrorAction SilentlyContinue
-    # Brief settle so the OS releases the port + log-file + .pyd handles before
-    # the dependency install. 2 s is overkill on a normal machine but cheap
-    # insurance against a slow handle-close.
+    # Settle so the OS releases the port + log-file + .pyd handles before the
+    # dependency install; 2 s is generous but covers a slow handle-close.
     Start-Sleep -Seconds 2
 }
 
-# One-time cleanup: drop the legacy NSSM binary if it's still in the repo dir.
 if (Test-Path $LegacyNssm) {
     Write-Host "Removing legacy nssm.exe (no longer used)..."
     Remove-Item -Force $LegacyNssm
 }
 
 # --- install / refresh Python dependencies (EVERY run) ----------------------
-# Run on every invocation, not just first venv creation, so dependencies added
-# or bumped in a later commit are picked up by simply re-running this script.
+# Not just on first venv creation: dependencies added or bumped in a later
+# commit are picked up by re-running this script.
 $reqFile = Join-Path $RepoDir "requirements.txt"
 if (Test-Path $reqFile) {
     Write-Host "Installing/refreshing requirements (faster-whisper + CUDA wheels can take a few minutes)..." -ForegroundColor Cyan
@@ -445,8 +442,7 @@ if ($ff -and (-not $Full -or (Test-FfmpegShared $ff))) {
         $ErrorActionPreference = $oldPref
     }
     # winget's PATH change only reaches new shells, so this re-check usually
-    # still fails right after a successful winget install; -Full goes
-    # straight to the deterministic pinned download.
+    # still fails right after a successful winget install.
     $ff = Get-Command ffmpeg -ErrorAction SilentlyContinue
     if ($ff -and (-not $Full -or (Test-FfmpegShared $ff))) {
         Write-Host "ffmpeg installed (a new shell may be needed for PATH)." -ForegroundColor Green
@@ -471,8 +467,6 @@ if ($ff -and (-not $Full -or (Test-FfmpegShared $ff))) {
         # from $env:TEMP to a checkout on another volume. The old dir is gone,
         # so the copy becomes ffmpeg\ itself rather than nesting inside it.
         Copy-Item -Recurse $inner.FullName $RepoFfmpegDir
-        # Stamp which zip this copy came from; compared against the pin above
-        # on re-runs so a pin bump replaces the copy automatically.
         Set-Content -Path $RepoFfmpegPin -Value $FfmpegZipSha -Encoding ASCII
         Remove-Item -Force $zipPath
         Remove-Item -Recurse -Force $extractDir
@@ -537,12 +531,11 @@ if ($WithConvert) {
     }
 }
 
-# WinSW v2.12.0 ships several executables:
+# WinSW ships several executables:
 #   WinSW.NET461.exe (~640 KB) -- requires .NET Framework 4.6.1+, OS-tracked & patched
 #   WinSW-x64.exe    (~17 MB)  -- bundles .NET Core 3.1 (EOL Dec 2022, sec scanners flag it)
 # .NET 4.8 ships preinstalled on Windows 10 1903+ / Win11 / Server 2022, so
-# .NET461 is the right pick for our supported targets. Fall back to the
-# bundled-runtime build only if 4.6.1 isn't available.
+# .NET461 is the right pick for our supported targets.
 $WinSWVersion = "v2.12.0"
 $net4Release  = (Get-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\NET Framework Setup\NDP\v4\Full" `
                  -Name Release -ErrorAction SilentlyContinue).Release
