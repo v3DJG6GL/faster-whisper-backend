@@ -3519,6 +3519,9 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
     const expandBtn = document.createElement('button');
     expandBtn.type = 'button';
     expandBtn.className = 'expand-btn';
+    // Opening a card only shows its body, so an env-pinned list keeps this
+    // live for reading; the body's own controls stay disabled.
+    expandBtn.dataset.diagnostic = '1';
     const _setExpandLabel = () => {
       expandBtn.textContent = row.classList.contains('expanded') ? 'edit ▴' : 'edit ▾';
     };

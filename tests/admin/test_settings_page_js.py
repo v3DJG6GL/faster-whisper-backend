@@ -956,3 +956,40 @@ function paint(isChecklist) {
 console.log(JSON.stringify([paint(false), paint(true)]));
 """)
     assert out == [[[False] * 3] * 2, [[True] * 3] * 2]
+
+
+@needs_node
+def test_env_pinned_rule_list_cards_still_open_for_reading(client):
+    """disableEnvPinnedEditor() disabled each card's "edit ▾" toggle too, so on
+    an env-pinned PIPELINE_RULES no rule body could be opened to read it, and
+    the "↑ view" jump link's click on that toggle did nothing."""
+    html = _html(client, "/settings/pipeline")
+    src = "\n".join([
+        _block(html, "    const expandBtn = document.createElement('button');",
+               "\n    });\n"),
+        _block(html, "function disableEnvPinnedEditor(el) {", "\n}\n"),
+    ])
+    out = _node(_FAKE_DOM + """
+const CONTROL = ['INPUT', 'SELECT', 'TEXTAREA', 'BUTTON'];
+El.prototype.matches = function () { return CONTROL.includes(this.tagName); };
+El.prototype.querySelectorAll = function () {
+  const out = [];
+  (function walk(n) { n.children.forEach(c => { if (c.matches()) out.push(c); walk(c); }); })(this);
+  return out;
+};
+const rule = { name: 'a', type: 'regex' };
+const row = document.createElement('div');
+const expandedNames = new Set();
+function _saveExpanded() {}
+let refresh = null;
+""" + src + """
+const body = row.appendChild(document.createElement('div'));
+const inp = body.appendChild(document.createElement('input'));
+row.appendChild(expandBtn);
+disableEnvPinnedEditor(row);
+// A disabled button never sees the click, so only fire it when live.
+const click = expandBtn.disabled ? Promise.resolve() : fire(expandBtn, 'click');
+click.then(() => console.log(JSON.stringify(
+  [expandBtn.disabled, row.classList.contains('expanded'), inp.disabled])));
+""")
+    assert out == [False, True, True]
