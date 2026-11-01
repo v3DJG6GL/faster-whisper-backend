@@ -195,7 +195,6 @@ def test_broadcast_drops_on_full_queue():
     for _ in range(q._SUBSCRIBER_QUEUE_MAX):
         sub.put_nowait({"x": 1})
     assert sub.full()
-    # Overflow event is dropped silently; subscriber stays registered.
     q._broadcast({"event": "trace"})
     assert sub.qsize() == q._SUBSCRIBER_QUEUE_MAX
     assert sub in q._subscribers
