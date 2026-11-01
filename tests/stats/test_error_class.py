@@ -89,9 +89,9 @@ def _raised_from(wrapper, cause, *, suppress=False):
 
 def test_classify_error_reads_the_wrapped_cause():
     """The soft-fail stages re-raise a client-safe RuntimeError over the real
-    failure: a CUDA OOM under diarization / translation was "other", and the
-    diarization load wrapper's "out of memory or unavailable" text made any
-    placement failure an OOM."""
+    failure, so the cause chain decides: a CUDA OOM under diarization /
+    translation is an OOM, and the diarization load wrapper's "out of memory
+    or unavailable" text alone is not."""
     from faster_whisper_backend.audio.diarization import DiarizationError
 
     oom = _raised_from(DiarizationError("diarization failed on this file"),
