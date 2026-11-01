@@ -59,8 +59,7 @@ _STATS_PREFIX = "pyannote:"
 # and model_id → count still running on a pipeline that has already been
 # dropped from the cache (see _drop_locked's orphan branch). Freeing a torch
 # pipeline while another job's executor thread is inside it is a use-after-free
-# in native code; until this existed, the only thing preventing it was the
-# caller's local Python reference.
+# in native code.
 #
 # Mutated without _lock on the cache-hit fast path only: that path has no await
 # between the key check and the increment, and every drop runs synchronously on
@@ -108,9 +107,7 @@ def _load_blocking(model_id: str, device: str, batch_size: int):
     # LOCAL_FILES_ONLY is a HOT setting — scope the offline switch to this
     # load and restore it after (same hazard translation._load_blocking
     # documents: one offline load would otherwise poison every later
-    # huggingface_hub download until a process restart). The env var only
-    # reaches subprocesses / a fresh import; the hub's module constant
-    # (toggled below) is what THIS load honours.
+    # huggingface_hub download until a process restart).
     # Snapshot ONCE: the flag is hot and this runs for minutes in the
     # executor — re-reading it in the finally would skip the restore (or
     # clobber a value this call never set) after a mid-load admin flip.
@@ -269,8 +266,7 @@ def _drop_locked(*, force: bool = False) -> bool:
     # thread may still be inside pipe() (see _infer_mutex): freeing now would
     # unregister the stats row and "unload" a pipeline that is still
     # allocated, and the next request would load a second copy beside it.
-    # The mutex is the one lock that tracks a running inference (same guard
-    # as translation.engine._drop_locked).
+    # The mutex is the one lock that tracks a running inference.
     if not force:
         if not _infer_mutex.acquire(blocking=False):
             logger.info("[diarize] inference still running — eviction of %s "
@@ -304,7 +300,7 @@ def _release_locked(model_id: str, pipe=None) -> None:
     a device/batch change orphans the old pipeline under the SAME key), so its
     release must not be charged to the orphan bucket — that would free the
     dying pipeline's stats early and skip the idle-clock restamp below. Without
-    ``pipe`` (legacy callers) orphans are decremented first, as before."""
+    ``pipe`` orphans are decremented first."""
     global _last_used_monotonic
     live = pipe is not None and pipe is _pipeline
     n = 0 if live else _orphans.get(model_id, 0)
@@ -356,10 +352,10 @@ async def _get_pipeline(model_id: "str | None" = None, *, lease: bool = False,
     device = _resolve_device()
     batch = int(getattr(cfg, "DIARIZATION_EMBEDDING_BATCH_SIZE", 4) or 4)
     key = (model_id, device, batch)
-    # Lock-free cache hit. Read the singleton into a LOCAL first so a
-    # concurrent _drop_locked cannot null it between the check and the return.
-    # Taking _lock before the key comparison (as this did) made every job on a
-    # warm pipeline block for the full duration of any other job's load.
+    # Lock-free cache hit: _lock is held across a whole load, so taking it
+    # first would block every job on a warm pipeline behind another's load.
+    # Read the singleton into a LOCAL so a concurrent _drop_locked cannot
+    # null it between the check and the return.
     pipe = _pipeline
     if pipe is not None and _pipeline_key == key:
         _last_used_monotonic = time.monotonic()
@@ -427,7 +423,7 @@ async def _get_pipeline(model_id: "str | None" = None, *, lease: bool = False,
             if lease:
                 _release_locked(model_id, pipe)
             if not isinstance(e, asyncio.CancelledError):
-                # A failed register leaves nothing cached, as before.
+                # A failed register leaves nothing cached (a cancel keeps it).
                 _pipeline = None
                 _pipeline_key = None
                 if _cancelled is not None:
@@ -454,8 +450,7 @@ async def _get_pipeline(model_id: "str | None" = None, *, lease: bool = False,
 # its own set), so named matching is only a hint: any chunked step (one that
 # reports completed/total) gets the next free window in encounter order —
 # the first two chunked steps dominate the wall clock in every pyannote
-# speaker pipeline. Steps without a total are logged but never move the bar
-# (the old behavior parked it at 90% the moment an unmapped step fired).
+# speaker pipeline. Steps without a total are logged but never move the bar.
 # The plain fraction's windows are proportioned like the measured run
 # (segmentation is seconds, embeddings the wall clock); the run plan
 # refines them per model and device from its ledger — the hook also names
@@ -474,11 +469,11 @@ def _make_hook(progress_cb, cancel_check=None):
     """pyannote hook(step_name, artifact, file=…, total=…, completed=…) →
     a monotone 0..1 fraction for ``progress_cb``. Logs each step name once
     (so an unexpected pipeline is diagnosable from the server log) and
-    quartile progress per step. Never raises — except DiarizeCancelled when
+    each step's progress in 5% steps. Never raises — except DiarizeCancelled when
     ``cancel_check`` answers True, which must unwind the inference."""
     best = {"frac": 0.0}
     spans: dict = {}     # step name → (lo, hi)
-    quartile: dict = {}  # step name → last logged quartile
+    quartile: dict = {}  # step name → last logged 5% bucket (0..20)
     # Units the plan tracks. An untracked step (speaker counting, the final
     # assignment) is reported as "clustering" only once embeddings finished:
     # pyannote counts speakers BETWEEN segmentation and embeddings, and a
@@ -562,9 +557,9 @@ async def diarize(path: str, *, num_speakers: "int | None" = None,
     already; this just doesn't forward the bounds alongside it — pyannote
     treats the combination as an error). ``model_id`` overrides
     cfg.DIARIZATION_MODEL for this call (per-request stage models — the
-    caller has already applied its allowlist). ``progress_cb`` (called from
-    the executor thread with a 0..1 float) reports pipeline step progress via
-    pyannote's hook kwarg — best-effort. ``cancel_check`` (no-arg, truthy =
+    caller has already applied its allowlist). ``progress_cb(frac, step,
+    target=, target_progress=)`` (called from the executor thread, frac 0..1)
+    reports pipeline step progress via pyannote's hook kwarg — best-effort. ``cancel_check`` (no-arg, truthy =
     abort) is polled from the same hook; a positive answer raises
     :class:`DiarizeCancelled` out of this coroutine.
 
@@ -704,12 +699,8 @@ async def drop_pipeline(*, force: bool = True) -> bool:
         return _drop_locked(force=force)
 
 
-# =============================================================================
-# Residency API (runtime.preload's view of the singleton)
-# =============================================================================
-# ``model_id`` below is a resolved DIARIZATION_MODEL id (the lease key). Each
-# function reads the module globals at call time, so a test that rebinds
-# _pipeline_key / _leases / _orphans still steers it.
+# Residency API (runtime.preload's view of the singleton). ``model_id``
+# below is a resolved DIARIZATION_MODEL id (the lease key).
 
 def is_resident(model_id: str) -> bool:
     """Is the cached pipeline ``model_id``'s (on any device/batch)?"""
