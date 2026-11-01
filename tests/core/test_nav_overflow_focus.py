@@ -1,7 +1,7 @@
-"""Priority+ nav overflow (NAV_OVERFLOW_JS): every relayout (a poller tick
-that changes the status rail's width fires the ResizeObserver) used to
-re-append every nav link, and moving a focused node blurs it, so a keyboard
-user's focus jumped to <body> mid-Tab.
+"""Priority+ nav overflow (NAV_OVERFLOW_JS): a relayout (a poller tick that
+changes the status rail's width fires the ResizeObserver) must not re-append
+links already in place. Moving a focused node blurs it, so a keyboard user's
+focus would jump to <body> mid-Tab.
 
 The script runs under node against a minimal DOM stub whose node moves blur
 a focused node like a browser does; widths are faked (10px per link, nav
