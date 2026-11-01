@@ -3,18 +3,15 @@
 SQLite (stdlib) in WAL mode — single-file, crash-safe, indexed. Lives at
 cfg.REPORTS_DB (defaults to reports.local.sqlite3 alongside config.local.json).
 
-This is the only structured, query-able, end-user-editable durable
-dictation-content surface produced by this app. The rotating text logger
-is also durable content but format-locked; reports are user-curated for
-triage. Plaintext on disk; whole-disk encryption is the deployment's
-responsibility.
+Reports hold dictation content in plaintext on disk; whole-disk encryption
+is the deployment's responsibility.
 
 Do not log report content. The module's INFO/WARNING lines carry only
 counts and report-id prefixes for forensics.
 
-Module-level connection: SQLite's WAL mode lets us share one connection
-across threads (with `check_same_thread=False`). All public functions
-acquire `_lock` for writes. The reads take it too: fetchall() releases the
+One module-level connection is shared across threads
+(`check_same_thread=False`). All public functions acquire `_lock` for
+writes. The reads take it too: fetchall() releases the
 GIL between steps, so a write on the same connection could otherwise move a
 row (a resubmit re-stamps created_ts) past the scan, and two threads running
 the same SELECT text share one cached statement and can read each other's
@@ -50,15 +47,12 @@ _CAP_STEPS_ROWS = 500
 _CAP_INTENDED = 2_000
 _CAP_COMMENT = 4_000
 _CAP_REQUEST_ID = 128
-# Job provenance, added so a report about a translation identifies the
-# translation. Same caps the recent-transcriptions store uses for the same
-# two fields, so a value that fits one row fits the other.
+# Job-provenance caps match the recent-transcriptions store's, so a value
+# that fits one row fits the other.
 _CAP_LANGUAGE = 32
 _CAP_STAGES_JSON = 20_000
-# Anything past this is not a plausible trace timestamp (year 2100). The point
-# is not the upper bound but rejecting inf/NaN: sqlite stores them in a REAL
-# column intact, and Starlette renders JSON with allow_nan=False, so one such
-# row makes /reports/api/list raise on EVERY subsequent load.
+# Year 2100: no plausible trace timestamp lies past it. The bound that
+# matters is rejecting inf/NaN, see _clean_trace_ts.
 _MAX_TRACE_TS = 4_102_444_800.0
 _CAP_ADMIN_NOTES = 8_000
 # Read ceiling for list_reports(). Matches the REPORTS_MAX eviction cap's
@@ -109,12 +103,9 @@ def init_db(path: str) -> None:
     # serialises writers (so the COUNT inside _evict_to_cap sees a stable
     # total) but does not make the INSERT + DELETEs atomic vs crash.
     _conn = store_common.open_wal_db(path)
-    # Column renames (2026-09): the transcript columns are raw_text /
-    # final_text in every store. Before _SCHEMA so CREATE TABLE IF NOT
-    # EXISTS never sees the old names as the live ones.
+    # Rename legacy columns (raw / final, *_json) in place, before _SCHEMA so
+    # CREATE TABLE IF NOT EXISTS never sees the old names as the live ones.
     have = {r["name"] for r in _conn.execute("PRAGMA table_info(reports)")}
-    # The JSON-bearing columns dropped their `_json` suffix (the wire has
-    # always emitted the bare names); a pre-existing DB is renamed in place.
     for old, new in (("raw", "raw_text"), ("final", "final_text"),
                      ("steps_json", "steps"), ("corrections_json", "corrections"),
                      ("stages_json", "stages")):
@@ -131,13 +122,11 @@ def _ensure_columns(conn: sqlite3.Connection) -> None:
     release. `CREATE TABLE IF NOT EXISTS` never alters an existing table, so
     a new column must be ALTER-ed in here. Safe to run on every init.
 
-    Same convention as api_keys_store._ensure_columns; this store had no such
-    hook because it had never needed one."""
+    Same convention as api_keys_store._ensure_columns."""
     cols = {r["name"] for r in conn.execute("PRAGMA table_info(reports)")}
     for col, ddl in (
-        # A report used to identify only the Whisper model, so "the French
-        # translation is wrong" produced a row naming neither the language
-        # nor the translation nor the model that made it.
+        # Job provenance: a report about a translation names its language
+        # and the stages (translation model) that produced it.
         ("language", "ADD COLUMN language TEXT"),
         ("stages", "ADD COLUMN stages TEXT"),
     ):
@@ -217,10 +206,6 @@ def _row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
     return d
 
 
-# ---------------------------------------------------------------------
-# Create
-# ---------------------------------------------------------------------
-
 def _truncate_steps(steps: list) -> list:
     """Cap the steps list so its JSON serialization stays below
     _CAP_STEPS_JSON. Drops from the front (oldest pipeline stages first)
@@ -237,11 +222,10 @@ def _truncate_steps(steps: list) -> list:
     # far above any legitimate trace, and it bounds the byte walk below
     # regardless of how many entries the client posted.
     out = out[-_CAP_STEPS_ROWS:]
-    # Walk newest-first accumulating each entry's own serialized length
-    # instead of re-serializing the whole remaining list per drop (that
-    # was quadratic on a large submitted steps array). Budget the two
-    # enclosing brackets plus json.dumps' ", " separator per entry, so
-    # the caller's single serialization is guaranteed under the cap.
+    # Walk newest-first summing each entry's own serialized length:
+    # re-serializing the remaining list per drop is quadratic. Budget the
+    # two brackets plus json.dumps' ", " separator per entry, so the
+    # caller's single serialization stays under the cap.
     budget = _CAP_STEPS_JSON - 2
     keep = 0
     for entry in reversed(out):
@@ -285,14 +269,10 @@ def _find_by_request_user_locked(
     return _row_to_dict(row) if row else None
 
 
-# Resubmit merge reuses text_corrections.three_way_merge_corrections with the
-# chips the client's form was seeded from as the baseline — start from
-# existing, apply the user's removals / edits / additions as deltas, dedupe
-# anchorless on (wrong, correct). An empty baseline (a caller that sends none)
-# degrades to a union of existing and incoming. That helper is the single source of truth
-# for chip-merge keying (anchored on (idx, idx_end), anchorless on
-# (wrong, correct)) and the captures-routes group-PATCH path already uses it
-# — keep the two stores in lockstep so future chip-merge tweaks land once.
+# Resubmit merge goes through text_corrections.three_way_merge_corrections,
+# which the captures group-PATCH path also uses: chip-merge keying lives
+# there only, so a tweak lands in both stores at once. An empty baseline
+# degrades to a union of existing and incoming.
 
 
 def upsert_report(
@@ -424,8 +404,7 @@ def upsert_report(
 
 def _evict_to_cap(conn: sqlite3.Connection) -> None:
     """Enforce REPORTS_MAX: when total > cap, delete oldest closed first,
-    then oldest open. Two autocommit DELETEs (connection is in
-    autocommit mode); logs only the count.
+    then oldest open, in two autocommit DELETEs; logs only the count.
 
     Lazy-imports config so test harnesses that monkey-patch cfg pick up
     the current value. _lock is already held by the caller, so the COUNT
@@ -443,7 +422,6 @@ def _evict_to_cap(conn: sqlite3.Connection) -> None:
     excess = total - cap
     if excess <= 0:
         return
-    # Closed first: status != 'open', oldest by created_ts.
     closed = conn.execute(
         "DELETE FROM reports WHERE id IN ("
         "  SELECT id FROM reports WHERE status != 'open'"
@@ -469,10 +447,6 @@ def _evict_to_cap(conn: sqlite3.Connection) -> None:
         )
 
 
-# ---------------------------------------------------------------------
-# Read
-# ---------------------------------------------------------------------
-
 def list_reports(user_id: str | None = None, *,
                  limit: "int | None" = _LIST_LIMIT) -> list[dict[str, Any]]:
     """Return reports newest-first. `user_id=None` means "no filter"
@@ -490,12 +464,8 @@ def list_reports(user_id: str | None = None, *,
     `Permissions.effective_user_id_for("reports", caller_uid)` so the
     "own vs all" decision lives in one place."""
     conn = _require_conn()
-    # The soft cap the docstring relies on is an EVICTION cap, not a read cap:
-    # nothing here bounded the row count, and each row decodes up to ~300 KB of
-    # text plus a JSON parse of steps, inline in an async handler. A LIMIT
-    # makes the documented ceiling real. _LIST_LIMIT is the eviction cap, so a
-    # store at or under its own cap returns exactly what it returns today.
-    # SQLite treats a negative LIMIT as "no limit".
+    # Each row decodes up to ~300 KB plus a steps JSON parse; the LIMIT bounds
+    # that (see _LIST_LIMIT). SQLite treats a negative LIMIT as "no limit".
     lim = -1 if limit is None else limit
     with _lock:
         if user_id is None:
@@ -589,10 +559,6 @@ def counts_by_status(user_id: str | None = None) -> dict[str, int]:
     return out
 
 
-# ---------------------------------------------------------------------
-# Update
-# ---------------------------------------------------------------------
-
 def update_report(rid: str, patch: dict[str, Any]) -> dict[str, Any] | None:
     """Apply a partial update. Allowed fields: status, admin_notes.
     Returns the updated row dict or None if not found. Unknown fields
@@ -631,12 +597,7 @@ def update_report(rid: str, patch: dict[str, Any]) -> dict[str, Any] | None:
     return get_report(rid)
 
 
-# ---------------------------------------------------------------------
-# Delete
-# ---------------------------------------------------------------------
-
 def delete_report(rid: str) -> bool:
-    """Delete a single report. Returns True if a row was removed."""
     conn = _require_conn()
     with _lock:
         cur = conn.execute("DELETE FROM reports WHERE id = ?", (rid,))
@@ -652,14 +613,12 @@ def clear_all(reporter_host: str = "") -> int:
     conn = _require_conn()
     with _lock:
         n = conn.execute("DELETE FROM reports").rowcount
-    # VACUUM rewrites the entire DB file and blocks other writers — run
-    # it outside _lock so unrelated writes (e.g. a fresh report submit
-    # arriving during the wipe) aren't stalled. Connection is autocommit,
-    # no transaction needed. Skip when nothing was deleted — VACUUM on an
-    # already-empty table is pure I/O for zero space recovery.
-    # Best-effort: single-row readers on this shared connection do not take
-    # _lock, and SQLite refuses VACUUM while any of their statements is open. The rows are already gone, so that must not
-    # 500 the route or skip the audit line below.
+    # VACUUM rewrites the whole file: run it outside _lock so a submit
+    # arriving during the wipe is not stalled (the connection is autocommit,
+    # so no transaction is open), and skip it when nothing was deleted.
+    # Best-effort: outside _lock it can meet a reader's open statement, which
+    # SQLite refuses. The rows are already gone, so that must not 500 the
+    # route or skip the audit line below.
     if n > 0:
         try:
             conn.execute("VACUUM")
@@ -671,10 +630,6 @@ def clear_all(reporter_host: str = "") -> int:
     )
     return n
 
-
-# ---------------------------------------------------------------------
-# Retention
-# ---------------------------------------------------------------------
 
 def sweep_retention() -> int:
     """Delete rows older than cfg.REPORTS_RETENTION_DAYS. Returns count
