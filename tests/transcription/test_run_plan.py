@@ -53,7 +53,6 @@ def test_seed_estimates_use_seed_rates(ledger, clock):
     # Diarization is the sum of its three steps' own seeds.
     _DIAR = 600 / 600 + 600 / 14 + 600 / 400
     assert _stage(snap, "diarizing")["est_s"] == pytest.approx(_DIAR, abs=0.06)
-    # Nothing has run: the run is at 0 %, and the ETA is the whole plan.
     assert snap["overall"] == 0.0
     assert snap["eta_s"] == pytest.approx(600 / 8 + 600 / 6 + _DIAR, abs=0.2)
 
