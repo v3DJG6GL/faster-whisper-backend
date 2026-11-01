@@ -17,11 +17,9 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
-# Deps first, in three layers ordered by how often they change — cheapest
-# rebuild for the commonest change (2026-08-31). Renovate bumps a small pin in
-# requirements.txt most weeks; when all of pip lived in one layer, that
-# one-line change re-downloaded the whole compiled stack and re-ran the extras
-# install (run 624: 6-9 min per variant for a pydantic bump). Now:
+# Deps in three layers ordered by how often they change, so the commonest
+# change (Renovate bumping a small pin in requirements.txt) no longer
+# re-downloads the whole compiled stack and re-runs the extras install:
 #   1. heavy  — the big compiled wheels (requirements-heavy.txt)
 #   2. extras — the optional -full stack, before the light layer so a light
 #               bump cannot invalidate this 5-minute layer
@@ -40,9 +38,8 @@ RUN pip install --upgrade pip && pip install -r requirements-heavy.txt
 # libraries. The lean image skips all of it; the code lazy-imports and
 # soft-fails with a message naming the requirements file.
 # gcc/g++ are BUILD-time only: audio-separator's diffq dependency ships no
-# cp314 wheel and compiles from source (run 372 failed on "No such file or
-# directory: 'gcc'"). Purged in the same RUN so the compiler never reaches
-# the final layer.
+# cp314 wheel and compiles from source. Purged in the same RUN so the
+# compiler never reaches the final layer.
 ARG INCLUDE_EXTRAS=0
 COPY requirements-diarize.txt requirements-bgm.txt requirements-translate.txt ./
 RUN if [ "${INCLUDE_EXTRAS}" = "1" ]; then \
