@@ -21,7 +21,7 @@ def _post(client, headers=None, **data):
 
 # --- rows land on every POST path ------------------------------------------
 
-@pytest.mark.parametrize("fmt", ["json", "text", "verbose_json"])
+@pytest.mark.parametrize("fmt", ["json", "text", "verbose_json", "srt", "vtt"])
 def test_post_with_progress_id_stores_the_verbatim_payload(client, fmt):
     r = _post(client, progress_id=_PID, response_format=fmt)
     assert r.status_code == 200, r.text
@@ -37,9 +37,11 @@ def test_post_with_progress_id_stores_the_verbatim_payload(client, fmt):
     res = client.get(f"/v1/jobs/{_PID}/result")
     assert res.status_code == 200
     assert res.headers.get("cache-control") == "no-store"
-    # Same body AND media type as the POST: the text format is text/plain.
+    # Same body AND media type as the POST: text, srt and vtt are text/plain.
     assert res.content == r.content
     assert res.headers["content-type"] == r.headers["content-type"]
+    if fmt in ("srt", "vtt"):
+        assert "00:00:00" in res.text and "-->" in res.text
 
 
 def test_post_without_progress_id_creates_no_row(client):

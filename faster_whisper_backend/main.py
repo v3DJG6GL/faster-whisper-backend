@@ -227,6 +227,7 @@ from faster_whisper_backend.captures import store as captures_store
 from faster_whisper_backend.client_settings import store as client_settings_store
 from faster_whisper_backend.media import download as url_download
 from faster_whisper_backend.media import subtitle_mux as _subtitle_mux
+from faster_whisper_backend.media import subtitles as _subtitles
 from faster_whisper_backend.quick_config import recent_feed as qc_recent_feed
 from faster_whisper_backend.reports import store as reports_store
 from faster_whisper_backend.stats import recent_transcriptions_store
@@ -1408,6 +1409,9 @@ def _form_bool(value: "str | None") -> "bool | None":
     return None
 
 
+_RESPONSE_FORMATS = ("json", "text", "srt", "verbose_json", "vtt")
+
+
 @app.post("/v1/audio/transcriptions")
 async def transcribe(
     request: Request,
@@ -1442,6 +1446,12 @@ async def transcribe(
     preload_plan: str | None = Form(None),
     user: dict = Depends(_get_current_user_dep),
 ):
+    """OpenAI-compatible transcription. `response_format`: `json` (default),
+    `verbose_json`, `text`, `srt` or `vtt`; anything else is a 422. `srt` /
+    `vtt` answer a subtitle document (text/plain, one cue per segment, each
+    cue's text through the post-processing pipeline). Like `text` they carry
+    the transcript only: `translate_to` tracks and every other additive key
+    need `json` / `verbose_json`, and `retain_media` is refused with them."""
     resolved_model = tx_models._resolve_model_name(model_name)
     _pid = tx_progress._claim_progress_id(progress_id)
     # Whisper's only two tasks; anything else is a caller error, not something
@@ -1459,6 +1469,15 @@ async def transcribe(
         raise HTTPException(
             status_code=422,
             detail="translation_mode must be 'fluent' or 'faithful'")
+    # OpenAI's five formats; anything else is a 422 like theirs. Answering an
+    # unknown one with the json shape would land JSON in a client's subtitle
+    # or text file with no other signal.
+    response_format = (response_format or "").strip() or "json"
+    if response_format not in _RESPONSE_FORMATS:
+        raise HTTPException(
+            status_code=422,
+            detail="response_format must be one of: "
+                   + ", ".join(_RESPONSE_FORMATS))
     # Speaker-count hints: clamp like the other schemaless numeric knobs. 0 (or
     # below) is the conventional "no hint", the same falsy value diarization
     # reads as unset — clamping it up to 1 would force a one-speaker run. It
@@ -1654,10 +1673,10 @@ async def transcribe(
                     detail="keep_video needs a progress_id to report the "
                            "video through")
             media_video._url_video_rate.hit(_rl.identity_key(user, request))
-        if _retain_media and response_format == "text":
-            # A text body has no field for the media id, so the retained
-            # copy could never be addressed — refuse before the spool (and
-            # its hardlink) is written, like keep_video above.
+        if _retain_media and response_format in ("text", *_subtitles.FORMATS):
+            # A text or subtitle body has no field for the media id, so the
+            # retained copy could never be addressed — refuse before the
+            # spool (and its hardlink) is written, like keep_video above.
             raise HTTPException(
                 status_code=422,
                 detail="retain_media requires a json response format")
@@ -3492,6 +3511,25 @@ async def transcribe(
                 from fastapi.responses import PlainTextResponse
                 _response_payload = full_text_str
                 return PlainTextResponse(full_text_str)
+
+            if response_format in _subtitles.FORMATS:
+                # One cue per kept segment at its own timestamps. segments[]
+                # carry RAW Whisper text (the pipeline runs on the joined
+                # text), so each cue runs the same pipeline on its own: a rule
+                # matching across a segment boundary sees two halves there,
+                # and the output wrappers (a dictation prefix/suffix) stay
+                # out. Transcript only, like `text`: translate_to tracks have
+                # no slot in a single-language subtitle file.
+                from fastapi.responses import PlainTextResponse
+                _doc = _subtitles.render([
+                    (seg["start"], seg["end"], pl_engine._postprocess_text(
+                        seg["text"], model_name=resolved_model, ident=ident,
+                        language=_detected_lang))
+                    for seg in segments_list], response_format)
+                _response_payload = _doc
+                # text/plain like OpenAI's srt / vtt answers, and like `text`:
+                # the jobs result route serves a stored str the same way.
+                return PlainTextResponse(_doc)
 
             # Joined per-language transcripts, shared by verbose_json AND the
             # default json shape below. Deliberately NOT run through

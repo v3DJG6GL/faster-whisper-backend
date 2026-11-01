@@ -4,6 +4,8 @@ Drives the real handler with the FakeModel injected via the harness. The
 fake model ignores the uploaded bytes, so a tiny dummy WAV payload is fine.
 """
 
+import pytest
+
 from tests.conftest import FakeModel, FakeSegment, bearer
 from faster_whisper_backend.runtime import model_registry
 from faster_whisper_backend.transcription import models as tx_models
@@ -59,18 +61,62 @@ def test_verbose_json_shape(client):
     assert [w["word"] for w in body["words"]] == ["hallo", "welt"]
 
 
-def test_srt_falls_through_to_text_object(client):
-    # Documented non-OpenAI behavior: srt/vtt aren't special-cased, so they
-    # fall through to the default {"text": ...} JSON shape.
+def _two_segments(fake_model, monkeypatch):
+    from faster_whisper_backend.pipeline import engine as pl_engine
+    fake_model._segments = [FakeSegment(" hallo welt", 0.0, 1.5),
+                            FakeSegment(" zweiter satz", 1.5, 3661.25)]
+    seen = []
+
+    def _pp(text, **kw):
+        seen.append(kw.get("language"))
+        return text.upper()
+    monkeypatch.setattr(pl_engine, "_postprocess_text", _pp)
+    return seen
+
+
+def test_srt_format_returns_a_subrip_document(client, fake_model, monkeypatch):
+    # Like OpenAI: numbered cues at the segments' own times, as text/plain.
+    # The cue text is the pipeline's output (upper-cased by the stub), not
+    # the raw segment text verbose_json's segments[] carry.
+    seen = _two_segments(fake_model, monkeypatch)
     r = _post(client, response_format="srt")
-    assert r.status_code == 200
-    assert r.json() == {"text": "hallo welt"}
+    assert r.status_code == 200, r.text
+    assert r.headers["content-type"] == "text/plain; charset=utf-8"
+    assert r.text == ("1\n00:00:00,000 --> 00:00:01,500\nHALLO WELT\n\n"
+                      "2\n00:00:01,500 --> 01:01:01,250\nZWEITER SATZ\n")
+    assert "de" in seen
 
 
-def test_vtt_falls_through_to_text_object(client):
+def test_vtt_format_returns_a_webvtt_document(client, fake_model, monkeypatch):
+    _two_segments(fake_model, monkeypatch)
     r = _post(client, response_format="vtt")
-    assert r.status_code == 200
-    assert r.json() == {"text": "hallo welt"}
+    assert r.status_code == 200, r.text
+    assert r.headers["content-type"] == "text/plain; charset=utf-8"
+    assert r.text == ("WEBVTT\n\n00:00:00.000 --> 00:00:01.500\nHALLO WELT\n\n"
+                      "00:00:01.500 --> 01:01:01.250\nZWEITER SATZ\n")
+
+
+def test_translations_srt_format_returns_a_subrip_document(client):
+    r = client.post("/v1/audio/translations", files=_FILE,
+                    data={"model": "whisper-1", "response_format": "srt"})
+    assert r.status_code == 200, r.text
+    assert r.text == "1\n00:00:00,000 --> 00:00:01,000\nhallo welt\n"
+
+
+def test_unknown_response_format_is_refused_before_the_model_loads(
+        client, monkeypatch):
+    # It used to fall through to the json shape, so a typo landed JSON in
+    # the caller's file with a 200.
+    loads = []
+
+    async def _loader(name, *, lease=False):
+        loads.append(name)
+    monkeypatch.setattr(tx_models, "_get_or_load_model", _loader)
+    r = _post(client, response_format="xml")
+    assert r.status_code == 422
+    assert r.json()["detail"] == ("response_format must be one of: "
+                                  "json, text, srt, verbose_json, vtt")
+    assert loads == []
 
 
 def test_words_gated_by_config_disabled(client, app_module):
@@ -1005,6 +1051,22 @@ def test_retain_media_over_the_store_cap_is_declined_with_a_warning(
     body = r.json()
     assert "source_media_id" not in body
     assert any("RETAINED_MEDIA_MAX_BYTES" in w for w in body["warnings"])
+    assert calls == []
+
+
+@pytest.mark.parametrize("fmt", ["text", "srt", "vtt"])
+def test_retain_media_with_a_body_that_cannot_name_it_is_refused(
+        client, app_module, monkeypatch, tmp_path, fmt):
+    """A plain-text or subtitle body has no field for source_media_id: the
+    retained copy could never be addressed, so no copy is staged at all."""
+    from faster_whisper_backend.media import media_store
+    _retain_on(app_module, monkeypatch, tmp_path)
+    calls = []
+    monkeypatch.setattr(media_store, "make_pipeline_copy",
+                        lambda *a, **kw: calls.append("copy"))
+    r = _post(client, response_format=fmt, retain_media="true")
+    assert r.status_code == 422
+    assert r.json()["detail"] == "retain_media requires a json response format"
     assert calls == []
 
 

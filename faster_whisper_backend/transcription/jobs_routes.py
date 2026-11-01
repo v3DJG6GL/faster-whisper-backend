@@ -195,7 +195,8 @@ async def job_get(job_id: str, request: Request,
 async def job_result(job_id: str, request: Request,
                      user: dict = Depends(_get_current_user_dep)):
     """The run's response payload, byte-for-byte what the POST returned
-    (the `text` format comes back as text/plain, as it did there). 409 while
+    (the `text`, `srt` and `vtt` formats come back as text/plain, as they
+    did there). 409 while
     the run is still going; 404 when there is none (failed / cancelled)."""
     row = await _job_for_caller(job_id, user, request)
     if row.get("state") == "running":
@@ -211,7 +212,8 @@ async def job_result(job_id: str, request: Request,
     if payload is None:
         raise HTTPException(status_code=404, detail="no result for this job")
     if isinstance(payload, str):
-        # Only the `text` format stores a bare str (jobs_store.finish).
+        # Only `text`, `srt` and `vtt` store a bare str (jobs_store.finish),
+        # and all three answered text/plain: no format to remember.
         return PlainTextResponse(payload, headers={"Cache-Control": "no-store"})
     if isinstance(payload, dict):
         payload = _scrub_media_refs(

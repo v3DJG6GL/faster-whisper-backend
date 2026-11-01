@@ -20,6 +20,9 @@ Rules:
     site's language key so the same link yields the same ids on every probe;
   - `lang` (and `language_of`) in the server's own spelling (`_code`), so
     the code a track carries is one the packaging route accepts.
+
+`render(cues, fmt)` goes the other way: a transcript's timed cues as an SRT
+or WebVTT document (the response_format=srt / vtt body of the batch routes).
 """
 from __future__ import annotations
 
@@ -201,3 +204,48 @@ async def fetch_tracks(info, ids: "list[str]") -> "tuple[list[dict], list[dict]]
         except Exception:  # noqa: BLE001 — transport noise; never echo it
             failed.append({"id": tid, "error": "the subtitles could not be fetched"})
     return tracks, failed
+
+
+# ── rendering ───────────────────────────────────────────────────────────────
+FORMATS = ("srt", "vtt")
+_ARROW_RE = re.compile(r"--+>")
+
+
+def _timestamp(seconds: float, sep: str) -> str:
+    ms = max(0, round(float(seconds) * 1000))
+    h, ms = divmod(ms, 3_600_000)
+    m, ms = divmod(ms, 60_000)
+    s, ms = divmod(ms, 1000)
+    return f"{h:02d}:{m:02d}:{s:02d}{sep}{ms:03d}"
+
+
+def _cue_body(text: str, fmt: str) -> str:
+    # A blank line ends a cue in both formats and a line holding "-->" reads
+    # as a timing line, so a dictated paragraph break or an arrow in the
+    # transcript would cut the cue short and spill text into the next one.
+    lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    body = "\n".join(ln.strip() for ln in lines if ln.strip())
+    if fmt == "vtt":
+        # WebVTT cue text is markup: a bare "<" opens a tag, "&" an entity
+        # (escaping ">" also takes care of the arrow).
+        return body.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    return _ARROW_RE.sub("->", body)
+
+
+def render(cues, fmt: str) -> str:
+    """`cues` — (start_s, end_s, text) in order — as an SRT ("srt") or
+    WebVTT ("vtt") document. A cue whose text is empty is left out (SRT
+    numbers stay consecutive); an end before its start is pulled up to it."""
+    sep = "," if fmt == "srt" else "."
+    blocks: "list[str]" = []
+    for start, end, text in cues:
+        body = _cue_body(text or "", fmt)
+        if not body:
+            continue
+        start = max(0.0, float(start))
+        timing = (f"{_timestamp(start, sep)} --> "
+                  f"{_timestamp(max(start, float(end)), sep)}")
+        blocks.append(f"{len(blocks) + 1}\n{timing}\n{body}" if fmt == "srt"
+                      else f"{timing}\n{body}")
+    doc = "\n\n".join(blocks) + "\n" if blocks else ""
+    return doc if fmt == "srt" else "WEBVTT\n\n" + doc
