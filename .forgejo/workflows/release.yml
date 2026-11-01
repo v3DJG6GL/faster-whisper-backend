@@ -1,29 +1,21 @@
-# .forgejo/workflows/release.yml
-#
-# Version tagging — the single place that mints v* tags. Sibling of
-# faster-whisper-frontend/release.yml, but structurally inverted: this repo
-# has NO version files (the tag IS the version — ci.yml bakes the pushed
-# tag's own name (GITHUB_REF_NAME) into the images on a tag run, never
-# `git describe`, which is ambiguous when a manual minor/major lands on an
-# already patch-tagged commit; build_info.py's describe is the bare-metal
-# fallback), so there is no bump-commit, only a tag. And unlike the frontend — which pushes its tag with the
-# actions token precisely so the push event is swallowed (its own run
-# already builds the release) — this repo NEEDS the tag-push event to fire:
-# ci.yml's `tags: ['v*']` run is what bakes the clean vX.Y.Z into the
-# images and publishes the :vX.Y.Z tags. Forgejo swallows push events whose
-# actor is the actions token (IsActions doer, cycle prevention — see
-# ci.yml's mirror job), so the tag here is pushed with RELEASE_TOKEN, a PAT
-# with write:repository on this repo. The job fails loudly until that
-# secret exists.
+# Version tagging — the single place that mints v* tags. There are no
+# version files: the tag IS the version. A ci.yml tag run bakes the tag's
+# own name (GITHUB_REF_NAME) into the images, never `git describe`, which is
+# ambiguous when a manual minor/major lands on an already patch-tagged
+# commit (build_info.py's describe is the bare-metal fallback) — so there is
+# no bump-commit, only a tag. Unlike faster-whisper-frontend's release.yml,
+# this repo NEEDS the tag-push event: ci.yml's `tags: ['v*']` run builds and
+# publishes the :vX.Y.Z images. Forgejo swallows push events whose actor is
+# the actions token (cycle prevention), so the tag is pushed with
+# RELEASE_TOKEN, a PAT with write:repository on this repo; the job fails
+# loudly until that secret exists.
 #
 # Two ways in, one implementation:
 #   - continuous (automatic): ci.yml's `mirror` job dispatches this
 #     workflow with bump=patch + the tested commit's sha after every green
-#     test run on a main push (tag-first flow: main runs test only — the
-#     tag run this workflow triggers does the single image build). Every
-#     main commit thus becomes a patch release. Opt out per commit by
-#     putting "[skip release]" anywhere in the commit message (checked on
-#     auto runs only — but note such a commit then publishes no images).
+#     test run on a main push, so every main commit becomes a patch release.
+#     Opt out per commit with "[skip release]" anywhere in the commit message
+#     (auto runs only — such a commit then publishes no images).
 #   - manual ("Run workflow" button): pick patch/minor/major; tags the
 #     current HEAD of the chosen branch. Use minor for a feature release,
 #     major for a breaking one — the automatic path never does either.
@@ -34,10 +26,8 @@
 #     the target commit's existing all-ci commit status and refuses to tag
 #     anything that isn't green.
 #
-# The tag itself triggers everything downstream, all pre-existing: the v*
-# ci.yml run (4 image variants with BUILD_VERSION=vX.Y.Z, tests skipped →
-# ghcr mirror dispatch); mirror-ghcr.yml's v* regex already expects the
-# tags.
+# The tag triggers everything downstream: the v* ci.yml run (4 image
+# variants with BUILD_VERSION=vX.Y.Z, tests skipped → ghcr mirror dispatch).
 # This workflow additionally creates a Forgejo Release carrying the commit
 # log since the previous tag, so /releases doubles as the changelog.
 #
@@ -45,14 +35,12 @@
 #   * concurrency group serializes overlapping dispatches; version compute
 #     happens inside the job, so the second run sees the first run's tag.
 #   * idempotent: re-dispatch for an already-tagged commit mints no new
-#     tag — but it does re-check that the tag's release exists, because
-#     the tag push and the release POST are two separate writes with no
-#     compensation between them: a 5xx, a network blip or a token-scope
-#     problem on the second one used to be unrecoverable (the re-dispatch
-#     took the no-op branch forever, so that version never got its
-#     changelog entry, and every run reported success). That holds after
-#     a newer commit was tagged too: a superseded target that carries its
-#     own vX.Y.Z tag emits it for the same probe-then-POST repair.
+#     tag but re-checks that the tag's release exists — the tag push and
+#     the release POST are two separate writes with no compensation between
+#     them, so a failed POST (5xx, network blip, token scope) is repaired by
+#     the next dispatch. That holds after a newer commit was tagged too: a
+#     superseded target that carries its own vX.Y.Z tag emits it for the
+#     same probe-then-POST repair.
 #   * out-of-order CI completions (an older commit's all-ci finishing after
 #     a newer commit was already tagged) are detected via an ancestor check
 #     and skipped — tags stay monotonic along main.
@@ -83,8 +71,7 @@ jobs:
     steps:
       # Full history + tags: the version is computed from the newest v* tag,
       # and the ancestor/changelog steps walk history. persist-credentials
-      # off — both pushes below carry their credential explicitly (same
-      # reasoning as the frontend's version job).
+      # off — the tag push below carries its PAT explicitly in the URL.
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
