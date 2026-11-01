@@ -21,7 +21,6 @@ def test_settings_page_marks_full_view(client):
 
 
 def test_pipeline_tab_in_nav(client):
-    # The shared nav must expose the new admin-only Pipeline tab.
     r = client.get("/settings")
     assert 'href="/settings/pipeline"' in r.text
 
@@ -32,8 +31,7 @@ def test_pipeline_page_no_store(client):
 
 
 def test_view_branching_and_stub_ship_in_shell(client):
-    # The shared shell carries the PIPELINE_ONLY branch + the /settings stub
-    # builder (rendered client-side, so assert the code/strings are present).
+    # The stub is built client-side, so only its code/strings can be asserted.
     r = client.get("/settings/pipeline")
     assert "PIPELINE_ONLY" in r.text
     assert "pipeline-moved-stub" in r.text
@@ -49,8 +47,6 @@ def test_settings_keeps_editor_code_and_links_to_pipeline(client):
 
 
 def test_redesigned_card_controls_present(client):
-    # The redesigned card chrome (rail, lock toggle, colour swatch) ships in
-    # the editor JS/CSS.
     r = client.get("/settings/pipeline")
     for needle in ("rule-rail", "lock-btn", "color-btn", "color-pop", "head-actions"):
         assert needle in r.text, needle
