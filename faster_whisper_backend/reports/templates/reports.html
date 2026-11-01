@@ -26,10 +26,7 @@
     margin: 0; padding: 0; }
   main { max-width: var(--col); margin: 0 auto; padding: 1rem var(--gutter) 4rem; box-sizing: border-box; }
   h2 { font-size: var(--fs-xl); margin: 0 0 0.5rem; color: var(--bold); }
-  /* The page toolbar (status/model/search filters + actions) now lives in
-     the sticky header subbar — styled by NAV_CSS, consistent with every
-     other page. Counts ("12 open · 0 resolved · 0 dismissed") sit right
-     after the status filter they describe and wrap with the filter group. */
+  /* The toolbar (filters, counts, actions) is the header subbar, styled by NAV_CSS. */
   button {
     background: var(--input-bg); color: var(--fg);
     border: 1px solid var(--border); border-radius: 4px;
@@ -276,9 +273,6 @@
   // on a 401 we call window._showLoginGate(), which prompts for a key and
   // reloads the page on success.
 
-  // -------------------------------------------------------------------
-  // Toast
-  // -------------------------------------------------------------------
   var _toastTimer = null;
   function toast(msg, err) {
     var el = document.getElementById('toast');
@@ -291,9 +285,6 @@
     }, err ? 5000 : 2500);
   }
 
-  // -------------------------------------------------------------------
-  // API helper
-  // -------------------------------------------------------------------
   async function api(method, url, body) {
     // Session cookie sent automatically; mutations carry the CSRF token.
     var headers = { 'Content-Type': 'application/json' };
@@ -311,10 +302,8 @@
       throw new Error('unauthorized');
     }
     if (resp.status === 403) {
-      // Probe /auth/whoami to disambiguate "non-admin user" from a
-      // server-side authz problem. On non-admin, swap <main> for the
-      // Admin-only landing and throw a sentinel the load() catch can
-      // suppress (no toast, no console noise).
+      // When whoami shows no reports scope, swap <main> for the no-access
+      // landing and throw a sentinel the load() catch suppresses (no toast).
       var rendered = await _renderAdminOnlyIfNonAdmin();
       if (rendered) throw new Error('not-admin');
     }
@@ -339,11 +328,9 @@
     // A 403 here does NOT prove the caller lacks the reports page: the
     // CSRF/Origin middleware and the host gate answer 403 too (e.g. a
     // stale csrf_token after the session was re-issued in another tab).
-    // Keying the landing on is_admin===false wiped <main> for a
-    // legitimate non-admin reports user on a status/notes save. Render it
-    // only when whoami actually shows no reports scope; fall back to the
-    // old test only if permissions are absent (an EMPTY map — what admins
-    // get — means absent, not "no scope"). Same gate as captures.html.
+    // So render the landing only when whoami shows no reports scope; fall
+    // back to is_admin===false only if permissions are absent (an EMPTY
+    // map, what admins get, means absent). Same gate as captures.html.
     try {
       var r = await fetch('/auth/whoami');
       if (r.ok) {
@@ -365,13 +352,9 @@
     return false;
   }
 
-  // -------------------------------------------------------------------
-  // Diff renderer — word-level LCS, hand-rolled. ~30 LOC.
-  // -------------------------------------------------------------------
-  // Tokenize preserving whitespace runs so the rendered diff reads
-  // naturally. Each token is either a word (letters/digits/some Unicode
-  // letters) or a whitespace run. Punctuation is a third class kept
-  // separate so a "comma vs. period" change shows as a diff op too.
+  // Three token classes: word runs, whitespace runs (kept so the rendered
+  // diff reads naturally), and single punctuation chars (so a "comma vs.
+  // period" change shows as a diff op too).
   var WORDISH = /[\p{L}\p{N}_]+/u;
   function tokenizeForDiff(s) {
     if (!s) return [];
@@ -405,9 +388,6 @@
   }
 
   function lcsDiff(a, b) {
-    // Compare token streams ignoring leading/trailing whitespace; treat
-    // whitespace runs as their own equivalence class so we don't waste
-    // diff ops on minor spacing changes.
     var n = a.length, m = b.length;
     var dp = new Array(n + 1);
     for (var i = 0; i <= n; i++) {
@@ -477,9 +457,6 @@
     return div;
   }
 
-  // -------------------------------------------------------------------
-  // State
-  // -------------------------------------------------------------------
   var _allReports = [];
   var _counts = { open: 0, resolved: 0, dismissed: 0 };
   var _truncated = false;
@@ -570,15 +547,11 @@
       (_truncated ? ' · showing newest ' + _allReports.length : '');
   }
 
-  // -------------------------------------------------------------------
-  // Card rendering
-  // -------------------------------------------------------------------
   function renderCard(r) {
     var card = document.createElement('div');
     card.className = 'report-card';
     card.dataset.id = r.id;
 
-    // Header row
     var head = document.createElement('div');
     head.className = 'rc-head';
     head.innerHTML =
@@ -604,7 +577,6 @@
       '<span class="spacer"></span>';
     card.appendChild(head);
 
-    // Status dropdown
     var sel = document.createElement('select');
     sel.className = 'status-' + (r.status || 'open');
     ['open', 'resolved', 'dismissed'].forEach(function(v) {
@@ -617,14 +589,12 @@
     sel.addEventListener('change', function() { onStatusChange(r, sel); });
     head.appendChild(sel);
 
-    // Delete button
     var delBtn = document.createElement('button');
     delBtn.className = 'danger';
     delBtn.textContent = 'Delete';
     delBtn.addEventListener('click', function() { onDelete(r); });
     head.appendChild(delBtn);
 
-    // raw + final
     function textLine(klass, label, value) {
       var row = document.createElement('div');
       row.className = 'rc-textline ' + klass;
@@ -687,7 +657,6 @@
       card.appendChild(det);
     }
 
-    // Word corrections section
     var corr = (r.corrections || []).filter(function(c) {
       return c && c.correct;
     });
@@ -710,7 +679,6 @@
       card.appendChild(sec);
     }
 
-    // Sentence rewrite diff
     if (r.intended_text && r.intended_text.trim()) {
       var sec2 = document.createElement('div');
       sec2.className = 'rc-section';
@@ -719,7 +687,6 @@
       card.appendChild(sec2);
     }
 
-    // User comment
     if (r.user_comment && r.user_comment.trim()) {
       var sec3 = document.createElement('div');
       sec3.className = 'rc-section';
@@ -731,7 +698,6 @@
       card.appendChild(sec3);
     }
 
-    // Admin notes — explicit Save
     var sec4 = document.createElement('div');
     sec4.className = 'rc-section rc-notes';
     sec4.innerHTML = '<h3>Admin notes</h3>';
@@ -774,9 +740,6 @@
     return card;
   }
 
-  // -------------------------------------------------------------------
-  // Actions
-  // -------------------------------------------------------------------
   async function onStatusChange(r, sel) {
     var newStatus = sel.value;
     var prev = r.status;
@@ -904,8 +867,8 @@
   }
 
   function onExport() {
-    // Fetch via JS (session cookie auto-sent) and download as a blob.
-    // Not signed in? The 401 branch below triggers the sign-in modal.
+    // fetch + blob download rather than a plain link, so a 401 opens the
+    // login gate instead of navigating to a JSON error.
     fetch('/reports/api/export').then(function(resp) {
       if (resp.status === 401) {
         if (window._showLoginGate) window._showLoginGate();
@@ -931,9 +894,6 @@
     });
   }
 
-  // -------------------------------------------------------------------
-  // Render loop
-  // -------------------------------------------------------------------
   function render() {
     var rows = applyFilters(_allReports);
     var list = document.getElementById('list');
@@ -955,9 +915,6 @@
     });
   }
 
-  // -------------------------------------------------------------------
-  // Load
-  // -------------------------------------------------------------------
   async function load() {
     var seq = ++_loadSeq;
     _loadsOpen++;
@@ -994,9 +951,6 @@
     updateCounts();
   }
 
-  // -------------------------------------------------------------------
-  // Wire up
-  // -------------------------------------------------------------------
   document.getElementById('filt-status').addEventListener('change', render);
   document.getElementById('filt-model').addEventListener('change', render);
   document.getElementById('filt-search').addEventListener('input', render);
@@ -1004,7 +958,6 @@
   document.getElementById('btn-export').addEventListener('click', onExport);
   document.getElementById('btn-clear').addEventListener('click', onClearAll);
 
-  // First load. If unauthorized, prompt for the token then retry.
   load();
   timeTick();
 })();
