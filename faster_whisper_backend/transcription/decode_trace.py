@@ -552,8 +552,8 @@ def finish(tr: "DecodeTrace | None", segments, info=None) -> "dict | None":
     for i, w in enumerate(tr.windows):
         lf = w.get("len_frames")
         len_s = (lf / _FRAMES_PER_S) if lf is not None else None
-        # A window shorter than 30 s is the last one of its clip: it ends at
-        # the content end, so its start is content − length. The first window
+        # A window shorter than a full one is the last one of its clip: it ends
+        # at the content end, so its start is content − length. The first window
         # starts at 0 regardless. A full window after the first is placed by
         # the seek its own segments carry; one that yielded nothing stays
         # unplaced.
