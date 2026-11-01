@@ -38,18 +38,13 @@ logger = logging.getLogger("whisper-api")
 
 _T = TypeVar("_T")
 
-# Serializes quick_config_routes.apply_rules_patch (and, via rules_lock(), the
-# admin PIPELINE_RULES writers): it snapshots cfg.PIPELINE_RULES, awaits the
-# offloaded save (up to the guard timeout), and writes the WHOLE key back —
-# so two overlapping patches would both snapshot the pre-update list and the
-# second save would silently revert the first caller's edit. This closes the
-# single-worker window only; with SERVER_WORKERS > 1 the cross-process case
-# still relies on atomic_json.save_lock + the per-slug fingerprints.
+# See rules_lock() for the lost update this closes. Single-worker only: with
+# SERVER_WORKERS > 1 the cross-process case still relies on
+# atomic_json.save_lock + the per-slug fingerprints.
 # A LoopLock (one asyncio.Lock per event loop): an asyncio.Lock binds to the
 # first loop that awaits it, and this module (unlike main) is not reloaded
-# per test, so a plain module-level Lock would raise "bound to a different
-# event loop" on the second TestClient. In production one worker = one loop
-# = one lock.
+# per test, so a plain Lock would raise "bound to a different event loop"
+# on the second TestClient. In production one worker = one loop = one lock.
 _RULES_LOCK = LoopLock()
 
 # Serializes apply_hot_changes' reload + setattr (see there). Not rules_lock():
@@ -94,12 +89,12 @@ async def run_to_end(coro: Coroutine[Any, Any, _T]) -> _T:
     return await asyncio.shield(asyncio.ensure_future(coro))
 
 
-# Async dropper per settings_schema.EXTRAS_EVICTION bucket: when a save touches
-# any field in a bucket, apply_hot_changes awaits the matching dropper so the cached
-# extra's VRAM frees now instead of at the idle timeout. (Correctness doesn't
-# depend on this — both modules re-key on their load params per request.)
-# Both modules are lazy-import-safe: their heavy optional deps load on first
-# pipeline use, not at module import.
+# Async dropper per settings_schema.EXTRAS_EVICTION bucket (diarization /
+# BGM / translation), awaited when a save touches a bucket field: a load
+# parameter or the stage's on/off switch. It only frees the VRAM now instead
+# of at the idle timeout, since each module re-keys on its load params per
+# request. All three are lazy-import-safe: their heavy optional deps load on
+# first pipeline use, not at module import.
 EVICTORS: dict[str, Any] = {
     "diarization": diarization.drop_pipeline,
     "bgm": bgm_separation.drop_separator,
@@ -143,17 +138,11 @@ def canon_rules(rules: Any) -> Any:
     return out
 
 
-# `model_dump()` preserves insertion order on nested dict fields (e.g. the
-# `map` on a callback:map rule). The resolved value (after a local.json
-# overlay) and the baseline `default_value` (from cfg._BASELINE) can carry
-# different insertion orders even when contents are equal — which makes
-# JSON.stringify(value) !== JSON.stringify(default_value) so the WebUI's
-# dirty / origin-badge checks falsely report a diff, AND clicking reset
-# visibly re-sorts the rows. Recursively sorting nested dict keys (applied
-# identically to value AND default_value) makes the equality check reliable.
-# Forced alphabetical is the right canonical order for `cb:map` rules: the
-# longest-first word-bounded regex is rebuilt server-side from these keys,
-# so display order has no functional meaning.
+# Same reason for nested dicts: model_dump() keeps their insertion order (a
+# callback:map's `map`), which can differ between value and default_value
+# when the contents are equal, a false diff that also makes reset visibly
+# re-sort the rows. Alphabetical is safe: the map's match order (longest
+# first) is rebuilt server-side from the keys.
 def _sort_dicts(obj: Any) -> Any:
     if isinstance(obj, dict):
         return {k: _sort_dicts(obj[k]) for k in sorted(obj)}
@@ -165,19 +154,14 @@ def _sort_dicts(obj: Any) -> Any:
 async def rebuild_caches_off_loop(reason: str) -> None:
     """Recompile the pipeline engine's derived caches, off the event loop.
 
-    Off the loop because rebuild_caches recompiles every rule; a
-    callback:map builds a \\b(alt|alt|...)\\b alternation and
-    re.compile()s it — measured at 68 ms for 500 random 13-char keys, 116 ms
-    at 1000, 250 ms at 2000, and a *changed* map (exactly what every caller
-    here produces) always misses re._cache.
+    Off the loop because rebuild_caches recompiles every rule, and a
+    callback:map compiles all its keys into one large pattern (tens to
+    hundreds of ms at a few thousand keys). A *changed* map, which is what
+    every caller here produces, is never in a cache.
 
-    rebuild_caches mutates module globals. Today every caller that can
-    rebuild holds rules_lock() (only PIPELINE_RULES triggers a rebuild, and
-    every route that writes it takes the lock), but rebuild_caches also
-    serialises itself on engine._REBUILD_LOCK as a defensive guard: a future
-    caller that skips rules_lock() still cannot overlap two rebuilds. Since
-    each caller's cfg setattr lands before its own rebuild starts, the last
-    rebuild to run compiles the latest cfg."""
+    rebuild_caches serialises itself on engine._REBUILD_LOCK. Each caller's
+    cfg setattr lands before its own rebuild starts, so the last rebuild to
+    run compiles the latest cfg."""
     try:
         await asyncio.to_thread(pl_engine.rebuild_caches)
         logger.info("[config] rebuilt pipeline caches after %s", reason)
@@ -191,12 +175,6 @@ async def apply_hot_changes(
     """Apply hot edits from a config save to the running cfg module, rebuild
     caches, and evict load-time-affected models.
 
-    Shared by /settings/state and /settings/overrides (admin) and
-    /quick-config/state (end-user). For
-    /quick-config only PIPELINE_RULES can change, so most branches here
-    simply skip — but the helper handles all cases uniformly so the two
-    paths stay in lockstep.
-
     Returns a dict suitable to splat into the JSON response envelope:
       hot_applied, cold_pending, env_pinned_ignored, evicted.
 
@@ -206,28 +184,19 @@ async def apply_hot_changes(
     value and could leave a model loaded under the settings in between.
     """
     # Shielded: every caller awaits this after its save already wrote
-    # config.local.json, and a dropped connection unwinds the handler as a
-    # cancellation. Unshielded, the setattr loop, the evictions, the HF_TOKEN
-    # re-sync and the log-level push after the cancelled await were skipped,
-    # so the running cfg kept the old values while disk held the new ones.
-    # The task runs to the end whether or not anyone still awaits it.
+    # config.local.json. A cancelled await would skip the setattr loop, the
+    # evictions, the HF_TOKEN re-sync and the log-level push, so the running
+    # cfg would keep the old values while disk holds the new ones.
     return await run_to_end(_apply_hot_changes(written))
 
 
 async def _apply_hot_changes(written: dict[str, Any]) -> dict[str, Any]:
-    # Apply hot edits to the running cfg module so the next request sees them.
-    # We re-load from disk so the in-memory values get the same coercions
-    # (set/frozenset/tuple) load_overrides applies.
-    # Off the event loop: this helper is NOT admin-only in practice — POST
-    # /quick-config/state carries only require_user_webui_host +
-    # require_page("quick_config") and awaits apply_rules_patch, which awaits
-    # us. load_overrides is a blocking disk read + full Pydantic pass.
+    # Re-loaded from disk so the in-memory values get load_overrides'
+    # coercions (set/frozenset/tuple). Off the loop: a blocking disk read +
+    # full Pydantic pass that the non-admin /quick-config save reaches too.
     # Load + setattr under one lock: two saves that skip rules_lock() (scalar
-    # admin saves) could otherwise interleave — the older save's load reads
-    # the file before the newer save replaces it, returns last, and setattr()s
-    # its stale value over the newer one while disk holds the new value.
-    # Serialised, each load runs after the previous caller's, so the last
-    # setattr comes from the newest file.
+    # admin saves) could otherwise interleave, and the older save's load could
+    # setattr() its stale value last while disk holds the newer one.
     async with _APPLY_LOCK:
         coerced = await asyncio.to_thread(config_store.load_overrides)
         hot_changed: list[str] = []
@@ -247,11 +216,10 @@ async def _apply_hot_changes(written: dict[str, Any]) -> dict[str, Any]:
             if name in coerced:
                 new_val = coerced[name]
             else:
-                # The override was removed (reset to default): revert the running
-                # cfg to the in-repo baseline. getattr(cfg, name) would still hold
-                # the stale override value (set when it was first saved) until we
-                # overwrite it here, so it can't be the fallback. _BASELINE holds
-                # the native-typed default (matching load_overrides' coercions).
+                # Override removed (reset to default): revert to the in-repo
+                # baseline. getattr(cfg, name) still holds the stale override, so
+                # it can't be the fallback; _BASELINE holds the native-typed
+                # default (matching load_overrides' coercions).
                 baseline = getattr(cfg, "_BASELINE", {}) or {}
                 new_val = baseline.get(name, getattr(cfg, name, None))
             if name == "MODEL_OVERRIDES":
@@ -281,10 +249,8 @@ async def _apply_hot_changes(written: dict[str, Any]) -> dict[str, Any]:
     # nothing after this point changes what a session resolves from cfg.
     settings_version.bump_config_version()
 
-    # Eviction-on-edit: when a load-time field changed (globally or per-model),
-    # drop the affected loaded model(s) from the cache so the next request
-    # reloads them with the new settings. In-flight transcribes finish on the
-    # old WhisperModel instance via Python ref-counting (drain-then-evict).
+    # Eviction-on-edit: in-flight transcribes finish on the old WhisperModel
+    # instance via Python ref-counting (drain-then-evict).
     evicted: list[str] = []
     # Env-pinned names were skipped above: their running value did not change,
     # so they are no reason to drop a loaded model or extra.
@@ -328,11 +294,9 @@ async def _apply_hot_changes(written: dict[str, Any]) -> dict[str, Any]:
         # change still persisted; worst case they restart manually.
         logger.error("[config] eviction-on-edit failed: %s", e)
 
-    # Drop the cached extras (pyannote pipeline / BGM separator) when their
-    # load parameters changed, so the VRAM frees now instead of at the idle
-    # timeout. Buckets and their trigger fields come from the generated
-    # settings_schema.EXTRAS_EVICTION (per-field `evict=` registry metadata); a
-    # failed drop never breaks the save response.
+    # Buckets and trigger fields come from settings_schema.EXTRAS_EVICTION
+    # (per-field `evict=`; see EVICTORS). A failed drop never breaks the save
+    # response.
     for _extra, _extra_fields in settings_schema.EXTRAS_EVICTION.items():
         if not effective & _extra_fields:
             continue
