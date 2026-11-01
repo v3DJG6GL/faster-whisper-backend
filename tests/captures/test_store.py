@@ -224,7 +224,7 @@ def test_list_captures_newest_first_drops_words(captures_store_db, monkeypatch, 
     _make(cs, monkeypatch, tmp_path, request_id="a")
     cid2 = _make(cs, monkeypatch, tmp_path, request_id="b")
     rows = cs.list_captures()
-    assert rows[0]["id"] == cid2  # newest first
+    assert rows[0]["id"] == cid2
     assert "words" not in rows[0] and "segments" not in rows[0]
 
 
@@ -268,7 +268,7 @@ def test_iter_export_includes_words_oldest_first(captures_store_db, monkeypatch,
     conn.execute("UPDATE captures SET created_ts=? WHERE id=?", (100.0, cid1))
     conn.execute("UPDATE captures SET created_ts=? WHERE id=?", (200.0, cid2))
     rows = list(cs.iter_captures_for_export())
-    assert [r["id"] for r in rows] == [cid1, cid2]  # ascending
+    assert [r["id"] for r in rows] == [cid1, cid2]
     assert "words" in rows[0]
 
 
@@ -589,7 +589,7 @@ def test_evict_priority_dismissed_first(captures_store_db, monkeypatch, tmp_path
     conn.execute("UPDATE captures SET created_ts=2 WHERE id=?", (c_new,))
     monkeypatch.setattr(config, "CAPTURES_MAX", 2, raising=False)
     _make(cs, monkeypatch, tmp_path)
-    assert cs.get_capture(c_dismissed) is None      # dismissed evicted first
+    assert cs.get_capture(c_dismissed) is None
     assert cs.get_capture(c_new) is not None
 
 
@@ -616,8 +616,8 @@ def test_evict_excludes_group_members(captures_store_db, groups_store_db, monkey
     # counted nor dropped, because eviction could never reduce them anyway.
     # Two ungrouped rows against a cap of 1 leaves exactly one to drop.
     monkeypatch.setattr(config, "CAPTURES_MAX", 1, raising=False)
-    fresh = _make(cs, monkeypatch, tmp_path)  # 2 ungrouped now > cap 1
-    assert cs.get_capture(member) is not None  # group member never evicted
+    fresh = _make(cs, monkeypatch, tmp_path)
+    assert cs.get_capture(member) is not None
     assert cs.get_capture(other) is None       # the only evictable old row went
     # Counting the grouped row too would make excess 2 and drop this one.
     assert cs.get_capture(fresh) is not None
