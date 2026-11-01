@@ -1,6 +1,6 @@
-"""Cookie-session auth: /auth/login + /auth/logout, cookie-authenticated
-access to protected routes, absolute TTL, user revocation, the Secure flag,
-and the CSRF guard (enforced for cookie auth, exempt for bearer clients).
+"""Cookie-session auth: login/logout, cookie access, TTL, revocation,
+CSRF + Origin guards, the failed-login throttle and multi-worker
+session-index coherence.
 
 TestClient keeps an httpx cookie jar across requests on the same instance,
 so a login() call leaves the session + CSRF cookies in place for the
@@ -18,10 +18,8 @@ def _set_cookie_lines(resp):
     return [v for k, v in resp.headers.multi_items() if k.lower() == "set-cookie"]
 
 
-# --- login / logout basics --------------------------------------------------
-
 def test_login_open_mode_is_noop(client):
-    # No admin key => open mode => login is a no-op, no cookie issued.
+    # No admin key yet => open mode.
     r = client.post("/auth/login", json={"key": "anything"})
     assert r.status_code == 200
     assert r.json() == {"open_mode": True}
@@ -39,7 +37,7 @@ def test_login_open_mode_off_admin_allowlist_issues_a_session(app_module):
         uid = api_keys_store.create_user("alice", is_admin=False)
         api_keys_store.set_user_permissions(uid, {"pages": {"stats": "all"}})
         raw, _rec = api_keys_store.create_key(uid)
-        assert api_keys_store.is_locked_down() is False  # still open mode
+        assert api_keys_store.is_locked_down() is False
         assert c.get("/auth/whoami").status_code == 401
         r = c.post("/auth/login", json={"key": raw})
         assert r.status_code == 200
@@ -70,7 +68,7 @@ def test_login_good_key_sets_cookies(client, make_user_key):
     lines = " ; ".join(_set_cookie_lines(r)).lower()
     assert "whisper_session=" in lines
     assert "whisper_csrf=" in lines
-    assert "httponly" in lines  # the session cookie is HttpOnly
+    assert "httponly" in lines
 
 
 def test_whoami_names_the_csrf_cookie(client, make_user_key, monkeypatch):
@@ -99,13 +97,9 @@ def test_login_non_string_key_is_401_not_500(client, make_user_key):
         assert not _set_cookie_lines(r)
 
 
-# --- cookie-authenticated access to protected routes ------------------------
-
 def test_cookie_auth_reaches_admin_route(client, make_user_key):
     _uid, raw = make_user_key("root", is_admin=True)
-    # Locked down: no bearer, no cookie yet -> 401.
     assert client.get("/settings/state").status_code == 401
-    # After login the session cookie alone admits the admin route.
     client.post("/auth/login", json={"key": raw})
     assert client.get("/settings/state").status_code == 200
 
@@ -114,7 +108,6 @@ def test_cookie_auth_respects_page_permissions(client, make_user_key):
     make_user_key("root", is_admin=True)
     _uid, raw = make_user_key("alice", pages={"quick_config": "own"})
     client.post("/auth/login", json={"key": raw})
-    # Permitted page via cookie -> 200; admin-only route -> 403.
     assert client.get("/quick-config/state").status_code == 200
     assert client.get("/settings/state").status_code == 403
 
@@ -125,7 +118,6 @@ def test_logout_clears_session(client, make_user_key):
     assert client.get("/settings/state").status_code == 200
     r = client.post("/auth/logout", headers={"X-CSRF-Token": tok})
     assert r.status_code == 200
-    # Session revoked: subsequent cookie-only request is rejected.
     assert client.get("/settings/state").status_code == 401
 
 
@@ -163,8 +155,6 @@ def test_logout_keeps_cookies_when_the_revoke_fails(client, make_user_key,
         sessions_store._rebuild_index_locked()
     assert sessions_store.lookup_session(cookie) is None
 
-
-# --- absolute TTL / expiry -------------------------------------------------
 
 def test_expired_session_is_rejected(client, make_user_key):
     from faster_whisper_backend.auth import sessions_store
@@ -258,8 +248,6 @@ def test_legacy_slid_session_is_capped_at_the_configured_ttl(
         _close_fake_clock_store(sessions_store)
 
 
-# --- user revocation kills live sessions ------------------------------------
-
 def test_revoked_user_session_dies(client, make_user_key):
     from faster_whisper_backend.auth import api_keys_store
     make_user_key("root", is_admin=True)
@@ -283,7 +271,6 @@ def test_revoked_key_session_dies(client, make_user_key):
     assert client.get("/quick-config/state").status_code == 200
     kid = api_keys_store.list_keys(uid)[0]["id"]
     api_keys_store.revoke_key(kid)
-    # Bearer and cookie now agree: both are rejected immediately.
     assert client.get("/quick-config/state").status_code == 401
     assert client.get(
         "/quick-config/state", headers=bearer(raw),
@@ -324,8 +311,6 @@ def test_session_use_touches_key_last_used(client, make_user_key):
     assert api_keys_store.get_key(kid)["last_used_ts"] is not None
 
 
-# --- Secure flag ------------------------------------------------------------
-
 def test_secure_flag_marks_cookies(client, make_user_key, monkeypatch):
     from faster_whisper_backend.settings import config
     monkeypatch.setattr(config, "SESSION_COOKIE_SECURE", True)
@@ -341,8 +326,6 @@ def test_secure_flag_off_by_default(client, make_user_key):
     lines = " ; ".join(_set_cookie_lines(r)).lower()
     assert "secure" not in lines
 
-
-# --- CSRF: enforced for cookie auth, exempt for bearer ----------------------
 
 def test_csrf_missing_token_blocks_cookie_mutation(client, make_user_key):
     _uid, raw = make_user_key("root", is_admin=True)
@@ -367,9 +350,7 @@ def test_csrf_wrong_token_blocks_cookie_mutation(client, make_user_key):
 
 
 def test_csrf_exempt_for_bearer_clients(client, make_user_key):
-    # A bearer/API client (no session cookie) is never subject to CSRF, so a
-    # mutation without any X-CSRF-Token still passes the middleware. Uses a
-    # fresh client that never logged in (no session cookie in the jar).
+    # No login yet, so the jar holds no session cookie: CSRF never applies.
     _uid, raw = make_user_key("root", is_admin=True)
     r = client.post("/auth/logout", headers=bearer(raw))
     assert r.status_code == 200
@@ -405,9 +386,7 @@ def test_csrf_covers_router_mounted_mutation(client, make_user_key):
     # (e.g. /quick-config/*), not just app-level endpoints like /auth/logout.
     _uid, raw = make_user_key("root", is_admin=True)
     tok = client.post("/auth/login", json={"key": raw}).json()["csrf_token"]
-    # Cookie present, no token -> blocked before the route runs.
     assert client.post("/quick-config/state", json={"rules_patch": {}}).status_code == 403
-    # Valid token -> passes the middleware (route then handles it: 200).
     r = client.post(
         "/quick-config/state",
         json={"rules_patch": {}},
@@ -415,8 +394,6 @@ def test_csrf_covers_router_mounted_mutation(client, make_user_key):
     )
     assert r.status_code == 200
 
-
-# --- Origin: checked on every unsafe method, whatever the credential --------
 
 def test_cross_site_origin_blocked_in_open_mode(client):
     # Open mode resolves every request to the synthetic admin, so a cookie-less
@@ -457,8 +434,6 @@ def test_bearer_still_works_when_cookie_login_available(client, make_user_key):
     assert client.get("/settings/state", headers=bearer(raw)).status_code == 200
 
 
-# --- multi-worker (SERVER_WORKERS > 1) index coherence ----------------------
-
 def _worker(name, db_path):
     """Load a second, independent copy of sessions_store bound to the same DB
     file — faithful to two uvicorn workers, each with its own connection and
@@ -479,8 +454,8 @@ _WORKER_MODULES: list = []
 
 @pytest.fixture(autouse=True)
 def _close_worker_modules():
-    """Close every _worker() connection after the test (7 per run otherwise
-    leak to GC as 'unclosed database' ResourceWarnings)."""
+    """Close every _worker() connection after the test (otherwise they leak
+    to GC as 'unclosed database' ResourceWarnings)."""
     yield
     while _WORKER_MODULES:
         mod = _WORKER_MODULES.pop()
@@ -669,8 +644,6 @@ def test_revoke_failing_on_the_counter_leaves_no_half_revoked_session(tmp_path):
     assert real.execute("SELECT revoked_ts FROM sessions").fetchone()[0] is not None
 
 
-# --- failed-login throttle --------------------------------------------------
-
 def test_login_failures_are_throttled(client, app_module, make_user_key):
     """Keyed by client host (a login has no identity yet). The attempt past
     LOGIN_FAILURE_RATE is refused before the key is even looked up."""
@@ -710,7 +683,6 @@ def test_login_success_resets_the_window(client, app_module, make_user_key):
         assert client.post("/auth/login",
                            json={"key": "wk_nope"}).status_code == 401
     assert client.post("/auth/login", json={"key": raw}).status_code == 200
-    # The window is cleared, so a fresh run of failures is admitted again.
     for _ in range(limit):
         assert client.post("/auth/login",
                            json={"key": "wk_nope"}).status_code == 401
