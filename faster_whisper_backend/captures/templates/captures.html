@@ -133,7 +133,6 @@
     border-radius: 4px; padding: 0.1rem 0.6rem; font: inherit; font-size: var(--fs-sm); cursor: pointer; }
   #toast button[hidden] { display: none; }
 
-  /* Advanced ▾ dropdown (bulk reprocess + destructive actions). */
   .load-more-wrap { display: flex; justify-content: center; padding: 14px 0 4px; }
   .adv-wrap { position: relative; display: inline-block; }
   /* The shared header's `body.role-admin header .admin-only` rule sets
@@ -706,8 +705,8 @@
     color: var(--help); align-self: stretch;
   }
   a.compact-player-dl:hover { background: #21262d; color: var(--bold); }
-  /* Inline SVG glyphs (play/pause/skip-to-start/undo) — block so flex
-     centering applies cleanly; sized in em so they ride the --fs-* scale. */
+  /* Inline SVG glyphs: block so flex centering applies cleanly; sized in
+     em (by _svgIcon) so they ride the --fs-* scale. */
   .compact-player-btn svg, .merge-preview-btn svg { display: block; }
   /* Slider matches the page aesthetic: thin rectangular track in the
      same color as .meter-bar, progress fill in accent, a small vertical
@@ -1938,8 +1937,7 @@
         escapeHtml(r.status || 'new') + '</span>' +
       (r.model ? '<span class="pill">' + escapeHtml(r.model) + '</span>' : '') +
       (r.language ? '<span class="pill">' + escapeHtml(r.language) + '</span>' : '') +
-      // Lists which languages exist; only EN is ever training data
-      // (Whisper's translate task targets English only).
+      // Only EN counts: Whisper's translate task targets English only.
       (r.translations && Object.keys(r.translations).length
         ? '<span class="pill pill-mt" title="translations on this capture'
           + ' (only EN, on non-English transcribe captures, is eligible as'
@@ -4044,7 +4042,7 @@
     wrap.appendChild(timeEl);
     wrap.appendChild(sep);
     wrap.appendChild(totalEl);
-    wrap.appendChild(audio);  // hidden, but lives inside the wrapper
+    wrap.appendChild(audio);
 
     var seeking = false;
     btn.addEventListener('click', function() {
