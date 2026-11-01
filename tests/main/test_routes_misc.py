@@ -77,7 +77,7 @@ def test_v1_models_hides_a_resident_model_the_loader_refuses(
     # Allowlist narrowed to large-v3 while models/my-ft is resident.
     monkeypatch.setattr(app_module.cfg, "ALLOWED_MODELS", {"large-v3"})
     assert ids() == {"large-v3": True}
-    # No allowlist, DEFAULT_MODEL moved off the local dir: no longer named.
+    # No allowlist: only DEFAULT_MODEL is named, so models/my-ft is not.
     monkeypatch.setattr(app_module.cfg, "ALLOWED_MODELS", set())
     assert ids() == {"large-v3": True}
     # Still named (the allowlist lists it): advertised as loaded.
