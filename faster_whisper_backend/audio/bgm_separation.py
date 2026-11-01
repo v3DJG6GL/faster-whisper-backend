@@ -250,8 +250,8 @@ def _install_shims() -> None:
 # keeps running in its executor thread (threads can't be aborted) — and
 # Separator is a singleton whose per-file state (audio_file_path, sources)
 # is cleared at the end of each run. A zombie finishing mid-way through a
-# live run wiped that state under it (observed 2026-08-26: write_audio saw
-# audio_file_path=None → "separator returned no output files"). A plain
+# live run wiped that state under it (write_audio saw audio_file_path=None
+# → "separator returned no output files"). A plain
 # threading.Lock in the executor thread covers zombies too.
 _separate_mutex = threading.Lock()
 
@@ -273,8 +273,7 @@ _STATS_PREFIX = "uvr:"
 # separator, and → count still running on one already dropped from the cache
 # (see _drop_locked's orphan branch). Tearing an ONNX session down while
 # another job's executor thread is inside it is a use-after-free in native
-# code; until this existed, the only thing preventing it was the caller's
-# local Python reference.
+# code.
 #
 # Mutated without _lock on the cache-hit fast path only — see the same note on
 # diarization._leases for why loop semantics make that safe.
@@ -411,7 +410,6 @@ def _load_blocking(model_filename: str, device: str):
 
         def _demix(mix, is_match_mix=False):
             if is_match_mix:
-                # Only ever read under invert_using_spec — see above.
                 return mix
             # Everything between _run's load_t0 and here is prepare_mix:
             # reading + validating + normalizing the whole input (tens of
@@ -426,7 +424,6 @@ def _load_blocking(model_filename: str, device: str):
             out = _orig_demix(mix, is_match_mix=is_match_mix)
             logger.info("[bgm] model pass done in %.1fs",
                         time.perf_counter() - t0)
-            # What follows in the library is stem synthesis + the WAV write.
             logger.info("[bgm] assembling and writing the vocals stem")
             return out
 
@@ -439,9 +436,8 @@ def _load_blocking(model_filename: str, device: str):
         sep._fwb_single_pass = _single_pass
     except Exception:  # noqa: BLE001 — falls back to the module global
         pass
-    # Placement truth comes from the _OrtShim above (the session lives only
-    # in a closure inside mdx_separator; sep.onnx_execution_provider is the
-    # REQUESTED list and proves nothing).
+    # Placement truth comes from _OrtShim; sep.onnx_execution_provider is
+    # only the REQUESTED list.
     if device == "cuda" and _session_device == "cpu":
         logger.warning(
             "[bgm] cuda was requested but the session runs on the CPU — "
@@ -585,8 +581,8 @@ async def _get_separator(model_filename: "str | None" = None, *,
     key = (model, device)
     # Lock-free cache hit. Read the singleton into a LOCAL first so a
     # concurrent _drop_locked cannot null it between the check and the return.
-    # Taking _lock before the key comparison (as this did) made every job on a
-    # warm separator block for the full duration of any other job's load.
+    # Taking _lock first would block every job on a warm separator for the
+    # full duration of any other job's load.
     sep = _separator
     if sep is not None and _separator_key == key:
         _last_used_monotonic = time.monotonic()
@@ -671,7 +667,7 @@ async def _get_separator(model_filename: "str | None" = None, *,
                 if lease:
                     _release_locked(model, sep)
                 if not isinstance(e, asyncio.CancelledError):
-                    # A failed register leaves nothing cached, as before.
+                    # A failed register leaves nothing cached.
                     _separator = None
                     _separator_key = None
                     if _cancelled is not None:
@@ -846,13 +842,9 @@ async def drop_separator(*, force: bool = True) -> bool:
         return _drop_locked(force=force)
 
 
-# =============================================================================
-# Residency API (runtime.preload's view of the singleton)
-# =============================================================================
-# ``model`` below is an on-disk model FILENAME (``UVR-Foo.onnx``), the key the
-# singleton and its leases use. Each function reads the module globals at call
-# time, so a test that rebinds _separator_key / _leases / _orphans still
-# steers it.
+# Residency API: runtime.preload's view of the singleton. ``model`` below is
+# an on-disk model FILENAME (``UVR-Foo.onnx``), the key the singleton and its
+# leases use.
 
 def is_resident(model: str) -> bool:
     """Is the cached separator ``model``'s (on any device)?"""
