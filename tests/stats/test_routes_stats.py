@@ -1313,7 +1313,7 @@ def test_stats_usage_list_filters_kinds_users_keys(client):
     keys = client.get("/stats/usage?by=kind&keys=kb,kc").json()
     assert keys["totals"]["all"]["audio_s"] == 50.0
     one = client.get("/stats/usage?by=kind&keys=kb").json()
-    assert one["filter"]["key_id"] == "kb"          # v2 shape for one key
+    assert one["filter"]["key_id"] == "kb"          # one picked key filters as a scalar, like key=
 
     tail = client.get("/stats/tail?kind=file,url&users=alice,bob").json()
     assert tail["turnaround"]["n"] == 2
