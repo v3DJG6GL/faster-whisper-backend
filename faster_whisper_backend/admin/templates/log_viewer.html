@@ -25,17 +25,13 @@
   input, textarea, select, kbd, code, pre { font-family: var(--font-mono); }
   /* header / .header-inner / .title / page-toolbar controls (buttons,
      pills, the #filter input) are all centralized in NAV_CSS. */
-  /* width:100% + box-sizing:border-box are the fix for the "tiny centered
-     column with text clipped at the start" rendering — without them the
-     container sits on a content-sized box that overflows the viewport.
-     No max-width: log content uses the full viewport so long lines (HF
-     URLs, model paths) sit on a single line on wide monitors instead of
-     wrapping into the empty side-bands. The header bar stays centered at
-     the page canvas (col-fluid, 150rem) so controls remain in a predictable
-     spot. pre-wrap still wraps lines that genuinely exceed the viewport.
-     font-size = global rem * --log-zoom is the multiplicative log-only
-     zoom; bumping the global picker grows logs and chrome together, and
-     the [-]/[+] buttons in the header then scale logs only on top. */
+  /* width:100% + border-box: without them #log sits on a content-sized
+     box that overflows the viewport (a narrow centred column, text clipped
+     at the start). No max-width on purpose: long lines (HF URLs, model
+     paths) stay on one line on wide monitors; only the header stays
+     centred at the page canvas. font-size = global rem * --log-zoom: the
+     global picker scales logs and chrome together, the header's [-]/[+]
+     then scale logs only. */
   #log { padding: 0.5rem 0.875rem;
     width: 100%;
     box-sizing: border-box;
@@ -44,7 +40,6 @@
     white-space: pre-wrap; overflow-wrap: anywhere;
     overflow-anchor: none; }
   .line { display: block; word-break: break-word; }
-  /* Log-zoom control — independent from the global UI scale picker. */
   .log-zoom { display: inline-flex; align-items: center; gap: 0.25rem;
     border: 1px solid var(--border); border-radius: 4px;
     padding: 0.125rem 0.25rem; flex-shrink: 0;
@@ -670,8 +665,8 @@
   // in the DOM. Reset by openLogStream() and Clear, advanced by every
   // append() (backlog + live) and by each successful /logs/older batch length.
   let _logsSkip = 0;
-  // Bumped by openLogStream(): a batch fetched against the old DOM and
-  // cursor must not land on the replayed backlog.
+  // Bumped by openLogStream() and Clear: a batch fetched against the old
+  // DOM and cursor must not land on the new one.
   let _logsGen = 0;
   let _logsOlderBusy = false;
   const loadOlderBtn = document.getElementById('loadOlderBtn');
@@ -721,9 +716,8 @@
     });
   }
 
-  // EventSource sends the HttpOnly session cookie automatically (same-origin),
-  // so the server's _require_logs_page_sse dependency resolves the user
-  // without the legacy ?key= fallback.
+  // EventSource cannot set a header; it sends the HttpOnly session cookie
+  // (same-origin), which is what _require_logs_page_sse authenticates.
   let es = null;
   let _logRecoveryTimer = null;
   let _logReconnectDelay = 3000;
