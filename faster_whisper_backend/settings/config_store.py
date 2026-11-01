@@ -34,11 +34,9 @@ from pydantic_core import PydanticCustomError
 
 
 _REPO_DIR = REPO_ROOT  # the checkout, not this package — see paths.py
-# Admin-edited overrides file. Defaults into the data dir like every other
-# runtime-state path (mirrors config._DATA_DIR — computed locally, the rule is
-# two lines): WHISPER_CONFIG_LOCAL > WHISPER_DATA_DIR/config.local.json >
-# /data/config.local.json (Windows: <repo>\data — bare metal by definition, and
-# "/data" would be drive-relative there; keep in sync with config._DATA_DIR).
+# Admin-edited overrides file, in the data dir like every other runtime-state
+# path. Windows uses <repo>\data: bare metal by definition, and "/data" would
+# be drive-relative there. Keep in sync with config._DATA_DIR.
 OVERRIDES_PATH = os.environ.get("WHISPER_CONFIG_LOCAL") or os.path.normpath(
     os.path.join(
         (os.environ.get("WHISPER_DATA_DIR") or "").strip()
@@ -99,7 +97,7 @@ def _migrate_tightened_bundle_values(raw: dict[str, Any]) -> list[str]:
     them left in a stored bundle fails load_overrides' whole-file validation —
     every admin override is then ignored at boot, and every save 422s. A guard
     at 1 was already off at runtime, so it becomes 0 (off); an unparseable CSV is
-    dropped (inherit), with its lock. DEFAULT_LANGUAGE (top level too) gained
+    dropped (inherit) and its lock stays. DEFAULT_LANGUAGE (top level too) gained
     a Whisper-code membership check: an unknown code failed every decode
     that relied on it, so it is dropped (inherit). SUPPRESS_TOKENS (top
     level too) gained a token-id range: an id far past the vocab crashed
@@ -400,8 +398,8 @@ def save_factory_rules(rules: list[Any], path: str = FACTORY_PATH, *,
     When these rules are the ones in force (no local or env PIPELINE_RULES
     copy), a rule still named by a stored MODEL_OVERRIDES / OVERRIDE_PROFILES
     / CAPTURES_PIPELINE_RULES_EXCLUDE (in `overrides_path`, default
-    OVERRIDES_PATH) cannot be removed or renamed: the dangling slug would make
-    every later save of that key 422, as save_overrides refuses it too.
+    OVERRIDES_PATH) cannot be removed or renamed: the pages draw rows only for
+    live rules, so the dangling slug could be neither seen nor cleared.
 
     Returns the validated, coerced rule list. Raises ValidationError on bad
     input or an unreadable config.json — the route handler converts that to
@@ -424,11 +422,8 @@ def save_factory_rules(rules: list[Any], path: str = FACTORY_PATH, *,
             settings_schema.AdminConfig.model_validate(
                 refs, context={"canonical_slugs": frozenset(
                     out_names | (_stored_ref_slugs(refs) - removed))})
-    # config.json now holds ALL factory defaults, not just PIPELINE_RULES, so
-    # read-modify-write to preserve the sibling scalar keys. A blind whole-file
-    # replace (as before) would wipe every other default on a rules promote.
-    # The read-through-write runs under atomic_json.save_lock: an unlocked RMW here loses
-    # a concurrent save's scalar edits the same way save_overrides() did.
+    # Read-modify-write: a whole-file replace would wipe the sibling scalar
+    # defaults. Under save_lock, or a concurrent save's scalar edits are lost.
     with atomic_json.save_lock(path):
         merged: dict[str, Any] = {}
         if os.path.exists(path):
@@ -515,10 +510,10 @@ _SILENCE_PAIR_KEYS = ("STREAMING_VAD_INNER_SILENCE_MS",
 
 def _unreadable_overrides_error(path: str, why: str,
                                 remedy: str = "fix or remove it") -> ValidationError:
-    """The 422 a save over an unparseable overrides file fails with. Boot
-    (load_overrides) ignores such a file, so the WebUI shows defaults; merging
-    onto {} and rewriting would silently wipe every hand-edited override that
-    fixing the encoding or a stray comma would have recovered."""
+    """The 422 a save over an unparseable config.local.json or config.json
+    fails with: merging onto {} and rewriting would silently wipe every
+    hand-edited value that fixing the encoding or a stray comma would have
+    recovered."""
     return ValidationError.from_exception_data("AdminConfig", [{
         "type": PydanticCustomError(
             "config_file_unreadable",
@@ -541,12 +536,9 @@ def save_overrides(
     guarding the whole list. Compile + template validation always covers
     everything regardless.
 
-    `payload` may contain ONLY the fields the user just edited — the WebUI
-    sends a "dirty" diff, not the full state. We MERGE on top of whatever is
-    already in `config.local.json` so partial saves preserve previously-saved
-    settings. Without this, saving one field would wipe every other override
-    on disk and the next restart would revert those values to the in-repo
-    defaults.
+    `payload` may hold ONLY the fields the user just edited (the WebUI sends
+    a dirty diff); it is merged onto the stored file so a partial save keeps
+    every other override.
 
     Sentinels in `payload`:
       - any key with value `None`  → REMOVE the override (revert to default)
@@ -561,20 +553,12 @@ def save_overrides(
     Raises ValidationError on bad input — the route handler converts to a 422
     JSON response. An existing file that is not a readable JSON object fails
     the same way and is left untouched; a missing file is the empty case.
-
-    Atomicity: write to a tempfile in the same directory, then os.replace. On
-    Windows AV scanners can briefly hold the destination open; we retry the
-    rename a few times with a short backoff.
     """
-    # Read existing file (raw, no Pydantic) so we don't lose fields the caller
-    # didn't include in `payload`. load_overrides() applies coercions that
-    # don't round-trip through model_validate cleanly (set, frozenset, tuple),
-    # so we read raw JSON here.
-    # The read → validate → write sequence is a read-modify-write that rewrites
-    # the WHOLE merged document, and the guard_regex probe below runs out of
-    # process for seconds in the middle of it. atomic_json.save_lock() serialises it across
-    # threads and workers; unlocked, a save that lands inside another save's
-    # window is silently reverted (see atomic_json.save_lock's docstring).
+    # Raw JSON, not load_overrides(): its coercions (set, frozenset, tuple)
+    # don't round-trip through model_validate.
+    # This read-modify-write rewrites the WHOLE document while the guard_regex
+    # probe runs out of process for seconds; save_lock serialises it across
+    # threads and workers, or a save landing in that window is silently reverted.
     with atomic_json.save_lock(path):
         existing: dict[str, Any] = {}
         if os.path.exists(path):
@@ -594,7 +578,6 @@ def save_overrides(
             payload = {**payload, "MODEL_OVERRIDES": _strip_env_model_overrides(
                 payload["MODEL_OVERRIDES"], existing.get("MODEL_OVERRIDES"))}
 
-        # Merge: payload wins over existing. None means "remove this override."
         merged = dict(existing)
         for k, v in payload.items():
             if v is None:
@@ -617,11 +600,9 @@ def save_overrides(
             _renames.migrate_rule_slugs(merged, factory)
             _renames.migrate_bundle_keys(merged, factory)
 
-        # guard_regex: run the out-of-process catastrophic-backtracking check —
-        # this is a SAVE of (possibly non-admin) submitted rules.
-        # Screen regex rules only when this save actually submits rules —
-        # otherwise one stored legacy pattern that fails today's structural
-        # screen would brick every unrelated settings save.
+        # The out-of-process regex guard runs only when this save submits
+        # rules: one stored legacy pattern that fails today's screen would
+        # otherwise brick every unrelated settings save.
         context: dict[str, Any] = {}
         if "PIPELINE_RULES" in payload:
             context["guard_regex"] = True
@@ -659,7 +640,7 @@ def save_overrides(
             if drops_local_rules:
                 # The local copy is being removed: the factory list becomes
                 # the one in force, so EVERY stored ref must survive it, or
-                # each later save of that key 422s on a slug nobody can see.
+                # it is left naming a rule the pages never show or clear.
                 slug_refs = {k: merged[k] for k in _SLUG_REF_KEYS
                              if merged.get(k) is not None}
                 slugs = factory if slug_refs else None
@@ -692,9 +673,8 @@ def save_overrides(
         store_common.secure_file(path)
     settings_version.bump_config_version()   # let live consumers (streaming idents) re-resolve
 
-    # Return only the fields that actually changed in this call. Compare
-    # against `existing` (what was on disk before) using the validated form
-    # so type coercions don't show up as spurious diffs.
+    # Return the fields whose written (validated) value differs from what was
+    # on disk before (`existing`, as read).
     # Dropping the local rules copy also rewrote the slug refs migrated above:
     # report them too, so the caller puts them on the running cfg.
     changed: dict[str, Any] = {}
@@ -716,12 +696,8 @@ def _env_effective_values() -> dict[str, Any]:
 
 
 def pipeline_rule_tags(rules: Any) -> list[str]:
-    """Return the deduped, sorted union of every tag across the given
-    rule list. Used by `/settings/state` + `/settings/api-keys/api/users`
-    to populate autocomplete in the tag-picker widget so admins don't
-    have to remember the exact spelling.
-
-    Accepts both dicts (post pipeline.apply.canon_rules) and Pydantic models."""
+    """Deduped, sorted union of every tag across `rules` (dicts or Pydantic
+    models), for the tag-picker autocomplete of /settings/api-keys/api/users."""
     seen: set[str] = set()
     for r in (rules or []):
         if hasattr(r, "model_dump"):
@@ -762,9 +738,7 @@ def env_pinned_fields() -> dict[str, str]:
     return out
 
 
-# =============================================================================
-# Per-identity binding validation (per-user / per-API-key config blobs)
-# =============================================================================
+# Per-identity binding validation (per-user / per-API-key config blobs).
 # A binding = {"direct": <OverrideProfile-shaped dict>, "profiles": [name, …]}.
 # The wire shape sent by the WebUI is {"overrides": {...}, "profiles": [...],
 # "locks": [...]}; validate_binding() turns it into the stored shape, applying
@@ -910,8 +884,9 @@ def validate_allowed_profiles(raw: Any, stored: Any = ()) -> list[str] | None:
     REQUEST. This is distinct from `profiles` (which are forced-applied layers);
     the allowlist only restricts which names a per-request `override_profile`
     may select. None = inherit / no restriction (every requestable profile is
-    allowed). The wildcard "*" (alone) = explicitly all. An explicit list
-    restricts to those names — each must match the profile-name shape AND exist;
+    allowed). A "*" anywhere in the list = explicitly all (the other names are
+    not checked). An explicit list restricts to those names — each must match
+    the profile-name shape AND exist;
     [] = allow none. A name `stored` (the binding's allowlist before this
     save) already holds passes as in validate_profile_refs. Raises
     ValueError on a bad / unknown name."""
@@ -1001,9 +976,6 @@ def validate_binding(raw: Any, previous: Any = None) -> dict[str, Any]:
     if allow is not None:
         out["allowed_override_profiles"] = validate_allowed_profiles(
             allow, prev.get("allowed_override_profiles"))
-    # Admin force — NOT a request gate: does not inherit, is not bound by the
-    # override-profile gate. True = suppress every bound/requested profile for
-    # this identity. Stored only when explicitly set.
     anp = raw.get("apply_no_profiles")
     if isinstance(anp, bool):
         out["apply_no_profiles"] = anp
