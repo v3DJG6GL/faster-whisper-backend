@@ -15,13 +15,8 @@ import unicodedata
 
 
 def _combining_marks_class() -> str:
-    """Every Unicode combining mark (Mn/Mc/Me) as char-class ranges.
-
-    Without them a token stopped at every vowel sign: "हिन्दी भाषा बोलते"
-    gave only "लत", a fragment from inside "बोलते" that, picked as a cb:map
-    key, rewrites the inside of other words. Same for Thai, Bengali,
-    vowelled Arabic and NFD-decomposed Latin ("E" + U+0301 + "ric" gave
-    "ric")."""
+    """Every Unicode combining mark (Mn/Mc/Me) as char-class ranges: Indic
+    and Thai vowel signs, Arabic vowelling, NFD-decomposed Latin accents."""
     ranges: list[list[int]] = []
     for cp in range(sys.maxunicode + 1):
         if unicodedata.category(chr(cp))[0] == "M":
