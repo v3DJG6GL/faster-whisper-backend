@@ -5,13 +5,9 @@ training samples) accept the same chip shape:
 
     {wrong: str, correct: str, idx: int?, idx_end: int?}
 
-This module centralizes the cleaner so the two stores stay in lockstep —
-adding a new chip-related field here automatically propagates to both
-surfaces and to the future "promote a capture into a report" workflow.
-
-The function lives here (not in either store) to avoid a circular
-import: captures_store imports reports_store's helpers today would form
-a chain through the route layer.
+The cleaner and the merge live here so the two stores stay in lockstep
+(a chip field added here reaches both surfaces). It is in core/, not in
+either store, so neither store has to import the other.
 """
 from __future__ import annotations
 
@@ -103,14 +99,11 @@ def three_way_merge_corrections(
 
     Merge key is `(idx, idx_end)` with idx_end defaulting to idx for
     anchored chips. Anchorless chips (no integer `idx`) have no positional
-    identity — keying them by position collapses every (None, None) entry
-    into one and silently drops chips — so they are keyed by
-    `(wrong, correct)` instead, under the same delta rule: one the user
-    removed (in baseline, not in edited) is dropped, an added or changed
-    one wins, and an untouched one keeps whatever `current` has (absent
-    stays absent). With an empty baseline (the reports resubmit path) this is the
-    union of `current` and `edited`. An edit of an anchorless chip's
-    `correct` is a remove of the old key plus an add of the new one."""
+    identity — keying them by position would collapse every (None, None)
+    entry into one — so they are keyed by `(wrong, correct)` under the same
+    delta rule; editing one's `correct` is a remove plus an add. With an
+    empty baseline (the reports resubmit path) the result is the union of
+    `current` and `edited`."""
     def key(c: dict[str, Any]) -> "tuple[int, int] | None":
         i = c.get("idx")
         if not isinstance(i, int):
@@ -148,9 +141,6 @@ def three_way_merge_corrections(
             out[k] = edit_anc[k]
         elif base_anc[k] != edit_anc[k]:
             out[k] = edit_anc[k]
-        # else: chip key in both with equal payload — user untouched it;
-        # keep whatever `current` has so concurrent edits at that key
-        # survive.
 
     def _sort_key(c: dict[str, Any]) -> tuple[int, int]:
         i = c.get("idx")
@@ -159,10 +149,8 @@ def three_way_merge_corrections(
         except (TypeError, ValueError):
             return (1, 0)
 
-    # Anchorless chips: the same delta keyed by (wrong, correct). Without the
-    # baseline a removed (or re-worded) chip came straight back from
-    # `current`. Edited entries win on collision; untouched ones (equal to
-    # baseline) are not written back, so a concurrent removal stays removed.
+    # Untouched anchorless chips (equal to baseline) are not written back,
+    # so a concurrent removal stays removed.
     merged_free = {k: v for k, v in cur_free.items()
                    if not (k in base_free and k not in edit_free)}
     merged_free.update({k: v for k, v in edit_free.items()
