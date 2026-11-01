@@ -175,7 +175,7 @@ def test_rename_key_flow(client):
         json={"label": "  new name  "},
     )
     assert r.status_code == 200
-    assert r.json()["record"]["label"] == "new name"  # trimmed
+    assert r.json()["record"]["label"] == "new name"
     keys = client.get(f"/settings/api-keys/api/users/{uid}/keys").json()["keys"]
     row = next(k for k in keys if k["id"] == kid)
     assert row["label"] == "new name"
