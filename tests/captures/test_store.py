@@ -1,8 +1,4 @@
-"""Tests for captures_store: path helpers + traversal defense, _truncate_json
-binary-search tail-trim, _safe_unlink, create_capture (success + cleanup),
-list/iter/get/find/counts, update_capture validation + reviewed_ts toggle,
-delete_capture (+ group auto-dissolve), clear_all, _evict_to_cap priority +
-disabled, reconcile_on_startup, sweep_retention."""
+"""Tests for captures_store (faster_whisper_backend/captures/store.py)."""
 
 import json
 import os
@@ -13,10 +9,6 @@ import pytest
 
 RATE = 16000
 
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 def _fake_transcode(cs, monkeypatch, nbytes=1234):
     """Patch transcode_to_wav_16k_mono to write a minimal valid WAV at dst and
@@ -55,10 +47,6 @@ def _make(cs, monkeypatch, tmp_path, **over):
     return cs.create_capture(**kw)
 
 
-# ---------------------------------------------------------------------------
-# _relpath_for
-# ---------------------------------------------------------------------------
-
 def test_relpath_fanout_and_ext_lowercase(captures_store_db):
     cs = captures_store_db
     rel = cs._relpath_for("abcdef1234", ".WAV")
@@ -73,14 +61,9 @@ def test_relpath_empty_ext_becomes_bin(captures_store_db):
 def test_relpath_ext_capped(captures_store_db):
     cs = captures_store_db
     rel = cs._relpath_for("aabbccdd", "x" * 50)
-    # ext is capped at _CAP_AUDIO_FORMAT (16) chars.
     name = os.path.basename(rel)
     assert name == "aabbccdd." + "x" * cs._CAP_AUDIO_FORMAT
 
-
-# ---------------------------------------------------------------------------
-# abs_audio_path — path traversal defense
-# ---------------------------------------------------------------------------
 
 def test_abs_audio_path_ok(captures_store_db):
     cs = captures_store_db
@@ -98,10 +81,6 @@ def test_abs_audio_path_rejects_escape(captures_store_db, bad):
         captures_store_db.abs_audio_path(bad)
 
 
-# ---------------------------------------------------------------------------
-# _truncate_json
-# ---------------------------------------------------------------------------
-
 def test_truncate_json_under_cap_intact(captures_store_db):
     items = [{"a": 1}, {"b": 2}]
     out = captures_store_db._truncate_json(items, 10_000)
@@ -117,7 +96,6 @@ def test_truncate_json_tail_trim(captures_store_db):
     kept = json.loads(out)
     assert len(out) <= cap
     assert 0 < len(kept) < len(items)
-    # Front entries are kept (tail trimmed).
     assert kept == items[:len(kept)]
 
 
@@ -153,10 +131,6 @@ def test_truncate_translations_key_overhead_over_cap(captures_store_db):
     assert json.loads(cs._truncate_translations({"k" * 50: "v"}, 20)) == {}
 
 
-# ---------------------------------------------------------------------------
-# _safe_unlink
-# ---------------------------------------------------------------------------
-
 def test_safe_unlink_existing(captures_store_db, tmp_path):
     f = tmp_path / "gone.bin"
     f.write_bytes(b"x")
@@ -167,10 +141,6 @@ def test_safe_unlink_existing(captures_store_db, tmp_path):
 def test_safe_unlink_missing_is_true(captures_store_db, tmp_path):
     assert captures_store_db._safe_unlink(str(tmp_path / "never.bin")) is True
 
-
-# ---------------------------------------------------------------------------
-# count / create_capture
-# ---------------------------------------------------------------------------
 
 def test_count_starts_zero(captures_store_db):
     assert captures_store_db.count() == 0
@@ -186,7 +156,6 @@ def test_create_capture_inserts_row_and_writes_audio(captures_store_db, monkeypa
     assert row["language"] == "de"
     assert row["user_id"] == "u1"
     assert row["words"] == [{"word": "hi", "start": 0.0, "end": 0.5}]
-    # Audio file actually exists at the resolved relpath.
     assert os.path.isfile(cs.abs_audio_path(row["audio_relpath"]))
 
 
@@ -216,7 +185,6 @@ def test_create_capture_transcode_failure_cleans_tmp(captures_store_db, monkeypa
             words=[], segments=[],
         )
     assert cs.count() == 0
-    # No .tmp left behind in the audio tree.
     leftovers = []
     for root, _d, files in os.walk(cs._require_audio_dir()):
         leftovers += [f for f in files if f.endswith(".tmp")]
@@ -244,17 +212,12 @@ def test_create_capture_insert_failure_unlinks_audio(captures_store_db, monkeypa
             language="de", audio_s=1.0, raw="r", final="f",
             words=[], segments=[],
         )
-    # The audio blob was unlinked on insert failure (no orphans).
     monkeypatch.setattr(cs, "_require_conn", lambda: real_conn)
     files = []
     for root, _d, fs in os.walk(cs._require_audio_dir()):
         files += [f for f in fs if f.endswith(".wav")]
     assert files == []
 
-
-# ---------------------------------------------------------------------------
-# list_captures
-# ---------------------------------------------------------------------------
 
 def test_list_captures_newest_first_drops_words(captures_store_db, monkeypatch, tmp_path):
     cs = captures_store_db
@@ -297,10 +260,6 @@ def test_list_captures_before_ts_cursor(captures_store_db, monkeypatch, tmp_path
     assert [r["id"] for r in page] == [cid1]
 
 
-# ---------------------------------------------------------------------------
-# iter_captures_for_export
-# ---------------------------------------------------------------------------
-
 def test_iter_export_includes_words_oldest_first(captures_store_db, monkeypatch, tmp_path):
     cs = captures_store_db
     cid1 = _make(cs, monkeypatch, tmp_path)
@@ -320,10 +279,6 @@ def test_iter_export_filters(captures_store_db, monkeypatch, tmp_path):
     assert len(list(cs.iter_captures_for_export(user_id="u1"))) == 1
     assert len(list(cs.iter_captures_for_export(status="all"))) == 2
 
-
-# ---------------------------------------------------------------------------
-# get_capture / find_by_request_id / counts_by_status
-# ---------------------------------------------------------------------------
 
 def test_get_capture_missing(captures_store_db):
     assert captures_store_db.get_capture("nope") is None
@@ -345,7 +300,6 @@ def test_counts_by_status(captures_store_db, monkeypatch, tmp_path):
     cs.update_capture(c1, {"status": "ready"})
     counts = cs.counts_by_status()
     assert counts["new"] == 1 and counts["ready"] == 1
-    # All valid statuses are present as keys.
     assert set(counts) == set(cs._VALID_STATUS)
 
 
@@ -376,7 +330,7 @@ def test_counts_and_total_scoped_to_user(captures_store_db, monkeypatch,
 def test_empty_owner_list_matches_nothing(captures_store_db, monkeypatch,
                                           tmp_path):
     """Only None means "no owner filter". A list with no usable id is an
-    empty owner set and must fail CLOSED — it used to widen to every user."""
+    empty owner set and must fail CLOSED, never widen to every user."""
     cs = captures_store_db
     _make(cs, monkeypatch, tmp_path, user_id="alice")
     _make(cs, monkeypatch, tmp_path, user_id="bob")
@@ -419,10 +373,6 @@ def test_get_captures_light_projection_and_chunking(captures_store_db,
     assert cs.get_captures_light([]) == {}
 
 
-# ---------------------------------------------------------------------------
-# update_capture
-# ---------------------------------------------------------------------------
-
 def test_update_invalid_status_raises(captures_store_db, monkeypatch, tmp_path):
     cs = captures_store_db
     cid = _make(cs, monkeypatch, tmp_path)
@@ -436,13 +386,13 @@ def test_update_status_toggles_reviewed_ts(captures_store_db, monkeypatch, tmp_p
     row = cs.update_capture(cid, {"status": "reviewed"})
     assert row["status"] == "reviewed" and row["reviewed_ts"] is not None
     row = cs.update_capture(cid, {"status": "new"})
-    assert row["reviewed_ts"] is None  # back to new clears it
+    assert row["reviewed_ts"] is None
 
 
 def test_update_corrections_cleaned(captures_store_db, monkeypatch, tmp_path):
     cs = captures_store_db
     cid = _make(cs, monkeypatch, tmp_path)
-    # One valid (has correct), one dropped (no correct field).
+    # The entry with an empty `correct` is dropped.
     row = cs.update_capture(cid, {"corrections": [
         {"wrong": "a", "correct": "b"},
         {"wrong": "x", "correct": ""},
@@ -480,10 +430,6 @@ def test_update_missing_row_returns_none(captures_store_db):
     assert captures_store_db.update_capture("nope", {"status": "ready"}) is None
 
 
-# ---------------------------------------------------------------------------
-# delete_capture
-# ---------------------------------------------------------------------------
-
 def test_delete_capture_returns_bool_and_removes_audio(captures_store_db, monkeypatch, tmp_path):
     cs = captures_store_db
     cid = _make(cs, monkeypatch, tmp_path)
@@ -498,7 +444,6 @@ def test_delete_member_auto_dissolves_group(captures_store_db, groups_store_db, 
     cs = captures_store_db
     gs = groups_store_db
     cid = _make(cs, monkeypatch, tmp_path)
-    # Manually create a group row + attach the capture as a member.
     conn = cs._require_conn()
     sid = "g0123456789abcdef"
     conn.execute(
@@ -512,13 +457,8 @@ def test_delete_member_auto_dissolves_group(captures_store_db, groups_store_db, 
     )
     assert gs.get_sample(sid) is not None
     assert cs.delete_capture(cid) is True
-    # Group auto-dissolved on member delete.
     assert gs.get_sample(sid) is None
 
-
-# ---------------------------------------------------------------------------
-# clear_all
-# ---------------------------------------------------------------------------
 
 def test_clear_all_wipes_rows_and_files(captures_store_db, groups_store_db, monkeypatch, tmp_path):
     cs = captures_store_db
@@ -634,15 +574,10 @@ def test_create_capture_skips_the_row_when_a_clear_wiped_its_audio(
     assert cs.count() == 0
 
 
-# ---------------------------------------------------------------------------
-# _evict_to_cap
-# ---------------------------------------------------------------------------
-
 def test_evict_priority_dismissed_first(captures_store_db, monkeypatch, tmp_path):
     cs = captures_store_db
     from faster_whisper_backend.settings import config
-    # Insert 3 rows then cap to 2 — eviction should drop the dismissed one
-    # before any new/ready row (priority order).
+    # Eviction drops a dismissed row before any new/ready one (priority order).
     monkeypatch.setattr(config, "CAPTURES_MAX", 5000, raising=False)
     monkeypatch.setattr(config, "CAPTURES_MAX_MB", 5000, raising=False)
     c_dismissed = _make(cs, monkeypatch, tmp_path)
@@ -652,7 +587,6 @@ def test_evict_priority_dismissed_first(captures_store_db, monkeypatch, tmp_path
     conn = cs._require_conn()
     conn.execute("UPDATE captures SET created_ts=1 WHERE id=?", (c_dismissed,))
     conn.execute("UPDATE captures SET created_ts=2 WHERE id=?", (c_new,))
-    # Now tighten cap to 2 and insert a 3rd, forcing 1 eviction.
     monkeypatch.setattr(config, "CAPTURES_MAX", 2, raising=False)
     _make(cs, monkeypatch, tmp_path)
     assert cs.get_capture(c_dismissed) is None      # dismissed evicted first
@@ -920,21 +854,15 @@ def test_evict_disabled_when_caps_below_one(captures_store_db, monkeypatch, tmp_
     monkeypatch.setattr(config, "CAPTURES_MAX_MB", 0, raising=False)
     for _ in range(4):
         _make(cs, monkeypatch, tmp_path)
-    assert cs.count() == 4  # no eviction
+    assert cs.count() == 4
 
-
-# ---------------------------------------------------------------------------
-# reconcile_on_startup
-# ---------------------------------------------------------------------------
 
 def test_reconcile_marks_missing_and_unlinks_orphans(captures_store_db, monkeypatch, tmp_path):
     cs = captures_store_db
     keep = _make(cs, monkeypatch, tmp_path)
     missing = _make(cs, monkeypatch, tmp_path)
-    # Delete the audio file of `missing` directly (row stays).
     miss_abs = cs.abs_audio_path(cs.get_capture(missing)["audio_relpath"])
     os.unlink(miss_abs)
-    # Drop an orphan file with no row, plus a stray .tmp.
     audio = cs._require_audio_dir()
     orphan_dir = os.path.join(audio, "zz", "zz")
     os.makedirs(orphan_dir, exist_ok=True)
@@ -964,7 +892,7 @@ def test_reconcile_skips_groups_subtree(captures_store_db, monkeypatch, tmp_path
     with open(merged, "wb") as f:
         f.write(b"x")
     cs.reconcile_on_startup()
-    assert os.path.isfile(merged)  # groups/ subtree preserved
+    assert os.path.isfile(merged)
 
 
 def _hide_audio(cs, cid, tmp_path):
@@ -1037,10 +965,6 @@ def test_reconcile_restores_a_row_marked_before_the_column_to_new(
     assert got["status"] == "new" and got["reviewed_ts"] is None
     assert cs.get_capture(gone)["status"] == "audio_missing"
 
-
-# ---------------------------------------------------------------------------
-# sweep_retention
-# ---------------------------------------------------------------------------
 
 def test_sweep_retention_disabled(captures_store_db, monkeypatch, tmp_path):
     cs = captures_store_db
@@ -1161,10 +1085,6 @@ def test_sweep_retention_expires_an_over_age_sample_and_its_members(
     assert gs.get_sample(sid) is None
 
 
-# ---------------------------------------------------------------------------
-# translations stays valid JSON at any size (create + update)
-# ---------------------------------------------------------------------------
-
 def test_create_capture_oversized_translations_stay_valid_json(
         captures_store_db, monkeypatch, tmp_path):
     """A raw slice of the JSON blob lands mid-token; the reader then swallows
@@ -1198,7 +1118,6 @@ def test_update_translations_rejects_non_dict_and_caps_dict(
         cs.update_capture(cid, {"translations": ["not", "a", "map"]})
     with pytest.raises(ValueError):
         cs.update_capture(cid, {"translations": "en: hi"})
-    # Nothing was stored by the rejected writes.
     assert cs.get_capture(cid)["translations"] == {}
 
     row = cs.update_capture(cid, {"translations": {"en": "e" * (cs._CAP_FINAL * 2)}})
@@ -1208,11 +1127,8 @@ def test_update_translations_rejects_non_dict_and_caps_dict(
     assert row["translations"] == {}
 
 
-# ---------------------------------------------------------------------------
-# Public reads hold _lock (two threads running the same SELECT text on the
-# shared connection can read each other's rows — another user's captures)
-# ---------------------------------------------------------------------------
-
+# Public reads hold _lock: two threads running the same SELECT text on the
+# shared connection can read each other's rows (another user's captures).
 def test_reads_hold_the_lock(captures_store_db, monkeypatch, tmp_path):
     from tests.stats.test_store_reads_hold_lock import _LockCheckingConn
 
