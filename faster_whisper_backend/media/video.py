@@ -153,10 +153,10 @@ async def _download_video_for_run(pid: "str | None", url: str, rung: dict, *,
     try:
         _pub(state="queued")
         # The job dir is made only once the download slot is ours, and lives
-        # on (past the slot) until register() has moved the file out: a dir
-        # made while queued kept its creation mtime through the whole wait,
-        # and _reap_stale_staging (video wall clock + margin) deleted a live
-        # job queued behind full-timeout downloads.
+        # on (past the slot) until register() has moved the file out: made
+        # while queued, its mtime would age through the wait and
+        # _reap_stale_staging (longest download timeout + margin) could
+        # delete a live job queued behind full-timeout downloads.
         async with AsyncExitStack() as job_stack:
             async with tx_models._get_url_download_semaphore():
                 if tx_progress._cancel_requested(pid):
