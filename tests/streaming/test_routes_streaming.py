@@ -165,9 +165,9 @@ def test_dictate_page_served(app_module):
 
 
 def test_dictate_page_explains_streaming_disabled_close(app_module):
-    """The WS handler refuses with close code 4503 when STREAMING_ENABLED is
-    off; the page's onclose must name that refusal (next to its 4401/4403
-    branches) instead of falling through to a bare "closed"."""
+    """Each refusal close the WS handler sends (4401/4403/4503/4429/4408 —
+    4503 is STREAMING_ENABLED off) gets its own message in the page's
+    onclose instead of falling through to a bare "closed"."""
     with TestClient(app_module.app, client=("127.0.0.1", 12345)) as client:
         body = client.get("/dictate").text
     for code in ("4401", "4403", "4503", "4429", "4408"):
@@ -335,11 +335,11 @@ def test_dictate_page_sends_a_cleared_language_as_auto_detect(app_module):
         assert json.loads(out) == {"ws": want, "form": want}, box
 
 
-# --- handshake credential carriers -------------------------------------------
-# Three: the Authorization header (native clients), the `bearer.<key>`
-# subprotocol (the one request header a browser can set on a WebSocket), and
-# the session cookie. A ?key= query param is NOT one — it would land in every
-# access log that records the request line.
+# The handshake has three credential carriers: the Authorization header
+# (native clients), the `bearer.<key>` subprotocol (the one request header a
+# browser can set on a WebSocket), and the session cookie. A ?key= query
+# param is NOT one — it would land in every access log that records the
+# request line.
 
 def _handshake(ws):
     ws.send_json({"type": "config", "model": "whisper-1",
@@ -577,13 +577,13 @@ def test_stream_idle_timeout_zero_disables(app_module, monkeypatch):
 def test_stream_idle_timeout_not_re_armed_by_non_audio_frames(app_module, monkeypatch):
     """The idle deadline is anchored to the last AUDIO byte, not the last frame.
 
-    Regression: `_receive_idle` used to be re-armed with the FULL timeout on every
-    inbound frame, so a client alternating an unrecognised control JSON with an
-    empty binary frame (a no-op sink write) held its session slot open forever
-    while decoding nothing — enough sockets to pin STREAMING_MAX_SESSIONS.
+    A client alternating an unrecognised control JSON with an empty binary
+    frame (a no-op sink write) must not hold its session slot open while
+    decoding nothing — enough such sockets would pin STREAMING_MAX_SESSIONS.
 
-    The assertion is on the DRAIN duration, not on the notice alone: the old code
-    also emits an idle_timeout notice, just one full timeout AFTER the last frame.
+    The assertion is on the DRAIN duration, not on the notice alone: a deadline
+    re-armed on every frame also emits an idle_timeout notice, just one full
+    timeout AFTER the last frame.
     Here the socket must already be closed by the time we stop sending.
     """
     monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
@@ -616,8 +616,8 @@ def test_stream_idle_timeout_not_tripped_while_audio_flows(app_module, monkeypat
     short even though the session runs far longer than one idle timeout."""
     monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
     # 2 s timeout with a frame every 0.25 s: 1.75 s of slack per frame, so a
-    # loaded CI runner (three interpreters share one box) cannot turn a stalled
-    # sleep into a spurious idle close — 0.5 s / 0.25 s flaked on py3.13 in CI.
+    # stalled sleep on a loaded CI runner cannot turn into a spurious idle
+    # close (a 0.5 s timeout with 0.25 s frames flaked in CI).
     monkeypatch.setattr(app_module.cfg, "STREAMING_IDLE_TIMEOUT_S", 2.0, raising=False)
     with TestClient(app_module.app, client=("127.0.0.1", 12345)) as client:
         with client.websocket_connect("/v1/audio/transcriptions/stream") as ws:
@@ -633,8 +633,6 @@ def test_stream_idle_timeout_not_tripped_while_audio_flows(app_module, monkeypat
             msgs = _drain(ws)
     assert not any(m.get("code") == "idle_timeout" for m in msgs)
 
-
-# --- per-user session cap ----------------------------------------------------
 
 _STREAM_URL = "/v1/audio/transcriptions/stream"
 
@@ -837,8 +835,6 @@ def test_cancel_during_a_completed_load_still_releases_the_lease(
     assert streaming_routes._active_sessions == set()
 
 
-# --- usage job id ------------------------------------------------------------
-
 def _dictate_one_utterance(client, conf_extra):
     with client.websocket_connect(_STREAM_URL) as ws:
         ws.send_json({"type": "config", "model": "whisper-1",
@@ -878,9 +874,9 @@ def test_dictate_page_keeps_earlier_documents_across_a_hard_break(app_module):
     """StreamSession._hard_break (STREAMING_HARD_BREAK_SILENCE_MS, 5 s by
     default) emits {"type":"boundary"} and resets the document, so the next
     final's committed/tail cover only the NEW document. The page must fold
-    what is on screen into a prefix on that frame — an older build had no
-    boundary handler and its full-replace final handler wiped everything
-    dictated before the pause the moment the user resumed speaking."""
+    what is on screen into a prefix on that frame, or the full-replace final
+    handler wipes everything dictated before the pause the moment the user
+    resumes speaking."""
     with TestClient(app_module.app, client=("127.0.0.1", 12345)) as client:
         body = client.get("/dictate").text
     assert 'm.type === "boundary"' in body
@@ -898,8 +894,6 @@ def test_dictate_page_resampler_seam_uses_a_real_neighbour(app_module):
     assert "i < 0 ? resampleCarry : float32[i]" in body
     assert "float32[i + 1] : resampleCarry" not in body
 
-
-# --- residual-window stop (DECODE_SKIP_RESIDUAL_WINDOWS) ---------------------
 
 def test_stream_final_arms_the_residual_stop_and_reports_it(app_module, monkeypatch, caplog):
     """The FINAL decode resolves DECODE_SKIP_RESIDUAL_WINDOWS through cfg_for,
@@ -1021,10 +1015,9 @@ def test_stream_final_best_of_pins_when_the_client_value_does_not_apply(
     assert [kw["best_of"] for kw in calls if _is_final(kw)] == [1]
 
 
-# ---------------------------------------------------------------------------
-# Tail cuts inside a segment (transcription/segment_guards.py) on finals and previews.
-# Timings are the real ones the production server returned on 2026-09-19.
-# ---------------------------------------------------------------------------
+# Tail cuts inside a segment (transcription/segment_guards.py) on finals and
+# previews. _loop_segment's timings are the real ones the production server
+# returned on 2026-09-19.
 
 def _loop_segment():
     from tests.conftest import FakeSegment, FakeWord
@@ -1103,17 +1096,13 @@ def test_stream_tail_cuts_off_keep_the_tail(app_module, fake_model, monkeypatch)
     assert "abzuschliessen" in "".join(m["committed"] + m.get("tail", "") for m in finals)
 
 
-# ---- formatting language: known before the utterance is formatted ----------
-
 def test_stream_formats_the_first_final_in_the_detected_language(app_module, fake_model,
                                                                  monkeypatch):
     """Auto language: the utterance's own final is formatted in the language
-    its decode detected. It used to be recorded only in on_final — after the
-    final had gone out formatted with EVERY language's rules (a German
-    question got the Spanish '¿') — and the closing final then formatted the
-    same sentence without it. The previews guess Spanish: _fmt_lang falls back
-    to the partials' guess, so with the preview language matching the final's
-    this test passed even with the final's own detection removed."""
+    its decode detected, not with every language's rules (a German question
+    got the Spanish '¿'), so the closing final extends it unchanged. The
+    previews guess Spanish on purpose: _fmt_lang falls back to the partials'
+    guess, so a matching preview language would hide a missing detection."""
     from tests.conftest import FakeInfo, FakeSegment
     fake_model._segments = [FakeSegment(" Hat der Patient Fieber Fragezeichen", 0.0, 1.0)]
     real_transcribe = fake_model.transcribe
@@ -1180,11 +1169,9 @@ def test_preview_decode_does_not_charge_the_session_wait():
 
 
 def test_final_decode_starts_from_a_clean_session_wait():
-    """A final whose decode raised after the GPU gate charged its wait never
-    reaches on_final, the only take_wait() site — with no partial text the
-    session emits dropped/error and returns. decode_final zeroes the
-    accumulator before its own decode, so that stranded wait cannot land on
-    the next recorded utterance's wait_s."""
+    """decode_final zeroes the session wait accumulator (metrics.take_wait())
+    after the revoked-credential check and before its own decode, so a wait
+    left over from an earlier decode cannot land on this utterance's wait_s."""
     import inspect
 
     from faster_whisper_backend.streaming import routes as s_routes
