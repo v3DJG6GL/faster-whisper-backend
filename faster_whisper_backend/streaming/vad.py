@@ -2,7 +2,7 @@
 
 One question, asked per fixed 512-sample (32 ms @ 16 kHz) float32 frame: *is this
 speech?* The two-tier silence timing (inner partial-boundary gate, outer commit
-gate) and the forced-commit cap live in :class:`streaming_session.StreamSession`,
+gate) and the forced-commit cap live in :class:`streaming.session.StreamSession`,
 not here — this module only classifies frames.
 
 Two backends behind one interface:
@@ -27,8 +27,8 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 SAMPLE_RATE = 16000
-FRAME_SAMPLES = 512  # Silero v5 requires exactly this at 16 kHz (= 32 ms)
-FRAME_MS = 1000 * FRAME_SAMPLES // SAMPLE_RATE  # 32
+FRAME_SAMPLES = 512  # Silero's window at 16 kHz (= 32 ms)
+FRAME_MS = 1000 * FRAME_SAMPLES // SAMPLE_RATE
 
 
 def rms_dbfs(samples: np.ndarray) -> float:
