@@ -2259,9 +2259,8 @@ def _build_merged_words(
     ident_cache: dict = {}
 
     use_per_member = bool(member_trims)
-    # New uniform-silence layout stamps each member with an absolute
-    # `offset_ms`; legacy groups don't, and fall back to the cum+i*silence
-    # formula so their karaoke renders exactly as before (until reprocessed).
+    # Uniform-silence groups stamp every member with an absolute `offset_ms`;
+    # legacy groups don't, so the first member tells which layout applies.
     _first = (member_trims or {}).get(members[0]["id"]) if (use_per_member and members) else None
     new_layout = bool(_first and _first.get("offset_ms") is not None)
 
