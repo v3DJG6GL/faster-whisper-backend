@@ -5,9 +5,8 @@ WHY THIS EXISTS
 A batch transcription translates in-band, so its receipt can describe the
 whole pipeline. Dictation cannot: the stream finalizes an utterance, logs its
 receipt, and the client THEN makes a separate HTTP request to translate the
-text. The two were unlinked in the log — a receipt at 18:22:57, then four
-orphan `[translate]` lines with nothing tying them to the utterance they
-belonged to.
+text. The two were unlinked in the log: orphan `[translate]` lines with
+nothing tying them to the utterance they belonged to.
 
 So the receipt is parked here instead of logged, and the translate request
 claims it by `captured_id` and merges its own sections in. One block per
@@ -72,11 +71,9 @@ def park(key: str, kwargs: "dict[str, Any]", *, hold_s: float) -> None:
             _overflow.append(evicted)
         displaced = _held.get(key)
         if displaced is not None:
-            # Two parks on one key: a capture id was reused, or a retry parked
-            # a second receipt before the first was claimed. Overwriting would
-            # drop the first one on the floor, which this module promises never
-            # to do — so the DISPLACED receipt goes to overflow for the next
-            # sweep to log, exactly like a cap eviction.
+            # Two parks on one key (a reused capture id, or a retry before the
+            # claim): the DISPLACED receipt goes to overflow for the next sweep
+            # to log, like a cap eviction, instead of being overwritten.
             displaced["note"] = "released — receipt superseded by a later one"
             _overflow.append(displaced)
         _held[key] = {
@@ -86,8 +83,8 @@ def park(key: str, kwargs: "dict[str, Any]", *, hold_s: float) -> None:
         }
 
 
-# Receipts evicted by the cap, waiting for the caller to drain and log them.
-# Never dropped on the floor: eviction is a reason to log, not to forget.
+# Receipts evicted by the cap or superseded by a later park, waiting for
+# sweep() / flush_all() to hand them to the caller for logging.
 _overflow: "list[dict[str, Any]]" = []
 
 
@@ -144,7 +141,8 @@ def _with_note(entry: "dict[str, Any]", note: str) -> "dict[str, Any]":
 
 def sweep() -> "list[dict[str, Any]]":
     """Release everything that has gone quiet for longer than its hold, plus
-    anything the cap evicted. Returns render kwargs for the caller to log."""
+    the overflow (cap evictions, superseded parks). Returns render kwargs for
+    the caller to log."""
     now = time.monotonic()
     out: "list[dict[str, Any]]" = []
     with _lock:
