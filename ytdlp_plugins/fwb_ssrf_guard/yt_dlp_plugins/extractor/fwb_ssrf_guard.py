@@ -101,8 +101,8 @@ def _load_net_policy():
         return net_policy
     except ImportError:
         pass
-    # <repo>/ytdlp_plugins/fwb_ssrf_guard/yt_dlp_plugins/extractor/<this file>
-    #   parents:            4          3              2          1      0
+    # dirname(__file__) = <repo>/ytdlp_plugins/fwb_ssrf_guard/yt_dlp_plugins/extractor,
+    # so four pardirs reach <repo>.
     repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__),
                                              *([os.pardir] * 4)))
     path = os.path.join(repo_root, "faster_whisper_backend", "core", "net_policy.py")
