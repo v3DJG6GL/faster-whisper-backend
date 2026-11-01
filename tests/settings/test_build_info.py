@@ -57,8 +57,6 @@ def test_no_git_falls_back_to_unknown(monkeypatch):
         importlib.reload(build_info)
 
 
-# --- engine_versions: optional llama-cpp-python part ----------------------
-
 def _stub_pkg_version(monkeypatch, llama):
     """Route importlib.metadata.version through a stub: known core packages
     answer fixed versions; llama-cpp-python answers `llama` (or raises when
