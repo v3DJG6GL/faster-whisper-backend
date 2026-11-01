@@ -178,8 +178,7 @@ async def _stream_log_lines(request: Request):
     # and does not render or count it as a log line.
     yield "data: __LIVE_TAIL__\n\n"
 
-    # Live tail: poll for new lines from the offset sampled above. Reopen on
-    # rotation (when the file shrinks below our last position).
+    # Live tail from the offset sampled before the backlog.
     while True:
         await asyncio.sleep(0.5)
         try:
@@ -294,8 +293,7 @@ async def logs_older(skip: int = 0, limit: int = 0):
     cap = initial * _LOG_OLDER_MAX_PAGES
     requested = max(0, int(skip))
     if requested >= cap:
-        # Past the cap: chain-end, not a silent clamp (which served the same
-        # window forever while the viewer kept its own cursor). No disk I/O.
+        # Past the cap: chain-end, not a clamp (see docstring). No disk I/O.
         return {"lines": [], "next_skip": None}
     # _read_chain_window does blocking disk I/O over the whole rotation
     # chain — run it off the event loop so one deep page can't stall the
