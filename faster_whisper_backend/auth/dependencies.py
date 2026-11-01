@@ -218,9 +218,9 @@ def user_from_session_cookie(request: Request) -> dict[str, Any] | None:
     # If this session was created from a specific API key, carry that key_id so
     # per-key overrides/locks bind on cookie-authenticated requests exactly as
     # they do for the bearer key. A pre-migration session (no stamped key) keeps
-    # get_user_record's "(session)" sentinel — i.e. the prior no-key-layer
-    # behaviour — until the user next logs in. is_admin / permissions still come
-    # from the LIVE user row above, never from the key (no privilege change).
+    # get_user_record's "(session)" sentinel until the user next logs in.
+    # is_admin / permissions still come from the LIVE user row above, never from
+    # the key (no privilege change).
     stamped_key = sess.get("key_id")
     if stamped_key:
         # The stamped key must still be LIVE: the bearer path 401s the moment
@@ -320,7 +320,7 @@ def resolve_user_for_page_sse(
     HttpOnly session cookie (sent automatically on a same-origin stream).
     Open mode hands out the synthetic admin on the admin host allowlist only
     (open_mode_host_ok) — all through the same `_resolve_user` core, so the
-    SSE gates can never drift from the Depends path again. Raises the shared
+    SSE gates can never drift from the Depends path. Raises the shared
     401 on no credential; 403 (`forbidden_detail`, default "no access to
     /<page>") when the resolved user cannot reach the page.
     """
