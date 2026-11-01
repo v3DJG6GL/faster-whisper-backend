@@ -21,9 +21,9 @@ format is plaintext; whole-disk encryption is the deployment's
 responsibility. INFO/WARNING log lines carry only counts + id prefixes,
 never content.
 
-The route layer must NOT trust audio_format from a row directly when
-serving — paths must be re-resolved against CAPTURES_DIR and rejected
-if they escape it (path traversal defense).
+The route layer must NOT trust a row's audio_relpath or audio_format
+when serving: paths are re-resolved through abs_audio_path (which rejects
+an escape from CAPTURES_DIR) and the Content-Type is sniffed from the file.
 """
 from __future__ import annotations
 
@@ -48,7 +48,6 @@ _lock = threading.Lock()
 _conn: sqlite3.Connection | None = None
 _audio_dir: str | None = None
 
-# Field caps.
 _CAP_RAW = 50_000
 _CAP_FINAL = 50_000
 _CAP_CORRECTED = 100_000  # admin-edited free-form ground truth
@@ -98,10 +97,6 @@ CREATE INDEX IF NOT EXISTS idx_captures_user  ON captures(user_id, created_ts DE
 CREATE INDEX IF NOT EXISTS idx_captures_group ON captures(sample_id, sample_order);
 """
 
-
-# ---------------------------------------------------------------------
-# Init
-# ---------------------------------------------------------------------
 
 def init_db(db_path: str, audio_dir: str) -> None:
     """Open the SQLite DB (WAL) and ensure the audio dir exists. Idempotent:
@@ -189,16 +184,11 @@ def _require_audio_dir() -> str:
     return _audio_dir
 
 
-# ---------------------------------------------------------------------
-# Path helpers
-# ---------------------------------------------------------------------
-
 def _relpath_for(cid: str, ext: str) -> str:
     """Compute the fanned-out audio relpath for a capture id.
 
     4-char fanout keeps each directory under ~256 entries even when the
-    store grows beyond the default 5k cap. Lowercase the extension and
-    strip a leading dot so the file name is `<id>.<ext>`."""
+    store grows beyond the default 5k cap."""
     ext = ext.lstrip(".").lower()[:_CAP_AUDIO_FORMAT]
     if not ext:
         ext = "bin"
@@ -240,10 +230,6 @@ def _safe_unlink(abs_path: str) -> bool:
             time.sleep(0.1)
     return False
 
-
-# ---------------------------------------------------------------------
-# Row helpers
-# ---------------------------------------------------------------------
 
 def _row_to_dict(row: sqlite3.Row, include_words: bool = True) -> dict[str, Any]:
     """Materialize a row, decoding the JSON-bearing columns. With
@@ -303,10 +289,6 @@ def text_language(row: Any) -> "str | None":
     return _col("language")
 
 
-# ---------------------------------------------------------------------
-# Create
-# ---------------------------------------------------------------------
-
 def _user_clause(user_id: "str | list[str] | None") -> tuple[str, list[Any]]:
     """`user_id` filter fragment for the list / counts / stats queries:
     None → no filter (admin, scope=all); a string → that owner; a list →
@@ -331,9 +313,8 @@ def count(user_id: "str | list[str] | None" = None) -> int:
     modal and by the captures list toolbar total. count_evictable() is the
     count that mirrors _evict_to_cap's scope.
 
-    `user_id=None` means "do not filter" (admin / scope=all); a string
-    narrows to a single owner so a scope=own toolbar total matches the
-    rows that caller can actually see."""
+    `user_id` scopes as in _user_clause, so a scope=own toolbar total
+    matches the rows that caller can see."""
     conn = _require_conn()
     clause, params = _user_clause(user_id)
     row = conn.execute(
@@ -345,15 +326,9 @@ def count(user_id: "str | list[str] | None" = None) -> int:
 
 @_read_under_lock
 def count_evictable() -> int:
-    """Row count _evict_to_cap holds against CAPTURES_MAX. (No ingest gate
-    compares it to the cap any more: a full store rotates its oldest rows out
-    in create_capture instead of refusing new ones.)
-
-    Mirrors _evict_to_cap's scope: only ungrouped rows (`sample_id IS
-    NULL`) count, because grouped rows back a merged WAV and are bounded
-    by retention, not by this cap. Comparing the unfiltered count()
-    against the cap would wedge an ingest gate shut once grouped rows alone
-    reach CAPTURES_MAX while the evictor sees nothing to evict."""
+    """Row count _evict_to_cap holds against CAPTURES_MAX: only ungrouped
+    rows (`sample_id IS NULL`), because grouped rows back a merged WAV and
+    are bounded by retention, not by this cap."""
     conn = _require_conn()
     row = conn.execute(
         "SELECT COUNT(*) FROM captures WHERE sample_id IS NULL",
@@ -439,11 +414,10 @@ def create_capture(
             pass
         raise RuntimeError(f"audio transcode failed: {e}") from e
 
-    # Atomic visibility is handled by writing to .tmp + os.replace below;
-    # transcode_to_wav_16k_mono already closed the write fd, and re-opening
-    # read-only just to fsync is a no-op on Windows (fsync needs write
-    # access) and the .tmp+replace dance already guards the
-    # crash-between-rename-and-insert window.
+    # No fsync: the transcoder already closed its write fd, and a read-only
+    # re-open to fsync is a no-op on Windows (fsync needs write access).
+    # .tmp + os.replace keeps a partial file invisible; a crash before the
+    # row insert leaves an orphan WAV that reconcile_on_startup unlinks.
     last_err: Exception | None = None
     for attempt in range(3):
         try:
@@ -457,7 +431,6 @@ def create_capture(
         _safe_unlink(tmp_path)
         raise last_err
 
-    # Insert row. On failure, drop the audio file so we don't orphan it.
     now = time.time()
     raw_t = (raw or "")[:_CAP_RAW]
     final_t = (final or "")[:_CAP_FINAL]
@@ -637,14 +610,11 @@ def _evict_to_cap(conn: sqlite3.Connection) -> bool:
     if row_cap < 1 and mb_cap < 1:
         return False
 
-    # Count only what this function can actually evict. Every eviction query
-    # below filters `sample_id IS NULL` (a grouped row backs a merged WAV and
-    # must survive), and _total_audio_bytes already scopes itself the same way.
-    # Counting grouped rows here inflated `excess`, so once grouped rows
-    # approached the cap every insert computed a large overflow and deleted
-    # OTHER identities' ungrouped captures to satisfy a total it could never
-    # reduce. Grouped audio is bounded by retention instead (sweep_retention
-    # expires whole samples), not by this cap.
+    # Count only what the eviction queries below can drop (`sample_id IS
+    # NULL`, like _total_audio_bytes; a grouped row backs a merged WAV and
+    # must survive): counting grouped rows would inflate `excess` and evict
+    # other users' ungrouped captures to meet a total it can never reduce.
+    # Grouped audio is bounded by sweep_retention instead.
     row = conn.execute(
         "SELECT COUNT(*) FROM captures WHERE sample_id IS NULL",
     ).fetchone()
@@ -815,10 +785,6 @@ def _drop_oldest_by_bytes(
     return freed
 
 
-# ---------------------------------------------------------------------
-# Read
-# ---------------------------------------------------------------------
-
 # Column projection for list/find queries that don't need words/segments.
 # Hoisted to a constant so list_captures and find_by_request_id can't
 # silently drift apart when a new column is added.
@@ -883,10 +849,8 @@ def iter_captures_for_export(
     deterministic order. Used by the export endpoint to stream a tarball
     without holding the whole result set in memory.
 
-    `user_id=None` means "no filter" (admin / scope=all). A string
-    narrows to a single owner — symmetric to `list_captures`, ready
-    for the day non-admin scope=own users get export access (the
-    endpoint stays admin-only for now per the plan)."""
+    `user_id=None` means "no filter" (admin / scope=all); a string
+    narrows to a single owner."""
     conn = _require_conn()
     clauses: list[str] = []
     params: list[Any] = []
@@ -1061,10 +1025,6 @@ def stats(user_id: "str | list[str] | None" = None,
     }
 
 
-# ---------------------------------------------------------------------
-# Update
-# ---------------------------------------------------------------------
-
 def update_capture(cid: str, patch: dict[str, Any]) -> dict[str, Any] | None:
     """Apply a partial update. Allowed fields: status, corrected_text,
     corrections, admin_notes, final, text_for_training, translations,
@@ -1167,8 +1127,7 @@ def bulk_update_status(ids: list[str], new_status: str) -> list[dict[str, Any]]:
     now = time.time()
     # Chunked like _delete_ids / get_captures_light: BulkStatusIn admits 1000
     # ids, past the classic 999 bind-variable limit. The UPDATE chunks share
-    # one transaction so the pass stays all-or-nothing, as the single
-    # statement was.
+    # one transaction so the pass stays all-or-nothing.
     chunks = [ids[off:off + 500] for off in range(0, len(ids), 500)]
     # Both store locks for the BEGIN..COMMIT span, samples-then-captures as in
     # samples_store.dissolve_sample: the stores share one autocommit
@@ -1219,10 +1178,6 @@ def bulk_update_status(ids: list[str], new_status: str) -> list[dict[str, Any]]:
     return [{"id": r["id"], "prev_status": r["status"]} for r in prev]
 
 
-# ---------------------------------------------------------------------
-# Delete
-# ---------------------------------------------------------------------
-
 def delete_capture(cid: str, *, refuse_locked: bool = False) -> bool:
     """Drop a single capture row + its audio file. If the capture was
     a member of a group, the group is auto-dissolved — a merged
@@ -1258,7 +1213,6 @@ def delete_capture(cid: str, *, refuse_locked: bool = False) -> bool:
         _safe_unlink(abs_audio_path(row["audio_relpath"]))
     except ValueError:
         pass
-    # Also clean up the trimmed companion file if one was produced.
     trimmed = row["audio_trimmed_relpath"]
     if trimmed:
         try:
@@ -1319,9 +1273,8 @@ def clear_all(reporter_host: str = "") -> int:
         row = conn.execute("SELECT COUNT(*) FROM captures").fetchone()
         n = int(row[0]) if row else 0
         conn.execute("DELETE FROM captures")
-        # Best-effort: readers on this shared connection (list_captures in
-        # to_thread) do not take _lock, and SQLite refuses VACUUM while any of
-        # their statements is open. The rows are already gone; the rmtree and
+        # Best-effort: SQLite refuses VACUUM while any statement on the shared
+        # connection is still open. The rows are already gone; the rmtree and
         # proposer invalidation below must still run.
         try:
             conn.execute("VACUUM")
@@ -1362,10 +1315,6 @@ def clear_all(reporter_host: str = "") -> int:
     return n
 
 
-# ---------------------------------------------------------------------
-# Reconciliation & retention
-# ---------------------------------------------------------------------
-
 def reconcile_on_startup() -> tuple[int, int]:
     """Audit the store on startup. Two passes:
 
@@ -1377,10 +1326,12 @@ def reconcile_on_startup() -> tuple[int, int]:
          when none was kept (marked before the column existed) — or a
          reviewed / ready capture would stay in eviction tier 2 and out of
          the export for good.
-      2. For each file under CAPTURES_DIR with no matching row, unlink
-         (orphaned files from prior crashes / clear-all races).
+      2. For each file inside the `<xx>/<yy>/` fanout with no matching row
+         (and every *.tmp partial there), unlink: orphans from prior
+         crashes / clear-all races. groups/ is samples_store's.
 
-    Returns (rows_marked_missing, files_unlinked)."""
+    Returns (rows_marked_missing, files_unlinked); restored rows are only
+    logged."""
     conn = _require_conn()
     audio_dir = _require_audio_dir()
     rows_marked = 0
@@ -1432,14 +1383,11 @@ def reconcile_on_startup() -> tuple[int, int]:
                 if os.path.isfile(t_abs):
                     known_paths.add(os.path.abspath(t_abs))
 
-    # Walk the audio directory and unlink anything not in known_paths.
-    # The `groups/` subtree is owned by capture_samples_store and has its
-    # own reconcile pass — prune it here so we never see a merged-group
-    # WAV as an orphan and delete it on every restart. Hex-fanout dirs
-    # are "00".."ff", none of which equal "groups", so this is safe.
-    # Only files inside a two-level fanout dir (`<xx>/<yy>/`) are ours: a
-    # CAPTURES_DIR mis-set to the data dir or a parent of it must not take
-    # config.local.json, the *.sqlite3 stores or the logs with it.
+    # Only files inside a two-level fanout dir (`<xx>/<yy>/`) are ours. The
+    # `groups/` subtree is capture_samples_store's, with its own reconcile
+    # pass (pruned here so a merged WAV is never deleted as an orphan on each
+    # restart), and a CAPTURES_DIR mis-set to the data dir or a parent of it
+    # must not take config.local.json, the *.sqlite3 stores or the logs with it.
     if os.path.isdir(audio_dir):
         for root, dirs, files in os.walk(audio_dir):
             if root == audio_dir and "groups" in dirs:
@@ -1474,10 +1422,9 @@ def sweep_retention() -> int:
     Returns count deleted.
 
     Samples are expired as whole objects FIRST: a group's members back a merged
-    WAV, so they cannot be aged out individually, and skipping them entirely (as
-    this used to) meant any user could exempt their recordings from the
-    retention policy indefinitely by merging them — the audio simply never
-    expired. Dissolving an over-age sample unlinks its merged WAV and releases
+    WAV, so they cannot be aged out individually, and skipping them would let
+    any user exempt recordings from retention for good by merging them.
+    Dissolving an over-age sample unlinks its merged WAV and releases
     the members, which the ordinary sweep below then applies the same age rule
     to. The size and count caps still spare grouped rows; retention does not."""
     try:
