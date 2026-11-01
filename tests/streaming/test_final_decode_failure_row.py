@@ -20,7 +20,7 @@ def test_failed_final_decode_is_recorded_as_a_classified_error(
     monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
 
     def _oom(*a, **kw):
-        # The first step of decode_final only: the previews still decode.
+        # Only decode_final calls this, so the previews still decode.
         raise RuntimeError("CUDA failed with error out of memory")
 
     monkeypatch.setattr(s_routes, "_trim_trailing_nonspeech", _oom)
