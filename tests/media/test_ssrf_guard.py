@@ -459,10 +459,6 @@ def test_probe_extraction_is_cut_at_its_wall_clock_deadline(
         srv.server_close()
 
 
-# ---------------------------------------------------------------------------
-# no data: / ftp: escape hatch
-# ---------------------------------------------------------------------------
-
 @pytest.mark.parametrize("target", [
     "data:audio/mpeg;base64,//uQxAAAAAAAAAAAAAAAAAAAAAAA",
     "ftp://127.0.0.1:1/secret.mp3",
@@ -491,10 +487,6 @@ def test_probe_refuses_non_http_redirect(target, servers, public_is_public,
     # refuses a non-http/ftp Location first ("HTTP Error 302"). Those cases
     # pin that the hop is refused at all, whichever layer does it.
 
-
-# ---------------------------------------------------------------------------
-# fail closed
-# ---------------------------------------------------------------------------
 
 @pytest.fixture
 def broken_guard(monkeypatch):
@@ -539,10 +531,6 @@ def test_guard_failure_is_not_sticky(monkeypatch):
     udl.guard_self_check()
     assert udl._guard_ok is True
 
-
-# ---------------------------------------------------------------------------
-# one definition of the address policy
-# ---------------------------------------------------------------------------
 
 def test_url_download_uses_net_policy_directly():
     assert udl._host_is_forbidden is net_policy.host_is_forbidden
@@ -657,8 +645,6 @@ def test_classify_error_tells_an_external_downloader_refusal_apart():
     assert (udl.classify_error(f"ERROR: {ei.value}")
             == "this media needs a downloader the server does not allow")
 
-
-# --- an operator-configured proxy is a trusted hop -------------------------
 
 class _FakeSock:
     """Records the address the pinned connect dials; never touches the wire."""
