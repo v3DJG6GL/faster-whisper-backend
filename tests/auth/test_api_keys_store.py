@@ -664,7 +664,6 @@ def test_failed_reinit_clears_db_ready(api_keys_db, tmp_path):
     with pytest.raises(sqlite3.DatabaseError):   # "file is not a database"
         api_keys_db.init_db(str(garbage))
     assert api_keys_db._DB_READY is False
-    # The previous DB's keys no longer authenticate from the stale index.
     assert api_keys_db.lookup_by_raw_key(raw) is None
     assert api_keys_db.is_locked_down() is True
     # Re-init must close the previous connection instead of leaking it (plus
