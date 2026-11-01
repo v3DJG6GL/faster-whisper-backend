@@ -39,8 +39,6 @@ def test_language_empty_applies_to_all(app_module):
 
 
 def test_language_none_applies_to_all(app_module):
-    """When language is None (streaming partial before detection), no rule is
-    skipped — safe default for ephemeral display text."""
     _set(app_module, _rule(languages=["es"]))
     assert pl_engine._postprocess_text("a", model_name="", language=None) == "b"
 
@@ -56,30 +54,24 @@ def test_language_multi_mismatch(app_module):
 
 
 def test_language_include_mismatch_still_skips(app_module):
-    """Language wins over INCLUDE — a force-INCLUDEd rule with languages:["es"]
-    must NOT fire on German audio."""
     _set(app_module, _rule(enabled=False, languages=["es"]))
     app_module.cfg.MODEL_OVERRIDES = {"m": {"PIPELINE_RULES_INCLUDE": ["rl"]}}
     assert pl_engine._postprocess_text("a", model_name="m", language="de") == "a"
 
 
 def test_language_include_match_applies(app_module):
-    """INCLUDE + matching language: disabled rule force-enabled, language
-    matches → runs."""
     _set(app_module, _rule(enabled=False, languages=["es"]))
     app_module.cfg.MODEL_OVERRIDES = {"m": {"PIPELINE_RULES_INCLUDE": ["rl"]}}
     assert pl_engine._postprocess_text("a", model_name="m", language="es") == "b"
 
 
 def test_language_exclude_wins(app_module):
-    """EXCLUDE beats everything — even a matching language."""
     _set(app_module, _rule(languages=["es"]))
     assert pl_engine._postprocess_text("a", model_name="", language="es",
                                          extra_excludes={"rl"}) == "a"
 
 
 def test_language_mismatch_trace_entry(app_module):
-    """Trace log records the language skip reason."""
     _set(app_module, _rule(languages=["es"]))
     trace = []
     pl_engine._postprocess_text("a", model_name="", language="de", trace=trace)
