@@ -1,8 +1,7 @@
-"""Pure-Python tests for the layered per-identity config resolver.
-
-These exercise effective_config._resolve_from_layers (the pure core) and the
-config_store schema. No faster-whisper / DB needed — runnable on the web-only
-box with `pytest -o addopts="" tests/settings/test_effective_config.py`.
+"""Pure-Python tests for the layered per-identity config resolver
+(effective_config) and the override / lock fields of the settings schema.
+No faster-whisper / DB needed — runnable on the web-only box with
+`pytest -o addopts="" tests/settings/test_effective_config.py`.
 """
 
 import pytest
@@ -56,8 +55,8 @@ def test_translation_lockable_membership():
 
 
 def test_stage_model_fields_now_per_request():
-    # The scope flip: a caller (or profile / per-model bundle) may pick the
-    # diarization pipeline and the UVR model; the allowlists stay server-only.
+    # A caller (or profile / per-model bundle) may pick the diarization
+    # pipeline and the UVR model; the allowlists stay server-only.
     assert "DIARIZATION_MODEL" in settings_schema.OverrideProfile.model_fields
     assert "DIARIZATION_MODEL" in settings_schema.ModelOverride.model_fields
     assert "DIARIZATION_MODEL" in settings_schema.LOCKABLE_FIELDS
@@ -148,8 +147,8 @@ def test_value_less_lock_pins_inherited():
 
 
 def test_value_setting_winner_shadows_lower_value_less_lock():
-    # first-layer-owns-lock still holds: a higher layer that SETS the value
-    # (unlocked) shadows a lower layer's value-less lock on the same field.
+    # Most-specific-wins: a higher layer that SETS the value (unlocked)
+    # shadows a lower layer's value-less lock on the same field.
     r = _resolve([_layer("key", TEMPERATURE="0.0"),
                   _layer("user", locks=["TEMPERATURE"])],
                  req={"temperature": 0.9})
@@ -207,7 +206,6 @@ def test_per_model_rules_folded_without_identity(monkeypatch):
 def test_identity_rule_overrides_per_model(monkeypatch):
     monkeypatch.setattr(cfg, "MODEL_OVERRIDES",
                         {"m1": {"PIPELINE_RULES_EXCLUDE": ["r3"]}}, raising=False)
-    # user force-includes r3 → identity (more specific) wins over per-model.
     r = _resolve([_layer("user", PIPELINE_RULES_INCLUDE=["r3"])], model_id="m1")
     assert "r3" in r.pipeline_include and "r3" not in r.pipeline_exclude
 
@@ -222,7 +220,6 @@ def test_provenance_marks_single_winner(monkeypatch):
     winners = [h for h in stack if h["is_winner"]]
     assert len(winners) == 1
     assert winners[0]["layer_id"] == "user.direct" and winners[0]["value"] == 8
-    # per-model + global rows present and overridden (not winners)
     pm = [h for h in stack if h["layer_id"] == "per-model"][0]
     assert pm["is_set"] and pm["value"] == 6 and not pm["is_winner"]
 
@@ -249,10 +246,8 @@ def test_provenance_value_less_lock_owned_by_first_layer():
 
 
 def test_provenance_value_less_lock_winner_inherits_value(monkeypatch):
-    # When a value-less lock is the most-specific opinion it owns the lock, but
-    # the VALUE still comes from per-model/global. The waterfall marks the lock
-    # layer's row as locked (not value-winner), the per-model row as the value
-    # winner, and the shadowed lower value as set-but-not-winner.
+    # A most-specific value-less lock owns the lock, but the VALUE still comes
+    # from per-model/global: the waterfall must split the two badges.
     monkeypatch.setattr(cfg, "MODEL_OVERRIDES",
                         {"m1": {"TEMPERATURE": "0.0"}}, raising=False)
     r = _resolve([_layer("key", locks=["TEMPERATURE"]),
@@ -308,7 +303,7 @@ def test_per_model_rules_map_a_split_card_against_the_rules_in_force(monkeypatch
     assert ec._per_model_rule_layer("m1")["exclude"] == set(old)
 
 
-# --- request-named override profile (P10) ---------------------------------
+# --- request-named override profile ---------------------------------------
 
 def _set_profiles(monkeypatch, profiles, allow=True):
     monkeypatch.setattr(cfg, "OVERRIDE_PROFILES", profiles, raising=False)
@@ -323,12 +318,12 @@ def test_request_profile_layer_valid(monkeypatch):
 
 def test_request_profile_layer_unknown_bad_or_gated(monkeypatch):
     _set_profiles(monkeypatch, {"fast": {"BEAM_SIZE": 3}})
-    assert ec._request_profile_layer("nope") is None        # unknown name
+    assert ec._request_profile_layer("nope") is None
     assert ec._request_profile_layer("Bad Name") is None    # fails TAG_RE
-    assert ec._request_profile_layer("") is None            # empty
+    assert ec._request_profile_layer("") is None
     assert ec._request_profile_layer(None) is None
     _set_profiles(monkeypatch, {"fast": {"BEAM_SIZE": 3}}, allow=False)
-    assert ec._request_profile_layer("fast") is None        # gated off
+    assert ec._request_profile_layer("fast") is None
 
 
 def test_resolve_applies_request_profile(monkeypatch):
@@ -364,14 +359,14 @@ def test_request_profile_is_least_specific(monkeypatch):
               _layer("user", locks=["TEMPERATURE"]),  # value-less lock → profile can't unlock
               req_layer]
     r = _resolve(layers, req={"temperature": 0.9})
-    assert r.values["BEAM_SIZE"] == 10             # key wins over the profile
+    assert r.values["BEAM_SIZE"] == 10
     assert "TEMPERATURE" not in r.values           # lock pins inherited; profile value shadowed
-    assert "TEMPERATURE" in r.locked               # still locked despite the profile
+    assert "TEMPERATURE" in r.locked
     assert "temperature" in r.locked_client_keys
     assert r.values["DEFAULT_LANGUAGE"] == "fr"    # profile fills a field nobody set
 
 
-# --- per-identity request gates + allowlist (P11) -------------------------
+# --- per-identity request gates + allowlist -------------------------------
 
 def _bindings(monkeypatch, *, key=None, user=None):
     """Monkeypatch the per-identity binding fetch — no DB. Pass partial binding
@@ -586,7 +581,7 @@ def test_one_unreadable_scope_is_enough(monkeypatch):
     assert r.allow_request_decode_overrides is False
 
 
-# --- "no profile" suppression sentinel (P27) ------------------------------
+# --- "no profile" suppression sentinel ------------------------------------
 
 def test_none_sentinel_suppresses_bound_profile(monkeypatch):
     # A profile bound to the identity normally applies; the reserved "__none__"
@@ -678,8 +673,8 @@ def test_apply_no_profiles_ignored_on_user_binding(monkeypatch):
 
 def test_pre_rename_binding_keys_and_locks_are_migrated():
     # A per-identity binding stored before a config_renames rename never
-    # passes config_store's load-path migration; it used to collapse to no
-    # layer at all (override AND lock silently gone after the upgrade).
+    # passes config_store's load-path migration, so the layer builder must
+    # migrate it or its override AND lock vanish after the upgrade.
     lyr = _layer("key", SEGMENT_MAX_WORDS_PER_SEC=3.0,
                  locks=["SEGMENT_MAX_WORDS_PER_SEC", "STREAMING_IDLE_TIMEOUT_SEC"])
     assert lyr is not None
