@@ -98,8 +98,7 @@ def test_transcode_unreadable_input_cleans_up(tmp_path):
 
 def test_transcode_mid_stream_failure_unlinks_dst(tmp_path, monkeypatch):
     """A failure AFTER the output container is open (the tests above all
-    fail inside _open_audio, before dst exists) closes the output and
-    unlinks the partial dst."""
+    fail before dst exists) closes the output and unlinks the partial dst."""
     src = _write_src_wav(str(tmp_path / "in.wav"), rate=RATE, nchannels=1)
     dst = str(tmp_path / "out.wav")
     real = audio_transcode._decoded_frames
