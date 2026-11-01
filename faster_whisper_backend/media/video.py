@@ -331,8 +331,7 @@ def _video_response_keys(task: "asyncio.Task | None",
 
 def _url_host_for_log(url: str) -> str:
     """Best-effort hostname for log lines — never the full URL (it can carry
-    tokens/identifiers we don't want in logs). Delegates to the module that
-    owns that contract."""
+    tokens/identifiers we don't want in logs)."""
     return _udl.host_for_log(url)
 
 
