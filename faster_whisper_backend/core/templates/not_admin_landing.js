@@ -25,8 +25,7 @@ function _renderNoAccessLanding(opts) {
   var perms = (who.permissions && who.permissions.pages) || {};
   var isAdmin = !!who.is_admin;
 
-  // Pages the caller can reach, minus the one they're on (it's the
-  // page we can't reach — listing it would be confusing).
+  // Skip the current page: it is the one the caller can't reach.
   var allowed = Object.keys(_PAGE_LINK_INFO).filter(function(p) {
     if (p === current) return false;
     if (isAdmin || _PAGE_LINK_INFO[p].free) return true;
@@ -39,10 +38,9 @@ function _renderNoAccessLanding(opts) {
          + info.href + '</a>';
   }).join('');
 
-  // Heading slug: prefer the full URL path stashed by OPEN_MODE_BANNER_JS
-  // (e.g. "/settings/api-keys"), then fall back to a derived form, then to
-  // an empty suffix. Admin-only pages get the URL too — never the bare
-  // sentinel.
+  // Prefer OPEN_MODE_BANNER_JS's stashed URL path: a nested page's key
+  // does not map back to it (/settings/api-keys). Never show the
+  // __admin_only__ sentinel.
   var displayPath = window.__current_page_path || '';
   var slug;
   if (displayPath) {
@@ -72,7 +70,7 @@ function _renderNoAccessLanding(opts) {
     + '</p></div>';
 }
 
-// Backwards-compat alias — old callers used `_renderNotAdminLanding()`.
+// Legacy alias with no remaining in-tree caller.
 function _renderNotAdminLanding() {
   _renderNoAccessLanding({ page: window.__current_page || '' });
 }
