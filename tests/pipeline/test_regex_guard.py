@@ -51,8 +51,7 @@ def test_fixtures_still_lack_the_attack_character():
 def test_prefix_ambiguous_alternations_are_structurally_visible():
     """The prefix-ambiguous repeated-alternation family — one run of input
     that splits many ways, no branch repeated verbatim — must trip
-    _nested_repetition. (Moved here from test_config_store.py: the private
-    helper's unit coverage belongs next to the module.)"""
+    _nested_repetition."""
     for pat in ("(a|ab)+", "(x|xx)+y", "(ab|a|b)+c", "(n|d|nd)+#", "(|a)+"):
         assert g._nested_repetition(pat), pat
 
@@ -83,10 +82,10 @@ def test_chain_only_pair_is_rejected_through_the_chain():
 
 
 def test_chain_carries_an_earlier_entrys_output_downstream():
-    """Half one of the fix, without the timing: entry 0's replacement really
-    does reach the running fixture that entry 1 is probed against — including
-    when entry 0's pattern matches nothing in the static fixture (the guard
-    seeds a witness so the entry fires at all)."""
+    """Without the timing: entry 0's replacement really does reach the
+    running fixture that entry 1 is probed against — including when entry 0's
+    pattern matches nothing in the static fixture (the guard seeds a witness
+    so the entry fires at all)."""
     import re
     pattern, replacement = _MANUFACTURED[0][1], _MANUFACTURED[0][2]
     assert not re.search(pattern, g.FIXTURE), "premise: fixture never says Wetter"
@@ -112,9 +111,9 @@ def test_chain_never_raises_on_a_broken_entry():
 
 
 def test_synthetic_probe_targets_the_patterns_own_alphabet():
-    """Half two of the fix: a run of the character the first unbounded atom
-    matches, terminated by something the pattern cannot match so the engine is
-    forced to exhaust the split search."""
+    """A run of the character the first unbounded atom matches, terminated
+    by something the pattern cannot match so the engine is forced to exhaust
+    the split search."""
     synths = g._synthetic_fixtures(_MANUFACTURED[1][1])
     assert all(s.startswith("-" * g._SYNTH_RUN) for s in synths)
     assert "-" * g._SYNTH_RUN + "!" in synths
@@ -487,12 +486,11 @@ def test_budget_grows_with_the_list_and_a_large_rule_set_passes(monkeypatch, cap
     with caplog.at_level(logging.WARNING, logger="whisper-api"):
         g.validate(checks)
     budget = min(g._GUARD_TIMEOUT + g._PER_CHECK_BUDGET * 3000, g._GUARD_TIMEOUT_MAX)
-    # The screen before the helper starts is all that may come off the budget.
     assert len(seen) == 1 and budget - (started[0] - t0) <= seen[0] <= budget
     assert seen[0] > g._GUARD_TIMEOUT
     assert "regex guard skipped" not in caplog.text
 
-    # Below the cap the budget is the per-entry formula; far past it, the cap.
+    # Below the cap the budget is the per-entry formula; past it, the cap.
     def _ok_run(*args, **kwargs):
         seen.append(kwargs["timeout"])
         started.append(time.perf_counter())
@@ -723,7 +721,7 @@ def test_unrepeated_overlapping_alternation_still_passes():
 def test_fixed_count_overlapping_alternation_inside_a_repeat_is_rejected(pat):
     """`X{2}` is `XX`: a fixed count only matches one way when its body does.
     An overlapping alternation under `{2}` still splits every run many ways,
-    so repeating it is exponential (the run-7 `((a|aa){3})+` blowup)."""
+    so repeating it is exponential (the `((a|aa){3})+` blowup)."""
     assert g._nested_repetition(pat)
     with pytest.raises(ValueError, match="nested repetition"):
         g.validate([("r", pat, "")])
@@ -1343,8 +1341,8 @@ def test_run_behind_an_ordinary_word_is_rejected(pat, probe):
 
 def test_run_without_a_leading_atom_is_probed_bare():
     """No lead for a rule with nothing in front of its run, nor past a
-    top-level `|`; one the run itself supplies (`\\n\\s*…x`, 855ee6f) keeps
-    its bare probes next to the led ones."""
+    top-level `|`; one the run itself supplies (`\\n\\s*…x`) keeps its bare
+    probes next to the led ones."""
     for pat in (r"\s*" * 7 + "#", r"(?=\t)" + r"\s*" * 7 + "x",
                 r"\s*x|" + r"\d*" * 7 + "#"):
         assert all(s[0] in " \t\n\r\f\v 1234567890" and len(s) <= g._SYNTH_RUN + 1
