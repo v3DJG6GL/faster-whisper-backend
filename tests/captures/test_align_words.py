@@ -354,9 +354,8 @@ def test_align_member_words_no_train_when_equal(monkeypatch):
 
 def test_align_member_words_blanked_training_marks_every_word_removed(monkeypatch):
     # A training-only removal rule blanked the member ("" is the verdict, not
-    # a missing value), while runtime `final` kept the text. Falling back to
-    # `final` attached no train_word, so the group card showed the words the
-    # merged transcript and the export leave out.
+    # a missing value) while runtime `final` kept the text: every word is
+    # train_removed, as the merged transcript and the export leave them out.
     _install_word_map(monkeypatch, {})
     m = {
         "words": _words(" Untertitel", " im", " Auftrag", " des", " ZDF"),
