@@ -88,25 +88,19 @@ def migrate_tightened_bundle(bundle: dict[str, Any], label: str) -> list[str]:
 
 def _migrate_tightened_bundle_values(raw: dict[str, Any]) -> list[str]:
     """Rewrite stored values that the validators started refusing after they
-    were stored, mostly inside OVERRIDE_PROFILES / MODEL_OVERRIDES bundles
-    (in place). Returns one note per change for the caller's log.
+    were stored (in place). Returns one note per change for the caller's log.
 
-    The bundles gained AdminConfig's value rules late: the two segment guards
-    refuse 1 (top level too), TEMPERATURE / SUPPRESS_TOKENS must parse as CSV.
-    The per-profile / per-model grid accepted those values before, and one of
-    them left in a stored bundle fails load_overrides' whole-file validation —
-    every admin override is then ignored at boot, and every save 422s. A guard
-    at 1 was already off at runtime, so it becomes 0 (off); an unparseable CSV is
-    dropped (inherit) and its lock stays. DEFAULT_LANGUAGE (top level too) gained
-    a Whisper-code membership check: an unknown code failed every decode
-    that relied on it, so it is dropped (inherit). SUPPRESS_TOKENS (top
-    level too) gained a token-id range: an id far past the vocab crashed
-    every decode, so it is dropped the same way. A path setting or HF_TOKEN
-    holding a NUL (schema.NUL_FREE_FIELDS) is dropped (default). A
-    PIPELINE_RULES callback:map key that is whitespace-only is dropped.
-    Per-identity bindings (api_keys_store._parse_binding) and the env JSON
-    bundles (config.py) run the same per-bundle rules via
-    migrate_tightened_bundle."""
+    One such value left in the file fails load_overrides' whole-file
+    validation: every admin override is then ignored at boot and every save
+    422s. So a segment guard at 1 (already off at runtime) becomes 0; inside
+    OVERRIDE_PROFILES / MODEL_OVERRIDES an unparseable TEMPERATURE /
+    SUPPRESS_TOKENS CSV is dropped (inherit) and its lock stays; an unknown
+    DEFAULT_LANGUAGE code or an out-of-vocab SUPPRESS_TOKENS id (both failed
+    every decode) is dropped, top level too; a path setting or HF_TOKEN
+    holding a NUL (schema.NUL_FREE_FIELDS) and a whitespace-only
+    PIPELINE_RULES callback:map key are dropped. Per-identity bindings
+    (api_keys_store._parse_binding) and the env JSON bundles (config.py) run
+    the per-bundle rules via migrate_tightened_bundle."""
     notes = _migrate_segment_guards(raw, "")
     for key, check in (("DEFAULT_LANGUAGE", settings_schema._language_code),
                        ("SUPPRESS_TOKENS", settings_schema._suppress_tokens_csv)):
@@ -293,14 +287,8 @@ def _migrate_legacy_keys(raw: dict[str, Any]) -> dict[str, Any]:
     _renames.migrate_bundle_keys(raw, known)
     for note in _migrate_tightened_bundle_values(raw):
         print(f"[config_store] {note}", file=sys.stderr)
-    # Wildcard-host origins ('https://*.example.com') used to pass the origin
-    # validators but never matched anything (both the CORS middleware and the
-    # trusted-origin guard compare the Origin header by exact string). They
-    # are rejected now; strip the already-inert entries from a stored file so
-    # the tightened rule cannot wipe every other override at boot. A bare '*'
-    # stays legal for CORS only.
-    # The env reader (config.py) strips the same entries from
-    # WHISPER_TRUSTED_ORIGINS / WHISPER_CORS_ALLOW_ORIGINS.
+    # Strip the inert wildcard-host entries (config_renames.strip_wildcard_origins)
+    # so their refusal cannot wipe every other override at boot.
     for key in ("TRUSTED_ORIGINS", "CORS_ALLOW_ORIGINS"):
         entries = raw.get(key)
         if not isinstance(entries, list):
@@ -673,10 +661,8 @@ def save_overrides(
         store_common.secure_file(path)
     settings_version.bump_config_version()   # let live consumers (streaming idents) re-resolve
 
-    # Return the fields whose written (validated) value differs from what was
-    # on disk before (`existing`, as read).
-    # Dropping the local rules copy also rewrote the slug refs migrated above:
-    # report them too, so the caller puts them on the running cfg.
+    # Dropping the local rules copy also rewrote the slug refs migrated above,
+    # so they count as changed too: the caller puts them on the running cfg.
     changed: dict[str, Any] = {}
     for k in dict.fromkeys((*payload, *(_SLUG_REF_KEYS if drops_local_rules else ()))):
         new_v = to_write.get(k)             # post-validation value, or None if removed
@@ -737,12 +723,6 @@ def env_pinned_fields() -> dict[str, str]:
             out[field] = env
     return out
 
-
-# Per-identity binding validation (per-user / per-API-key config blobs).
-# A binding = {"direct": <OverrideProfile-shaped dict>, "profiles": [name, …]}.
-# The wire shape sent by the WebUI is {"overrides": {...}, "profiles": [...],
-# "locks": [...]}; validate_binding() turns it into the stored shape, applying
-# the same OverrideProfile schema (bounds + lock-field check) the profiles use.
 
 def _canonical_rule_slugs() -> set[str] | None:
     """The set of rule slugs in the live PIPELINE_RULES list (post-load dicts
