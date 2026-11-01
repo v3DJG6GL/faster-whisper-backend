@@ -266,12 +266,11 @@ async def _apply_hot_changes(written: dict[str, Any]) -> dict[str, Any]:
             ev = await tx_models.drain_then_evict(None)
             evicted.extend(ev)
         if prev_model_overrides is not None:
-            # Per-model override changed for one or more model ids — evict
-            # only those whose LOAD-TIME subset (added, changed or removed
-            # key) differs between the running value replaced above and the
-            # new bundle (None: env-pinned, nothing changed in memory).
-            # A removed id whose bundle held only decode-time keys needs no
-            # reload, matching the global-field rule.
+            # Per-model override changed — evict only the model ids whose
+            # LOAD-TIME subset (added, changed or removed key) differs between
+            # the running value replaced above and the new bundle. A removed
+            # id whose bundle held only decode-time keys needs no reload,
+            # matching the global-field rule.
             new_overrides = getattr(cfg, "MODEL_OVERRIDES", None) or {}
             old_overrides = prev_model_overrides
             lt = settings_schema.LOAD_TIME_FIELDS
@@ -305,11 +304,10 @@ async def _apply_hot_changes(written: dict[str, Any]) -> dict[str, Any]:
         except Exception as e:
             logger.error("[config] %s eviction-on-edit failed: %s", _extra, e)
 
-    # Re-sync os.environ["HF_TOKEN"] whenever cfg.HF_TOKEN changed. The
-    # token is set process-wide at startup (main.py) so non-WhisperModel HF
-    # calls (Silero VAD, tokenizer fetches) inherit it; live edits via the
-    # admin UI need to re-set the env var or those callers stay on the old
-    # value until next service restart.
+    # main.py sets HF_TOKEN process-wide at startup so non-WhisperModel HF
+    # calls (Silero VAD, tokenizer fetches) inherit it; re-sync it on every
+    # save of the field or those callers keep the old token until a restart.
+    # A cleared field falls back to the service environment's (_ENV_HF_TOKEN).
     if "HF_TOKEN" in written:
         new_token = getattr(cfg, "HF_TOKEN", None) or ""
         if new_token:
