@@ -1,5 +1,7 @@
-"""The finalize paths that reach on_final WITHOUT a final decode, and the
-handshake refusals' close codes.
+"""The finalize paths that reach on_final WITHOUT a final decode, the
+handshake refusals' close codes, and the route's smaller per-utterance
+contracts (translate_expect parking, the capture gate, handshake reporting,
+the queue item cap).
 
 The near-silence gate (StreamSession._finalize_inner) skips the decoder but
 still reports the partial-committed text. on_final then has no decode of its
@@ -32,9 +34,6 @@ def _config(ws, **extra):
     ws.send_json({"type": "config", "model": "whisper-1",
                   "audio": {"format": "pcm_s16le", "sample_rate": 16000}, **extra})
     return ws.receive_json()
-
-
-# ---- session level: the gate path's payload ----------------------------------
 
 
 class _AlwaysSpeech:
@@ -230,9 +229,6 @@ def test_empty_final_decode_takes_text_and_words_from_localagreement(trim):
     assert words[-1]["end"] <= info["audio_dur"] + 1e-6
 
 
-# ---- route level ----------------------------------------------------------------
-
-
 def _gate_second_utterance(monkeypatch, ws, *, before_second=None):
     """Utterance 1 decodes normally; utterance 2 commits text through the
     partials and is then finalized with the RMS gate forced shut, so on_final
@@ -340,9 +336,6 @@ def test_revoked_identity_gets_no_rows_through_the_gate_path(
         "the revoked identity still got a trace/usage row through the gate path"
 
 
-# ---- translate_expect on a translation-disabled server ----------------------
-
-
 def test_translate_expect_is_ignored_when_translation_is_disabled(
         client, app_module, monkeypatch):
     """/v1/text/translations refuses before it can claim a receipt, so a
@@ -388,9 +381,6 @@ def test_translate_expect_parks_when_translation_is_enabled(
         msgs, _code = _drain(ws)
     assert any(m.get("type") == "captured" for m in msgs), msgs
     assert receipt_hold.pending() >= 1
-
-
-# ---- capture gate -----------------------------------------------------------
 
 
 def _dictate_one(ws):
@@ -464,9 +454,6 @@ def test_turning_capture_recording_off_mid_session_stops_recording(
         msgs, _code = _dictate_one(ws)
     assert any(m["type"] == "final" for m in msgs)
     assert created == []
-
-
-# ---- refusals carry their close code ---------------------------------------
 
 
 @pytest.fixture
@@ -549,9 +536,6 @@ def test_cap_refusal_closes_after_accept_with_4429(client, app_module, monkeypat
     _assert_accepted_before_close(ws_sends, _WS_TOO_MANY)
 
 
-# ---- handshake reporting / jobs row / queue item cap ---------------------------
-
-
 def test_condition_on_previous_text_override_is_reported_ignored(client, app_module):
     with client.websocket_connect(_STREAM_URL) as ws:
         ready = _config(ws, decode_overrides={"condition_on_previous_text": True})
@@ -581,8 +565,8 @@ def test_multilingual_with_a_set_language_is_reported_ignored(client, app_module
 
 def test_multilingual_override_reaches_the_final_decode(app_module, fake_model):
     from faster_whisper_backend.streaming import routes as sr
-    # The handshake narrows decode_overrides to the client keys; multilingual
-    # is one, and the final decode (auto-detect) carries it.
+    # The handshake drops any override not in _CLIENT_OVERRIDE_KEYS, so
+    # multilingual must be one of them.
     assert "multilingual" in sr._CLIENT_OVERRIDE_KEYS
     kw = sr._build_transcribe_kwargs(
         "some-model", final=True, prompt="", want_words=False,
