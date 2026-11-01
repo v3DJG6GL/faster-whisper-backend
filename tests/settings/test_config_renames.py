@@ -1,7 +1,7 @@
-"""config_renames.UPGRADED_RULE_LANGUAGES: a factory rule that gained a
-rule-level language scope in config.json carries it into a saved
+"""config_renames: factory rule changes in config.json (language scopes,
+patterns, entry text, slug renames / splits / folds) are carried into a saved
 PIPELINE_RULES copy (config.local.json / WHISPER_PIPELINE_RULES), which
-otherwise replaces the factory list and keeps the rule on every language.
+otherwise replaces the factory list and keeps the old rule forever.
 """
 import copy
 import json
@@ -22,9 +22,9 @@ def _rule(rules, name):
     return next(r for r in rules if r.get("name") == name)
 
 
-# Factory patterns changed after the rule got its scope (the hyphen rule
-# stopped firing after a digit): a copy saved before the scope still holds
-# the old one, which is what UPGRADED_RULE_LANGUAGES keys on.
+# The hyphen rule's factory pattern changed after it got its scope: a copy
+# saved before the scope still holds the original pattern, which is what
+# UPGRADED_RULE_LANGUAGES keys on.
 _PATTERN_BEFORE_SCOPE = {"capitalize-letter-after-hyphen": "(-)([a-zäöüß])"}
 
 
