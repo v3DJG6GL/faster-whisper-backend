@@ -1,8 +1,9 @@
 """Engine tests for the callback:upper rule: it uppercases group(2) in place
 and keeps every other part of the match. The pattern is editable from
 /settings/pipeline and /quick-config, so it is not limited to the two seeded
-shapes whose match happens to be exactly group(1) + group(2). The last two
-tests cover the same shapes for its callback:lowercase-wordlist sibling."""
+shapes whose match happens to be exactly group(1) + group(2). The
+lowercase-wordlist tests at the end cover the same shapes for its
+callback:lowercase-wordlist sibling."""
 
 import re
 
