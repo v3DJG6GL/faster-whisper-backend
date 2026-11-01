@@ -1,9 +1,10 @@
 """Tests for config.py's environment-variable layer: the coercion helpers,
-the per-model override decoder, and the stdlib factory-rules loader.
+the per-model override decoder, and the stdlib factory-defaults loader.
 
 The helper functions read os.environ at call time, so they're tested directly
-with monkeypatched env vars. The module-level per-model scanner is exercised
-once via a guarded importlib.reload (restored in a finally).
+with monkeypatched env vars. The module-level env application (per-model
+scanner, schema-driven overrides) runs only at import, so those tests use
+importlib.reload and reload again in a finally to restore the clean module.
 """
 
 import importlib
@@ -15,10 +16,6 @@ import pytest
 from faster_whisper_backend.settings import config
 from tests.conftest import _repoint_path_default
 
-
-# ---------------------------------------------------------------------------
-# Scalar coercion helpers
-# ---------------------------------------------------------------------------
 
 def test_truthy():
     for v in ["1", "true", "TRUE", "Yes", "on", "  on  "]:
@@ -114,10 +111,6 @@ def test_env_csv_list(monkeypatch):
     assert config._env_csv_list("X_L", ["z"]) == ["z"]   # unset -> current
 
 
-# ---------------------------------------------------------------------------
-# Per-model override decode helpers
-# ---------------------------------------------------------------------------
-
 def test_decode_model_id():
     assert config._decode_model_id("org__SLASH__name__DOT__ct2") == "org/name.ct2"
     assert config._decode_model_id("plain") == "plain"
@@ -134,11 +127,9 @@ def test_coerce_override_value_types():
 
 
 def test_per_model_env_scanner_end_to_end(monkeypatch):
-    # WHISPER_MODEL_OVERRIDE__<encoded id>__<FIELD> populates MODEL_OVERRIDES.
-    # NOTE: the encoded id is UPPERCASE on purpose. Windows normalises
-    # os.environ keys to uppercase, so a lowercase id in the var NAME would not
-    # round-trip there; an uppercase id is case-stable on every platform and
-    # still exercises the right-to-left "__" boundary scanner + _decode_model_id.
+    # The encoded id is UPPERCASE on purpose: Windows upper-cases os.environ
+    # keys, so only an uppercase id round-trips on every platform while still
+    # exercising the right-to-left "__" boundary scanner + _decode_model_id.
     monkeypatch.setenv(
         "WHISPER_MODEL_OVERRIDE__ORG__SLASH__NAME__DOT__CT2__BEAM_SIZE", "7"
     )
@@ -162,11 +153,6 @@ def test_env_value_is_stored_as_the_schema_normalizes_it(monkeypatch):
         importlib.reload(config)
 
 
-# ---------------------------------------------------------------------------
-# _load_defaults (stdlib loader: config.json is the single source of factory
-# defaults; config.py reads every value from it at import)
-# ---------------------------------------------------------------------------
-
 def _write_cfg(tmp_path, **extra):
     """Write a minimal-but-valid config.json into tmp_path and return its path."""
     data = {"schema_version": 1,
@@ -178,8 +164,7 @@ def _write_cfg(tmp_path, **extra):
 
 def test_load_defaults_reads_committed_config():
     d = config._load_defaults()
-    # Returns ALL defaults, not just the rules: scalars + the rules list. Assert
-    # structure/types, not specific values (those are deployment-tunable).
+    # Structure/types only, not specific values (those are deployment-tunable).
     assert isinstance(d, dict)
     assert isinstance(d["PIPELINE_RULES"], list) and len(d["PIPELINE_RULES"]) >= 2
     assert isinstance(d["DEFAULT_MODEL"], str) and d["DEFAULT_MODEL"]
@@ -210,8 +195,6 @@ def test_load_defaults_missing_rules_raises(monkeypatch, tmp_path):
 
 
 def test_load_defaults_is_the_source(monkeypatch, tmp_path):
-    # A value placed in config.json is what _load_defaults returns — proving
-    # config.json (not config.py) is the source of truth.
     _write_cfg(tmp_path, BEST_OF=9, DEFAULT_MODEL="my-model")
     monkeypatch.setattr(config, "_REPO_DIR", str(tmp_path))
     d = config._load_defaults()
@@ -220,11 +203,9 @@ def test_load_defaults_is_the_source(monkeypatch, tmp_path):
 
 
 def test_load_defaults_resolves_data_dir_placeholders(monkeypatch, tmp_path):
-    # {DATA_DIR}/{DB_DIR}/{MODELS_DIR} placeholders resolve against the data
-    # layout knobs (WHISPER_DATA_DIR/WHISPER_DB_DIR/WHISPER_MODELS_DIR —
-    # captured at import into _DATA_DIR/_DB_DIR/_MODELS_DIR), NOT the repo
-    # dir. See also tests/settings/test_data_dir.py for the end-to-end env → path
-    # matrix.
+    # {DATA_DIR}/{DB_DIR}/{MODELS_DIR} resolve against the import-time
+    # data-layout knobs (_DATA_DIR/_DB_DIR/_MODELS_DIR), NOT the repo dir.
+    # End-to-end env → path matrix: tests/settings/test_data_dir.py.
     _write_cfg(tmp_path,
                LOG_FILE="{DATA_DIR}/logs/whisper.log",
                API_KEYS_DB="{DB_DIR}/api_keys.local.sqlite3",
@@ -255,10 +236,8 @@ def test_load_defaults_coerces_set_fields(monkeypatch, tmp_path):
 
 
 def test_baseline_comes_from_config_json():
-    # _BASELINE (what "↺ Reset to default" reverts to) must equal the values in
-    # config.json, with the same set-coercion + {DATA_DIR}/{DB_DIR}/{MODELS_DIR}
-    # path resolution applied.
-    # Locks "config.json is the single source of truth for factory defaults".
+    # _BASELINE (what "↺ Reset to default" reverts to) must equal config.json,
+    # with the same set-coercion + placeholder path resolution applied.
     expected = config._load_defaults()
     for k, v in expected.items():
         assert config._BASELINE[k] == v, k
@@ -277,21 +256,13 @@ def test_env_float_or_none(monkeypatch):
     assert config._env_float_or_none("X_FON", 0.6) == 0.6   # unset -> current
 
 
-# ---------------------------------------------------------------------------
-# Env var names (ENV_VAR_MAPPING covers every AdminConfig field by
-# construction: schema.py builds it over the field registry)
-# ---------------------------------------------------------------------------
-
 def test_env_var_names_are_unique():
+    # Coverage needs no test: schema.py builds ENV_VAR_MAPPING over the field registry.
     from faster_whisper_backend.settings import schema as settings_schema
     names = list(settings_schema.ENV_VAR_MAPPING.values())
     assert len(names) == len(set(names)), "duplicate WHISPER_* env var names"
     assert all(n.startswith("WHISPER_") for n in names)
 
-
-# ---------------------------------------------------------------------------
-# End-to-end schema-driven env application (importlib.reload)
-# ---------------------------------------------------------------------------
 
 def _reload_with_env(monkeypatch, **env):
     for k, v in env.items():
@@ -338,8 +309,8 @@ def test_default_language_empty_means_autodetect(monkeypatch):
 
 def test_model_and_log_file_env_are_stripped_and_blank_keeps_current(monkeypatch):
     # The schema refuses "" for both, so a blank var keeps the current value
-    # like every other str (it logged an error), and an edge space from an
-    # env_file line no longer reverts the model to the factory default.
+    # like every other str instead of logging an error, and an edge space
+    # from an env_file line is stripped rather than reverting the model.
     try:
         # The value the reload yields with the var absent, not the module's
         # current one: another test may have repointed config.LOG_FILE.
@@ -374,7 +345,6 @@ def test_set_typed_special_cases_stay_sets(monkeypatch):
 
 
 def test_json_model_overrides_env(monkeypatch):
-    # JSON blob validates + normalises to plain dicts; per-model var merges atop.
     try:
         _reload_with_env(
             monkeypatch,
@@ -431,7 +401,6 @@ def test_json_pipeline_rules_env_upgrades_an_old_factory_entry(monkeypatch):
 def test_invalid_json_keeps_default_and_warns(monkeypatch):
     try:
         _reload_with_env(monkeypatch, WHISPER_PIPELINE_RULES="not json")
-        # factory rules remain in place
         assert len(config.PIPELINE_RULES) >= 2
         assert any("WHISPER_PIPELINE_RULES" in m for m in config._ENV_WARNINGS)
     finally:
@@ -478,9 +447,7 @@ def test_rejected_secret_warning_is_redacted(monkeypatch):
                 if "WHISPER_HF_TOKEN" in m and "not a valid" in m]
         assert warn, config._ENV_WARNINGS
         msg = warn[0]
-        # The operator still learns which var was rejected and why...
         assert "HF_TOKEN" in msg
-        # ...but the retained value is not echoed.
         assert "keeping <redacted>" in msg
     finally:
         monkeypatch.undo()
@@ -577,9 +544,9 @@ def test_per_model_env_override_coerces_newer_field_types(monkeypatch):
 
 
 def test_per_model_env_override_unparseable_bool_is_skipped(monkeypatch):
-    """The per-model path used to coerce bools with _truthy, so DIARIZE=enabled
-    silently became False (a valid bool the revalidation cannot catch). It must
-    warn and leave that one field out, keeping the model's other overrides."""
+    """An unparseable per-model bool (DIARIZE=maybe) must not be coerced to
+    False, a valid bool the revalidation cannot catch: it warns and leaves that
+    one field out, keeping the model's other overrides."""
     try:
         _reload_with_env(
             monkeypatch,
@@ -651,10 +618,9 @@ def test_save_overrides_migrates_use_auth_token(tmp_path):
 
 
 def test_env_cross_field_triple_validates_as_a_batch(monkeypatch):
-    """A self-consistent TARGET/MAX pair set together via env must apply.
-    Per-field validation filled the unset members from _BASELINE (TARGET
-    26.0), so MAX=20 alone was mis-rejected even though the operator also
-    set TARGET=15 in the same environment."""
+    """A self-consistent TARGET/MAX pair set together via env must apply:
+    validated per field, MAX=20 would meet the _BASELINE TARGET (26.0)
+    instead of the TARGET=15 set alongside it, and be mis-rejected."""
     try:
         _reload_with_env(
             monkeypatch,
@@ -1081,7 +1047,6 @@ def _point_overrides_at(monkeypatch, path):
     does: the module constant AND the def-time-bound default argument."""
     from faster_whisper_backend.settings import config_store
     monkeypatch.setattr(config_store, "OVERRIDES_PATH", str(path), raising=False)
-    # By name, not __defaults__[-1] (conftest's shared helper).
     _repoint_path_default(monkeypatch, (config_store.load_overrides,), str(path))
 
 
@@ -1123,7 +1088,8 @@ def test_env_cross_field_consistent_with_local_override_applies(tmp_path, monkey
 
 def test_explicitly_empty_env_pins_fields_where_empty_is_a_value(monkeypatch):
     """WHISPER_X="" is a real value for the readers that map "" to None / ""
-    / [] / set() — the var controls the field, so /settings must badge it
+    / [] / set() / a fixed default (CONVERT_QUANTIZATION -> float16) — the
+    var controls the field, so /settings must badge it
     as env-pinned (and the hot-apply path must skip it) instead of letting
     an edit "work" until the next restart. A reader that treats "" as
     "keep current" (BEAM_SIZE) still does not pin."""
@@ -1207,10 +1173,6 @@ def test_env_supplied_override_with_unknown_rule_slug_is_rejected(monkeypatch):
         monkeypatch.undo()
         importlib.reload(config)
 
-
-# ---------------------------------------------------------------------------
-# Renamed keys / slugs on every env entry point; pre-env validation errors
-# ---------------------------------------------------------------------------
 
 def test_env_rules_that_break_a_stored_exclude_do_not_revert_every_scalar(monkeypatch):
     """A WHISPER_PIPELINE_RULES without the rules CAPTURES_PIPELINE_RULES_
@@ -1492,8 +1454,8 @@ def test_env_bundle_schema_error_is_not_called_bad_json(monkeypatch):
 
 
 def test_env_wildcard_origin_drops_only_that_entry(monkeypatch):
-    """Same legacy value, same outcome as the stored-file path: the wildcard
-    entry goes, its valid siblings stay trusted."""
+    """A legacy wildcard origin in the env var gets the same outcome as in a
+    stored file: the wildcard entry goes, its valid siblings stay trusted."""
     try:
         _reload_with_env(
             monkeypatch,
@@ -1737,9 +1699,9 @@ def test_env_slug_list_is_not_blamed_for_a_stored_sibling_list(monkeypatch):
 
 
 def test_env_guard_at_one_means_off_not_the_factory_threshold(monkeypatch):
-    """1 is refused since older releases accepted it, and 1 already behaved
-    as off; reverting the env value to the factory 3 / 2 turned the guard ON.
-    The stored and bundle paths map it to 0, and so does the env layer."""
+    """1 is no longer accepted, but older releases took it and it behaved as
+    off; reverting the env value to the factory 3 / 2 turned the guard ON.
+    The env layer maps it to 0, like the stored and bundle paths."""
     try:
         _reload_with_env(monkeypatch,
                          WHISPER_SEGMENT_HEAD_ECHO_MIN_WORDS="1",
