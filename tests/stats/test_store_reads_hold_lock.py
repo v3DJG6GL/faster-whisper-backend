@@ -1,7 +1,8 @@
-"""Reads on the shared store connections run under the store lock (usage_store
-and recent_transcriptions_store: on a connection of their own): two threads running the same SELECT text share
-pysqlite's cached statement, and each can read the other's rows (another
-user's, under an own-scope filter)."""
+"""Store reads never run unlocked on a shared connection: system_metrics_store
+and jobs_store read under the store lock, usage_store and
+recent_transcriptions_store on a connection of their own. Two threads running
+the same SELECT text share pysqlite's cached statement, and each can read the
+other's rows (another user's, under an own-scope filter)."""
 import threading
 import time
 
