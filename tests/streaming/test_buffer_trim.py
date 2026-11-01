@@ -109,9 +109,7 @@ def test_trim_preserves_committed_opening_in_final_document():
     # No duplication at the seam: every grid word appears exactly once.
     words = info["raw_text"].split()
     assert len(words) == len(set(words)), f"duplicated words: {info['raw_text']!r}"
-    # The words are in order and contiguous (w0, w1, ..., wN).
     assert words == [f"w{i}" for i in range(len(words))]
-    # The emitted document (committed + tail of the last final) matches.
     finals = [m for m in msgs if m["type"] == "final"]
     doc = finals[-1]["committed"] + finals[-1]["tail"]
     assert "w0" in doc
@@ -122,8 +120,7 @@ def test_trim_preserves_committed_opening_in_final_document():
     # would be shorter than the trim threshold's keep window).
     assert info["audio_dur"] >= 3.2
     assert abs(info["audio"].shape[0] / SR - info["audio_dur"]) < 1e-6
-    # Words merge banked (absolute) + decode (shifted) entries: the utterance's
-    # first word is present, times are monotonic, and there's no duplication.
+    # Words merge banked (absolute) + decode (shifted) entries onto one timeline.
     wtexts = [w["word"].strip() for w in info["words"]]
     assert wtexts and wtexts[0] == "w0"
     assert len(wtexts) == len(set(wtexts))
@@ -218,8 +215,7 @@ def test_trim_keeps_base_prompt_when_capping_the_rolling_prompt():
 
 def test_short_utterance_unchanged_no_trim():
     """Below buffer_trim_sec nothing is banked: the final decode's text stands
-    alone, no trim is reported, and the payload audio is the plain buffer
-    (pre-fix behaviour preserved)."""
+    alone, no trim is reported, and the payload audio is the plain buffer."""
     s, msgs, finals_meta, trimmed = _run_long_utterance(speech_ms=800)
     info = finals_meta[-1]
     assert info["trimmed_sec"] == 0.0
@@ -227,8 +223,6 @@ def test_short_utterance_unchanged_no_trim():
     assert trimmed == [], "nothing should ever have been banked"
 
 
-# ---- hard ceiling ---------------------------------------------------------
-#
 # _maybe_trim runs from _run_partial only, behind the skip-partials / speech /
 # RMS gates, and needs a committed word to anchor its cut — so it is not a bound
 # on the buffer, just an optimisation of the usual case. max_buffer_sec is the
@@ -417,8 +411,6 @@ def test_ceiling_finalize_keeps_trim_banked_text_when_the_rms_gate_trips():
     assert "w0" in doc
 
 
-# ---- buffer accounting ----------------------------------------------------
-#
 # The buffer takes a chunk per 32 ms frame but is joined lazily, on read. The
 # sample counter — what the ceiling above and both trims consult, so that asking
 # for a length never forces a join — must therefore stay exactly in step with
