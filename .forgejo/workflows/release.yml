@@ -80,9 +80,8 @@ jobs:
       - name: Compute and push the next version tag
         id: bump
         env:
-          # PAT with write:repository (repo Settings → Actions → Secrets).
-          # NOT the actions token: Forgejo swallows its push events, and the
-          # whole point of this tag is to fire ci.yml's v* build run.
+          # PAT with write:repository (repo Settings → Actions → Secrets), not
+          # the actions token — see the header.
           PUSH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
           API_TOKEN: ${{ github.token }}
           BUMP: ${{ inputs.bump }}
@@ -149,9 +148,8 @@ jobs:
           # Resumable, not a hard no-op: emit the EXISTING tag so the release
           # step below still runs and can repair a missing release (it probes
           # first, so the normal case costs one GET and changes nothing).
-          # Manual minor/major on an already patch-tagged commit falls through
-          # and adds a second tag on that commit (the continuous flow tags every
-          # green main commit, so HEAD is always already tagged). But when
+          # Manual minor/major on an already patch-tagged commit (the usual case,
+          # see the header) falls through and adds a second tag on it. But when
           # $latest already sits at the requested boundary (minor: x.y.0,
           # major: x.0.0) on this commit, it was a manual run of that same
           # bump — a re-run after a failed release POST, or a second dispatch
