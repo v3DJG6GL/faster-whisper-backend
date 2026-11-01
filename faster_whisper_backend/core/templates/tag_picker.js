@@ -163,7 +163,7 @@
       });
       _setActive(-1);   // reset highlight + clear any stale aria-activedescendant
       input.setAttribute('aria-expanded', 'true');
-      sugPop.show();      // promote to top layer + position under the field
+      sugPop.show();
     }
 
     input.addEventListener('keydown', function(e) {
