@@ -94,8 +94,6 @@ def test_captures_migration_upgrades_a_pre_existing_table(tmp_path):
     with _own_db(captures_store):
         captures_store.init_db(db, audio)
         cols = _cols(captures_store._conn, "captures")
-        # The JSON columns were renamed in place: the bare names exist, the
-        # `_json`-suffixed ones are gone.
         assert {"words", "segments", "corrections", "translations"} <= cols
         assert not ({"words_json", "segments_json", "corrections_json",
                      "translations_json"} & cols)
