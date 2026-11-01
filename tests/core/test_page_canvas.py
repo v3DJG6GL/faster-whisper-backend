@@ -39,7 +39,6 @@ def test_nav_css_declares_canvas_tokens_and_uses_them():
     # header floored at the data canvas; toolbar exactly on the page column
     assert "max-width: max(var(--col), var(--col-data))" in css
     assert re.search(r"header \.subbar \{[^}]*max-width: var\(--col\)", css)
-    # the old fixed caps are gone from the header rules
     assert "max-width: 150rem" not in css
     assert "max-width: 68.75rem" not in css
     # long <option> labels no longer dictate the toolbar row width
@@ -154,8 +153,8 @@ def test_popover_fallback_portals_even_when_the_layer_is_already_unhidden():
 
 
 def test_activity_popover_treats_zero_vram_as_no_reading():
-    """Sibling of the /stats models-table fix: a cuda NVML delta of 0 is
-    stored as vram_mb 0.0, which the header popover rendered as "0.0G"."""
+    """A cuda NVML delta of 0 is stored as vram_mb 0.0, which the header
+    popover rendered as "0.0G"."""
     js = web_common.ACTIVITY_CLUSTER_JS
     assert "m.vram_mb ? gb(m.vram_mb) + 'G' : null" in js
     assert "vram_mb != null" not in js
