@@ -5,9 +5,6 @@ Shared by the settings persistence layer (config.local.json / config.json in
 settings/config_store.py) and the small runtime ledgers (model_sizes,
 stage_rates). Import-light on purpose: stdlib only at import; `filelock` is
 imported lazily inside save_lock().
-
-Atomic writes: tmp file in the same directory, then os.replace. Retry loop
-covers Windows sharing-violations from AV scanners briefly holding the file.
 """
 
 from __future__ import annotations
