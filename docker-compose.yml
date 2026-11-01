@@ -45,9 +45,8 @@ services:
       # stores in /data/db; config.local.json, logs/, captures/) and models
       # under /models — matching the two volumes below. To relocate anything,
       # set WHISPER_DATA_DIR / WHISPER_DB_DIR / WHISPER_MODELS_DIR (move the
-      # roots wholesale) or
-      # any individual WHISPER_* path env — see .env.example for the full
-      # list and defaults.
+      # roots wholesale) or any individual WHISPER_* path env — see
+      # .env.example for the full list and defaults.
       # The values shown ARE the defaults — uncomment and edit to relocate:
       # WHISPER_DATA_DIR: /data
       # WHISPER_DB_DIR: /data/db
@@ -67,10 +66,10 @@ services:
       # WHISPER_DOWNLOAD_ROOT: /models
       # WHISPER_CONVERTED_MODELS_DIR: /models/converted
       #
-      # HF download backend (hf_xet) writes its cache + logs under HF_HOME;
-      # unset it defaults to ~/.cache, which fails ("Permission denied") when
-      # the platform runs the container as a non-root UID with HOME=/. Point it
-      # at the writable, persistent /models volume so the cache survives too.
+      # HF download backend (hf_xet) writes its cache + logs under HF_HOME
+      # (default ~/.cache: non-persistent /tmp in this image, "Permission
+      # denied" if a platform sets HOME=/ for the non-root UID). Point it at
+      # the writable, persistent /models volume.
       HF_HOME: /models
       # Disable the Xet transfer backend: on restrictive/proxied networks its
       # CAS endpoint gets rate-limited (429) and stalls (concurrency throttles
@@ -81,9 +80,9 @@ services:
       # --- Behind a reverse proxy (remote access) ---------------------------
       # The WebUI pages are gated by client IP, bucketed by privilege tier
       # (admin: /settings, /settings/api-keys, /docs; user: /, /quick-config,
-      # /captures, /reports, /stats, /logs, /dictate, /sev).
-      # Behind a proxy the app sees the PROXY's IP, so
-      # those pages 403 ("host not in allowlist"). To gate on the REAL client
+      # /captures, /reports, /stats, /logs, /dictate, /sev). Behind a proxy
+      # the app sees the PROXY's IP, so those pages 403 ("host not in
+      # allowlist"). To gate on the REAL client
       # IP, trust the proxy's X-Forwarded-For: set FORWARDED_ALLOW_IPS to the
       # proxy's IP/subnet (uvicorn then rewrites the client IP). Never "*"
       # unless the container is unreachable except via the proxy (spoofing).
@@ -128,8 +127,8 @@ services:
     # then `ip6 daddr { ::1/128, fc00::/7, fe80::/10 } drop` in place of
     # the nfproto line. The `ct state` line lets through the replies to
     # connections that came IN (a LAN client or reverse proxy on the
-    # published port —
-    # without it those replies match the RFC1918 drop and LAN access dies),
+    # published port — without it those replies match the RFC1918 drop and
+    # LAN access dies),
     # so only connections the container opens are filtered. Host-local
     # clients and Docker's embedded DNS never cross FORWARD at all. The
     # subnet below sits inside 172.16/12 — adjust both to your network.
