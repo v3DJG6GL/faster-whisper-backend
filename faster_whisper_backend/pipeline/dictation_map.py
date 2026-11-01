@@ -42,10 +42,9 @@ from faster_whisper_backend.core.unicode_marks import MARKS as _MARKS
 _PUNCT_VALUE_CHARS = frozenset(".,:;!?")
 # What Whisper puts before a dictated punctuation word: its own marks
 # (the ellipsis as three periods or as one character); compile_map adds the
-# spaces after them. Starts only at the beginning of a run and is
-# possessive: a plain greedy run was
-# retried from every position inside a long hallucinated "……" / "::::" run,
-# each attempt backtracking char by char into the failed lookahead — O(n²).
+# spaces after them. Anchored at the start of a run and possessive: a greedy
+# run would be retried from every position inside a long hallucinated
+# "……" / "::::" run, each try backtracking into the failed lookahead — O(n²).
 _WHISPER_PUNCT = r"(?<![.,:;!?…])[.,:;!?…]++"
 
 
