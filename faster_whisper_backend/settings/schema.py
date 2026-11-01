@@ -296,7 +296,7 @@ class _RuleBase(BaseModel):
     # list means "visible to every authenticated user" (zero-config
     # migration); a populated list means "visible only to users whose
     # `quick_config_tags` intersects this list". Admins always see
-    # everything. See auth.Permissions.can_see_rule().
+    # everything. See auth.dependencies.Permissions.can_see_rule().
     tags: list[str] = Field(default_factory=list, max_length=32)
     # Free-text rationale for the rule — why it exists, ordering constraints,
     # tradeoffs. Lives in config.json so a rule's "why" travels with it.
