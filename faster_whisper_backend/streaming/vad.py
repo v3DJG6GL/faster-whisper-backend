@@ -116,7 +116,7 @@ class SileroEndpointer:
         return float(np.asarray(out).reshape(-1)[-1])
 
     def is_speech(self, frame: np.ndarray) -> bool:
-        if frame.shape[0] != FRAME_SAMPLES:        # strict 512-sample window
+        if frame.shape[0] != FRAME_SAMPLES:
             buf = np.zeros(FRAME_SAMPLES, dtype=np.float32)
             n = min(FRAME_SAMPLES, frame.shape[0])
             buf[:n] = frame[:n]
