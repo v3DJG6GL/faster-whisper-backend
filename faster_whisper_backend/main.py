@@ -177,8 +177,8 @@ from fastapi import FastAPI, File, UploadFile, Form, HTTPException, Request, Dep
 from fastapi.exceptions import RequestValidationError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-# Auth dep used by /v1/audio/transcriptions. In open mode (no admin key in DB)
-# it returns the synthetic admin — but only to callers on
+# Auth dep used by /v1/audio/transcriptions and /translations. In open mode
+# (no admin key in DB) it returns the synthetic admin — but only to callers on
 # ADMIN_WEBUI_ALLOWED_HOSTS — so the operator can bootstrap; otherwise it 401s
 # on missing/invalid bearer.
 from faster_whisper_backend.auth.dependencies import get_current_user as _get_current_user_dep
@@ -1483,8 +1483,6 @@ async def transcribe(
     # Bracket the entire request with metrics.in_flight_transcriptions +
     # record_transcription so failed loads / failed transcriptions still
     # surface in the dashboard.
-    # request_id is minted before the outer try so its finally can correlate
-    # timing-only writes to the SQLite store on the error path too.
     metrics.in_flight_transcriptions += 1
     # GPU-gate wait for this request accumulates here (every acquire in
     # this task, and in tasks it spawns, charges it); read in the finally.
@@ -1585,6 +1583,8 @@ async def transcribe(
     # lease that was never taken (a rejected/failed load takes none). The
     # instance rides along: the release must tell a reload from it.
     _leased_model: "tuple[str, object] | None" = None
+    # Minted before the outer try so its finally can correlate timing-only
+    # writes to the SQLite store on the error path too.
     request_id = uuid.uuid4().hex
     _user_id = user.get("user_id")
     _key_id = user.get("key_id")
@@ -2557,10 +2557,9 @@ async def transcribe(
                                _kw=transcribe_kwargs, _pad_ms=_lead_pad_ms,
                                _t=_decode_timing, _skip=_skip_residual,
                                _cap=_token_cap):
-                # Materialize the lazy segment generator WITH live progress:
-                # each yielded segment carries its end time, and info.duration
-                # is known up front — that ratio is genuine decode progress
-                # (the executor thread's dict writes are GIL-atomic).
+                # Live progress while materializing: each yielded segment
+                # carries its end time, and info.duration is known up front —
+                # that ratio is genuine decode progress.
                 def _collect(_gen, _info, _pad_s=0.0):
                     # Live figures on the ORIGINAL timeline, like the shifted
                     # result (_shift_to_original_timeline runs only after
