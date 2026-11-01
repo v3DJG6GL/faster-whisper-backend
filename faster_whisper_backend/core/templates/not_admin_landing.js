@@ -1,8 +1,6 @@
 
-// Per-page metadata used to render the landing's pill-style action
-// buttons. `href` is what the button navigates to. The button label
-// reuses `href` directly (no "Open " verb prefix — stacked verbs read
-// like the redundant menu) so the buttons look + behave like links.
+// The landing's action buttons. Each label is its `href` (no "Open" verb:
+// stacked verbs read like a redundant menu), so they read as links.
 // `free` marks a page with no per-page permission key: /dictate is
 // reachable by every signed-in identity (an ungated navlink in _NAV_SPEC,
 // tier "any" on the hub), so a key with every page scope at 'none' still
@@ -17,8 +15,7 @@ var _PAGE_LINK_INFO = {
 };
 
 function _renderNoAccessLanding(opts) {
-  // Clear admin chrome — same reason it's removed: the landing shows
-  // when the caller is NOT entitled to admin UI on this page.
+  // The landing means the caller is not entitled to admin UI here.
   document.body.classList.remove('role-admin');
   var main = document.getElementsByTagName('main')[0];
   if (!main) return;
@@ -38,9 +35,6 @@ function _renderNoAccessLanding(opts) {
 
   var btns = allowed.map(function(p) {
     var info = _PAGE_LINK_INFO[p];
-    // Button text is the URL path itself (`/logs`, `/quick-config`,
-    // …) — drops the redundant "Open" verb and matches what the user
-    // expects to see in the address bar.
     return '<a href="' + info.href + '" class="landing-btn">'
          + info.href + '</a>';
   }).join('');
