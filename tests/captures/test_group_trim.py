@@ -36,7 +36,6 @@ def _write_wav(path, pcm):
 
 
 def test_trim_collapses_internal_gap_and_edges(monkeypatch, fake_vad):
-    # 200ms sil | 300ms speech | 1000ms sil (internal) | 300ms speech | 200ms sil
     pcm, n = _pcm([
         ("sil", 200), ("speech", 300), ("sil", 1000),
         ("speech", 300), ("sil", 200),
@@ -284,7 +283,6 @@ def test_proposer_trimmed_duration_and_caching(monkeypatch, tmp_path, fake_vad):
     from faster_whisper_backend.captures import merge_proposer as P
     from faster_whisper_backend.captures import store as captures_store
 
-    # 200ms sil | 600ms speech | 200ms sil.
     pcm, _ = _pcm([("sil", 200), ("speech", 600), ("sil", 200)])
     wav = tmp_path / "a.wav"
     _write_wav(str(wav), pcm)
