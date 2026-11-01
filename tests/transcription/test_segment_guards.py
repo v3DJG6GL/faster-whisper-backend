@@ -82,8 +82,8 @@ def test_zero_run_reaches_minimum():
 
 
 def test_real_last_word_that_absorbed_leftover_time_is_never_cut():
-    # spoken word, then the zero run: the non-zero word before the run has a
-    # spoken (non-zero) word before it → it stays.
+    # " zwei" soaked up the leftover time before the zero run, but it is
+    # confident and the spoken " eins" precedes it → the real last word stays.
     words = [_w(" eins", 0.0, 0.5), _w(" zwei", 0.5, 2.0),
              _w(" x", 2.0, 2.0), _w(" y", 2.0, 2.0)]
     assert sg.find_tail_cut(words, "", zero_tail=2) == (2, ["zero_tail"])
