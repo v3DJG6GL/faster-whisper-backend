@@ -28,7 +28,6 @@ def test_test_pipeline_regex_list_skips_huge_range_repeat_entry(client):
     })
     assert r.status_code == 200, r.text
     step = r.json()["steps"][0]
-    # Only the bad entry is skipped; the valid sibling still applies.
     assert step["after"] == "bbb"
     assert step["matches"] == 3
     assert "repetition number is too large" in (step["error"] or "")
