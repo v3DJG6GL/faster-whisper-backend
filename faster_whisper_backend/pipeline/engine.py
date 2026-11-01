@@ -287,10 +287,10 @@ def _rebuild_caches_locked() -> None:
 
 
 def _apply_rule(rule: _CompiledRule, text: str) -> str:
-    """Dispatch on rule type. Hot path — payload is pre-bound at
-    rebuild_caches() time (a replacement string for `regex-list`, a pre-built
-    callable for every callback:* type), so every type collapses to a
-    single pattern.sub call with no per-request closure allocation."""
+    """Hot path, no dispatch: the payload is pre-bound at rebuild_caches()
+    time (a replacement string for `regex-list`, a pre-built callable for
+    every callback:* type), so every type is one pattern.sub call with no
+    per-request closure allocation."""
     return rule.pattern.sub(rule.payload, text)  # type: ignore[arg-type]
 
 
@@ -366,18 +366,12 @@ def _postprocess_text(text: str, model_name: "str | None" = None,
          disabled.
       4. Otherwise inherit `rule.enabled` from the global PIPELINE_RULES list.
 
-    Effective (_rule_runs):  slug NOT in EXCLUDE (extra_excludes included)
-    AND (rule.enabled OR slug IN INCLUDE)
-    AND (rule.languages is empty OR language matches or is unknown).
-    The per-model lists cannot share a slug (pydantic rejects that);
-    extra_excludes can, and then the exclude wins.
-
-    `extra_excludes` is an additional set of rule slugs to skip on top of
-    the per-model EXCLUDE. Used by the /captures storage path to produce
-    a training-form transcript (cfg.CAPTURES_PIPELINE_RULES_EXCLUDE) while
-    leaving the runtime /transcribe response untouched. Rules in
-    `extra_excludes` are skipped even when they appear in INCLUDE — the
-    captures-specific intent overrides the per-model force-on.
+    _rule_runs applies this. `extra_excludes` adds slugs to skip on top of
+    the per-model EXCLUDE: the /captures storage path uses it to produce a
+    training-form transcript (cfg.CAPTURES_PIPELINE_RULES_EXCLUDE) without
+    touching the /transcribe response. The per-model lists cannot share a
+    slug (pydantic rejects that); extra_excludes can, and then the exclude
+    wins over a per-model force-on.
 
     A rule with `repeat` on runs again on its own output (a regex-list card:
     all its entries) until a pass changes nothing, at most _REPEAT_MAX_PASSES
@@ -460,7 +454,6 @@ def _postprocess_text(text: str, model_name: "str | None" = None,
     return text
 
 
-# ---- live-dictation seam helpers (streaming/session.py) ----------------------
 # The streaming session formats its document utterance by utterance and never
 # changes text it already sent. These two read the SAME rule selection as
 # _postprocess_text (_scoping / _rule_runs), so what is held back and what is
@@ -531,8 +524,10 @@ rebuild_caches()
 
 
 def _reset_for_tests() -> None:
-    """Drop the hold-back spec cache. The compiled rules themselves are rebuilt
-    by the app_module fixture (rebuild_caches after reloading config)."""
+    """Drop the hold-back spec cache and rebind _REBUILD_LOCK, so a lock a
+    previous test's rebuild thread still holds cannot block the next test.
+    The compiled rules themselves are rebuilt by the app_module fixture
+    (rebuild_caches after reloading config)."""
     global _REBUILD_LOCK
     _holdback_spec.cache_clear()
     _REBUILD_LOCK = threading.Lock()
