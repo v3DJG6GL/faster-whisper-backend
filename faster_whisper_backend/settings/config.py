@@ -1937,9 +1937,21 @@ try:
                     f"old names still work but will be removed in a later release.")
             # ...and so do renamed rule slugs (config_renames.RENAMED_RULES).
             _parsed = _renames.migrate_rule_slugs({_field: _parsed})[_field]
+            # config_store imports this module only inside functions, so the
+            # import here cannot cycle.
+            from faster_whisper_backend.settings import config_store as _cs
+            _wrapped = {_field: _parsed}
+            # ...and so does a copy of a factory rule nobody edited since it
+            # was in sync (config_rev = its own fingerprint): it becomes the
+            # current config.json rule, as a config.local.json copy does —
+            # in memory, since the env var is never written.
+            _resynced = _cs._resync_untouched_factory_copies(_wrapped)
+            if _resynced:
+                _ENV_WARNINGS.append(
+                    f"{_ENV_VAR_MAPPING[_field]}: updated rules {_resynced} "
+                    f"you never edited to the current config.json version")
             # ...and so does a factory entry whose text was fixed since the
             # JSON was written (config_renames.UPGRADED_RULE_ENTRIES).
-            _wrapped = {_field: _parsed}
             _upgraded = _renames.upgrade_rule_entries(_wrapped)
             if _upgraded:
                 _ENV_WARNINGS.append(
@@ -1949,7 +1961,6 @@ try:
             # after it was written (guard words 1 → 0, a bad TEMPERATURE /
             # SUPPRESS_TOKENS / DEFAULT_LANGUAGE dropped) — the same
             # migration a stored config.local.json bundle gets.
-            from faster_whisper_backend.settings import config_store as _cs
             _ENV_WARNINGS.extend(
                 f"{_ENV_VAR_MAPPING[_field]}: {_note}"
                 for _note in _cs._migrate_tightened_bundle_values(_wrapped))
