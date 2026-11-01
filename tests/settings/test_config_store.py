@@ -561,8 +561,8 @@ def test_pipeline_backrefs_and_alternation_still_accepted():
 
 
 def test_pipeline_ordinary_expansion_still_accepted():
-    # The counterpart to the test above: a rule whose replacement is longer
-    # than its match is completely normal and must keep validating.
+    # Counterpart to the replacement-growth rejections: a rule whose
+    # replacement is longer than its match is normal and must keep validating.
     _ok_on_save(PIPELINE_RULES=[
         _regex("expand", pattern=r"z\.B\.", replacement="zum Beispiel"),
         _terminal()])
