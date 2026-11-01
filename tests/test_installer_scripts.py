@@ -1,8 +1,8 @@
-"""Pin the installer/deploy-script invariants fixed in the code review.
+"""Pin the installer/deploy-script invariants.
 
-The shell/PowerShell/compose files have no runtime under test, so these
-tests grep the scripts for the load-bearing lines instead: a regression
-that drops one of them reintroduces the reviewed bug.
+The shell/PowerShell/compose files have no runtime under test, so most
+tests grep the scripts for the load-bearing lines (a few run extracted
+bash snippets): a regression that drops one reintroduces the bug it guards.
 """
 import io
 import os
@@ -340,15 +340,11 @@ def test_time_ledger_heatmap_adds_up_to_the_session_hours(tmp_path, monkeypatch)
     assert sum(h["hours"] for h in data["heat"]) == 0.5
 
 
-# --- .dockerignore -----------------------------------------------------------
-
 def test_dockerignore_excludes_repo_local_ffmpeg_tree():
     # install-service.ps1 -Full extracts ~150 MB of Windows ffmpeg DLLs into
     # ./ffmpeg/ (gitignored); a local docker build must not ship them.
     assert re.search(r"^ffmpeg/$", _read(".dockerignore"), re.M)
 
-
-# --- docker-compose ----------------------------------------------------------
 
 def _nft_snippets():
     """The egress nftables snippet as README.md and both compose files ship
@@ -391,8 +387,6 @@ def test_compose_files_carry_the_db_layout_upgrade_note():
         assert "WHISPER_DB_DIR: /data" in text, name
 
 
-# --- docs/brand --------------------------------------------------------------
-
 def test_gen_logo_svg_writes_utf8_and_has_no_dead_import():
     # The SVG payload contains a literal em dash; the write must be explicit
     # UTF-8 or LC_ALL=C runs raise UnicodeEncodeError / cp1252 writes mojibake.
@@ -429,8 +423,6 @@ def test_gpu_compose_is_the_cpu_compose_plus_the_gpu_bits():
     strip_tag = lambda lines: [re.sub(r"^(\s*image: \S+?):[\w.-]+$", r"\1", ln) for ln in lines]
     assert strip_tag(cpu) == strip_tag(gpu)
 
-
-# --- PowerShell encoding -----------------------------------------------------
 
 def test_powershell_scripts_are_pure_ascii():
     # The installers self-elevate via `Start-Process powershell`, which is
