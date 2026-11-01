@@ -695,6 +695,28 @@ Invoke-WinSW install
 # (Test-EnvSets, above the XML).
 $dataDir = Join-Path $RepoDir "data"
 $dbDir   = Join-Path $dataDir "db"
+# Captures rows find their audio by a path relative to CAPTURES_DIR, which the
+# repo-root layout kept in <repo>\captures and the server now roots in
+# <dataDir>\captures: the tree moves in the SAME stopped window as its store.
+# Rows without their audio come up audio_missing, and audio without its rows
+# is deleted as orphans by the next start, so the tree goes before the store
+# and the recipe throws (never overwrites, and the line stops before the
+# store moves) while the target holds any file. Only the empty folders a
+# start created (groups\) are cleared, and <dataDir> is created first:
+# Move-Item onto a missing parent fails.
+$legacyAudio = Join-Path $RepoDir "captures"
+$audioDir    = Join-Path $dataDir "captures"
+$audioMove   = ""
+$audioConflict = "(the throw stops the line when $audioDir already holds audio -- captures recorded since: merge them by hand)"
+if (-not (Test-EnvSets "WHISPER_CAPTURES_DIR") -and -not (Test-EnvSets "WHISPER_DATA_DIR") `
+        -and (Get-ChildItem -LiteralPath $legacyAudio -Recurse -File -Force -ErrorAction SilentlyContinue)) {
+    $audioMove = ("if (Get-ChildItem -LiteralPath '$audioDir' -Recurse -File -Force " +
+        "-ErrorAction SilentlyContinue) { throw '$audioDir already holds audio' }; " +
+        "if (Test-Path -LiteralPath '$audioDir') { Remove-Item -LiteralPath '$audioDir' " +
+        "-Recurse -Force -ErrorAction Stop }; " +
+        "New-Item -ItemType Directory -Force '$dataDir' | Out-Null; " +
+        "Move-Item -LiteralPath '$legacyAudio' '$audioDir' -ErrorAction Stop; ")
+}
 if (-not (Test-EnvSets "WHISPER_DB_DIR") -and -not (Test-EnvSets "WHISPER_DATA_DIR")) {
     # Warn while a legacy store EXISTS, not only while <dbDir>\<name> is
     # missing: the start below creates an empty store there on the first run,
@@ -713,16 +735,29 @@ if (-not (Test-EnvSets "WHISPER_DB_DIR") -and -not (Test-EnvSets "WHISPER_DATA_D
             else { "WHISPER_$($stem.ToUpper())_DB" }
         if (Test-EnvSets $storeEnv) { continue }
         $target = Join-Path $dbDir $legacy.Name
+        $audio = ""
+        if ($legacy.FullName -eq (Join-Path $RepoDir "captures.local.sqlite3")) {
+            $audio = $audioMove; $audioMove = ""
+        }
         Write-Warning ("legacy store $($legacy.FullName) is IGNORED by the service " +
-            "(it reads $dbDir). Move it: Stop-Service $ServiceName; " +
+            "(it reads $dbDir). Move it: Stop-Service $ServiceName; $audio" +
             "Remove-Item '$target-wal','$target-shm' -ErrorAction SilentlyContinue; " +
             "New-Item -ItemType Directory -Force '$dbDir' | Out-Null; " +
             "Move-Item '$($legacy.FullName)*' '$dbDir' -Force; Start-Service $ServiceName " +
             "(-Force replaces the EMPTY store a start without it created -- skip it if " +
-            "$target holds keys you issued since) -- or set WHISPER_DB_DIR=" +
-            "$($legacy.DirectoryName) in $envFile and restart. Already moved? " +
-            "Delete the leftover $($legacy.FullName).")
+            "$target holds keys you issued since)$(if ($audio) { " $audioConflict" }) " +
+            "-- or set WHISPER_DB_DIR=$($legacy.DirectoryName)" +
+            "$(if ($audio) { " and WHISPER_CAPTURES_DIR=$legacyAudio" }) in $envFile " +
+            "and restart. Already moved? Delete the leftover $($legacy.FullName).")
     }
+}
+# The store moved already (an older recipe left the tree behind), or it is
+# pinned elsewhere: the tree on its own.
+if ($audioMove) {
+    Write-Warning ("legacy captures audio $legacyAudio is IGNORED by the service " +
+        "(it reads $audioDir). Move it: Stop-Service $ServiceName; $audioMove" +
+        "Start-Service $ServiceName $audioConflict -- or set " +
+        "WHISPER_CAPTURES_DIR=$legacyAudio in $envFile and restart.")
 }
 $legacyConfig = Join-Path $RepoDir "config.local.json"
 # <dataDir> is created first, as for the stores: Move-Item onto a missing

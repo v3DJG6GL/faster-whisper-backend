@@ -334,19 +334,44 @@ store_env() {
       echo "WHISPER_${stem^^}_DB" ;;
   esac
 }
+# Captures rows find their audio by a path relative to CAPTURES_DIR, which the
+# repo-root layout kept in captures/ and the unit roots in data/captures: the
+# tree moves in the SAME stopped window as its store. Rows without their audio
+# come up audio_missing, and audio without its rows is unlinked as orphans by
+# the next start, so the tree goes before the store and mv -T refuses a target
+# that holds any file (never overwrites; the && chain stops before the store
+# moves). Only the empty dirs a start created (groups/) are cleared first.
+LEGACY_AUDIO="$REPO_DIR/captures" AUDIO_DIR="$REPO_DIR/data/captures" AUDIO_MOVE=""
+if ! env_sets WHISPER_CAPTURES_DIR "$UNIT_NAMES" && ! env_sets WHISPER_DATA_DIR \
+    && [ -n "$(find "$LEGACY_AUDIO" ! -type d -print -quit 2>/dev/null)" ]; then
+  AUDIO_MOVE="&& mkdir -p '$AUDIO_DIR' && find '$AUDIO_DIR' -mindepth 1 -depth -type d -empty -delete"
+  AUDIO_MOVE+=" && mv -T '$LEGACY_AUDIO' '$AUDIO_DIR' "
+fi
+AUDIO_CONFLICT="(mv -T stops the chain when $AUDIO_DIR already holds audio — captures recorded since: merge them by hand)"
 if ! env_sets WHISPER_DB_DIR "$UNIT_NAMES" && ! env_sets WHISPER_DATA_DIR; then
   for legacy in "$REPO_DIR"/*.local.sqlite3 "$REPO_DIR"/data/*.local.sqlite3; do
     [ -e "$legacy" ] || continue
     env_sets "$(store_env "$(basename "$legacy")")" "$UNIT_NAMES" && continue
     target="$REPO_DIR/data/db/$(basename "$legacy")"
+    audio=""
+    if [ "$legacy" = "$REPO_DIR/captures.local.sqlite3" ]; then
+      audio="$AUDIO_MOVE" AUDIO_MOVE=""
+    fi
     warn_legacy "legacy store $legacy is IGNORED by the service (it reads $REPO_DIR/data/db/)." \
-      "Move it: systemctl stop ${SERVICE_NAME} && sudo -u $RUN_USER mkdir -p $REPO_DIR/data/db" \
+      "Move it: systemctl stop ${SERVICE_NAME} ${audio}&& sudo -u $RUN_USER mkdir -p $REPO_DIR/data/db" \
       "&& rm -f '$target' '$target-wal' '$target-shm' && mv '$legacy'* $REPO_DIR/data/db/" \
       "&& systemctl start ${SERVICE_NAME} (the rm drops the EMPTY store a start without it" \
-      "created — skip it if $target holds keys you issued since) — or set" \
-      "WHISPER_DB_DIR=$(dirname "$legacy") in $REPO_DIR/.env and restart. Already moved?" \
-      "Delete the leftover $legacy."
+      "created — skip it if $target holds keys you issued since)${audio:+ $AUDIO_CONFLICT} — or set" \
+      "WHISPER_DB_DIR=$(dirname "$legacy")${audio:+ and WHISPER_CAPTURES_DIR=$LEGACY_AUDIO}" \
+      "in $REPO_DIR/.env and restart. Already moved? Delete the leftover $legacy."
   done
+fi
+# The store moved already (an older recipe left the tree behind), or it is
+# pinned elsewhere: the tree on its own.
+if [ -n "$AUDIO_MOVE" ]; then
+  warn_legacy "legacy captures audio $LEGACY_AUDIO is IGNORED by the service (it reads $AUDIO_DIR/)." \
+    "Move it: systemctl stop ${SERVICE_NAME} ${AUDIO_MOVE}&& systemctl start ${SERVICE_NAME}" \
+    "$AUDIO_CONFLICT — or set WHISPER_CAPTURES_DIR=$LEGACY_AUDIO in $REPO_DIR/.env and restart."
 fi
 if ! env_sets WHISPER_CONFIG_LOCAL "$UNIT_NAMES" && ! env_sets WHISPER_DATA_DIR \
     && [ -e "$REPO_DIR/config.local.json" ] && [ ! -e "$REPO_DIR/data/config.local.json" ]; then

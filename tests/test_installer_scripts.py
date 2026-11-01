@@ -805,19 +805,14 @@ def test_linux_installer_legacy_checks_expand_a_unit_set_var(tmp_path):
     # unit's own WHISPER_DATA_DIR, so the service never reads data/db: the
     # legacy checks warned "IGNORED ... Move it" into the wrong place (and for
     # a per-store pin, told the operator to move the live store).
-    sh = _read("install-service.sh")
-    funcs = "\n".join(re.search(rf"^{n}\(\) \{{\n.*?^\}}\n", sh, re.S | re.M).group(0)
-                      for n in ("env_value", "env_sets"))
-    units = sh[sh.index("\n}\n", sh.index("env_sets() {")) + 3:
-               sh.index("\n# systemd splits")]
-    legacy = sh[sh.index("\nwarn_legacy() {"):sh.index('\necho "Enabling')]
+    section = _legacy_section(_read("install-service.sh"))
     (tmp_path / "api_keys.local.sqlite3").write_text("", encoding="utf-8")
     (tmp_path / "config.local.json").write_text("{}", encoding="utf-8")
 
     def run(dotenv: str) -> str:
         (tmp_path / ".env").write_text(dotenv, encoding="utf-8")
         out = subprocess.run(
-            ["bash", "-c", funcs + units + legacy], capture_output=True,
+            ["bash", "-c", section], capture_output=True,
             text=True, timeout=60,
             env={"REPO_DIR": str(tmp_path), "PY": sys.executable,
                  "SERVICE_NAME": "w", "RUN_USER": "u", "PATH": "/usr/bin:/bin"})
@@ -830,3 +825,123 @@ def test_linux_installer_legacy_checks_expand_a_unit_set_var(tmp_path):
         assert "IGNORED" not in run(dotenv), dotenv
     # Unpinned: both legacy files still warn.
     assert run("").count("IGNORED") == 2
+
+
+def _legacy_section(sh):
+    funcs = "\n".join(re.search(rf"^{n}\(\) \{{\n.*?^\}}\n", sh, re.S | re.M).group(0)
+                      for n in ("env_value", "env_sets"))
+    units = sh[sh.index("\n}\n", sh.index("env_sets() {")) + 3:
+               sh.index("\n# systemd splits")]
+    return funcs + units + sh[sh.index("\nwarn_legacy() {"):sh.index('\necho "Enabling')]
+
+
+@pytest.mark.skipif(sys.platform == "win32" or shutil.which("bash") is None,
+                    reason="bash installer")
+def test_linux_legacy_captures_recipe_moves_the_audio_tree_with_its_store(tmp_path):
+    # Captures rows resolve audio_relpath against CAPTURES_DIR: a recipe that
+    # moved only captures.local.sqlite3 left every row pointing at audio that
+    # is not in data/captures. Run the printed recipe for real (systemctl and
+    # sudo stubbed) against a repo-root layout plus the empty store and
+    # groups/ dir a start without it created.
+    section = _legacy_section(_read("install-service.sh"))
+    repo, stubs = tmp_path / "repo", tmp_path / "stubs"
+    stubs.mkdir()
+    (stubs / "systemctl").write_text(
+        f'#!/bin/sh\necho "$*" >> "{tmp_path}/systemctl.log"\n', encoding="utf-8")
+    (stubs / "sudo").write_text('#!/bin/sh\nshift 2\nexec "$@"\n', encoding="utf-8")
+    for stub in stubs.iterdir():
+        stub.chmod(0o755)
+    env = {"REPO_DIR": str(repo), "PY": sys.executable, "SERVICE_NAME": "w",
+           "RUN_USER": "u", "PATH": f"{stubs}:/usr/bin:/bin"}
+
+    def layout(conflict=False):
+        shutil.rmtree(repo, ignore_errors=True)
+        (repo / "captures" / "ab" / "cd").mkdir(parents=True)
+        (repo / "captures" / "groups").mkdir()
+        (repo / "captures" / "ab" / "cd" / "abcd.wav").write_text("a", encoding="utf-8")
+        (repo / "captures" / "groups" / "g.wav").write_text("g", encoding="utf-8")
+        (repo / "captures.local.sqlite3").write_text("rows", encoding="utf-8")
+        (repo / "captures.local.sqlite3-wal").write_text("wal", encoding="utf-8")
+        (repo / "data" / "db").mkdir(parents=True)
+        (repo / "data" / "db" / "captures.local.sqlite3").write_text("", encoding="utf-8")
+        (repo / "data" / "captures" / "groups").mkdir(parents=True)
+        if conflict:
+            (repo / "data" / "captures" / "ef" / "01").mkdir(parents=True)
+            (repo / "data" / "captures" / "ef" / "01" / "ef01.wav").write_text(
+                "new", encoding="utf-8")
+        (tmp_path / "systemctl.log").unlink(missing_ok=True)
+
+    def warnings(dotenv=""):
+        (repo / ".env").write_text(dotenv, encoding="utf-8")
+        out = subprocess.run(["bash", "-c", section], capture_output=True,
+                             text=True, timeout=60, env=env)
+        assert out.returncode == 0, out.stderr
+        return re.sub(r"\x1b\[[0-9;]*m", "", out.stderr)
+
+    def recipe(warning, end):
+        return warning[warning.index("Move it: ") + 9:warning.index(end)]
+
+    def run(cmd):
+        return subprocess.run(["bash", "-c", cmd], capture_output=True,
+                              text=True, timeout=60, env=env)
+
+    layout()
+    out = run(recipe(warnings(), " (the rm drops"))
+    assert out.returncode == 0, out.stderr
+    assert (repo / "data" / "captures" / "ab" / "cd" / "abcd.wav").read_text(
+        encoding="utf-8") == "a"
+    assert (repo / "data" / "captures" / "groups" / "g.wav").exists()
+    assert not (repo / "captures").exists()
+    assert (repo / "data" / "db" / "captures.local.sqlite3").read_text(
+        encoding="utf-8") == "rows"
+    assert (repo / "data" / "db" / "captures.local.sqlite3-wal").exists()
+    assert (tmp_path / "systemctl.log").read_text(encoding="utf-8") == "stop w\nstart w\n"
+    # Idempotent: the next installer run has nothing left to warn about.
+    assert "IGNORED" not in warnings()
+
+    # Audio recorded into data/captures since: never overwritten, and the
+    # chain stops before the store moves (audio without its rows would be
+    # unlinked as orphans by the next start).
+    layout(conflict=True)
+    out = run(recipe(warnings(), " (the rm drops"))
+    assert out.returncode != 0 and "Directory not empty" in out.stderr
+    assert (repo / "captures" / "ab" / "cd" / "abcd.wav").exists()
+    assert (repo / "captures.local.sqlite3").read_text(encoding="utf-8") == "rows"
+    assert (repo / "data" / "captures" / "ef" / "01" / "ef01.wav").read_text(
+        encoding="utf-8") == "new"
+    assert (tmp_path / "systemctl.log").read_text(encoding="utf-8") == "stop w\n"
+
+    # The store moved already (the older recipe): the tree on its own.
+    layout()
+    for f in ("captures.local.sqlite3", "captures.local.sqlite3-wal"):
+        (repo / f).unlink()
+    warning = warnings()
+    assert "legacy captures audio" in warning
+    out = run(recipe(warning, " (mv -T stops"))
+    assert out.returncode == 0, out.stderr
+    assert (repo / "data" / "captures" / "ab" / "cd" / "abcd.wav").exists()
+    assert "IGNORED" not in warnings()
+
+    # A .env CAPTURES_DIR pin reads the tree where it is: leave it be.
+    layout()
+    warning = warnings(f"WHISPER_CAPTURES_DIR={repo}/captures\n")
+    assert warning.count("IGNORED") == 1 and "mv -T" not in warning
+
+
+def test_windows_legacy_captures_recipe_moves_the_audio_tree_with_its_store():
+    # Same recipe as the Linux one (no PowerShell under test, so pin its
+    # shape): the audio tree is part of the repo-root captures store's move,
+    # goes BEFORE the store, and a target holding any file throws before
+    # anything moves; the tree also warns on its own once the store moved.
+    ps1 = _read("install-service.ps1")
+    block = ps1[ps1.index("# --- upgrade check"):ps1.index("\nInvoke-WinSW start")]
+    assert 'if (-not (Test-EnvSets "WHISPER_CAPTURES_DIR")' in block
+    guard = block.index("{ throw '$audioDir already holds audio' }")
+    clear = block.index("{ Remove-Item -LiteralPath '$audioDir' ")
+    parent = block.index("\"New-Item -ItemType Directory -Force '$dataDir' | Out-Null; \"")
+    move = block.index("\"Move-Item -LiteralPath '$legacyAudio' '$audioDir' -ErrorAction Stop; \"")
+    assert guard < clear < parent < move
+    assert 'if ($legacy.FullName -eq (Join-Path $RepoDir "captures.local.sqlite3"))' in block
+    recipe = block.index('"(it reads $dbDir). Move it: Stop-Service $ServiceName; $audio" +')
+    assert recipe < block.index("\"Move-Item '$($legacy.FullName)*' '$dbDir' -Force;")
+    assert '"(it reads $audioDir). Move it: Stop-Service $ServiceName; $audioMove" +' in block
