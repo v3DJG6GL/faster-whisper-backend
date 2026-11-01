@@ -374,8 +374,8 @@ def _progress_set(pid: "str | None", **fields) -> None:
 # pyannote step) poll the flag and abort. Closing the HTTP connection alone
 # does NOT stop the work — the stages run in executor threads that outlive a
 # cancelled handler task. Only ids with a live _BATCH_PROGRESS entry can be
-# flagged, and _progress_close discards, so the set stays bounded by
-# the number of in-flight requests.
+# flagged, and _progress_close discards the flag, so the set stays bounded
+# by the number of in-flight requests.
 _BATCH_CANCELLED: "set[str]" = set()
 
 
