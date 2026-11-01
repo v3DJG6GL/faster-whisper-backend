@@ -165,17 +165,14 @@ def test_unmatched_route_keys_capped():
     assert len(metrics.req_count) == metrics._MAX_UNMATCHED_KEYS
     assert metrics._UNMATCHED_OVERFLOW not in metrics.req_count
 
-    # Past the cap: new unmatched paths share the sentinel...
     metrics.record_request("/junk/overflow-a", 404, 1.0, unmatched=True)
     metrics.record_request("/junk/overflow-b", 404, 1.0, unmatched=True)
     assert metrics.req_count[metrics._UNMATCHED_OVERFLOW] == 2
     assert "/junk/overflow-a" not in metrics.req_count
 
-    # ...an existing unmatched key still increments under its own name...
     metrics.record_request("/junk/0", 404, 1.0, unmatched=True)
     assert metrics.req_count["/junk/0"] == 2
 
-    # ...and a matched route is never folded.
     metrics.record_request("/v1/models", 200, 1.0)
     assert metrics.req_count["/v1/models"] == 1
 
