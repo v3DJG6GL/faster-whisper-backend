@@ -31,8 +31,8 @@ purge, a sibling worker's commit (PRAGMA data_version), or a moved
 
 Expiry is absolute: a row lives SESSION_TTL_S from login, whatever the
 activity, and lookups never write. The cookie is set once at login with that
-max_age, so a row that slid forward only ever served a token replayed outside
-the browser (a copied cookie stayed valid for as long as it kept being used).
+max_age, so sliding a row forward would only serve a token replayed outside
+the browser (a copied cookie would stay valid for as long as it kept being used).
 """
 from __future__ import annotations
 
@@ -82,8 +82,8 @@ _DATA_VERSION: int = -1
 # unthrottled (correctness before a write). The throttle applies to index
 # HITS only. A miss is not throttled, so a sibling's fresh login is never
 # bounced, but it never rebuilds either: after a sibling commit it fetches
-# just that one token (_fetch_on_miss). A forced full rebuild per miss let
-# junk cookies plus a sibling's login loop cost O(N) per login again.
+# just that one token (_fetch_on_miss). A full rebuild per miss would let
+# junk cookies plus a sibling's login loop cost O(N) per login.
 # Measured on the monotonic clock: a backwards wall-clock step would make the
 # elapsed time negative and skip every HIT's check for the size of the step.
 _REFRESH_MIN_INTERVAL_S = 1.0
@@ -146,8 +146,8 @@ def init_db(db_path: str) -> None:
 def _migrate_add_key_id(conn: sqlite3.Connection) -> None:
     """Add the `key_id` column to a sessions table created before login began
     stamping the key. Pre-migration sessions keep `key_id` NULL, so they resolve
-    to the `(session)` sentinel (no key layer) — the prior behaviour — until the
-    user next logs in and a fresh, key-stamped session is issued."""
+    to the `(session)` sentinel (no key layer) until the user next logs in and
+    a fresh, key-stamped session is issued."""
     cols = {r["name"] for r in conn.execute("PRAGMA table_info(sessions)")}
     if "key_id" not in cols:
         try:
@@ -387,9 +387,7 @@ def revoke_session(raw_token: str) -> None:
     conn = _require_conn()
     with _lock:
         # See create_session: pick up a sibling worker's commit BEFORE writing,
-        # never by re-stamping the counter after our own commit. As there,
-        # this check can still cost one full rebuild on the event loop when a
-        # sibling worker has committed since the last check.
+        # never by re-stamping the counter after our own commit.
         if _data_version_locked() != _DATA_VERSION:
             _rebuild_index_locked()
         # The connection autocommits, so without the explicit transaction the
