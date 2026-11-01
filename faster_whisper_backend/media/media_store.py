@@ -54,7 +54,7 @@ _KNOWN_EXTS = frozenset({
 
 KINDS = ("audio", "video")
 
-# Staging jobs (video downloads land here so register()'s move is a rename
+# Staging jobs (link downloads land here so register()'s move is a rename
 # on the same filesystem, not a multi-GB copy across TMPDIR → data dir).
 _STAGING_NAME = "staging"
 _STAGING_PREFIX = "vid-"
