@@ -33,8 +33,8 @@ def select_segments(durations: "list[float]", starts: "list[float]",
                     seconds: float, margin: float) -> "list[tuple[int, int, float]]":
     """The segments under each piece [start, start + seconds), widened by
     `margin` on both sides: (first, end, skip) per start — segments
-    [first:end], and `skip` seconds of them before the piece begins. A piece
-    past the last segment gets first == end."""
+    [first:end], and `skip` seconds of them before the piece begins.
+    first == end once start - margin reaches the stream's end."""
     edges = list(itertools.accumulate(durations, initial=0.0))
     n = len(durations)
     out = []
