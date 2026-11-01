@@ -49,11 +49,9 @@ def _stub_load(monkeypatch):
         return name
     monkeypatch.setattr(tx_models, "_ensure_ct2_model", _same)
     monkeypatch.setattr(tx_models.cfg, "ALLOWED_MODELS", set(), raising=False)
-    # Skips the Hub pre-download block (no huggingface_hub in the test env).
+    # Skips the Hub pre-download, so the stubbed load never touches the network.
     monkeypatch.setattr(tx_models.cfg, "LOCAL_FILES_ONLY", True, raising=False)
 
-
-# --- _drop_loaded_model ------------------------------------------------------
 
 def test_drop_refuses_while_leased():
     _register("a")
@@ -76,8 +74,6 @@ def test_drop_unleased_still_drops():
     assert tx_models._drop_loaded_model("a") is True
     assert "a" not in tx_models._loaded_models
 
-
-# --- LRU eviction ------------------------------------------------------------
 
 def test_lru_skips_a_leased_entry(monkeypatch):
     _stub_load(monkeypatch)
@@ -118,8 +114,8 @@ def _stub_doomed_constructor(monkeypatch, built):
 
 
 def test_unknown_short_name_evicts_nothing(monkeypatch):
-    """A typo'd size can only fail in the constructor; rejected before the
-    LRU loop, it no longer costs the hot model a cold reload."""
+    """A typo'd size can only fail in the constructor, so it is rejected
+    before the LRU loop and costs the hot model no cold reload."""
     _stub_load(monkeypatch)
     built = []
     _stub_doomed_constructor(monkeypatch, built)
@@ -243,9 +239,9 @@ def test_a_resident_dir_is_refused_once_default_model_moves_off_it(
 @pytest.mark.parametrize("err", ["RepositoryNotFoundError",
                                  "RevisionNotFoundError"])
 def test_repo_missing_on_the_hub_evicts_nothing(monkeypatch, err):
-    """snapshot_download raises these only after its cache fallback missed,
-    so the constructor (same arguments) would too: fail before the LRU loop
-    instead of swallowing it as a best-effort pre-download failure."""
+    """The constructor's own snapshot_download (same arguments) would raise
+    these too, so the load fails before the LRU loop instead of swallowing
+    them as a best-effort pre-download failure."""
     import httpx2
     import huggingface_hub
     from huggingface_hub import errors as hf_errors
@@ -290,8 +286,9 @@ def _concurrent_cold_loads(monkeypatch, snapshot, n=4):
 
 
 def test_concurrent_misses_share_one_hub_download(monkeypatch):
-    """Every concurrent miss for a cold repo started its own snapshot, the
-    later ones each pinning a default-executor worker on the blob lock."""
+    """Concurrent misses for one cold repo share one snapshot_download: one
+    each would pin a default-executor worker per later caller on the blob
+    lock."""
     calls = []
 
     def _slow(**kw):
@@ -332,10 +329,10 @@ def test_a_shared_hub_refusal_reaches_every_caller_and_is_retried(
 ])
 def test_hub_refusal_of_an_existing_repo_points_at_the_token(
         monkeypatch, caplog, err, said):
-    """A gated repo, and a private one without the right token, reach the
-    loader as RepositoryNotFoundError (GatedRepoError subclasses it): the
-    client is told to check HF_TOKEN / access, not only to hunt a typo, and
-    the Hub's own access hint stays in the log."""
+    """A gated repo (GatedRepoError, a RepositoryNotFoundError subclass) or a
+    private one without the right token: the client is told to check
+    HF_TOKEN / access, not only to hunt a typo, and the start of the Hub's
+    own text (log_safe caps it at LOG_FIELD_MAX) reaches the log."""
     import httpx2
     import huggingface_hub
     from huggingface_hub import errors as hf_errors
@@ -399,8 +396,6 @@ def test_hub_rejecting_the_token_evicts_nothing(monkeypatch, status, refused):
     assert built == [] and tx_models._model_leases == {}
 
 
-# --- lease acquisition -------------------------------------------------------
-
 def test_lease_taken_on_cache_hit_and_on_load(monkeypatch):
     _stub_load(monkeypatch)
     monkeypatch.setattr(tx_models.cfg, "MAX_LOADED_MODELS", 4, raising=False)
@@ -433,8 +428,6 @@ def test_rejected_names_take_no_lease(monkeypatch):
         assert exc.value.status_code == 400
         assert tx_models._model_leases == {}
 
-
-# --- _release_model_lease ----------------------------------------------------
 
 def test_release_restamps_last_used():
     _register("a")
@@ -698,8 +691,6 @@ def test_release_during_an_unleased_over_cap_load_trims_after_it(monkeypatch):
     assert list(tx_models._loaded_models) == ["b"]
 
 
-# --- idle evictor ------------------------------------------------------------
-
 def test_idle_evictor_defers_then_evicts(monkeypatch):
     _register("a")
     tx_models._model_leases["a"] = 1
@@ -727,8 +718,6 @@ def test_idle_evictor_defers_then_evicts(monkeypatch):
     assert seen == [True]                      # the lease deferred the evict
     assert "a" not in tx_models._loaded_models      # the release let it through
 
-
-# --- the batch handler balances its lease ------------------------------------
 
 def _leasing_loader(app_module, model, held):
     """`held` records every name leased, so the tests can key the mid-decode
@@ -786,8 +775,6 @@ def test_transcribe_releases_the_lease_on_error(client, app_module,
     assert held and model.leases_during == {held[0]: 1}
     assert tx_models._model_leases == {}
 
-
-# --- persistence runs off the event loop -------------------------------------
 
 def test_register_loaded_model_runs_off_the_loop(monkeypatch):
     """register_loaded_model persists the measurement (model_sizes.record ->
