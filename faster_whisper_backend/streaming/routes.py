@@ -1070,11 +1070,6 @@ async def transcribe_stream(ws: WebSocket) -> None:
             # fallback: segment-level units (coarser LocalAgreement granularity)
             return [(seg.start, seg.end, seg.text) for seg in segs]
 
-        # Captures are eligible only when the model allows the DTW word path
-        # (per-model WORD_TIMESTAMPS_ENABLED) — same gate as the batch route.
-        # CAPTURES_RECORDING_ENABLED itself is read per utterance in on_final:
-        # it is a privacy switch, and turning it off must stop recording on a
-        # long-lived socket too, not only on the next connection.
         # The final decode stashes its faster-whisper info / segment diagnostics /
         # word list here so on_final (run right after it on the pump task) can
         # build the rich log block + the capture row without re-decoding.
@@ -1449,6 +1444,10 @@ async def transcribe_stream(ws: WebSocket) -> None:
                     info["audio_dur"] - info["trimmed_sec"], info["trimmed_sec"])
 
             captured_id = None
+            # Captures need the model's DTW word path (per-model
+            # WORD_TIMESTAMPS_ENABLED), the same gate as batch.
+            # CAPTURES_RECORDING_ENABLED is read per utterance: it is a privacy
+            # switch, so turning it off must stop recording on an open socket.
             if (gate_final_words and getattr(cfg, "CAPTURES_RECORDING_ENABLED", False)
                     and raw_text.strip()):
                 # seg_diag is on the decode BUFFER's timeline; after a trim the
