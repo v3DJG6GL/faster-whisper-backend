@@ -183,7 +183,7 @@ def test_progress_sees_downloading_stage(client, url_enabled):
     orig_download = url_download.download
 
     async def _spying_download(url, **kw):
-        # capture the live progress entry the moment the stub reports bytes
+        # Read the entry while the run is still live: the finished request pops it.
         result = await orig_download(url, **kw)
         seen.update(tx_progress._BATCH_PROGRESS.get(_PID) or {})
         return result
@@ -292,7 +292,7 @@ def test_preview_policy_reject_400(client, url_enabled, monkeypatch):
 
 
 def test_preview_and_source_url_with_an_unencodable_host_are_400(client, url_enabled):
-    # `a..com`: getaddrinfo raises UnicodeError, which escaped as a 500.
+    # `a..com`: getaddrinfo raises UnicodeError, which must map to the 400 too.
     bad = "https://a..com/x.mp3"
     r = client.post("/v1/audio/url-preview", json={"url": bad})
     assert r.status_code == 400, r.text
@@ -1226,7 +1226,6 @@ def test_video_id_dropped_during_the_run_is_not_advertised(
     assert "source_video_expires_at" not in body
     assert body["source_video_error"].startswith("the downloaded video left")
     assert any(w.startswith("source_video:") for w in body["warnings"])
-    # The audio id is untouched: only the dropped entry goes.
     assert "source_media_id" in body
 
 
