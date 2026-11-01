@@ -168,8 +168,8 @@ def hash_token(raw_token: str) -> str:
 
 
 def _rebuild_index_locked() -> None:
-    """Rebuild _SESSION_INDEX from the DB. Caller holds _lock (or is in
-    init). Only non-revoked, non-expired rows are indexed."""
+    """Rebuild _SESSION_INDEX from the DB. Caller holds _lock. Only
+    non-revoked, non-expired rows are indexed."""
     global _SESSION_INDEX, _DATA_VERSION
     conn = _require_conn()
     now = time.time()
@@ -199,7 +199,7 @@ def _rebuild_index_locked() -> None:
 def _data_version_locked() -> int:
     """Read `PRAGMA data_version` off the shared connection. Falls back to the
     cached value on error so a transient sqlite failure can't be mistaken for
-    a sibling commit. Caller holds _lock (or is in init)."""
+    a sibling commit. Caller holds _lock."""
     try:
         return int(_require_conn().execute("PRAGMA data_version").fetchone()[0])
     except (sqlite3.Error, RuntimeError):
@@ -212,11 +212,9 @@ def _refresh_if_sibling_committed() -> None:
     api_keys_store._refresh_if_sibling_committed(); without it a logout in one
     uvicorn worker would leave the cookie valid in every other worker.
 
-    Throttled to one check per _REFRESH_MIN_INTERVAL_S (see the constant's
-    comment): sibling login/logout commits can be frequent, and each detected one
-    costs a full O(live sessions) rebuild under _lock. revocation_generation
-    rebuilds on its own when the revocations counter moved, and the miss path
-    of lookup_session uses _fetch_on_miss instead of bypassing the throttle."""
+    Throttled to one check per _REFRESH_MIN_INTERVAL_S; the comments on that
+    constant and on _LAST_REV_GEN give the cost and the paths that do not
+    wait for it (lookup misses via _fetch_on_miss, revocation_generation)."""
     global _LAST_REFRESH_TS
     if _conn is None or not _DB_READY:
         return
@@ -434,12 +432,9 @@ def revoke_session(raw_token: str) -> None:
         finally:
             # Drop the one key, as create_session inserts one: a full rebuild
             # is O(live sessions) on the event loop (~37 ms at 20 000 rows)
-            # and N is caller-growable (see create_session). No post-commit
-            # re-stamp: our own commit does not move PRAGMA data_version on
-            # this connection, and re-stamping would swallow a sibling's
-            # commit that landed since the last check. In a finally: a failed
-            # write still stops THIS worker honouring the cookie it was asked
-            # to sign out.
+            # and N is caller-growable (see create_session). In a finally: a
+            # failed write still stops THIS worker honouring the cookie it was
+            # asked to sign out.
             _SESSION_INDEX.pop(th, None)
     if revoked:
         settings_version.bump_config_version()
@@ -457,12 +452,13 @@ def revocation_generation() -> int:
     When the counter moved past _LAST_REV_GEN (a sibling's revocation; this
     worker's own logout is pre-adopted by revoke_session), the index is
     rebuilt before returning: the caller bumps the config version, a live
-    stream then re-authenticates through lookup_session, and a throttled HIT on the stale index would let the
-    revoked cookie through and spend the bump. The rebuild is unconditional,
-    not gated on `PRAGMA data_version`: _data_version_locked() answers a
-    failed header read with the cached value, which would read as "no
-    sibling commit" and skip the rebuild. The counter moves once per logout,
-    so the O(live sessions) cost stays bounded."""
+    stream then re-authenticates through lookup_session, and a throttled HIT
+    on the stale index would let the revoked cookie through and spend the
+    bump. The rebuild is unconditional, not gated on `PRAGMA data_version`:
+    _data_version_locked() answers a failed header read with the cached
+    value, which would read as "no sibling commit" and skip the rebuild. The
+    counter moves once per logout, so the O(live sessions) cost stays
+    bounded."""
     global _LAST_REV_GEN, _LAST_REFRESH_TS
     if not _DB_READY:
         return -1
