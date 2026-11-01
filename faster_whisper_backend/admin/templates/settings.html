@@ -2865,6 +2865,10 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
     if (!r || typeof r !== 'object') return Object.assign({}, r);
     const c = Object.assign({ enabled: true, languages: [], locked: false,
                               exposed: false, tags: [], note: '', color: '' }, r);
+    // `repeat` off is ABSENT in the server dump (schema _repeat_off_is_absent),
+    // so a false is dropped rather than a default filled in: every rule saved
+    // before the switch existed keeps its fingerprint.
+    if (c.repeat === false) delete c.repeat;
     // A MapRule always dumps `map_meta` (default {}); the add dialog has none.
     // Its validator also drops map_meta keys no longer in `map` (schema
     // _prune_map_meta), which the map editor's row delete leaves behind.
@@ -3861,7 +3865,7 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
       body.appendChild(labelWrap);
     }
 
-    body.appendChild(renderTypeEditor(rule, commitData, { showNote: true }));
+    body.appendChild(renderTypeEditor(rule, commitData, { showNote: true, showRepeat: true }));
 
     if (rule.type !== 'terminal') {
       const status = document.createElement('div');
@@ -3921,7 +3925,10 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
           } else {
             status.className = 'regex-status ok';
             const n = step.matches || 0;
-            status.textContent = '✓ valid · ' + n + ' match' + (n === 1 ? '' : 'es') + ' in sample';
+            // A repeating rule's step spans its passes (test-pipeline
+            // `passes`: every pass run, the one that changed nothing too).
+            status.textContent = '✓ valid · ' + n + ' match' + (n === 1 ? '' : 'es') + ' in sample'
+              + (step.passes > 1 ? ' · ' + step.passes + ' passes' : '');
           }
         }, 250);
       };
@@ -5192,7 +5199,8 @@ function pipelineTestPanel() {
       // follows it was not run — not a full run.
       else if (step.capped) badge = testBadge('warn', '⚠ ' + (step.matches || 0) + ' matches · output limit, rest skipped');
       else if (step.slow) badge = testBadge('warn', '⚠ slow');
-      else if (step.matches) badge = testBadge('ok', step.matches + ' matches');
+      else if (step.matches) badge = testBadge('ok', step.matches + ' matches'
+        + (step.passes > 1 ? ' · ' + step.passes + ' passes' : ''));
       const changed = step.before !== step.after;
       const outCell = document.createElement('td');
       outCell.className = 'out';

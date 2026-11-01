@@ -1160,10 +1160,11 @@ async def test_pipeline(payload: dict[str, Any]) -> JSONResponse:
     # instead of timing it out again; on other text it is timed afresh.
     known_slow: dict[tuple[int, int], set[str]] = {}
 
-    def _probe_from(start: int, text: str) -> None:
+    def _probe_from(start: int, text: str, end: int | None = None) -> None:
+        # `end`: walk the rules before it only (None = to the end of the list).
         units: list[list[Any]] = []
         owner: dict[int, tuple[int, int]] = {}
-        for ri in range(start, len(rules)):
+        for ri in range(start, len(rules) if end is None else end):
             rule = rules[ri]
             if not isinstance(rule, dict):
                 continue
@@ -1429,6 +1430,30 @@ async def test_pipeline(payload: dict[str, Any]) -> JSONResponse:
                     "capped": True}
         return {**common, "after": out["after"], "matches": out["matches"]}
 
+    async def _run_pass(idx: int, rule: dict, text: str,
+                        end: int | None) -> dict[str, Any]:
+        """One pass of rule `idx` on `text`: the killable probe first, then
+        _run_rule. `end`: how far a fresh probe walk goes (_probe_from)."""
+        nonlocal deadline
+        # Every match this rule runs in-process must have been timed by the
+        # killable probe on exactly this text, or it is not run.
+        held: dict[int, str] = {}
+        items = _probe_items(rule)
+        if items and probe["on"]:
+            h = _text_sha(text)
+            if cleared.get(idx, ("",))[0] != h and not probe["exhausted"]:
+                t0 = time.monotonic()
+                await asyncio.to_thread(_probe_from, idx, text, end)
+                # The probe strands no thread: its time is not the budget's.
+                deadline += time.monotonic() - t0
+            if probe["on"]:
+                got = cleared.get(idx)
+                held = (got[1] if got is not None and got[0] == h
+                        else {ei: _UNPROBED_MSG for ei, _p, _r in items})
+        # _run_rule blocks for up to 2 s on its guard thread's join — run it on
+        # a worker so one pathological pattern cannot stall unrelated requests.
+        return await asyncio.to_thread(_run_rule, text, rule, held)
+
     text = sample
     steps: list[dict[str, Any]] = []
     saw_terminal = False
@@ -1462,24 +1487,29 @@ async def test_pipeline(payload: dict[str, Any]) -> JSONResponse:
             step["ordinal"] = idx + 1
             steps.append(step)
             continue
-        # Every match this rule runs in-process must have been timed by the
-        # killable probe on exactly this text, or it is not run.
-        held: dict[int, str] = {}
-        items = _probe_items(rule)
-        if items and probe["on"]:
-            h = _text_sha(text)
-            if cleared.get(idx, ("",))[0] != h and not probe["exhausted"]:
-                t0 = time.monotonic()
-                await asyncio.to_thread(_probe_from, idx, text)
-                # The probe strands no thread: its time is not the budget's.
-                deadline += time.monotonic() - t0
-            if probe["on"]:
-                got = cleared.get(idx)
-                held = (got[1] if got is not None and got[0] == h
-                        else {ei: _UNPROBED_MSG for ei, _p, _r in items})
-        # _run_rule blocks for up to 2 s on its guard thread's join — run it on
-        # a worker so one pathological pattern cannot stall unrelated requests.
-        step = await asyncio.to_thread(_run_rule, text, rule, held)
+        step = await _run_pass(idx, rule, text, None)
+        # Engine parity (pl_engine._postprocess_text): a repeating rule runs
+        # on its own output again until a pass changes nothing, at most
+        # _REPEAT_MAX_PASSES passes; the step spans them all (`passes`, the
+        # matches summed). A pass that is slow, not run or stopped at the
+        # output bound ends it there: that pass is already not the engine's.
+        if rule.get("repeat") is True and rule.get("type") != "terminal":
+            first, passes, matches = text, 1, step["matches"]
+            while (passes < pl_engine._REPEAT_MAX_PASSES
+                   and step["after"] != step["before"]
+                   and not (step.get("slow") or step.get("not_run")
+                            or step.get("capped"))
+                   and len(step["after"]) <= pl_engine._POSTPROCESS_MAX_CHARS):
+                if time.monotonic() > deadline:
+                    step["slow"] = True
+                    break
+                # Walk only this rule: its next pass is all the probe must
+                # clear now; the rules after it are walked on the text the
+                # last pass leaves.
+                step = await _run_pass(idx, rule, step["after"], idx + 1)
+                passes += 1
+                matches += step["matches"]
+            step = {**step, "before": first, "matches": matches, "passes": passes}
         step["ordinal"] = idx + 1
         steps.append(step)
         text = step["after"]

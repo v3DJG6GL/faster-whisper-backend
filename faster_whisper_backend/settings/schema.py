@@ -26,7 +26,7 @@ from faster_whisper_backend.core.languages import WHISPER_LANGUAGE_NAMES
 from faster_whisper_backend.settings.descriptions import FIELD_DESCRIPTIONS
 
 from pydantic import (
-    BaseModel, Field, ValidationError, ValidationInfo, create_model,
+    BaseModel, Field, StrictBool, ValidationError, ValidationInfo, create_model,
     field_validator, model_validator,
 )
 
@@ -355,6 +355,35 @@ class _RuleBase(BaseModel):
         return s if s in RULE_CARD_COLORS else ""
 
 
+# Most passes a repeating rule (_RepeatableRule.repeat) gets per transcript,
+# the first one included. A rule that converges needs one pass per overlapping
+# match it could not see in the pass before, plus one that changes nothing — a
+# German compound chain ("Hals-nasen-ohren-arzt") is three plus one. The cap
+# is for a rule whose output never settles (one that appends, or two entries
+# that undo each other): it is cut after this many passes instead of looping
+# forever, so a repeating rule costs at most this many times one pass.
+RULE_REPEAT_MAX_PASSES = 8
+
+
+class _RepeatableRule(_RuleBase):
+    """Every rule type but `terminal` (a fixed trim: a second pass is a no-op)."""
+    # "Repeat until nothing changes": the engine applies the rule to its own
+    # output again (a regex-list: its whole entry batch) until the text stops
+    # changing, at most RULE_REPEAT_MAX_PASSES times. For a rule
+    # whose re.sub scans the ORIGINAL text once, so a match overlapping the
+    # previous one is never seen in the same pass ("Hals-nasen-ohren-arzt").
+    # Off is stored as absent, never as false: every rule saved before the
+    # field existed then dumps, compares and fingerprints (config_rev, the
+    # /quick-config _fp) exactly as before. StrictBool: a "yes" / 1 is a typo,
+    # not an opt-in.
+    repeat: StrictBool | None = None
+
+    @field_validator("repeat", mode="before")
+    @classmethod
+    def _repeat_off_is_absent(cls, v: Any) -> Any:
+        return None if v is False else v
+
+
 class RegexListEntry(BaseModel):
     """One find→replace pair inside a regex-list rule. `pattern` is required; an
     empty `replacement` deletes the match. `label`/`note` are optional human
@@ -368,7 +397,7 @@ class RegexListEntry(BaseModel):
     note: Annotated[str, Field(max_length=4000)] = ""
 
 
-class RegexListRule(_RuleBase):
+class RegexListRule(_RepeatableRule):
     """Ordered batch of (pattern, replacement) entries — the unified find→replace
     rule. Entries apply in list order (entry N's output feeds N+1), exactly like a
     run of standalone re.sub rules. Replaces the legacy single `regex` type (a
@@ -377,7 +406,7 @@ class RegexListRule(_RuleBase):
     entries: list[RegexListEntry] = Field(default_factory=list, max_length=200)
 
 
-class LowercaseWordlistRule(_RuleBase):
+class LowercaseWordlistRule(_RepeatableRule):
     """Strip terminator and lowercase the next word if it's in the wordlist."""
     type: Literal["callback:lowercase-wordlist"]
     pattern: Annotated[str, Field(max_length=512)]
@@ -387,7 +416,7 @@ class LowercaseWordlistRule(_RuleBase):
     ]
 
 
-class MapRule(_RuleBase):
+class MapRule(_RepeatableRule):
     """Spoken-word → symbol lookup. Pattern auto-built from `map` keys
     (longest-first alternation, case-insensitive) at compile time."""
     type: Literal["callback:map"]
@@ -410,14 +439,14 @@ class MapRule(_RuleBase):
         return {k: ts for k, ts in v.items() if k in keys}
 
 
-class DedupRule(_RuleBase):
+class DedupRule(_RepeatableRule):
     """Pattern-only row. Callback collapses each match: prefer last
     non-comma in the run; pure-comma run collapses to a single comma."""
     type: Literal["callback:dedup"]
     pattern: Annotated[str, Field(max_length=512)]
 
 
-class UpperRule(_RuleBase):
+class UpperRule(_RepeatableRule):
     """Pattern-only row. Callback uppercases group(2) (or the entire match
     if the pattern has fewer than 2 groups)."""
     type: Literal["callback:upper"]

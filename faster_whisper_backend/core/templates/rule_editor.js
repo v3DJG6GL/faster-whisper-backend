@@ -507,6 +507,35 @@ function renderTypeEditor(rule, commitData, opts) {
     return box;
   }
 
+  // "Repeat until nothing changes" (schema _RepeatableRule.repeat). Admin
+  // only, like the note: /quick-config cannot patch it (_PATCH_ALLOWED_FIELDS).
+  // Off is deleted, never stored as false — the server dumps it absent, and
+  // the editor's fingerprint of every rule without it must not move.
+  if (opts.showRepeat) {
+    const repWrap = document.createElement('label');
+    repWrap.className = 'rule-repeat';
+    const repCb = document.createElement('input');
+    repCb.type = 'checkbox';
+    repCb.className = 'rule-repeat-cb';
+    repCb.checked = rule.repeat === true;
+    repCb.addEventListener('change', () => {
+      if (repCb.checked) rule.repeat = true;
+      else delete rule.repeat;
+      commitData();
+    });
+    repWrap.appendChild(repCb);
+    const repTxt = document.createElement('span');
+    repTxt.textContent = ' Repeat until nothing changes';
+    repWrap.appendChild(repTxt);
+    box.appendChild(repWrap);
+    const repHelp = document.createElement('div');
+    repHelp.className = 'help';
+    repHelp.textContent = 'Runs the rule again on its own output (a list: all its entries) '
+      + 'until the text stops changing, at most __REPEAT_CAP__ times. For matches that overlap: '
+      + 'one pass sees "Hals-nasen-ohren-arzt" only up to the first hyphen it changed.';
+    box.appendChild(repHelp);
+  }
+
   // Right-align the per-card Save button on rule types that don't have a
   // sibling "+ add entry" bar (cb:map handles its own pairing below).
   function _appendSaveRow(parent) {

@@ -305,6 +305,33 @@ const tick = () => new Promise(r => setTimeout(r, 0));
 
 
 @needs_node
+def test_rule_status_names_the_passes_of_a_repeating_rule(client):
+    """A step of a rule with `repeat` on spans every pass the engine ran
+    (test-pipeline `passes`); a one-pass step says nothing about passes."""
+    block = _block(_html(client, "/settings/pipeline"),
+                   "      let timer = null;\n", "        }, 250);\n      };\n")
+    out = _node(_FAKE_DOM + """
+const tick = () => new Promise(r => setTimeout(r, 0));
+(async function () {
+  function setTimeout(f) { f(); return 1; }
+  function clearTimeout() {}
+  const status = document.createElement('div');
+  const rule = { name: 'r', type: 'callback:upper', enabled: true, repeat: true };
+  const replies = [{ type: 'callback:upper', matches: 3, passes: 4 },
+                   { type: 'callback:upper', matches: 1 }];
+  function _testOneRule() { return Promise.resolve(replies.shift()); }
+  let refresh;
+""" + block + """
+  const seen = [];
+  refresh(); await tick(); seen.push(status.textContent);
+  refresh(); await tick(); seen.push(status.textContent);
+  console.log(JSON.stringify(seen));
+})();
+""")
+    assert out == ["✓ valid · 3 matches in sample · 4 passes", "✓ valid · 1 match in sample"]
+
+
+@needs_node
 def test_rule_status_badge_reports_a_network_error(client):
     """api() lets fetch's rejection through; _testOneRule promised null on a
     transport error, and the badge kept its old verdict instead."""

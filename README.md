@@ -618,7 +618,7 @@ A single ordered list of rules — `cfg.PIPELINE_RULES` — is applied to each t
 - `callback:upper` — capitalize after sentence terminator
 - `terminal` — final `lstrip(" \t\r") + rstrip(" \t\r")`; always last (preserves leading/trailing `\n`)
 
-The 15 seeded cards handle orthography normalization (`ß`→`ss`), Whisper noise stripping, dictation (`Punkt`→`.`, `neue Zeile`→`\n`, …), and tidy spacing/newlines/capitalization. They live in the committed **`config.json`** (the `PIPELINE_RULES` array, next to all the scalar defaults); `faster_whisper_backend/settings/config.py` loads that file at startup. Each rule carries an optional `note` field documenting its rationale.
+The 15 seeded cards handle orthography normalization (`ß`→`ss`), Whisper noise stripping, dictation (`Punkt`→`.`, `neue Zeile`→`\n`, …), and tidy spacing/newlines/capitalization. They live in the committed **`config.json`** (the `PIPELINE_RULES` array, next to all the scalar defaults); `faster_whisper_backend/settings/config.py` loads that file at startup. Each rule carries an optional `note` field documenting its rationale. Every rule but `terminal` can also carry `repeat: true` (*Repeat until nothing changes* in the editor): the rule is applied to its own output again (a `regex-list`: all its entries) until the text stops changing, at most 8 passes — for matches that overlap, which one `re.sub` pass never sees (`Hals-nasen-ohren-arzt`).
 
 **Ordering invariants:** `de-dictation-map` multi-word phrases must precede their single-word components (the alternation regex is rebuilt longest-first, so the longest phrase wins); the `terminal` trim rule is always last.
 

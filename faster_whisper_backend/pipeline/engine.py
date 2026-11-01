@@ -7,6 +7,7 @@ attribute (``pl_engine._postprocess_text(...)``): rebuild_caches rebinds
 _COMPILED_RULES, so a ``from ... import`` of it would go stale.
 """
 import functools
+import itertools
 import logging
 import re
 import threading
@@ -14,6 +15,7 @@ import threading
 from faster_whisper_backend.pipeline import dictation_map as _dictation_map
 from faster_whisper_backend.pipeline import seam_holdback as _seam_holdback
 from faster_whisper_backend.settings import config as cfg
+from faster_whisper_backend.settings import schema as settings_schema
 
 logger = logging.getLogger("whisper-api")
 
@@ -67,6 +69,10 @@ class _CompiledRule:
     card_no: int
     sub_no: "int | None" = None
     languages: frozenset[str] = frozenset()
+    # The card's "Repeat until nothing changes" switch (schema
+    # _RepeatableRule.repeat), on every row of a regex-list card: the walk
+    # re-applies the whole card, not one entry (see _card_passes).
+    repeat: bool = False
     # callback:map only: the effective lower-cased key → value lookup (ß keys'
     # ss variants included, see pipeline/dictation_map.py). The streaming
     # hold-back builds its spec from it. Kept out of eq/hash: a dict is
@@ -93,6 +99,8 @@ _TERMINAL_CARD_NO: int = 0
 # transcript is a few hundred KB, so 4 M chars only ever trips on a rule set
 # that expands its own input (the pipeline runs on admin-editable regexes).
 _POSTPROCESS_MAX_CHARS = 4_000_000
+# Most passes a repeating rule gets per transcript (see the schema constant).
+_REPEAT_MAX_PASSES = settings_schema.RULE_REPEAT_MAX_PASSES
 
 
 def _rule_ordinal(card_no: int, sub_no: "int | None" = None) -> str:
@@ -208,6 +216,9 @@ def _rebuild_caches_locked() -> None:
             continue
         rule_enabled = bool(rule.get("enabled", True))
         rule_langs = frozenset(rule.get("languages") or ())
+        # `is True`: the schema stores only true (off is absent); a hand-edited
+        # "yes" must not switch it on (the dry run reads it the same way).
+        rule_repeat = rule.get("repeat") is True
 
         # regex-list: expand each entry into its own _CompiledRule row, all
         # sharing the card's name + enabled + languages (so per-model
@@ -237,7 +248,7 @@ def _rebuild_caches_locked() -> None:
                 compiled.append(_CompiledRule(
                     rname, f"{rlabel} · {entry.get('label') or epat}",
                     "regex-list", ecre, entry.get("replacement", "") or "",
-                    rule_enabled, card_no, sub_no, rule_langs))
+                    rule_enabled, card_no, sub_no, rule_langs, rule_repeat))
             continue
 
         map_lookup = None
@@ -278,7 +289,8 @@ def _rebuild_caches_locked() -> None:
         compiled.append(_CompiledRule(rule.get("name", "?"),
                                        rule.get("label", rule.get("name", "?")),
                                        rtype, cre, payload, rule_enabled, card_no,
-                                       languages=rule_langs, map_lookup=map_lookup))
+                                       languages=rule_langs, repeat=rule_repeat,
+                                       map_lookup=map_lookup))
     _COMPILED_RULES = compiled
     _TERMINAL_NAME = terminal_name
     _TERMINAL_LABEL = terminal_label
@@ -298,6 +310,19 @@ def _apply_rule(rule: _CompiledRule, text: str) -> str:
     single pattern.sub call with no per-request closure allocation."""
     return rule.pattern.sub(rule.payload, text)  # type: ignore[arg-type]
 
+
+
+def _cards(rows: "list[_CompiledRule]") -> "list[list[_CompiledRule]]":
+    """The compiled rows grouped by card (a regex-list card is one row per
+    entry, consecutive and sharing its card_no), in pipeline order."""
+    return [list(g) for _k, g in itertools.groupby(rows, key=lambda r: r.card_no)]
+
+
+def _card_passes(card: "list[_CompiledRule]") -> int:
+    """How many times the walk may apply `card`: once, or up to
+    _REPEAT_MAX_PASSES for a repeating rule (the walk stops earlier at the
+    first pass that leaves the text as it was)."""
+    return _REPEAT_MAX_PASSES if card[0].repeat else 1
 
 
 def _scoping(model_name: "str | None", ident=None,
@@ -368,6 +393,10 @@ def _postprocess_text(text: str, model_name: "str | None" = None,
     `extra_excludes` are skipped even when they appear in INCLUDE — the
     captures-specific intent overrides the per-model force-on.
 
+    A rule with `repeat` on runs again on its own output (a regex-list card:
+    all its entries) until a pass changes nothing, at most _REPEAT_MAX_PASSES
+    passes; the scoping above decides for the card once.
+
     The terminal "trim-edges" step (filtered out of _COMPILED_RULES at
     rebuild time) runs as the always-last step here, gated by the same
     exclude set so a trainer can preserve trailing whitespace by adding
@@ -376,47 +405,63 @@ def _postprocess_text(text: str, model_name: "str | None" = None,
     wrappers, so per-model exclusion of trim-edges has no effect there.
     """
     exclude, include = _scoping(model_name, ident, extra_excludes)
-    for rule in _COMPILED_RULES:
-        # Step number mirrors the /settings/pipeline card position (`#P` / `#P.S`),
-        # NOT the flat index over the expanded compiled list.
-        ordinal = _rule_ordinal(rule.card_no, rule.sub_no)
-        if not _rule_runs(rule, exclude, include, language):
-            # When tracing, surface the skip so the log explains why a rule
-            # didn't run — the reasons in _rule_runs' order: force-EXCLUDE
-            # wins outright (admin explicitly turned this off), then the
-            # language, then globally disabled and not force-included.
-            if trace is not None:
-                if rule.name in exclude:
-                    why = f"EXCLUDED for {model_name}"
-                elif rule.languages and language and language not in rule.languages:
-                    why = f"SKIPPED lang:{language} ∉ {sorted(rule.languages)}"
-                else:
-                    why = "SKIPPED globally disabled"
-                trace.append((f"{ordinal} {rule.label} [{why}]", text, text))
-            continue
-        forced_in = rule.name in include
-        before = text
-        text = _apply_rule(rule, before)
-        if trace is not None:
-            # Force-included rule: tag the trace line so the admin sees the
-            # rule ran *because of* the per-model override, not the global
-            # state. Always emit even when before == after, to make the
-            # override path visible.
-            if forced_in and not rule.enabled:
-                trace.append(
-                    (f"{ordinal} {rule.label} [FORCED on for {model_name}]",
-                     before, text)
-                )
-            elif before != text:
-                trace.append((f"{ordinal} {rule.label}", before, text))
-        # Absolute output bound. Rules whose replacement template expands what
-        # it matches compose: each one feeds the next, so a handful of them can
-        # multiply a short transcript into gigabytes. Stop the pipeline instead
-        # and keep what we have — no real transcript comes near this size.
-        if len(text) > _POSTPROCESS_MAX_CHARS:
-            logger.warning(
-                "[pipeline] output exceeded %d chars at rule %r — remaining "
-                "rules skipped", _POSTPROCESS_MAX_CHARS, rule.name)
+    capped = False
+    for card in _cards(_COMPILED_RULES):
+        # A repeating rule runs on its own output again until a pass leaves
+        # the text as it was (or _REPEAT_MAX_PASSES). A skipped card changes
+        # nothing, so it is traced once and left after its first pass.
+        for pass_no in range(1, _card_passes(card) + 1):
+            card_in = text
+            for rule in card:
+                # Step number mirrors the /settings/pipeline card position
+                # (`#P` / `#P.S`), NOT the flat index over the expanded
+                # compiled list; the label of a repeat pass names the pass.
+                ordinal = _rule_ordinal(rule.card_no, rule.sub_no)
+                label = rule.label if pass_no == 1 else f"{rule.label} (pass {pass_no})"
+                if not _rule_runs(rule, exclude, include, language):
+                    # When tracing, surface the skip so the log explains why a
+                    # rule didn't run — the reasons in _rule_runs' order:
+                    # force-EXCLUDE wins outright (admin explicitly turned this
+                    # off), then the language, then globally disabled and not
+                    # force-included.
+                    if trace is not None:
+                        if rule.name in exclude:
+                            why = f"EXCLUDED for {model_name}"
+                        elif rule.languages and language and language not in rule.languages:
+                            why = f"SKIPPED lang:{language} ∉ {sorted(rule.languages)}"
+                        else:
+                            why = "SKIPPED globally disabled"
+                        trace.append((f"{ordinal} {label} [{why}]", text, text))
+                    continue
+                forced_in = rule.name in include
+                before = text
+                text = _apply_rule(rule, before)
+                if trace is not None:
+                    # Force-included rule: tag the trace line so the admin sees
+                    # the rule ran *because of* the per-model override, not the
+                    # global state. Always emit (on its first pass) even when
+                    # before == after, to make the override path visible.
+                    if forced_in and not rule.enabled and (pass_no == 1 or before != text):
+                        trace.append(
+                            (f"{ordinal} {label} [FORCED on for {model_name}]",
+                             before, text)
+                        )
+                    elif before != text:
+                        trace.append((f"{ordinal} {label}", before, text))
+                # Absolute output bound. Rules whose replacement template
+                # expands what it matches compose: each one feeds the next, so
+                # a handful of them can multiply a short transcript into
+                # gigabytes. Stop the pipeline instead and keep what we have —
+                # no real transcript comes near this size.
+                if len(text) > _POSTPROCESS_MAX_CHARS:
+                    logger.warning(
+                        "[pipeline] output exceeded %d chars at rule %r — remaining "
+                        "rules skipped", _POSTPROCESS_MAX_CHARS, rule.name)
+                    capped = True
+                    break
+            if capped or text == card_in:
+                break
+        if capped:
             break
     term_ordinal = _rule_ordinal(_TERMINAL_CARD_NO)
     if _TERMINAL_NAME in exclude:
@@ -478,16 +523,24 @@ def seam_culprit(prefix_raw: str, full_raw: str, *, model_name: "str | None" = N
         return pb.lstrip(" \t\r").startswith(pa.lstrip(" \t\r").rstrip(" \t\r"))
 
     ok = extends(a, b)
-    for rule in _COMPILED_RULES:
-        if not _rule_runs(rule, exclude, include, language):
+    for card in _cards(_COMPILED_RULES):
+        if not _rule_runs(card[0], exclude, include, language):
             continue
-        a, b = _apply_rule(rule, a), _apply_rule(rule, b)
-        if max(len(a), len(b)) > _POSTPROCESS_MAX_CHARS:
-            return f"{_rule_ordinal(rule.card_no, rule.sub_no)} {rule.label} (output bound hit)"
-        now = extends(a, b)
-        if ok and not now:
-            return f"{_rule_ordinal(rule.card_no, rule.sub_no)} {rule.label}"
-        ok = now
+        # Both texts get the passes _postprocess_text gives each: a pass that
+        # leaves one of them as it was leaves it so on every later pass too,
+        # so walking both until neither changes equals two separate walks.
+        for _pass in range(_card_passes(card)):
+            a_in, b_in = a, b
+            for rule in card:
+                a, b = _apply_rule(rule, a), _apply_rule(rule, b)
+                if max(len(a), len(b)) > _POSTPROCESS_MAX_CHARS:
+                    return f"{_rule_ordinal(rule.card_no, rule.sub_no)} {rule.label} (output bound hit)"
+                now = extends(a, b)
+                if ok and not now:
+                    return f"{_rule_ordinal(rule.card_no, rule.sub_no)} {rule.label}"
+                ok = now
+            if a == a_in and b == b_in:
+                break
     return "none found" if ok else "raw text already diverges"
 
 

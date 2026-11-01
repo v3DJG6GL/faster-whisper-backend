@@ -69,8 +69,9 @@ router = APIRouter(prefix="/quick-config")
 # Per-type allow-list of fields an end-user is allowed to patch on an
 # already-existing exposed rule. Anything else in a patch dict triggers a
 # 400. `name`, `label`, `type`, `exposed`, `locked`, `seeded` are NEVER
-# editable from /quick-config (admin-only). Adding a new rule, deleting a
-# rule, or reordering is also admin-only.
+# editable from /quick-config (admin-only). Nor is `repeat`: it changes how
+# the rule runs, not its body, like `note` / `color` it is set on /settings.
+# Adding a new rule, deleting a rule, or reordering is also admin-only.
 
 # Dedicated, deliberately tiny pool for the one blocking call that can hold a
 # thread for seconds: config_store.save_overrides runs the ReDoS guard, which
@@ -715,8 +716,8 @@ async def v1_patch_pipeline_rules(
 ) -> JSONResponse:
     """Apply a per-rule patch — `enabled` + the per-type body fields only
     (regex-list→entries, callback:map→map, lowercase-wordlist→pattern+wordlist,
-    dedup/upper→pattern). name/label/type/tags/colour/exposed/locked are never
-    editable here, and rules can't be added/removed/reordered (admin-only, on
+    dedup/upper→pattern). name/label/type/tags/colour/exposed/locked/repeat
+    are never editable here, and rules can't be added/removed/reordered (admin-only, on
     the /settings WebUI). Body `{rules_patch:{slug:{field:val}}, fingerprints:
     {slug:fp}}`. 200 `{saved, conflicts, requires_restart, …}`; 422
     `{errors:[…]}` on validation; 400 on a malformed patch or an unknown (or

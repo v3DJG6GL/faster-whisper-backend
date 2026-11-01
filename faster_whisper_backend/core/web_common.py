@@ -419,7 +419,10 @@ _MAP_MAX_ENTRIES: int = next(
     10_000,  # fallback mirrors MapRule.map's max_length
 )
 
-RULE_EDITOR_JS = templates.load(__file__, "rule_editor.js").replace("__MAP_CAP__", str(_MAP_MAX_ENTRIES))
+# The repeat switch's help text names the pass cap the engine applies.
+RULE_EDITOR_JS = (templates.load(__file__, "rule_editor.js")
+                  .replace("__MAP_CAP__", str(_MAP_MAX_ENTRIES))
+                  .replace("__REPEAT_CAP__", str(settings_schema.RULE_REPEAT_MAX_PASSES)))
 
 
 def _nav_items(current: str) -> list[tuple[str, str, bool]]:
