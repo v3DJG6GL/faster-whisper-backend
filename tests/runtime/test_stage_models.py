@@ -1,7 +1,7 @@
 """Per-request stage models (diarization_model / separation_model), the
 optional-stage startup preloads, and translation eviction-on-edit. All heavy
 deps stay uninstalled — stage modules are stubbed at the same handler
-boundaries as test_diarization/test_bgm."""
+boundaries as tests/audio/test_diarization.py / test_bgm_separation.py."""
 
 import asyncio
 import os
@@ -43,8 +43,6 @@ def _stub_separate(monkeypatch, calls):
         return out
     monkeypatch.setattr(bgm_separation, "separate", _fake)
 
-
-# --- per-request diarization model -------------------------------------------
 
 def test_per_request_diarization_model_honored(client, app_module, monkeypatch):
     monkeypatch.setattr(app_module.cfg, "DIARIZATION_ENABLED", True,
@@ -128,8 +126,6 @@ def test_diarization_model_allowlist_miss_skips_stage(client, app_module,
     assert seen.get("skipped") == ["diarizing"]
 
 
-# --- per-request separation model --------------------------------------------
-
 def test_per_request_separation_model_honored(client, app_module, monkeypatch):
     monkeypatch.setattr(app_module.cfg, "BGM_SEPARATION_ENABLED", True,
                         raising=False)
@@ -169,8 +165,6 @@ def test_bgm_model_filename_override_resolution():
     assert bgm_separation._model_filename(None) == "UVR-MDX-NET-Inst_HQ_4.onnx"
     assert bgm_separation._model_filename("  ") == "UVR-MDX-NET-Inst_HQ_4.onnx"
 
-
-# --- startup preloads --------------------------------------------------------
 
 def test_preload_extras_loads_configured_models(app_module, monkeypatch):
     loaded = []
@@ -260,12 +254,10 @@ def test_translation_model_allowed_shape_checks_client_ref(app_module,
     assert allowed("../../etc/passwd", requested="org/other") is True
 
 
-# --- eviction-on-edit --------------------------------------------------------
-
 def test_translation_device_edit_dispatches_eviction(client, monkeypatch):
     """Editing a field in the 'translation' EXTRAS_EVICTION bucket awaits
-    translation's evictor via the generic post_state loop (the e5167ba
-    dispatch — same template as the diarization/bgm buckets)."""
+    translation's evictor via the generic post_state loop, the same dispatch
+    the diarization/bgm buckets use."""
     calls = []
 
     async def _spy():
@@ -283,8 +275,6 @@ def test_translation_device_edit_dispatches_eviction(client, monkeypatch):
     assert calls == []
 
 
-# ── review-fix regressions: allowlist semantics ─────────────────────────────
-
 def test_empty_bgm_allowlist_admits_only_the_configured_model(
         client, app_module, monkeypatch):
     """Empty allowlist = the configured model ONLY — clearing the list is a
@@ -300,7 +290,7 @@ def test_empty_bgm_allowlist_admits_only_the_configured_model(
     assert r.status_code == 200, r.text
     body = r.json()
     assert any("not allowed" in w for w in body.get("warnings", []))
-    assert not calls  # the stage was skipped, nothing loaded
+    assert not calls
     # The configured default still runs untouched.
     r = _post(client, separate_bgm="true")
     assert r.status_code == 200
@@ -414,24 +404,17 @@ def test_allowlist_admits_the_identity_effective_separation_model_when_echoed(
     assert not any("not allowed" in w for w in r.json().get("warnings", []))
 
 
-# --- stage-ahead (the _progress_set hook) ------------------------------------
-
 def _plan_with_stub_queue(app_module, monkeypatch, entries, pid="ab" * 8):
     """Register a plan bound to `pid` with the enqueue path stubbed, so the
     test observes exactly what the cursor decided to warm."""
     from faster_whisper_backend.runtime import preload
     from faster_whisper_backend.runtime import model_sizes
-    # REGISTRATION must admit nothing, so the plan starts with an empty queue
-    # and what the CURSOR does next is unambiguous. on_stage_start
-    # deliberately does not consult the ladder; the worker re-admits at
-    # dequeue, which is exactly the split under test.
-    #
-    # A definite "no room" is the right refusal to stub. `size_unknown` used
-    # to serve here, but only by accident: it means "cannot say", and the
-    # ladder now TRIES on it, because refusing meant an unmeasured model was
-    # never loaded and therefore never measured. Left as size_unknown this
-    # helper would silently let registration enqueue everything, leaving the
-    # cursor with nothing to do and the test asserting on an empty list.
+    # REGISTRATION must admit nothing, so what the CURSOR enqueues next is
+    # unambiguous: on_stage_start does not consult the ladder (the worker
+    # re-admits at dequeue), which is the split under test.
+    # Stub a definite "no room", not size_unknown: the ladder TRIES on
+    # size_unknown, so registration would enqueue everything and leave the
+    # cursor with nothing to assert on.
     monkeypatch.setattr(model_sizes, "fits",
                         lambda *a, **k: (False, "insufficient_vram"))
     monkeypatch.setattr(preload, "_idle_peer", lambda *a, **k: None)
