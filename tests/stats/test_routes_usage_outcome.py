@@ -2,8 +2,8 @@
 dictation outcome report (activation / delivery / translation / app id).
 
 User-tier bearer, no page gate, no host allowlist (always mounted, like the
-settings sync). Strictly self-scoped and idempotent: a re-send or someone
-else's job id both read `duplicate`.
+settings sync). Strictly self-scoped: while the job row lasts, a re-send or
+someone else's job id both read `duplicate`.
 """
 
 import pytest
@@ -136,7 +136,6 @@ def test_outcome_rate_limited_per_identity(client, make_user_key):
     assert r.status_code == 429
     assert r.headers.get("Retry-After")
     assert r.json()["error"]["type"] == "rate_limit_exceeded"
-    # Another identity has its own budget.
     r = client.post(_URL, json={"outcomes": [_outcome("f" * 32)]},
                     headers=bearer(raw_other))
     assert r.status_code == 200
