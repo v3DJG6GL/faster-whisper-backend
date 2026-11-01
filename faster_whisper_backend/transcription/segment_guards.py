@@ -68,7 +68,6 @@ _SHORT_S = 0.133
 # this length: leftover audio after the last word is short, a longer confident
 # word is speech ("wirklich" 0.4-1.9 p0.99 between two collapsed words).
 _ABSORBER_MAX_S = 1.0
-# The burst rule looks at the segment's last second.
 _BURST_WINDOW_S = 1.0
 # Burst rule: a word at least this long is a spoken word, however close the next
 # one starts — short function words ("und", "die") last 0.08-0.12 s, below the
