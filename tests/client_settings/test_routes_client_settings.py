@@ -200,11 +200,9 @@ def test_locked_down_requires_bearer_and_isolates_users(client, make_user_key):
     _uid_a, key_a = make_user_key("alice")
     _uid_b, key_b = make_user_key("bob")
 
-    # No bearer once locked down -> 401.
     assert client.get(_URL).status_code == 401
     assert _put(client, {"n": 1}, 0).status_code == 401
 
-    # Each account gets its own isolated blob.
     r = _put(client, {"who": "alice"}, 0, headers=bearer(key_a))
     assert r.status_code == 200
     r = _put(client, {"who": "bob"}, 0, headers=bearer(key_b))
@@ -253,7 +251,7 @@ def test_partial_init_maps_to_503_not_500(client, monkeypatch):
     assert "CLIENT_SETTINGS_DB" in r.json()["detail"]
 
 
-# --- the old /v1/client-settings path: a deprecated alias -------------------
+# The old /v1/client-settings path: a deprecated alias of _URL.
 
 _OLD = "/v1/client-settings"
 
