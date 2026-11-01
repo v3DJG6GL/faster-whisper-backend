@@ -6,7 +6,7 @@ can assert on the served HTML directly."""
 
 import pytest
 
-# (path, current-page label) for every WebUI page that renders shared chrome.
+# Every WebUI page that renders the shared chrome.
 _PAGES = [
     "/stats",
     "/logs",
@@ -34,7 +34,6 @@ def test_page_ships_shared_login_gate(client, path):
 @pytest.mark.parametrize("path", _PAGES)
 def test_page_has_no_legacy_login_ui(client, path):
     html = client.get(path).text
-    # The per-page login UIs were removed in favour of the shared gate.
     assert 'id="token-modal"' not in html, f"{path} still has a #token-modal"
     assert 'id="login-wrap"' not in html, f"{path} still has the #login-wrap card"
     assert 'id="login-token"' not in html, f"{path} still has the login-card input"
