@@ -104,10 +104,7 @@ _reader = threading.local()
 # as its own bucket. The UI renders it as a plain label.
 OPEN_MODE_ID = "(open-mode)"
 
-# ORDER BY column names are interpolated, so they MUST come from this set.
-# processing_s (server processing seconds) and sessions (distinct dictation sessions
-# / file runs, as opposed to HTTP requests) were written from day one and
-# only read by document(); /stats reads them too since v2.
+# Metric column names are interpolated into SQL, so they MUST come from this set.
 _METRICS: frozenset[str] = frozenset(
     ("requests", "errors", "words", "audio_s", "processing_s", "sessions"))
 
@@ -130,9 +127,10 @@ _JOB_TARGETS_MAX = 32
 # handshake hands its raw client `model` string through record_usage.
 _CAP_MODEL = 128
 
-# Which jobs a stage COULD have run on — the denominator of the "ran on N of
-# M" meter. Translation applies to every kind (a dictation is translated via
-# the text endpoint, a file inline); the audio stages only to batch inputs.
+# The optional stages, in the order document() lists them: document() keeps
+# only these unless all_stages, and they are the `with=` choices
+# (WITH_STAGES). Only the keys are read; the "ran on N of M" denominator
+# comes from STAGE_ELIGIBLE.
 STAGE_APPLIES_TO: dict[str, tuple[str, ...]] = {
     "translating": KINDS,
     "diarizing": ("file", "url"),
@@ -161,7 +159,7 @@ TRANSLATIONS: tuple[str, ...] = ("translated", "kept_original", "not_asked",
                                  "aborted", "unreported")
 UNREPORTED = "unreported"
 
-# Reading speed the "time saved" figure is measured against: a dictated
+# Typing speed the "time saved" figure is measured against: a dictated
 # word would have taken 1/40 min to type at a comfortable 40 wpm.
 TYPING_WPM = 40.0
 
@@ -271,8 +269,7 @@ CREATE TABLE IF NOT EXISTS usage_app_hourly (
 
 def init_db(path: str) -> None:
     """Open (or create) the DB at `path` in WAL mode. Idempotent — call
-    once on service startup before any other function. Mirrors
-    recent_transcriptions_store.init_db."""
+    once on service startup before any other function."""
     global _conn, _path
     # Published only once every migration step succeeded: main.py logs a
     # failed init as "store down" and never starts the sweep, so a
@@ -297,8 +294,7 @@ def init_db(path: str) -> None:
 
 # Additive columns for DBs created before them. CREATE TABLE IF NOT EXISTS is
 # a no-op against an existing table, so a column that joins the schema must
-# also be listed here or it never reaches a live database. Same pattern as
-# recent_transcriptions_store.init_db; idempotent (PRAGMA table_info first).
+# also be listed here or it never reaches a live database.
 _COLUMN_MIGRATIONS: dict[str, tuple[tuple[str, str], ...]] = {
     "usage_jobs": (
         ("wait_s", "ADD COLUMN wait_s REAL NOT NULL DEFAULT 0"),
@@ -328,10 +324,9 @@ def _migrate_columns(conn: sqlite3.Connection) -> None:
 
 
 def _rename_columns(conn: sqlite3.Connection) -> None:
-    """Column renames (2026-09): processing_s spells its unit the way
-    audio_s does and is what every other store now calls the same
-    measurement. Runs before _SCHEMA (CREATE TABLE IF NOT EXISTS would
-    otherwise leave the old name in place); RENAME COLUMN keeps the data."""
+    """Rename the legacy proc_s column to processing_s. Runs before _SCHEMA
+    (CREATE TABLE IF NOT EXISTS would otherwise leave the old name in
+    place); RENAME COLUMN keeps the data."""
     for table in ("usage_hourly", "usage_jobs"):
         have = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}
         if "proc_s" in have and "processing_s" not in have:
@@ -466,8 +461,6 @@ def _reads_own_conn(fn):
     return wrapper
 
 
-# --- time helpers ---------------------------------------------------------
-
 def now_hour() -> int:
     return int(time.time() // 3600)
 
@@ -535,8 +528,6 @@ def _midnight_hour(day: datetime.date, tz: zoneinfo.ZoneInfo | None) -> int:
     count it in the window while filing it under a day outside it."""
     return -(-int(_midnight_ts(day, tz)) // 3600)
 
-
-# --- write path -----------------------------------------------------------
 
 def _norm_kind(kind: str | None) -> str:
     return kind if kind in KINDS else UNKNOWN_KIND
@@ -704,10 +695,8 @@ def record_usage(
                             "  wait_s      = wait_s + excluded.wait_s,"
                             "  error_class = COALESCE(error_class, excluded.error_class),"
                             "  error_stage = COALESCE(error_stage, excluded.error_stage)",
-                            # model and language capped like jobs_store's
-                            # _CAP_MODEL / recent_transcriptions_store's
-                            # _CAP_LANGUAGE: a caller may hand a raw client value
-                            # (a refused stream handshake's model string).
+                            # language capped like recent_transcriptions_store's
+                            # _CAP_LANGUAGE: a caller may hand a raw client value.
                             (jid, uid, kid, k, created_ts, status, a, w, p,
                              (model or "")[:_CAP_MODEL] or None,
                              (language or "")[:32] or None,
@@ -757,8 +746,8 @@ def _record_stage(conn: sqlite3.Connection, hour: int, uid: str,
     meter's denominator is sessions, and the per-job (with=) path reads one
     row per session; a batch job writes each stage once, so nothing changes
     for it. The hourly speakers / retained sums are averaged over those runs,
-    so they too take only the run's first row (the per-job row keeps one
-    value per session as well): a dictation's per-utterance "vad" stage
+    so they too take only the run's first row (the per-job row keeps the
+    first non-NULL value): a dictation's per-utterance "vad" stage
     summed every utterance's ratio over one run and read 4.5 for 0.9."""
     err = st.get("error")
     new_targets = st["targets"]
@@ -787,8 +776,9 @@ def _record_stage(conn: sqlite3.Connection, hour: int, uid: str,
             "  audio_s  = audio_s + excluded.audio_s,"
             "  model    = COALESCE(excluded.model, model),"
             "  targets  = COALESCE(excluded.targets, targets),"
-            # The first value wins, like the hourly sums (count_run): a
-            # later utterance's ratio would make the with= path disagree.
+            # The first non-NULL value wins (the hourly sums keep the run's
+            # first row, count_run): adding later utterances' ratios would
+            # inflate the with= path.
             "  speakers = COALESCE(speakers, excluded.speakers),"
             "  retained = COALESCE(retained, excluded.retained),"
             "  error    = COALESCE(error, excluded.error),"
@@ -926,7 +916,8 @@ def record_outcome(
 ) -> str:
     """Attach the desktop app's outcome to one dictation job. Returns
     'accepted' on the first report and 'duplicate' for every later one (or
-    for a job that belongs to someone else — indistinguishable on purpose).
+    for a job that belongs to someone else — indistinguishable on purpose)
+    while the job row lasts: once sweep() prunes it, a replay counts again.
 
     A job the server never saw (a session with no finished utterance, or
     one whose utterances raced the report) gets a stub row so the outcome
@@ -1262,8 +1253,6 @@ def prune(*, retention_days: int) -> int:
     return removed
 
 
-# --- read path (the desktop app's /v1/usage document) ---------------------
-
 def _zero_cell() -> dict[str, Any]:
     return {"sessions": 0, "requests": 0, "errors": 0, "words": 0,
             "audio_s": 0.0, "processing_s": 0.0}
@@ -1380,9 +1369,6 @@ def empty_document(
             "source": source,
             "jobs_retention_days": int(jobs_retention_days),
         },
-        # An extra split per kind for the hour grid (words stay flat on the
-        # slot for the desktop app; see _finish).
-
         "today": _zero_split(),
         "total": _zero_split(),
         "series": [],
@@ -1626,10 +1612,6 @@ def document(
     return doc
 
 
-# ---------------------------------------------------------------------------
-# overview(): the /stats/usage v2 gather — document() plus a breakdown
-# ---------------------------------------------------------------------------
-
 BREAKDOWNS: tuple[str, ...] = ("kind", "user", "key", "model", "stage")
 BUCKETS: tuple[str, ...] = ("auto", "day", "week", "month")
 COMPARES: tuple[str, ...] = ("off", "prev", "yoy")
@@ -1773,8 +1755,6 @@ def overview(
         if i is not None:
             e["values"][i] += float(cell.get(metric, 0.0) or 0.0)
 
-    # with_stages narrows every breakdown to the per-job rows (like the
-    # document above it); without it kind/user/key/stage read the rollups.
     source = "jobs" if with_stages or by == "model" else "rollups"
     key_scoped = True
     if by == "kind":
@@ -1789,8 +1769,8 @@ def overview(
                     rest[m] -= cell[m]
             # Each cell was rounded to 3 decimals on its own, so `all` minus
             # the four kinds leaves up to a few thousandths of dust; only a
-            # real remainder is an "unknown" kind (rows recorded before
-            # kinds existed).
+            # real remainder is an "unknown" kind (a row whose kind is not
+            # in KINDS).
             rest = {m: (v if v > 0.05 else 0) for m, v in rest.items()}
             if any(v > 0 for v in rest.values()):
                 add(ent(UNKNOWN_KIND, label=UNKNOWN_KIND), day, rest)
@@ -1901,11 +1881,10 @@ def overview(
         for e in ranked[:max(1, int(limit))]
     ]
 
-    # The per-model table reads the job rows, which prune on their own clock:
-    # under All time it starts where tail() does (the earlier of the rollups'
-    # and the jobs' first day), else a USAGE_RETENTION_DAYS shorter than
-    # USAGE_JOBS_RETENTION_DAYS drops jobs still on disk. The axis, lines and
-    # leaderboard keep the document's range. with= already starts at a job.
+    # The per-model table reads the job rows, which prune on their own clock,
+    # so under All time it starts where tail() does (_first_tail_day). The
+    # axis, lines and leaderboard keep the document's range. with= already
+    # starts at a job.
     models_start = start_ts
     if all_time and not with_stages:
         mf, _ = resolve_window(today=_from_epoch_day(t), days=None, from_day=None,
@@ -2032,20 +2011,17 @@ def _models_in_window(conn: sqlite3.Connection, user_id: Ids,
     return out
 
 
-# ---------------------------------------------------------------------------
-# tail(): the /stats/tail document — queue wait, turnaround, failures,
-# per-model, compare — from the per-job rows within retention
-# ---------------------------------------------------------------------------
-
 # Fixed log-spaced edges for the turnaround histogram (seconds): the last
 # bucket is open-ended. Fixed so two windows (and the compare) share bins.
 TURNAROUND_EDGES_S: tuple[int, ...] = (0, 1, 2, 5, 10, 30, 60, 120, 300, 900)
 
 
 def _no_outcome_stub(prefix: str = "") -> str:
-    """The predicate that leaves record_outcome's stubs out of every per-job
-    model / tail reader (see _jobs_where): they never reach usage_hourly,
-    so counting them as "(unknown)" sessions would disagree with it."""
+    """The predicate that leaves record_outcome's stubs (a dictation row
+    with no utterance: an empty session, or a report that raced its
+    utterances) out of every per-job model / tail reader. They are sessions,
+    not decodes, never reach usage_hourly, and would count as 0 s jobs of
+    model "(unknown)"."""
     return f" AND NOT ({prefix}kind = 'dictation' AND {prefix}utterances = 0)"
 
 
@@ -2053,13 +2029,8 @@ def _jobs_where(user_id: Ids, key_id: Ids, kind: Ids,
                 start_ts: float, end_ts: float, alias: str = ""
                 ) -> tuple[str, list[Any]]:
     """`(" WHERE …", params)` over usage_jobs for a window, optional
-    owner(s) / key(s) / kind(s). `alias` prefixes the columns for joined
-    queries.
-
-    record_outcome's stubs (a dictation row with no utterance: an empty
-    session, or a report that raced its utterances) are left out. They are
-    sessions, not decodes, and would count as 0 s jobs of model "(unknown)"
-    in every tail distribution."""
+    owner(s) / key(s) / kind(s), stubs excluded (_no_outcome_stub). `alias`
+    prefixes the columns for joined queries."""
     p = alias + "." if alias else ""
     kinds = [kind] if isinstance(kind, str) else list(kind or ())
     where, params = _scope_where(user_id, key_id, col=p + "user_id",
@@ -2379,8 +2350,8 @@ def _slot_extra() -> dict[str, dict[str, Any]]:
 
 def _add_slot_extra(extra: dict[str, dict[str, Any]], kind: str,
                     cell: dict[str, Any]) -> None:
-    """Add one cell (processing_s / audio_s / sessions / requests / errors) to
-    the slot's splits: always to `all`, to its kind when known."""
+    """Add one cell's SLOT_MEASURES to the slot's splits: always to `all`,
+    to its kind when known."""
     for name in SLOT_MEASURES:
         split, v = extra[name], cell.get(name) or 0
         split["all"] += v
@@ -2390,11 +2361,10 @@ def _add_slot_extra(extra: dict[str, dict[str, Any]], kind: str,
 
 def _finish(doc: dict[str, Any], *, by_day, words_by_day, words_by_slot,
             words_all_days, today: datetime.date, extra_by_slot=None) -> None:
-    """Common tail: the sparse arrays and the per-kind streaks. A slot in
-    `hours` carries its words flat (the desktop app reads `h[kind]`) plus
-    nested `processing_s`, `audio_s`, `sessions`, `requests` and `errors` splits
-    (SLOT_MEASURES), so the backend's busy-hours grid can show whichever
-    measure the console has picked. A slot is emitted when it saw any
+    """Shared by _fill_from_rollups and _fill_from_jobs: the sparse arrays
+    and the per-kind streaks. A slot in `hours` carries its words flat (the
+    desktop app reads `h[kind]`) plus nested SLOT_MEASURES splits, so the
+    busy-hours grid can show whichever measure the console has picked. A slot is emitted when it saw any
     words, any request or any processing time."""
     extra_by_slot = extra_by_slot or {}
     doc["series"] = [{"day": _epoch_day(d), **_rounded(by_day[d])}
@@ -2515,7 +2485,8 @@ def _fill_from_jobs(conn, doc, user_id, tz, today, with_stages,
                     key_id=None, kinds=()) -> None:
     """The `with=` document: every figure from the per-job rows that ran all
     of `with_stages`. Sessions are jobs, requests are utterances, an error
-    is a job whose last status was not ok. The dictation buckets come from
+    is a job whose status is not ok (a dictation stays failed once any of
+    its utterances failed). The dictation buckets come from
     the reported outcome columns (an unreported job stays unbucketed, as in
     the rollup); the translating stage's kept_original is the per-job
     segment count the guard fell back on, the same figure the rollup sums
@@ -2656,10 +2627,7 @@ def _stages(conn: sqlite3.Connection, user_id: str | None, start_hour: int,
             end_hour: int, window: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
     """Stage rows for the window, every recorded stage in pipeline order
     (document() drops the decode and the download again unless asked for
-    all_stages — the desktop app lists the optional ones). The per-stage extras are
-    emitted only where they mean something: a speaker average for
-    diarization, a retained-audio average for silence skipping, a
-    kept-original count for translation."""
+    all_stages — the desktop app lists the optional ones)."""
     targets: dict[str, list[dict[str, Any]]] = {}
     where, params = _scope_where(user_id)
     for r in conn.execute(
