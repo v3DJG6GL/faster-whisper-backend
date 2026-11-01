@@ -161,10 +161,6 @@ def _check_url(url: str) -> None:
     _resolve_pinned(parts.hostname or "", port)
 
 
-# Only connect() is overridden: everything else (the Host header, the request
-# line, chunking) still sees the original hostname, which is what makes
-# name-based virtual hosting and certificate validation keep working.
-
 def _dials_a_proxy(conn) -> bool:
     # HTTPS CONNECT tunnel (stdlib sets _tunnel_host) or plain-HTTP proxying
     # (via_proxy stamped by _GuardedHTTPHandler): conn.host is the proxy.
