@@ -1,8 +1,8 @@
 
 <script>(function(){
-  // Read the page-key meta once for every helper (no-access landing,
-  // SCALE_PICKER):
-  //   * __current_page = permission key (for can()/scope() lookups)
+  // Read the page-key meta once for every helper (this file, the no-access
+  // landing, ACTIVITY_CLUSTER):
+  //   * __current_page = permission key (indexes whoami's permissions.pages)
   //   * __current_page_path = full URL path, so the landing heading of a
   //     nested page reads /settings/api-keys, not one derived from the key.
   try {
@@ -268,8 +268,7 @@
         .forEach(function(a){ a.classList.remove('allowed'); });
     } catch(_) {}
 
-    // The HttpOnly session cookie (and any Authorization header from a
-    // non-browser caller) is sent automatically — no manual header needed.
+    // The HttpOnly session cookie is sent automatically — no manual header needed.
     fetch('/auth/whoami', {
       headers: { Accept: 'application/json' }, cache: 'no-store',
     })
