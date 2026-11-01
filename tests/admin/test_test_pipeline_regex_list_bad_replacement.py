@@ -1,8 +1,9 @@
 """POST /settings/test-pipeline with a regex-list entry whose replacement
 fails at substitution time with something other than re.error: an unknown
-group name raises IndexError, a non-string replacement raises TypeError. The
-engine skips only that entry, so the dry run must keep the earlier entries'
-output and show the failure as an advisory."""
+group name raises IndexError, a non-string replacement raises TypeError. A
+save refuses such an entry, but the dry run runs the unsaved card, so it must
+skip only that entry, keep the earlier entries' output and show the failure
+as an advisory."""
 
 import pytest
 
