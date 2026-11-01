@@ -18,7 +18,8 @@ Protocol (see streaming/session.py for the emission contract):
     1. first TEXT frame: JSON config
        {"type":"config","model":..,"language":..,"response_format":"json|verbose_json",
         "audio":{"format":"pcm_s16le","sample_rate":16000}}
-    2. BINARY frames: raw 16 kHz mono s16le PCM, or an encoded stream
+    2. BINARY frames: raw 16 kHz mono s16le PCM (audio.sample_rate is not
+       read: raw PCM is always taken as 16 kHz), or an encoded stream
        (audio.format in transport.ENCODED_FORMATS, decoded via ffmpeg)
     3. control TEXT frames: {"type":"flush"} | {"type":"stop"}
   server → client:
@@ -182,7 +183,8 @@ _SURROGATE_RE = re.compile(r"[\ud800-\udfff]")
 
 
 # The handshake `language`: a Whisper code (`de`, `haw`) or a BCP-47-ish tag,
-# "-" or "_" separated (POSIX LANG and Java's Locale.toString() write "de_DE").
+# "-" or "_" separated (Java's Locale.toString() and POSIX locale names write
+# "de_DE"; a LANG codeset suffix such as ".UTF-8" does not match).
 _LANGUAGE_RE = re.compile(r"\A[A-Za-z]{2,3}([-_][A-Za-z0-9]{2,8}){0,2}\Z")
 
 
@@ -451,7 +453,7 @@ def _build_transcribe_kwargs(model_name: str, *, final: bool,
         overrides=overrides, ident=ident,
     )
     if final:
-        # Full-utterance decode — identical to the batch route, EXCEPT
+        # Full-utterance decode — the batch route's kwargs with two pins.
         # condition_on_previous_text (STREAMING_FINAL_CONDITION_ON_PREVIOUS_TEXT,
         # default off): when trailing non-speech survives into the buffer,
         # Whisper decodes the sub-second leftover after the last word as its
@@ -518,9 +520,9 @@ def _trim_trailing_nonspeech(audio: "np.ndarray", pad_ms: int,
     mid-utterance trim on_final re-bases the capture's segments by trimmed_sec
     onto the utterance timeline — captures are NOT on the buffer timeline).
 
-    Returns ``audio`` unchanged when trimming is disabled (pad_ms <= 0), Silero
-    is unavailable, no speech is found (the pre-decode gates own that case), or
-    nothing lies beyond the pad."""
+    Returns ``audio`` unchanged when trimming is disabled (pad_ms <= 0),
+    faster_whisper.vad cannot be imported, no speech is found (the pre-decode
+    gates own that case), or nothing lies beyond the pad."""
     if pad_ms <= 0 or getattr(audio, "size", 0) == 0:
         return audio
     try:
@@ -703,12 +705,11 @@ async def transcribe_stream(ws: WebSocket) -> None:
             try:
                 conf = json.loads(first["text"])
             except (ValueError, TypeError, RecursionError):
-                # RecursionError is what json actually raises on a deeply
-                # nested document, and it is a RuntimeError, not a ValueError.
-                # A ~400 KB "[[[[..." frame (well inside ws_max_size) used to
-                # escape to the handler's blanket except Exception, which logs
-                # a full traceback carrying absolute paths, unthrottled, at a
-                # rate the client picks.
+                # RecursionError is what json raises on a deeply nested
+                # document (a ~400 KB "[[[[..." frame fits ws_max_size), and it
+                # is a RuntimeError, not a ValueError: uncaught, the blanket
+                # except Exception logs a full traceback with absolute paths,
+                # unthrottled, at a rate the client picks.
                 conf = {}
             if not isinstance(conf, dict):
                 conf = {}
@@ -1088,8 +1089,6 @@ async def transcribe_stream(ws: WebSocket) -> None:
             avoids discarding genuine quiet speech."""
             alp = getattr(seg, "avg_logprob", 0.0)
             temp = getattr(seg, "temperature", 0.0)
-            # Resolve through the per-identity layer like every sibling STREAMING_*
-            # decode knob here (cfg_for honours ident > per-model > global).
             floor = float(effective_config.cfg_for(final_model, "STREAMING_FINAL_DROP_MIN_AVG_LOGPROB", ident))
             ceil = float(effective_config.cfg_for(final_model, "STREAMING_FINAL_DROP_TEMPERATURE", ident))
             return alp < floor and temp >= ceil
@@ -1110,9 +1109,9 @@ async def transcribe_stream(ws: WebSocket) -> None:
             # Off the event loop: this is a full Silero sweep over the whole
             # final buffer (up to max_buffer_sec), and decode_final is awaited
             # from the pump task — run inline it stalls the producer's
-            # ws.receive() drain (the wedge documented at the queue-sizing
-            # note). The pump is the sole session mutator, so the extra
-            # suspension adds no new interleaving.
+            # ws.receive() drain (the wedge the producer→consumer hand-off
+            # note describes). The pump is the sole session mutator, so the
+            # extra suspension adds no new interleaving.
             _untrimmed_s = audio.shape[0] / SAMPLE_RATE
             audio = await asyncio.to_thread(
                 _trim_trailing_nonspeech,
@@ -1874,8 +1873,9 @@ async def transcribe_stream(ws: WebSocket) -> None:
         async with send_lock:
             await _safe_ws_send(ws, ready_msg)
 
-        # Start the consumer before any audio is queued (the handshake byte, pending
-        # audio, or the receive loop) so nothing waits on a not-yet-running pump.
+        # Start the consumer before any audio is queued (the first frame's
+        # pending_audio, or the receive loop) so nothing waits on a
+        # not-yet-running pump.
         consumer_task = asyncio.create_task(_pump())
         if pending_audio:
             await transport.feed(pending_audio)
@@ -1923,7 +1923,6 @@ async def transcribe_stream(ws: WebSocket) -> None:
                             pass
                     break
                 if msg.get("bytes") is not None:
-                    # Only a NON-EMPTY audio payload re-arms the idle deadline.
                     if msg["bytes"]:
                         _last_audio = _loop.time()
                     await transport.feed(msg["bytes"])
@@ -2062,8 +2061,7 @@ async def transcribe_stream(ws: WebSocket) -> None:
             except Exception:  # noqa: BLE001
                 pass
         # Stop the consumer before closing the session so the two never touch the
-        # session concurrently. On the normal path it has already finished (awaited
-        # above); on an error/disconnect path cancel + await it here.
+        # session concurrently (normally it already finished, awaited above).
         if consumer_task is not None and not consumer_task.done():
             consumer_task.cancel()
             try:
