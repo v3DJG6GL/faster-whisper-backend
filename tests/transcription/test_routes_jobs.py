@@ -19,8 +19,6 @@ def _post(client, headers=None, **data):
                        headers=headers or {})
 
 
-# --- rows land on every POST path ------------------------------------------
-
 @pytest.mark.parametrize("fmt", ["json", "text", "verbose_json", "srt", "vtt"])
 def test_post_with_progress_id_stores_the_verbatim_payload(client, fmt):
     r = _post(client, progress_id=_PID, response_format=fmt)
@@ -72,10 +70,9 @@ def test_failed_run_stores_the_error_and_no_result(client, fake_model):
 
 def test_undecodable_upload_is_a_400_not_a_server_fault(client, fake_model,
                                                        app_module, monkeypatch):
-    """Bytes that are not audio raise av's InvalidDataError out of
-    model.transcribe; that fell into the generic arm as a 500 "transcription
-    failed" logged at ERROR, which a client reads as a retryable server
-    fault. The ledger still files it as a decode failure."""
+    """Bytes that are not audio (av's InvalidDataError out of
+    model.transcribe) are the client's fault: a 500 would read as a
+    retryable server fault. The ledger still files it as a decode failure."""
     import av
     def _not_audio(path, **kw):
         raise av.error.InvalidDataError(
@@ -153,8 +150,6 @@ def test_text_translation_failure_records_failed(client, app_module,
     row = client.get(f"/v1/jobs/{_PID}").json()
     assert row["state"] == "failed" and row["error"] == "model refused"
 
-
-# --- the live merge ------------------------------------------------------------
 
 def _seed_running(app_module, pid=_PID, owner=None):
     js.start(job_id=pid, request_id="req", kind="transcribe",
@@ -237,8 +232,6 @@ def test_delete_spares_a_row_reposted_between_read_and_delete(client,
     assert client.delete(f"/v1/jobs/{_PID}").json() == {"deleted": False}
     assert real_get(_PID)["state"] == "running"
 
-
-# --- gates, ownership, listing ----------------------------------------------
 
 def test_malformed_id_is_422_and_unknown_is_404(client):
     assert client.get("/v1/jobs/NOPE").status_code == 422
@@ -338,8 +331,6 @@ def test_rate_limited_answers_429(client, app_module, monkeypatch):
     assert r.status_code == 429 and r.headers.get("retry-after")
 
 
-# --- stored results and retained media ---------------------------------------
-
 def test_result_drops_dangling_media_ids(client):
     assert _post(client, progress_id=_PID).status_code == 200
     js.finish(job_id=_PID, state="done", ttl_s=3600, result={
@@ -410,8 +401,6 @@ def test_result_refreshes_a_live_media_expiry(client, tmp_path):
     assert body["source_media_expires_at"] == ums.expires_at_unix(mid)
 
 
-# --- lifecycle -----------------------------------------------------------------
-
 def test_lifespan_marks_interrupted_runs_failed(client, app_module):
     js.start(job_id=_PID, request_id="req", kind="transcribe", user_id=None,
              key_id=None, model="m", source_kind="file", source_name="a",
@@ -448,8 +437,6 @@ def test_jobs_sweep_runs_off_the_loop_thread(app_module, monkeypatch):
     assert calls == [False]
 
 
-# --- the id belongs to whoever ran it first -------------------------------------
-
 def test_foreign_progress_id_never_replaces_the_owners_row(client, make_user_key):
     make_user_key("root", is_admin=True)   # locks the server down
     _, alice = make_user_key("alice")
@@ -479,8 +466,9 @@ def test_jobs_start_leaves_pruning_to_the_retention_loop(client, app_module,
 
 def test_jobs_finish_never_raises_on_an_unencodable_payload(client, app_module):
     assert _post(client, progress_id=_PID).status_code == 200
-    # The sync helper is called bare on translate_text's success tail: an
-    # encoder error must be swallowed like every other ledger failure.
+    # Its worker-thread callers (translate_text's abort catch-all,
+    # _jobs_start_async's cancel path) never await it: an encoder error
+    # must be swallowed like every other ledger failure.
     tx_progress._jobs_finish_sync(_PID, status="ok", payload={"x": object()})
 
 
