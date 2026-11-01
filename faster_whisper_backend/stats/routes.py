@@ -67,10 +67,9 @@ _require_stats_host = web_common.require_user_webui_host
 
 
 def _require_stats_page_sse(request: Request) -> dict[str, Any]:
-    """SSE-aware `require_page("stats")` — one line over the shared resolver
-    in auth, so this gate can never drift from the Depends path (bearer
-    header, then the HttpOnly session cookie EventSource sends by itself;
-    open mode only on the admin host allowlist)."""
+    """SSE-aware `require_page("stats")` (cookie-capable: EventSource sends
+    no headers) — the shared auth resolver, so it can never drift from the
+    Depends path."""
     return auth.resolve_user_for_page_sse(request, "stats")
 
 
@@ -89,7 +88,7 @@ class StatsScope:
                        admins, and own-scope viewers (every row is theirs)
       sees_machine     the machine cards (gpu/host/process/latency/endpoints/
                        5xx/models/preload); False replaces them with a
-                       coarse `server` block (decision 2, 2026-09-02)
+                       coarse `server` block (see _coarse_server)
     """
     scope: str
     user_id: str | None
@@ -107,11 +106,10 @@ def stats_scope_for(user: dict[str, Any], *,
     returns (`user_id`, `is_admin`, `permissions`).
 
     admin                       → all, every identity, machine visible
-    admin + preview_user_id     → "own" for THAT user (the api-keys page's
-                                  preview link); still sees the machine —
-                                  it is the admin looking, by design
+    admin + preview_user_id     → "own" for THAT user (`?user=` on
+                                  /stats/usage and /stats/jobs); still sees
+                                  the machine — it is the admin looking, by design
     non-admin, stats="all"      → all, identities scrubbed, machine visible
-                                  (today's behaviour)
     non-admin, stats="own"      → own rows only, identities on (they are
                                   all the caller's), machine only when
                                   cfg.STATS_OWN_SCOPE_SHOW_SYSTEM_METRICS (read at call
@@ -338,7 +336,9 @@ def _unscrub(dim: str, labels: list[str], scrub: bool, caller_uid: str | None) -
     A non-admin "all" viewer sends the row `id` the picker / leaderboard
     gave it (or, for older links, the opaque label it was shown), so each
     value is matched against every id the rollups know and against its
-    opaque label. Unknown values are dropped rather than refused."""
+    opaque label. Unknown values are dropped rather than refused; when
+    none match, the "__no_match__" sentinel keeps the filter matching
+    nothing instead of widening to everyone."""
     if not scrub:
         return labels
     want = set(labels)
@@ -518,11 +518,10 @@ async def stats_usage(
         out["scope"] = scope.scope
         # What the page asked for, as it asked (labels for scrubbed viewers).
         out["filter"].update({"kinds": kind_list, "users": user_list, "keys": key_list})
-        # Display names for the picked user ids. The page otherwise learns
-        # them only from the who picker or a by=user board, so a pasted or
-        # reloaded `users=` link matched the jobs table's running rows (keyed
-        # by username) against raw ids. Names only where the viewer already
-        # sees identities, or for their own id.
+        # Display names for the picked user ids: a pasted / reloaded `users=`
+        # link has no picker or by=user board to learn them from, and the jobs
+        # table's running rows are keyed by username. Names only where the
+        # viewer already sees identities, or for their own id.
         if user_list:
             names = api_keys_store.get_usernames(user_list)
             out["filter"]["user_labels"] = {
@@ -785,8 +784,8 @@ async def stats_history(
     # an absurd value inside SQLite's integer range.
     step_s = (min(max(cadence, int(step)), max(cadence, int(t1 - t0)))
               if step else auto)
-    # A store whose init_db failed at startup (logged, non-fatal) raised from
-    # _require_conn() here: a bare 500 with a traceback on every spark fetch.
+    # A store whose init_db failed at startup (logged, non-fatal) would raise
+    # from _require_conn(): a bare 500 with a traceback on every spark fetch.
     if not system_metrics_store.is_open():
         raise HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -847,9 +846,8 @@ async def stats_stream(
     return web_common.sse_response(gen())
 
 
-# --- HTML template -----------------------------------------------------------
-# Single-file, no build step. Mirrors the /logs and /settings style. uPlot is
-# loaded from the local /static mount — no CDN, works offline.
+# No build step; uPlot and stats.js load from the local /static mount — no
+# CDN, works offline.
 
 _STATS_VIEWER_HTML = templates.load(__file__, "stats.html")
 # /static is cacheable (ETag), the page is not: the version in the query
