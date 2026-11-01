@@ -6,7 +6,7 @@ can assert on the served HTML directly."""
 
 import pytest
 
-# Every WebUI page that renders the shared chrome.
+# A sample of the WebUI pages that render the shared chrome.
 _PAGES = [
     "/stats",
     "/logs",
