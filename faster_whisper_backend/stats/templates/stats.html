@@ -61,8 +61,7 @@
     padding: 0 0.35em; border-radius: 2px; pointer-events: none; white-space: nowrap; z-index: 2; }
   .spark-flag { bottom: 0; transform: translateX(-50%); background: var(--yellow); color: #1a1200; }
   .spark-vp { top: 2px; background: rgba(22, 27, 34, .88); color: var(--bold); }
-  /* Edit-layout mode: dashed tile borders, grab cursor on titles, corners
-     visible. Off = tiles are static (see staticGrid) and titles are text. */
+  /* Edit-layout mode. Off = tiles are static (see staticGrid) and titles are text. */
   body.layout-edit .grid-stack-item .card { border-style: dashed; border-color: var(--cyan); }
   body.layout-edit .grid-stack-item .card h3 { cursor: grab; }
   body.layout-edit .grid-stack-item .card h3:focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; }
@@ -128,7 +127,6 @@
   .chip.filter .x { color: var(--dim); }
   .chip:focus-visible { outline: 2px solid var(--cyan); outline-offset: 1px; }
   .sb-none { font-size: var(--fs-xs); color: var(--dim); }
-  /* who / keys pickers: shared .picker widget, CSS + JS in web_common (PICK_LIST_JS). */
   .card .win .fn { color: var(--cyan); }
   header .subbar-caption { padding-top: 0.3rem; padding-bottom: 0.35rem; }
   header .subbar-caption:has(.sb-summary:empty) { display: none; }
@@ -225,8 +223,7 @@
     overflow: hidden; text-overflow: ellipsis; }
   .hl .v small { color: var(--dim); font-size: var(--fs-xs); font-weight: 400; margin-left: 0.25rem; }
   .hl .v.warn { color: var(--yellow); }
-  /* Headline tiles that carry a measure double as its picker: the active
-     one is underlined in the accent, the rest lift on hover. */
+  /* Headline tiles that carry a measure (data-m) double as its picker. */
   .hl[data-m] { cursor: pointer; border-bottom: 2px solid transparent; }
   .hl[data-m]:hover { background: #262c34; }
   .hl[data-m]:focus-visible { outline: 2px solid var(--cyan); outline-offset: 1px; }
@@ -938,9 +935,9 @@ const hist = {
 
 // The server's uptime at the last sample: when it goes backwards the server
 // restarted between two samples, and the sparks would join the samples from
-// before the outage to the fresh ones. The recovery probe used to clear the
-// ring on every reconnect, but the browser's own EventSource retry usually
-// beats it through a restart (onopen then cancels the probe).
+// before the outage to the fresh ones. A reconnect hook cannot catch this: the
+// browser's own EventSource retry usually beats the recovery probe through a
+// restart (onopen then cancels the probe).
 let _lastUptime = null;
 function pushHistory(snap) {
   const up = typeof snap.uptime_sec === 'number' ? snap.uptime_sec : null;
@@ -1099,9 +1096,9 @@ function scrubStep(delta) {
   scrubTo(cur + delta);
 }
 // Park every spark's cursor off-plot: a cursor left on a sample is
-// re-resolved on every setData and would freeze the readouts again. A
-// programmatic setCursor is not published to the sync group (see scrubTo),
-// so parking only one spark left the others on their sample.
+// re-resolved on every setData and would freeze the readouts again. Each
+// spark is parked because a programmatic setCursor is not published to the
+// sync group (see scrubTo).
 function parkSparkCursors() {
   Object.values(sparks).forEach(u => { if (u) { try { u.setCursor({ left: -10, top: -10 }); } catch (_) {} } });
 }
@@ -1137,9 +1134,6 @@ function refreshStatusPill() {
   statusEl.className = 'pill live';
   statusEl.textContent = liveMode !== 'live' ? 'live · rings show ' + rangeLabel(liveMode) : 'live';
 }
-// The ring cards' window chips (see .card .win): live / paused at a
-// clock time / the history window. Clicking a paused chip returns to live;
-// otherwise it flashes the rings control so the reader finds it.
 let rangeTo = null;    // epoch seconds the last /stats/history fetch ended at
 let gpuTotalMb = null; // latest GPU total VRAM for MB→% conversion
 function _clock(ts, secs) {
@@ -1151,6 +1145,9 @@ function flashCtl(id) {
   el.scrollIntoView({ block: 'nearest' });
   el.classList.remove('flash'); void el.offsetWidth; el.classList.add('flash');
 }
+// The ring cards' window chips (see .card .win): live / paused at a
+// clock time / the history window. Clicking a paused chip returns to live;
+// otherwise it flashes the rings control so the reader finds it.
 function refreshRingChips() {
   let cls = 'win', html;
   if (liveMode !== 'live') {
@@ -1498,7 +1495,7 @@ function setBar(barEl, pct) {
   barEl.classList.toggle('crit', pct >= 90);
 }
 
-// Scope-aware chrome, applied on the first snapshot only.
+// Scope-aware chrome.
 // The payload's `scope` ("own"|"all") and `machine` (bool) are decided
 // server-side (StatsScope). scope=own hides the per-user controls — the only
 // user is the viewer — and machine=false swaps the machine tiles for the
@@ -1511,7 +1508,7 @@ let scopeApplied = null;
 function applyScope(snap) {
   const sig = (snap.scope || 'all') + ':' + (snap.machine === false ? 0 : 1);
   if (scopeApplied === sig) return;
-  if (scopeApplied !== null) { location.reload(); return; }   // scope moved
+  if (scopeApplied !== null) { location.reload(); return; }
   scopeApplied = sig;
   if (snap.scope === 'own') {
     document.body.classList.add('scope-own');
@@ -1630,9 +1627,8 @@ function render(snap) {
     // the header cluster are all there is to draw.
     renderServer(snap.server);
     renderJobs(snap);
-    // This payload has no top-level gpu (pinned server-side); the coarse one
-    // the lite stream gives every other page sits under server.gpu. Without
-    // it the header cluster showed '–' for GPU / VRAM on /stats only.
+    // The header cluster reads a top-level gpu, which this payload lacks
+    // (pinned server-side): hand it the coarse one under server.gpu.
     if (typeof window._fwFeedActivity === 'function') {
       try { window._fwFeedActivity(Object.assign({}, snap, { gpu: snap.server && snap.server.gpu })); } catch (_) {}
     }
@@ -2171,8 +2167,7 @@ function renderJobs(snap) {
   }
   const moreBtn = $('rj-more');
   if (moreBtn) moreBtn.addEventListener('click', rjLoadMore);
-  // The sub-bar's filters changed (static/stats.js): re-render from the
-  // last snapshot and start paging from the top again.
+  // Called by static/stats.js when the sub-bar's filters change.
   window._fwRerenderJobs = () => { rjResetPages(); if (lastJobsSnap) renderJobs(lastJobsSnap); };
   // Cancel and row expansion are delegated: rows are re-rendered every tick.
   const body = $('rt-rows');
@@ -2196,8 +2191,8 @@ let es = null;
 // the stream delivers. refreshStatusPill reads it.
 let connState = null;
 let recoveryTimer = null;
-// Recovery back-off, kept across failures: onerror re-declaring it made
-// every new failure restart at 1.5 s. Only a (re)opened stream resets it.
+// Recovery back-off lives at module level so it grows across failures;
+// only a (re)opened stream resets it.
 let recoveryDelay = 1500;
 const statusEl = $('status');
 wireRingControls();
