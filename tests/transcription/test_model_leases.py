@@ -530,6 +530,50 @@ def test_a_reload_holder_release_leaves_the_old_holder_lease_orphaned(
     assert tx_models._orphan_leases == {} and tx_models._model_leases == {}
 
 
+def test_a_failed_register_leaves_no_lease_a_cache_hit_took_meanwhile(
+        monkeypatch):
+    # The model is cached before the register write, so a lock-free cache hit
+    # leases it while that write runs. When the write then raises, that
+    # holder's release must not leave a count behind that pins the next load
+    # of "a" (a miss for "b" overflowed the cap until restart).
+    _stub_load(monkeypatch)
+    monkeypatch.setattr(tx_models.cfg, "MAX_LOADED_MODELS", 1, raising=False)
+    monkeypatch.setattr(tx_models, "_model_load_lock", asyncio.Lock())
+    entered, go = threading.Event(), threading.Event()
+    real_register = model_registry.register_loaded_model
+
+    def _failing_register(*a, **kw):
+        real_register(*a, **kw)
+        if not entered.is_set():   # only the first load's write fails
+            entered.set()
+            go.wait(5)
+            # Raised past the insert: the registry entry is in already.
+            raise RuntimeError("registry write failed")
+    monkeypatch.setattr(model_registry, "register_loaded_model",
+                        _failing_register)
+
+    async def scenario():
+        loader = asyncio.create_task(
+            tx_models._get_or_load_model("a", lease=True))
+        while not entered.is_set():
+            await asyncio.sleep(0.01)
+        held = await tx_models._get_or_load_model("a", lease=True)
+        go.set()
+        with pytest.raises(RuntimeError):
+            await loader
+        tx_models._release_model_lease("a", held)
+        assert "a" not in model_registry._loaded_models
+        await tx_models._get_or_load_model("a")
+        await tx_models._get_or_load_model("b")
+
+    try:
+        asyncio.run(scenario())
+    finally:
+        go.set()
+    assert list(tx_models._loaded_models) == ["b"]
+    assert tx_models._orphan_leases == {} and tx_models._model_leases == {}
+
+
 def test_last_release_trims_a_cap_lowered_under_leases(monkeypatch):
     # The cap was lowered while every resident model was leased, so
     # trim_to_cap skipped them all; later requests only hit the cache, so no

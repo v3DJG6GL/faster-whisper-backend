@@ -1584,8 +1584,11 @@ async def _load_on_miss(name: str, *, lease: bool) -> "WhisperModel":
             if leased:
                 _release_model_lease(name, new_model)
             if not isinstance(e, asyncio.CancelledError):
-                # A failed register leaves nothing cached, as before.
-                _loaded_models.pop(name, None)
+                # A failed register leaves nothing cached, as before. Forced,
+                # as a lock-free cache hit may have leased the model during
+                # the write: that holder's lease turns orphaned, so its
+                # release cannot leave a count pinning the next load of name.
+                _drop_loaded_model(name, force=True)
                 if _cancelled is not None:
                     raise _cancelled from e
             raise
