@@ -48,12 +48,9 @@ const _PIPELINE_TYPES = [
 ];
 const _typePill = (t) => (_PIPELINE_TYPES.find(x => x.type === t) || {}).pill || t;
 
-// Bind Enter-to-commit on a text input. When `onEnter` is provided and the
-// user presses Enter, defer one tick before firing — if the input's value
-// changed during that tick, the user picked a datalist suggestion (native
-// behavior); skip the commit and let the next Enter fire it. Otherwise
-// invoke onEnter. Browsers update <input list> values synchronously when a
-// suggestion is selected, so a one-tick defer is enough to distinguish.
+// Enter commits after a one-tick defer: picking an <input list> suggestion
+// with Enter changes the value synchronously, so a changed value means a
+// datalist pick (no commit; the next Enter fires it).
 function _bindEnterCommit(inp, onEnter) {
   if (!onEnter) return;
   inp.addEventListener('keydown', (e) => {
@@ -99,15 +96,11 @@ function _makeMapRow(rule, key, val, commitData, datalistId, onEnter, ts, showDa
   td3.style.width = '2.5rem';
   const ki = document.createElement('input');
   ki.type = 'text'; ki.value = _esc(key);
-  // Spoken-word cell opts into a datalist on /quick-config so end-users
-  // get autocomplete from recent transcription FINALs. Admin /settings
-  // doesn't pass datalistId — no autocomplete on the admin page (it
-  // would clutter long maps).
+  // /quick-config autocompletes the spoken word from recent transcription
+  // FINALs; /settings passes no datalistId (it would clutter long maps).
   if (datalistId) ki.setAttribute('list', datalistId);
   const vi = document.createElement('input');
   vi.type = 'text'; vi.value = _esc(val);
-  // Map keys/values may contain \n etc.; <input> strips real newlines,
-  // so we display \n as literal 2-char escape and decode on read.
   // A repeated spoken word keeps only the LAST row's value, so every row
   // sharing a key is flagged; otherwise Save silently drops the others.
   // The server lowercases keys (and 422s keys differing only by case), so
@@ -177,19 +170,18 @@ function _makeMapRow(rule, key, val, commitData, datalistId, onEnter, ts, showDa
   return tr;
 }
 
-// ---- regex-list entry editor (shared by /settings + /quick-config) ----
-// An ordered batch of {pattern, replacement, label?, note?} entries. The DOM IS
-// the source of truth: _readEntries(parent) rebuilds rule.entries from the rows
-// in DOM order, so add / delete / drag-reorder all reduce to "mutate the DOM,
-// then _readEntries + commit". Empty-pattern rows are skipped on read (kept in
-// the DOM so an in-progress row isn't lost), mirroring cb:map. Helpers live at
-// script top level (not inside the branch) so they survive strict-mode block
-// scoping; _esc/_unesc handle \n etc. in the single-line pattern/replacement.
+// regex-list entry editor (shared by /settings + /quick-config): an ordered
+// batch of {pattern, replacement, label?, note?} entries. The DOM IS the source
+// of truth: add / delete / drag-reorder all reduce to "mutate the DOM, then
+// _readEntries + commit". Empty-pattern rows are skipped on read (kept in the
+// DOM so an in-progress row isn't lost), mirroring cb:map. Helpers live at
+// script top level so they survive strict-mode block scoping. Pattern and
+// replacement are regex source shown and read verbatim; only the label goes
+// through _esc/_unesc.
 let _rlDragSrc = null;
 
-// ---- Shared reorder affordances (used by THIS regex-list editor AND the
-// admin pipeline-rule list, which is a sibling <script> parsed after this one
-// so it inherits these globals) -------------------------------------------
+// Shared reorder affordances: also used by the admin pipeline-rule list, a
+// sibling <script> parsed after this one that inherits these globals.
 // Edge auto-scroll for native-DnD reorder lists. The browser's built-in drag
 // auto-scroll only fires in a sliver at the very viewport edge, crawls at a
 // fixed speed, and stalls the instant the pointer holds still. This drives a
@@ -212,12 +204,9 @@ function makeDragAutoScroll() {
     }
     scroller = null;
   }
-  // A sticky/fixed header pinned to the top of the viewport overlaps the top
-  // hot-zone, so the zone must START at the header's BOTTOM, not at y=0. Without
-  // this a tall sticky header swallows the whole top zone and you have to shove
-  // the cursor to the very window edge to scroll up (the bottom has no such
-  // overlap — which is exactly why only the top felt broken). Pinned at top:0,
-  // the header's bottom edge is constant during a drag, so resolve it once.
+  // A sticky/fixed header pinned at top:0 covers the top hot-zone, so the zone
+  // starts at the header's BOTTOM (else it swallows the zone). That edge is
+  // constant during a drag, so resolve it once.
   function computeTopInset() {
     const hdr = document.querySelector('header');
     if (!hdr) return 0;
@@ -272,9 +261,9 @@ const MOVE_CHEV_DOWN = '<svg viewBox="0 0 16 16" width="1em" height="1em" fill="
 function _readEntries(parent) {
   const out = [];
   parent.querySelectorAll('.rl-entry').forEach((en) => {
-    // find/repl are regex SOURCE — stored verbatim. NOT _unesc'd: that would
-    // collapse \n/\t/\\ and is paired with an _esc that doubles backslashes on
-    // display. Only the literal cb:map editor escapes (it holds raw strings).
+    // find/repl are regex SOURCE, read verbatim (and shown verbatim by frRow):
+    // _unesc would collapse \n/\t/\\ in the regex. Only cb:map (raw strings)
+    // and the label escape.
     const pat = (en.querySelector('.e-pattern') || {}).value || '';
     if (!pat) return;  // skip empty-pattern rows (no-op; stays in the DOM)
     const lbl = _unesc((en.querySelector('.e-label') || {}).value || '');
@@ -312,9 +301,8 @@ function _makeEntryRow(rule, entry, commitData, onEnter) {
     rule.entries = _readEntries(parent);
     commitData();
   }
-  // rail: drag grip (top) + a "rank stepper" — ▲ / ordinal / ▼ — for one-
-  // position nudges without dragging. The ordinal + end-stops are maintained
-  // by _renumberEntries; drag the grip for big jumps (now with edge auto-scroll).
+  // rail: drag grip + ▲/ordinal/▼ stepper for one-position nudges; the ordinal
+  // and end-stops are maintained by _renumberEntries.
   const rail = document.createElement('div');
   rail.className = 'rl-rail';
   const grip = document.createElement('span');
@@ -353,13 +341,10 @@ function _makeEntryRow(rule, entry, commitData, onEnter) {
   });
   const ord = document.createElement('span');
   ord.className = 'rl-ord'; ord.textContent = '0';
-  // ↑/↓ move this entry one position. The DOM is the source of truth, so a move
-  // is just "reinsert, then _readEntries + renumber + commit" — exactly what a
-  // drop does. The NEIGHBOUR is moved, not this row: reinserting the row would
-  // blur the ↑/↓ button the keyboard user just pressed, dropping focus to
-  // <body> after one step. insertBefore(x, null) appends (last). A move onto an
-  // end-stop disables the pressed button, which drops focus to <body> too —
-  // hand focus to the row's other arrow then.
+  // ↑/↓ move the NEIGHBOUR, not this row: reinserting the row would blur the
+  // button the keyboard user just pressed, dropping focus to <body>. A move onto
+  // an end-stop disables the pressed button (same focus loss), so hand focus to
+  // the row's other arrow then.
   function _rlMove(delta) {
     const parent = row.parentNode;
     if (!parent) return;
@@ -391,10 +376,8 @@ function _makeEntryRow(rule, entry, commitData, onEnter) {
   dnBtn.addEventListener('click', () => { if (!dnBtn.disabled) _rlMove(1); });
   stepper.appendChild(upBtn); stepper.appendChild(ord); stepper.appendChild(dnBtn);
   rail.appendChild(grip); rail.appendChild(stepper);
-  // body
   const body = document.createElement('div');
   body.className = 'rl-ebody';
-  // row 1: optional label + note toggle + delete
   const r1 = document.createElement('div');
   r1.className = 'rl-erow1';
   const lwrap = document.createElement('div');
@@ -434,7 +417,6 @@ function _makeEntryRow(rule, entry, commitData, onEnter) {
     if (parent) { rule.entries = _readEntries(parent); _renumberEntries(parent); commitData(); }
   });
   r1.appendChild(lwrap); r1.appendChild(noteBtn); r1.appendChild(del);
-  // find / replace mono rows
   function frRow(gut, cls, val, ph) {
     const fr = document.createElement('div');
     fr.className = 'rl-fr';
@@ -460,19 +442,15 @@ function _makeEntryRow(rule, entry, commitData, onEnter) {
 }
 
 function renderTypeEditor(rule, commitData, opts) {
-  // opts (optional):
-  //   datalistId      — passed through to _makeMapRow for cb:map autocomplete
-  //                     on /quick-config. Other rule types ignore.
-  //   makeSaveBtn     — `() => HTMLButtonElement` factory. When provided, the
-  //                     editor appends a per-rule Save button. /quick-config
-  //                     passes a factory closed over the global dirty Set;
-  //                     /settings (admin) omits this opt → no per-card Save.
-  //   commitOnEnter   — `() => void` callback. When provided, pressing Enter
-  //                     inside any text input in this editor fires it (after
-  //                     a one-tick guard for native datalist picks). Skipped
-  //                     for the cb:wordlist textarea (Enter inserts newline)
-  //                     and the terminal type (no inputs). /quick-config
-  //                     passes `doSave`; admin /settings omits → Enter inert.
+  // opts (all optional):
+  //   datalistId      — cb:map key autocomplete (/quick-config).
+  //   makeSaveBtn     — `() => HTMLButtonElement`; adds a per-rule Save button
+  //                     (/quick-config; admin /settings has no per-card Save).
+  //   commitOnEnter   — fired by Enter in any text input (after a one-tick
+  //                     guard for native datalist picks); not the wordlist
+  //                     textarea, where Enter inserts a newline.
+  //   showNote / showRepeat — admin-only fields (see below).
+  //   showMapDates / collapseMapAfter — cb:map date column / fold older rows.
   opts = opts || {};
   const onEnter = opts.commitOnEnter;
   const box = document.createElement('div');
@@ -536,8 +514,8 @@ function renderTypeEditor(rule, commitData, opts) {
     box.appendChild(repHelp);
   }
 
-  // Right-align the per-card Save button on rule types that don't have a
-  // sibling "+ add entry" bar (cb:map handles its own pairing below).
+  // Save row for rule types without a "+ add entry" bar (regex-list and
+  // cb:map put Save next to their add button instead).
   function _appendSaveRow(parent) {
     if (!opts.makeSaveBtn) return;
     const saveRow = document.createElement('div');
@@ -597,7 +575,6 @@ function renderTypeEditor(rule, commitData, opts) {
       const pi = row.querySelector('.e-pattern');
       if (pi) pi.focus();
     });
-    // Pair add + save side-by-side, like the cb:map bar.
     const btnRow = document.createElement('div');
     btnRow.style.cssText = 'display:flex;gap:0.5rem;align-items:stretch;margin-top:0.6rem;';
     btnRow.appendChild(addBtn);
@@ -639,9 +616,8 @@ function renderTypeEditor(rule, commitData, opts) {
       + 'word-bounded, case-insensitive). Edit entries below.';
     box.appendChild(note);
     // "n / cap" readout so a full dictionary is visible BEFORE a save
-    // bounces off the server's entry cap. __mme now ships with the shared
-    // editor (defaulted at the top of RULE_EDITOR_JS from the MapRule
-    // schema); /quick-config's load() overwrites it with the API value.
+    // bounces off the server's entry cap. __mme defaults to the MapRule cap
+    // (top of this file); /quick-config's load() overwrites it from the API.
     const mapCap = (typeof window.__mme === 'number') ? window.__mme : 0;
     const cnt = document.createElement('div');
     cnt.className = 'help';
@@ -662,7 +638,6 @@ function renderTypeEditor(rule, commitData, opts) {
     const collapseAfter = opts.collapseMapAfter || 0;
     const hiddenCount = (collapseAfter && rows.length > collapseAfter)
       ? rows.length - collapseAfter : 0;
-    // Toggle for the older (collapsed) head — only when there's an overflow.
     if (hiddenCount) {
       const toggle = document.createElement('button');
       toggle.type = 'button';
@@ -691,31 +666,22 @@ function renderTypeEditor(rule, commitData, opts) {
     addBtn.textContent = '+ add entry';
     addBtn.style.flex = '1';
     addBtn.addEventListener('click', () => {
-      // Append a new <tr> directly so the surrounding row body stays
-      // expanded and other expanded rows keep their input state.
-      // Pass empty key/val: _readMap rebuilds the dict from DOM inputs
-      // on every change and skips empty-key rows, so the new row's
-      // blank input doesn't need a placeholder slug in rule.map. No
-      // commitData() here — the first keystroke triggers it via the
-      // input's rebuild listener (an empty row contributes nothing
-      // to the saved dict).
+      // Append directly (no re-render) so the row body stays expanded and
+      // other rows keep their input state. No placeholder key and no
+      // commitData(): _readMap skips empty-key rows, and the first keystroke
+      // commits.
       if (!rule.map) rule.map = {};
       const newTr = _makeMapRow(rule, '', '', commitData, opts.datalistId, onEnter, 0, opts.showMapDates);
       tbl.appendChild(newTr);
-      // Focus + open the autocomplete dropdown immediately so the user
-      // sees recent-transcription candidates without a second click.
-      // Synchronous showPicker() inside this user-initiated handler
-      // preserves transient activation (Chrome 99+, Firefox 149+, no-op
-      // on older browsers — degrades to focus-only).
+      // Open the autocomplete straight away. showPicker() must run
+      // synchronously in this click handler to keep transient activation
+      // (Chrome 99+, Firefox 149+; older browsers just focus).
       const ki = newTr.querySelector('td:first-child input');
       if (ki) {
         ki.focus();
         try { ki.showPicker(); } catch (_) { /* unsupported */ }
       }
     });
-    // Pair addBtn + saveBtn in a flex row so they sit side-by-side near
-    // the bottom of the map table. addBtn fills available width; saveBtn
-    // sits on the right with a min-width so its label reads comfortably.
     const btnRow = document.createElement('div');
     btnRow.style.cssText = 'display:flex;gap:0.5rem;align-items:stretch;margin-top:0.6rem;';
     btnRow.appendChild(addBtn);
@@ -725,12 +691,9 @@ function renderTypeEditor(rule, commitData, opts) {
       btnRow.appendChild(saveBtn);
     }
     box.appendChild(btnRow);
-    // Repaint the count on every row add/remove: mutations deliberately avoid
-    // re-rendering the editor (the add handler appends a <tr> directly, the
-    // per-row × removes one), so a build-time-only readout froze the moment a
-    // row changed. Counts DOM rows (not rule.map) so a blank just-added row
-    // shows in the total; the MutationObserver catches the delete path too —
-    // the × handler detaches the row, so no event ever bubbles to tbl.
+    // Row add/remove never re-renders the editor, so repaint on DOM changes.
+    // Counts <tr>s (not rule.map) so a blank just-added row counts; a
+    // MutationObserver because × detaches its row and no event bubbles to tbl.
     const paintCount = () => {
       const n = tbl.querySelectorAll('tr').length;
       cnt.textContent = n + (mapCap ? ' / ' + mapCap : '') + ' entries'
