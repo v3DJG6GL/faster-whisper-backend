@@ -521,7 +521,7 @@ def _load_blocking_inner(ref: str, device: str, family: str,
         import llama_cpp
     except ImportError as e:
         # A broken install raises ImportError too — the log carries the real
-        # cause (same diagnosability note as diarization._load_blocking).
+        # cause.
         logger.error("[translate] llama_cpp import failed: %s", e)
         raise TranslationError(
             "translation dependencies are not installed on this server — "
@@ -564,12 +564,11 @@ def _load_blocking_inner(ref: str, device: str, family: str,
                 logger.warning("[translate] pre-download of %s timed out "
                                "(%s) — loading the cached copy", ref, e)
             else:
-                # An unreachable hub (DNS, refused, hub 5xx) fails fast, so
-                # the fallback below cannot hang — but its listing fails on
-                # the same hub too, as it does on any hub HTTP refusal (a
-                # revoked HF_TOKEN's 401, a gated or removed repo): load a
-                # copy already on disk first, as whisper's snapshot_download
-                # does.
+                # An unreachable hub (DNS, refused, hub 5xx) or a hub HTTP
+                # refusal (a revoked HF_TOKEN's 401, a gated or removed repo)
+                # fails fast, so the fallback below cannot hang, but its
+                # listing fails the same way: load a copy already on disk
+                # first, as whisper's snapshot_download does.
                 if _is_hub_unreachable(e) or _is_hub_refusal(e):
                     local_path = _cached_gguf(repo, quant)
                 if local_path:
@@ -756,8 +755,8 @@ def _predownload_gguf(repo: str, quant: "str | None",
 
 def _cached_gguf(repo: str, quant: "str | None") -> "str | None":
     """Resolve the .gguf for repo[:quant] from the local HF cache without
-    any network (LOCAL_FILES_ONLY path). Returns the path when exactly one
-    cached file matches the same glob from_pretrained applies, else None.
+    any network. Returns the path when exactly one cached file matches the
+    same glob from_pretrained applies, else None.
     Revisions are tried like the online path resolves them: the one "main"
     points at first, then newest first; the first revision holding a match
     decides, so a stale snapshot of a re-uploaded file never wins."""
@@ -795,8 +794,9 @@ def _draining(ref: str) -> bool:
 
 def _drop_locked(ref: str) -> bool:
     """Drop one cached model. Caller holds _lock. Declines (False) while a
-    job holds a lease on it — closing llama.cpp's native context under a
-    running decode is a use-after-free that takes the whole process down."""
+    job holds a lease on it or a decode on it is still draining — closing
+    llama.cpp's native context under a running decode is a use-after-free
+    that takes the whole process down."""
     if _active.get(ref, 0) > 0:
         logger.info("[translate] model %s is in use — eviction deferred", ref)
         return False
@@ -953,7 +953,6 @@ async def _get_model(ref: str, *, lease: bool = False, download_cb=None):
         # registry entry with no cached model is a phantom that only
         # _drop_locked would ever unregister.
         async with _lock:
-            # Re-trim: another ref's load may have inserted meanwhile.
             _trim_locked(_load_cap())
             _models[ref] = llm
             _params[ref] = params
@@ -1870,10 +1869,8 @@ async def translate_segments(
     # when dropping the context actually changes the prompt. Sampled families
     # (hunyuan, temp 0.7) get a meaningful re-roll either way.
     greedy = not _FAMILIES[family].sampling.get("temperature")
-    # ...and dropping the context only changes the prompt when the family's
-    # builder actually renders it — gemma/milmmt/seedx/chatml accept the
-    # ``context`` argument and ignore it, so their greedy retry would re-send
-    # a bit-identical prompt (custom: depends on the template having a slot).
+    # ...and dropping the context only changes the prompt when the builder
+    # renders it (Family.uses_context; custom: the template's {context} slot).
     ctx_changes = _FAMILIES[family].uses_context and (
         family != "custom" or "{context}" in (
             template_override if template_override is not None
@@ -1920,9 +1917,8 @@ async def translate_segments(
                               seg_idx: int) -> str:
         """One translation + guard; on failure ONE context-free retry (see
         _retry_context_free), then keep the original text + a warning.
-        Greedy families skip the retry when dropping the context cannot
-        change the prompt (identical prompt at temperature 0 = guaranteed
-        same output)."""
+        Greedy families skip the retry when it would re-send an identical
+        prompt (see ``greedy`` / ``ctx_changes``)."""
         nonlocal last_ok
         out, reason = await _translate_fit(text, target, context)
         reason = reason or _guard(text, out, target)
@@ -2095,7 +2091,6 @@ async def translate_segments(
                         # source text — revert the group like a guard hit.
                         reason = "redistribution left empty cues"
                 if reason is not None:
-                    # Whole-group revert to the source text.
                     for j in group:
                         results[j][target] = segments[j].get("text") or ""
                     span = (f"segment {group[0] + 1}" if len(group) == 1 else
