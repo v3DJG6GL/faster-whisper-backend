@@ -1160,6 +1160,67 @@ def test_alternation_tail_trading_with_the_atoms_around_it_stays_rejected(pat):
 
 
 @pytest.mark.parametrize("pat", [
+    r"(?:(?:sozusagen|eben)\s)+",
+    r"(?:(?:also|irgendwie) )+",
+    r"(?:(?:eben|sozusagen|halt), )+",
+    r"(?:\b(?:äh|ähm)\b,? ?)+",
+    r"(?:\b(?:also|irgendwie)\b )+",
+])
+def test_repeated_filler_word_list_is_accepted(pat):
+    """A mandatory letter of a word list was read as apart from the list's
+    own tail, so the last `e` of `irgendwie` seemed to trade with the `o|e`
+    slot holding its fourth letter, and every repeated filler cleanup was
+    refused. `\\b` after `(?:äh|ähm)` ends the shorter word only where the
+    longer one does not go on, so the optional `,? ?` after it need not."""
+    assert not g._nested_repetition(pat)
+    g.validate([("r", pat, "")])
+
+
+@pytest.mark.parametrize("pat", [
+    r"(?:(?:x?)?ain)+#",
+    r"(?:ain(?:b?)?)+#",
+    r"(?:ain(?: ?){0,1})+#",
+    r"(?:(?:b[bc]|[ab]c))+#",
+    r"(?:cb|[ac]bcb)+#",
+    r"(?: ?[a-c]|c?bbaa)+#",
+    r"(?:\b(?:ab|[ab]b)\b )+",
+])
+def test_empty_optional_group_or_class_overlapping_branches_are_rejected(pat):
+    """`(?:x?)?` matches empty as its body or by being skipped; `b[bc]` /
+    `[ab]c` both match `bc`, and `c?bbaa` starts with the `c` that `[a-c]`
+    takes, though no branch's witness shows it: each repetition matches two
+    ways — `"ain" * 22 + "!"` takes seconds in re.sub, twice that per extra
+    unit. A `\\b` after the list pins nothing when two same-width branches
+    match the same word."""
+    assert g._nested_repetition(pat)
+    with pytest.raises(ValueError, match="nested repetition"):
+        g.validate([("r", pat, "")])
+
+
+@pytest.mark.parametrize("pat", [
+    r"(?:(?:x)?ain)+#", r"(?:x?)?ain", r"(?:b[bc]|[ac]a)+#", r"(?:\d[,.]|[a-c]\d)+#",
+])
+def test_optional_group_that_cannot_match_empty_or_disjoint_classes_pass(pat):
+    assert not g._nested_repetition(pat)
+
+
+@pytest.mark.parametrize("pat", [
+    r"(?:[ab]?(?:bx|x)a)*#",
+    r"b(?:x?(?:(?:[ac]|xc)a))*x",
+    r"a(?: ?[a-c]|c?(?:bbaca|bbaa)){2,}#",
+    r"(?:(?:aa|cbc[bc]b)?x ?x|[a-c]){2,}",
+])
+def test_word_list_shifted_by_an_optional_atom_stays_rejected(pat):
+    """`[ab]?` before `(?:bx|x)` matches "bx" as `b` + `x` or skips to `bx`,
+    so the list's own positions do trade there; and a branch whose optional
+    atoms start it on a letter another branch takes overlaps that branch.
+    Both were refused only through the tail-trade misreading the filler
+    rules above suffered from — reading the list as one unit must not let
+    them through."""
+    assert g._nested_repetition(pat)
+
+
+@pytest.mark.parametrize("pat", [
     r"(?:[,.]?(?:\.(?=\.)|x))+#",
     r"\b(?:\.?(?:\.(?=\.)|;))+#",
     r"m(?:x?(?:x(?=x)|y))+#",

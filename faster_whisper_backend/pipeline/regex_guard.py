@@ -193,6 +193,11 @@ _HEX_ESCAPES = {"x": 2, "u": 4, "U": 8}
 # dictation rule needs anything near this many repetitions.
 _MAX_FIXED_COUNT = 10 ** 4
 
+# Steps the in-process branch-overlap walk (_class_runs_overlap) may take for
+# one alternation before it answers "overlaps": hundreds of class branches
+# each holding optional atoms would otherwise hold the save lock for seconds.
+_OVERLAP_WALK_CAP = 200_000
+
 _SELF = os.path.abspath(__file__)
 
 
@@ -638,6 +643,13 @@ def _nested_repetition(pat: str) -> bool:
             # quantifier on the group itself ((?>a)+) still repeats.
             if frame["lookaround"]:
                 continue
+            # `(?:x?)?` matches empty two ways — its body matching empty, or
+            # skipped — so each repetition of an enclosing group doubles the
+            # paths to try: `(?:(?:x?)?ain)+#` is exponential although no
+            # atom in it repeats, and _branch_atoms reads `(?:x?)?` as `x?`.
+            if (not possessive and _optional_quantifier(pat[close + 1:i])
+                    and _matches_empty(pat[frame["start"]:close])):
+                stack[-1]["rep"] = True
             # An un-quantified alternation group that is its parent's whole
             # body hands its branches up: `(?:(a|ab))+` repeats them all the
             # same. Not through an atomic group, which never re-splits.
@@ -742,19 +754,57 @@ def _optional_only(body: str) -> bool:
     return False
 
 
+def _optional_quantifier(q: str) -> bool:
+    """True if the quantifier text ``q`` is ``?`` / ``{0,1}`` / ``{,1}``,
+    lazy or not: the item is taken once or skipped."""
+    import re
+    return q[:1] == "?" or re.fullmatch(r"\{0*,0*1\}\??", q) is not None
+
+
+def _matches_empty(body: str, depth: int = 0) -> bool:
+    """True if a top-level branch of the group body ``body`` can match the
+    empty string: every item in it is optional, zero-width or a group that
+    can itself match empty — `x?`, `\\b`, `(?:a?b*)`, an empty branch. An
+    item that cannot be read (a backreference, a group nested too deep)
+    counts as able to: that refuses more, never less."""
+    import re
+    empty = True
+    i, n = 0, len(body)
+    while i < n:
+        if body[i] == "|":
+            if empty:
+                return True
+            empty = True
+            i += 1
+            continue
+        char, group, j = _next_atom(body, i)
+        k = _read_quantifier(body, j)[2]
+        start, i = i, max(k, j)
+        if not empty or re.fullmatch(r"(?:[?*]|\{0*(?:,[0-9]*)?\})[?+]?", body[j:k]):
+            continue
+        if body[start] == "[":
+            empty = False
+        elif group is not None:
+            empty = depth >= 4 or _matches_empty(group, depth + 1)
+        elif char is not None:
+            empty = False
+    return empty
+
+
 # Zero-width items consume nothing, so they sit between two atoms without
 # separating them: `n?\bn` is `n?n`.
 _ZERO_WIDTH = ("^", "$", "\\b", "\\B", "\\A", "\\Z", "(?=", "(?!", "(?<=", "(?<!")
 
 
-def _branch_atoms(body: str, depth: int = 0) -> "list[list[tuple[str, bool, object] | None]]":
+def _branch_atoms(body: str, depth: int = 0) -> "list[list[tuple[str, bool, object, object] | None]]":
     """The top-level branches of ``body``, each as a list of its consuming
-    single-character atoms ``(atom text, optional, tail)`` with ``None`` for
-    an item that is not one (a pin, see ``_optional_overlap``). ``tail`` is
-    shared by the positions past the shortest run of one alternation, and
-    None for every other atom."""
+    single-character atoms ``(atom text, optional, tail, alt)`` with ``None``
+    for an item that is not one (a pin, see ``_optional_overlap``). ``tail``
+    is shared by the positions past the shortest run of one alternation, and
+    None for every other atom; ``alt`` is shared by every position of one
+    alternation, and None for every other atom."""
     import re
-    branches: "list[list[tuple[str, bool, object] | None]]" = [[]]
+    branches: "list[list[tuple[str, bool, object, object] | None]]" = [[]]
     i = 0
     n = len(body)
     while i < n:
@@ -766,7 +816,7 @@ def _branch_atoms(body: str, depth: int = 0) -> "list[list[tuple[str, bool, obje
         _repeats, possessive, k, variable = _read_quantifier(body, j)
         text, q = body[i:j], body[j:k]
         i = max(k, j)
-        optional = q[:1] == "?" or re.fullmatch(r"\{0*,0*1\}\??", q) is not None
+        optional = _optional_quantifier(q)
         # `{1}` / `{1,1}` matches exactly as the bare item does: reading it
         # as a pin hid `(?:(?:,?\s?){1})+#` from _optional_only.
         if re.fullmatch(r"\{0*1(?:,0*1)?\}\??", q):
@@ -790,22 +840,22 @@ def _branch_atoms(body: str, depth: int = 0) -> "list[list[tuple[str, bool, obje
                 # repetition matched `aac` two ways.
                 if all(b and not any(a[1] for a in b) for b in inner):
                     low = min(len(b) for b in inner)
-                    tail = object()
+                    tail, alt = object(), object()
                     for p in range(max(len(b) for b in inner)):
                         alts = dict.fromkeys(b[p][0] for b in inner if len(b) > p)
                         branches[-1].append(("(?:" + "|".join(alts) + ")",
                                              optional or p >= low,
-                                             tail if p >= low else None))
+                                             tail if p >= low else None, alt))
                 else:
                     branches[-1].append(None)
             else:
-                branches[-1].extend((t, o or optional, u) for t, o, u in inner[0])
+                branches[-1].extend((t, o or optional, u, v) for t, o, u, v in inner[0])
         elif char is None:
             if not (text.startswith(_ZERO_WIDTH)
                     or re.fullmatch(r"\(\?[aiLmsux-]*\)", text)):
                 branches[-1].append(None)
         else:
-            branches[-1].append((text, optional, None))
+            branches[-1].append((text, optional, None, None))
     return branches
 
 
@@ -837,7 +887,7 @@ _POOL_CHARS = frozenset(
            "   　  ٠۰०０"))
 
 
-def _splits_ambiguously(atoms: "list[tuple[str, bool, object] | None]", flags: int) -> bool:
+def _splits_ambiguously(atoms: "list[tuple[str, bool, object, object] | None]", flags: int) -> bool:
     """The test ``_optional_overlap`` describes, for one branch's ``atoms``."""
     import re
     if not any(a and a[1] for a in atoms):
@@ -860,9 +910,26 @@ def _splits_ambiguously(atoms: "list[tuple[str, bool, object] | None]", flags: i
     m = len(atoms)
     optional = [x for x in range(m) if sets[x] is not None and atoms[x][1]]
 
+    # An optional atom outside an alternation that can take one of its
+    # letters shifts where the alternation starts: `[ab]?(?:bx|x)` matches
+    # "bx" as `b` + `x` or as `bx`, so that alternation's own positions do
+    # trade with each other, and are counted one by one as any other atoms.
+    shifted = {atoms[y][3] for y in range(m)
+               if atoms[y] and atoms[y][3] is not None and sets[y] is not None
+               and any(sets[x] & sets[y] for x in optional
+                       if atoms[x][3] is not atoms[y][3])}
+
     def apart(x: int, y: int) -> bool:
-        """Two items, not two positions of one alternation's tail."""
-        return x != y and (atoms[x][2] is None or atoms[x][2] is not atoms[y][2])
+        """Two items, not two positions of one alternation. Its branches
+        never trade letters with each other inside one repetition when
+        nothing shifts its start: the branch is picked whole, and two
+        branches that match the same start are the prefix overlap
+        _spans_overlap refuses. Reading a mandatory position as apart from
+        the alternation's own tail refused `(?:(?:also|irgendwie) )+`: the
+        last `e` of `irgendwie` seemed to trade with the `o|e` slot that
+        holds its fourth letter."""
+        return x != y and (atoms[x][3] is None or atoms[x][3] is not atoms[y][3]
+                           or atoms[x][3] in shifted)
 
     # An optional atom that shares no character with any other atom of the
     # branch is forced: it takes its character exactly when the input has
@@ -949,6 +1016,114 @@ def _spans_overlap(pat: str, spans: "list[tuple[int, int]]", icase: bool = False
         if rxs and any(w and rx.match(w) is not None
                        for w in _witnesses(a) for rx in rxs):
             return True
+    return _class_runs_overlap(stripped, icase)
+
+
+def _literal_atom(text: str) -> bool:
+    """True if the single atom ``text`` is one plain character: a literal or
+    an escaped non-alphanumeric one."""
+    if text.startswith("\\"):
+        return len(text) == 2 and not text[1].isalnum()
+    return len(text) == 1 and text not in ".^$"
+
+
+def _class_runs_overlap(branches: "list[str]", icase: bool) -> bool:
+    """True if two ``branches`` that are each a run of single-character
+    atoms can match the same start of the input: one matches a non-empty
+    string that starts a match of the other.
+
+    The witness test in _spans_overlap tries one character per class and
+    leaves optional atoms out, so it missed `(?:b[bc]|[ab]c)+#` — `b[bc]` is
+    tried on `ac`, `[ab]c` on `bb`, yet both match `bc` — and
+    `(?: ?[a-c]|c?(?:bbaca|bbaa)){2,}#`, where "cbbaa" is `c` + `bbaa` or
+    the second branch whole: a run of either splits as `(a|a)+` does. Each
+    pair is walked position by position, an optional atom taken or skipped,
+    so the walk stops at the first pair of atoms that share no character.
+    An alternation inside a branch is read as one class per position, as
+    _branch_atoms reads it: a match is over-approximated, never missed. Two
+    branches of plain characters are left to the text comparison above, a
+    branch holding a pin to the witness test. Characters are tested as in
+    _splits_ambiguously: each atom compiled alone, against one pool built
+    from every atom's characters."""
+    import re
+    if all(re.fullmatch(r"[^\\\[\]().?*+{}|^$]*", b) for b in branches):
+        return False  # plain words only: the text comparison was exact
+    parsed = []
+    for b in branches:
+        got = _branch_atoms(b)
+        parsed.append(got[0] if len(got) == 1 and got[0] and None not in got[0]
+                      else None)
+    texts = {a[0] for atoms in parsed if atoms for a in atoms}
+    flags = re.DOTALL | (re.IGNORECASE if icase else 0)
+    pool = set(_POOL_CHARS).union(*(_atom_chars(t) for t in texts))
+    sets: "dict[str, frozenset[str]]" = {}
+    for t in texts:
+        try:
+            rx = re.compile(t, flags)
+        except re.error:
+            sets[t] = frozenset(pool)  # unreadable: assume it overlaps
+        else:
+            sets[t] = frozenset(c for c in pool if rx.fullmatch(c))
+    # Per branch: (character set, optional) per atom, and whether every atom
+    # from each position on is optional — the walk may end there.
+    runs: "dict[int, tuple[list[tuple[frozenset[str], bool]], list[bool]]]" = {}
+    for x, atoms in enumerate(parsed):
+        if atoms is not None:
+            seq = [(sets[a[0]], a[1]) for a in atoms]
+            done = [True] * (len(seq) + 1)
+            for p in range(len(seq) - 1, -1, -1):
+                done[p] = seq[p][1] and done[p + 1]
+            runs[x] = (seq, done)
+    loose = [x for x in runs
+             if not all(not a[1] and _literal_atom(a[0]) for a in parsed[x])]
+    if not loose:
+        return False
+
+    fixed = {x for x, (seq, _done) in runs.items() if not any(a[1] for a in seq)}
+    steps = 0
+
+    def share_start(x: int, y: int) -> bool:
+        nonlocal steps
+        (sa, da), (sb, db) = runs[x], runs[y]
+        if x in fixed and y in fixed:
+            # No optional atom: atom by atom up to the shorter's length.
+            return not any(a[0].isdisjoint(b[0]) for a, b in zip(sa, sb))
+        todo, seen = [(0, 0, False)], set()
+        while todo:
+            state = todo.pop()
+            if state in seen:
+                continue
+            seen.add(state)
+            steps += 1
+            if steps > _OVERLAP_WALK_CAP:
+                return True
+            i, j, took = state
+            if took and (da[i] or db[j]):
+                return True
+            if i < len(sa) and sa[i][1]:
+                todo.append((i + 1, j, took))
+            if j < len(sb) and sb[j][1]:
+                todo.append((i, j + 1, took))
+            if i < len(sa) and j < len(sb) and not sa[i][0].isdisjoint(sb[j][0]):
+                todo.append((i + 1, j + 1, True))
+        return False
+    # Only branches whose first characters meet can overlap, so a long list
+    # is paired through those, not all-pairs: the atoms up to the first
+    # mandatory one can each take the first character.
+    first: "dict[str, list[int]]" = {}
+    lead: "dict[int, frozenset[str]]" = {}
+    for x, (seq, done) in runs.items():
+        end = next((p for p, a in enumerate(seq) if not a[1]), len(seq) - 1)
+        lead[x] = frozenset().union(*(a[0] for a in seq[:end + 1]))
+        for c in lead[x]:
+            first.setdefault(c, []).append(x)
+    # A loose branch still to come is paired with ``x`` on its own turn.
+    ahead = set(loose)
+    for x in loose:
+        ahead.discard(x)
+        partners = {y for c in lead[x] for y in first.get(c, ())}
+        if any(share_start(x, y) for y in partners - ahead - {x}):
+            return True
     return False
 
 
@@ -970,25 +1145,18 @@ def _follower_fixes_split(pat: str, spans: "list[tuple[int, int]]", i: int) -> b
     past the check. Anything else answers False and keeps the refusal:
     `(?:(?:ax|[ab]x)c)+#` has two same-width branches matching `ax`, and
     `((?:a|aa)a?)+#` has an optional follower — both stay exponential.
+
+    A `\\b` right after the group pins the split by itself when every branch
+    character is a word character (or every one is not): a shorter branch
+    then ends inside a longer branch's word, where `\\b` fails, so whatever
+    follows — `(?:\\b(?:äh|ähm)\\b,? ?)+` — only one branch fits.
     """
     import re
     n = len(pat)
+    bounded = False
     while pat.startswith(("\\b", "\\B"), i):
+        bounded = bounded or pat[i + 1] == "b"
         i += 2
-    if i >= n or pat[i] in "()|^$.*+?{":
-        return False
-    char, group, j = _next_atom(pat, i)
-    if char is None or group is not None:
-        return False
-    k = _read_quantifier(pat, j)[2]
-    if k > j:
-        q = pat[j:k]
-        lo = q[1:].split(",")[0].rstrip("}?+") if q[0] == "{" else ""
-        if not (q[0] == "+" or (q[0] == "{" and _ascii_digits(lo) and int(lo) >= 1)):
-            return False
-    follower = _follower_chars(pat[i:j])
-    if not follower:
-        return False
     widths = set()
     atoms = []
     for a, b in spans:
@@ -1006,11 +1174,51 @@ def _follower_fixes_split(pat: str, spans: "list[tuple[int, int]]", i: int) -> b
         if not count or count in widths:
             return False
         widths.add(count)
+    if bounded and _uniform_wordness(pat, atoms):
+        return True
+    if i >= n or pat[i] in "()|^$.*+?{":
+        return False
+    char, group, j = _next_atom(pat, i)
+    if char is None or group is not None:
+        return False
+    k = _read_quantifier(pat, j)[2]
+    if k > j:
+        q = pat[j:k]
+        lo = q[1:].split(",")[0].rstrip("}?+") if q[0] == "{" else ""
+        if not (q[0] == "+" or (q[0] == "{" and _ascii_digits(lo) and int(lo) >= 1)):
+            return False
+    follower = _follower_chars(pat[i:j])
+    if not follower:
+        return False
     try:
         compiled = [re.compile(x, re.IGNORECASE | re.DOTALL) for x in set(atoms)]
     except re.error:
         return False
     return not any(rx.fullmatch(ch) for rx in compiled for ch in follower)
+
+
+def _uniform_wordness(pat: str, atoms: "list[str]") -> bool:
+    """True if the characters of ``atoms`` (single atoms, see
+    _follower_chars) are all word characters for ``\\b``, or all not — in
+    Unicode, and in ASCII too when ``pat`` may set the ``a`` flag, where
+    `ä` is no word character but `h` is."""
+    import re
+    chars: "set[str]" = set()
+    for a in atoms:
+        got = None if a == "." else _follower_chars(a)
+        if not got:
+            return False
+        chars |= got
+    modes = [0]
+    try:
+        if re.compile(pat).flags & re.ASCII:
+            modes.append(re.ASCII)
+    except re.error:
+        return False
+    if re.search(r"\(\?[aiLmsux-]*a", pat):
+        modes.append(re.ASCII)
+    return all(len({re.fullmatch(r"\w", c, m) is None for c in chars}) == 1
+               for m in modes)
 
 
 def _follower_chars(atom: str) -> "set[str] | None":
