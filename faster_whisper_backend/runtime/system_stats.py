@@ -201,10 +201,9 @@ def _build_process() -> dict[str, Any]:
 def system_snapshot() -> dict[str, Any]:
     """Build a snapshot of GPU + host + process + loaded models.
 
-    No TTL cache: the dominant consumer is the /stats/stream SSE generator
-    which rebuilds every second (longer than any sub-second cache could
-    survive), so a shared cache only helped the rare multi-tab snapshot
-    burst, at the cost of an unsafe RMW on a module global."""
+    No TTL cache: the /stats/stream SSE generator rebuilds every second,
+    past any sub-second cache's life, and a shared cache would need an
+    unsafe read-modify-write on a module global."""
     return {
         "gpu": _build_gpu(),
         "gpu_error": NVML_ERR if not NVML_OK else None,
