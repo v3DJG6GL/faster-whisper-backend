@@ -1,12 +1,6 @@
-"""Tests for the committed factory pipeline-rules layer (config.json).
-
-Covers config_store.load_factory_rules / save_factory_rules: validation,
-round-trip, the `note` field, the terminal-rule invariant, and the
-fail-fast behaviour on a missing/corrupt file. Also the behaviour of the
-shipped rules themselves: the dictation map (Neuenzeile at the end of an
-utterance, ß keys matching their ss spelling, dictated punctuation winning
-over Whisper's), tighten-quote-spacing's left-to-right quote pairing and the
-German „ “ tightening.
+"""The committed factory pipeline-rules layer (config.json):
+config_store.load_factory_rules / save_factory_rules, and the behaviour of
+the shipped rules themselves.
 
 Not the full app stack: config_store (pydantic) plus, for the shipped-rule
 tests, pipeline.dictation_map.
@@ -44,7 +38,6 @@ def _map_rule(name, mapping=None, map_meta=None, **kw):
 
 
 def test_load_real_config_json():
-    """The committed config.json loads, validates, and ends with a terminal."""
     rules = cs.load_factory_rules()
     assert len(rules) >= 2
     assert rules[-1]["type"] == "terminal"
@@ -52,7 +45,6 @@ def test_load_real_config_json():
 
 
 def test_save_load_roundtrip(tmp_path):
-    """save_factory_rules → load_factory_rules is a stable round-trip."""
     path = str(tmp_path / "config.json")
     rules = [_regex_rule("alpha"), _regex_rule("beta"), _terminal()]
     saved = cs.save_factory_rules(rules, path=path)
@@ -92,7 +84,6 @@ def test_wrapped_object_shape(tmp_path):
 
 
 def test_note_round_trips(tmp_path):
-    """The `note` field survives a save/load cycle."""
     path = str(tmp_path / "config.json")
     why = "explains why this rule exists"
     cs.save_factory_rules([_regex_rule("noted", note=why), _terminal()], path=path)
@@ -129,7 +120,6 @@ def test_map_meta_prunes_unknown_keys():
 
 
 def test_map_meta_defaults_empty():
-    """A cb:map rule with no map_meta validates and defaults to {}."""
     rule = settings_schema.MapRule(**_map_rule("words", mapping={"foo": "=>"}))
     assert rule.map_meta == {}
 
@@ -210,14 +200,12 @@ def test_factory_save_ignores_a_ref_that_already_dangles(tmp_path):
 
 
 def test_terminal_must_be_last(tmp_path):
-    """The terminal rule must be the final entry."""
     with pytest.raises(ValidationError):
         cs.save_factory_rules([_terminal(), _regex_rule("after")],
                               path=str(tmp_path / "config.json"))
 
 
 def test_duplicate_slug_rejected(tmp_path):
-    """Two rules with the same name are rejected."""
     with pytest.raises(ValidationError):
         cs.save_factory_rules(
             [_regex_rule("dup"), _regex_rule("dup"), _terminal()],
@@ -231,7 +219,6 @@ def test_missing_file_raises():
 
 
 def test_corrupt_json_raises(tmp_path):
-    """load_factory_rules fails fast on malformed JSON."""
     path = tmp_path / "config.json"
     path.write_bytes(b"{ not valid json")
     with pytest.raises(RuntimeError):
@@ -250,7 +237,6 @@ def test_save_refuses_an_unreadable_config_json(tmp_path, body):
 
 
 def test_missing_pipeline_rules_key_raises(tmp_path):
-    """A JSON object without a PIPELINE_RULES key is rejected."""
     path = tmp_path / "config.json"
     path.write_bytes(b'{"schema_version": 1}')
     with pytest.raises(RuntimeError):
@@ -306,12 +292,9 @@ def test_quote_spacing_pairs_quotes_left_to_right():
     cre, rep = re.compile(e["pattern"]), e["replacement"]
     sub = lambda t: cre.sub(rep, t)
     assert sub('Sie sagt " mir ist schwindlig " Punkt') == 'Sie sagt "mir ist schwindlig" Punkt'
-    # an open quote at the end is formatted as opening — the same as once closed
     assert sub('Sie sagt " mir ist') == 'Sie sagt "mir ist'
     assert sub('Sie sagt " mir ist schwindlig " .').startswith(sub('Sie sagt " mir ist'))
-    # a quotation spanning a line break
     assert sub('" eins\nzwei "') == '"eins\nzwei"'
-    # two quotations: each pair on its own
     assert sub('a " b " c " d "') == 'a "b" c "d"'
 
 
