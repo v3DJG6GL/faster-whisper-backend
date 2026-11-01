@@ -31,13 +31,16 @@ from faster_whisper_backend import paths as _paths  # underscore: not a setting
 # so an exported env var / docker-compose `environment:` still wins over .env.
 # Guarded: the app must still import if python-dotenv isn't installed.
 # The file is decoded here, not by dotenv (strict UTF-8, which crashed the
-# import with an error naming neither .env nor the fix): a BOM picks UTF-32 /
-# UTF-16 (Windows PowerShell 5.1 `>` / `Out-File`), anything else is UTF-8. A
-# file that does not decode, or holds a NUL (a BOM-less UTF-16 `>>` append
-# reads as UTF-8 with NULs, which os.environ refuses mid-load), stops the
-# import with that path and the fix: skipping it would start the server on the
-# default DATA_DIR with empty stores and every security pin dropped. The whole
-# file is checked before load_dotenv sets anything.
+# import with an error naming neither .env nor the fix): a UTF-32 BOM picks
+# UTF-32, anything else is UTF-8. A UTF-16 BOM (Windows PowerShell 5.1 `>` /
+# `Out-File`) is refused, not decoded: 8-bit lines a tool later appended to
+# such a file decode, when their byte count is even, to CJK junk, and those
+# pins were silently gone. A refused file, one that does not decode, or one
+# that holds a NUL (a BOM-less UTF-16 `>>` append reads as UTF-8 with NULs,
+# which os.environ refuses mid-load) stops the import with that path and the
+# fix: skipping it would start the server on the default DATA_DIR with empty
+# stores and every security pin dropped. The whole file is checked before
+# load_dotenv sets anything.
 # _ENV_FROM_DOTENV holds the names the load set (never a real env var that
 # .env also names): the POSIX self-restart re-execs with them dropped
 # (admin/restart_service), so the new process reads .env again and an edited
@@ -60,7 +63,7 @@ else:
             if _buf[:4] in (b"\xff\xfe\x00\x00", b"\x00\x00\xfe\xff"):
                 _text = _buf.decode("utf-32")
             elif _buf[:2] in (b"\xff\xfe", b"\xfe\xff"):
-                _text = _buf.decode("utf-16")
+                raise UnicodeError("it is saved as UTF-16")
             else:
                 _text = _buf.decode("utf-8-sig")
             if "\x00" in _text:

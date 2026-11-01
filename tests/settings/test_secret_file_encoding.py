@@ -100,10 +100,9 @@ _DOTENV = "WHISPER_BEAM_SIZE=3\r\nWHISPER_DEFAULT_PROMPT=Grüße\r\n"
 
 
 @pytest.mark.parametrize("data", [
-    _DOTENV.encode("utf-16"),       # PowerShell 5.1 `>`: UTF-16 with a BOM
     _DOTENV.encode("utf-32"),       # `Out-File -Encoding utf32`: FF FE 00 00
     b"\xef\xbb\xbf" + _DOTENV.encode(),  # UTF-8 BOM: not glued to the 1st key
-], ids=["utf16-bom", "utf32-bom", "utf8-bom"])
+], ids=["utf32-bom", "utf8-bom"])
 def test_a_bom_dotenv_is_decoded_and_applied(tmp_path, data):
     """dotenv reads .env as strict UTF-8: a UTF-16 file crashed `import
     config` with a UnicodeDecodeError naming neither .env nor the fix, and a
