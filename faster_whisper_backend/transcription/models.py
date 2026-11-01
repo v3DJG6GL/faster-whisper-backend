@@ -628,7 +628,6 @@ def _output_wrappers(resolved_model, ident, overrides: "dict | None") -> "tuple[
 
 
 def _drop_suppress_chars_cache(model_id: str) -> None:
-    """Drop all cache entries for a given model. Called from unload paths."""
     for k in list(_suppress_chars_cache):
         if k[0] == model_id:
             _suppress_chars_cache.pop(k, None)
@@ -1613,9 +1612,9 @@ async def drain_then_evict(model_id: "str | None" = None) -> list[str]:
     settings.
 
     "Drain" comes for free from Python reference counting: in-flight transcribe
-    requests already hold their own `model` reference (captured via `_get_or_
-    load_model` before the executor call), so they continue running on the
-    old WhisperModel instance until they finish. Only NEW requests for the
+    requests already hold their own `model` reference (captured via
+    `_get_or_load_model` before the executor call), so they continue running
+    on the old WhisperModel instance until they finish. Only NEW requests for the
     evicted id pay the reload cost. Returns the list of evicted ids.
 
     Called from pipeline.apply.apply_hot_changes when a load-time field (MODEL_DEVICE,
@@ -1677,14 +1676,11 @@ def _evict_over_cap(keep: "str | None") -> list[str]:
 async def _idle_evictor() -> None:
     """Periodically unload models that haven't been touched for
     cfg.MODEL_IDLE_TIMEOUT_S seconds. Wakes every 30 s; cheap when
-    timeout is 0 (early return) or no models are loaded. Acquires the
-    same _model_load_lock used by _get_or_load_model so concurrent loads
-    can't race with eviction.
-
-    VRAM reclamation: pop the WhisperModel reference from _loaded_models
-    so its CT2 destructor can run, then gc.collect() to break any
-    remaining cycles. If torch is already imported and CUDA is active,
-    also call torch.cuda.empty_cache() to release pool-cached blocks.
+    timeout is 0 or no models are loaded. Evicts under the same
+    _model_load_lock _get_or_load_model takes, so a load can't race it.
+    After an unload, gc.collect() breaks leftover cycles so the CT2
+    destructor runs, and torch.cuda.empty_cache() releases pool-cached
+    blocks.
     """
     import gc
     while True:
