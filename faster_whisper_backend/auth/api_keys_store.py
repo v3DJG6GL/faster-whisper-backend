@@ -1161,10 +1161,9 @@ def bootstrap_admin_from_env(raw_key: str) -> None:
         )
         return
     # _KEY_INDEX holds live rows only, so a REVOKED key's hash is invisible
-    # above; the INSERT would hit the UNIQUE on key_hash and the server would
-    # boot OPEN while the operator believes it locked down (fatal per main.py's
-    # lifespan), so fail loudly. Un-revoking would resurrect a deliberately
-    # killed key.
+    # above; the INSERT would then fail on the UNIQUE key_hash with the generic
+    # hash-race error below, so name the real cause here. Un-revoking would
+    # resurrect a deliberately killed key.
     _revoked = _require_conn().execute(
         "SELECT id FROM api_keys WHERE key_hash = ? AND revoked_ts IS NOT NULL",
         (h,),
