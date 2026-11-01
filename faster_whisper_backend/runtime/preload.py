@@ -125,10 +125,6 @@ class Plan:
     stage_ahead: bool = True
 
 
-# =============================================================================
-# Keys and residency
-# =============================================================================
-
 def normalize_id(family: str, model_id: str) -> str:
     """The id as the owning module CACHES it.
 
@@ -139,8 +135,7 @@ def normalize_id(family: str, model_id: str) -> str:
     will actually be served. separation: audio-separator keys its singleton by
     on-disk FILENAME while the allowlist holds friendly names, so the loader's
     own rule (bgm_separation.model_filename) maps it. Callers go through here
-    rather than open-coding either mapping because /v1/me open-coded the UVR
-    one once already — a second copy would disagree for exactly that case the
+    rather than open-coding either mapping: a second copy would disagree the
     moment one of them changed."""
     model_id = (model_id or "").strip()
     if not model_id:
@@ -176,10 +171,9 @@ def stats_key(family: str, model_id: str) -> str:
 def is_resident(family: str, model_id: str) -> bool:
     """Is this model loaded right now?
 
-    The single answer for all four families. /v1/me and /v1/models open-coded
-    four different versions of this question; they call here now, so a `loaded`
-    flag cannot drift from what the preloader believes. Each family's own
-    ``is_resident`` owns what "loaded" means for its cache."""
+    The single answer for all four families, shared with /v1/me and /v1/models
+    so their `loaded` flag cannot drift from what the preloader believes. Each
+    family's own ``is_resident`` owns what "loaded" means for its cache."""
     mid = normalize_id(family, model_id)
     if not mid:
         return False
@@ -200,10 +194,6 @@ def is_resident(family: str, model_id: str) -> bool:
     return False
 
 
-# =============================================================================
-# Warm leases
-# =============================================================================
-
 def _ttl() -> int:
     return int(getattr(cfg, "MODEL_PRELOAD_WARM_TTL_S", 180) or 180)
 
@@ -215,7 +205,7 @@ def _enabled() -> bool:
 def _recompute_warm_locked() -> None:
     """Rebuild _warm as the union of the live plans' keys. Caller holds _lock.
 
-    Cheap (at most 8 plans x 4 entries) and total, which is the whole point:
+    Cheap (at most _MAX_PLANS x _MAX_PLAN_ENTRIES) and total, which is the whole point:
     no incremental bookkeeping means no way to leak a lease."""
     fresh: "dict[str, float]" = {}
     for plan in _plans.values():
@@ -247,10 +237,6 @@ def is_warm(key: str) -> bool:
     except Exception:  # noqa: BLE001 — an evictor must never break on this
         return False
 
-
-# =============================================================================
-# Admission
-# =============================================================================
 
 def _stage_enabled(family: str) -> bool:
     if family == "diarization":
@@ -454,20 +440,14 @@ def _admit(family: str, model_id: str) -> "tuple[str, str | None]":
             and _idle_peer(family, model_id) is not None):
         return (_pending_state(), None)
     if ok is None and reason == "size_unknown":
-        # `fits` returns None to mean "cannot say", explicitly distinct from a
-        # definite no, so that a caller may try anyway. Treating it as a hard
-        # refusal made the check self-defeating: preload never loaded an
-        # unmeasured model, so the load that would have measured it never
-        # happened, so it stayed unmeasured forever. On a fresh install that
-        # is every model, and it fails silently.
-        #
-        # Trying is how a model gets measured — but only when nothing has to
-        # be evicted for it — a free slot in a multi-slot cache is not an
-        # eviction, even if a cold peer exists — so an unknown model can never
-        # displace a known one. If it OOMs, the loader's own error path
-        # handles it and the job falls back to loading in-band, which is the
-        # pre-preload behaviour. (A needed room with no droppable peer was
-        # already refused as family_busy above.)
+        # None means "cannot say", not no. Refusing it would mean an
+        # unmeasured model (every model on a fresh install) is never loaded,
+        # so never measured. Try it, but only when nothing has to be evicted
+        # (a free slot in a multi-slot cache is not an eviction, even with a
+        # cold peer), so an unknown model never displaces a known one. An OOM
+        # goes through the loader's error path and the job loads in-band.
+        # Needed room with no droppable peer was already refused as
+        # family_busy above.
         if not _needs_room(family, model_id):
             return (_pending_state(), None)
         return ("deferred", "size_unknown")
@@ -492,10 +472,6 @@ def _pending_state() -> str:
         return "queued"
     return "loading"
 
-
-# =============================================================================
-# Registration
-# =============================================================================
 
 def derive_plan_id(user_id: str, entries: "list[tuple[str, str]]") -> str:
     """Stable id for a caller that did not supply one, so a client repeating
@@ -560,9 +536,10 @@ def register_plan(user_id: "str | None",
                               trigger=trigger, user_name=user_name)
     except Exception as e:  # noqa: BLE001 — a preload must never fail a request
         logger.error("[preload] register_plan failed: %s", e)
-        # _register_plan may have inserted the Plan (and its warm lease)
-        # before the failure; a "deferred" answer must not leave models
-        # pinned against the evictors for the TTL.
+        # Drop every plan this caller owns under the ids _register_plan could
+        # have used — a new one, or an earlier one this call merged into: a
+        # "deferred" answer must not leave models pinned against the evictors
+        # for the TTL.
         # The echoed id fails closed: a job binds whatever id comes back, so
         # another user's live plan id must never be handed out here.
         fallback_pid = ""
@@ -634,11 +611,9 @@ def _register_plan(user_id, entries, *, plan_id, denied, stage_ahead,
     results: "list[dict]" = []
     to_enqueue: "list[tuple[str, str, str]]" = []
     with _lock:
-        # A supplied id may only ever adopt the caller's OWN plan. Naming
-        # another user's id would merge into theirs, extend its TTL and
-        # let their stage advances warm this caller's entries — so the
-        # collision is treated as a miss and the id re-derived (from the
-        # unfiltered list, the id register_plan's cleanup looks under).
+        # Again under this lock: another user may have taken `pid` since the
+        # check above, and merging into their plan would extend its TTL and
+        # let their stage advances warm this caller's entries.
         pid = _owned_pid_locked(user_id, pid, id_kept)
         plan = _plans.get(pid)
         if plan is None:
@@ -757,22 +732,16 @@ def _register_plan(user_id, entries, *, plan_id, denied, stage_ahead,
 
 def _log_plan_receipt(pid: str, user_id: "str | None",
                       results: "list[dict]", trigger: "str | None") -> None:
-    """One info block per accepted plan, listing every entry and its verdict.
+    """One info block per registration, listing every entry and its verdict.
 
-    Every log line this module had lived in the WORKER, and the worker only
-    runs for entries that were actually enqueued — so the three most common
-    outcomes produced no output at all:
+    The worker logs only the entries it enqueued, so without this receipt the
+    common outcomes leave no trace: `resident` (the steady state, otherwise
+    indistinguishable from preload never being called), registration-time
+    deferrals (whose reason is otherwise only in the HTTP body), and a plan
+    that never arrived.
 
-      * `resident`, which is what a plan returns once a model has been used
-        once, i.e. the normal steady state. Preload working perfectly was
-        indistinguishable from preload never being called.
-      * every registration-time deferral, whose reason went into the HTTP
-        response body and nowhere else.
-      * a plan that never arrived, since the endpoint logged nothing either.
-
-    Deliberately `info` and never `warning`: preload is best-effort, a
-    deferral is the system working as designed, and warning-level noise here
-    would train an operator to ignore the one channel that explains it."""
+    `info`, never `warning`: a deferral is the system working as designed,
+    and warning-level noise would train an operator to ignore this channel."""
     try:
         who = (user_id or "-")[:8]
         head = f"[preload] plan {pid[:8]}  user={who}"
@@ -829,10 +798,6 @@ def _end_job_if_settled_locked(plan: Plan) -> None:
         jobs.job_end(plan.job_id)
         plan.job_id = None
 
-
-# =============================================================================
-# Stage-ahead
-# =============================================================================
 
 def on_stage_start(plan_id: str, stage: str) -> None:
     """A stage of the owning job just started: advance the cursor and warm the
@@ -902,9 +867,8 @@ def on_stage_start(plan_id: str, stage: str) -> None:
 def _enqueue_threadsafe(item: "tuple[str, str, str]") -> None:
     loop, q = _loop, _queue
     if loop is None or q is None or loop.is_closed():
-        # Silently dropping this was the failure that looked most like
-        # "preload is broken" while leaving no trace whatsoever: the plan
-        # reports `queued`, and nothing ever loads.
+        # Logged, never silent: a dropped item otherwise looks exactly like
+        # "preload is broken" with no trace of why nothing loaded.
         logger.debug("[preload] enqueue dropped (worker not running): %s",
                      stats_key(item[1], item[2]))
         _forget_inflight(item)
@@ -930,10 +894,6 @@ def _forget_inflight(item: "tuple[str, str, str]") -> None:
             plan.inflight.discard(stats_key(fam, mid))
             _end_job_if_settled_locked(plan)
 
-
-# =============================================================================
-# Worker
-# =============================================================================
 
 async def _worker_loop() -> None:
     """Single consumer. One task, not a pool: serialised loads keep the NVML
@@ -974,9 +934,7 @@ async def _handle(item: "tuple[str, str, str]") -> None:
             if is_resident(family, model_id):
                 return
             plan.warmed.discard(key)
-    # Second run of the ladder. State moved while the item sat in the queue —
-    # the job may have loaded the model itself, a peer may have taken the VRAM,
-    # or a lease may have appeared. This verdict is the one that acts.
+    # Second run of the ladder (see _admit): this verdict is the one that acts.
     state, reason = _admit(family, model_id)
     if state == "resident":
         with _lock:
@@ -1057,10 +1015,6 @@ async def _evict(family: str, peer_id: str) -> None:
         await bgm_separation.drop_separator(force=False)
 
 
-# =============================================================================
-# Lifecycle
-# =============================================================================
-
 async def start() -> None:
     """Bind the loop, open the queue and start the worker. Called from
     lifespan; safe to call twice."""
@@ -1129,9 +1083,8 @@ async def sweeper_loop() -> None:
 
 
 def diagnostics() -> dict:
-    """Surfaced in the /stats payload next to the loaded-model list. The most
-    likely real failure of this feature is silence — no worker, no plans, no
-    loads — and four integers make that visible instead of invisible."""
+    """The /stats `preload` block: five cheap scalars that make the feature's
+    likeliest failure, silence, visible (see the module's failure stance)."""
     q = _queue
     with _lock:
         plans, warm = len(_plans), len(_warm)
