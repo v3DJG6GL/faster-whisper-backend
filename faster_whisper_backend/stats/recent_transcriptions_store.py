@@ -101,7 +101,7 @@ def init_db(path: str) -> None:
     conn = store_common.open_wal_db(path)
     # Publish the connection only once schema + migrations succeeded: a
     # half-initialised store must read as not open (is_open() gates the 1 Hz
-    # /stats re-reads and the /stats/history 503 on it).
+    # /stats re-reads on it).
     try:
         conn.execute("PRAGMA temp_store=MEMORY;")
         conn.executescript(_SCHEMA)
@@ -183,10 +183,10 @@ def _reader_conn() -> Iterator[sqlite3.Connection]:
 
 
 def _truncate_steps(steps: list) -> list:
-    """Same shape as reports_store._truncate_steps but with this module's
-    own caps so the two stores can evolve their limits independently.
-    Drops oldest pipeline stages first when over-cap; preserves the
-    output-wrapper + terminal-trim trailers (the part admins care about)."""
+    """Same algorithm as reports_store._truncate_steps, on this module's
+    own (equal-valued) caps. Drops oldest pipeline stages first when over-cap;
+    preserves the output-wrapper + terminal-trim trailers (the part admins
+    care about)."""
     out: list = []
     for s in steps:
         if not isinstance(s, (list, tuple)) or len(s) < 3:
