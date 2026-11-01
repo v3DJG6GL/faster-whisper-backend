@@ -29,10 +29,9 @@ models/
 **/.env
 **/.env.*
 # The docker-compose files document ./secrets/bootstrap_admin_key.txt (and
-# .env.example documents an hf_token beside it) as the *_FILE secret source.
-# It is a bind-mount source, never needed inside the image, and none of the
-# patterns above match it — a local `docker build` baked a full-admin
-# bootstrap key into a layer. Verified by building a context and listing it.
+# .env.example documents an hf_token beside it) as the *_FILE secret source:
+# a bind-mount source no pattern above matches, so without this a local
+# `docker build` bakes a full-admin bootstrap key into a layer.
 # Root-relative only: `**/secrets/` would also drop a future
 # faster_whisper_backend/secrets/ package (the `**/logs/` trap above).
 secrets/
