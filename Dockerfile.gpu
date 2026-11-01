@@ -23,8 +23,7 @@ WORKDIR /app
 # Deps in three layers ordered by churn — see the same block in Dockerfile for
 # the reasoning. The payoff is largest here: the CUDA wheels in
 # requirements-gpu.txt are ~1.2 GB (cuBLAS alone is 581 MB), and before the
-# split a one-line pydantic bump in requirements.txt re-downloaded all of it
-# (run 624, gpu leg: 107 s of pip on top of a 134 s layer export).
+# split a one-line pydantic bump in requirements.txt re-downloaded all of it.
 COPY requirements-heavy.txt requirements-gpu.txt ./
 RUN pip install --upgrade pip \
  && pip install -r requirements-heavy.txt -r requirements-gpu.txt
@@ -33,19 +32,18 @@ RUN pip install --upgrade pip \
 # diarization + music separation. torch comes from the cu126 index so the
 # image keeps ONE cu12 userspace (PyPI-default torch 2.12+ would pull the
 # cu13 stack alongside — two CUDA userspaces in one process is asking for
-# trouble). Caveat observed in run 390: torch cu126 hard-pins OLDER
-# nvidia-cublas-cu12 / nvidia-cudnn-cu12 than requirements-gpu.txt's floors,
-# so pip uninstalls the 12.9/9.24 libs from the previous layer and installs
-# torch's 12.6/9.5 pins (~2 min churn + the old copies linger as whiteouts).
+# trouble). Caveat: torch cu126 hard-pins OLDER nvidia-cublas-cu12 /
+# nvidia-cudnn-cu12 than requirements-gpu.txt's floors, so pip uninstalls
+# the 12.9/9.24 libs from the previous layer and installs torch's 12.6/9.5
+# pins (~2 min churn + the old copies linger as whiteouts).
 # Still cublas 12.x / cudnn 9.x, which is all ctranslate2 (and faster_whisper_backend/main.py's
 # Windows DLL preloader majors) require — accepted until the -full build
 # is restructured into a single pip resolution. audio-separator's [gpu]
 # extra swaps onnxruntime for onnxruntime-gpu. ffmpeg from apt for
 # torchcodec / audio-separator decoding.
 # gcc/g++ are BUILD-time only: audio-separator's diffq dependency ships no
-# cp314 wheel and compiles from source (run 372 failed on "No such file or
-# directory: 'gcc'"). Purged in the same RUN so the compiler never reaches
-# the final layer.
+# cp314 wheel and compiles from source. Purged in the same RUN so the
+# compiler never reaches the final layer.
 ARG INCLUDE_EXTRAS=0
 COPY requirements-diarize.txt requirements-bgm.txt requirements-translate.txt ./
 RUN if [ "${INCLUDE_EXTRAS}" = "1" ]; then \
