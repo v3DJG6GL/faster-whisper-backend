@@ -76,7 +76,7 @@
     function show() {
       // Portal before the isOpen() check: pick_list and the activity cluster
       // un-hide the layer before show(), so on a first open the fallback
-      // isOpen() is already true and a portal inside the guard was skipped.
+      // isOpen() is already true and a portal inside the guard would never run.
       if (!nativePop && popEl.parentNode !== document.body) document.body.appendChild(popEl);
       if (!isOpen()) {
         if (nativePop) { try { popEl.showPopover(); } catch (e) {} }
