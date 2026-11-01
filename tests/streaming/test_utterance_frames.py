@@ -8,7 +8,7 @@ server is working" off these frames, so an utterance that is announced and
 never closed is a status indicator stuck on "working".
 
 Also pinned here, because it is the same code path: a final decode that raises
-ends the utterance (it used to be retried on every following frame).
+ends the utterance.
 """
 
 import asyncio
