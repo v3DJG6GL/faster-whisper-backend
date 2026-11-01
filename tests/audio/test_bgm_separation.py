@@ -84,9 +84,7 @@ def test_separate_transcodes_non_libsndfile_container(
         _src, _dst, _rate, _layout = transcoded[0]
         assert (_rate, _layout) == (44100, "stereo")
         assert _src.endswith(".m4a") and _dst.endswith(".wav")
-        # The separator got the WAV, not the original container...
         assert calls == [_dst]
-        # ...and the intermediate WAV was unlinked after separation.
         assert not os.path.exists(_dst)
         assert fake_model.last_audio == made[0]
     finally:
