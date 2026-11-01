@@ -647,8 +647,17 @@ def _nested_repetition(pat: str) -> bool:
             # skipped — so each repetition of an enclosing group doubles the
             # paths to try: `(?:(?:x?)?ain)+#` is exponential although no
             # atom in it repeats, and _branch_atoms reads `(?:x?)?` as `x?`.
-            if (not possessive and _optional_quantifier(pat[close + 1:i])
-                    and _matches_empty(pat[frame["start"]:close])):
+            # Two other ways to match empty twice: two branches that each can
+            # (`(?:x?|y?)`), and a fixed count of two or more over a body that
+            # can (`(?:x?){2}` — the engine retries which repetition stays
+            # empty). An atomic group commits to its first empty match.
+            body = pat[frame["start"]:close]
+            if not possessive and (
+                    _optional_quantifier(pat[close + 1:i]) and _matches_empty(body)
+                    or not frame["atomic"] and (
+                        repeats and not variable and _matches_empty(body)
+                        or frame["alts"] and not frame.get("conditional")
+                        and _matches_empty(body, branches=2))):
                 stack[-1]["rep"] = True
             # An un-quantified alternation group that is its parent's whole
             # body hands its branches up: `(?:(a|ab))+` repeats them all the
@@ -761,18 +770,19 @@ def _optional_quantifier(q: str) -> bool:
     return q[:1] == "?" or re.fullmatch(r"\{0*,0*1\}\??", q) is not None
 
 
-def _matches_empty(body: str, depth: int = 0) -> bool:
-    """True if a top-level branch of the group body ``body`` can match the
-    empty string: every item in it is optional, zero-width or a group that
-    can itself match empty — `x?`, `\\b`, `(?:a?b*)`, an empty branch. An
-    item that cannot be read (a backreference, a group nested too deep)
-    counts as able to: that refuses more, never less."""
+def _matches_empty(body: str, depth: int = 0, branches: int = 1) -> bool:
+    """True if ``branches`` top-level branches of the group body ``body`` can
+    match the empty string: every item in them is optional, zero-width or a
+    group that can itself match empty — `x?`, `\\b`, `(?:a?b*)`, an empty
+    branch. An item that cannot be read (a backreference, a group nested too
+    deep) counts as able to: that refuses more, never less."""
     import re
     empty = True
     i, n = 0, len(body)
     while i < n:
         if body[i] == "|":
-            if empty:
+            branches -= empty
+            if branches <= 0:
                 return True
             empty = True
             i += 1
@@ -788,7 +798,7 @@ def _matches_empty(body: str, depth: int = 0) -> bool:
             empty = depth >= 4 or _matches_empty(group, depth + 1)
         elif char is not None:
             empty = False
-    return empty
+    return branches - empty <= 0
 
 
 # Zero-width items consume nothing, so they sit between two atoms without

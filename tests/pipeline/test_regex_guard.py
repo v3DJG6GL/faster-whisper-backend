@@ -1205,6 +1205,34 @@ def test_optional_group_that_cannot_match_empty_or_disjoint_classes_pass(pat):
 
 
 @pytest.mark.parametrize("pat", [
+    r"(?:(?:x?|y?)ain)+#",
+    r"(?:(?:x?|y?|z)ain)+#",
+    r"(?:ain(?:x?|y?))+#",
+    r"(?:(?:x?){2}ain)+#",
+    r"(?:(?:x?){3}?ain)+#",
+    r"(?:(?:x?|y){2}ain)+#",
+])
+def test_group_that_matches_empty_two_ways_is_rejected(pat):
+    """Like `(?:x?)?`, these match empty more than one way — two branches
+    that each can, or a fixed count over a body that can, whose repetitions
+    the engine retries in turn — so each repetition of the enclosing group
+    doubles the paths: `"ain" * 18 + "!"` took about 0.26 s, twice that per
+    extra unit."""
+    assert g._nested_repetition(pat)
+    with pytest.raises(ValueError, match="nested repetition"):
+        g.validate([("r", pat, "")])
+
+
+@pytest.mark.parametrize("pat", [
+    r"(?:(?:x|y)ain)+#", r"(?:(?:x){2}ain)+#", r"(?:(?:x?|y)ain)+#",
+    r"(?:(?:x?){1}ain)+#", r"(?:(?:x?y){2}ain)+#", r"(?:(?>x?|y?)ain)+#",
+    r"(?:(?:x?){2}+ain)+#", r"(?:(?:x?|y?)ain){3}#",
+])
+def test_group_that_matches_empty_at_most_one_way_passes(pat):
+    assert not g._nested_repetition(pat)
+
+
+@pytest.mark.parametrize("pat", [
     r"(?:[ab]?(?:bx|x)a)*#",
     r"b(?:x?(?:(?:[ac]|xc)a))*x",
     r"a(?: ?[a-c]|c?(?:bbaca|bbaa)){2,}#",
