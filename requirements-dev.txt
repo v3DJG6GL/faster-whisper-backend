@@ -11,8 +11,7 @@ pytest-cov>=7.1.0
 # takes several times longer. pytest-cov merges the workers' coverage data.
 pytest-xdist>=3.8.0
 # Starlette's TestClient (used by the route integration tests) prefers httpx2;
-# without it, TestClient falls back to httpx with a deprecation warning. Pinned
-# here (Renovate keeps it current).
+# without it, TestClient falls back to httpx with a deprecation warning.
 httpx2>=2.16.0
 # Linter; config in ruff.toml, run by the Linux CI leg (`ruff check .`).
 ruff>=0.17.3
