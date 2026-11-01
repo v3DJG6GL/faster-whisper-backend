@@ -1,10 +1,10 @@
-"""P11: per-identity request gates + allowlist, the GET /v1/me capability
+"""Per-identity request gates + allowlist, the GET /v1/me capability
 contract, the caller-filtered GET /v1/override-profiles, and the per-profile
 GET /v1/override-profiles/{name} values endpoint. Driven through the real app.
 
 Resolver-level precedence/gate semantics are covered purely (no DB) in
 test_effective_config.py; here we assert the HTTP wiring and the admin binding
-round-trip (the new request-gate keys survive validate_binding/_parse_binding).
+round-trip (the request-gate keys survive validate_binding/_parse_binding).
 """
 
 from faster_whisper_backend.core import languages
@@ -31,8 +31,6 @@ def _set_key_binding(client, h, uid, kid, **binding):
     assert r.status_code == 200, r.text
     return r.json()["config"]
 
-
-# --- GET /v1/me -----------------------------------------------------------
 
 def test_me_open_mode_all_allowed(client):
     j = client.get("/v1/me").json()
@@ -207,10 +205,9 @@ def test_me_explicit_allowlist(client, make_user_key):
 
 def test_per_key_gate_follows_session_login(client, make_user_key):
     """A per-key restriction must still apply after the key holder logs into the
-    WebUI (cookie auth), not only when the key is sent as a bearer token.
-    Regression guard: the session now stamps the login key_id so per-key
-    overrides/locks bind on cookie-authed requests (previously the '(session)'
-    sentinel shed them)."""
+    WebUI (cookie auth), not only when the key is sent as a bearer token: the
+    session stamps the login key_id, so per-key overrides/locks bind on
+    cookie-authed requests instead of falling to the '(session)' sentinel."""
     _, raw_admin = make_user_key("admin", is_admin=True)
     h = bearer(raw_admin)
     _profiles(client, h, {"fast": {"BEAM_SIZE": 3}})
@@ -238,8 +235,6 @@ def test_per_key_gate_follows_session_login(client, make_user_key):
     client.cookies.clear()
 
 
-# --- GET /v1/override-profiles (caller-filtered) --------------------------
-
 def test_override_profiles_filtered_by_allowlist(client, make_user_key):
     _, raw_admin = make_user_key("admin", is_admin=True)
     h = bearer(raw_admin)
@@ -261,8 +256,6 @@ def test_override_profiles_excludes_non_requestable(client, make_user_key):
     assert r.json() == {"profiles": ["fast"]}     # internal hidden from clients
 
 
-# --- GET /v1/override-profiles/{name} (values) ----------------------------
-
 def test_override_profile_detail_values_and_locks(client, make_user_key):
     _, raw_admin = make_user_key("admin", is_admin=True)
     h = bearer(raw_admin)
@@ -278,8 +271,8 @@ def test_override_profile_detail_values_and_locks(client, make_user_key):
 
 
 def test_override_profile_detail_exposes_prompt(client, make_user_key):
-    """B5: the detail endpoint exposes the profile's DEFAULT_PROMPT SEPARATELY (not
-    in `values`, which is the 19 client decode keys) so the editor can ghost it as
+    """The detail endpoint exposes the profile's DEFAULT_PROMPT SEPARATELY (not
+    in `values`, which holds only client decode keys) so the editor can ghost it as
     the inherited 'Vocabulary / prompt'. Its lock state rides along; a prompt-less
     profile reports null/false."""
     _, raw_admin = make_user_key("admin", is_admin=True)
@@ -320,8 +313,6 @@ def test_override_profile_detail_404_when_not_allowed(client, make_user_key):
     assert client.get("/v1/override-profiles/fast", headers=bh).status_code == 200
 
 
-# --- admin binding round-trip (new keys survive validate/parse) -----------
-
 def test_binding_roundtrip_preserves_request_gates(client, make_user_key):
     _, raw_admin = make_user_key("admin", is_admin=True)
     h = bearer(raw_admin)
@@ -341,8 +332,6 @@ def test_binding_roundtrip_preserves_request_gates(client, make_user_key):
     assert cfg["allow_request_override_profile"] is False
     assert cfg["allowed_override_profiles"] == ["fast"]
 
-
-# --- admin per-key "apply no profiles" force ------------------------------
 
 def test_apply_no_profiles_roundtrip_and_suppresses_user_profile(client, make_user_key):
     # End-to-end: a profile bound at the USER scope applies, until the per-KEY
@@ -398,8 +387,6 @@ def test_me_stage_model_lists_seed_the_configured_model(client, app_module,
     assert [m["id"] for m in j["diarization_models"]] == ["pyannote/x", "pyannote/y"]
     assert [m["id"] for m in j["separation_models"]] == ["UVR-A", "UVR-B"]
 
-
-# --- GET /v1/me server_info --------------------------------------------------
 
 def test_me_server_info_limits_and_keeps(client, app_module, monkeypatch):
     monkeypatch.setattr(app_module.cfg, "CAPTURES_RECORDING_ENABLED", False)
