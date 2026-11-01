@@ -47,13 +47,11 @@ _path: str | None = None
 _insert_counter = 0
 
 # Generous field caps — raw/final are audio-driven and can be long
-# (a 5-minute dictation block). Steps JSON is bounded by the existing
-# reports_store cap so a trace pair (report + recent) doesn't surprise
-# anyone with mismatched size limits.
+# (a 5-minute dictation block). The steps caps copy reports_store's values
+# so a trace pair (report + recent) is truncated alike.
 _CAP_RAW = 50_000
 _CAP_FINAL = 50_000
 _CAP_STEPS_JSON = 200_000
-# Hard row bound on the steps list, applied before the JSON byte cap.
 _CAP_STEPS_ROWS = 500
 _CAP_TOKEN_FIELD = 64
 # A model id rejected with a 400 is still recorded verbatim (the error
@@ -358,8 +356,9 @@ def record_timing(
     success it patches the row record_trace wrote; on error it inserts a
     minimal row with no raw/final/steps.
 
-    `kind` ('translate' / 'download' / NULL = a transcription, resolved via
-    `source`), `stages` (per-stage timing dicts, JSON-encoded), `key_label`
+    `kind` ('dictate' / 'translate' / 'download' / NULL = a transcription,
+    resolved via `source`), `stages` (per-stage timing dicts, JSON-encoded),
+    `key_label`
     and `username` are COALESCEd on conflict, so a caller that omits them
     never blanks an earlier write. Translate and error-path rows have no
     trace half, so username must come in here."""
@@ -560,9 +559,9 @@ def prune(*, max_rows: int, ttl_days: float) -> int:
 
 def sweep_retention() -> int:
     """prune() with the configured cap + TTL, for the startup and hourly
-    sweeps in main. The lazy prune alone counts inserts in-process, so a
-    quiet server (or one restarted before PRUNE_EVERY inserts) never aged
-    its rows out. Reads cfg each call so /settings edits apply next tick."""
+    sweeps in main. The lazy prune counts inserts in-process, so on its own
+    a quiet server (or one restarted before PRUNE_EVERY inserts) would never
+    age its rows out. Reads cfg each call so /settings edits apply next tick."""
     from faster_whisper_backend.settings import config as cfg
     return prune(
         max_rows=int(getattr(cfg, "RECENT_TRANSCRIPTIONS_MAX", 500) or 0),
