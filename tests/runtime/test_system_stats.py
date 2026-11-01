@@ -1,14 +1,10 @@
-"""Tests for system_stats: snapshot shape (including the registry's models
-row), and idempotent shutdown. The registry itself: test_model_registry.py.
+"""system_stats: snapshot shape (including the registry's models row),
+per-card VRAM reads, disk-free resolution and idempotent shutdown. The
+registry itself: test_model_registry.py.
 
 system_stats has import-time side effects (psutil priming, an NVML init
-attempt that degrades gracefully). On this CI box NVML is absent, so the
-snapshot's gpu is None and gpu_error is a non-empty string; assertions accept
-either the absent-fallback (the real CI condition) or a present GPU.
-
-The snapshot's models row reads model_registry's process-global registry; a
-local autouse fixture clears it between tests so cases don't observe each
-other's writes.
+attempt that degrades gracefully); assertions accept either NVML absent (the
+CI condition) or a present GPU.
 """
 
 import os
@@ -21,9 +17,9 @@ from faster_whisper_backend.runtime import system_stats
 
 @pytest.fixture(autouse=True)
 def _reset_registry(model_sizes_ledger):
-    """Reset model_registry's module-global loaded-model registry. A
-    registration with a positive VRAM delta records into the measured-size
-    ledger, so that is repointed at tmp_path too."""
+    """The snapshot's models row reads this process-global registry, so cases
+    must not see each other's writes. A registration with a positive VRAM
+    delta records into the measured-size ledger, hence model_sizes_ledger."""
     with model_registry._loaded_models_lock:
         model_registry._loaded_models.clear()
     yield
@@ -31,18 +27,13 @@ def _reset_registry(model_sizes_ledger):
         model_registry._loaded_models.clear()
 
 
-# ---------------------------------------------------------------------------
-# system_snapshot
-# ---------------------------------------------------------------------------
-
 def test_snapshot_shape():
     snap = system_stats.system_snapshot()
     assert set(snap.keys()) == {"gpu", "gpu_error", "host", "process", "models"}
     assert isinstance(snap["host"], dict)
     assert isinstance(snap["process"], dict)
     assert isinstance(snap["models"], list)
-    # On this box NVML is absent: gpu None + non-empty error. Accept a present
-    # GPU too (dict + error None) so the test isn't box-specific.
+    # CI has no NVML; the else branch keeps the test green on a GPU box.
     if snap["gpu"] is None:
         assert isinstance(snap["gpu_error"], str) and snap["gpu_error"]
     else:
@@ -78,13 +69,8 @@ def test_snapshot_models_reflects_registry(model_sizes_ledger):
     assert "base|cuda|int8" in open(model_sizes_ledger, encoding="utf-8").read()
 
 
-# ---------------------------------------------------------------------------
-# gpu_mem_used_bytes
-# ---------------------------------------------------------------------------
-
 def test_gpu_mem_used_bytes():
     val = system_stats.gpu_mem_used_bytes()
-    # NVML absent here -> None; if present, a non-negative int.
     if system_stats.NVML_OK:
         assert val is None or val >= 0
     else:
@@ -159,10 +145,6 @@ def test_preload_sizes_whisper_on_its_device_index(monkeypatch):
     assert preload._device_index("diarization", "p/x") == 0
 
 
-# ---------------------------------------------------------------------------
-# shutdown
-# ---------------------------------------------------------------------------
-
 def test_shutdown_safe_and_idempotent(two_gpus):
     # Under the fake NVML, never the real one: shutdown flips the module
     # global NVML_OK, which would change every later VRAM read on a GPU box
@@ -177,10 +159,6 @@ def test_shutdown_safe_and_idempotent(two_gpus):
     assert system_stats.NVML_OK is False
     assert system_stats.pynvml.shutdowns == 1
 
-
-# ---------------------------------------------------------------------------
-# _build_host regressions
-# ---------------------------------------------------------------------------
 
 def test_disk_free_reads_the_download_root_drive(monkeypatch, tmp_path):
     """/stats labels it "disk free (model cache)": with HF_HOME unset the
