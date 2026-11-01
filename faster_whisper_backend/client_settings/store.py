@@ -292,9 +292,8 @@ def put(
         )
         rows = cur.fetchall()
         if not rows:
-            # Stale base_version, or the row was deleted (then the caller's
-            # next look shows blob=None via GET / the 409 body's state=None
-            # is normalized by the route).
+            # Stale base_version, or the row is gone (state None, which the
+            # route's 409 body renders as the version-0 zero-state).
             return False, _get_locked(user_id, profile)
         new_row = _row_to_dict(rows[0])
         logger.info(
