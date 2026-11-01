@@ -103,8 +103,8 @@ def test_all_leased_overflows_the_cap(monkeypatch, caplog):
 
 
 def _stub_doomed_constructor(monkeypatch, built):
-    """WhisperModel as faster-whisper builds it: an unknown short size is a
-    ValueError, a missing Hub repo the snapshot error itself."""
+    """WhisperModel that raises faster-whisper's ValueError for an unknown
+    short size and records every build, so a test can assert none ran."""
     def _build(path, **kw):
         built.append(path)
         if path not in sys.modules["faster_whisper"].available_models():
