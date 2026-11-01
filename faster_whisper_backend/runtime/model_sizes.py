@@ -25,9 +25,9 @@ import tempfile
 import threading
 import time
 
-# Both are hard dependencies already imported unguarded by system_stats (psutil
-# is in requirements.txt); NVML is the optional one, and system_stats hides that
-# behind gpu_mem_free_bytes() returning None.
+# A hard dependency (requirements.txt) that system_stats already imports
+# unguarded; NVML is the optional one, and system_stats hides that behind
+# gpu_mem_free_bytes() returning None.
 import psutil
 
 from faster_whisper_backend.core import atomic_json
@@ -36,7 +36,7 @@ from faster_whisper_backend.runtime import system_stats
 from faster_whisper_backend.paths import REPO_ROOT
 
 _REPO_DIR = REPO_ROOT  # the checkout, not this package — see paths.py
-# Same two-line precedence rule config_store states for config.local.json:
+# Same precedence config_store uses for config.local.json:
 # WHISPER_MODEL_SIZES_PATH > WHISPER_DATA_DIR/model_sizes.json >
 # /data/model_sizes.json (Windows: <repo>\data — bare metal by definition, and
 # "/data" would be drive-relative there; keep in sync with config._DATA_DIR).
@@ -94,10 +94,9 @@ def _read(path: str = PATH) -> dict[str, dict]:
                     b = v.get("bytes") if isinstance(v, dict) else None
                     # json.load accepts Infinity / NaN, and a bool is an
                     # int: none of them, nor a non-positive size, is a
-                    # footprint. Normalised here, once, like
-                    # stage_rates._read: lookup() and the merge trust
-                    # `bytes` and `n`, and int(Infinity) or int("many")
-                    # there would 500 /stats.
+                    # footprint. lookup() and the merge trust `bytes` and
+                    # `n`, so int(Infinity) or int("many") there would 500
+                    # /stats.
                     if (isinstance(b, (int, float)) and not isinstance(b, bool)
                             and math.isfinite(b) and b > 0):
                         row = {"bytes": int(b), "n": _count(v.get("n"))}
