@@ -1,21 +1,18 @@
-"""Durable store for capture groups — packed, duration-capped training
+"""Durable store for capture samples — packed, duration-capped training
 samples (cfg.CAPTURES_SAMPLE_MAX_DURATION_S, default 29.9 s) built from
-2+ consecutive same-speaker captures.
+one or more consecutive same-speaker captures.
 
 Lives in the same SQLite DB as `captures` (re-uses the connection from
 `captures_store`). The merged WAV files sit under `CAPTURES_DIR/groups/`
 with the same 4-char fanout as individual captures.
 
-The schema is structurally minimal: one `capture_samples` row per merged
-sample + a `sample_id`/`sample_order` FK on the existing captures table.
-Dissolving a group deletes the
-row + the merged WAV; members get their `sample_id` NULL'd out and
-return to the flat list.
+One `capture_samples` row per merged sample plus a `sample_id` /
+`sample_order` FK on the captures table. Dissolving a sample deletes the
+row and the merged WAV; its members get `sample_id` NULL'd and return to
+the flat list.
 
-Member-content drift is recorded via per-member PCM-content hashes
-stored in `member_hashes` at merge time; downstream consumers
-compare against the snapshot when they need to decide whether the
-merged WAV is still authoritative.
+Per-member PCM hashes are snapshot into `member_hashes` at merge time so
+consumers can tell whether the merged WAV is still authoritative.
 """
 from __future__ import annotations
 
@@ -72,10 +69,6 @@ _VALID_STATUS = frozenset({"new", "reviewed", "ready", "dismissed"})
 _CAP_ADMIN_NOTES = 8000
 
 
-# ---------------------------------------------------------------------
-# Init
-# ---------------------------------------------------------------------
-
 def init_db(conn: sqlite3.Connection, captures_audio_root: str) -> None:
     """Reuse the captures DB connection (single SQLite file). The audio
     root mirrors captures_store's fanout but under a `groups/` subtree
@@ -127,10 +120,6 @@ def _require_audio_root() -> str:
     return _groups_audio_dir
 
 
-# ---------------------------------------------------------------------
-# Path helpers
-# ---------------------------------------------------------------------
-
 def _relpath_for(sid: str) -> str:
     """`groups/<g0g1>/<g2g3>/<sid>.wav` — mirrors the captures fanout."""
     return os.path.join("groups", sid[0:2], sid[2:4], f"{sid}.wav")
@@ -153,15 +142,9 @@ def abs_path_for(relpath: str) -> str:
     return abs_p
 
 
-# ---------------------------------------------------------------------
-# Row helpers
-# ---------------------------------------------------------------------
-
 def _row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
-    # `corrections` is derived from current member chips on every read
-    # (see captures_routes._enrich_sample / list_samples_api). The DB row
-    # has no chip storage of its own — single source of truth lives on
-    # the member captures.
+    # No `corrections` here: chips live only on the member captures and are
+    # re-projected on every read (captures/routes.py _enrich_sample).
     return {
         "id":                          row["id"],
         "user_id":                     row["user_id"],
@@ -182,10 +165,6 @@ def _row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
         "member_trims":                json.loads(row["member_trims"] or "{}"),
     }
 
-
-# ---------------------------------------------------------------------
-# Create / read / mutate / dissolve
-# ---------------------------------------------------------------------
 
 @_read_under_lock
 def get_sample(sid: str) -> dict[str, Any] | None:
@@ -279,14 +258,10 @@ def update_sample(
     sid: str,
     patch: dict[str, Any],
 ) -> dict[str, Any] | None:
-    """Patch transcript / transcript_join_strategy /
-    inter_segment_silence_ms / is_locked / is_stale /
-    member_hashes / merged_duration_ms / status / admin_notes /
-    language / merged_lead_trim_ms / merged_trail_trim_ms /
-    member_trims. Returns the updated row.
+    """Patch the `allowed` fields below and return the updated row.
 
     Chip state (the user-facing "corrections" list) is NOT on the
-    group row — it's derived from members on every read. Patch chip
+    sample row — it's derived from members on every read. Patch chip
     edits via `captures_store.update_capture` on each member instead."""
     allowed = {
         "transcript", "transcript_join_strategy",
@@ -333,10 +308,10 @@ def dissolve_sample(sid: str, *, refuse_locked: bool = False) -> None:
     path re-reads the row under the same lock and stops when it is gone. Like
     every other holder of that lock, never call this from the event loop.
 
-    The member release and the row DELETE are one explicit transaction: the
-    shared connection is autocommit (store_common.open_wal_db), so `with conn:`
-    opened none, and a failing DELETE left the members released under a
-    surviving, memberless row. Both store locks are held for the BEGIN..COMMIT
+    The member release and the row DELETE are one explicit transaction (the
+    shared connection is autocommit, store_common.open_wal_db, so `with conn:`
+    would open none): a failing DELETE must not leave the members released
+    under a surviving, memberless row. Both store locks are held for the BEGIN..COMMIT
     span in the same samples-then-captures order as
     captures/routes.py _insert_sample_with_sid."""
     from faster_whisper_backend.captures import samples as capture_samples
@@ -405,12 +380,11 @@ def expire_samples_older_than(cutoff_ts: float) -> list[str]:
             (cutoff_ts,),
         ).fetchall()
     ids = [r["id"] for r in rows]
-    # Per-item isolation: retention is a data-EXPIRY control, and the caller
-    # wraps this whole call in one try/except. Without it a single failing
-    # dissolve (a locked DB, a disk error) aborted the pass, so every remaining
-    # over-age sample kept its merged WAV and its members stayed sample_id
-    # NOT NULL — which the ungrouped sweep then skips too. The operator saw a
-    # partial sweep reported as a normal one.
+    # Per-item isolation: retention is a data-expiry control and the caller
+    # wraps this whole call in one try/except, so one failing dissolve (locked
+    # DB, disk error) would otherwise abort the pass and leave every remaining
+    # over-age sample's WAV in place, its members sample_id NOT NULL and so
+    # skipped by the ungrouped sweep too.
     done: list[str] = []
     failed = 0
     for sid in ids:
@@ -524,8 +498,6 @@ def reconcile_on_startup() -> tuple[int, int, int]:
                         continue
                     files_unlinked += 1
 
-    # Pass 3: orphan-FK sweep. A capture whose sample_id points to a
-    # missing group row gets returned to the flat list.
     orphan_fks_cleared = 0
     with _lock:
         cur = conn.execute(
