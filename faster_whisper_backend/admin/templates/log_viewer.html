@@ -663,7 +663,8 @@
 
   // "Load older" cursor: how many lines from the chain head are already
   // in the DOM. Reset by openLogStream() and Clear, advanced by every
-  // append() (backlog + live) and by each successful /logs/older batch length.
+  // append() (backlog + live) and by each successful /logs/older batch length,
+  // stepped back by each line the live DOM trim removes.
   let _logsSkip = 0;
   // Bumped by openLogStream() and Clear: a batch fetched against the old
   // DOM and cursor must not land on the new one.
