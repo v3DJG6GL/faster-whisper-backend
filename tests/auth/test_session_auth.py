@@ -428,8 +428,7 @@ def test_same_origin_mutation_allowed(client, make_user_key):
 
 
 def test_bearer_still_works_when_cookie_login_available(client, make_user_key):
-    # Regression guard: adding cookie auth must not break header-bearer auth
-    # on the transcription/admin surface (Vowen / curl path).
+    # Vowen / curl path: header bearer on the transcription/admin surface.
     _uid, raw = make_user_key("root", is_admin=True)
     assert client.get("/settings/state", headers=bearer(raw)).status_code == 200
 
@@ -484,8 +483,7 @@ def test_revoke_in_sibling_worker_is_seen_after_local_write(tmp_path):
     b.revoke_session(raw)                          # sibling worker logs out
     assert b.lookup_session(raw) is None
 
-    # A now does an unrelated local write. The old code re-stamped the version
-    # here and never noticed B's revocation.
+    # An unrelated local write by A must still notice B's revocation.
     a.create_session("someone-else", 3600.0)
     assert a.lookup_session(raw) is None
 
