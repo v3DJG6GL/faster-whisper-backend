@@ -2,9 +2,10 @@
 In-process request metrics for the /stats dashboard.
 
 Bounded ring buffers + a few counters. No Prometheus, no external metrics
-backend. All updates happen on the asyncio event loop (uvicorn runs
-SERVER_WORKERS=1) so plain `Counter[k] += 1` and `deque.append` are safe
-without explicit locking.
+backend, no locks. Request counters update on the asyncio event loop
+(SERVER_WORKERS=1), but sampler.tick() and record_model_load write from
+worker threads and the snapshot is built in one, so readers copy a deque
+or dict in one C-level step before iterating it (see _errors_in).
 
 The "Recent transcriptions" widget on /stats is sourced from the durable
 `recent_transcriptions_store` SQLite database (same source as /quick-config's
@@ -23,31 +24,26 @@ logger = logging.getLogger("whisper-api")
 
 START_TS = time.time()
 
-_LATENCY_MAX = 200          # ring for p50/p95/p99
+_LATENCY_MAX = 200
 _ERROR_WINDOW_SEC = 15 * 60
-_MODEL_LOAD_KEEP = 50       # bounded per-model history
+_MODEL_LOAD_KEEP = 50
 
 # Long-lived stream paths whose duration would dominate latency stats.
 SSE_PATHS = frozenset({"/logs/stream", "/stats/stream", "/quick-config/stream"})
 
 # Cap on distinct UNMATCHED-route keys (404 / pre-routing) in req_count.
-# Matched routes carry a templated path (a small finite set) and are always
-# counted under their own key; unmatched requests carry the raw client URL, so
-# a flood of distinct nonexistent paths would otherwise grow these counters
-# without bound — and inflate every /stats snapshot plus the 1 Hz SSE frame.
-# The check compares len(req_count) — the TOTAL key count, matched keys
-# included — so the effective unmatched budget is the cap minus however many
-# matched routes have been hit (and the dict tops out at cap + #routes).
-# Past it, further NEW unmatched paths fold into one sentinel key.
+# Matched routes are a small templated set; unmatched ones key on the raw
+# client URL, so a flood of nonexistent paths would grow the counters, every
+# /stats snapshot and the 1 Hz SSE frame without bound. The check compares the
+# TOTAL key count, so the unmatched budget is the cap minus the matched routes
+# hit. Past it, new unmatched paths fold into one sentinel key.
 _MAX_UNMATCHED_KEYS = 512
 _UNMATCHED_OVERFLOW = "(other)"
 
-# Cap on the LENGTH of one such key. The key count alone doesn't bound the
-# memory an unmatched flood can pin: the raw client URL is attacker-chosen and
-# can be kilobytes long, and every retained key is re-serialised into each
-# /stats snapshot and 1 Hz SSE frame. Applied before the cardinality check so
-# what lands in req_count is always the truncated form. Comfortably longer
-# than any real route.
+# Cap on the LENGTH of one such key: the raw URL is attacker-chosen, can be
+# kilobytes, and is re-serialised into every snapshot and SSE frame. Applied
+# before the cardinality check, so req_count only holds the truncated form;
+# comfortably longer than any real route.
 _MAX_UNMATCHED_KEY_LEN = 120
 
 # Statuses the durable usage rollup must NOT count as errors. A client
@@ -78,13 +74,13 @@ def record_guard_hit(name: str) -> None:
     if name in GUARD_NAMES:
         guard_hits[name] += 1
 
-# Bumped/dec'd by the transcribe handler with try/finally.
+# Bracketed (try/finally) by the /transcribe and streaming handlers.
 in_flight_transcriptions: int = 0
 
 
-# --- GPU gate: the inference semaphore, timed ----------------------------------
-# transcription.models.get_inference_semaphore() builds one of these. `async with` calls
-# exactly acquire()/release(), so the seven call sites are untouched; what
+# The inference semaphore, timed: transcription.models.get_inference_semaphore()
+# builds a GpuGate. `async with` calls exactly acquire()/release(), so no call
+# site changes; what
 # is added is the queue: how many tasks are waiting, for how long, and how
 # much of each REQUEST's time went to waiting. The per-request sum rides a
 # ContextVar so no acquire site has to know which request it serves — the
@@ -169,7 +165,6 @@ class GpuGate(asyncio.Semaphore):
 gpu_gate: "GpuGate | None" = None
 
 
-# --- Error classes -------------------------------------------------------------
 # Why a job failed, in six words the failures card can group by. Message-
 # based where the libraries give nothing better (CTranslate2 and onnxruntime
 # raise bare RuntimeErrors for an OOM), so `other` is the honest fallback
@@ -298,7 +293,8 @@ _latency: deque[float] = deque(maxlen=_LATENCY_MAX)
 # 5xx timestamps for rolling 1/5/15 min windows.
 _errors_ts: deque[float] = deque()
 
-# Cold-load durations per model name. Bounded to last _MODEL_LOAD_KEEP each.
+# Cold-load durations per model name: the first load plus the latest ones,
+# _MODEL_LOAD_KEEP in all (see record_model_load).
 model_loads: dict[str, list[float]] = {}
 
 
@@ -345,8 +341,8 @@ def record_transcription(model: str, audio_dur: float, proc_dur: float,
                          error_stage: str | None = None,
                          recent_row: bool = True,
                          session_job_id: str | None = None) -> None:
-    """Called from the transcribe handler's outer finally on every
-    /transcribe request (both success and error paths). UPSERTs the
+    """Called once per finished job (the /transcribe handler's outer finally,
+    the streaming finals, /translate), success and error paths alike. UPSERTs the
     timing half of the recent-transcriptions row keyed by request_id;
     record_trace() in quick_config/recent_feed.py has already inserted the rich
     half on the success path, so this call only patches timing fields
@@ -473,17 +469,16 @@ def record_model_load(model: str, load_seconds: float) -> None:
     """Called once per WhisperModel(...) construction in _get_or_load_model."""
     bucket = model_loads.setdefault(model, [])
     bucket.append(load_seconds)
-    # Preserve bucket[0] as the canonical first cold-load forever; trim
-    # the middle so the bucket fits in _MODEL_LOAD_KEEP. The UI shows
-    # first + last-N-avg, both of which depend on bucket[0] surviving.
+    # Trim from the middle: bucket[0] is the first cold load, which the
+    # UI shows next to the last-N average.
     if len(bucket) > _MODEL_LOAD_KEEP:
         del bucket[1 : len(bucket) - _MODEL_LOAD_KEEP + 1]
 
 
 def quantile(sorted_vals: list[float], q: float) -> float:
-    """Nearest-rank quantile of an already-sorted list (0.0 when empty).
-    Fine for N <= a few thousand and human display; the usage rollups in
-    usage_store use the same rule so the two dashboards agree."""
+    """Quantile of an already-sorted list: the value at index
+    round(q*(n-1)) (banker's rounding, no interpolation); 0.0 when empty.
+    usage_store calls this too, so the two dashboards agree."""
     if not sorted_vals:
         return 0.0
     k = max(0, min(len(sorted_vals) - 1, int(round(q * (len(sorted_vals) - 1)))))
@@ -492,12 +487,9 @@ def quantile(sorted_vals: list[float], q: float) -> float:
 
 def _errors_in(seconds: float) -> int:
     cutoff = time.time() - seconds
-    # _errors_ts is append-ordered; iterate from newest. Bounded by
-    # _ERROR_WINDOW_SEC of traffic so this stays O(window) at worst.
-    # Copied first (one C-level step): this runs on the snapshot's worker
-    # thread while record_request appends / poplefts on the loop, and a
-    # Python-level walk of the live deque raised "deque mutated during
-    # iteration".
+    # Append-ordered and bounded by _ERROR_WINDOW_SEC, so O(window). Copied
+    # in one C-level step first: this runs on the snapshot's worker thread
+    # while record_request mutates the deque on the loop.
     n = 0
     for t in reversed(tuple(_errors_ts)):
         if t < cutoff:
