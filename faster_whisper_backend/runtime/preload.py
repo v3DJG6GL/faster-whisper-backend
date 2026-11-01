@@ -806,8 +806,7 @@ def on_stage_start(plan_id: str, stage: str) -> None:
     MUST NOT await — the only caller is ``tx_progress._progress_set``, which runs on
     executor threads. Everything after the lock is a ``call_soon_threadsafe``
     hand-off to the loop, and the whole body is wrapped: progress reporting
-    must never break a request, the stance every progress callback in this tree
-    already takes."""
+    must never break a request."""
     try:
         idx = STAGE_INDEX.get(stage)
         if idx is None:
