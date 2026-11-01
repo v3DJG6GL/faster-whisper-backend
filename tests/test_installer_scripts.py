@@ -21,8 +21,6 @@ def _read(*rel):
         return fh.read()
 
 
-# --- install-service.sh ------------------------------------------------------
-
 def test_linux_installer_restarts_the_unit():
     # Re-runs must pick up the refreshed venv + rewritten unit: `enable --now`
     # is a no-op on an active unit, so the script must use an explicit restart.
@@ -79,7 +77,7 @@ def test_linux_installer_cpu_full_uses_pytorch_cpu_index():
 def test_linux_installer_precreates_logs_dir():
     # The unit pins WHISPER_LOG_FILE at $REPO_DIR/logs/whisper.log (unless
     # .env sets it); without a pre-created, chowned logs/ the service degrades
-    # to stderr-only logging. Each pinned dir joins STATE_DIRS with its line.
+    # to stderr-only logging.
     sh = _read("install-service.sh")
     assert re.search(r'LOG_ENV_LINE="Environment=WHISPER_LOG_FILE=\$\{REPO_DIR\}/logs/whisper.log"\n'
                      r'\s*STATE_DIRS\+=\("\$REPO_DIR/logs"\)', sh)
@@ -175,8 +173,6 @@ def test_linux_installer_env_sets_reads_dotenv_like_the_service(tmp_path):
     assert set(_run(empty).values()) == {"0"}
 
 
-# --- uninstall-service.sh ----------------------------------------------------
-
 @pytest.mark.skipif(shutil.which("bash") is None or os.name == "nt",
                     reason="needs a POSIX bash")
 def test_linux_uninstaller_sees_an_installed_unit_in_a_long_listing(tmp_path):
@@ -203,8 +199,6 @@ def test_linux_uninstaller_sees_an_installed_unit_in_a_long_listing(tmp_path):
     assert out.stdout.strip() == "installed"
 
 
-# --- uninstall-service.ps1 ---------------------------------------------------
-
 def test_uninstall_never_executes_legacy_nssm():
     # An untrusted WhisperAPI.exe must fall back to sc.exe delete, never to
     # executing an equally unverified repo-local nssm.exe elevated.
@@ -218,8 +212,6 @@ def test_uninstall_never_executes_legacy_nssm():
     assert "& $WinSWExe" not in ps1
     assert "Test-WinSWTrusted" not in ps1
 
-
-# --- install-service.ps1 -----------------------------------------------------
 
 def test_convert_extras_reuse_cu126_index_on_gpu():
     # requirements-convert.txt floors torch; on a -Gpu box the resolution must
@@ -237,9 +229,7 @@ def test_install_never_executes_unverified_wrapper():
     assert "& $LegacyNssm" not in ps1
     assert "if (Test-WinSWTrusted) {\n        Invoke-WinSW uninstall" in ps1
     assert "sc.exe delete $ServiceName" in ps1
-    # The hash table must be defined before the removal block uses it.
     assert ps1.index("$WinSWHashes = @{") < ps1.index("Invoke-WinSW uninstall")
-    # nssm.exe is still cleaned up as a file.
     assert "Remove-Item -Force $LegacyNssm" in ps1
 
 
@@ -298,8 +288,6 @@ def test_winsw_arguments_quote_the_main_py_path():
     assert ET.fromstring(x).findtext("arguments") == '"%BASE%\\main.py"'
 
 
-# --- .env.example ------------------------------------------------------------
-
 def test_env_example_lines_uncomment_to_their_documented_value():
     # The recipe is "uncomment the line"; python-dotenv only strips an inline
     # comment that follows a value, so `#WHISPER_OUTPUT_PREFIX=   # ...`
@@ -311,8 +299,6 @@ def test_env_example_lines_uncomment_to_their_documented_value():
     bad = {k: v for k, v in values.items() if (v or "").lstrip().startswith("#")}
     assert not bad
 
-
-# --- scripts/time_ledger.py --------------------------------------------------
 
 def test_time_ledger_heatmap_adds_up_to_the_session_hours(tmp_path, monkeypatch):
     # The heatmap loop included its end point: every session got one extra
