@@ -1237,10 +1237,10 @@ def _redistribute(group_texts: "list[str]", translated: str) -> "list[str]":
     so it is cut after the nearest clause punctuation, else the nearest
     space, and only when that boundary lies within a quarter of the member's
     share of the ideal cut; else at the raw proportional position (stepped
-    past combining marks and Thai/Lao leading vowels). Members whose source is blank
-    get an empty piece; a reply with fewer character clusters than members
-    is unsplittable and comes back with blank pieces, which the caller
-    reverts."""
+    past combining marks and any _JOINS_NEXT character). Members whose
+    source is blank get an empty piece; a reply with fewer character
+    clusters than members is unsplittable and comes back with blank
+    pieces, which the caller reverts."""
     n = len(group_texts)
     if n <= 1:
         return [translated.strip()] if n == 1 else []
