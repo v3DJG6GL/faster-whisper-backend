@@ -11,16 +11,13 @@
     --red: #ff7b72; --magenta: #d2a8ff; --bold: #f0f6fc;
     --border: #30363d; --input-bg: #0d1117;
   }
-  /* Font-size tokens, --font-sans, --font-mono and html { font-size: var(--fs-base) }
-     live in NAV_CSS (injected further down, just before the body markup)
-     so all pages share one scaling knob. Important: never embed the NAV_CSS
-     template placeholder inside another comment block — render_page() does
-     a naive string replace and would inject NAV_CSS into this comment,
-     prematurely closing it (NAV_CSS contains its own internal comments)
-     and silently dropping every CSS rule that follows.
-     Chrome (titles, labels, descriptions, buttons, badges) uses --font-sans;
-     code-y contexts (input/textarea values, log lines, regex panels, the
-     de-dictation-map key/value cells) opt into --font-mono via the rules below. */
+  /* Font-size tokens, --font-sans, --font-mono and the html font-size live in
+     NAV_CSS (injected just before the body markup) so all pages share one
+     scaling knob. Never write the NAV_CSS template placeholder inside a
+     comment: render_page() does a naive string replace, NAV_CSS's own
+     comments close this one early, and every rule after it is dropped.
+     Chrome text uses --font-sans; code-y contexts (inputs, logs, regex
+     panels, map cells) opt into --font-mono. */
   html, body { background: var(--bg); color: var(--fg);
     font: 1rem/1.5 var(--font-sans);
     margin: 0; padding: 0; min-height: 100%; }
@@ -78,15 +75,13 @@
     transition: transform 120ms ease; display: inline-block; }
   details.section-details[open] > summary.section-summary::before {
     transform: rotate(90deg); }
-  /* The divider/margin now lives on the summary, so neutralize the <h2>'s own. */
+  /* The divider/margin lives on the summary, so neutralize the <h2>'s own. */
   details.section-details summary.section-summary h2 {
     margin: 0; padding: 0; border-bottom: none; flex: 1 1 auto; }
   details.section-details > summary.section-summary:hover h2 { color: var(--cyan); }
-  /* Subgrid: each subgroup wraps its fields in .group-fields so all rows
-     share one column track. The label column auto-sizes to whatever the
-     longest label in THAT section needs; the value column gets the rest.
-     Sections are independent — a tight section won't widen because of a
-     wide one elsewhere. Subgrid: Chrome 117+, Firefox 71+, Safari 16+. */
+  /* Subgrid: all rows of a .group-fields share one column track, so the
+     label column fits the longest label of THAT section only.
+     Subgrid: Chrome 117+, Firefox 71+, Safari 16+. */
   .group-fields { display: grid;
     grid-template-columns: minmax(min-content, max-content) 1fr;
     column-gap: 0.625rem; }
@@ -114,11 +109,8 @@
   .badge.restart { color: var(--yellow); border-color: #4d3e1f; }
   .badge.env { color: var(--magenta); border-color: #4a2e6f; }
   .badge.local { color: var(--cyan); border-color: #194f73; }
-  /* font-size/line-height inherit from body (=1rem/1.5); font-family
-     comes from the generic `input,textarea,select { font-family: var(--font-mono) }`
-     rule in the body block. Avoid `font: inherit` here — that's a shorthand
-     that pulls in font-family from the parent (which is now sans), defeating
-     the chrome/code split. */
+  /* No `font: inherit` here: the shorthand would pull the parent's sans
+     font-family over the generic input/textarea/select mono rule above. */
   .input-col input, .input-col textarea, .input-col select {
     width: 100%; box-sizing: border-box;
     background: var(--input-bg); color: var(--fg); border: 1px solid var(--border);
@@ -126,10 +118,6 @@
     font-size: inherit; line-height: inherit; }
   .input-col input[type=checkbox] { width: 1rem; }
   .input-col textarea { min-height: 4rem; resize: vertical; }
-  /* --- Native widget overrides — bring all browser-default controls
-     (checkbox, number-spinner, select, textarea, unclassed buttons)
-     into the GitHub-dark palette. ----------------------------------- */
-  /* Checkbox: replace native white square with a dark themed one. */
   input[type="checkbox"] {
     appearance: none; -webkit-appearance: none;
     width: 1rem; height: 1rem;
@@ -149,16 +137,14 @@
   input[type="checkbox"]:focus-visible {
     outline: 2px solid var(--cyan); outline-offset: 1px;
   }
-  /* Number-input: hide native spinner buttons (Firefox + WebKit/Blink).
-     Field looks like a plain text input; user types or pastes numbers. */
+  /* Number-input: hide native spinner buttons (Firefox + WebKit/Blink). */
   input[type="number"] { -moz-appearance: textfield; }
   input[type="number"]::-webkit-inner-spin-button,
   input[type="number"]::-webkit-outer-spin-button {
     -webkit-appearance: none; margin: 0;
   }
-  /* Prompt lab (TRANSLATION_PROMPT_TEMPLATE row) — two-column bench:
-     sample + test on the left, the server-rendered prompt readout on the
-     right. Collapses to one column on narrow viewports. */
+  /* Prompt lab (TRANSLATION_PROMPT_TEMPLATE row): sample + test on the left,
+     the server-rendered prompt readout on the right. */
   .prompt-lab { display: grid; grid-template-columns: 1fr 1fr; gap: 0.8rem; }
   @media (max-width: 900px) { .prompt-lab { grid-template-columns: 1fr; } }
   .prompt-lab .lab-col { min-width: 0; display: flex; flex-direction: column; gap: 0.4rem; }
@@ -184,9 +170,8 @@
   .prompt-lab details summary:hover { color: var(--fg); }
   .prompt-lab .tpl-preview { background: #010409; border: 1px solid var(--border);
     border-radius: 4px; padding: 0.4rem 0.6rem; margin: 0.3rem 0 0; font-size: var(--fs-xs); }
-  /* Select: replace native white triangle with a custom dim-grey SVG arrow.
-     Scoped to .input-col so the header scale-picker (which has its own
-     style) isn't double-overridden. */
+  /* Select arrow: scoped to .input-col so the header scale-picker keeps its
+     own style. */
   .input-col select {
     appearance: none; -webkit-appearance: none;
     background: var(--input-bg) url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'><path fill='%236e7681' d='M0 0l5 6 5-6z'/></svg>") no-repeat right 0.5rem center;
@@ -194,10 +179,8 @@
     cursor: pointer;
   }
   .input-col select:focus { outline: 1px solid var(--cyan); outline-offset: -1px; }
-  /* Generic dark button styling for unclassed <button> elements (Add /
-     Cancel in custom-rule dialog, "+ Add custom rule", etc.). Scoped to
-     not override existing classed buttons (.reset-link, .delete-btn,
-     .expand-btn, header button, .modal button, etc.). */
+  /* Dark styling for unclassed <button>s only (custom-rule dialog Add /
+     Cancel, "+ Add custom rule"); classed buttons keep their own. */
   main button:not([class]) {
     background: #21262d; color: var(--fg);
     border: 1px solid var(--border); border-radius: 4px;
@@ -212,16 +195,13 @@
      while still collapsing other whitespace and wrapping long lines. */
   .input-col .help, .field-fullrow > .help { color: var(--help); font-size: var(--fs-sm);
     margin-top: 0.1875rem; white-space: pre-line; }
-  /* Vertical checkbox list (PRELOAD_MODELS, etc.). Both gaps in rem so they
-     scale with --fs-base — fixes "compressed checklist" at higher scales. */
+  /* Vertical checkbox list (PRELOAD_MODELS, etc.). Gaps in rem so they scale
+     with --fs-base. */
   .cb-list { display: flex; flex-direction: column; gap: 0.4rem; }
   .cb-row  { display: flex; gap: 0.5rem; align-items: center; cursor: pointer; }
   .err { color: var(--red); font-size: var(--fs-xs); margin-top: 0.1875rem; }
-  /* Collapsible subgroup heading: smaller than h2, lighter weight, with
-     a small dividing line so it's visibly distinct from the section
-     header. Native disclosure-triangle is suppressed — list-style: none
-     on summary + ::-webkit-details-marker for older WebKit. State
-     persists in localStorage (see render() in JS). */
+  /* Collapsible subgroup heading; open state persists in localStorage
+     (see render() in JS). */
   details.subgroup-details { margin: 0.875rem 0 0.375rem 0; }
   details.subgroup-details > summary.subgroup-summary {
     color: var(--dim); font-size: var(--fs-sm); font-weight: 500;
@@ -260,13 +240,11 @@
     color: var(--cyan); cursor: pointer; font: inherit; font-size: var(--fs-xs);
     font-style: italic; text-decoration: underline; text-underline-offset: 2px; }
   .reset-link:hover { color: var(--bold); }
-  /* Regex editor + status badge */
   .regex-status { font-size: var(--fs-xs); font-family: var(--font-mono); }
   .regex-status.ok { color: var(--green); }
   .regex-status.err { color: var(--red); }
   .regex-status.warn { color: var(--yellow); }
   .regex-status.empty { color: var(--dim); font-style: italic; }
-  /* Advanced warning banner above the Step 3 fields */
   .advanced-warn { background: #2d1f0a; color: var(--yellow); border-left: 3px solid var(--yellow);
     padding: 0.375rem 0.625rem; margin: 0.5rem 0; border-radius: 3px; font-size: var(--fs-sm); }
   /* Pipeline rule origin badges (factory / edited / local-only vs config.json) */
@@ -277,7 +255,6 @@
   .rule-origin-badge.local-only { color: var(--green); }
   .rule-moved-badge { font-size: var(--fs-xs); font-family: var(--font-mono);
     color: var(--cyan); white-space: nowrap; }
-  /* Promote diff / confirm modal */
   .rule-modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.6);
     display: flex; align-items: center; justify-content: center; z-index: 1000; }
   .rule-modal { background: #161b22; border: 1px solid var(--border);
@@ -332,7 +309,6 @@
     font-size: var(--fs-xs); }
   .rule-origin-badge.behind { color: var(--cyan); }
   .rule-origin-badge.diverged { color: var(--yellow); }
-  /* Review dialog */
   .rule-modal.review { max-width: 58rem; display: flex; flex-direction: column; gap: 0.75rem; }
   .rv-flow { display: flex; flex-wrap: wrap; align-items: stretch; gap: 0.5rem; }
   .rv-node { flex: 1 1 13rem; border: 1px solid var(--border); border-radius: 4px;
@@ -392,12 +368,10 @@
     transform: translateX(-50%); background: #161b22; color: var(--fg);
     border: 1px solid var(--cyan); border-radius: 4px;
     padding: 0.5rem 0.875rem; font-size: var(--fs-sm); z-index: 1001; }
-  /* Test panel */
   .regex-test-panel { background: #161b22; border: 1px solid var(--border);
     border-radius: 4px; padding: 0.625rem 0.75rem; margin: 0.5rem 0 0.875rem 0; }
   .regex-test-panel textarea { resize: vertical; max-width: 100%; }
   .regex-test-out { margin-top: 0.625rem; }
-  /* ===== Pipeline rules editor — redesigned card ====================== */
   .pipeline-rules-wrap { display: flex; flex-direction: column; gap: 0.375rem; }
   .rule-list { display: flex; flex-direction: column; gap: 0.5rem; }
   /* Card = a left RAIL (rank + grip + lock) beside the MAIN column (header +
@@ -416,7 +390,6 @@
   .rule-placeholder { border: 1px dashed var(--cyan); background: rgba(56,189,248,0.08);
     border-radius: 8px; margin-bottom: 0.25rem; transition: height 120ms ease; }
 
-  /* --- left rail: grip (top) · rank (middle) · lock (bottom) --- */
   .rule-rail { flex: 0 0 2.5rem; display: flex; flex-direction: column;
     align-items: center; gap: 0.3rem; padding: 0.5rem 0;
     background: linear-gradient(180deg, #1b222c, var(--panel));
@@ -464,7 +437,6 @@
   .rule-rail .lock-btn.is-locked:hover { color: #1c1407; background: #ffd968; }
   .rule-rail .lock-btn:disabled { cursor: default; opacity: 0.7; }
 
-  /* --- main column + two-line header --- */
   .rule-main { flex: 1; min-width: 0; display: flex; flex-direction: column;
     padding: 0.45rem 0.6rem; }
   .rule-row .row-header { display: flex; flex-direction: column; gap: 0.35rem; }
@@ -558,7 +530,6 @@
   .rule-row.terminal { opacity: 0.9; }
   .rule-row.terminal:not([data-color]) { border-left: 3px solid var(--dim); }
 
-  /* --- body + footer --- */
   .rule-row .row-body { padding-top: 0.5rem; margin-top: 0.5rem;
     border-top: 1px solid var(--border); display: none; }
   .rule-row.expanded .row-body { display: block; }
@@ -579,7 +550,6 @@
   .rule-editor .map-table { font-family: var(--font-mono); font-size: var(--fs-sm); }
   .rule-editor .map-table input { background: transparent; color: var(--fg);
     border: 1px solid var(--border); padding: 0.125rem 0.25rem; }
-  /* Full-pipeline test table */
   .pipeline-test-table { width: 100%; border-collapse: collapse; font-size: var(--fs-sm);
     margin-top: 0.375rem; }
   .pipeline-test-table th, .pipeline-test-table td {
@@ -599,8 +569,7 @@
   .pipeline-test-table .tag.empty { background: #21262d; color: var(--dim); font-style: italic; }
   .preset-select { margin-bottom: 0.375rem; }
   .preset-select select { font-family: var(--font-mono); font-size: var(--fs-sm); }
-  /* Nullable-number editor in its disabled (null) state — greyed input,
-     enable/disable button labelled accordingly. */
+  /* Nullable-number editor: the input is disabled while the value is null. */
   .nullable-wrap input:disabled { opacity: 0.4; cursor: not-allowed; }
   /* Env-pinned fields: the env var wins at runtime, so the GUI editor is
      disabled and greyed. The label/badges stay full-strength so the field is
@@ -632,10 +601,8 @@
     color: var(--fg); display: none; }
   #toast.show { display: block; }
   #toast.err { border-color: #5a2424; color: var(--red); }
-  /* ============================================================ */
-  /* MODEL_OVERRIDES master-detail editor                          */
-  /* ============================================================ */
-  /* Full-row .field (no label-col / help text). Inside, two columns:
+  /* MODEL_OVERRIDES master-detail editor: a full-row .field (no label-col /
+     help text). Inside, two columns:
      a sidebar of models on the left and the detail pane on the right.
      Below 56rem the sidebar collapses to a horizontal scroller above
      the pane (KDE Linux narrow-viewport requirement).               */
@@ -652,10 +619,8 @@
     border-left: 3px solid transparent; min-width: 0; }
   .mo-list-item:hover { background: #1c2230; }
   .mo-list-item.active { background: #1c2230; border-left-color: var(--cyan); }
-  /* Model name wraps instead of truncating: in the vertical sidebar it spills
-     to a second line (readable); in the ≤56rem horizontal-scroller it just
-     shows in full (scroll to reach). Was ellipsis-on-nowrap, which clipped
-     longer names to "distil-large-v…". */
+  /* Model name wraps instead of truncating: an ellipsis clipped longer names
+     to "distil-large-v…". */
   .mo-list-item .mo-list-label { flex: 1; min-width: 0;
     white-space: normal; overflow-wrap: anywhere; }
   .mo-list-item .mo-count { color: var(--dim); font-size: var(--fs-xs);
@@ -665,9 +630,8 @@
   .mo-list-item .mo-collapse-ind { color: var(--dim);
     font-size: var(--fs-xs); flex-shrink: 0; opacity: 0; }
   .mo-list-item.active .mo-collapse-ind { opacity: 0.85; }
-  /* Top sidebar row: replaces the old "Global (read-only ref)" entry.
-     Whole row toggles diff-mode dim. Looks like a list item but is a label
-     wrapping a checkbox. */
+  /* Top sidebar row: the diff-mode toggle. A <label> wrapping a checkbox,
+     styled like a list item so the whole row toggles. */
   .mo-sidebar-toggle { display: flex; align-items: center; gap: 0.5rem;
     padding: 0.4rem 0.6rem; border-radius: 4px; cursor: pointer;
     border-left: 3px solid transparent; user-select: none;
@@ -731,8 +695,6 @@
   .mo-row .mo-value-cell input[type="number"] { -moz-appearance: textfield; }
   .mo-row .mo-row-ctrl { display: flex; gap: 0.4rem; align-items: center;
     flex-shrink: 0; }
-  /* Inherit/override dot indicator. Filled cyan = override active, dim
-     outline = inherits global. */
   .mo-dot { width: 0.5rem; height: 0.5rem; border-radius: 50%;
     flex-shrink: 0; }
   .mo-dot.override { background: var(--cyan);
@@ -748,22 +710,16 @@
   .mo-inherits .val { min-width: 0; color: var(--fg);
     font-family: var(--font-mono); font-size: var(--fs-sm);
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  /* Diff-to-global mode: dim rows whose value matches the resolved global. */
   .mo-mainpane.diff-mode .mo-row[data-matches-global="true"] {
     opacity: 0.45; filter: grayscale(0.6); }
-  /* Pipeline rules (scoping only) inherit the same diff-mode treatment as
-     .mo-row: a rule whose slug is in neither EXCLUDE nor INCLUDE for this
-     model is "functionally inherited" and dims identically. Independent
-     selector because .rule-row lives in its own class namespace. */
+  /* Same diff-mode dim as .mo-row for per-model rule rows: a rule in neither
+     EXCLUDE nor INCLUDE for this model counts as inherited. */
   .mo-mainpane.diff-mode .pipeline-rules-wrap.checklist-mode
     .rule-row[data-matches-global="true"] {
     opacity: 0.45; filter: grayscale(0.6); }
-  /* Per-model pipeline rules checklist: makeRuleListEditor renders each
-     rule with .rule-row; checklist mode adds .checklist-mode on the wrap
-     and per-row .excluded marker. Compact layout: checkbox | label | pill | view.   */
-  /* Per-model + capture scoping rows adopt the redesigned card language: a
-     compact single line — switch | label | pill | chips | view — sharing the
-     card border/hover from the base .rule-row, with the reusable .switch. */
+  /* Per-model + capture scoping checklist (makeRuleListEditor 'checklist'
+     mode): one compact line, switch | #N | label | pill | chips | view, on the
+     base .rule-row card border/hover. */
   .pipeline-rules-wrap.checklist-mode .rule-list { gap: 0.3rem; }
   .pipeline-rules-wrap.checklist-mode .rule-row { padding: 0.35rem 0.6rem; border-radius: 7px; }
   .pipeline-rules-wrap.checklist-mode .rule-row .row-header {
@@ -780,15 +736,12 @@
     font-size: var(--fs-xs); color: var(--yellow); font-weight: 600; letter-spacing: 0.03em; }
   .pipeline-rules-wrap.checklist-mode .rule-row.terminal {
     border-left-color: var(--dim); }
-  /* Globally-disabled, NOT force-included → dim the row so the admin sees
-     "this is dormant unless I act". On hover it brightens slightly so the
-     row remains scannable. Once force-included, the .globally-disabled
-     class is removed → row returns to full opacity. */
+  /* Globally disabled and not force-included: dimmed as "dormant unless I
+     act"; hover brightens it so the row stays scannable. */
   .pipeline-rules-wrap.checklist-mode .rule-row.globally-disabled {
     opacity: 0.5; filter: grayscale(0.6); }
   .pipeline-rules-wrap.checklist-mode .rule-row.globally-disabled:hover {
     opacity: 0.85; filter: grayscale(0.3); }
-  /* Override-state chips after the label/pill (pill-shaped, consistent). */
   .pipeline-rules-wrap.checklist-mode .rule-globally-disabled-tag,
   .pipeline-rules-wrap.checklist-mode .rule-force-included-tag {
     font-size: var(--fs-xs); padding: 0.05rem 0.45rem;
@@ -969,10 +922,9 @@ async function loadState(saved) {
   const r = await api('GET', '/settings/state');
   if (r.status === 401) return;  // the shared login gate is already showing
   if (r.status === 403 && typeof _renderNoAccessLanding === 'function') {
-    // Valid bearer but no admin scope — render the shared landing
-    // instead of falling through to the generic toast (which would
-    // leave the page blank). Refresh whoami so the landing can list
-    // pages this user CAN reach.
+    // Signed in but not admin: the shared landing, not the generic toast
+    // (which leaves the page blank); fresh whoami so it lists the pages
+    // this user CAN reach.
     try {
       const w = await fetch('/auth/whoami');
       if (w.ok) window.__whoami = await w.json();
@@ -985,10 +937,6 @@ async function loadState(saved) {
     return;
   }
   state = await r.json();
-  // role-admin is set by OPEN_MODE_BANNER_JS (single source of truth)
-  // when whoami.is_admin=true. /settings/state requires admin so callers
-  // who reach this point ARE admin, but the central handler already
-  // covered the body-class add — keep this comment as a breadcrumb.
   renderServerIdent(state.server_ident);
   // Worked out from the LIVE `dirty`, after the GET: an edit typed while it
   // was in flight is as unsaved as one typed during the POST.
@@ -1086,16 +1034,14 @@ function setDirty(name, value) {
     document.dispatchEvent(new CustomEvent('admin:model-lists-changed',
                                            { detail: { name } }));
   }
-  // Notify per-field listeners (currently the ↺ Reset button) so they can
-  // refresh their "value differs from default?" display.
+  // Per-field listeners (↺ Reset visibility, model-override markers, prompt
+  // lab) re-read the changed field.
   document.dispatchEvent(new CustomEvent('admin:dirty', { detail: { name } }));
 }
 
-// Re-render listeners on the model-overrides + model-list editors used to
-// document.addEventListener() on every render — loadState() rebuilds those
-// editors on every reload / save / login, leaking one listener per render.
-// Register once per (event, key) instead; subsequent registrations remove
-// the prior one so old closures (and their pinned DOM) can be GC'd.
+// One document listener per (event, key): loadState() rebuilds the editors
+// on every reload / save / login, so re-registering replaces the old closure
+// (and its pinned DOM) instead of leaking one per render.
 const _adminListeners = {};
 function _registerAdminListener(event, key, fn) {
   const k = event + '|' + key;
@@ -1121,11 +1067,9 @@ function makeBadges(name) {
   return wrap;
 }
 
-// Linkify https URLs in a help description (gated-model terms, token
-// settings pages live on huggingface.co — make them clickable). Built from
-// text nodes + <a> elements, never innerHTML, so the description text stays
-// exactly as inert as textContent. Trailing sentence punctuation is kept out
-// of the href.
+// Linkify https URLs in a help description (gated-model terms, HF token
+// pages). Text nodes + <a> only, never innerHTML, so the text stays as inert
+// as textContent.
 function setHelpText(el, text) {
   const re = /https:\/\/[^\s]+/g;
   let last = 0, m;
@@ -1146,12 +1090,9 @@ function setHelpText(el, text) {
   el.appendChild(document.createTextNode(text.slice(last)));
 }
 
-// Field rows like MODEL_OVERRIDES are master-detail widgets that have their
-// own visual structure (sidebar + detail pane) and do not benefit from the
-// shared label-col / +reset / help-text chrome — the section header above
-// already conveys what the widget is, and the widget renders its own legend.
-// Listed here so fieldRow() can render them edge-to-edge in the section's
-// .group-fields grid (grid-column: 1 / -1, no label-col, no description).
+// Widgets with their own structure and legend (MODEL_OVERRIDES is
+// master-detail): fieldRow() renders them edge-to-edge (grid-column 1 / -1)
+// with no label column, ↺ reset or help text.
 const FULLROW_FIELDS = new Set(['MODEL_OVERRIDES']);
 
 function envPinnedNote(name) {
@@ -1215,10 +1156,8 @@ function fieldRow(name) {
     inputCol.appendChild(help);
   }
 
-  // ↺ Reset link button — appears whenever the current value differs from
-  // the in-repo baseline (cfg._BASELINE). Clicking sets the field to the
-  // baseline value, marking it dirty so the save button enables. Recovery
-  // path for "I broke a regex / typed the wrong number".
+  // ↺ Reset: shown while the value differs from the in-repo baseline
+  // (cfg._BASELINE, sent as default_value).
   // PIPELINE_RULES has none: its editor brings its own reset flows, and this
   // one would save a pinned local copy of the rev-less config.json list,
   // losing the record of which config.json version each rule matched.
@@ -1238,19 +1177,15 @@ function fieldRow(name) {
   resetBtn.addEventListener('click', () => {
     const def = fieldDef(name).default_value;
     setDirty(name, def);
-    // Re-render this row so the editor reflects the new value.
     const newRow = fieldRow(name);
     row.replaceWith(newRow);
   });
   resetWrap.appendChild(resetBtn);
   inputCol.appendChild(resetWrap);
-  // Initial visibility uses the local resetWrap (the row isn't in the DOM
-  // yet during render()); subsequent updates flow through the single
-  // delegated 'admin:dirty' listener installed at DOMContentLoaded
-  // (refreshFieldReset, by data-field lookup). Previously each fieldRow()
-  // call registered its own document-level listener; row.replaceWith() and
-  // full re-renders never removed them, so listeners (and pinned DOM nodes)
-  // accumulated unboundedly across reload/discard/reset cycles.
+  // Initial visibility from the local resetWrap (the row is not in the DOM
+  // yet); later updates come from the one delegated admin:dirty listener
+  // (refreshFieldReset). A per-row document listener would leak across
+  // replaceWith() and re-renders.
   (function paintInitialResetVisibility() {
     const cur = currentValue(name);
     const def = fieldDef(name).default_value;
@@ -1326,8 +1261,7 @@ function makeEditor(name) {
           : Array.from(new Set([...cur, slug])).sort();
         setDirty(name, next);
       },
-      // "↑ view" jumps to the matching rule in the global PIPELINE_RULES
-      // editor (top-level helper — reachable from this top-level makeEditor).
+      // "↑ view" jumps to the rule in the global PIPELINE_RULES editor.
       onJumpToGlobal: (slug) => jumpToGlobalRule(slug),
     });
   }
@@ -1384,11 +1318,9 @@ function makeEditor(name) {
       || name === 'ADMIN_WEBUI_ALLOWED_HOSTS' || name === 'USER_WEBUI_ALLOWED_HOSTS') {
     return linesEditor(name, []);
   }
-  // Enum fields render as a dropdown sourced from the server's `choices`, which
-  // are derived from the field's AdminConfig Literal (see _field_choices). Single
-  // source of truth — covers SERVER_LOG_LEVEL, MODEL_DEVICE(_FALLBACK),
-  // MODEL_COMPUTE_TYPE(_FALLBACK), CONVERT_QUANTIZATION, STREAMING_VAD_BACKEND,
-  // CAPTURES_SAMPLE_JOIN_STRATEGY, … with no hardcoded option lists to drift.
+  // Enum fields: a dropdown over the server's `choices`, derived from the
+  // field's AdminConfig Literal (see _field_choices), so there are no
+  // hardcoded option lists to drift.
   const _ed = fieldDef(name);
   if (_ed && Array.isArray(_ed.choices) && _ed.choices.length) {
     return selectEditor(name, v, _ed.choices);
@@ -1397,36 +1329,26 @@ function makeEditor(name) {
   return stringEditor(name, v == null ? '' : v);
 }
 
-// =============================================================================
-// MODEL_OVERRIDES editor — master-detail UI
-// =============================================================================
-// Sidebar: [Global ☑ dim toggle] + per-model entries (with override counts +
-// collapse indicator on the active row) + [+ add model dropdown] +
-// [× remove model entry]. The toggle row replaces the old "Global (read-only
-// ref)" navigation entry AND the standalone "Compare diff to global"
-// checkbox. Main pane: per-model edit view (6 field sections + Pipeline
-// rules checklist) — no top header bar, no chevron. Clicking the active
-// sidebar entry collapses/expands the detail pane (state persisted in
-// localStorage['mo.detail.<id>']). Per-field rows show ●/○ inherit/override
-// dots, an input widget when overridden, "inherits {global}" + "+ override"
-// when not. Diff-to-global toggle dims rows whose value matches the resolved
-// global. Live: every input change refreshes dot/match/count/inherits text
-// in place via refreshMarkers(field) — no input rebuild, focus preserved.
-// Advanced subgroups persist their own open/closed state under mo.adv.<id>.
+// MODEL_OVERRIDES editor, master-detail. Sidebar: diff-to-global toggle, one
+// entry per model (override count), add / remove. Main pane: the selected
+// model's field sections + its pipeline-rules checklist; a field row shows an
+// input when overridden, "inherits {global}" + "+ override" when not.
+// Clicking the active entry collapses the pane (localStorage 'mo.detail.<id>';
+// advanced subgroups use 'mo.adv.<id>'). Diff mode dims rows that match the
+// resolved global. Edits refresh dot / match / count / inherits text in place
+// via refreshMarkers(field): no input rebuild, so focus survives.
 function modelOverridesEditor(name, v) {
   // Authoritative state. Local mutable copy of the saved overrides; full
   // snapshot pushed via setDirty(name, snapshot) on every edit so the existing
   // /settings/state save flow sees one consistent payload.
   let overrides = JSON.parse(JSON.stringify(v || {}));
-  // Diff-mode default ON: most useful first state — the user immediately
-  // sees which fields differ from global. Toggleable via the top sidebar row.
+  // Diff mode starts ON so the first view shows what differs from global.
   let selectedId = null;     // chosen during initial paint below
   let diffMode = true;
   // Live handle to the per-model pipeline section so refreshPipelineSection()
   // can replaceWith() it on global PIPELINE_RULES changes.
   let pipelineSectionEl = null;
 
-  // Section / field grouping. Mirrors the plan's master-detail layout.
   const SECTIONS = [
     { id: 'hardware', title: 'Hardware', advTitle: 'load-time hardware',
       basic: ['MODEL_DEVICE','MODEL_COMPUTE_TYPE','MODEL_DEVICE_FALLBACK','MODEL_COMPUTE_TYPE_FALLBACK'],
@@ -1481,7 +1403,6 @@ function modelOverridesEditor(name, v) {
   // makeInputWidget); the schema-derived opts are only a fallback.
   const FIELD_META = {{MO_FIELD_META_JSON}};
 
-  // -------- helpers ------------------------------------------------------
   function getOverrideValue(modelId, field) {
     const m = overrides[modelId];
     if (!m) return undefined;
@@ -1496,8 +1417,6 @@ function modelOverridesEditor(name, v) {
       overrides[modelId][field] = value;
     }
     persist();
-    // Live update: dot, data-matches-global, sidebar count, "inherits" text
-    // refresh in place — no full re-render means typing focus is preserved.
     refreshMarkers(field);
   }
   function clearOverride(modelId, field) {
@@ -1539,13 +1458,9 @@ function modelOverridesEditor(name, v) {
     el.appendChild(lbl); el.appendChild(val);
   }
 
-  // -------- live marker refresh ------------------------------------------
-  // Recompute the per-row dot / data-matches-global / "inherits {global}"
-  // text and the sidebar override count + dot, WITHOUT rebuilding any input
-  // widgets. Cheap (handful of querySelectorAll), preserves typing focus.
-  // `field` (optional): only that field's row gets updated. Otherwise all.
+  // Patch the sidebar and per-row markers in place, without rebuilding any
+  // input widget, so typing focus survives. `field` limits the row pass to it.
   function refreshMarkers(field) {
-    // 1. Sidebar: per-model entry override count + dot.
     for (const li of sidebar.querySelectorAll('.mo-list-item')) {
       const id = li.dataset.modelId;
       if (!id) continue;
@@ -1559,7 +1474,6 @@ function modelOverridesEditor(name, v) {
       }
     }
 
-    // 2. Per-row markers in the detail pane.
     const rows = mainpane.querySelectorAll('.mo-row[data-mo-field]');
     for (const row of rows) {
       const f = row.dataset.moField;
@@ -1575,10 +1489,8 @@ function modelOverridesEditor(name, v) {
         dot.classList.toggle('override', isOverridden);
         dot.classList.toggle('inherit',  !isOverridden);
       }
-      // Only the not-overridden branch renders a .mo-inherits hint; if the
-      // global value just changed, that text needs to follow. (When the row
-      // IS overridden, the input widget shows the override value — already
-      // live via the input element itself; no DOM patch needed.)
+      // Only a not-overridden row has a .mo-inherits hint to follow the
+      // global; an overridden row's input already shows its own value.
       const inh = row.querySelector('.mo-inherits');
       if (inh) fillInherits(inh, globalVal);
     }
@@ -1596,7 +1508,6 @@ function modelOverridesEditor(name, v) {
     keepPinned();
   }
 
-  // -------- DOM scaffolding ----------------------------------------------
   const wrap = document.createElement('div');
   wrap.className = 'mo-wrap';
   const sidebar = document.createElement('aside');
@@ -1611,7 +1522,6 @@ function modelOverridesEditor(name, v) {
     if (isEnvPinned(name)) disableEnvPinnedEditor(wrap);
   }
 
-  // -------- sidebar -------------------------------------------------------
   function renderSidebar() {
     sidebar.innerHTML = '';
     const allowed = Array.isArray(currentValue('ALLOWED_MODELS'))
@@ -1620,9 +1530,7 @@ function modelOverridesEditor(name, v) {
     // an entry). German-aware, case-insensitive order (model IDs are mixed-case).
     const ids = Object.keys(overrides).sort(new Intl.Collator('de', { sensitivity: 'base', numeric: true }).compare);
 
-    // Top row: diff-mode toggle. Replaces the old "Global (read-only ref)"
-    // entry AND the standalone "Compare diff to global" checkbox. The whole
-    // row toggles diffMode; clicking anywhere flips the checkbox.
+    // Top row: diff-mode toggle. The row is a <label>, so a click anywhere flips it.
     const toggleWrap = document.createElement('label');
     toggleWrap.className = 'mo-sidebar-toggle';
     toggleWrap.title = 'Dim per-model rows whose value equals the resolved global';
@@ -1643,7 +1551,6 @@ function modelOverridesEditor(name, v) {
     toggleWrap.appendChild(toggleLbl);
     sidebar.appendChild(toggleWrap);
 
-    // Per-model entries.
     for (const id of ids) {
       const item = document.createElement('div');
       item.className = 'mo-list-item';
@@ -1664,8 +1571,7 @@ function modelOverridesEditor(name, v) {
       const cnt = document.createElement('span');
       cnt.className = 'mo-count';
       cnt.textContent = (n ? '(' + n + ')' : '');
-      // Collapse indicator: ▾ when expanded, ▸ when collapsed. Only the
-      // active row reveals it via .active CSS opacity.
+      // Collapse indicator; CSS shows it only on the .active row.
       const collapsed = (_lsGet('mo.detail.' + id) === '0');
       const ind = document.createElement('span');
       ind.className = 'mo-collapse-ind';
@@ -1679,7 +1585,6 @@ function modelOverridesEditor(name, v) {
             localStorage.setItem('mo.detail.' + id, isCollapsed ? '1' : '0');
           } catch (_) {}
           applyCollapseState();
-          // Refresh the indicator on this entry only.
           const indEl = item.querySelector('.mo-collapse-ind');
           if (indEl) indEl.textContent = isCollapsed ? '▾' : '▸';
         } else {
@@ -1690,7 +1595,6 @@ function modelOverridesEditor(name, v) {
       sidebar.appendChild(item);
     }
 
-    // + add model — inline dropdown of allowed models without an entry yet.
     const addRow = document.createElement('div');
     addRow.className = 'mo-list-add';
     const free = allowed.filter(m => !overrides[m]);
@@ -1725,7 +1629,6 @@ function modelOverridesEditor(name, v) {
     }
     sidebar.appendChild(addRow);
 
-    // Remove-current-model affordance — only when a model is selected.
     if (selectedId) {
       const rmBtn = document.createElement('button');
       rmBtn.type = 'button';
@@ -1735,8 +1638,6 @@ function modelOverridesEditor(name, v) {
       rmBtn.addEventListener('click', () => {
         if (!confirm('Delete all overrides for ' + selectedId + '?')) return;
         delete overrides[selectedId];
-        // Pick a sensible new selection: first remaining override-bearing
-        // model, else first allowed model, else null.
         const remaining = Object.keys(overrides).sort(new Intl.Collator('de', { sensitivity: 'base', numeric: true }).compare);
         if (remaining.length > 0) selectedId = remaining[0];
         else selectedId = allowed[0] || null;
@@ -1748,10 +1649,8 @@ function modelOverridesEditor(name, v) {
     keepPinned();
   }
 
-  // -------- collapse state ------------------------------------------------
-  // Apply the saved collapsed/expanded state of the currently-selected
-  // model to the mainpane. localStorage['mo.detail.<id>'] === '0' means
-  // explicitly collapsed; anything else (including absence) means expanded.
+  // localStorage['mo.detail.<id>'] === '0' means collapsed; anything else,
+  // including absence, means expanded.
   function applyCollapseState() {
     if (!selectedId) {
       mainpane.classList.remove('collapsed');
@@ -1761,7 +1660,6 @@ function modelOverridesEditor(name, v) {
     mainpane.classList.toggle('collapsed', isCollapsed);
   }
 
-  // -------- main pane: dispatcher ----------------------------------------
   function renderMain() {
     mainpane.innerHTML = '';
     mainpane.classList.toggle('diff-mode', diffMode);
@@ -1774,7 +1672,6 @@ function modelOverridesEditor(name, v) {
     keepPinned();
   }
 
-  // -------- main pane: empty state (no allowed models) -------------------
   function renderEmptyState() {
     const note = document.createElement('div');
     note.className = 'help';
@@ -1783,7 +1680,6 @@ function modelOverridesEditor(name, v) {
     mainpane.appendChild(note);
   }
 
-  // -------- main pane: Model edit view -----------------------------------
   function renderModelEditView() {
     const body = document.createElement('div');
     body.className = 'mo-detail-body';
@@ -1839,14 +1735,11 @@ function modelOverridesEditor(name, v) {
 
     const row = document.createElement('div');
     row.className = 'mo-row';
-    // Use a distinct attribute (not data-field) so the diff dim selector
-    // doesn't collide with the global fieldRow's data-field. The global
-    // editor uses data-field on its rows; we use data-mo-field to keep the
-    // jump-link selectors unambiguous.
+    // data-mo-field, not data-field, so the page's data-field lookups for
+    // global rows never match a per-model row.
     row.dataset.moField = field;
-    // matches-global: not overridden, OR overridden but the value happens to
-    // equal the global. The latter is degenerate but cheap to detect, and
-    // useful — the row is functionally inherited.
+    // An override equal to the global also counts as matching: the row is
+    // functionally inherited.
     const matches = !isOverridden || JSON.stringify(overrideVal) === JSON.stringify(globalVal);
     row.dataset.matchesGlobal = matches ? 'true' : 'false';
 
@@ -1937,8 +1830,8 @@ function modelOverridesEditor(name, v) {
     }
     if (meta.kind === 'enum') {
       const sel = document.createElement('select');
-      // Options from the server's schema-derived choices (single source of
-      // truth); meta.opts is a legacy fallback (now always absent).
+      // Server choices are the source of truth; meta.opts (the schema enum)
+      // is only the fallback.
       const opts = (fieldDef(field) && fieldDef(field).choices) || meta.opts || [];
       for (const o of opts) {
         const opt = document.createElement('option');
@@ -1994,7 +1887,6 @@ function modelOverridesEditor(name, v) {
       ta.addEventListener('input', () => setOverrideValue(selectedId, field, ta.value));
       return ta;
     }
-    // string fallback (and TEMPERATURE / SUPPRESS_TOKENS / PUNCTUATIONS)
     const inp = document.createElement('input');
     inp.type = 'text';
     if (meta.placeholder) inp.placeholder = meta.placeholder;
@@ -2003,7 +1895,6 @@ function modelOverridesEditor(name, v) {
     return inp;
   }
 
-  // -------- main pane: pipeline rules checklist --------------------------
   function renderPipelineSection() {
     const secEl = document.createElement('div');
     secEl.className = 'mo-section';
@@ -2054,8 +1945,7 @@ function modelOverridesEditor(name, v) {
         persist();
         refreshMarkers();  // sidebar count + dot, in place (parity with field rows)
       },
-      // "↑ view" delegates to the shared top-level helper (which also expands
-      // a collapsed Pipeline section and uses the correct expand-btn selector).
+      // jumpToGlobalRule also expands a collapsed Pipeline section.
       onJumpToGlobal: (slug) => jumpToGlobalRule(slug),
     };
     secEl.appendChild(makeRuleListEditor('PIPELINE_RULES', rules, 'checklist', ruleOpts));
@@ -2063,9 +1953,7 @@ function modelOverridesEditor(name, v) {
   }
 
   // Initial selection: the alphabetically-first model with overrides;
-  // otherwise null (renders the empty-state hint in the detail pane). The
-  // Global ref view is gone — when no model has an override yet the user
-  // is told to use the "+ add model override" dropdown.
+  // otherwise null (renders the empty-state hint in the detail pane).
   (function() {
     const overridden = Object.keys(overrides).filter(id => countOverrides(id) > 0).sort(new Intl.Collator('de', { sensitivity: 'base', numeric: true }).compare);
     if (overridden.length > 0) selectedId = overridden[0];
@@ -2136,7 +2024,6 @@ function modelDropdownEditor(name, v, lists) {
     const sel = document.createElement('select');
     let curInList = false;
     if (!cur) {
-      // Empty default — show a placeholder "Select model..." option.
       const ph = document.createElement('option');
       ph.value = ''; ph.textContent = '— select a model —';
       ph.selected = true; ph.disabled = true;
@@ -2203,8 +2090,6 @@ function modelMultiSelectEditor(name, v, lists) {
       return;
     }
 
-    // Universe = allowed + any stale preload entries (preserved so the user
-    // can see + uncheck them deliberately).
     const universe = [...allowed];
     for (const p of preload) {
       if (!universe.includes(p)) universe.push(p);
@@ -2257,7 +2142,7 @@ function modelMultiSelectEditor(name, v, lists) {
 
 function translationTemplateEditor(name, v) {
   // TRANSLATION_PROMPT_TEMPLATE hosts the PROMPT LAB — visible for EVERY
-  // family, not just custom (design: mockup "Prompt Lab" option B):
+  // family, not just custom:
   //   left column   sample (model / from / to / text / glossary, the custom
   //                 template textarea when family=custom) + "▶ Test this
   //                 model" with staged cold-load status and stacked results
@@ -2271,7 +2156,6 @@ function translationTemplateEditor(name, v) {
   const wrap = document.createElement('div');
   wrap.className = 'prompt-lab';
 
-  // --- left: sample -------------------------------------------------------
   const left = document.createElement('div');
   left.className = 'lab-col';
   const mkRow = (labelText, ctrl) => {
@@ -2365,7 +2249,6 @@ function translationTemplateEditor(name, v) {
   // textarea `t` is deliberately NOT marked; the pin still disables it.
   [modelSel, srcIn, tgtIn, sample, gloss, testBtn].forEach(c => { c.dataset.diagnostic = '1'; });
 
-  // --- right: what the model receives ------------------------------------
   const right = document.createElement('div');
   right.className = 'lab-col';
   const rHead = document.createElement('div');
@@ -2402,12 +2285,11 @@ function translationTemplateEditor(name, v) {
   rawDetails.appendChild(rawPre);
   right.appendChild(rawDetails);
   // Custom textarea vs built-in template reference for a family. Set at
-  // build, by renderPrompt() on a successful preview, by the failed-preview
-  // branch and on every family change: a failed preview (403 translation off,
-  // 400/422, network) must not leave the previous family's widgets on show —
-  // with family=custom that hid the only place to type the template the save
-  // then demands. A family with no built-in template (auto) hides the
-  // reference instead of opening an empty one.
+  // build, on every family change, by renderPrompt() and by the non-2xx
+  // preview branch: a failed preview (403 translation off, 400/422) must not
+  // leave the previous family's widgets on show — with family=custom that hid
+  // the only place to type the template the save then demands. A family with
+  // no built-in template (auto) hides the reference instead of an empty one.
   function showFamily(fam) {
     const c = fam === 'custom';
     t.style.display = c ? '' : 'none';
@@ -2491,7 +2373,7 @@ function translationTemplateEditor(name, v) {
         }
       } catch (e) {
         // Best-effort, but a thrown fetch must not leave the previous
-        // inputs' prompt on show either (same as the non-2xx branch).
+        // inputs' prompt on show either.
         if (seq !== previewSeq) return;
         famChip.textContent = '';
         sampling.textContent = '';
@@ -2511,8 +2393,6 @@ function translationTemplateEditor(name, v) {
     stage.textContent = testBtn.dataset.cold
       ? 'Loading model… a first run downloads it (multi-GB), then loads into VRAM'
       : 'Translating…';
-    // Live staged progress: mint a progress id, thread it through the test
-    // body, and poll the shared transcription-progress endpoint at 1 Hz.
     const pid = Array.from(crypto.getRandomValues(new Uint8Array(16)))
       .map(b => b.toString(16).padStart(2, '0')).join('');
     const fmtGB = b => (b / 1073741824).toFixed(2);
@@ -2589,8 +2469,7 @@ function translationTemplateEditor(name, v) {
         }
       } else {
         card.className = 'lab-result warned';
-        // FastAPI's 422 `detail` is an ARRAY of error dicts — string-coercing
-        // it printed "[object Object]". Normalize it to "field: message".
+        // FastAPI's 422 `detail` is an ARRAY of error dicts: show "field: message".
         const det = Array.isArray(j.detail)
           ? j.detail.map(d => String((d.loc || []).slice(-1)) + ': ' + d.msg).join(' · ')
           : j.detail;
@@ -2629,18 +2508,10 @@ function translationTemplateEditor(name, v) {
   return wrap;
 }
 
-// =============================================================================
-// PIPELINE_RULES editor — single ordered list of mixed-type rules
-// =============================================================================
-// Rendered as a stack of .rule-row cards. Each row: drag-handle | enabled
-// checkbox | ordinal | name+label | type-pill | edit toggle | reset (seeded
-// only) | delete (custom only). Body (visible when expanded) holds a
-// type-specific sub-editor + per-row live status badge.
-//
-// Drag-to-reorder uses HTML5 native DnD on the .drag-handle. A locked rule
-// can't be dragged or nudged (its grip and ▲/▼ are disabled); other rules
-// move freely around it, without a dialog: the lock protects the rule's own
-// content and position, not the whole list.
+// PIPELINE_RULES editor: one ordered list of mixed-type .rule-row cards.
+// A locked rule can't be dragged or nudged (its grip and ▲/▼ are disabled);
+// other rules move freely around it, without a dialog: the lock protects the
+// rule's own content and position, not the whole list.
 
 const TEST_PRESETS = {
   'default':              "Hallo. Wie geht's? 10.23 Uhr! Bitte Frau, Müller. neuer Absatz. 1,000 EUR.",
@@ -2651,7 +2522,6 @@ const TEST_PRESETS = {
 };
 
 function _slugify(s) {
-  // kebab-case, ASCII-ish, drop diacritics, collapse runs of -.
   return (s || '').toLowerCase()
     .normalize('NFD').replace(/[̀-ͯ]/g, '')   // strip combining marks
     .replace(/ß/g, 'ss').replace(/[äöü]/g, m => ({'ä':'a','ö':'o','ü':'u'}[m]))
@@ -2674,9 +2544,8 @@ function _ensureUniqueSlug(slug, existing) {
   return at(n);
 }
 
-// Live status check for one rule against the current test panel sample (and
-// its language). Hits POST /settings/test-pipeline with a single-rule list.
-// Returns the step dict or null on transport error.
+// Live status of one rule against the test panel's sample and language:
+// the step dict, or null when the check fails (non-2xx or transport error).
 async function _testOneRule(rule) {
   const panelSample = document.getElementById('pipeline-test-sample');
   const sample = panelSample ? panelSample.value : TEST_PRESETS['default'];
@@ -2709,16 +2578,15 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
   // mode: "full" (default) → editable list with drag-reorder, add/delete,
   //         per-row body editor, per-row test badge. Used for the global
   //         PIPELINE_RULES editor.
-  //       "checklist" → compact read-only-ish list with one checkbox per
-  //         rule (writes to MODEL_OVERRIDES[id].PIPELINE_RULES_EXCLUDE) and
-  //         a "↑ view" jump-link to the global editor. Used by the per-model
-  //         override pane. opts.excludeSet (Set<slug>) drives initial state;
-  //         opts.onToggle(slug, excluded) and opts.onJumpToGlobal(slug) are
-  //         the two callbacks.
+  //       "checklist" → one checkbox per rule plus a "↑ view" jump-link to
+  //         the global editor; the rules themselves are not editable. Used by
+  //         the per-model override pane and CAPTURES_PIPELINE_RULES_EXCLUDE.
+  //         opts.excludeSet (Set<slug>) drives initial state; the callbacks
+  //         are opts.onToggle(slug, wantActive, globallyEnabled) (wantActive
+  //         = the box is ticked, i.e. NOT excluded) and opts.onJumpToGlobal(slug).
   // initialRules: list of rule dicts as stored in PIPELINE_RULES.
-  // Local mutable copy lives in a closure; in "full" mode setDirty(name, snapshot)
-  // on every edit so save tracks the whole list as one entry. In "checklist"
-  // mode the list is purely read-only — toggles call opts.onToggle directly.
+  // In "full" mode every edit calls setDirty(name, snapshot) on a local copy,
+  // so save tracks the whole list as one entry.
   mode = mode || 'full';
   opts = opts || {};
   const isChecklist = mode === 'checklist';
@@ -2750,7 +2618,6 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
   list.className = 'rule-list';
   wrap.appendChild(list);
 
-  // Drag state across rule rows.
   let dragSrcIdx = null;
   let dragSrcEl = null;     // the <div class="rule-row"> currently dragging
   // One shared placeholder div — HTML5 DnD allows only one drag at a time
@@ -2759,11 +2626,9 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
   // full row), moves around on dragenter, removed on dragend.
   const placeholder = document.createElement('div');
   placeholder.className = 'rule-placeholder';
-  // Expanded-row state, keyed by rule.name (slug). Survives full repaints.
-  // In full mode (the global PIPELINE_RULES editor) it ALSO persists across
-  // page reloads via localStorage['pipeline.expanded'] — matching the
-  // subgroup/section collapse persistence. Checklist mode has no expandable
-  // bodies, so it never reads or writes that key.
+  // Expanded-row state, keyed by slug. Survives full repaints and, in full
+  // mode, page reloads via localStorage['pipeline.expanded'] (like the
+  // subgroup/section collapse state).
   const expandedNames = new Set();
   if (!isChecklist) {
     try {
@@ -2813,9 +2678,7 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
     }
     const oldIdx = dragSrcIdx;
     if (newIdx === oldIdx) return;     // dropped in place
-    // A locked rule can't be dragged (its grip is disabled while locked), and
-    // moving other rules around a locked one is allowed — lock protects the
-    // rule's content + its own position, not the whole list. No confirm needed.
+    // No lock check: a locked rule's grip is disabled, and moving others around it is allowed.
     const [moved] = rules.splice(oldIdx, 1);
     rules.splice(newIdx, 0, moved);
     // Defensive: keep terminal last.
@@ -2832,13 +2695,13 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
     dragSrcIdx = null;
     commitFull();
   });
-  }  // end if (!isChecklist) — drag handlers
+  }
 
-  // --- factory baseline (config.json) ---------------------------------
   // `factoryRules` mirrors the committed config.json: seeded from the page's
-  // default_value (cfg._BASELINE) and refreshed from every successful
-  // POST /settings/factory-rules response, so origin badges, the promote
-  // affordances and reset buttons stay correct after a promote.
+  // default_value (cfg._BASELINE), then replaced by every successful
+  // /settings/factory-rules answer (the POST of a promote, the GET re-read
+  // before each sync action), so origin badges, the promote affordances and
+  // reset buttons stay correct.
   let factoryRules = JSON.parse(JSON.stringify(
     (fieldDef(name) && fieldDef(name).default_value) || []));
   function _factoryRule(slug) {
@@ -2955,9 +2818,9 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
     const base = _factoryOrderSeq().filter(n => seen.has(n));   // config.json order, intersected
     return JSON.stringify(cur) !== JSON.stringify(base);
   }
-  // A factory-backed rule whose rank in the current list differs from its rank
-  // in config.json — same content, moved position. Local-only rules return
-  // false (they carry the local-only badge and never claim a config.json match).
+  // A factory-backed rule whose rank among the rules shared with config.json
+  // differs from its rank there; content is not compared. Local-only rules
+  // return false (they carry the local-only badge instead).
   function _ruleMoved(rule) {
     if (!rule || rule.type === 'terminal' || !_factoryHas(rule.name)) return false;
     const cur = _curFactorySeq();
@@ -2985,8 +2848,6 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
 
   function refreshControlsVisibility() {
     if (isChecklist) return;   // checklist rows have no reset/dirty controls
-    // Per row: repaint the origin badge, toggle the ↑ Promote (.row-promote)
-    // and ↓ Reset (.row-reset) buttons in the head row's sync slot.
     let nReset = 0;      // rules that differ from config.json (any reason)
     let nPromote = 0;    // rules with something of their own to write up
     list.querySelectorAll('.rule-row').forEach(r => {
@@ -3038,25 +2899,20 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
     _paintSyncNotice();
   }
 
-  // --- commit helpers --------------------------------------------------
-  // Inline edits (typing into pattern/replacement/wordlist/map) MUST NOT
-  // rebuild the DOM — that would steal focus mid-keystroke and collapse
-  // any other expanded rows. Structural changes (add/delete/reorder/reset/
-  // toggle-enabled) DO rebuild because the visible row layout changes.
-  // Both push the whole rule list into the global dirty overlay via setDirty
-  // so the page-level Save → /settings/state persists it to config.local.json.
-  // Promoting (a separate action) writes config.json instead.
-  // config_rev is editor bookkeeping (_stampConfigRevs adds it to every
-  // in-sync rule), and the server value of a list never saved here is the
-  // canonical config.json, which carries none. Compare without it, so an
-  // edit undone by hand clears the dirty entry instead of leaving Save lit
-  // (and a Save then pinning this server to a full local copy of the rules).
-  // Only where the server copy of the rule carries no rev, though: against a
-  // stored rev, a rev-only change is real (_afterPromoteStamp's restamp) and
-  // dropping it would read the next config.json change as 'diverged'.
-  // `keep`: name → the server copy's config_rev.
-  // Schema defaults are filled in (and keys sorted) on both sides, so an
-  // empty field the editor's serializers leave out is no edit either.
+  // Inline edits (commitData) MUST NOT rebuild the DOM — that would steal
+  // focus mid-keystroke and collapse other expanded rows. Structural changes
+  // (add/delete/reorder/reset/toggle-enabled) use commitFull and repaint.
+  // Save persists the list to config.local.json; Promote writes config.json.
+  //
+  // _sansRevs: config_rev is editor bookkeeping (_stampConfigRevs adds it to
+  // every in-sync rule), and a list never saved here equals the canonical
+  // config.json, which carries none. Compare without it so an edit undone by
+  // hand clears the dirty entry (instead of a Save pinning a full local copy).
+  // Only where the server copy has no rev, though: against a stored rev a
+  // rev-only change is real (_afterPromoteStamp's restamp), and dropping it
+  // would read the next config.json change as 'diverged'. `keep`: name → the
+  // server copy's config_rev. Defaults are filled and keys sorted on both
+  // sides, so an empty field the serializers leave out is no edit either.
   function _sansRevs(v, keep) {
     return JSON.stringify((v || []).map(r => {
       const c = _withDefaults(r);
@@ -3097,10 +2953,8 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
     }
   }
 
-  // Union of every tag currently set on any rule in this list — used as
-  // the tag-picker autocomplete source so admins don't have to retype
-  // an existing tag's spelling. Computed at render time so newly-added
-  // tags propagate without a reload.
+  // Tag-picker autocomplete source; computed per render so a newly added
+  // tag shows up without a reload.
   function _allRuleTags() {
     const seen = {};
     for (const r of rules) {
@@ -3117,10 +2971,8 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
     row.dataset.idx = idx;
     row.dataset.slug = rule.name || '';
 
-    // -------- Checklist mode: compact one-checkbox row + jump-link --------
-    // No drag handle, no body, no test badge, no add/delete/reset. Bodies
-    // are still edited globally; this row is just an inclusion/exclusion
-    // toggle for the model selected in the master-detail UI.
+    // Checklist mode: a one-checkbox inclusion/exclusion row (per model, or
+    // for captures); rule bodies are edited in the global editor only.
     //
     // Effective state: (rule.enabled && !forcedOut) || forcedIn.
     //   forcedOut = slug in PIPELINE_RULES_EXCLUDE → force-disable
@@ -3137,9 +2989,6 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
 
       if (isTerminal) row.classList.add('terminal');
       if (forcedOut) row.classList.add('excluded');
-      // Globally-disabled rules render dimmed UNTIL the admin force-includes
-      // them. Once force-included the row is "alive" — undim it so the
-      // effective state is visible at a glance.
       if (!globallyEnabled && !forcedIn) row.classList.add('globally-disabled');
       // Diff-to-global hook: a rule whose slug is in neither EXCLUDE nor
       // INCLUDE is "functionally inherited" — same contract as .mo-row's
@@ -3183,8 +3032,6 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
         cb.disabled = true;
         cb.title = 'Globally disabled — enable it on the Pipeline page to use it here.';
       } else {
-        // Tooltip combines all the state so the admin sees WHY the box is
-        // checked or not at a glance.
         if (!globallyEnabled && forcedIn) {
           cb.title = 'Globally disabled, force-included for this model. '
                    + 'Uncheck to fall back to the global default (off).';
@@ -3198,17 +3045,16 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
         }
         cb.addEventListener('change', () => {
           // Hand the global state to onToggle so the parent picks the right
-          // list to mutate (EXCLUDE vs INCLUDE). Single callback, two paths.
+          // list to mutate (EXCLUDE vs INCLUDE).
           if (opts.onToggle) opts.onToggle(rule.name, cb.checked, globallyEnabled);
           // Local re-class without a full repaint — keeps focus / scroll.
           const newForcedOut = globallyEnabled && !cb.checked;
           const newForcedIn  = !globallyEnabled && cb.checked;
           row.classList.toggle('excluded', newForcedOut);
           row.classList.toggle('globally-disabled', !globallyEnabled && !newForcedIn);
-          // Diff-mode dim follows the new forced state synchronously — no
-          // attribute means the dim CSS would freeze on the render-time value.
+          // Keep data-matches-global in step, or the diff-mode dim keeps the
+          // render-time value.
           row.dataset.matchesGlobal = (!newForcedOut && !newForcedIn) ? 'true' : 'false';
-          // Update tags + status text.
           status.textContent = newForcedOut ? 'EXCLUDED' : '';
           if (gdTag) gdTag.style.display = (!globallyEnabled && !newForcedIn) ? '' : 'none';
           if (fiTag) fiTag.style.display = (!globallyEnabled && newForcedIn) ? '' : 'none';
@@ -3217,9 +3063,8 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
       }
       head.appendChild(cb);
 
-      // Card position (#N) — matches the /settings/pipeline card ordinal and
-      // the /logs trace. idx is the 1-based-minus-1 index into the full
-      // PIPELINE_RULES list (terminal included), so idx+1 IS the card number.
+      // idx indexes the full PIPELINE_RULES list (terminal included), so #idx+1
+      // matches the /settings/pipeline card number and the /logs trace.
       const ord = document.createElement('span');
       ord.className = 'card-no';
       ord.textContent = '#' + (idx + 1);
@@ -3260,9 +3105,6 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
         head.appendChild(view);
       }
 
-      // Tags: surface global state alongside per-model overrides. Visible
-      // only when the relevant condition holds; toggled live by the change
-      // handler above.
       let gdTag = null;
       let fiTag = null;
       if (!isTerminal) {
@@ -3290,7 +3132,6 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
       row.appendChild(head);
       return row;
     }
-    // ----------------------------------------------------------------------
 
     row.tabIndex = 0;     // keyboard-focusable; CSS :focus-visible draws ring
     if (rule.locked) row.classList.add('locked');
@@ -3299,10 +3140,9 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
     // Restore expansion across repaints (state lives in expandedNames Set).
     if (expandedNames.has(rule.name)) row.classList.add('expanded');
 
-    // ---- Redesigned card chrome: a left "rail" (drag grip + rank number +
-    // lock padlock) beside the main column (header + body). The rail gives
-    // ordering + protection one home and visually separates sibling cards. A
-    // per-card colour token tints the rail/accent (data-color → CSS). -------
+    // Card chrome: a left rail (drag grip + rank stepper + padlock: ordering and
+    // protection in one place) beside the main column (header + body).
+    // data-color tints the rail/accent via CSS.
     row.classList.add('rule-card');
     if (rule.color) row.dataset.color = rule.color;
     const rail = document.createElement('div');
@@ -3310,9 +3150,8 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
     const cardMain = document.createElement('div');
     cardMain.className = 'rule-main';
 
-    // ----- Labelled-toggle factory (used for `enabled` on line 1 and
-    // `user-editable` on line 2). Same shape, same green-when-on cue,
-    // same dim-when-off — readable as a parallel pair. ------------------
+    // Shared by `enabled` (line 1) and `user-editable` (line 2) so the two
+    // read as a parallel pair.
     function _labelledToggle(text, checked, opts) {
       opts = opts || {};
       const wrap = document.createElement('label');
@@ -3334,10 +3173,8 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
       return wrap;
     }
 
-    // Header is now a flex COLUMN with two children — line 1 (identity)
-    // and line 2 (metadata). The previous single-line layout meant the
-    // rule-label was the first thing to truncate when 10+ inline
-    // controls fought for horizontal space.
+    // Header = flex column: line 1 (identity) and line 2 (metadata). On one
+    // line, 10+ inline controls truncated the rule label first.
     const head = document.createElement('div');
     head.className = 'row-header';
     const headLine1 = document.createElement('div');
@@ -3358,8 +3195,9 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
         DRAG_AUTOSCROLL.begin(list);   // resolve scroll target for edge auto-scroll
         // Firefox requires setData() — without it, the drag never fires.
         // A private type, not text/plain: every text field accepts a text
-        // drop natively, so a release over a rule's input inserted the index
-        // there. The drop handler reads dragSrcIdx, never the payload.
+        // drop natively, so a release over an input outside this list
+        // inserted the index there. The drop handler reads dragSrcIdx, never
+        // the payload.
         try { e.dataTransfer.setData('application/x-fwb-rule-card', String(idx)); } catch (_) {}
         e.dataTransfer.effectAllowed = 'move';
         // Whole row as the drag ghost (not just the handle glyph) so
@@ -3391,9 +3229,7 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
     }
     rail.appendChild(drag);
 
-    // `enabled` toggle on line 1 — gets a visible label "enabled" (not
-    // just a tooltip). Terminal rules disable the toggle but still show
-    // it for visual rhythm.
+    // `enabled` toggle: the terminal rule shows it disabled, for visual rhythm.
     const enabledToggle = _labelledToggle('enabled', !!rule.enabled, {
       title: 'Enable / disable this rule',
       disabled: rule.type === 'terminal',
@@ -3404,10 +3240,8 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
     });
     headLine1.appendChild(enabledToggle);
 
-    // Line 2 is built later (after we've decided whether this is a
-    // terminal row — those skip line 2 entirely). The badge variable
-    // is hoisted so _syncUntaggedBadge() can find it before line 2's
-    // construction completes.
+    // Line 2 (skipped for the terminal rule) is built further down; until it
+    // assigns _untaggedBadge, _syncUntaggedBadge() is a no-op.
     let _untaggedBadge = null;
     function _syncUntaggedBadge() {
       if (!_untaggedBadge) return;
@@ -3417,11 +3251,8 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
     }
     _syncUntaggedBadge();
 
-    // Rank stepper — the rank chip grown into a number-stepper: ▲ above, rank
-    // in the middle, ▼ below. One-position nudges without dragging (drag the
-    // grip for big jumps). Direction maps to position: ▲ moves toward the top.
-    // upBtn/downBtn are hoisted so _applyLockState() can disable them when the
-    // rule is locked, alongside the drag grip.
+    // Rank stepper: one-position nudges without dragging. upBtn/downBtn are
+    // row-scoped so _applyLockState() can disable them with the drag grip.
     let upBtn = null, downBtn = null;
     const _hasTerminal = rules.some(r => r.type === 'terminal');
     const _lastMovable = _hasTerminal ? rules.length - 2 : rules.length - 1;
@@ -3518,11 +3349,9 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
     pill.textContent = _typePill(rule.type);
     headLine1.appendChild(pill);
 
-    // Origin badge — how this rule relates to config.json. Repainted live by
-    // refreshControlsVisibility. Skipped for the terminal rule. The sync slot
-    // right after it takes the "↓ Reset / Update" and "↑ Promote" buttons:
-    // they sit next to the badge they act on, and both only open the review
-    // dialog, so the scannable head row stays safe.
+    // Origin badge — how this rule relates to config.json; repainted live by
+    // refreshControlsVisibility. The sync slot holds "↓ Reset / Update" and
+    // "↑ Promote"; both only open the review dialog, so a mis-click is safe.
     let syncSlot = null;
     if (rule.type !== 'terminal') {
       const originBadge = document.createElement('span');
@@ -3533,7 +3362,7 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
       // full (label, slug, type, badge) and squeezed the label to "DE: St…".
       syncSlot = document.createElement('span');
       syncSlot.className = 'rule-sync-slot';
-      // Position-diverged marker — same content as config.json but moved.
+      // Position-diverged marker (rank differs from config.json, see _ruleMoved).
       // Toggled live by refreshControlsVisibility.
       const movedBadge = document.createElement('span');
       movedBadge.className = 'rule-moved-badge';
@@ -3544,12 +3373,8 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
       headLine1.appendChild(movedBadge);
     }
 
-    // `refresh` (the per-row test-panel re-runner) is defined inside the
-    // non-terminal block further down. Under 'use strict' a block-level
-    // function declaration is NOT visible out here, so hoist a row-scoped
-    // handle the block assigns into — otherwise this expand handler (which
-    // fires it on first reveal) throws "refresh is not defined", aborting the
-    // rest of the handler (_saveExpanded / label update).
+    // Per-row test-panel re-runner, assigned by the non-terminal block below
+    // (null for the terminal rule); the expand handler fires it on reveal.
     let refresh = null;
     const expandBtn = document.createElement('button');
     expandBtn.type = 'button';
@@ -3582,8 +3407,6 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
     colorBtn.className = 'color-btn';
     colorBtn.title = 'Card colour';
     colorBtn.innerHTML = '<span class="color-dot" data-color="' + (rule.color || '') + '"></span>';
-    // The colour palette popover is built after headActions (its anchor)
-    // exists — see just below the action-cluster setup.
 
     // Right-aligned action cluster: colour + edit/expand. Promote / reset sit
     // in the sync slot on the "applies to" line and delete in the body footer,
@@ -3594,7 +3417,7 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
     headActions.appendChild(expandBtn);
     headLine1.appendChild(headActions);
 
-    // ----- Colour palette popover. Rendered in the browser top layer (a
+    // Colour palette popover. Rendered in the browser top layer (a
     // [popover]) so the card's overflow:hidden can't clip it; _anchorPopover
     // pins it under the button. Manual popover + our own Esc / outside-click
     // dismiss (sidesteps the auto-popover invoker double-toggle), and the 8
@@ -3667,10 +3490,8 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
       });
     }
 
-    // ↑ Promote — push this rule into the committed config.json. Built here,
-    // mounted in the head row's sync slot further down. Shown only when the
-    // rule has edits of its own (refreshControlsVisibility toggles it via the
-    // .row-promote selector).
+    // ↑ Promote: mounted in the sync slot further down; refreshControlsVisibility
+    // shows it (via .row-promote) only when the rule has something of its own to write.
     let promoteBtnEl = null;
     if (rule.type !== 'terminal') {
       promoteBtnEl = document.createElement('button');
@@ -3682,8 +3503,7 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
       promoteBtnEl.addEventListener('click', (e) => { e.stopPropagation(); _promoteOne(rule); });
     }
 
-    // ----- Language scope line: "applies to:" + language picker.
-    // Terminal rules skip it — they're always universal. ---------------
+    // "applies to:" language picker; terminal rules are always universal.
     let _langPicker = null;
     if (rule.type !== 'terminal') {
       const headLineLang = document.createElement('div');
@@ -3709,9 +3529,8 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
       head.appendChild(headLineLang);
     }
 
-    // ----- Line 2 (metadata): tag picker + user-editable toggle +
-    // untagged badge. Terminal rules skip it entirely — they have no
-    // tags, no exposed flag, no user-editable concept. ---------------
+    // Tags + user-editable line; terminal rules have neither tags nor an
+    // exposed flag.
     if (rule.type !== 'terminal') {
       const tagsLbl = document.createElement('span');
       tagsLbl.className = 'meta-label';
@@ -3736,9 +3555,6 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
       tagWrap.appendChild(picker.el);
       headLine2.appendChild(tagWrap);
 
-      // `user-editable` toggle (was the confusing "simple" string).
-      // Tooltip explains the where; the visible label is the truthful
-      // effect description.
       const exposedToggle = _labelledToggle('user-editable', !!rule.exposed, {
         title: 'Show on /quick-config so non-admin users can edit '
              + 'this rule’s body.',
@@ -3750,10 +3566,8 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
       });
       headLine2.appendChild(exposedToggle);
 
-      // Yellow "visible to all users" badge — shown when the rule is
-      // exposed AND has no tags (the asymmetric default that lets it
-      // reach every non-admin user). Helps admins spot rules they
-      // probably wanted to scope but forgot to tag.
+      // Exposed + untagged reaches every non-admin user: flag rules the
+      // admin probably meant to scope but forgot to tag.
       _untaggedBadge = document.createElement('span');
       _untaggedBadge.className = 'rule-untagged-badge';
       _untaggedBadge.textContent = '⚠ untagged · visible to all users';
@@ -3766,11 +3580,9 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
       head.appendChild(headLine2);
     }
 
-    // ----- Reset / delete. ↓ Reset mounts in the head row's sync slot
-    // (toggled via .row-reset); × delete is rare + destructive, so it lives
-    // in the expanded body footer where mis-clicks are less likely
-    // (PatternFly guidance). Built here so the closures capture
-    // `rule`/`idx`/`expandedNames`; delete is appended further down. ------
+    // ↓ Reset mounts in the head row's sync slot (toggled via .row-reset);
+    // × delete is rare + destructive, so it goes in the body footer
+    // (appended further down), where mis-clicks are less likely.
     const _destructiveBtns = [];
     // A rule present in config.json (factory / edited) can be reset to its
     // committed value; a local-only rule (not in config.json) can be deleted.
@@ -3804,23 +3616,18 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
     // Drop logic lives at list level (see top of makeRuleListEditor) —
     // the shared placeholder follows the cursor between rows there.
 
-    // Body (collapsed by default).
     const body = document.createElement('div');
     body.className = 'row-body';
 
-    // Label editor — skipped for terminal (hardcoded label). For seeded
-    // rules the slug stays fixed (it's the contract with the in-repo
-    // baseline). For custom rules the slug regenerates from the label so
-    // the kebab-case slug stays in sync without a separate field. Live
-    // updates the header lbl/slug spans without a full repaint to
-    // preserve focus/caret position during typing.
-    // Membership in config.json — not the seeded flag — is authoritative
-    // (as in _canReset/_canDelete): a rule promoted from here keeps
-    // seeded:false locally, and re-slugging it would detach it from its
-    // config.json copy (local-only here, "missing" there). A rule already
-    // saved on this server is fixed too: the per-model, profile and captures
-    // checklists and per-identity bindings can name its slug, and a rename
-    // 422s the next save or silently un-excludes the rule for a user.
+    // Label editor (terminal's label is hardcoded). A custom rule's slug
+    // follows its label; the header spans update in place, with no repaint,
+    // so the caret survives typing. The slug is fixed once the rule is in
+    // config.json (membership, not `seeded`, as in _canReset/_canDelete: a
+    // promote under a local-list shadow keeps seeded:false, and re-slugging
+    // would detach it, local-only here and "missing" there) or saved on this
+    // server (per-model, profile and captures checklists and per-identity
+    // bindings name the slug; a rename 422s the next save or silently
+    // un-excludes the rule for a user).
     const savedSlugs = new Set((fieldDef(name).value || []).map(r => r && r.name));
     const slugFixed = r => r.seeded || _factoryHas(r.name) || savedSlugs.has(r.name);
     if (rule.type !== 'terminal') {
@@ -3934,19 +3741,15 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
           }
         }, 250);
       };
-      // Refresh on any input change inside the body.
       body.addEventListener('input', refresh);
       body.addEventListener('change', refresh);
-      // Only kick off the initial test if this row is rendered expanded;
-      // for collapsed rows the body is display:none, so the test output
-      // would be invisible. The expand-click handler fires refresh() on
-      // first reveal instead.
+      // A collapsed body is display:none; the expand handler runs refresh()
+      // on first reveal instead.
       if (row.classList.contains('expanded')) requestAnimationFrame(refresh);
     }
 
-    // Promote joins reset in the sync slot; delete lives in a body footer
-    // (out of the scannable head row), appended AFTER the rule editor + test
-    // panel so the visual order reads: edit body → run test → delete.
+    // Delete's footer is appended AFTER the editor + test panel so the body
+    // reads: edit → run test → delete.
     if (promoteBtnEl && syncSlot) syncSlot.appendChild(promoteBtnEl);
     if (_destructiveBtns.length) {
       const footer = document.createElement('div');
@@ -3978,7 +3781,7 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
       if (_langPicker) _langPicker.el.querySelectorAll('input, button').forEach(el => { el.disabled = true; });
       drag.draggable = false;
       // Locked = "protect from edits + reorder": kill the ↑/↓ nudges too, not
-      // just the drag grip (a locked rule must not move by any affordance).
+      // just the drag grip (no per-row affordance may move a locked rule).
       if (upBtn) upBtn.disabled = true;
       if (downBtn) downBtn.disabled = true;
       // Same for a regex-list rule's entries: their ↑/↓ are buttons (disabled
@@ -3992,11 +3795,8 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
     return row;
   }
 
-  // Footer + bottom controls. In checklist mode we ONLY show the footer
-  // count; full mode adds add-rule + reset-order + reset-all buttons.
-  // Footer reflects EFFECTIVE state: globally-disabled rules don't count
-  // unless the model force-includes them; globally-enabled rules count
-  // unless the model force-excludes them.
+  // Checklist-mode footer. It counts EFFECTIVE state: a force-include or
+  // force-exclude overrides the rule's global enabled flag.
   let footer = null;
   function _footerText() {
     const ex = (opts.excludeSet || new Set());
@@ -4023,7 +3823,6 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
     return wrap;
   }
 
-  // Bottom controls.
   const ctrls = document.createElement('div');
   ctrls.className = 'rule-list-controls';
   ctrls.style.marginTop = '0.5rem';
@@ -4077,8 +3876,6 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
   syncSpacer.className = 'sync-spacer';
   syncBar.appendChild(syncSpacer);
 
-  // ↑ Promote order — write the current pipeline ORDER into config.json
-  // (rule contents unchanged); shown only when the order differs.
   const promoteOrderBtn = document.createElement('button');
   promoteOrderBtn.type = 'button';
   promoteOrderBtn.className = 'sync-btn up';
@@ -4187,9 +3984,8 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
         enabled: true, languages: [], locked: false, seeded: false,
         exposed: false, tags: [], note: '', color: '',
       };
-      // Seed empty type-specific fields; the user fills them in via the
-      // expanded body editor (auto-opened below). Empty patterns are
-      // skipped at runtime so the new rule is harmless until edited.
+      // Empty type fields: an empty pattern is skipped at runtime, so the
+      // new rule is harmless until edited.
       if (t === 'regex-list') {
         newRule.entries = [];
       } else if (t === 'callback:map') {
@@ -4200,13 +3996,10 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
       } else {
         newRule.pattern = '';
       }
-      // Insert just before the terminal row, or at the end if no terminal.
       const tIdx = rules.findIndex(r => r.type === 'terminal');
       if (tIdx >= 0) rules.splice(tIdx, 0, newRule);
       else rules.push(newRule);
       form.remove();
-      // Auto-expand the newly added rule so the user lands directly in
-      // its editor body and can fill in pattern/map/etc.
       expandedNames.add(slug);
       _saveExpanded();
       commitFull();
@@ -4222,7 +4015,6 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
     return wr;
   }
 
-  // --- promote: write local rules up into the committed config.json ----
   function _pipelineDirty() {
     try { return Object.prototype.hasOwnProperty.call(dirty, name); }
     catch (_) { return false; }
@@ -4388,7 +4180,7 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
   const _RV_SERVER = { t: 'This server', s: 'config.local.json — not in git' };
   const _RV_CONFIG = { t: 'config.json', s: 'git-tracked — shared by every deployment' };
   // o: { title, up (true = this server -> config.json), verb, left:[h,sub],
-  //      right:[h,sub], groups:[{id, name, meta, rows, pick, checked, open}],
+  //      right:[h,sub], groups:[{id, name, meta, rows, pick, checked, open, left?, right?}],
   //      extraEls, warn, lose, confirm(n, selectedGroups) -> label, confirmClass,
   //      onConfirm(selectedIds) }
   // Left column = what gets overwritten, right column = what it becomes.
@@ -4433,7 +4225,7 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
     same.style.display = 'none';
     panel.appendChild(same);
 
-    const picks = [];   // [{id, cb}]
+    const picks = [];   // per group: {cb}, or null when not pickable
     const single = o.groups.length === 1 && !o.groups[0].pick;
     if (single) {
       panel.appendChild(_rvTable(o.groups[0].rows, o.left, o.right));
@@ -4644,8 +4436,6 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
       onConfirm: (ids) => {
         const pick = new Set(ids);
         missing.filter(b => pick.has(b.name)).forEach(b => {
-          // Before the next config.json rule that exists here, else before
-          // the terminal step.
           const nx = nextLocal(b);
           let at = nx ? rules.indexOf(nx) : rules.findIndex(r => r.type === 'terminal');
           if (at === -1) at = rules.length;
@@ -4656,9 +4446,8 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
       },
     });
   }
-  // Shared "pipeline order changed" element for the promote dialogs — lists
-  // the moved rules and the resulting order. Positional (pipeline) order,
-  // never collated: rule order is functional, not alphabetical.
+  // Moved rules + new order for the promote dialogs. Positional order, never
+  // collated: rule order is functional, not alphabetical.
   function _orderChangeEl() {
     const d = document.createElement('div');
     d.className = 'promote-change-line';
@@ -4678,9 +4467,8 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
     d.appendChild(line2);
     return d;
   }
-  // Non-terminal editor rules that are NOT in config.json (factoryRules) —
-  // i.e. local-only. config.json has no home for them: an order-promote skips
-  // them, and clearing the local override would drop them from the live run.
+  // Local-only rules: config.json has no home for them, so an order-promote
+  // skips them and clearing the local override drops them from the live run.
   function _localOnlyNames() {
     return rules.filter(r => r.type !== 'terminal' && !_factoryHas(r.name))
                 .map(r => r.label || r.name);
@@ -4716,10 +4504,10 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
     rules.forEach(r => {
       if (r.type === 'terminal') { terminal = r; return; }
       if (promoteSet.has(r.name)) {
-        out.push(JSON.parse(JSON.stringify(r)));                    // promote current content
+        out.push(JSON.parse(JSON.stringify(r)));
       } else if (_factoryHas(r.name)) {
-        out.push(JSON.parse(JSON.stringify(_factoryRule(r.name)))); // committed content, new position
-      }                                                             // else local-only & not promoted -> skip
+        out.push(JSON.parse(JSON.stringify(_factoryRule(r.name))));
+      }
     });
     if (keepAbsent) {
       // Rule order is functional: an absent rule (e.g. a new es-punctuation
@@ -4730,7 +4518,6 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
         if (b.type === 'terminal') return;
         if (out.some(o => o.name === b.name)) return;
         const after = fo.slice(fo.indexOf(b.name) + 1);
-        // Nearest config.json successor present (walk config.json order).
         let at = -1;
         for (const n of after) {
           at = out.findIndex(o => o.name === n);
@@ -4774,11 +4561,10 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
     if (Array.isArray(out.rules)) {
       factoryRules = out.rules;
       // config.json IS the baseline (the server refreshed cfg._BASELINE).
-      // With no config.local.json list and no env pin, the promoted list is
-      // also what this server runs now: mirror it into fieldDef so the dirty
-      // compare is against the running value. The stale old value kept Save
-      // lit, and that Save wrote a full local copy (PIPELINE_RULES is
-      // prune-exempt) shadowing every later config.json update.
+      // With no config.local.json list and no env pin it is also the running
+      // value: mirror it into fieldDef, else Save stays lit and would pin a
+      // full local copy (PIPELINE_RULES is prune-exempt) that shadows every
+      // later config.json update.
       const fd = fieldDef(name);
       if (fd) {
         fd.default_value = JSON.parse(JSON.stringify(out.rules));
@@ -4833,9 +4619,6 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
       confirm: () => '↑ Promote to config.json',
       confirmClass: 'solid-up',
       onConfirm: async () => {
-        // Preserve the CURRENT pipeline order; promote only this rule's
-        // content. _buildFactoryPayload enforces terminal-last and the
-        // before-terminal placement of a rule that is new in config.json.
         const out = await _postFactory(_buildFactoryPayload(new Set([rule.name]), true));
         if (out) { _afterPromoteStamp(); _toast('Promoted to config.json — commit & push to ship it.'); }
       },
@@ -4877,7 +4660,7 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
     // config.json rules this server does not have: left alone unless ticked.
     // (A saved local list cannot tell "deleted here on purpose" from "new in
     // an update", so removal from config.json is always an explicit choice.)
-    // 'rm:' cannot start a rule slug (^[a-z0-9-]+$ allows a leading '-').
+    // 'rm:' cannot collide with a rule slug: ':' is outside ^[a-z0-9-]+$.
     _missingFactoryRules().forEach(b => {
       groups.push({
         id: 'rm:' + b.name, name: b.label || b.name, pick: true, checked: false, open: false,
@@ -4918,8 +4701,7 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
         const promote = new Set(ids.filter(i => !i.startsWith('rm:')));
         const remove = new Set(ids.filter(i => i.startsWith('rm:')).map(i => i.slice(3)));
         // keepAbsent=true: config.json rules missing here stay in config.json;
-        // only the explicitly ticked ones are dropped. The immutable terminal
-        // is written from COMMITTED content (see _buildFactoryPayload).
+        // only the explicitly ticked ones are dropped.
         const payload = _buildFactoryPayload(promote, true).filter(r => !remove.has(r.name));
         const out = await _postFactory(payload);
         if (out) { _afterPromoteStamp(); _afterPromoteAll(out); }
@@ -4935,8 +4717,6 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
       + 'Rule contents stay exactly as committed — only positions change.';
     body.appendChild(intro);
     body.appendChild(_orderChangeEl());
-    // Local-only rules can't be positioned in config.json without also writing
-    // their content, so order-promote excludes them. Say so explicitly.
     const localOnly = _localOnlyNames();
     if (localOnly.length) {
       const w = document.createElement('div');
@@ -5058,9 +4838,7 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
 
 
 function pipelineTestPanel() {
-  // Full-pipeline test panel — preset dropdown + editable textarea + run button.
-  // Inserted under the Pipeline section heading. Output renders as an ordered
-  // table mirroring the trace block: ordinal | label | type-pill | output.
+  // Dry run of the whole (unsaved) PIPELINE_RULES list against an editable sample.
   const wrap = document.createElement('div');
   wrap.className = 'regex-test-panel';
 
@@ -5224,8 +5002,6 @@ function pipelineTestPanel() {
       const ordCell = document.createElement('td');
       ordCell.textContent = step.ordinal;
       tr.appendChild(ordCell);
-      // Rule labels are free-form (only the slug is pattern-restricted), so
-      // the cell is assembled from nodes rather than an HTML string.
       const labelCell = document.createElement('td');
       labelCell.textContent = step.label || '?';
       if (badge) {
@@ -5260,13 +5036,8 @@ function pipelineTestPanel() {
 }
 
 function nullableNumberEditor(name, v, fallback = 0) {
-  // Toggle between "active number" and "disabled (null)" states. When null:
-  //   - input is HTMLDisabled (greyed out, can't focus or type)
-  //   - button label flips to "enable" so the user knows it's a toggle
-  // When non-null:
-  //   - input is editable
-  //   - button reads "disable" (sets value back to null)
-  // Re-enabling restores the last-known number (or `fallback` if there was none).
+  // A number a button toggles to null (check skipped); re-enabling restores
+  // the last number, or `fallback` if the field started out null.
   const wrap = document.createElement('span');
   wrap.className = 'nullable-wrap';
   wrap.style.display = 'flex'; wrap.style.gap = '0.375rem'; wrap.style.alignItems = 'center';
@@ -5276,7 +5047,6 @@ function nullableNumberEditor(name, v, fallback = 0) {
   const btn = document.createElement('button');
   btn.style.padding = '0.125rem 0.5rem';
 
-  // Last non-null value the user typed, used to restore on "enable" click.
   let lastVal = (v == null) ? fallback : v;
 
   function paint() {
@@ -5304,10 +5074,8 @@ function nullableNumberEditor(name, v, fallback = 0) {
   btn.addEventListener('click', () => {
     const cur = currentValue(name);
     if (cur == null) {
-      // Re-enable with the last known value.
       setDirty(name, lastVal);
     } else {
-      // Disable. Stash the current value so a later "enable" restores it.
       lastVal = cur;
       setDirty(name, null);
     }
@@ -5376,7 +5144,6 @@ function linesEditor(name, v) {
   wrap.appendChild(t); wrap.appendChild(help);
   return wrap;
 }
-// --- section nav / collapse helpers --------------------------------------
 // Slugify a section title into a stable element id / nav target. Section
 // titles are fixed, unique English strings, so lowercase + non-alnum->'-'
 // is collision-free. e.g. "Access & sessions" -> "access-sessions".
@@ -5398,10 +5165,8 @@ function expandSectionContaining(el) {
   }
 }
 
-// Scroll the global PIPELINE_RULES editor to the rule named `ruleName` and
-// expand its body. Shared by the per-model AND captures "↑ view" buttons —
-// top-level (not trapped in the modelOverridesEditor closure) so every caller
-// can reach it.
+// Scroll the global PIPELINE_RULES editor to `ruleName` and expand it.
+// Shared by the per-model and captures "↑ view" buttons and the #rule= jump.
 function jumpToGlobalRule(ruleName) {
   const fieldRow = document.querySelector('main .field[data-field="PIPELINE_RULES"]');
   if (!fieldRow) {
@@ -5454,10 +5219,8 @@ function buildSectionNav() {
   const navRow = $('section-nav');
   if (!navRow || !state) return;
   navRow.innerHTML = '';
-  // The dedicated /settings/pipeline page renders a single section and has no
-  // use for the settings section-nav — leave the strip empty (CSS
-  // `.section-nav:empty { display:none }` hides it) rather than listing sections
-  // that live on the main /settings page.
+  // /settings/pipeline has one section: leave the strip empty (CSS
+  // `.section-nav:empty` hides it).
   if (PIPELINE_ONLY) { refreshSectionToggleAllLabel(); return; }
   for (const g of state.groups) {
     const id = 'sec-' + slug(g.title);
@@ -5542,17 +5305,11 @@ function render() {
   const main = $('main');
   main.innerHTML = '';
   for (const g of state.groups) {
-    // View routing: the dedicated /settings/pipeline page shows ONLY the
-    // Pipeline section; /settings shows every other section (Pipeline becomes
-    // a link to that page — see the stub branch below).
     if (PIPELINE_ONLY && g.title !== 'Pipeline') continue;
     const sec = document.createElement('section');
     sec.id = 'sec-' + slug(g.title);
-    // Collapsible section: the <h2> is promoted into a <summary> inside a
-    // native <details> so the whole section folds away. Open/closed persists
-    // in localStorage['sec.global.<title>'] (default OPEN — absence !== '0').
-    // dataset.lsKey lets expand/collapse-all persist without re-deriving the
-    // title. Same mechanism as the "Advanced —" subgroups below.
+    // The section folds as a native <details>, open by default. dataset.lsKey
+    // lets expand/collapse-all persist it without re-deriving the key.
     const secDet = document.createElement('details');
     secDet.className = 'section-details';
     const secKey = 'sec.global.' + g.title;
@@ -5580,11 +5337,8 @@ function render() {
       main.appendChild(sec);
       continue;
     }
-    // Each group has subgroups; iterate them. A subgroup with title===null
-    // emits no subheader. A subgroup WITH a title is wrapped in
-    // <details>/<summary> so the admin can collapse long-tail "Advanced —"
-    // sections; open/closed state persists in localStorage keyed by
-    // `adv.global.{group}.{sub}`.
+    // A titled subgroup (the long-tail "Advanced —" ones) folds into a
+    // <details>, closed by default; an untitled one gets no subheader.
     for (const sub of g.subgroups) {
       const fieldsWrap = document.createElement('div');
       fieldsWrap.className = 'group-fields';
@@ -5619,9 +5373,6 @@ function render() {
         body.appendChild(fieldsWrap);
       }
     }
-    // The Pipeline section gets the full-pipeline test panel appended at the
-    // bottom (after PIPELINE_RULES renders). Single panel — runs the whole
-    // ordered list against the editable sample.
     if (g.title === 'Pipeline') {
       body.appendChild(pipelineTestPanel());
     }
@@ -5710,10 +5461,8 @@ async function doRestart() {
   $('restart-progress').classList.add('show');
   $('restart-progress-msg').textContent = 'Asking the server to spawn the restart helper.';
 
-  // Capture the current process identity BEFORE asking it to restart, so
-  // the polling loop can detect "different process now serving" even if
-  // its polling interval missed the brief "service down" window. Falls
-  // back to the old sawDown heuristic if the server lacks boot_id.
+  // Read boot_id BEFORE the restart: a changed boot_id proves a new process
+  // even when the 500 ms poll missed the brief "service down" window.
   let preBootId = null;
   try {
     const m0 = await fetch('/v1/models', { cache: 'no-store' });
@@ -5779,16 +5528,14 @@ async function doRestart() {
 }
 
 document.addEventListener('DOMContentLoaded', async () => {
-  // Single delegated 'admin:dirty' listener — refreshes one field's reset
-  // visibility per dispatch. Replaces the per-fieldRow subscription that
+  // One delegated listener, not one per fieldRow: a per-row subscription
   // leaked a listener on every render/reset cycle.
   document.addEventListener('admin:dirty', (e) => {
     if (e && e.detail && e.detail.name) refreshFieldReset(e.detail.name);
   });
-  // The sticky header is variable-height (now 3 rows; wraps on narrow widths),
-  // so measure it into --header-h. Section anchors use it via scroll-margin-top
-  // (CSS) so section-nav jumps land just below the header instead of under it;
-  // the scrollspy band is re-tuned to the live height on resize.
+  // The sticky header's height varies (it wraps on narrow widths), so measure
+  // it into --header-h: scroll-margin-top uses it so section-nav jumps land
+  // below the header, and the scrollspy band is re-tuned on resize.
   const _hdr = document.querySelector('header');
   if (_hdr && typeof ResizeObserver !== 'undefined') {
     const _setHH = () => {
@@ -5798,19 +5545,15 @@ document.addEventListener('DOMContentLoaded', async () => {
     new ResizeObserver(_setHH).observe(_hdr);
     _setHH();
   }
-  // Sign-in is handled by the shared full-screen login gate (web_common):
-  // a 401 from loadState()/api() shows it; it prompts + reloads on success.
-  // #logout-btn + #reload-btn are wired globally in OPEN_MODE_BANNER_JS;
-  // expose this page's soft refresh (re-fetch config) as the reload hook.
-  // loadState() drops `dirty` without asking, so the header ↻ asks first —
-  // the same question the Restart button asks.
+  // Sign-in: a 401 from loadState()/api() shows the shared login gate
+  // (web_common). OPEN_MODE_BANNER_JS wires the header ↻ (#reload-btn) to
+  // this hook; loadState() drops `dirty` without asking, so ask first, as
+  // Restart does.
   window._pageReload = () => {
     if (Object.keys(dirty).length > 0
         && !confirm('You have unsaved changes that will be lost on reload. Continue?')) return;
     return loadState();
   };
-  // Collapse/expand-all lives on the toolbar (not the section-nav strip); its
-  // label is kept in sync by refreshSectionToggleAllLabel() after each render.
   $('sec-toggle-all').addEventListener('click', () => setAllSections(!_anySectionOpen()));
   $('save-btn').addEventListener('click', save);
   $('discard-btn').addEventListener('click', () => {
@@ -5818,12 +5561,11 @@ document.addEventListener('DOMContentLoaded', async () => {
     dirty = {};
     $('save-btn').disabled = true;
     $('discard-btn').disabled = true;
-    render();    // re-render every field from state.fields (server-side values)
+    render();
   });
   $('restart-btn').addEventListener('click', () => {
-    // Manual-restart entry point. Same flow as the post-save modal but with
-    // generic copy and no field list — useful when an earlier save's cold
-    // changes never got applied (e.g., the auto-restart flow misfired).
+    // The post-save restart flow, on demand: for cold changes an earlier save
+    // never applied (e.g. the auto-restart misfired).
     if (Object.keys(dirty).length > 0) {
       if (!confirm('You have unsaved changes that will be lost on restart. Continue?')) {
         return;
@@ -5839,16 +5581,13 @@ document.addEventListener('DOMContentLoaded', async () => {
     () => $('restart-modal').classList.remove('show'));
   $('restart-now').addEventListener('click', doRestart);
 
-  // Probe the state endpoint to figure out whether a sign-in is required.
   const probe = await fetch('/settings/state', { cache: 'no-store' });
   if (probe.status === 401) {
-    // Shared full-screen login gate prompts + reloads on success.
     if (window._showLoginGate) window._showLoginGate('Sign in to continue.');
     return;
   }
   if (probe.status === 403) {
-    // 403 with a presented bearer = signed-in but not admin. Render the
-    // shared no-access landing (#app-wrap is always visible now).
+    // 403 with a presented bearer = signed in but not admin.
     try {
       const wr = await fetch('/auth/whoami');
       if (wr.ok) {
