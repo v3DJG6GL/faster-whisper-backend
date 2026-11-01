@@ -10,7 +10,7 @@ picture its subtitles belong to.
 
 Deliberately tiny and in-process:
   - The registry is a plain dict (GIL-atomic single-key updates, same stance
-    as tx_progress._BATCH_PROGRESS). Ids die with the process, so startup_reset()
+    as transcription/progress._BATCH_PROGRESS). Ids die with the process, so startup_reset()
     wipes the directory — every file on disk without a registry entry is an
     orphan by definition. Multi-worker deployments are already documented as
     unsupported (SERVER_WORKERS: "keep at 1").
@@ -397,8 +397,8 @@ async def janitor_loop(interval_s: float = 60.0) -> None:
         await asyncio.sleep(interval_s)
         try:
             # Off the loop: unlinking multi-GB retained files and rmtree'ing
-            # dead fragment dirs can take seconds. sweep() works on a
-            # snapshot of _REG, as register() on worker threads already does.
+            # dead fragment dirs can take seconds. sweep() iterates snapshots
+            # of _REG, so it is safe beside register() on other worker threads.
             await asyncio.to_thread(sweep)
         except Exception as e:  # noqa: BLE001 — the janitor must never die
             logger.error("[url-dl] retention sweep failed: %s", e)
