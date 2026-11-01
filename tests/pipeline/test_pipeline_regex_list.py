@@ -38,7 +38,6 @@ def test_regex_list_empty_pattern_entry_is_noop(app_module):
 
 
 def test_regex_list_excluded_by_card_slug(app_module):
-    # The whole card is the EXCLUDE unit — all expanded entries share the slug.
     _set(app_module, {"name": "rl", "label": "RL", "type": "regex-list", "enabled": True,
                       "entries": [{"pattern": "a", "replacement": "b"},
                                   {"pattern": "b", "replacement": "c"}]})
