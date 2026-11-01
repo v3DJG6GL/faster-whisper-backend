@@ -150,7 +150,6 @@ def sweep() -> "list[dict[str, Any]]":
                  if now - e["touched"] > e["hold_s"]]
         for k in stale:
             entry = _held.pop(k)
-            # Idle, not elapsed: every progress tick restamped the hold.
             out.append(_with_note(
                 entry,
                 f"no result and no progress for {entry['hold_s']:.0f}s"
