@@ -6,7 +6,8 @@
 #   - The repo directory
 #   - The venv
 #   - Log files in .\logs\
-#   - The Hugging Face model cache (~1.5 GB at %USERPROFILE%\.cache\huggingface)
+#   - Runtime data in .\data\ (SQLite stores incl. API keys, captures, config.local.json)
+#   - Downloaded / converted models in .\models\
 #   - WhisperAPI.exe / WhisperAPI.xml (left in place for re-install)
 # Use -RemoveLocal to also delete logs, WhisperAPI.exe / WhisperAPI.xml,
 # any legacy nssm.exe, and the repo-local ffmpeg\ tree install-service.ps1
@@ -18,7 +19,6 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-# --- elevate to admin if needed ---------------------------------------------
 # Stop-Service / sc.exe delete both require administrator rights.
 $identity  = [Security.Principal.WindowsIdentity]::GetCurrent()
 $principal = New-Object Security.Principal.WindowsPrincipal($identity)
@@ -42,12 +42,10 @@ $WinSWExe    = Join-Path $RepoDir "$ServiceName.exe"
 $WinSWXml    = Join-Path $RepoDir "$ServiceName.xml"
 $LegacyNssm  = Join-Path $RepoDir "nssm.exe"
 
-# --- check service exists ---------------------------------------------------
 $svc = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
 if (-not $svc) {
     Write-Host "Service '$ServiceName' is not installed - nothing to remove." -ForegroundColor Yellow
 } else {
-    # --- stop -----------------------------------------------------------
     if ($svc.Status -ne "Stopped") {
         Write-Host "Stopping $ServiceName..."
         try {
@@ -57,7 +55,6 @@ if (-not $svc) {
             # Fall through to the polling loop below.
             Write-Host "  (stop signal sent; waiting for service to settle)" -ForegroundColor DarkGray
         }
-        # Poll until actually stopped, max 30 s.
         $deadline = (Get-Date).AddSeconds(30)
         while ((Get-Date) -lt $deadline) {
             $cur = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
@@ -66,7 +63,6 @@ if (-not $svc) {
         }
     }
 
-    # --- delete ---------------------------------------------------------
     # sc.exe delete removes the registration (WinSW or a legacy nssm install
     # alike; the service is already stopped above) without executing any
     # repo-local binary elevated.
@@ -88,7 +84,6 @@ if (-not $svc) {
     }
 }
 
-# --- optional local cleanup -------------------------------------------------
 if ($RemoveLocal) {
     if (Test-Path $LogsDir) {
         Write-Host "Removing logs directory: $LogsDir"
