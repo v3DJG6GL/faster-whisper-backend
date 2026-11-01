@@ -2855,12 +2855,6 @@ async def transcribe(
                             "end": word.end,
                         })
 
-            # Post-decode diarization stage (soft-fail): a failure or a
-            # disabled server never costs the caller the transcript — it
-            # arrives without speaker labels plus a `warnings` entry. The tmp
-            # file is still on disk here (the capture path below reads it too;
-            # the finally unlinks it after the response is built). Runs under
-            # the shared inference semaphore so GPU stages serialize.
             # The translation estimate scales with the segment count, and
             # the detected language decides which targets are verbatim.
             _rplan.set_segments(len(segments_list))
@@ -2869,6 +2863,12 @@ async def transcribe(
             _text_lang = ("en" if _task == "translate"
                           else (getattr(info, "language", None) or None))
             _rplan.mark_instant(_text_lang)
+            # Post-decode diarization stage (soft-fail): a failure or a
+            # disabled server never costs the caller the transcript — it
+            # arrives without speaker labels plus a `warnings` entry. The tmp
+            # file is still on disk here (the capture path below reads it too;
+            # the finally unlinks it after the response is built). Runs under
+            # the shared inference semaphore so GPU stages serialize.
             speakers_list: "list[str]" = []
             if _diarize and segments_list:
                 if not getattr(cfg, "DIARIZATION_ENABLED", False):
