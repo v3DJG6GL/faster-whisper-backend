@@ -1525,7 +1525,7 @@ async def _load_on_miss(name: str, *, lease: bool) -> "WhisperModel":
             raise
         if _cancelled is not None:
             if leased:
-                # Cancelled during the register: the lease is never released.
+                # Cancelled during the register: the caller never gets the model to release it.
                 _release_model_lease(name, new_model)
             raise _cancelled
         return new_model
