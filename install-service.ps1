@@ -8,11 +8,12 @@
 # (Self-elevates to admin via UAC if not already running elevated.)
 #
 # -Full mirrors the Docker "-full" image tags (Dockerfile / Dockerfile.gpu
-# with INCLUDE_EXTRAS=1): speaker diarization (pyannote) + background-music
-# separation (audio-separator). Several GB of downloads. Pass the SAME flags
-# on every re-run: a re-run without -Full leaves installed extras alone but
-# does not refresh them, and re-running a GPU box's -Full without -Gpu would
-# downgrade torch to the CPU build.
+# with INCLUDE_EXTRAS=1): speaker diarization (pyannote), background-music
+# separation (audio-separator) and text translation (llama-cpp-python).
+# Several GB of downloads. Pass the SAME flags on every re-run: a re-run
+# without -Full leaves installed extras alone but does not refresh them, and
+# re-running a GPU box's -Full without -Gpu would downgrade torch to the CPU
+# build.
 #
 # WinSW.exe is auto-downloaded into this folder if missing. No package
 # manager (choco/scoop/winget) required.
@@ -56,8 +57,6 @@ if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administra
         "-ExecutionPolicy", "Bypass",
         "-File", "`"$PSCommandPath`""
     )
-    # Forward switches across the UAC re-launch so they aren't lost when the
-    # script restarts under elevation.
     if ($WithConvert) { $relaunchArgs += "-WithConvert" }
     if ($Gpu)         { $relaunchArgs += "-Gpu" }
     if ($Full)        { $relaunchArgs += "-Full" }
@@ -115,14 +114,13 @@ if (-not (Test-Path $MainPy))  { throw "main.py not found: $MainPy" }
 New-Item -ItemType Directory -Force -Path $LogsDir | Out-Null
 
 # --- bootstrap venv if missing ---------------------------------------------
-# First-time install on a fresh clone has no venv yet. Create it inline using
-# whatever Python the user has on PATH so the script is "clone -> run" with
-# no manual prep. Idempotent: an existing venv is kept whatever Python it runs,
-# as long as that python starts and has pip. venv\Scripts\python.exe is a
-# launcher that finds its base interpreter through pyvenv.cfg, so it outlives
-# an uninstalled Python ("No Python at ..."), and a failed build leaves it
-# behind without pip: both died at "pip install" on every re-run, so rebuild.
-# The probe's stderr would terminate under Stop, as for pip cache purge below.
+# Builds the venv from the Python on PATH, so a fresh clone is "clone -> run".
+# An existing venv is kept whatever Python it runs, as long as that python
+# starts and has pip. venv\Scripts\python.exe is a launcher that finds its
+# base interpreter through pyvenv.cfg, so it outlives an uninstalled Python
+# ("No Python at ..."), and a failed build leaves it behind without pip: both
+# died at "pip install" on every re-run, so rebuild. The probe's stderr would
+# terminate under Stop, as for pip cache purge below.
 function Test-VenvUsable {
     if (-not (Test-Path $Python)) { return $false }
     $oldPref = $ErrorActionPreference
@@ -484,22 +482,13 @@ if ($ff -and (-not $Full -or (Test-FfmpegShared $ff))) {
     }
 }
 
-# --- optional: install HF->CT2 conversion extras ----------------------------
-# Required only when AUTO_CONVERT_HF_MODELS=true in /settings. Adds ~2 GB
-# (transformers + torch + accelerate).
-#
-# Decision tree:
-#   -WithConvert flag -> install without prompting (CI / scripted use).
-#   Already installed -> silent skip (idempotent re-run).
-#   Otherwise        -> interactive y/N prompt.
+# Optional HF->CT2 conversion extras (transformers + torch + accelerate,
+# ~2 GB): needed only when AUTO_CONVERT_HF_MODELS=true in /settings.
 
 function Test-ConvertDepsInstalled {
-    # Probe by trying to import all three deps in the venv. Exit code 0 = all
-    # present. Python writes the ImportError traceback to stderr; under
-    # $ErrorActionPreference=Stop, PowerShell turns that into a terminating
-    # NativeCommandError before the 2>$null redirect kicks in. Relax the
-    # pref locally and merge stderr->stdout so the probe stays silent
-    # regardless of import outcome.
+    # A failed import writes a traceback to stderr, which under
+    # $ErrorActionPreference=Stop becomes a terminating NativeCommandError
+    # before any redirect applies: relax the pref and merge stderr locally.
     $oldPref = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
     try {
@@ -548,12 +537,6 @@ if ($WithConvert) {
     }
 }
 
-# NOTE: the service stop + orphan-kill + legacy-nssm cleanup runs EARLIER now --
-# moved up to before the dependency install so pip can replace compiled files
-# (.pyd/.dll) the running service would otherwise hold open. See the "pre-flight"
-# block above. The WinSW (re)install happens below.
-
-# --- pick the right WinSW binary -------------------------------------------
 # WinSW v2.12.0 ships several executables:
 #   WinSW.NET461.exe (~640 KB) -- requires .NET Framework 4.6.1+, OS-tracked & patched
 #   WinSW-x64.exe    (~17 MB)  -- bundles .NET Core 3.1 (EOL Dec 2022, sec scanners flag it)
@@ -571,7 +554,6 @@ if ($net4Release -ge 394254) {
     Write-Host "Using $WinSWAsset (host lacks .NET 4.6.1; falling back to bundled .NET Core 3.1 build)" -ForegroundColor Yellow
 }
 
-# --- download WinSW.exe if missing -----------------------------------------
 function Get-WinSW {
     $url = "https://github.com/winsw/winsw/releases/download/$WinSWVersion/$WinSWAsset"
     Write-Host "Downloading WinSW $WinSWVersion ($WinSWAsset)..." -ForegroundColor Cyan
@@ -608,7 +590,6 @@ if ($hash -ne $expected) {
 }
 Write-Host "WinSW.exe verified at: $WinSWExe ($([math]::Round((Get-Item $WinSWExe).Length/1KB)) KB, SHA-256 matches $WinSWVersion)" -ForegroundColor Green
 
-# --- write WhisperAPI.xml --------------------------------------------------
 # Always overwritten so edits to this here-string actually take effect on
 # re-install. %BASE% is a WinSW built-in that resolves to the directory
 # containing WhisperAPI.exe -- portable across deployments.
@@ -683,7 +664,6 @@ $xml = @"
 Set-Content -Path $WinSWXml -Value $xml -Encoding UTF8
 Write-Host "WhisperAPI.xml written: $WinSWXml" -ForegroundColor DarkGray
 
-# --- install + start --------------------------------------------------------
 Write-Host "Installing $ServiceName service via WinSW..."
 Invoke-WinSW install
 
@@ -774,7 +754,6 @@ if (-not (Test-EnvSets "WHISPER_CONFIG_LOCAL") -and -not (Test-EnvSets "WHISPER_
 Write-Host "Starting $ServiceName service..."
 Invoke-WinSW start
 
-# --- verify -----------------------------------------------------------------
 Start-Sleep -Seconds 3
 $final = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
 if (-not $final) {
