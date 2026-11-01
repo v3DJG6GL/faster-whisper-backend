@@ -43,14 +43,10 @@ _log_safe = store_common.log_safe
 router = APIRouter()
 
 
-# ── Transcribe-from-URL: preview + retained-media endpoints ─────────────────
-
 # Per-identity window for the metadata probe: each preview is a real outbound
 # fetch to the linked site, so a keystroke-happy client must not turn the
-# server into a probe cannon. This is the only endpoint in the tree whose
-# limit protects a THIRD PARTY — the server is the abuse vector and the victim
-# is somebody else's infrastructure, which is why the default is far tighter
-# than anything else here.
+# server into a probe cannon. Like the other url-* limiters it protects a
+# THIRD PARTY (the server is the abuse vector), hence the tight default.
 _url_preview_rate = _rl.FixedWindow(
     config_field="URL_PREVIEW_RATE_PER_MIN",
     window_s=60.0,
@@ -224,14 +220,15 @@ async def url_subtitles(request: Request,
 @router.get("/v1/audio/url-media/{media_id}")
 async def url_media(media_id: str,
                     user: dict = Depends(_get_current_user_dep)):
-    """The retained audio of a finished transcribe-from-URL run, so the
-    client can pull ONE local copy for playback. Short-lived (URL_MEDIA_TTL_S,
+    """A retained media file — a transcribe-from-URL run's audio, a link's
+    video, or an uploaded video — so the client can pull ONE local copy for
+    playback or export. Short-lived (URL_MEDIA_TTL_S,
     wiped on restart); unknown, expired and foreign-owner ids all
     answer the same 404 — no oracle. FileResponse handles Range, so the
     client player can seek without re-downloading."""
-    # Either producer hands out these ids: a link run (URL download) or an
-    # uploaded / retained video (media packaging, on by default). Gating on
-    # the URL feature alone left the packaging ids live but unreadable.
+    # Either producer hands out these ids — a link run (URL download) or an
+    # uploaded / retained video (media packaging, on by default) — so either
+    # feature keeps the route open.
     if not (getattr(cfg, "URL_DOWNLOAD_ENABLED", False)
             or getattr(cfg, "MEDIA_PACKAGE_ENABLED", True)):
         raise HTTPException(status_code=403,
@@ -256,7 +253,7 @@ async def url_media(media_id: str,
         path=path,
         media_type=mime,
         filename=f"{media_id}.{ext}",
-        # Owner-gated audio: a shared cache must never answer the next,
+        # Owner-gated media: a shared cache must never answer the next,
         # differently-authenticated caller (same stance as captures audio).
         headers={"Cache-Control": "no-store"},
     )
@@ -567,7 +564,6 @@ async def url_language(request: Request,
     return await _url_media_on_demand(user, body, url, "language check", _check)
 
 
-# ── Media export: upload, stream facts, subtitle packaging ──────────────────
 # The client exports a video WITH its subtitle tracks: it generates the SRTs
 # itself (edits, renames and speaker colours included), the server muxes them
 # into the retained video — a link's, or one the client uploads here for the
@@ -597,10 +593,11 @@ _MEDIA_EXT_RE = re.compile(r"\A[a-z0-9]{1,5}\Z")
 # margin): a near-full disk is refused before the transfer, not after it.
 _UPLOAD_DISK_MARGIN = 64 * 1024 * 1024
 _NO_DISK = "not enough disk space on the server"
-# Letters and digits in any script (\w on a str pattern): FileResponse sends
-# a non-ASCII name as RFC 5987 filename*=utf-8''…, so only controls, bidi
-# marks, separators and punctuation need to go. NFC first, or a decomposed
-# "Ü" would lose its combining mark (category Mn is not \w).
+# Keeps \w (letters and digits in any script) plus " .()-": FileResponse
+# sends a non-ASCII name as RFC 5987 filename*=utf-8''…, so controls, bidi
+# marks, separators and punctuation go. NFC first, or a decomposed "Ü" would
+# lose its combining mark (Mn/Mc are not \w) — a mark with no precomposed
+# form (Devanagari vowel signs) is still dropped.
 _MEDIA_FILENAME_RE = re.compile(r"[^\w .()\-]+")
 
 
@@ -637,7 +634,8 @@ async def upload_media(request: Request,
                        user: dict = Depends(_get_current_user_dep)):
     """Raw-body upload of a local VIDEO into the media store (the client's
     own file, for packaging with its subtitles): `?ext=mp4`, the bytes as the
-    body. Streamed to disk chunk by chunk against MEDIA_MAX_BYTES — never
+    body. Streamed to disk chunk by chunk against the media store's cap
+    (MEDIA_MAX_BYTES, or RETAINED_MEDIA_MAX_BYTES when lower) — never
     resident, never spooled twice (this is deliberately NOT multipart: the
     form parser spools the whole part before a handler sees a byte). Returns
     {media_id, expires_at, bytes}; the file lives URL_MEDIA_TTL_S."""
@@ -683,9 +681,9 @@ async def upload_media(request: Request,
                 raise HTTPException(status_code=507, detail=_NO_DISK) from None
             raise
         except ClientDisconnect:
-            # main._max_body_mw cuts the receive channel at the same cap (a chunked
-            # body declares no length) and flags it in the scope; anything
-            # else is a client that went away mid-upload.
+            # main._max_body_mw cuts the receive channel at MEDIA_MAX_BYTES (a
+            # chunked body declares no length) and flags it in the scope;
+            # anything else is a client that went away mid-upload.
             if received >= cap or request.scope.get("state", {}).get("body_cap_hit"):
                 raise HTTPException(status_code=413, detail=too_large)
             raise HTTPException(status_code=400, detail="upload interrupted")
