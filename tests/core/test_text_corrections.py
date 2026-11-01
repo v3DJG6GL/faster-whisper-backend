@@ -1,16 +1,9 @@
-"""Exhaustive tests for text_corrections (pure, no I/O).
-
-Covers clean_corrections (field caps, idx/idx_end range rules, list cap,
-malformed tolerance) and three_way_merge_corrections (anchored delta rules,
-anchorless delta keyed by (wrong, correct), ordering).
-"""
+"""core/text_corrections (pure, no I/O): clean_corrections, over_cap and
+three_way_merge_corrections (anchored deltas, anchorless deltas keyed by
+(wrong, correct), ordering)."""
 
 from faster_whisper_backend.core import text_corrections as tc
 
-
-# ---------------------------------------------------------------------------
-# clean_corrections
-# ---------------------------------------------------------------------------
 
 def test_none_and_empty():
     assert tc.clean_corrections(None) == []
@@ -107,10 +100,6 @@ def test_unicode_preserved():
     assert out[0]["wrong"] == "Müller"
 
 
-# ---------------------------------------------------------------------------
-# three_way_merge_corrections
-# ---------------------------------------------------------------------------
-
 def _chip(wrong, correct, idx=None, idx_end=None):
     c = {"wrong": wrong, "correct": correct}
     if idx is not None:
@@ -125,14 +114,12 @@ def test_merge_all_none():
 
 
 def test_merge_user_added_anchored():
-    # edited has a chip not in baseline -> inserted.
     edited = [_chip("a", "b", idx=0)]
     out = tc.three_way_merge_corrections([], edited, [])
     assert out == edited
 
 
 def test_merge_user_removed_anchored():
-    # chip in baseline but not edited -> removed from current.
     base = [_chip("a", "b", idx=0)]
     cur = [_chip("a", "b", idx=0)]
     out = tc.three_way_merge_corrections(base, [], cur)
@@ -148,8 +135,7 @@ def test_merge_user_edited_wins_over_concurrent():
 
 
 def test_merge_untouched_keeps_concurrent():
-    # key in both base & edited with equal payload -> user untouched ->
-    # keep concurrent value from current.
+    # Same payload in baseline and edited = untouched by this user.
     base = [_chip("a", "b", idx=0)]
     edited = [_chip("a", "b", idx=0)]
     cur = [_chip("a", "CONCURRENT", idx=0)]
@@ -158,7 +144,6 @@ def test_merge_untouched_keeps_concurrent():
 
 
 def test_merge_idx_end_part_of_key():
-    # Same idx but different idx_end are distinct keys.
     base = []
     edited = [_chip("a", "b", idx=0, idx_end=2), _chip("a", "c", idx=0)]
     out = tc.three_way_merge_corrections(base, edited, [])
@@ -169,13 +154,11 @@ def test_merge_anchorless_union_dedup():
     cur = [_chip("x", "y"), _chip("p", "q")]
     edited = [_chip("p", "q"), _chip("m", "n")]
     out = tc.three_way_merge_corrections([], edited, cur)
-    # union deduped by (wrong, correct): x/y, p/q, m/n -> 3
     pairs = {(c["wrong"], c["correct"]) for c in out}
     assert pairs == {("x", "y"), ("p", "q"), ("m", "n")}
 
 
 def test_merge_anchorless_edited_wins_collision():
-    # Same (wrong, correct) key -> edited entry overwrites current's.
     cur = [{"wrong": "x", "correct": "y", "note": "old"}]
     edited = [{"wrong": "x", "correct": "y", "note": "new"}]
     out = tc.three_way_merge_corrections([], edited, cur)
@@ -184,15 +167,14 @@ def test_merge_anchorless_edited_wins_collision():
 
 
 def test_merge_anchorless_not_collapsed():
-    # Two distinct anchorless chips must not collapse into one.
     cur = [_chip("a", "b"), _chip("c", "d")]
     out = tc.three_way_merge_corrections([], [], cur)
     assert len(out) == 2
 
 
 def test_merge_anchorless_user_removed():
-    # An anchorless chip in baseline but not edited is a removal; it used
-    # to come straight back from `current` and could never be deleted.
+    # In baseline but not in edited is a removal: `current` must not bring
+    # it back, or an anchorless chip could never be deleted.
     a = _chip("foo", "bar")
     assert tc.three_way_merge_corrections([a], [], [a]) == []
 
@@ -231,7 +213,6 @@ def test_merge_anchorless_changed_payload_wins_over_concurrent_remove():
 def test_merge_ordering_anchored_before_anchorless():
     cur = [_chip("z", "free"), _chip("a", "anchored", idx=3)]
     out = tc.three_way_merge_corrections([], [], cur)
-    # anchored (idx sort key (0, idx)) come before anchorless ((1, 0)).
     assert out[0]["correct"] == "anchored"
     assert out[1]["correct"] == "free"
 
