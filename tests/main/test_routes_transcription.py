@@ -54,9 +54,8 @@ def test_verbose_json_shape(client):
     assert isinstance(body["segments"], list) and body["segments"]
     seg = body["segments"][0]
     assert seg["text"] == "hallo welt"
-    # verbose_json with no explicit granularities still asks for words
-    # (include_words = response_format == "verbose_json" and not granularities),
-    # and WORD_TIMESTAMPS_ENABLED defaults True, so words are present.
+    # verbose_json with no explicit granularities still asks for words, and
+    # WORD_TIMESTAMPS_ENABLED defaults True.
     assert "words" in body
     assert [w["word"] for w in body["words"]] == ["hallo", "welt"]
 
@@ -105,8 +104,7 @@ def test_translations_srt_format_returns_a_subrip_document(client):
 
 def test_unknown_response_format_is_refused_before_the_model_loads(
         client, monkeypatch):
-    # It used to fall through to the json shape, so a typo landed JSON in
-    # the caller's file with a 200.
+    # A typo must not land the json shape in the caller's file with a 200.
     loads = []
 
     async def _loader(name, *, lease=False):
@@ -120,9 +118,7 @@ def test_unknown_response_format_is_refused_before_the_model_loads(
 
 
 def test_words_gated_by_config_disabled(client, app_module):
-    # WORD_TIMESTAMPS_ENABLED=False => want_word_ts is False even when the
-    # request asks for word granularity, so the model gets word_timestamps=False
-    # and the FakeModel returns no words; verbose_json["words"] is empty.
+    # WORD_TIMESTAMPS_ENABLED=False beats a request asking for word granularity.
     app_module.cfg.WORD_TIMESTAMPS_ENABLED = False
     r = client.post(
         "/v1/audio/transcriptions",
@@ -138,8 +134,6 @@ def test_words_gated_by_config_disabled(client, app_module):
 
 
 def test_words_included_with_granularity_field(client, app_module):
-    # Default config has WORD_TIMESTAMPS_ENABLED=True. Explicitly request word
-    # granularity on a verbose_json response — verify words are present.
     r = client.post(
         "/v1/audio/transcriptions",
         files=_FILE,
@@ -171,8 +165,7 @@ def test_output_prefix_suffix_wrap(client, app_module):
     app_module.cfg.OUTPUT_SUFFIX = " (end)"
     r = _post(client, response_format="text")
     assert r.status_code == 200
-    # Wrappers applied, then a defensive outer trim (leading/trailing spaces of
-    # the *whole* string are stripped). Inner content keeps the wrapper text.
+    # The post-wrapper trim strips only the ends of the whole string.
     assert r.text == "[de] hallo welt (end)"
 
 
@@ -182,20 +175,18 @@ def test_missing_file_is_422(client):
 
 
 def test_prompt_sentinel_inherit_clear_value(client, fake_model, app_module):
-    """B4: `prompt` is a present-vs-absent sentinel read from the RAW form (FastAPI
+    """`prompt` is a present-vs-absent sentinel read from the RAW form (FastAPI
     coerces an empty Form field to its default, so the handler reads request.form()
     directly). Absent → inherit DEFAULT_PROMPT; present-but-empty "" → CLEAR (no
     initial_prompt); value → verbatim."""
     app_module.cfg.DEFAULT_PROMPT = "SERVER PROMPT"
-    # absent → inherit DEFAULT_PROMPT
     _post(client, response_format="json")
     assert fake_model.last_kwargs["initial_prompt"] == "SERVER PROMPT"
-    # value → verbatim
     _post(client, response_format="json", prompt="my terms")
     assert fake_model.last_kwargs["initial_prompt"] == "my terms"
-    # explicit empty → CLEAR. httpx drops empty `data`/`files` values and FastAPI
-    # coerces an empty Form field to its default, so hand-build the multipart body
-    # to deliver a genuine present-but-empty `prompt` part (what reqwest sends).
+    # explicit empty → CLEAR. httpx drops empty `data`/`files` values, so
+    # hand-build the multipart body for a present-but-empty `prompt` part
+    # (what reqwest sends).
     b = "----p12boundary"
     body = (
         f'--{b}\r\nContent-Disposition: form-data; name="file"; filename="a.wav"\r\n'
@@ -257,7 +248,6 @@ def test_null_byte_in_filename_does_not_crash(client):
 
 def test_safe_tmp_suffix_keeps_ordinary_extensions(app_module):
     f = app_module._safe_tmp_suffix
-    # A well-formed upload keeps exactly the suffix it always had.
     for name in ("a.wav", "clip.MP3", "x.m4a", "recording.ogg", "a.b.flac"):
         assert f(name) == "." + name.rsplit(".", 1)[1]
     # Screened out → no suffix, never an exception.
@@ -276,8 +266,6 @@ def test_model_id_regex_rejects_a_trailing_newline(app_module):
     assert not tx_models._MODEL_ID_RE.match("org/some-repo\n")
 
 
-# --- task (translate) --------------------------------------------------------
-
 def test_task_translate_reaches_model_and_response(client, fake_model):
     r = _post(client, response_format="verbose_json", task="translate")
     assert r.status_code == 200
@@ -286,8 +274,6 @@ def test_task_translate_reaches_model_and_response(client, fake_model):
 
 
 def test_task_default_is_not_forwarded(client, fake_model):
-    # The common path must stay byte-identical to pre-feature kwargs: no
-    # `task` key at all, and the response echoes "transcribe".
     r = _post(client, response_format="verbose_json")
     assert r.status_code == 200
     assert "task" not in fake_model.last_kwargs
@@ -310,8 +296,6 @@ def test_translations_endpoint_pins_task(client, fake_model):
 
 
 def test_task_config_default_applies_when_field_absent(client, app_module, fake_model):
-    # TASK config (global layer) is the default when the request has no task
-    # field; an explicit field still wins.
     app_module.cfg.TASK = "translate"
     try:
         r = _post(client, response_format="verbose_json")
@@ -323,8 +307,6 @@ def test_task_config_default_applies_when_field_absent(client, app_module, fake_
     finally:
         app_module.cfg.TASK = "transcribe"
 
-
-# --- progress reporting ------------------------------------------------------
 
 def test_progress_endpoint_unknown_id(client):
     r = client.get("/v1/audio/transcriptions/progress/" + "a" * 32)
@@ -346,9 +328,8 @@ def test_progress_live_entry_and_cleanup(client, app_module):
     assert body["stage"] == "transcribing"
     assert body["progress"] == 0.5
     assert body["duration"] == 60.0
-    # A request that carries a progress_id pops its entry when done. (The
-    # seeded entry is released first: an id still in flight is treated as
-    # absent by the handler, so it would neither adopt nor pop it.)
+    # Release the seeded entry first: the handler treats an id still in
+    # flight as absent, so it would neither adopt nor pop it.
     tx_progress._BATCH_PROGRESS.pop(pid, None)
     r = _post(client, response_format="verbose_json", progress_id=pid)
     assert r.status_code == 200
@@ -375,7 +356,6 @@ def test_progress_updates_during_decode(client, app_module, fake_model):
     # transcribe() runs inside the executor slot, after "waiting" gave way
     # to the "analyzing" stage (audio decode + VAD window).
     assert seen.get("stage") == "analyzing"
-    # ...and the entry is gone once the response is built.
     assert pid not in tx_progress._BATCH_PROGRESS
 
 
@@ -663,8 +643,6 @@ def test_curated_4xx_is_rejected_not_a_server_failure(client, app_module, monkey
     assert row["status"] == "error" and row["error_class"] == "rejected"
 
 
-# --- the server-owned run plan ------------------------------------------------
-
 def test_progress_carries_plan_overall_and_eta(client, app_module):
     """A polled entry with a run plan behind it publishes the plan, the
     overall fraction and the ETA; an entry without one (the admin prompt
@@ -688,7 +666,6 @@ def test_progress_carries_plan_overall_and_eta(client, app_module):
     assert body["plan"][1]["units"][0]["target"] == "fr"
     assert 0.0 < body["overall"] < 1.0
     assert body["eta_s"] > 0
-    # No plan: the keys are present and null.
     pid2 = "f" * 32
     tx_progress._progress_set(pid2, stage="translating", progress=0.1)
     try:
@@ -832,8 +809,6 @@ def test_huge_translate_to_field_is_walked_and_echoed_bounded(client, app_module
     assert len(dropped[0]) < 1024
 
 
-# --- playlist containers never reach an unguarded decoder ---------------------
-
 def _write_wav(path):
     import wave
     with wave.open(str(path), "wb") as w:
@@ -920,8 +895,8 @@ def test_a_refused_bgm_transcode_never_hands_the_original_to_the_separator(
 def test_a_pyav_error_in_the_bgm_transcode_falls_back_to_the_original(
         client, app_module, monkeypatch):
     """PyAV's errors subclass ValueError too, but only _open_audio's own
-    ValueError is a refusal: any other av error keeps the run-12 fallback
-    (the separator decodes the original) instead of skipping separation."""
+    ValueError is a refusal: any other av error keeps the fallback (the
+    separator decodes the original) instead of skipping separation."""
     import av
     from faster_whisper_backend.audio import bgm_separation
     from faster_whisper_backend.audio import transcode as audio_transcode
