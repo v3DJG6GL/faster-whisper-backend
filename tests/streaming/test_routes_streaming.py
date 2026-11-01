@@ -611,9 +611,9 @@ def test_stream_idle_timeout_not_re_armed_by_non_audio_frames(app_module, monkey
 
 
 def test_stream_idle_timeout_not_tripped_while_audio_flows(app_module, monkeypatch):
-    """The other side of the same fix: real audio DOES re-arm the deadline, so a
-    live mic (which streams PCM continuously, even through silence) is never cut
-    short even though the session runs far longer than one idle timeout."""
+    """Real audio DOES re-arm the idle deadline, so a live mic (which streams
+    PCM continuously, even through silence) is never cut short even though the
+    session runs far longer than one idle timeout."""
     monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
     # 2 s timeout with a frame every 0.25 s: 1.75 s of slack per frame, so a
     # stalled sleep on a loaded CI runner cannot turn into a spurious idle
