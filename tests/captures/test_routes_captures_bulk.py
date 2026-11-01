@@ -143,8 +143,8 @@ def test_list_user_id_rejects_an_oversized_speaker_list(client, make_user_key):
 
 
 def test_samples_user_id_accepts_several_speakers(client, make_user_key):
-    """/captures/api/samples scopes like the list: the comma-separated form
-    used to be bound as one `user_id = ?` string and matched nothing."""
+    """/captures/api/samples scopes like the list: each comma-separated
+    speaker is its own id, not one `user_id = ?` string that matches nothing."""
     from faster_whisper_backend.captures import samples_store as gs
     from faster_whisper_backend.captures import store as captures_store
 
