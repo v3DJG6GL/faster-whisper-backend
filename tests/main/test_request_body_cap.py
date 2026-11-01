@@ -58,8 +58,7 @@ def test_oversize_json_body_is_413(client):
 
 def test_oversize_json_is_rejected_before_the_route_runs(client, app_module):
     # A body this size would otherwise be json.loads-expanded (~24x RSS) before
-    # any dependency — including auth — got to run. The spy proves the
-    # ordering the name claims: the 413 lands with auth never invoked.
+    # any dependency — including auth — got to run.
     from faster_whisper_backend.auth import dependencies as auth
     seen = []
 
@@ -151,8 +150,7 @@ def test_multipart_upload_is_not_subject_to_the_json_cap(client, app_module,
 def test_non_json_content_type_is_not_held_to_the_json_cap(client):
     # text/plain is neither JSON nor an upload: it gets the non-upload
     # backstop (min(MAX_REQUEST_BYTES, 256 MiB), pinned below), not the JSON
-    # cap, so a body that would trip the JSON cap is not rejected by the
-    # middleware (the route rejects it on its own terms instead).
+    # cap; only the route may reject it, on its own terms.
     r = client.put("/v1/synced-client-settings", content=b"x" * (8 * 1024 * 1024),
                    headers={"Content-Type": "text/plain"})
     assert r.status_code != 413
