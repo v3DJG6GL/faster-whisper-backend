@@ -18,8 +18,6 @@ from faster_whisper_backend.media import segmented as seg
 _BASE = "https://cdn.test/v/audio/index.m3u8"
 
 
-# ── parse_hls ─────────────────────────────────────────────────────────────
-
 _TS_PLAYLIST = """#EXTM3U
 #EXT-X-VERSION:3
 #EXT-X-TARGETDURATION:6
@@ -91,7 +89,7 @@ video/480.m3u8
 """
     assert seg.parse_hls(text, "https://cdn.test/master.m3u8") == \
         "https://cdn.test/video/480.m3u8"
-    # No default at all: the first listed rendition, as before.
+    # No default at all: the first listed rendition.
     assert seg.parse_hls(text.replace("DEFAULT=YES,", ""),
                          "https://cdn.test/master.m3u8") == \
         "https://cdn.test/ad/index.m3u8"
@@ -135,8 +133,6 @@ def test_hls_attribute_list_parses_in_linear_time():
         "TYPE": "AUDIO", "GROUP-ID": "a,b", "NAME": "x"}
 
 
-# ── dash_media / source_of ────────────────────────────────────────────────
-
 def test_dash_fragments_with_init_and_absolute_urls():
     media = seg.dash_media([
         {"path": "init.dash?x=1"},
@@ -179,8 +175,6 @@ def test_source_of_picks_segmented_formats_only():
     assert seg.source_of({"requested_formats": [
         {"protocol": "m3u8_native", "vcodec": "avc1", "acodec": "mp4a"}]}) is None
 
-
-# ── fetch_pieces with real segments ───────────────────────────────────────
 
 _RATE = 24000
 SEG_S = 4.0
@@ -290,7 +284,8 @@ def test_fetch_hls_ts_pieces(served, tmp_path):
 
 def test_fetch_without_starts_places_pieces_by_the_playlist(served, tmp_path):
     """starts None (the probe had no length): the pieces sit at 20/50/80 %
-    of the playlist's summed segment durations, and are reported back."""
+    of the playlist's summed segment durations, each a full PIECE_SECONDS inside
+    it (60 s: 80 % = 48 is clamped to 40), and are reported back."""
     table, _calls = served
     names = [f"s{i}.ts" for i in range(15)]
     for name, body in zip(names, ts_segments(15)):
@@ -333,7 +328,7 @@ def test_fetch_dash_fmp4_pieces(served, tmp_path):
                                           for i in range(len(frags))]}
     starts = [5.0, 21.0, 37.0]
     pieces, got = _fetch(source, starts, 6.0, tmp_path)
-    assert [u for u, _h in calls].count(base + "init.dash") == 1     # fetched once
+    assert [u for u, _h in calls].count(base + "init.dash") == 1
     assert got["segments"] == 6
     _assert_pieces_hit(pieces, starts, 6.0)
 
