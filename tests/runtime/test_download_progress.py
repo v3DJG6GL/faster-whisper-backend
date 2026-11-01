@@ -229,7 +229,7 @@ def test_failed_download_gets_no_done_receipt(monkeypatch, caplog):
     msgs = [r.getMessage() for r in caplog.records]
     assert not any("done:" in m for m in msgs)
     assert any("aborted" in m and "[download] x" in m for m in msgs)
-    # No completion-shaped (done, total or done) pair after the failure.
+    # No completion-shaped pair (done == total) after the failure.
     assert calls[-1] == (50, 100)
     assert (50, 50) not in calls
     assert (100, 100) not in calls
