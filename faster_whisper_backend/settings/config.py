@@ -81,7 +81,7 @@ else:
 
 # The checkout root — where the committed config.json lives (see paths.py).
 # Underscore-prefixed so it's excluded from _BASELINE / the admin UI; tests
-# monkeypatch it. (Path DEFAULTS no longer live here — see _DATA_DIR/_DB_DIR.)
+# monkeypatch it.
 _REPO_DIR = _paths.REPO_ROOT
 
 # Data layout. Three layered knobs re-root every runtime-state DEFAULT (the
@@ -114,14 +114,9 @@ _MODELS_DIR = (os.environ.get("WHISPER_MODELS_DIR") or "").strip() or (
     os.path.join(_REPO_DIR, "models") if _IS_WINDOWS else "/models")
 
 
-# -----------------------------------------------------------------------------
-# Factory defaults: loaded from config.json (the committed single source of truth
-# for ALL default values). config.py no longer hardcodes them -- each setting
-# below is `NAME = _D("NAME")`. config.local.json + ENV overrides still layer on
-# top (precedence unchanged: ENV > config.local.json > config.json). Paths are
-# stored with {DATA_DIR}/{DB_DIR}/{MODELS_DIR} placeholders so they stay
-# portable across machines (resolved against the data layout above).
-# -----------------------------------------------------------------------------
+# Factory defaults from config.json. Path values are stored with
+# {DATA_DIR}/{DB_DIR}/{MODELS_DIR} placeholders so they stay portable across
+# machines (resolved against the data layout above).
 # Fields stored as JSON arrays but used as sets in code -- mirror of
 # schema._POST_LOAD_COERCERS (kept here too: this runs before config_store /
 # schema are imported).
@@ -207,14 +202,13 @@ ALLOWED_MODELS: "set[str]" = _D("ALLOWED_MODELS")
 MAX_LOADED_MODELS = _D("MAX_LOADED_MODELS")
 
 # Time-based eviction: unload a model after this many seconds without
-# being used (touched on every transcribe). 0 disables time-based
-# eviction (current behavior — only LRU-evict when MAX_LOADED_MODELS
-# is exceeded). Common values: 1800 (30 min), 3600 (1 h), 14400 (4 h).
+# being used (touched on every transcribe). 0 = off: only LRU eviction past
+# MAX_LOADED_MODELS. Common values: 1800 (30 min), 3600 (1 h), 14400 (4 h).
 MODEL_IDLE_TIMEOUT_S = _D("MODEL_IDLE_TIMEOUT_S")
 
 # Models to load eagerly at server startup. Listed models stay hot in VRAM
 # from boot, so the first request to each doesn't pay the 5-30 s warm-up.
-# If empty, only DEFAULT_MODEL is preloaded (current/historical behavior).
+# If empty, only DEFAULT_MODEL is preloaded.
 # Keep len(PRELOAD_MODELS) <= MAX_LOADED_MODELS or LRU eviction starts
 # fighting your own preloads. Order doesn't matter for behavior, only for
 # load order at startup.
@@ -268,26 +262,18 @@ DEFAULT_PROMPT: "str | None" = _D("DEFAULT_PROMPT")
 # =============================================================================
 # Text post-processing pipeline (PIPELINE_RULES)
 # =============================================================================
-# The ordered rule list applied to the joined transcript lives in the
-# committed file config.json -- NOT in this module. The admin WebUI's
-# "Defaults" mode edits config.json so rule fixes can be git-pushed to every
-# deployment; config.local.json still layers per-deployment overrides on top
-# (precedence: ENV > config.local.json > config.json).
-#
-# Each rule's `type` is one of:
-#   - "regex-list"                  -- ordered [{pattern, replacement}] entries, each re.sub in turn
-#   - "callback:lowercase-wordlist" -- strip terminator, lowercase next word if in wordlist
-#   - "callback:map"                -- auto-built alternation of map keys; lookup replacement
-#   - "callback:dedup"              -- collapse adjacent punctuation (last-non-comma wins)
-#   - "callback:upper"              -- capitalize after sentence terminator
-#   - "terminal"                    -- final lstrip(" \t\r") + rstrip(" \t\r"); always last
+# The ordered rule list lives in config.json like every other default. The
+# /settings/pipeline editor saves edits to config.local.json; its Promote
+# writes them into config.json so a rule fix can be git-pushed to every
+# deployment. Rule types: pipeline/engine.py and README ("Post-processing
+# pipeline").
 #
 # Ordering invariants: de-dictation-map multi-word phrases must precede their
 # single-word components (longest-first wins); the terminal rule is always
-# last. See README ("Pipeline rules") for the full rationale.
+# last.
 #
-# Each rule's regex pattern is precompiled in pipeline.engine.rebuild_caches()
-# at module load and again when the WebUI saves changes (CACHE_REBUILD_FIELDS).
+# Patterns are precompiled by pipeline.engine.rebuild_caches() at module load
+# and again when the WebUI saves changes (CACHE_REBUILD_FIELDS).
 
 
 PIPELINE_RULES: list[dict] = _D("PIPELINE_RULES")
@@ -401,8 +387,8 @@ VAD_FILTER = _D("VAD_FILTER")
 # Silero VAD parameters. The library defaults (min_silence_duration_ms=2000,
 # speech_pad_ms=400) are tuned for long-form audio and EAT short dictation
 # clips — a 2-3 s utterance with brief leading/trailing silence collapses to
-# zero segments. The values below work for both short clips and long-form;
-# tighten further (250 / 100) for very short clips.
+# zero segments. The config.json defaults work for both short clips and
+# long-form; tighten further (250 / 100) for very short clips.
 VAD_MIN_SILENCE_MS: int = _D("VAD_MIN_SILENCE_MS")
 VAD_SPEECH_PAD_MS: int = _D("VAD_SPEECH_PAD_MS")
 VAD_THRESHOLD: float = _D("VAD_THRESHOLD")
@@ -458,11 +444,10 @@ COMPRESSION_RATIO_THRESHOLD: "float | None" = _D("COMPRESSION_RATIO_THRESHOLD")
 DEFAULT_HOTWORDS: "str | None" = _D("DEFAULT_HOTWORDS")
 
 # Temperature fallback ladder (comma-separated floats). The decoder retries
-# at each temperature when compression / log-prob checks fail. Ship the
-# faster-whisper / OpenAI Whisper standard ladder explicitly so the admin UI's
-# "Reset to default" gives users the safety net (a single value disables the
-# fallback ladder and lets hallucination loops slip through). Empty = library
-# default (currently identical, but explicit is safer for surprises).
+# at each temperature when compression / log-prob checks fail. The standard
+# Whisper ladder ships explicitly so the admin UI's "Reset to default" restores
+# the safety net: a single value disables the ladder and lets hallucination
+# loops slip through. Empty = library default.
 TEMPERATURE: "str | None" = _D("TEMPERATURE")
 
 # Whisper task: "transcribe" (source language) or "translate" (into English —
@@ -624,9 +609,8 @@ DOWNLOAD_ROOT: "str | None" = _D("DOWNLOAD_ROOT")
 # If True, never hit the network — only resolve from local cache.
 LOCAL_FILES_ONLY: bool = _D("LOCAL_FILES_ONLY")
 
-# HuggingFace auth token for gated/private repos. None = no token.
-# (Renamed from USE_AUTH_TOKEN — the old env spellings still work, see
-# config_renames.RENAMED_KEYS.)
+# HuggingFace auth token for gated/private repos. None = no token. The old
+# USE_AUTH_TOKEN spellings still work (config_renames.RENAMED_KEYS).
 HF_TOKEN: "str | None" = _D("HF_TOKEN")
 
 # Auto-convert HuggingFace transformers Whisper models to CTranslate2 format
@@ -783,7 +767,7 @@ TRANSLATION_GLOSSARY: str = _D("TRANSLATION_GLOSSARY")
 # `source_url` field (and whether /v1/audio/url-preview answers at all).
 URL_DOWNLOAD_ENABLED: bool = _D("URL_DOWNLOAD_ENABLED")
 
-# Site policy (all three combine; see media/download.py _policy_check):
+# Site policy (all three combine; see media/download.py _policy_check_info):
 #   URL_ALLOWED_EXTRACTORS  non-empty → only these yt-dlp extractor keys
 #                           (case-insensitive, e.g. "Youtube") are accepted;
 #                           empty → every dedicated extractor is accepted.
@@ -796,7 +780,7 @@ URL_DOWNLOAD_ENABLED: bool = _D("URL_DOWNLOAD_ENABLED")
 #                           web one caller can point this backend at. Off by
 #                           default; enabling it is an explicit operator call.
 #
-# Both of the above widen WHICH URLs are accepted, not what the server may
+# These three decide WHICH URLs are accepted, not what the server may
 # reach. Every fetch on the URL path — the direct-media probe, the thumbnail
 # fetch, yt-dlp's metadata probe AND the yt-dlp download subprocess — is held
 # to one address policy (net_policy.py): hop 0 and every redirect hop must
@@ -922,7 +906,7 @@ USER_WEBUI_ALLOWED_HOSTS: "list[str]" = _D("USER_WEBUI_ALLOWED_HOSTS")
 # CORS allowlist for cross-origin browser calls to the JSON API (e.g. a
 # third-party browser app on another origin calling this backend; /dictate
 # itself always talks to its own origin).
-# Empty (default) = CORS disabled, no Access-Control-* headers, same as before.
+# Empty (default) = CORS disabled, no Access-Control-* headers.
 # List explicit origins (scheme://host[:port], comma-separated in the env var)
 # to allow them; "*" allows any origin (credentials are then disabled, per the
 # CORS spec). Streaming (WebSocket) is unaffected — it is not subject to CORS.
@@ -1052,8 +1036,7 @@ RECENT_TRANSCRIPTIONS_DB = _D("RECENT_TRANSCRIPTIONS_DB")
 # Hard row-count cap. 0 = unbounded (TTL-only pruning). Lazy pruning runs
 # every RECENT_TRANSCRIPTIONS_PRUNE_EVERY inserts, so the actual on-disk
 # row count may briefly exceed this by up to PRUNE_EVERY entries before
-# the next sweep. 500 is the documented default — keeps the UI useful
-# without ballooning the DB when traces are large.
+# the next sweep. The cap keeps the DB from ballooning when traces are large.
 RECENT_TRANSCRIPTIONS_MAX = _D("RECENT_TRANSCRIPTIONS_MAX")
 
 # Auto-delete entries older than this many days. 0 = disabled
@@ -1081,8 +1064,7 @@ QUICK_CONFIG_WORD_SUGGESTIONS_MAX: int = _D("QUICK_CONFIG_WORD_SUGGESTIONS_MAX")
 
 # Lazy-prune cadence — every Nth insert runs a single DELETE that
 # enforces both the row cap and the TTL. 0 disables lazy pruning (rows
-# accumulate until a manual /clear or the startup / hourly sweep). 50 is
-# the documented default.
+# accumulate until a manual /clear or the startup / hourly sweep).
 RECENT_TRANSCRIPTIONS_PRUNE_EVERY = _D("RECENT_TRANSCRIPTIONS_PRUNE_EVERY")
 
 # /stats "Recent transcriptions" widget row count. The dashboard is
@@ -1174,11 +1156,6 @@ USAGE_UNREPORTED_AFTER_H = _D("USAGE_UNREPORTED_AFTER_H")
 # OPEN mode — every request is accepted as a synthetic admin — and emits a
 # WARNING every 60 s plus a red banner on every WebUI page. The operator
 # creates the first admin user/key in /settings/api-keys.
-#
-# Optional shortcut: setting WHISPER_BOOTSTRAP_ADMIN_KEY at startup creates
-# (if needed) a `bootstrap-admin` user holding that exact key, so the
-# operator can paste it into a client / curl immediately. The variable is read
-# once and never persisted in plaintext; only the SHA-256 hash hits disk.
 
 API_KEYS_DB = _D("API_KEYS_DB")
 
@@ -1189,9 +1166,9 @@ API_KEYS_DB = _D("API_KEYS_DB")
 SESSIONS_DB = _D("SESSIONS_DB")
 
 # If set, on startup we insert (or no-op) a user named `bootstrap-admin`
-# with this exact raw key. NEVER stored in config.local.json. Operator
-# typically sets it once, copies the value into their client, then unsets
-# the env var (the key is independently stored in the DB).
+# with this exact raw key. Never persisted in plaintext (not in
+# config.local.json; the DB keeps only its SHA-256 hash), so the operator can
+# set it once, copy the value into their client, then unset the env var.
 BOOTSTRAP_ADMIN_KEY: "str | None" = _D("BOOTSTRAP_ADMIN_KEY")
 
 # Desktop-client settings-sync store: one opaque settings blob per account
@@ -1262,9 +1239,7 @@ CAPTURES_RECORDING_AUDIO_BYTES_HARD_LIMIT = _D("CAPTURES_RECORDING_AUDIO_BYTES_H
 # truth for the merge/preview/proposer paths (no per-merge overrides).
 #   MIN — finished-sample floor; just discards near-empty junk (the proposer
 #         packs the bulk toward TARGET so this only bites tiny solos).
-#   MAX — hard ceiling. Whisper truncates >30 s; keep a margin. The merge,
-#         the cap validation, the merge-estimate, and the proposer all read
-#         this one value (was four hardcoded 28 s sites).
+#   MAX — hard ceiling. Whisper truncates >30 s; keep a margin.
 #   JOIN_STRATEGY — how member transcripts concatenate ("space" or
 #         "period_space"); applies to every new/regenerated sample.
 # Constraint (enforced in settings/schema.py): MIN <= PROPOSER_TARGET_S <= MAX <= 30.
@@ -1309,15 +1284,14 @@ CAPTURES_PIPELINE_RULES_EXCLUDE: "set[str]" = _D("CAPTURES_PIPELINE_RULES_EXCLUD
 # excessive leading/trailing silence (Calm-Whisper arXiv:2505.12969
 # documents silence-induced hallucination as a fine-tune failure mode).
 #
-# Auto-trim runs after merge_wavs() produces a sample's merged WAV. (The old
-# manual per-singleton "Trim silence" button was retired — a single capture is
-# trimmed by turning it into a one-member sample, same uniform model.)
+# Auto-trim runs after merge_wavs() produces a sample's merged WAV; a single
+# capture is trimmed by turning it into a one-member sample.
 CAPTURES_VAD_TRIM_ENABLED_FOR_SAMPLES = _D("CAPTURES_VAD_TRIM_ENABLED_FOR_SAMPLES")
 # Per-member sample trim (CAPTURES_VAD_TRIM_ENABLED_FOR_SAMPLES path): silence is
-# now trimmed from EVERY member before concatenation, not just the merged WAV's
-# outer edges. Without this, member i's trailing + the inter-segment gap +
-# member i+1's leading silence stacked into multi-second dead air at each join —
-# bad fine-tune data (silence-induced hallucination, wasted 30 s window).
+# trimmed from EVERY member before concatenation, else member i's trailing + the
+# inter-segment gap + member i+1's leading silence stack into multi-second dead
+# air at each join — bad fine-tune data (silence-induced hallucination, wasted
+# 30 s window).
 #   SAMPLE_EDGE_MS     — silence kept on each member's outer edges (margin so
 #                        tight VAD boundaries don't clip word onsets).
 #   SAMPLE_INTERNAL_MS — internal silences inside a member are capped at this
@@ -1328,8 +1302,8 @@ CAPTURES_VAD_MARGIN_SAMPLE_INTERNAL_MS = _D("CAPTURES_VAD_MARGIN_SAMPLE_INTERNAL
 
 # Auto-merge proposer (/captures "Auto-propose merges" panel) ---------------
 #
-# Heuristic ranks groupings of ungrouped captures into ~26-second training
-# samples honoring the existing 28 s hard cap. Knobs:
+# Heuristic ranks groupings of ungrouped captures into training samples near
+# TARGET_S, never above CAPTURES_SAMPLE_MAX_DURATION_S. Knobs:
 #   SESSION_GAP_S    — captures more than this many seconds apart start a
 #                      new session bucket (tractability + density score).
 #   DUP_THRESHOLD    — difflib.ratio above this rejects pairing in a group
@@ -1347,14 +1321,6 @@ CAPTURES_PROPOSER_TARGET_S = _D("CAPTURES_PROPOSER_TARGET_S")
 CAPTURES_PROPOSER_CACHE_TTL_S = _D("CAPTURES_PROPOSER_CACHE_TTL_S")
 
 
-# Snapshot the in-file defaults BEFORE config.local.json + env overrides apply.
-# Used by the request log block (transcription/receipt.py) to mark
-# non-default scalar values with `*` so the operator can see at a glance which
-# knobs are overridden — and by the admin UI's "↺ Reset" button to recover
-# the in-repo default. Deep-copy
-# because the env-override block below mutates MODEL_OVERRIDES IN PLACE via
-# setdefault(); a shallow snapshot would keep the same dict reference and the
-# "default" handed to the WebUI would silently carry env-injected overrides.
 # =============================================================================
 # Live streaming (WebSocket dictation) + shared inference concurrency
 # =============================================================================
@@ -1376,9 +1342,9 @@ INFERENCE_CONCURRENCY: int = _D("INFERENCE_CONCURRENCY")
 STREAMING_IDLE_TIMEOUT_S: float = _D("STREAMING_IDLE_TIMEOUT_S")
 # WebSocket keepalive, passed to uvicorn. The server pings the client every
 # _INTERVAL_ s and drops the socket if no pong returns within _TIMEOUT_ s. The
-# decode now runs off the receive loop (streaming_routes producer/consumer), so
-# pings stay answered during a decode; this generous timeout is belt-and-suspenders
-# against a momentary stall. Keep the interval non-zero so a genuinely dead client
+# decode runs off the receive loop (streaming/routes.py producer/consumer), so
+# pings stay answered during a decode; the generous timeout only covers a
+# momentary stall. Keep the interval non-zero so a genuinely dead client
 # is still detected (0 on either → that knob disabled). Read once at uvicorn.run
 # (restart to change).
 STREAMING_WS_PING_INTERVAL_S: float = _D("STREAMING_WS_PING_INTERVAL_S")
@@ -1458,8 +1424,8 @@ STREAMING_HARD_BREAK_SEPARATOR: str = _D("STREAMING_HARD_BREAK_SEPARATOR")
 STREAMING_PROMPT_WORDS: int = _D("STREAMING_PROMPT_WORDS")
 
 # (5) Buffer management (kept well inside Whisper's 30 s receptive field).
-# MAX_BUFFER_S is the decode-independent backstop: the trim above runs only
-# from a partial decode, so a buffer being filled by silence (VAD flicker, no
+# MAX_BUFFER_S is the decode-independent backstop: the BUFFER_TRIM_S trim runs
+# only from a partial decode, so a buffer being filled by silence (VAD flicker, no
 # committed word to anchor a cut) has nothing else bounding it. Generous by
 # design — it must never fire during real dictation.
 STREAMING_BUFFER_TRIM_S: float = _D("STREAMING_BUFFER_TRIM_S")
@@ -1467,6 +1433,11 @@ STREAMING_BUFFER_TRIM_KEEP_S: float = _D("STREAMING_BUFFER_TRIM_KEEP_S")
 STREAMING_MAX_BUFFER_S: float = _D("STREAMING_MAX_BUFFER_S")
 
 
+# Snapshot the in-file defaults BEFORE config.local.json + env overrides apply.
+# transcription/receipt.py marks non-default scalars with `*` against it, and
+# the admin UI's "↺ Reset" button restores from it. Deep copy: the env-override
+# block below mutates MODEL_OVERRIDES IN PLACE via setdefault(), so a shallow
+# snapshot would hand the WebUI env-injected overrides as the "default".
 import copy as _copy
 _BASELINE: "dict[str, object]" = _copy.deepcopy({
     k: v for k, v in globals().items()
@@ -1500,8 +1471,6 @@ except ImportError:
 # =============================================================================
 # Environment variable overrides (deployment-time)
 # =============================================================================
-# Anything below here lets the env var win over the in-file default. Touch
-# only if you want to change the override syntax itself.
 
 # Collects "couldn't parse WHISPER_X=..." messages encountered while applying
 # env overrides at import time. main.py drains this AFTER logging is configured
@@ -1576,14 +1545,9 @@ _FALSY = ("0", "false", "no", "off", "n", "f", "disabled")
 def _env_bool(name: str, current: bool) -> bool:
     """Same contract as _env_int/_env_float: an unparseable value KEEPS the
     current setting and is reported, rather than being silently coerced.
-
-    This used to return _truthy(raw), so every value outside 1/true/yes/on —
-    including the plausible typos "enabled", "y", "t", "True # comment" —
-    became False with no warning anywhere. For SESSION_COOKIE_SECURE that
-    means an operator who deliberately turned the flag ON for an HTTPS
-    deployment silently got a non-Secure session cookie, and the /settings page
-    still showed the field as env-pinned. The schema revalidation pass cannot
-    catch it either, because False is a perfectly valid bool."""
+    Coercing to False would be invisible: the schema revalidation pass cannot
+    catch it (False is a valid bool), so e.g. SESSION_COOKIE_SECURE=True#x
+    would silently drop the Secure flag on an HTTPS deployment."""
     raw = os.environ.get(name)
     if raw is None or not raw.strip():
         return current
@@ -1690,21 +1654,10 @@ for _secret in ("WHISPER_" + _f for _f in _SECRET_FIELDS):
 # their env vars through the generic loop below, like every other field.
 ADMIN_UI_ENABLED = _env_bool("WHISPER_ADMIN_UI", ADMIN_UI_ENABLED)
 BOOTSTRAP_ADMIN_KEY = _env_str("WHISPER_BOOTSTRAP_ADMIN_KEY", BOOTSTRAP_ADMIN_KEY)
-# CAPTURES_PROPOSER_CACHE_TTL_S only: it is genuinely absent from
-# ENV_VAR_MAPPING, so the generic loop below never reaches it.
-#
-# The seven siblings that used to sit here (PROPOSER_SESSION_GAP_S,
-# PROPOSER_DUP_THRESHOLD, PROPOSER_MAX_PROPOSALS, PROPOSER_TARGET_S,
-# SAMPLE_MIN_DURATION_S, SAMPLE_MAX_DURATION_S, SAMPLE_JOIN_STRATEGY) ARE in
-# ENV_VAR_MAPPING, and applying them here — BEFORE the _ENV_PRE snapshot — made
-# the snapshot record the already-env-modified value. The revalidation pass
-# then saw `_new == _old`, skipped them, and silently exempted exactly these
-# seven from the schema bounds every other env-mapped field is held to:
-# SAMPLE_MAX_DURATION_S=999 (schema le=30), MAX_PROPOSALS=100000 (le=200) and
-# JOIN_STRATEGY=bogus all applied with an empty _ENV_WARNINGS. The generic loop
-# infers the identical reader from each value's type, so dropping them here
-# changes nothing except that they now get validated and reverted like the
-# other ~150 fields.
+# CAPTURES_PROPOSER_CACHE_TTL_S only: it is absent from ENV_VAR_MAPPING, so
+# the generic loop below never reaches it. Never apply a mapped field here:
+# this runs before the _ENV_PRE snapshot, so the revalidation pass would see
+# no change and skip that field's schema bounds.
 CAPTURES_PROPOSER_CACHE_TTL_S = _env_int(
     "WHISPER_CAPTURES_PROPOSER_CACHE_TTL_S", CAPTURES_PROPOSER_CACHE_TTL_S)
 
@@ -1728,9 +1681,9 @@ _ENV_SPECIAL_CASES = {
 }
 # A tuple, in this order: MODEL_OVERRIDES / OVERRIDE_PROFILES are validated
 # against the PIPELINE_RULES slugs in force at that moment (_env_slug_ctx), so
-# an env rule they reference must be applied first. A set iterated in
-# PYTHONHASHSEED order, and an env profile naming an env rule loaded on some
-# restarts only.
+# an env rule they reference must be applied first. A set would iterate in
+# PYTHONHASHSEED order, so an env profile naming an env rule would load on
+# some restarts only.
 _ENV_JSON_FIELDS = ("PIPELINE_RULES", "MODEL_OVERRIDES", "OVERRIDE_PROFILES")
 _ENV_READER_OVERRIDES = {
     # empty string CLEARS the value to None (disable the feature)
@@ -1808,7 +1761,6 @@ def _env_reader_kind(field: str, current) -> str:
     return "str"  # plain string: empty → keep current (safe default)
 
 
-# Defined here, ahead of its first user (the JSON env loop just below).
 def _env_validation_reason(exc: BaseException, skip: "set[tuple]" = frozenset()) -> str:
     """The human-readable half of a pydantic ValidationError, without the
     docs URL line that str(exc) ends on. `skip` holds (loc, msg) signatures
@@ -1919,7 +1871,6 @@ try:
                 # badge the field as env-pinned (folded into _ENV_REJECTED).
                 _ENV_UNPARSED.add(_ENV_VAR_MAPPING[_field])
 
-    # --- JSON-encoded structured fields (escape hatch) ----------------------
     for _field in _ENV_JSON_FIELDS:
         _raw = os.environ.get(_ENV_VAR_MAPPING[_field])
         if _raw is None or not _raw.strip():
@@ -1984,7 +1935,6 @@ except ImportError:
     pass
 
 
-# --- Special-case readers (preserve exact legacy semantics) -----------------
 # The set-typed fields (_SET_FIELDS): CSV → set; explicit "" means an empty
 # set ("any well-formed name/ref passes" — see each field's comment above).
 # All three use the plain WHISPER_<NAME> env form (none pass env= to _F).
@@ -2015,8 +1965,9 @@ if _env_convert_quant is not None:
 # --- Per-model overrides via env (WHISPER_MODEL_OVERRIDE__<id>__<FIELD>) ----
 # Convention: model id is encoded by replacing "/" with "__SLASH__" and "." with
 # "__DOT__" so HF-style ids round-trip cleanly through env var names. Field
-# names are UPPER_CASE matching the AdminConfig field. Values are parsed in
-# the same way as their global counterparts (int, float, bool, string).
+# names are UPPER_CASE matching the AdminConfig field. Values are coerced by
+# _coerce_override_value (bool / int / float / slug list by field name, else
+# the raw string); the validation pass below rejects what does not fit.
 def _decode_model_id(s: str) -> str:
     return s.replace("__SLASH__", "/").replace("__DOT__", ".")
 
@@ -2073,8 +2024,7 @@ _OVERRIDE_LIST_FIELDS = frozenset({
 
 # Returned by _coerce_override_value for a bool field whose value is neither
 # spelling — the assembly loop below warns and skips it, the same keep-and-warn
-# contract as _env_bool (which used to be _truthy here too, so DIARIZE=enabled
-# silently became False).
+# contract as _env_bool.
 _UNPARSED = object()
 
 
@@ -2125,21 +2075,14 @@ for _k, _v in os.environ.items():
     if not _k.startswith(_OVERRIDE_PREFIX):
         continue
     _rest = _k[len(_OVERRIDE_PREFIX):]
-    # Split on the LAST "__<UPPER>" occurrence. We can't just split on "__"
-    # because the encoded id contains "__SLASH__" and "__DOT__".
-    # Strategy: find the last "__" that isn't part of __SLASH__/__DOT__ by
-    # walking from the right.
+    # Split id from field at the LAST "__" that does not open an encoded
+    # __SLASH__ / __DOT__ marker (the encoded id contains "__" itself).
     _idx = -1
     _i = len(_rest) - 1
     while _i >= 0:
-        # find a "__" boundary
         _pos = _rest.rfind("__", 0, _i + 1)
         if _pos < 0:
             break
-        # is it the boundary BEFORE __SLASH__ / __DOT__ / __FIELD__?
-        # We're scanning right-to-left looking for the boundary that
-        # separates the encoded id from the field name. Skip if the segment
-        # to the right starts with one of our encoded markers.
         _tail = _rest[_pos + 2:]
         if _tail.startswith("SLASH__") or _tail.startswith("DOT__"):
             _i = _pos - 1
@@ -2152,9 +2095,8 @@ for _k, _v in os.environ.items():
     _field = _rest[_idx + 2:]
     # Honour the same rename table as the top-level env aliases and the
     # config.local.json migration, so an old per-model field name still works.
-    # The new name wins when both are set, as in config_renames.alias_env —
-    # otherwise the os.environ order (which compose / systemd do not fix)
-    # decided which of the two values applied.
+    # A non-empty new name wins, as in config_renames.alias_env, so the
+    # os.environ order (which compose / systemd do not fix) cannot decide.
     if _field in _renames.RENAMED_KEYS:
         _new_field = _renames.RENAMED_KEYS[_field]
         _new_var = f"{_OVERRIDE_PREFIX}{_enc_id}__{_new_field}"
@@ -2182,24 +2124,13 @@ for _k, _v in os.environ.items():
 # =============================================================================
 # Validate the env layer (last, after every reader + special case has run)
 # =============================================================================
-# (_env_validation_reason is defined above the env readers, its first user.)
-
-# Every value arriving through config.local.json is checked by AdminConfig:
-# _safe_log_path rejects UNC / ".." in LOG_FILE, _validate_hosts requires the
-# two allowlists to parse as IP/CIDR, _validate_trusted_origins explicitly
-# rejects "*" ("a wildcard here would accept every cross-site Origin and
-# disable the guard outright"), the cookie names carry a character pattern
-# because they are interpolated into Set-Cookie, and every numeric field
-# carries ge/le bounds. The env layer applied the SAME fields with none of it,
-# so a value rejected with a 422 through /settings loaded silently from an
-# env var — and these reach real sinks (the log handler path, the origin
-# guard, the session cookie, the 413 ceiling).
-#
-# Rejected values are reverted to what they were before the env layer ran and
-# reported through _ENV_WARNINGS (main logs them once logging is up). Import
-# never fails over this: refusing to boot would turn a bad env var into an
-# outage, and a reverted field is the same fail-safe the readers above already
-# apply when a value will not coerce.
+# Env values are held to the same AdminConfig checks as config.local.json and
+# a /settings save (LOG_FILE path safety, IP/CIDR host allowlists, no "*" in
+# TRUSTED_ORIGINS, cookie-name pattern for Set-Cookie, numeric ge/le bounds):
+# they reach real sinks (log handler path, origin guard, session cookie, the
+# 413 ceiling). A rejected value is reverted to its pre-env value and reported
+# through _ENV_WARNINGS (main logs them once logging is up). Import never
+# fails over this: refusing to boot would turn a bad env var into an outage.
 # Fields whose env value was rejected and reverted below. config_store.
 # env_pinned_fields() excludes them: a var that no longer controls the field
 # must not badge it as pinned (the /settings apply path skips pinned names,
@@ -2214,15 +2145,9 @@ try:
 
     def _revert_env_field(_field: str, _reason: str) -> None:
         """Put the pre-env value back, record the rejection, and warn.
-
-        The field name and the validation reason stay — an operator has to
-        know their env value was rejected and that the previous one is in
-        force. But the reverted value itself is a STORED SECRET for the
-        credential fields (HF_TOKEN is a HuggingFace token and goes through
-        this pass like any other AdminConfig field: paste an over-long one
-        and the warning would carry the repr of the token already
-        configured). _ENV_WARNINGS is drained into the logger and that log
-        is served by /logs and /logs/stream."""
+        The kept value is redacted for _SECRET_FIELDS (e.g. the stored
+        HF_TOKEN): _ENV_WARNINGS is drained into the log served by /logs and
+        /logs/stream."""
         globals()[_field] = _ENV_PRE[_field]
         _ENV_REJECTED.add(_field)
         _kept = ("<redacted>" if _field in _SECRET_FIELDS
@@ -2337,17 +2262,14 @@ try:
                             _revert_env_field(
                                 _field, _env_validation_reason(_ferr, _PRE_ENV_SIGS))
         # Cross-field / empty-loc backstop. A model validator (the sample-sizing
-        # triple) reports loc=() so nothing above is attributed, and each half
-        # of an inconsistent pair passes in isolation — the one failure the
-        # batch pass exists for would otherwise never be rejected. Re-validate
-        # whatever still stands as a group — as the FULL effective config,
-        # because the model validators fill absent members from _BASELINE,
-        # which predates config.local.json; revert the fields the error names
-        # until the group passes. An error that names none (loc=()) reverts
-        # the members whose single revert clears it — reverting the whole
-        # remainder threw out every unrelated env value with it (a session
-        # cookie Secure flag included) under the sizing triple's message —
-        # and the whole remainder only when no single revert helps.
+        # triple) reports loc=(), and each half of an inconsistent pair passes
+        # in isolation, so nothing above rejects it. Re-validate what still
+        # stands as the FULL effective config (the model validators fill absent
+        # members from _BASELINE, which predates config.local.json) and revert
+        # the fields the error names until it passes. An error that names none
+        # reverts each member whose single revert clears it, so unrelated env
+        # values are not thrown out under its message, and the whole remainder
+        # only when no single revert helps.
         for _ in range(len(_changed) + 1):
             _left = [_f for _f in sorted(_changed) if _f not in _ENV_REJECTED]
             if not _left:
@@ -2417,16 +2339,14 @@ try:
                   and all(type(_x) is str for _x in _v)):
                 globals()[_f] = _v
 
-    # MODEL_OVERRIDES is assembled key-by-key from the
-    # WHISPER_MODEL_OVERRIDE__<id>__<FIELD> convention, which bypasses
-    # ModelOverride's `extra: forbid` and its per-field bounds entirely — so an
-    # unknown field name or an out-of-range value both landed in the live dict.
-    # Beyond defeating the bound (BEAM_SIZE=9999 would sail past Field(le=20)),
-    # a bad entry also makes every later /settings save 422 forever, because
-    # the page round-trips the whole dict back through AdminConfig.
-    # The drop applies to the ENV-supplied fields only: the stored fields
-    # already passed load_overrides and are kept (the entry is re-validated
-    # with the env fields reverted to their pre-env values), matching
+    # MODEL_OVERRIDES is assembled key-by-key from
+    # WHISPER_MODEL_OVERRIDE__<id>__<FIELD>, which bypasses ModelOverride's
+    # `extra: forbid` and per-field bounds (BEAM_SIZE=9999 would pass
+    # Field(le=20)); a bad entry would also make every later /settings save
+    # 422, since the page round-trips the whole dict through AdminConfig.
+    # Only the ENV-supplied fields are dropped: the stored fields already
+    # passed load_overrides and are kept (the entry is re-validated with the
+    # env fields reverted to their pre-env values), matching
     # _revert_env_field's revert-to-pre-env contract for scalar fields.
     if MODEL_OVERRIDES:
         _clean_overrides = {}
@@ -2477,7 +2397,7 @@ try:
             and _stored_slug_ctx)."""
             # Keep the VALIDATED dump, not the raw entry: pydantic's lax
             # mode coerces string leftovers ("false", "3") that the
-            # frozenset lookup above missed, so a field newly added to
+            # _OVERRIDE_*_FIELDS lookup missed, so a field newly added to
             # ModelOverride can never stay live as a raw string.
             _ctx = (_allowed_ctx if (_standing or _env_json_models)
                     else _stored_allowed_ctx)
@@ -2593,7 +2513,6 @@ if not SESSION_COOKIE_SECURE:
             f"prefix")
 
 
-# --- Legacy in-repo runtime state left behind by the data-dir rework --------
 # Runtime state used to live under the checkout; it now resolves under
 # WHISPER_DATA_DIR (see the data-layout comment at the top). An in-place
 # upgrade that still has the old files but nothing at the new locations would
