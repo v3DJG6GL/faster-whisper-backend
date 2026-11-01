@@ -39,8 +39,8 @@ def test_recent_store_is_open_when_the_preload_loop_runs(app_module,
 def test_failing_startup_sweeps_still_start_the_hourly_loops(app_module,
                                                              monkeypatch):
     # A transient "database is locked" in a store's one-time startup sweep or
-    # reconcile used to skip that store's hourly retention loop for the whole
-    # process lifetime, while the open store kept taking writes.
+    # reconcile must not skip that store's hourly retention loop: the open
+    # store keeps taking writes for the whole process lifetime.
     from faster_whisper_backend.captures import samples_store
     from faster_whisper_backend.captures import store as captures_store
     from faster_whisper_backend.reports import store as reports_store
