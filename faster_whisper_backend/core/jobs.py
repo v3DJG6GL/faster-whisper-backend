@@ -86,8 +86,8 @@ def job_start(
         "stage": None,
         "step": None,
         # Set via job_update by handlers whose client opted into the
-        # progress/cancel registry — lets an admin's activity popover POST
-        # the cancel endpoint for this job.
+        # progress/cancel registry — the cancel handle the activity popover
+        # POSTs (shown to admins and to the job's own owner).
         "progress_id": None,
         "started_ts": time.time(),
         "started_mono": time.monotonic(),
