@@ -16,8 +16,6 @@ from starlette.testclient import TestClient
 from tests.conftest import close_app_stores, isolate_app_env
 
 
-# ---- origin validation ----------------------------------------------------
-
 def test_cors_origin_validator_accepts_origins_and_star():
     from faster_whisper_backend.settings.schema import AdminConfig
     m = AdminConfig.model_validate({
@@ -60,8 +58,6 @@ def test_trusted_origins_validator_rejects_bad(bad):
     with pytest.raises(ValidationError):
         AdminConfig.model_validate({"TRUSTED_ORIGINS": [bad]})
 
-
-# ---- runtime behavior -----------------------------------------------------
 
 def test_no_cors_headers_by_default(app_module):
     """Default (empty allowlist) → no CORSMiddleware, no Access-Control-* headers."""
