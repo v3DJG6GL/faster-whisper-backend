@@ -13,10 +13,9 @@ import pytest
 from faster_whisper_backend.admin import routes as admin_routes
 
 # Every probe round starts a `python -I` child inside its timeout. Sixty walks
-# against the 0.2 s rounds these tests need (a bigger budget no longer shows
-# a charge per finished walk) outlast it on a loaded Windows runner, where a
-# child's start alone can pass 0.2 s (CI run 1660); the walk logic is the
-# same on every platform, so Linux keeps it covered.
+# against the 0.2 s rounds these tests need outlast it on a loaded Windows
+# runner, where a child's start alone can pass 0.2 s (CI run 1660); the walk
+# logic is the same on every platform, so Linux keeps it covered.
 _SIXTY_WALKS_OUTRUN_WINDOWS_STARTS = pytest.mark.skipif(
     sys.platform == "win32",
     reason="0.2 s probe rounds are shorter than a loaded Windows child start")
@@ -38,7 +37,6 @@ def test_regex_list_entry_too_slow_on_the_sample_is_not_run(client, monkeypatch)
     step = r.json()["steps"][0]
     assert step["not_run"] is True
     assert "killable probe" in step["error"]
-    # The valid sibling still applies.
     assert step["after"] == "bbbb"
 
 
@@ -58,7 +56,7 @@ def test_callback_pattern_too_slow_on_the_sample_is_not_run(client, monkeypatch)
 
 # ~5 ms per position: harmless on a 1-char sample, ~0.5 s per pass over the
 # 100 chars an earlier rule makes of it (in-process: finditer AND sub, ~1 s
-# with the GIL held — under the 2 s join, so the old code ran it to the end).
+# with the GIL held — under the 2 s join, so the guard thread alone lets it run).
 _GROWN_BACKTRACK = "(?:|){18}(?!)"
 
 
