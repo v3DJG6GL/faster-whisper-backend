@@ -12,10 +12,6 @@ import pytest
 from faster_whisper_backend.quick_config import recent_feed as q
 
 
-# ---------------------------------------------------------------------------
-# _tokenize
-# ---------------------------------------------------------------------------
-
 def test_tokenize_empty_and_none():
     assert q._tokenize("") == []
     assert q._tokenize(None) == []
@@ -38,8 +34,8 @@ def test_tokenize_german_umlauts_preserved():
 
 
 def test_tokenize_non_german_leading_letter_not_truncated():
-    # The tail was always \w; a start class of ASCII + umlauts only made
-    # the match begin at the second letter ("Éric" -> "ric").
+    # A start class narrower than the \w tail (e.g. ASCII + umlauts) begins
+    # the match at the second letter ("Éric" -> "ric").
     text = "Éric Dupont und Łukasz Øberg trafen Ärzte"
     assert q._tokenize(text) == [
         "Éric", "Dupont", "Łukasz", "Øberg", "trafen", "Ärzte",
@@ -58,15 +54,15 @@ def test_tokenize_still_rejects_digit_and_underscore_start():
 
 
 @pytest.mark.parametrize("text, tokens, bigrams", [
-    # Hindi: \w alone stops at every vowel sign; HEAD gave ["लत"].
+    # Hindi: \w alone stops at every vowel sign; a bare-\w tokenizer gave ["लत"].
     ("हिन्दी भाषा बोलते हैं",
      ["हिन्दी", "भाषा", "बोलते", "हैं"],
      ["हिन्दी भाषा", "भाषा बोलते", "बोलते हैं"]),
-    # Thai: HEAD gave ["ภาษาไทย", "คร"].
+    # Thai: a bare-\w tokenizer gave ["ภาษาไทย", "คร"].
     ("ภาษาไทย ครับ", ["ภาษาไทย", "ครับ"], ["ภาษาไทย ครับ"]),
-    # Arabic with harakat: HEAD dropped مُحَمَّد.
+    # Arabic with harakat: a bare-\w tokenizer dropped مُحَمَّد.
     ("مُحَمَّد كتاب", ["مُحَمَّد", "كتاب"], ["مُحَمَّد كتاب"]),
-    # NFD Latin: HEAD gave the fragment "ric".
+    # NFD Latin: a bare-\w tokenizer gave the fragment "ric".
     ("Éric Dupont", ["Éric", "Dupont"], ["Éric Dupont"]),
 ], ids=["hindi", "thai", "arabic-harakat", "nfd-latin"])
 def test_tokenize_keeps_combining_marks_inside_words(text, tokens, bigrams):
@@ -75,11 +71,11 @@ def test_tokenize_keeps_combining_marks_inside_words(text, tokens, bigrams):
 
 
 @pytest.mark.parametrize("text, tokens, bigrams", [
-    # Persian ZWNJ: HEAD gave ["من", "می", "خواهم", "بروم"].
+    # Persian ZWNJ: a tokenizer without joiners gave ["من", "می", "خواهم", "بروم"].
     ("من می\u200cخواهم بروم",
      ["من", "می\u200cخواهم", "بروم"],
      ["من می\u200cخواهم", "می\u200cخواهم بروم"]),
-    # Devanagari ZWJ: HEAD gave the fragments "र्" and "याम".
+    # Devanagari ZWJ: a tokenizer without joiners gave the fragments "र्" and "याम".
     ("र्\u200dयाम है", ["र्\u200dयाम", "है"], ["र्\u200dयाम है"]),
 ], ids=["persian-zwnj", "devanagari-zwj"])
 def test_tokenize_keeps_zero_width_joiners_inside_words(text, tokens, bigrams):
@@ -129,10 +125,6 @@ def test_tokenize_cap():
     assert len(q._tokenize(words)) == q._TOKEN_CAP
 
 
-# ---------------------------------------------------------------------------
-# _extract_bigrams
-# ---------------------------------------------------------------------------
-
 def test_bigrams_empty():
     assert q._extract_bigrams("") == []
     assert q._extract_bigrams(None) == []
@@ -171,10 +163,6 @@ def test_bigrams_cap():
     assert len(q._extract_bigrams(words)) == q._BIGRAM_CAP
 
 
-# ---------------------------------------------------------------------------
-# subscribe / unsubscribe / _broadcast
-# ---------------------------------------------------------------------------
-
 @pytest.fixture(autouse=True)
 def _clear_subscribers():
     saved = list(q._subscribers)
@@ -204,7 +192,6 @@ def test_broadcast_delivers_to_all():
 
 def test_broadcast_drops_on_full_queue():
     sub = q.subscribe()
-    # Fill the queue to its bound.
     for _ in range(q._SUBSCRIBER_QUEUE_MAX):
         sub.put_nowait({"x": 1})
     assert sub.full()
