@@ -40,10 +40,9 @@ _lock = threading.Lock()
 _conn: sqlite3.Connection | None = None
 # Set as the LAST statement of init_db: every earlier statement (the PRAGMAs,
 # the schema script, the migration, secure_db_file) can still raise, and main
-# treats an init_db failure as non-fatal ("/v1/synced-client-settings will
-# answer 503 until this is fixed"). Gating on `_conn is not None` alone left a
-# partial-init window where the connection exists but the table does not, so
-# every call 500'd instead of the advertised 503.
+# treats an init_db failure as non-fatal (the endpoint answers 503). `_conn`
+# alone is not enough: it exists before the table does, and a half-finished
+# init must still answer 503, not 500.
 # Mirrors sessions_store._DB_READY / api_keys_store._DB_READY.
 _DB_READY: bool = False
 
