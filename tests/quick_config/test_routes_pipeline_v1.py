@@ -15,10 +15,6 @@ from faster_whisper_backend.quick_config import routes as quick_config_routes
 from tests.conftest import bearer
 
 
-# --------------------------------------------------------------------------
-# Helpers (mirror test_routes_quick_config.py)
-# --------------------------------------------------------------------------
-
 def _expose_first_regex_list_rule(app_module):
     """Mark the first regex-list rule exposed (no tags = visible to all).
     Returns its slug. Mutates a deep copy assigned back onto cfg so the per-test
@@ -49,10 +45,6 @@ def _expose_tagged(app_module):
     app_module.cfg.PIPELINE_RULES = rules
     return rl[0]["name"], rl[1]["name"], rl[2]["name"]
 
-
-# --------------------------------------------------------------------------
-# GET /v1/pipeline-rules
-# --------------------------------------------------------------------------
 
 def test_v1_get_open_mode_shape(client):
     r = client.get("/v1/pipeline-rules")
@@ -95,13 +87,8 @@ def test_v1_get_includes_exposed_rule_with_fingerprint(client, app_module):
     assert slug in names
     rule = next(r for r in body["rules"] if r["name"] == slug)
     assert rule["_fp"] and isinstance(rule["_fp"], str)
-    # terminal sentinel is never exposed to the client
     assert all(r.get("type") != "terminal" for r in body["rules"])
 
-
-# --------------------------------------------------------------------------
-# PATCH /v1/pipeline-rules — allow-list, validation, concurrency
-# --------------------------------------------------------------------------
 
 def test_v1_patch_empty_is_noop(client):
     r = client.patch("/v1/pipeline-rules", json={"rules_patch": {}})
@@ -162,7 +149,6 @@ def test_v1_patch_fingerprint_conflict_then_match(client, app_module):
     rule = next(r for r in client.get("/v1/pipeline-rules").json()["rules"]
                 if r["name"] == slug)
     fp = rule["_fp"]
-    # Stale fingerprint -> reported as a conflict, nothing written.
     bad = client.patch("/v1/pipeline-rules", json={
         "rules_patch": {slug: {"enabled": False}},
         "fingerprints": {slug: "deadbeef0000"},
@@ -170,7 +156,6 @@ def test_v1_patch_fingerprint_conflict_then_match(client, app_module):
     assert bad.status_code == 200
     assert bad.json()["saved"] == []
     assert any(c["slug"] == slug for c in bad.json()["conflicts"])
-    # Matching fingerprint (unchanged since GET) -> saved.
     ok = client.patch("/v1/pipeline-rules", json={
         "rules_patch": {slug: {"enabled": False}},
         "fingerprints": {slug: fp},
@@ -178,10 +163,6 @@ def test_v1_patch_fingerprint_conflict_then_match(client, app_module):
     assert ok.status_code == 200
     assert slug in ok.json()["saved"]
 
-
-# --------------------------------------------------------------------------
-# Tag / permission gating (locked-down mode, non-admin keys)
-# --------------------------------------------------------------------------
 
 def _alice_alpha_key(make_user_key):
     """A non-admin 'alice' with quick_config=own and only the alpha tag —
@@ -234,8 +215,8 @@ def test_v1_patch_rule_not_visible_is_indistinguishable_from_unknown(
 
 
 def test_v1_patch_visible_rule_still_works(client, app_module, make_user_key):
-    """The counterpart: a rule that IS exposed to the caller keeps resolving
-    normally — the collapse above must not hide their own rules from them."""
+    """A rule that IS exposed to the caller keeps resolving normally — the
+    hidden-equals-unknown 400 must not hide their own rules from them."""
     alpha, _beta, _untagged = _expose_tagged(app_module)
     raw = _alice_alpha_key(make_user_key)
     r = client.patch(
@@ -260,10 +241,6 @@ def test_v1_requires_auth_when_locked_down(client, make_user_key):
     assert r.status_code == 401
 
 
-# --------------------------------------------------------------------------
-# The whole point: /v1/pipeline-rules is NOT host-gated (unlike /quick-config)
-# --------------------------------------------------------------------------
-
 def test_v1_not_host_gated_unlike_quick_config(app_module, make_user_key):
     from starlette.testclient import TestClient
     # Narrow the user-WebUI allowlist to loopback only, then call from a
@@ -278,9 +255,10 @@ def test_v1_not_host_gated_unlike_quick_config(app_module, make_user_key):
 
 
 def test_v1_nonadmin_can_edit_exposed_regex_entries(client, app_module, make_user_key):
-    """A tagged non-admin CAN edit the regex `entries` of an exposed rule — that
-    is the whole point of exposing it. The save-time catastrophic-backtracking
-    guard runs out-of-process (regex_guard) and does not block a valid pattern."""
+    """A non-admin CAN edit the regex `entries` of an exposed (untagged, so
+    visible-to-all) rule — that is the whole point of exposing it. The save-time
+    catastrophic-backtracking guard runs out-of-process (regex_guard) and does
+    not block a valid pattern."""
     slug = _expose_first_regex_list_rule(app_module)
     make_user_key("root", is_admin=True)  # flips lockdown
     _uid, alice = make_user_key("alice", pages={"quick_config": "own"})
