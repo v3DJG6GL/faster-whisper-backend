@@ -375,7 +375,7 @@ def test_skip_partials_suppresses_partial_decode_but_keeps_finals():
 
 def test_prompt_words_zero_carries_no_confirmed_words():
     """prompt_words=0 means "no cross-utterance context". Python's [-0:] is
-    the whole list, so the rolling prompt used to become the entire document."""
+    the whole list, so a naive tail slice would carry the entire document."""
     cfg = StreamConfig(
         min_chunk_ms=96, vad_min_silence_ms=96, commit_silence_ms=192,
         min_speech_ms=64, forced_commit_sec=100, buffer_trim_sec=100,
