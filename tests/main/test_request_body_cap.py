@@ -130,7 +130,7 @@ def test_chunked_oversize_json_is_cut_off(client, app_module):
 def test_json_cap_honours_a_cfg_override(client, app_module, monkeypatch):
     # MAX_JSON_BODY_BYTES is an internal escape hatch (getattr with a 4 MiB
     # default), not an operator-facing setting — it has no config_store
-    # registry entry. This pins the escape hatch, not a published knob.
+    # registry entry.
     monkeypatch.setattr(app_module.cfg, "MAX_JSON_BODY_BYTES", 1024, raising=False)
     assert _put_json(client, _big_json(4096)).status_code == 413
     assert _put_json(client, _big_json(16)).status_code == 200
@@ -138,7 +138,6 @@ def test_json_cap_honours_a_cfg_override(client, app_module, monkeypatch):
 
 def test_multipart_upload_is_not_subject_to_the_json_cap(client, app_module,
                                                          monkeypatch):
-    # A multipart body well past the JSON ceiling still reaches the route.
     monkeypatch.setattr(app_module.cfg, "MAX_JSON_BODY_BYTES", 4096, raising=False)
     r = client.post(
         "/v1/audio/transcriptions",
@@ -161,9 +160,9 @@ def test_non_json_content_type_is_not_held_to_the_json_cap(client):
 
 def test_non_multipart_non_json_keeps_a_256mib_backstop(client, app_module,
                                                        monkeypatch):
-    # MAX_REQUEST_BYTES is sized for a MEDIA_MAX_BYTES video upload (GiB).
-    # Only multipart bodies get that ceiling: a text/plain PUT declaring
-    # 300 MiB is refused up front, exactly as before the media cap grew.
+    # MAX_REQUEST_BYTES is sized for a MEDIA_MAX_BYTES video upload (GiB);
+    # only multipart upload routes get that ceiling, so a text/plain PUT
+    # declaring 300 MiB is still refused up front.
     monkeypatch.setattr(app_module.cfg, "MAX_REQUEST_BYTES",
                         10 * 1024 * 1024 * 1024, raising=False)
     r = client.put("/v1/synced-client-settings", content=b"x",
