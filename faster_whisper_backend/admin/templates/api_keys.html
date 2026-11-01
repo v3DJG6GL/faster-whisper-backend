@@ -269,7 +269,7 @@
     background: rgba(242, 204, 96, 0.07); }
   /* Per-cell scope is a shared .status-btn-group (none/own/all) from NAV_CSS —
      keep adjacent cells from crowding, and trim the segment padding so the
-     5-column matrix fits a normal screen without the wrap's scrollbar. */
+     matrix fits a normal screen without the wrap's scrollbar. */
   .perm-matrix td .status-btn-group { white-space: nowrap; }
   .perm-matrix td .status-btn { padding: 0.2rem 0.45rem; }
   .perm-matrix .admin-cell {
@@ -584,7 +584,7 @@
     function doCopy(onCopied) {
       // navigator.clipboard needs a secure context (https / localhost). Over
       // LAN HTTP it's undefined, so fall back to a hidden textarea +
-      // execCommand('copy'); if both fail, select the .raw-key span for Ctrl+C.
+      // execCommand('copy'); if both fail, select the .raw-key text for Ctrl+C.
       function copyFallback(text) {
         var ta = document.createElement('textarea');
         ta.value = text;
