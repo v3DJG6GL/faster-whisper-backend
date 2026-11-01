@@ -83,8 +83,6 @@ def test_a_client_trigger_cannot_pass_for_the_job_binding(
     assert seen == ["client:job", "dictation", None]
 
 
-# --- auth --------------------------------------------------------------------
-
 def test_401_unauthenticated(client, app_module, monkeypatch, make_user_key):
     _enable(app_module, monkeypatch)
     make_user_key("admin", is_admin=True)          # flips to locked-down
@@ -99,8 +97,6 @@ def test_202_for_a_plain_user(client, app_module, monkeypatch, make_user_key):
     r = client.post(_URL, json=_body(), headers=bearer(raw))
     assert r.status_code == 202, r.text
 
-
-# --- response shape ----------------------------------------------------------
 
 def test_response_shape(client, app_module, monkeypatch):
     _enable(app_module, monkeypatch)
@@ -121,7 +117,6 @@ def test_unknown_body_key_is_422(client, app_module, monkeypatch):
     # Unknown key inside a model entry too (extra="forbid" on both models).
     assert client.post(_URL, json={
         "models": [{"family": "whisper", "id": "x", "nope": 1}]}).status_code == 422
-    # Structurally invalid: empty list, unknown family, blank id.
     assert client.post(_URL, json={"models": []}).status_code == 422
     assert client.post(_URL, json={
         "models": [{"family": "vad", "id": "silero"}]}).status_code == 422
@@ -129,8 +124,6 @@ def test_unknown_body_key_is_422(client, app_module, monkeypatch):
         "models": [{"family": "whisper", "id": ""}]}).status_code == 422
     assert client.post(_URL, json=_body(plan_id="NOT-HEX")).status_code == 422
 
-
-# --- everything that is NOT a 4xx --------------------------------------------
 
 def _one(client, body):
     r = client.post(_URL, json=body)
@@ -389,8 +382,6 @@ def test_a_refused_whisper_id_contributes_no_per_model_stage_model(
     assert rows[("diarization", "p/tiny")].get("reason") != "not_allowed"
 
 
-# --- idempotency -------------------------------------------------------------
-
 def test_repeat_post_reuses_the_plan_and_does_not_grow_the_queue(
         client, app_module, monkeypatch):
     _enable(app_module, monkeypatch)
@@ -416,8 +407,6 @@ def test_client_supplied_plan_id_is_honoured(client, app_module, monkeypatch):
     j = client.post(_URL, json=_body(plan_id="deadbeef")).json()
     assert j["plan_id"] == "deadbeef"
 
-
-# --- worker robustness -------------------------------------------------------
 
 def test_a_raising_loader_leaves_the_plan_intact(client, app_module,
                                                  monkeypatch):
@@ -447,8 +436,6 @@ def test_a_raising_loader_leaves_the_plan_intact(client, app_module,
         not in plan.warmed
 
 
-# --- residency flags agree with preload.is_resident --------------------------
-
 def test_v1_models_loaded_flag_agrees(client, app_module, monkeypatch):
     _enable(app_module, monkeypatch)
     monkeypatch.setattr(app_module.cfg, "DEFAULT_MODEL", "small",
@@ -474,8 +461,8 @@ def test_v1_me_loaded_flags_agree_for_all_four_families(client, app_module,
     monkeypatch.setattr(cfg, "DIARIZATION_MODEL", "p/x", raising=False)
     monkeypatch.setattr(cfg, "DIARIZATION_ALLOWED_MODELS", ["p/x", "p/y"],
                         raising=False)
-    # A UVR FRIENDLY name (no ".onnx") — the case where the two open-coded
-    # predicates this replaced would disagree.
+    # A UVR FRIENDLY name (no ".onnx"): is_resident must map it to the
+    # loaded ".onnx" separator key, as /v1/me does.
     monkeypatch.setattr(cfg, "BGM_SEPARATION_UVR_MODEL", "UVR-Foo",
                         raising=False)
     monkeypatch.setattr(cfg, "BGM_SEPARATION_ALLOWED_MODELS",
@@ -504,8 +491,6 @@ def test_v1_me_loaded_flags_agree_for_all_four_families(client, app_module,
         "o/r:Q4": True}
 
 
-# --- /stats surfaces the diagnostics ----------------------------------------
-
 def test_stats_snapshot_carries_preload_diagnostics(client, app_module,
                                                     monkeypatch):
     _enable(app_module, monkeypatch)
@@ -514,8 +499,6 @@ def test_stats_snapshot_carries_preload_diagnostics(client, app_module,
                                  "queue_depth"}
     assert j["preload"]["worker_alive"] is True
 
-
-# --- the batch handler's job plan honours the translation allowlist ----------
 
 def test_job_plan_skips_non_allowlisted_translation_model(
         client, app_module, monkeypatch):
