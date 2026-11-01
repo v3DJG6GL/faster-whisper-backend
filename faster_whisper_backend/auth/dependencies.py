@@ -277,8 +277,6 @@ def _resolve_user(
             rec = user_from_session_cookie(request)
         if rec is None:
             return None
-    # Attach the policy object so routes can ask can(page)/scope(page)
-    # without each one re-parsing the JSON.
     rec["permissions"] = Permissions(
         rec.get("permissions_raw") or {},
         bool(rec.get("is_admin")),
