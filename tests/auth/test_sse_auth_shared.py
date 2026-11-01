@@ -74,8 +74,8 @@ def test_existing_sse_gates_confine_open_mode_to_the_admin_hosts(client):
 
 
 def test_own_scope_user_is_admitted_to_the_stats_stream(client, make_user_key):
-    """stats="own" is a real page grant (v2): the SSE gate admits the
-    caller; what they then see is the StatsScope's business."""
+    """stats="own" is a real page grant: the SSE gate admits the caller;
+    what they then see is the StatsScope's business."""
     from faster_whisper_backend.stats import routes as stats_routes
     make_user_key("root", is_admin=True)
     uid, raw = make_user_key("carol", pages={"stats": "own"})
