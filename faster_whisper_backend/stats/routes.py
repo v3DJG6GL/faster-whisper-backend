@@ -366,8 +366,8 @@ def _label_rows(rows: list[dict[str, Any]], by: str, *, scrub: bool,
     names = api_keys_store.get_usernames(
         [r["user_id"] for r in rows if r.get("user_id")])
 
-    # A sentinel id ("(open-mode)") names nobody: scrubbing it only made it
-    # read like a real person on the board.
+    # A sentinel id ("(open-mode)") names nobody: scrubbing it would only make
+    # it read like a real person on the board.
     def _user_label(uid: str) -> str:
         if scrub and uid != caller_uid and not (uid or "").startswith("("):
             return _opaque_user_label(uid)
