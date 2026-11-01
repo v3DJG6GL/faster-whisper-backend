@@ -266,7 +266,7 @@ def test_decode_pieces_seeks_to_each_start(tmp_path, name):
 def test_decode_pieces_measures_starts_from_the_stream_start(tmp_path, name):
     """`starts` are media seconds; a stream whose pts begin at ~10 s (an
     MPEG-TS download, a remux keeping the offset) must not be cut 10 s
-    early — the 35 s piece used to come from media 25 s (440 Hz)."""
+    early — that would take the 35 s piece from media 25 s (440 Hz)."""
     src = _two_tone(str(tmp_path / name), pts_offset_s=10)
     pieces = audio_transcode.decode_pieces_16k(src, [5.0, 35.0, 55.0], 4.0)
     assert [len(p) for p in pieces] == [4 * RATE] * 3
