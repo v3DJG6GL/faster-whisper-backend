@@ -43,8 +43,8 @@ def test_stale_cookie_can_still_sign_out(client, make_user_key):
 
 
 def test_live_cookie_with_bearer_still_requires_the_token(client, make_user_key):
-    # Pre-existing contract pinned: a LIVE cookie plus a bearer header still
-    # runs the token check (the skip applies only when the session is gone).
+    # A LIVE cookie plus a bearer header still runs the token check: the
+    # skip applies only when the session is gone.
     _uid, raw = make_user_key("root", is_admin=True)
     client.post("/auth/login", json={"key": raw})
     r = client.post("/auth/logout", headers=bearer(raw))
