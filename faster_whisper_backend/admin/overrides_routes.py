@@ -1,15 +1,14 @@
 """
-Admin API for the layered per-identity config-override feature.
+Admin API + page for the layered per-identity config-override feature.
 
-Serves the dedicated /settings/overrides page's JSON contract:
-  GET  /settings/overrides/state    profiles + field metadata + groups + rules + usage
-  POST /settings/overrides/state    save the OVERRIDE_PROFILES dirty diff (hot-applied)
-  GET  /settings/overrides/resolve  the effective-config WATERFALL for a user/key/model
-                                    (drives the Explorer + the in-context preview)
+  GET  /settings/overrides                  the page shell (admin host allowlist only)
+  GET  /settings/overrides/state            profiles + field metadata + groups + rules + usage
+  POST /settings/overrides/state            save the OVERRIDE_PROFILES dirty diff (hot-applied)
+  POST /settings/overrides/profiles/rename  rename a profile + cascade it through bindings
+  GET  /settings/overrides/resolve          the effective-config WATERFALL for a user/key/model
+                                            (drives the Explorer + the in-context preview)
 
-The HTML page + nav wiring live in this module too once the UI lands (phase 6);
-for now this is the backend the binding editors and the Explorer call. All
-endpoints are admin-only (host allowlist + admin key).
+The JSON endpoints are admin-only (host allowlist + admin key).
 """
 
 from __future__ import annotations
@@ -225,8 +224,6 @@ async def post_state(payload: dict[str, Any], request: Request) -> JSONResponse:
     profiles dict under that key). Same validate → save → hot-apply contract as
     /settings/state; OVERRIDE_PROFILES is a hot field (resolved per-request, so
     no cache rebuild / model eviction needed)."""
-    # Only the OVERRIDE_PROFILES key is accepted here — this page never edits
-    # any other global setting.
     unknown = set(payload) - {"OVERRIDE_PROFILES"}
     if unknown:
         raise HTTPException(status.HTTP_400_BAD_REQUEST,
@@ -244,21 +241,14 @@ async def post_state(payload: dict[str, Any], request: Request) -> JSONResponse:
 
     async def _locked() -> JSONResponse:
         async with _PROFILES_LOCK, _hold_profile_refs():
-            # The "profile is in use — unbind it first" rule existed ONLY in the page
-            # JS (startDelete), and _build_usage's own docstring already calls itself
-            # "the usage-aware delete guard". save_overrides performs no such check —
-            # validate_profile_refs enforces existence on the BINDING save path, the
-            # opposite direction — so a POST from curl, or from a tab whose usage map
-            # went stale against a concurrent binding change, deleted a referenced
-            # profile outright. That fails OPEN rather than merely dangling:
-            # effective_config resolves a missing name to None and silently DROPS the
-            # layer, so every `locks` entry it contributed disappears and fields the
-            # admin had pinned against per-request decode_override become
-            # client-overridable again, with no error anywhere.
+            # The server-side in-use guard: save_overrides does not check
+            # references (validate_profile_refs covers only the binding save), so a
+            # curl POST or a tab with a stale usage map could delete a bound
+            # profile. That fails OPEN: effective_config drops the missing layer,
+            # and every lock it contributed silently goes away.
             # Presence-keyed, not isinstance-keyed: `{"OVERRIDE_PROFILES": null}` is
-            # the save_overrides remove-the-whole-key sentinel, which deletes EVERY
-            # profile — so a non-dict value must count all current profiles as removed
-            # rather than skip the guard.
+            # save_overrides' remove-the-whole-key sentinel, so a non-dict value
+            # counts every current profile as removed.
             if "OVERRIDE_PROFILES" in payload:
                 incoming = payload["OVERRIDE_PROFILES"]
                 keep = set(incoming) if isinstance(incoming, dict) else set()
@@ -355,8 +345,6 @@ async def rename_profile(payload: _RenameProfileIn, request: Request) -> JSONRes
                 raise HTTPException(status.HTTP_409_CONFLICT,
                                     f"a profile named {new!r} already exists")
 
-            # 1) Rename the key in OVERRIDE_PROFILES (preserve insertion order), then
-            #    persist + hot-apply through the same path /state uses.
             renamed = {(new if k == old else k): v for k, v in profiles.items()}
             try:
                 # Off the loop, same reasoning as the /state save above.
@@ -373,24 +361,22 @@ async def rename_profile(payload: _RenameProfileIn, request: Request) -> JSONRes
                 raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR,
                                     f"could not write config.local.json: {e}")
 
-            # 2) Cascade the new name through all bindings (now that OVERRIDE_PROFILES
-            #    holds the new key, the binding set stays referentially consistent).
-            #    Off the loop like the save above: the cascade is a full users+keys
-            #    scan with per-row UPDATEs under the store lock.
-            #    The save above reached disk only: the running cfg still holds `old`
-            #    alone until apply_hot_changes, so a request resolving a binding the
-            #    cascade already moved to `new` would drop that profile layer and its
-            #    locks (fail-open). Alias both names to the same bundle meanwhile so a
-            #    binding resolves under either name; the hot-apply leaves only `new`.
+            # Cascade only after the save, so disk never names a missing profile.
+            # The cascade is a full users+keys scan with per-row UPDATEs under the
+            # store lock, hence off the loop. The save reached disk only: until
+            # apply_hot_changes the running cfg holds `old` alone, so a binding the
+            # cascade already moved to `new` would drop that layer and its locks
+            # (fail-open). Alias both names to the same bundle meanwhile; the
+            # hot-apply leaves only `new`.
             aliased = dict(getattr(cfg, "OVERRIDE_PROFILES", None) or {})
             if old in aliased:
                 aliased[new] = aliased[old]
                 setattr(cfg, "OVERRIDE_PROFILES", aliased)
-            #    A failed cascade must not hot-apply the rename: the bindings still
-            #    name `old` (the cascade is one transaction), so a cfg holding only
-            #    `new` would drop their profile layer and its locks. Write the
-            #    original profiles back and re-apply them instead; if even that
-            #    fails, the alias above keeps both names resolving in this process.
+            # A failed cascade must not hot-apply the rename: the bindings still
+            # name `old` (the cascade is one transaction), so a cfg holding only
+            # `new` would drop their profile layer and its locks. Write the
+            # original profiles back and re-apply them instead; if even that
+            # fails, the alias above keeps both names resolving in this process.
             try:
                 affected = await asyncio.to_thread(api_keys_store.rename_profile_refs, old, new)
             except Exception as e:
@@ -528,14 +514,13 @@ def resolve(user_id: str = "", key_id: str = "", model: str = "",
         client_sim = None
         ck = effective_config._CONFIG_TO_CLIENT_KEY.get(fname)
         if ck and ck in sim_dict:
-            # Reflect the SAME gate the live decode path applies (transcription.
+            # The SAME gate the live decode path applies (transcription.
             # models._apply_decode_overrides / batch+streaming overrides_ignored key off
             # locked_client_keys): a field-level lock OR the per-identity decode
-            # master gate being off (which locks every client key) → ignored.
-            # Checking only r.locked would report "applied" for a key the server
-            # actually drops whenever the master gate is off.
-            # An unlocked value is reported as production would use it:
-            # clamped to the client bounds, or dropped when unparsable.
+            # master gate being off (it locks every client key via
+            # locked_client_keys, not r.locked) → ignored. An unlocked value is
+            # reported as production would use it: clamped to the client bounds,
+            # or dropped when unparsable.
             if fname in r.locked or ck in r.locked_client_keys:
                 value, outcome = sim_dict[ck], "ignored_locked"
             else:
@@ -560,9 +545,5 @@ def resolve(user_id: str = "", key_id: str = "", model: str = "",
         "binding_fault": bool(getattr(r, "binding_fault", False)),
     }
 
-
-# ---------------------------------------------------------------------
-# HTML page — Profiles manager (master-detail) + effective-config Explorer
-# ---------------------------------------------------------------------
 
 _OVERRIDES_HTML = templates.load(__file__, "overrides.html")
