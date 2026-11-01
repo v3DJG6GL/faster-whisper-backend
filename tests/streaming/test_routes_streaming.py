@@ -88,11 +88,11 @@ def test_stream_announces_the_utterance_lifecycle(app_module, monkeypatch):
 
 
 def test_dictate_page_shows_the_decode_as_transcribing(app_module):
-    """The page said "listening" through the whole final decode. It now follows
-    the utterance frames — and only while running, so the post-Stop drain's
-    frames can't overwrite "finishing…". A dropped utterance gets no final, so
-    the frame itself clears the faded partial (before the guard: harmless
-    after Stop)."""
+    """The status follows the utterance frames ("decoding" shows
+    "transcribing…"), but only while running, so the post-Stop drain's frames
+    can't overwrite "finishing…". A dropped utterance gets no final, so the
+    frame itself clears the faded partial (before the guard: harmless after
+    Stop)."""
     with TestClient(app_module.app, client=("127.0.0.1", 12345)) as client:
         body = client.get("/dictate").text
     block = body.split('m.type === "utterance"', 1)[1].split("else if (m.type", 1)[0]
@@ -180,8 +180,8 @@ def test_dictate_page_explains_streaming_disabled_close(app_module):
 def test_dictate_page_keeps_the_socket_open_until_closing(app_module):
     """The server emits the held final and the last document after
     {"type":"stop"} and closes the socket itself after {"type":"closing"}, so
-    stop() must not close the socket / detach onmessage synchronously
-    (regression of fb90091): it waits for "closing" with a fallback timer."""
+    stop() must not close the socket / detach onmessage synchronously: it
+    waits for "closing" with a fallback timer."""
     with TestClient(app_module.app, client=("127.0.0.1", 12345)) as client:
         body = client.get("/dictate").text
     stop_body = body.split("function stop() {", 1)[1].split("\n  }\n", 1)[0]
@@ -476,7 +476,7 @@ def test_flush_after_new_audio_is_not_coalesced(app_module, monkeypatch):
 
     async def slow_flush(self):
         # Hold the pump on flush A so audio + flush B arrive while it is still
-        # in flight — the exact window where the old coalescing dropped B.
+        # in flight.
         flushes.append(time.monotonic())
         await asyncio.sleep(0.4)
         await orig_flush(self)
@@ -771,7 +771,8 @@ def test_aborted_handshake_releases_the_per_user_slot(client, app_module,
                                                        monkeypatch):
     """ws.accept() raises when the client is already gone. The per-user slot
     is taken BEFORE accept and the releasing finally only starts after it, so
-    every aborted handshake used to burn one slot for the life of the process."""
+    without its own release an aborted handshake burns one slot for the life
+    of the process."""
     import starlette.websockets
     from faster_whisper_backend.streaming import routes as streaming_routes
 
