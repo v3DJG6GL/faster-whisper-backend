@@ -486,12 +486,12 @@ def test_rename_profile_failed_cascade_keeps_the_old_name(
 
 
 def test_profile_save_waits_for_an_in_flight_rename(client, make_user_key, monkeypatch):
-    """A /state save from a page still naming `old` landed between a rename's
-    save and its hot-apply (which re-reads disk): the cascade moved every
-    binding to `new` while cfg reloaded a library without it, so the bound
-    identity silently lost the profile layer and its locks. The two routes
-    are serialized now: the stale save runs after the rename and meets the
-    in-use guard."""
+    """A /state save from a page still naming `old` must not land between a
+    rename's save and its hot-apply (which re-reads disk): the cascade has
+    moved every binding to `new`, so cfg would reload a library without it
+    and the bound identity would silently lose the profile layer and its
+    locks. The two routes are serialized: the stale save runs after the
+    rename and meets the in-use guard."""
     import asyncio
     import threading
 
