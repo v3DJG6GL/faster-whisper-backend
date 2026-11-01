@@ -269,7 +269,7 @@ def gpu_gate_snapshot() -> dict[str, Any]:
 
 
 # One entry per second, 1 = an inference slot was held, appended by
-# stats_sampler.tick(). 900 s = the 15-minute window of the busy share.
+# sampler.tick(). 900 s = the 15-minute window of the busy share.
 busy_ring: deque[int] = deque(maxlen=900)
 
 
