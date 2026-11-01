@@ -20,7 +20,7 @@ def _hour(iso, hh=12):
 
 def _seed(us):
     # 2025-06-02 (Mon) .. 2025-06-11: alice files on k1/k2, bob dictation on k3,
-    # one diarized file from carol on 06-05, one text job from alice.
+    # one diarized URL job from carol on 06-05, one text job from alice.
     us.record_usage(key_id="k1", user_id="alice", audio_s=60.0, words=100,
                     status="ok", kind="file", hour=_hour("2025-06-02"),
                     processing_s=6.0, job_id="a1", model="large-v3")
@@ -189,7 +189,6 @@ def test_overview_compare_prev_and_yoy_aligned(usage_store_db):
                                      "days": 10}
     assert y["compare"]["totals"]["all"]["audio_s"] == 7.0
     assert {ln["id"]: ln["values"] for ln in y["compare"]["lines"]}["dictation"][1] == 7.0
-    # Feb 29 clamps to Feb 28 a year earlier.
     assert us._year_back(_D("2024-02-29")) == _D("2023-02-28")
     assert _ov(us, days=3, compare="off")["compare"] is None
 
