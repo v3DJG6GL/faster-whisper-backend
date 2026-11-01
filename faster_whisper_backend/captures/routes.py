@@ -67,7 +67,7 @@ def _proposer_pool() -> "concurrent.futures.ThreadPoolExecutor":
 
 # Serialises every read-merge-write of member `corrections`: the single
 # capture PATCH, the sample PATCH fan-out and preview-save-chips all run in
-# worker threads now, so without it one save can land between another's read
+# worker threads, so without it one save can land between another's read
 # and its writes, and the three-way merge would run against a stale `current`
 # (a lost chip edit). A threading.Lock, taken INSIDE the to_thread callables,
 # so a waiter parks a worker thread, never the event loop.
@@ -434,12 +434,10 @@ async def by_request_id_api(
     return JSONResponse({"captures": await asyncio.to_thread(_run)})
 
 
-# Literal-path GET routes (export, groups) MUST be declared BEFORE the
-# parameterized /captures/api/{cid} route — FastAPI/Starlette match in
-# declaration order, and the `{cid}` placeholder would otherwise swallow
-# any literal-named GET like /captures/api/export with cid="export" or
-# /captures/api/samples with cid="samples" (which silently 404s the
-# group-list fetch and hides newly created groups from the UI).
+# Literal-path GET routes (/api/export, /api/samples) MUST be declared
+# BEFORE the parameterized /captures/api/{cid} route: Starlette matches in
+# declaration order, so `{cid}` would otherwise swallow them as
+# cid="export" / cid="samples" and 404.
 @router.get(
     "/api/export",
     dependencies=[
@@ -571,12 +569,9 @@ async def get_capture_api(
     def _detail() -> dict[str, Any]:
         _refresh_final_if_stale(row)
         # Attach BOTH the runtime-`final` token (`word`) and the EXCLUDE-aware
-        # training token (`train_word`/`train_removed`) per raw word — the same
-        # shape the merge/proposal path produces. The Corrections strip + chips
-        # display the training token so they match what the Final result and the
-        # export actually emit (CAPTURES_PIPELINE_RULES_EXCLUDE respected); the
-        # runtime form stays visible on the "runtime (dictation-map applied)"
-        # line.
+        # training token (`train_word`/`train_removed`), as the merge path does:
+        # the chips show the training token so they match what Final and the
+        # export emit (CAPTURES_PIPELINE_RULES_EXCLUDE respected).
         row["words"] = _align_member_words(row)
         # Shift word/segment timestamps onto the trimmed-audio timeline
         # when the capture has been VAD-trimmed; the karaoke band plays the
@@ -877,10 +872,9 @@ async def patch_capture_api(
         if payload.corrections is not None:
             edited = [c.model_dump() for c in payload.corrections]
             if payload.baseline_corrections is not None:
-                # Three-way merge: apply the user's deltas to the current
-                # DB state, not just replace. Protects against concurrent
-                # cross-tab admin saves (and the same member edited from its
-                # group view).
+                # Merged into the current DB state so concurrent cross-tab
+                # admin saves (and edits of this member from its group view)
+                # survive.
                 current = row.get("corrections") or []
                 baseline = [c.model_dump() for c in payload.baseline_corrections]
                 edited = text_corrections.three_way_merge_corrections(
@@ -1240,14 +1234,15 @@ def _validate_merge_payload(
 ) -> tuple[list[dict[str, Any]], str, list[str], int]:
     """Shared validation for create_sample_api and the preview / estimate endpoints.
 
-    Validates: deduped member_ids, every capture exists, none is already in
-    a group, all members belong to the same user (whom the caller's scope may
-    read: the owner, or any scope=all caller incl. admin), audio files are
-    present on disk, and — when
-    `enforce_cap` — the TRIMMED merged duration (per-member VAD trim + inter-
-    segment silence) is within the configured cap. The cap is measured on trimmed audio because
-    that's what the merged WAV actually is (and what the proposer packs to);
-    measuring raw would reject groups that comfortably fit after trimming.
+    Validates: no duplicate member_ids, every capture exists, none is already
+    in a group, all members belong to one user (whom the caller's scope may
+    read: the owner, or any scope=all caller incl. admin) and share one task
+    and one language, audio files are present on disk, and, when
+    `enforce_cap`, the TRIMMED merged duration (per-member VAD trim +
+    inter-segment silence) is within the configured cap. The cap is measured
+    on trimmed audio because that is what the merged WAV is (and what the
+    proposer packs to); measuring raw would reject groups that fit after
+    trimming.
 
     `enforce_cap=False` skips only the cap (used by the merge-estimate
     endpoint, which needs the totals even when they exceed the cap).
@@ -1463,8 +1458,7 @@ async def create_sample_api(
             member_trims=member_trims,
         ))
     except Exception:
-        # Insert failed — roll back the WAV we just wrote so the
-        # next merge attempt for the same captures starts clean.
+        # Drop the orphan WAV so a retry of the same merge starts clean.
         try:
             os.unlink(capture_samples_store.abs_path_for(
                 capture_samples_store._relpath_for(sid)))
@@ -1513,7 +1507,7 @@ async def preview_merge_audio_api(
             capture_samples._global_silence_ms(), user)
     )
 
-    # mkstemp + close so FileResponse can stream the closed file; _TempFileResponse unlinks it however the response ends.
+    # mkstemp + close so FileResponse can stream the closed file.
     fd, tmp_path = tempfile.mkstemp(prefix="preview_merge_", suffix=".wav")
     os.close(fd)
     try:
@@ -2031,11 +2025,9 @@ def _refresh_final_if_stale(
         return
     stored_final = row.get("final") or ""
     try:
-        # Resolve the capture OWNER's effective pipeline (mirrors the explicit
-        # /reprocess endpoint). Without ident the self-heal would recompute with
-        # GLOBAL rules and write the result back, silently reverting any
-        # per-identity reprocess and producing wrong text for owners with
-        # per-identity pipeline rules.
+        # The capture OWNER's pipeline, as /reprocess uses it: GLOBAL rules
+        # here would write back text that silently reverts a per-identity
+        # reprocess.
         ident = effective_config.build_ident({"user_id": row.get("user_id")}, row.get("model"))
         text_lang = captures_store.text_language(row)
         fresh_final = captures_reapply.final_text(
@@ -2046,11 +2038,9 @@ def _refresh_final_if_stale(
     if fresh_final != stored_final:
         patch["final"] = fresh_final
         row["final"] = fresh_final
-    # Self-heal text_for_training even when `final` is up-to-date — the
-    # captures-excludes set could have changed (admin tweaked
-    # CAPTURES_PIPELINE_RULES_EXCLUDE) without an underlying PIPELINE_RULES
-    # change, and stale training text would mislead reviewers and
-    # the export.
+    # Training text too, even when `final` is current:
+    # CAPTURES_PIPELINE_RULES_EXCLUDE can change without any PIPELINE_RULES
+    # change.
     try:
         fresh_training = captures_reapply.training_text(
             raw, fresh_final, model=row.get("model"), ident=ident,
@@ -2389,17 +2379,12 @@ async def patch_sample_api(
         if payload.admin_notes is not None:
             patch["admin_notes"] = payload.admin_notes
         if payload.corrections is not None:
-            # Fan group-level chip edits DOWN to the owning members. Group
-            # corrections are derived from members on every read (see
-            # `_enrich_sample`); writing to a group-level chip column would
-            # be discarded by the next GET.
-            #
-            # When the client also sends `baseline_corrections` (a snapshot
-            # of what it loaded), apply a three-way merge against the
-            # current member-projected chips BEFORE the split — that way a
-            # concurrent cross-tab admin save (or a member edited from its
-            # singleton /captures card) isn't clobbered by the user's payload,
-            # and the user's deltas (additions, removals, edits) apply on top.
+            # Group chips live on the members (`_enrich_sample` derives the
+            # group's set on every read), so the edit fans down to them.
+            # `baseline_corrections` (what the client loaded) first drives a
+            # three-way merge against the current member chips, so a concurrent
+            # save from another tab or a member's singleton /captures card
+            # isn't clobbered.
             members_now = _members()
             edited = [c.model_dump() for c in payload.corrections]
             if payload.baseline_corrections is not None:
@@ -2436,11 +2421,10 @@ async def patch_sample_api(
                 if m["id"] in by_member:
                     m["corrections"] = by_member[m["id"]]
 
-        # Re-derive `transcript` from current members + chips ONLY when the
-        # corrections changed. The common status/admin_notes/is_locked auto-save
-        # click would otherwise trigger a get_members + transcript rebuild + DB
-        # write on every click. Join strategy uses the sample's stored value
-        # (the global only re-applies on regenerate / bulk reprocess).
+        # Only a corrections save rebuilds: the status/notes/lock auto-save
+        # clicks must not each pay a member hydrate + rebuild. The sample's
+        # stored join applies (the global one only on regenerate / bulk
+        # reprocess).
         if payload.corrections is not None:
             join_for_derive = g["transcript_join_strategy"] or "space"
             patch["transcript"] = capture_samples._build_default_transcript(
@@ -2746,9 +2730,10 @@ def _group_task(members: list) -> str:
 def _build_export_stream(only_status: str | None, include_audio: bool):
     """Generator that yields tar.gz bytes containing manifest.jsonl and,
     optionally, audio/<id>.wav entries. One manifest entry per training
-    unit — a "unit" is either a capture group (packed sample) OR
-    an ungrouped singleton capture. Group members never appear as
-    singletons (no double-counting; the group transcript covers them).
+    unit — a capture group (packed sample) or an ungrouped singleton — plus
+    an English `translate` line for a reviewed singleton that has one.
+    Group members are skipped as singletons (the group transcript covers
+    them).
 
     Hard filters applied regardless of `only_status`:
       - `is_stale=true` (group audio/text drift) → skipped
@@ -2756,12 +2741,9 @@ def _build_export_stream(only_status: str | None, include_audio: bool):
       - a group whose members no longer match the ids its merged WAV was
         built from (`member_hashes`) → skipped
       - `status=audio_missing` (file is gone) → skipped
-      - missing WAV on disk → both manifest entry AND tar entry skipped
-        (prevents the manifest from referencing files that don't exist
-        in the tarball)
+      - missing WAV on disk → both manifest entry AND tar entry skipped,
+        so the manifest never references a file the tarball lacks
     `only_status` (default "ready" from the route) further narrows.
-    `audio_missing` rows leak only when `only_status='all'`, and even
-    then the hard filter above drops them.
     """
 
     buf = io.BytesIO()
@@ -2868,9 +2850,8 @@ def _build_export_stream(only_status: str | None, include_audio: bool):
             if (row.get("status") or "") == "audio_missing":
                 continue
             cid = row["id"]
-            # Source training-form text first so the export matches what
-            # reviewers see on /captures. Chip-applied on top. A blanked
-            # training text is skipped below, not swapped for the raw text.
+            # Training-form text, so the export matches what reviewers see on
+            # /captures; a blanked one is skipped below, not swapped for raw.
             base = capture_samples._training_base(row)
             chips = row.get("corrections") or []
             text = capture_samples._apply_chips_to_text(
