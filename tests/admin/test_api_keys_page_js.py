@@ -100,6 +100,7 @@ def test_save_perms_baseline_is_the_sent_state(client, tmp_path):
     html = client.get("/settings/api-keys").text
     js = (_fn(html, "permRowState") + "\n" + _fn(html, "recomputePermDirty")
           + "\n" + _fn(html, "savePerms") + r"""
+var _permSaves = 0, _permRenders = 0;
 function group(page, val) {
   var g = { dataset: { page: page }, val: val };
   g.querySelector = function () { return { dataset: { val: g.val } }; };
@@ -158,7 +159,8 @@ function confirm() { asked++; return answer; }
 var drawers = [], dirtyRow = null;
 var ct = { innerHTML: 'old', appendChild: function () {},
   querySelectorAll: function () { return drawers; } };
-var matrix = { querySelector: function (sel) { return sel === 'tr.dirty' ? dirtyRow : null; } };
+var matrix = { querySelectorAll: function (sel) { return sel === 'tr.dirty' && dirtyRow ? [dirtyRow] : []; } };
+function permRowState() { return 'edited'; }
 var window = {};
 var document = { getElementById: function (id) {
   return id === 'users-container' ? ct : id === 'perm-matrix-wrap' ? matrix : { style: {} }; } };
@@ -190,6 +192,101 @@ var document = { getElementById: function (id) {
     # load(), so a successful save does not prompt about itself.
     assert "var sentSig = _sig(b);" in html
     assert "_baseline = sentSig; showToast('Overrides saved', 'ok'); load();" in html
+
+
+def test_permission_save_is_not_undone_by_a_load_already_running(client, tmp_path):
+    """load() reads the users list (which holds every row's scopes) first
+    and rebuilds the matrix only after three more requests. A permission
+    PATCH landing in between was overwritten on screen by the pre-save
+    scopes, which the rebuilt row then took as its clean baseline. A row
+    whose save was in flight also counted as unsaved, so that load() asked
+    the discard-confirm for nothing."""
+    html = client.get("/settings/api-keys").text
+    start = html.index("  var _loadGen = 0;")
+    loadsrc = html[start:html.index("\n  }\n", start) + 4]
+    js = (_fn(html, "permRowState") + "\n" + _fn(html, "recomputePermDirty")
+          + "\n" + _fn(html, "savePerms") + "\n" + loadsrc + r"""
+function group(page, val) {
+  var g = { dataset: { page: page }, val: val };
+  g.querySelector = function () { return { dataset: { val: g.val } }; };
+  return g;
+}
+var cls = new Set(), groups, server, renders, asked;
+var tr = {
+  querySelectorAll: function () { return groups; },
+  classList: { toggle: function (c, on) { if (on) cls.add(c); else cls.delete(c); } },
+};
+var pending = [];
+function resp(body) { return { ok: true, status: 200, json: function () { return Promise.resolve(body); } }; }
+function api(method, url, body) {
+  return new Promise(function (res) { pending.push({ method: method, url: url, body: body, res: res }); });
+}
+// Answer the oldest pending request to `url`; the server commits a PATCH
+// only when it is answered, and a users GET reads what is committed then.
+function answer(url) {
+  var i = pending.findIndex(function (p) { return p.url.endsWith(url); });
+  var p = pending.splice(i, 1)[0];
+  if (p.method === 'PATCH') { server = Object.assign({}, p.body.pages); p.res(resp({})); }
+  else if (p.url.endsWith('/api/users')) p.res(resp({ users: [{ id: 'u1', pages: Object.assign({}, server) }] }));
+  else p.res(resp({ by_user: {}, by_key: {}, profiles: {} }));
+}
+function tick() { return new Promise(function (r) { setTimeout(r, 0); }); }
+async function finishLoad() {
+  for (var url of ['/api/users', '/api/client-settings', '/api/usage', '/overrides/state']) {
+    answer(url); await tick();
+  }
+}
+async function drain() {   // answer whatever a restarted load() asks next
+  while (pending.length) { answer(pending[0].url); await tick(); }
+}
+function reset() {
+  groups = [group('logs', 'none'), group('stats', 'own')];
+  server = { logs: 'none', stats: 'own' }; renders = []; asked = 0; cls.clear();
+  tr._permBaseline = permRowState(tr);
+  groups[0].val = 'all'; recomputePermDirty(tr);     // the edit to save
+}
+function _check403() { return Promise.resolve(false); }
+function showToast() {}
+function renderMatrix(j) { renders.push(j.users[0].pages.logs); }
+function renderUser() { return {}; }
+function renderOpenModeCsCard() {}
+function renderOrphanCsCards() {}
+function confirm() { asked++; return true; }
+var ct = { innerHTML: '', appendChild: function () {}, querySelectorAll: function () { return []; } };
+var matrix = { querySelectorAll: function () { return cls.has('dirty') ? [tr] : []; },
+  querySelector: function () { return cls.has('dirty') ? tr : null; } };
+var window = {};
+var document = { getElementById: function (id) {
+  return id === 'users-container' ? ct : id === 'perm-matrix-wrap' ? matrix : { style: {} }; } };
+(async function () {
+  var out = {};
+  // The PATCH lands after load()'s users GET, before its rebuild.
+  reset();
+  load(); answer('/api/users'); await tick();
+  savePerms('u1', tr, {}); answer('/permissions'); await tick();
+  await drain();
+  out.landed_mid_load = { renders: renders, asked: asked };
+  // load() renders while the PATCH is still in flight; the PATCH lands after.
+  reset();
+  load(); savePerms('u1', tr, {});
+  await finishLoad();
+  answer('/permissions'); await tick();
+  await drain();
+  out.landed_after_render = { renders: renders, asked: asked };
+  // A further edit made while the PATCH runs is still unsaved.
+  reset();
+  savePerms('u1', tr, {});
+  groups[1].val = 'all'; recomputePermDirty(tr);
+  load(); await finishLoad();
+  out.edited_in_flight = { asked: asked };
+  pending = [];
+  console.log(JSON.stringify(out));
+})();
+""")
+    out = _run(js, tmp_path)
+    assert out["landed_mid_load"] == {"renders": ["all"], "asked": 0}
+    assert out["landed_after_render"] == {"renders": ["none", "all"], "asked": 0}
+    assert out["edited_in_flight"] == {"asked": 1}
 
 
 def test_import_stays_off_while_a_cancelled_import_is_in_flight(client, tmp_path):

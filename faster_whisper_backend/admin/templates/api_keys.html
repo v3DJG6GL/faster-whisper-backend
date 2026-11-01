@@ -926,6 +926,11 @@
     // Only Save is disabled in flight; cells stay editable, so the baseline
     // must be what was sent, not the row as it looks when the PATCH resolves.
     var sent = permRowState(tr);
+    // A row whose edits are on the wire is not "unsaved" to load()'s
+    // discard-confirm; a load() that renders meanwhile may have read the
+    // users list before this PATCH landed, so success then reloads.
+    tr._permSending = sent;
+    var renders0 = _permRenders;
     btn.disabled = true;
     api('PATCH',
         '/settings/api-keys/api/users/' + encodeURIComponent(uid) + '/permissions',
@@ -939,11 +944,14 @@
         tr._permBaseline = sent;
         recomputePermDirty(tr);
         showToast('Permissions saved', 'ok');
+        _permSaves++;
+        if (_permRenders !== renders0) load();
       })
       .catch(function(e) {
         showToast(String(e.message || e), 'err');
       })
       .finally(function() {
+        tr._permSending = undefined;
         btn.disabled = false;
       });
   }
@@ -2218,8 +2226,14 @@
   // quick reload) would each append the full user list; only the newest one
   // renders.
   var _loadGen = 0;
+  // A permission save that lands while load() runs makes its users list
+  // (read first) stale: the rebuilt row would show, and take as its clean
+  // baseline, the pre-save scopes. Such a load restarts instead of rendering;
+  // one that already rendered is redone by savePerms (see _permRenders).
+  var _permSaves = 0, _permRenders = 0;
   async function load() {
     var gen = ++_loadGen;
+    var saves0 = _permSaves;
     var r = await api('GET', '/settings/api-keys/api/users');
     if (gen !== _loadGen) return;
     if (r.status === 401) {
@@ -2282,17 +2296,21 @@
       else ovstate = { profiles: {}, field_meta: {}, rules: [], unavailable: true };
     } catch (_) { ovstate = { profiles: {}, field_meta: {}, rules: [], unavailable: true }; }
     if (gen !== _loadGen) return;
+    if (_permSaves !== saves0) return load();
     // Any successful action (rename, revoke, another drawer's save) reloads;
     // an open overrides drawer or a dirty permission-matrix row (renderMatrix
     // rebuilds it from the server) would lose its unsaved edits silently.
     var unsaved = Array.prototype.some.call(ct.querySelectorAll('.cfg-drawer'),
       function (d) { return d._ovDirty && d._ovDirty(); })
-      || !!document.getElementById('perm-matrix-wrap').querySelector('tr.dirty');
+      || Array.prototype.some.call(
+        document.getElementById('perm-matrix-wrap').querySelectorAll('tr.dirty'),
+        function (tr) { return permRowState(tr) !== tr._permSending; });
     if (unsaved && !confirm('Reloading the list discards unsaved permission or override edits. Reload anyway?')) return;
     window.__usage = usage;
     window.__ovstate = ovstate;
     // Cleared only here, right before the synchronous rebuild.
     ct.innerHTML = '';
+    _permRenders++;
     renderMatrix(j);
     var nUsers = j.users.length;
     j.users.forEach(function(u) { ct.appendChild(renderUser(u, nUsers)); });
