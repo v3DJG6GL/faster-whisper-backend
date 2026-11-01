@@ -156,7 +156,7 @@ def test_cb_failures_never_escape(monkeypatch):
         raise RuntimeError("cb exploded")
     with dp.capture("x", cb=boom, record=False):
         bar = _mk_bar()
-        bar.update(100)                           # must not raise
+        bar.update(100)
 
 
 def test_snapshot_transfer_twin_bar_is_counted_once(monkeypatch):
