@@ -735,3 +735,72 @@ def build_ident(user: "dict | None", model_id: "str | None",
         request_profile=request_profile,
         with_provenance=with_provenance,
     )
+
+
+# ---------------------------------------------------------------------------
+# Live-dictation silence gates
+# ---------------------------------------------------------------------------
+# The three gates only work as a set: inner >= outer stretches the commit wait
+# to the forced-commit cap (streaming/session.py), and a hard break that is on
+# but fires by the first frame after the finalize (schema.hard_break_floor_ms)
+# breaks after EVERY utterance, because the idle-silence clock survives the
+# finalize. AdminConfig refuses only a GLOBAL set that does not fit; a profile,
+# identity or client value can still cross it, so the RESOLVED set is fitted
+# here — for the session itself (streaming/routes) and for every view that
+# reports what a session will use (GET /v1/request-default-settings).
+SILENCE_INNER = "STREAMING_VAD_INNER_SILENCE_MS"
+SILENCE_OUTER = "STREAMING_VAD_OUTER_SILENCE_MS"
+SILENCE_HARD_BREAK = "STREAMING_HARD_BREAK_SILENCE_MS"
+SILENCE_GATES = (SILENCE_INNER, SILENCE_OUTER, SILENCE_HARD_BREAK)
+
+
+def silence_gate_locks(ident=None, client=()) -> frozenset[str]:
+    """The silence gates a fit must never move: locked by the identity layer
+    that owns them, or pinned by a WHISPER_* var with no identity value above
+    it (the env value is then what runs). A gate the connection's client set
+    (`client`, its field names) is the client's own value, never locked."""
+    pinned = config_store.env_pinned_fields()
+    locked = ident.locked if ident is not None else set()
+    values = ident.values if ident is not None else {}
+    return frozenset(f for f in SILENCE_GATES if f not in client
+                     and (f in locked or (f in pinned and f not in values)))
+
+
+def hard_break_breaks_every_utterance(hb: int, outer: int) -> bool:
+    return 0 < hb <= settings_schema.hard_break_floor_ms(outer)
+
+
+def fit_silence_gates(inner: int, outer: int, hb: int,
+                      locked: "frozenset[str] | set[str]" = frozenset(),
+                      ) -> "tuple[int, int, int, bool]":
+    """(inner, outer, hard break, fits) with the UNLOCKED gates moved so the
+    set works. Outer anchors: inner = outer - 50, hard break = outer + 1000.
+    When a LOCKED partner does not fit an unlocked outer, outer moves instead
+    (locked inner + 50, locked hard break - 1000 but not under outer's own
+    minimum), and its unlocked partner follows. A locked gate never moves:
+    `fits` is False when the locked gates alone leave no valid set — they
+    are then kept as set (outer too, as moving it would not help)."""
+    breaks = hard_break_breaks_every_utterance
+    hb_locked, inner_locked = SILENCE_HARD_BREAK in locked, SILENCE_INNER in locked
+    if SILENCE_OUTER not in locked:
+        moved = outer
+        if hb_locked and breaks(hb, moved):
+            moved = max(settings_schema.field_bounds()[SILENCE_OUTER]["min"], hb - 1000)
+        if inner_locked and inner >= moved:
+            moved = inner + 50
+        if not ((hb_locked and breaks(hb, moved)) or (inner_locked and inner >= moved)):
+            outer = moved
+    if not inner_locked and inner >= outer:
+        inner = max(0, outer - 50)
+    if not hb_locked and breaks(hb, outer):
+        hb = outer + 1000
+    return inner, outer, hb, inner < outer and not breaks(hb, outer)
+
+
+def session_silence_gates(ident=None) -> "tuple[dict[str, int], bool]":
+    """({field: value}, fits) of the three gates a live-dictation session of
+    this identity runs when its client sends none of them."""
+    *gates, fits = fit_silence_gates(
+        *(int(cfg_for(None, f, ident)) for f in SILENCE_GATES),
+        silence_gate_locks(ident))
+    return dict(zip(SILENCE_GATES, gates)), fits

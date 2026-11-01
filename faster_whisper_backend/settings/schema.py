@@ -657,6 +657,22 @@ def _effective(model: BaseModel, name: str, fallback: Any = None,
     return getattr(_cfg, name, fallback)
 
 
+def hard_break_floor_ms(outer: int) -> int:
+    """The longest live-dictation hard break that still fires right after
+    EVERY finalize for this outer gate. Silence is counted in whole
+    streaming/vad.FRAME_MS frames: the finalize fires on the first frame at
+    or past outer and the hard-break check sees the idle clock one frame
+    later, so any hard break up to that frame acts like one <= outer."""
+    from faster_whisper_backend.streaming.vad import FRAME_MS  # numpy-only leaf
+    return FRAME_MS * (-(-outer // FRAME_MS) + 1)
+
+
+def _max_outer_below_hard_break_ms(hb: int) -> int:
+    """The longest outer gate whose hard_break_floor_ms stays below `hb`."""
+    from faster_whisper_backend.streaming.vad import FRAME_MS
+    return FRAME_MS * (-(-hb // FRAME_MS) - 2)
+
+
 class AdminConfig(BaseModel):
     """Pydantic schema for config.local.json. Every field is Optional; absent
     means "do not override". Bounds and patterns enforce resource caps and
@@ -1607,31 +1623,48 @@ class AdminConfig(BaseModel):
 
     # The live-dictation silence gates only work as a pair with outer:
     # inner >= outer stretches the commit wait, and a hard break that is on
-    # but <= outer breaks after EVERY utterance (the idle-silence clock
-    # survives the finalize). streaming/routes._stream_config fits the
+    # but fires by the first frame after the finalize (hard_break_floor_ms)
+    # breaks after EVERY utterance (the idle-silence clock survives the
+    # finalize). settings/effective_config.fit_silence_gates fits the
     # RESOLVED pair (like the trim pair), which covers profiles and
     # identities; the GLOBAL pair is refused here so the admin learns of it.
     # On SAVE only, and only by a save touching the pair (config_store sets
     # silence_pair_check to the touched keys): at load a failure drops every
-    # override.
+    # override. The hint names only a gate the admin can change: an
+    # env-pinned one has a read-only editor and loses to its WHISPER_* var.
     @model_validator(mode="after")
     def _validate_silence_gates(self, info: ValidationInfo) -> "AdminConfig":
         touched = (info.context or {}).get("silence_pair_check") or ()
         if not touched:
             return self
+        pinned = (info.context or {}).get("env_effective") or {}
         outer_f = "STREAMING_VAD_OUTER_SILENCE_MS"
         outer = int(_effective(self, outer_f, info=info))
-        for fld, bad, want, why in (
+        floor = hard_break_floor_ms(outer)
+        for fld, bad, want, outer_want, why in (
                 ("STREAMING_VAD_INNER_SILENCE_MS", lambda v: v >= outer,
-                 f"below {outer} ms", "every commit would wait longer"),
-                ("STREAMING_HARD_BREAK_SILENCE_MS", lambda v: 0 < v <= outer,
-                 f"0 (off) or above {outer} ms",
+                 f"below {outer} ms", lambda v: f"above {v} ms",
+                 "every commit would wait longer"),
+                ("STREAMING_HARD_BREAK_SILENCE_MS", lambda v: 0 < v <= floor,
+                 f"0 (off) or above {floor} ms",
+                 lambda v: f"at most {_max_outer_below_hard_break_ms(v)} ms",
                  "every dictated sentence would start a new document")):
             v = int(_effective(self, fld, info=info))
-            if (fld in touched or outer_f in touched) and bad(v):
-                raise ValueError(
-                    f"{fld} {v} ms does not fit {outer_f} {outer} ms ({why}) "
-                    f"— set {fld} to {want}, or change {outer_f}")
+            if not ((fld in touched or outer_f in touched) and bad(v)):
+                continue
+            if fld in pinned and outer_f in pinned:
+                fix = (f"both are set by environment variables — change "
+                       f"{ENV_VAR_MAPPING[fld]} or {ENV_VAR_MAPPING[outer_f]}")
+            elif fld in pinned:
+                fix = (f"{fld} is set by {ENV_VAR_MAPPING[fld]}, so set "
+                       f"{outer_f} to {outer_want(v)}")
+            elif outer_f in pinned:
+                fix = (f"{outer_f} is set by {ENV_VAR_MAPPING[outer_f]}, so "
+                       f"set {fld} to {want}")
+            else:
+                fix = f"set {fld} to {want}, or change {outer_f}"
+            raise ValueError(
+                f"{fld} {v} ms does not fit {outer_f} {outer} ms ({why}) — {fix}")
         return self
 
     @model_validator(mode="after")

@@ -448,9 +448,13 @@ async def get_decode_defaults(model: str = "", override_profile: str = "",
         return {"value": value, "source": source, "label": label,
                 "locked": bool(locked)}
 
+    # The silence gates as a session runs them: fitted as a set, so a
+    # profile outer above the global hard break reports the moved hard break.
+    silence, _ = effective_config.session_silence_gates(ident)
     settings: dict = {}
     for field, client_key in settings_schema.CONFIG_TO_CLIENT_KEY.items():
-        value = effective_config.cfg_for(model_name, field, ident)
+        value = silence[field] if field in silence else effective_config.cfg_for(
+            model_name, field, ident)
         # Blank text is "unset" to the decoder (hotwords are only sent when
         # non-blank) — say so, rather than ghosting an empty string.
         if isinstance(value, str) and not value.strip() and client_key == "hotwords":
