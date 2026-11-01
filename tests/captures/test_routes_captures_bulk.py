@@ -226,9 +226,9 @@ def test_bulk_status_keeps_reviewed_ts_of_rows_already_at_the_target(
 
 def test_single_patch_keeps_reviewed_ts_when_status_is_unchanged(
         client, make_user_key):
-    """The card's Save used to resend the current status with every chip or
-    note edit; update_capture re-stamped reviewed_ts, so a note on a
-    months-old ready capture moved it into "ready this week"."""
+    """A PATCH that resends the unchanged status with a chip or note edit
+    must not re-stamp reviewed_ts, or a note on a months-old ready capture
+    moves it into "ready this week"."""
     from faster_whisper_backend.captures import store as captures_store
 
     _root, raw_root = make_user_key("root", is_admin=True)
