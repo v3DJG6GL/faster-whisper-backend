@@ -48,7 +48,7 @@ from __future__ import annotations
 
 import os
 
-# ~1 KB realistic fixture (mirrors the former in-process guard's fixture).
+# ~1 KB of realistic German dictation output.
 FIXTURE = "Hallo. Wie geht's? 10.23 Uhr! Bitte. " * 32
 
 # Whole-validation wall-clock budget: _GUARD_TIMEOUT plus a per-entry
@@ -139,8 +139,8 @@ _SCALE_SAMPLES = 3
 _SCALE_MIN_REJECT = 5e-3
 
 # Chained-probe cap (see _probe). Entry N is probed against the fixture as
-# entries 0..N-1 have already REWRITTEN it, because that is exactly what
-# engine.rebuild_caches feeds it at match time — an earlier entry can manufacture
+# entries 0..N-1 have already REWRITTEN it, because that is what
+# engine._postprocess_text feeds it at match time — an earlier entry can manufacture
 # the input shape that makes a later one explode, and the static fixtures never
 # contain it. The running string is truncated to this many characters after
 # each substitution so the chaining itself can never become the blowup.
@@ -163,9 +163,9 @@ _SYNTH_LETTERS = "zq"
 # Short-run length each candidate probe is first matched at, to drop the ones
 # the rule treats like an earlier candidate (see _synthetic_fixtures). Short
 # enough that even an explosive rule screens in milliseconds; raised to the
-# pattern's minimum match width (+2) so it can match at all: a wider rule
-# matched no capped screen run, so a run whose terminator it accepts at once
-# stood in for the one it splits every way.
+# pattern's minimum match width (+2, at most _SYNTH_RUN) so it can match at
+# all, or a run whose terminator the rule accepts at once would stand in for
+# the one it splits every way.
 _SYNTH_SCREEN = 8
 # What a shorthand escape can match, for the synthetic probe only. `\W` gets a
 # control character no rule writes literally: as `#` it was also the attack
@@ -342,7 +342,7 @@ def _skip_class(pat: str, i: int) -> "tuple[int, int, bool]":
     # synthetic probe's witness for `[]]` must be `]`, not an empty body.
     start = j
     if j < n and pat[j] == "]":
-        j += 1  # a `]` first in the class is a literal
+        j += 1
     while j < n and pat[j] != "]":
         j += 2 if pat[j] == "\\" else 1
     return start, j, negated
@@ -355,9 +355,9 @@ def _strip_outer_group(branch: str) -> str:
     Only strips when the opening ``(`` is balanced by the LAST ``)`` (i.e. the
     parens wrap the entire branch, not just a prefix). A non-capturing, named,
     atomic or scoped-flag prefix (``?:``, ``?P<name>``, ``?<name>``, ``?>``,
-    ``?i:``) goes with the parens — left in place it made the body uncompilable
-    and its witness wrong, so wrapping an overlapping branch in ``(?:...)``
-    slipped past the overlap check. A lookaround, conditional, comment or
+    ``?i:``) goes with the parens: left in place, the body would not compile
+    and an overlapping branch wrapped in ``(?:...)`` would pass the overlap
+    check. A lookaround, conditional, comment or
     backreference group is not the plain body it holds and stays as it is.
     """
     import re
@@ -390,9 +390,9 @@ def _strip_verbose(pat: str) -> str:
 
     Under ``(?x)`` (or a scoped ``(?x:...)``) unescaped whitespace is ignored
     and ``#`` runs a comment to the end of the line, so the quantifier in
-    ``(?x)(a+) +#`` really applies to the group — but a scanner that reads a
-    quantifier only directly after ``)`` counted it as a root-level repeat,
-    and a ``)`` inside a comment popped the wrong frame. Escapes, character
+    ``(?x)(a+) +#`` applies to the group and a ``)`` inside a comment closes
+    nothing; the screens read a quantifier only directly after ``)`` and
+    count every ``)``, so they need the stripped text. Escapes, character
     classes and ``(?#...)`` are copied verbatim (whitespace and ``#`` are
     literal there). Returns ``pat`` unchanged when no verbose mode applies.
     """
@@ -465,10 +465,9 @@ def _strip_comments(pat: str) -> str:
     """``pat`` with every ``(?#...)`` comment group removed.
 
     The engine drops a comment, so a quantifier after one binds to the atom
-    BEFORE it: ``a(?#x){3}`` is ``a{3}`` and ``(a+)(?#x)+#`` is ``(a+)+#``. A
-    scanner that skipped the comment and then read the quantifier as plain
-    text missed both the fixed count and the nested repeat. Escapes and
-    character classes are copied verbatim (``(?#`` is literal there).
+    BEFORE it: ``a(?#x){3}`` is ``a{3}`` and ``(a+)(?#x)+#`` is ``(a+)+#``.
+    Escapes and character classes are copied verbatim (``(?#`` is literal
+    there).
     """
     if "(?#" not in pat:
         return pat
@@ -628,12 +627,9 @@ def _nested_repetition(pat: str) -> bool:
             if variable and not frame["atomic"] and not possessive:
                 if _rep(frame):
                     return True
-                # (a|a)* — identical alternatives overlap, so the engine
-                # re-tries the same split every way round. Prefix-ambiguous
-                # branches are the same trap without being byte-identical:
-                # (a|ab)+, (x|xx)+y, (n|d|nd)+# all let one run of input be
-                # split many ways, which backtracks exponentially. An empty
-                # branch — (|a)+ — is the degenerate case of the same thing.
+                # An overlapping alternation (see _spans_overlap) splits one
+                # run of input many ways; an empty branch — (|a)+ — is the
+                # degenerate case.
                 if spans and _overlap(spans):
                     return True
             # A lookaround is matched once and never backtracked into, so a
@@ -1331,8 +1327,8 @@ def _class_char(body: str, negated: bool) -> "str | None":
     """A character the character class ``[body]`` can match, or None.
 
     Only needs ONE witness, so the first literal / range start / shorthand in
-    the class body is enough. For a negated class, try a few ordinary
-    candidates and return the first that the body does not obviously contain.
+    the class body is enough. For a negated class, the first of a few
+    ordinary candidates the class really matches.
     """
     members = []
     i = 0
@@ -1349,11 +1345,11 @@ def _class_char(body: str, negated: bool) -> "str | None":
         i += 3 if (i + 2 < n and body[i + 1] == "-") else 1
     if not negated:
         return members[0] if members else None
-    # Verify each candidate against the real class instead of guessing from
-    # the expanded members: a shorthand like `\w` stands for a whole SET, so
-    # its one representative ('a') banned only 'a' and let '1' through — a
-    # character `[^\w]` can never match, silently no-op'ing the synthetic
-    # probe. Fall back to the member heuristic if the body doesn't compile.
+    # Test candidates against the compiled class, not the expanded members:
+    # a shorthand member stands for a whole set (`\w` is represented by 'a'
+    # alone, yet `[^\w]` cannot match '1' either), and a wrong pick silently
+    # no-ops the synthetic probe. The member guess is only for a body that
+    # won't compile.
     import re
     try:
         rx = re.compile(f"[^{body}]")
@@ -1377,10 +1373,9 @@ def _escape_char(pat: str, i: int, in_class: bool = False) -> "tuple[str | None,
     Returns ``(char, end)``: a character the escape matches (None for a
     zero-width assertion, a backreference or anything undecodable) and the
     index just past the WHOLE escape. A numeric or named escape is ONE
-    character — ``\\x2d`` is ``-``, ``\\u2013`` and ``\\N{EN DASH}`` an en dash.
-    Reading only the letter after the backslash took ``\\x2d`` for ``x`` and
-    its ``2d`` for two more atoms, so the synthetic probe ran on a character
-    the pattern never matches and waved a polynomial ``\\x2d*\\x2d*…#`` through.
+    character — ``\\x2d`` is ``-``, ``\\u2013`` and ``\\N{EN DASH}`` an en dash;
+    read as ``x`` plus two atoms, the synthetic probe would run on a character
+    the pattern never matches and wave a polynomial ``\\x2d*\\x2d*…#`` through.
     Digits follow the engine: outside a class ``\\0oo`` and three octal digits
     are a character and any other digit run a group reference; inside a class
     every digit escape is octal and ``\\b`` is a backspace.
@@ -1523,11 +1518,11 @@ def _first_char(body: str, depth: int = 0) -> "str | None":
 
 
 def _first_repeated_char(pat: str, depth: int = 0) -> "str | None":
-    """A character matched by the first atom that carries a repeating
-    quantifier (`*`, `+`, `{2,}`), or None if none can be determined.
+    """The character of _first_repeat's atom (the first unbounded repeat,
+    else the first bounded count), or None if none can be determined.
 
-    That atom is where an unbounded run of input gets consumed, so repeating
-    the character it matches is the input shape most likely to make the
+    That atom is where a run of input gets consumed, so repeating the
+    character it matches is the input shape most likely to make the
     pattern backtrack. Best effort by construction: returning None simply
     skips the synthetic probe for that pattern.
     """
@@ -1683,10 +1678,9 @@ def _synthetic_fixtures(pat: str) -> "list[str]":
             lead = ""
         terms = dict.fromkeys([
             next((t for t in _SYNTH_TERMINATORS if t not in pat), "#"),
-            # The single pick before the union, kept so the set stays a
-            # superset of it: `\d*…(?:[!-/]|$)` eats the first and
-            # empty-matches every terminator, so only one it cannot consume
-            # fails the run.
+            # The first unwritten one it cannot match non-empty:
+            # `\d*…(?:[!-/]|$)` eats the first and empty-matches every
+            # terminator, so only one it cannot consume fails the run.
             next((t for t in _SYNTH_TERMINATORS
                   if t not in pat and t != char
                   and not any(m.end() > m.start() for m in rx.finditer(t))), ""),
@@ -1702,10 +1696,6 @@ def _synthetic_fixtures(pat: str) -> "list[str]":
         for led in dict.fromkeys(("", lead)):
             for c in dict.fromkeys(char + family):
                 for t in terms:
-                    # Equal spans say nothing about cost: a rule that splits a
-                    # `\n` run every way before a cheap `|\s` matches it ends
-                    # with the spans a space run gets at once. Only runs every
-                    # atom treats alike share a probe.
                     outcome = (led,
                                tuple(m.span() for m in
                                      rx.finditer(led + c * screen + t)),
@@ -1810,17 +1800,16 @@ def _char_atoms(parsed) -> "tuple[list, list, bool] | None":
 def _witness(pat: str, depth: int = 0, width: int = 64) -> str:
     """A short string ``pat`` plausibly matches, or "" if none can be built.
 
-    Used to keep the CHAINED probe reachable: an entry whose pattern matches
-    nothing in the running fixture (`(Wetter)` against German small talk that
-    never says "Wetter") substitutes nothing, so its replacement — which may be
-    exactly the run that detonates a later entry — never reaches the chain.
-    Injecting a witness makes the entry fire, and its output then travels
-    downstream the way it will at match time.
+    It makes an entry fire where the probe text alone never reaches it: the
+    chained probe seeds one for an entry that matches nothing in the running
+    fixture (_chain_advance), and the synthetic probe leads its run with one
+    (_synthetic_fixtures).
 
-    Best effort: one representative character per atom, the first alternative
-    of a top-level alternation, optional atoms omitted. A wrong guess costs a
-    few wasted characters in a probe input; it can never reject anything by
-    itself, because the chained probe's only verdict is the parent's timeout.
+    Best effort: one representative character per atom, a repeat written
+    three times, the first alternative of each alternation, optional atoms
+    omitted, cut at ``width``. A wrong guess only costs a probe that reaches
+    less. It can never reject anything by itself, because every probe's only
+    verdict is timing (the parent's timeout, the per-entry CPU cap).
     """
     return _witnesses(pat, depth, width=width)[0]
 
@@ -1862,11 +1851,13 @@ def _chain_advance(rx, pattern: str, replacement: str, chained: str) -> str:
     """Apply one entry to the running chained fixture and return the result.
 
     This is what makes the chained probe carry a MANUFACTURED input downstream:
-    entry N is handed the text entries 0..N-1 produced, exactly as
-    ``engine.rebuild_caches`` applies them (list order, no longest-first sort).
-    Truncated to ``_CHAIN_CAP`` so the chaining itself can never become the
-    expensive thing. Never raises: chaining is extra signal, and its only
-    verdict is the parent's timeout — it must not invent a rejection reason.
+    entry N is handed the text entries 0..N-1 produced, in list order like
+    ``engine._postprocess_text`` (no longest-first sort). That is an
+    approximation for callback rows, which arrive with an empty replacement,
+    and for a save that guards only the changed rules. Truncated to
+    ``_CHAIN_CAP`` so the chaining itself can never become the expensive
+    thing. Never raises: chaining is extra signal whose only verdict is
+    timing, so it must not invent a rejection reason.
     """
     try:
         seeded = False
@@ -1919,10 +1910,12 @@ def validate(checks: list, timeout: float | None = None, spent: float = 0.0) -> 
     exceeds ``timeout`` seconds. Raises ``ValueError(f"{where}: ...")`` on a
     pattern that repeats an already-repeating group (`(x+)+`, `(a|a)*` — see
     ``_nested_repetition``), a bad regex/replacement (e.g. a backref to a
-    non-existent group), a replacement that expands the fixture beyond
-    ``_MAX_GROWTH``, or a catastrophic-backtracking timeout (of the whole
-    child, or of one entry past _GUARD_TIMEOUT of CPU). No-op for an empty
-    list.
+    non-existent group), nested fixed counts past ``_MAX_FIXED_COUNT``, a
+    replacement that can grow a match beyond ``_MAX_GROWTH`` (measured on the
+    fixture and bounded analytically), a match time that grows superlinearly
+    on the longer fixture, slow compiling (below), or a catastrophic-
+    backtracking timeout (of the whole child, or of one entry past
+    _GUARD_TIMEOUT of CPU). No-op for an empty list.
 
     Fails OPEN: if the helper can't be launched / crashes, the save proceeds
     WITHOUT the backtracking check rather than blocking a legitimate edit — the
@@ -1955,8 +1948,8 @@ def validate(checks: list, timeout: float | None = None, spent: float = 0.0) -> 
     # than any wall-clock probe on inputs the fixtures don't happen to contain,
     # so they are refused on shape rather than on measured time.
     for where, pattern, _repl in checks:
-        # Before the overlap check below, which matches branch fragments
-        # in-process.
+        # Before _nested_repetition: its overlap check matches branch
+        # fragments in-process, where a huge fixed count hangs uninterruptibly.
         check_fixed_counts(where, pattern)
         if pattern and _nested_repetition(pattern):
             raise ValueError(
@@ -2054,7 +2047,7 @@ def _probe(checks: list):
     import sys
     import time
     # The fixture as it looks after entries 0..i-1 have been applied, in LIST
-    # ORDER (engine.rebuild_caches applies them in list order, unsorted). Entry 0
+    # ORDER (engine._postprocess_text applies them in list order, unsorted). Entry 0
     # sees the plain fixture; every later entry is additionally probed against
     # whatever its predecessors manufactured.
     chained = FIXTURE
@@ -2135,11 +2128,9 @@ def _probe(checks: list):
         # Per-pattern synthetic run: closes the fixed-alphabet hole above for
         # any character, not just the ones the four fixtures happen to hold.
         probes.extend(_synthetic_fixtures(item[0]))
-        # The chained fixture: what this entry is actually handed at match time
-        # once its predecessors have rewritten the text. An entry that is
-        # harmless on prose but explodes on a long run some EARLIER entry
-        # manufactures ((\w) -> 60 dashes, then (-+)(-+)... on the result) is
-        # invisible to every static fixture and only shows up here.
+        # Chained fixture (see _CHAIN_CAP): catches an entry that only explodes
+        # on a run an EARLIER entry manufactures ((\w) -> 60 dashes, then
+        # (-+)(-+)... on the result).
         if chained and chained != FIXTURE:
             probes.append(chained)
         for fixture in probes:
@@ -2147,23 +2138,14 @@ def _probe(checks: list):
                 rx.sub(item[1], fixture)
             except Exception as exc:  # noqa: BLE001 - any sub failure
                 return i, str(exc)
-        # Scaling verdict (measured above). The structural screen catches
-        # EXPONENTIAL shapes and the fixed-size probes catch anything already
-        # slow at ~1 KB, but a merely POLYNOMIAL pattern is fast at 1 KB by
-        # construction and only bites at transcript length — `.*.*#` costs
-        # 0.2 s on FIXTURE and ~40 s at 6 KB. The longer fixture repeats
-        # FIXTURE, so only the LENGTH changes: linear work grows with the
-        # length multiplier, and anything growing far faster is superlinear in
-        # the input it will actually be applied to.
-        # _TIMER_FLOOR keeps timer noise on a microsecond-scale legit rule from
-        # tripping the ratio; the allowance is double the length multiplier, so
-        # ordinary rules have ample headroom while `.*.*#` (~130x) is caught.
-        # A first-sample trip is confirmed before it rejects: re-measure both
-        # sides and keep the best (min) of each — noise only ever inflates a
-        # CPU-time reading, so the minima are the pattern's true cost. Legit
-        # rules pay nothing for this (no trip, no resample); a genuinely
-        # polynomial pattern trips every sample. The absolute _SCALE_MIN_REJECT
-        # floor then keeps a sub-5 ms scaled run from rejecting on ratio alone.
+        # Scaling verdict (measured above; thresholds at _SCALE_FACTOR..
+        # _SCALE_MIN_REJECT). The structural screen catches EXPONENTIAL shapes
+        # and the fixed-size probes anything already slow at ~1 KB, but a
+        # POLYNOMIAL pattern is fast at 1 KB and only bites at transcript
+        # length: `.*.*#` costs ~0.3 s on FIXTURE and ~15 s on _SCALE_FIXTURE
+        # (~50x, far over the allowance). A first-sample trip is re-measured
+        # and the min of each side decides, because noise only ever inflates a
+        # CPU-time reading; legit rules never trip, so they pay nothing.
         if _t_scaled > _SCALE_ALLOWANCE * max(_t_base, _TIMER_FLOOR):
             try:
                 for _ in range(_SCALE_SAMPLES - 1):
@@ -2183,9 +2165,6 @@ def _probe(checks: list):
                 "on a short sample but stalls on a full transcript — simplify it "
                 "(a leading or trailing `.*` is rarely needed; anchor instead)."
             )
-        # This entry passed, so feed its OUTPUT to the next one, exactly as the
-        # pipeline does. Truncated to _CHAIN_CAP so a legitimately expanding
-        # rule set can't make the chained probe itself the expensive thing.
         chained = _chain_advance(rx, item[0], item[1], chained)
         _t_entry = time.process_time() - _t_entry
         if _t_entry > _GUARD_TIMEOUT:
