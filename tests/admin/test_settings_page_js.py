@@ -908,7 +908,6 @@ def test_restart_dialog_fits_a_small_screen(client):
     # The field list scrolls on its own, keeping the buttons in view.
     lst = _block(html, "  #restart-fields { ", "}")
     assert "max-height: 40vh" in lst and "overflow: auto" in lst
-    # Both dialogs use that box, and the buttons sit inside it.
     for dlg in ('<div id="restart-modal" class="modal">',
                 '<div id="restart-progress" class="modal">'):
         assert dlg + '\n  <div class="modal-box">' in html
