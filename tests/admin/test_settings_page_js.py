@@ -908,3 +908,51 @@ _applyLockState();
 console.log(JSON.stringify(grips.map(g => g.draggable)));
 """)
     assert out == [False, False]
+
+
+@needs_node
+def test_env_pinned_rule_list_repaint_stays_read_only(client):
+    """fieldRow() disabled an env-pinned PIPELINE_RULES editor once, but its
+    rule grips stayed draggable and paintAll() rebuilt every row enabled: one
+    drag made the list editable while setDirty() dropped each edit unseen."""
+    html = _html(client, "/settings/pipeline")
+    src = "\n".join([
+        _block(html, "  function paintAll() {"),
+        _block(html, "function disableEnvPinnedEditor(el) {", "\n}\n"),
+    ])
+    out = _node(_FAKE_DOM + """
+const CONTROL = ['INPUT', 'SELECT', 'TEXTAREA', 'BUTTON'];
+El.prototype.matches = function () { return CONTROL.includes(this.tagName); };
+El.prototype.querySelectorAll = function (sel) {
+  const want = sel.split(',').map(s => s.trim());
+  const hit = (n) => want.some(s => s.startsWith('.')
+    ? n.classList.contains(s.slice(1)) : n.tagName === s.toUpperCase());
+  const out = [];
+  (function walk(n) { n.children.forEach(c => { if (hit(c)) out.push(c); walk(c); }); })(this);
+  return out;
+};
+const name = 'PIPELINE_RULES';
+const rules = [{ name: 'a' }, { name: 'b' }];
+function isEnvPinned(n) { return n === 'PIPELINE_RULES'; }
+function refreshControlsVisibility() {}
+function renderRow(rule, idx) {
+  const row = document.createElement('div');
+  for (const cls of ['drag-handle', 'rl-grip']) {
+    const g = row.appendChild(document.createElement('span'));
+    g.className = cls; g.draggable = true;
+  }
+  row.appendChild(document.createElement('input'));
+  return row;
+}
+function paint(isChecklist) {
+  const wrap = document.createElement('div');
+  const list = wrap.appendChild(document.createElement('div'));
+""" + src + """
+  paintAll();
+  // Per row: is each grip still draggable, is the input still editable?
+  return list.children.map(r => r.children.map(c => c.tagName === 'INPUT'
+    ? !c.disabled : c.draggable));
+}
+console.log(JSON.stringify([paint(false), paint(true)]));
+""")
+    assert out == [[[False] * 3] * 2, [[True] * 3] * 2]

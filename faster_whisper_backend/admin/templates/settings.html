@@ -3053,6 +3053,15 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
     list.innerHTML = '';
     rules.forEach((rule, idx) => list.appendChild(renderRow(rule, idx)));
     refreshControlsVisibility();
+    // fieldRow() disables an env-pinned editor once, but every repaint builds
+    // fresh, enabled rows, and the grips are no form controls: re-apply it and
+    // freeze the grips like a locked rule's, or a drag makes every control
+    // live while setDirty() drops the edits. Checklist mode passes the global
+    // PIPELINE_RULES name for a MODEL_OVERRIDES pane, whose pin is its own.
+    if (!isChecklist && isEnvPinned(name)) {
+      disableEnvPinnedEditor(wrap);
+      list.querySelectorAll('.drag-handle, .rl-grip').forEach(g => { g.draggable = false; });
+    }
   }
 
   // Union of every tag currently set on any rule in this list — used as
