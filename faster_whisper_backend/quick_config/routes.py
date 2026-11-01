@@ -88,7 +88,7 @@ _MAP_MAX_ENTRIES: int = web_common._MAP_MAX_ENTRIES
 # Request-wide bound for a patch naming SEVERAL map rules: it caps the
 # event-loop work of one POST, and is deliberately NOT the per-dictionary
 # cap above — the page sends every dirty map in full in a single request, so
-# reusing _MAP_MAX_ENTRIES here made two individually valid dictionaries
+# reusing _MAP_MAX_ENTRIES here would make two individually valid dictionaries
 # unsaveable together.
 _MAP_MAX_TOTAL_ENTRIES: int = 4 * _MAP_MAX_ENTRIES
 
@@ -245,7 +245,7 @@ def _redact_invisible_slugs(
 ) -> list[dict[str, str]]:
     """Blank out rule slugs the caller is not allowed to see.
 
-    save_overrides re-validates the ENTIRE merged rule list, and config_store
+    save_overrides re-validates the ENTIRE merged rule list, and settings/schema.py
     builds its messages as `rule {idx} ({slug!r}) ...` regardless of who asked.
     Rule visibility is a real authorization boundary — the GET path filters on
     `can_see_rule` and the PATCH path answers an invisible slug with the same
