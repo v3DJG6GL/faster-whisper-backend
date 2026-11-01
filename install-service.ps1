@@ -1,6 +1,6 @@
 # Install (or reinstall) the faster-whisper-backend as a Windows Service
-# via WinSW (https://github.com/winsw/winsw, v2.12.0). Run from any
-# PowerShell prompt:
+# via WinSW (https://github.com/winsw/winsw; version pinned at $WinSWVersion).
+# Run from any PowerShell prompt:
 #   .\install-service.ps1
 #   .\install-service.ps1 -WithConvert     # also install ~2 GB of HF->CT2 deps
 #   .\install-service.ps1 -Gpu             # also install the NVIDIA CUDA wheels
