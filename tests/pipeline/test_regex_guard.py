@@ -500,7 +500,7 @@ def test_budget_grows_with_the_list_and_a_large_rule_set_passes(monkeypatch, cap
     seen.clear()
     started.clear()
     small = [(f"r{i}", "x", "") for i in range(400)]
-    # Just past the cap; a longer list only slows the screen.
+    # Past the cap (1600 entries); a longer list only slows the screen.
     capped = [(f"r{i}", "x", "") for i in range(3000)]
     assert g._GUARD_TIMEOUT + g._PER_CHECK_BUDGET * len(capped) > g._GUARD_TIMEOUT_MAX
     t0 = time.perf_counter()
