@@ -696,9 +696,7 @@ _TEST_PIPELINE_MAX_RULES = _pipeline_rules_max()
 _TEST_PIPELINE_MAX_SAMPLE = 8192
 # A saved rule cannot carry a longer regex-list replacement or map value than
 # these, so the dry run refuses them too (it gets the editor's unsaved rules,
-# which skip the schema adapter): one re.sub of an 8192-char sample with a
-# multi-MB replacement allocates sample x replacement before the output bound
-# is ever checked. Fallbacks equal today's schema bounds.
+# which skip the schema adapter). Fallbacks equal today's schema bounds.
 _TEST_PIPELINE_MAX_REPLACEMENT = _field_max_length(
     settings_schema.RegexListEntry.model_fields["replacement"]) or 512
 _TEST_PIPELINE_MAX_MAP_VALUE = _str_max_length(
