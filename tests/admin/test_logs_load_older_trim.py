@@ -28,6 +28,7 @@ function kidsOf(o) {
 var log = kidsOf({ insertBefore: function (frag) {
   frag.kids.forEach(function (el) { el.parentNode = log; });
   log.kids = frag.kids.concat(log.kids); frag.kids = []; } });
+Object.defineProperty(log, 'innerHTML', { set: function () { log.kids = []; } });
 function appendLine(target, line) {
   var el = { text: line, parentNode: target,
     classList: { contains: function (c) { return c === 'line'; } },
@@ -42,8 +43,11 @@ var window = { scrollTo: function () {} };
 const _LOG_DOM_MAX = 5;
 let _olderInDom = 0;
 const _liveDim = { dimLeft: 0 };
-let filterText = '', paused = true;
+let filterText = '', paused = true, matchCurEl = null;
 function _unfold() {}
+function _resetLiveDim() {}
+function updateNav() {}
+var clearBtn = { addEventListener: function (ev, fn) { clearBtn.click = fn; } };
 // Server side: the log chain, oldest first; /logs/older counts `skip` back
 // from its newest line at the time the request arrives.
 var chain = [];
@@ -91,3 +95,42 @@ def test_load_older_stays_contiguous_when_live_lines_trim_during_the_fetch(clien
     # Every row shown is the chain's newest lines in order: no gap, no repeat.
     assert out["dom"] == out["chain_tail"]
     assert len(out["dom"]) == 5 + 2 + 4 + 4
+
+
+def test_load_older_after_clear_resumes_right_behind_the_screen(client, tmp_path):
+    """Clear emptied #log but kept the cursor at the cleared line count.
+    Live lines then trimmed the DOM and stepped the cursor back as if the
+    DOM still bordered the cleared block, so "Load older" skipped lines and
+    showed others twice. A batch in flight at Clear also landed in the
+    emptied pane at its old offset."""
+    html = client.get("/logs").text
+    js = (_HARNESS + _block(html, "  function append(line) {")
+          + _block(html, "  clearBtn.addEventListener('click', () => {", "\n  });\n")
+          + _block(html, "  let _logsSkip = 0;") + r"""
+(async function () {
+  var out = {};
+  chain.slice(-5).forEach(append);
+  clearBtn.click();
+  live(7);                                 // trims 2 of the post-Clear rows
+  var c1 = btn.click(); pending(); await c1;
+  var c2 = btn.click(); pending(); await c2;
+  out.after_trim = { dom: log.kids.map(function (e) { return e.text; }) };
+  out.after_trim.chain_tail = chain.slice(-out.after_trim.dom.length);
+  var c3 = btn.click(); clearBtn.click();  // Clear while a batch is in flight
+  live(2); pending(); await c3;
+  var c4 = btn.click(); pending(); await c4;
+  out.in_flight = { dom: log.kids.map(function (e) { return e.text; }) };
+  out.in_flight.chain_tail = chain.slice(-out.in_flight.dom.length);
+  console.log(JSON.stringify(out));
+})();
+""")
+    f = tmp_path / "probe.js"
+    f.write_text(js, encoding="utf-8")
+    p = subprocess.run([_NODE, str(f)], capture_output=True, text=True,
+                       encoding="utf-8", timeout=30)
+    assert p.returncode == 0, p.stderr
+    out = json.loads(p.stdout.strip().splitlines()[-1])
+    assert out["after_trim"]["dom"] == out["after_trim"]["chain_tail"]
+    assert len(out["after_trim"]["dom"]) == 5 + 4 + 4
+    assert out["in_flight"]["dom"] == out["in_flight"]["chain_tail"]
+    assert len(out["in_flight"]["dom"]) == 2 + 4

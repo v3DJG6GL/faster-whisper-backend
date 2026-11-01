@@ -674,14 +674,19 @@
     // The search counter and current hit pointed into the emptied DOM.
     matchCurEl = null;
     updateNav();
-    // Resetting the DOM after Clear: the next live append re-fills
-    // from the bottom, but the older-chain pointer is unchanged so
-    // the user can still walk back if they want.
+    // "Load older" resumes right behind what is on screen, so the cleared
+    // lines come back first. Keeping the old count instead left the cursor
+    // past a gap the live trim knows nothing about: every trimmed row
+    // stepped it back as if it bordered the cleared block, and the next
+    // batch skipped some lines and repeated others. A batch still in flight
+    // was read at the old cursor: drop it, as after a reconnect.
+    _logsSkip = 0;
+    _logsGen++;
   });
 
   // "Load older" cursor: how many lines from the chain head are already
-  // in the DOM. Reset by openLogStream(), advanced by every append()
-  // (backlog + live) and by each successful /logs/older batch length.
+  // in the DOM. Reset by openLogStream() and Clear, advanced by every
+  // append() (backlog + live) and by each successful /logs/older batch length.
   let _logsSkip = 0;
   // Bumped by openLogStream(): a batch fetched against the old DOM and
   // cursor must not land on the replayed backlog.
