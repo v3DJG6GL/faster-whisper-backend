@@ -62,12 +62,10 @@ async def transcription_cancel(progress_id: str,
     return {"cancelled": True}
 
 
-# ── Server jobs: GET/DELETE /v1/jobs* ───────────────────────────────────────
-# The durable job resource (transcription/jobs_store.py): every batch run posted with
-# a progress_id is a row a client can list, poll, fetch the result of and
-# cancel/delete — the connection that carried the POST is no longer the only
-# way to get the transcript. Owner-gated like the progress route: a foreign,
-# expired or unknown id is one 404 (no existence oracle); admins read all.
+# /v1/jobs*: every batch run posted with a progress_id is a row a client can
+# list, poll, fetch and cancel/delete. Owner-gated like the progress route: a
+# foreign, expired or unknown id is one 404 (no existence oracle); admins
+# read all.
 
 _jobs_rate = _rl.FixedWindow(
     config_field="JOBS_RATE_PER_MIN",
