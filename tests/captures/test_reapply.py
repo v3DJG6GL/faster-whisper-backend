@@ -20,7 +20,7 @@ from faster_whisper_backend.captures import reapply as captures_reapply
 from faster_whisper_backend.pipeline import engine as pl_engine
 from faster_whisper_backend.settings import effective_config
 
-# The module's canonical idle state (start() reads _state["status"]).
+# The module's canonical idle state (mirrors reapply._reset_for_tests).
 _IDLE = {
     "status": "idle",
     "started_ts": None,
@@ -114,7 +114,6 @@ def test_start_while_running_queues_one_more_pass(fake_thread):
 def test_start_after_done_spawns_again(fake_thread):
     captures_reapply.start()
     assert len(fake_thread.created) == 1
-    # Simulate the worker finishing.
     captures_reapply._state["status"] = "done"
     captures_reapply.start()
     assert len(fake_thread.created) == 2
