@@ -1,13 +1,7 @@
-"""
-Shared helpers used by the /logs, /settings, /stats, and /quick-config pages.
-
-  - require_allowed_host(allowlist) — FastAPI dependency that 403s callers
-    not in the allowlist. Allowlist accepts bare IPs or CIDRs. Defined in
-    auth/hosts.py, re-exported here with the two tier gates.
-  - nav_html(current)               — server-rendered nav row HTML.
-  - severity_counts()               — WARNING+ counts since process start
-                                      (bounded by the 2000-entry ring).
-"""
+"""Shared page chrome for every WebUI page: render_page, the nav row and
+header fragments, the shared JS/CSS snippets, SSE response headers and the
+in-memory severity ring. The host-allowlist gates live in auth/hosts.py and
+are re-exported here."""
 
 from __future__ import annotations
 
@@ -28,15 +22,10 @@ from faster_whisper_backend.auth.hosts import require_allowed_host as require_al
 from faster_whisper_backend.auth.hosts import require_user_webui_host as require_user_webui_host
 
 
-# --- Severity ring (in-memory log-level counts, since process start) ---------
-# A logging.Handler appends (timestamp, levelno) on every record. The /stats
-# page reads severity_counts() at request time; the nav pills ship as ZEROES
-# and are filled client-side by SEV_POLLER_JS from the authenticated GET /sev
-# (deliberately -- see sev_pills_html's docstring: the host-allowlisted page
-# shell must not hand an unauthenticated caller an error-rate oracle).
-# Bounded ring
-# (maxlen=2000) keeps memory predictable under burst logging — once the ring
-# fills, oldest entries fall off and the per-level counters cap accordingly.
+# (created, levelno) of every WARNING+ record since process start; bounded
+# so burst logging keeps memory flat. The nav pills ship as zeroes and are
+# filled from the authenticated GET /sev (no error-rate oracle for an
+# unauthenticated caller; see sev_pills_html).
 _SEVERITY_LOG: deque[tuple[float, int]] = deque(maxlen=2000)
 
 
@@ -58,13 +47,8 @@ class SeverityCounter(logging.Handler):
 
 
 def severity_counts() -> dict[str, int]:
-    """Return {warn, err, crit} counts since process start.
-
-    Reads the entire in-memory _SEVERITY_LOG ring. The ring is bounded at
-    2000 entries — under sustained WARNING+ traffic, oldest entries fall off
-    and the counter caps. In practice this matches a per-run "session
-    counter" the user investigates via the /logs?filter=<level> link on each
-    pill. Restart resets to zero."""
+    """Return {warn, err, crit} counts since process start (restart resets
+    them); capped by the 2000-entry ring under sustained WARNING+ traffic."""
     warn = err = crit = 0
     # Iterate a snapshot: emit() appends from any logging thread, and a
     # Python-level walk of the live deque raises "deque mutated during
@@ -81,8 +65,6 @@ def severity_counts() -> dict[str, int]:
     return {"warn": warn, "err": err, "crit": crit}
 
 
-# --- Server-Sent Events ------------------------------------------------------
-
 # Headers every SSE endpoint must send so a buffering reverse proxy streams the
 # response instead of accumulating it. Without these, nginx (proxy_buffering on
 # by default) holds an infinite text/event-stream body until its buffers/timeout
@@ -93,12 +75,9 @@ def severity_counts() -> dict[str, int]:
 #   Cache-Control: no-store, no-cache, no-transform — no proxy cache; no gzip
 #                            rewrite (gzip buffers to compress, which also
 #                            breaks SSE).
-# `no-store` is load-bearing and must stay: the middleware only *defaults*
-# Cache-Control to no-store (setdefault), so an explicit value here wins, and
-# bare `no-cache` still lets a shared cache STORE the body — these streams carry
-# transcript text (/logs/stream, /quick-config/recent/stream). It changes no
-# proxy behaviour: X-Accel-Buffering and no-transform are what protect
-# streaming, and stats_page already ships the same combination.
+# `no-store` must stay: the middleware only setdefaults Cache-Control, so this
+# value wins, and bare `no-cache` still lets a shared cache STORE the body —
+# these streams carry transcript text (/logs/stream, /quick-config/recent/stream).
 # Connection is intentionally omitted: it's hop-by-hop, managed by uvicorn/nginx;
 # setting it from ASGI is ignored.
 SSE_HEADERS = {
@@ -114,8 +93,6 @@ def sse_response(generator):
         generator, media_type="text/event-stream", headers=dict(SSE_HEADERS),
     )
 
-
-# --- Nav row + severity pills ------------------------------------------------
 
 # Pipeline-stage and job-kind hues — ONE definition for every backend page (/stats
 # cards and rings, /logs receipts, /quick-config traces) and the same values
@@ -147,15 +124,6 @@ _STAGE_TOKENS = "\n".join(
     [f"  --stage-{k}: {v};" for k, v in STAGE_COLORS.items()]
     + [f"  --kind-{k}: {v};" for k, v in KIND_COLORS.items()])
 
-# Inline CSS so each page can drop the nav into its existing <header> without
-# duplicating styles. Color tokens reuse the page-level CSS vars.
-#
-# `header .spacer { flex: 0 0 0.25rem }` — single canonical spacer rule: a
-# fixed gap, NOT a grower. Pages place `<span class="spacer"></span>` between
-# the nav block and the action cluster; `header .navrow` absorbs the slack in
-# the single row and `header .hdr-right { margin-left: auto }` keeps the
-# cluster right-aligned when the nav leaves the flow (drawer mode). The spacer
-# is hidden entirely in nav-row2.
 NAV_CSS = templates.load(__file__, "nav.css").replace("{{STAGE_TOKENS}}", _STAGE_TOKENS)
 
 
@@ -204,12 +172,9 @@ SCALE_PICKER_HTML = (
 )
 
 
-# Global sign-out button — the {{LOGOUT}} fragment, rendered into every page's
-# right-hand header utility cluster. Auth is a single HttpOnly session cookie
-# shared across all pages, so one logout works everywhere; the click handler +
-# visibility toggle live in OPEN_MODE_BANNER_JS. Starts `hidden`
-# (class .auth-action) and is revealed only while logged in. Icon-only to
-# save space, but with an authoritative title + aria-label (outward door-arrow).
+# The {{LOGOUT}} fragment. One HttpOnly session cookie covers every page, so
+# one logout works everywhere; OPEN_MODE_BANNER_JS wires the click and reveals
+# the (initially hidden) button only while logged in.
 LOGOUT_BTN_HTML = (
     '<button id="logout-btn" class="icon-btn auth-action" type="button" '
     'title="Sign out" aria-label="Sign out" hidden>'
@@ -243,12 +208,9 @@ RELOAD_BTN_HTML = (
 SCALE_PICKER_JS = templates.load(__file__, "scale_picker.js")
 
 
-# Mobile nav drawer wire-up — appended to SCALE_PICKER_JS at the end of
-# <body> on every page (so it ships without a new per-page placeholder).
-# Self-contained IIFE (no reliance on later-defined helpers — see the
-# injected-JS-parse-order pitfall). Toggles `header.nav-open`, traps focus
-# by marking the rest of the page `inert`, closes on Esc / backdrop / link,
-# and restores focus to the toggle on close.
+# Mobile nav drawer — appended to SCALE_PICKER_JS so every page ships it
+# without a new placeholder. Self-contained IIFE: it must not rely on helpers
+# defined by later-injected scripts.
 NAV_DRAWER_JS = templates.load(__file__, "nav_drawer.js")
 
 
@@ -281,54 +243,25 @@ POPOVER_JS = templates.load(__file__, "popover.js")
 OPEN_MODE_BANNER_JS = templates.load(__file__, "open_mode_banner.js")
 
 
-# Shared timestamp helpers — one source of truth across every admin page.
-# Pages opt in by inserting `{{TIME_HELPERS_JS}}` at the top of their inline
-# <script> block; render_page substitutes the constant below.
-#
-# Format contract: HH:MM:SS | YYYY.MM.DD — 24-hour clock, dot-separated date,
-# space-pipe-space separator. fmtWhen appends a relative suffix (e.g.
-# " | 5m ago") while the event is within 24 h, then drops it.
-#
-# `timeTick(rootSelector, intervalMs=30000)` walks every element matching
-# rootSelector (defaults to `[data-ts]`) and re-renders its textContent from
-# fmtWhen(parseFloat(el.dataset.ts)). Cheap; pages that want their cards'
-# relative suffixes to age in place can call timeTick() once at boot.
+# Shared timestamp helpers (own <script> block; pages opt in with a
+# `{{TIME_HELPERS_JS}}` line). Format contract: YYYY.MM.DD | HH:MM:SS, 24-hour;
+# fmtWhen appends " | 5m ago"-style suffixes within 24 h. timeTick() (default
+# `[data-ts]`, 30 s) re-renders those elements so the suffixes age in place.
 TIME_HELPERS_JS = templates.load(__file__, "time_helpers.js")
 
 
-# No-access landing card used when the bearer is valid but the caller
-# lacks access to the current page. Replaces the old `Admin only`
-# hard-coded card. The new version reads `window.__whoami` (set by
-# OPEN_MODE_BANNER_JS) to list every other page the caller CAN reach,
-# rendering one button per accessible page plus a Sign-out button.
-# Falls back to a "no pages available" message when the caller has
-# scope=none everywhere.
-#
-# `_renderNotAdminLanding` is kept as a thin alias so existing callers
-# (`reports_routes._renderAdminOnlyIfNonAdmin`, the similar inline helper
-# in captures_routes, and api_keys_routes._check403) keep working.
-#
-# Two flavours:
-#   - NOT_ADMIN_LANDING_JS         — raw (no <script> wrapper). Injected
-#                                    inside a page's existing <script>
-#                                    IIFE via {{NOT_ADMIN_LANDING_JS}}.
-#                                    Used by pages that already host a
-#                                    big inline IIFE (reports, captures,
-#                                    api_keys).
-#   - NOT_ADMIN_LANDING_GLOBAL_JS  — full <script> wrapper that puts the
-#                                    helpers on the global window. Pulled
-#                                    in alongside OPEN_MODE_BANNER_JS so
-#                                    every page has access regardless of
-#                                    whether it includes the placeholder.
+# No-access landing card for a valid bearer that lacks access to the current
+# page: reads `window.__whoami` (set by OPEN_MODE_BANNER_JS) and renders one
+# button per page the caller CAN reach plus Sign out, or a "no pages
+# available" message. Raw (no <script> wrapper) for pages that inject it into
+# their own IIFE via {{NOT_ADMIN_LANDING_JS}}. `_renderNotAdminLanding` is a
+# legacy alias with no remaining in-tree caller.
 NOT_ADMIN_LANDING_JS = templates.load(__file__, "not_admin_landing.js")
 
 
-# Global wrapper around NOT_ADMIN_LANDING_JS — puts the helpers on the
-# window so every page has access regardless of whether it includes the
-# {{NOT_ADMIN_LANDING_JS}} placeholder. Injected via render_page next to
-# OPEN_MODE_BANNER_JS so the centralised auto-landing path can call
-# `_renderNoAccessLanding` for /logs, /stats, /quick-config without
-# requiring their templates to opt in to the older placeholder.
+# Global copy, injected by render_page beside OPEN_MODE_BANNER_JS so its
+# auto-landing path can call `_renderNoAccessLanding` on pages that never
+# include the {{NOT_ADMIN_LANDING_JS}} placeholder.
 NOT_ADMIN_LANDING_GLOBAL_JS = "<script>" + NOT_ADMIN_LANDING_JS + "</script>"
 
 
@@ -338,16 +271,9 @@ NOT_ADMIN_LANDING_GLOBAL_JS = "<script>" + NOT_ADMIN_LANDING_JS + "</script>"
 # setAvailable }`. Caller mounts the returned element wherever and
 # subscribes to `opts.onChange(newTags)`.
 #
-# Tag format matches the server-side `settings_schema.TAG_RE`: lowercase
-# letters/digits/hyphens, 1-32 chars, no leading hyphen.
-# Validation happens BOTH client-side (visual red border on bad input)
-# AND server-side (set_user_permissions / Pydantic validator) so a
-# JS-side bypass can't smuggle malformed tags into the DB.
-#
-# Autocomplete: caller passes `available` = the union of every tag
-# currently in use (rule tags for the matrix UI, or all rule tags for
-# the rule editor). The widget suggests matches as the user types;
-# clicking a suggestion adds the tag.
+# The JS mirrors `settings_schema.TAG_RE` for a red border only; the server
+# (set_user_permissions / Pydantic) re-validates, so a JS bypass can't store a
+# malformed tag. `available` = tags in use, offered as autocomplete.
 TAG_PICKER_JS = templates.load(__file__, "tag_picker.js")
 
 
@@ -377,14 +303,8 @@ PICK_LIST_JS = templates.load(__file__, "pick_list.js")
 LANG_PICKER_JS = templates.load(__file__, "lang_picker.js")
 
 
-# Severity pill poller — placed at the end of <body> on every page that shows
-# the nav. Polls /sev every 5 s and writes the counts into the three pills.
-# Server-side severity_counts() is the authoritative source (WARNING+ records
-# since process start, ring-bounded). The poller is the sole pill updater:
-# /stats SSE explicitly defers to it, and the /logs per-line bumps were
-# dropped — so every page just trusts the 5 s tick.
-#
-# Skips the work if no pills exist on the page (e.g. tests, future pages).
+# Severity pill poller: GET /sev every 5 s. It is the sole pill updater —
+# /stats SSE deliberately defers to it.
 SEV_POLLER_JS = templates.load(__file__, "sev_poller.js")
 
 
@@ -395,23 +315,15 @@ SEV_POLLER_JS = templates.load(__file__, "sev_poller.js")
 ACTIVITY_CLUSTER_JS = templates.load(__file__, "activity_cluster.js")
 
 
-# Per-rule body editors shared by /settings (full editor with drag-reorder etc.)
-# and /quick-config (read-only header + body editor only). Defined as
-# top-level functions so both pages can call them with their own
-# `commitData` callback. The `commitData` argument is invoked by every
-# input/change event inside an editor; each page implements its own dirty-
-# tracking on top of that callback.
-#
-# Keep the per-type rendering here in lockstep with settings/schema.py rule
-# schemas. Adding a new rule type requires:
-#   1. New Pydantic class in settings/schema.py
-#   2. New `if (rule.type === '<type>')` branch in renderTypeEditor below
-#   3. New entry in _PIPELINE_TYPES for the pill label
-# Schema-derived cap on cb:map entries, read off settings_schema.MapRule so the
-# editor's "n / cap" readout can never drift from the save-path bound. Baked
-# into RULE_EDITOR_JS below so EVERY page embedding the shared editor ships
-# it -- previously only /quick-config's load() assigned window.__mme, leaving
-# /settings with a bare count and a never-disabled add button.
+# Per-rule body editors shared by /settings and /quick-config; each page
+# passes its own `commitData` callback (fired on every input/change) and does
+# its own dirty-tracking. Keep in lockstep with settings/schema.py: a new rule
+# type needs a Pydantic class there plus, in templates/rule_editor.js, a
+# renderTypeEditor branch and a _PIPELINE_TYPES entry.
+
+# cb:map entry cap read off settings_schema.MapRule and baked into
+# RULE_EDITOR_JS, so the editor's "n / cap" readout can never drift from the
+# save-path bound on any page that embeds it.
 _MAP_MAX_ENTRIES: int = next(
     (m.max_length
      for m in settings_schema.MapRule.model_fields["map"].metadata
@@ -426,12 +338,10 @@ RULE_EDITOR_JS = (templates.load(__file__, "rule_editor.js")
 
 
 def _nav_items(current: str) -> list[tuple[str, str, bool]]:
-    """Return [(label, href, active), ...] in left-to-right display order,
-    honoring cfg.ADMIN_UI_ENABLED. `_NAV_SPEC` is the single source of truth
-    for nav order — edit it to reorder the bar. The trailing flag marks links
-    that only exist when the admin UI is registered (quick-config / reports /
-    captures / settings / api-keys); logs + stats are always served and so
-    render unconditionally."""
+    """Return [(label, href, active), ...] in left-to-right display order.
+    `_NAV_SPEC` is the single source of truth for order and gating: links
+    whose admin_gated flag is set only exist when cfg.ADMIN_UI_ENABLED
+    registered the admin UI."""
     admin = getattr(cfg, "ADMIN_UI_ENABLED", False)
     return [
         (label, href, current == key)
@@ -464,17 +374,11 @@ def nav_html(current: str) -> str:
     """Render the primary nav links as the {{NAV}} fragment. The severity
     pills are rendered separately by sev_pills_html() ({{SEV_PILLS}}) so they
     can live in the header's right-hand utility cluster."""
-    # Two visibility tracks:
-    #
-    #   - "admin-only" — settings + api-keys + sev pills. These stay all-or-
-    #     nothing on the existing `body.role-admin` class (CSS hides by
-    #     default; pages add the class after a successful admin-API ping).
-    #
-    #   - "page-link" + data-page="<X>" — logs / stats / quick-config /
-    #     reports / captures. Per-user gated by OPEN_MODE_BANNER_JS via
-    #     /auth/whoami → permissions.pages[X]. CSS default-hides; the JS
-    #     adds `.allowed` per link the caller can reach. Admins always
-    #     pass via the is_admin short-circuit on the server side.
+    # Two visibility tracks, both default-hidden by CSS:
+    # - "admin-only": all-or-nothing on `body.role-admin`, which a page adds
+    #   after a successful admin-API ping (the sev pills use it too).
+    # - "page-link" + data-page="<X>": OPEN_MODE_BANNER_JS adds `.allowed`
+    #   when /auth/whoami's permissions.pages[X] grants it (admins always do).
     page_link_labels: dict[str, str] = {
         "logs":     "logs",
         "stats":    "stats",
@@ -556,24 +460,16 @@ def activity_cluster_html() -> str:
 
 
 def sev_pills_html() -> str:
-    """Render the three severity-count pills (warn/err/crit) as the
-    {{SEV_PILLS}} fragment, grouped in a `.sevpills` wrapper for the header's
-    right-hand utility cluster. Split out of nav_html so the pills sit with
-    the other status/utility chrome (scale picker) rather than beside the
-    nav links.
+    """Render the warn/err/crit pills (plus the activity cluster) as the
+    {{SEV_PILLS}} fragment for the header's utility cluster. Stable IDs let
+    SEV_POLLER_JS rewrite just the `.n` span on each /sev tick (preserving
+    focus/click state).
 
-    Stable IDs let SEV_POLLER_JS update just the `.n` inner span on each /sev
-    tick without rebuilding the link (preserves focus/click state).
-
-    Rendered as ZEROES, deliberately. Every page shell that carries this
-    fragment is gated by a host allowlist ONLY — USER_WEBUI_ALLOWED_HOSTS
-    defaults to 0.0.0.0/0 — while GET /sev, which serves these same three
-    integers, requires authentication and calls itself user-tier. Baking the
-    live counts into the shell handed an unauthenticated caller a running
-    error-rate oracle for the server, one HTTP hop inside the gate the product
-    puts on exactly that data. SEV_POLLER_JS already rewrites these `.n` spans
-    from /sev, so for an authenticated user the only change is that the numbers
-    arrive on the first poll instead of in the initial HTML."""
+    Rendered as ZEROES, deliberately: the page shell is gated only by a host
+    allowlist (USER_WEBUI_ALLOWED_HOSTS defaults to 0.0.0.0/0) while GET /sev
+    requires auth, so baking live counts in would hand an unauthenticated
+    caller an error-rate oracle. Authenticated users get the numbers on the
+    first poll."""
     # Activity cluster first: it sits left of the pills in the utility
     # cluster and rides the same placeholder so all templates inherit it.
     parts: list[str] = ['<span class="hdr-status">', activity_cluster_html(),
@@ -704,17 +600,15 @@ def render_page(template: str, current: str) -> str:
                                    "faster-whisper-backend · <slug>"
                                    plain text, used inside <title>
       - {{HEADER_BRAND}}         → branded header lockup (waveform mark +
-                                   wordmark + slug) for <span class="title">
+                                   wordmark, links to /) for <span class="title">
       - {{HEADER_VTAG}}          → build-version chip (hover = full build
                                    tooltip, click = copy) placed right after
                                    the .title span in the global bar
 
     Pages that don't include a given placeholder are returned unchanged."""
-    # Resolve the /logs DOM cap: 0 in config means "auto = initial × 4".
-    # Computed here so the JS gets a final integer and doesn't need its
-    # own resolver. These reads stay per-call (they're two attribute reads)
-    # and are passed into the memo key, because the settings save path
-    # mutates them at runtime.
+    # LOG_VIEWER_DOM_MAX 0 means "auto = initial × 4"; resolved here so the
+    # JS gets a final integer. The cfg reads stay per-call and enter the memo
+    # key because the settings save path mutates them at runtime.
     _log_initial = int(getattr(cfg, "LOG_VIEWER_INITIAL_LINES", 2000))
     _log_dom = int(getattr(cfg, "LOG_VIEWER_DOM_MAX", 0)) or (_log_initial * 4)
     _admin_ui = bool(getattr(cfg, "ADMIN_UI_ENABLED", False))
@@ -728,7 +622,8 @@ def render_page(template: str, current: str) -> str:
 
 # Maps the `current=` argument passed by each page route into the
 # permission-key used by api_keys_store.PAGES. The admin-only pages
-# (settings, api-keys, ...) map to the __admin_only__ sentinel below. Pages
+# (settings, api-keys, ...) map to the __admin_only__ sentinel, so the JS can
+# tell "no per-page perm to check" from a data page's permissions key. Pages
 # absent from this map (dictate, home) get no page-key meta tag at all, so
 # they don't participate in per-page scope gating; the central JS
 # short-circuits for them.
@@ -738,9 +633,6 @@ _PAGE_KEY_BY_CURRENT: dict[str, str] = {
     "quick-config": "quick_config",
     "reports":      "reports",
     "captures":     "captures",
-    # Admin-only pages: emit a sentinel so the JS can distinguish
-    # "no per-page perm to check" from "we're on a data page that maps
-    # to a key in the permissions dict".
     "settings":     "__admin_only__",
     "pipeline":     "__admin_only__",
     "api-keys":     "__admin_only__",
@@ -765,10 +657,8 @@ _PAGE_PATH_BY_CURRENT: dict[str, str] = {
 }
 
 
-# Human-readable slug per page, used in the uniform header string
-# `faster-whisper-backend · <slug>`. Centralising this here means
-# adding a page or renaming one is a single-line change instead of
-# touching every template's <title> + <span class="title">.
+# Human-readable slug per page for the {{HEADER_TITLE}} <title> string
+# `faster-whisper-backend · <slug>`.
 _HEADER_SLUG_BY_CURRENT: dict[str, str] = {
     "logs":         "logs",
     "stats":        "stats",
@@ -784,10 +674,7 @@ _HEADER_SLUG_BY_CURRENT: dict[str, str] = {
 
 
 def _header_title_for(current: str) -> str:
-    """Build the uniform page-title string substituted into every page's
-    <title> via {{HEADER_TITLE}} (plain text — no markup). Format:
-    `faster-whisper-backend · <slug>`. Unknown `current` values fall
-    back to the app name alone."""
+    """{{HEADER_TITLE}}: plain-text (no markup) page title for <title>."""
     slug = _HEADER_SLUG_BY_CURRENT.get(current, "")
     if not slug:
         return "faster-whisper-backend"
@@ -815,14 +702,10 @@ _BRAND_MARK_SVG = (
 
 
 def _header_brand_for(current: str) -> str:
-    """Build the branded header lockup substituted into every page's
-    <span class="title"> via {{HEADER_BRAND}} (HTML — kept separate from
-    the plain-text {{HEADER_TITLE}} used inside <title>). Renders the
-    waveform mark + compact wordmark `fasterwhisper › backend`. The current
-    page is conveyed by the active nav link (aria-current), so the brand no
-    longer repeats it as a slug. The whole lockup links to the / landing hub
-    so every page has a one-click way back to the launcher. `current` is
-    unused but kept for a uniform {{...}}-builder signature."""
+    """{{HEADER_BRAND}} HTML for <span class="title">: waveform mark +
+    wordmark `fasterwhisper > backend`, linking to the / hub. No page slug —
+    the active nav link (aria-current) names the page. `current` is unused,
+    kept for a uniform {{...}}-builder signature."""
     return (
         '<a class="brand-link" href="/" title="Home">'
         f"{_BRAND_MARK_SVG}"
@@ -833,13 +716,12 @@ def _header_brand_for(current: str) -> str:
     )
 
 
-# ── header build-version tag ({{HEADER_VTAG}}) ──────────────────────────────
-# Empty shell only — the shared header rides on host-gated (keyless) pages, so
-# the version/boot/start facts must never be baked into it. _fillBuildChip()
-# in OPEN_MODE_BANNER_JS writes them in from the authenticated /auth/whoami
-# payload; until then the chip is :empty and the CSS hides it. _fwCopyBuild is
-# defined here (once per page) and reused by any other copy-report button
-# (e.g. the /settings server-identity card).
+# {{HEADER_VTAG}}: an empty shell only — the shared header rides on host-gated
+# (keyless) pages, so the version/boot/start facts must never be baked into
+# it. _fillBuildChip() in OPEN_MODE_BANNER_JS writes them in from the
+# authenticated /auth/whoami payload; until then the chip is :empty and the
+# CSS hides it. _fwCopyBuild is defined here (once per page) and reused by any
+# other copy-report button (e.g. the /settings server-identity card).
 def _header_vtag_html() -> str:
     return (
         '<button id="hdr-vtag" class="vtag" type="button" data-tip="" '
