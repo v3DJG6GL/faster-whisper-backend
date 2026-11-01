@@ -1,30 +1,25 @@
-# Forgejo Actions port of the GitHub workflow (.github/workflows/ci.yml,
-# removed in the same commit). Structural changes vs. the GitHub original —
-# same conventions as faster-whisper-frontend/ci.yml and
+# Conventions shared with faster-whisper-frontend/ci.yml and
 # nextcloud-fpm-nginx/build.yml:
 #
-#   * Actions are referenced unqualified (owner/repo@ref): the instance sets
-#     DEFAULT_ACTIONS_URL to itself, so refs resolve against local pull
-#     mirrors (orgs: actions, docker). REQUIRES app.ini [actions]
+#   * Actions are referenced unqualified (owner/repo@ref) and resolve against
+#     the instance's local pull mirrors. REQUIRES app.ini [actions]
 #     DEFAULT_ACTIONS_URL = https://forgejo.informethic.ch — without it,
 #     unqualified refs fall back to code.forgejo.org. Before bumping any
 #     @version, confirm the mirror has synced that tag (8h interval, or
 #     "Synchronize now" in the mirror repo's settings).
-#   * actions/setup-python is NOT mirrored on the instance, and it would
-#     download interpreter builds from GitHub at runtime anyway. The Linux
-#     test legs instead run in official python:<ver> containers (job-level
-#     `container:`), which pins the interpreter without any GitHub
-#     dependency. The full (non-slim) image ships git + build toolchain.
+#   * actions/setup-python is NOT mirrored, and it would download interpreter
+#     builds from GitHub at runtime anyway. The Linux test leg runs in an
+#     official python:<ver> container instead (job-level `container:`); the
+#     full (non-slim) image ships git + build toolchain.
 #   * python containers have no node, so JS actions (actions/checkout) can't
-#     run there — the test legs check out manually with plain git, using the
-#     run-scoped actions token (same manual-checkout pattern as the
-#     frontend's host-mode Windows legs, which exists there because
-#     actions/checkout's credential persistence breaks in host mode).
+#     run there — the test legs check out manually with plain git and the
+#     run-scoped actions token (the frontend's host-mode Windows legs use the
+#     same pattern because actions/checkout's credential persistence breaks
+#     in host mode).
 #   * windows-latest runs on the self-hosted Windows VM runner (host mode,
 #     label windows-latest:host — see forgejo-runner-windows/
-#     windows-runner-setup.md). It builds a per-job venv from the SYSTEM
-#     python (see its install step). VM prerequisite (one-time, admin
-#     PowerShell):
+#     windows-runner-setup.md) and builds a per-job venv from the SYSTEM
+#     python. VM prerequisite (one-time, admin PowerShell):
 #         .\setup-runner.ps1 -ToolchainOnly   (forgejo-runner-windows repo)
 #     which choco-installs python, node and ffmpeg AND rewrites the nssm
 #     AppEnvironmentExtra PATH (the service PATH is explicit, so a bare
@@ -32,32 +27,16 @@
 #     C:\ProgramData\chocolatey\bin, which only the script puts on it)
 #     and restarts the service. Until then this leg fails at "python not
 #     found" or in "Verify system test tools".
-#     node and ffmpeg are prerequisites, not conveniences: the suite guards
-#     the inline <script> blocks with `node --check` and decodes real
-#     WebM/Opus with ffmpeg, and both guards SKIP themselves when the tool
-#     is missing — the leg would report green having checked neither. The
-#     "Verify system test tools" step fails loudly instead; the Linux legs
-#     apt-install the same two tools into their container.
-#   * Registry: ghcr.io -> the Forgejo container registry (REGISTRY env).
-#     Auth via a PAT (secrets.REGISTRY_USER / REGISTRY_TOKEN, scope
-#     package:write — same secret pair as nextcloud-fpm-nginx) instead of
-#     the ephemeral GITHUB_TOKEN; the GHCR login retry-loop is gone (local
-#     registry, no flaky token proxy).
-#   * Buildx cache: type=gha -> type=registry on the Forgejo registry
-#     (buildcache-<variant> tags), per-variant so cpu/gpu don't evict each
-#     other, and per-producer so one PR can't clobber another's — see the
-#     "Compute buildx cache refs" step. ignore-error on export: a transient
-#     cache-push failure must not fail a publish.
-#   * Image layers are pushed zstd-compressed, matching the cache, so a
-#     cached layer is reused as a blob instead of being re-gzipped on every
-#     export. Needs Docker >= 23 on the hosts that pull these images.
-#   * buildkitd docker.io mirror (mirror.gcr.io): both variants resolve the
-#     python:3.x-slim base from Docker Hub; the mirror keeps repeated
-#     matrix/PR builds away from Hub's anonymous rate limit.
-#   * provenance/sbom disabled — buildx attestation manifests
-#     (unknown/unknown entries) have a spotty history with Forgejo
-#     registries.
-#   * permissions: blocks dropped — GitHub token-permission model.
+#     node and ffmpeg are prerequisites, not conveniences: the suite's
+#     `node --check` and real WebM/Opus guards SKIP themselves when the tool
+#     is missing, so the leg would go green having checked neither. "Verify
+#     system test tools" fails loudly instead; the Linux leg apt-installs
+#     both into its container.
+#   * Registry auth: a PAT (secrets.REGISTRY_USER / REGISTRY_TOKEN, scope
+#     package:write — same secret pair as nextcloud-fpm-nginx).
+#   * Buildx cache: type=registry on the Forgejo registry, per variant (so
+#     cpu/gpu don't evict each other) and per producer — see the "Compute
+#     buildx cache refs" step.
 name: CI
 
 on:
@@ -78,10 +57,10 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
-  # The instance host, spelled out once for the whole file: it is both the
-  # container registry and the git remote the manual checkouts fetch from
-  # (they read it via a GIT_HOST step env). Keep it that way — a hostname
-  # copy that only fails at fetch time is the drift this replaces.
+  # The instance host, spelled out once: it is both the container registry
+  # and the git remote the manual checkouts fetch from (via a GIT_HOST step
+  # env), so a rename is a one-line edit, not a literal that only fails
+  # mid-fetch.
   REGISTRY: forgejo.informethic.ch
   # The Linux test legs run as root inside python:* job containers — that's
   # the whole environment, not a system Python worth protecting, so silence
@@ -89,7 +68,7 @@ env:
   PIP_ROOT_USER_ACTION: ignore
 
 jobs:
-  # What a pull request needs (interlinea's ci.yml pattern). Outputs 'true'
+  # What a pull request needs. Outputs 'true'
   # or 'false'; push, tag and dispatch runs, a diff that cannot be computed
   # and any change under .forgejo/ set both 'true'.
   #   suite — false only when EVERY changed file is a Dockerfile (Renovate's
@@ -152,19 +131,17 @@ jobs:
   test:
     name: tests (ubuntu-latest py3.14)
     needs: [changes]
-    # Skipped on v* tag runs — tag-first flow (2026-08-27): a tag is only
-    # ever minted for a commit that already tested green (release.yml
-    # enforces it on both its paths), so the tag run goes straight to the
-    # image build instead of re-running the suites. Skipping a needed job
-    # is safe since Forgejo v16 (16.0.3 here): the server evaluates job
-    # `if` itself (PR #13030); on v15 this would have hung the run
-    # (forgejo#12937).
+    # Skipped on v* tag runs: a tag is only ever minted for a commit that
+    # already tested green (release.yml enforces it on both its paths), so
+    # the tag run goes straight to the image build. Skipping a needed job
+    # needs Forgejo >= v16 (server-side job `if`, PR #13030) — older
+    # servers hang the run (forgejo#12937).
     if: ${{ !cancelled() && !startsWith(github.ref, 'refs/tags/') }}
     runs-on: ubuntu-latest
     # Exact interpreter via the official image — replaces setup-python (see
     # header). One leg, on the interpreter the images ship (python:3.14-slim)
     # and the installers require; windows (below) is a portability parity
-    # guard. 3.12 and 3.13 legs dropped 2026-10-29 (owner decision).
+    # guard.
     #
     # /persistent/uv is the runner's shared download cache (interlinea's
     # docs/ops/ci.md "Download cache"; listed in the runner config's
@@ -196,11 +173,8 @@ jobs:
           GIT_REF: ${{ github.ref }}
           GIT_SHA: ${{ github.sha }}
           GIT_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Single-source the instance host from env.REGISTRY above (it is
-          # the same host that serves git and the registry). The rest of the
-          # family derives it too — mirror-ghcr.yml strips GITHUB_SERVER_URL
-          # — so an instance rename stays a one-line edit instead of a hunt
-          # for literals that only surface as a DNS/auth error mid-fetch.
+          # The git host is the registry host (env.REGISTRY); mirror-ghcr.yml
+          # derives it from GITHUB_SERVER_URL the same way.
           GIT_HOST: ${{ env.REGISTRY }}
         run: |
           # Fetch from the credentialed URL directly instead of `git remote
@@ -255,16 +229,14 @@ jobs:
           uv --version
           uv pip install -r requirements.txt -r requirements-dev.txt
 
-      # Lint (config in ruff.toml): unused / undefined names and syntax-level
-      # errors. Cheap, so every Linux leg runs it.
+      # Rules in ruff.toml. Linux leg only: the lint result does not depend
+      # on the platform.
       - name: Lint (ruff)
         run: ruff check .
 
-      # Coverage is gated: the suite must exercise at least this percent of
-      # the application modules, so coverage can only ratchet upward. A
-      # shortfall fails this leg, which fails the `all-ci` gate below, which
-      # blocks auto-merge / release publishing. Measured 2026-10-06 at 87% on
-      # both Linux and Windows (run 1226); set 3 points lower so per-version
+      # Coverage gate: a shortfall fails this leg, hence `all-ci`, hence
+      # auto-merge and release publishing. Measured 2026-10-06 at 87% on
+      # both Linux and Windows (run 1226); set 3 points lower so run-to-run
       # variance and the Windows leg's POSIX-only skips don't false-fail.
       # Raise this number as coverage grows — never lower it.
       # A fixed worker count, never -n auto: auto took all 80 CPUs of the
@@ -380,13 +352,11 @@ jobs:
       - name: Run tests (with coverage gate)
         run: .venv\Scripts\python -m pytest -n 16 -q --cov-fail-under=84
 
-  # Single, stable status check to require in the branch protection. Matrix
-  # legs expand/rename over time; this gate aggregates them so the required
-  # check name never changes. It fails unless EVERY leg succeeded — so
-  # Renovate automerge only proceeds when the whole suite is green on all
-  # platforms. (Skipped needs-jobs no longer hang the run since Forgejo
-  # v16 — server-side `if` evaluation, PR #13030 — which is what allows
-  # the tag-run skips asserted below.)
+  # Single, stable status check to require in the branch protection: test
+  # legs come and go, the required check name never changes. It fails
+  # unless every leg has its expected verdict — success, or skipped only on
+  # tag runs and (Windows) Dockerfile-only PRs — so Renovate automerge only
+  # proceeds when the whole suite is green on all platforms.
   all-ci:
     name: all-ci
     if: always()
@@ -415,20 +385,19 @@ jobs:
             fi
           fi
 
-  # Build (and, off PRs, publish) the container images — tag-first flow
-  # (2026-08-27): a main push runs ONLY the test legs; its green verdict
-  # dispatches release.yml (see the mirror job below), which mints the next
-  # v* tag, and THAT tag's run — this job — is the single image build per
-  # release, baking the clean vX.Y.Z. Main-push runs skip this job
-  # entirely: no double builds, and no interim :latest carrying a
-  # describe-suffixed version. PRs still build to validate the Dockerfiles
-  # without pushing, when they touch the Dockerfiles, requirements or
-  # .dockerignore (changes.image); a workflow_dispatch run builds and publishes sha tags
-  # (manual rebuild escape hatch). Dispatched on a v* tag it republishes
-  # that tag's vX/sha tags, and :latest only when it is the newest v* tag
-  # (the "newest" step) — an old release never takes latest back. The all-ci gate still fronts every
-  # publish: on tag runs it verifies the suites were skipped deliberately
-  # (the tagged commit tested green on its main-push run).
+  # Build (and, off PRs, publish) the container images. A main push runs
+  # ONLY the test legs; its green verdict dispatches release.yml (see the
+  # mirror job below), which mints the next v* tag, and that tag's run is
+  # the single image build per release, baking the clean vX.Y.Z — no double
+  # builds, no interim :latest with a describe-suffixed version. PRs build
+  # without pushing, to validate the Dockerfiles, and only when they touch
+  # the Dockerfiles, requirements or .dockerignore (changes.image). A
+  # workflow_dispatch run builds and publishes sha tags (manual rebuild
+  # escape hatch); on a v* tag it republishes that tag's vX/sha tags, and
+  # :latest only when it is the newest v* tag (the "newest" step) — an old
+  # release never takes latest back. The all-ci gate fronts every publish:
+  # on tag runs it verifies the suites were skipped deliberately (the tagged
+  # commit tested green on its main-push run).
   #
   # Four variants build in parallel from the same context:
   #   cpu      — Dockerfile      → :latest, :v*, :sha-<short>     (CPU-only base)
@@ -502,23 +471,15 @@ jobs:
 
       # Buildx cache refs, per variant AND per producer.
       #
-      # One shared PR bucket did not work (2026-08-31): every open PR wrote
-      # buildcache-<variant>-pr, so a long-lived base-digest PR and a routine
-      # pin bump PR overwrote each other, and whether a release build hit its
-      # cache came down to which PR had exported last. Run 624 caught it
-      # mid-race — gpu-full read the useful bucket and finished in 21 s while
-      # the other three variants read a clobbered one and rebuilt for 2-9 min.
-      #
-      # So each PR gets its OWN bucket, and non-PR runs (tags, dispatch) keep
-      # the main one. To let a release build still reuse the work its PR
-      # already did, non-PR runs additionally read the bucket of the PR named
-      # in the merge commit's subject — Renovate squash-merges land as
-      # "chore(deps): update dependency pydantic to >=2.13.5 (#76)", so the
-      # number is right there. Missing buckets are not an error: buildkit logs
-      # "failed to configure registry cache importer: not found" and carries on.
-      #
-      # Stale buckets from abandoned PRs are the cost of this; they are cache
-      # tags on the container package and can be deleted in the registry UI.
+      # Each PR writes its OWN bucket: one shared PR bucket let concurrent
+      # PRs overwrite each other, so a release build's cache hit depended on
+      # which PR exported last. Non-PR runs (tags, dispatch) write the main
+      # bucket and, to reuse the work their PR already did, additionally read
+      # the bucket of the PR named in the merge commit's subject — Renovate
+      # squash-merges end in "(#76)". A missing bucket is not an error
+      # (buildkit logs "failed to configure registry cache importer: not
+      # found" and carries on). Stale buckets from abandoned PRs are the cost:
+      # cache tags on the container package, deletable in the registry UI.
       - name: Compute buildx cache refs
         id: cache
         env:
@@ -533,8 +494,8 @@ jobs:
           scope=""
           if [ "$EVENT" = "pull_request" ]; then
             # github.event.pull_request.number is the documented field; fall
-            # back to the ref (refs/pull/<n>/{head,merge}) so a payload shape
-            # difference degrades to the old shared bucket instead of failing.
+            # back to the ref (refs/pull/<n>/{head,merge}), then to a shared
+            # "-pr-shared" bucket, so a payload shape difference never fails.
             n="$PR_NUMBER"
             [ -n "$n" ] || n=$(printf '%s' "$GITHUB_REF" | sed -n 's|^refs/pull/\([0-9]\+\)/.*|\1|p')
             scope="-pr-${n:-shared}"
@@ -619,15 +580,11 @@ jobs:
         uses: docker/metadata-action@v6
         with:
           images: ${{ env.REGISTRY }}/${{ steps.img.outputs.name }}
-          # latest=false: we control the `latest` tag via the type=raw rule
-          # below. Tag-first flow: only v* tag runs build-and-push, so
-          # latest is owned by tag runs and always carries the clean
-          # vX.Y.Z baked version — never a describe-suffixed interim.
-          # Every green main push gets a tag (release.yml), so latest
-          # still tracks main; the exception is commits marked
-          # [skip release], which now publish no images at all.
-          # suffix appends "-gpu" to every tag for the gpu leg;
-          # onlatest=true ensures it reaches the raw `latest` tag too.
+          # latest=false: the type=raw rule below owns `latest` — tag runs
+          # only, and only for the newest v* tag (the "newest" step), so it
+          # always carries a clean vX.Y.Z. A [skip release] commit gets no
+          # tag and so publishes no images. onlatest=true: the variant
+          # suffix reaches the raw `latest` tag too.
           flavor: |
             latest=false
             suffix=${{ matrix.suffix }},onlatest=true
@@ -650,36 +607,26 @@ jobs:
           # registries — off until verified on this instance.
           provenance: false
           sbom: false
-          # zstd image layers, via `outputs` rather than `push:` (the two are
-          # the same --output flag and cannot both be set). The build cache is
-          # already zstd; the image was still gzip, so EVERY layer restored
-          # from cache had to be decompressed and re-gzipped at export — 702 s
-          # on the gpu-full leg of run 593, 134 s on run 624's gpu leg, even
-          # for layers that never changed. Matching the two formats lets
-          # buildkit reuse the cached blob as-is.
-          # No force-compression: the base image's own layers stay gzip, so
-          # they keep deduplicating against every other python:3.14-slim image
-          # in the registry instead of being recompressed into private copies.
-          # COMPATIBILITY: pulling zstd layers needs Docker >= 23 (2023),
-          # containerd >= 1.5, or any current podman. Every host that runs
-          # these images must clear that bar.
+          # zstd image layers via `outputs`, not `push:` (both are the same
+          # --output flag; they cannot both be set). Matching the zstd build
+          # cache lets buildkit reuse a cached blob as-is instead of re-gzipping
+          # every layer at export (~700 s on gpu-full, even unchanged layers).
+          # No force-compression: base-image layers stay gzip, so they keep
+          # deduplicating against other python:3.14-slim images in the registry.
+          # COMPATIBILITY: every host that pulls these images needs Docker >= 23,
+          # containerd >= 1.5, or a current podman.
           outputs: type=image,push=${{ github.event_name != 'pull_request' }},compression=zstd,oci-mediatypes=true
-          # Per-variant, per-producer registry cache — see the "Compute buildx
-          # cache refs" step for what the refs are and why.
           # cache-to deliberately lives in the separate step below — see there.
           cache-from: ${{ steps.cache.outputs.from }}
 
-      # Cache export runs as its own buildx invocation, AFTER the push above.
-      # Sharing one invocation makes buildkit push the image layers and export
-      # the cache concurrently, so a layer new to the registry gets uploaded
-      # twice at once. Forgejo's GetOrInsertBlob does a SELECT-then-INSERT with
-      # no upsert: the losing writer trips the UQE_package_blob_blake2b unique
-      # index and the error path nil-derefs (2026-08-04, run 80 — the 1.66 GB
-      # CUDA layer panicked the server, the retry 400'd, and buildx reported
-      # only "failed to push …:latest-gpu: unknown"). Serializing the two
-      # writers removes the overlap. Everything is cached locally by now, so
-      # this step costs seconds; ignore-error keeps a transient cache-push
-      # failure from failing an already-published image.
+      # Cache export runs as its own buildx invocation, AFTER the push above:
+      # in one invocation buildkit pushes image layers and exports the cache
+      # concurrently, so a layer new to the registry is uploaded twice at once.
+      # Forgejo's GetOrInsertBlob (SELECT-then-INSERT, no upsert) then trips
+      # the UQE_package_blob_blake2b unique index and nil-derefs the server;
+      # buildx reports only "failed to push …: unknown". Everything is cached
+      # locally by now, so this step costs seconds; ignore-error keeps a
+      # transient cache-push failure from failing an already-published image.
       - name: Export build cache
         uses: docker/build-push-action@v7
         with:
@@ -692,37 +639,23 @@ jobs:
           provenance: false
           sbom: false
           cache-from: ${{ steps.cache.outputs.from }}
-          # zstd instead of the default gzip: "preparing build cache for
-          # export" gzip-compresses every layer, and on the gpu-full leg
-          # (~7 GB of CUDA/torch wheels) that alone took 327s of the 402s
-          # cache-export step (run 390). zstd compresses those layers several
-          # times faster; force-compression recompresses layers imported from
-          # the old gzip cache so the blobs converge on zstd instead of
-          # mixing.
-          # The ref is per variant AND per producer (PR runs write their own
-          # bucket) — see the "Compute buildx cache refs" step.
+          # The `to` ref (see "Compute buildx cache refs") exports zstd: gzip
+          # of the ~7 GB gpu-full CUDA/torch layers was most of this step's
+          # time. force-compression recompresses layers imported from the old
+          # gzip cache so the blobs converge on zstd instead of mixing.
           cache-to: ${{ steps.cache.outputs.to }}
 
   # Kick mirror-ghcr.yml exactly once per publishing run, after every
-  # variant has pushed. Replaces that workflow's registry_package trigger,
-  # which fired once per pushed tag — ~12 runs per commit across the four
-  # variants, because Forgejo's concurrency groups serialize an event
-  # burst instead of deduping it. Dispatch is also the only trigger shape
-  # that works from CI at all: Forgejo suppresses workflow events whose
-  # actor is the actions token (cycle prevention), but the dispatch API
-  # bypasses the event pipeline and accepts the run-scoped token.
+  # variant has pushed (see mirror-ghcr.yml's header for why not a
+  # registry_package trigger). Dispatch is also the only trigger shape that
+  # works from CI: Forgejo suppresses workflow events whose actor is the
+  # actions token (cycle prevention), but the dispatch API bypasses the
+  # event pipeline and accepts the run-scoped token.
   #
-  # if: always() so this job runs whatever happened upstream — build is
-  # deliberately *skipped* on main pushes (tag-first flow), and the
-  # dispatch decisions live on the steps: the ghcr mirror fires only after
-  # a successful publish (tag runs / manual dispatch), the auto-release
-  # only after a green main-push test run.
-  #
-  # The continuous-release dispatch (second step): every green push to
-  # main kicks release.yml with bump=patch, which mints the next v* tag →
-  # which fires this workflow's tag run — the single image build per
-  # release, baking the clean vX.Y.Z. Gated to main pushes, so the tag
-  # run cannot re-dispatch — no cycle.
+  # if: always() because build is deliberately *skipped* on main pushes;
+  # the step conditions decide: the ghcr mirror fires only after a
+  # successful publish (tag runs / manual dispatch), the auto-release only
+  # after a green main-push test run.
   mirror:
     name: dispatch ghcr mirror + auto-release
     if: always()
@@ -749,16 +682,12 @@ jobs:
             --data "{\"ref\":\"main\",\"inputs\":{\"sha\":\"${GITHUB_SHA}\"}}" \
             "${GITHUB_SERVER_URL}/api/v1/repos/${GITHUB_REPOSITORY}/actions/workflows/mirror-ghcr.yml/dispatches"
 
-      # Continuous versioning: every commit that reached main and tested
-      # green becomes a patch release (the tag run then does the actual
-      # image build — build is skipped on this run). release.yml owns all
+      # Every green main push becomes a patch release. release.yml owns all
       # the tag logic (bump compute, [skip release] opt-out, monotonicity,
       # idempotence) — this step only tells it WHICH commit passed. Main
-      # pushes only: tag runs of this workflow must not re-dispatch (cycle),
-      # and manual minor/major bumps go through release.yml's own
-      # workflow_dispatch button. The dispatch API accepts the run-scoped
-      # token (same as the mirror dispatch above); the PAT that release.yml
-      # needs for the tag push itself lives there as RELEASE_TOKEN.
+      # pushes only: a tag run must not re-dispatch (cycle). The dispatch API
+      # accepts the run-scoped token; the PAT release.yml needs for the tag
+      # push itself lives there as RELEASE_TOKEN.
       - name: Dispatch release.yml (auto patch bump; green main pushes only)
         if: needs.all-ci.result == 'success' && github.event_name == 'push' && github.ref == 'refs/heads/main'
         env:
