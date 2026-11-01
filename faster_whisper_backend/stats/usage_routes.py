@@ -24,9 +24,10 @@ Security model:
   - Strictly self-scoped: an outcome only ever attaches to a job the caller
     owns. Someone else's job id reads as `duplicate` — the same answer as a
     re-send, so the endpoint confirms nothing about other users' sessions.
-  - Idempotent: the first report per job is `accepted`, every later one
-    `duplicate` (nothing changes). The client queues outcomes offline and
-    retries, so a replay must be harmless.
+  - Idempotent while the job row lives (USAGE_JOBS_RETENTION_DAYS): the
+    first report per job is `accepted`, every later one `duplicate` (nothing
+    changes). The client queues outcomes offline and retries, so a replay
+    must be harmless; one older than the job retention is taken as new.
   - Flood guard: 60 posts per minute per identity (rate_limit.FixedWindow),
     which is far above what a human dictating can produce and keeps a
     retry loop gone wrong from hammering the store.
