@@ -1448,10 +1448,6 @@ def test_save_overrides_invalid_raises(tmp_path):
     assert not os.path.exists(p)
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
 def test_pipeline_rule_tags_union():
     rules = [
         {"tags": ["b", "a"]},
@@ -1506,10 +1502,6 @@ def test_format_validation_errors_shape():
     assert set(out[0]) == {"loc", "msg"}
     assert "BEAM_SIZE" in out[0]["loc"]
 
-
-# ---------------------------------------------------------------------------
-# save_overrides concurrency — the lost update
-# ---------------------------------------------------------------------------
 
 def test_concurrent_save_overrides_keep_both_keys(tmp_path, monkeypatch):
     """Two saves touching DIFFERENT keys must both survive.
@@ -1667,10 +1659,6 @@ def test_save_lock_file_does_not_disturb_the_config_dir(tmp_path):
         [], ["config.local.json.lock"])
 
 
-# ---------------------------------------------------------------------------
-# MAX_REQUEST_BYTES must stay >= MEDIA_MAX_BYTES (effective values)
-# ---------------------------------------------------------------------------
-
 def test_media_cap_above_baseline_request_cap_rejected():
     # 20 GB media cap alone: the baseline request cap (10 GiB) would answer
     # first with the generic body-too-large 413 instead of the media 413.
@@ -1685,10 +1673,7 @@ def test_request_cap_below_baseline_upload_cap_rejected():
     _bad(MAX_REQUEST_BYTES=1024)
 
 
-# ---------------------------------------------------------------------------
-# Origin allowlists: wildcard hosts are rejected (they never matched anyway)
-# ---------------------------------------------------------------------------
-
+# Wildcard hosts never matched, so refusing them takes nothing away.
 @pytest.mark.parametrize("bad", ["https://*.example.com", "https://*"])
 def test_trusted_origins_rejects_wildcard_host(bad):
     _bad(TRUSTED_ORIGINS=[bad])
@@ -1799,10 +1784,6 @@ def test_load_overrides_drops_blank_map_key_keeps_rest(tmp_path):
     assert cs.load_overrides(p)["BEAM_SIZE"] == 5
 
 
-# ---------------------------------------------------------------------------
-# _F(evict=...) is a closed set
-# ---------------------------------------------------------------------------
-
 def test_extras_eviction_buckets_are_declared():
     assert set(settings_schema.EXTRAS_EVICTION) <= set(settings_schema._EVICT_BUCKETS)
 
@@ -1812,11 +1793,8 @@ def test_field_helper_rejects_unknown_evict_bucket():
         settings_schema._F("DEFAULT_MODEL", scope="server", group="Models", evict="diarizaton")
 
 
-# ---------------------------------------------------------------------------
-# Stored values a later-tightened validator refuses (load must not drop all)
-# ---------------------------------------------------------------------------
-
 def test_stored_bundle_values_refused_since_are_migrated_not_fatal(tmp_path, capsys):
+    # Values a later-tightened validator refuses must not make load drop every override.
     p = tmp_path / "config.local.json"
     p.write_text(json.dumps({
         "SERVER_PORT": 9000,
@@ -1866,10 +1844,6 @@ def test_stored_nul_in_a_path_or_token_is_dropped_not_fatal(tmp_path, capsys):
     assert json.loads(p.read_text(encoding="utf-8")) == {
         "DEFAULT_MODEL": "small", "BEAM_SIZE": 3}
 
-
-# ---------------------------------------------------------------------------
-# WHISPER_MODEL_OVERRIDE__ values stay env values on a per-model save
-# ---------------------------------------------------------------------------
 
 def test_save_keeps_env_per_model_values_out_of_the_file(tmp_path, monkeypatch):
     monkeypatch.setattr(cs_config, "_ENV_OVERRIDE_VALUES",
