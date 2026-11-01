@@ -203,10 +203,10 @@
     const ratio = srcRate / TARGET_SR;
     // pos is relative to index -1 == resampleCarry (the previous block's last
     // sample), so a seam point always interpolates between two REAL neighbours.
-    // Using the carry as the RIGHT neighbour of the last sample (an older build)
-    // reached 128 samples into the past at every block seam — inaudible at
-    // 48 kHz (ratio 3, seams land on integers) but a ~124 Hz click train at
-    // 44.1 kHz, the default capture rate on most Apple hardware.
+    // Using the carry as the RIGHT neighbour of the last sample instead reaches
+    // 128 samples into the past at every block seam — inaudible at 48 kHz
+    // (ratio 3, seams land on integers) but a ~124 Hz click train at 44.1 kHz,
+    // the default capture rate on most Apple hardware.
     let pos = resamplePos;
     while (pos < float32.length - 1) {
       const i = Math.floor(pos);
@@ -262,16 +262,14 @@
     }
     else if (m.type === "utterance") {
       // Lifecycle of the utterance the server is holding. "decoding" = it heard
-      // the end of the phrase and is running the final decode — without this the
-      // page said "listening" through the whole decode, as if nothing was
-      // happening. "dropped" = it ended with no text (noise); back to listening.
-      // No final follows a dropped utterance, so its partial would stay faded on
-      // screen — words that never reach the document. Clearing it is harmless
-      // after Stop too, so it runs before the guard.
-      // Unknown states are ignored on purpose (the server may grow more).
+      // the end of the phrase and is running the final decode. "dropped" = it
+      // ended with no text (noise); back to listening. No final follows a
+      // dropped utterance, so its faded partial must be cleared here (words that
+      // never reach the document) — harmless after Stop too, so it runs before
+      // the guard. Unknown states are ignored on purpose (the server may grow more).
       if (m.state === "dropped") renderPartial("", "");
-      // Only the known states move uttState: an unknown one arriving after
-      // "decoding" must not cut Stop's long decode window to STOP_WAIT_MS.
+      // Only the known states move uttState, so an unknown one after "decoding"
+      // cannot make a later stop() pick STOP_WAIT_MS over the long window.
       if (m.state === "dropped") uttState = null;
       else if (m.state === "open" || m.state === "decoding") uttState = m.state;
       // After Stop the forced final decode may take far longer than a frame
@@ -327,7 +325,6 @@
     toggleBtn.classList.remove("danger");
   }
 
-  // --- batch mode: record with MediaRecorder, POST the whole clip ---------------
   function pickMime() {
     const cands = ["audio/webm;codecs=opus", "audio/webm", "audio/ogg;codecs=opus", "audio/mp4"];
     for (const c of cands) {
@@ -568,10 +565,8 @@
     }
   });
 
-  // Switching mode while idle just relabels the button (Start dictation ⇄ Record).
   $("mode").addEventListener("change", () => { if (!running) resetToggleButton(); });
 
-  // --- init: restore saved settings, persist on change, warn on insecure context ---
   loadPrefs();
   resetToggleButton();   // reflect the restored mode (Start dictation / Record)
   PREF_FIELDS.forEach((f) => { const el = $(f); if (el) el.addEventListener("change", savePrefs); });
