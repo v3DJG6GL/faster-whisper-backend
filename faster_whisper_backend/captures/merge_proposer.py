@@ -3,9 +3,9 @@ Auto-merge proposer for /captures fine-tuning data curation.
 
 Given the user's ungrouped captures, ranks plausible merges into ~26 s
 samples that respect the configurable duration cap
-(cfg.CAPTURES_SAMPLE_MAX_DURATION_S, default 29.9 s) already enforced by
-captures_routes.create_sample_api (mirrors its raw-`audio_s`
-arithmetic).
+(cfg.CAPTURES_SAMPLE_MAX_DURATION_S, default 29.9 s) that the merge
+endpoints enforce in captures_routes._validate_merge_payload (mirrors its
+trimmed-body + join-gap + outer-edge arithmetic).
 
 Heuristic rationale (see docs/captures-finetune-findings.md + research notes):
   - Whisper's encoder window is 30 s; ~25-30 s merged samples preserve
@@ -41,10 +41,6 @@ from faster_whisper_backend.core import store_common
 logger = logging.getLogger(__name__)
 
 
-# The finished-sample duration cap is the global cfg.CAPTURES_SAMPLE_MAX_DURATION_S
-# (read in _generate); the inter-member gap mirrors the global VAD-internal
-# silence. Kept out of imports to avoid a circular dep with captures_routes.
-
 # Hard cap on members per proposal — must not exceed the merge endpoints'
 # CreateSampleIn/PreviewMergeIn `member_ids` Field(max_length=30), or an
 # accepted proposal would 422 on POST. Packing is by trimmed duration, so a
@@ -59,11 +55,10 @@ _ALL_USERS = "__all__"
 # {cache_key: (generated_ts, [ProposedGroup, ...])}
 _CACHE: dict[str, tuple[float, list[dict[str, Any]]]] = {}
 # Insertion-order ceiling, matching _TRIM_DUR_CACHE_MAX below. A scope=all
-# caller picks the ?user_id= that becomes the key, and invalidate() only ever
-# pops a REAL user's key plus the sentinel — so an unknown id minted an entry
-# that nothing could evict, for the life of the process. The key is rejected
-# up front now (see propose_merges); this is the belt-and-braces half, so the
-# dict is bounded however the key is derived.
+# caller picks the ?user_id= that becomes the key, and invalidate() only pops
+# real users' keys plus the sentinel, so an entry under any other key would
+# never be evicted. Unknown ids are rejected up front (_known_owner); this
+# bounds the dict however the key is derived.
 _CACHE_MAX = 512
 # Serializes the sweep itself (see propose_merges) — sweeps only. It does NOT
 # make the _CACHE / _TRIM_DUR_CACHE mutations single-threaded: invalidate()
@@ -227,8 +222,8 @@ def _build_sample_score(members: list[dict[str, Any]], gap_s: float,
 def _format_reason(scored: dict[str, float], n: int) -> str:
     total = scored["total_dur"]
     wall = scored["wall_dur"]
-    # Wall is total when n=1 (degenerate) — only show "from a X session" when
-    # the wall span is materially larger than packed audio.
+    # Minutes + seconds only when the wall span is materially larger than the
+    # packed audio; otherwise plain seconds.
     if wall > total * 1.5 and wall >= 60:
         mins = int(wall // 60)
         secs = int(wall % 60)
@@ -272,11 +267,9 @@ def _generate_candidates_for_bucket(
         used_dur = 2.0 * edge_s + _dur(bucket[i])
         for j in range(i + 1, n):
             if len(members) >= _MAX_MEMBERS:
-                # At the API member cap; emitting more would 422 on accept.
                 break
             cand = bucket[j]
             cand_dur = _dur(cand)
-            # Adding j costs cand_dur + one gap (between prior member and j).
             tentative = used_dur + cand_dur + gap_s
             if tentative > hard_cap_s:
                 # Doesn't fit; try smaller successors (skip-allowed pack).
@@ -439,7 +432,6 @@ def _propose_merges_locked(
     the 500-row window and the max-proposals cap, so a busy third speaker
     cannot crowd the picked ones out.
     """
-    # Resolve effective filter + cache key.
     if not is_admin:
         effective_user_id = caller_user_id
         # Unconditionally namespaced: an empty caller id must never fall back
