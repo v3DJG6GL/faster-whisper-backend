@@ -615,9 +615,9 @@ def test_test_pipeline_rules_not_list_400(client):
 
 
 def test_test_pipeline_skips_a_rule_scoped_to_other_languages(client):
-    """The engine skips a rule whose `languages` leave out the known language
-    (pl_engine._rule_runs); the dry run ran every enabled rule, so the panel
-    showed German-only rules rewriting an English sample."""
+    """Like the engine (pl_engine._rule_runs), the dry run skips a rule whose
+    `languages` leave out the known language, so the panel never shows a
+    German-only rule rewriting an English sample."""
     rules = [
         {"name": "de-only", "type": "regex-list", "enabled": True,
          "languages": ["de"], "entries": [{"pattern": "welt", "replacement": "world"}]},
@@ -910,8 +910,8 @@ def test_settings_page_injects_mo_constants(client):
     assert meta["TRANSLATION_GLOSSARY"]["kind"] == "textarea"
     assert meta["NO_SPEECH_THRESHOLD"]["kind"] == "nullable_float"
 
-    # Every FIELD_META key is a real ModelOverride field — the payload once
-    # shipped seven CAPTURES_* rows no renderer could ever read.
+    # Every FIELD_META key is a real ModelOverride field: a row no renderer
+    # can read must never ship in the payload.
     from faster_whisper_backend.admin import routes as admin_routes
     from faster_whisper_backend.settings import schema as settings_schema
     assert (set(json.loads(admin_routes._MO_FIELD_META_JSON))
@@ -1177,9 +1177,9 @@ def test_translation_test_explicit_auto_detects_instead_of_the_saved_pin(
 
 def test_translation_test_cleared_custom_template_is_not_the_saved_one(
         client, app_module, monkeypatch):
-    """The lab sent `t.value || null`: a cleared custom textarea fell back
-    to the SAVED template, so the preview/test showed text the editor no
-    longer held. '' is now sent and rendered as-is."""
+    """A cleared custom textarea is sent as '' and rendered as-is. A null
+    fallback would bring back the SAVED template, so the preview/test would
+    show text the editor no longer holds."""
     monkeypatch.setattr(app_module.cfg, "TRANSLATION_ENABLED", True)
     monkeypatch.setattr(app_module.cfg, "TRANSLATION_PROMPT_TEMPLATE",
                         "SAVED-SENTINEL {text} -> {target_language}")
