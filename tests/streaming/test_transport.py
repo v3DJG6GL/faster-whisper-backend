@@ -109,9 +109,9 @@ def test_ffmpeg_transport_dead_reader_warns_once(caplog):
 
 
 def test_ffmpeg_transport_cancelled_aclose_still_kills_the_process():
-    """A cancel while aclose() waits (server shutdown) used to skip kill(), and
-    _closed was already True, so the routes backstop aclose() returned at once
-    and ffmpeg was never killed. The cancel itself must still propagate."""
+    """A cancel while aclose() waits (server shutdown) must still kill ffmpeg:
+    _closed is already True, so the routes backstop aclose() returns at once
+    without killing it. The cancel itself must still propagate."""
     class _Stdin:
         def is_closing(self):
             return False
@@ -177,10 +177,9 @@ async def _nosink(b):
 
 
 def test_ffmpeg_transport_cancel_during_reader_join_propagates():
-    """A cancel while aclose() joins the stdout reader went to the reader task,
-    which swallowed it and returned — so aclose() carried on and returned
-    normally inside a handler that was meant to be cancelled. It must raise,
-    and the process must still be killed."""
+    """A cancel while aclose() joins the stdout reader lands on the reader
+    task; aclose() must still raise it (not return normally inside a handler
+    meant to be cancelled), and the process must still be killed."""
     async def run():
         t = FfmpegTransport(_nosink)
         t._proc = _StuckProc()
