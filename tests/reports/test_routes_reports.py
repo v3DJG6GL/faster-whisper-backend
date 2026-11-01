@@ -36,9 +36,8 @@ def test_submit_unknown_field_422(client):
 
 
 def test_submit_rate_limit_429(client, app_module):
-    # REPORTS_SUBMIT_RATE_PER_10MIN per identity (in open mode every request
-    # is charged to the client host, the one loopback host here). The submit
-    # past the limit trips it.
+    # REPORTS_SUBMIT_RATE_PER_10MIN per identity; in open mode every request
+    # is charged to the client host, the one loopback host here.
     limit = int(app_module.cfg.REPORTS_SUBMIT_RATE_PER_10MIN)
     last = None
     for i in range(limit + 1):
@@ -161,7 +160,7 @@ def test_list_with_legacy_nonfinite_trace_ts_reads_created_ts(client):
         "UPDATE reports SET trace_ts = ?", (float("inf"),))
     r = client.get("/reports/api/list")
     assert r.status_code == 200
-    row = json.loads(r.text)["reports"][0]     # strict: no bare Infinity
+    row = json.loads(r.text)["reports"][0]
     assert row["trace_ts"] == row["created_ts"]
 
 
@@ -269,7 +268,6 @@ def test_page_api_error_shows_a_422_detail_list_as_text(client):
 def test_patch_report_invalid_status_422(client):
     sub = client.post(_SUBMIT, json=_payload(request_id="patch-1"))
     rid = sub.json()["id"]
-    # status is a Literal -> "bogus" fails pydantic validation -> 422.
     r = client.patch(f"/reports/api/{rid}", json={"status": "bogus"})
     assert r.status_code == 422
 
