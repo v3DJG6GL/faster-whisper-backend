@@ -2643,6 +2643,31 @@ def _legacy_state_warnings(
              and os.path.exists(c)), None)
         if _legacy_path is None:
             continue
+        if os.path.isdir(_legacy_path):
+            # The first start creates the configured dir, so "configured
+            # missing" would go quiet from the second start on while the old
+            # tree's audio sits unused. Warn while it holds any file instead;
+            # one found file is enough.
+            if not any(_files for _, _, _files in os.walk(_legacy_path)):
+                continue
+            try:
+                if os.path.samefile(_legacy_path, _configured):
+                    continue                    # a symlink to the live dir
+            except OSError:
+                pass
+            out.append(
+                f"legacy {_legacy_path} holds files but the server reads "
+                f"{_configured} — the audio there is NOT used (its captures "
+                f"come up audio_missing). Stop the server, delete "
+                f"{_configured} if it holds no files (only the empty folders "
+                f"a start created; merge by hand if it holds audio recorded "
+                f"since) and move {_legacy_path} to {_configured}, in the "
+                f"same stop as a legacy captures store that has not moved "
+                f"yet (audio without its rows is deleted as orphans on the "
+                f"next start). Or set WHISPER_CAPTURES_DIR to "
+                f"{_legacy_path!r}."
+            )
+            continue
         _missing = not os.path.exists(_configured)
         if not _missing and not (_legacy_name.endswith(".sqlite3")
                                  and _looks_fresh(_configured, _legacy_path)):
