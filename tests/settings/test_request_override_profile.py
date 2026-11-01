@@ -1,4 +1,4 @@
-"""P10: per-request `override_profile` selection on the batch endpoint + the
+"""Per-request `override_profile` selection on the batch endpoint + the
 `/v1/override-profiles` names endpoint. Driven through the real app; no
 faster-whisper needed (FakeModel records the decode kwargs).
 
@@ -40,7 +40,7 @@ def test_request_profile_gated_off_is_ignored(client, fake_model, monkeypatch):
               "override_profile": "fast"},
     )
     assert r.status_code == 200, r.text
-    assert fake_model.last_kwargs["beam_size"] != 3      # profile ignored
+    assert fake_model.last_kwargs["beam_size"] != 3
     assert r.json()["profile_applied"] is None
 
 
@@ -81,8 +81,6 @@ def test_binding_lock_beats_request_profile(client, make_user_key, fake_model):
     assert r.json()["profile_applied"] == "fast"         # it was applied (just shadowed on beam_size)
 
 
-# --- /v1/override-profiles names endpoint ---------------------------------
-
 def test_override_profiles_endpoint_lists_names(client, monkeypatch):
     monkeypatch.setattr(cfg, "OVERRIDE_PROFILES",
                         {"fast": {"BEAM_SIZE": 3}, "clinic-de": {"DEFAULT_LANGUAGE": "de"}},
@@ -112,8 +110,6 @@ def test_override_profiles_endpoint_requires_auth_when_locked(client, make_user_
     assert r.status_code == 200, r.text
     assert r.json()["profiles"] == ["fast"]
 
-
-# --- "__none__" suppression sentinel (P27) --------------------------------
 
 def test_none_sentinel_suppresses_bound_profile(client, make_user_key, fake_model):
     # A profile bound to a user normally applies; sending the reserved "__none__"
@@ -145,7 +141,7 @@ def test_none_sentinel_suppresses_bound_profile(client, make_user_key, fake_mode
     r = client.post("/v1/audio/transcriptions", files=_FILE, headers=bearer(raw_alice),
                     data={**base, "override_profile": NO_PROFILE_SENTINEL})
     assert r.status_code == 200, r.text
-    assert fake_model.last_kwargs["beam_size"] == default_beam   # suppressed → default
+    assert fake_model.last_kwargs["beam_size"] == default_beam
     assert r.json()["profile_applied"] is None
 
 
