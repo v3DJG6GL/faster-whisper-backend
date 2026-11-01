@@ -449,7 +449,7 @@ def test_measurement_replaces_a_larger_disk_prior(ledger):
 
 def test_disk_size_defaults_to_the_hub_cache_without_any_root(
         ledger, tmp_path, monkeypatch):
-    """Empty DOWNLOAD_ROOT + no HF_HOME is the documented default install
+    """Empty DOWNLOAD_ROOT + no HF_HOME is a documented install
     (.env.example: 'empty = standard HF cache ~/.cache/huggingface'); the
     prior must look where the hub itself writes (its HF_HUB_CACHE, frozen at
     import) instead of giving up."""
