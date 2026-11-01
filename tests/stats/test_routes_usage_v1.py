@@ -39,10 +39,6 @@ def _hour_in(tz, days_ago=0, hh=12):
                                  tzinfo=tz).timestamp() // 3600)
 
 
-# --------------------------------------------------------------------------
-# Shape (open mode)
-# --------------------------------------------------------------------------
-
 def test_v1_usage_shape(client):
     body = client.get("/v1/usage").json()
     assert set(body) == {
@@ -106,10 +102,6 @@ def test_v1_usage_params_clamped_and_tz_echoed(client):
     r = client.get("/v1/usage", params={"with": "decoding"})
     assert r.status_code == 422 and "decoding" in r.json()["detail"]
 
-
-# --------------------------------------------------------------------------
-# Totals + series + kinds
-# --------------------------------------------------------------------------
 
 def test_v1_usage_per_kind_totals_series_and_today(client, make_user_key):
     make_user_key("root", is_admin=True)  # flip lockdown
@@ -189,10 +181,6 @@ def test_v1_usage_server_local_days_without_tz(client, make_user_key, set_tz):
     assert body["today"]["all"]["words"] == 5
     assert body["series"][-1]["day"] == (datetime.datetime.now(tokyo).date() - datetime.date(1970, 1, 1)).days
 
-
-# --------------------------------------------------------------------------
-# Scoping + auth
-# --------------------------------------------------------------------------
 
 def test_v1_usage_self_scoped_even_for_admin(client, make_user_key):
     admin_uid, admin_raw = make_user_key("root", is_admin=True)
