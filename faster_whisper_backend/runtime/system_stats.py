@@ -17,7 +17,6 @@ from typing import Any, Callable
 
 from faster_whisper_backend.runtime import model_registry
 
-# --- NVML init (optional, defensive) -----------------------------------------
 NVML_OK = False
 NVML_ERR: str | None = None
 _nvml_handle: Any = None
@@ -29,10 +28,9 @@ _handles: dict[int, Any] = {}
 def _nvml_index(cuda_index: int) -> int:
     """The NVML index of CUDA ordinal `cuda_index`. NVML enumerates every
     GPU and ignores CUDA_VISIBLE_DEVICES, so ordinal N is the N-th entry of
-    that list when it is set. A UUID / MIG entry keeps the raw ordinal (the
-    pre-mapping behaviour), as does an unset or empty list. Exact only when
-    CUDA's own order matches NVML's (CUDA_DEVICE_ORDER=PCI_BUS_ID, or
-    identical cards)."""
+    that list when it is set. A UUID / MIG entry, or an unset or empty
+    list, keeps the raw ordinal. Exact only when CUDA's own order matches
+    NVML's (CUDA_DEVICE_ORDER=PCI_BUS_ID, or identical cards)."""
     cvd = (os.environ.get("CUDA_VISIBLE_DEVICES") or "").strip()
     if cvd:
         parts = [p.strip() for p in cvd.split(",")]
@@ -63,7 +61,6 @@ try:
 except Exception as e:                  # ImportError, NVMLError, ...
     NVML_ERR = f"{type(e).__name__}: {e}"
 
-# --- psutil ------------------------------------------------------------------
 import psutil
 
 # Prime the non-blocking cpu_percent calls so the first /stats fetch returns
@@ -155,13 +152,11 @@ def _build_gpu() -> dict[str, Any] | None:
 
 def _build_host() -> dict[str, Any]:
     vmem = psutil.virtual_memory()
-    # Disk free on the drive containing the model cache — the hub dir
-    # model_sizes looks in for GGUF / pyannote (runtime.hf_cache.hub_lookup_dir:
-    # HF_HUB_CACHE, else HF_HOME/hub, else DOWNLOAD_ROOT/hf/hub, else the hub's
-    # own default). Whisper (DOWNLOAD_ROOT itself) and UVR
-    # (DOWNLOAD_ROOT/audio-separator) sit beside it under the same root, so
-    # without a hub override it is their drive too. Walk up to the nearest
-    # existing ancestor so a not-yet-created cache dir still reads its drive.
+    # Disk free on the drive holding the hub cache (hf_cache.hub_lookup_dir(),
+    # where model_sizes looks for GGUF / pyannote). Whisper and UVR live under
+    # DOWNLOAD_ROOT beside it, so without a hub override it is their drive too.
+    # Walk up to the nearest existing ancestor so a not-yet-created cache dir
+    # still reads its drive.
     try:
         from faster_whisper_backend.runtime import hf_cache
         cache_dir = hf_cache.hub_lookup_dir()
