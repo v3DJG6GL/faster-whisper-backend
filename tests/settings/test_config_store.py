@@ -1,11 +1,8 @@
-"""Exhaustive tests for config_store + the settings schema: AdminConfig field
-bounds & validators, ModelOverride, normalize_tags, the overrides load/save
-layer (incl. its save lock), and the small helper functions. The atomic writer
-itself is covered in tests/core/test_atomic_json.py.
-
-Factory-rule round-trips (load/save_factory_rules, terminal/dup/bad-regex)
-are already covered by test_factory_rules.py; here we add the
-override layer, the scalar/model validators, and the helpers it does not touch.
+"""Tests for config_store + the settings schema: AdminConfig field bounds &
+validators, ModelOverride, normalize_tags, the overrides load/save layer (incl.
+its save lock) and the small helpers. The atomic writer is covered in
+tests/core/test_atomic_json.py, factory-rule round-trips in
+test_factory_rules.py.
 """
 
 import json
@@ -21,7 +18,6 @@ from faster_whisper_backend.core import atomic_json
 
 
 def _ok(**fields):
-    """Validate a partial AdminConfig payload; return the model."""
     return settings_schema.AdminConfig.model_validate(fields)
 
 
@@ -29,10 +25,6 @@ def _bad(**fields):
     with pytest.raises(ValidationError):
         settings_schema.AdminConfig.model_validate(fields)
 
-
-# ---------------------------------------------------------------------------
-# extra=forbid
-# ---------------------------------------------------------------------------
 
 def test_unknown_key_rejected():
     _bad(NOT_A_REAL_FIELD=1)
@@ -42,10 +34,6 @@ def test_empty_payload_ok():
     m = _ok()
     assert m.BEAM_SIZE is None
 
-
-# ---------------------------------------------------------------------------
-# Numeric bounds (reject below / accept at / accept at / reject above)
-# ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("field,lo,hi", [
     ("MAX_LOADED_MODELS", 1, 8),
@@ -199,10 +187,6 @@ def test_silence_gates_must_fit_outer_on_save():
          STREAMING_HARD_BREAK_SILENCE_MS=7000)
 
 
-# ---------------------------------------------------------------------------
-# Patterns / literals
-# ---------------------------------------------------------------------------
-
 @pytest.mark.parametrize("val", ["large-v2", "org/name", "a", "A1_.-"])
 def test_model_id_valid(val):
     assert _ok(DEFAULT_MODEL=val).DEFAULT_MODEL == val
@@ -231,13 +215,13 @@ def test_device_and_compute_literals():
 
 
 def test_compute_vs_convert_quant_literals():
-    # MODEL_COMPUTE_TYPE is the full CT2 compute_type set (10), so it now allows
-    # int16 and the "auto"/"default" selectors. CONVERT_QUANTIZATION is CT2's
-    # conversion set (8) — the concrete precisions only, NOT auto/default.
+    # MODEL_COMPUTE_TYPE is CT2's runtime set, incl. the "auto"/"default"
+    # selectors; CONVERT_QUANTIZATION is the conversion set — concrete
+    # precisions only, so auto/default are refused there.
     _ok(MODEL_COMPUTE_TYPE="auto")
     _ok(MODEL_COMPUTE_TYPE="int16")
     _ok(MODEL_COMPUTE_TYPE="int8_bfloat16")
-    _bad(CONVERT_QUANTIZATION="auto")          # auto/default are runtime-only
+    _bad(CONVERT_QUANTIZATION="auto")
     _bad(CONVERT_QUANTIZATION="default")
     assert _ok(CONVERT_QUANTIZATION="int16").CONVERT_QUANTIZATION == "int16"
 
@@ -253,10 +237,6 @@ def test_console_log_level_literal():
     assert _ok(CONSOLE_LOG_LEVEL=" WARNING ").CONSOLE_LOG_LEVEL == "warning"
     _bad(CONSOLE_LOG_LEVEL="verbose")
 
-
-# ---------------------------------------------------------------------------
-# Translation (T2T) fields
-# ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("val", ["", "org/repo", "org/repo:Q4_K_M",
                                  "tencent/HY-MT1.5-7B-GGUF:Q4_K_M",
@@ -305,7 +285,7 @@ def test_translation_prompt_template_placeholders():
 def test_translation_list_fields_validate_entries():
     _ok(TRANSLATION_ALLOWED_MODELS=["org/repo", "org/repo:Q8_0"])
     _ok(TRANSLATION_PRELOAD_MODELS=["org/repo:Q4_K_M"])
-    _bad(TRANSLATION_ALLOWED_MODELS=[""])            # empty entry
+    _bad(TRANSLATION_ALLOWED_MODELS=[""])
     _bad(TRANSLATION_ALLOWED_MODELS=["no-slash:q4"])
     _bad(TRANSLATION_PRELOAD_MODELS=["no-slash"])
 
@@ -348,14 +328,7 @@ def test_load_overrides_coerces_translation_allowed_models_to_set(tmp_path):
     assert isinstance(out["TRANSLATION_ALLOWED_MODELS"], set)
 
 
-# ---------------------------------------------------------------------------
-# CONVERT_QUANTIZATION / TEMPERATURE / SUPPRESS_TOKENS validators
-# ---------------------------------------------------------------------------
-
 def test_convert_quantisation():
-    # The full CT2 ACCEPTED_MODEL_TYPES set is valid (ConvertQuantLit) — wider
-    # than ComputeLit (e.g. int16, int8_bfloat16, int8_float32 are NOT runtime
-    # compute types but ARE valid conversion quantizations).
     for v in ["float32", "float16", "bfloat16", "int16",
               "int8", "int8_float32", "int8_float16", "int8_bfloat16"]:
         _ok(CONVERT_QUANTIZATION=v)
@@ -368,9 +341,9 @@ def test_temperature():
     _ok(TEMPERATURE="")
     _ok(TEMPERATURE="0,0.2,0.4,0.6,0.8,1.0")
     _ok(TEMPERATURE="0.8,0.2")          # descending allowed (order not enforced)
-    _ok(TEMPERATURE="0.5 , 0.5")        # whitespace tolerated
+    _ok(TEMPERATURE="0.5 , 0.5")
     _bad(TEMPERATURE="1.1")             # out of range
-    _bad(TEMPERATURE="abc")             # not a float
+    _bad(TEMPERATURE="abc")
 
 
 def test_suppress_tokens():
@@ -380,10 +353,6 @@ def test_suppress_tokens():
     _bad(SUPPRESS_TOKENS="1.5")
     _bad(SUPPRESS_TOKENS="x")
 
-
-# ---------------------------------------------------------------------------
-# Host validators (two different ones!)
-# ---------------------------------------------------------------------------
 
 def test_allowed_hosts_ip_cidr():
     _ok(ADMIN_WEBUI_ALLOWED_HOSTS=["127.0.0.1", "::1", "192.168.1.0/24"])
@@ -418,7 +387,7 @@ def test_server_host_loose_charset():
     _ok(SERVER_HOST="0.0.0.0")
     _ok(SERVER_HOST="::")
     _ok(SERVER_HOST="my-host.local")
-    _bad(SERVER_HOST="bad host")       # space rejected
+    _bad(SERVER_HOST="bad host")
     _bad(SERVER_HOST="has/slash")
 
 
@@ -431,16 +400,12 @@ def test_server_host_bracketed_ipv6_saves_bindable():
     _bad(SERVER_HOST="[[::]]")
 
 
-# ---------------------------------------------------------------------------
-# LOG_FILE path safety
-# ---------------------------------------------------------------------------
-
 def test_log_file_rejects_unc_and_traversal():
     _ok(LOG_FILE="logs/whisper.log")
     _bad(LOG_FILE="\\\\server\\share\\x.log")  # UNC
     _bad(LOG_FILE="//server/share/x.log")       # posix UNC-ish
     _bad(LOG_FILE="../etc/passwd")              # .. segment
-    _bad(LOG_FILE="logs/../../x")               # windows-style .. caught too
+    _bad(LOG_FILE="logs/../../x")               # .. mid-path
 
 
 @pytest.mark.parametrize("field", [
@@ -474,18 +439,10 @@ def test_hf_token_drops_surrounding_whitespace():
     assert _ok(HF_TOKEN=" \t\n").HF_TOKEN == ""
 
 
-# ---------------------------------------------------------------------------
-# _cap_list (ALLOWED_MODELS / PRELOAD_MODELS)
-# ---------------------------------------------------------------------------
-
 def test_cap_list_over_1000():
     _bad(ALLOWED_MODELS=[f"m{i}" for i in range(1001)])
     _ok(ALLOWED_MODELS=[f"m{i}" for i in range(1000)])
 
-
-# ---------------------------------------------------------------------------
-# normalize_tags
-# ---------------------------------------------------------------------------
 
 def test_normalize_tags_basic():
     assert settings_schema.normalize_tags(None) == []
@@ -507,10 +464,6 @@ def test_normalize_tags_rejects_bad():
     with pytest.raises(ValueError):
         settings_schema.normalize_tags(["x" * 33])
 
-
-# ---------------------------------------------------------------------------
-# Pipeline rule validators (the parts not covered via save_factory_rules)
-# ---------------------------------------------------------------------------
 
 def _regex(name, pattern="x", replacement="y"):
     # A one-entry regex-list == a former single `regex` rule.
@@ -550,8 +503,7 @@ def _ok_on_save(**fields):
 
 
 def test_pipeline_bad_backref_reported():
-    # Replacement \3 with one group -> re.sub raises -> "regex test failed".
-    # The .sub probe runs out-of-process on SAVE (guard_regex context).
+    # Replacement \3 with one group -> "regex test failed".
     with pytest.raises(ValidationError) as ei:
         _ok_on_save(PIPELINE_RULES=[_regex("b", pattern="(a)", replacement=r"\3"),
                                     _terminal()])
@@ -559,8 +511,8 @@ def test_pipeline_bad_backref_reported():
 
 
 def test_pipeline_catastrophic_regex_rejected_on_save(monkeypatch):
-    # A catastrophic-backtracking pattern is rejected on save WITHOUT hanging:
-    # the out-of-process guard is killed on timeout (shortened here).
+    # The structural screen refuses a catastrophic-backtracking pattern on save
+    # before any timed probe runs; the shortened timeout only bounds a regression.
     from faster_whisper_backend.pipeline import regex_guard
     monkeypatch.setattr(regex_guard, "_GUARD_TIMEOUT", 0.5)
     with pytest.raises(ValidationError) as ei:
@@ -582,12 +534,9 @@ def test_pipeline_replacement_growth_rejected_when_fixture_never_matches():
 
 
 def test_pipeline_backref_only_replacement_rejected():
-    # The analytic growth bound used to DELETE group references from the
-    # replacement before measuring it, so a replacement made only of
-    # backreferences measured as zero growth and was always accepted —
-    # ("(n+)", r"\1" * 256) amplifies exactly as hard as ("n", "n" * 256),
-    # which the sibling test above proves is rejected. Each reference is now
-    # charged the shortest string the pattern can match.
+    # The growth bound charges each group reference the shortest string the
+    # pattern can match: ("(n+)", r"\1" * 256) amplifies exactly as hard as
+    # ("n", "n" * 256), which the sibling test above rejects.
     with pytest.raises(ValidationError) as ei:
         _ok_on_save(PIPELINE_RULES=[
             _regex("blow", pattern="(n+)", replacement="\\1" * 256), _terminal()])
@@ -595,11 +544,9 @@ def test_pipeline_backref_only_replacement_rejected():
 
 
 def test_pipeline_prefix_ambiguous_alternation_rejected():
-    # The overlap screen only caught byte-IDENTICAL branches, so the
-    # prefix-ambiguous forms — one run of input that splits many ways — walked
-    # through and then backtracked exponentially on real transcripts.
-    # (The _nested_repetition unit assertions for the full family live in
-    # tests/pipeline/test_regex_guard.py with the rest of the helper's coverage.)
+    # A prefix-ambiguous repeated alternation splits one run of input many ways
+    # and backtracks exponentially. (The full _nested_repetition family is
+    # unit-tested in tests/pipeline/test_regex_guard.py.)
     with pytest.raises(ValidationError) as ei:
         _ok_on_save(PIPELINE_RULES=[
             _regex("boom", pattern="(n|d|nd)+#", replacement="X"), _terminal()])
@@ -736,13 +683,11 @@ def test_regex_list_validates_and_keeps_order():
 
 
 def test_regex_list_requires_pattern_per_entry():
-    # `pattern` is required on every entry.
     _bad(PIPELINE_RULES=[{"name": "rl", "label": "RL", "type": "regex-list",
                           "entries": [{"replacement": "b"}]}, _terminal()])
 
 
 def test_regex_list_entry_extra_forbid():
-    # Unknown per-entry key rejected (RegexListEntry has extra="forbid").
     _bad(PIPELINE_RULES=[{"name": "rl", "label": "RL", "type": "regex-list",
                           "entries": [{"pattern": "a", "bogus": 1}]}, _terminal()])
 
@@ -854,19 +799,6 @@ def test_default_language_must_be_a_whisper_code():
             model.model_validate({"DEFAULT_LANGUAGE": ok})
 
 
-# NOTE: the validator's "took > 2 s" catastrophic-backtracking branch is
-# deliberately NOT tested here. Triggering it requires a pattern that never
-# terminates (e.g. (.+)+# against the validator's fixed ~1 KB fixture); the
-# validator abandons the work via a daemon thread join(timeout=2.0), but that
-# daemon thread then runs the runaway regex forever, pinning a CPU core and
-# contending the GIL for the rest of the pytest session. The error branch is
-# covered by test_pipeline_bad_backref_reported above.
-
-
-# ---------------------------------------------------------------------------
-# ModelOverride validators
-# ---------------------------------------------------------------------------
-
 def test_model_override_include_exclude_overlap():
     with pytest.raises(ValidationError):
         settings_schema.ModelOverride.model_validate({
@@ -889,8 +821,8 @@ def test_admin_extra_forbid_on_override():
 def test_empty_override_for_a_nonempty_str_field_means_no_override():
     # The /settings per-model pane seeds `+ override` with '' for string
     # kinds (REVISION has no global to seed from) and a cleared string widget
-    # stores ''. For a field needing >= 1 character that 422'd the whole save;
-    # '' now means "no override" (absent = inherit).
+    # stores '': for a field needing >= 1 character '' means "no override"
+    # (absent = inherit), not a 422 for the whole save.
     m = settings_schema.ModelOverride.model_validate(
         {"REVISION": "", "BGM_SEPARATION_UVR_MODEL": "", "BEAM_SIZE": 3})
     assert m.REVISION is None and m.BGM_SEPARATION_UVR_MODEL is None
@@ -899,7 +831,6 @@ def test_empty_override_for_a_nonempty_str_field_means_no_override():
     p = settings_schema.OverrideProfile.model_validate(
         {"BGM_SEPARATION_UVR_MODEL": ""})
     assert p.BGM_SEPARATION_UVR_MODEL is None
-    # A real value still validates and is kept.
     m = settings_schema.ModelOverride.model_validate(
         {"REVISION": "main", "BGM_SEPARATION_UVR_MODEL": "UVR-MDX-NET-Inst_HQ_3"})
     assert (m.REVISION, m.BGM_SEPARATION_UVR_MODEL) == (
@@ -913,10 +844,6 @@ def test_empty_override_keeps_an_explicit_empty_where_empty_is_valid():
     assert m.DEFAULT_LANGUAGE == "" and "DEFAULT_LANGUAGE" in m.model_fields_set
 
 
-# ---------------------------------------------------------------------------
-# Model-level cross-field validators (only fire when both keys present)
-# ---------------------------------------------------------------------------
-
 def test_no_orphan_overrides_fires_only_with_both():
     # Both present + non-empty allowlist + orphan -> reject.
     _bad(ALLOWED_MODELS=["a"], MODEL_OVERRIDES={"b": {"BEAM_SIZE": 5}})
@@ -924,7 +851,6 @@ def test_no_orphan_overrides_fires_only_with_both():
     _ok(ALLOWED_MODELS=[], MODEL_OVERRIDES={"b": {"BEAM_SIZE": 5}})
     # Only overrides present -> cross-check skipped.
     _ok(MODEL_OVERRIDES={"b": {"BEAM_SIZE": 5}})
-    # Override model in allowlist -> ok.
     _ok(ALLOWED_MODELS=["a", "b"], MODEL_OVERRIDES={"b": {"BEAM_SIZE": 5}})
 
 
@@ -933,7 +859,6 @@ def test_pipeline_rule_slugs_cross_check():
     # Unknown slug in a per-model EXCLUDE -> reject (both keys present).
     _bad(PIPELINE_RULES=rules,
          MODEL_OVERRIDES={"m": {"PIPELINE_RULES_EXCLUDE": ["bogus"]}})
-    # Known slug -> ok.
     _ok(PIPELINE_RULES=rules,
         MODEL_OVERRIDES={"m": {"PIPELINE_RULES_EXCLUDE": ["known"]}})
     # Only MODEL_OVERRIDES present -> skipped.
@@ -960,10 +885,6 @@ def test_pipeline_rule_slugs_from_context():
              "MODEL_OVERRIDES": {"m": {"PIPELINE_RULES_EXCLUDE": ["bogus"]}}},
             context={"canonical_slugs": {"bogus"}})
 
-
-# ---------------------------------------------------------------------------
-# load_overrides / save_overrides
-# ---------------------------------------------------------------------------
 
 def test_load_overrides_missing_returns_empty(tmp_path):
     assert cs.load_overrides(str(tmp_path / "nope.json")) == {}
@@ -1048,7 +969,6 @@ def test_stored_out_of_range_suppress_tokens_is_dropped_not_fatal(tmp_path):
 def test_load_overrides_unknown_key_ignored_whole_file(tmp_path):
     p = tmp_path / "u.json"
     p.write_text(json.dumps({"BEAM_SIZE": 5, "BOGUS": 1}), encoding="utf-8")
-    # Whole file is rejected on validation failure -> {}.
     assert cs.load_overrides(str(p)) == {}
 
 
@@ -1271,8 +1191,8 @@ def test_binding_defaults_missing_or_null_overrides_and_locks_to_empty():
 def test_removing_the_local_rules_copy_refuses_refs_it_would_strand(
         tmp_path, monkeypatch):
     # Resetting PIPELINE_RULES makes the factory list canonical; a stored
-    # exclude naming a local-only rule would then 422 every later save of
-    # that key, so the reset is refused instead and the file kept.
+    # exclude naming a local-only rule would then dangle silently (no page
+    # draws a row for it), so the reset is refused instead and the file kept.
     factory = [{"name": "factory-rule"}, {"name": "trim-edges"}]
     monkeypatch.setattr(cs, "load_factory_rules", lambda path=None: factory)
     monkeypatch.setattr(cs, "_canonical_rule_slugs",
@@ -1347,33 +1267,30 @@ def test_save_overrides_none_removes(tmp_path):
 def test_save_overrides_changed_excludes_unchanged(tmp_path):
     p = str(tmp_path / "config.local.json")
     cs.save_overrides({"BEAM_SIZE": 5}, p)
-    # Re-saving the same value reports no change for it.
     changed = cs.save_overrides({"BEAM_SIZE": 5}, p)
     assert changed == {}
 
 
 def test_save_factory_rules_preserves_sibling_defaults(tmp_path):
-    # config.json now holds ALL factory defaults, not just PIPELINE_RULES, so a
-    # rules "Promote to factory" must read-modify-write — not clobber the sibling
-    # scalar defaults (the old whole-file replace would wipe every other value).
+    # config.json holds ALL factory defaults, not just PIPELINE_RULES, so a
+    # rules "Promote to factory" must read-modify-write, not clobber the
+    # sibling scalar defaults.
     p = str(tmp_path / "config.json")
     with open(p, "w", encoding="utf-8") as f:
         json.dump({"schema_version": 1, "DEFAULT_MODEL": "keep-me", "BEST_OF": 7,
                    "PIPELINE_RULES": [{"name": "t", "label": "T", "type": "terminal"}]}, f)
     cs.save_factory_rules([{"name": "trim", "label": "Trim", "type": "terminal"}], p)
     on_disk = json.loads(open(p, encoding="utf-8").read())
-    assert on_disk["DEFAULT_MODEL"] == "keep-me"     # sibling default preserved
-    assert on_disk["BEST_OF"] == 7                    # sibling default preserved
-    assert [r["name"] for r in on_disk["PIPELINE_RULES"]] == ["trim"]   # rules updated
+    assert on_disk["DEFAULT_MODEL"] == "keep-me"
+    assert on_disk["BEST_OF"] == 7
+    assert [r["name"] for r in on_disk["PIPELINE_RULES"]] == ["trim"]
 
 
 def test_sample_sizing_absent_field_uses_baseline_not_live_override(monkeypatch):
-    # Regression: _validate_sample_sizing must fall back to config._BASELINE
-    # (the immutable in-repo default) for an absent field, NOT the live config
-    # attribute. The live attribute already carries any applied override, so at
-    # save time (server running) it would be the OLD override while at load
-    # time (config import) it is the bare default — that asymmetry let a save
-    # pass validation, then the next restart's load fail it and silently drop
+    # _validate_sample_sizing must fall back to config._BASELINE (the in-repo
+    # default) for an absent field, NOT the live attribute: that carries the
+    # applied override at save time but the bare default at load time, so a
+    # save passed and the next restart's load failed it and silently dropped
     # EVERY override on disk.
     from faster_whisper_backend.settings import config as _cfg
 
@@ -1476,9 +1393,9 @@ def test_save_overrides_refuses_a_file_only_an_env_pin_makes_valid(tmp_path,
 
 def test_save_overrides_prefixed_cookie_name_with_env_pinned_secure(tmp_path,
                                                                   monkeypatch):
-    """The bare re-check (run because an env pin exists) dropped the env
-    context but kept the save-only cookie-prefix check, so it fell back to
-    the baseline Secure=False and refused a cookie that IS Secure."""
+    """An env-pinned SESSION_COOKIE_SECURE=True counts for the save-only
+    __Host- prefix check: the bare re-check an env pin triggers must not fall
+    back to the baseline Secure=False."""
     monkeypatch.setattr(cs, "_env_effective_values",
                         lambda: {"SESSION_COOKIE_SECURE": True})
     p = str(tmp_path / "config.local.json")
@@ -1562,7 +1479,7 @@ def test_env_pinned_fields(monkeypatch):
     pinned = cs.env_pinned_fields()
     assert pinned.get("DEFAULT_MODEL") == "WHISPER_DEFAULT_MODEL"
     assert pinned.get("BEAM_SIZE") == "WHISPER_BEAM_SIZE"
-    assert "BOOTSTRAP_ADMIN_KEY" not in pinned  # a secret constant, not an AdminConfig field
+    assert "BOOTSTRAP_ADMIN_KEY" not in pinned
 
 
 def test_env_pinned_fields_excludes_rejected_env_values(monkeypatch):
@@ -1581,7 +1498,6 @@ def test_env_pinned_fields_excludes_rejected_env_values(monkeypatch):
         assert "BEST_OF" not in config._ENV_REJECTED
         pinned = cs.env_pinned_fields()
         assert "BEAM_SIZE" not in pinned
-        # A validly pinned field is unaffected by the exclusion.
         assert pinned.get("BEST_OF") == "WHISPER_BEST_OF"
     finally:
         monkeypatch.undo()
@@ -1804,8 +1720,6 @@ def test_trusted_origins_lowercased():
 
 
 def test_origins_uppercase_scheme_is_lowercased_not_refused():
-    # The scheme was matched case-sensitively BEFORE the .lower() the
-    # docstrings promise, so 'HTTPS://A.com' got a 422.
     assert _ok(TRUSTED_ORIGINS=["HTTPS://A.com"]).TRUSTED_ORIGINS == ["https://a.com"]
     assert _ok(CORS_ALLOW_ORIGINS=["HTTP://B.com:8080"]).CORS_ALLOW_ORIGINS == [
         "http://b.com:8080"]
