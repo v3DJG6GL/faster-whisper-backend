@@ -35,7 +35,7 @@ def test_snapshot_scrubs_identity_by_default():
 def test_update_merges_only_non_none_and_ignores_unknown_ids():
     jid = jobs.job_start("download", model="gguf:org/m")
     jobs.job_update(jid, progress=0.3)
-    jobs.job_update(jid, progress=None, step="fetch")   # None must not clobber
+    jobs.job_update(jid, progress=None, step="fetch")
     row = jobs.jobs_snapshot()[0]
     assert row["progress"] == 0.3 and row["step"] == "fetch"
     jobs.job_update("nope", progress=1.0)               # no-op, no raise
