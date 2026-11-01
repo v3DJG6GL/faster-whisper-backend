@@ -152,8 +152,6 @@ class RunPlan:
         self._hold: float = 0.0
         self._finished = False
 
-    # ── configuration / refinement ──────────────────────────────────────
-
     def set_stages(self, names: list[str]) -> None:
         """The stages this run will execute, in pipeline order. Provisional
         at request entry, final once every enable/allowlist verdict has
@@ -289,8 +287,6 @@ class RunPlan:
                 st.learn = False
             self._close(name, "done", took_s)
 
-    # ── observation ────────────────────────────────────────────────────
-
     def tick(self, *, stage: str | None, progress: float | None = None,
              target: str | None = None,
              target_progress: float | None = None,
@@ -356,7 +352,6 @@ class RunPlan:
                 st.state = "active"
                 st.started = now
                 st.frac = None
-            # waiting is queue time, billed apart from the stage's work
             if phase == "waiting":
                 if st.wait_started is None:
                     st.wait_started = now
@@ -377,8 +372,6 @@ class RunPlan:
             if target and st.units:
                 self._advance_units_locked(st, target, target_progress, now)
             self._recompute()
-
-    # ── output ─────────────────────────────────────────────────────────
 
     def snapshot(self) -> dict:
         with self._lock:
@@ -431,7 +424,7 @@ class RunPlan:
         if samples:
             stage_rates.record_many(samples)
 
-    # ── internals (lock held) ──────────────────────────────────────────
+    # Internals: the caller holds the lock.
 
     def _get(self, name: str) -> Stage | None:
         for s in self._stages:
@@ -637,7 +630,6 @@ class RunPlan:
         st.est_src = src
         st.est_s = total if (known and audio) else None
 
-    # weight of a stage in the overall sum: what it cost, else what it should
     @staticmethod
     def _weight(st: Stage) -> float | None:
         if st.state in ("done", "failed"):
@@ -681,10 +673,9 @@ class RunPlan:
         if st.frac is not None:
             return st.frac
         # A warm-up phase (resolving, waiting, analyzing, loading, a cold
-        # model fetch, preparing) reports no fraction because nothing of the
-        # stage's work has happened: the bar stays where it is rather than
-        # filling by the clock — a number that moved while the stage could
-        # not report said nothing real.
+        # model fetch, preparing) reports no fraction because none of the
+        # stage's work has happened yet: hold the bar, don't fill it by the
+        # clock.
         if st.phase is not None:
             return 0.0
         # The clock fill counts work time only, as the ETA does: a warm-up
@@ -748,7 +739,6 @@ class RunPlan:
                     continue
                 eta += st.est_s
                 continue
-            # active
             # A warm-up phase with no fraction to go on: _fraction holds the
             # bar there, so the ETA holds too — counting the estimate down by
             # the clock only to snap back up once the phase ends said nothing.
