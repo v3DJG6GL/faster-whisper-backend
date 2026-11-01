@@ -1,21 +1,18 @@
-"""Silence-trim a WAV file using the Silero VAD that ships with
+"""Silence-trim capture audio using the Silero VAD that ships with
 faster-whisper.
 
-Used by the /captures training-data path:
-  - Samples: auto-trim after merge_wavs() (cfg.CAPTURES_VAD_TRIM_ENABLED_FOR_SAMPLES)
-  - Singletons: manual button on the /captures detail page
+trim_pcm_for_merge is the sample path: with
+cfg.CAPTURES_VAD_TRIM_ENABLED_FOR_SAMPLES, merge_wavs runs it on every member
+before concatenation. It drops the outer silence and caps internal gaps, so
+all silence in a sample is uniform. trim_wav (whole-file leading/trailing
+trim) lost its only production caller when the singleton "Trim silence"
+button was retired.
 
-The trim is non-destructive at the API surface: callers pass a `dst_path`
-distinct from the source when they want to preserve the original. Format
-constraints match captures/merge.py — 16 kHz mono signed-16-bit PCM RIFF/WAVE
-— so a Whisper fine-tune loader sees identical audio shape for trimmed
-and untrimmed samples.
-
-Only leading/trailing silence is trimmed; inter-utterance gaps inside the
-clip are preserved (groups deliberately insert ~300 ms silence between
-members per the Low-Resource Whisper paper). Calm-Whisper (arXiv:2505.12969)
-documents long silence as a hallucination trigger during fine-tune; this
-is the captures-side mitigation.
+Output keeps the captures/merge.py format (16 kHz mono signed-16-bit PCM
+RIFF/WAVE), so a Whisper fine-tune loader sees the same audio shape for
+trimmed and untrimmed samples. Calm-Whisper (arXiv:2505.12969) documents
+long silence as a hallucination trigger during fine-tune; this is the
+captures-side mitigation.
 """
 from __future__ import annotations
 
@@ -48,8 +45,8 @@ def trim_wav(
 
       {
         "trimmed":           bool,   # True iff dst was written
-        "lead_ms":           int,    # samples cut from front (0 if not trimmed)
-        "trail_ms":          int,    # samples cut from back  (0 if not trimmed)
+        "lead_ms":           int,    # ms cut from front (0 if not trimmed)
+        "trail_ms":          int,    # ms cut from back  (0 if not trimmed)
         "orig_duration_ms":  int,    # original WAV duration in ms
         "new_duration_ms":   int,    # post-trim duration (equals orig when
                                      # trimmed=False)
@@ -98,8 +95,7 @@ def trim_wav(
     if n_samples == 0:
         return _no_trim(0)
 
-    # int16 PCM bytes → float32 [-1, 1] numpy array. Silero VAD's
-    # threshold function operates on normalised float audio.
+    # Silero VAD expects normalised float audio in [-1, 1].
     audio = np.frombuffer(pcm, dtype=np.int16).astype(np.float32) / 32768.0
 
     # Use a relatively tight min_silence_duration to detect genuine
@@ -220,7 +216,7 @@ def trim_pcm_for_merge(
 ) -> dict:
     """Plan + apply a per-member silence trim for the group merge path.
 
-    Unlike `trim_wav` (singleton button: outer leading/trailing only), this
+    Unlike `trim_wav` (outer leading/trailing only, keeps a margin), this
     removes a member's outer leading/trailing silence ENTIRELY (no outer pad —
     the merge layer owns the uniform outer margin), pads only the inner sides
     of internal speech spans by `edge_pad_ms`, AND collapses any internal
@@ -289,13 +285,6 @@ def trim_pcm_for_merge(
     max_gap = max(0, int(max_internal_gap_ms)) * _REQ_RATE // 1000
     n_spans = len(speeches)
 
-    # Build a SPEECH-BODY-ONLY result in ORIGINAL samples: outer leading and
-    # trailing silence is removed ENTIRELY (no outer pad), internal speech
-    # segments keep `pad` of context on their inner sides, and the silence
-    # between two kept spans is capped at `max_gap`. The merge layer
-    # (audio_merge.merge_wavs) then adds the uniform outer margin (EDGE) and
-    # the inter-member join silence, so all silence in the final clip is
-    # uniform and the per-member body carries no edge padding of its own.
     bsps = audio_merge.BYTES_PER_SAMPLE
     out_chunks: list[bytes] = []
     segments: list[list[int]] = []
@@ -303,8 +292,6 @@ def trim_pcm_for_merge(
     prev_kept_end = 0    # original-sample end of the previous kept span
 
     for idx, seg in enumerate(speeches):
-        # No pad on the clip's outer edges (first span's left, last span's
-        # right); internal span sides keep `pad` of context.
         left_pad = 0 if idx == 0 else pad
         right_pad = 0 if idx == n_spans - 1 else pad
         s = max(0, int(seg["start"]) - left_pad)
@@ -317,13 +304,11 @@ def trim_pcm_for_merge(
             continue
 
         if not segments:
-            # Leading: drop everything before the first kept span.
             gap_keep = 0
         else:
             orig_gap = s - prev_kept_end
             gap_keep = min(orig_gap, max_gap)
             if gap_keep > 0:
-                # Emit `gap_keep` silence taken from the original gap bytes.
                 out_chunks.append(pcm[prev_kept_end * bsps:
                                       (prev_kept_end + gap_keep) * bsps])
                 new_pos += gap_keep
@@ -342,8 +327,7 @@ def trim_pcm_for_merge(
     out_pcm = b"".join(out_chunks)
     new_n = new_pos
     new_duration_ms = _samples_to_ms(new_n)
-    # Leading silence fully removed (info only; the merge layer owns outer
-    # margins now).
+    # Info only: the merge layer owns the outer margins.
     lead_ms = _samples_to_ms(int(speeches[0]["start"]))
 
     # Nothing meaningfully removed (under ~50 ms total) → identity, so the
