@@ -8,14 +8,11 @@
 @font-face { font-family: "Geist Mono"; font-style: normal; font-display: swap;
   font-weight: 100 900;
   src: url(/static/geist-mono-latin-wght-normal.woff2) format("woff2-variations"); }
-/* Global scaling tokens — every page uses these so a single :root knob
-   (`--fs-base`) re-scales the WHOLE UI. Bump --fs-base to scale up; the
-   scale-picker dropdown writes inline-style to override at runtime.
-   Spacing/padding everywhere uses rem so it scales with font.
-   Font stacks split chrome (sans) from code/values/log (mono): Segoe UI
-   ships on every Windows since Vista; Consolas on every Windows; both
-   listed first so we never fall through to Times New Roman / Courier New
-   on boxes without ui-monospace or Cascadia Code installed. --help is
+/* Global scaling tokens: the single :root knob `--fs-base` re-scales the
+   WHOLE UI (all sizes are rem); the scale picker overrides it inline at
+   runtime. Font stacks split chrome (sans) from code/values/log (mono);
+   Consolas leads the mono stack so Windows boxes without ui-monospace or
+   Cascadia Code never fall through to Courier New. --help is
    one notch brighter than --dim for description text. --magenta is
    consumed by NAV_CSS's own header activity cluster (.hact-ring border,
    .hact-bar.vram fill), so it must live here: pages that define no
@@ -68,12 +65,9 @@ body.col-fluid { --col: var(--col-fluid); }
    well: :root's --col was computed from the 100rem --col-data and inherits
    as a value. */
 html.pref-fluid body.col-data { --col-data: var(--col-fluid); --col: var(--col-fluid); }
-/* Boundary marker for transcription values: dim brackets around the EXACT
-   text, with internal whitespace preserved (pre-wrap) so a leading/trailing
-   space shows as a literal gap inside the brackets and the begin/end of the
-   transcription is unambiguous. Brackets are pseudo-elements — never part of
-   the text — so they can't be mistaken for content. Ordinary spaces stay
-   visible only as the gap they occupy; no per-space glyphs. */
+/* Boundary marker for transcription values: dim pseudo-element brackets
+   (never part of the copied text) around the EXACT text, whitespace kept
+   (pre-wrap), so a leading/trailing space shows as a gap inside them. */
 .ws-region { white-space: pre-wrap; overflow-wrap: anywhere; }
 .ws-region::before { content: "\27E6"; color: var(--dim); }
 .ws-region::after  { content: "\27E7"; color: var(--dim); }
@@ -136,8 +130,6 @@ header .sevpill.crit.hot { color: var(--red);
 header .sevpill.zero { opacity: 0.45; }
 @keyframes sev-flash { 0% { color: var(--bold) } 100% { color: inherit } }
 header .sevpill.flash { animation: sev-flash .6s ease-out; }
-/* Scale picker dropdown — same dark-themed look as other selects.
-   Inline SVG arrow keeps it portable across pages. */
 header .scale-picker {
   background: #0d1117 url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'><path fill='%236e7681' d='M0 0l5 6 5-6z'/></svg>")
     no-repeat right 0.375rem center;
@@ -150,11 +142,10 @@ header .scale-picker {
 /* ---- Two-tier sticky header (Carbon/Primer "global bar + page toolbar") ----
    Row 1 .header-inner = GLOBAL BAR, identical on every page:
      brand · │ · work links │ admin links · [more ▾] … status rail · utilities
-     Full-bleed SURFACE, but its content sits on the page canvas: never
-     narrower than the data canvas (100rem: the width one row needs, so form
-     pages don't fold it), never wider than the page's own column, so on data
-     pages brand and status rail end exactly where the cards end. Single-row
-     (the old 68.75rem cap + flex-wrap folded it into three rows). When the
+     Full-bleed SURFACE, but its content sits on the page canvas: the wider
+     of the page's own column and the data canvas (100rem: the width one row
+     needs, so form pages don't fold it), so on data / fluid pages brand and
+     status rail end exactly where the cards end. Single-row. When the
      links don't fit, NAV_OVERFLOW_JS drops them to a second row / tucks them
      into the .nav-more disclosure; the compaction ladder sheds labels and
      metrics in a designed order before that.
@@ -175,7 +166,6 @@ header { position: sticky; top: 0; z-index: 10;
   box-shadow: 0 6px 20px -14px rgba(0,0,0,0.7);
   container-type: inline-size; container-name: hdr; }
 
-/* row 1 — global bar */
 header .header-inner { display: flex; align-items: center; gap: 0.75rem;
   flex-wrap: nowrap; width: 100%;
   /* page canvas, floored at the data canvas (see :root --col-*) */
@@ -185,8 +175,7 @@ header .title { display: inline-flex; align-items: center; gap: 0.5rem;
   font-weight: 600; color: var(--bold); white-space: nowrap;
   flex-shrink: 1; min-width: 0; max-width: 22rem; overflow: hidden; }
 header .brand-mark { width: 2.2rem; height: 2.2rem; flex-shrink: 0; display: block; }
-/* The lockup is an <a> to the / landing hub — same flex layout as its .title
-   parent so wrapping it changed nothing visually; color:inherit keeps the
+/* The lockup is an <a> to the / landing hub; color:inherit keeps the
    wordmark spans' own colors. */
 header .brand-link { display: inline-flex; align-items: center; gap: 0.5rem;
   color: inherit; text-decoration: none; min-width: 0; }
@@ -226,7 +215,6 @@ header .vtag::after { content: attr(data-tip); position: absolute; left: 0;
   color: var(--fg); font-size: var(--fs-xs); line-height: 1.8;
   white-space: pre; text-align: left; }
 header .vtag:hover::after, header .vtag:focus-visible::after { display: block; }
-/* the requested clear separation between logo and nav */
 header .brand-sep { flex-shrink: 0; width: 1px; align-self: stretch;
   margin: 0.15rem 0.35rem; background: var(--border); }
 /* fixed gap only: #navrow absorbs the slack in the single row */
@@ -237,8 +225,7 @@ header .hdr-right { display: flex; align-items: center; gap: 0.5rem; flex-shrink
   margin-left: auto; }
 /* Status rail — activity cluster + severity pills read as ONE segmented chip.
    Each half keeps its own border (so a hidden half leaves no empty box) and
-   the halves fuse when both are visible. Same IDs as before: SEV_POLLER_JS
-   and ACTIVITY_CLUSTER_JS are untouched. */
+   the halves fuse when both are visible. */
 header .hdr-status { display: inline-flex; align-items: stretch; flex: none; }
 header .sevpills { display: inline-flex; align-items: center; gap: 0.55rem;
   padding: 0 0.6rem; background: #0d1117; border: 1px solid var(--border);
@@ -263,7 +250,6 @@ header .sevpill.hot::before { opacity: 1; }
    ACTIVITY_CLUSTER_JS from /stats/stream?lite=1. Visibility mirrors the
    stats nav-link's whoami gate: default-hidden, JS adds `.allowed`. */
 header .hact-wrap { position: relative; display: inline-flex; }
-/* Button chrome per the mockup: mono type, recessed ground, cyan hover ring. */
 header .hdr-activity { display: none; align-items: center; gap: 0.65rem;
   background: #10151c; border: 1px solid var(--border); border-radius: 6px;
   padding: 0.2rem 0.65rem; cursor: pointer; color: var(--fg);
@@ -309,8 +295,8 @@ header .hdr-activity.stale .hact-bar i { background: var(--help); }
 header .hdr-activity.stale .hact-jobs { color: var(--help); }
 header .hdr-activity.stale .hact-ring { animation: none;
   border-color: var(--border); }
-/* Popover: bordered sections (running · server · models) + footer link. */
-/* Placed by window._anchorPopover: end-aligned under the button, flipped to
+/* Popover (running · server · models + footer link), placed by
+   window._anchorPopover: end-aligned under the button, flipped to
    start-align before it may leave the header canvas, clamped to the viewport. */
 .hact-pop { inset: auto; margin: 0; color: var(--fg);
   z-index: 60; width: 28rem; max-width: min(calc(100vw - 2rem), var(--col-data));
@@ -372,9 +358,9 @@ header .hdr-activity.stale .hact-ring { animation: none;
 .hact-pop .hact-foot a { color: var(--cyan); font-size: 0.74rem;
   text-decoration: none; }
 .hact-pop .empty { color: var(--help); font-style: italic; }
-/* Square icon buttons (logout / reload …) — same chrome as text buttons via
-   the page-local `header button` rule, just sized to the glyph. Labels live
-   in title + aria-label so the icon stays accessible. */
+/* Square icon buttons (logout / reload …): the `header button` chrome below,
+   sized to the glyph. Labels live in title + aria-label so the icon stays
+   accessible. */
 header .icon-btn { display: inline-flex; align-items: center; justify-content: center;
   padding: 0.3rem; line-height: 0; }
 header .icon-btn svg { width: 1.1em; height: 1.1em; display: block; }
@@ -385,18 +371,16 @@ header .icon-btn:focus-visible { outline: 2px solid var(--cyan); outline-offset:
 header .auth-action[hidden] { display: none; }
 
 /* row 2 — page toolbar. Shares the global bar's --panel surface so the
-   whole header reads as ONE cohesive slab; a single internal hairline
-   divides the two tiers. The page title anchors the left edge so the
-   action cluster never floats alone over the page background (the old
-   `background: var(--bg)` made this row the same colour as the page, so
-   it looked like buttons stuck to a transparent strip). */
+   whole header reads as ONE slab; a single internal hairline divides the
+   tiers. The page title anchors the left edge so the action cluster never
+   floats alone. */
 header .subbar { display: flex; align-items: center; gap: 0.6rem;
   flex-wrap: wrap; row-gap: 0.4rem;
   max-width: var(--col); margin: 0 auto; width: 100%;
   padding: 0.45rem var(--gutter); box-sizing: border-box;
   border-top: 1px solid var(--border); }
-/* page title — fills the left, with a small green tick echoing the brand
-   separator so the toolbar feels designed rather than empty-on-the-left. */
+/* page title, led by a small green tick echoing the brand separator so the
+   toolbar feels designed rather than empty-on-the-left. */
 header .subbar-title { flex: 0 0 auto; display: inline-flex; align-items: center;
   gap: 0.5rem; font: 600 var(--fs-md)/1.2 var(--font-sans); color: var(--bold);
   white-space: nowrap; }
@@ -417,12 +401,9 @@ header .subbar #filter { flex: 1 1 auto; min-width: 8rem; max-width: 32rem; }
 header .subbar .sep { align-self: stretch; width: 1px; background: var(--border);
   margin: 0.1rem 0.15rem; }
 
-/* Canonical page-toolbar controls. Every page renders identical buttons,
-   pills and filter inputs inside the header; page-local CSS no longer
-   redefines `header button` / `header .pill` (they used to drift — e.g.
-   /quick-config shrank its buttons to --fs-sm), so the toolbar now matches
-   across all pages. This block is injected after each page's own <style>,
-   so these rules win the cascade on equal specificity. */
+/* Canonical page-toolbar controls, identical on every page. This block is
+   injected after each page's own <style>, so these rules beat any page-local
+   `header button` / `header .pill` rule of equal specificity. */
 header button { background: #21262d; color: var(--fg);
   border: 1px solid var(--border); border-radius: 4px;
   padding: 0.3rem 0.7rem; font: inherit; font-size: var(--fs-md);
@@ -533,8 +514,7 @@ body:not(.col-data) header .width-toggle { display: none; }
 
 /* ---- Shared pick-list widget (PICK_LIST_JS → window._renderPickList) ----
    A button that opens a searchable checklist; used by /stats (users / keys,
-   ranked by the measure) and /captures (speakers, ranked by hours). Class
-   names are the ones /stats always used, so its layout is unchanged. */
+   ranked by the measure) and /captures (speakers, ranked by hours). */
 .picker { position: relative; display: inline-block; }
 .picker > button { background: var(--panel); border: 1px solid var(--border); border-radius: 6px;
   color: var(--fg); font: inherit; font-size: var(--fs-sm); padding: 0.1rem 0.5rem; cursor: pointer;
@@ -575,14 +555,10 @@ body:not(.col-data) header .width-toggle { display: none; }
 .pick-foot button { background: transparent; border: 1px solid var(--border); border-radius: 4px;
   color: var(--fg); font: inherit; font-size: var(--fs-xs); padding: 0.05rem 0.5rem; cursor: pointer; }
 
-/* ---- Admin-only nav elements ----
-   logs/stats/settings nav links + sev pills are marked .admin-only at
-   render time. Hidden by default; revealed when the page's JS adds
-   `body.role-admin` after a successful auth-required state fetch.
-   /settings, /logs, /stats add the class unconditionally (their state
-   endpoints already require admin token). /quick-config adds it only
-   when /quick-config/state returns role=admin — non-admin user keys
-   never see admin-only chrome. */
+/* Admin-only chrome (settings / pipeline / api-keys / overrides links + sev
+   pills): hidden until `body.role-admin`, which is added only for an admin
+   identity (e.g. OPEN_MODE_BANNER_JS on whoami.is_admin), so non-admin keys
+   never see it. */
 header .admin-only { display: none; }
 body.role-admin header .admin-only { display: inline-flex; }
 
@@ -593,10 +569,8 @@ body.role-admin header .admin-only { display: inline-flex; }
 header .page-link { display: none; }
 header .page-link.allowed { display: inline-flex; }
 
-/* No-access landing card — rendered by _renderNoAccessLanding() when
-   the bearer is valid but the caller lacks permission for the current
-   page. Replaces the page's <main> content. Lists every page the
-   caller CAN reach as a button, plus a Sign-out fallback. */
+/* No-access landing card — _renderNoAccessLanding() puts it in place of the
+   page's <main> when the bearer is valid but lacks permission for this page. */
 .no-access-landing {
   max-width: 36rem; margin: 4rem auto; text-align: center;
   padding: 2rem; background: var(--panel);
@@ -634,13 +608,9 @@ header .page-link.allowed { display: inline-flex; }
   background: #21262d; color: var(--bold);
 }
 
-/* Tag-picker widget — shared between /settings rule editor and the
-   /settings/api-keys permissions matrix. Renders as a single
-   border-bounded row of pills + an inline text input.
-   Validation: TAG_RE = lowercase a-z0-9- only, 1-32 chars, no
-   leading hyphen. Bad input gets a red border via .invalid.
-   The autocomplete dropdown is position:absolute relative to the
-   picker, so each .tag-picker is position:relative. */
+/* Tag-picker widget — shared by the /settings rule editor and the
+   /settings/api-keys permissions matrix. position:relative anchors the
+   suggest list on the no-Popover-API fallback path (see below). */
 .tag-picker { position: relative; display: inline-block;
   min-width: 12rem; max-width: 24rem; vertical-align: middle; }
 .tag-picker.disabled { opacity: 0.45; pointer-events: none; }
@@ -757,19 +727,17 @@ header .page-link.allowed { display: inline-flex; }
   border: 1px solid rgba(242, 204, 96, 0.3);
   border-radius: 999px; white-space: nowrap; }
 
-/* ===================================================================
-   RESPONSIVE FOUNDATION  — shared phone/tablet support, injected on
-   every page (after each page's own <style>, so these win on equal
-   specificity). Breakpoint convention (em is relative to the BROWSER
-   default font, NOT --fs-base):
+/* Responsive foundation — shared phone/tablet support, injected on every
+   page (after each page's own <style>, so these win on equal specificity).
+   Breakpoint convention (em is relative to the BROWSER default font, NOT
+   --fs-base):
        tablet  max-width: 64em  (~1024px)
        phone   max-width: 40em  (~640px)   matches @container hdr 40rem
        small   max-width: 30em  (~480px)
    Media-query em/rem do NOT track the --fs-base scale picker, so any
    width-based reflow that must follow the user's scale uses grid
    auto-fit + rem minmax() (scale-aware) instead of a breakpoint — see
-   the .rgrid helper below.
-   =================================================================== */
+   the .rgrid helper below. */
 
 /* Scale-aware card/grid deck: columns drop on their own as the viewport
    narrows OR the user raises --fs-base, with no media query (22rem rides
@@ -856,12 +824,9 @@ header .page-link.allowed { display: inline-flex; }
   header.nav-open .nav-backdrop { display: block; }
 }
 
-/* ── Unified login gate ─────────────────────────────────────────────────────
-   Full-viewport authentication screen shown by OPEN_MODE_BANNER_JS whenever
-   /auth/whoami 401s (locked-down + no session). Opaque cover → the page behind
-   it stays hidden until the user authenticates, exactly like the old /settings
-   login card, but shared by every page. Terminal-dark + the waveform brand,
-   with one signature moment: the logo's bars rise on load. */
+/* Unified login gate — full-viewport screen shown by OPEN_MODE_BANNER_JS
+   whenever /auth/whoami 401s (locked-down + no session). Opaque cover, so the
+   page behind it stays hidden until the user authenticates. */
 #login-gate[hidden] { display: none; }
 #login-gate {
   position: fixed; inset: 0; z-index: 9999;
@@ -973,14 +938,11 @@ input[type="checkbox"].switch:focus-visible {
   input[type="checkbox"].switch::after { transition: none; } }
 
 /* ---- Segmented control — a connected row of buttons for a single choice
-   among 3+ MUTUALLY-EXCLUSIVE values (where a 2-state .switch can't reach).
-   Used for the captures status filter and the api-keys page-permissions
-   (none/own/all) + override request-gates (inherit/allow/deny). One click vs
-   open-pick; the selected value is always visible. Mark the group
+   among 3+ MUTUALLY-EXCLUSIVE values (where a 2-state .switch can't reach):
+   one click, and the selected value is always visible. Mark the group
    role="radiogroup" and each button role="radio" + aria-checked. The selected
    segment shows BOTH a fill AND font-weight (never colour alone — WCAG 1.4.1).
-   NAV_CSS is injected AFTER each page's own <style>, so this wins ties; the
-   base block is the former local copy from captures/routes.py verbatim. */
+   NAV_CSS is injected AFTER each page's own <style>, so this wins ties. */
 .status-btn-group {
   display: inline-flex; gap: 0;
   border: 1px solid var(--border); border-radius: 0.375rem;
@@ -1018,8 +980,7 @@ input[type="checkbox"].switch:focus-visible {
 
 /* ---- regex-list entry editor (shared by /settings + /quick-config). NAV_CSS
    is injected AFTER each page's own <style>, so these scoped rules win ties
-   against `.rule-editor input` / `.card .rule-editor input`. All sizing in
-   rem/em + --fs-* tokens; --font-mono for the find/replace code inputs. */
+   against `.rule-editor input` / `.card .rule-editor input`. */
 .rule-editor .rl-entries { display: flex; flex-direction: column; gap: 0.3rem; margin-top: 0.4rem; }
 .rule-editor .rl-entry { display: grid; grid-template-columns: 1.75rem 1fr; align-items: start;
   background: #12171f; border: 1px solid var(--border, #30363d); border-radius: 5px; }
