@@ -31,13 +31,6 @@ from pydantic import (
 )
 
 
-# ENV_VAR_MAPPING / RESTART_REQUIRED_FIELDS / LOAD_TIME_FIELDS /
-# CACHE_REBUILD_FIELDS / _POST_LOAD_COERCERS / FIELD_GROUPS /
-# CONFIG_TO_CLIENT_KEY / LOCKABLE_FIELDS are GENERATED from the per-field
-# registry metadata declared on each AdminConfig field via _F(...) — see the
-# "Generated field-registry tables" block below the AdminConfig class body.
-
-
 # Valid values for the per-field `scope` registry key:
 #   server      — server-wide only; never overridable per-model or per-request
 #   per_model   — load-time ModelOverride-only fields that are also global
@@ -103,10 +96,8 @@ def _F(
                      per-model ModelOverride field; False marks the
                      streaming-only fields excluded from ModelOverride.
 
-    Single-source-of-truth helper: every editable field passes its name to
-    this and gets its description wired up automatically. Raises KeyError
-    at import time if a name is missing — keeps schema and descriptions
-    in lockstep.
+    A name missing from FIELD_DESCRIPTIONS raises KeyError at import, which
+    keeps schema and descriptions in lockstep.
     """
     if scope not in _SCOPES:
         raise ValueError(
@@ -196,11 +187,9 @@ ConvertQuantLit = Literal[
 ]
 
 
-# =============================================================================
-# Pipeline rule schema (discriminated union on `type`)
-# =============================================================================
-# Each rule is one row in the unified post-processing pipeline. See
-# config.py:PIPELINE_RULES for the canonical seeded list.
+# Pipeline rule schema (discriminated union on `type`). Each rule is one row
+# in the unified post-processing pipeline; the factory list is config.json's
+# PIPELINE_RULES.
 RuleSlug = Annotated[str, Field(min_length=1, max_length=64,
                                 pattern=r"^[a-z0-9-]+$")]
 RuleLabel = Annotated[str, Field(min_length=1, max_length=80)]
@@ -311,10 +300,9 @@ class _RuleBase(BaseModel):
     # everything. See auth.Permissions.can_see_rule().
     tags: list[str] = Field(default_factory=list, max_length=32)
     # Free-text rationale for the rule — why it exists, ordering constraints,
-    # tradeoffs. Lives in config.json so a rule's "why" travels with it (this
-    # was inline config.py commentary before the factory defaults moved to
-    # config.json). Optional; defaults to "" so older config.local.json files
-    # that predate this field still validate.
+    # tradeoffs. Lives in config.json so a rule's "why" travels with it.
+    # Defaults to "" so older config.local.json files that predate this field
+    # still validate.
     note: Annotated[str, Field(max_length=4000)] = ""
     # Optional card tint for the pipeline editor (one of RULE_CARD_COLORS, or
     # "" for none). Forgiving by design: an unknown/typo'd token normalises to
@@ -369,9 +357,9 @@ class _RepeatableRule(_RuleBase):
     """Every rule type but `terminal` (a fixed trim: a second pass is a no-op)."""
     # "Repeat until nothing changes": the engine applies the rule to its own
     # output again (a regex-list: its whole entry batch) until the text stops
-    # changing, at most RULE_REPEAT_MAX_PASSES times. For a rule
-    # whose re.sub scans the ORIGINAL text once, so a match overlapping the
-    # previous one is never seen in the same pass ("Hals-nasen-ohren-arzt").
+    # changing, at most RULE_REPEAT_MAX_PASSES times — re.sub scans the
+    # ORIGINAL text once, so a match overlapping the previous one is never
+    # seen in the same pass ("Hals-nasen-ohren-arzt").
     # Off is stored as absent, never as false: every rule saved before the
     # field existed then dumps, compares and fingerprints (config_rev, the
     # /quick-config _fp) exactly as before. StrictBool: a "yes" / 1 is a typo,
@@ -426,9 +414,10 @@ class MapRule(_RepeatableRule):
         Annotated[str, Field(max_length=64)],
     ] = Field(default_factory=dict, max_length=10_000)
     # Server-owned: epoch seconds per `map` key, set when an entry is added or
-    # its value last changed (see quick_config_routes.post_state). Never written
-    # by the client — drives newest-first ordering + the inline date column on
-    # /quick-config. Keys not present in `map` are dropped by the validator so
+    # its value last changed (see quick_config/routes.py
+    # _apply_rules_patch_locked). Never written by the client — drives
+    # newest-first ordering + the inline date column on /quick-config. Keys
+    # not present in `map` are dropped by the validator so
     # the two stay consistent even when an admin edits the map via /settings.
     map_meta: dict[str, int] = Field(default_factory=dict, max_length=10_000)
 
@@ -465,27 +454,20 @@ PipelineRule = Annotated[
 ]
 
 
-# =============================================================================
-# Per-model overrides
-# =============================================================================
-# A ModelOverride bundle lives at MODEL_OVERRIDES[model_id]. Every field is
-# Optional — absent means "inherit the global default". The runtime helper
-# effective_config.cfg_for(model_id, field) walks: per-model override > global > faster-
-# whisper default. Same precedence as everywhere else, just with one more
-# layer interposed.
-#
-# Validation: models may only carry override values that pass the same
-# constraints as the corresponding global field. Pipeline rule scoping uses
-# PIPELINE_RULES_EXCLUDE: a flat list of rule slugs to skip for this model.
-# Rule bodies are NEVER per-model — they stay in the single global PIPELINE_RULES
-# list, edited in the global pipeline editor. The per-model pane only toggles
-# inclusion via a checklist.
+# Per-model overrides. A ModelOverride bundle lives at MODEL_OVERRIDES[model_id];
+# every field is Optional — absent means "inherit the global default".
+# effective_config.cfg_for(model_id, field, ident) walks: per-identity override >
+# per-model override > global > faster-whisper default. Override values pass
+# the same constraints as the corresponding global field. Rule scoping is by
+# slug list (PIPELINE_RULES_EXCLUDE / PIPELINE_RULES_INCLUDE); rule bodies are
+# NEVER per-model — they stay in the single global PIPELINE_RULES list, and the
+# per-model pane only toggles inclusion via a checklist.
 
 # Override-schema fields that are NOT AdminConfig fields — they exist ONLY on
 # the override models (ModelOverride / the call-time mixin), never as a global
 # setting. Declared here with the same Annotated types they carry in the
-# override schemas so the generated tables (and, eventually, the generated
-# override models) can source them alongside the AdminConfig registry:
+# override schemas so the generated tables and override models can source
+# them alongside the AdminConfig registry:
 #   REVISION                — per-model HF snapshot pin; ModelOverride-only,
 #                             load-time (edit → drain-then-evict).
 #   PIPELINE_RULES_EXCLUDE/ — per-bundle rule scoping lists; call-time-mixin-
@@ -713,7 +695,6 @@ class AdminConfig(BaseModel):
     # warning so we can use MODEL_DEVICE / MODEL_COMPUTE_TYPE field names.
     model_config = {"extra": "forbid", "protected_namespaces": ()}
 
-    # --- Models ---
     DEFAULT_MODEL: ModelId | None = _F(
         "DEFAULT_MODEL", scope="server", group="Models", order=1)
     # Sets serialize as JSON arrays; convert back on load. List type here lets
@@ -741,7 +722,6 @@ class AdminConfig(BaseModel):
         "MODEL_COMPUTE_TYPE_FALLBACK", scope="per_model", group="Models",
         order=9, load_time=True)
 
-    # --- Decode params (transcribe-time) ---
     DEFAULT_LANGUAGE: Annotated[str, Field(pattern=r"^([a-z]{2,3})?$")] | None = _F(
         "DEFAULT_LANGUAGE", scope="per_request", group="Decode params",
         order=1)
@@ -787,7 +767,6 @@ class AdminConfig(BaseModel):
         group="Decode params", order=16,
         client_key="compression_ratio_threshold")
 
-    # --- Decode params (advanced) ---
     DEFAULT_HOTWORDS: Annotated[str, Field(max_length=2048)] | None = _F(
         "DEFAULT_HOTWORDS", scope="per_request", group="Decode params",
         order=3, client_key="hotwords")
@@ -814,7 +793,6 @@ class AdminConfig(BaseModel):
         "PROMPT_RESET_ON_TEMPERATURE", scope="per_request",
         group="Decode params", subgroup="Advanced — beam & sampling")
 
-    # --- Language detection (active when DEFAULT_LANGUAGE is empty) ---
     MULTILINGUAL: bool | None = _F(
         "MULTILINGUAL", scope="per_request", group="Decode params",
         subgroup="Advanced — language detection (active when DEFAULT_LANGUAGE empty)",
@@ -830,7 +808,6 @@ class AdminConfig(BaseModel):
         subgroup="Advanced — language detection (active when DEFAULT_LANGUAGE empty)",
         client_key="language_detection_segments")
 
-    # --- Anti-hallucination & token control ---
     HALLUCINATION_SILENCE_THRESHOLD: Annotated[float, Field(ge=0.0, le=60.0)] | None = _F(
         "HALLUCINATION_SILENCE_THRESHOLD", scope="per_request",
         group="Decode params",
@@ -884,7 +861,7 @@ class AdminConfig(BaseModel):
         subgroup="Advanced — anti-hallucination & token control",
         client_key="append_punctuations")
 
-    # --- Output wrappers (NOT a faster-whisper param; backend-level) ---
+    # Backend-level wrappers, never passed to faster-whisper.
     OUTPUT_PREFIX: Annotated[str, Field(max_length=512)] | None = _F(
         "OUTPUT_PREFIX", scope="per_request", group="Output wrappers",
         client_key="output_prefix")
@@ -892,7 +869,6 @@ class AdminConfig(BaseModel):
         "OUTPUT_SUFFIX", scope="per_request", group="Output wrappers",
         client_key="output_suffix")
 
-    # --- Live streaming (WebSocket dictation) ---
     STREAMING_ENABLED: bool | None = _F(
         "STREAMING_ENABLED", scope="server", group="Live streaming", order=1)
     STREAMING_MAX_SESSIONS: Annotated[int, Field(ge=1, le=256)] | None = _F(
@@ -1008,7 +984,6 @@ class AdminConfig(BaseModel):
         group="Live streaming", subgroup="Finalize & document breaks",
         order=4, model_override=False)
 
-    # --- Load-time, hardware (advanced) ---
     DOWNLOAD_ROOT: Annotated[str, Field(max_length=512)] | None = _F(
         "DOWNLOAD_ROOT", scope="server", group="Models",
         subgroup="Advanced — load-time hardware", load_time=True)
@@ -1037,7 +1012,6 @@ class AdminConfig(BaseModel):
         "DEVICE_INDEX", scope="per_model", group="Models",
         subgroup="Advanced — load-time hardware", load_time=True)
 
-    # --- Preload & warm cache (advanced) ---
     # All HOT: preload.py re-reads every one of these per admission decision,
     # so an operator raising a reserve or switching the feature off applies to
     # the next plan with no restart. None is load_time — a warm lease changes
@@ -1062,16 +1036,16 @@ class AdminConfig(BaseModel):
         "MODEL_PRELOAD_EVICT_IDLE_MODELS", scope="server", group="Models",
         subgroup="Advanced — preload & warm cache")
 
-    # --- Speaker diarization ---
     # evict= on each capacity switch: once off, no request can reach the
-    # cached extra again, so turning it off frees the VRAM now instead of at
-    # the idle timeout (never, with 0). Turning it on drops an empty cache.
+    # cached extra again, so turning it off drops it on save instead of at
+    # the idle timeout (never, with 0) — except a translation model still
+    # leased or decoding, which waits for the idle evictor. Turning it on
+    # drops an empty cache.
     DIARIZATION_ENABLED: bool | None = _F(
         "DIARIZATION_ENABLED", scope="server", group="Diarization",
         evict="diarization")
-    # Per-request since the stage-model-allowlist work: a caller may pick the
-    # pipeline (subject to DIARIZATION_ALLOWED_MODELS); the evict metadata
-    # stays so a global edit still drops the cached pipeline.
+    # A caller may pick the pipeline (subject to DIARIZATION_ALLOWED_MODELS);
+    # evict= stays so a global edit still drops the cached pipeline.
     DIARIZATION_MODEL: DiarizationModelLit | None = _F(
         "DIARIZATION_MODEL", scope="per_request", group="Diarization",
         evict="diarization")
@@ -1102,11 +1076,10 @@ class AdminConfig(BaseModel):
         "DIARIZATION_MAX_SPEAKERS", scope="per_request", group="Diarization",
         subgroup="Advanced — speaker bounds & VRAM", order=3)
 
-    # --- Background-music separation ---
     BGM_SEPARATION_ENABLED: bool | None = _F(
         "BGM_SEPARATION_ENABLED", scope="server", group="Music separation",
         evict="bgm")
-    # Per-request since the stage-model-allowlist work (see DIARIZATION_MODEL).
+    # evict= on a per-request field: see DIARIZATION_MODEL.
     BGM_SEPARATION_UVR_MODEL: Annotated[str, Field(min_length=1, max_length=128)] | None = _F(
         "BGM_SEPARATION_UVR_MODEL", scope="per_request",
         group="Music separation", evict="bgm")
@@ -1128,7 +1101,6 @@ class AdminConfig(BaseModel):
     SEPARATE_BGM: bool | None = _F(
         "SEPARATE_BGM", scope="per_request", group="Music separation")
 
-    # --- Translation (T2T) ---
     TRANSLATION_ENABLED: bool | None = _F(
         "TRANSLATION_ENABLED", scope="server", group="Translation",
         evict="translation")
@@ -1139,8 +1111,7 @@ class AdminConfig(BaseModel):
     TRANSLATION_DEFAULT_MODEL: TranslationModelRef | None = _F(
         "TRANSLATION_DEFAULT_MODEL", scope="server", group="Translation",
         evict="translation")
-    # Sets serialize as JSON arrays; convert back on load (mirrors
-    # ALLOWED_MODELS — list type here for per-element validation).
+    # list + coerce=set: same reason as ALLOWED_MODELS.
     TRANSLATION_ALLOWED_MODELS: list[TranslationModelRefItem] | None = _F(
         "TRANSLATION_ALLOWED_MODELS", scope="server", group="Translation",
         coerce=set, evict="translation")
@@ -1191,7 +1162,6 @@ class AdminConfig(BaseModel):
         "TRANSLATION_GLOSSARY", scope="per_request", group="Translation",
         subgroup="Per-request defaults")
 
-    # --- Transcribe-from-URL (yt-dlp) ---
     URL_DOWNLOAD_ENABLED: bool | None = _F(
         "URL_DOWNLOAD_ENABLED", scope="server", group="Transcribe from URL")
     URL_ALLOWED_EXTRACTORS: Annotated[
@@ -1246,17 +1216,14 @@ class AdminConfig(BaseModel):
         "RETAINED_MEDIA_MAX_BYTES", scope="server", group="Transcribe from URL",
         subgroup="Advanced — timeouts, concurrency & retention")
 
-    # --- Media export (subtitle packaging) ---
     MEDIA_PACKAGE_ENABLED: bool | None = _F(
         "MEDIA_PACKAGE_ENABLED", scope="server", group="Media export")
     MEDIA_PACKAGE_TIMEOUT_S: Annotated[int, Field(ge=30, le=7200)] | None = _F(
         "MEDIA_PACKAGE_TIMEOUT_S", scope="server", group="Media export")
 
-    # --- Per-model overrides ---
     MODEL_OVERRIDES: dict[ModelId, ModelOverride] | None = _F(
         "MODEL_OVERRIDES", scope="server", group="Per-model overrides")
 
-    # --- Per-identity config profiles (reusable, name → override bundle) ---
     OVERRIDE_PROFILES: dict[ProfileName, OverrideProfile] | None = _F(
         "OVERRIDE_PROFILES", scope="server", group=None)
     ALLOW_REQUEST_OVERRIDE_PROFILE: bool | None = _F(
@@ -1269,7 +1236,6 @@ class AdminConfig(BaseModel):
         "STATS_OWN_SCOPE_SHOW_SYSTEM_METRICS", scope="server",
         group="Access & sessions", order=7)
 
-    # --- Pipeline ---
     PIPELINE_RULES: Annotated[list[PipelineRule], Field(max_length=200)] | None = _F(
         "PIPELINE_RULES", scope="server", group="Pipeline",
         cache_rebuild=True)
@@ -1277,7 +1243,6 @@ class AdminConfig(BaseModel):
         "TRACE_ENABLED", scope="server", group="Logging", order=6,
         env="WHISPER_TRACE")
 
-    # --- Logging ---
     LOG_FILE: Annotated[str, Field(min_length=1, max_length=512)] | None = _F(
         "LOG_FILE", scope="server", group="Logging", order=1, restart=True)
     LOG_MAX_BYTES: Annotated[int, Field(ge=1024 * 1024, le=1024 * 1024 * 1024)] | None = _F(
@@ -1301,7 +1266,6 @@ class AdminConfig(BaseModel):
     CONSOLE_LOG_LEVEL: LogLevel | None = _F(
         "CONSOLE_LOG_LEVEL", scope="server", group="Logging", order=11)
 
-    # --- Server ---
     SERVER_HOST: Annotated[str, Field(min_length=1, max_length=64)] | None = _F(
         "SERVER_HOST", scope="server", group="Server", restart=True)
     SERVER_PORT: Annotated[int, Field(ge=1, le=65535)] | None = _F(
@@ -1315,7 +1279,6 @@ class AdminConfig(BaseModel):
     MAX_REQUEST_BYTES: Annotated[int, Field(ge=1024, le=50_000_000_000)] | None = _F(
         "MAX_REQUEST_BYTES", scope="server", group="Server")
 
-    # --- WebUI access control (host allowlists, bucketed by privilege tier) ---
     # Each entry must be parseable by ipaddress.ip_network(strict=False) — bare
     # IPs (v4 or v6) and CIDRs are both accepted. See _validate_hosts below.
     ADMIN_WEBUI_ALLOWED_HOSTS: Annotated[
@@ -1350,7 +1313,6 @@ class AdminConfig(BaseModel):
     API_KEYS_DB: Annotated[str, Field(min_length=1, max_length=512)] | None = _F(
         "API_KEYS_DB", scope="server", group="Access & sessions",
         order=8, restart=True)
-    # --- Browser sessions ---
     SESSIONS_DB: Annotated[str, Field(min_length=1, max_length=512)] | None = _F(
         "SESSIONS_DB", scope="server", group="Access & sessions",
         subgroup="Browser sessions (cookie auth)", restart=True)
@@ -1372,7 +1334,6 @@ class AdminConfig(BaseModel):
     ] | None = _F(
         "SESSION_CSRF_COOKIE_NAME", scope="server",
         group="Access & sessions", subgroup="Browser sessions (cookie auth)")
-    # --- Concurrency & request limits ---
     # All hot: the limiters re-read cfg on every call, so an edit takes effect
     # on the next request with no restart and no bucket reset. Every one of
     # them treats 0 as "unlimited" — the escape hatch for a single-user box.
@@ -1448,7 +1409,6 @@ class AdminConfig(BaseModel):
         "LOGIN_FAILURE_RATE", scope="server",
         group="Concurrency & Request Limits", order=8)
 
-    # --- Reports store ---
     REPORTS_DB: Annotated[str, Field(min_length=1, max_length=512)] | None = _F(
         "REPORTS_DB", scope="server", group="Reports", restart=True)
     REPORTS_MAX: Annotated[int, Field(ge=10, le=100_000)] | None = _F(
@@ -1458,9 +1418,8 @@ class AdminConfig(BaseModel):
     REPORTS_ALLOW_USER_SUBMIT: bool | None = _F(
         "REPORTS_ALLOW_USER_SUBMIT", scope="server", group="Reports")
 
-    # --- Recent transcriptions store (persistent /quick-config + /stats) ---
-    # MAX/TTL/PRUNE_EVERY accept 0 to mean "disabled"; combined bound is
-    # "tighter of MAX and TTL wins."
+    # RECENT_TRANSCRIPTIONS_MAX / _RETENTION_DAYS / _PRUNE_EVERY: 0 means
+    # "disabled"; with both MAX and RETENTION_DAYS set, the tighter one wins.
     RECENT_TRANSCRIPTIONS_DB: Annotated[str, Field(min_length=1, max_length=512)] | None = _F(
         "RECENT_TRANSCRIPTIONS_DB", scope="server",
         group="Recent transcriptions", restart=True)
@@ -1486,7 +1445,6 @@ class AdminConfig(BaseModel):
         "STATS_RECENT_TRANSCRIPTIONS_COUNT", scope="server",
         group="Recent transcriptions")
 
-    # --- Server jobs (durable job resource, transcription/jobs_store.py) ---
     JOBS_ENABLED: bool | None = _F(
         "JOBS_ENABLED", scope="server", group="Jobs")
     JOBS_DB: Annotated[str, Field(min_length=1, max_length=512)] | None = _F(
@@ -1507,7 +1465,6 @@ class AdminConfig(BaseModel):
         "STATS_SYSTEM_METRICS_RETENTION_DAYS", scope="server",
         group="System metrics")
 
-    # --- Usage statistics (the desktop app's /v1/usage + admin /stats) ---
     USAGE_DB: Annotated[str, Field(min_length=1, max_length=512)] | None = _F(
         "USAGE_DB", scope="server", group="Usage statistics", restart=True)
     USAGE_RETENTION_DAYS: Annotated[int, Field(ge=0, le=3650)] | None = _F(
@@ -1519,12 +1476,10 @@ class AdminConfig(BaseModel):
     USAGE_UNREPORTED_AFTER_H: Annotated[int, Field(ge=1, le=720)] | None = _F(
         "USAGE_UNREPORTED_AFTER_H", scope="server", group="Usage statistics")
 
-    # --- Client settings sync (the desktop app's /v1/synced-client-settings) ---
     CLIENT_SETTINGS_DB: Annotated[str, Field(min_length=1, max_length=512)] | None = _F(
         "CLIENT_SETTINGS_DB", scope="server", group="Client settings sync",
         restart=True)
 
-    # --- Captures (fine-tuning data store) ---
     CAPTURES_RECORDING_ENABLED: bool | None = _F(
         "CAPTURES_RECORDING_ENABLED", scope="server", group="Captures",
         order=1)
@@ -1553,11 +1508,7 @@ class AdminConfig(BaseModel):
     CAPTURES_RECORDING_AUDIO_BYTES_HARD_LIMIT: Annotated[int, Field(ge=1024, le=10_000_000_000)] | None = _F(
         "CAPTURES_RECORDING_AUDIO_BYTES_HARD_LIMIT", scope="server",
         group="Captures", subgroup="Duration & size guards")
-    # Captures-specific pipeline-rule exclusion (set of rule slugs).
-    # Stored as a list in JSON; coerced back to set at use time. The
-    # admin UI surfaces this as the same rule-checklist widget used for
-    # per-model PIPELINE_RULES_EXCLUDE so the editing affordance is
-    # identical.
+    # Rule slugs skipped for the captures training-form transcript.
     CAPTURES_PIPELINE_RULES_EXCLUDE: Annotated[
         list[Annotated[str, Field(min_length=1, max_length=64)]],
         Field(max_length=64),
@@ -1614,9 +1565,10 @@ class AdminConfig(BaseModel):
     @model_validator(mode="after")
     def _validate_body_caps(self, info: ValidationInfo) -> "AdminConfig":
         # MAX_REQUEST_BYTES is documented (config.py, FIELD_DESCRIPTIONS,
-        # main._max_body_mw) as sitting ABOVE MEDIA_MAX_BYTES so an oversized
+        # main._max_body_mw) as sitting above MEDIA_MAX_BYTES so an oversized
         # media POST hits the media-specific 413 that names the right setting.
-        # Enforce it on the EFFECTIVE values (see _effective).
+        # Only "not below" is enforced (equal passes), on the EFFECTIVE
+        # values (see _effective).
         up = int(_effective(self, "MEDIA_MAX_BYTES", info=info))
         rq = int(_effective(self, "MAX_REQUEST_BYTES", info=info))
         if rq < up:
@@ -1754,12 +1706,11 @@ class AdminConfig(BaseModel):
     def _safe_log_path(cls, v: str | None) -> str | None:
         if v is None:
             return v
-        # Reject UNC and \\?\ extended paths; cheap to enforce, removes a class
-        # of footguns where an admin types a network share by accident.
+        # UNC and \\?\ paths: an admin typing a network share by accident.
         if v.startswith("\\\\") or v.startswith("//"):
             raise ValueError("UNC / network paths are not allowed")
-        # Reject path traversal segments. We use both PurePath and PureWindowsPath
-        # because the deploy target is Windows but the dev machine may be Linux.
+        # Both path flavours: the deploy target is Windows, the dev box may be
+        # Linux.
         if ".." in PurePath(v).parts or ".." in PureWindowsPath(v).parts:
             raise ValueError("'..' segments are not allowed")
         return v
@@ -1889,14 +1840,10 @@ class AdminConfig(BaseModel):
                         "slow to compile).")
             return rx
 
-        # Collect every (where, pattern, replacement, slug) that needs a regex
-        # smoke-test. The actual re.sub probe runs OUT OF PROCESS at the end
-        # (only on save, via the guard_regex context) so a catastrophic-
-        # backtracking pattern can be killed — CPython's re can't be interrupted
-        # in-process. The slug rides along so `guard_slugs` can scope the probe
-        # to the rules a patch actually changed; it is stripped before the
-        # 3-tuple regex_guard.validate call. The compiled pattern rides along
-        # too, so the template parse below does not compile it a second time.
+        # (where, pattern, replacement, slug, compiled) per regex to check.
+        # The slug lets `guard_slugs` scope the out-of-process probe and is
+        # stripped (with the compiled pattern) before regex_guard.validate;
+        # the compiled pattern spares the template parse a second compile.
         checks: list[tuple[str, str, str, str, re.Pattern[str]]] = []
         seen: set[str] = set()
         terminal_idx: int | None = None
@@ -1930,7 +1877,6 @@ class AdminConfig(BaseModel):
                                 f"rule {idx} ({slug!r}): map keys "
                                 f"{originals} collide when lowercased")
                 continue
-            # regex-list: compile + guard each entry's pattern + replacement.
             if rtype == "regex-list":
                 for eidx, entry in enumerate(getattr(rule, "entries", None) or []):
                     epat = getattr(entry, "pattern", None)
@@ -1949,7 +1895,8 @@ class AdminConfig(BaseModel):
             where = f"rule {idx} ({slug!r})"
             rx = _compile(where, pattern, str(slug or ""))
             # The replacer drops only the text before group 1 and lowercases
-            # group 2 + 3; with fewer groups it keeps the match untouched
+            # group 2 (the first letter) when groups 2 + 3 spell a wordlist
+            # word; with fewer groups it keeps the match untouched
             # (engine._make_lowercase_wordlist_replacer), so the rule would
             # do nothing. Save only, scoped like the guard: a loaded rule
             # stays harmless.
@@ -1988,14 +1935,11 @@ class AdminConfig(BaseModel):
                 re._compile_template(rx, repl)
             except (re.error, IndexError) as e:
                 raise ValueError(f"{where}: regex test failed: {e}")
-        # Out-of-process catastrophic-backtracking guard (a real .sub run
-        # against the 1 KB fixture). Runs ONLY on an explicit save of
-        # user/admin-submitted rules (guard_regex context), so load/startup/
-        # diff validations never spawn the helper subprocess. `guard_slugs`
-        # (when present) narrows the probe to the rules the save changed —
-        # see the docstring; the chained probe then only threads across the
-        # probed rules' own entries, an accepted trade for not letting an
-        # untouched rule fail (or time-budget-starve) someone else's save.
+        # Out-of-process backtracking guard, explicit save only (see the
+        # docstring), so load/startup/diff never spawn the helper. With
+        # `guard_slugs` the chained probe threads only across the probed
+        # rules' own entries: accepted, so an untouched rule cannot fail (or
+        # budget-starve) someone else's save.
         if checks and guarding:
             to_guard = (checks if guard_slugs is None
                         else [c for c in checks if c[3] in guard_slugs])
@@ -2018,8 +1962,7 @@ class AdminConfig(BaseModel):
             return self
         allowed = set(self.ALLOWED_MODELS)
         if not allowed:
-            # Empty allowlist = "anything goes" per config.py convention;
-            # we don't need to enforce overrides being a subset.
+            # Empty allowlist = any model allowed (config.py convention).
             return self
         orphans = sorted(set(self.MODEL_OVERRIDES.keys()) - allowed)
         if orphans:
@@ -2242,14 +2185,9 @@ class AdminConfig(BaseModel):
         return out
 
 
-# =============================================================================
-# Generated field-registry tables
-# =============================================================================
-# Every table below is DERIVED from the per-field metadata declared on each
-# AdminConfig field via _F(..., scope=…, group=…, …) — see the _F docstring.
-# Public names and types are unchanged from the era when these were
-# hand-written literals, so every consumer keeps working; the metadata now
-# lives ON the field it describes and cannot drift from the schema.
+# Generated field-registry tables: every table below is DERIVED from the
+# per-field _F(...) metadata on AdminConfig (see the _F docstring), so it
+# cannot drift from the schema.
 
 def _registry(name: str) -> dict[str, Any]:
     """The x_registry metadata dict attached to an AdminConfig field."""
@@ -2264,9 +2202,8 @@ _REGISTRY: dict[str, dict[str, Any]] = {
     name: _registry(name) for name in AdminConfig.model_fields
 }
 
-# Map AdminConfig field name -> env var that pins it. Mirrors the override
-# block at the bottom of config.py. Used by the WebUI to mark fields as
-# "currently overridden by WHISPER_X" with a badge.
+# AdminConfig field name -> the WHISPER_* env var that pins it. config.py's
+# schema-driven env loop applies these; the WebUI badges a pinned field.
 ENV_VAR_MAPPING: dict[str, str] = {
     name: reg["env"] for name, reg in _REGISTRY.items()
 }
@@ -2280,11 +2217,10 @@ RESTART_REQUIRED_FIELDS: frozenset[str] = frozenset(
     name for name, reg in _REGISTRY.items() if reg["restart"]
 )
 
-# Load-time fields. Editing these (globally OR per-model in MODEL_OVERRIDES)
-# triggers drain-then-evict on the affected loaded models so the next request
-# reloads them with the new values. These are read at WhisperModel(...)
-# construction time; changes only take effect after re-load. Includes the
-# virtual (ModelOverride-only) REVISION field.
+# Load-time fields (read at WhisperModel(...) construction): editing one,
+# globally OR per-model in MODEL_OVERRIDES, drains-then-evicts the affected
+# loaded models so the next request reloads them. Includes the virtual
+# (ModelOverride-only) REVISION field.
 LOAD_TIME_FIELDS: frozenset[str] = frozenset(
     name for name, reg in _REGISTRY.items() if reg["load_time"]
 ) | frozenset(
@@ -2313,8 +2249,7 @@ _POST_LOAD_COERCERS: dict[str, Any] = {
 # governs. Mirrors the allow-list enforced by transcription.models._apply_decode_overrides, so
 # a lock on the config field blocks the matching client key. Fields absent here
 # are not client-overridable, so a lock on them is a no-op for the client gate.
-# Consumed by effective_config (which keeps its historical module-level alias
-# _CONFIG_TO_CLIENT_KEY pointing at this dict).
+# Consumed by effective_config (as its alias _CONFIG_TO_CLIENT_KEY).
 CONFIG_TO_CLIENT_KEY: dict[str, str] = {
     name: reg["client_key"] for name, reg in _REGISTRY.items()
     if reg["client_key"]
@@ -2395,7 +2330,8 @@ _GROUP_ORDER: list[tuple[str, list[str | None]]] = [
 
 def _build_field_groups() -> list[tuple[str, list[tuple[str | None, list[str]]]]]:
     """Assemble the _GROUP_ORDER × per-field metadata into the nested
-    section/subgroup/fields structure admin_routes renders. Raises at import
+    section/subgroup/fields structure the /settings form renders (admin.routes,
+    admin.overrides_routes). Raises at import
     on any drift: a field pointing at an unlisted (group, subgroup), or a
     listed subgroup no field belongs to."""
     decl_idx = {name: i for i, name in enumerate(AdminConfig.model_fields)}
@@ -2433,9 +2369,10 @@ FIELD_GROUPS: list[tuple[str, list[tuple[str | None, list[str]]]]] = (
     _build_field_groups()
 )
 
-# Derived-extras eviction: editing any of the fields in a bucket drops the
-# matching cached extra (diarization pipeline / BGM separator) so its VRAM
-# frees now instead of at the idle timeout. Generated from the per-field
+# Derived-extras eviction: editing any field in a bucket drops the matching
+# cached extra (diarization pipeline / BGM separator / translation models) so
+# its VRAM frees now instead of at the idle timeout; a translation model that
+# a job is still using declines the drop. Generated from the per-field
 # `evict=` metadata; pipeline.apply.apply_hot_changes dispatches each bucket
 # name through its EVICTORS table.
 EXTRAS_EVICTION: dict[str, frozenset[str]] = {
@@ -2446,37 +2383,23 @@ EXTRAS_EVICTION: dict[str, frozenset[str]] = {
 }
 
 
-# =============================================================================
-# Generated override schemas
-# =============================================================================
-# A ModelOverride bundle lives at MODEL_OVERRIDES[model_id]. Every field is
-# Optional — absent means "inherit the global default". The runtime helper
-# effective_config.cfg_for(model_id, field) walks: per-model override > global > faster-
-# whisper default. Same precedence as everywhere else, just with one more
-# layer interposed.
-#
-# Validation: models may only carry override values that pass the same
-# constraints as the corresponding global field — guaranteed structurally:
-# each override field's annotation is copied verbatim from the AdminConfig
-# field it overrides (the bounds live inside the Annotated type), selected by
-# the per-field registry metadata:
+# Generated override schemas. Every field is Optional (absent = inherit the
+# next layer down) and its annotation is copied verbatim from the AdminConfig
+# field it overrides (the bounds live inside the Annotated type), so the
+# bounds can never drift. Selected by the registry:
 #   scope="per_request" + model_override=True  → call-time mixin
 #   scope="per_request" + model_override=False → streaming mixin
 #   scope="per_model"                          → ModelOverride load-time block
 # plus _VIRTUAL_OVERRIDE_FIELDS (REVISION → ModelOverride; the pipeline
-# include/exclude lists → call-time mixin). Pipeline rule scoping uses
-# PIPELINE_RULES_EXCLUDE: a flat list of rule slugs to skip for this model.
-# Rule bodies are NEVER per-model — they stay in the single global
-# PIPELINE_RULES list, edited in the global pipeline editor. The per-model
-# pane only toggles inclusion via a checklist.
+# include/exclude lists → call-time mixin). Rule bodies are never per-bundle:
+# the lists only toggle slugs of the single global PIPELINE_RULES.
 
 def _override_defs(pred: Any) -> dict[str, Any]:
     """create_model field definitions `(annotation, None)` for every
     AdminConfig field whose registry entry satisfies `pred`. The annotation is
     the field's exact Optional annotated type (bounds included); the AdminConfig
     field-level FieldInfo (description, x_registry) is deliberately NOT copied,
-    so the override schemas stay as minimal as the hand-written classes they
-    replaced."""
+    so the override schemas stay minimal."""
     return {
         name: (AdminConfig.model_fields[name].annotation, None)
         for name, reg in _REGISTRY.items() if pred(reg)
@@ -2577,13 +2500,9 @@ class _StreamingOverrideBase(BaseModel):
     model_config = {"extra": "forbid", "protected_namespaces": ()}
 
 
-# Call-time (decode + post-processing) override fields, shared by ModelOverride
-# (per-model) and OverrideProfile (per-identity) so the bounds are
-# single-sourced and the two layers can never drift apart. All fields optional;
-# absent = inherit the next layer down. The diarization / BGM capacity switches
-# (DIARIZATION_ENABLED, BGM_SEPARATION_ENABLED) are deliberately server-scoped
-# so they never appear here; DIARIZE / the speaker bounds / SEPARATE_BGM are
-# per-caller policy and therefore do.
+# The diarization / BGM capacity switches (DIARIZATION_ENABLED,
+# BGM_SEPARATION_ENABLED) are deliberately server-scoped, so they never appear
+# here; DIARIZE / the speaker bounds / SEPARATE_BGM are per-caller policy.
 _CallTimeOverrideMixin = create_model(
     "_CallTimeOverrideMixin",
     __base__=_CallTimeOverrideBase,
@@ -2600,16 +2519,10 @@ _CallTimeOverrideMixin.__doc__ = (
     "+ the virtual pipeline include/exclude lists."
 )
 
-# Live-streaming (WebSocket dictation) override fields that are meaningful
-# per-identity — partial-decode knobs, VAD / speech gates, finalize &
-# document-break, buffer trimming, idle timeout. Hard server-capacity caps
-# (STREAMING_ENABLED, STREAMING_MAX_SESSIONS, INFERENCE_CONCURRENCY) and the
-# partial-model selector are deliberately NOT here — they are server-wide, not
-# per-caller (scope="server"). The idle timeout IS here: it is a per-caller
-# policy (a trusted profile can be granted a longer silence grace than an
-# anonymous one). Bounds are copied verbatim from the AdminConfig STREAMING_*
-# fields so the two can never drift. All optional; absent = inherit the next
-# layer down.
+# Server-capacity caps (STREAMING_ENABLED, STREAMING_MAX_SESSIONS,
+# INFERENCE_CONCURRENCY) and the partial-model selector are scope="server",
+# so not here. The idle timeout IS here: it is per-caller policy (a trusted
+# profile can be granted a longer silence grace than an anonymous one).
 _StreamingOverrideMixin = create_model(
     "_StreamingOverrideMixin",
     __base__=_StreamingOverrideBase,
@@ -2622,9 +2535,6 @@ _StreamingOverrideMixin.__doc__ = (
     "model_override=False)."
 )
 
-# Per-model override bundle: the call-time fields + the load-time fields
-# (editing any of the latter drains-then-evicts the affected loaded model).
-# All fields optional; absent = inherit global.
 ModelOverride = create_model(
     "ModelOverride",
     __base__=_CallTimeOverrideMixin,
