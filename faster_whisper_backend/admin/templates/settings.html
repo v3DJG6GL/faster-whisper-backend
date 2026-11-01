@@ -2668,16 +2668,17 @@ function _ensureUniqueSlug(slug, existing) {
   return at(n);
 }
 
-// Live status check for one rule against the current test panel sample.
-// Hits POST /settings/test-pipeline with a single-rule list. Returns the step
-// dict or null on transport error.
+// Live status check for one rule against the current test panel sample (and
+// its language). Hits POST /settings/test-pipeline with a single-rule list.
+// Returns the step dict or null on transport error.
 async function _testOneRule(rule) {
   const panelSample = document.getElementById('pipeline-test-sample');
   const sample = panelSample ? panelSample.value : TEST_PRESETS['default'];
+  const panelLang = document.getElementById('pipeline-test-language');
   let j;
   try {
     const r = await api('POST', '/settings/test-pipeline', {
-      sample, rules: [rule],
+      sample, rules: [rule], language: (panelLang && panelLang.value) || null,
     });
     if (!r.ok) return null;
     j = await r.json();
@@ -3879,7 +3880,13 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
             status.textContent = '✗ test endpoint error';
             return;
           }
-          if (step.skipped) {
+          if (step.skipped_language) {
+            const pl = document.getElementById('pipeline-test-language');
+            status.className = 'regex-status empty';
+            status.textContent = '∅ skipped — language: the rule runs only for '
+              + (rule.languages || []).join(', ') + ', the test sample is '
+              + ((pl && pl.value) || '?');
+          } else if (step.skipped) {
             status.className = 'regex-status empty';
             status.textContent = rule.enabled
               ? '∅ empty pattern — rule skipped'
@@ -5053,6 +5060,30 @@ function pipelineTestPanel() {
     sel.appendChild(o);
   }
   presetWrap.appendChild(sel);
+  // The sample's language: the engine skips a rule whose `languages` leave
+  // out the detected language, so the dry run must know it too. Defaults to
+  // DEFAULT_LANGUAGE (what an un-hinted request is transcribed as); "any /
+  // unknown" runs every rule, as the engine does before detection.
+  const langLbl = document.createElement('span');
+  langLbl.className = 'help';
+  langLbl.style.margin = '0 0.375rem 0 0.75rem';
+  langLbl.textContent = 'language:';
+  presetWrap.appendChild(langLbl);
+  const langSel = document.createElement('select');
+  langSel.id = 'pipeline-test-language';
+  langSel.setAttribute('aria-label', 'test sample language');
+  const anyOpt = document.createElement('option');
+  anyOpt.value = ''; anyOpt.textContent = 'any / unknown';
+  langSel.appendChild(anyOpt);
+  for (const l of WHISPER_LANGS) {
+    const o = document.createElement('option');
+    o.value = l.code; o.textContent = l.code + ' — ' + l.name;
+    langSel.appendChild(o);
+  }
+  const defLang = state.fields.DEFAULT_LANGUAGE
+    ? (currentValue('DEFAULT_LANGUAGE') || '') : '';
+  if (WHISPER_LANGS.some(l => l.code === defLang)) langSel.value = defLang;
+  presetWrap.appendChild(langSel);
   wrap.appendChild(presetWrap);
 
   const sampleLbl = document.createElement('div');
@@ -5111,6 +5142,7 @@ function pipelineTestPanel() {
       r = await api('POST', '/settings/test-pipeline', {
         sample: sample.value,
         rules: currentValue('PIPELINE_RULES') || [],
+        language: langSel.value || null,
       });
       if (r.ok) j = await r.json();
     } catch (e) {
@@ -5142,7 +5174,8 @@ function pipelineTestPanel() {
       const advisory = step.error && step.type === 'regex-list';
       // `capped`: an earlier rule pushed the text past the engine's output
       // bound, so the engine skips this one too.
-      if (step.skipped) badge = testBadge('empty', step.capped ? 'skipped · output limit' : 'skipped');
+      if (step.skipped) badge = testBadge('empty', step.capped ? 'skipped · output limit'
+        : step.skipped_language ? 'skipped · language' : 'skipped');
       // A screened regex-list entry is not run, but the step's other entries
       // are: the badge says so instead of "not run" next to real output.
       else if (step.not_run) badge = testBadge('warn', step.type === 'regex-list'

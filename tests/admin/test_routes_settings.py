@@ -618,6 +618,37 @@ def test_test_pipeline_rules_not_list_400(client):
     assert r.status_code == 400
 
 
+def test_test_pipeline_skips_a_rule_scoped_to_other_languages(client):
+    """The engine skips a rule whose `languages` leave out the known language
+    (pl_engine._rule_runs); the dry run ran every enabled rule, so the panel
+    showed German-only rules rewriting an English sample."""
+    rules = [
+        {"name": "de-only", "type": "regex-list", "enabled": True,
+         "languages": ["de"], "entries": [{"pattern": "welt", "replacement": "world"}]},
+        {"name": "any", "type": "regex-list", "enabled": True,
+         "entries": [{"pattern": "hallo", "replacement": "hi"}]},
+    ]
+
+    def run(language):
+        r = client.post("/settings/test-pipeline", json={
+            "sample": "hallo welt", "rules": rules, "language": language})
+        assert r.status_code == 200, r.text
+        return r.json()
+
+    body = run("en")
+    assert body["final"] == "hi welt"
+    assert body["steps"][0]["skipped"] and body["steps"][0]["skipped_language"]
+    assert not body["steps"][1].get("skipped_language")
+    # The sample's language, or none (unknown: the engine skips nothing).
+    for language in ("DE", "", None):
+        body = run(language)
+        assert body["final"] == "hi world", language
+        assert not any(s.get("skipped_language") for s in body["steps"])
+    r = client.post("/settings/test-pipeline", json={
+        "sample": "x", "rules": rules, "language": ["de"]})
+    assert r.status_code == 400
+
+
 def test_test_pipeline_nested_repetition_screened_not_run(client):
     """An exponential shape must be refused on structure, not started: a
     timed-out dry-run thread is abandoned, not killed, and would pin a core

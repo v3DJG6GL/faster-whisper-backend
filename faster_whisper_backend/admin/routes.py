@@ -972,9 +972,12 @@ async def test_pipeline(payload: dict[str, Any]) -> JSONResponse:
     """Dry-run the full pipeline-rules list against a sample. Used by the
     WebUI's per-row live-validation badge AND the inline test panel.
 
-    Payload: { sample: str, rules: list[dict] }
+    Payload: { sample: str, rules: list[dict], language?: str | null }
     `rules` is the live (dirty+saved) overlay from the WebUI so unsaved edits
     are testable. Each rule is the same dict shape as in cfg.PIPELINE_RULES.
+    `language` is the sample's language: a rule whose `languages` list leaves
+    it out is skipped (`skipped_language: true`) exactly as the engine skips
+    it; null/empty = unknown, which (as in the engine) skips no rule.
 
     Response:
       {
@@ -1058,6 +1061,13 @@ async def test_pipeline(payload: dict[str, Any]) -> JSONResponse:
             status_code=status.HTTP_400_BAD_REQUEST,
             content={"error": f"sample too long (max {_TEST_PIPELINE_MAX_SAMPLE} chars)"},
         )
+    language = payload.get("language")
+    if language is not None and not isinstance(language, str):
+        return JSONResponse(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            content={"error": "language must be a string or null"},
+        )
+    language = (language or "").strip().lower() or None
     for idx, rule in enumerate(rules):
         if not isinstance(rule, dict):
             continue
@@ -1088,14 +1098,27 @@ async def test_pipeline(payload: dict[str, Any]) -> JSONResponse:
                                       f"(max {_TEST_PIPELINE_MAX_MAP_VALUE} chars)"},
                 )
 
+    def _language_skipped(rule: dict) -> bool:
+        """Engine parity (pl_engine._rule_runs): a rule scoped to languages
+        that leave out the sample's known language does not run. The editor's
+        rules skip schema validation, so the codes are folded as
+        settings_schema.normalize_languages would, and junk entries ignored."""
+        langs = rule.get("languages")
+        if not language or not isinstance(langs, list):
+            return False
+        codes = {c.strip().lower() for c in langs if isinstance(c, str) and c.strip()}
+        return bool(codes) and language not in codes
+
     _screened: dict[str, bool] = {}
 
     def _probe_items(rule: Any) -> list[tuple[int, str, Any]]:
         """(entry index, pattern, replacement) for every match `rule` would run
-        in-process: enabled, a non-empty string, past both structural screens
-        (those are refused as not_run anyway). Entry index -1 = the rule's own
-        pattern; replacement None = a callback (matched, not substituted)."""
-        if not isinstance(rule, dict) or not rule.get("enabled", True):
+        in-process: enabled, in the sample's language, a non-empty string,
+        past both structural screens (those are refused as not_run anyway).
+        Entry index -1 = the rule's own pattern; replacement None = a callback
+        (matched, not substituted)."""
+        if (not isinstance(rule, dict) or not rule.get("enabled", True)
+                or _language_skipped(rule)):
             return []
         rtype = rule.get("type")
         if rtype in ("callback:map", "terminal"):
@@ -1189,6 +1212,9 @@ async def test_pipeline(payload: dict[str, Any]) -> JSONResponse:
 
         if not rule.get("enabled", True):
             return {**common, "after": text, "skipped": True}
+        if _language_skipped(rule):
+            return {**common, "after": text, "skipped": True,
+                    "skipped_language": True}
 
         # regex-list: apply each entry in order to a running buffer (entry N's
         # output feeds N+1), all inside ONE 2 s guard. Reports one card-level

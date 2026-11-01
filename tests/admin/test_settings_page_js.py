@@ -477,6 +477,7 @@ def _test_panel_harness(html, body):
 const out = document.createElement('div');
 const runBtn = document.createElement('button');
 const sample = { value: 'Hallo' };
+const langSel = { value: '' };
 function currentValue() { return []; }
 function _typePill(t) { return t; }
 let api;
@@ -518,6 +519,74 @@ run().catch(() => {}).then(() => {
 });
 """))
     assert out == ["err", "test endpoint unreachable: TypeError: Failed to fetch"]
+
+
+@needs_node
+def test_pipeline_test_panel_sends_the_sample_language(client):
+    """The engine skips a rule whose `languages` leave out the detected
+    language, but the panel sent no language, so "Run all enabled rules" and
+    each card's status ran German-only rules on every sample. The panel now
+    starts at DEFAULT_LANGUAGE and says which steps the language skipped."""
+    html = _html(client, "/settings/pipeline")
+    src = "\n".join([
+        _block(html, "function pipelineTestPanel() {", "\n}\n"),
+        _block(html, "async function _testOneRule(rule) {", "\n}\n"),
+    ])
+    out = _node(_FAKE_DOM + """
+const TEST_PRESETS = { 'default': 'Hallo' };
+const WHISPER_LANGS = [{ code: 'de', name: 'German' }, { code: 'en', name: 'English' }];
+const state = { fields: { DEFAULT_LANGUAGE: { value: 'de' } } };
+function currentValue(n) { return n === 'PIPELINE_RULES' ? [] : state.fields[n].value; }
+function _typePill(t) { return t; }
+const sent = [];
+async function api(m, url, body) {
+  sent.push(body.language);
+  return { ok: true, json: async () => ({ final: 'Hallo', steps: [
+    { ordinal: 1, label: 'de-only', type: 'regex', before: 'Hallo', after: 'Hallo',
+      skipped: true, skipped_language: true }] }) };
+}
+""" + src + """
+(async () => {
+  const wrap = pipelineTestPanel();
+  const langSel = find(wrap, e => e.id === 'pipeline-test-language');
+  const runBtn = find(wrap, e => e.textContent === 'Run all enabled rules');
+  const first = langSel.value;
+  await fire(runBtn, 'click');
+  const badge = find(wrap, e => e.classList.contains('tag'));
+  langSel.value = '';
+  await fire(runBtn, 'click');
+  // A card's own status check reads the panel's language too.
+  document.getElementById = id => id === 'pipeline-test-language' ? { value: 'en' } : null;
+  await _testOneRule({ name: 'r' });
+  console.log(JSON.stringify([first, sent, badge && badge.textContent]));
+})();
+""")
+    assert out == ["de", ["de", None, "en"], "skipped · language"]
+
+
+@needs_node
+def test_rule_status_says_the_language_skipped_it(client):
+    """A step the sample's language skipped read "∅ empty pattern — rule
+    skipped" on an enabled rule whose pattern is anything but empty."""
+    block = _block(_html(client, "/settings/pipeline"),
+                   "      let timer = null;\n", "        }, 250);\n      };\n")
+    out = _node(_FAKE_DOM + """
+document.getElementById = id => id === 'pipeline-test-language' ? { value: 'en' } : null;
+(async function () {
+  function setTimeout(f) { f(); return 1; }
+  function clearTimeout() {}
+  const status = document.createElement('div');
+  const rule = { name: 'r', type: 'regex', enabled: true, languages: ['de', 'es'] };
+  async function _testOneRule() { return { type: 'regex', skipped: true, skipped_language: true }; }
+  let refresh;
+""" + block + """
+  refresh();
+  await new Promise(r => globalThis.setTimeout(r, 0));
+  console.log(JSON.stringify(status.textContent));
+})();
+""")
+    assert out == ("∅ skipped — language: the rule runs only for de, es, "
+                   "the test sample is en")
 
 
 # ---- scalar editors -------------------------------------------------------------
