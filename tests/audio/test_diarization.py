@@ -50,8 +50,7 @@ def test_diarize_labels_segments_and_lists_speakers(client, app_module, monkeypa
 
 
 def test_diarize_disabled_server_soft_fails(client, app_module, monkeypatch):
-    # DIARIZATION_ENABLED defaults off: the request still succeeds, the
-    # transcript has no speakers, and a warning explains why.
+    # DIARIZATION_ENABLED defaults off, so this test leaves it unset.
     called = []
     _stub_turns(monkeypatch, [(0.0, 1.0, "SPEAKER_00")], calls=called)
     r = _post(client, diarize="true")
