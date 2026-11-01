@@ -1,4 +1,4 @@
-"""Unit tests for preload.py's plan MERGE path and its seams with main.py.
+"""Unit tests for preload.py's plan MERGE path and its stage-cache seams.
 
 A repeat registration of the same plan_id merges into the existing plan; the
 first registration is the well-trodden path, the merge is where the entries
@@ -49,8 +49,6 @@ def _enable(monkeypatch, **over):
     return cfg
 
 
-# --- PC1: a merged plan stays in stage order --------------------------------
-
 def test_merge_restores_stage_order_so_stage_ahead_picks_the_nearer_stage(
         monkeypatch):
     """The documented main path: a client POSTs [whisper, translation], then
@@ -80,8 +78,6 @@ def test_merge_restores_stage_order_so_stage_ahead_picks_the_nearer_stage(
         assert item == ("2" * 8, "diarization", "p/x")
     asyncio.run(_run())
 
-
-# --- PC2: one plan's entries are bounded ------------------------------------
 
 def test_plan_entries_are_capped_on_repeat_posts(monkeypatch):
     _enable(monkeypatch)
@@ -122,19 +118,14 @@ def test_an_entry_past_the_cap_is_deferred_not_enqueued(monkeypatch):
     asyncio.run(_run())
 
 
-# --- PC3: whisper placement honours MODEL_OVERRIDES --------------------------
-
 def test_whisper_placement_uses_the_per_model_override(monkeypatch):
     _enable(monkeypatch, MODEL_DEVICE="cuda", MODEL_COMPUTE_TYPE="float16",
             MODEL_OVERRIDES={"tiny": {"MODEL_DEVICE": "cpu",
                                       "MODEL_COMPUTE_TYPE": "int8"}})
     assert preload._placement("whisper", "tiny") == ("cpu", "int8")
     assert preload._placement("whisper", "large-v3") == ("cuda", "float16")
-    # The bare call (no id) is the global pair.
     assert preload._placement("whisper") == ("cuda", "float16")
 
-
-# --- PC4: a second lifespan gets a queue bound to ITS loop -------------------
 
 def test_second_start_on_a_new_loop_does_not_reuse_the_old_queue():
     async def _first():
@@ -184,8 +175,6 @@ def test_start_replaces_a_worker_left_pending_on_a_closed_loop():
     gc.collect()        # finalise the abandoned task here, not in a later test
 
 
-# --- PC5: the queue cap counts the batch being admitted ---------------------
-
 def test_queue_cap_counts_the_in_flight_batch(monkeypatch):
     _enable(monkeypatch)
     _fits(monkeypatch, (True, None))
@@ -206,8 +195,6 @@ def test_queue_cap_counts_the_in_flight_batch(monkeypatch):
     asyncio.run(_run())
 
 
-# --- PC7: _reset_for_tests clears the warm predicate -------------------------
-
 def test_reset_for_tests_clears_the_warm_predicate():
     async def _run():
         await preload.start()
@@ -217,8 +204,6 @@ def test_reset_for_tests_clears_the_warm_predicate():
         assert model_registry.is_warm("anything") is False
     asyncio.run(_run())
 
-
-# --- PC9: stage_ahead is upgrade-only on merge -------------------------------
 
 def test_stage_ahead_upgrades_on_merge_and_never_downgrades(monkeypatch):
     _enable(monkeypatch)
@@ -231,8 +216,6 @@ def test_stage_ahead_upgrades_on_merge_and_never_downgrades(monkeypatch):
     preload.register_plan("u", e, plan_id="4" * 8, stage_ahead=False)
     assert preload._plans["4" * 8].stage_ahead is True
 
-
-# --- a merge re-validates the warmed keys against residency ------------------
 
 def test_merge_prunes_warmed_keys_that_are_no_longer_resident(monkeypatch):
     _enable(monkeypatch)
@@ -278,8 +261,6 @@ def test_stage_ahead_rewarms_a_warmed_entry_that_was_dropped(monkeypatch):
     assert "pyannote:p/x" not in plan.warmed
 
 
-# --- PC10: a new job on the same plan starts fresh ---------------------------
-
 def test_a_job_binding_rewinds_the_cursor_a_client_post_does_not(monkeypatch):
     _enable(monkeypatch)
     _fits(monkeypatch, (None, "size_unknown"))
@@ -293,8 +274,6 @@ def test_a_job_binding_rewinds_the_cursor_a_client_post_does_not(monkeypatch):
     preload.register_plan("u", e, plan_id="6" * 8, trigger="job")
     assert plan.cursor == -1
 
-
-# --- PC11: a whisper preload never makes main evict a warm peer --------------
 
 def test_whisper_full_cache_with_only_a_warm_peer_is_family_busy(monkeypatch):
     _enable(monkeypatch, MAX_LOADED_MODELS=1)
@@ -441,8 +420,6 @@ def test_a_declined_singleton_load_does_not_mark_the_plan_warm(monkeypatch):
     assert key in preload._plans[pid].warmed
 
 
-# --- PC12: the warm lease comes from the plan, not from _admit ---------------
-
 def test_resident_entry_is_warm_through_its_plan_only(monkeypatch):
     _enable(monkeypatch)
     monkeypatch.setattr(diarization, "_pipeline_key", ("p/x", "cpu", 4))
@@ -456,8 +433,6 @@ def test_resident_entry_is_warm_through_its_plan_only(monkeypatch):
     assert preload._warm["pyannote:p/x"] == preload._plans["8" * 8].expires_mono
 
 
-# --- GS1: preload speaks the transcribe route's whisper vocabulary ----------
-
 def test_whisper_1_alias_resolves_to_the_default_model(monkeypatch):
     _enable(monkeypatch, DEFAULT_MODEL="large-v3")
     assert preload.normalize_id("whisper", "whisper-1") == "large-v3"
@@ -466,7 +441,7 @@ def test_whisper_1_alias_resolves_to_the_default_model(monkeypatch):
     monkeypatch.setitem(tx_models._loaded_models, "large-v3", object())
     assert preload.is_resident("whisper", "whisper-1") is True
     assert preload.is_resident("whisper", "large-v3") is True
-    # The two spellings are one plan entry as far as the ids are concerned.
+    # derive_plan_id normalises first, so both spellings derive one plan id.
     assert preload.derive_plan_id("u", [("whisper", "whisper-1")]) == \
         preload.derive_plan_id("u", [("whisper", "large-v3")])
 
@@ -515,8 +490,6 @@ def test_unknown_short_whisper_name_is_not_admitted(monkeypatch):
     assert preload_routes._allowed("whisper", "large-v3") is True
 
 
-# --- PC6: the translation allowlist rule is main's --------------------------
-
 def test_translation_allowlist_is_mains_rule(monkeypatch):
     from faster_whisper_backend.runtime import preload_routes
     cfg = _enable(monkeypatch, TRANSLATION_ALLOWED_MODELS=set(),
@@ -530,8 +503,6 @@ def test_translation_allowlist_is_mains_rule(monkeypatch):
     assert preload_routes._allowed("translation", "o/d:Q8") is True
     assert preload_routes._allowed("translation", "o/evil:Q8") is False
 
-
-# --- GS2: the /stats page renders the preload diagnostics --------------------
 
 def test_stats_page_renders_the_preload_diagnostics(client, app_module,
                                                     make_user_key):
