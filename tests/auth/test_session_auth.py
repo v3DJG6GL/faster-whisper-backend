@@ -72,8 +72,8 @@ def test_login_good_key_sets_cookies(client, make_user_key):
 
 
 def test_whoami_names_the_csrf_cookie(client, make_user_key, monkeypatch):
-    # The page's live-cookie CSRF fallback hard-coded "whisper_csrf", so a
-    # renamed SESSION_CSRF_COOKIE_NAME left it reading nothing.
+    # The page's live-cookie CSRF fallback takes the cookie name from whoami,
+    # so a renamed SESSION_CSRF_COOKIE_NAME must reach it there.
     from faster_whisper_backend.settings import config as cfg
     monkeypatch.setattr(cfg, "SESSION_CSRF_COOKIE_NAME", "fw_csrf")
     _uid, raw = make_user_key("root", is_admin=True)
@@ -202,9 +202,9 @@ def _close_fake_clock_store(sessions_store):
 
 
 def test_active_session_ends_ttl_after_login(tmp_path, monkeypatch):
-    # The row used to slide on every lookup, so a raw token replayed outside
-    # the browser (whose cookie dies TTL after login) stayed valid for as long
-    # as it kept being used.
+    # The row must not slide on lookup: the browser's cookie dies TTL after
+    # login, and a sliding row would keep a replayed raw token valid for as
+    # long as it kept being used.
     clock = [10_000.0]
     sessions_store = _fake_clock_store(tmp_path, monkeypatch, clock)
     try:
