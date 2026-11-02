@@ -40,8 +40,6 @@ _REPO_DIR = REPO_ROOT  # the checkout, not this package — see paths.py
 # WHISPER_MODEL_SIZES_PATH > WHISPER_DATA_DIR/model_sizes.json >
 # /data/model_sizes.json (Windows: <repo>\data — bare metal by definition, and
 # "/data" would be drive-relative there; keep in sync with config._DATA_DIR).
-# Computed here rather than imported from config: config imports config_store,
-# and model_registry reaches this module, so importing config would close a cycle.
 PATH = os.environ.get("WHISPER_MODEL_SIZES_PATH") or os.path.normpath(
     os.path.join(
         (os.environ.get("WHISPER_DATA_DIR") or "").strip()
