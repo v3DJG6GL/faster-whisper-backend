@@ -376,8 +376,9 @@ def nav_html(current: str) -> str:
     pills are rendered separately by sev_pills_html() ({{SEV_PILLS}}) so they
     can live in the header's right-hand utility cluster."""
     # Two visibility tracks, both default-hidden by CSS:
-    # - "admin-only": all-or-nothing on `body.role-admin`, which a page adds
-    #   after a successful admin-API ping (the sev pills use it too).
+    # - "admin-only": all-or-nothing on `body.role-admin`, which
+    #   OPEN_MODE_BANNER_JS's /auth/whoami pass sets for admins (quick-config
+    #   and captures also set it from their own load); the sev pills use it too.
     # - "page-link" + data-page="<X>": OPEN_MODE_BANNER_JS adds `.allowed`
     #   when /auth/whoami's permissions.pages[X] grants it (admins always do).
     page_link_labels: dict[str, str] = {
