@@ -194,8 +194,8 @@ DEFAULT_MODEL = _D("DEFAULT_MODEL")
 ALLOWED_MODELS: "set[str]" = _D("ALLOWED_MODELS")
 
 # Number of models to keep hot in VRAM. LRU eviction beyond this. Each
-# large-v3 model is ~1.5 GB on float16 CUDA; turbo/distill variants are
-# ~600 MB. Pick based on free VRAM after the OS / other apps.
+# large-v3 model is ~3 GB on float16 CUDA; turbo/distil variants are
+# ~1.5 GB. Pick based on free VRAM after the OS / other apps.
 MAX_LOADED_MODELS = _D("MAX_LOADED_MODELS")
 
 # Time-based eviction: unload a model after this many seconds without
@@ -362,9 +362,10 @@ MEDIA_MAX_BYTES = _D("MEDIA_MAX_BYTES")
 
 # Service-wide ceiling on any request body, checked against Content-Length
 # before the body is read. Deliberately ABOVE MEDIA_MAX_BYTES so the more
-# specific media cap is what an oversized upload hits. Only multipart bodies
-# get this full ceiling: every other non-JSON body keeps a 256 MiB backstop
-# in main._max_body_mw, and JSON bodies a 4 MiB one. 10 GiB.
+# specific media cap is what an oversized upload hits. Only multipart uploads
+# to /v1/audio/transcriptions and /translations get this full ceiling: every
+# other non-JSON body keeps a 256 MiB backstop in main._max_body_mw, and JSON
+# bodies a 4 MiB one. 10 GiB.
 MAX_REQUEST_BYTES = _D("MAX_REQUEST_BYTES")
 
 
