@@ -95,13 +95,11 @@ class ReportSubmitIn(BaseModel):
     # baseline to tell a chip the user removed from one it never saw.
     baseline_corrections: list[CorrectionIn] = Field(default=[], max_length=500)
     # 64 KB, deliberately NOT the store's own 2 000 / 4 000 caps. The store
-    # slices these AFTER pydantic has parsed the whole body, and the only other
-    # ceiling is MAX_REQUEST_BYTES (256 MB) — a submit carrying two 100 MB
-    # strings parsed fine and peaked at 627 MB of RSS to store 6 KB. A ceiling
-    # 16x above the store's functional cap kills that while staying far above
-    # anything a human types. The page's textarea is capped at the store's
-    # 4 000; a longer comment from an API client is truncated by the store
-    # rather than refused with a 422 that loses the text.
+    # slices these only AFTER pydantic has parsed the whole body, and the JSON
+    # body ceiling (MAX_JSON_BODY_BYTES, 4 MiB) still admits multi-MB strings
+    # that would be parsed and copied to store a few KB. The page's textarea is
+    # capped at the store's 4 000; a longer comment from an API client is
+    # truncated by the store rather than refused with a 422 that loses the text.
     intended_text: str = Field(default="", max_length=65_536)
     user_comment: str = Field(default="", max_length=65_536)
     # Job provenance: the language and the per-stage models, so a report on a
@@ -110,12 +108,11 @@ class ReportSubmitIn(BaseModel):
     stages: list[Any] = Field(default=[], max_length=32)
 
     # Parity with the intended_text/user_comment ceilings above: max_length
-    # on a list[Any] bounds the ITEM COUNT only, so one 100 MB string nested
-    # in steps[0] (or inside a stages dict) reproduces exactly the case the
-    # 64 KB ceilings were added to kill. Any contained str is bounded at the
-    # same 64 KB, and the walked total at a budget far above the store's
-    # _CAP_STEPS_JSON / _CAP_STAGES_JSON, so nothing stored intact today
-    # starts 422-ing. The types stay list[Any]: tightening them would turn
+    # on a list[Any] bounds the ITEM COUNT only, so one huge string nested in
+    # steps[0] (or inside a stages dict) would bypass them. Any contained str is
+    # bounded at the same 64 KB, and the walked total at a budget far above the
+    # store's _CAP_STEPS_JSON / _CAP_STAGES_JSON, so nothing stored intact
+    # today starts 422-ing. The types stay list[Any]: tightening them would turn
     # shapes _truncate_steps silently drops today into 422s.
     @field_validator("steps", "stages")
     @classmethod
