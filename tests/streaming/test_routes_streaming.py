@@ -606,7 +606,6 @@ def test_stream_idle_timeout_not_re_armed_by_non_audio_frames(app_module, monkey
             msgs = _drain(ws)
             drained_in = time.monotonic() - t0
     assert any(m.get("code") == "idle_timeout" for m in msgs)
-    # Closed at ~0.5 s (during the send loop), not 0.5 s after the last frame.
     assert drained_in < 0.25, f"socket was still armed when we stopped sending ({drained_in:.2f}s)"
 
 
