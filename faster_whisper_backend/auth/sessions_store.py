@@ -60,11 +60,10 @@ _conn: sqlite3.Connection | None = None
 # Mirrors api_keys_store._DB_READY.
 _DB_READY: bool = False
 
-# In-memory token_hash → session row index. Maintained incrementally on
-# create/revoke (and _fetch_on_miss); rebuilt in full only on init, purge, a
-# detected sibling commit, or a moved 'revocations' counter. INVARIANT: any
-# incremental insert must carry exactly the keys _rebuild_index_locked()
-# produces (user_id, key_id, csrf_token, created_ts, expires_ts).
+# token_hash → session row (lifecycle: module docstring; _fetch_on_miss
+# inserts too). INVARIANT: any incremental insert must carry exactly the keys
+# _rebuild_index_locked() produces (user_id, key_id, csrf_token, created_ts,
+# expires_ts).
 _SESSION_INDEX: dict[str, dict[str, Any]] = {}
 
 # Last `PRAGMA data_version` observed on _conn — same role as in
@@ -391,10 +390,10 @@ def revoke_session(raw_token: str) -> None:
         if _data_version_locked() != _DATA_VERSION:
             _rebuild_index_locked()
         # The connection autocommits, so without the explicit transaction the
-        # revoke and the counter bump were two commits: a SQLITE_BUSY / disk
-        # error on the second left the row revoked with this worker's index
-        # still honouring it (our own commit does not move our data_version)
-        # and the siblings' counter never moving.
+        # revoke and the counter bump would be two commits: a SQLITE_BUSY / disk
+        # error on the second would leave the row revoked with this worker's
+        # index still honouring it (our own commit does not move our
+        # data_version) and the siblings' counter never moving.
         try:
             conn.execute("BEGIN IMMEDIATE")
             try:
@@ -415,7 +414,7 @@ def revoke_session(raw_token: str) -> None:
                 conn.execute("COMMIT")
                 # Our own revocation is already reflected in the index (the
                 # pop below), so mark its counter step seen: otherwise the
-                # next revocation_generation() redid the full O(live
+                # next revocation_generation() would redo the full O(live
                 # sessions) rebuild on the event loop for every local logout.
                 # Only when no sibling revocation interleaved (gap of exactly
                 # one); a larger gap still forces that rebuild.
