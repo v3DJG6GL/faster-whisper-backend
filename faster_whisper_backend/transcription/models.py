@@ -65,10 +65,10 @@ _model_load_lock = asyncio.Lock()
 #
 # Deliberately NOT guarded by _model_load_lock: every mutation happens on the
 # event loop with no await between the check and the write, and every eviction
-# path (_drop_loaded_model's callers: the LRU loop, _idle_evictor,
-# drain_then_evict, shutdown) is a synchronous block on that same loop. Loop
-# semantics therefore make check-then-mutate atomic — the same reasoning that
-# already lets the cache-hit fast path in _get_or_load_model run lock-free.
+# path (each _drop_loaded_model caller) is a synchronous block on that same
+# loop. Loop semantics therefore make check-then-mutate atomic — the same
+# reasoning that already lets the cache-hit fast path in _get_or_load_model
+# run lock-free.
 _model_leases: "dict[str, int]" = {}
 # name → leases still held on an INSTANCE _drop_loaded_model(force=True)
 # dropped (drain_then_evict). Leases are keyed by name, so without this a
@@ -642,7 +642,8 @@ def _drop_loaded_model(name: str, *, force: bool = False) -> bool:
     Declines (False) while a request holds a lease on the model, unless
     ``force``. ``force`` is for the drain-then-evict / shutdown paths, whose
     documented contract (see drain_then_evict) is that in-flight requests keep
-    running on the local reference they already captured."""
+    running on the local reference they already captured, and for a failed
+    register in _load_on_miss."""
     if not force and _model_leases.get(name, 0) > 0:
         logger.info("Model %s is in use — eviction deferred", name)
         return False
@@ -1720,9 +1721,9 @@ async def _idle_evictor() -> None:
                         logger.info("[idle-evict] unloaded %s after %ds idle",
                                     name, timeout)
             if not unloaded:
-                # Every drop was refused (a leased model mid-decode keeps
-                # reading as stale every tick): nothing to reclaim, and a
-                # full gc on the loop every 30 s would be pure stall.
+                # Nothing was dropped (a lease or a use landed after the
+                # prescan): nothing to reclaim, and a full gc on the loop
+                # would be pure stall.
                 continue
             gc.collect()
             # Only a torch some other subsystem already imported can hold
