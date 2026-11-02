@@ -230,9 +230,9 @@ def test_rename_profile_refs_keeps_the_real_error_after_sqlite_rolled_back(
 
 def test_revoke_user_failing_key_cascade_leaves_the_user_active(
         api_keys_db, monkeypatch):
-    """revoke_user ran two autocommit UPDATEs: when the api_keys one failed,
-    the user stayed revoked (gone from list_users, so no retry from the UI)
-    while their keys kept authenticating. Both now roll back together."""
+    """A failing api_keys UPDATE rolls the users UPDATE back too: a user left
+    revoked alone would be gone from list_users (so no retry from the UI)
+    while their keys kept authenticating."""
     ak = api_keys_db
     real_conn = ak._require_conn()
     ak.create_user("admin", is_admin=True)
