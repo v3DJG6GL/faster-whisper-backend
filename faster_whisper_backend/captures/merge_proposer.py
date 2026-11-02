@@ -55,10 +55,10 @@ _ALL_USERS = "__all__"
 # {cache_key: (generated_ts, [proposal dict, ...])}
 _CACHE: dict[str, tuple[float, list[dict[str, Any]]]] = {}
 # Insertion-order ceiling, matching _TRIM_DUR_CACHE_MAX below. A scope=all
-# caller picks the ?user_id= that becomes the key, and invalidate() only pops
-# real users' keys plus the sentinel, so an entry under any other key would
-# never be evicted. Unknown ids are rejected up front (_known_owner); this
-# bounds the dict however the key is derived.
+# caller picks the ?user_id= that becomes the key, and invalidate() pops only
+# the written user's key, the sentinel and the several-speaker keys, so an
+# entry under any other key would never be evicted. Unknown ids are rejected
+# up front (_known_owner); this bounds the dict however the key is derived.
 _CACHE_MAX = 512
 # Serializes the sweep itself (see propose_merges) — sweeps only. It does NOT
 # make the _CACHE / _TRIM_DUR_CACHE mutations single-threaded: invalidate()
@@ -241,14 +241,14 @@ def _generate_candidates_for_bucket(
     edge_s: float = 0.0,
     min_sample_s: float = 0.0,
 ) -> list[tuple[float, list[dict[str, Any]]]]:
-    """For one (session, language) bucket of chronologically-sorted captures,
-    enumerate one candidate group per starting index by walking forward and
-    skipping any successor that overflows the budget or duplicates an
-    already-included member. Returns [(composite_score, [members]), ...].
+    """For one (session, user, language, task) bucket of chronologically-sorted
+    captures, enumerate one candidate group per starting index by walking
+    forward and skipping any successor that overflows the budget or duplicates
+    an already-included member. Returns [(composite_score, [members]), ...].
 
     Greedy with skip-allowed lookahead. O(N^2). Not globally optimal, but
     produces sensible session-bundles for typical N ≤ 30. The non-overlap
-    pass in propose_merges() handles cross-candidate member contention.
+    pass in _propose_merges_locked() handles cross-candidate member contention.
     """
     n = len(bucket)
     candidates: list[tuple[float, list[dict[str, Any]]]] = []
