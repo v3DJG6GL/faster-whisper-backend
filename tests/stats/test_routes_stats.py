@@ -1430,8 +1430,8 @@ def test_recent_jobs_who_filter_matches_by_user_id(client):
 def test_stats_js_chart_never_all_hidden_after_reload(client):
     """Hide a series in the legend, then narrow the kind filter to that very
     kind: the reload must not draw an empty chart with the empty message
-    hidden, so prepareLines applies the legend's never-blank guard (before
-    the compare total and the legend), and renderChart no longer does."""
+    hidden, so prepareLines, not renderChart, applies the legend's
+    never-blank guard (before the compare total and the legend)."""
     with pathlib.Path(REPO_ROOT, "static", "stats.js").open(encoding="utf-8") as f:
         js = f.read()
     assert "if (hidden.size === curLines.length) hidden.clear();" in js
