@@ -952,8 +952,8 @@ def _is_final(kw):
 
 def test_stream_final_caps_tokens_and_samples_one_candidate(
         app_module, fake_model, monkeypatch, caplog):
-    """2026-09-19: a looping rung ran to 224 tokens (18.6 s), then a sampled
-    rung's 17-token answer waited 13.9 s for a looping sibling. The FINAL
+    """A looping rung once ran to 224 tokens (18.6 s), then a sampled rung's
+    17-token answer waited 13.9 s for a looping sibling. The FINAL
     decode gets the token cap (through the trace capture) and
     STREAMING_FINAL_BEST_OF; partials keep their own knobs."""
     import logging
