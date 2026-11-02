@@ -35,8 +35,9 @@ async def whoami(
     csrf_token?}`. `build` carries the header chip's facts (version, boot,
     start) — the shared header ships as an empty shell because its pages are
     only host-gated, so the facts ride this authenticated route instead. The
-    `permissions` object is `{pages: {<page>: 'own'|'all'|'none', ...}}`
-    (access-only pages such as logs are 'all'|'none') — used by each page's
+    `permissions` object is `{pages: {<page>: 'own'|'all'|'none', ...},
+    quick_config_tags: [...]}` (access-only pages such as logs are
+    'all'|'none') — used by each page's
     JS to hide nav links the user can't reach and to render scope hints.
     `csrf_token` and `csrf_cookie` (SESSION_CSRF_COOKIE_NAME) are present
     only for cookie-authenticated callers (set by user_from_session_cookie
