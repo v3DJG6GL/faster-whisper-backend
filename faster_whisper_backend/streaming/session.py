@@ -652,7 +652,7 @@ class StreamSession:
             else:
                 # The decode only heard the (possibly trim-shortened) buffer: text whose
                 # audio _maybe_trim cut from it survives in the banked committed words —
-                # without this prefix an over-15s continuous utterance loses its opening
+                # without this prefix an utterance longer than buffer_trim_sec loses its opening
                 # (the decode result would replace the already-committed-and-shown text).
                 # Applies to the dropped_all case too: the drop verdict judged the
                 # remaining buffer, not the banked (multi-partial-agreed) prefix.
