@@ -745,7 +745,7 @@ async def transcribe_stream(ws: WebSocket) -> None:
         req_prompt = (_SURROGATE_RE.sub("", _req_prompt).strip()[:2048]
                       if prompt_provided else "")
         # Optional per-request decode overrides (the client's "decode overrides").
-        # Applied to the FINAL decode (the batch analogue); partials keep their
+        # Applied to both decodes, as in batch; partials then re-pin their
         # streaming-specific beam/temp/condition/vad knobs (see _build_transcribe_kwargs).
         req_overrides = conf.get("decode_overrides")
         if not isinstance(req_overrides, dict):
@@ -2003,7 +2003,7 @@ async def transcribe_stream(ws: WebSocket) -> None:
     except Exception as exc:  # noqa: BLE001
         # Client-chosen handshake strings (model / language / response_format)
         # land verbatim in exception messages, and any exception raised outside
-        # the two inner blocks that already screen theirs reaches this line — so
+        # the inner blocks that already screen theirs reaches this line — so
         # screen it too before it hits the line-oriented rotating log.
         logger.exception("[stream %s] error: %s",
                          session_id[:8], store_common.log_safe(str(exc)))
