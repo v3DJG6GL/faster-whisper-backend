@@ -30,7 +30,7 @@ from faster_whisper_backend.settings import config as cfg
 logger = logging.getLogger("whisper-api")
 
 
-# Optional per-request progress for the file-upload path: a client that sends a
+# Optional per-request progress for the batch routes (upload or URL): a client that sends a
 # `progress_id` form field can poll GET /v1/audio/transcriptions/progress/<id>
 # while its POST is in flight. Entries live only for the request (retired by
 # _progress_close in the handler's finally); the cap below bounds many runs in
