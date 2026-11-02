@@ -61,9 +61,9 @@ def test_locked_language_ignores_client_param(client, make_user_key, fake_model)
 def test_batch_language_reduces_to_a_whisper_code(client, make_user_key, fake_model):
     # /dictate sends one language box to both modes and the streaming handshake
     # folds it to a Whisper code, so batch must too: faster-whisper's tokenizer
-    # raises (a 500) on a region tag, an underscore locale or a withdrawn
-    # ISO 639-1 code ("iw", "in", "jv"). Blank is auto-detect; a value that
-    # reduces to no code is a 422 (below).
+    # raises (a 500) on a region tag, an underscore locale, a withdrawn
+    # ISO 639-1 code ("iw", "in") or the standard "jv" (Whisper keeps "jw").
+    # Blank is auto-detect; a value that reduces to no code is a 422 (below).
     _, raw = make_user_key("alice", is_admin=False)
     for sent, expected in (("DE", "de"), ("de-DE", "de"), (" pt-BR ", "pt"),
                            ("de_DE", "de"), ("pt_BR", "pt"),
