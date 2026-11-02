@@ -8,7 +8,7 @@ older than STATS_SYSTEM_METRICS_RETENTION_DAYS are pruned hourly.
 
 Own file (STATS_SYSTEM_METRICS_DB) because this is rolling telemetry: it
 shares neither the usage ledger's keep-for-years lifecycle nor the recent
-transcriptions' plaintext-content sensitivity. Until 2026-09 the table lived
+transcriptions' plaintext-content sensitivity. The table used to live
 in the recent-transcriptions DB as `sys_samples`; adopt_legacy() moves those
 rows over once.
 """
