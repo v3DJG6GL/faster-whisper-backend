@@ -154,10 +154,10 @@
       })
         .then(function(r) {
           if (r.ok) return;
-          // Only a 401 is a verdict on the key. A 429 (the host's failed
-          // sign-in window is exhausted) refuses even a CORRECT key, and a
-          // 5xx is the server failing to open a session: show the server's
-          // own reason (RateLimited carries `detail` for exactly this).
+          // Only a 401 is a verdict on the key. A 5xx is the server failing
+          // to open a session. A 429 (the host's failed sign-in window is
+          // exhausted) refuses even a CORRECT key: show the server's own
+          // reason (RateLimited carries `detail` for exactly this).
           if (r.status === 401) throw 'That key was rejected.';
           if (r.status >= 500) {
             throw 'The server could not create a session (HTTP ' + r.status +
