@@ -2,7 +2,7 @@
 idempotent registration and thread safety.
 
 No FastAPI and no heavy deps: every family module is monkeypatched at the same
-module boundary test_diarization / test_bgm / test_stage_models use (the
+module boundary test_diarization / test_bgm_separation / test_stage_models use (the
 registry dicts and the loader coroutines), so nothing here can import pyannote,
 onnxruntime, llama.cpp or CTranslate2.
 """
