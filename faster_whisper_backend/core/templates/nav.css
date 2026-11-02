@@ -554,10 +554,9 @@ body:not(.col-data) header .width-toggle { display: none; }
 header .admin-only { display: none; }
 body.role-admin header .admin-only { display: inline-flex; }
 
-/* Per-user-gated nav links (logs/stats/quick/reports/captures).
-   Hidden until OPEN_MODE_BANNER_JS sets `.allowed` per link based on
-   /auth/whoami → permissions.pages[X]. Admins still pass via the
-   server-side is_admin short-circuit. */
+/* Per-user-gated nav links (logs/stats/quick/reports/captures): hidden
+   until OPEN_MODE_BANNER_JS adds `.allowed` from /auth/whoami →
+   permissions.pages[X] (always for an admin). */
 header .page-link { display: none; }
 header .page-link.allowed { display: inline-flex; }
 
