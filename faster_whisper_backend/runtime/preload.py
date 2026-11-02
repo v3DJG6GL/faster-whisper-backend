@@ -406,10 +406,10 @@ def _admit(family: str, model_id: str) -> "tuple[str, str | None]":
     """The admission ladder: (state, reason) with state in
     resident|loading|queued|deferred.
 
-    Run TWICE per entry — once at enqueue so the response can say something
-    honest, and again at dequeue, because residency, leases and free VRAM all
-    move in between. The DEQUEUE verdict is the one that decides what actually
-    happens; the enqueue verdict is a forecast."""
+    Run at registration so the response can say something honest, and again
+    at dequeue (the only run for a stage-advance enqueue), because residency,
+    leases and free VRAM all move in between. The DEQUEUE verdict is the one
+    that decides what actually happens; the registration verdict is a forecast."""
     if not _enabled():
         return ("deferred", "disabled")
     refusal = _static_refusal(family, model_id)
@@ -933,7 +933,7 @@ async def _handle(item: "tuple[str, str, str]") -> None:
             if is_resident(family, model_id):
                 return
             plan.warmed.discard(key)
-    # Second run of the ladder (see _admit): this verdict is the one that acts.
+    # The dequeue run of the ladder (see _admit): this verdict is the one that acts.
     state, reason = _admit(family, model_id)
     if state == "resident":
         with _lock:
