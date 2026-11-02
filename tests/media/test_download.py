@@ -1987,7 +1987,7 @@ def test_pick_rung():
     # falls back to the height rule.
     assert udl.pick_rung(ladder, None, "v1080-30")["format_id"] == "v1080-30"
     assert udl.pick_rung(ladder, 720, "gone")["format_id"] == "v720"
-    # A height-less "Best available" rung is what an uncapped pick returns.
+    # A height-less "Best available" rung is picked under any height cap.
     best = [{"kind": "video", "height": None, "format_id": None}]
     assert udl.pick_rung(best, None) is best[0]
     assert udl.pick_rung(best, 720) is best[0]
