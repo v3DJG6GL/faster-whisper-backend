@@ -5,8 +5,11 @@ Covers:
     collapse, the kept-speech segment time-map, and the no-op/identity guards.
   - audio_merge.merge_wavs: per-member trim wiring + concatenation, and the
     trim=False identity path.
-  - captures_routes._remap_time_ms / _build_merged_words: word-timestamp
-    re-placement onto the trimmed merged timeline (per-member + legacy).
+  - captures_routes._remap_time_ms / _build_merged_words / _align_member_words /
+    _apply_trim_to_capture_row / _split_corrections_to_members: word-timestamp
+    re-placement onto the trimmed timeline (per-member + legacy), one word per
+    raw word, and chip splitting across members.
+  - merge_proposer.trimmed_duration_s / _build_proposal: trimmed durations + cache.
 
 The planner tests use the deterministic `fake_vad` fixture (tests/conftest.py),
 which treats any non-zero PCM as speech. The route-layer tests are skipped
