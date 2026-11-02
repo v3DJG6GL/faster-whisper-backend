@@ -173,15 +173,13 @@ if (resetLayoutBtn) {
 }
 
 // Usage section (independent of the live SSE dashboard).
-// One document from GET /stats/usage (v2) feeds every usage card: the
-// headline strip, the chart (stacked bars by kind, lines otherwise, a dashed
-// compare line), the legend / table twin, the leaderboard, the pipeline
-// stages card, the busy-hours grid, and the audio/RTF columns of the
-// loaded-models table (via window.__statsUsage for the inline renderer).
+// One document from GET /stats/usage (v2) feeds every usage card, including
+// the audio/RTF columns of the loaded-models table (via window.__statsUsage
+// for the inline renderer).
 //
-// The scope bar in the page header (range, compare, kind, "with stage" chips,
-// click-to-filter chips) is the single filter that scopes all of them, and
-// its state is mirrored to the URL so a view can be pasted and reopened.
+// The scope bar in the page header is the single filter that scopes all of
+// them, and its state is mirrored to the URL so a view can be pasted and
+// reopened.
 //
 // The chart formats its own axis/tooltip dates inline rather than via the
 // shared TIME_HELPERS_JS fmtWhen: its x-values are day*86400 = UTC midnight
