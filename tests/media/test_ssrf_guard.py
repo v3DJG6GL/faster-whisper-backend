@@ -303,7 +303,7 @@ def test_launcher_starts_yt_dlp_with_the_guard_flags(tmp_path):
     """The launcher must not fail closed on a healthy tree, and the guard
     must ALSO load through yt-dlp's official --plugin-dirs channel."""
     proc = _run_launcher([], tmp_path)
-    assert udl.GUARD_UNAVAILABLE_MARKER not in proc.stderr  # no fail-closed
+    assert udl.GUARD_UNAVAILABLE_MARKER not in proc.stderr
     assert "Error while importing module" not in proc.stderr
     plugin_dirs = [ln for ln in proc.stderr.splitlines()
                    if "Plugin directories:" in ln]
