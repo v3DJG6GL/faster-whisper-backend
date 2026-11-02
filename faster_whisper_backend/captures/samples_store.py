@@ -128,7 +128,7 @@ def _relpath_for(sid: str) -> str:
 def abs_path_for(relpath: str) -> str:
     """Resolve a relpath (the `groups/...` form) to an absolute path
     rooted at CAPTURES_DIR. Path-traversal defense — anything that
-    escapes returns ValueError."""
+    escapes raises ValueError."""
     # Imported lazily to avoid an import cycle at module load.
     from faster_whisper_backend.captures import store as captures_store
     root = os.path.abspath(captures_store._require_audio_dir())
