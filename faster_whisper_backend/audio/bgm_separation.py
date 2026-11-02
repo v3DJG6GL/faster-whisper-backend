@@ -607,8 +607,6 @@ async def _get_separator(model_filename: "str | None" = None, *,
         # force: a request for a DIFFERENT model must never be blocked by a
         # running job — orphaning lets both coexist until the old one drains.
         _drop_locked(force=True)
-        # Marks the load in flight for _free_locked (an orphan released
-        # mid-load must not wipe this load's placement or stats row).
         _loading_key = key
         try:
             vram_before = system_stats.gpu_mem_used_bytes()
