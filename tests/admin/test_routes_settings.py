@@ -1340,9 +1340,9 @@ def test_translation_test_progress_id_seeds_registry(
 
 def test_translation_test_progress_entry_is_owner_stamped(
         client, app_module, monkeypatch, make_user_key):
-    """The lab's seed joins _BATCH_PROGRESS with an owner, like the batch and
-    stage-ahead seeds in main — an owner-less entry would be readable (and
-    cancellable) by ANY authenticated caller holding the id."""
+    """The lab's seed joins _BATCH_PROGRESS with an owner, like the
+    transcription and batch-translation seeds — an owner-less entry would be
+    readable (and cancellable) by ANY authenticated caller holding the id."""
     from faster_whisper_backend.translation import engine as translation
     from tests.conftest import bearer
 
