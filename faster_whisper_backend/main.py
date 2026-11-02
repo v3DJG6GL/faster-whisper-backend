@@ -471,7 +471,7 @@ async def lifespan(app: FastAPI):
     # download before refusing to start would turn one misconfiguration into
     # a multi-minute crash loop under restart=always.
     #
-    # FATAL, unlike every other store below: without it auth can resolve
+    # FATAL, unlike every other store: without it auth can resolve
     # nobody, so the service answers 401 to everything while still looking
     # healthy; exiting non-zero lets the container/unit restart instead. A
     # bootstrap key matching a revoked or non-admin key (or one that cannot
