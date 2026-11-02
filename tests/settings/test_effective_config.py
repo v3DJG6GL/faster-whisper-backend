@@ -11,8 +11,6 @@ from faster_whisper_backend.settings import schema as settings_schema
 from faster_whisper_backend.settings import effective_config as ec
 
 
-# --- layer builders -------------------------------------------------------
-
 def _layer(scope, **blob):
     return ec._blob_to_layer(f"{scope}.direct", f"{scope} · direct", None, blob)
 
@@ -26,8 +24,6 @@ def _resolve(layers, model_id=None, req=None, prov=False):
     layers = [l for l in layers if l is not None]
     return ec._resolve_from_layers(model_id, layers, req or {}, prov)
 
-
-# --- schema ---------------------------------------------------------------
 
 def test_lockable_excludes_pipeline_lists():
     assert "BEAM_SIZE" in settings_schema.LOCKABLE_FIELDS
@@ -88,8 +84,6 @@ def test_profile_roundtrip_through_adminconfig():
     assert out["DEFAULT_LANGUAGE"] == "de" and out["BEAM_SIZE"] == 8
     assert out["locks"] == ["DEFAULT_LANGUAGE"]
 
-
-# --- scalar precedence ----------------------------------------------------
 
 def test_empty_is_noop():
     r = _resolve([])
@@ -178,8 +172,6 @@ def test_vad_lock_maps_to_client_subparam_key():
     assert "vad_min_silence_duration_ms" in r.dropped
 
 
-# --- pipeline rules -------------------------------------------------------
-
 def test_rule_first_mention_wins():
     # key.include r2 is more specific than user.exclude r2 → enabled.
     r = _resolve([_layer("key", PIPELINE_RULES_INCLUDE=["r2"]),
@@ -207,8 +199,6 @@ def test_identity_rule_overrides_per_model(monkeypatch):
     r = _resolve([_layer("user", PIPELINE_RULES_INCLUDE=["r3"])], model_id="m1")
     assert "r3" in r.pipeline_include and "r3" not in r.pipeline_exclude
 
-
-# --- provenance (verbose path) -------------------------------------------
 
 def test_provenance_marks_single_winner(monkeypatch):
     monkeypatch.setattr(cfg, "MODEL_OVERRIDES",
@@ -258,8 +248,6 @@ def test_provenance_value_less_lock_winner_inherits_value(monkeypatch):
     assert user["is_set"] and not user["is_winner"]
 
 
-# --- public resolve() open-mode shortcut ----------------------------------
-
 def test_resolve_open_mode_no_identity():
     r = ec.resolve("whisper-1", user_id="(open-mode)", key_id="(open-mode)")
     assert not r.has_identity()
@@ -300,8 +288,6 @@ def test_per_model_rules_map_a_split_card_against_the_rules_in_force(monkeypatch
         {"name": "strip-whisper-punctuation"}, {"name": "trim-edges"}])
     assert ec._per_model_rule_layer("m1")["exclude"] == set(old)
 
-
-# --- request-named override profile ---------------------------------------
 
 def _set_profiles(monkeypatch, profiles, allow=True):
     monkeypatch.setattr(cfg, "OVERRIDE_PROFILES", profiles, raising=False)
@@ -363,8 +349,6 @@ def test_request_profile_is_least_specific(monkeypatch):
     assert "temperature" in r.locked_client_keys
     assert r.values["DEFAULT_LANGUAGE"] == "fr"    # profile fills a field nobody set
 
-
-# --- per-identity request gates + allowlist -------------------------------
 
 def _bindings(monkeypatch, *, key=None, user=None):
     """Monkeypatch the per-identity binding fetch — no DB. Pass partial binding
@@ -461,8 +445,6 @@ def test_request_profile_cant_escape_lock_via_resolve(monkeypatch):
     assert "beam_size" in r.dropped
     assert r.request_profile_applied == "fast"    # applied, just shadowed
 
-
-# --- binding fetch failure fails closed -----------------------------------
 
 def _broken_bindings(monkeypatch, *, key=True, user=True):
     """Make the per-identity binding fetch raise, as a live store fault would.
@@ -579,8 +561,6 @@ def test_one_unreadable_scope_is_enough(monkeypatch):
     assert r.allow_request_decode_overrides is False
 
 
-# --- "no profile" suppression sentinel ------------------------------------
-
 def test_none_sentinel_suppresses_bound_profile(monkeypatch):
     # A profile bound to the identity normally applies; the reserved "__none__"
     # request name suppresses every bound profile → plain defaults.
@@ -616,8 +596,6 @@ def test_none_sentinel_refused_when_gated_off(monkeypatch):
     assert ec.resolve("m", key_id="k",
                       request_profile=settings_schema.NO_PROFILE_SENTINEL).values["BEAM_SIZE"] == 7
 
-
-# --- admin per-key apply_no_profiles force --------------------------------
 
 def test_apply_no_profiles_suppresses_user_bound_profile(monkeypatch):
     # The per-key admin force suppresses profiles bound at the USER scope too.
