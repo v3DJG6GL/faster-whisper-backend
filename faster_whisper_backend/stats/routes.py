@@ -351,8 +351,8 @@ def _unscrub(dim: str, labels: list[str], scrub: bool, caller_uid: str | None) -
 
 
 def _one_or_many(ids: list[str]) -> str | list[str]:
-    """One picked id keeps the v2 shape (`filter.key_id == "k1"`); several
-    go as a list (an IN clause in the store)."""
+    """One picked id stays a scalar (`filter.key_id == "k1"`, as a lone
+    `key=` gives); several go as a list (an IN clause in the store)."""
     return ids[0] if len(ids) == 1 else ids
 
 
