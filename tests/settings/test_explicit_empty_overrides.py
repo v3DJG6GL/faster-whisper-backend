@@ -15,8 +15,6 @@ OV = "/settings/overrides"
 PERMS = "/settings/api-keys/api/users"
 
 
-# --- per-request decode_overrides -------------------------------------------
-
 def test_explicit_empty_suppress_tokens_means_suppress_nothing():
     for cleared in ([], ""):
         kw = tx_models._apply_decode_overrides(
@@ -60,8 +58,6 @@ def test_multilingual_override_true_null_and_locked():
                                       ident=locked)
     assert "multilingual" not in kw
 
-
-# --- profile / per-model layer ------------------------------------------------
 
 def _assemble(values, language="", overrides=None):
     return tx_models.assemble_transcribe_kwargs(
@@ -137,8 +133,6 @@ def test_suppress_chars_survive_a_client_suppress_tokens_override(monkeypatch):
     assert kw["suppress_tokens"] == [-1, 7, 8]
 
 
-# --- batch form fields ---------------------------------------------------------
-
 def _bind_profile(client, make_user_key, **fields):
     _, raw_admin = make_user_key("admin", is_admin=True)
     admin_h = bearer(raw_admin)
@@ -199,8 +193,6 @@ def test_empty_translate_to_and_glossary_form_fields_override_the_profile(
     assert len(calls) == n
     assert "translations" not in json.dumps(r.json().get("segments", [{}])[0])
 
-
-# --- dictation handshake ----------------------------------------------------------
 
 def _stream_decode_languages(client, app_module, fake_model, monkeypatch, **conf):
     """Run one dictation utterance and return the language= of every decode."""
