@@ -252,7 +252,6 @@ def test_list_captures_before_ts_cursor(captures_store_db, monkeypatch, tmp_path
     cs = captures_store_db
     cid1 = _make(cs, monkeypatch, tmp_path)
     cid2 = _make(cs, monkeypatch, tmp_path)
-    # Pin deterministic timestamps.
     conn = cs._require_conn()
     conn.execute("UPDATE captures SET created_ts=? WHERE id=?", (100.0, cid1))
     conn.execute("UPDATE captures SET created_ts=? WHERE id=?", (200.0, cid2))
