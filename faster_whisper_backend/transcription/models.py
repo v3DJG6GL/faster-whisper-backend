@@ -680,7 +680,6 @@ def _release_model_lease(name: str, model: "WhisperModel") -> None:
         _schedule_trim_to_cap(keep=name)
     else:
         _model_leases[name] = n
-    # No-op for a name the registry no longer knows (force-dropped mid-job).
     model_registry.touch_loaded_model(name)
 
 
