@@ -356,8 +356,8 @@ def test_force_put_returns_own_write_despite_concurrent_writer(client_settings_s
 
 
 def test_init_db_renames_the_legacy_updated_at_column(client_settings_store_db, tmp_path):
-    """An install from before the 2026-09 rename has `updated_at`; init_db
-    renames it in place, keeping the row, and writes go on working."""
+    """An install with the legacy `updated_at` column: init_db renames it in
+    place, keeping the row, and writes go on working."""
     import sqlite3
 
     store = client_settings_store_db
