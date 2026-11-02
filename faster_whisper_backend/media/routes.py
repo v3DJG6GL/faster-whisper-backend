@@ -66,8 +66,9 @@ _url_subtitles_rate = _rl.FixedWindow(
             "({limit}/min; retry in {retry_after}s)",
 )
 
-# Per-identity window for link language checks — the costliest URL route: a
-# whole audio download from a third party AND three detections on the GPU.
+# Per-identity window for link language checks — the costliest URL route: an
+# audio download from a third party (the whole file unless the stream is
+# segmented) AND up to three detections on the GPU.
 _url_language_rate = _rl.FixedWindow(
     config_field="URL_LANGUAGE_RATE_PER_MIN",
     window_s=60.0,
