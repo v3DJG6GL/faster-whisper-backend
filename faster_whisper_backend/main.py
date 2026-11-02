@@ -1134,8 +1134,8 @@ async def _legacy_path_mw(request: Request, call_next):
 
     A middleware, not an injected Response: the PUT handler returns its own
     JSONResponse and errors are HTTPExceptions, both of which drop headers set
-    on an injected Response. Registered before _security_headers_mw, so it
-    wraps the inner middlewares and also stamps their early 403/413."""
+    on an injected Response. Registered after _csrf_mw / _max_body_mw, so it
+    wraps them and also stamps their early 403/413."""
     response = await call_next(request)
     path = request.url.path
     successor = _LEGACY_PATHS.get(path)
