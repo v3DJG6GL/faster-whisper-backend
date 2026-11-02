@@ -195,7 +195,7 @@ def hash_key(raw_key: str) -> str:
     """SHA-256 hex of the raw key bytes (UTF-8)."""
     # surrogatepass: a lone surrogate from a JSON login body ("\ud800") would
     # otherwise raise UnicodeEncodeError (an unauthenticated 500, uncounted by
-    # the login lockout). Valid keys hash exactly as before; this one just
+    # the login lockout). It changes no valid key's bytes; this one just
     # misses the index and fails like any wrong key.
     return sha256(raw_key.encode("utf-8", "surrogatepass")).hexdigest()
 
@@ -773,8 +773,8 @@ def _touch_last_used_debounced(key_id: str) -> None:
     """Update last_used_ts at most once per _LAST_USED_DEBOUNCE_S per key.
     Read of last_used_ts goes to the index (which doesn't track it) → we
     cache a separate small dict here. The debounce runs on the monotonic
-    clock (a backwards wall-clock step froze the writes for its length); the
-    stored value stays wall-clock."""
+    clock (a backwards wall-clock step would freeze the writes for its length);
+    the stored value stays wall-clock."""
     mono = time.monotonic()
     last = _LAST_USED_CACHE.get(key_id)
     if last is not None and mono - last < _LAST_USED_DEBOUNCE_S:
