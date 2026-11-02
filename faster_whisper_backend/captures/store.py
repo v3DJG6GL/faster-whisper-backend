@@ -54,7 +54,7 @@ _CAP_CORRECTED = 100_000  # admin-edited free-form ground truth
 _CAP_ADMIN_NOTES = 8_000
 _CAP_WORDS_JSON = 1_000_000  # ~10k words at ~100 bytes/word
 _CAP_SEGMENTS_JSON = 200_000
-_CAP_AUDIO_FORMAT = 16  # "wav", "m4a", "webm" — short extensions only
+_CAP_AUDIO_FORMAT = 16  # extension length cap; every capture is stored as "wav"
 
 _VALID_STATUS = frozenset({"new", "reviewed", "ready", "dismissed", "audio_missing"})
 
