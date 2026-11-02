@@ -1588,8 +1588,9 @@ async def translation_test(
             if (body.progress_id
                 and tx_progress._PROGRESS_ID_RE.match(body.progress_id))
             else None)
-    # Owner-stamped like the batch/stage-ahead seeds in main: an owner-less
-    # entry is readable/cancellable by ANY authenticated caller holding the id.
+    # Owner-stamped like the transcription and batch-translation seeds: an
+    # owner-less entry is readable/cancellable by ANY authenticated caller
+    # holding the id.
     tx_progress._progress_set(_pid, stage="starting", progress=None,
                               model=(ref or default or None), compute="gguf",
                               owner=(user.get("user_id") or user.get("key_id")))
