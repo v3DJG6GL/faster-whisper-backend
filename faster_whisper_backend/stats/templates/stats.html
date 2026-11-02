@@ -2148,8 +2148,6 @@ function renderJobs(snap) {
     : (rt.length ? 'newest jobs from the live snapshot' : '');
 }
 
-// Jobs-table wiring: the view segments re-render from the last snapshot
-// immediately and restart paging.
 (() => {
   const viewCtl = $('rj-view');
   if (viewCtl) {
