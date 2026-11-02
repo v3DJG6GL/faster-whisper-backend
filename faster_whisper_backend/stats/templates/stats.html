@@ -2265,7 +2265,7 @@ function openStream() {
 // Hidden tabs close the SSE (the browser caps an origin at 6 connections)
 // and cancel the recovery poll: one that succeeded in the background would
 // openStream() alongside the re-open on show and orphan one EventSource.
-const HIDE_CLEAR_MS = 30000;   // a few sample periods of gap
+const HIDE_CLEAR_MS = 30000;   // 30 samples: a quarter of the 2-minute 1 Hz live ring
 let _hiddenAt = null;
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'hidden') {
