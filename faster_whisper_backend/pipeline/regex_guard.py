@@ -133,7 +133,7 @@ _SCALE_SAMPLES = 3
 # ...and even a confirmed ratio only rejects when the scaled run costs at
 # least this much CPU. A pattern that finishes the 4 KB fixture in under 5 ms
 # cannot meaningfully stall a transcript whatever its growth curve; a real
-# polynomial pattern (`.*.*#` ~ hundreds of ms at 4 KB) clears this floor by
+# polynomial pattern (`.*.*#` takes seconds on the 4 KB fixture) clears this floor by
 # orders of magnitude. This is the deterministic backstop that keeps a busy
 # host (the guard shares the box with transcription) from failing valid saves.
 _SCALE_MIN_REJECT = 5e-3
