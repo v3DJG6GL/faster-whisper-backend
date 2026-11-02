@@ -1015,7 +1015,7 @@ def test_settings_page_wires_translation_model_editors(client):
     assert "preload: 'TRANSLATION_PRELOAD_MODELS'" in text
     # …and the UVR model from the separation allowlist (no preload concept).
     assert "{ allowed: 'BGM_SEPARATION_ALLOWED_MODELS',\n" in text
-    # The re-render event fires for the new source lists too.
+    # The re-render event fires for the translation and separation lists too.
     assert "name === 'TRANSLATION_ALLOWED_MODELS'" in text
     assert "name === 'BGM_SEPARATION_ALLOWED_MODELS'" in text
     # No editor reads the diarization allowlist (DIARIZATION_MODEL stays on
