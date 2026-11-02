@@ -719,9 +719,8 @@ class StreamSession:
             await self._release_held()
         # Only a document the client was actually sent has an end to mark. One
         # whose raw text formatted to nothing (a filler the pipeline strips)
-        # sent no final — a boundary for it made the client insert the
-        # separator a second time after the previous document. The
-        # accumulators below are reset either way.
+        # sent no final — a boundary for it would make the client insert the
+        # separator a second time after the previous document.
         if self._sent:
             await self.emit({
                 "type": "boundary",
