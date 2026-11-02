@@ -126,9 +126,9 @@ def test_window_roll_restarts_the_counter(window):
 
 def test_window_rolls_on_the_monotonic_clock_despite_a_wall_clock_step(
         window, monkeypatch):
-    """A wall clock stepped back an hour (NTP correction, VM resume) made
-    `now - start` negative, so a spent window (a login lockout) stayed shut
-    for the size of the step instead of window_s."""
+    """A wall clock stepped back an hour (NTP correction, VM resume) must
+    not keep a spent window (a login lockout) shut for the size of the step:
+    the window still rolls after window_s."""
     import types
     mono = [5000.0]
     monkeypatch.setattr(rate_limit, "time", types.SimpleNamespace(
