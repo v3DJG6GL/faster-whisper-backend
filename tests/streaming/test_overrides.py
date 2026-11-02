@@ -233,10 +233,7 @@ def test_setup_window_error_delivers_internal_error_and_closes(
         client, make_user_key, fake_model, app_module, monkeypatch):
     """A failure in the handshake→loop setup window (after the audio consumer task
     has started, before the receive loop's own cleanup is armed) must still deliver
-    an `internal` error frame and close without hanging. The error reply is sent
-    under the same send-lock as every other send — hoisted above the try so it is
-    bound even on an early failure — and the consumer is cancelled in the finally
-    (no orphaned task)."""
+    an `internal` error frame and close without hanging."""
     monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
     _, raw_alice = make_user_key("alice")
 
