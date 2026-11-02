@@ -784,7 +784,7 @@ def _drop_oldest_by_bytes(
     return freed
 
 
-# list/find projection: every column except the heavy words/segments.
+# list/find projection: every wire column except the heavy words/segments.
 _LIST_COLUMNS = (
     "id, created_ts, request_id, model, language,"
     " audio_s, audio_relpath, audio_format,"
