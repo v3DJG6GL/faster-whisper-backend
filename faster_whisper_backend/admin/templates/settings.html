@@ -1179,8 +1179,6 @@ function fieldRow(name) {
   return row;
 }
 
-// Refresh one field's "↺ Reset to default" visibility by looking up the
-// current row in the DOM. Called from the delegated admin:dirty listener.
 function refreshFieldReset(name) {
   const row = document.querySelector('main .field[data-field="' + name + '"]');
   if (!row) return;
@@ -1802,8 +1800,6 @@ function modelOverridesEditor(name, v) {
     }
     if (meta.kind === 'enum') {
       const sel = document.createElement('select');
-      // Server choices are the source of truth; meta.opts (the schema enum)
-      // is only the fallback.
       const opts = (fieldDef(field) && fieldDef(field).choices) || meta.opts || [];
       for (const o of opts) {
         const opt = document.createElement('option');
