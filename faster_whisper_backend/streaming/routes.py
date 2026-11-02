@@ -1028,7 +1028,7 @@ async def transcribe_stream(ws: WebSocket) -> None:
                 metrics.WAIT_ACC.reset(_wait_tok)
             if not req_language:
                 _partial_lang[0] = getattr(_info, "language", None) or _partial_lang[0]
-            # Live previews get the same tail cuts as the final (core/
+            # Live previews get the same tail cuts as the final (transcription/
             # segment_guards.py): a made-up tail that shows up in two previews in
             # a row would otherwise be committed by LocalAgreement and banked as
             # confirmed text. Per segment, no cascade — a multi-window buffer can
@@ -1630,7 +1630,7 @@ async def transcribe_stream(ws: WebSocket) -> None:
             api_keys_store.revoke_user / revoke_key and
             sessions_store.revoke_session (/auth/logout) bump the config version
             for exactly this.
-            `_ws_credentials` reads only ws.headers/ws.cookies, both of which
+            `authenticate_ws` reads only ws.headers/ws.cookies, both of which
             outlive the handshake, so re-invoking it here is enough."""
             nonlocal ident, _ident_version, out_prefix, out_suffix
             nonlocal req_language, req_prompt, overrides_ignored
@@ -2007,10 +2007,10 @@ async def transcribe_stream(ws: WebSocket) -> None:
         # screen it too before it hits the line-oriented rotating log.
         logger.exception("[stream %s] error: %s",
                          session_id[:8], store_common.log_safe(str(exc)))
-        # The ledger otherwise never hears of a failed session (utterances
-        # record only on success): one error row under the session's job id,
-        # classified like a batch failure. Best effort — locals bound only
-        # after the handshake may be missing.
+        # The ledger otherwise never hears of a failed session (utterance rows
+        # cover only each utterance's own decode): one error row under the
+        # session's job id, classified like a batch failure. Best effort —
+        # locals bound only after the handshake may be missing.
         try:
             _ec, _es = metrics.classify_error(exc, status="error",
                                               stage="transcribing")
