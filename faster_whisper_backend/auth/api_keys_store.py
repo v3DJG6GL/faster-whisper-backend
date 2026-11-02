@@ -591,9 +591,9 @@ def create_key(user_id: str, *, label: str = "") -> tuple[str, dict[str, Any]]:
 def update_key_label(key_id: str, label: str) -> dict[str, Any] | None:
     """Rename an existing key's display label. Returns the refreshed record
     (same shape as `list_keys` rows), or None if no key has that id. The label
-    is required here (unlike `create_key`) and capped at 128 chars. The label is
-    cached in the auth index (so the per-request log block can show it without a
-    DB hit), so a relabel rebuilds the index — rare admin action, cheap enough."""
+    is cached in the auth index (so the per-request log block can show it
+    without a DB hit), so a relabel rebuilds the index — rare admin action,
+    cheap enough."""
     label = (label or "").strip()
     if not label:
         raise ValueError("label is required")
