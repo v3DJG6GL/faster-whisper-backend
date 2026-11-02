@@ -8,8 +8,8 @@
 
 These are client-rendered, so the assertions check the served HTML/JS/CSS
 strings (same approach as test_routes_pipeline_page.py). A final test runs the
-inline scripts through `node --check` to catch syntax breakage inside the big
-Python-string templates (py_compile can't see into them)."""
+inline scripts through `node --check` to catch syntax breakage inside the
+template files (no Python-side check parses the JS)."""
 
 import copy
 import re
