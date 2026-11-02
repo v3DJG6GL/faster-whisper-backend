@@ -104,7 +104,7 @@ def init_db(path: str) -> None:
             pass
         _conn = None
     _conn = store_common.open_wal_db(path)
-    # Column rename (2026-09): every other store stamps its times *_ts.
+    # Legacy updated_at column rename: every other store stamps its times *_ts.
     # (open_wal_db is autocommit, so the ALTER is durable once execute returns.)
     have = {r["name"] for r in _conn.execute("PRAGMA table_info(client_settings)")}
     if "updated_at" in have and "updated_ts" not in have:
