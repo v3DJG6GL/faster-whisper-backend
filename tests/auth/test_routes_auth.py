@@ -396,8 +396,8 @@ def test_quick_config_stream_rescopes_and_ends(client, make_user_key,
 
 def test_first_origin_rejection_is_logged_right_after_host_boot(
         monkeypatch, caplog):
-    # time.monotonic() counts from host boot; a 0.0 start swallowed the first
-    # rejection (the one naming TRUSTED_ORIGINS) within a minute of boot.
+    # time.monotonic() counts from host boot; a 0.0 start would swallow the
+    # first rejection (the one naming TRUSTED_ORIGINS) within a minute of boot.
     import logging
     import types
     from faster_whisper_backend.auth import hosts
