@@ -559,10 +559,13 @@ def register_plan(user_id: "str | None",
         return {
             "plan_id": fallback_pid,
             "expires_in_s": 0,
-            "models": [{"family": f, "id": m, "state": "deferred",
-                        "reason": (denied or {}).get((f, m), "disabled")}
+            "models": [_deferred_row(f, m, (denied or {}).get((f, m), "disabled"))
                        for f, m in entries],
         }
+
+
+def _deferred_row(fam: str, mid: str, reason: str) -> dict:
+    return {"family": fam, "id": mid, "state": "deferred", "reason": reason}
 
 
 def _register_plan(user_id, entries, *, plan_id, denied, stage_ahead,
@@ -582,10 +585,8 @@ def _register_plan(user_id, entries, *, plan_id, denied, stage_ahead,
         # The master switch: no Plan, no warm lease, no /stats row. Anything
         # registered here would pin models against the idle evictors for the
         # TTL, which is exactly what "0 = load-on-first-use" promises not to.
-        results = [{"family": f, "id": m, "state": "deferred",
-                    "reason": "disabled"} for f, m in kept]
-        results += [{"family": f, "id": m, "state": "deferred",
-                     "reason": denied[(f, m)]}
+        results = [_deferred_row(f, m, "disabled") for f, m in kept]
+        results += [_deferred_row(f, m, denied[(f, m)])
                     for f, m in entries if (f, m) in denied]
         _log_plan_receipt(pid, user_id, results, trigger)
         return {"plan_id": pid, "expires_in_s": 0, "models": results}
@@ -596,10 +597,8 @@ def _register_plan(user_id, entries, *, plan_id, denied, stage_ahead,
     id_kept = kept
     refused = {e: r for e in kept if (r := _static_refusal(*e))}
     kept = [e for e in kept if e not in refused]
-    refused_rows = [{"family": f, "id": m, "state": "deferred", "reason": r}
-                    for (f, m), r in refused.items()]
-    refused_rows += [{"family": f, "id": m, "state": "deferred",
-                      "reason": denied[(f, m)]}
+    refused_rows = [_deferred_row(f, m, r) for (f, m), r in refused.items()]
+    refused_rows += [_deferred_row(f, m, denied[(f, m)])
                      for f, m in entries if (f, m) in denied]
     if not kept:
         # Nothing to warm or retry: a Plan here would only take one of the
