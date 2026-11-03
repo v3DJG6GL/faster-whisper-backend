@@ -229,6 +229,8 @@
     partialEl.append(c, p);
   }
 
+  function showDoc(text, tail) { finalEl.textContent = text; tailEl.textContent = tail || ""; renderPartial("", ""); }
+
   function onMessage(ev) {
     let m; try { m = JSON.parse(ev.data); } catch { return; }
     if (stopTimer) armStopTimer(STOP_WAIT_MS);
@@ -245,9 +247,7 @@
       // are full strings (server re-sends them), so we replace, not append.
       // They span only the CURRENT document (since the last hard break),
       // hence docPrefix.
-      finalEl.textContent = docPrefix + (m.committed || "");
-      tailEl.textContent = m.tail || "";
-      renderPartial("", "");
+      showDoc(docPrefix + (m.committed || ""), m.tail);
       uttState = null;
       // A final is the terminal frame of the utterance that showed
       // "transcribing…" below. Only while running: after Stop the status is
@@ -330,7 +330,7 @@
   }
 
   async function startBatch(gen) {
-    finalEl.textContent = ""; tailEl.textContent = ""; renderPartial("", "");
+    showDoc("");
     recChunks = [];
     const stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true } });
     // Stop pressed while the permission prompt was open: stopBatch() already
@@ -402,8 +402,7 @@
       } else {
         text = await resp.text();
       }
-      finalEl.textContent = text || "";
-      tailEl.textContent = ""; renderPartial("", "");
+      showDoc(text || "");
       setStatus("done", "live");
     } catch (err) {
       setStatus("batch failed: " + err.message, "error");
@@ -423,7 +422,7 @@
   }
 
   async function start(gen) {
-    finalEl.textContent = ""; tailEl.textContent = ""; renderPartial("", ""); docPrefix = "";
+    showDoc(""); docPrefix = "";
     uttState = null;
     setStatus("requesting mic…");
 
