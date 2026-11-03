@@ -933,6 +933,16 @@
     try { localStorage.setItem(userCollapseKey(uid), open ? '0' : '1'); } catch (_) {}
   }
 
+  // Drawer toggle: a click on an open drawer empties its holder, otherwise
+  // build() runs afresh (so the drawer reads the current user/key state).
+  function toggleDrawer(btn, holder, build) {
+    btn.onclick = function () {
+      if (holder.firstChild) { holder.innerHTML = ''; btn.classList.remove('on'); return; }
+      btn.classList.add('on');
+      holder.appendChild(build());
+    };
+  }
+
   function renderUser(u, nUsers) {
     var card = document.createElement('div');
     card.className = 'card user';
@@ -1050,10 +1060,8 @@
     ovrBtn.className = 'ghost';
     ovrBtn.textContent = '⚙ Overrides';
     var ovrWrap = document.createElement('div');
-    ovrBtn.onclick = function () {
-      if (ovrWrap.firstChild) { ovrWrap.innerHTML = ''; ovrBtn.classList.remove('on'); return; }
-      ovrBtn.classList.add('on');
-      ovrWrap.appendChild(buildBindingDrawer({
+    toggleDrawer(ovrBtn, ovrWrap, function () {
+      return buildBindingDrawer({
         scope: 'user', binding: bindingFromConfig((u.permissions || {}).config),
         previewQuery: 'user_id=' + encodeURIComponent(u.id),
         save: function (body) {
@@ -1067,8 +1075,8 @@
               return j;
             });
         },
-      }));
-    };
+      });
+    });
     tb.appendChild(ovrBtn);
 
     // Synced settings (desktop sync) — same drawer idiom as ⚙ Overrides.
@@ -1076,15 +1084,7 @@
     csBtn.className = 'ghost';
     csBtn.textContent = '⇅ Synced settings';
     var csWrap = document.createElement('div');
-    csBtn.onclick = function () {
-      if (csWrap.firstChild) {
-        csWrap.innerHTML = '';
-        csBtn.classList.remove('on');
-        return;
-      }
-      csBtn.classList.add('on');
-      csWrap.appendChild(buildCsDrawer(u));
-    };
+    toggleDrawer(csBtn, csWrap, function () { return buildCsDrawer(u); });
     tb.appendChild(csBtn);
 
     var revBtn = document.createElement('button');
@@ -1220,10 +1220,8 @@
       var kcfgBtn = document.createElement('button');
       kcfgBtn.className = 'ghost';
       kcfgBtn.textContent = '⚙ Overrides';
-      kcfgBtn.onclick = function () {
-        if (kdraw.firstChild) { kdraw.innerHTML = ''; kcfgBtn.classList.remove('on'); return; }
-        kcfgBtn.classList.add('on');
-        kdraw.appendChild(buildBindingDrawer({
+      toggleDrawer(kcfgBtn, kdraw, function () {
+        return buildBindingDrawer({
           scope: 'key', binding: bindingFromConfig(k.config),
           previewQuery: 'user_id=' + encodeURIComponent(u.id) + '&key_id=' + encodeURIComponent(k.id),
           save: function (body2) {
@@ -1232,8 +1230,8 @@
               .then(_okJson)
               .then(function (j) { k.config = j.config; return j; });
           },
-        }));
-      };
+        });
+      });
       acts.appendChild(kcfgBtn);
 
       var b = document.createElement('button');

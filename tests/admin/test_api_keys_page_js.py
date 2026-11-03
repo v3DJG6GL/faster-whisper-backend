@@ -341,14 +341,14 @@ def test_reopened_overrides_drawer_shows_the_save_after_a_declined_reload(
     showed the pre-save binding, and its next Save reverted the overrides."""
     html = client.get("/settings/api-keys").text
     if scope == "user":
-        src = _between(html, "    ovrBtn.onclick = function () {", "\n    };\n")
+        src = _between(html, "    toggleDrawer(ovrBtn, ovrWrap, function () {", "\n    });\n")
         btn, wrap = "ovrBtn", "ovrWrap"
         reply = {"ok": True, "permissions": {"pages": {}, "config": {"direct": {"beam_size": 3}}}}
     else:
-        src = _between(html, "      kcfgBtn.onclick = function () {", "\n      };\n")
+        src = _between(html, "      toggleDrawer(kcfgBtn, kdraw, function () {", "\n      });\n")
         btn, wrap = "kcfgBtn", "kdraw"
         reply = {"ok": True, "config": {"direct": {"beam_size": 3}}}
-    js = _fn(html, "_okJson") + r"""
+    js = _fn(html, "_okJson") + "\n" + _fn(html, "toggleDrawer") + r"""
 function mkBtn() { return { classList: { add: function () {}, remove: function () {} } }; }
 var %(btn)s = mkBtn();
 var %(wrap)s = { firstChild: null, set innerHTML(v) { this.firstChild = null; },
