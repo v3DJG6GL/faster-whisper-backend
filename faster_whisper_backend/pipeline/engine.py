@@ -141,7 +141,7 @@ def _make_lowercase_wordlist_replacer(wordlist: frozenset):
       group(2) = first letter of the next word
       group(3) = rest of the next word
     A pattern with fewer than 3 groups keeps the match as is: a save refuses
-    it, and stripping its whole match deleted the captured word with it.
+    it, and stripping its whole match would delete the captured word with it.
     Only the text before group(1) is the terminator: what the match holds
     between or after the groups (an opening quote, a trailing space) is kept,
     as in _upper_callback.
