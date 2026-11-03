@@ -104,6 +104,11 @@ class Resolved:
         return bool(self.layers)
 
 
+def _profile_layer_id(scope: str, name: str) -> str:
+    """Layer id of a profile layer; resolve() looks the request one up by it."""
+    return f"{scope}.profile:{name}"
+
+
 def _blob_to_layer(layer_id: str, label: str, profile_name: str | None,
                    blob: Any) -> dict[str, Any] | None:
     """Normalise an OverrideProfile-shaped dict (a direct blob or a profile)
@@ -262,7 +267,7 @@ def _gather_identity_layers(key_binding: Any,
             return
         for pname in (binding.get("profiles") or []):
             prof = profiles.get(pname)
-            lyr = _blob_to_layer(f"{scope}.profile:{pname}",
+            lyr = _blob_to_layer(_profile_layer_id(scope, pname),
                                  f"{scope} · profile {pname}", pname, prof)
             if lyr is not None:
                 layers.append(lyr)
@@ -310,7 +315,7 @@ def _request_profile_layer(request_profile: str | None, *,
     if isinstance(blob, dict) and blob.get("requestable") is False:
         return None
     return _blob_to_layer(
-        f"request.profile:{request_profile}",
+        _profile_layer_id("request", request_profile),
         f"request · profile {request_profile}",
         request_profile,
         blob,
@@ -524,7 +529,7 @@ def resolve(model_id: str | None, *, user_id: str | None = None,
     req_overrides = request_overrides or {}
     resolved = _resolve_from_layers(model_id, layers, req_overrides, with_provenance)
 
-    req_id = f"request.profile:{request_profile}" if request_profile else None
+    req_id = _profile_layer_id("request", request_profile) if request_profile else None
     resolved.request_profile_applied = (
         request_profile if (req_id is not None and req_id in resolved.layers) else None
     )
