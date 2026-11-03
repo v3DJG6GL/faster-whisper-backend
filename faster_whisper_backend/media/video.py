@@ -44,13 +44,7 @@ def _prefetched_audio(media_id: "str | None", url: str,
 # Per-identity window for VIDEO downloads (a link run that keeps the video, or
 # the on-demand route): each one pulls up to MEDIA_MAX_BYTES from a third
 # party — the preview limiter's reasoning, with a fatter payload.
-_url_video_rate = _rl.FixedWindow(
-    config_field="URL_VIDEO_RATE_PER_MIN",
-    window_s=60.0,
-    default_max=6,
-    message="too many video downloads — slow down "
-            "({limit}/min; retry in {retry_after}s)",
-)
+_url_video_rate = _rl.per_minute("URL_VIDEO_RATE_PER_MIN", 6, "video downloads")
 
 
 # progress_id → the keep_video task still running past its transcription
