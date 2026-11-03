@@ -552,6 +552,17 @@ def prune(*, max_rows: int, ttl_days: float) -> int:
         return cur.rowcount or 0
 
 
+def lazy_prune_settings() -> dict[str, Any]:
+    """record_trace / record_timing's prune_every / max_rows / ttl_days from
+    cfg, read per call so /settings edits apply to the next write."""
+    from faster_whisper_backend.settings import config as cfg
+    return {
+        "prune_every": int(getattr(cfg, "RECENT_TRANSCRIPTIONS_PRUNE_EVERY", 50)),
+        "max_rows": int(getattr(cfg, "RECENT_TRANSCRIPTIONS_MAX", 500)),
+        "ttl_days": float(getattr(cfg, "RECENT_TRANSCRIPTIONS_RETENTION_DAYS", 30)),
+    }
+
+
 def sweep_retention() -> int:
     """prune() with the configured cap + TTL, for the startup and hourly
     sweeps in main. The lazy prune counts inserts in-process, so on its own

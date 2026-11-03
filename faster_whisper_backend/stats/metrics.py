@@ -378,7 +378,6 @@ def record_transcription(model: str, audio_dur: float, proc_dur: float,
     if not request_id:
         return
     try:
-        from faster_whisper_backend.settings import config as cfg
         from faster_whisper_backend.stats import recent_transcriptions_store
         if recent_row:
             recent_transcriptions_store.record_timing(
@@ -393,9 +392,7 @@ def record_transcription(model: str, audio_dur: float, proc_dur: float,
                 kind=kind,
                 stages=stages,
                 key_label=key_label,
-                prune_every=int(getattr(cfg, "RECENT_TRANSCRIPTIONS_PRUNE_EVERY", 50)),
-                max_rows=int(getattr(cfg, "RECENT_TRANSCRIPTIONS_MAX", 500)),
-                ttl_days=float(getattr(cfg, "RECENT_TRANSCRIPTIONS_RETENTION_DAYS", 30)),
+                **recent_transcriptions_store.lazy_prune_settings(),
                 wait_s=wait_s,
                 error_class=error_class,
                 error_stage=error_stage,
@@ -437,7 +434,6 @@ def record_download(model: str, seconds: float, bytes_done: int, *,
     try:
         import uuid
 
-        from faster_whisper_backend.settings import config as cfg
         from faster_whisper_backend.stats import recent_transcriptions_store
         mb_s = (bytes_done / (1 << 20)) / seconds if seconds > 0 else 0.0
         detail = f"{bytes_done / (1 << 30):.2f} GB · {mb_s:.1f} MB/s"
@@ -455,9 +451,7 @@ def record_download(model: str, seconds: float, bytes_done: int, *,
                      "model": model,
                      "detail": detail,
                      "bytes": int(bytes_done)}],
-            prune_every=int(getattr(cfg, "RECENT_TRANSCRIPTIONS_PRUNE_EVERY", 50)),
-            max_rows=int(getattr(cfg, "RECENT_TRANSCRIPTIONS_MAX", 500)),
-            ttl_days=float(getattr(cfg, "RECENT_TRANSCRIPTIONS_RETENTION_DAYS", 30)),
+            **recent_transcriptions_store.lazy_prune_settings(),
         )
     except Exception as e:
         logger.warning("[metrics] record_download persist failed: %s", e)
