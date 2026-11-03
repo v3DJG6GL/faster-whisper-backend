@@ -419,7 +419,7 @@ async def get_decode_defaults(model: str = "", override_profile: str = "",
 
     Exposes the global / per-model / bound DEFAULT_PROMPT and DEFAULT_HOTWORDS to
     any key holder — intended: they shape every transcript that key gets back
-    (SECURITY-REVIEW_NOTES, "decode defaults are readable"). User-tier auth."""
+    (SECURITY-REVIEW_NOTES, "`GET /v1/request-default-settings`"). User-tier auth."""
     model = (model or "").strip()
     if len(model) > _DECODE_DEFAULTS_MODEL_MAX:
         raise HTTPException(status_code=400, detail="Model id is too long.")
