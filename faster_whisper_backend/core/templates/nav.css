@@ -361,8 +361,9 @@ header .icon-btn { display: inline-flex; align-items: center; justify-content: c
 header .icon-btn svg { width: 1.1em; height: 1.1em; display: block; }
 header .icon-btn:hover { color: var(--cyan); }
 header .icon-btn:focus-visible { outline: 2px solid var(--cyan); outline-offset: 1px; }
-/* `.auth-action` (the sign-out button) is hidden until a bearer exists; the
-   author rule must beat `.icon-btn { display:inline-flex }` for [hidden]. */
+/* `.auth-action` (the sign-out button) is hidden unless signed in to a
+   locked-down server; the author rule must beat `.icon-btn { display:inline-flex }`
+   for [hidden]. */
 header .auth-action[hidden] { display: none; }
 
 /* row 2 — page toolbar. Shares the global bar's --panel surface so the
