@@ -160,28 +160,24 @@ def test_per_minute_backstop_429s_and_releases_the_held_receipt(
     _stub_translate(monkeypatch)
     window = tr_routes._text_translate_rate
     window._state.clear()
-    try:
-        # A body that fails validation still counts against the window.
-        assert client.post(URL, json={"segments": [], "targets": ["en"]}
-                           ).status_code == 422
-        assert client.post(URL, json=_body()).status_code == 200
-        # Over the ceiling a malformed body is refused by the window, not
-        # by the validation it never reaches.
-        assert client.post(URL, json={"segments": [], "targets": ["en"]}
-                           ).status_code == 429
-        r = client.post(URL, json=_body())
-        assert r.status_code == 429, r.text
-        body = r.json()
-        assert body["error"]["param"] == "TRANSLATE_RATE_PER_MIN"
-        assert r.headers["Retry-After"] == str(body["error"]["retry_after"])
+    # A body that fails validation still counts against the window.
+    assert client.post(URL, json={"segments": [], "targets": ["en"]}
+                       ).status_code == 422
+    assert client.post(URL, json=_body()).status_code == 200
+    # Over the ceiling a malformed body is refused by the window, not
+    # by the validation it never reaches.
+    assert client.post(URL, json={"segments": [], "targets": ["en"]}
+                       ).status_code == 429
+    r = client.post(URL, json=_body())
+    assert r.status_code == 429, r.text
+    body = r.json()
+    assert body["error"]["param"] == "TRANSLATE_RATE_PER_MIN"
+    assert r.headers["Retry-After"] == str(body["error"]["retry_after"])
 
-        _park("cap2", hold_s=90)
-        r = client.post(URL, json=_body(captured_id="cap2"))
-        assert r.status_code == 429
-        assert receipt_hold.pending() == 0
-    finally:
-        window._state.clear()
-        receipt_hold._reset_for_tests()
+    _park("cap2", hold_s=90)
+    r = client.post(URL, json=_body(captured_id="cap2"))
+    assert r.status_code == 429
+    assert receipt_hold.pending() == 0
 
 
 def _open_key():
@@ -387,19 +383,16 @@ def test_422_lone_surrogate_in_text_or_id(client, app_module, monkeypatch):
     _enable(app_module, monkeypatch)
     calls = []
     _stub_translate(monkeypatch, calls=calls)
-    try:
-        for seg in ({"id": 1, "text": "a\ud800"},
-                    {"id": "\ud800", "text": "a"}):
-            _park("cap-u", hold_s=90)
-            r = client.post(URL, content=json.dumps(
-                {"segments": [seg], "targets": ["en"],
-                 "captured_id": "cap-u"}),
-                headers={"Content-Type": "application/json"})
-            assert r.status_code == 422, r.text
-            assert "surrogate" in r.json()["detail"]
-            assert receipt_hold.pending() == 0
-    finally:
-        receipt_hold._reset_for_tests()
+    for seg in ({"id": 1, "text": "a\ud800"},
+                {"id": "\ud800", "text": "a"}):
+        _park("cap-u", hold_s=90)
+        r = client.post(URL, content=json.dumps(
+            {"segments": [seg], "targets": ["en"],
+             "captured_id": "cap-u"}),
+            headers={"Content-Type": "application/json"})
+        assert r.status_code == 422, r.text
+        assert "surrogate" in r.json()["detail"]
+        assert receipt_hold.pending() == 0
     assert calls == []
 
 
@@ -627,13 +620,10 @@ def test_held_receipt_survives_a_gpu_queue_with_a_resident_model(
     monkeypatch.setattr(tx_models, "get_inference_semaphore", _busy_gate)
     _stub_translate(monkeypatch)
     _park("cap-q", hold_s=0.2)
-    try:
-        r = client.post(URL, json=_body(captured_id="cap-q"))
-        assert r.status_code == 200, r.text
-        assert swept == []
-        assert receipt_hold.pending() == 0          # claimed by the request
-    finally:
-        receipt_hold._reset_for_tests()
+    r = client.post(URL, json=_body(captured_id="cap-q"))
+    assert r.status_code == 200, r.text
+    assert swept == []
+    assert receipt_hold.pending() == 0          # claimed by the request
 
 
 def test_plan_is_clocked_without_a_progress_id(client, app_module,
@@ -702,13 +692,10 @@ def test_held_receipt_survives_a_queued_translation(client, app_module,
         return _echo_result(segments, targets)
     monkeypatch.setattr(translation, "translate_segments", _slow)
     _park("cap-q", hold_s=0.2)
-    try:
-        r = client.post(URL, json=_body(captured_id="cap-q"))
-        assert r.status_code == 200, r.text
-        assert swept == []
-        assert receipt_hold.pending() == 0          # claimed by the request
-    finally:
-        receipt_hold._reset_for_tests()
+    r = client.post(URL, json=_body(captured_id="cap-q"))
+    assert r.status_code == 200, r.text
+    assert swept == []
+    assert receipt_hold.pending() == 0          # claimed by the request
 
 
 def test_translation_error_maps_to_400(client, app_module, monkeypatch):
@@ -881,15 +868,11 @@ def test_inflight_refusal_releases_the_held_receipt(client, app_module,
     for _ in range(int(app_module.cfg.TRANSLATE_MAX_INFLIGHT_PER_USER)):
         gauge.acquire(_open_key())
     _park("cap1", hold_s=90)
-    try:
-        r = client.post(URL, json=_body(captured_id="cap1"))
-        assert r.status_code == 429
-        assert receipt_hold.pending() == 0
-        assert len(logged) == 1               # handed back, not dropped
-        assert any("too many in flight" in n for n in logged[0]["skipped"])
-    finally:
-        gauge.clear()
-        receipt_hold._reset_for_tests()
+    r = client.post(URL, json=_body(captured_id="cap1"))
+    assert r.status_code == 429
+    assert receipt_hold.pending() == 0
+    assert len(logged) == 1               # handed back, not dropped
+    assert any("too many in flight" in n for n in logged[0]["skipped"])
 
 
 def test_validation_reject_releases_the_held_receipt(client, app_module,
@@ -901,20 +884,17 @@ def test_validation_reject_releases_the_held_receipt(client, app_module,
 
     _enable(app_module, monkeypatch)
     _stub_translate(monkeypatch)
-    try:
-        _park("cap-v", hold_s=90)
-        r = client.post(URL, json={"segments": [], "targets": ["en"],
-                                   "captured_id": "cap-v"})
-        assert r.status_code == 422, r.text
-        assert receipt_hold.pending() == 0
+    _park("cap-v", hold_s=90)
+    r = client.post(URL, json={"segments": [], "targets": ["en"],
+                               "captured_id": "cap-v"})
+    assert r.status_code == 422, r.text
+    assert receipt_hold.pending() == 0
 
-        _park("cap-s", hold_s=90)
-        r = client.post(URL, json=_body(
-            segments=[{"id": 0, "text": "x" * 200_001}], captured_id="cap-s"))
-        assert r.status_code == 413, r.text
-        assert receipt_hold.pending() == 0
-    finally:
-        receipt_hold._reset_for_tests()
+    _park("cap-s", hold_s=90)
+    r = client.post(URL, json=_body(
+        segments=[{"id": 0, "text": "x" * 200_001}], captured_id="cap-s"))
+    assert r.status_code == 413, r.text
+    assert receipt_hold.pending() == 0
 
 
 def test_admin_pinned_model_passes_the_allowlist_gate(
@@ -1087,12 +1067,9 @@ def test_claimed_dictation_receipt_folds_into_the_utterance_row(
                       stages=[{"name": "transcribing", "secs": 0.9}])
     _park("cap-fold", hold_s=90, file_label="utt#0", model_name="w",
           request_id="utt-rid")
-    try:
-        r = client.post(URL, json=_body(captured_id="cap-fold"))
-        assert r.status_code == 200, r.text
-        assert receipt_hold.pending() == 0
-    finally:
-        receipt_hold._reset_for_tests()
+    r = client.post(URL, json=_body(captured_id="cap-fold"))
+    assert r.status_code == 200, r.text
+    assert receipt_hold.pending() == 0
     rows = rts.list_recent(limit=10)
     assert [x["kind"] for x in rows].count("translate") == 0
     utt = next(x for x in rows if x["request_id"] == "utt-rid")
