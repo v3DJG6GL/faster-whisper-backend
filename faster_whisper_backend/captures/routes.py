@@ -2065,8 +2065,9 @@ def _remap_time_ms(tm: float, segments: list[list[int]]) -> float:
     via the per-member kept-speech `segments` list
     ([orig_start_ms, orig_end_ms, new_start_ms], ascending). A time inside a
     kept span maps linearly; a time in a dropped/collapsed silence region
-    snaps to the nearest span boundary (words live in speech, so this only
-    fires on the rare straddle/rounding case)."""
+    snaps forward to the next span's start (past the last span: to its end).
+    Words live in speech, so this only fires on the rare straddle/rounding
+    case."""
     if not segments:
         return tm
     if tm <= segments[0][0]:
