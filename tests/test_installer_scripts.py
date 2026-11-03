@@ -137,10 +137,7 @@ def test_linux_installer_env_sets_reads_dotenv_like_the_service(tmp_path):
     bash = shutil.which("bash")
     if bash is None or os.name == "nt":
         pytest.skip("needs a POSIX bash")
-    sh = _read("install-service.sh")
-    start = sh.index("env_value() {")
-    end = sh.index("\n}\n", sh.index("env_sets() {")) + 3
-    funcs = sh[start:end]
+    funcs = _env_funcs(_read("install-service.sh"))
     (tmp_path / ".env").write_text(
         "WHISPER_DATA_DIR=/srv/whisper\n"
         "# WHISPER_DB_DIR=/commented/out\n"
@@ -604,13 +601,22 @@ def test_installers_warn_about_legacy_repo_root_state_before_the_start():
     assert "config.local.json" in block
 
 
+def _env_funcs(sh):
+    """install-service.sh's env_value + env_sets, on their own."""
+    return "\n".join(re.search(rf"^{n}\(\) \{{\n.*?^\}}\n", sh, re.S | re.M).group(0)
+                     for n in ("env_value", "env_sets"))
+
+
+def _unit_decisions(sh):
+    """_env_funcs plus the unit-line decisions and the "cannot expand" warning loop."""
+    return _env_funcs(sh) + sh[sh.index("\n}\n", sh.index("env_sets() {")) + 3:
+                               sh.index("\n# systemd splits")]
+
+
 def _env_sets_runner(tmp_path):
     """install-service.sh's env_value/env_sets, sourced on their own and run
     against tmp_path/.env with the test venv's python (has python-dotenv)."""
-    sh = _read("install-service.sh")
-    funcs = "\n".join(re.search(rf"^{n}\(\) \{{\n.*?^\}}\n", sh, re.S | re.M).group(0)
-                      for n in ("env_value", "env_sets"))
-    (tmp_path / "f.sh").write_text(funcs, encoding="utf-8")
+    (tmp_path / "f.sh").write_text(_env_funcs(_read("install-service.sh")), encoding="utf-8")
 
     def run(line: str) -> bool:
         (tmp_path / ".env").write_text(line + "\n", encoding="utf-8")
@@ -695,14 +701,8 @@ def test_linux_installer_expands_a_dotenv_reference_to_a_unit_set_var(tmp_path):
     # .env: WHISPER_MODELS_DIR=${WHISPER_DATA_DIR}/models resolves to
     # <repo>/data/models. The installer warned it "cannot expand" and wrote a
     # WHISPER_MODELS_DIR=<repo>/models line that overrode it.
-    sh = _read("install-service.sh")
-    funcs = "\n".join(re.search(rf"^{n}\(\) \{{\n.*?^\}}\n", sh, re.S | re.M).group(0)
-                      for n in ("env_value", "env_sets"))
-    # The unit-line decisions and the "cannot expand" warning loop.
-    block = sh[sh.index("\n}\n", sh.index("env_sets() {")) + 3:
-               sh.index("\n# systemd splits")]
-    script = (funcs + block + 'echo "D=$DATA_ENV_LINE"; echo "M=$MODELS_ENV_LINE";'
-              ' echo "L=$LOG_ENV_LINE"\n')
+    script = (_unit_decisions(_read("install-service.sh"))
+              + 'echo "D=$DATA_ENV_LINE"; echo "M=$MODELS_ENV_LINE"; echo "L=$LOG_ENV_LINE"\n')
 
     def run(dotenv: str) -> tuple[dict, str]:
         (tmp_path / ".env").write_text(dotenv, encoding="utf-8")
@@ -813,11 +813,7 @@ def test_linux_installer_legacy_checks_expand_a_unit_set_var(tmp_path):
 
 
 def _legacy_section(sh):
-    funcs = "\n".join(re.search(rf"^{n}\(\) \{{\n.*?^\}}\n", sh, re.S | re.M).group(0)
-                      for n in ("env_value", "env_sets"))
-    units = sh[sh.index("\n}\n", sh.index("env_sets() {")) + 3:
-               sh.index("\n# systemd splits")]
-    return funcs + units + sh[sh.index("\nwarn_legacy() {"):sh.index('\necho "Enabling')]
+    return _unit_decisions(sh) + sh[sh.index("\nwarn_legacy() {"):sh.index('\necho "Enabling')]
 
 
 @pytest.mark.skipif(sys.platform == "win32" or shutil.which("bash") is None,
