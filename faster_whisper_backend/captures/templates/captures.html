@@ -2187,15 +2187,7 @@
 
     // Karaoke highlighting via timeupdate (~4 Hz; battery-friendly).
     function onTimeUpdate() {
-      var t = audio.currentTime;
-      var idx = -1;
-      // Linear scan: fine for the few hundred words a capture holds.
-      for (var i = 0; i < state.words.length; i++) {
-        var s = state.words[i].start || 0;
-        var e = state.words[i].end || 0;
-        if (s <= t && t < e) { idx = i; break; }
-      }
-      _setActiveWord(state, idx);
+      _setActiveWord(state, _wordIdxAt(state.words, audio.currentTime));
     }
     audio.addEventListener('timeupdate', onTimeUpdate);
 
@@ -3744,6 +3736,16 @@
     else if (w.bottom > bottom) strip.scrollTop += w.bottom - bottom;
   }
 
+  // Index of the word playing at time t (its [start, end) holds t), or -1.
+  // Linear scan: fine for the few hundred words a capture holds.
+  function _wordIdxAt(words, t) {
+    for (var i = 0; i < words.length; i++) {
+      var s = words[i].start || 0;
+      if (s <= t && t < (words[i].end || 0)) return i;
+    }
+    return -1;
+  }
+
   // Karaoke highlight: `.active` on the strip span AND the matching
   // Final-result span (state.wordToGround). `idx` indexes state.words; -1
   // clears.
@@ -4089,12 +4091,7 @@
         scrub.value = (t / audio.duration) * 1000;
       }
       timeEl.textContent = _fmtTime(t);
-      var idx = -1;
-      for (var i = 0; i < words.length; i++) {
-        var s = words[i].start || 0;
-        var e = words[i].end || s;
-        if (s <= t && t < e) { idx = i; break; }
-      }
+      var idx = _wordIdxAt(words, t);
       if (panel._state) _setActiveWord(panel._state, idx);
     }
     function onLoaded() {
@@ -5228,14 +5225,7 @@
         // Karaoke highlight via timeupdate (attached once; reads the
         // live sampleState.words). Survives applyServerSample re-renders.
         audio.addEventListener('timeupdate', function() {
-          var t = audio.currentTime;
-          var idx = -1;
-          for (var i = 0; i < sampleState.words.length; i++) {
-            var s = sampleState.words[i].start || 0;
-            var e = sampleState.words[i].end || 0;
-            if (s <= t && t < e) { idx = i; break; }
-          }
-          _setActiveWord(sampleState, idx);
+          _setActiveWord(sampleState, _wordIdxAt(sampleState.words, audio.currentTime));
         });
 
         var chipBox = document.createElement('div');
