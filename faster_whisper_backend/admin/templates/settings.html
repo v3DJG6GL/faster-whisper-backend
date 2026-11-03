@@ -280,12 +280,11 @@
   .sync-btn.down { color: var(--green); border-color: rgba(126,231,135,0.45);
     background: rgba(126,231,135,0.08); }
   .sync-btn.down:hover { border-color: var(--green); }
-  .sync-btn.solid-up { background: var(--cyan); border-color: var(--cyan);
+  .sync-btn.solid-up, .sync-btn.solid-down, .sync-btn.solid-danger {
     color: #0d1117; font-weight: 600; }
-  .sync-btn.solid-down { background: var(--green); border-color: var(--green);
-    color: #0d1117; font-weight: 600; }
-  .sync-btn.solid-danger { background: var(--red); border-color: var(--red);
-    color: #0d1117; font-weight: 600; }
+  .sync-btn.solid-up { background: var(--cyan); border-color: var(--cyan); }
+  .sync-btn.solid-down { background: var(--green); border-color: var(--green); }
+  .sync-btn.solid-danger { background: var(--red); border-color: var(--red); }
   .sync-btn:disabled { opacity: 0.45; cursor: default; }
   .rule-sync-slot { display: inline-flex; gap: 0.3rem; align-items: center;
     margin-left: auto; }
