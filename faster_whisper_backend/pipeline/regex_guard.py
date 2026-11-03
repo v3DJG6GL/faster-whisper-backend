@@ -2124,7 +2124,7 @@ def _probe(checks: list):
         # rejection reason for an otherwise fine replacement.
         probes = list(_ADVERSARIAL)
         # Per-pattern synthetic run: closes the fixed-alphabet hole above for
-        # any character, not just the ones the four fixtures happen to hold.
+        # any character, not just the ones the fixed fixtures happen to hold.
         probes.extend(_synthetic_fixtures(item[0]))
         # Chained fixture (see _CHAIN_CAP): catches an entry that only explodes
         # on a run an EARLIER entry manufactures ((\w) -> 60 dashes, then
