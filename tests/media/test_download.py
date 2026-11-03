@@ -9,6 +9,7 @@ progress parsing, cancellation, timeouts, result validation — runs for real.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 import socket
 import sys
@@ -1465,6 +1466,16 @@ def _ok_server(content_type, body, on_get=None):
     return srv
 
 
+@contextlib.contextmanager
+def _stopping(srv):
+    """Stop a loopback HTTPServer (its serve_forever thread, then its socket) on exit."""
+    try:
+        yield srv
+    finally:
+        srv.shutdown()
+        srv.server_close()
+
+
 def _rebinding_server(monkeypatch, content_type):
     """Local server + a getaddrinfo stub for "rebind.test" that answers a
     public address on the first lookup (the _host_is_forbidden gate) and
@@ -1497,24 +1508,18 @@ def test_thumbnail_fetch_pins_dns_against_rebinding(monkeypatch):
     name that answers public for the gate and internal at connect time must
     not get its internal body handed to the client as a data: URI."""
     srv, port, hits = _rebinding_server(monkeypatch, "image/png")
-    try:
+    with _stopping(srv):
         out = _run(udl.fetch_thumbnail_data_uri(
             f"http://rebind.test:{port}/t.png", timeout=3))
-    finally:
-        srv.shutdown()
-        srv.server_close()
     assert out is None
     assert hits["n"] == 0
 
 
 def test_direct_media_probe_pins_dns_against_rebinding(monkeypatch):
     srv, port, hits = _rebinding_server(monkeypatch, "audio/mpeg")
-    try:
+    with _stopping(srv):
         with pytest.raises(udl.UrlDownloadError, match="could not be reached"):
             udl._direct_media_probe_sync(f"http://rebind.test:{port}/a.mp3", timeout=3)
-    finally:
-        srv.shutdown()
-        srv.server_close()
     assert hits["n"] == 0
 
 
@@ -1623,13 +1628,10 @@ def test_direct_media_probe_admits_an_hls_manifest_only_for_a_hand_off(
     srv = _ok_server("application/vnd.apple.mpegurl; charset=utf-8",
                      b"#EXTM3U\n")
     url = f"http://127.0.0.1:{srv.server_port}/live.m3u8"
-    try:
+    with _stopping(srv):
         assert udl._direct_media_probe_sync(
             url, timeout=3, accept_hls=True) is True
         assert udl._direct_media_probe_sync(url, timeout=3) is False
-    finally:
-        srv.shutdown()
-        srv.server_close()
 
 
 def test_direct_media_probe_and_capped_get_fetch_a_raw_unicode_path(
@@ -1643,13 +1645,10 @@ def test_direct_media_probe_and_capped_get_fetch_a_raw_unicode_path(
     srv = _ok_server("audio/ogg", b"x", lambda h: seen.append(h.path))
     url = udl.validate_url(
         f"http://127.0.0.1:{srv.server_port}/M\u00fcller%20x.ogg?t=\u00e9")
-    try:
+    with _stopping(srv):
         assert udl._direct_media_probe_sync(url, timeout=3) is True
         assert udl._capped_get(url, max_bytes=10, timeout=3) == (
             "audio/ogg", b"x")
-    finally:
-        srv.shutdown()
-        srv.server_close()
     # The existing %20 escape is kept, not doubled.
     assert seen == ["/M%C3%BCller%20x.ogg?t=%C3%A9"] * 2
 
@@ -1676,7 +1675,7 @@ def test_direct_media_probe_and_capped_get_send_an_idn_host_as_punycode(
     port = srv.server_port
     if via_proxy:
         monkeypatch.setenv("http_proxy", f"http://127.0.0.1:{port}")
-    try:
+    with _stopping(srv):
         for host, wire in (("müller.example", "xn--mller-kva.example"),
                            ("例え.jp", "xn--r8jz45g.jp")):
             seen.clear()
@@ -1686,9 +1685,6 @@ def test_direct_media_probe_and_capped_get_send_an_idn_host_as_punycode(
                 "audio/ogg", b"x")
             path = f"http://{wire}:{port}/a.ogg" if via_proxy else "/a.ogg"
             assert seen == [(f"{wire}:{port}", path)] * 2
-    finally:
-        srv.shutdown()
-        srv.server_close()
 
 
 def test_cutoff_shuts_a_socket_added_after_it_fired():
