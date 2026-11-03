@@ -29,6 +29,16 @@ def _block(html, start, end="\n  }\n"):
     return html[i:j + len(end)]
 
 
+def _make_editor_src(html, *builders):
+    """makeEditor() with its field tables, plus the named top-level builders."""
+    return "\n".join([
+        _block(html, "const NULLABLE_NUMBER_FIELDS = {", "\n};\n"),
+        _block(html, "const MULTILINE_TEXT_FIELDS = ", ";\n"),
+        _block(html, "function makeEditor(name) {", "\n}\n"),
+        *(_block(html, f"function {b}(", "\n}\n") for b in builders),
+    ])
+
+
 def _node(script):
     """Run `script` under node; its last stdout line is JSON."""
     p = subprocess.run([_NODE, "-"], input=script, capture_output=True,
@@ -661,13 +671,7 @@ def test_null_default_number_field_never_saves_an_empty_string(client):
     Once saved, the next render gave it a plain number box that ignores a
     clear, so 'auto' (null) was unreachable."""
     html = _html(client)
-    src = "\n".join([
-        _block(html, "const NULLABLE_NUMBER_FIELDS = {", "\n};\n"),
-        _block(html, "function makeEditor(name) {", "\n}\n"),
-        _block(html, "function nullableNumberEditor(name, v, fallback = 0) {", "\n}\n"),
-        _block(html, "function stringEditor(name, v) {", "\n}\n"),
-        _block(html, "function numberEditor(name, v) {", "\n}\n"),
-    ])
+    src = _make_editor_src(html, "nullableNumberEditor", "stringEditor", "numberEditor")
     out = _node(_FAKE_DOM + """
 const state = { DIARIZATION_NUM_SPEAKERS: null };
 const seen = [];
@@ -702,12 +706,7 @@ def test_threshold_with_a_number_default_gets_no_disable_button(client):
     it switched the check off while the filter kept running. Only a field
     whose null can stick (null default, or null now) keeps the toggle."""
     html = _html(client)
-    src = "\n".join([
-        _block(html, "const NULLABLE_NUMBER_FIELDS = {", "\n};\n"),
-        _block(html, "function makeEditor(name) {", "\n}\n"),
-        _block(html, "function nullableNumberEditor(name, v, fallback = 0) {", "\n}\n"),
-        _block(html, "function numberEditor(name, v) {", "\n}\n"),
-    ])
+    src = _make_editor_src(html, "nullableNumberEditor", "numberEditor")
     out = _node(_FAKE_DOM + """
 const state = { NO_SPEECH_THRESHOLD: 0.6, LOG_PROB_THRESHOLD: null,
                 HALLUCINATION_SILENCE_THRESHOLD: 2 };
@@ -730,13 +729,7 @@ def test_multiline_text_fields_get_a_textarea_that_keeps_newlines(client):
     multi-line glossary saved as one line and every pair after the first
     was gone."""
     html = _html(client)
-    src = "\n".join([
-        _block(html, "const NULLABLE_NUMBER_FIELDS = {", "\n};\n"),
-        _block(html, "const MULTILINE_TEXT_FIELDS = ", ";\n"),
-        _block(html, "function makeEditor(name) {", "\n}\n"),
-        _block(html, "function stringEditor(name, v) {", "\n}\n"),
-        _block(html, "function textareaEditor(name, v) {", "\n}\n"),
-    ])
+    src = _make_editor_src(html, "stringEditor", "textareaEditor")
     out = _node(_FAKE_DOM + """
 const state = { TRANSLATION_GLOSSARY: 'Niere = kidney\\nLeber = liver',
                 DEFAULT_HOTWORDS: 'a\\nb', DEFAULT_PROMPT: 'p\\nq',
@@ -773,14 +766,7 @@ def test_env_pinned_plain_field_cannot_be_typed_into(client):
     plain text/textarea field's editor is the bare control: an env-pinned
     DEFAULT_PROMPT stayed editable and setDirty() dropped the edit unseen."""
     html = _html(client)
-    src = "\n".join([
-        _block(html, "const NULLABLE_NUMBER_FIELDS = {", "\n};\n"),
-        _block(html, "const MULTILINE_TEXT_FIELDS = ", ";\n"),
-        _block(html, "function makeEditor(name) {", "\n}\n"),
-        _block(html, "function stringEditor(name, v) {", "\n}\n"),
-        _block(html, "function textareaEditor(name, v) {", "\n}\n"),
-        _block(html, "function disableEnvPinnedEditor(el) {", "\n}\n"),
-    ])
+    src = _make_editor_src(html, "stringEditor", "textareaEditor", "disableEnvPinnedEditor")
     out = _node(_FAKE_DOM + _CONTROL_QSA + """
 const state = { DEFAULT_PROMPT: 'p', DEFAULT_LANGUAGE: 'de' };
 function currentValue(n) { return state[n]; }
