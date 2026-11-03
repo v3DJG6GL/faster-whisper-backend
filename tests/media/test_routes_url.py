@@ -7,6 +7,7 @@ the handler down runs real.
 from __future__ import annotations
 
 import asyncio
+import copy
 import os
 import threading
 
@@ -42,6 +43,14 @@ def _info(**kw):
                 is_live=False, thumbnail_url=None, ext="m4a", abr=128.0)
     base.update(kw)
     return UrlMediaInfo(**base)
+
+
+def _stub_probe(monkeypatch, **kw):
+    """url_download.probe answers _info(url=<asked url>, **kw), a fresh deep
+    copy per call: a test may mutate what it passed between two probes."""
+    async def _probe(url, *, timeout):
+        return _info(url=url, **copy.deepcopy(kw))
+    monkeypatch.setattr(url_download, "probe", _probe)
 
 
 @pytest.fixture
@@ -272,13 +281,11 @@ def test_preview_happy_path(client, url_enabled):
 
 
 def test_preview_lists_tracks_never_their_urls(client, url_enabled, monkeypatch):
-    async def _probe(url, *, timeout):
-        return _info(url=url, language="de", subtitle_tracks=[
-            {"id": "m-de-CH", "lang": "de-CH", "name": "German", "kind": "manual",
-             "ext": "vtt", "hoh": False}],
-            subtitle_sources={"m-de-CH": {"url": "https://x.test/s?pot=SECRET",
-                                          "ext": "vtt"}})
-    monkeypatch.setattr(url_download, "probe", _probe)
+    _stub_probe(monkeypatch, language="de", subtitle_tracks=[
+        {"id": "m-de-CH", "lang": "de-CH", "name": "German", "kind": "manual",
+         "ext": "vtt", "hoh": False}],
+        subtitle_sources={"m-de-CH": {"url": "https://x.test/s?pot=SECRET",
+                                      "ext": "vtt"}})
     r = client.post("/v1/audio/url-preview", json={"url": _URL})
     body = r.json()
     assert body["language"] == "de"
@@ -372,9 +379,6 @@ def video_enabled(url_enabled, monkeypatch):
     calls: list = []
     gate: dict = {"release": None}
 
-    async def _probe(url, *, timeout):
-        return _info(url=url, video_ladder=[dict(r) for r in _LADDER])
-
     async def _download_video(url, *, dest_dir, max_bytes=None, max_height=None,
                               container="mkv", expected_total=None, timeout=None,
                               progress_cb=None, cancel_check=None, **kw):
@@ -392,7 +396,7 @@ def video_enabled(url_enabled, monkeypatch):
             f.write(b"video-bytes" * 8)
         return path
 
-    monkeypatch.setattr(url_download, "probe", _probe)
+    _stub_probe(monkeypatch, video_ladder=_LADDER)
     monkeypatch.setattr(url_download, "download_video", _download_video)
     app_module._video_calls = calls
     app_module._video_gate = gate
@@ -634,10 +638,7 @@ def test_keep_video_falls_back_to_the_best_rung_under_the_size_cap(
     import time as _time
 
     ladder = [dict(_LADDER[0], over_cap=True), dict(_LADDER[1]), dict(_LADDER[2])]
-
-    async def _probe(url, *, timeout):
-        return _info(url=url, video_ladder=[dict(r) for r in ladder])
-    monkeypatch.setattr(url_download, "probe", _probe)
+    _stub_probe(monkeypatch, video_ladder=ladder)
     r = _post_url(client, keep_video="true", progress_id=_PID)
     assert r.status_code == 200, r.text
     assert "source_video_error" not in r.json()
@@ -672,10 +673,7 @@ def test_on_demand_video_falls_back_to_the_best_rung_under_the_size_cap(
     # format_id the client named explicitly is still refused.
     ladder = [dict(_LADDER[0], over_cap=True, format_id="137+140"),
               dict(_LADDER[1]), dict(_LADDER[2])]
-
-    async def _probe(url, *, timeout):
-        return _info(url=url, video_ladder=[dict(r) for r in ladder])
-    monkeypatch.setattr(url_download, "probe", _probe)
+    _stub_probe(monkeypatch, video_ladder=ladder)
     r = client.post("/v1/audio/url-media/video", json={"url": _URL})
     assert r.status_code == 200, r.text
     assert r.json()["height"] == 720
@@ -724,11 +722,9 @@ def test_video_ratio_is_learned_against_the_unscaled_estimate(
     # it would settle the EWMA on sqrt(true ratio).
     from faster_whisper_backend.runtime import stage_rates
 
-    async def _probe(url, *, timeout):
-        rung = dict(_LADDER[1], bytes_approx=True, approx_bytes=44,
-                    raw_approx_bytes=176, extractor="Youtube", protocol="m3u8")
-        return _info(url=url, video_ladder=[rung, dict(_LADDER[2])])
-    monkeypatch.setattr(url_download, "probe", _probe)
+    rung = dict(_LADDER[1], bytes_approx=True, approx_bytes=44,
+                raw_approx_bytes=176, extractor="Youtube", protocol="m3u8")
+    _stub_probe(monkeypatch, video_ladder=[rung, _LADDER[2]])
     seen: list = []
     monkeypatch.setattr(stage_rates, "record", lambda *a: seen.append(a))
     r = client.post("/v1/audio/url-media/video", json={"url": _URL})
@@ -791,10 +787,7 @@ def test_on_demand_audio_leaves_no_staging_job(client, url_enabled, monkeypatch)
 
 
 def test_on_demand_video_over_cap_is_400(client, video_enabled, monkeypatch):
-    async def _probe(url, *, timeout):
-        rungs = [dict(r, over_cap=True) for r in _LADDER]
-        return _info(url=url, video_ladder=rungs)
-    monkeypatch.setattr(url_download, "probe", _probe)
+    _stub_probe(monkeypatch, video_ladder=[dict(r, over_cap=True) for r in _LADDER])
     r = client.post("/v1/audio/url-media/video", json={"url": _URL})
     assert r.status_code == 400
     assert "size limit" in r.json()["detail"]
@@ -842,11 +835,7 @@ _SUB_SOURCES = {"m-de": {"url": "https://subs.test/de.vtt?pot=SECRET", "ext": "v
 def subs_enabled(url_enabled, fake_capped_get, monkeypatch):
     fake_capped_get.table[_SUB_SOURCES["m-de"]["url"]] = (
         b"WEBVTT\n\n00:00.000 --> 00:01.000\nHallo\n")
-
-    async def _probe(url, *, timeout):
-        return _info(url=url, subtitle_tracks=list(_SUB_TRACKS),
-                     subtitle_sources=dict(_SUB_SOURCES))
-    monkeypatch.setattr(url_download, "probe", _probe)
+    _stub_probe(monkeypatch, subtitle_tracks=_SUB_TRACKS, subtitle_sources=_SUB_SOURCES)
     return url_enabled
 
 
@@ -980,10 +969,7 @@ def test_language_check_places_pieces_by_the_downloaded_files_length(
     # is on disk its real length (90 s) places the 20/50/80 % pieces, not
     # one piece at 0 s.
     from faster_whisper_backend.media import subtitle_mux
-
-    async def _probe(url, *, timeout):
-        return _info(url=url, duration=None)
-    monkeypatch.setattr(url_download, "probe", _probe)
+    _stub_probe(monkeypatch, duration=None)
     monkeypatch.setattr(subtitle_mux, "probe_streams", lambda path: subtitle_mux.MediaStreams(
         video_codec=None, audio_codec="mp3", width=None, height=None,
         duration=90.0, mp4_ok=True, mp4_reason=None))
@@ -1045,10 +1031,8 @@ def hls_link(url_enabled, lang_check, fake_capped_get, monkeypatch):
     serve_hls(link.table, _HLS, 15)
     link.ctype, link.downloads, link.heard = "video/mp2t", [], []
 
-    async def _probe(url, *, timeout):
-        return _info(url=url, duration=60.0, segmented={
-            "protocol": "hls", "url": _HLS, "headers": {}})
-    monkeypatch.setattr(url_download, "probe", _probe)
+    _stub_probe(monkeypatch, duration=60.0, segmented={
+        "protocol": "hls", "url": _HLS, "headers": {}})
     full = url_download.download
 
     async def _download(url, **kw):
@@ -1085,10 +1069,8 @@ def test_language_check_places_segmented_pieces_by_the_playlist_length(
         client, hls_link, monkeypatch):
     """A bare .m3u8 link: the probe has no length, so the playlist's segment
     durations (15 × 4 s) place the three pieces — not one 20 s piece at 0 s."""
-    async def _probe(url, *, timeout):
-        return _info(url=url, duration=None, segmented={
-            "protocol": "hls", "url": _HLS, "headers": {}})
-    monkeypatch.setattr(url_download, "probe", _probe)
+    _stub_probe(monkeypatch, duration=None, segmented={
+        "protocol": "hls", "url": _HLS, "headers": {}})
     r = client.post("/v1/audio/url-language", json={"url": _URL})
     assert r.status_code == 200, r.text
     assert [p["at"] for p in r.json()["pieces"]] == [12.0, 30.0, 40.0]
