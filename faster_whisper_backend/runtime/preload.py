@@ -150,8 +150,7 @@ def normalize_id(family: str, model_id: str) -> str:
         except Exception:  # noqa: BLE001 — a key must never fail to form
             return model_id
     if family == "separation":
-        from faster_whisper_backend.audio import bgm_separation
-        return bgm_separation.model_filename(model_id)
+        return _family_module(family).model_filename(model_id)
     return model_id
 
 
@@ -277,14 +276,9 @@ def _placement(family: str, model_id: str = "") -> "tuple[str, str]":
     raises — _admit has no try)."""
     if family == "whisper":
         return tx_models.placement(normalize_id(family, model_id) or None)
-    if family == "diarization":
-        from faster_whisper_backend.audio import diarization
-        return diarization.placement()
-    if family == "separation":
-        from faster_whisper_backend.audio import bgm_separation
-        return bgm_separation.placement()
-    from faster_whisper_backend.translation import engine as translation
-    return translation.placement()
+    # An unknown family is routed to translation.
+    return (_family_module(family)
+            or _family_module("translation")).placement()
 
 
 def _device_index(family: str, model_id: str) -> int:
@@ -320,45 +314,27 @@ def _family_busy(family: str, model_id: str) -> bool:
     rule; whisper and translation refuse while a load of their own runs."""
     mid = normalize_id(family, model_id)
     try:
-        if family == "whisper":
-            # A preload must never be the reason a job waits on the whisper
-            # load lock, so a running load is a refusal, not a queue.
-            if tx_models.load_in_progress():
-                return True
+        mod = _family_module(family)
+        if family in ("whisper", "translation"):
+            # A preload must never be the reason a job waits on the family's
+            # load lock, so a running load is a refusal, not a queue (see
+            # translation.load_in_progress for why the cap check alone is
+            # not enough there).
             # A full cache is a refusal too unless a COLD peer can be dropped:
-            # the loader's MAX_LOADED_MODELS loop evicts the LRU unleased
-            # model and never consults the warm predicate, so a preload that
-            # reached it could be the thing that drops another plan's warm
+            # whisper's MAX_LOADED_MODELS loop evicts the LRU unleased model,
+            # and the translation cache's trim drops the first unleased ref,
+            # neither consulting the warm predicate, so a preload that
+            # reached them could be the thing that drops another plan's warm
             # model.
-            if _cache_full(family) and not _can_drop_peer(family, model_id):
-                return True
-            return False
+            return bool(mod.load_in_progress() or (
+                _cache_full(family) and not _can_drop_peer(family, model_id)))
         # The singletons have one slot: loading a different model drops the
         # resident one (_get_pipeline / _get_separator force-drop it, warm or
         # not). Same refusal shape as whisper's full cache: a held peer that
         # is warm (another plan's), or any held peer with eviction off.
-        if family == "diarization":
-            from faster_whisper_backend.audio import diarization
-            return diarization.busy(mid) or (
-                diarization.holds_other(mid)
-                and not _can_drop_peer(family, model_id))
-        if family == "separation":
-            from faster_whisper_backend.audio import bgm_separation
-            return bgm_separation.busy(mid) or (
-                bgm_separation.holds_other(mid)
-                and not _can_drop_peer(family, model_id))
-        if family == "translation":
-            from faster_whisper_backend.translation import engine as translation
-            # Same refusal as whisper's running load (see
-            # translation.load_in_progress for why the cap check alone is
-            # not enough).
-            if translation.load_in_progress():
-                return True
-            # Same shape as whisper: the translation cache's trim drops the
-            # first unleased ref without consulting the warm predicate.
-            if _cache_full(family) and not _can_drop_peer(family, model_id):
-                return True
-            return False
+        if mod is not None:
+            return mod.busy(mid) or (
+                mod.holds_other(mid) and not _can_drop_peer(family, model_id))
     except Exception:  # noqa: BLE001 — unknown state is not a reason to load
         return True
     return False
@@ -366,11 +342,8 @@ def _family_busy(family: str, model_id: str) -> bool:
 
 def _cache_full(family: str) -> bool:
     """Is the family's multi-slot cache at its cap? False for singletons."""
-    if family == "whisper":
-        return tx_models.cache_full()
-    if family == "translation":
-        from faster_whisper_backend.translation import engine as translation
-        return translation.cache_full()
+    if family in ("whisper", "translation"):
+        return _family_module(family).cache_full()
     return False
 
 
@@ -991,17 +964,11 @@ async def _load(family: str, model_id: str) -> bool:
     False when a singleton declined the load because a running job holds
     another model — nothing was loaded."""
     mid = normalize_id(family, model_id)
-    if family == "whisper":
-        await tx_models.load_unleased(mid)
-    elif family == "diarization":
-        from faster_whisper_backend.audio import diarization
-        return await diarization.load_unleased(mid)
-    elif family == "separation":
-        from faster_whisper_backend.audio import bgm_separation
-        return await bgm_separation.load_unleased(mid)
-    elif family == "translation":
-        from faster_whisper_backend.translation import engine as translation
-        await translation.load_unleased(mid)
+    mod = _family_module(family)
+    if family in ("diarization", "separation"):
+        return await mod.load_unleased(mid)
+    if mod is not None:
+        await mod.load_unleased(mid)
     return True
 
 
@@ -1010,17 +977,12 @@ async def _evict(family: str, peer_id: str) -> None:
     nothing in the tree holds two — that is the deadlock proof."""
     logger.info("[preload] evicting idle %s to make room",
                 stats_key(family, peer_id))
-    if family == "whisper":
-        await tx_models.evict(peer_id)
-    elif family == "translation":
-        from faster_whisper_backend.translation import engine as translation
-        await translation.evict(peer_id)
+    if family in ("whisper", "translation"):
+        await _family_module(family).evict(peer_id)
     elif family == "diarization":
-        from faster_whisper_backend.audio import diarization
-        await diarization.drop_pipeline(force=False)
+        await _family_module(family).drop_pipeline(force=False)
     elif family == "separation":
-        from faster_whisper_backend.audio import bgm_separation
-        await bgm_separation.drop_separator(force=False)
+        await _family_module(family).drop_separator(force=False)
 
 
 async def start() -> None:
