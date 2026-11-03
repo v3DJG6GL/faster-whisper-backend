@@ -1,8 +1,7 @@
-"""A whoami retry whose fetch was rejected (server restarting) returned at
-once when another whoami on the page had filled window.__whoami meanwhile:
-the chrome stayed cleared (no admin chrome, no nav), the "retrying…" notice
-stayed up and nothing retried again. A rejected fetch now falls back to the
-cached whoami exactly like a 5xx does.
+"""A whoami retry whose fetch is rejected (server restarting) falls back to
+window.__whoami when another whoami on the page filled it meanwhile, exactly
+like a 5xx does; otherwise the chrome stays cleared (no admin chrome, no
+nav), the "retrying…" notice stays up and nothing retries again.
 
 Reuses the node harness of test_whoami_unavailable_retry; the fetch stub is
 wrapped so the page's own whoami "succeeds" right before the retry fires."""
