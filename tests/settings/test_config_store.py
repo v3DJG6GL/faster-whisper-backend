@@ -752,9 +752,9 @@ def test_regex_list_nested_fixed_counts_refused_before_the_template_sub():
 
 
 def test_nested_fixed_counts_refused_at_load_without_a_replacement():
-    # The count screen sat after the empty-replacement skip, so a "delete the
-    # match" entry or a callback pattern row loaded cleanly (the out-of-process
-    # guard runs only on a save) and looped N*N in-process on every request.
+    # The count screen runs before the empty-replacement skip: a "delete the
+    # match" entry or a callback pattern row must fail at LOAD too (the
+    # out-of-process guard runs only on a save), or it loops N*N on every request.
     pat = "(?:(?:a{0}){100000}){100000}"
     for rule in (
             {"name": "rl", "label": "RL", "type": "regex-list",
@@ -1047,9 +1047,9 @@ def test_validate_binding_checks_slugs_against_an_empty_live_rule_list(monkeypat
 
 
 def test_stale_stored_slug_only_blocks_saves_of_its_own_key(tmp_path, monkeypatch):
-    # The slug check used to run over the whole merged document whenever the
-    # save touched ANY slug-bearing key, so a stale exclude stored under
-    # MODEL_OVERRIDES 422'd every OVERRIDE_PROFILES / captures save too.
+    # The slug check covers only the keys a save submits, not the whole merged
+    # document, so a stale exclude stored under MODEL_OVERRIDES must not 422
+    # an OVERRIDE_PROFILES / captures save.
     monkeypatch.setattr(cs, "_canonical_rule_slugs", lambda: {"known"})
     p = tmp_path / "config.local.json"
     p.write_text(json.dumps({"MODEL_OVERRIDES": {"m": {
@@ -1706,8 +1706,8 @@ def test_origins_uppercase_scheme_is_lowercased_not_refused():
 
 def test_origins_default_port_dropped_on_save_and_load(tmp_path):
     # The browser omits the scheme's default port from Origin, so a stored
-    # 'https://x:443' was an exact-match miss: every POST/WebSocket from the
-    # proxy origin the operator just trusted got the CSRF 403.
+    # 'https://x:443' would never match exactly: every POST/WebSocket from
+    # that proxy origin would get the CSRF 403.
     p = str(tmp_path / "config.local.json")
     cs.save_overrides({"TRUSTED_ORIGINS": ["https://w.example.com:443",
                                            "http://[::1]:80", "https://a.com:80",
