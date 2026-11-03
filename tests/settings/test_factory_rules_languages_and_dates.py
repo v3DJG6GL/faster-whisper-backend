@@ -445,12 +445,17 @@ def test_space_before_closing_punct_is_fast_on_a_hallucinated_dot_loop(app_modul
     assert out == "Das war es Danke"
 
 
-def test_space_before_closing_punct_output_is_unchanged():
-    entry = _entry(_factory_rules(), "space-before-closing-punct")
-    old = renames.UPGRADED_RULE_ENTRIES["space-before-closing-punct"][0]
-    for s in ("a , b", "a \t \t. b  ;c", "( 45 Jahre ) klagt .", "x   y", " \t", "a  ,\n  .",
-              "Wert 12 % ] } ! ?", "\t,\t.\t"):
+def _assert_same_output_as_old(label, samples):
+    entry = _entry(_factory_rules(), label)
+    old = renames.UPGRADED_RULE_ENTRIES[label][0]
+    for s in samples:
         assert re.sub(entry["pattern"], entry["replacement"], s) == re.sub(*old, s), s
+
+
+def test_space_before_closing_punct_output_is_unchanged():
+    _assert_same_output_as_old("space-before-closing-punct", (
+        "a , b", "a \t \t. b  ;c", "( 45 Jahre ) klagt .", "x   y", " \t", "a  ,\n  .",
+        "Wert 12 % ] } ! ?", "\t,\t.\t"))
 
 
 def test_stored_old_closing_punct_entry_is_upgraded_once():
@@ -506,12 +511,10 @@ def _assert_trim_trailing_period_is_fast(app_module, unit, n):
 
 
 def test_trim_trailing_period_output_is_unchanged():
-    entry = _entry(_factory_rules(), "trim-trailing-period")
-    old = renames.UPGRADED_RULE_ENTRIES["trim-trailing-period"][0]
-    for s in ("Wert 5.", "gut. . . ", "x. .", "a  \t.\n", "z.B. morgen", " . ", "...",
-              "Ende.\n\n", "a b", "  ", "1.5 mg .\t.", "Satz. Zwei", "es...... Danke",
-              "5\n.\n\n.", ". .", "a.. b.."):
-        assert re.sub(entry["pattern"], entry["replacement"], s) == re.sub(*old, s), s
+    _assert_same_output_as_old("trim-trailing-period", (
+        "Wert 5.", "gut. . . ", "x. .", "a  \t.\n", "z.B. morgen", " . ", "...",
+        "Ende.\n\n", "a b", "  ", "1.5 mg .\t.", "Satz. Zwei", "es...... Danke",
+        "5\n.\n\n.", ". .", "a.. b.."))
 
 
 def test_stored_old_trailing_period_entry_is_upgraded_once():
@@ -537,11 +540,9 @@ def test_tidy_newlines_is_fast_on_a_symbol_loop_with_the_whitespace_card_off(app
 
 
 def test_tidy_newlines_output_is_unchanged():
-    entry = _entry(_factory_rules(), "tidy-newlines")
-    old = renames.UPGRADED_RULE_ENTRIES["tidy-newlines"][0]
-    for s in ("a ,\n, b", "Hallo   ,   \n   Welt", "x\n\n\ty", "\t\ta\n\t\n,a\t", "\n \n ",
-              "a , , \n", ",\n,", "a  b", " \t ", "Zeile 1,\nZeile 2", "\n", "a ,b\n"):
-        assert re.sub(entry["pattern"], entry["replacement"], s) == re.sub(*old, s), s
+    _assert_same_output_as_old("tidy-newlines", (
+        "a ,\n, b", "Hallo   ,   \n   Welt", "x\n\n\ty", "\t\ta\n\t\n,a\t", "\n \n ",
+        "a , , \n", ",\n,", "a  b", " \t ", "Zeile 1,\nZeile 2", "\n", "a ,b\n"))
 
 
 def test_stored_old_tidy_newlines_entry_is_upgraded_once():
