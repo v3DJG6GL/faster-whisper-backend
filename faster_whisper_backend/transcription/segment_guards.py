@@ -45,7 +45,7 @@ equal the prompt's last k words AND every one of them looks made up — a real
 repeat ("… zwei Tabletten" / "zwei Tabletten am Abend") is spoken words with a
 length and a confidence, and stays.
 
-Pure module: no import of ``main`` (streaming imports main lazily).
+Pure module: no import of ``main``.
 """
 
 import re
