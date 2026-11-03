@@ -25,10 +25,15 @@ def _transcribe(client, profile, headers=None):
     )
 
 
+def _gate_profiles(monkeypatch, allow, profiles=None):
+    monkeypatch.setattr(cfg, "OVERRIDE_PROFILES", profiles or {"fast": {"BEAM_SIZE": 3}},
+                        raising=False)
+    monkeypatch.setattr(cfg, "ALLOW_REQUEST_OVERRIDE_PROFILE", allow, raising=False)
+
+
 def test_request_profile_applies_to_decode_kwargs(client, fake_model, monkeypatch):
     # Open mode (no keys) → synthetic admin; the request profile is the only layer.
-    monkeypatch.setattr(cfg, "OVERRIDE_PROFILES", {"fast": {"BEAM_SIZE": 3}}, raising=False)
-    monkeypatch.setattr(cfg, "ALLOW_REQUEST_OVERRIDE_PROFILE", True, raising=False)
+    _gate_profiles(monkeypatch, True)
     r = _transcribe(client, "fast")
     assert r.status_code == 200, r.text
     assert fake_model.last_kwargs["beam_size"] == 3
@@ -36,8 +41,7 @@ def test_request_profile_applies_to_decode_kwargs(client, fake_model, monkeypatc
 
 
 def test_request_profile_gated_off_is_ignored(client, fake_model, monkeypatch):
-    monkeypatch.setattr(cfg, "OVERRIDE_PROFILES", {"fast": {"BEAM_SIZE": 3}}, raising=False)
-    monkeypatch.setattr(cfg, "ALLOW_REQUEST_OVERRIDE_PROFILE", False, raising=False)
+    _gate_profiles(monkeypatch, False)
     r = _transcribe(client, "fast")
     assert r.status_code == 200, r.text
     assert fake_model.last_kwargs["beam_size"] != 3
@@ -45,8 +49,7 @@ def test_request_profile_gated_off_is_ignored(client, fake_model, monkeypatch):
 
 
 def test_unknown_request_profile_not_applied(client, fake_model, monkeypatch):
-    monkeypatch.setattr(cfg, "OVERRIDE_PROFILES", {"fast": {"BEAM_SIZE": 3}}, raising=False)
-    monkeypatch.setattr(cfg, "ALLOW_REQUEST_OVERRIDE_PROFILE", True, raising=False)
+    _gate_profiles(monkeypatch, True)
     r = _transcribe(client, "nope")
     assert r.status_code == 200, r.text
     assert r.json()["profile_applied"] is None
@@ -74,26 +77,22 @@ def test_binding_lock_beats_request_profile(client, make_user_key, fake_model):
 
 
 def test_override_profiles_endpoint_lists_names(client, monkeypatch):
-    monkeypatch.setattr(cfg, "OVERRIDE_PROFILES",
-                        {"fast": {"BEAM_SIZE": 3}, "clinic-de": {"DEFAULT_LANGUAGE": "de"}},
-                        raising=False)
-    monkeypatch.setattr(cfg, "ALLOW_REQUEST_OVERRIDE_PROFILE", True, raising=False)
+    _gate_profiles(monkeypatch, True,
+                   {"fast": {"BEAM_SIZE": 3}, "clinic-de": {"DEFAULT_LANGUAGE": "de"}})
     r = client.get("/v1/override-profiles")
     assert r.status_code == 200, r.text
     assert r.json() == {"profiles": ["clinic-de", "fast"]}   # sorted, names only
 
 
 def test_override_profiles_endpoint_empty_when_gated(client, monkeypatch):
-    monkeypatch.setattr(cfg, "OVERRIDE_PROFILES", {"fast": {"BEAM_SIZE": 3}}, raising=False)
-    monkeypatch.setattr(cfg, "ALLOW_REQUEST_OVERRIDE_PROFILE", False, raising=False)
+    _gate_profiles(monkeypatch, False)
     r = client.get("/v1/override-profiles")
     assert r.status_code == 200, r.text
     assert r.json() == {"profiles": []}
 
 
 def test_override_profiles_endpoint_requires_auth_when_locked(client, make_user_key, monkeypatch):
-    monkeypatch.setattr(cfg, "OVERRIDE_PROFILES", {"fast": {"BEAM_SIZE": 3}}, raising=False)
-    monkeypatch.setattr(cfg, "ALLOW_REQUEST_OVERRIDE_PROFILE", True, raising=False)
+    _gate_profiles(monkeypatch, True)
     # Creating the first admin key flips the app to locked-down mode.
     _, raw_admin = make_user_key("admin", is_admin=True)
     assert client.get("/v1/override-profiles").status_code == 401   # no bearer
@@ -139,8 +138,7 @@ def test_none_sentinel_suppresses_bound_profile(client, make_user_key, fake_mode
 
 def test_none_sentinel_never_listed(client, monkeypatch):
     from faster_whisper_backend.settings.schema import NO_PROFILE_SENTINEL
-    monkeypatch.setattr(cfg, "OVERRIDE_PROFILES", {"fast": {"BEAM_SIZE": 3}}, raising=False)
-    monkeypatch.setattr(cfg, "ALLOW_REQUEST_OVERRIDE_PROFILE", True, raising=False)
+    _gate_profiles(monkeypatch, True)
     r = client.get("/v1/override-profiles")
     assert r.status_code == 200, r.text
     assert NO_PROFILE_SENTINEL not in r.json()["profiles"]
