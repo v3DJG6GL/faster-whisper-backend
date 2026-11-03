@@ -332,8 +332,7 @@
     padding: 0.1rem 0.5rem; font-size: var(--fs-sm); }
   .cfg-chip .num { font-family: var(--font-mono); color: var(--dim);
     font-size: var(--fs-xs); }
-  .cfg-chip button { background: none; border: 0; color: var(--dim);
-    cursor: pointer; font: inherit; padding: 0; }
+  .cfg-chip button { font: inherit; padding: 0; }
   .cfg-chip button:hover { color: var(--fg); }
   /* "Apply no profiles" admin force (per-key only): a switch row above the chip
      list; when ON the list is dimmed + non-interactive (data kept, not cleared). */
@@ -350,9 +349,9 @@
     border: 1px solid var(--border); border-radius: 4px; font: inherit;
     font-size: var(--fs-sm); padding: 0.1rem 0.3rem; width: 100%;
     box-sizing: border-box; }
-  .cfg-ovr-row .lk { background: none; border: 0; cursor: pointer; color: var(--dim); }
+  .cfg-chip button, .cfg-ovr-row .lk, .cfg-ovr-row .rm { background: none; border: 0;
+    cursor: pointer; color: var(--dim); }
   .cfg-ovr-row .lk.on { color: var(--yellow); }
-  .cfg-ovr-row .rm { background: none; border: 0; cursor: pointer; color: var(--dim); }
   /* Drawer footer (overrides: Preview ghost left, the one primary Save right) */
   .ov-footer { display: flex; align-items: center; gap: 0.5rem;
     padding: 0.65rem 0.95rem; background: var(--panel); }
