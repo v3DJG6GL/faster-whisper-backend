@@ -77,7 +77,7 @@ def test_oversize_json_is_rejected_before_the_route_runs(client, app_module):
 
 def test_oversize_json_with_plus_json_subtype_is_413(client):
     # FastAPI parses application/*+json bodies as JSON too — a prefix test on
-    # "application/json" would hand them the 256 MB service-wide ceiling.
+    # "application/json" would hand them the 256 MiB non-upload backstop.
     r = client.put("/v1/synced-client-settings", content=_big_json(8 * 1024 * 1024),
                    headers={"Content-Type": "application/merge-patch+json"})
     assert r.status_code == 413
