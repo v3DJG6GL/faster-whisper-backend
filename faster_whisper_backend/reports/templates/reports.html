@@ -425,16 +425,14 @@
     var a = tokenizeForDiff(beforeStr || '');
     var b = tokenizeForDiff(afterStr || '');
     if (a.length * b.length > DIFF_CELL_BUDGET) {
-      var plain = document.createElement('div');
-      plain.className = 'rc-diff ws-region';
+      var plain = _el('div', 'rc-diff ws-region');
       plain.appendChild(_el('span', 'diff-del', beforeStr || ''));
       plain.appendChild(_el('span', 'diff-eq', '\n'));
       plain.appendChild(_el('span', 'diff-ins', afterStr || ''));
       return plain;
     }
     var ops = lcsDiff(a, b);
-    var div = document.createElement('div');
-    div.className = 'rc-diff ws-region';
+    var div = _el('div', 'rc-diff ws-region');
     ops.forEach(function(op) {
       div.appendChild(_el('span', 'diff-' + op[0], op[1]));
     });
@@ -539,12 +537,10 @@
   }
 
   function renderCard(r) {
-    var card = document.createElement('div');
-    card.className = 'report-card';
+    var card = _el('div', 'report-card');
     card.dataset.id = r.id;
 
-    var head = document.createElement('div');
-    head.className = 'rc-head';
+    var head = _el('div', 'rc-head');
     head.innerHTML =
       '<span class="when" data-ts="' + (r.created_ts || 0) + '" title="' +
         escapeHtml(absTime(r.created_ts)) + '">' +
@@ -585,8 +581,7 @@
     head.appendChild(delBtn);
 
     function textLine(klass, label, value) {
-      var row = document.createElement('div');
-      row.className = 'rc-textline ' + klass;
+      var row = _el('div', 'rc-textline ' + klass);
       row.appendChild(_el('span', 'tag', label));
       row.appendChild(_el('span', 'val' + (value ? ' ws-region' : ' dim'), value || '(empty)'));
       return row;
@@ -616,8 +611,7 @@
     // pipeline itself).
     var steps = r.steps || [];
     if (steps.length) {
-      var det = document.createElement('details');
-      det.className = 'rc-steps';
+      var det = _el('details', 'rc-steps');
       var sum = document.createElement('summary');
       var changed = steps.filter(function(s) {
         return Array.isArray(s) && s.length >= 3 && s[1] !== s[2];
@@ -627,8 +621,7 @@
       det.appendChild(sum);
       steps.forEach(function(s) {
         if (!Array.isArray(s) || s.length < 3) return;
-        var st = document.createElement('div');
-        st.className = 'rc-step';
+        var st = _el('div', 'rc-step');
         st.innerHTML =
           '<span class="step-label">' + escapeHtml(s[0]) + '</span>' +
           '<span><span class="step-before"><span class="ws-region">'
@@ -646,11 +639,9 @@
     if (corr.length) {
       var sec = _el('div', 'rc-section');
       sec.innerHTML = '<h3>Word corrections</h3>';
-      var box = document.createElement('div');
-      box.className = 'rc-corrections';
+      var box = _el('div', 'rc-corrections');
       corr.forEach(function(c) {
-        var chip = document.createElement('div');
-        chip.className = 'rc-correction';
+        var chip = _el('div', 'rc-correction');
         chip.innerHTML =
           '<span class="wrong">' + escapeHtml(c.wrong || '?') + '</span>' +
           '<span class="arrow">→</span>' +
@@ -681,8 +672,7 @@
     ta.value = _hasDraft(r.id) ? _drafts[r.id] : (r.admin_notes || '');
     ta.placeholder = 'Notes about how this was triaged, what was changed, follow-ups…';
     sec4.appendChild(ta);
-    var row = document.createElement('div');
-    row.className = 'row';
+    var row = _el('div', 'row');
     var saveBtn = _el('button', 'primary', 'Save notes');
     saveBtn.disabled = true;
     var dirty = _el('span', 'dirty hidden', 'unsaved changes');
@@ -871,8 +861,7 @@
     var list = document.getElementById('list');
     list.innerHTML = '';
     if (rows.length === 0) {
-      var empty = document.createElement('div');
-      empty.className = 'empty-state';
+      var empty = _el('div', 'empty-state');
       if (_allReports.length === 0) {
         empty.innerHTML = '<strong>No reports yet.</strong><br>' +
           "When users flag a transcription on /quick-config, it lands here.";
