@@ -2175,8 +2175,8 @@ def test_preview_save_chips_keeps_a_members_anchorless_chip(
 
 
 def test_patch_keeps_every_chip_the_schema_accepts(client, make_user_key):
-    """The store used to stop at 50 chips while the schema took 200: Save
-    toasted "Saved." and chips 51+ were gone on reload."""
+    """The store keeps every chip the schema accepts (200): a lower store
+    cap would toast "Saved." and lose the extra chips on reload."""
     from faster_whisper_backend.captures import store as captures_store
 
     _uid, raw = make_user_key("root", is_admin=True)
