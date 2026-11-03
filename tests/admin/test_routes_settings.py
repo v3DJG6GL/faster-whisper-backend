@@ -7,7 +7,7 @@ import pytest
 from faster_whisper_backend.pipeline import apply as pl_apply
 from faster_whisper_backend.pipeline import engine as pl_engine
 from faster_whisper_backend.transcription import progress as tx_progress
-from tests._page_helpers import js_body
+from tests._page_helpers import TOP_CLOSE, js_body, js_upto
 from tests.conftest import _repoint_path_default
 
 
@@ -256,8 +256,7 @@ def test_preload_editor_skips_its_own_model_list_event(client):
     page = client.get("/settings").text
     assert ("document.dispatchEvent(new CustomEvent('admin:model-lists-changed',\n"
             "                                           { detail: { name } }));") in page
-    multi = page[page.index("function modelMultiSelectEditor("):]
-    multi = multi[:multi.index("\n}\n")]
+    multi = js_upto(page, "function modelMultiSelectEditor(", TOP_CLOSE)
     assert "if (e && e.detail && e.detail.name === name) return;" in multi
 
 
@@ -266,8 +265,7 @@ def test_model_editors_stay_disabled_when_env_pinned_after_a_rerender(client):
     each model editor must re-apply the env-pin disable after it re-renders."""
     page = client.get("/settings").text
     for fn in ("function modelDropdownEditor(", "function modelMultiSelectEditor("):
-        body = page[page.index(fn):]
-        body = body[:body.index("\n}\n")]
+        body = js_upto(page, fn, TOP_CLOSE)
         assert "if (isEnvPinned(name)) disableEnvPinnedEditor(wrap);" in body, fn
 
 
@@ -1027,8 +1025,7 @@ def test_off_list_default_is_not_called_failing_where_the_gate_admits_it(client)
     assert "defaultAdmitted: true" in tr[:tr.index("};")]
     bgm = text[text.index("{ allowed: 'BGM_SEPARATION_ALLOWED_MODELS',"):]
     assert "defaultAdmitted: true" in bgm[:bgm.index("}")]
-    ed = text[text.index("function modelDropdownEditor("):]
-    ed = ed[:ed.index("\n}\n")]
+    ed = js_upto(text, "function modelDropdownEditor(", TOP_CLOSE)
     assert "lists.defaultAdmitted" in ed
     assert "admitted as the configured default" in ed
     assert "request will fail" in ed
@@ -1490,8 +1487,7 @@ def test_settings_page_guards_every_localstorage_read(client):
 
 def _settings_save_body(client):
     html = client.get("/settings").text
-    body = html[html.index("async function save() {"):]
-    return html, body[:body.index("\n}\n")]
+    return html, js_upto(html, "async function save() {", TOP_CLOSE)
 
 
 def test_settings_save_reloads_state_on_the_restart_branch_too(client):
@@ -1513,8 +1509,7 @@ def test_settings_save_keeps_edits_made_while_in_flight(client):
     assert "const sent = JSON.parse(JSON.stringify(dirty));" in body
     assert "await api('POST', '/settings/state', sent);" in body
     assert "dirty = {};" not in body
-    ls = html[html.index("async function loadState(saved) {"):]
-    ls = ls[:ls.index("\n}\n")]
+    ls = js_upto(html, "async function loadState(saved) {", TOP_CLOSE)
     assert "for (const k of Object.keys(keep)) {" in ls
     # The carry-over is worked out from the live `dirty` AFTER the awaited
     # GET: an edit typed during that second round trip survives too.
@@ -1535,8 +1530,7 @@ def test_settings_save_keeps_a_revert_made_while_in_flight(client):
     assert "const dirtyRef = dirty;" in body
     assert body.index("const dirtyRef = dirty;") \
         < body.index("await api('POST', '/settings/state', sent);")
-    es = html[html.index("function _editsSince(saved) {"):]
-    es = es[:es.index("\n}\n")]
+    es = js_upto(html, "function _editsSince(saved) {", TOP_CLOSE)
     assert "if (dirty === saved.dirtyRef) {" in es
     assert "if (!has(dirty, k)) out[k] = saved.before[k];" in es
 

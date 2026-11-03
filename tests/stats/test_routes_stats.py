@@ -11,6 +11,7 @@ from faster_whisper_backend.core import jobs
 from faster_whisper_backend.paths import REPO_ROOT
 from faster_whisper_backend.stats import metrics
 from faster_whisper_backend.translation import engine as translation
+from tests._page_helpers import TOP_CLOSE, js_upto
 
 
 def _stats_js() -> str:
@@ -937,8 +938,7 @@ def test_stats_layout_presets_edit_mode_and_ring_freeze(client):
     # setData re-resolves a scrubbed cursor's pixel against the shifted
     # scale every tick; with no pointer the hook puts the cursor back on the
     # frozen sample instead of advancing frozenTs.
-    hover = html[html.index("function onSparkHover(u) {"):]
-    hover = hover[:hover.index("\n}\n")]
+    hover = js_upto(html, "function onSparkHover(u) {", TOP_CLOSE)
     assert hover.index("if (hoverU === null && frozenTs != null) {") < hover.index(
         "frozenTs = ts;")
     assert "nearestIdx(xs, frozenTs)" in hover and "u.valToPos(xs[want], 'x')" in hover
@@ -1406,8 +1406,7 @@ def test_stats_js_chart_never_all_hidden_after_reload(client):
     prep = js[js.index("function prepareLines() {"):js.index("function chartData()")]
     assert prep.index("hidden.clear();") < prep.index(
         "const keep = new Set(visibleLines()")
-    chart = js[js.index("function renderChart() {"):]
-    chart = chart[:chart.index("\n}\n")]
+    chart = js_upto(js, "function renderChart() {", TOP_CLOSE)
     assert "hidden.clear()" not in chart
 
 
@@ -1558,8 +1557,7 @@ def test_jobs_chip_is_not_rewritten_every_snapshot(client):
     """renderJobs() runs at 1 Hz; the chip's DOM is only replaced when its
     text changed (like renderWindowChips)."""
     html = client.get("/stats").text
-    start = html.index("let _rjChipSig = null;")
-    body = html[start:html.index("\n}\n", start)]
+    body = js_upto(html, "let _rjChipSig = null;", TOP_CLOSE)
     assert body.index("if (sig === _rjChipSig) return;") < body.index(
         "el.innerHTML = html;")
 
@@ -1725,11 +1723,10 @@ def test_stats_page_status_pill_keeps_the_stream_state(client):
     snapshot + the first frame) trapped the keyboard scrub on the pair: the
     newer one replaces it."""
     html = client.get("/stats").text
-    pill = html[html.index("function refreshStatusPill() {"):]
-    pill = pill[:pill.index("\n}\n")]
+    pill = js_upto(html, "function refreshStatusPill() {", TOP_CLOSE)
     assert pill.index("if (connState) {") < pill.index("statusEl.className = 'pill live';")
-    status = html[html.index("function setStatus(text, cls) {"):]
-    assert "connState = cls === 'live' ? null : text;" in status[:status.index("\n}\n")]
+    status = js_upto(html, "function setStatus(text, cls) {", TOP_CLOSE)
+    assert "connState = cls === 'live' ? null : text;" in status
     sse = html[html.index("function openStream() {"):html.index("es.onerror")]
     assert sse.count("connState = null;") == 2   # a message and a (re)open
     push = html[html.index("function pushHistory(snap) {"):]
@@ -1741,8 +1738,7 @@ def test_stats_turnaround_tooltip_and_resize_use_the_drawn_tail():
     the resize redraw waits for the current usage document: lastTail already
     holds the next window while its usage document is in flight."""
     js = _stats_js()
-    ta = js[js.index("function renderTurnaround() {"):]
-    ta = ta[:ta.index("\n}\n")]
+    ta = js_upto(js, "function renderTurnaround() {", TOP_CLOSE)
     tips = ta[ta.index("wireTips(el, '[data-tip]'"):ta.index("el._ro = onResizeFrame(el")]
     assert "const tt = t;" in tips and "lastTail" not in tips
     ro = ta[ta.index("el._ro = onResizeFrame(el"):]

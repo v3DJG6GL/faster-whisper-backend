@@ -13,7 +13,7 @@ import pytest
 
 from faster_whisper_backend.settings import config_store as cs
 from faster_whisper_backend.settings import schema as settings_schema
-from tests._page_helpers import js_body
+from tests._page_helpers import TOP_CLOSE, js_body, js_upto
 
 
 def _html(client):
@@ -288,8 +288,7 @@ def test_regex_list_entries_are_read_back_in_the_schema_shape(client):
     ("" when empty). The row reader dropped an empty one, so typing into a
     note and deleting it again read the rule as "edited here"."""
     html = _html(client)
-    body = html[html.index("function _readEntries(parent) {"):]
-    body = body[:body.index("\n}\n")]
+    body = js_upto(html, "function _readEntries(parent) {", TOP_CLOSE)
     assert "if (lbl) o.label = lbl;" not in body
     assert "if (note) o.note = note;" not in body
     assert "label: lbl, note: note" in body
