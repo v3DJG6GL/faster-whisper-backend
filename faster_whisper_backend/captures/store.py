@@ -259,6 +259,15 @@ def _invalidate_proposals(*uids: str | None) -> None:
         pass
 
 
+def _json_column(raw: Any, empty: str) -> Any:
+    """json.loads(raw or empty); a malformed or non-text value decodes as
+    `empty` (a fresh container each call)."""
+    try:
+        return json.loads(raw or empty)
+    except (TypeError, ValueError):
+        return json.loads(empty)
+
+
 def _row_to_dict(row: sqlite3.Row, include_words: bool = True) -> dict[str, Any]:
     """Materialize a row, decoding the JSON-bearing columns. With
     include_words=False the heavy fields (words, segments)
@@ -270,30 +279,17 @@ def _row_to_dict(row: sqlite3.Row, include_words: bool = True) -> dict[str, Any]
         d["raw"] = d.pop("raw_text")
     if "final_text" in d:
         d["final"] = d.pop("final_text")
-    try:
-        d["corrections"] = json.loads(d.get("corrections") or "[]")
-    except (TypeError, ValueError):
-        d["corrections"] = []
+    d["corrections"] = _json_column(d.get("corrections"), "[]")
     if include_words:
-        try:
-            d["words"] = json.loads(d.get("words") or "[]")
-        except (TypeError, ValueError):
-            d["words"] = []
-        try:
-            d["segments"] = json.loads(d.get("segments") or "[]")
-        except (TypeError, ValueError):
-            d["segments"] = []
+        d["words"] = _json_column(d.get("words"), "[]")
+        d["segments"] = _json_column(d.get("segments"), "[]")
     else:
         d.pop("words", None)
         d.pop("segments", None)
     # Per-language translations. A JSON column needs an explicit decode here
     # or it reaches the UI as a raw string; absent on pre-migration rows.
-    try:
-        d["translations"] = json.loads(d.get("translations") or "{}")
-        if not isinstance(d["translations"], dict):
-            d["translations"] = {}
-    except (TypeError, ValueError):
-        d["translations"] = {}
+    translations = _json_column(d.get("translations"), "{}")
+    d["translations"] = translations if isinstance(translations, dict) else {}
     # reconcile_on_startup's own bookkeeping, not part of the capture.
     d.pop("status_before_missing", None)
     return d
