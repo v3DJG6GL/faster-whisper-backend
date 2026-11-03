@@ -1992,11 +1992,7 @@ class AdminConfig(BaseModel):
         """Reject any per-model EXCLUDE / INCLUDE that references a rule slug
         not present in the canonical PIPELINE_RULES list. Closes the silent-
         typo footgun where 'dictashion-map' would save cleanly and quietly do
-        nothing at runtime.
-
-        Fires when PIPELINE_RULES is in the payload, or when save_overrides()
-        supplies the live/factory slug set via the `canonical_slugs`
-        validation context; a bare partial validation with neither still skips.
+        nothing at runtime. Skip rule: see _canonical_slugs.
         """
         if self.MODEL_OVERRIDES is None:
             return self
