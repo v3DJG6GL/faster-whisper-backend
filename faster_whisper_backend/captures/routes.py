@@ -1339,11 +1339,9 @@ def _validate_merge_payload(
     # Σ trimmed bodies + (N-1)×join silence.
     n_members = len(member_ids)
     total_gap_ms = int(silence_ms) * max(0, n_members - 1)
-    edge_ms = capture_samples._global_edge_ms()
     # merge_wavs adds the outer edge margin only on its trim path; counting
     # 2×edge with trimming off would over-reject in-cap merges by ~2×edge_ms.
-    trim_samples = bool(getattr(cfg, "CAPTURES_VAD_TRIM_ENABLED_FOR_SAMPLES", False))
-    total_edge_ms = 2 * edge_ms if (trim_samples and n_members >= 1) else 0
+    total_edge_ms = 2 * capture_samples._outer_edge_ms() if n_members >= 1 else 0
     cap_ms = int(float(getattr(cfg, "CAPTURES_SAMPLE_MAX_DURATION_S", 29.9)) * 1000)
     total_ms = total_trimmed_ms + total_gap_ms + total_edge_ms
     if enforce_cap and total_ms > cap_ms:
@@ -1612,10 +1610,8 @@ async def merge_estimate_api(
     )
     n = len(payload.member_ids)
     gap_ms = int(capture_samples._global_silence_ms()) * max(0, n - 1)
-    edge_ms = capture_samples._global_edge_ms()
     # Mirror merge_wavs: the outer edge margin only exists on the trim path.
-    trim_samples = bool(getattr(cfg, "CAPTURES_VAD_TRIM_ENABLED_FOR_SAMPLES", False))
-    total_edge_ms = 2 * edge_ms if (trim_samples and n >= 1) else 0
+    total_edge_ms = 2 * capture_samples._outer_edge_ms() if n >= 1 else 0
     cap_ms = int(float(getattr(cfg, "CAPTURES_SAMPLE_MAX_DURATION_S", 29.9)) * 1000)
     trimmed_total = trimmed_ms + gap_ms + total_edge_ms
     return JSONResponse({

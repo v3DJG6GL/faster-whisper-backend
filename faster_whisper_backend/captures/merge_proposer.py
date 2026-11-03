@@ -477,14 +477,9 @@ def _propose_merges_locked(
     # Uniform outer margin on both ends of the merged WAV (counts toward cap),
     # but only when group trimming is on — the legacy/trim-off merge path emits
     # no outer margin (audio_merge.merge_wavs), so counting it here would
-    # over-pack the cap budget by ~2×edge_s and depress fill scores, diverging
-    # from captures/routes.py _validate_merge_payload's same trim-gated
-    # estimate.
-    edge_s = (
-        capture_samples._global_edge_ms() / 1000.0
-        if getattr(cfg, "CAPTURES_VAD_TRIM_ENABLED_FOR_SAMPLES", False)
-        else 0.0
-    )
+    # over-pack the cap budget by ~2×edge_s and depress fill scores.
+    # _outer_edge_ms is the trim-gated value _validate_merge_payload budgets with.
+    edge_s = capture_samples._outer_edge_ms() / 1000.0
     # Finished-sample floor — drop proposals (incl. solos) shorter than this.
     min_sample_s = float(getattr(cfg, "CAPTURES_SAMPLE_MIN_DURATION_S", 1.0))
 

@@ -58,6 +58,15 @@ def _global_edge_ms() -> int:
         return 300
 
 
+def _outer_edge_ms() -> int:
+    """The per-end outer margin merge_wavs adds to the merged WAV: the edge
+    knob on its trim path, 0 with sample trimming off. The merge validation,
+    the merge-estimate meter and the proposer all budget with it."""
+    if getattr(cfg, "CAPTURES_VAD_TRIM_ENABLED_FOR_SAMPLES", False):
+        return _global_edge_ms()
+    return 0
+
+
 # Scripts written without spaces between words: Thai, Lao, Myanmar, Khmer,
 # Hiragana, Katakana and Han (the ideographic iteration / closing marks
 # 々〆〇 included). The JS twins in captures.html (_applyChipsToText,
