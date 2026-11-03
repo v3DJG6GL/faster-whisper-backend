@@ -53,13 +53,7 @@ router = APIRouter(prefix="/v1")
 # No matching AdminConfig field: the ceiling is a flood guard, not a quota
 # an operator would tune, so FixedWindow's config lookup falls through to
 # the default here.
-_outcome_rate = _rl.FixedWindow(
-    config_field="USAGE_OUTCOME_RATE_PER_MIN",
-    window_s=60.0,
-    default_max=60,
-    message="too many usage outcome posts — slow down "
-            "({limit}/min; retry in {retry_after}s)",
-)
+_outcome_rate = _rl.per_minute("USAGE_OUTCOME_RATE_PER_MIN", 60, "usage outcome posts")
 
 
 class Outcome(BaseModel):
