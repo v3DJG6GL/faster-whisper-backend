@@ -71,8 +71,7 @@ function _helpDiv(text) {
   return d;
 }
 
-function _makeMonoLabeledInput(label, val, onInput, onEnter) {
-  const lbl = _helpDiv(label + ':');
+function _monoTextInput(val, onInput, onEnter) {
   const inp = document.createElement('input');
   inp.type = 'text';
   inp.spellcheck = false;
@@ -80,6 +79,12 @@ function _makeMonoLabeledInput(label, val, onInput, onEnter) {
   inp.value = val == null ? '' : val;
   inp.addEventListener('input', () => onInput(inp.value));
   _bindEnterCommit(inp, onEnter);
+  return inp;
+}
+
+function _makeMonoLabeledInput(label, val, onInput, onEnter) {
+  const lbl = _helpDiv(label + ':');
+  const inp = _monoTextInput(val, onInput, onEnter);
   const wrap = document.createElement('div');
   wrap.appendChild(lbl); wrap.appendChild(inp);
   return wrap;
@@ -379,13 +384,8 @@ function _makeEntryRow(rule, entry, commitData, onEnter) {
   r1.className = 'rl-erow1';
   const lwrap = document.createElement('div');
   lwrap.className = 'rl-elabelwrap';
-  const li = document.createElement('input');
-  li.type = 'text'; li.className = 'e-label';
-  li.spellcheck = false; li.autocomplete = 'off';
-  li.placeholder = 'label (optional)';
-  li.value = _esc(entry.label || '');
-  li.addEventListener('input', rebuild);
-  _bindEnterCommit(li, onEnter);
+  const li = _monoTextInput(_esc(entry.label || ''), rebuild, onEnter);
+  li.className = 'e-label'; li.placeholder = 'label (optional)';
   lwrap.appendChild(li);
   const noteWrap = document.createElement('div');
   noteWrap.className = 'rl-enote';
@@ -419,13 +419,8 @@ function _makeEntryRow(rule, entry, commitData, onEnter) {
     fr.className = 'rl-fr';
     const g = document.createElement('span');
     g.className = 'rl-gut'; g.textContent = gut;
-    const inp = document.createElement('input');
-    inp.type = 'text'; inp.className = cls;
-    inp.spellcheck = false; inp.autocomplete = 'off';
-    inp.value = val == null ? '' : val;  // regex source: verbatim, no _esc (see _readEntries)
-    inp.placeholder = ph;
-    inp.addEventListener('input', rebuild);
-    _bindEnterCommit(inp, onEnter);
+    const inp = _monoTextInput(val, rebuild, onEnter);  // regex source: verbatim, no _esc (see _readEntries)
+    inp.className = cls; inp.placeholder = ph;
     fr.appendChild(g); fr.appendChild(inp);
     return fr;
   }
