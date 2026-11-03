@@ -162,7 +162,7 @@ def is_warm(name: str) -> bool:
 
 # What a loaded model is for, told apart by the registration prefix each
 # family uses (diarization._STATS_PREFIX, bgm_separation._STATS_PREFIX,
-# translation._STATS_PREFIX); an unprefixed name is a faster-whisper decode
+# translation.engine._STATS_PREFIX); an unprefixed name is a faster-whisper decode
 # model. The role names match the pipeline-stage vocabulary the stats page
 # colours (transcribing / diarizing / separating / translating).
 MODEL_ROLE_PREFIXES: tuple[tuple[str, str], ...] = (
