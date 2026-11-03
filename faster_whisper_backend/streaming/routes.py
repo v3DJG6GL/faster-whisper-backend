@@ -736,7 +736,7 @@ async def transcribe_stream(ws: WebSocket) -> None:
         _req_prompt = conf.get("prompt")
         prompt_provided = isinstance(_req_prompt, str)
         # Bounded to the 2048 that the admin-set DEFAULT_PROMPT it replaces
-        # (config_store: Field(max_length=2048)) and the sibling `hotwords`
+        # (settings_schema: Field(max_length=2048)) and the sibling `hotwords`
         # override (tx_models._DECODE_STR_CAPS) carry: uncapped, up to the whole
         # 1 MiB ws_max_size frame is re-tokenised on every partial. Clamp rather
         # than reject: an over-long prompt is a client bug, not an attack, and
