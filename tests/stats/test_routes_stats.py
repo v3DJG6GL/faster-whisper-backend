@@ -408,6 +408,16 @@ def _seed_jobs():
     return a, b
 
 
+def _own_payload_with_seeded_jobs(lite=False):
+    from faster_whisper_backend.stats import routes as stats_routes
+    a, b = _seed_jobs()
+    try:
+        return stats_routes._build_payload(
+            stats_routes.stats_scope_for(_user("own")), lite=lite), a
+    finally:
+        jobs.job_end(a); jobs.job_end(b)
+
+
 def test_stats_scope_rules(client, app_module, monkeypatch):
     from faster_whisper_backend.stats import routes as stats_routes
     admin = stats_routes.stats_scope_for(_user("all", is_admin=True))
@@ -431,17 +441,11 @@ def test_own_scope_full_payload_is_coarse(client):
     """Own scope: only the caller's jobs and recent rows, identities on
     (they are all theirs), the machine keys replaced by the `server`
     block."""
-    from faster_whisper_backend.stats import routes as stats_routes
     metrics.record_transcription("m", 1.0, 0.5, "ok", 3, request_id="a1",
                                  user_id="ua")
     metrics.record_transcription("m", 2.0, 0.5, "ok", 3, request_id="b1",
                                  user_id="ub")
-    a, b = _seed_jobs()
-    try:
-        snap = stats_routes._build_payload(
-            stats_routes.stats_scope_for(_user("own")))
-    finally:
-        jobs.job_end(a); jobs.job_end(b)
+    snap, a = _own_payload_with_seeded_jobs()
     assert snap["scope"] == "own" and snap["machine"] is False
     assert not (_MACHINE_KEYS & set(snap))
     assert set(snap["server"]) == {"gpu", "models_loaded"}
@@ -470,12 +474,7 @@ def _with_gpu(monkeypatch, present=True):
 def test_own_scope_lite_payload_scoped(client, monkeypatch):
     from faster_whisper_backend.stats import routes as stats_routes
     _with_gpu(monkeypatch)
-    a, b = _seed_jobs()
-    try:
-        snap = stats_routes._build_payload(
-            stats_routes.stats_scope_for(_user("own")), lite=True)
-    finally:
-        jobs.job_end(a); jobs.job_end(b)
+    snap, a = _own_payload_with_seeded_jobs(lite=True)
     assert set(snap) == {"ts", "scope", "machine", "jobs", "severity", "gpu",
                          "models", "server"}
     assert set(snap["gpu"]) == {"busy", "mem_used_mb", "mem_total_mb"}
@@ -494,14 +493,8 @@ def test_own_scope_lite_payload_scoped(client, monkeypatch):
 def test_own_scope_toggle_restores_machine(client, app_module, monkeypatch):
     """The /settings switch: machine keys come back for own-scope viewers,
     the job filter stays."""
-    from faster_whisper_backend.stats import routes as stats_routes
     monkeypatch.setattr(app_module.cfg, "STATS_OWN_SCOPE_SHOW_SYSTEM_METRICS", True)
-    a, b = _seed_jobs()
-    try:
-        snap = stats_routes._build_payload(
-            stats_routes.stats_scope_for(_user("own")))
-    finally:
-        jobs.job_end(a); jobs.job_end(b)
+    snap, a = _own_payload_with_seeded_jobs()
     assert snap["machine"] is True and "server" not in snap
     assert {"gpu", "host", "process", "latency_ms", "preload"} <= set(snap)
     assert [j["id"] for j in snap["jobs"]] == [a]
