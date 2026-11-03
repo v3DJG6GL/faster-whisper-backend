@@ -85,12 +85,7 @@ def _safe(fn: Callable[[], Any], default: Any = None) -> Any:
 def gpu_mem_used_bytes(index: int = 0) -> int | None:
     """Return current global VRAM used (in bytes) on CUDA device `index`
     (a model's DEVICE_INDEX), or None if NVML unavailable."""
-    if not NVML_OK:
-        return None
-    try:
-        return int(pynvml.nvmlDeviceGetMemoryInfo(_handle(index)).used)
-    except Exception:
-        return None
+    return _safe(lambda: int(pynvml.nvmlDeviceGetMemoryInfo(_handle(index)).used))
 
 
 def gpu_mem_free_bytes(index: int = 0) -> int | None:
@@ -101,12 +96,7 @@ def gpu_mem_free_bytes(index: int = 0) -> int | None:
     number for a pre-load fit check: it accounts for every other process on the
     machine (a second worker, a game, the desktop compositor), not just the
     models runtime.model_registry knows about."""
-    if not NVML_OK:
-        return None
-    try:
-        return int(pynvml.nvmlDeviceGetMemoryInfo(_handle(index)).free)
-    except Exception:
-        return None
+    return _safe(lambda: int(pynvml.nvmlDeviceGetMemoryInfo(_handle(index)).free))
 
 
 def gpu_name() -> str | None:
