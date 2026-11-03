@@ -1333,9 +1333,8 @@ def _validate_merge_payload(
     n_members = len(member_ids)
     total_gap_ms = int(silence_ms) * max(0, n_members - 1)
     edge_ms = capture_samples._global_edge_ms()
-    # The outer edge margin exists only on merge_wavs' trim path; its legacy
-    # (trim-disabled) layout adds no outer margin, so counting 2×edge here when
-    # trimming is off over-rejects in-cap merges by ~2×edge_ms.
+    # merge_wavs adds the outer edge margin only on its trim path; counting
+    # 2×edge with trimming off would over-reject in-cap merges by ~2×edge_ms.
     trim_samples = bool(getattr(cfg, "CAPTURES_VAD_TRIM_ENABLED_FOR_SAMPLES", False))
     total_edge_ms = 2 * edge_ms if (trim_samples and n_members >= 1) else 0
     cap_ms = int(float(getattr(cfg, "CAPTURES_SAMPLE_MAX_DURATION_S", 29.9)) * 1000)
@@ -1472,8 +1471,8 @@ class _TempFileResponse(FileResponse):
     """FileResponse that unlinks its file however the response ends.
     Starlette runs `background` only after a normal body send: its Range
     branches (400 malformed, 416 unsatisfiable) return before it, and a
-    client disconnect mid-stream raises past it — each left a merged PHI WAV
-    in the temp dir for good."""
+    client disconnect mid-stream raises past it — either way a `background`
+    unlink would leave the merged PHI WAV in the temp dir for good."""
 
     async def __call__(self, scope, receive, send):
         try:
@@ -2300,7 +2299,7 @@ def _build_merged_words(
                 segments = [[0, int(dur_ms), 0]]
                 new_dur_ms = dur_ms
             if off_ms is not None:
-                member_offset_s = float(off_ms) / 1000.0     # new uniform layout
+                member_offset_s = float(off_ms) / 1000.0     # uniform-silence layout
             else:
                 member_offset_s = cum_ms / 1000.0 + i * silence_s  # legacy
             ws = _align_member_words(m, ident_cache)
@@ -2360,7 +2359,6 @@ async def patch_sample_api(
     # to 30 update_capture writes and rebuilds the transcript.
     def _apply() -> dict[str, Any] | None:
         patch: dict[str, Any] = {}
-        # Lazily-fetched hydrated members, shared by the branches below.
         _members_cache: list[dict[str, Any]] | None = None
         def _members() -> list[dict[str, Any]]:
             nonlocal _members_cache
@@ -2730,7 +2728,7 @@ def _build_export_stream(only_status: str | None, include_audio: bool):
     """Generator that yields tar.gz bytes containing manifest.jsonl and,
     optionally, audio/<id>.wav entries. One manifest entry per training
     unit — a capture group (packed sample) or an ungrouped singleton — plus
-    an English `translate` line for a reviewed singleton that has one.
+    an English `translate` line for a `ready` singleton that has one.
     Group members are skipped as singletons (the group transcript covers
     them).
 
