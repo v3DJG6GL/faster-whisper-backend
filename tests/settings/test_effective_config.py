@@ -354,10 +354,11 @@ def _bindings(monkeypatch, *, key=None, user=None):
     """Monkeypatch the per-identity binding fetch — no DB. Pass partial binding
     dicts (e.g. {"allow_request_override_profile": False})."""
     from faster_whisper_backend.auth import api_keys_store
-    monkeypatch.setattr(api_keys_store, "get_key_config",
-                        lambda kid: key or {"direct": {}, "profiles": []}, raising=False)
-    monkeypatch.setattr(api_keys_store, "get_user_config",
-                        lambda uid: user or {"direct": {}, "profiles": []}, raising=False)
+
+    def _b(part):
+        return {"direct": {}, "profiles": [], **(part or {})}
+    monkeypatch.setattr(api_keys_store, "get_key_config", lambda kid: _b(key), raising=False)
+    monkeypatch.setattr(api_keys_store, "get_user_config", lambda uid: _b(user), raising=False)
 
 
 def test_effective_flag_inherits_and_narrows():
@@ -383,8 +384,7 @@ def test_effective_allowlist_key_over_user():
 def test_request_profile_per_identity_gate(monkeypatch):
     _set_profiles(monkeypatch, {"fast": {"BEAM_SIZE": 3}})
     # key gate off → refused even though global is on
-    _bindings(monkeypatch, key={"direct": {}, "profiles": [],
-                                "allow_request_override_profile": False})
+    _bindings(monkeypatch, key={"allow_request_override_profile": False})
     r = ec.resolve("m", key_id="k", request_profile="fast")
     assert r.request_profile_applied is None and "BEAM_SIZE" not in r.values
     # no per-identity opinion → inherits global on
@@ -395,17 +395,13 @@ def test_request_profile_per_identity_gate(monkeypatch):
 
 def test_request_profile_allowlist(monkeypatch):
     _set_profiles(monkeypatch, {"fast": {"BEAM_SIZE": 3}})
-    _bindings(monkeypatch, key={"direct": {}, "profiles": [],
-                                "allowed_override_profiles": ["other"]})
+    _bindings(monkeypatch, key={"allowed_override_profiles": ["other"]})
     assert ec.resolve("m", key_id="k", request_profile="fast").request_profile_applied is None
-    _bindings(monkeypatch, key={"direct": {}, "profiles": [],
-                                "allowed_override_profiles": ["fast"]})
+    _bindings(monkeypatch, key={"allowed_override_profiles": ["fast"]})
     assert ec.resolve("m", key_id="k", request_profile="fast").request_profile_applied == "fast"
-    _bindings(monkeypatch, key={"direct": {}, "profiles": [],
-                                "allowed_override_profiles": ["*"]})
+    _bindings(monkeypatch, key={"allowed_override_profiles": ["*"]})
     assert ec.resolve("m", key_id="k", request_profile="fast").request_profile_applied == "fast"
-    _bindings(monkeypatch, key={"direct": {}, "profiles": [],
-                                "allowed_override_profiles": []})
+    _bindings(monkeypatch, key={"allowed_override_profiles": []})
     assert ec.resolve("m", key_id="k", request_profile="fast").request_profile_applied is None
 
 
@@ -419,8 +415,7 @@ def test_request_profile_requestable_false_refused(monkeypatch):
 
 def test_decode_master_gate_off_drops_all(monkeypatch):
     _set_profiles(monkeypatch, {})
-    _bindings(monkeypatch, key={"direct": {}, "profiles": [],
-                                "allow_request_decode_overrides": False})
+    _bindings(monkeypatch, key={"allow_request_decode_overrides": False})
     r = ec.resolve("m", key_id="k",
                    request_overrides={"beam_size": 9, "temperature": 0.5})
     assert r.allow_request_decode_overrides is False
@@ -437,7 +432,7 @@ def test_request_profile_cant_escape_lock_via_resolve(monkeypatch):
     # still cannot move a key-locked value.
     _set_profiles(monkeypatch, {"fast": {"BEAM_SIZE": 3}})
     _bindings(monkeypatch, key={"direct": {"BEAM_SIZE": 10, "locks": ["BEAM_SIZE"]},
-                                "profiles": [], "allowed_override_profiles": ["fast"]})
+                                "allowed_override_profiles": ["fast"]})
     r = ec.resolve("m", key_id="k", request_profile="fast",
                    request_overrides={"beam_size": 7})
     assert r.values["BEAM_SIZE"] == 10            # key value wins
@@ -565,7 +560,7 @@ def test_none_sentinel_suppresses_bound_profile(monkeypatch):
     # A profile bound to the identity normally applies; the reserved "__none__"
     # request name suppresses every bound profile → plain defaults.
     _set_profiles(monkeypatch, {"clinic": {"BEAM_SIZE": 7}})
-    _bindings(monkeypatch, key={"direct": {}, "profiles": ["clinic"]})
+    _bindings(monkeypatch, key={"profiles": ["clinic"]})
     assert ec.resolve("m", key_id="k").values["BEAM_SIZE"] == 7   # bound profile applies
     r = ec.resolve("m", key_id="k", request_profile=settings_schema.NO_PROFILE_SENTINEL)
     assert "BEAM_SIZE" not in r.values            # bound profile suppressed
@@ -586,12 +581,12 @@ def test_none_sentinel_refused_when_gated_off(monkeypatch):
     # Global gate off → suppression refused; the bound profile still applies (an
     # admin who forces profiles by turning the gate off is not bypassed).
     _set_profiles(monkeypatch, {"clinic": {"BEAM_SIZE": 7}}, allow=False)
-    _bindings(monkeypatch, key={"direct": {}, "profiles": ["clinic"]})
+    _bindings(monkeypatch, key={"profiles": ["clinic"]})
     assert ec.resolve("m", key_id="k",
                       request_profile=settings_schema.NO_PROFILE_SENTINEL).values["BEAM_SIZE"] == 7
     # Per-identity gate off (global on) → also refused.
     _set_profiles(monkeypatch, {"clinic": {"BEAM_SIZE": 7}}, allow=True)
-    _bindings(monkeypatch, key={"direct": {}, "profiles": ["clinic"],
+    _bindings(monkeypatch, key={"profiles": ["clinic"],
                                 "allow_request_override_profile": False})
     assert ec.resolve("m", key_id="k",
                       request_profile=settings_schema.NO_PROFILE_SENTINEL).values["BEAM_SIZE"] == 7
@@ -600,10 +595,9 @@ def test_none_sentinel_refused_when_gated_off(monkeypatch):
 def test_apply_no_profiles_suppresses_user_bound_profile(monkeypatch):
     # The per-key admin force suppresses profiles bound at the USER scope too.
     _set_profiles(monkeypatch, {"clinic": {"BEAM_SIZE": 7}})
-    _bindings(monkeypatch, user={"direct": {}, "profiles": ["clinic"]})
+    _bindings(monkeypatch, user={"profiles": ["clinic"]})
     assert ec.resolve("m", key_id="k", user_id="u").values["BEAM_SIZE"] == 7
-    _bindings(monkeypatch, key={"direct": {}, "profiles": [], "apply_no_profiles": True},
-              user={"direct": {}, "profiles": ["clinic"]})
+    _bindings(monkeypatch, key={"apply_no_profiles": True}, user={"profiles": ["clinic"]})
     r = ec.resolve("m", key_id="k", user_id="u")
     assert "BEAM_SIZE" not in r.values           # user-bound profile suppressed
     assert r.profiles_applied == []
@@ -624,7 +618,7 @@ def test_apply_no_profiles_not_gated_by_global(monkeypatch):
     # Unlike the client "__none__" opt-out, the admin force is NOT bound by
     # ALLOW_REQUEST_OVERRIDE_PROFILE: it suppresses even when the gate is off.
     _set_profiles(monkeypatch, {"clinic": {"BEAM_SIZE": 7}}, allow=False)
-    _bindings(monkeypatch, key={"direct": {}, "profiles": ["clinic"],
+    _bindings(monkeypatch, key={"profiles": ["clinic"],
                                 "apply_no_profiles": True})
     assert "BEAM_SIZE" not in ec.resolve("m", key_id="k").values
 
@@ -632,7 +626,7 @@ def test_apply_no_profiles_not_gated_by_global(monkeypatch):
 def test_apply_no_profiles_suppresses_requested_profile(monkeypatch):
     # With the force on, even a permitted per-request profile is suppressed.
     _set_profiles(monkeypatch, {"fast": {"BEAM_SIZE": 3}})
-    _bindings(monkeypatch, key={"direct": {}, "profiles": [], "apply_no_profiles": True})
+    _bindings(monkeypatch, key={"apply_no_profiles": True})
     r = ec.resolve("m", key_id="k", request_profile="fast")
     assert "BEAM_SIZE" not in r.values
     assert r.request_profile_applied is None
@@ -642,7 +636,7 @@ def test_apply_no_profiles_ignored_on_user_binding(monkeypatch):
     # The force is read off the KEY binding only; set on a user binding it does
     # nothing (the user-bound profile still applies).
     _set_profiles(monkeypatch, {"clinic": {"BEAM_SIZE": 7}})
-    _bindings(monkeypatch, user={"direct": {}, "profiles": ["clinic"],
+    _bindings(monkeypatch, user={"profiles": ["clinic"],
                                  "apply_no_profiles": True})
     assert ec.resolve("m", key_id="k", user_id="u").values["BEAM_SIZE"] == 7
 
