@@ -83,6 +83,11 @@ def staging_dir() -> str:
     return d
 
 
+def media_max_bytes() -> int:
+    """MEDIA_MAX_BYTES: the one media ceiling (upload, link, retained file)."""
+    return int(getattr(cfg, "MEDIA_MAX_BYTES", 10_000_000_000))
+
+
 def max_retainable_bytes() -> int:
     """The largest single file register() can keep: MEDIA_MAX_BYTES, or
     RETAINED_MEDIA_MAX_BYTES when an operator set it lower (_evict_over_cap
@@ -90,7 +95,7 @@ def max_retainable_bytes() -> int:
     only purpose is to be retained (a video, an upload, a link's audio for
     the language check) is held to this up front, not refused after the
     whole transfer."""
-    cap = int(getattr(cfg, "MEDIA_MAX_BYTES", 10_000_000_000))
+    cap = media_max_bytes()
     store = int(getattr(cfg, "RETAINED_MEDIA_MAX_BYTES", 50_000_000_000) or 0)
     return min(cap, store) if store > 0 else cap
 

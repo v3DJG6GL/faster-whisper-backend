@@ -167,7 +167,7 @@ async def url_preview(request: Request,
         # media_max_bytes (the transcription ceiling — a run fetches it
         # without keeping it). [] when video is off or the link has none.
         "video_ladder": info.video_ladder,
-        "media_max_bytes": int(getattr(cfg, "MEDIA_MAX_BYTES", 10_000_000_000)),
+        "media_max_bytes": url_media_store.media_max_bytes(),
         "retained_max_bytes": url_media_store.max_retainable_bytes(),
         # The longest link this server downloads (the client flags a longer
         # one before "Add link").
@@ -656,7 +656,7 @@ async def upload_media(request: Request,
     # refuse it here, before the transfer, naming the cap that binds.
     cap = url_media_store.max_retainable_bytes()
     too_large = ("upload too large"
-                 if cap >= int(getattr(cfg, "MEDIA_MAX_BYTES", 10_000_000_000))
+                 if cap >= url_media_store.media_max_bytes()
                  else "upload too large for the server's media store "
                       "(RETAINED_MEDIA_MAX_BYTES)")
     _clen = request.headers.get("content-length")
