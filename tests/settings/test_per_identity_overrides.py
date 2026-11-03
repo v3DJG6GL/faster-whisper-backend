@@ -35,6 +35,12 @@ def _set_key_binding(client, h, uid, kid, **binding):
     return r.json()["config"]
 
 
+def _bind_user_profiles(client, h, uid, profiles):
+    r = client.patch(f"{PERMS}/{uid}/permissions", headers=h, json={
+        "pages": {}, "config": {"overrides": {}, "profiles": profiles, "locks": []}})
+    assert r.status_code == 200, r.text
+
+
 def test_me_open_mode_all_allowed(client):
     j = client.get("/v1/me").json()
     assert j["can_request_override_profile"] is True
@@ -134,10 +140,7 @@ def test_me_translate_to_default_respects_identity_override(
     monkeypatch.setattr(app_module.cfg, "TRANSLATE_TO", "en")
     h = _admin_with_profiles(client, make_user_key, {"de-fr": {"TRANSLATE_TO": "de,fr-CA"}})
     uid, raw_alice = make_user_key("alice")
-    r = client.patch(f"{PERMS}/{uid}/permissions", headers=h, json={
-        "pages": {},
-        "config": {"overrides": {}, "profiles": ["de-fr"], "locks": []}})
-    assert r.status_code == 200, r.text
+    _bind_user_profiles(client, h, uid, ["de-fr"])
     # Alice sees HER effective default (profile layer), parsed csv → list.
     j = client.get("/v1/me", headers=bearer(raw_alice)).json()
     assert j["translate_to_default"] == ["de", "fr-CA"]
@@ -323,9 +326,7 @@ def test_apply_no_profiles_roundtrip_and_suppresses_user_profile(client, make_us
     # PATCH → store → resolve path.
     h = _admin_with_profiles(client, make_user_key, {"clinic": {"BEAM_SIZE": 7}})
     uid, _ = make_user_key("alice")
-    r = client.patch(f"{PERMS}/{uid}/permissions", headers=h, json={
-        "pages": {}, "config": {"overrides": {}, "profiles": ["clinic"], "locks": []}})
-    assert r.status_code == 200, r.text
+    _bind_user_profiles(client, h, uid, ["clinic"])
     kid = _key_id(client, h, uid)
 
     # baseline: the user-bound profile applies for this key
@@ -417,10 +418,7 @@ def test_me_server_info_max_targets_per_identity(
         client, app_module, make_user_key, monkeypatch):
     h = _admin_with_profiles(client, make_user_key, {"two": {"TRANSLATION_MAX_TARGETS": 2}})
     uid, raw_alice = make_user_key("alice")
-    r = client.patch(f"{PERMS}/{uid}/permissions", headers=h, json={
-        "pages": {},
-        "config": {"overrides": {}, "profiles": ["two"], "locks": []}})
-    assert r.status_code == 200, r.text
+    _bind_user_profiles(client, h, uid, ["two"])
     alice = client.get("/v1/me", headers=bearer(raw_alice)).json()
     assert alice["server_info"]["limits"]["translation_max_targets"] == 2
     admin = client.get("/v1/me", headers=h).json()
