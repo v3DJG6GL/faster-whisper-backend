@@ -1703,7 +1703,7 @@
   function fmtClock(sec) {
     sec = Math.round(Number(sec) || 0);
     var m = Math.floor(sec / 60), s = sec % 60;
-    return m + ':' + (s < 10 ? '0' : '') + s;
+    return m + ':' + _pad2(s);
   }
   function fmtAge(ts) {
     if (!ts) return '';
@@ -3717,7 +3717,7 @@
     if (!isFinite(s) || s < 0) s = 0;
     var m = Math.floor(s / 60);
     var sec = Math.floor(s % 60);
-    return m + ':' + (sec < 10 ? '0' : '') + sec;
+    return m + ':' + _pad2(sec);
   }
 
   // Scroll the word strip, and only the strip, so `el` shows inside it (like
