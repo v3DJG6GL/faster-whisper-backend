@@ -398,6 +398,16 @@ def wav_factory(tmp_path):
     return _write
 
 
+def fake_wav_transcode(src_path, dst_path):
+    """Stand-in for transcode_to_wav_16k_mono: a tiny valid WAV, 1234 bytes reported."""
+    with wave.open(dst_path, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(RATE)
+        w.writeframes(b"\x00\x00" * 100)
+    return 1234
+
+
 # ---------------------------------------------------------------------------
 # Timezone control (usage_store day/week bucketing is server-local time)
 # ---------------------------------------------------------------------------

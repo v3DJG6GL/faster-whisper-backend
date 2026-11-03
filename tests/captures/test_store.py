@@ -4,27 +4,18 @@ import contextlib
 import json
 import os
 import sqlite3
-import wave
 
 import pytest
 
-RATE = 16000
+from tests.conftest import fake_wav_transcode
 
 
-def _fake_transcode(cs, monkeypatch, nbytes=1234):
+def _fake_transcode(cs, monkeypatch):
     """Patch transcode_to_wav_16k_mono to write a minimal valid WAV at dst and
     return a byte count, so create_capture's insert path runs without ffmpeg."""
     from faster_whisper_backend.audio import transcode as audio_transcode
 
-    def _fake(src_path, dst_path):
-        with wave.open(dst_path, "wb") as w:
-            w.setnchannels(1)
-            w.setsampwidth(2)
-            w.setframerate(RATE)
-            w.writeframes(b"\x00\x00" * 100)
-        return nbytes
-
-    monkeypatch.setattr(audio_transcode, "transcode_to_wav_16k_mono", _fake)
+    monkeypatch.setattr(audio_transcode, "transcode_to_wav_16k_mono", fake_wav_transcode)
 
 
 def _make(cs, monkeypatch, tmp_path, **over):

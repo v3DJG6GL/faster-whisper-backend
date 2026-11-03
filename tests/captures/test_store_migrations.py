@@ -8,6 +8,8 @@ tests/reports/test_reports_store_migrations.py."""
 import contextlib
 import sqlite3
 
+from tests.conftest import fake_wav_transcode as _fake_wav_transcode
+
 
 def _cols(conn, table):
     return {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}
@@ -28,16 +30,6 @@ def _own_db(module):
             conn.close()
         if hasattr(module, "_audio_dir"):
             module._audio_dir = None
-
-
-def _fake_wav_transcode(src_path, dst_path):
-    import wave
-    with wave.open(dst_path, "wb") as w:
-        w.setnchannels(1)
-        w.setsampwidth(2)
-        w.setframerate(16000)
-        w.writeframes(b"\x00\x00" * 100)
-    return 1234
 
 
 def test_captures_migration_adds_columns_and_is_idempotent(tmp_path):

@@ -2,23 +2,13 @@
 (not the caller's), tolerates owner-less captures, and runs the pipeline off
 the event loop."""
 
-import wave
-
 from faster_whisper_backend.settings import effective_config
-from tests.conftest import RATE, bearer
+from tests.conftest import bearer, fake_wav_transcode
 
 
 def _fake_transcode(monkeypatch):
     from faster_whisper_backend.audio import transcode as audio_transcode
-
-    def _fake(src_path, dst_path):
-        with wave.open(dst_path, "wb") as w:
-            w.setnchannels(1)
-            w.setsampwidth(2)
-            w.setframerate(RATE)
-            w.writeframes(b"\x00\x00" * 100)
-        return 1234
-    monkeypatch.setattr(audio_transcode, "transcode_to_wav_16k_mono", _fake)
+    monkeypatch.setattr(audio_transcode, "transcode_to_wav_16k_mono", fake_wav_transcode)
 
 
 def _make_capture(tmp_path, user_id):

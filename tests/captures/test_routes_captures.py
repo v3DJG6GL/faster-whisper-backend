@@ -11,7 +11,7 @@ import pytest
 from starlette.testclient import TestClient
 
 from faster_whisper_backend.pipeline import engine as pl_engine
-from tests.conftest import bearer
+from tests.conftest import bearer, fake_wav_transcode
 
 
 def test_captures_page(client):
@@ -249,12 +249,8 @@ def _fake_wav_transcode(monkeypatch):
     """Route audio_transcode to a stub that writes a tiny valid WAV."""
     from faster_whisper_backend.audio import transcode as audio_transcode
 
-    def _fake(src_path, dst_path):
-        _write_silent_wav(dst_path, 100)
-        return 1234
-
     monkeypatch.setattr(
-        audio_transcode, "transcode_to_wav_16k_mono", _fake)
+        audio_transcode, "transcode_to_wav_16k_mono", fake_wav_transcode)
 
 
 def _audio_capture(captures_store, monkeypatch, tmp_path, **fields):
