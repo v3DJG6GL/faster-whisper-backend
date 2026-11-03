@@ -125,7 +125,6 @@
   .chip.filter { border-style: solid; border-color: #1f3a5a; color: var(--cyan);
     background: #1f2630; }
   .chip.filter .x { color: var(--dim); }
-  .chip:focus-visible { outline: 2px solid var(--cyan); outline-offset: 1px; }
   .sb-none { font-size: var(--fs-xs); color: var(--dim); }
   .card .win .fn { color: var(--cyan); }
   header .subbar-caption { padding-top: 0.3rem; padding-bottom: 0.35rem; }
@@ -224,7 +223,6 @@
   /* Headline tiles that carry a measure (data-m) double as its picker. */
   .hl[data-m] { cursor: pointer; border-bottom: 2px solid transparent; }
   .hl[data-m]:hover { background: #262c34; }
-  .hl[data-m]:focus-visible { outline: 2px solid var(--cyan); outline-offset: 1px; }
   .hl.active { border-bottom-color: var(--cyan); }
   .hl.active .l { color: var(--cyan); }
   .delta { display: block; font: var(--fs-xs) var(--font-mono); color: var(--dim); }
@@ -307,7 +305,9 @@
   .hours i, .hours-legend i { display: block; border-radius: 2px; background: #1d232c; }
   .hours i { height: 100%; min-height: 0.5rem; box-sizing: border-box; }
   .hours i { cursor: default; }
-  .hours i:focus-visible { outline: 2px solid var(--cyan); outline-offset: 1px; }
+  /* Focus ring of the page's own controls; above .hours i.peak / :hover so those still win on a cell. */
+  .chip:focus-visible, .hl[data-m]:focus-visible, .hours i:focus-visible,
+  .hours .hb:focus-visible, .hours .rb:focus-visible { outline: 2px solid var(--cyan); outline-offset: 1px; }
   .hours i[data-l="1"], .hours-legend i[data-l="1"] { background: #0e2a3f; }
   .hours i[data-l="2"], .hours-legend i[data-l="2"] { background: #124b73; }
   .hours i[data-l="3"], .hours-legend i[data-l="3"] { background: #1f6fa8; }
@@ -322,7 +322,6 @@
   .hours .dl.on, .hours .hl.on { color: var(--bold); }
   .hours .hb.on i, .hours .rb.on i { background: var(--bold); }
   .hours .hb, .hours .rb { cursor: default; }
-  .hours .hb:focus-visible, .hours .rb:focus-visible { outline: 2px solid var(--cyan); outline-offset: 1px; }
   /* The legend is its own surface under the grid: a ruled, slightly
      inset strip, so the key reads as a key and not as more chart. */
   .hours-legend { display: flex; gap: 0.25rem 0.6rem; align-items: center; flex-wrap: wrap;
