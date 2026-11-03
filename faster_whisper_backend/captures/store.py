@@ -231,6 +231,22 @@ def _safe_unlink(abs_path: str) -> bool:
     return False
 
 
+def _unlink_row_audio(row: sqlite3.Row) -> None:
+    """Best-effort unlink of a deleted row's WAV, then its VAD-trimmed
+    companion; a relpath escaping CAPTURES_DIR (abs_audio_path ValueError)
+    is skipped."""
+    try:
+        _safe_unlink(abs_audio_path(row["audio_relpath"]))
+    except ValueError:
+        pass
+    trimmed = row["audio_trimmed_relpath"]
+    if trimmed:
+        try:
+            _safe_unlink(abs_audio_path(trimmed))
+        except ValueError:
+            pass
+
+
 def _invalidate_proposals(*uids: str | None) -> None:
     """Best-effort drop of the cached merge proposals for each uid (None =
     every key). Lazy import: merge_proposer imports this module, so a
@@ -725,16 +741,7 @@ def _drop_oldest_with_status(
         return 0
     _delete_ids(conn, [r["id"] for r in rows])
     for r in rows:
-        try:
-            _safe_unlink(abs_audio_path(r["audio_relpath"]))
-        except ValueError:
-            pass
-        trimmed = r["audio_trimmed_relpath"]
-        if trimmed:
-            try:
-                _safe_unlink(abs_audio_path(trimmed))
-            except ValueError:
-                pass
+        _unlink_row_audio(r)
     return len(rows)
 
 
@@ -1197,16 +1204,7 @@ def delete_capture(cid: str, *, refuse_locked: bool = False) -> bool:
             if g is not None and g["is_locked"]:
                 raise capture_samples_store.SampleLockedError(sid)
         conn.execute("DELETE FROM captures WHERE id = ?", (cid,))
-    try:
-        _safe_unlink(abs_audio_path(row["audio_relpath"]))
-    except ValueError:
-        pass
-    trimmed = row["audio_trimmed_relpath"]
-    if trimmed:
-        try:
-            _safe_unlink(abs_audio_path(trimmed))
-        except ValueError:
-            pass
+    _unlink_row_audio(row)
     if sid:
         try:
             from faster_whisper_backend.captures import samples_store as capture_samples_store
@@ -1432,16 +1430,7 @@ def sweep_retention() -> int:
             return 0
         _delete_ids(conn, [r["id"] for r in rows])
     for r in rows:
-        try:
-            _safe_unlink(abs_audio_path(r["audio_relpath"]))
-        except ValueError:
-            pass
-        trimmed = r["audio_trimmed_relpath"]
-        if trimmed:
-            try:
-                _safe_unlink(abs_audio_path(trimmed))
-            except ValueError:
-                pass
+        _unlink_row_audio(r)
     # Aged rows of every identity are gone: a cached proposal naming one
     # would 404 on accept. Best-effort, as in clear_all.
     _invalidate_proposals(None)
