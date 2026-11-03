@@ -1131,11 +1131,7 @@
       method: method, headers: headers,
       body: body === undefined ? undefined : JSON.stringify(body),
     });
-    if (resp.status === 401) {
-      // Shared login gate prompts + reloads on success (which re-runs load()).
-      if (window._showLoginGate) window._showLoginGate();
-      throw new Error('unauthorized');
-    }
+    _throwIfUnauthorized(resp);
     if (resp.status === 403) {
       var rendered = await _renderAdminOnlyIfNonAdmin();
       if (rendered) throw new Error('not-admin');
@@ -1147,6 +1143,13 @@
       throw new Error(msg);
     }
     return await resp.json();
+  }
+
+  // A 401: the shared login gate prompts + reloads on success (which re-runs load()).
+  function _throwIfUnauthorized(resp) {
+    if (resp.status !== 401) return;
+    if (window._showLoginGate) window._showLoginGate();
+    throw new Error('unauthorized');
   }
 
   // An error body's message: FastAPI's 422 `detail` is a list of
@@ -2138,10 +2141,7 @@
     // server always serves RIFF/WAVE 16 kHz mono (every capture is
     // transcoded on write), so browser decode is reliable cross-platform.
     fetch('/captures/api/' + encodeURIComponent(r.id) + '/audio').then(function(resp) {
-      if (resp.status === 401) {
-        if (window._showLoginGate) window._showLoginGate();
-        throw new Error('unauthorized');
-      }
+      _throwIfUnauthorized(resp);
       if (resp.status === 410) throw new Error('audio file is gone');
       if (!resp.ok) throw new Error('HTTP ' + resp.status);
       return resp.blob();
@@ -3105,10 +3105,7 @@
 
   function onExport() {
     fetch('/captures/api/export?only_status=ready&include_audio=1').then(function(resp) {
-      if (resp.status === 401) {
-        if (window._showLoginGate) window._showLoginGate();
-        throw new Error('unauthorized');
-      }
+      _throwIfUnauthorized(resp);
       if (!resp.ok) throw new Error('HTTP ' + resp.status);
       var fname = 'whisper-captures-' +
         new Date().toISOString().replace(/[:T]/g, '-').slice(0, 19) + '.tar.gz';
