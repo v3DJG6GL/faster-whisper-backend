@@ -97,6 +97,22 @@ _audio_rate = rate_limit.FixedWindow(
 )
 
 
+def _admit_row(
+    row: dict[str, Any] | None, user: dict[str, Any],
+    kind: str, row_id: str, detail: str,
+) -> dict[str, Any]:
+    """404 a missing OR foreign row with ONE detail (a 403, or a different
+    body for the two, would confirm the row exists: OWASP IDOR), then audit
+    a cross-user read."""
+    if row is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail)
+    user["permissions"].assert_can_read_row(
+        row, "captures", user.get("user_id") or "", detail=detail,
+    )
+    _audit_cross_user_read(user, row, kind, row_id)
+    return row
+
+
 def _audit_cross_user_read(
     user: dict[str, Any], row: dict[str, Any] | None,
     kind: str, row_id: str,
@@ -550,16 +566,12 @@ async def get_capture_api(
     # Off the loop, like get_audio_api: every card expand lands here, and
     # get_capture json.loads the words + segments blobs on the shared
     # connection that clear_all VACUUMs.
-    row = await asyncio.to_thread(captures_store.get_capture, cid)
-    if row is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "capture not found")
     # Scope guard. 404 (not 403) on cross-user access — a 403 would
     # confirm the row exists (OWASP IDOR cheatsheet).
-    user["permissions"].assert_can_read_row(
-        row, "captures", user.get("user_id") or "",
-        detail="capture not found",
+    row = _admit_row(
+        await asyncio.to_thread(captures_store.get_capture, cid),
+        user, "capture", cid, "capture not found",
     )
-    _audit_cross_user_read(user, row, "capture", cid)
 
     # OFF the loop, like list_samples_api. `_align_member_words` runs
     # `_align_words_to_final` once (twice when the training text differs from
@@ -669,14 +681,10 @@ async def get_audio_api(
     # Off the loop: this is the busiest captures endpoint (reviewers audition
     # card after card), and get_capture json.loads the words + segments blobs
     # on the shared connection that clear_all VACUUMs.
-    row = await asyncio.to_thread(captures_store.get_capture, cid)
-    if row is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "capture not found")
-    user["permissions"].assert_can_read_row(
-        row, "captures", user.get("user_id") or "",
-        detail="capture not found",
+    row = _admit_row(
+        await asyncio.to_thread(captures_store.get_capture, cid),
+        user, "audio", cid, "capture not found",
     )
-    _audit_cross_user_read(user, row, "audio", cid)
     abs_path, mime = await asyncio.to_thread(_capture_audio_file, row, original)
     # FileResponse handles Range automatically — seeking in the karaoke
     # player won't re-download the whole file.
@@ -848,14 +856,10 @@ async def patch_capture_api(
             return _patch()
 
     def _patch() -> dict[str, Any] | None:
-        row = captures_store.get_capture(cid)
-        if row is None:
-            raise HTTPException(status.HTTP_404_NOT_FOUND, "capture not found")
-        user["permissions"].assert_can_read_row(
-            row, "captures", user.get("user_id") or "",
-            detail="capture not found",
+        row = _admit_row(
+            captures_store.get_capture(cid),
+            user, "capture-patch", cid, "capture not found",
         )
-        _audit_cross_user_read(user, row, "capture-patch", cid)
         _assert_member_sample_not_locked(row, user)
         if (payload.status is not None
                 and row.get("status") == "audio_missing"
@@ -916,14 +920,10 @@ async def delete_capture_api(
     # connection that clear_all VACUUMs. The guards keep their order (scope
     # 404 before the lock 409, which would confirm the row exists).
     def _read_and_guard() -> None:
-        row = captures_store.get_capture(cid)
-        if row is None:
-            raise HTTPException(status.HTTP_404_NOT_FOUND, "capture not found")
-        user["permissions"].assert_can_read_row(
-            row, "captures", user.get("user_id") or "",
-            detail="capture not found",
+        row = _admit_row(
+            captures_store.get_capture(cid),
+            user, "capture-delete", cid, "capture not found",
         )
-        _audit_cross_user_read(user, row, "capture-delete", cid)
         _assert_member_sample_not_locked(row, user)
 
     await asyncio.to_thread(_read_and_guard)
@@ -988,14 +988,10 @@ async def reprocess_capture_api(
     # other request and WebSocket for the length of the run. The HTTPExceptions
     # raised inside propagate out of to_thread unchanged.
     def _run() -> tuple[dict[str, Any], list[str]]:
-        row = captures_store.get_capture(cid)
-        if row is None:
-            raise HTTPException(status.HTTP_404_NOT_FOUND, "capture not found")
-        user["permissions"].assert_can_read_row(
-            row, "captures", user.get("user_id") or "",
-            detail="capture not found",
+        row = _admit_row(
+            captures_store.get_capture(cid),
+            user, "capture-reprocess", cid, "capture not found",
         )
-        _audit_cross_user_read(user, row, "capture-reprocess", cid)
         _assert_member_sample_not_locked(row, user)
         raw = row.get("raw") or ""
         captures_excludes = getattr(cfg, "CAPTURES_PIPELINE_RULES_EXCLUDE", None)
@@ -1790,15 +1786,11 @@ async def get_sample_api(
 ) -> JSONResponse:
     # Off the loop: the samples store shares the captures connection, which
     # clear_all holds across a full VACUUM.
-    g = await asyncio.to_thread(capture_samples_store.get_sample, sid)
-    if g is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "sample not found")
     # 404 (not 403) on cross-user — leaking existence violates OWASP IDOR.
-    user["permissions"].assert_can_read_row(
-        g, "captures", user.get("user_id") or "",
-        detail="sample not found",
+    g = _admit_row(
+        await asyncio.to_thread(capture_samples_store.get_sample, sid),
+        user, "sample", sid, "sample not found",
     )
-    _audit_cross_user_read(user, g, "sample", sid)
     # OFF the loop, like list_samples_api: `_enrich_sample` runs
     # `_align_member_words` per member, and each of those runs the O(n*m)
     # `_align_words_to_final` DP once (twice when the training text differs
@@ -2337,14 +2329,10 @@ async def patch_sample_api(
 ) -> JSONResponse:
     # Off the loop: the samples store shares the captures connection, which
     # clear_all holds across a full VACUUM.
-    g = await asyncio.to_thread(capture_samples_store.get_sample, sid)
-    if g is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "sample not found")
-    user["permissions"].assert_can_read_row(
-        g, "captures", user.get("user_id") or "",
-        detail="sample not found",
+    g = _admit_row(
+        await asyncio.to_thread(capture_samples_store.get_sample, sid),
+        user, "sample-patch", sid, "sample not found",
     )
-    _audit_cross_user_read(user, g, "sample-patch", sid)
     if g["is_locked"] and not user.get("is_admin"):
         # `is_locked` is writable by any captures-scoped caller (below), so they
         # must be able to release it too, or the lock is a one-way switch only an
@@ -2481,14 +2469,10 @@ async def regenerate_sample_api(
     admin's edits stay."""
     # Off the loop: the samples store shares the captures connection, which
     # clear_all holds across a full VACUUM.
-    g = await asyncio.to_thread(capture_samples_store.get_sample, sid)
-    if g is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "sample not found")
-    user["permissions"].assert_can_read_row(
-        g, "captures", user.get("user_id") or "",
-        detail="sample not found",
+    g = _admit_row(
+        await asyncio.to_thread(capture_samples_store.get_sample, sid),
+        user, "sample-regenerate", sid, "sample not found",
     )
-    _audit_cross_user_read(user, g, "sample-regenerate", sid)
     if g["is_locked"] and not user.get("is_admin"):
         raise HTTPException(status.HTTP_409_CONFLICT, "sample is locked")
     silence_ms = capture_samples._global_silence_ms()
@@ -2537,14 +2521,10 @@ async def dissolve_sample_api(
 ) -> JSONResponse:
     # Off the loop: the samples store shares the captures connection, which
     # clear_all holds across a full VACUUM.
-    g = await asyncio.to_thread(capture_samples_store.get_sample, sid)
-    if g is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "sample not found")
-    user["permissions"].assert_can_read_row(
-        g, "captures", user.get("user_id") or "",
-        detail="sample not found",
+    g = _admit_row(
+        await asyncio.to_thread(capture_samples_store.get_sample, sid),
+        user, "sample-delete", sid, "sample not found",
     )
-    _audit_cross_user_read(user, g, "sample-delete", sid)
     if g["is_locked"] and not user.get("is_admin"):
         raise HTTPException(status.HTTP_409_CONFLICT, "sample is locked")
     # Off the loop: dissolve waits on the per-sid rebuild lock, which an
@@ -2642,14 +2622,10 @@ async def get_sample_audio_api(
     _audio_rate.hit(rate_limit.identity_key(user, request))
     # Off the loop: the samples store shares the captures connection, which
     # clear_all holds across a full VACUUM.
-    g = await asyncio.to_thread(capture_samples_store.get_sample, sid)
-    if g is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "sample not found")
-    user["permissions"].assert_can_read_row(
-        g, "captures", user.get("user_id") or "",
-        detail="sample not found",
+    g = _admit_row(
+        await asyncio.to_thread(capture_samples_store.get_sample, sid),
+        user, "sample-audio", sid, "sample not found",
     )
-    _audit_cross_user_read(user, g, "sample-audio", sid)
     # Off the loop: this waits on a threading.Lock the VAD reprocess worker
     # holds for a whole rebuild, then runs the merge (a Silero-VAD pass per
     # member plus a WAV write) synchronously; inline it would stall every
