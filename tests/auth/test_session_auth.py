@@ -124,9 +124,9 @@ def test_logout_clears_session(client, make_user_key):
 def test_logout_keeps_cookies_when_the_revoke_fails(client, make_user_key,
                                                     monkeypatch):
     """A failed revoke (SQLITE_BUSY on COMMIT, disk full) rolls back, so the
-    row stays live. Clearing both cookies then made the client's retry a
-    cookie-less no-op 200 while the session stayed valid for its TTL; the
-    cookies now stay so the retry actually revokes it."""
+    row stays live and logout must keep both cookies: clearing them would
+    make the client's retry a cookie-less no-op 200 while the session stays
+    valid for its TTL."""
     import sqlite3
     from faster_whisper_backend.auth import sessions_store
     _uid, raw = make_user_key("root", is_admin=True)
@@ -468,10 +468,10 @@ def _close_worker_modules():
 
 def test_revoke_in_sibling_worker_is_seen_after_local_write(tmp_path):
     """A revocation committed by worker B must not survive worker A's own
-    next write. create_session/revoke_session used to re-stamp _DATA_VERSION
-    AFTER their own commit; since a connection's own commit does not move its
-    own PRAGMA data_version, that re-stamp absorbed B's commit and marked it
-    seen — leaving the revoked cookie authenticating in A until it expired."""
+    next write. create_session/revoke_session must not re-stamp _DATA_VERSION
+    after their own commit: a connection's own commit does not move its own
+    PRAGMA data_version, so that re-stamp would absorb B's commit as seen and
+    leave the revoked cookie authenticating in A until it expired."""
     db = str(tmp_path / "sessions.db")
     a = _worker("sessions_store_a", db)
     b = _worker("sessions_store_b", db)
