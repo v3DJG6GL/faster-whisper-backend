@@ -53,27 +53,23 @@ def test_pre_flagged_request_aborts_with_499(client, app_module):
 def test_bgm_cancel_is_not_a_soft_fail(client, app_module, monkeypatch):
     # BgmCancelled must abort the request — never the "transcribing the
     # original audio" warning path that BgmSeparationError takes.
-    app_module.cfg.BGM_SEPARATION_ENABLED = True
-    try:
-        async def _cancelled(path, **kw):
-            raise bgm_separation.BgmCancelled()
-        monkeypatch.setattr(bgm_separation, "separate", _cancelled)
-        r = _post(client, separate_bgm="1", progress_id=_PID)
-        assert r.status_code == 499, r.text
-    finally:
-        app_module.cfg.BGM_SEPARATION_ENABLED = False
+    monkeypatch.setattr(app_module.cfg, "BGM_SEPARATION_ENABLED", True, raising=False)
+
+    async def _cancelled(path, **kw):
+        raise bgm_separation.BgmCancelled()
+    monkeypatch.setattr(bgm_separation, "separate", _cancelled)
+    r = _post(client, separate_bgm="1", progress_id=_PID)
+    assert r.status_code == 499, r.text
 
 
 def test_diarize_cancel_is_not_a_soft_fail(client, app_module, monkeypatch):
-    app_module.cfg.DIARIZATION_ENABLED = True
-    try:
-        async def _cancelled(path, **kw):
-            raise diarization.DiarizeCancelled()
-        monkeypatch.setattr(diarization, "diarize", _cancelled)
-        r = _post(client, diarize="1", progress_id=_PID)
-        assert r.status_code == 499, r.text
-    finally:
-        app_module.cfg.DIARIZATION_ENABLED = False
+    monkeypatch.setattr(app_module.cfg, "DIARIZATION_ENABLED", True, raising=False)
+
+    async def _cancelled(path, **kw):
+        raise diarization.DiarizeCancelled()
+    monkeypatch.setattr(diarization, "diarize", _cancelled)
+    r = _post(client, diarize="1", progress_id=_PID)
+    assert r.status_code == 499, r.text
 
 
 def test_cancelled_run_records_status_cancelled(client, app_module,
@@ -194,7 +190,7 @@ def _flag_on(app_module, monkeypatch, pid, pred):
 
 def test_cancel_inside_separation_stage_is_not_a_soft_fail(
         client, app_module, monkeypatch, caplog):
-    app_module.cfg.BGM_SEPARATION_ENABLED = True
+    monkeypatch.setattr(app_module.cfg, "BGM_SEPARATION_ENABLED", True, raising=False)
     _flag_on(app_module, monkeypatch, _PID,
              lambda f: f.get("stage") == "separating")
 
@@ -205,14 +201,13 @@ def test_cancel_inside_separation_stage_is_not_a_soft_fail(
         r = _post(client, separate_bgm="1", progress_id=_PID)
         assert r.status_code == 499, r.text
     finally:
-        app_module.cfg.BGM_SEPARATION_ENABLED = False
         tx_progress._BATCH_CANCELLED.discard(_PID)
     assert "[bgm] unexpected failure" not in caplog.text
 
 
 def test_cancel_inside_diarization_stage_is_not_a_soft_fail(
         client, app_module, monkeypatch):
-    app_module.cfg.DIARIZATION_ENABLED = True
+    monkeypatch.setattr(app_module.cfg, "DIARIZATION_ENABLED", True, raising=False)
     _flag_on(app_module, monkeypatch, _PID,
              lambda f: f.get("stage") == "diarizing")
 
@@ -224,7 +219,6 @@ def test_cancel_inside_diarization_stage_is_not_a_soft_fail(
         assert r.status_code == 499, r.text
         assert "diarization failed" not in r.text
     finally:
-        app_module.cfg.DIARIZATION_ENABLED = False
         tx_progress._BATCH_CANCELLED.discard(_PID)
 
 

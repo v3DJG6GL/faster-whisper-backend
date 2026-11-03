@@ -406,21 +406,18 @@ def test_locked_diarize_ignores_client_param(client, app_module, make_user_key,
         called.append(path)
         return [(0.0, 1.0, "SPEAKER_00")]
     monkeypatch.setattr(diarization, "diarize", _fake_diarize)
-    app_module.cfg.DIARIZATION_ENABLED = True
-    try:
-        raw_alice = _bind_profile_user(client, make_user_key, "nodiar",
-                                       locks=["DIARIZE"])
+    monkeypatch.setattr(app_module.cfg, "DIARIZATION_ENABLED", True, raising=False)
+    raw_alice = _bind_profile_user(client, make_user_key, "nodiar",
+                                   locks=["DIARIZE"])
 
-        r = client.post(
-            "/v1/audio/transcriptions", files=_FILE, headers=bearer(raw_alice),
-            data={"model": "whisper-1", "response_format": "verbose_json",
-                  "diarize": "true"},
-        )
-        assert r.status_code == 200, r.text
-        assert called == []                          # pinned off
-        assert "diarize" in r.json()["overrides_ignored"]
-    finally:
-        app_module.cfg.DIARIZATION_ENABLED = False
+    r = client.post(
+        "/v1/audio/transcriptions", files=_FILE, headers=bearer(raw_alice),
+        data={"model": "whisper-1", "response_format": "verbose_json",
+              "diarize": "true"},
+    )
+    assert r.status_code == 200, r.text
+    assert called == []                          # pinned off
+    assert "diarize" in r.json()["overrides_ignored"]
 
 
 def _record_diarize(monkeypatch, calls):

@@ -97,18 +97,15 @@ def test_vad_row_bills_the_lead_pad_pre_decode(client, app_module,
 
 def test_diarization_block_present_when_stage_labels_nobody(
         client, app_module, monkeypatch):
-    app_module.cfg.DIARIZATION_ENABLED = True
+    monkeypatch.setattr(app_module.cfg, "DIARIZATION_ENABLED", True, raising=False)
 
     async def _no_turns(path, **kw):
         return []
     monkeypatch.setattr(diarization, "diarize", _no_turns)
     seen = {}
     _capture_receipt(app_module, monkeypatch, seen)
-    try:
-        r = _post(client, diarize="true")
-        assert r.status_code == 200, r.text
-    finally:
-        app_module.cfg.DIARIZATION_ENABLED = False
+    r = _post(client, diarize="true")
+    assert r.status_code == 200, r.text
     assert any(s["name"] == "diarizing" for s in seen["stages"])
     assert seen["diarization"] is not None
     assert seen["diarization"]["result"].startswith("0 speakers")
@@ -118,7 +115,7 @@ def test_diarization_block_present_when_stage_labels_nobody(
 def test_separation_row_has_no_transcode_detail_for_wav_input(
         client, app_module, monkeypatch):
     from faster_whisper_backend.audio import transcode as audio_transcode
-    app_module.cfg.BGM_SEPARATION_ENABLED = True
+    monkeypatch.setattr(app_module.cfg, "BGM_SEPARATION_ENABLED", True, raising=False)
     _stub_separate(monkeypatch)
     # The detail alone cannot tell a skipped transcode from a failed one
     # (the real transcode raises on these fake bytes and the fallback drops
@@ -127,25 +124,22 @@ def test_separation_row_has_no_transcode_detail_for_wav_input(
     calls = []
     monkeypatch.setattr(audio_transcode, "transcode_to_wav",
                         lambda *a, **k: calls.append(a))
-    try:
-        for name in ("a.wav", "a.flac"):
-            seen = {}
-            _capture_receipt(app_module, monkeypatch, seen)
-            r = _post(client, files={"file": (name, b"RIFFxxxxWAVE",
-                                              "audio/wav")},
-                      separate_bgm="true")
-            assert r.status_code == 200, r.text
-            row = next(s for s in seen["stages"] if s["name"] == "separating")
-            assert not row.get("detail")
-    finally:
-        app_module.cfg.BGM_SEPARATION_ENABLED = False
+    for name in ("a.wav", "a.flac"):
+        seen = {}
+        _capture_receipt(app_module, monkeypatch, seen)
+        r = _post(client, files={"file": (name, b"RIFFxxxxWAVE",
+                                          "audio/wav")},
+                  separate_bgm="true")
+        assert r.status_code == 200, r.text
+        row = next(s for s in seen["stages"] if s["name"] == "separating")
+        assert not row.get("detail")
     assert calls == []
 
 
 def test_separation_row_keeps_transcode_detail_when_transcode_ran(
         client, app_module, monkeypatch):
     from faster_whisper_backend.audio import transcode as audio_transcode
-    app_module.cfg.BGM_SEPARATION_ENABLED = True
+    monkeypatch.setattr(app_module.cfg, "BGM_SEPARATION_ENABLED", True, raising=False)
     _stub_separate(monkeypatch)
 
     def _fake_transcode(src, dst, *, rate=44100, layout="stereo"):
@@ -154,12 +148,9 @@ def test_separation_row_keeps_transcode_detail_when_transcode_ran(
     monkeypatch.setattr(audio_transcode, "transcode_to_wav", _fake_transcode)
     seen = {}
     _capture_receipt(app_module, monkeypatch, seen)
-    try:
-        r = _post(client, files={"file": ("a.mp3", b"ID3xxxx", "audio/mpeg")},
-                  separate_bgm="true")
-        assert r.status_code == 200, r.text
-    finally:
-        app_module.cfg.BGM_SEPARATION_ENABLED = False
+    r = _post(client, files={"file": ("a.mp3", b"ID3xxxx", "audio/mpeg")},
+              separate_bgm="true")
+    assert r.status_code == 200, r.text
     row = next(s for s in seen["stages"] if s["name"] == "separating")
     assert row.get("detail") == "incl. transcode"
 
@@ -167,7 +158,7 @@ def test_separation_row_keeps_transcode_detail_when_transcode_ran(
 def test_separation_row_drops_transcode_detail_when_transcode_failed(
         client, app_module, monkeypatch):
     from faster_whisper_backend.audio import transcode as audio_transcode
-    app_module.cfg.BGM_SEPARATION_ENABLED = True
+    monkeypatch.setattr(app_module.cfg, "BGM_SEPARATION_ENABLED", True, raising=False)
     _stub_separate(monkeypatch)
 
     def _boom(src, dst, *, rate=44100, layout="stereo"):
@@ -175,19 +166,16 @@ def test_separation_row_drops_transcode_detail_when_transcode_failed(
     monkeypatch.setattr(audio_transcode, "transcode_to_wav", _boom)
     seen = {}
     _capture_receipt(app_module, monkeypatch, seen)
-    try:
-        r = _post(client, files={"file": ("a.mp3", b"ID3xxxx", "audio/mpeg")},
-                  separate_bgm="true")
-        assert r.status_code == 200, r.text
-    finally:
-        app_module.cfg.BGM_SEPARATION_ENABLED = False
+    r = _post(client, files={"file": ("a.mp3", b"ID3xxxx", "audio/mpeg")},
+              separate_bgm="true")
+    assert r.status_code == 200, r.text
     row = next(s for s in seen["stages"] if s["name"] == "separating")
     assert not row.get("detail")
 
 
 def test_min_speakers_above_max_is_clamped_down(client, app_module,
                                                 monkeypatch):
-    app_module.cfg.DIARIZATION_ENABLED = True
+    monkeypatch.setattr(app_module.cfg, "DIARIZATION_ENABLED", True, raising=False)
     calls = []
 
     async def _fake(path, *, num_speakers=None, min_speakers=None,
@@ -197,18 +185,15 @@ def test_min_speakers_above_max_is_clamped_down(client, app_module,
                       "max": max_speakers})
         return [(0.0, 1.0, "SPEAKER_00")]
     monkeypatch.setattr(diarization, "diarize", _fake)
-    try:
-        r = _post(client, diarize="true", min_speakers="10", max_speakers="2")
-        assert r.status_code == 200, r.text
-    finally:
-        app_module.cfg.DIARIZATION_ENABLED = False
+    r = _post(client, diarize="true", min_speakers="10", max_speakers="2")
+    assert r.status_code == 200, r.text
     assert calls == [{"num": None, "min": 2, "max": 2}]
     assert "diarization failed" not in r.text
 
 
 def test_zero_speaker_hint_means_auto_not_one_speaker(client, app_module,
                                                       monkeypatch):
-    app_module.cfg.DIARIZATION_ENABLED = True
+    monkeypatch.setattr(app_module.cfg, "DIARIZATION_ENABLED", True, raising=False)
     calls = []
 
     async def _fake(path, *, num_speakers=None, min_speakers=None,
@@ -218,12 +203,9 @@ def test_zero_speaker_hint_means_auto_not_one_speaker(client, app_module,
                       "max": max_speakers})
         return [(0.0, 1.0, "SPEAKER_00")]
     monkeypatch.setattr(diarization, "diarize", _fake)
-    try:
-        r = _post(client, diarize="true", num_speakers="0",
-                  min_speakers="0", max_speakers="0")
-        assert r.status_code == 200, r.text
-    finally:
-        app_module.cfg.DIARIZATION_ENABLED = False
+    r = _post(client, diarize="true", num_speakers="0",
+              min_speakers="0", max_speakers="0")
+    assert r.status_code == 200, r.text
     assert calls == [{"num": None, "min": None, "max": None}]
 
 
