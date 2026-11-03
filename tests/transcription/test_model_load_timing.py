@@ -16,6 +16,7 @@ import pytest
 from faster_whisper_backend.runtime import model_registry
 from tests.conftest import FakeModel
 from faster_whisper_backend.transcription import models as tx_models
+from tests.transcription._load_helpers import register_fake_model as _register
 from tests.transcription._load_helpers import stub_whisper_load as _stub_load
 
 
@@ -351,9 +352,8 @@ def _run_one_evictor_tick(monkeypatch):
     asyncio.run(tx_models._idle_evictor())
 
 
-def _register_stale(name):
-    tx_models._loaded_models[name] = FakeModel()
-    model_registry.register_loaded_model(name, 0, "cpu", "int8")
+def _register_stale(name, leases=0):
+    _register(name, leases)
     model_registry._loaded_models[name]["last_used_monotonic"] = (
         time.monotonic() - 3600)
 
@@ -388,8 +388,7 @@ def test_evictor_does_not_claim_an_unload_it_was_refused(monkeypatch, caplog):
 
 def test_evictor_prescan_skips_a_leased_model(monkeypatch, caplog):
     import gc
-    _register_stale("a")
-    tx_models._model_leases["a"] = 1
+    _register_stale("a", leases=1)
     collected = []
     monkeypatch.setattr(gc, "collect", lambda *a: collected.append(1))
     with caplog.at_level(logging.INFO, logger="whisper-api"):

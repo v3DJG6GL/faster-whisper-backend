@@ -16,6 +16,7 @@ from fastapi import HTTPException
 from faster_whisper_backend.runtime import model_registry
 from tests.conftest import FakeModel
 from faster_whisper_backend.transcription import models as tx_models
+from tests.transcription._load_helpers import register_fake_model as _register
 from tests.transcription._load_helpers import stub_whisper_load as _stub_load
 
 _FILE = {"file": ("a.wav", b"RIFFxxxxWAVE", "audio/wav")}
@@ -31,23 +32,15 @@ def _clean_cache():
     model_registry._loaded_models.clear()
 
 
-def _register(name):
-    """Put a fake model in the cache the way a successful load would."""
-    tx_models._loaded_models[name] = FakeModel()
-    model_registry.register_loaded_model(name, 0, "cpu", "int8")
-
-
 def test_drop_refuses_while_leased():
-    _register("a")
-    tx_models._model_leases["a"] = 1
+    _register("a", leases=1)
     assert tx_models._drop_loaded_model("a") is False
     assert "a" in tx_models._loaded_models
     assert model_registry._loaded_models.get("a") is not None
 
 
 def test_drop_force_evicts_a_leased_model():
-    _register("a")
-    tx_models._model_leases["a"] = 1
+    _register("a", leases=1)
     assert tx_models._drop_loaded_model("a", force=True) is True
     assert "a" not in tx_models._loaded_models
     assert "a" not in model_registry._loaded_models
@@ -73,8 +66,7 @@ def test_lru_skips_a_leased_entry(monkeypatch):
 
 def test_all_leased_overflows_the_cap(monkeypatch, caplog):
     _stub_load(monkeypatch, max_loaded=1)
-    _register("a")
-    tx_models._model_leases["a"] = 1
+    _register("a", leases=1)
 
     with caplog.at_level(logging.WARNING, logger="whisper-api"):
         asyncio.run(tx_models._get_or_load_model("b"))
@@ -403,8 +395,7 @@ def test_rejected_names_take_no_lease(monkeypatch):
 
 
 def test_release_restamps_last_used():
-    _register("a")
-    tx_models._model_leases["a"] = 1
+    _register("a", leases=1)
     info = model_registry._loaded_models["a"]
     info["last_used_monotonic"] = time.monotonic() - 500
     stale = info["last_used_monotonic"]
@@ -416,16 +407,14 @@ def test_release_restamps_last_used():
 
 
 def test_release_decrements_before_zero():
-    _register("a")
-    tx_models._model_leases["a"] = 2
+    _register("a", leases=2)
     tx_models._release_model_lease("a", tx_models._loaded_models["a"])
     assert tx_models._model_leases == {"a": 1}
     assert tx_models._drop_loaded_model("a") is False
 
 
 def test_release_tolerates_a_dropped_model():
-    _register("a")
-    tx_models._model_leases["a"] = 1
+    _register("a", leases=1)
     old = tx_models._loaded_models["a"]
     tx_models._drop_loaded_model("a", force=True)   # drain_then_evict shape
     tx_models._release_model_lease("a", old)        # must not KeyError
@@ -436,8 +425,7 @@ def test_a_reload_after_drain_does_not_inherit_the_old_lease(monkeypatch):
     # R1 still decodes on the instance drain_then_evict dropped; the reload
     # nobody leased must stay evictable, or a miss for "b" overflows the cap.
     _stub_load(monkeypatch, max_loaded=1)
-    _register("a")
-    tx_models._model_leases["a"] = 1
+    _register("a", leases=1)
 
     async def scenario():
         assert await tx_models.drain_then_evict("a") == ["a"]
@@ -451,9 +439,8 @@ def test_a_reload_after_drain_does_not_inherit_the_old_lease(monkeypatch):
 
 def test_an_old_holder_release_leaves_the_reload_lease(monkeypatch):
     _stub_load(monkeypatch, max_loaded=1)
-    _register("a")
+    _register("a", leases=1)
     old = tx_models._loaded_models["a"]
-    tx_models._model_leases["a"] = 1
 
     async def scenario():
         await tx_models.drain_then_evict("a")
@@ -476,9 +463,8 @@ def test_a_reload_holder_release_leaves_the_old_holder_lease_orphaned(
     # release must free the reload, or a miss for "b" overflows the cap for
     # the rest of R1's session.
     _stub_load(monkeypatch, max_loaded=1)
-    _register("a")
+    _register("a", leases=1)
     old = tx_models._loaded_models["a"]
-    tx_models._model_leases["a"] = 1
 
     async def scenario():
         await tx_models.drain_then_evict("a")
@@ -557,8 +543,7 @@ def test_last_release_trims_a_cap_lowered_under_leases(monkeypatch):
 
 
 def test_release_within_the_cap_schedules_no_trim(monkeypatch):
-    _register("a")
-    tx_models._model_leases["a"] = 1
+    _register("a", leases=1)
     monkeypatch.setattr(tx_models.cfg, "MAX_LOADED_MODELS", 1, raising=False)
 
     async def scenario():
@@ -580,8 +565,7 @@ def test_release_in_an_all_leased_overflow_keeps_the_released_model(
         builds.append(path)
         return FakeModel()
     _stub_load(monkeypatch, whisper_model=_model, max_loaded=1)
-    _register("a")
-    tx_models._model_leases["a"] = 1
+    _register("a", leases=1)
 
     async def scenario():
         for _ in range(3):
@@ -608,8 +592,7 @@ def test_a_leased_load_keeps_a_release_scheduled_trim_from_evicting(
             gate.wait(5)
         return FakeModel()
     _stub_load(monkeypatch, whisper_model=_model, max_loaded=1)
-    _register("a")
-    tx_models._model_leases["a"] = 1
+    _register("a", leases=1)
 
     async def scenario():
         await tx_models._get_or_load_model("b", lease=True)
@@ -636,8 +619,7 @@ def test_release_during_an_unleased_over_cap_load_trims_after_it(monkeypatch):
         gate.wait(5)
         return FakeModel()
     _stub_load(monkeypatch, whisper_model=_slow_model, max_loaded=1)
-    _register("a")
-    tx_models._model_leases["a"] = 1
+    _register("a", leases=1)
 
     async def scenario():
         load = asyncio.ensure_future(tx_models.load_unleased("b"))
@@ -654,8 +636,7 @@ def test_release_during_an_unleased_over_cap_load_trims_after_it(monkeypatch):
 
 
 def test_idle_evictor_defers_then_evicts(monkeypatch):
-    _register("a")
-    tx_models._model_leases["a"] = 1
+    _register("a", leases=1)
     model_registry._loaded_models["a"]["last_used_monotonic"] = \
         time.monotonic() - 500
     monkeypatch.setattr(tx_models.cfg, "MODEL_IDLE_TIMEOUT_S", 1, raising=False)

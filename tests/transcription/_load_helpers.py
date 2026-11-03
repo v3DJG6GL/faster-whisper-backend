@@ -7,6 +7,7 @@ Import as ``from tests.transcription._load_helpers import ...``.
 import sys
 import types
 
+from faster_whisper_backend.runtime import model_registry
 from tests.conftest import FakeModel
 from faster_whisper_backend.transcription import models as tx_models
 
@@ -30,3 +31,12 @@ def stub_whisper_load(monkeypatch, *, whisper_model=None, max_loaded=None):
     if max_loaded is not None:
         monkeypatch.setattr(tx_models.cfg, "MAX_LOADED_MODELS", max_loaded,
                             raising=False)
+
+
+def register_fake_model(name, leases=0):
+    """Put a fake model in the cache the way a successful load would, held by
+    `leases` requests."""
+    tx_models._loaded_models[name] = FakeModel()
+    model_registry.register_loaded_model(name, 0, "cpu", "int8")
+    if leases:
+        tx_models._model_leases[name] = leases
