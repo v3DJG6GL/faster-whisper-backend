@@ -683,8 +683,6 @@ def _split_unspaced(texts: list[str], toks: list[str]) -> list[list[str]] | None
             matched = True
             own[b0:b1] = a_own[a0:a1]
         elif tag == "replace":
-            # Each raw word's share of the replaced chars, by how many of
-            # them it owns; the last takes the rounding remainder.
             counts: dict[int, int] = {}
             for r in a_own[a0:a1]:
                 counts[r] = counts.get(r, 0) + 1
