@@ -47,6 +47,15 @@ def _make(cs, monkeypatch, tmp_path, **over):
     return cs.create_capture(**kw)
 
 
+def _seed_rows(conn, ids, status="new", ts=1.0):
+    """Raw-insert minimal capture rows (no audio on disk), one per id."""
+    conn.executemany(
+        "INSERT INTO captures (id, created_ts, model, audio_relpath,"
+        " audio_format, raw_text, final_text, words, segments, corrections,"
+        " status, user_id) VALUES (?,?,'m','x.wav','wav','r','f','[]','[]',"
+        "'[]',?,'bob')", [(i, ts, status) for i in ids])
+
+
 def test_relpath_fanout_and_ext_lowercase(captures_store_db):
     cs = captures_store_db
     rel = cs._relpath_for("abcdef1234", ".WAV")
@@ -351,11 +360,7 @@ def test_get_captures_light_projection_and_chunking(captures_store_db,
     cid = _make(cs, monkeypatch, tmp_path, user_id="alice")
     conn = cs._require_conn()
     many = [f"light{i:07d}" for i in range(1100)]
-    conn.executemany(
-        "INSERT INTO captures (id, created_ts, model, audio_relpath,"
-        " audio_format, raw_text, final_text, words, segments, corrections,"
-        " status, user_id) VALUES (?,1.0,'m','x.wav','wav','r','f','[]','[]',"
-        "'[]','new','bob')", [(i,) for i in many])
+    _seed_rows(conn, many)
 
     # Builds differ (Debian's sqlite allows 250000 variables, stock 32766):
     # lower the limit below the 1101 ids so one unchunked IN-list would fail.
@@ -666,11 +671,7 @@ def test_evict_deletes_more_ids_than_one_in_list_chunk(
     from faster_whisper_backend.settings import config
     conn = cs._require_conn()
     many = [f"evict{i:07d}" for i in range(1100)]
-    conn.executemany(
-        "INSERT INTO captures (id, created_ts, model, audio_relpath,"
-        " audio_format, raw_text, final_text, words, segments, corrections,"
-        " status, user_id) VALUES (?,1.0,'m','x.wav','wav','r','f','[]','[]',"
-        "'[]','dismissed','bob')", [(i,) for i in many])
+    _seed_rows(conn, many, "dismissed")
     monkeypatch.setattr(config, "CAPTURES_MAX", 1, raising=False)
     monkeypatch.setattr(config, "CAPTURES_MAX_MB", 0, raising=False)
     # Builds differ (Debian's sqlite allows 250000 variables, stock 32766):
@@ -728,11 +729,7 @@ def test_bulk_update_status_chunks_past_the_bind_variable_limit(
     cs = captures_store_db
     conn = cs._require_conn()
     ids = [f"bulkst{i:06d}" for i in range(1000)]
-    conn.executemany(
-        "INSERT INTO captures (id, created_ts, model, audio_relpath,"
-        " audio_format, raw_text, final_text, words, segments, corrections,"
-        " status, user_id) VALUES (?,1.0,'m','x.wav','wav','r','f','[]','[]',"
-        "'[]','new','bob')", [(i,) for i in ids])
+    _seed_rows(conn, ids)
     old = conn.getlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER)
     conn.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 999)
     try:
@@ -757,11 +754,7 @@ def test_bulk_update_status_holds_the_samples_lock(captures_store_db):
     from faster_whisper_backend.captures import samples_store as capture_samples_store
 
     cs = captures_store_db
-    cs._require_conn().execute(
-        "INSERT INTO captures (id, created_ts, model, audio_relpath,"
-        " audio_format, raw_text, final_text, words, segments, corrections,"
-        " status, user_id) VALUES ('bulklock0000001',1.0,'m','x.wav','wav',"
-        "'r','f','[]','[]','[]','new','bob')")
+    _seed_rows(cs._require_conn(), ["bulklock0000001"])
     done = threading.Event()
     with capture_samples_store._lock:
         t = threading.Thread(target=lambda: (
@@ -771,14 +764,6 @@ def test_bulk_update_status_holds_the_samples_lock(captures_store_db):
     t.join(5)
     assert done.is_set()
     assert cs.get_capture("bulklock0000001")["status"] == "ready"
-
-
-def _seed_ready(cs, n, ts=1.0):
-    cs._require_conn().executemany(
-        "INSERT INTO captures (id, created_ts, model, audio_relpath,"
-        " audio_format, raw_text, final_text, words, segments, corrections,"
-        " status, user_id) VALUES (?,?,'m','x.wav','wav','r','f','[]','[]',"
-        "'[]','ready','bob')", [(f"ready{i:07d}", ts) for i in range(n)])
 
 
 def test_a_store_full_of_ready_rows_records_nothing(
@@ -791,7 +776,7 @@ def test_a_store_full_of_ready_rows_records_nothing(
     from faster_whisper_backend.settings import config
     monkeypatch.setattr(config, "CAPTURES_MAX", 10, raising=False)
     monkeypatch.setattr(config, "CAPTURES_MAX_MB", 0, raising=False)
-    _seed_ready(cs, 10)
+    _seed_rows(cs._require_conn(), [f"ready{i:07d}" for i in range(10)], "ready")
     assert cs.ready_fills_cap() is True
     _fake_transcode(cs, monkeypatch)
     src = tmp_path / "src_in.bin"
@@ -836,7 +821,7 @@ def test_an_older_new_row_is_evicted_before_the_fresh_one(
     older = _make(cs, monkeypatch, tmp_path)
     cs._require_conn().execute(
         "UPDATE captures SET created_ts=0.5 WHERE id=?", (older,))
-    _seed_ready(cs, 9)
+    _seed_rows(cs._require_conn(), [f"ready{i:07d}" for i in range(9)], "ready")
     monkeypatch.setattr(config, "CAPTURES_MAX", 10, raising=False)
     assert cs.ready_fills_cap() is False
     fresh = _make(cs, monkeypatch, tmp_path)
@@ -995,11 +980,7 @@ def test_sweep_retention_deletes_more_ids_than_one_in_list_chunk(
     from faster_whisper_backend.settings import config
     monkeypatch.setattr(config, "CAPTURES_RETENTION_DAYS", 30, raising=False)
     conn = cs._require_conn()
-    conn.executemany(
-        "INSERT INTO captures (id, created_ts, model, audio_relpath,"
-        " audio_format, raw_text, final_text, words, segments, corrections,"
-        " status, user_id) VALUES (?,1.0,'m','x.wav','wav','r','f','[]','[]',"
-        "'[]','new','bob')", [(f"aged{i:07d}",) for i in range(1100)])
+    _seed_rows(conn, [f"aged{i:07d}" for i in range(1100)])
     old = conn.getlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER)
     conn.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 999)
     try:
