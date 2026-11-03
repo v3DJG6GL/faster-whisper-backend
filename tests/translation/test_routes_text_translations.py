@@ -32,6 +32,12 @@ def _park(key, *, hold_s, **extra):
     receipt_hold.park(key, payload, hold_s=hold_s)
 
 
+def _echo_result(segments, targets):
+    """The '<text>-<target>' success tuple a hand-written fake returns."""
+    per_seg = [{t: f"{seg['text']}-{t}" for t in targets} for seg in segments]
+    return per_seg, [], {"model": "org/d:Q4", "source": "", "mode": "fluent"}
+
+
 def test_translates_and_echoes_ids_in_input_order(client, app_module,
                                                   monkeypatch):
     _enable(app_module, monkeypatch)
@@ -550,9 +556,7 @@ def test_cold_load_excludes_the_gpu_queue_wait(client, app_module,
             await asyncio.sleep(0.1)        # the model load
             _register_load(0.1)
         progress_cb(1.0)
-        per_seg = [{t: f"{seg['text']}-{t}" for t in targets}
-                   for seg in segments]
-        return per_seg, [], {"model": "org/d:Q4", "source": "", "mode": "fluent"}
+        return _echo_result(segments, targets)
     monkeypatch.setattr(translation, "translate_segments", _cold)
     with caplog.at_level(logging.INFO, logger="whisper-api"):
         r = client.post(URL, json=_body())
@@ -641,9 +645,7 @@ def test_plan_is_clocked_without_a_progress_id(client, app_module,
         progress_cb(0.0, "de 0/1", target="de", target_progress=0.0)
         await asyncio.sleep(0.6)
         progress_cb(1.0, "de 1/1", target="de", target_progress=1.0)
-        per_seg = [{t: f"{seg['text']}-{t}" for t in targets}
-                   for seg in segments]
-        return per_seg, [], {"model": "org/d:Q4", "source": "", "mode": "fluent"}
+        return _echo_result(segments, targets)
     monkeypatch.setattr(translation, "translate_segments", _slow)
     r = client.post(URL, json=_body(targets=["de"]))
     assert r.status_code == 200, r.text
@@ -693,9 +695,7 @@ def test_held_receipt_survives_a_queued_translation(client, app_module,
         for _ in range(10):
             await asyncio.sleep(0.05)
             swept.extend(receipt_hold.sweep())
-        per_seg = [{t: f"{seg['text']}-{t}" for t in targets}
-                   for seg in segments]
-        return per_seg, [], {"model": "org/d:Q4", "source": "", "mode": "fluent"}
+        return _echo_result(segments, targets)
     monkeypatch.setattr(translation, "translate_segments", _slow)
     _park("cap-q", hold_s=0.2)
     try:
@@ -765,9 +765,7 @@ def test_progress_wrapper_forwards_last_text_and_logs_receipts(
     async def _fake(segments, targets, *, progress_cb=None, **kwargs):
         progress_cb(0.5, "en 1/2", "Hello there")
         seen["entry"] = dict(tx_progress._BATCH_PROGRESS.get(_PID) or {})
-        per_seg = [{t: f"{seg['text']}-{t}" for t in targets}
-                   for seg in segments]
-        return per_seg, [], {"model": "org/d:Q4", "source": "", "mode": "fluent"}
+        return _echo_result(segments, targets)
     monkeypatch.setattr(translation, "translate_segments", _fake)
 
     with caplog.at_level(logging.INFO, logger="whisper-api"):
@@ -798,9 +796,7 @@ def test_download_progress_is_published(client, app_module, monkeypatch):
         seen["download"] = dict(tx_progress._BATCH_PROGRESS.get(_PID) or {})
         progress_cb(0.0, "en 1/1", None)
         seen["after"] = dict(tx_progress._BATCH_PROGRESS.get(_PID) or {})
-        per_seg = [{t: f"{seg['text']}-{t}" for t in targets}
-                   for seg in segments]
-        return per_seg, [], {"model": "org/d:Q4", "source": "", "mode": "fluent"}
+        return _echo_result(segments, targets)
     monkeypatch.setattr(translation, "translate_segments", _fake)
 
     r = client.post(URL, json=_body(progress_id=_PID))
@@ -1028,9 +1024,7 @@ def test_text_run_has_a_one_stage_plan_with_units(client, app_module,
         seen["progress"] = {
             **dict(tx_progress._BATCH_PROGRESS.get(_PID) or {}),
             **tx_progress._plan_fields(_PID)}
-        per_seg = [{t: f"{seg['text']}-{t}" for t in targets}
-                   for seg in segments]
-        return per_seg, [], {"model": "org/d:Q4", "source": "", "mode": "fluent"}
+        return _echo_result(segments, targets)
     monkeypatch.setattr(translation, "translate_segments", _fake)
 
     r = client.post(URL, json=_body(progress_id=_PID))
@@ -1058,8 +1052,7 @@ def test_unheld_request_logs_a_standalone_receipt(client, app_module,
 
     async def _fake(segments, targets, *, progress_cb=None, download_cb=None,
                     **kwargs):
-        per_seg = [{t: f"{seg['text']}-{t}" for t in targets} for seg in segments]
-        return per_seg, [], {"model": "org/d:Q4", "source": "", "mode": "fluent"}
+        return _echo_result(segments, targets)
     monkeypatch.setattr(translation, "translate_segments", _fake)
 
     with caplog.at_level(logging.INFO, logger="whisper-api"):
