@@ -36,9 +36,12 @@
   .card .meta { color: var(--dim); font-size: var(--fs-xs); margin-top: 0.25rem; }
   .card .meta b { color: var(--fg); font-weight: 500; }
   .card .meta .warn { color: var(--yellow); font-weight: 600; }
-  .bar { height: 6px; background: #21262d; border-radius: 3px; margin-top: 0.375rem; overflow: hidden; }
-  .bar > i { display: block; height: 100%; background: var(--cyan);
-    transition: width .3s ease; }
+  /* Mini meters: one track + fill look; size and placement stay on each component's own rule. */
+  .bar, .meter, .rj-runbar, .rj-stage-row .stage-bar { background: #21262d; border-radius: 3px; overflow: hidden; }
+  .bar > i, .meter i, .rj-runbar i, .rj-stage-row .stage-bar i { display: block; height: 100%; }
+  .bar > i, .meter i, .rj-runbar i { background: var(--cyan); }
+  .bar { height: 6px; margin-top: 0.375rem; }
+  .bar > i { transition: width .3s ease; }
   .bar.warn > i { background: var(--yellow); }
   .bar.crit > i { background: var(--red); }
   /* #gpu-content wraps three spark-wraps; without being a flex column of
@@ -239,9 +242,7 @@
   table.stages tr.pinned td:first-child { color: var(--bold); }
   .stage-sw { display: inline-block; width: 0.55rem; height: 0.55rem; border-radius: 2px;
     margin-right: 0.35rem; vertical-align: -1px; }
-  .meter { display: inline-block; width: 3rem; height: 5px; border-radius: 3px;
-    background: #21262d; vertical-align: middle; margin-right: 0.35rem; overflow: hidden; }
-  .meter i { display: block; height: 100%; background: var(--cyan); }
+  .meter { display: inline-block; width: 3rem; height: 5px; vertical-align: middle; margin-right: 0.35rem; }
   /* Rows stretch to the tile: the hour-label row is auto, the seven day
      rows share what is left, so the grid fills the card at any height. */
   .hours { display: grid; grid-template-columns: auto repeat(24, 1fr) 2.8rem;
@@ -499,18 +500,13 @@
     font-size: var(--fs-xs); margin: 0.15rem 0; }
   .rj-stage-row .nm { flex: 0 0 6.5rem; color: var(--dim);
     text-transform: uppercase; letter-spacing: .03em; }
-  .rj-stage-row .stage-bar { flex: 1 1 auto; height: 8px;
-    background: #21262d; border-radius: 3px; overflow: hidden; }
-  .rj-stage-row .stage-bar i { display: block; height: 100%; }
+  .rj-stage-row .stage-bar { flex: 1 1 auto; height: 8px; }
   .rj-stage-row .secs { flex: 0 0 4.5rem; text-align: right;
     font-variant-numeric: tabular-nums; color: var(--fg); }
   .rj-stage-row .det { flex: 0 1 auto; color: var(--dim);
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   tr.rj-run td { background: rgba(121, 192, 255, 0.05); }
-  .rj-runbar { display: inline-block; width: 5rem; height: 6px;
-    background: #21262d; border-radius: 3px; overflow: hidden;
-    vertical-align: middle; }
-  .rj-runbar i { display: block; height: 100%; background: var(--cyan); }
+  .rj-runbar { display: inline-block; width: 5rem; height: 6px; vertical-align: middle; }
   .rj-spin { display: inline-block; width: 0.7rem; height: 0.7rem;
     border: 2px solid #21262d; border-top-color: var(--cyan);
     border-radius: 50%; animation: rj-spin 0.9s linear infinite;
