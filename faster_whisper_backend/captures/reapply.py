@@ -10,8 +10,9 @@ Scope:
     rule-independent) stay untouched.
   - For each affected member that belongs to an unlocked group,
     rebuild the group's snapshot `transcript` from the current member
-    text via samples._build_default_transcript. Locked
-    groups are skipped — they're exported training samples.
+    text via samples._build_default_transcript. Members of a locked
+    group are skipped entirely (text and transcript): they're exported
+    training samples.
   - No audio re-merge. Pipeline rules only affect text; merged WAV
     bytes are unchanged.
 
