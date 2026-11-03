@@ -2075,7 +2075,8 @@ async def transcribe(
             # final response.
             _skipped: "list[str]" = []
 
-            def _skip(stage: str) -> None:
+            def _skip(stage: str, warning: str) -> None:
+                _warnings.append(warning)
                 _skipped.append(stage)
                 _rplan.skip(stage)
                 _ps(skipped=list(_skipped))
@@ -2110,10 +2111,9 @@ async def transcribe(
                         _diarization_model, "DIARIZATION_ALLOWED_MODELS",
                         "DIARIZATION_MODEL", effective_config.cfg_for(
                             resolved_model, "DIARIZATION_MODEL", ident))):
-                _warnings.append(
-                    "requested diarization model is not allowed on this "
-                    "server (DIARIZATION_ALLOWED_MODELS)")
-                _skip("diarizing")
+                _skip("diarizing",
+                      "requested diarization model is not allowed on this "
+                      "server (DIARIZATION_ALLOWED_MODELS)")
                 _diarize = False
             _sm_req = (separation_model or "").strip() or None
             _separation_model = effective_config._resolve_request_knob(
@@ -2125,10 +2125,9 @@ async def transcribe(
                         _separation_model, "BGM_SEPARATION_ALLOWED_MODELS",
                         "BGM_SEPARATION_UVR_MODEL", effective_config.cfg_for(
                             resolved_model, "BGM_SEPARATION_UVR_MODEL", ident))):
-                _warnings.append(
-                    "requested separation model is not allowed on this "
-                    "server (BGM_SEPARATION_ALLOWED_MODELS)")
-                _skip("separating")
+                _skip("separating",
+                      "requested separation model is not allowed on this "
+                      "server (BGM_SEPARATION_ALLOWED_MODELS)")
                 _separate = False
             # Translation (T2T): the capacity gates (TRANSLATION_ENABLED,
             # model allowlist) live at the stage itself and soft-fail into
@@ -2331,10 +2330,9 @@ async def transcribe(
             # every GPU stage.
             if _separate:
                 if not getattr(cfg, "BGM_SEPARATION_ENABLED", False):
-                    _warnings.append(
-                        "music separation requested but not enabled on this "
-                        "server (BGM_SEPARATION_ENABLED is off)")
-                    _skip("separating")
+                    _skip("separating",
+                          "music separation requested but not enabled on this "
+                          "server (BGM_SEPARATION_ENABLED is off)")
                 else:
                     try:
                         _sep_t0 = time.perf_counter()
@@ -2815,10 +2813,9 @@ async def transcribe(
             speakers_list: "list[str]" = []
             if _diarize and segments_list:
                 if not getattr(cfg, "DIARIZATION_ENABLED", False):
-                    _warnings.append(
-                        "diarization requested but not enabled on this "
-                        "server (DIARIZATION_ENABLED is off)")
-                    _skip("diarizing")
+                    _skip("diarizing",
+                          "diarization requested but not enabled on this "
+                          "server (DIARIZATION_ENABLED is off)")
                 else:
                     try:
                         _diar_t0 = time.perf_counter()
@@ -2874,8 +2871,7 @@ async def transcribe(
                             "diarization failed; the transcript has no "
                             "speaker labels")
             elif _diarize:
-                _warnings.append("diarization skipped: no speech segments")
-                _skip("diarizing")
+                _skip("diarizing", "diarization skipped: no speech segments")
 
             # Post-decode translation stage (soft-fail). CRITICAL invariant:
             # translated text lives ONLY in seg["translations"], the top-level
@@ -2886,10 +2882,9 @@ async def transcribe(
             _translation_meta: "dict | None" = None
             if _translate_to and segments_list:
                 if not getattr(cfg, "TRANSLATION_ENABLED", False):
-                    _warnings.append(
-                        "translation requested but TRANSLATION_ENABLED is "
-                        "off on this server")
-                    _skip("translating")
+                    _skip("translating",
+                          "translation requested but TRANSLATION_ENABLED is "
+                          "off on this server")
                 else:
                     # Empty request/config model resolves to the server
                     # default at stage time (a live admin edit applies).
@@ -2904,10 +2899,9 @@ async def transcribe(
                             inherited=_tm_inherited):
                         # Soft-fail like the enabled gate — never a 4xx after
                         # the transcript already exists.
-                        _warnings.append(
-                            "requested translation model is not in "
-                            "TRANSLATION_ALLOWED_MODELS on this server")
-                        _skip("translating")
+                        _skip("translating",
+                              "requested translation model is not in "
+                              "TRANSLATION_ALLOWED_MODELS on this server")
                     else:
                         try:
                             _tr_t0 = time.perf_counter()
@@ -3032,8 +3026,7 @@ async def transcribe(
                                 "translation failed; the transcript is "
                                 "untranslated")
             elif _translate_to:
-                _warnings.append("translation skipped: no speech segments")
-                _skip("translating")
+                _skip("translating", "translation skipped: no speech segments")
 
             raw_full_text = "".join(raw_full_text_parts)
             trace: "list | None" = [] if cfg.TRACE_ENABLED else None
