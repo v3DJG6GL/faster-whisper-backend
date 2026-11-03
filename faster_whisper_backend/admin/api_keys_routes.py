@@ -155,6 +155,22 @@ async def api_keys_page() -> HTMLResponse:
 # load landing during that cascade must not block the event loop (and with it
 # every in-flight streaming WebSocket and SSE feed).
 
+def _user_or_404(uid: str) -> dict[str, Any]:
+    user = api_keys_store.get_user(uid)
+    if user is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "user not found")
+    return user
+
+
+def _owned_key_or_404(uid: str, kid: str) -> dict[str, Any]:
+    """Key {kid} only when it belongs to {uid}: a key id under another user's
+    path 404s, so /users/A/keys/{B's key} can never touch it."""
+    key = api_keys_store.get_key(kid)
+    if key is None or key["user_id"] != uid:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "key not found")
+    return key
+
+
 @router.get(
     "/api/users",
     dependencies=[Depends(require_admin)],
@@ -220,9 +236,7 @@ def create_user_api(payload: CreateUserIn) -> JSONResponse:
     dependencies=[Depends(require_admin)],
 )
 def revoke_user_api(uid: str) -> JSONResponse:
-    user = api_keys_store.get_user(uid)
-    if user is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "user not found")
+    user = _user_or_404(uid)
     if user["revoked_ts"] is not None:
         return JSONResponse({"ok": True, "already_revoked": True})
     try:
@@ -240,8 +254,7 @@ def revoke_user_api(uid: str) -> JSONResponse:
     dependencies=[Depends(require_admin)],
 )
 def list_user_keys_api(uid: str) -> JSONResponse:
-    if api_keys_store.get_user(uid) is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "user not found")
+    _user_or_404(uid)
     return JSONResponse({"keys": api_keys_store.list_keys(user_id=uid)})
 
 
@@ -301,9 +314,7 @@ def create_user_key_api(uid: str, payload: CreateKeyIn) -> JSONResponse:
     dependencies=[Depends(require_admin)],
 )
 def revoke_key_api(uid: str, kid: str) -> JSONResponse:
-    key = api_keys_store.get_key(kid)
-    if key is None or key["user_id"] != uid:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "key not found")
+    key = _owned_key_or_404(uid, kid)
     if key["revoked_ts"] is not None:
         return JSONResponse({"ok": True, "already_revoked": True})
     try:
@@ -331,9 +342,7 @@ def patch_user_permissions_api(
     path picks up the saved defaults) but their `is_admin` flag
     short-circuits all page checks at request time — the matrix UI
     greys their row out for clarity."""
-    target = api_keys_store.get_user(uid)
-    if target is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "user not found")
+    target = _user_or_404(uid)
     if target["revoked_ts"] is not None:
         raise HTTPException(status.HTTP_409_CONFLICT, "user is revoked")
     try:
@@ -362,9 +371,7 @@ def rename_key_api(
     """Rename an existing key's display label. 404 if the key isn't this
     user's; 409 if revoked (revoked keys are read-only); 400 on a blank or
     over-long label. Renaming never exposes or rotates the secret."""
-    key = api_keys_store.get_key(kid)
-    if key is None or key["user_id"] != uid:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "key not found")
+    key = _owned_key_or_404(uid, kid)
     if key["revoked_ts"] is not None:
         raise HTTPException(status.HTTP_409_CONFLICT, "key is revoked")
     try:
@@ -386,9 +393,7 @@ def patch_key_config_api(
     """Validate + persist a per-key config binding (override profiles + direct
     overrides + locks). Returns the stored {"direct": …, "profiles": …} so the
     drawer can echo it back. 404 if the key isn't this user's; 409 if revoked."""
-    key = api_keys_store.get_key(kid)
-    if key is None or key["user_id"] != uid:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "key not found")
+    key = _owned_key_or_404(uid, kid)
     if key["revoked_ts"] is not None:
         raise HTTPException(status.HTTP_409_CONFLICT, "key is revoked")
     try:
@@ -416,10 +421,7 @@ async def _cs_user_or_404(uid: str) -> dict[str, Any] | None:
     path can't create or expose rows."""
     if uid == api_keys_store.OPEN_MODE_USER["user_id"]:
         return None
-    user = await asyncio.to_thread(api_keys_store.get_user, uid)
-    if user is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "user not found")
-    return user
+    return await asyncio.to_thread(_user_or_404, uid)
 
 
 @router.get(
