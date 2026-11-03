@@ -340,8 +340,7 @@ def load_factory_rules(path: str = FACTORY_PATH) -> list[dict[str, Any]]:
     """Load and validate the committed factory pipeline rules from config.json.
 
     Unlike load_overrides(), this RAISES on any problem — config.json is a
-    required, committed file and the pipeline has no rules without it. The
-    caller surfaces the failure as a fatal startup error.
+    required, committed file and the pipeline has no rules without it.
 
     Returns the validated PIPELINE_RULES list (list of plain dicts).
     """
