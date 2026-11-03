@@ -3128,7 +3128,7 @@
   }
 
   // Assigned, not function-declared: the groups-aware render further down
-  // sets it, with no dead shadowed definition left behind.
+  // sets it.
   var render;
 
   async function load(agreed) {
@@ -5752,8 +5752,6 @@
     list.innerHTML = '';
     // Members render inside their group card, so leave them out of the flat list.
     var ungrouped = rows.filter(function(r) { return !r.sample_id; });
-    // Groups take the same status, model and search filters. `audio_missing`
-    // is a captures-only status, so no group shows under that filter.
     var filteredSamples = _allSamples.filter(function(g) {
       if (_filtStatus !== 'all' && g.status !== _filtStatus) return false;
       return sampleMatchesFilters(g);
