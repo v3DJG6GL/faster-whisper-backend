@@ -294,7 +294,8 @@ class RunPlan:
              step: str | None = None) -> None:
         """One progress-registry write. Advances the plan when the tick
         names a stage that has not started, labels a sub-phase otherwise,
-        and moves the translation units along with `target`."""
+        and moves the stage's units (translation targets, diarization
+        steps) along with `target`."""
         if not stage:
             return
         name = SUBPHASE_OF.get(stage, stage)
