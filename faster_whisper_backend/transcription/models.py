@@ -700,8 +700,8 @@ def _schedule_trim_to_cap(keep: "str | None" = None) -> None:
 
     ``keep`` (the model whose lease just went, or that an unleased load just
     cached) is never evicted by it: in an all-leased overflow that model is
-    the only unleased entry, and evicting it made every request for it a cold
-    reload.
+    the only unleased entry, and evicting it would make every request for it
+    a cold reload.
     The latest call's ``keep`` wins, except that ``None`` never clears a
     pending trim's; the excess is reclaimed by the trim the release of
     another model's lease schedules."""
@@ -743,8 +743,8 @@ _convert_locks_meta = asyncio.Lock()
 
 def _converted_root() -> str:
     """Output root for converted models. "~" and $VAR in CONVERTED_MODELS_DIR
-    are expanded here (dotenv does not): verbatim, the weights landed in a
-    literal "./~" dir under the cwd."""
+    are expanded here (dotenv does not): unexpanded, the weights would land in
+    a literal "./~" dir under the cwd."""
     configured = getattr(cfg, "CONVERTED_MODELS_DIR", None)
     if configured:
         return os.path.expandvars(os.path.expanduser(configured))
