@@ -117,8 +117,8 @@ def test_stored_out_of_range_suppress_token_is_dropped_not_forwarded():
 
 
 def test_suppress_chars_survive_a_client_suppress_tokens_override(monkeypatch):
-    # The chars merge runs AFTER the client override, which used to replace
-    # the merged ids wholesale.
+    # The chars merge runs AFTER the client override, so a client list
+    # cannot replace the merged ids wholesale.
     monkeypatch.setattr(tx_models, "_resolve_suppress_chars", lambda *a: [7, 8])
     kw = _assemble({"SUPPRESS_CHARS": "."}, overrides={"suppress_tokens": "5,6"})
     assert kw["suppress_tokens"] == [5, 6, 7, 8]
