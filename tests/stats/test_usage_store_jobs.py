@@ -562,7 +562,7 @@ def test_half_hour_zone_files_the_boundary_hour_inside_the_window(usage_store_db
 def test_server_local_fallback_matches_tz_none(usage_store_db, set_tz):
     set_tz("America/New_York")
     us = usage_store_db
-    # 23:00 New York on the 3rd = 04:00 UTC on the 4th.
+    # 23:00 New York on the 3rd = 03:00 UTC on the 4th.
     ny = zoneinfo.ZoneInfo("America/New_York")
     us.record_usage(key_id="k", user_id="u", audio_s=1.0, words=5, status="ok",
                     kind="file", hour=_hour(2025, 6, 3, 23, 0, ny))
