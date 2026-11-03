@@ -313,8 +313,8 @@ function _makeEntryRow(rule, entry, commitData, onEnter) {
     e.dataTransfer.effectAllowed = 'move';
     // Firefox starts a drag only once SOME data is set. A private type, not
     // text/plain: every text field accepts a text drop natively, so a release
-    // over another card's pattern input inserted the payload there and counted
-    // as a real drop (no cancel restore below).
+    // over another card's pattern input would insert the payload there and
+    // count as a real drop (no cancel restore below).
     try { e.dataTransfer.setData('application/x-fwb-regex-entry', '1'); } catch (_) {}
     DRAG_AUTOSCROLL.begin(row.parentNode);
     setTimeout(() => row.classList.add('rl-dragging'), 0);
