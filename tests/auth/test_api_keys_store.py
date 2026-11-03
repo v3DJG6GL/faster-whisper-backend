@@ -368,7 +368,7 @@ def test_revoke_nonadmin_unguarded(api_keys_db):
 
 def test_concurrent_reads_are_thread_safe(api_keys_db):
     # get_user() & friends share one sqlite3 connection: without every read
-    # under _lock, threadpool workers raced on it → `sqlite3.InterfaceError:
+    # under _lock, threadpool workers race on it → `sqlite3.InterfaceError:
     # bad parameter or other API misuse` and torn rows (created_ts read as None).
     ak = api_keys_db
     uid = ak.create_user("root", is_admin=True)
@@ -757,8 +757,8 @@ def test_parse_binding_keeps_a_split_card_the_rules_in_force_still_hold(monkeypa
 
 def test_list_users_migrates_the_user_binding_the_drawer_sends_back(api_keys_db):
     """The per-user drawer reads list_users() and sends the blob back on
-    every save; a raw stored guard at 1 or a pre-rename key 422'd any edit
-    (keys already arrived migrated through _row_to_key_dict)."""
+    every save; a raw stored guard at 1 or a pre-rename key would 422 any edit
+    (keys already arrive migrated through _row_to_key_dict)."""
     import json
     ak = api_keys_db
     uid = ak.create_user("u", is_admin=False)
