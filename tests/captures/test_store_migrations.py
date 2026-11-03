@@ -15,10 +15,10 @@ def _cols(conn, table):
 
 @contextlib.contextmanager
 def _own_db(module):
-    """Teardown for tests that call init_db()/init() on their own DB path:
-    neither hook closes the previous handle, so a bare call leaks the
-    connection AND leaves the module global bound to a tmp_path DB pytest
-    deletes. Tests without a custom path use the conftest fixtures instead."""
+    """Teardown for tests that call init_db() on their own DB path: it does
+    not close the previous handle, so a bare call leaks the connection AND
+    leaves the module global bound to a tmp_path DB pytest deletes. Tests
+    without a custom path use the conftest fixtures instead."""
     try:
         yield module
     finally:
