@@ -135,6 +135,17 @@ class Permissions:
                 status.HTTP_404_NOT_FOUND, detail,
             )
 
+    def assert_row_found(
+        self, row: dict[str, Any] | None, page: str, caller_uid: str,
+        detail: str,
+    ) -> dict[str, Any]:
+        """404 a missing OR foreign row with the SAME `detail` (the missing
+        check first, then assert_can_read_row); returns the row."""
+        if row is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, detail)
+        self.assert_can_read_row(row, page, caller_uid, detail=detail)
+        return row
+
     def quick_config_tags(self) -> list[str]:
         """The caller's stored per-user tag list, returned as stored for
         admins too — can_see_rule ignores it for them, so never read the

@@ -104,10 +104,8 @@ def _admit_row(
     """404 a missing OR foreign row with ONE detail (a 403, or a different
     body for the two, would confirm the row exists: OWASP IDOR), then audit
     a cross-user read."""
-    if row is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, detail)
-    user["permissions"].assert_can_read_row(
-        row, "captures", user.get("user_id") or "", detail=detail,
+    user["permissions"].assert_row_found(
+        row, "captures", user.get("user_id") or "", detail,
     )
     _audit_cross_user_read(user, row, kind, row_id)
     return row
@@ -1274,18 +1272,13 @@ def _validate_merge_payload(
     tasks: set[str] = set()
     languages: set[str] = set()
     for mid in member_ids:
-        cap = captures_store.get_capture(mid)
-        if cap is None:
-            raise HTTPException(
-                status.HTTP_404_NOT_FOUND, f"capture {mid} not found",
-            )
         # Scope guard per member BEFORE revealing any state (already-in-sample
         # / audio-missing), so a scope=own caller cannot probe another user's
-        # capture id. 404 with the not-found branch's exact detail, so neither
+        # capture id. One 404 detail for missing and foreign, so neither
         # status nor body is an existence oracle.
-        user["permissions"].assert_can_read_row(
-            cap, "captures", user.get("user_id") or "",
-            detail=f"capture {mid} not found",
+        cap = user["permissions"].assert_row_found(
+            captures_store.get_capture(mid), "captures",
+            user.get("user_id") or "", f"capture {mid} not found",
         )
         if cap.get("sample_id"):
             raise HTTPException(

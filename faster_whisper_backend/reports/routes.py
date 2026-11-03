@@ -363,11 +363,8 @@ async def patch_report_api(
     # reports_store._lock, which a submit's eviction or the retention sweep
     # holds for a full-table pass — inline, that wait froze the event loop.
     existing = await asyncio.to_thread(reports_store.get_report, rid)
-    if existing is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "report not found")
-    user["permissions"].assert_can_read_row(
-        existing, "reports", user.get("user_id") or "",
-        detail="report not found",
+    user["permissions"].assert_row_found(
+        existing, "reports", user.get("user_id") or "", "report not found",
     )
     patch: dict[str, Any] = {}
     if payload.status is not None:
@@ -433,11 +430,8 @@ async def delete_report_api(
     via /clear which stays admin-only. Does NOT touch capture chips."""
     # Off the loop (see patch_report_api): both wait on reports_store._lock.
     report = await asyncio.to_thread(reports_store.get_report, rid)
-    if report is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "report not found")
-    user["permissions"].assert_can_read_row(
-        report, "reports", user.get("user_id") or "",
-        detail="report not found",
+    user["permissions"].assert_row_found(
+        report, "reports", user.get("user_id") or "", "report not found",
     )
     await asyncio.to_thread(reports_store.delete_report, rid)
     return JSONResponse({"ok": True})
