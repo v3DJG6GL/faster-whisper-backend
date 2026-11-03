@@ -16,7 +16,7 @@ always had, two things are decided here:
   /quick-config, which nobody should have to spell twice.
 * **Dictated punctuation wins.** Whisper writes its own punctuation as it
   hears the pauses, and the strip rule keeps a mark right after a digit (so
-  3.5 survives). " HB 12... Komma 5" therefore reached the map as
+  3.5 survives). "12... Komma 5" therefore reached the map as
   "12. Komma 5", became "12. , 5" and the dedup rule kept the period — the
   dictated comma lost. A run of ``. , : ; ! ? …`` (plus spaces) directly
   before a word whose value is punctuation is now consumed by the match and
