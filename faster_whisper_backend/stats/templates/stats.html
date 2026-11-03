@@ -997,6 +997,9 @@ const READOUTS = [
   ['ram-now', 'ram_pct', v => v.toFixed(0) + '%'],
   ['lat-now', 'lat_p50', v => v.toFixed(0) + ' ms'],
 ];
+// The live readouts use the same formatter as their frozen text.
+const READOUT_FMT = Object.fromEntries(READOUTS.map(([id, , fmt]) => [id, fmt]));
+function setReadout(id, v) { $(id).textContent = READOUT_FMT[id](v); }
 function onSparkHover(u) {
   const idx = u.cursor.idx, xs = u.data[0] || [];
   const ts = (idx == null || idx < 0 || idx >= xs.length) ? null : xs[idx];
@@ -1314,7 +1317,6 @@ function applyFreeze() {
 // Range mode twin of applyFreeze: each readout shows its own series'
 // sample nearest the frozen timestamp, with the window's clock text.
 function applyRangeFreeze() {
-  const fmtOf = {}; READOUTS.forEach(([id, , fmt]) => { fmtOf[id] = fmt; });
   // A readout with no range series (lat-now) stays live in range mode: a
   // freeze carried over from the live ring must not keep it painted frozen.
   const owned = Object.values(SPARK_HEAD);
@@ -1330,7 +1332,7 @@ function applyRangeFreeze() {
       continue;
     }
     const v = d.avg[nearestIdx(d.t, frozenTs)];
-    el.textContent = (v == null ? '—' : (fmtOf[id] || String)(v)) + ' @ ' + flagTime(frozenTs);
+    el.textContent = (v == null ? '—' : (READOUT_FMT[id] || String)(v)) + ' @ ' + flagTime(frozenTs);
     el.classList.add('frozen');
   }
 }
@@ -1656,9 +1658,9 @@ function render(snap) {
     setData(sparks.gpu_util, hist.gpu_util);
     setData(sparks.gpu_mem,  hist.gpu_mem_pct);
     setData(sparks.gpu_temp, hist.gpu_temp);
-    $('gpu-util-now').textContent = (snap.gpu.util_pct ?? 0).toFixed(0) + '%';
-    $('gpu-mem-now').textContent  = memPct.toFixed(0) + '%';
-    $('gpu-temp-now').textContent = (snap.gpu.temp_c ?? 0).toFixed(0) + '°C';
+    setReadout('gpu-util-now', snap.gpu.util_pct ?? 0);
+    setReadout('gpu-mem-now', memPct);
+    setReadout('gpu-temp-now', snap.gpu.temp_c ?? 0);
   } else {
     $('gpu-content').classList.add('hidden');
     $('gpu-empty').classList.remove('hidden');
@@ -1676,7 +1678,7 @@ function render(snap) {
     stripEl.children[i].style.height = Math.max(2, cores[i]) + '%';
   }
   setData(sparks.cpu, hist.cpu);
-  $('cpu-now').textContent = (snap.host.cpu_pct ?? 0).toFixed(0) + '%';
+  setReadout('cpu-now', snap.host.cpu_pct ?? 0);
 
   $('ram-val').innerHTML = `${fmtBytes(snap.host.ram_used_mb)} ` +
     `<span class="sub">/ ${fmtBytes(snap.host.ram_total_mb)}</span>`;
@@ -1684,7 +1686,7 @@ function render(snap) {
   $('ram-meta').innerHTML = `<b>${snap.host.ram_pct.toFixed(1)}%</b> used &nbsp; ` +
     `<b>disk free</b> ${snap.host.disk_free_gb ?? '—'} GB (model cache)`;
   setData(sparks.ram, hist.ram_pct);
-  $('ram-now').textContent = (snap.host.ram_pct ?? 0).toFixed(0) + '%';
+  setReadout('ram-now', snap.host.ram_pct ?? 0);
 
   $('proc-rss').innerHTML = (snap.process.rss_mb ?? 0).toFixed(0) +
     '<span class="sub">MB RSS</span>';
@@ -1739,7 +1741,7 @@ function render(snap) {
     $('lat-meta').innerHTML =
       `<b>p95</b> ${lat.p95.toFixed(0)} ms &nbsp; ` +
       `<b>p99</b> ${lat.p99.toFixed(0)} ms`;
-    $('lat-now').textContent = lat.p50.toFixed(0) + ' ms';
+    setReadout('lat-now', lat.p50);
   } else {
     $('lat-val').innerHTML = '—';
     $('lat-meta').innerHTML = '<span class="empty">no requests yet</span>';
