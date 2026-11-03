@@ -451,7 +451,7 @@ def render_prompt(text: str, target: str, *, source: "str | None" = None,
     UNSAVED select value); ``template`` renders the custom family with THAT
     template. Returns a JSON-shaped dict: chat families carry ``messages``,
     raw-completion families carry ``text``."""
-    ref = (model_ref or "").strip() or tr_gating._translation_default_model()
+    ref = tr_gating._translation_model_or_default(model_ref)
     fam_name = (family or "").strip().lower()
     if fam_name not in _FAMILIES:
         fam_name = "custom" if template is not None else resolve_family(ref)
@@ -1758,7 +1758,7 @@ async def translate_segments(
     ``download_cb(done_bytes, total_bytes)`` receives byte progress when a
     cold model also has to download its weights.
     """
-    ref = (model_ref or "").strip() or tr_gating._translation_default_model()
+    ref = tr_gating._translation_model_or_default(model_ref)
     if not ref:
         raise TranslationError(
             "no translation model configured (TRANSLATION_DEFAULT_MODEL)")

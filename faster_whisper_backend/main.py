@@ -2202,8 +2202,8 @@ async def transcribe(
             if _translate_to:
                 _rplan.set_translation(
                     list(_translate_to),
-                    model=((_translation_model or "").strip()
-                           or tr_gating._translation_default_model() or None),
+                    model=(tr_gating._translation_model_or_default(
+                        _translation_model) or None),
                     device=_tr._resolve_device(),
                     mode=_translation_mode,
                     # A pinned decode language already tells which targets
@@ -2228,8 +2228,8 @@ async def transcribe(
             if _diarize and _diarization_model:
                 _preload_entries.append(("diarization", _diarization_model))
             if _translate_to:
-                _tr_ref = ((_translation_model or "").strip()
-                           or tr_gating._translation_default_model())
+                _tr_ref = tr_gating._translation_model_or_default(
+                    _translation_model)
                 # Same allowlist verdict the stage itself renders later: a
                 # ref the stage will refuse must not be pre-warmed (the plan
                 # would download/load an arbitrary GGUF the request cannot
@@ -2885,8 +2885,8 @@ async def transcribe(
                     # CLIENT-requested value — an admin-pinned per-model/
                     # per-identity TRANSLATION_MODEL is policy and passes,
                     # exactly like the diarization/separation gates above.
-                    _tr_model = ((_translation_model or "").strip()
-                                 or tr_gating._translation_default_model())
+                    _tr_model = tr_gating._translation_model_or_default(
+                        _translation_model)
                     if not tr_gating._translation_model_allowed(
                             _tr_model, requested=_tm_req,
                             inherited=_tm_inherited):

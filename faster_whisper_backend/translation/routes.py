@@ -269,8 +269,8 @@ async def translate_text(request: Request,
             raise HTTPException(status_code=422,
                                 detail="translation_model must be a string")
         _tm_req = (model_ref or "").strip() or None
-        _tr_model = (_knob("TRANSLATION_MODEL", "translation_model",
-                           _tm_req) or "").strip() or tr_gating._translation_default_model()
+        _tr_model = tr_gating._translation_model_or_default(
+            _knob("TRANSLATION_MODEL", "translation_model", _tm_req))
         # Shared allowlist gate; like the batch stage, it constrains only the
         # CLIENT-requested value — an admin-pinned per-identity/per-model
         # TRANSLATION_MODEL is policy and passes.

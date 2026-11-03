@@ -19,6 +19,13 @@ def _translation_default_model() -> str:
     return (getattr(cfg, "TRANSLATION_DEFAULT_MODEL", "") or "").strip()
 
 
+def _translation_model_or_default(ref: "str | None") -> str:
+    """The ref a translation runs: `ref` trimmed, or the server default when
+    it is blank ("" when neither is set). Read at call time, so a live admin
+    edit of the default applies."""
+    return (ref or "").strip() or _translation_default_model()
+
+
 def _translation_model_allowed(ref: str,
                                requested: "str | None" = None,
                                inherited: "str | None" = None) -> bool:
