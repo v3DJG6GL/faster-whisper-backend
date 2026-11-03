@@ -1144,12 +1144,8 @@ def series(
             cell = agg[day] = {"day": day, "requests": 0, "errors": 0,
                                "words": 0, "audio_s": 0.0, "processing_s": 0.0,
                                "sessions": 0}
-        cell["requests"] += int(r["requests"] or 0)
-        cell["errors"] += int(r["errors"] or 0)
-        cell["words"] += int(r["words"] or 0)
-        cell["audio_s"] += float(r["audio_s"] or 0.0)
-        cell["processing_s"] += float(r["processing_s"] or 0.0)
-        cell["sessions"] += int(r["sessions"] or 0)
+        for k, v in _hourly_cell(r).items():
+            cell[k] += v
     return [agg[d] for d in sorted(agg)]
 
 
@@ -1219,20 +1215,6 @@ def _zero_cell() -> dict[str, Any]:
 
 def _zero_split() -> dict[str, dict[str, Any]]:
     return {"all": _zero_cell(), **{k: _zero_cell() for k in KINDS}}
-
-
-def _add_row(split: dict[str, dict[str, Any]], r: sqlite3.Row) -> None:
-    """Add one usage_hourly row (or per-kind SUM row) to a split: always to
-    `all`, and to its kind when the kind is one the client knows."""
-    for cell in (split["all"], split.get(r["kind"])):
-        if cell is None:
-            continue
-        cell["sessions"] += int(r["sessions"] or 0)
-        cell["requests"] += int(r["requests"] or 0)
-        cell["errors"] += int(r["errors"] or 0)
-        cell["words"] += int(r["words"] or 0)
-        cell["audio_s"] += float(r["audio_s"] or 0.0)
-        cell["processing_s"] += float(r["processing_s"] or 0.0)
 
 
 def _rounded(split: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
@@ -1747,13 +1729,7 @@ def overview(
                         + " AND created_ts >= ? AND created_ts < ?",
                         (*params, *with_stages, start_ts, end_ts))]
         else:
-            rows = [(_epoch_day(_date_of(int(r["hour"]) * 3600, tz)), r,
-                     {"sessions": int(r["sessions"] or 0),
-                      "requests": int(r["requests"] or 0),
-                      "errors": int(r["errors"] or 0),
-                      "words": int(r["words"] or 0),
-                      "audio_s": float(r["audio_s"] or 0.0),
-                      "processing_s": float(r["processing_s"] or 0.0)})
+            rows = [(_epoch_day(_date_of(int(r["hour"]) * 3600, tz)), r, _hourly_cell(r))
                     for r in conn.execute(
                         "SELECT hour, user_id, key_id, SUM(requests) AS requests,"
                         " SUM(errors) AS errors, SUM(words) AS words, SUM(audio_s) AS audio_s,"
@@ -2373,27 +2349,23 @@ def _fill_from_rollups(conn, doc, user_id, tz, today, start_hour, end_hour,
         h = int(r["hour"])
         ts = h * 3600
         day = _date_of(ts, tz)
-        words = int(r["words"] or 0)
         kind = r["kind"]
+        cell = _hourly_cell(r)
+        words = cell["words"]
         if words > 0:
             _add_words(words_all_days.setdefault(day, _words_split()), kind, words)
         if today_start <= h < today_end:
-            _add_row(today_split, r)
+            _add_cell(today_split, kind, cell)
         if start_hour <= h < end_hour:
-            _add_row(window, r)
+            _add_cell(window, kind, cell)
             split = by_day.get(day)
             if split is None:
                 split = by_day[day] = _zero_split()
-            _add_row(split, r)
+            _add_cell(split, kind, cell)
             _add_words(words_by_day.setdefault(day, _words_split()), kind, words)
             slot = _slot_of(ts, tz)
             _add_words(words_by_slot.setdefault(slot, _words_split()), kind, words)
-            _add_slot_extra(extra_by_slot.setdefault(slot, _slot_extra()), kind,
-                            {"processing_s": float(r["processing_s"] or 0.0),
-                             "audio_s": float(r["audio_s"] or 0.0),
-                             "sessions": int(r["sessions"] or 0),
-                             "requests": int(r["requests"] or 0),
-                             "errors": int(r["errors"] or 0)})
+            _add_slot_extra(extra_by_slot.setdefault(slot, _slot_extra()), kind, cell)
     doc["total"] = _rounded(window)
     doc["today"] = _rounded(today_split)
     doc["stages"] = _stages(conn, user_id, start_hour, end_hour, window)
@@ -2416,6 +2388,19 @@ def _fill_from_rollups(conn, doc, user_id, tz, today, start_hour, end_hour,
     _finish(doc, by_day=by_day, words_by_day=words_by_day,
             words_by_slot=words_by_slot, words_all_days=words_all_days,
             today=today, extra_by_slot=extra_by_slot)
+
+
+def _hourly_cell(r: sqlite3.Row) -> dict[str, Any]:
+    """One usage_hourly row (or per-group SUM row) as a cell: the rollup
+    twin of _job_cell."""
+    return {
+        "sessions": int(r["sessions"] or 0),
+        "requests": int(r["requests"] or 0),
+        "errors": int(r["errors"] or 0),
+        "words": int(r["words"] or 0),
+        "audio_s": float(r["audio_s"] or 0.0),
+        "processing_s": float(r["processing_s"] or 0.0),
+    }
 
 
 def _job_cell(job: sqlite3.Row) -> dict[str, Any]:
