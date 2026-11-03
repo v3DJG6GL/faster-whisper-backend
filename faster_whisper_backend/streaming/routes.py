@@ -1766,9 +1766,10 @@ async def transcribe_stream(ws: WebSocket) -> None:
                 except asyncio.QueueEmpty:
                     break
                 if kind == "stop":
-                    # _pump's ONLY exit is this sentinel, and teardown awaits the
-                    # pump task with no timeout — discarding it would wedge the
-                    # consumer and leak the session slot. Put it back, stop draining.
+                    # Short of a revocation, _pump exits only on this sentinel, and
+                    # teardown awaits the pump task with no timeout — discarding it
+                    # would wedge the consumer and leak the session slot. Put it
+                    # back, stop draining.
                     audio_q.put_nowait((kind, old))
                     break
                 dropped = len(old) if (kind == "pcm" and old) else 0
