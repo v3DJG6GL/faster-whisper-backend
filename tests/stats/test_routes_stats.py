@@ -13,6 +13,10 @@ from faster_whisper_backend.stats import metrics
 from faster_whisper_backend.translation import engine as translation
 
 
+def _stats_js() -> str:
+    return pathlib.Path(REPO_ROOT, "static", "stats.js").read_text(encoding="utf-8")
+
+
 def test_stats_page_loopback_ok(client):
     r = client.get("/stats")
     assert r.status_code == 200
@@ -188,7 +192,7 @@ def test_stage_hues_have_one_definition():
     assert web_common.STAGE_COLORS["transcribing"] == "#93b76f"
     assert web_common.STAGE_COLORS["diarizing"] == "#c68fb4"
     assert web_common.STAGE_COLORS["translating"] == "#4dd0c4"
-    js = pathlib.Path(REPO_ROOT, "static", "stats.js").read_text(encoding="utf-8")
+    js = _stats_js()
     for stage in web_common.STAGE_COLORS:
         assert f"var(--stage-{stage})" in stats_routes._STATS_VIEWER_HTML
         assert f"var(--stage-{stage})" in quick_config_routes._QUICK_CONFIG_HTML
@@ -753,8 +757,7 @@ def test_stats_page_ships_own_scope_chrome(client):
     assert 'id="scope-pill"' in html and 'your usage' in html
     assert "GS_LAYOUT_KEY += '-own'" in html
     assert "if (snap.machine === false) {" in html
-    with pathlib.Path(REPO_ROOT, "static", "stats.js").open(encoding="utf-8") as f:
-        js = f.read()
+    js = _stats_js()
     assert "not available for your scope" in js
 
 
@@ -887,8 +890,7 @@ def test_stats_js_contract(client):
     promises: URL-mirrored state, stacked bars via uPlot's bars path, a
     keyboard-scrubbable chart with an aria-live readout, quartile levels for
     the hour grid, the v11 layout key, and the own-scope reload hook."""
-    with pathlib.Path(REPO_ROOT, "static", "stats.js").open(encoding="utf-8") as f:
-        js = f.read()
+    js = _stats_js()
     for s in ("history.replaceState", "uPlot.paths.bars(", "function quantileBreaks",
               "function parsePageQuery", "function pageQueryParams",
               "'ArrowLeft', 'ArrowRight', 'Home', 'End'", "usage-live",
@@ -911,8 +913,7 @@ def test_stats_layout_presets_edit_mode_and_ring_freeze(client):
     with keyboard move/resize (GridStack has none), and the live rings'
     shared crosshair that freezes the readouts at the hovered second."""
     html = client.get("/stats").text
-    with pathlib.Path(REPO_ROOT, "static", "stats.js").open(encoding="utf-8") as f:
-        js = f.read()
+    js = _stats_js()
     assert 'id="layout-preset"' in html and 'id="edit-layout-btn"' in html
     assert 'id="layout-live"' in html
     for s in ("const GS_PRESETS = {", "staticGrid: true", "function setPreset(",
@@ -1176,8 +1177,7 @@ def test_stats_page_jobs_table_survives_filter_changes_and_frames(client):
     assert jobs.index("if (rjAnchored && lastJobsSnap") < jobs.index("lastJobsSnap = snap;")
     assert "snapRows.concat(rjHeld.concat(rjExtra)" in jobs
     assert "rjAnchored = false; rjHeld = [];" in html
-    with pathlib.Path(REPO_ROOT, "static", "stats.js").open(encoding="utf-8") as f:
-        js = f.read()
+    js = _stats_js()
     for s in ("if (sig === _publishedSig) return;",
               "Object.assign(pickLabels.user, (j.filter || {}).user_labels || {});",
               "el.hasAttribute('data-nostage') ? htmlNoStage : html",
@@ -1212,8 +1212,7 @@ def test_stats_page_ring_scrubber_range_mode_and_tail_cards(client):
     from /stats/history in range mode, the turnaround and failures tiles
     fed from /stats/tail, turnaround in the headline."""
     html = client.get("/stats").text
-    with pathlib.Path(REPO_ROOT, "static", "stats.js").open(encoding="utf-8") as f:
-        js = f.read()
+    js = _stats_js()
     assert 'id="live-range"' in html and 'id="ring-scrub"' in html
     assert "fetch('/stats/history?metric='" in html
     assert "if (liveMode !== 'live')" in html
@@ -1432,8 +1431,7 @@ def test_stats_js_chart_never_all_hidden_after_reload(client):
     kind: the reload must not draw an empty chart with the empty message
     hidden, so prepareLines, not renderChart, applies the legend's
     never-blank guard (before the compare total and the legend)."""
-    with pathlib.Path(REPO_ROOT, "static", "stats.js").open(encoding="utf-8") as f:
-        js = f.read()
+    js = _stats_js()
     assert "if (hidden.size === curLines.length) hidden.clear();" in js
     assert "if (hidden.size && hidden.size === curLines.length) hidden.clear();" in js
     prep = js[js.index("function prepareLines() {"):js.index("function chartData()")]
@@ -1449,8 +1447,7 @@ def test_stats_js_tail_never_shows_the_previous_window(client):
     (or a failed tail fetch) drew the old window's turnaround and failures
     under the new chips. A 403 from a superseded load must not overwrite a
     newer leaderboard either."""
-    with pathlib.Path(REPO_ROOT, "static", "stats.js").open(encoding="utf-8") as f:
-        js = f.read()
+    js = _stats_js()
     load = js[js.index("function load() {"):js.index("function showError()")]
     assert load.index("lastTail = null;") < load.index("loadTail(mine);")
     assert load.index("if (mine !== _seq) return;") < load.index(
@@ -1471,8 +1468,7 @@ def test_stats_js_usage_chart_formats_the_drawn_documents_metric(client):
     lastDoc's audio seconds as word counts (or the reverse) and the legend
     named the wrong metric. The chart, tip, legend and table format the
     metric lastDoc echoes."""
-    with pathlib.Path(REPO_ROOT, "static", "stats.js").open(encoding="utf-8") as f:
-        js = f.read()
+    js = _stats_js()
     assert "function docMetric() { return (lastDoc && lastDoc.metric) || Q.metric; }" in js
     for start, end in (("function updateTip(u) {", "function showTipAt("),
                        ("function renderChart() {", "function refreshChart() {"),
@@ -1486,8 +1482,7 @@ def test_stats_js_usage_chart_formats_the_drawn_documents_metric(client):
 def test_stats_js_chart_month_ticks_on_long_ranges():
     """Past 400 days the x labels read only YY.MM: the ticks sit on UTC month
     starts every k months, not on a fixed day step that drifts off them."""
-    with pathlib.Path(REPO_ROOT, "static", "stats.js").open(encoding="utf-8") as f:
-        js = f.read()
+    js = _stats_js()
     splits = js[js.index("splits: (u) => {"):js.index("values: (u, splits) =>")]
     month = splits[splits.index("if (days > 400) {"):]
     assert "Date.UTC(y, m, 1) / 1000" in month
@@ -1498,8 +1493,7 @@ def test_stats_board_unknown_kind_row_not_clickable(client):
     """The by=kind board can carry a server-side "unknown" row (pre-kind
     rollups); it is not a valid kinds= filter, so the row stays display-only
     and the server contract it mirrors still rejects it."""
-    with pathlib.Path(REPO_ROOT, "static", "stats.js").open(encoding="utf-8") as f:
-        js = f.read()
+    js = _stats_js()
     assert "(by !== 'kind' || KINDS.includes(r.id))" in js
     assert client.get("/stats/usage?days=30&by=kind&kinds=unknown").status_code == 422
     assert client.get("/stats/tail?days=30&kind=unknown").status_code == 422
@@ -1553,8 +1547,7 @@ def test_stats_js_discloses_unscoped_stage_rollups_and_small_fixes(client):
     board row spans every column; hotkeys ignore chords; no "Infinity×
     live"; a zero compare value with a current one is "new", not flat;
     the reset-layout button drops a pending save."""
-    with pathlib.Path(REPO_ROOT, "static", "stats.js").open(encoding="utf-8") as f:
-        js = f.read()
+    js = _stats_js()
     for s in ("function breakdownUnscoped()",
               "(lastDoc.filter || {}).kind_scoped === false",
               "const unscoped = rg.kind_scoped === false || rg.key_scoped === false;",
@@ -1591,7 +1584,7 @@ def test_stats_js_does_not_rebuild_an_unchanged_picker():
     """setPicked() redraws the option list; echoing the widget's own pick
     back into it mid-click (and again on the reload) scrolled the list to the
     top and dropped focus. stats.js only pushes a set the widget lacks."""
-    js = pathlib.Path(REPO_ROOT, "static", "stats.js").read_text(encoding="utf-8")
+    js = _stats_js()
     assert "if (!inst || _pickerHas[list] === _pickSig(Q[list])) return;" in js
     assert "whoPicker.setPicked(Q.users)" not in js
     # the widget's own change is recorded before the echo
@@ -1612,7 +1605,7 @@ def test_stats_board_sort_resets_when_its_column_leaves(client):
     """'words' is a leaderboard column only while it is the measure: a words
     sort kept ordering the rows after a measure switch, with no header
     showing it. renderBoard drops a sort whose column is gone."""
-    js = pathlib.Path(REPO_ROOT, "static", "stats.js").read_text(encoding="utf-8")
+    js = _stats_js()
     board = js[js.index("function renderBoard() {"):]
     reset = board.index(
         "if (boardSort.key && !cols.some(c => c[0] === boardSort.key)) "
@@ -1714,8 +1707,7 @@ def test_stats_js_turnaround_overlays_and_rhythm_compare_total(client):
     data-tip, so hovering them hid the tooltip); the rhythm legend's compare
     total counts every compare record, also one the window's days grid has
     no column for (Oct 31 vs a Nov window)."""
-    with pathlib.Path(REPO_ROOT, "static", "stats.js").open(encoding="utf-8") as f:
-        js = f.read()
+    js = _stats_js()
     ta = js[js.index("function renderTurnaround() {"):]
     ta = ta[:ta.index("el.innerHTML = '<svg")]
     for s in ("s += '<rect' + NP + ' x=\"' + x.toFixed(1)",
@@ -1785,7 +1777,7 @@ def test_stats_turnaround_tooltip_and_resize_use_the_drawn_tail():
     """The tooltip uses the tail the bars were drawn from, never lastTail, and
     the resize redraw waits for the current usage document: lastTail already
     holds the next window while its usage document is in flight."""
-    js = pathlib.Path(REPO_ROOT, "static", "stats.js").read_text(encoding="utf-8")
+    js = _stats_js()
     ta = js[js.index("function renderTurnaround() {"):]
     ta = ta[:ta.index("\n}\n")]
     tips = ta[ta.index("wireTips(el, '[data-tip]'"):ta.index("el._ro = new ResizeObserver")]
