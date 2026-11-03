@@ -70,7 +70,7 @@ def _reload_main(tmp_path, monkeypatch, cors_env, trusted_env=""):
     """Re-import config+main with a temp store layout and a CORS allowlist set,
     through the same isolate_app_env the conftest app_module fixture uses
     (which can't parameterize env). Each caller's finally runs
-    close_app_stores() after its lifespan."""
+    _undo_reload() after its lifespan."""
     monkeypatch.setenv("WHISPER_CORS_ALLOW_ORIGINS", cors_env)
     monkeypatch.setenv("WHISPER_TRUSTED_ORIGINS", trusted_env)
     isolate_app_env(tmp_path, monkeypatch)
@@ -78,6 +78,15 @@ def _reload_main(tmp_path, monkeypatch, cors_env, trusted_env=""):
     from faster_whisper_backend import main
     importlib.reload(main)
     return main, cfg
+
+
+def _undo_reload(main, monkeypatch, env):
+    """Undo _reload_main: close the stores, drop `env`, re-import config +
+    main."""
+    close_app_stores()
+    monkeypatch.delenv(env, raising=False)
+    importlib.reload(importlib.import_module("faster_whisper_backend.settings.config"))
+    importlib.reload(main)
 
 
 def _preflight(client, origin):
@@ -98,10 +107,7 @@ def test_cors_preflight_allows_configured_origin(tmp_path, monkeypatch):
         assert r.headers.get("access-control-allow-origin") == origin
         assert "POST" in (r.headers.get("access-control-allow-methods") or "")
     finally:
-        close_app_stores()
-        monkeypatch.delenv("WHISPER_CORS_ALLOW_ORIGINS", raising=False)
-        importlib.reload(importlib.import_module("faster_whisper_backend.settings.config"))
-        importlib.reload(main)
+        _undo_reload(main, monkeypatch, "WHISPER_CORS_ALLOW_ORIGINS")
 
 
 def test_trusted_origin_passes_guard_without_enabling_cors(tmp_path, monkeypatch):
@@ -120,10 +126,7 @@ def test_trusted_origin_passes_guard_without_enabling_cors(tmp_path, monkeypatch
             assert _preflight(client, origin).headers.get(
                 "access-control-allow-origin") is None
     finally:
-        close_app_stores()
-        monkeypatch.delenv("WHISPER_TRUSTED_ORIGINS", raising=False)
-        importlib.reload(importlib.import_module("faster_whisper_backend.settings.config"))
-        importlib.reload(main)
+        _undo_reload(main, monkeypatch, "WHISPER_TRUSTED_ORIGINS")
 
 
 def test_cross_site_origin_still_rejected_with_trusted_origins_set(tmp_path, monkeypatch):
@@ -137,10 +140,7 @@ def test_cross_site_origin_still_rejected_with_trusted_origins_set(tmp_path, mon
         assert r.status_code == 403
         assert r.json()["detail"] == "Origin not allowed for this host"
     finally:
-        close_app_stores()
-        monkeypatch.delenv("WHISPER_TRUSTED_ORIGINS", raising=False)
-        importlib.reload(importlib.import_module("faster_whisper_backend.settings.config"))
-        importlib.reload(main)
+        _undo_reload(main, monkeypatch, "WHISPER_TRUSTED_ORIGINS")
 
 
 def test_cors_star_allows_any_origin(tmp_path, monkeypatch):
@@ -153,10 +153,7 @@ def test_cors_star_allows_any_origin(tmp_path, monkeypatch):
             r = _preflight(client, "http://anything.example:1234")
         assert r.headers.get("access-control-allow-origin") == "*"
     finally:
-        close_app_stores()
-        monkeypatch.delenv("WHISPER_CORS_ALLOW_ORIGINS", raising=False)
-        importlib.reload(importlib.import_module("faster_whisper_backend.settings.config"))
-        importlib.reload(main)
+        _undo_reload(main, monkeypatch, "WHISPER_CORS_ALLOW_ORIGINS")
 
 
 def test_an_early_413_still_carries_the_cors_header(tmp_path, monkeypatch):
@@ -175,7 +172,4 @@ def test_an_early_413_still_carries_the_cors_header(tmp_path, monkeypatch):
         assert r.status_code == 413
         assert r.headers.get("access-control-allow-origin") == origin
     finally:
-        close_app_stores()
-        monkeypatch.delenv("WHISPER_CORS_ALLOW_ORIGINS", raising=False)
-        importlib.reload(importlib.import_module("faster_whisper_backend.settings.config"))
-        importlib.reload(main)
+        _undo_reload(main, monkeypatch, "WHISPER_CORS_ALLOW_ORIGINS")
