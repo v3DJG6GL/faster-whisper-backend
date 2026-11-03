@@ -1,6 +1,7 @@
 """The post-processing rules engine: compiles cfg.PIPELINE_RULES into
-_COMPILED_RULES (rebuild_caches — at import and again on an admin save that
-touches a CACHE_REBUILD_FIELDS key) and applies them to a transcript
+_COMPILED_RULES (rebuild_caches — at import and again on any config save,
+admin or quick-config, that touches a CACHE_REBUILD_FIELDS key) and applies
+them to a transcript
 (_postprocess_text), plus the live-dictation seam helpers holdback_start /
 seam_culprit that read the same rule selection. Callers go through the module
 attribute (``pl_engine._postprocess_text(...)``): rebuild_caches rebinds
