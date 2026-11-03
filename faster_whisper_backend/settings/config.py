@@ -1470,7 +1470,7 @@ except ImportError:
 # Collects "couldn't parse WHISPER_X=..." messages encountered while applying
 # env overrides at import time. main.py drains this AFTER logging is configured
 # (config.py runs too early to log), so a typo like WHISPER_BEAM_SIZE=ten is
-# surfaced as a warning rather than silently ignored. See main.py startup.
+# surfaced as a warning rather than silently ignored.
 _ENV_WARNINGS: list[str] = []
 # Names of env vars whose value a reader below could not parse (and so kept
 # the current value). The validation pass at the bottom folds these into
