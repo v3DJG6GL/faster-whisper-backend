@@ -428,6 +428,16 @@ def test_digit_range_keeps_a_line_break_between_two_numbers():
     assert sub("Termin 10 - 12 Uhr") == "Termin 10/12 Uhr"
 
 
+def _assert_silence_loop_is_fast(app_module, unit, n):
+    app_module.cfg.PIPELINE_RULES = copy.deepcopy(_factory_rules())
+    pl_engine.rebuild_caches()
+    t0 = time.perf_counter()
+    out = pl_engine._postprocess_text(" Das war es " + unit * n + "Danke.",
+                                      model_name="", language="de")
+    assert time.perf_counter() - t0 < 1.0
+    assert out == "Das war es Danke"
+
+
 @pytest.mark.parametrize("unit", ["... ", " .", " ,"])
 def test_space_before_closing_punct_is_fast_on_a_hallucinated_dot_loop(app_module, unit):
     """Whisper hallucinates "... ... ..." on silence; strip-auto-punctuation
@@ -436,13 +446,7 @@ def test_space_before_closing_punct_is_fast_on_a_hallucinated_dot_loop(app_modul
     of the run and scanned to its end when no closing mark followed: 40000
     items took 7 s on /transcribe. A match now starts only at a run's first
     space (0.05 s)."""
-    app_module.cfg.PIPELINE_RULES = copy.deepcopy(_factory_rules())
-    pl_engine.rebuild_caches()
-    t0 = time.perf_counter()
-    out = pl_engine._postprocess_text(" Das war es " + unit * 40000 + "Danke.",
-                                      model_name="", language="de")
-    assert time.perf_counter() - t0 < 1.0
-    assert out == "Das war es Danke"
+    _assert_silence_loop_is_fast(app_module, unit, 40000)
 
 
 def _assert_same_output_as_old(label, samples):
@@ -489,7 +493,7 @@ def test_trim_trailing_period_is_fast_on_a_hallucinated_symbol_loop(app_module, 
     `\\s*\\.+\\s*$` started a match at every space of the run, took the rest
     of it and found no dot: 40000 spaces took 8 s on /transcribe. A match now
     starts only at a run's first space."""
-    _assert_trim_trailing_period_is_fast(app_module, unit, n)
+    _assert_silence_loop_is_fast(app_module, unit, n)
 
 
 def test_trim_trailing_period_is_fast_on_a_hallucinated_dot_run(app_module):
@@ -497,17 +501,7 @@ def test_trim_trailing_period_is_fast_on_a_hallucinated_dot_run(app_module):
     before strip-auto-punctuation deletes the dots. A match started at every
     dot of the run, took the rest of it and found text after it: 24000 dots
     took 8 s. A match now starts only at a run's first dot."""
-    _assert_trim_trailing_period_is_fast(app_module, ".", 20000)
-
-
-def _assert_trim_trailing_period_is_fast(app_module, unit, n):
-    app_module.cfg.PIPELINE_RULES = copy.deepcopy(_factory_rules())
-    pl_engine.rebuild_caches()
-    t0 = time.perf_counter()
-    out = pl_engine._postprocess_text(" Das war es " + unit * n + "Danke.",
-                                      model_name="", language="de")
-    assert time.perf_counter() - t0 < 1.0
-    assert out == "Das war es Danke"
+    _assert_silence_loop_is_fast(app_module, ".", 20000)
 
 
 def test_trim_trailing_period_output_is_unchanged():
