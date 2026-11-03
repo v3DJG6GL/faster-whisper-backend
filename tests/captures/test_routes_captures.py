@@ -231,6 +231,16 @@ def test_member_delete_respects_sample_lock(captures_store_db, groups_store_db):
         captures_store.get_capture("free0000cid"), _user(False))
 
 
+def _on_loop():
+    import asyncio
+
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return False
+    return True
+
+
 def _write_silent_wav(path, frames):
     with wave.open(path, "wb") as w:
         w.setnchannels(1)
@@ -1802,8 +1812,6 @@ def test_patch_capture_runs_off_the_loop_under_the_corrections_lock(
     """update_capture takes captures_store._lock (held across clear_all's
     VACUUM), so the PATCH must not call it on the event loop; a chip save
     holds the corrections lock across its read-merge-write."""
-    import asyncio
-
     from faster_whisper_backend.captures import routes as captures_routes
     from faster_whisper_backend.captures import store as captures_store
 
@@ -1814,12 +1822,7 @@ def test_patch_capture_runs_off_the_loop_under_the_corrections_lock(
     real = captures_store.update_capture
 
     def _spy(cid, patch):
-        try:
-            asyncio.get_running_loop()
-            on_loop = True
-        except RuntimeError:
-            on_loop = False
-        seen.append((on_loop, captures_routes._corrections_write_lock.locked()))
+        seen.append((_on_loop(), captures_routes._corrections_write_lock.locked()))
         return real(cid, patch)
 
     monkeypatch.setattr(captures_store, "update_capture", _spy)
@@ -1844,8 +1847,6 @@ def test_audio_and_delete_read_the_row_off_the_loop(client, make_user_key,
     clear_all VACUUMs; the audio route (reviewers fire it in bursts), the
     card-expand detail route and the delete route must not run it on the
     event loop."""
-    import asyncio
-
     from faster_whisper_backend.captures import store as captures_store
 
     uid, raw_key = make_user_key("root", is_admin=True)
@@ -1855,11 +1856,7 @@ def test_audio_and_delete_read_the_row_off_the_loop(client, make_user_key,
     real = captures_store.get_capture
 
     def _spy(cid):
-        try:
-            asyncio.get_running_loop()
-            seen.append(True)
-        except RuntimeError:
-            seen.append(False)
+        seen.append(_on_loop())
         return real(cid)
 
     monkeypatch.setattr(captures_store, "get_capture", _spy)
@@ -2007,8 +2004,6 @@ def test_preview_save_chips_writes_off_the_loop_and_skips_newly_grouped(
     """Up to 30 update_capture calls must not run on the event loop, and a
     member that a concurrent create_sample grouped after the validation is
     left alone (its chips now belong to the sample)."""
-    import asyncio
-
     from faster_whisper_backend.captures import routes as captures_routes
     from faster_whisper_backend.captures import store as captures_store
 
@@ -2025,12 +2020,7 @@ def test_preview_save_chips_writes_off_the_loop_and_skips_newly_grouped(
     real_update = captures_store.update_capture
 
     def _spy(cid, patch):
-        try:
-            asyncio.get_running_loop()
-            on_loop = True
-        except RuntimeError:
-            on_loop = False
-        seen.append((cid, on_loop, captures_routes._corrections_write_lock.locked()))
+        seen.append((cid, _on_loop(), captures_routes._corrections_write_lock.locked()))
         return real_update(cid, patch)
 
     monkeypatch.setattr(captures_store, "get_captures_light", _light)
