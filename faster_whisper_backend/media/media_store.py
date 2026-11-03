@@ -21,6 +21,7 @@ Deliberately tiny and in-process:
 """
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import re
@@ -190,10 +191,8 @@ def make_pipeline_copy(src: str) -> "str | None":
                 shutil.copyfileobj(sf, df)
     except OSError as e:
         logger.error("[url-dl] pipeline copy failed: %s", e)
-        try:
+        with contextlib.suppress(OSError):
             os.unlink(tmp)
-        except OSError:
-            pass
         return None
     # The os.link fast path inherits the download's umask mode (typically
     # 0644) in the shared tempdir — tighten it like the fallback already is.
