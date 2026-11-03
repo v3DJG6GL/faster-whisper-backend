@@ -1527,7 +1527,7 @@ async def translation_test(
     # Same admission rule as the request path (tr_gating._translation_model_allowed
     # owns the allowlist semantics).
     ref = (body.model or "").strip()
-    default = (getattr(cfg, "TRANSLATION_DEFAULT_MODEL", "") or "").strip()
+    default = tr_gating._translation_default_model()
     if ref and not tr_gating._translation_model_allowed(ref, requested=ref):
         return _bad_request("model is not in TRANSLATION_ALLOWED_MODELS")
     # An explicit "auto" (the lab's UNSAVED select) is name detection, not
