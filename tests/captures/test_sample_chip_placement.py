@@ -4,7 +4,7 @@ A chip's idx counts aligned karaoke words, and a removed raw word (a filler, a
 dictated "Komma") owns no text token. The export passes the member's aligned
 words to `_build_default_transcript`; every other route that builds or stores
 a sample transcript must too, or the reviewer approves one text and the
-trainer gets another. Here two removed fillers precede the first of two
+trainer gets another. Here three removed fillers precede the first of two
 "die"s and the chip marks that first one: the nearest-match fallback would
 rewrite the second.
 """
