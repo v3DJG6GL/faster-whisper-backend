@@ -9,7 +9,8 @@ from tests._translation_helpers import enable_translation
 from faster_whisper_backend.transcription import models as tx_models
 from faster_whisper_backend.transcription import receipt as tx_receipt
 from faster_whisper_backend.translation import gating as tr_gating
-from tests._transcription_helpers import WAV_UPLOAD as _FILE, post_transcription, post_verbose
+from tests._transcription_helpers import (
+    WAV_UPLOAD as _FILE, bind_profile, post_transcription, post_verbose)
 OV = "/settings/overrides"
 PERMS = "/settings/api-keys/api/users"
 
@@ -23,16 +24,7 @@ def _setup_profile(client, admin_h, name, **fields):
 def _bind_profile_user(client, make_user_key, profile, user="alice", **fields):
     """Admin saves override profile `profile` and binds it to a fresh
     non-admin `user`; returns that user's raw key."""
-    _, raw_admin = make_user_key("admin", is_admin=True)
-    admin_h = bearer(raw_admin)
-    _setup_profile(client, admin_h, profile, **fields)
-    uid, raw = make_user_key(user, is_admin=False)
-    r = client.patch(f"{PERMS}/{uid}/permissions", headers=admin_h,
-                     json={"pages": {}, "config": {"overrides": {},
-                                                   "profiles": [profile],
-                                                   "locks": []}})
-    assert r.status_code == 200, r.text
-    return raw
+    return bind_profile(client, make_user_key, profile, fields, user=user)[1]
 
 
 def test_identity_profile_applies_to_decode_kwargs(client, make_user_key, fake_model):

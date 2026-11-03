@@ -19,18 +19,18 @@ def post_verbose(client, headers=None, **data):
     return post_transcription(client, headers, **data)
 
 
-def bind_profile(client, make_user_key, name, fields):
-    """Create admin + non-admin 'alice' bound to the one OVERRIDE_PROFILES
-    entry `name` = `fields`; return (admin_headers, alice_raw_key)."""
+def bind_profile(client, make_user_key, name, fields, user="alice"):
+    """Create admin + non-admin `user` bound to the one OVERRIDE_PROFILES
+    entry `name` = `fields`; return (admin_headers, user_raw_key)."""
     _, raw_admin = make_user_key("admin", is_admin=True)
     admin_h = bearer(raw_admin)
     r = client.post("/settings/overrides/state", headers=admin_h,
                     json={"OVERRIDE_PROFILES": {name: fields}})
     assert r.status_code == 200, r.text
-    uid, raw_alice = make_user_key("alice", is_admin=False)
+    uid, raw = make_user_key(user, is_admin=False)
     r = client.patch(
         f"/settings/api-keys/api/users/{uid}/permissions", headers=admin_h,
         json={"pages": {}, "config": {"overrides": {},
                                       "profiles": [name], "locks": []}})
     assert r.status_code == 200, r.text
-    return admin_h, raw_alice
+    return admin_h, raw
