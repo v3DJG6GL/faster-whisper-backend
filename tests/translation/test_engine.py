@@ -2283,15 +2283,7 @@ def test_warm_hit_does_not_block_on_cold_load(lru_env, monkeypatch):
 
     async def run():
         warm = await translation._get_model("o/warm")
-        started = threading.Event()
-        release = threading.Event()
-
-        def slow_load(ref, device, family, download_cb=None):
-            started.set()
-            assert release.wait(5)
-            made[ref] = _FakeLlama(ref)
-            return made[ref]
-        monkeypatch.setattr(translation, "_load_blocking", slow_load)
+        started, release = _gated_load(monkeypatch, made)
         loop = asyncio.get_running_loop()
         cold = asyncio.ensure_future(translation._get_model("o/cold"))
         try:
@@ -2302,6 +2294,22 @@ def test_warm_hit_does_not_block_on_cold_load(lru_env, monkeypatch):
             release.set()   # a failed assertion must not also time out
         assert await cold is made["o/cold"]
     asyncio.run(run())
+
+
+def _gated_load(monkeypatch, made, calls=None):
+    """Patch _load_blocking with a load that sets `started`, then parks until
+    `release` is set; return (started, release)."""
+    started, release = threading.Event(), threading.Event()
+
+    def slow_load(ref, device, family, download_cb=None):
+        if calls is not None:
+            calls.append(ref)
+        started.set()
+        assert release.wait(5)
+        made[ref] = _FakeLlama(ref)
+        return made[ref]
+    monkeypatch.setattr(translation, "_load_blocking", slow_load)
+    return started, release
 
 
 def _two_overlapping_loads(monkeypatch, made, refs=("o/a", "o/b")):
@@ -2338,15 +2346,7 @@ def test_contended_locks_survive_a_second_event_loop(lru_env, monkeypatch):
         asyncio.run(contend_gate())
     load_lock = None
     for _ in range(2):
-        started = threading.Event()
-        release = threading.Event()
-
-        def slow_load(ref, device, family, download_cb=None):
-            started.set()
-            release.wait(5)
-            made[ref] = _FakeLlama(ref)
-            return made[ref]
-        monkeypatch.setattr(translation, "_load_blocking", slow_load)
+        started, release = _gated_load(monkeypatch, made)
         translation._models.clear()      # a miss again; _loading is kept
 
         async def run():
@@ -2370,17 +2370,8 @@ def test_a_cancel_mid_load_finishes_the_build_under_the_ref_lock(
     the next request for the ref gets that build instead of starting a
     second load next to it. The cancelled caller's model stays unleased."""
     made, stats = lru_env
-    started = threading.Event()
-    release = threading.Event()
     calls = []
-
-    def slow_load(ref, device, family, download_cb=None):
-        calls.append(ref)
-        started.set()
-        assert release.wait(5)
-        made[ref] = _FakeLlama(ref)
-        return made[ref]
-    monkeypatch.setattr(translation, "_load_blocking", slow_load)
+    started, release = _gated_load(monkeypatch, made, calls)
 
     async def run():
         first = asyncio.ensure_future(
