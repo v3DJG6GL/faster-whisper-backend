@@ -1034,26 +1034,26 @@ async def test_pipeline(payload: dict[str, Any]) -> JSONResponse:
     if language is not None and not isinstance(language, str):
         return _bad_request("language must be a string or null")
     language = (language or "").strip().lower() or None
+
+    def _capped_strings(rule: dict):
+        """(label, value, cap) for every string the dry run length-caps, in refusal order."""
+        entries = rule.get("entries") if rule.get("type") == "regex-list" else None
+        entries = [e for e in entries if isinstance(e, dict)] if isinstance(entries, list) else []
+        yield "pattern", rule.get("pattern"), _TEST_PIPELINE_MAX_PATTERN
+        for e in entries:
+            yield "pattern", e.get("pattern"), _TEST_PIPELINE_MAX_PATTERN
+        for e in entries:
+            yield "replacement", e.get("replacement"), _TEST_PIPELINE_MAX_REPLACEMENT
+        m = rule.get("map") if rule.get("type") == "callback:map" else None
+        for v in m.values() if isinstance(m, dict) else ():
+            yield "map value", v, _TEST_PIPELINE_MAX_MAP_VALUE
+
     for idx, rule in enumerate(rules):
         if not isinstance(rule, dict):
             continue
-        entries = rule.get("entries") if rule.get("type") == "regex-list" else None
-        for pat in (rule.get("pattern"), *(
-                e.get("pattern") for e in (entries if isinstance(entries, list) else ())
-                if isinstance(e, dict))):
-            if isinstance(pat, str) and len(pat) > _TEST_PIPELINE_MAX_PATTERN:
-                return _bad_request(f"rule {idx + 1}: pattern too long "
-                                    f"(max {_TEST_PIPELINE_MAX_PATTERN} chars)")
-        for entry in entries if isinstance(entries, list) else ():
-            er = entry.get("replacement") if isinstance(entry, dict) else None
-            if isinstance(er, str) and len(er) > _TEST_PIPELINE_MAX_REPLACEMENT:
-                return _bad_request(f"rule {idx + 1}: replacement too long "
-                                    f"(max {_TEST_PIPELINE_MAX_REPLACEMENT} chars)")
-        m = rule.get("map") if rule.get("type") == "callback:map" else None
-        for v in m.values() if isinstance(m, dict) else ():
-            if isinstance(v, str) and len(v) > _TEST_PIPELINE_MAX_MAP_VALUE:
-                return _bad_request(f"rule {idx + 1}: map value too long "
-                                    f"(max {_TEST_PIPELINE_MAX_MAP_VALUE} chars)")
+        for what, v, cap in _capped_strings(rule):
+            if isinstance(v, str) and len(v) > cap:
+                return _bad_request(f"rule {idx + 1}: {what} too long (max {cap} chars)")
 
     def _language_skipped(rule: dict) -> bool:
         """Engine parity (pl_engine._rule_runs): a rule scoped to languages
