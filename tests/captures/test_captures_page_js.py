@@ -941,6 +941,14 @@ def _batch_fns(page):
     return _js_functions(page, "_renderBatchCard", "_advanceBatch") + "\n"
 
 
+def _batch_reload_harness(page):
+    """The batch card plus _loadProposals; `gets` is for the test's GET stub,
+    and a reload replaces the queue."""
+    return (_batch_fns(page) + _js_function(page, "_loadProposals") + _BATCH_STUBS
+            + "\nvar _filtSpeakers = [], gets = [];\n"
+            + "function _renderProposals(ps) { _proposals = ps; }")
+
+
 @needs_node
 def test_batch_second_trigger_during_the_transition_is_ignored(page, tmp_path):
     """Dismiss / Accept splice the queue before the 260 ms re-render, so a
@@ -986,10 +994,7 @@ def test_batch_refresh_blocks_the_card_until_the_queue_reloads(page, tmp_path):
     """A batch-mode Refresh left the current card live during its GET: an
     Accept meanwhile POSTed a sample, then the reloaded queue (swept before
     that create) showed the merged proposal again with its Revert gone."""
-    out = _run_node(tmp_path, _batch_fns(page) + _js_function(page, "_loadProposals")
-                    + _BATCH_STUBS + r"""
-var _filtSpeakers = [], gets = [];
-function _renderProposals(ps) { _proposals = ps; }
+    out = _run_node(tmp_path, _batch_reload_harness(page) + r"""
 api = function(m, u, body) {
   if (m === 'GET') return new Promise(function(r, j) { gets.push({ r: r, j: j }); });
   posts.push(body.member_ids[0]);
@@ -1015,10 +1020,7 @@ def test_batch_refresh_during_an_accept_leaves_the_card_held(page, tmp_path):
     """A Refresh while an Accept POST was in flight released the batch hold
     when its GET landed: the card showed the proposal still being POSTed,
     and the next Accept sent the same members a second time."""
-    out = _run_node(tmp_path, _batch_fns(page) + _js_function(page, "_loadProposals")
-                    + _BATCH_STUBS + r"""
-var _filtSpeakers = [], gets = [];
-function _renderProposals(ps) { _proposals = ps; }
+    out = _run_node(tmp_path, _batch_reload_harness(page) + r"""
 api = function(m, u, body) {
   if (m === 'GET') return new Promise(function(r) { gets.push(r); });
   posts.push(body.member_ids[0]);
@@ -1047,10 +1049,7 @@ def test_batch_double_refresh_holds_the_card_until_the_latest_reload(page, tmp_p
     """The batch hold had no sequence token: with two Refreshes in flight the
     first reply (or failure) released it, an Accept then went through, and
     the second reply put back the queue swept before that Accept."""
-    out = _run_node(tmp_path, _batch_fns(page) + _js_function(page, "_loadProposals")
-                    + _BATCH_STUBS + r"""
-var _filtSpeakers = [], gets = [];
-function _renderProposals(ps) { _proposals = ps; }
+    out = _run_node(tmp_path, _batch_reload_harness(page) + r"""
 api = function(m, u, body) {
   if (m === 'GET') return new Promise(function(r, j) { gets.push({ r: r, j: j }); });
   posts.push(body.member_ids[0]);
