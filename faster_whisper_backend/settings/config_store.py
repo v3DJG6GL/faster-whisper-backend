@@ -4,8 +4,8 @@ Persistence layer for the admin WebUI.
 Stores user-edited overrides in config.local.json inside the data dir
 (default /data, on Windows the repo's data dir; WHISPER_DATA_DIR moves the dir,
 WHISPER_CONFIG_LOCAL moves just this file). The file is loaded by config.py
-BETWEEN the in-file defaults and the env-var override block, so precedence
-stays:  ENV  >  config.local.json  >  config.py defaults.
+BETWEEN the config.json factory defaults and the env-var override block, so
+precedence stays:  ENV  >  config.local.json  >  config.json.
 
 Validation uses the Pydantic schema in settings/schema.py (AdminConfig and the
 override models). Atomic writes and the per-path save lock come from
@@ -42,9 +42,10 @@ OVERRIDES_PATH = os.environ.get("WHISPER_CONFIG_LOCAL") or os.path.normpath(
         (os.environ.get("WHISPER_DATA_DIR") or "").strip()
         or (os.path.join(_REPO_DIR, "data") if os.name == "nt" else "/data"),
         "config.local.json"))
-# Committed factory-default pipeline rules. Unlike config.local.json this file
-# IS version-controlled — the admin WebUI's "Defaults" mode edits it so rule
-# fixes can be git-pushed to every deployment. See load_factory_rules().
+# Committed factory defaults (every setting, PIPELINE_RULES included). Unlike
+# config.local.json this file IS version-controlled — the admin WebUI's
+# "Defaults" mode edits its rules so rule fixes can be git-pushed to every
+# deployment. See load_factory_rules().
 FACTORY_PATH = os.path.join(_REPO_DIR, "config.json")
 
 
