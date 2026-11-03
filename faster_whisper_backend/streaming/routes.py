@@ -1068,8 +1068,9 @@ async def transcribe_stream(ws: WebSocket) -> None:
             return [(seg.start, seg.end, seg.text) for seg in segs]
 
         # The final decode stashes its faster-whisper info / segment diagnostics /
-        # word list here so on_final (run right after it on the pump task) can
-        # build the rich log block + the capture row without re-decoding.
+        # kwargs / trace / guard settings here so on_final (run right after it on
+        # the pump task) can build the rich log block + the capture row without
+        # re-decoding.
         last_decode: dict = {}
 
         def _is_failed_segment(seg) -> bool:
@@ -1093,9 +1094,9 @@ async def transcribe_stream(ws: WebSocket) -> None:
                 # attributed to an identity that no longer exists.
                 raise _CredentialRevoked("credential revoked mid-session")
             # Each final starts from a clean accumulator: when a final's on_final
-            # (the only take) never runs — postprocess or emit raised first — the
-            # wait its gate charged would otherwise land on the NEXT recorded
-            # utterance's wait_s.
+            # (the only take that records it) never runs — postprocess or emit
+            # raised first — the wait its gate charged would otherwise land on the
+            # NEXT recorded utterance's wait_s.
             metrics.take_wait()
             tail_pad_ms = int(effective_config.cfg_for(final_model, "STREAMING_TAIL_TRIM_PAD_MS", ident))
             # Off the event loop: this is a full Silero sweep over the whole
