@@ -1415,7 +1415,7 @@ async def test_pipeline(payload: dict[str, Any]) -> JSONResponse:
                 t0 = time.monotonic()
                 await asyncio.to_thread(_probe_from, idx, text, end)
                 # The probe strands no thread, so its time does not count
-                # against the 5 s request deadline (probe["left"] bounds it).
+                # against the 5 s request deadline (probe["wall"] bounds it).
                 deadline += time.monotonic() - t0
             if probe["on"]:
                 got = cleared.get(idx)
