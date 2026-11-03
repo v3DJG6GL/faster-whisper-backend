@@ -629,7 +629,7 @@ def test_propose_greedy_non_overlap_claim(captures_store_db, monkeypatch, trim_d
 def test_propose_respects_max_proposals(captures_store_db, monkeypatch, trim_disabled):
     cs = captures_store_db
     monkeypatch.setattr(P.cfg, "CAPTURES_PROPOSER_MAX_PROPOSALS", 1, raising=False)
-    # Two separate sessions (gap > session gap) each yield a pair → 2 candidates,
+    # Two separate sessions (gap > session gap) each yield a pair → 2 proposals,
     # but max caps output to 1.
     monkeypatch.setattr(P.cfg, "CAPTURES_PROPOSER_SESSION_GAP_S", 100, raising=False)
     _insert_eligible(cs, "capsess1000001a", ts=1000.0, text="aaa one")
