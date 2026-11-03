@@ -126,9 +126,9 @@ def test_tail_document_and_compare(usage_store_db):
 
 
 def test_tail_half_hour_zone_keeps_wait_days_inside_the_range(usage_store_db):
-    """In Asia/Kolkata (+5:30) the window used to start at 23:30 the night
-    before: wait.by_day carried a day before `from`, and the previous
-    window lost that same job."""
+    """In Asia/Kolkata (+5:30) the window starts at local midnight, not at
+    23:30 the night before: a job at that hour stays out of wait.by_day
+    and is counted in the previous window."""
     us = usage_store_db
     ist = zoneinfo.ZoneInfo("Asia/Kolkata")
     for iso, w in (("2025-06-01", 1.0), ("2025-06-03", 2.0)):
@@ -142,8 +142,8 @@ def test_tail_half_hour_zone_keeps_wait_days_inside_the_range(usage_store_db):
 
 def test_outcome_stubs_stay_out_of_the_tail_distributions(usage_store_db):
     """record_outcome's stub (a hands-free session that ended without an
-    utterance) is a session, not a decode: it used to count as a 0 s job of
-    model "(unknown)" in the turnaround, wait, by-model and failure figures."""
+    utterance) is a session, not a decode: it must not count as a 0 s job of
+    model "(unknown)" in the turnaround, wait, by-model or failure figures."""
     import time
     us = usage_store_db
     us.record_usage(key_id="k", user_id="u", audio_s=10.0, words=5, status="ok",
