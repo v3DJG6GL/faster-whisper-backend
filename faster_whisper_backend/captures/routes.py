@@ -154,8 +154,12 @@ def _assert_member_sample_not_locked(
     sid = row.get("sample_id")
     if not sid or user.get("is_admin"):
         return
-    sample = capture_samples_store.get_sample(sid)
-    if sample is not None and sample.get("is_locked"):
+    _refuse_locked_sample(capture_samples_store.get_sample(sid), user)
+
+
+def _refuse_locked_sample(sample: dict[str, Any] | None, user: dict[str, Any]) -> None:
+    """409 a non-admin mutate of a LOCKED sample; a missing row passes."""
+    if sample is not None and sample.get("is_locked") and not user.get("is_admin"):
         raise HTTPException(status.HTTP_409_CONFLICT, "sample is locked")
 
 
@@ -2412,9 +2416,7 @@ async def patch_sample_api(
         with _corrections_write_lock:
             # Locked while we waited on the lock: the pre-check above saw a
             # stale row. A corrections save is never the unlock-only patch.
-            fresh = capture_samples_store.get_sample(sid)
-            if fresh is not None and fresh["is_locked"] and not user.get("is_admin"):
-                raise HTTPException(status.HTTP_409_CONFLICT, "sample is locked")
+            _refuse_locked_sample(capture_samples_store.get_sample(sid), user)
             return _apply_lock_aware()
 
     updated = await asyncio.to_thread(_apply_serialised)
@@ -2448,8 +2450,7 @@ async def regenerate_sample_api(
         await asyncio.to_thread(capture_samples_store.get_sample, sid),
         user, "sample-regenerate", sid, "sample not found",
     )
-    if g["is_locked"] and not user.get("is_admin"):
-        raise HTTPException(status.HTTP_409_CONFLICT, "sample is locked")
+    _refuse_locked_sample(g, user)
     silence_ms = capture_samples._global_silence_ms()
     join_strategy = _global_join_strategy()
 
@@ -2462,9 +2463,8 @@ async def regenerate_sample_api(
             if fresh is None:
                 raise HTTPException(status.HTTP_404_NOT_FOUND, "sample not found")
             # Locked while we waited: the pre-check above saw a stale row.
-            if fresh["is_locked"] and not user.get("is_admin"):
-                raise HTTPException(status.HTTP_409_CONFLICT, "sample is locked")
-            members = capture_samples_store.get_members(sid)
+            _refuse_locked_sample(fresh, user)
+            members =capture_samples_store.get_members(sid)
             duration_ms, hashes, member_trims = capture_samples._build_merged_wav(
                 sid=sid,
                 member_ids=[m["id"] for m in members],
@@ -2500,8 +2500,7 @@ async def dissolve_sample_api(
         await asyncio.to_thread(capture_samples_store.get_sample, sid),
         user, "sample-delete", sid, "sample not found",
     )
-    if g["is_locked"] and not user.get("is_admin"):
-        raise HTTPException(status.HTTP_409_CONFLICT, "sample is locked")
+    _refuse_locked_sample(g, user)
     # Off the loop: dissolve waits on the per-sid rebuild lock, which an
     # in-flight regenerate / VAD rebuild holds for seconds. The lock check is
     # repeated under that lock: the sample may have been locked meanwhile.
