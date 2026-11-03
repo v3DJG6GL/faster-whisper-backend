@@ -1581,15 +1581,9 @@ function modelOverridesEditor(name, v) {
       });
       addRow.appendChild(sel);
     } else if (allowed.length === 0) {
-      const note = document.createElement('div');
-      note.className = 'help';
-      note.textContent = 'ALLOWED_MODELS is empty — add models in the Models section above.';
-      addRow.appendChild(note);
+      addRow.appendChild(_helpDiv('ALLOWED_MODELS is empty — add models in the Models section above.'));
     } else {
-      const note = document.createElement('div');
-      note.className = 'help';
-      note.textContent = 'Every allowed model already has an entry.';
-      addRow.appendChild(note);
+      addRow.appendChild(_helpDiv('Every allowed model already has an entry.'));
     }
     sidebar.appendChild(addRow);
 
@@ -1637,11 +1631,8 @@ function modelOverridesEditor(name, v) {
   }
 
   function renderEmptyState() {
-    const note = document.createElement('div');
-    note.className = 'help';
-    note.textContent = 'No model selected. Add a model to ALLOWED_MODELS in the Models section above, '
-      + 'then add an override entry from the sidebar.';
-    mainpane.appendChild(note);
+    mainpane.appendChild(_helpDiv('No model selected. Add a model to ALLOWED_MODELS in the Models section above, '
+      + 'then add an override entry from the sidebar.'));
   }
 
   function renderModelEditView() {
@@ -1861,13 +1852,11 @@ function modelOverridesEditor(name, v) {
     const h4 = document.createElement('h4');
     h4.textContent = 'Pipeline rules (scoping only)';
     secEl.appendChild(h4);
-    const note = document.createElement('div');
-    note.className = 'help';
-    note.textContent = 'Per-model pipeline scoping. Rule bodies are edited globally — '
+    const note = _helpDiv('Per-model pipeline scoping. Rule bodies are edited globally — '
       + 'the checkbox here decides whether each rule runs in THIS model\'s pipeline. '
       + 'Globally-enabled rules can be force-disabled by unchecking; globally-disabled '
       + 'rules can be force-enabled by checking. The two modes are mutually exclusive '
-      + 'per slug (a rule cannot be both force-disabled and force-enabled).';
+      + 'per slug (a rule cannot be both force-disabled and force-enabled).');
     secEl.appendChild(note);
 
     let rules = [];
@@ -1965,10 +1954,7 @@ function modelDropdownEditor(name, v, lists) {
       i.placeholder = 'any model id (' + lists.allowed + ' is empty)';
       i.addEventListener('input', () => setDirty(name, i.value));
       wrap.appendChild(i);
-      const help = document.createElement('div');
-      help.className = 'help';
-      help.textContent = lists.allowed + ' is empty — free-form. Add entries there for a dropdown.';
-      wrap.appendChild(help);
+      wrap.appendChild(_helpDiv(lists.allowed + ' is empty — free-form. Add entries there for a dropdown.'));
       return;
     }
 
@@ -2034,10 +2020,7 @@ function modelMultiSelectEditor(name, v, lists) {
         setDirty(name, lines);
       });
       wrap.appendChild(t);
-      const help = document.createElement('div');
-      help.className = 'help';
-      help.textContent = lists.allowed + ' is empty — free-form. Add entries there for checkboxes.';
-      wrap.appendChild(help);
+      wrap.appendChild(_helpDiv(lists.allowed + ' is empty — free-form. Add entries there for checkboxes.'));
       return;
     }
 
@@ -2073,11 +2056,8 @@ function modelMultiSelectEditor(name, v, lists) {
       list.appendChild(lbl);
     }
     wrap.appendChild(list);
-    const help = document.createElement('div');
-    help.className = 'help';
-    help.textContent = 'preload at startup — first request to each is hot. '
-      + 'keep within the loaded-models cap to avoid LRU evicting your own preloads.';
-    wrap.appendChild(help);
+    wrap.appendChild(_helpDiv('preload at startup — first request to each is hot. '
+      + 'keep within the loaded-models cap to avoid LRU evicting your own preloads.'));
   }
   render();
   // Skip this field's own edits (the controls already show them; a rebuild
@@ -2205,9 +2185,7 @@ function translationTemplateEditor(name, v) {
   const readout = document.createElement('div');
   readout.className = 'lab-readout';
   right.appendChild(readout);
-  const sampling = document.createElement('div');
-  sampling.className = 'help';
-  right.appendChild(sampling);
+  const sampling = right.appendChild(_helpDiv());
 
   // Raw logical templates for reference (documentation strings — the LIVE
   // preview above is server-rendered and authoritative).
@@ -2391,11 +2369,8 @@ function translationTemplateEditor(name, v) {
         const out = document.createElement('div');
         out.textContent = j.output;
         card.appendChild(out);
-        const meta = document.createElement('div');
-        meta.className = 'help';
-        meta.textContent = (warned ? '⚠ ' + j.warnings.join(' · ') + ' · ' : 'ok · ')
-          + j.model + ' · ' + j.ms + ' ms' + (j.cold ? ' (incl. model load)' : '');
-        card.appendChild(meta);
+        card.appendChild(_helpDiv((warned ? '⚠ ' + j.warnings.join(' · ') + ' · ' : 'ok · ')
+          + j.model + ' · ' + j.ms + ' ms' + (j.cold ? ' (incl. model load)' : '')));
         if (j.prompt) {
           const dbg = document.createElement('details');
           const dsum = document.createElement('summary');
@@ -3887,11 +3862,9 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
 
     body.appendChild(_labeledRow('Type', typeSel));
     body.appendChild(_labeledRow('Label', labelInp));
-    const hint = document.createElement('div');
-    hint.className = 'help';
+    const hint = _helpDiv('Type-specific fields (pattern, replacement, wordlist, map) '
+      + 'open in the rule body after Add.');
     hint.style.marginTop = '0.375rem';
-    hint.textContent = 'Type-specific fields (pattern, replacement, wordlist, map) '
-      + 'open in the rule body after Add.';
     body.appendChild(hint);
     body.appendChild(ok);
     body.appendChild(cancel);
@@ -3940,9 +3913,7 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
   function _labeledRow(label, el) {
     const wr = document.createElement('div');
     wr.style.marginTop = '0.25rem';
-    const l = document.createElement('div');
-    l.className = 'help'; l.textContent = label + ':';
-    wr.appendChild(l); wr.appendChild(el);
+    wr.appendChild(_helpDiv(label + ':')); wr.appendChild(el);
     return wr;
   }
 
@@ -4149,9 +4120,7 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
     const chips = document.createElement('div');
     chips.className = 'rv-chips';
     panel.appendChild(chips);
-    const same = document.createElement('div');
-    same.className = 'help';
-    same.textContent = 'No differences — both sides are already identical. Nothing to do.';
+    const same = _helpDiv('No differences — both sides are already identical. Nothing to do.');
     same.style.display = 'none';
     panel.appendChild(same);
 
@@ -4389,10 +4358,8 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
     }
     const line1 = document.createElement('div');
     line1.textContent = moved.length + ' rule(s) moved: ' + moved.join(', ');
-    const line2 = document.createElement('div');
-    line2.className = 'help';
-    line2.textContent = 'New order: '
-      + rules.filter(r => r.type !== 'terminal').map(r => r.label || r.name).join(' → ');
+    const line2 = _helpDiv('New order: '
+      + rules.filter(r => r.type !== 'terminal').map(r => r.label || r.name).join(' → '));
     d.appendChild(line1);
     d.appendChild(line2);
     return d;
@@ -4636,11 +4603,8 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
   async function _promoteOrder() {
     if (!(await _refreshFactory())) return;
     const body = document.createElement('div');
-    const intro = document.createElement('div');
-    intro.className = 'help';
-    intro.textContent = 'This rewrites config.json with your current rule ORDER. '
-      + 'Rule contents stay exactly as committed — only positions change.';
-    body.appendChild(intro);
+    body.appendChild(_helpDiv('This rewrites config.json with your current rule ORDER. '
+      + 'Rule contents stay exactly as committed — only positions change.'));
     body.appendChild(_orderChangeEl());
     const localOnly = _localOnlyNames();
     if (localOnly.length) {
@@ -4688,15 +4652,12 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
     const returning = _missingFactoryRules().map(b => b.label || b.name);
     const lossy = orphaned.length || unpromoted.length || returning.length;
     const body = document.createElement('div');
-    const p = document.createElement('div');
-    p.className = 'help';
-    p.textContent = lossy
+    body.appendChild(_helpDiv(lossy
       ? 'This server keeps its own saved rule list, which is used instead of '
         + 'config.json — but config.json does NOT match every rule running here.'
       : 'config.json now holds your rules. This server still keeps its own saved '
         + 'rule list, which is used instead of config.json. Drop it so config.json '
-        + 'runs directly here? config.json can be committed either way.';
-    body.appendChild(p);
+        + 'runs directly here? config.json can be committed either way.'));
     const _warn = (text) => {
       const w = document.createElement('div');
       w.className = 'promote-unsaved-note';
@@ -4801,10 +4762,7 @@ function pipelineTestPanel() {
   presetWrap.appendChild(langSel);
   wrap.appendChild(presetWrap);
 
-  const sampleLbl = document.createElement('div');
-  sampleLbl.className = 'help';
-  sampleLbl.textContent = 'Test sample (edit to try your own):';
-  wrap.appendChild(sampleLbl);
+  wrap.appendChild(_helpDiv('Test sample (edit to try your own):'));
 
   const sample = document.createElement('textarea');
   sample.id = 'pipeline-test-sample';
@@ -5055,9 +5013,7 @@ function linesEditor(name, v) {
   t.value = v.join('\n');
   t.rows = Math.min(Math.max(v.length, 2), 10);
   t.placeholder = 'One entry per line';
-  const help = document.createElement('div');
-  help.className = 'help';
-  help.textContent = 'One entry per line. Blank lines ignored.';
+  const help = _helpDiv('One entry per line. Blank lines ignored.');
   const update = () => {
     const lines = t.value.split('\n').map(s => s.trim()).filter(Boolean);
     setDirty(name, lines);

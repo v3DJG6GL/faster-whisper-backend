@@ -92,7 +92,8 @@ def _captures_harness(html, body, real_list=False):
     `real_list` runs the page's own makeRuleListEditor on the fake DOM."""
     branch = _block(html, "  if (name === 'CAPTURES_PIPELINE_RULES_EXCLUDE') {")
     if real_list:
-        rle = _block(html, "function makeRuleListEditor(", "\n}\n")
+        rle = (_block(html, "function makeRuleListEditor(", "\n}\n")
+               + _block(html, "function _helpDiv(text) {", "\n}\n"))
         rle += """
 function fieldDef(n) { return { value: state[n], default_value: [] }; }
 function _lsGet() { return null; }
@@ -226,7 +227,8 @@ fire(find(row, e => e.textContent === '+ override'), 'click').then(() => {
 def _model_pipeline_harness(html, body):
     """The MODEL_OVERRIDES per-model pipeline checklist with
     makeRuleListEditor stubbed out: `editor.opts` is what the rows call."""
-    section = _block(html, "  function renderPipelineSection() {")
+    section = (_block(html, "function _helpDiv(text) {", "\n}\n")
+               + _block(html, "  function renderPipelineSection() {"))
     return _FAKE_DOM + """
 const state = {};
 function currentValue(n) { return state[n]; }
@@ -555,6 +557,7 @@ def test_pipeline_test_panel_sends_the_sample_language(client):
     src = "\n".join([
         _block(html, "function pipelineTestPanel() {", "\n}\n"),
         _block(html, "async function _testOneRule(rule) {", "\n}\n"),
+        _block(html, "function _helpDiv(text) {", "\n}\n"),
     ])
     out = _node(_FAKE_DOM + """
 const TEST_PRESETS = { 'default': 'Hallo' };
@@ -812,8 +815,9 @@ def test_prompt_lab_empty_glossary_box_uses_the_glossary_setting(client):
     """The lab's glossary box starts empty and labBody sent null, so the
     preview and the test run left out the TRANSLATION_GLOSSARY every real
     request inherits; a glossary edit on the page did not re-render either."""
-    ed = _block(_html(client), "function translationTemplateEditor(name, v) {",
-                "\n}\n")
+    html = _html(client)
+    ed = (_block(html, "function translationTemplateEditor(name, v) {", "\n}\n")
+          + _block(html, "function _helpDiv(text) {", "\n}\n"))
     out = _node(_FAKE_DOM + """
 const state = { TRANSLATION_PROMPT_FAMILY: 'hunyuan',
                 TRANSLATION_GLOSSARY: 'Niere = kidney',
