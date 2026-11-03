@@ -1314,13 +1314,8 @@ def empty_document(
         "total": _zero_split(),
         "series": [],
         "stages": [],
-        "dictation": {
-            "sessions": 0, "words": 0, "audio_s": 0.0, "wpm": 0.0,
-            "activation": {a: 0 for a in ACTIVATIONS},
-            "delivery": {d: 0 for d in DELIVERIES},
-            "translation": {t: 0 for t in TRANSLATIONS},
-            "targets": [],
-        },
+        "dictation": {**_dictation_summary(_zero_cell(), *_outcome_buckets()),
+                      "targets": []},
         "apps": [],
         "calendar": [],
         "hours": [],
@@ -2441,9 +2436,7 @@ def _fill_from_jobs(conn, doc, user_id, tz, today, with_stages,
     words_by_slot: dict[tuple[int, int], dict[str, int]] = {}
     extra_by_slot: dict[tuple[int, int], dict[str, dict[str, Any]]] = {}
     words_all_days: dict[datetime.date, dict[str, int]] = {}
-    activation = {a: 0 for a in ACTIVATIONS}
-    delivery = {d: 0 for d in DELIVERIES}
-    translation = {t: 0 for t in TRANSLATIONS}
+    activation, delivery, translation = _outcome_buckets()
     apps: dict[str, dict[str, int]] = {}
     window_jobs: list[str] = []
     where, params = _scope_where(user_id, key_id, kinds=kinds, kind_col="kind")
@@ -2483,16 +2476,8 @@ def _fill_from_jobs(conn, doc, user_id, tz, today, with_stages,
             a["words"] += words
     doc["total"] = _rounded(window)
     doc["today"] = _rounded(today_split)
-    cell = window["dictation"]
-    audio_s = float(cell["audio_s"])
     doc["dictation"] = {
-        "sessions": int(cell["sessions"]),
-        "words": int(cell["words"]),
-        "audio_s": round(audio_s, 3),
-        "wpm": round(cell["words"] / (audio_s / 60.0), 1) if audio_s > 0 else 0.0,
-        "activation": activation,
-        "delivery": delivery,
-        "translation": translation,
+        **_dictation_summary(window["dictation"], activation, delivery, translation),
         "targets": _dictation_targets(conn, user_id, start_ts, end_ts, with_stages,
                                       key_id=key_id, kinds=kinds),
     }
@@ -2617,9 +2602,7 @@ def _stages(conn: sqlite3.Connection, user_id: str | None, start_hour: int,
 
 def _dictation(conn: sqlite3.Connection, user_id: str | None, start_hour: int,
                end_hour: int, cell: dict[str, Any]) -> dict[str, Any]:
-    activation = {a: 0 for a in ACTIVATIONS}
-    delivery = {d: 0 for d in DELIVERIES}
-    translation = {t: 0 for t in TRANSLATIONS}
+    activation, delivery, translation = _outcome_buckets()
     where, params = _scope_where(user_id)
     for r in conn.execute(
         "SELECT activation, delivery, translation, SUM(sessions) AS sessions"
@@ -2634,6 +2617,20 @@ def _dictation(conn: sqlite3.Connection, user_id: str | None, start_hour: int,
             delivery[r["delivery"]] += n
         if r["translation"] in translation:
             translation[r["translation"]] += n
+    return _dictation_summary(cell, activation, delivery, translation)
+
+
+def _outcome_buckets() -> tuple[dict[str, int], dict[str, int], dict[str, int]]:
+    """Zeroed activation / delivery / translation counters."""
+    return ({a: 0 for a in ACTIVATIONS}, {d: 0 for d in DELIVERIES},
+            {t: 0 for t in TRANSLATIONS})
+
+
+def _dictation_summary(cell: dict[str, Any], activation: dict[str, int],
+                       delivery: dict[str, int],
+                       translation: dict[str, int]) -> dict[str, Any]:
+    """The document's dictation block (bar its targets) from the window's
+    dictation cell and the outcome counters."""
     audio_s = float(cell["audio_s"])
     return {
         "sessions": int(cell["sessions"]),
