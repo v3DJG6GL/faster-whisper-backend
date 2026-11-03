@@ -1721,7 +1721,7 @@ def test_bulk_action_asks_again_before_rendering_over_edits_made_meanwhile(
     lost its chips / notes to the render() after it, with no prompt."""
     fns = "\n".join(_js_function(page, f) for f in (
         "_bulkStatus", "_undoBulk", "_bulkDelete", "_renderUnlessKeptOpenEdits", "_freshOpenEdits",
-        "_okToDropOpenEdits", "_anyOpenDirty", "_dirtyOpenEdits"))
+        "_okToDropOpenEdits", "_anyOpenDirty", "_dirtyOpenEdits", "_plural"))
     out = _run_node(tmp_path, fns + _BULK_DIRTY_STUBS + r"""
 var reply = """ + json.dumps(reply) + r""";
 async function run(keep) {
@@ -1851,7 +1851,7 @@ def test_bulk_action_asks_once_about_edits_already_agreed_to_drop(
     prompt about the same edits, and a Cancel there left a stale list."""
     fns = "\n".join(_js_function(page, f) for f in (
         "_bulkStatus", "_undoBulk", "_bulkDelete", "_renderUnlessKeptOpenEdits", "_freshOpenEdits",
-        "_okToDropOpenEdits", "_anyOpenDirty", "_dirtyOpenEdits", "markDirty"))
+        "_okToDropOpenEdits", "_anyOpenDirty", "_dirtyOpenEdits", "markDirty", "_plural"))
     out = _run_node(tmp_path, fns + _BULK_DIRTY_STUBS + r"""
 var reply = """ + json.dumps(reply) + r""";
 async function run(editMeanwhile) {
