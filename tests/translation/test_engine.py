@@ -738,12 +738,7 @@ def _install_fake(monkeypatch, transform, calls=None):
         if calls is not None:
             calls.append(payload)
         if payload.startswith(translation._NUMBERED_INSTRUCTION):
-            body = payload.split("\n\n", 1)[1]
-            out = []
-            for line in body.splitlines():
-                m = re.match(r"(\d+)\.\s(.*)", line)
-                out.append(f"{m.group(1)}. {transform(m.group(2))}")
-            return "\n".join(out)
+            return _numbered_reply(payload, transform)
         return transform(payload)
     monkeypatch.setattr(translation, "_complete", fake)
     _stub_get_model(monkeypatch)
@@ -753,6 +748,13 @@ def _xlate(text):
     """A well-behaved pseudo-translation: differs from the input, keeps
     digits and roughly the length (guards all pass)."""
     return text.swapcase()
+
+
+def _numbered_reply(payload, transform=_xlate):
+    """Answer a numbered batch payload line by line through ``transform``."""
+    lines = payload.split("\n\n", 1)[1].splitlines()
+    return "\n".join(f"{m.group(1)}. {transform(m.group(2))}"
+                     for m in (re.match(r"(\d+)\.\s(.*)", ln) for ln in lines))
 
 
 def _run(coro):
@@ -853,15 +855,9 @@ def test_faithful_mismatch_halves_batch_down_to_success(base_cfg, monkeypatch):
         payload = _payload_of(prompt_or_msgs)
         calls.append(payload)
         if payload.startswith(translation._NUMBERED_INSTRUCTION):
-            body = payload.split("\n\n", 1)[1]
-            lines = body.splitlines()
-            if len(lines) > 2:
+            if len(payload.split("\n\n", 1)[1].splitlines()) > 2:
                 return "sorry, here is a poem instead"   # count mismatch
-            out = []
-            for line in lines:
-                m = re.match(r"(\d+)\.\s(.*)", line)
-                out.append(f"{m.group(1)}. {_xlate(m.group(2))}")
-            return "\n".join(out)
+            return _numbered_reply(payload)
         return _xlate(payload)
     monkeypatch.setattr(translation, "_complete", fake)
 
@@ -891,14 +887,9 @@ def test_faithful_mismatch_never_resends_the_same_batch(base_cfg, monkeypatch,
     Blank members on either side of the live ones are skipped, so they
     must not count towards the span that gets halved."""
     calls = []
-
-    def fake(llm, family, prompt_or_msgs, max_tokens):
-        payload = _payload_of(prompt_or_msgs)
-        calls.append(payload)
-        if payload.startswith(translation._NUMBERED_INSTRUCTION):
-            return "one line only"                  # always a count mismatch
-        return _xlate(payload)
-    monkeypatch.setattr(translation, "_complete", fake)
+    # Every numbered batch is a count mismatch.
+    monkeypatch.setattr(translation, "_complete",
+                        _numbered_fake(calls, lambda lines: True))
     _stub_get_model(monkeypatch)
 
     res, warns, _ = _run(translation.translate_segments(
@@ -918,19 +909,9 @@ def test_faithful_mismatch_after_leading_blanks_keeps_the_batch_size(
     them on top — otherwise every later batch of the target stays tiny."""
     monkeypatch.setattr(cfg, "TRANSLATION_BATCH_SEGMENTS", 8, raising=False)
     calls = []
-
-    def fake(llm, family, prompt_or_msgs, max_tokens):
-        payload = _payload_of(prompt_or_msgs)
-        calls.append(payload)
-        if payload.startswith(translation._NUMBERED_INSTRUCTION):
-            if len(calls) == 1:
-                return "one line only"              # first batch mismatches
-            lines = payload.split("\n\n", 1)[1].splitlines()
-            return "\n".join(
-                f"{m.group(1)}. {_xlate(m.group(2))}"
-                for m in (re.match(r"(\d+)\.\s(.*)", ln) for ln in lines))
-        return _xlate(payload)
-    monkeypatch.setattr(translation, "_complete", fake)
+    # The first batch mismatches.
+    monkeypatch.setattr(translation, "_complete",
+                        _numbered_fake(calls, lambda lines: len(calls) == 1))
     _stub_get_model(monkeypatch)
 
     live = [f"Satz nummer {n}." for n in range(28)]
@@ -958,10 +939,7 @@ def test_faithful_batch_size_grows_back_after_one_mismatch(base_cfg,
         calls.append(payload)
         if len(calls) == 1:
             return "one line only"                  # first batch mismatches
-        lines = payload.split("\n\n", 1)[1].splitlines()
-        return "\n".join(
-            f"{m.group(1)}. {_xlate(m.group(2))}"
-            for m in (re.match(r"(\d+)\.\s(.*)", ln) for ln in lines))
+        return _numbered_reply(payload)
     monkeypatch.setattr(translation, "_complete", fake)
     _stub_get_model(monkeypatch)
 
@@ -985,9 +963,7 @@ def _numbered_fake(calls, fails):
         lines = payload.split("\n\n", 1)[1].splitlines()
         if fails(lines):
             return "one line only"
-        return "\n".join(
-            f"{m.group(1)}. {_xlate(m.group(2))}"
-            for m in (re.match(r"(\d+)\.\s(.*)", ln) for ln in lines))
+        return _numbered_reply(payload)
     return fake
 
 
@@ -1158,10 +1134,7 @@ def _overflow_past(limit):
             raise ValueError(
                 "Requested tokens (9000) exceed context window of 2048")
         if payload.startswith(translation._NUMBERED_INSTRUCTION):
-            lines = payload.split("\n\n", 1)[1].splitlines()
-            return "\n".join(
-                f"{m.group(1)}. {_xlate(m.group(2))}"
-                for m in (re.match(r"(\d+)\.\s(.*)", ln) for ln in lines))
+            return _numbered_reply(payload)
         return _xlate(payload)
     return fake, calls
 
