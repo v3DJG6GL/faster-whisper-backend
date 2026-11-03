@@ -2853,7 +2853,7 @@
       // is not an editable value) and re-assert a stale one.
       var body = {
         corrections: corrections,
-        // Snapshot the server returned with the original GET. Lets the
+        // The chips of the GET, or what the last Save sent (see below). Lets the
         // server three-way-merge our edits against any concurrent
         // writes (another admin in another tab, or a group save touching
         // this member) so those changes survive.
