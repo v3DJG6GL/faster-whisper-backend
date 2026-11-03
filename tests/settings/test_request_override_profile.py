@@ -17,15 +17,19 @@ OV = "/settings/overrides"
 PERMS = "/settings/api-keys/api/users"
 
 
+def _transcribe(client, profile, headers=None):
+    return client.post(
+        "/v1/audio/transcriptions", files=_FILE, headers=headers,
+        data={"model": "whisper-1", "response_format": "verbose_json",
+              "override_profile": profile},
+    )
+
+
 def test_request_profile_applies_to_decode_kwargs(client, fake_model, monkeypatch):
     # Open mode (no keys) → synthetic admin; the request profile is the only layer.
     monkeypatch.setattr(cfg, "OVERRIDE_PROFILES", {"fast": {"BEAM_SIZE": 3}}, raising=False)
     monkeypatch.setattr(cfg, "ALLOW_REQUEST_OVERRIDE_PROFILE", True, raising=False)
-    r = client.post(
-        "/v1/audio/transcriptions", files=_FILE,
-        data={"model": "whisper-1", "response_format": "verbose_json",
-              "override_profile": "fast"},
-    )
+    r = _transcribe(client, "fast")
     assert r.status_code == 200, r.text
     assert fake_model.last_kwargs["beam_size"] == 3
     assert r.json()["profile_applied"] == "fast"
@@ -34,11 +38,7 @@ def test_request_profile_applies_to_decode_kwargs(client, fake_model, monkeypatc
 def test_request_profile_gated_off_is_ignored(client, fake_model, monkeypatch):
     monkeypatch.setattr(cfg, "OVERRIDE_PROFILES", {"fast": {"BEAM_SIZE": 3}}, raising=False)
     monkeypatch.setattr(cfg, "ALLOW_REQUEST_OVERRIDE_PROFILE", False, raising=False)
-    r = client.post(
-        "/v1/audio/transcriptions", files=_FILE,
-        data={"model": "whisper-1", "response_format": "verbose_json",
-              "override_profile": "fast"},
-    )
+    r = _transcribe(client, "fast")
     assert r.status_code == 200, r.text
     assert fake_model.last_kwargs["beam_size"] != 3
     assert r.json()["profile_applied"] is None
@@ -47,11 +47,7 @@ def test_request_profile_gated_off_is_ignored(client, fake_model, monkeypatch):
 def test_unknown_request_profile_not_applied(client, fake_model, monkeypatch):
     monkeypatch.setattr(cfg, "OVERRIDE_PROFILES", {"fast": {"BEAM_SIZE": 3}}, raising=False)
     monkeypatch.setattr(cfg, "ALLOW_REQUEST_OVERRIDE_PROFILE", True, raising=False)
-    r = client.post(
-        "/v1/audio/transcriptions", files=_FILE,
-        data={"model": "whisper-1", "response_format": "verbose_json",
-              "override_profile": "nope"},
-    )
+    r = _transcribe(client, "nope")
     assert r.status_code == 200, r.text
     assert r.json()["profile_applied"] is None
 
@@ -71,11 +67,7 @@ def test_binding_lock_beats_request_profile(client, make_user_key, fake_model):
                      json={"pages": {}, "config": {"overrides": {}, "profiles": ["locked"], "locks": []}})
     assert r.status_code == 200, r.text
 
-    r = client.post(
-        "/v1/audio/transcriptions", files=_FILE, headers=bearer(raw_alice),
-        data={"model": "whisper-1", "response_format": "verbose_json",
-              "override_profile": "fast"},
-    )
+    r = _transcribe(client, "fast", bearer(raw_alice))
     assert r.status_code == 200, r.text
     assert fake_model.last_kwargs["beam_size"] == 8      # binding wins; request profile shadowed
     assert r.json()["profile_applied"] == "fast"         # it was applied (just shadowed on beam_size)
