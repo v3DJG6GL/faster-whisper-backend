@@ -173,10 +173,8 @@ def _ensure_columns(conn: sqlite3.Connection) -> None:
 
     api_keys.config: JSON per-key override binding
     {"direct": {...}, "profiles": [...]}; default '{}' = no per-key config."""
-    cols = {r["name"] for r in conn.execute("PRAGMA table_info(api_keys)").fetchall()}
-    if "config" not in cols:
-        conn.execute(
-            "ALTER TABLE api_keys ADD COLUMN config TEXT NOT NULL DEFAULT '{}'")
+    store_common.add_missing_columns(
+        conn, "api_keys", (("config", "TEXT NOT NULL DEFAULT '{}'"),))
 
 
 def _require_conn() -> sqlite3.Connection:
