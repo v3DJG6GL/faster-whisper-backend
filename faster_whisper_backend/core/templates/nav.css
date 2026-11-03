@@ -450,8 +450,8 @@ header .subbar .filt-label { display: inline-flex; align-items: center; gap: 0.3
      c2   zero severity counters        c6  GPU segment
                                         c3  version chip
                                         c4  "› backend" suffix
-     c8  activity segment (jobs/GPU/VRAM)   c9  severity pills   — phones only
-     c10 "Aa" scale button                  c11 reload button    — phones only
+     c8  activity segment (jobs/GPU/VRAM)   c9  severity pills   — last resorts
+     c10 "Aa" scale button                  c11 reload button    — last resorts
    On a single row only c1a + c1 are allowed; past that the nav moves to
    its own row (header.nav-row2) and the ladder restarts on the brand row. */
 header.c1a .sevpill .lbl { display: none; }
@@ -466,7 +466,8 @@ header.c5 .hact-m.vramm { display: none; }
 header.c6 .hact-m.gpum { display: none; }
 header.c3 .vtag { display: none; }
 header.c4 .brand-word .bw-sep, header.c4 .brand-word .bw-c { display: none; }
-/* phone-only last resorts: the whole activity segment, then the pills */
+/* last resorts (brand row still overflows: phones, or a big --fs-base):
+   the whole activity segment, then the pills */
 header.c8 .hact-wrap { display: none; }
 header.c8 .sevpills { border-radius: 6px; border-left: 1px solid var(--border); }
 header.c9 .sevpills { display: none; }
