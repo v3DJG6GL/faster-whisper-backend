@@ -443,18 +443,14 @@ def assemble_transcribe_kwargs(resolved_model, model, *, language, temperature,
         ladder = _temperature_ladder(_temp_str)
         if ladder:
             transcribe_kwargs["temperature"] = ladder
-    _patience = cf("PATIENCE")
-    if _patience and _patience != 1.0:
-        transcribe_kwargs["patience"] = _patience
-    _length_penalty = cf("LENGTH_PENALTY")
-    if _length_penalty and _length_penalty != 1.0:
-        transcribe_kwargs["length_penalty"] = _length_penalty
-    _repetition_penalty = cf("REPETITION_PENALTY")
-    if _repetition_penalty and _repetition_penalty != 1.0:
-        transcribe_kwargs["repetition_penalty"] = _repetition_penalty
-    _no_repeat_ngram = cf("NO_REPEAT_NGRAM_SIZE")
-    if _no_repeat_ngram:
-        transcribe_kwargs["no_repeat_ngram_size"] = _no_repeat_ngram
+    # Forwarded only when set off faster-whisper's default.
+    for field, key, default in (("PATIENCE", "patience", 1.0),
+                                ("LENGTH_PENALTY", "length_penalty", 1.0),
+                                ("REPETITION_PENALTY", "repetition_penalty", 1.0),
+                                ("NO_REPEAT_NGRAM_SIZE", "no_repeat_ngram_size", 0)):
+        v = cf(field)
+        if v and v != default:
+            transcribe_kwargs[key] = v
     _prompt_reset_t = cf("PROMPT_RESET_ON_TEMPERATURE")
     if _prompt_reset_t is not None and _prompt_reset_t != 0.5:
         transcribe_kwargs["prompt_reset_on_temperature"] = _prompt_reset_t
