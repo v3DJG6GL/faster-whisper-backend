@@ -134,6 +134,14 @@ def stats_scope_for(user: dict[str, Any], *,
     return StatsScope("all", None, caller_uid, False, True)
 
 
+def _scope_with_preview(user: dict[str, Any], user_q: str | None) -> StatsScope:
+    """stats_scope_for with the admin-only `?user=` preview; 403 for anyone else."""
+    is_admin = bool(user.get("is_admin"))
+    if user_q and not is_admin:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="user= is admin-only")
+    return stats_scope_for(user, preview_user_id=(user_q or None) if is_admin else None)
+
+
 def _coarse_server(sysnap: dict[str, Any], any_job_running: bool
                    ) -> dict[str, Any]:
     """The own-scope replacement for the machine cards: enough to act on
@@ -482,12 +490,7 @@ async def stats_usage(
     # Normalise BEFORE the scope check: an unknown `by` collapses to "user"
     # and must not slip past the own-scope refusal below.
     by = by if by in usage_store.BREAKDOWNS else "user"
-    is_admin = bool(user.get("is_admin"))
-    if user_q and not is_admin:
-        raise HTTPException(status.HTTP_403_FORBIDDEN,
-                            detail="user= is admin-only")
-    scope = stats_scope_for(user, preview_user_id=(user_q or None)
-                            if is_admin else None)
+    scope = _scope_with_preview(user, user_q)
     if scope.scope == "own" and by == "user":
         raise HTTPException(
             status.HTTP_403_FORBIDDEN,
@@ -638,10 +641,7 @@ async def stats_jobs(
     with identities scrubbed for non-admin "all", `?user=` preview for
     admins (403 for anyone else)."""
 
-    is_admin = bool(user.get("is_admin"))
-    if user_q and not is_admin:
-        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="user= is admin-only")
-    scope = stats_scope_for(user, preview_user_id=(user_q or None) if is_admin else None)
+    scope = _scope_with_preview(user, user_q)
     kind_list = _kinds_param(kind, JOB_KINDS)
     if status_q and status_q not in JOB_STATUSES:
         raise HTTPException(422, detail=f"unknown status: {status_q!r}")
@@ -701,10 +701,7 @@ async def stats_tail(
     anyone else). The per-job rows keep USAGE_JOBS_RETENTION_DAYS; a window
     that starts earlier says so in range.truncated_to_days."""
 
-    is_admin = bool(user.get("is_admin"))
-    if user_q and not is_admin:
-        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="user= is admin-only")
-    scope = stats_scope_for(user, preview_user_id=(user_q or None) if is_admin else None)
+    scope = _scope_with_preview(user, user_q)
     w = _window_param(days=days, from_=from_, to=to, all_time=all, tz=tz)
     kind_list = _kinds_param(kind, usage_store.KINDS)
     user_list = _csv(users)
