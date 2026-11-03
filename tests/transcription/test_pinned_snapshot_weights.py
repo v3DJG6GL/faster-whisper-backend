@@ -8,12 +8,10 @@ The conversion stack is stubbed in sys.modules, as in test_auto_convert.py
 
 import asyncio
 import os
-import sys
-import types
 from fnmatch import fnmatch
 
 from faster_whisper_backend.transcription import models as tx_models
-from tests.transcription._conversion_helpers import stub_conversion_stack
+from tests.transcription._conversion_helpers import stub_conversion_stack, stub_hub
 
 # openai/whisper-large-v3's top level, plus a Trainer-style subfolder.
 _LARGE_V3 = [
@@ -53,10 +51,9 @@ def test_pinned_convert_snapshots_one_weight_set(monkeypatch, tmp_path):
             os.makedirs(out)
             open(os.path.join(out, "model.bin"), "w").close()
 
-    hub = types.ModuleType("huggingface_hub")
-    hub.list_repo_files = lambda repo_id, revision=None: list(_LARGE_V3)
-    hub.snapshot_download = _snapshot_download
-    monkeypatch.setitem(sys.modules, "huggingface_hub", hub)
+    stub_hub(monkeypatch,
+             list_repo_files=lambda repo_id, revision=None: list(_LARGE_V3),
+             snapshot_download=_snapshot_download)
     stub_conversion_stack(
         monkeypatch, _Converter, converted_dir=tmp_path,
         overrides={"openai/whisper-large-v3": {"REVISION": "abc"}})
@@ -97,10 +94,8 @@ def test_shard_only_checkpoint_is_converted(monkeypatch):
                                    "pytorch_model-00002-of-00002.bin"])):
         listing = ["config.json", "tokenizer.json", single + ".index.json",
                    *shards]
-        hub = types.ModuleType("huggingface_hub")
-        hub.list_repo_files = (
-            lambda repo_id, revision=None, _l=listing: list(_l))
-        monkeypatch.setitem(sys.modules, "huggingface_hub", hub)
+        stub_hub(monkeypatch, list_repo_files=(
+            lambda repo_id, revision=None, _l=listing: list(_l)))
         files = tx_models._conversion_repo_files("org/ft-large-v3", "abc")
         assert files == listing
         assert set(tx_models._pinned_snapshot_files(files)) == set(listing)

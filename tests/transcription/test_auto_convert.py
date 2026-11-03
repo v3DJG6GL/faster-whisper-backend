@@ -7,11 +7,9 @@ revision gets probed, converted and cached, not the conversion itself.
 
 import asyncio
 import os
-import sys
-import types
 
 from faster_whisper_backend.transcription import models as tx_models
-from tests.transcription._conversion_helpers import stub_conversion_stack
+from tests.transcription._conversion_helpers import stub_conversion_stack, stub_hub
 
 
 def test_pinned_revision_is_converted_not_answered_by_the_head_cache(
@@ -48,10 +46,8 @@ def test_pinned_revision_is_converted_not_answered_by_the_head_cache(
             with open(os.path.join(out, "model.bin"), "w") as f:
                 f.write(os.path.basename(self._src))
 
-    hub = types.ModuleType("huggingface_hub")
-    hub.list_repo_files = _list_repo_files
-    hub.snapshot_download = _snapshot_download
-    monkeypatch.setitem(sys.modules, "huggingface_hub", hub)
+    stub_hub(monkeypatch, list_repo_files=_list_repo_files,
+             snapshot_download=_snapshot_download)
     stub_conversion_stack(monkeypatch, _Converter, converted_dir=tmp_path,
                           overrides={"org/ft": {"REVISION": "v2"}})
 

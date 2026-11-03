@@ -21,6 +21,13 @@ class NoopFileLock:
         return False
 
 
+def stub_hub(monkeypatch, **funcs):
+    """A stand-in huggingface_hub module holding `funcs`."""
+    hub = types.ModuleType("huggingface_hub")
+    vars(hub).update(funcs)
+    monkeypatch.setitem(sys.modules, "huggingface_hub", hub)
+
+
 def stub_conversion_stack(monkeypatch, converter, *, converted_dir, overrides):
     """Stub filelock + ctranslate2's converter (+ transformers/torch) and turn
     AUTO_CONVERT_HF_MODELS on at float16; `converter` is the
