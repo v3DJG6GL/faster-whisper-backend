@@ -385,6 +385,12 @@ def _stand_in_yt_dlp(monkeypatch, matched, info):
     return captured
 
 
+def _handoff_policy(monkeypatch):
+    monkeypatch.setattr(udl.cfg, "URL_ALLOW_GENERIC", False, raising=False)
+    monkeypatch.setattr(udl.cfg, "URL_ALLOW_DIRECT_MEDIA", True, raising=False)
+    monkeypatch.setattr(udl.cfg, "URL_ALLOWED_EXTRACTORS", [], raising=False)
+
+
 def _probe_with_extractor(monkeypatch, matched, ran):
     """probe() with the offline match saying `matched` and a stand-in
     yt-dlp whose extraction ended in the extractor `ran`."""
@@ -396,9 +402,7 @@ def test_probe_refuses_a_direct_media_link_handed_to_a_site_extractor(monkeypatc
     """A Generic URL admitted only as direct media (the probe's distinctive
     request saw audio/*) must not come back from a site extractor GenericIE
     delegated to — that is the site policy bypassed, not a media file."""
-    monkeypatch.setattr(udl.cfg, "URL_ALLOW_GENERIC", False, raising=False)
-    monkeypatch.setattr(udl.cfg, "URL_ALLOW_DIRECT_MEDIA", True, raising=False)
-    monkeypatch.setattr(udl.cfg, "URL_ALLOWED_EXTRACTORS", [], raising=False)
+    _handoff_policy(monkeypatch)
     captured = _probe_with_extractor(monkeypatch, "Generic", "Youtube")
     with pytest.raises(udl.UrlPolicyError):
         _run(udl.probe("https://x/a.mp3", timeout=5.0))
@@ -423,9 +427,7 @@ def test_probe_refuses_a_site_extractor_handing_off_to_generic(monkeypatch):
     page — the widening URL_ALLOW_GENERIC=off forbids. A hand-off target
     that passed the direct-media Content-Type check is what
     URL_ALLOW_DIRECT_MEDIA admits — yt-dlp's "direct" flag alone is not."""
-    monkeypatch.setattr(udl.cfg, "URL_ALLOW_GENERIC", False, raising=False)
-    monkeypatch.setattr(udl.cfg, "URL_ALLOW_DIRECT_MEDIA", True, raising=False)
-    monkeypatch.setattr(udl.cfg, "URL_ALLOWED_EXTRACTORS", [], raising=False)
+    _handoff_policy(monkeypatch)
     with pytest.raises(udl.UrlPolicyError, match="leads to a site"):
         udl._policy_check_extractor("Youtube", {"extractor_key": "Generic"})
     with pytest.raises(udl.UrlPolicyError, match="leads to a site"):
@@ -439,12 +441,6 @@ def test_probe_refuses_a_site_extractor_handing_off_to_generic(monkeypatch):
             "Youtube", {"extractor_key": "Generic"}, handoff_is_media=True)
     monkeypatch.setattr(udl.cfg, "URL_ALLOW_GENERIC", True, raising=False)
     udl._policy_check_extractor("Youtube", {"extractor_key": "Generic"})
-
-
-def _handoff_policy(monkeypatch):
-    monkeypatch.setattr(udl.cfg, "URL_ALLOW_GENERIC", False, raising=False)
-    monkeypatch.setattr(udl.cfg, "URL_ALLOW_DIRECT_MEDIA", True, raising=False)
-    monkeypatch.setattr(udl.cfg, "URL_ALLOWED_EXTRACTORS", [], raising=False)
 
 
 def test_probe_admits_an_hls_manifest_handed_off_to_generic(monkeypatch):
@@ -585,9 +581,7 @@ def test_probe_reports_a_pinned_out_hand_off_as_a_policy_refusal(monkeypatch):
     delegated info dict: it raises "No suitable extractor (X) found". That
     is the policy at work, not a broken yt-dlp — the client must not be
     told to update the downloader."""
-    monkeypatch.setattr(udl.cfg, "URL_ALLOW_GENERIC", False, raising=False)
-    monkeypatch.setattr(udl.cfg, "URL_ALLOW_DIRECT_MEDIA", True, raising=False)
-    monkeypatch.setattr(udl.cfg, "URL_ALLOWED_EXTRACTORS", [], raising=False)
+    _handoff_policy(monkeypatch)
 
     def _pinned_out(url):
         raise Exception("ERROR: No suitable extractor (Youtube) found for "
@@ -606,9 +600,7 @@ def test_classify_error_maps_no_suitable_extractor_to_the_policy():
 
 
 def test_probe_admits_the_extractor_it_matched(monkeypatch):
-    monkeypatch.setattr(udl.cfg, "URL_ALLOW_GENERIC", False, raising=False)
-    monkeypatch.setattr(udl.cfg, "URL_ALLOW_DIRECT_MEDIA", True, raising=False)
-    monkeypatch.setattr(udl.cfg, "URL_ALLOWED_EXTRACTORS", [], raising=False)
+    _handoff_policy(monkeypatch)
     _probe_with_extractor(monkeypatch, "Generic", "Generic")
     assert _run(udl.probe("https://x/a.mp3", timeout=5.0)).extractor_key == "Generic"
 
