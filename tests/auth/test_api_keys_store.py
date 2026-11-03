@@ -1,5 +1,6 @@
 """Tests for api_keys_store — the security-sensitive identity layer."""
 
+import json
 import logging
 import sqlite3
 import threading
@@ -8,6 +9,18 @@ import pytest
 
 from faster_whisper_backend.auth import api_keys_store
 from tests.auth._store_helpers import failing_rebuild_conn, sibling_write
+
+
+def _store_user_binding(ak, uid, binding):
+    """Write a raw stored user binding, bypassing set_user_permissions."""
+    ak._require_conn().execute("UPDATE users SET permissions=? WHERE id=?",
+                               (json.dumps({"pages": {}, "config": binding}), uid))
+
+
+def _store_key_binding(ak, kid, binding):
+    """Write a raw stored key binding, bypassing set_key_config."""
+    ak._require_conn().execute("UPDATE api_keys SET config=? WHERE id=?",
+                               (json.dumps(binding), kid))
 
 
 def test_hash_key_deterministic_hex():
@@ -140,23 +153,19 @@ def test_last_used_by_user_batched_max(api_keys_db):
 
 
 def test_rename_profile_refs_cascades_lists_allowlist_and_wildcard(api_keys_db):
-    import json
     ak = api_keys_db
     conn = ak._require_conn()
     # User binding: 'old' appears in BOTH the ordered profiles list and the
     # allowlist; an unrelated profile and the '*' wildcard must survive untouched.
     u = ak.create_user("u", is_admin=False)
-    conn.execute("UPDATE users SET permissions=? WHERE id=?", (json.dumps({
-        "pages": {}, "config": {"direct": {}, "profiles": ["old", "keep"],
-                                "allowed_override_profiles": ["old", "*"]}}), u))
+    _store_user_binding(ak, u, {"direct": {}, "profiles": ["old", "keep"],
+                                "allowed_override_profiles": ["old", "*"]})
     # Two key bindings — one active, one revoked (migrated all the same so no
     # dangling references survive anywhere).
     _, k = ak.create_key(u)
-    conn.execute("UPDATE api_keys SET config=? WHERE id=?",
-                 (json.dumps({"direct": {}, "profiles": ["old"]}), k["id"]))
+    _store_key_binding(ak, k["id"], {"direct": {}, "profiles": ["old"]})
     _, kr = ak.create_key(u)
-    conn.execute("UPDATE api_keys SET config=? WHERE id=?",
-                 (json.dumps({"direct": {}, "profiles": ["old"]}), kr["id"]))
+    _store_key_binding(ak, kr["id"], {"direct": {}, "profiles": ["old"]})
     ak.revoke_key(kr["id"])
 
     assert ak.rename_profile_refs("old", "new") == 3   # user row + 2 key rows
@@ -180,15 +189,12 @@ def test_rename_profile_refs_is_all_or_nothing(api_keys_db, monkeypatch):
     raises, so the cascade must be all-or-nothing: on the autocommit
     connection a mid-scan error would leave the rows already rewritten
     pointing at a profile name that no longer exists."""
-    import json
     ak = api_keys_db
     conn = ak._require_conn()
     u = ak.create_user("u", is_admin=False)
-    conn.execute("UPDATE users SET permissions=? WHERE id=?", (json.dumps({
-        "pages": {}, "config": {"direct": {}, "profiles": ["clinic-de"]}}), u))
+    _store_user_binding(ak, u, {"direct": {}, "profiles": ["clinic-de"]})
     _, k = ak.create_key(u)
-    conn.execute("UPDATE api_keys SET config=? WHERE id=?",
-                 (json.dumps({"direct": {}, "profiles": ["clinic-de"]}), k["id"]))
+    _store_key_binding(ak, k["id"], {"direct": {}, "profiles": ["clinic-de"]})
     real = ak._rewrite_profile_in_binding
     calls = []
 
@@ -213,12 +219,10 @@ def test_rename_profile_refs_keeps_the_real_error_after_sqlite_rolled_back(
     """SQLite rolls the transaction back by itself on SQLITE_FULL / IOERR; a
     bare ROLLBACK then raised "no transaction is active" and replaced the
     real error in the overrides route's 500 detail."""
-    import json
     ak = api_keys_db
     conn = ak._require_conn()
     u = ak.create_user("u", is_admin=False)
-    conn.execute("UPDATE users SET permissions=? WHERE id=?", (json.dumps({
-        "pages": {}, "config": {"direct": {}, "profiles": ["clinic-de"]}}), u))
+    _store_user_binding(ak, u, {"direct": {}, "profiles": ["clinic-de"]})
 
     def _full(binding, old, new):
         conn.execute("ROLLBACK")      # what SQLite does on its own
@@ -265,12 +269,9 @@ def test_set_user_permissions_does_not_undo_a_concurrent_profile_rename(
     and wrote it back later — a rename_profile_refs landing in between was
     overwritten, so the binding pointed at the old, now-missing profile
     name. The rename is fired from inside the Save's read of the row."""
-    import json
     ak = api_keys_db
-    conn = ak._require_conn()
     u = ak.create_user("u", is_admin=False)
-    conn.execute("UPDATE users SET permissions=? WHERE id=?", (json.dumps({
-        "pages": {}, "config": {"direct": {}, "profiles": ["clinic-de"]}}), u))
+    _store_user_binding(ak, u, {"direct": {}, "profiles": ["clinic-de"]})
     real = ak._parse_permissions
     renamer: list[threading.Thread] = []
 
@@ -754,14 +755,11 @@ def test_list_users_migrates_the_user_binding_the_drawer_sends_back(api_keys_db)
     """The per-user drawer reads list_users() and sends the blob back on
     every save; a raw stored guard at 1 or a pre-rename key would 422 any edit
     (keys already arrive migrated through _row_to_key_dict)."""
-    import json
     ak = api_keys_db
     uid = ak.create_user("u", is_admin=False)
-    ak._require_conn().execute(
-        "UPDATE users SET permissions = ? WHERE id = ?",
-        (json.dumps({"pages": {}, "config": {"direct": {
-            "SEGMENT_HEAD_ECHO_MIN_WORDS": 1, "SEGMENT_MAX_WORDS_PER_SEC": 3.0},
-            "profiles": []}}), uid))
+    _store_user_binding(ak, uid, {"direct": {
+        "SEGMENT_HEAD_ECHO_MIN_WORDS": 1, "SEGMENT_MAX_WORDS_PER_SEC": 3.0},
+        "profiles": []})
     user = next(u for u in ak.list_users() if u["id"] == uid)
     direct = user["permissions"]["config"]["direct"]
     assert direct["SEGMENT_HEAD_ECHO_MIN_WORDS"] == 0
