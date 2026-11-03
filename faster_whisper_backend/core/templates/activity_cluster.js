@@ -226,8 +226,7 @@
   });
   // One cancel path for the popover and the /stats jobs table. Cookie-
   // authenticated pages go through _csrf_mw, which 403s any unsafe-method
-  // request without the token (same as _signOut). The endpoint re-checks
-  // that the caller owns the job (or is an admin).
+  // request without the token (same as _signOut).
   window._fwCancelJob = function(pid, c){
     if (!pid) return;
     if (c) c.disabled = true;
