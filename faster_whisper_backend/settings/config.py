@@ -1733,22 +1733,34 @@ def _env_reader_kind(field: str, current) -> str:
     return "str"  # plain string: empty → keep current (safe default)
 
 
+def _error_list(exc: BaseException) -> list:
+    """The error dicts of a pydantic ValidationError; [] for anything else
+    or when errors() itself fails."""
+    errs = getattr(exc, "errors", None)
+    if not callable(errs):
+        return []
+    try:
+        return list(errs())
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def _error_sig(e: dict) -> tuple:
+    return (tuple(e.get("loc") or ()), e.get("msg", ""))
+
+
 def _env_validation_reason(exc: BaseException, skip: "set[tuple]" = frozenset()) -> str:
     """The human-readable half of a pydantic ValidationError, without the
     docs URL line that str(exc) ends on. `skip` holds (loc, msg) signatures
     not to report (errors that predate the env layer)."""
-    errs = getattr(exc, "errors", None)
-    if callable(errs):
-        try:
-            _all = errs()
-            first = next((e for e in _all
-                          if (tuple(e.get("loc") or ()), e.get("msg", "")) not in skip),
-                         _all[0])
-            loc = ".".join(str(p) for p in first.get("loc", ()))
-            msg = first.get("msg", "invalid value")
-            return f"{loc}: {msg}" if loc else msg
-        except Exception:  # noqa: BLE001 - fall through to the string form
-            pass
+    try:
+        _all = _error_list(exc)
+        first = next((e for e in _all if _error_sig(e) not in skip), _all[0])
+        loc = ".".join(str(p) for p in first.get("loc", ()))
+        msg = first.get("msg", "invalid value")
+        return f"{loc}: {msg}" if loc else msg
+    except Exception:  # noqa: BLE001 - fall through to the string form
+        pass
     return str(exc).splitlines()[0].strip()
 
 
@@ -2152,12 +2164,8 @@ try:
     def _error_sigs(_exc: BaseException) -> "set[tuple]":
         """(loc, msg) of every error in a pydantic ValidationError; empty for
         anything else."""
-        _fn = getattr(_exc, "errors", None)
-        if not callable(_fn):
-            return set()
         try:
-            return {(tuple(_e.get("loc") or ()), _e.get("msg", ""))
-                    for _e in _fn()}
+            return {_error_sig(_e) for _e in _error_list(_exc)}
         except Exception:  # noqa: BLE001
             return set()
 
@@ -2196,17 +2204,11 @@ try:
             # empty/unknown loc (cross-field model validators) can't be
             # attributed, so fall back to validating each still-standing field
             # in isolation and reverting the ones that fail on their own.
-            _err_list = []
-            _errs_fn = getattr(_verr, "errors", None)
-            if callable(_errs_fn):
-                try:
-                    _err_list = _errs_fn()
-                except Exception:  # noqa: BLE001
-                    _err_list = []
+            _err_list = _error_list(_verr)
             _unattributed = not _err_list
             for _e in _err_list:
                 _loc = _e.get("loc") or ()
-                if (tuple(_loc), _e.get("msg", "")) in _PRE_ENV_SIGS:
+                if _error_sig(_e) in _PRE_ENV_SIGS:
                     continue  # predates the env layer: not this env value's
                 _f0 = str(_loc[0]) if _loc else ""
                 if _f0 in _changed:
@@ -2255,18 +2257,16 @@ try:
                     break   # only the pre-env errors are left
                 _reason = _env_validation_reason(_gerr, _PRE_ENV_SIGS)
                 _named: list[str] = []
-                _errs_fn2 = getattr(_gerr, "errors", None)
-                if callable(_errs_fn2):
-                    try:
-                        for _ge in _errs_fn2():
-                            _gloc = _ge.get("loc") or ()
-                            if (tuple(_gloc), _ge.get("msg", "")) in _PRE_ENV_SIGS:
-                                continue
-                            _gf0 = str(_gloc[0]) if _gloc else ""
-                            if _gf0 and _gf0 in _left and _gf0 not in _named:
-                                _named.append(_gf0)
-                    except Exception:  # noqa: BLE001
-                        pass
+                try:
+                    for _ge in _error_list(_gerr):
+                        _gloc = _ge.get("loc") or ()
+                        if _error_sig(_ge) in _PRE_ENV_SIGS:
+                            continue
+                        _gf0 = str(_gloc[0]) if _gloc else ""
+                        if _gf0 and _gf0 in _left and _gf0 not in _named:
+                            _named.append(_gf0)
+                except Exception:  # noqa: BLE001
+                    pass
                 if not _named:
                     _cur = _error_sigs(_gerr) - _PRE_ENV_SIGS
                     for _f in _left:
