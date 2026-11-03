@@ -45,17 +45,17 @@ router = APIRouter(prefix="/settings/overrides")
 
 # Serializes the library's read-modify-write: post_state and rename_profile
 # each snapshot cfg.OVERRIDE_PROFILES, save, and hot-apply by RE-READING disk
-# (apply_hot_changes). Interleaved, a /state save still naming `old` landed
-# between a rename's save and its apply, so the cascade moved every binding to
-# `new` while cfg reloaded a library without it: the layer and its locks
-# dropped (fail-open). Single-worker assumption, like pl_apply.rules_lock().
+# (apply_hot_changes). Interleaved, a /state save still naming `old` can land
+# between a rename's save and its apply, so the cascade moves every binding to
+# `new` while cfg reloads a library without it: the layer and its locks drop
+# (fail-open). Single-worker assumption, like pl_apply.rules_lock().
 _PROFILES_LOCK = LoopLock()
 
 # The third writer of profile names: the per-user / per-key binding PATCH
 # routes (api_keys_routes, plain-def threadpool handlers) validate names
 # against the running cfg and then write. Inside the window above, cfg still
 # holds the profile a /state save is deleting, or a rename's `old` alias, so a
-# binding save naming it passed and landed after the in-use guard or the
+# binding save naming it passes and lands after the in-use guard or the
 # cascade: dangling, and fail-open as above. A threading lock, so the sync
 # routes can hold it; the async writers poll for it (_hold_profile_refs) rather
 # than block the event loop behind a threadpool holder.
