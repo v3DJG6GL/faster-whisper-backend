@@ -6,7 +6,7 @@ fake model ignores the uploaded bytes, so a tiny dummy WAV payload is fine.
 
 import pytest
 
-from tests.conftest import FakeModel, FakeSegment, bearer
+from tests.conftest import FakeModel, FakeSegment, bearer, write_wav
 from tests._translation_helpers import enable_translation
 from faster_whisper_backend.runtime import model_registry
 from faster_whisper_backend.transcription import models as tx_models
@@ -791,15 +791,6 @@ def test_huge_translate_to_field_is_walked_and_echoed_bounded(client, app_module
     assert len(dropped[0]) < 1024
 
 
-def _write_wav(path):
-    import wave
-    with wave.open(str(path), "wb") as w:
-        w.setnchannels(1)
-        w.setsampwidth(2)
-        w.setframerate(16000)
-        w.writeframes(b"\x00\x00" * 16000)
-
-
 def test_ffconcat_upload_is_refused_before_any_decoder(client, app_module,
                                                        fake_model, tmp_path,
                                                        monkeypatch):
@@ -810,7 +801,7 @@ def test_ffconcat_upload_is_refused_before_any_decoder(client, app_module,
 
     import faster_whisper.audio
     monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
-    _write_wav(tmp_path / "secret.wav")
+    write_wav(str(tmp_path / "secret.wav"), b"\x00\x00" * 16000)
     decoded = []
     monkeypatch.setattr(faster_whisper.audio, "decode_audio",
                         lambda *a, **k: decoded.append(a))
