@@ -1139,11 +1139,10 @@ def series(
     user_id: str | None = None,
     key_id: str | None = None,
 ) -> list[dict[str, Any]]:
-    """Time-series of summed usage, one entry per SERVER-LOCAL day (the operator
-    dashboard's perspective), ascending, all kinds folded. Hours are rolled
-    into local days in Python via epoch_day_for(hour*3600) — DST-correct.
-    `day` is days-since-epoch so `day*86400` is UTC midnight of that date
-    (the client's label math). bucket='week' groups into 7-day blocks
+    """Time-series of summed usage, one entry per SERVER-LOCAL day,
+    ascending, all kinds folded. Hours are rolled into local days in Python
+    via epoch_day_for(hour*3600) — DST-correct. `day` is days-since-epoch so
+    `day*86400` is UTC midnight of that date. bucket='week' groups into 7-day blocks
     (day - day % 7). user_id / key_id None => global (all keys)."""
     conn = _require_conn()
     where, params = _window_clause(start_hour, end_hour)
@@ -1190,8 +1189,7 @@ def leaderboard(
     """Top entities for a window, ranked by `metric`. by='user' groups by
     user_id; by='key' groups by key_id (carrying user_id). `metric` is
     validated against the column whitelist (it is interpolated into the
-    ORDER BY). `user_id` narrows to one owner's rows (the /stats "own"
-    scope ranks that user's keys); None = every user."""
+    ORDER BY). `user_id` narrows to one owner's rows; None = every user."""
     if metric not in _METRICS:
         metric = "audio_s"
     conn = _require_conn()
@@ -2376,8 +2374,8 @@ def _finish(doc: dict[str, Any], *, by_day, words_by_day, words_by_slot,
             })
         return out
     doc["hours"] = grid("dow", lambda s: (s[0], s[2]))
-    # The same slots by day of month (1..31) × hour: the stats console's
-    # "busy days" rhythm. Not read by the desktop app.
+    # The same slots by day of month (1..31) × hour: the "busy days" rhythm
+    # of the stats console and of the desktop app's busy panel.
     doc["dom_hours"] = grid("dom", lambda s: (s[1], s[2]))
     doc["streak"] = {
         k: _streak({d: w[k] for d, w in words_all_days.items()}, today)
