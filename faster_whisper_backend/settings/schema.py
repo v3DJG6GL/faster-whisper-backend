@@ -666,6 +666,14 @@ def _effective(model: BaseModel, name: str, fallback: Any = None,
     return getattr(_cfg, name, fallback)
 
 
+def _refuse_unknown_slugs(where: str, slugs: Any,
+                          canonical: "set[str] | frozenset[str]") -> None:
+    unknown = [s for s in slugs or () if s not in canonical]
+    if unknown:
+        raise ValueError(f"{where} references unknown rule slugs: "
+                         f"{unknown}. Valid: {sorted(canonical)}.")
+
+
 def hard_break_floor_ms(outer: int) -> int:
     """The longest live-dictation hard break that still fires right after
     EVERY finalize for this outer gate. Silence is counted in whole
@@ -2002,14 +2010,8 @@ class AdminConfig(BaseModel):
             return self
         for model_id, override in self.MODEL_OVERRIDES.items():
             for list_name in ("PIPELINE_RULES_EXCLUDE", "PIPELINE_RULES_INCLUDE"):
-                slugs = getattr(override, list_name, None) or []
-                unknown = [s for s in slugs if s not in canonical]
-                if unknown:
-                    raise ValueError(
-                        f"MODEL_OVERRIDES[{model_id!r}].{list_name} "
-                        f"references unknown rule slugs: {unknown}. "
-                        f"Valid: {sorted(canonical)}."
-                    )
+                _refuse_unknown_slugs(f"MODEL_OVERRIDES[{model_id!r}].{list_name}",
+                                      getattr(override, list_name, None), canonical)
         return self
 
     @model_validator(mode="after")
@@ -2024,14 +2026,8 @@ class AdminConfig(BaseModel):
             return self
         for pname, prof in self.OVERRIDE_PROFILES.items():
             for list_name in ("PIPELINE_RULES_EXCLUDE", "PIPELINE_RULES_INCLUDE"):
-                slugs = getattr(prof, list_name, None) or []
-                unknown = [s for s in slugs if s not in canonical]
-                if unknown:
-                    raise ValueError(
-                        f"OVERRIDE_PROFILES[{pname!r}].{list_name} "
-                        f"references unknown rule slugs: {unknown}. "
-                        f"Valid: {sorted(canonical)}."
-                    )
+                _refuse_unknown_slugs(f"OVERRIDE_PROFILES[{pname!r}].{list_name}",
+                                      getattr(prof, list_name, None), canonical)
         return self
 
     @model_validator(mode="after")
@@ -2044,13 +2040,8 @@ class AdminConfig(BaseModel):
         canonical = self._canonical_slugs(info)
         if canonical is None:
             return self
-        unknown = [s for s in self.CAPTURES_PIPELINE_RULES_EXCLUDE
-                   if s not in canonical]
-        if unknown:
-            raise ValueError(
-                f"CAPTURES_PIPELINE_RULES_EXCLUDE references unknown "
-                f"rule slugs: {unknown}. Valid: {sorted(canonical)}."
-            )
+        _refuse_unknown_slugs("CAPTURES_PIPELINE_RULES_EXCLUDE",
+                              self.CAPTURES_PIPELINE_RULES_EXCLUDE, canonical)
         return self
 
     @field_validator("CONSOLE_LOG_LEVEL", "SERVER_LOG_LEVEL", mode="before")
