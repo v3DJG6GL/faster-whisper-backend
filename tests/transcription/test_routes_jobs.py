@@ -27,6 +27,12 @@ def _start_row(job_id=_PID, ttl_s=3600, **kw):
     return js.start(**args)
 
 
+def _finished_with(client, result):
+    """A real POSTed run under _PID whose stored result is then replaced."""
+    assert _post(client, progress_id=_PID).status_code == 200
+    js.finish(job_id=_PID, state="done", ttl_s=3600, result=result)
+
+
 @pytest.mark.parametrize("fmt", ["json", "text", "verbose_json", "srt", "vtt"])
 def test_post_with_progress_id_stores_the_verbatim_payload(client, fmt):
     r = _post(client, progress_id=_PID, response_format=fmt)
@@ -327,8 +333,7 @@ def test_rate_limited_answers_429(client, app_module, monkeypatch):
 
 
 def test_result_drops_dangling_media_ids(client):
-    assert _post(client, progress_id=_PID).status_code == 200
-    js.finish(job_id=_PID, state="done", ttl_s=3600, result={
+    _finished_with(client, {
         "text": "hallo", "source_media_id": "ab" * 16,
         "source_media_expires_at": 1, "source_video_media_id": "cd" * 16,
         "source_video_expires_at": 2, "source_video_pending": True})
@@ -337,8 +342,7 @@ def test_result_drops_dangling_media_ids(client):
 
 
 def test_result_drops_every_key_of_an_expired_video(client):
-    assert _post(client, progress_id=_PID).status_code == 200
-    js.finish(job_id=_PID, state="done", ttl_s=3600, result={
+    _finished_with(client, {
         "text": "hallo", "source_video_media_id": "cd" * 16,
         "source_video_expires_at": 2, "source_video_height": 720,
         "source_video_container": "mp4", "source_video_bytes": 123})
@@ -349,9 +353,7 @@ def test_result_keeps_the_pending_video_flag_while_the_run_is_open(client):
     """The handler stored `source_video_pending` and the video fetch still
     runs (its progress entry stays open until media/video.py patches the
     row): a client re-attaching via /result must keep polling."""
-    assert _post(client, progress_id=_PID).status_code == 200
-    js.finish(job_id=_PID, state="done", ttl_s=3600, result={
-        "text": "hallo", "source_video_pending": True})
+    _finished_with(client, {"text": "hallo", "source_video_pending": True})
     tx_progress._BATCH_PROGRESS[_PID] = {"stage": "downloading", "updated": 0}
     try:
         body = client.get(f"/v1/jobs/{_PID}/result").json()
@@ -365,9 +367,7 @@ def test_result_keeps_the_pending_flag_when_the_video_lands_during_the_read(
     # The read returns the pre-patch blob, then media/video.py's patch and
     # close land before the route resumes (only the close matters here): the
     # stale flag must survive so the client polls once more for the video.
-    assert _post(client, progress_id=_PID).status_code == 200
-    js.finish(job_id=_PID, state="done", ttl_s=3600, result={
-        "text": "hallo", "source_video_pending": True})
+    _finished_with(client, {"text": "hallo", "source_video_pending": True})
     tx_progress._BATCH_PROGRESS[_PID] = {"stage": "downloading", "updated": 0}
     real_get_result = js.get_result
 
@@ -388,8 +388,7 @@ def test_result_refreshes_a_live_media_expiry(client, tmp_path):
     src = tmp_path / "x.m4a"; src.write_bytes(b"x" * 10)
     mid = ums.register(str(src), user_id=None)
     assert mid
-    assert _post(client, progress_id=_PID).status_code == 200
-    js.finish(job_id=_PID, state="done", ttl_s=3600, result={
+    _finished_with(client, {
         "text": "hallo", "source_media_id": mid, "source_media_expires_at": 1})
     body = client.get(f"/v1/jobs/{_PID}/result").json()
     assert body["source_media_id"] == mid
