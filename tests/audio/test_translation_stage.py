@@ -8,6 +8,7 @@ import json
 from faster_whisper_backend.translation import engine as translation
 from faster_whisper_backend.transcription import progress as tx_progress
 from tests._transcription_helpers import WAV_UPLOAD as _FILE
+from tests._transcription_helpers import bind_profile
 from tests._transcription_helpers import post_verbose as _post
 from tests.conftest import bearer
 
@@ -180,19 +181,9 @@ def test_locked_translate_to_ignores_client_param(client, app_module,
                         raising=False)
     calls = []
     _stub_translate(monkeypatch, calls=calls)
-    _, raw_admin = make_user_key("admin", is_admin=True)
-    admin_h = bearer(raw_admin)
-    r = client.post("/settings/overrides/state", headers=admin_h,
-                    json={"OVERRIDE_PROFILES": {
-                        "de-only": {"TRANSLATE_TO": "de",
-                                    "locks": ["TRANSLATE_TO"]}}})
-    assert r.status_code == 200, r.text
-    uid, raw_alice = make_user_key("alice", is_admin=False)
-    r = client.patch(
-        f"/settings/api-keys/api/users/{uid}/permissions", headers=admin_h,
-        json={"pages": {}, "config": {"overrides": {},
-                                      "profiles": ["de-only"], "locks": []}})
-    assert r.status_code == 200, r.text
+    _, raw_alice = bind_profile(
+        client, make_user_key, "de-only",
+        {"TRANSLATE_TO": "de", "locks": ["TRANSLATE_TO"]})
 
     r = client.post(
         "/v1/audio/transcriptions", files=_FILE, headers=bearer(raw_alice),
@@ -362,17 +353,10 @@ def test_locked_context_segments_ignores_client_value(
                         raising=False)
     calls = []
     _stub_translate(monkeypatch, calls=calls)
-    _, raw_admin = make_user_key("admin", is_admin=True)
-    h = bearer(raw_admin)
-    r = client.post("/settings/overrides/state", headers=h, json={
-        "OVERRIDE_PROFILES": {"ctx": {"TRANSLATION_CONTEXT_SEGMENTS": 1,
-                                      "locks": ["TRANSLATION_CONTEXT_SEGMENTS"]}}})
-    assert r.status_code == 200, r.text
-    uid, raw_alice = make_user_key("alice")
-    r = client.patch(f"/settings/api-keys/api/users/{uid}/permissions", headers=h,
-                     json={"pages": {}, "config": {"overrides": {},
-                                                   "profiles": ["ctx"], "locks": []}})
-    assert r.status_code == 200, r.text
+    _, raw_alice = bind_profile(
+        client, make_user_key, "ctx",
+        {"TRANSLATION_CONTEXT_SEGMENTS": 1,
+         "locks": ["TRANSLATION_CONTEXT_SEGMENTS"]})
     r = client.post("/v1/audio/transcriptions", files=_FILE, headers=bearer(raw_alice),
                     data={"model": "whisper-1", "response_format": "verbose_json",
                           "translate_to": "en", "context_segments": "6"})

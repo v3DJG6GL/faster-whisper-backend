@@ -9,6 +9,7 @@ import pytest
 
 from faster_whisper_backend.audio import bgm_separation
 from tests._transcription_helpers import WAV_UPLOAD as _FILE
+from tests._transcription_helpers import bind_profile
 from tests._transcription_helpers import post_verbose as _post
 
 
@@ -194,16 +195,8 @@ def test_locked_separate_ignores_client_param(client, app_module, make_user_key,
     try:
         calls = []
         _stub_separate(monkeypatch, calls)
-        _, raw_admin = make_user_key("admin", is_admin=True)
-        admin_h = bearer(raw_admin)
-        r = client.post("/settings/overrides/state", headers=admin_h,
-                        json={"OVERRIDE_PROFILES": {"nosep": {"locks": ["SEPARATE_BGM"]}}})
-        assert r.status_code == 200, r.text
-        uid, raw_alice = make_user_key("alice", is_admin=False)
-        r = client.patch(f"/settings/api-keys/api/users/{uid}/permissions", headers=admin_h,
-                         json={"pages": {}, "config": {"overrides": {},
-                               "profiles": ["nosep"], "locks": []}})
-        assert r.status_code == 200, r.text
+        _, raw_alice = bind_profile(client, make_user_key, "nosep",
+                                    {"locks": ["SEPARATE_BGM"]})
         r = client.post(
             "/v1/audio/transcriptions", files=_FILE, headers=bearer(raw_alice),
             data={"model": "whisper-1", "response_format": "verbose_json",
