@@ -731,6 +731,12 @@ def _stub_get_model(monkeypatch, llm="STUB-LLM"):
     monkeypatch.setattr(translation, "_get_model", _fake)
 
 
+def _install_complete(monkeypatch, fake):
+    """Stub translation._complete with ``fake`` and _get_model with a stub LLM."""
+    monkeypatch.setattr(translation, "_complete", fake)
+    _stub_get_model(monkeypatch)
+
+
 def _install_fake(monkeypatch, transform, calls=None):
     """Stub translation._complete: applies `transform` per item, handling the
     numbered-list batch payloads transparently."""
@@ -741,8 +747,7 @@ def _install_fake(monkeypatch, transform, calls=None):
         if payload.startswith(translation._NUMBERED_INSTRUCTION):
             return _numbered_reply(payload, transform)
         return transform(payload)
-    monkeypatch.setattr(translation, "_complete", fake)
-    _stub_get_model(monkeypatch)
+    _install_complete(monkeypatch, fake)
 
 
 def _xlate(text):
@@ -860,9 +865,7 @@ def test_faithful_mismatch_halves_batch_down_to_success(base_cfg, monkeypatch):
                 return "sorry, here is a poem instead"   # count mismatch
             return _numbered_reply(payload)
         return _xlate(payload)
-    monkeypatch.setattr(translation, "_complete", fake)
-
-    _stub_get_model(monkeypatch)
+    _install_complete(monkeypatch, fake)
 
     segs = _segs("Eins zwei.", "Drei vier.", "Fuenf sechs.", "Sieben acht.")
     res, warns, _ = _run(translation.translate_segments(
@@ -889,9 +892,7 @@ def test_faithful_mismatch_never_resends_the_same_batch(base_cfg, monkeypatch,
     must not count towards the span that gets halved."""
     calls = []
     # Every numbered batch is a count mismatch.
-    monkeypatch.setattr(translation, "_complete",
-                        _numbered_fake(calls, lambda lines: True))
-    _stub_get_model(monkeypatch)
+    _install_complete(monkeypatch, _numbered_fake(calls, lambda lines: True))
 
     res, warns, _ = _run(translation.translate_segments(
         _segs(*texts), ["en"], source_lang="de", mode="faithful"))
@@ -911,9 +912,8 @@ def test_faithful_mismatch_after_leading_blanks_keeps_the_batch_size(
     monkeypatch.setattr(cfg, "TRANSLATION_BATCH_SEGMENTS", 8, raising=False)
     calls = []
     # The first batch mismatches.
-    monkeypatch.setattr(translation, "_complete",
-                        _numbered_fake(calls, lambda lines: len(calls) == 1))
-    _stub_get_model(monkeypatch)
+    _install_complete(monkeypatch, _numbered_fake(
+        calls, lambda lines: len(calls) == 1))
 
     live = [f"Satz nummer {n}." for n in range(28)]
     res, warns, _ = _run(translation.translate_segments(
@@ -941,8 +941,7 @@ def test_faithful_batch_size_grows_back_after_one_mismatch(base_cfg,
         if len(calls) == 1:
             return "one line only"                  # first batch mismatches
         return _numbered_reply(payload)
-    monkeypatch.setattr(translation, "_complete", fake)
-    _stub_get_model(monkeypatch)
+    _install_complete(monkeypatch, fake)
 
     live = [f"Satz nummer {n}." for n in range(32)]
     res, warns, _ = _run(translation.translate_segments(
@@ -981,9 +980,8 @@ def test_faithful_batch_size_stops_growing_to_a_size_that_keeps_failing(
     before every 4-batch for the rest of the target."""
     monkeypatch.setattr(cfg, "TRANSLATION_BATCH_SEGMENTS", 8, raising=False)
     calls = []
-    monkeypatch.setattr(translation, "_complete",
-                        _numbered_fake(calls, lambda lines: len(lines) > 4))
-    _stub_get_model(monkeypatch)
+    _install_complete(monkeypatch, _numbered_fake(
+        calls, lambda lines: len(lines) > 4))
 
     live = [f"Satz nummer {n}." for n in range(32)]
     res, warns, _ = _run(translation.translate_segments(
@@ -1000,9 +998,8 @@ def test_faithful_one_bad_cue_still_grows_back_to_the_full_batch(
     monkeypatch.setattr(cfg, "TRANSLATION_BATCH_SEGMENTS", 8, raising=False)
     calls = []
     live = [f"Satz nummer {n}." for n in range(32)]
-    monkeypatch.setattr(translation, "_complete", _numbered_fake(
+    _install_complete(monkeypatch, _numbered_fake(
         calls, lambda lines: any(live[5] in ln for ln in lines)))
-    _stub_get_model(monkeypatch)
 
     res, warns, _ = _run(translation.translate_segments(
         _segs(*live), ["en"], source_lang="de", mode="faithful"))
@@ -1020,9 +1017,8 @@ def test_faithful_two_bad_cues_apart_still_grow_back_to_the_full_batch(
     calls = []
     live = [f"Satz nummer {n}." for n in range(48)]
     bad = (live[5], live[29])
-    monkeypatch.setattr(translation, "_complete", _numbered_fake(
+    _install_complete(monkeypatch, _numbered_fake(
         calls, lambda lines: any(b in ln for ln in lines for b in bad)))
-    _stub_get_model(monkeypatch)
 
     res, warns, _ = _run(translation.translate_segments(
         _segs(*live), ["en"], source_lang="de", mode="faithful"))
@@ -1114,8 +1110,7 @@ def test_inference_error_surfaces_as_a_client_safe_translation_error(
     TranslationError with our own wording, never the raw text."""
     def boom(llm, family, prompt_or_msgs, max_tokens):
         raise RuntimeError("CUDA error: out of memory at 0xdeadbeef")
-    monkeypatch.setattr(translation, "_complete", boom)
-    _stub_get_model(monkeypatch)
+    _install_complete(monkeypatch, boom)
     with pytest.raises(translation.TranslationError) as ei:
         _run(translation.translate_segments(
             _segs("Hallo Welt"), ["en"], source_lang="de", mode="faithful"))
@@ -1148,8 +1143,7 @@ def test_faithful_batch_past_the_context_window_is_halved(base_cfg,
     texts = [f"Das ist der lange Satz nummer {n} hier." for n in range(4)]
     two = len(translation._NUMBERED_INSTRUCTION) + 2 * 50
     fake, calls = _overflow_past(two)
-    monkeypatch.setattr(translation, "_complete", fake)
-    _stub_get_model(monkeypatch)
+    _install_complete(monkeypatch, fake)
     res, warns, meta = _run(translation.translate_segments(
         _segs(*texts), ["en"], source_lang="de", mode="faithful"))
     assert warns == [] and meta["kept"] == {}
@@ -1164,8 +1158,7 @@ def test_segment_past_the_context_window_is_kept_original(base_cfg,
     the other segments and targets still translate."""
     huge = "Wort " * 400 + "Ende."
     fake, _ = _overflow_past(1000)
-    monkeypatch.setattr(translation, "_complete", fake)
-    _stub_get_model(monkeypatch)
+    _install_complete(monkeypatch, fake)
     res, warns, meta = _run(translation.translate_segments(
         _segs("Guten Morgen.", huge), ["en", "fr"], source_lang="de",
         mode=mode))
@@ -1427,8 +1420,7 @@ def test_unknown_source_is_not_asserted_as_english(base_cfg, monkeypatch):
     def fake(llm, family, msgs, max_tokens):
         prompts.append(msgs[0]["content"])
         return "Bonjour le monde ici"
-    monkeypatch.setattr(translation, "_complete", fake)
-    _stub_get_model(monkeypatch)
+    _install_complete(monkeypatch, fake)
 
     res, warns, _ = _run(translation.translate_segments(
         _segs("Hallo Welt hier"), ["fr"], source_lang=None, mode="faithful"))
@@ -2524,9 +2516,7 @@ def test_template_override_forces_custom_family_and_renders_it(
     def fake(llm, family, prompt_or_msgs, max_tokens):
         prompts.append((family, prompt_or_msgs))
         return "Hello world."
-    monkeypatch.setattr(translation, "_complete", fake)
-
-    _stub_get_model(monkeypatch)
+    _install_complete(monkeypatch, fake)
 
     res, warns, meta = _run(translation.translate_segments(
         _segs("Hallo Welt."), ["en"], source_lang="de", mode="faithful",
@@ -2549,9 +2539,7 @@ def test_without_override_custom_family_still_reads_cfg(base_cfg, monkeypatch):
     def fake(llm, family, prompt_or_msgs, max_tokens):
         prompts.append(prompt_or_msgs)
         return "Hello world."
-    monkeypatch.setattr(translation, "_complete", fake)
-
-    _stub_get_model(monkeypatch)
+    _install_complete(monkeypatch, fake)
 
     _run(translation.translate_segments(
         _segs("Hallo Welt."), ["en"], source_lang="de", mode="faithful"))
@@ -2781,8 +2769,7 @@ class TestFamilyOverride:
             seen["prompt"] = prompt
             return "ok"
 
-        _stub_get_model(monkeypatch)
-        monkeypatch.setattr(translation, "_complete", fake_complete)
+        _install_complete(monkeypatch, fake_complete)
         results, warnings, meta = _run(translation.translate_segments(
             [{"text": "Hallo"}], ["en"], source_lang="de", mode="faithful",
             family_override="seedx",
