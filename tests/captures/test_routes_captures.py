@@ -172,17 +172,19 @@ def _insert_sample(conn, gs, sid, *, locked, user_id="alice", ts=1.0):
     )
 
 
-def _insert_member(conn, cid, sid, user_id="alice"):
+def _insert_member(conn, cid, sid, user_id="alice", request_id=None):
     """Insert a captures row (optionally a member of sample `sid`) directly."""
-    rel = os.path.join(cid[0:2], cid[2:4], f"{cid}.wav")
+    from faster_whisper_backend.captures import store as captures_store
+
+    rel = captures_store._relpath_for(cid, "wav")
     conn.execute(
         "INSERT INTO captures (id, created_ts, request_id, model, language,"
         " audio_s, audio_relpath, audio_format, raw_text, final_text,"
         " words, segments, corrections, status, user_id,"
         " sample_id, sample_order)"
         " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-        (cid, 1.0, None, "m", "de", 2.0, rel, "wav", "r", "f", "[]", "[]",
-         "[]", "new", user_id, sid, 0),
+        (cid, 1.0, request_id, "m", "de", 2.0, rel, "wav", "r", "f", "[]",
+         "[]", "[]", "new", user_id, sid, 0),
     )
 
 
@@ -489,19 +491,6 @@ def test_last_page_reports_no_cursor(client, make_user_key):
     assert body["next"] is None
 
 
-def _insert_capture_with_request(conn, cid, request_id, user_id):
-    rel = os.path.join(cid[0:2], cid[2:4], f"{cid}.wav")
-    conn.execute(
-        "INSERT INTO captures (id, created_ts, request_id, model, language,"
-        " audio_s, audio_relpath, audio_format, raw_text, final_text,"
-        " words, segments, corrections, status, user_id,"
-        " sample_id, sample_order)"
-        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-        (cid, 1.0, request_id, "m", "de", 2.0, rel, "wav", "r", "f", "[]",
-         "[]", "[]", "new", user_id, None, 0),
-    )
-
-
 def test_by_request_id_audits_cross_user_read(client, make_user_key, caplog):
     """The by-request lookup hands a scope=all NON-admin the full capture row
     (raw/final text + the owner's username) for someone else's capture, so it
@@ -514,7 +503,8 @@ def test_by_request_id_audits_cross_user_read(client, make_user_key, caplog):
     uid_owner, _raw_owner = make_user_key("alice", pages={"captures": "own"})
     _uid_v, raw_viewer = make_user_key("viewer", pages={"captures": "all"})
     conn = captures_store._require_conn()
-    _insert_capture_with_request(conn, "byreqcap0001", "req-xyz", uid_owner)
+    _insert_member(conn, "byreqcap0001", None, user_id=uid_owner,
+                   request_id="req-xyz")
 
     with caplog.at_level(logging.INFO, logger="whisper-api"):
         r = client.get(
@@ -527,7 +517,8 @@ def test_by_request_id_audits_cross_user_read(client, make_user_key, caplog):
     # Self-reads must stay silent (same rule the siblings follow).
     caplog.clear()
     uid_self, raw_self = make_user_key("solo", pages={"captures": "all"})
-    _insert_capture_with_request(conn, "byreqcap0002", "req-own", uid_self)
+    _insert_member(conn, "byreqcap0002", None, user_id=uid_self,
+                   request_id="req-own")
     with caplog.at_level(logging.INFO, logger="whisper-api"):
         client.get("/captures/api/by-request/req-own", headers=bearer(raw_self))
     assert not [m for m in caplog.messages if "cross-user-read" in m]
@@ -1435,7 +1426,7 @@ def test_audio_original_switch_serves_the_untrimmed_file(client):
     conn = captures_store._require_conn()
     cid = "origaudio001"
     _insert_member(conn, cid, None)
-    rel = os.path.join(cid[0:2], cid[2:4], f"{cid}.wav")
+    rel = captures_store._relpath_for(cid, "wav")
     trel = os.path.join(cid[0:2], cid[2:4], f"{cid}.trim.wav")
     for r, payload in ((rel, b"RIFF....WAVEoriginal"), (trel, b"RIFF....WAVEtrimmed")):
         path = captures_store.abs_audio_path(r)
@@ -1627,8 +1618,7 @@ def _mixed_pair(task_b=None, lang_b="de"):
     ids = ["mixpair0000a", "mixpair0000b"]
     for cid in ids:
         _insert_member(conn, cid, None, user_id="alice")
-        p = captures_store.abs_audio_path(
-            os.path.join(cid[0:2], cid[2:4], f"{cid}.wav"))
+        p = captures_store.abs_audio_path(captures_store._relpath_for(cid, "wav"))
         os.makedirs(os.path.dirname(p), exist_ok=True)
         _write_silent_wav(p, 1600)
     conn.execute("UPDATE captures SET task = ?, language = ? WHERE id = ?",
