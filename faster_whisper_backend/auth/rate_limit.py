@@ -2,7 +2,8 @@
 
 Two shapes, both keyed by a caller-supplied identity string:
 
-  FixedWindow  counter that resets when its window rolls — "N per T seconds".
+  FixedWindow  counter that resets when its window rolls — "N per T seconds"
+               (`per_minute()` builds the common "N/min" flood guard).
   InFlight     concurrency gauge — "N at once", acquire/release around work.
 
 Both read their ceiling from `config` on EVERY call, which is what makes the
@@ -237,6 +238,16 @@ class FixedWindow:
             if oldest is None:
                 return
             self._state.pop(oldest, None)
+
+
+def per_minute(config_field: str, default_max: int, what: str) -> FixedWindow:
+    """A FixedWindow of `default_max` (config `config_field`) per minute whose
+    429 reads "too many <what> — slow down (N/min; retry in Ns)". Ties the
+    "/min" wording to window_s=60.0 so the two cannot drift apart."""
+    return FixedWindow(config_field=config_field, window_s=60.0,
+                       default_max=default_max,
+                       message=f"too many {what} — slow down "
+                               "({limit}/min; retry in {retry_after}s)")
 
 
 class InFlight:

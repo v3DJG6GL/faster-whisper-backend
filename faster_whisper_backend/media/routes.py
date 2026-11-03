@@ -47,35 +47,17 @@ router = APIRouter()
 # fetch to the linked site, so a keystroke-happy client must not turn the
 # server into a probe cannon. Like the other url-* limiters it protects a
 # THIRD PARTY (the server is the abuse vector), hence the tight default.
-_url_preview_rate = _rl.FixedWindow(
-    config_field="URL_PREVIEW_RATE_PER_MIN",
-    window_s=60.0,
-    default_max=10,
-    message="too many link previews — slow down "
-            "({limit}/min; retry in {retry_after}s)",
-)
+_url_preview_rate = _rl.per_minute("URL_PREVIEW_RATE_PER_MIN", 10, "link previews")
 
 
 # Per-identity window for subtitle fetches: each one re-probes the link and
 # GETs up to 8 small tracks from the site — the preview limiter's reasoning.
-_url_subtitles_rate = _rl.FixedWindow(
-    config_field="URL_SUBTITLES_RATE_PER_MIN",
-    window_s=60.0,
-    default_max=6,
-    message="too many subtitle downloads — slow down "
-            "({limit}/min; retry in {retry_after}s)",
-)
+_url_subtitles_rate = _rl.per_minute("URL_SUBTITLES_RATE_PER_MIN", 6, "subtitle downloads")
 
 # Per-identity window for link language checks — the costliest URL route: an
 # audio download from a third party (the whole file unless the stream is
 # segmented) AND up to three detections on the GPU.
-_url_language_rate = _rl.FixedWindow(
-    config_field="URL_LANGUAGE_RATE_PER_MIN",
-    window_s=60.0,
-    default_max=4,
-    message="too many language checks — slow down "
-            "({limit}/min; retry in {retry_after}s)",
-)
+_url_language_rate = _rl.per_minute("URL_LANGUAGE_RATE_PER_MIN", 4, "language checks")
 
 
 _VIDEO_MIME = {
@@ -565,20 +547,8 @@ async def url_language(request: Request,
 # itself (edits, renames and speaker colours included), the server muxes them
 # into the retained video — a link's, or one the client uploads here for the
 # purpose — as soft subtitle streams, and streams the result back.
-_media_upload_rate = _rl.FixedWindow(
-    config_field="MEDIA_UPLOAD_RATE_PER_MIN",
-    window_s=60.0,
-    default_max=6,
-    message="too many media uploads — slow down "
-            "({limit}/min; retry in {retry_after}s)",
-)
-_media_package_rate = _rl.FixedWindow(
-    config_field="MEDIA_PACKAGE_RATE_PER_MIN",
-    window_s=60.0,
-    default_max=12,
-    message="too many video exports — slow down "
-            "({limit}/min; retry in {retry_after}s)",
-)
+_media_upload_rate = _rl.per_minute("MEDIA_UPLOAD_RATE_PER_MIN", 6, "media uploads")
+_media_package_rate = _rl.per_minute("MEDIA_PACKAGE_RATE_PER_MIN", 12, "video exports")
 _media_package_inflight = _rl.InFlight(
     config_field="MEDIA_PACKAGE_MAX_INFLIGHT_PER_USER",
     default_max=1,
