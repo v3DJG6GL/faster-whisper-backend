@@ -512,9 +512,9 @@ async def post_factory_rules(payload: dict[str, Any], request: Request) -> JSONR
     rules so the editor can refresh its in-memory `factoryRules` snapshot.
     """
     rules = payload.get("PIPELINE_RULES")
-    # Element type matters, not just the container: save_factory_rules does
-    # `[{**r, "seeded": True} for r in rules]` BEFORE model_validate, so a
-    # non-mapping element raises TypeError, which neither `except
+    # Element type matters, not just the container: save_factory_rules reads
+    # each element's `r.items()` BEFORE model_validate, so a non-mapping
+    # element raises AttributeError, which neither `except
     # ValidationError` nor `except OSError` below catches — an unhandled 500
     # with a stack trace instead of this 400.
     if not isinstance(rules, list) or not all(isinstance(r, dict) for r in rules):
@@ -1540,10 +1540,10 @@ async def translation_test(
         body: _TranslationTestBody,
         user: dict[str, Any] = Depends(require_admin),
 ) -> JSONResponse:
-    """Run ONE sample segment through the translation stage — the WebUI's
-    "▶ Test with loaded model" button next to the custom-template preview.
-    Uses the configured default model (loading it on first use, exactly like
-    a real request); a supplied `template` is threaded through
+    """Run ONE sample segment through the translation stage — the prompt
+    lab's "▶ Test this model" button. Uses the lab's `model` (the configured
+    default when none is sent), loading it on first use exactly like a real
+    request; a supplied `template` is threaded through
     translate_segments(template_override=...) so the admin can test the
     UNSAVED textarea value. 403 when the stage is off; TranslationError →
     400 with its client-safe message (same contract as the request path)."""
