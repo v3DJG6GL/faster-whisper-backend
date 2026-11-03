@@ -904,11 +904,7 @@ def test_export_joins_the_text_with_the_strategy_of_the_reread_sample(
     cids = [_ready_capture(captures_store_db, monkeypatch, tmp_path,
                            language="de", translations=None) for _ in range(2)]
     captures_routes._insert_sample_with_sid(
-        sid=sid, user_id="alice", member_ids=cids, transcript="quelle quelle",
-        join_strategy="space", silence_ms=300,
-        member_hash_map={c: "h" for c in cids}, duration_ms=1000,
-        language="de", member_trims={},
-    )
+        sid=sid, **_sample_kwargs(cids, "quelle quelle"))
     _write_merged_wav(gs, sid, b"old audio")
     real_list = gs.list_samples
 
@@ -947,12 +943,9 @@ def test_export_skips_a_sample_whose_members_no_longer_match_its_wav(
         cids = [_ready_capture(captures_store_db, monkeypatch, tmp_path,
                                language="de", translations=None)
                 for _ in range(2)]
+        over = {} if hashed else {"member_hash_map": {}}
         captures_routes._insert_sample_with_sid(
-            sid=sid, user_id="alice", member_ids=cids,
-            transcript="quelle quelle", join_strategy="space", silence_ms=300,
-            member_hash_map={c: "h" for c in cids} if hashed else {},
-            duration_ms=1000, language="de", member_trims={},
-        )
+            sid=sid, **_sample_kwargs(cids, "quelle quelle", **over))
         _write_merged_wav(gs, sid, b"both members audio")
     gone = gs.get_members(drifted)[1]["id"]
     with captures_store_db._lock:
@@ -1088,17 +1081,21 @@ def test_rebuild_lock_contextmanager_pins_and_unpins():
     assert sid not in capture_samples._rebuild_locks
 
 
+def _sample_kwargs(cids, transcript="quelle", **over):
+    """_insert_sample_with_sid's arguments (all but sid) for alice's `cids`."""
+    return {"user_id": "alice", "member_ids": cids, "transcript": transcript,
+            "join_strategy": "space", "silence_ms": 300,
+            "member_hash_map": {c: "h" for c in cids}, "duration_ms": 1000,
+            "language": "de", "member_trims": {}, **over}
+
+
 def _grouped_capture(captures_store, monkeypatch, tmp_path, sid):
     """One ready capture packed into sample `sid`; returns the capture id."""
     from faster_whisper_backend.captures import routes as cr
 
     cid = _ready_capture(captures_store, monkeypatch, tmp_path, language="de",
                          translations=None)
-    cr._insert_sample_with_sid(
-        sid=sid, user_id="alice", member_ids=[cid], transcript="quelle",
-        join_strategy="space", silence_ms=300, member_hash_map={cid: "h"},
-        duration_ms=1000, language="de", member_trims={},
-    )
+    cr._insert_sample_with_sid(sid=sid, **_sample_kwargs([cid]))
     return cid
 
 
@@ -1261,12 +1258,7 @@ def test_create_sample_rejects_member_already_grouped(
     captures_store = captures_store_db
     cid = _grouped_capture(captures_store, monkeypatch, tmp_path, "b" * 32)
     with pytest.raises(HTTPException) as ei:
-        cr._insert_sample_with_sid(
-            sid="c" * 32, user_id="alice", member_ids=[cid],
-            transcript="quelle", join_strategy="space", silence_ms=300,
-            member_hash_map={cid: "h"}, duration_ms=1000, language="de",
-            member_trims={},
-        )
+        cr._insert_sample_with_sid(sid="c" * 32, **_sample_kwargs([cid]))
     assert ei.value.status_code == 409
     conn = captures_store._require_conn()
     ids = [r[0] for r in conn.execute(
@@ -1302,11 +1294,7 @@ def test_insert_sample_with_sid_holds_captures_lock(
 
     monkeypatch.setattr(gs, "_require_conn", lambda: _Conn())
     sid = "d" * 32
-    cr._insert_sample_with_sid(
-        sid=sid, user_id="alice", member_ids=[cid], transcript="quelle",
-        join_strategy="space", silence_ms=300, member_hash_map={cid: "h"},
-        duration_ms=1000, language="de", member_trims={},
-    )
+    cr._insert_sample_with_sid(sid=sid, **_sample_kwargs([cid]))
     assert seen == {"captures_lock_held": True}
     assert captures_store.get_capture(cid)["sample_id"] == sid
 
@@ -1338,10 +1326,7 @@ def test_insert_sample_with_sid_rolls_back_a_failed_commit(
             return getattr(real_conn, name)
 
     monkeypatch.setattr(gs, "_require_conn", lambda: _Conn())
-    kwargs = dict(user_id="alice", member_ids=[cid], transcript="quelle",
-                  join_strategy="space", silence_ms=300,
-                  member_hash_map={cid: "h"}, duration_ms=1000, language="de",
-                  member_trims={})
+    kwargs = _sample_kwargs([cid])
     with pytest.raises(sqlite3.OperationalError):
         cr._insert_sample_with_sid(sid="e" * 32, **kwargs)
     assert failed and not real_conn.in_transaction
