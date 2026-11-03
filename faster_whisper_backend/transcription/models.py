@@ -944,8 +944,8 @@ def _converted_is_current(name: str, output_dir: str) -> bool:
 
 
 def _pinned_revision(name: str) -> "str | None":
-    """The per-model REVISION pin. PM-only field (no global counterpart):
-    read directly from the override."""
+    """The per-model REVISION pin. No global REVISION exists to fall back
+    on, so it is read directly from the override."""
     _overrides = getattr(cfg, "MODEL_OVERRIDES", None) or {}
     _m_over = _overrides.get(name) if isinstance(_overrides, dict) else None
     return _m_over.get("REVISION") if isinstance(_m_over, dict) else None
