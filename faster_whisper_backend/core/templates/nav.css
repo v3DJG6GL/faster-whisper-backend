@@ -395,9 +395,10 @@ header .subbar #filter { flex: 1 1 auto; min-width: 8rem; max-width: 32rem; }
 header .subbar .sep { align-self: stretch; width: 1px; background: var(--border);
   margin: 0.1rem 0.15rem; }
 
-/* Canonical page-toolbar controls, identical on every page. This block is
-   injected after each page's own <style>, so these rules beat any page-local
-   `header button` / `header .pill` rule of equal specificity. */
+/* Canonical page-toolbar controls, identical on every page. Most pages
+   inject this block at the end of their own <style>, so these rules beat a
+   page-local `header button` / `header .pill` rule of equal specificity;
+   page rules written after it (stats, dictate) win on source order. */
 header button { background: #21262d; color: var(--fg);
   border: 1px solid var(--border); border-radius: 4px;
   padding: 0.3rem 0.7rem; font: inherit; font-size: var(--fs-md);
@@ -529,8 +530,7 @@ body:not(.col-data) header .width-toggle { display: none; }
 .pick-list { max-height: 16rem; overflow-y: auto; }
 /* .pick-pop prefix: the pickers live in the sub-bar, whose
    `header .subbar label { display: inline-flex }` outranks a bare .pick-opt
-   and shrank every row to its content — bars started wherever the name
-   ended. */
+   and would shrink each row to its content, misaligning the bars. */
 .pick-pop .pick-opt { display: flex; align-items: center; gap: 0.5rem; padding: 0.2rem 0.3rem; border-radius: 3px; cursor: pointer;
   font-size: var(--fs-sm); color: var(--fg); white-space: nowrap; }
 .pick-opt:hover { background: #21262d; }
