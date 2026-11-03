@@ -1,5 +1,6 @@
 """Tests for captures_store (faster_whisper_backend/captures/store.py)."""
 
+import contextlib
 import json
 import os
 import sqlite3
@@ -45,6 +46,17 @@ def _make(cs, monkeypatch, tmp_path, **over):
     )
     kw.update(over)
     return cs.create_capture(**kw)
+
+
+@contextlib.contextmanager
+def _var_limit(conn, n=999):
+    """Lower SQLITE_LIMIT_VARIABLE_NUMBER to n for the block, then restore it."""
+    old = conn.getlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER)
+    conn.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, n)
+    try:
+        yield
+    finally:
+        conn.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, old)
 
 
 def _seed_rows(conn, ids, status="new", ts=1.0):
@@ -364,12 +376,8 @@ def test_get_captures_light_projection_and_chunking(captures_store_db,
 
     # Builds differ (Debian's sqlite allows 250000 variables, stock 32766):
     # lower the limit below the 1101 ids so one unchunked IN-list would fail.
-    old = conn.getlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER)
-    conn.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 999)
-    try:
+    with _var_limit(conn):
         got = cs.get_captures_light([cid, "nope", cid, "", *many])
-    finally:
-        conn.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, old)
     assert got[cid] == {"id": cid, "user_id": "alice", "status": "new",
                         "sample_id": None,
                         "audio_relpath": cs.get_capture(cid)["audio_relpath"]}
@@ -676,13 +684,9 @@ def test_evict_deletes_more_ids_than_one_in_list_chunk(
     monkeypatch.setattr(config, "CAPTURES_MAX_MB", 0, raising=False)
     # Builds differ (Debian's sqlite allows 250000 variables, stock 32766):
     # lower the limit below the 1099 ids so one unchunked IN-list would fail.
-    old = conn.getlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER)
-    conn.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 999)
-    try:
+    with _var_limit(conn):
         with cs._lock:
             assert cs._evict_to_cap(conn) is True
-    finally:
-        conn.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, old)
     assert cs.count() == 1
 
 
@@ -730,12 +734,8 @@ def test_bulk_update_status_chunks_past_the_bind_variable_limit(
     conn = cs._require_conn()
     ids = [f"bulkst{i:06d}" for i in range(1000)]
     _seed_rows(conn, ids)
-    old = conn.getlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER)
-    conn.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 999)
-    try:
+    with _var_limit(conn):
         out = cs.bulk_update_status(ids, "ready")
-    finally:
-        conn.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, old)
     assert len(out) == 1000
     assert {o["prev_status"] for o in out} == {"new"}
     assert conn.execute(
@@ -981,12 +981,8 @@ def test_sweep_retention_deletes_more_ids_than_one_in_list_chunk(
     monkeypatch.setattr(config, "CAPTURES_RETENTION_DAYS", 30, raising=False)
     conn = cs._require_conn()
     _seed_rows(conn, [f"aged{i:07d}" for i in range(1100)])
-    old = conn.getlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER)
-    conn.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 999)
-    try:
+    with _var_limit(conn):
         assert cs.sweep_retention() == 1100
-    finally:
-        conn.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, old)
     assert cs.count() == 0
 
 
