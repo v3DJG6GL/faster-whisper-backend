@@ -24,6 +24,15 @@ def _seed(client, blob, base=0, device=None, headers=None):
     return r.json()
 
 
+def _export(client, uid, key):
+    return client.get(f"{_API}/users/{uid}/client-settings/export", headers=bearer(key))
+
+
+def _import(client, uid, key, blob):
+    return client.post(f"{_API}/users/{uid}/client-settings/import",
+                       json={"blob": blob}, headers=bearer(key))
+
+
 def test_page_ships_sync_ui(client):
     """The served page must carry the sync surface: the import-preview
     modal, the drawer builder, and the header-chip class."""
@@ -115,9 +124,7 @@ def test_meta_map_after_open_mode_push(client):
 def test_export_download(client, make_user_key):
     uid, key = make_user_key("Dr. Mueller", is_admin=True)
     _seed(client, {"general": {"theme": "dark"}}, headers=bearer(key))
-    r = client.get(
-        f"{_API}/users/{uid}/client-settings/export", headers=bearer(key)
-    )
+    r = _export(client, uid, key)
     assert r.status_code == 200
     assert r.headers["content-type"].startswith("application/json")
     # The blob may carry the account's saved API keys — no browser or
@@ -140,26 +147,18 @@ def test_export_import_roundtrip_unknown_schema(client, make_user_key):
     uid, key = make_user_key("future", is_admin=True)
     blob = {"futureCategory": {"x": 1}}
     _seed(client, blob, headers=bearer(key))
-    r = client.get(
-        f"{_API}/users/{uid}/client-settings/export", headers=bearer(key)
-    )
+    r = _export(client, uid, key)
     assert r.status_code == 200
     exported = json.loads(r.content)
     assert exported == blob
-    r = client.post(
-        f"{_API}/users/{uid}/client-settings/import",
-        json={"blob": exported},
-        headers=bearer(key),
-    )
+    r = _import(client, uid, key, exported)
     assert r.status_code == 200
     assert r.json()["ok"] is True
 
 
 def test_export_nothing_stored_404(client, make_user_key):
     uid, key = make_user_key("empty", is_admin=True)
-    r = client.get(
-        f"{_API}/users/{uid}/client-settings/export", headers=bearer(key)
-    )
+    r = _export(client, uid, key)
     assert r.status_code == 404
 
 
@@ -175,11 +174,7 @@ def test_import_bumps_and_devices_converge(client, make_user_key):
     uid, key = make_user_key("carol", is_admin=True)
     _seed(client, {"n": 1}, headers=bearer(key), device="laptop")  # device → v1
 
-    r = client.post(
-        f"{_API}/users/{uid}/client-settings/import",
-        json={"blob": {"n": 99}},
-        headers=bearer(key),
-    )
+    r = _import(client, uid, key, {"n": 99})
     assert r.status_code == 200
     assert r.json()["ok"] is True
     assert r.json()["version"] == 2
@@ -201,11 +196,7 @@ def test_import_bumps_and_devices_converge(client, make_user_key):
 
 def test_import_creates_when_nothing_stored(client, make_user_key):
     uid, key = make_user_key("fresh", is_admin=True)
-    r = client.post(
-        f"{_API}/users/{uid}/client-settings/import",
-        json={"blob": {"seeded": True}},
-        headers=bearer(key),
-    )
+    r = _import(client, uid, key, {"seeded": True})
     assert r.status_code == 200
     assert r.json()["version"] == 1
     got = client.get(_V1, headers=bearer(key)).json()
@@ -216,11 +207,7 @@ def test_import_oversize_413(client, make_user_key):
     from faster_whisper_backend.client_settings import store
     uid, key = make_user_key("big", is_admin=True)
     big = {"x": "a" * (store._CAP_BLOB + 100)}
-    r = client.post(
-        f"{_API}/users/{uid}/client-settings/import",
-        json={"blob": big},
-        headers=bearer(key),
-    )
+    r = _import(client, uid, key, big)
     assert r.status_code == 413
 
 
