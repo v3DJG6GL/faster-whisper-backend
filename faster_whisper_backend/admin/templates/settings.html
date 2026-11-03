@@ -924,9 +924,7 @@ async function loadState(saved) {
     if (!f || f.provenance === 'env') continue;
     if (JSON.stringify(f.value) !== JSON.stringify(keep[k])) dirty[k] = keep[k];
   }
-  const clean = Object.keys(dirty).length === 0;
-  $('save-btn').disabled = clean;
-  $('discard-btn').disabled = clean;
+  _paintSaveDiscard();
   $('status').textContent = 'loaded ' + Object.keys(state.fields).length + ' fields';
   $('status').className = 'pill ok';
   render();
@@ -982,6 +980,13 @@ function disableEnvPinnedEditor(el) {
   });
 }
 
+// Save and Discard are live exactly while `dirty` holds an edit.
+function _paintSaveDiscard() {
+  const empty = Object.keys(dirty).length === 0;
+  $('save-btn').disabled = empty;
+  $('discard-btn').disabled = empty;
+}
+
 function setDirty(name, value) {
   // Env-pinned fields are read-only in the GUI — the env var takes precedence,
   // so never record a pending edit for them.
@@ -994,9 +999,7 @@ function setDirty(name, value) {
   } else {
     dirty[name] = value;
   }
-  const empty = Object.keys(dirty).length === 0;
-  $('save-btn').disabled = empty;
-  $('discard-btn').disabled = empty;
+  _paintSaveDiscard();
   // Notify dependent editors when a model source-list changes. The
   // model dropdown / multi-select editors (whisper, translation, UVR
   // separator) listen for this and re-render their option sets.
@@ -5480,8 +5483,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   $('discard-btn').addEventListener('click', () => {
     if (Object.keys(dirty).length === 0) return;
     dirty = {};
-    $('save-btn').disabled = true;
-    $('discard-btn').disabled = true;
+    _paintSaveDiscard();
     render();
   });
   $('restart-btn').addEventListener('click', () => {
