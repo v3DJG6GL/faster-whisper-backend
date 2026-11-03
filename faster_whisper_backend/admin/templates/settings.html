@@ -1251,9 +1251,8 @@ function makeEditor(name) {
   // in a list editor.
   if (typeof v === 'boolean') return boolEditor(name, v);
   // Numeric fields that can be null ("disabled" / "auto"): routed by name
-  // BEFORE the number check. A null value has no runtime type, so it fell
-  // through to stringEditor and a cleared box saved '' (422); a set value
-  // took numberEditor, which ignores a clear, so null was unreachable.
+  // BEFORE the number check. A null has no runtime type (stringEditor would
+  // save '' → 422) and numberEditor ignores a clear, so neither reaches null.
   // Only when null can stick: a save drops a null (= config.json default),
   // so a threshold with a numeric default keeps the plain number box.
   if (Object.hasOwn(NULLABLE_NUMBER_FIELDS, name)
@@ -3346,9 +3345,8 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
       _saveExpanded();
       _setExpandLabel();
     });
-    // Colour swatch — tint this card with a curated token for visual grouping
-    // (data-color → CSS). Colour is a SECONDARY signal (rank + label still
-    // identify the rule); the popover offers 7 muted tints + "none".
+    // Colour swatch — a curated tint for visual grouping only; rank + label
+    // still identify the rule.
     const colorBtn = document.createElement('button');
     colorBtn.type = 'button';
     colorBtn.className = 'color-btn';
@@ -4478,7 +4476,6 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
     if (term) out.push(JSON.parse(JSON.stringify(term)));           // terminal-last invariant
     return out;
   }
-  // POST the full intended config.json array; refresh factoryRules + repaint.
   async function _postFactory(arr) {
     let resp;
     try {
