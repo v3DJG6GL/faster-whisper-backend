@@ -1988,7 +1988,7 @@ class AdminConfig(BaseModel):
 
     def _canonical_slugs(
             self, info: ValidationInfo) -> "set[str] | frozenset[str] | None":
-        """The slug set the reference validators below check against: this
+        """The slug set the reference validator below checks against: this
         payload's own PIPELINE_RULES when it carries them, else the
         `canonical_slugs` validation context (an empty set = no valid slug);
         None = unknown, skip. A payload's explicit empty PIPELINE_RULES
@@ -2004,51 +2004,25 @@ class AdminConfig(BaseModel):
         return ctx.get("canonical_slugs")
 
     @model_validator(mode="after")
-    def _validate_pipeline_rule_slugs(self, info: ValidationInfo) -> "AdminConfig":
-        """Reject any per-model EXCLUDE / INCLUDE that references a rule slug
-        not present in the canonical PIPELINE_RULES list. Closes the silent-
-        typo footgun where 'dictashion-map' would save cleanly and quietly do
-        nothing at runtime. Skip rule: see _canonical_slugs.
+    def _validate_rule_slug_refs(self, info: ValidationInfo) -> "AdminConfig":
+        """Reject any per-model / per-profile PIPELINE_RULES_EXCLUDE / _INCLUDE
+        and CAPTURES_PIPELINE_RULES_EXCLUDE that references a rule slug not in
+        the canonical PIPELINE_RULES list. Closes the silent-typo footgun
+        where 'dictashion-map' would save cleanly and quietly do nothing at
+        runtime. Skip rule: see _canonical_slugs.
         """
-        if self.MODEL_OVERRIDES is None:
-            return self
-        canonical = self._canonical_slugs(info)
-        if canonical is None:
-            return self
-        for model_id, override in self.MODEL_OVERRIDES.items():
-            for list_name in ("PIPELINE_RULES_EXCLUDE", "PIPELINE_RULES_INCLUDE"):
-                _refuse_unknown_slugs(f"MODEL_OVERRIDES[{model_id!r}].{list_name}",
-                                      getattr(override, list_name, None), canonical)
-        return self
-
-    @model_validator(mode="after")
-    def _validate_profile_pipeline_slugs(self, info: ValidationInfo) -> "AdminConfig":
-        """Reject any OVERRIDE_PROFILES EXCLUDE / INCLUDE that references a rule
-        slug not present in the canonical PIPELINE_RULES list — same silent-typo
-        guard (and skip rule, see _canonical_slugs) as the per-model check."""
-        if self.OVERRIDE_PROFILES is None:
-            return self
-        canonical = self._canonical_slugs(info)
-        if canonical is None:
-            return self
-        for pname, prof in self.OVERRIDE_PROFILES.items():
-            for list_name in ("PIPELINE_RULES_EXCLUDE", "PIPELINE_RULES_INCLUDE"):
-                _refuse_unknown_slugs(f"OVERRIDE_PROFILES[{pname!r}].{list_name}",
-                                      getattr(prof, list_name, None), canonical)
-        return self
-
-    @model_validator(mode="after")
-    def _validate_captures_pipeline_slugs(self, info: ValidationInfo) -> "AdminConfig":
-        """Same silent-typo guard (and skip rule, see _canonical_slugs) as the
-        per-model and per-profile checks, applied to
-        CAPTURES_PIPELINE_RULES_EXCLUDE."""
-        if self.CAPTURES_PIPELINE_RULES_EXCLUDE is None:
-            return self
-        canonical = self._canonical_slugs(info)
-        if canonical is None:
-            return self
-        _refuse_unknown_slugs("CAPTURES_PIPELINE_RULES_EXCLUDE",
-                              self.CAPTURES_PIPELINE_RULES_EXCLUDE, canonical)
+        refs = [(f"{field}[{key!r}].{list_name}", getattr(bundle, list_name, None))
+                for field, bundles in (("MODEL_OVERRIDES", self.MODEL_OVERRIDES),
+                                       ("OVERRIDE_PROFILES", self.OVERRIDE_PROFILES))
+                for key, bundle in (bundles or {}).items()
+                for list_name in ("PIPELINE_RULES_EXCLUDE", "PIPELINE_RULES_INCLUDE")]
+        if self.CAPTURES_PIPELINE_RULES_EXCLUDE is not None:
+            refs.append(("CAPTURES_PIPELINE_RULES_EXCLUDE",
+                         self.CAPTURES_PIPELINE_RULES_EXCLUDE))
+        canonical = self._canonical_slugs(info) if refs else None
+        if canonical is not None:
+            for where, slugs in refs:
+                _refuse_unknown_slugs(where, slugs, canonical)
         return self
 
     @field_validator("CONSOLE_LOG_LEVEL", "SERVER_LOG_LEVEL", mode="before")
