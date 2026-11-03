@@ -1402,9 +1402,9 @@ async def transcribe_stream(ws: WebSocket) -> None:
             words = info.get("words") or []
             decoded = bool(info.get("decoded", True))
             # SNAPSHOT, not an alias: decode_final refills last_decode for every
-            # utterance and on_final awaits (capture thread, `captured` frame)
-            # before building the log block; values are rebuilt per decode, so a
-            # shallow copy is enough. With NO decode for this utterance the dict
+            # utterance and on_final awaits the capture thread before building
+            # the log block; values are rebuilt per decode, so a shallow copy is
+            # enough. With NO decode for this utterance the dict
             # still holds the previous one's info/guards, so use {} (fw_info None
             # is tolerated by the block, the capture and the trace).
             dec = dict(last_decode) if decoded else {}
