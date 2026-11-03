@@ -131,12 +131,15 @@ async def _safe_ws_send(ws: WebSocket, message: dict, *, close: bool = False) ->
 
 
 async def _send_error_frame(ws: WebSocket, send_lock: asyncio.Lock, code: str,
-                            message: str) -> None:
-    """Send one terminal ``error`` frame under ``send_lock``. Wider catch than
+                            message: str, close_code: int | None = None) -> None:
+    """Send one terminal ``error`` frame under ``send_lock``, then close with
+    ``close_code`` if given (skipped when the send fails). Wider catch than
     _safe_ws_send: the session is ending anyway, so no failure may escape."""
     async with send_lock:
         try:
             await ws.send_json({"type": "error", "code": code, "message": message})
+            if close_code is not None:
+                await ws.close(code=close_code)
         except Exception:  # noqa: BLE001 — peer may be gone
             pass
 
@@ -1850,13 +1853,8 @@ async def transcribe_stream(ws: WebSocket) -> None:
                     # makes that receive() return a disconnect immediately; the
                     # producer's own _auth_revoked branch stays as a backstop
                     # (its send/close already tolerate a closed socket).
-                    async with send_lock:
-                        try:
-                            await ws.send_json({"type": "error", "code": "unauthorized",
-                                                "message": _REVOKED_MSG})
-                            await ws.close(code=_WS_UNAUTH)
-                        except Exception:  # noqa: BLE001 — peer may be gone
-                            pass
+                    await _send_error_frame(ws, send_lock, "unauthorized", _REVOKED_MSG,
+                                            close_code=_WS_UNAUTH)
                     break
                 except Exception as exc:  # noqa: BLE001 — a decode error must not kill the pump
                     # The exception text may echo client input — screen it
@@ -2014,17 +2012,12 @@ async def transcribe_stream(ws: WebSocket) -> None:
                 error_class=_ec, error_stage=_es)
         except Exception:  # noqa: BLE001 — never mask the real error
             pass
-        try:
-            # Lock like every other send: on a setup-window failure the consumer
-            # task may still be mid-emit (it is cancelled later, in the finally),
-            # so an unguarded send here could interleave with it.
-            async with send_lock:
-                # Generic client message — never forward the raw exception text
-                # (paths/internals); the full traceback is logged just above.
-                await ws.send_json({"type": "error", "code": "internal", "message": "internal error"})
-                await ws.close()
-        except Exception:  # noqa: BLE001
-            pass
+        # Lock like every other send: on a setup-window failure the consumer
+        # task may still be mid-emit (it is cancelled later, in the finally),
+        # so an unguarded send here could interleave with it. Generic client
+        # message — never forward the raw exception text (paths/internals);
+        # the full traceback is logged just above. 1000 = Starlette's default.
+        await _send_error_frame(ws, send_lock, "internal", "internal error", close_code=1000)
     finally:
         # Release the gauge and both slots before any await: CancelledError is a
         # BaseException, so a cancellation in the teardown below (lifespan
