@@ -1334,6 +1334,18 @@ def _from_epoch_day(n: int) -> datetime.date:
     return _EPOCH + datetime.timedelta(days=int(n))
 
 
+def _window_ts(fd: int, td: int, tz: zoneinfo.ZoneInfo | None) -> tuple[float, float]:
+    """UTC [start, end) timestamps of the epoch-day window fd..td in `tz`."""
+    return (_midnight_ts(_from_epoch_day(fd), tz),
+            _midnight_ts(_from_epoch_day(td) + datetime.timedelta(days=1), tz))
+
+
+def _window_hours(fd: int, td: int, tz: zoneinfo.ZoneInfo | None) -> tuple[int, int]:
+    """The same window as UTC epoch-hours (_midnight_hour's rounding)."""
+    return (_midnight_hour(_from_epoch_day(fd), tz),
+            _midnight_hour(_from_epoch_day(td) + datetime.timedelta(days=1), tz))
+
+
 # to+1 day must still be a date, and the month axis steps to the first of the
 # month AFTER to_day: 9999-12 has no successor, so the range ends in November.
 _MAX_EPOCH_DAY = _epoch_day(datetime.date(9999, 11, 30))
@@ -1524,16 +1536,12 @@ def document(
         doc["range"]["key_scoped"] = False
     if kinds and not with_stages:
         doc["range"]["kind_scoped"] = False
-    start_hour = _midnight_hour(_from_epoch_day(f), tz)
-    end_hour = _midnight_hour(_from_epoch_day(t) + datetime.timedelta(days=1), tz)
-    today_start = _midnight_hour(today, tz)
-    today_end = _midnight_hour(today + datetime.timedelta(days=1), tz)
+    td = _epoch_day(today)
+    start_hour, end_hour = _window_hours(f, t, tz)
+    today_start, today_end = _window_hours(td, td, tz)
     if with_stages:
         _fill_from_jobs(conn, doc, user_id, tz, today, with_stages,
-                        _midnight_ts(_from_epoch_day(f), tz),
-                        _midnight_ts(_from_epoch_day(t) + datetime.timedelta(days=1), tz),
-                        _midnight_ts(today, tz),
-                        _midnight_ts(today + datetime.timedelta(days=1), tz),
+                        *_window_ts(f, t, tz), *_window_ts(td, td, tz),
                         key_id, kinds)
     else:
         _fill_from_rollups(conn, doc, user_id, tz, today,
@@ -1669,10 +1677,8 @@ def overview(
         return index.get(_bucket_start(day, mode))
 
     conn = _require_conn()
-    start_hour = _midnight_hour(_from_epoch_day(f), tz)
-    end_hour = _midnight_hour(_from_epoch_day(t) + datetime.timedelta(days=1), tz)
-    start_ts = _midnight_ts(_from_epoch_day(f), tz)
-    end_ts = _midnight_ts(_from_epoch_day(t) + datetime.timedelta(days=1), tz)
+    start_hour, end_hour = _window_hours(f, t, tz)
+    start_ts, end_ts = _window_ts(f, t, tz)
 
     # entity id → {"label", "user_id"?, "values": [...], "totals": cell}
     ents: dict[str, dict[str, Any]] = {}
@@ -2192,13 +2198,8 @@ def tail(
     f, t = resolve_window(today=today, days=days, from_day=from_day,
                           to_day=to_day, all_time=all_time, first_day=first_day)
     span = t - f + 1
-
-    def bounds(fd: int, td: int) -> tuple[float, float]:
-        return (_midnight_ts(_from_epoch_day(fd), tz),
-                _midnight_ts(_from_epoch_day(td) + datetime.timedelta(days=1), tz))
-
-    start_ts, end_ts = bounds(f, t)
-    pstart, pend = bounds(f - span, f - 1)
+    start_ts, end_ts = _window_ts(f, t, tz)
+    pstart, pend = _window_ts(f - span, f - 1, tz)
     scope = dict(user_id=user_id, key_id=key_id, kind=kind)
     wait = wait_quantiles(start_ts=start_ts, end_ts=end_ts, **scope)
     wait["by_day"] = wait_series_by_day(start_ts=start_ts, end_ts=end_ts, tz=tz, **scope)
