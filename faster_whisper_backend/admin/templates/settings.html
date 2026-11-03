@@ -1501,7 +1501,7 @@ function modelOverridesEditor(name, v) {
       ? currentValue('ALLOWED_MODELS') : [];
     // List every key in overrides, even those with 0 fields (admin just added
     // an entry). German-aware, case-insensitive order (model IDs are mixed-case).
-    const ids = Object.keys(overrides).sort(new Intl.Collator('de', { sensitivity: 'base', numeric: true }).compare);
+    const ids = Object.keys(overrides).sort(_coll.compare);
 
     // Top row: diff-mode toggle. The row is a <label>, so a click anywhere flips it.
     const toggleWrap = document.createElement('label');
@@ -1593,7 +1593,7 @@ function modelOverridesEditor(name, v) {
       rmBtn.addEventListener('click', () => {
         if (!confirm('Delete all overrides for ' + selectedId + '?')) return;
         delete overrides[selectedId];
-        const remaining = Object.keys(overrides).sort(new Intl.Collator('de', { sensitivity: 'base', numeric: true }).compare);
+        const remaining = Object.keys(overrides).sort(_coll.compare);
         if (remaining.length > 0) selectedId = remaining[0];
         else selectedId = allowed[0] || null;
         persist();
@@ -1882,7 +1882,7 @@ function modelOverridesEditor(name, v) {
   // Initial selection: the alphabetically-first model with overrides;
   // otherwise null (renders the empty-state hint in the detail pane).
   (function() {
-    const overridden = Object.keys(overrides).filter(id => countOverrides(id) > 0).sort(new Intl.Collator('de', { sensitivity: 'base', numeric: true }).compare);
+    const overridden = Object.keys(overrides).filter(id => countOverrides(id) > 0).sort(_coll.compare);
     if (overridden.length > 0) selectedId = overridden[0];
   })();
 
@@ -3904,8 +3904,7 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
       if (JSON.stringify(o) === JSON.stringify(n)) return;
       if ((isObj(o) || o === undefined) && (isObj(n) || n === undefined) && (isObj(o) || isObj(n))) {
         o = o || {}; n = n || {};
-        const mk = Array.from(new Set(Object.keys(o).concat(Object.keys(n))))
-          .sort(new Intl.Collator('de', { sensitivity: 'base', numeric: true }).compare);
+        const mk = Array.from(new Set(Object.keys(o).concat(Object.keys(n)))).sort(_coll.compare);
         mk.forEach(key => {
           if (js(o[key]) === js(n[key])) return;
           add(k + ' · ' + JSON.stringify(key), js(o[key]), js(n[key]));
