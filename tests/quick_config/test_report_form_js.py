@@ -282,6 +282,22 @@ _APPLY_STATE_STUBS = r"""
   globalThis.loadMyUsage = () => {};
 """
 
+_SAVE_STUBS = r"""
+  globalThis.setStatus = () => {};
+  globalThis.liveRules = [];
+  globalThis.initialRules = [];
+  globalThis.fetchState = async () => ({ rules: [] });
+  globalThis._diffsSince = () => new Map();
+  globalThis.applyState = () => {};
+  globalThis.renderCards = () => {};
+  globalThis.updateButtons = () => {};
+"""
+
+
+def _run_save_js(client, tmp_path, body):
+    """_run_js on _doSave alone, with the page state it touches stubbed."""
+    return _run_js(client, tmp_path, _SAVE_STUBS + body, funcs=("_doSave",))
+
 
 @pytest.mark.parametrize("server_chips", [
     # The server set holds only the 100 newest open reports (and a /state
@@ -420,27 +436,19 @@ def test_partial_conflict_save_still_reapplies_saved_rules(client, tmp_path):
     # A save with some rules saved and others conflicting returned before the
     # only startReapplyJobSilent() call, so the saved rules never reached the
     # historical captures unless the admin saved again.
-    res = _run_js(client, tmp_path, r"""
+    res = _run_save_js(client, tmp_path, r"""
       const calls = [];
-      globalThis.setStatus = () => {};
-      globalThis.liveRules = [];
-      globalThis.initialRules = [];
       globalThis.api = async () => ({
         ok: true, status: 200,
         json: async () => ({
           saved: ['dict'], conflicts: [{ slug: 'other' }], captures_count: 7,
         }),
       });
-      globalThis.fetchState = async () => ({ rules: [] });
-      globalThis._diffsSince = () => new Map();
-      globalThis.applyState = () => {};
       globalThis._reapplyDiffs = () => false;
-      globalThis.renderCards = () => {};
-      globalThis.updateButtons = () => {};
       globalThis.startReapplyJobSilent = (n) => { calls.push(n); };
       await _doSave({ dict: {} }, {});
       out({ calls, toasts: _toasts });
-    """, funcs=("_doSave",))
+    """)
     assert res["calls"] == [7]
     assert res["toasts"][0][0] == "err" and "Saved 1." in res["toasts"][0][1]
 
@@ -925,16 +933,8 @@ _RESTORED_TOAST = ("another writer changed an entry you deleted; their entry is 
 def test_save_toasts_say_an_entry_the_user_deleted_is_back(client, tmp_path):
     # Every toast naming a clash said "your version is kept", also for a
     # deleted entry the merge brought back in the other writer's version.
-    res = _run_js(client, tmp_path, r"""
+    res = _run_save_js(client, tmp_path, r"""
       const toasts = {};
-      globalThis.setStatus = () => {};
-      globalThis.liveRules = [];
-      globalThis.initialRules = [];
-      globalThis.fetchState = async () => ({ rules: [] });
-      globalThis._diffsSince = () => new Map();
-      globalThis.applyState = () => {};
-      globalThis.renderCards = () => {};
-      globalThis.updateButtons = () => {};
       globalThis._isAdmin = () => true;
       globalThis._detailText = (j, msg) => j.detail;
       let calls = 0;
@@ -962,7 +962,7 @@ def test_save_toasts_say_an_entry_the_user_deleted_is_back(client, tmp_path):
       await _doSave({ rx: {} }, {});
       toasts.unmerged = _toasts[_toasts.length - 1][1];
       out(toasts);
-    """, funcs=("_doSave",))
+    """)
     for name in ("merged", "inflight", "refused", "unmerged"):
         msg = res[name]
         assert _RESTORED_TOAST in msg, name
@@ -1128,24 +1128,16 @@ def test_reapply_keeps_one_spelling_of_a_dictionary_key_both_writers_added_in_an
 
 
 def test_conflict_toast_names_the_rule_that_could_not_be_merged(client, tmp_path):
-    res = _run_js(client, tmp_path, r"""
-      globalThis.setStatus = () => {};
-      globalThis.liveRules = [];
-      globalThis.initialRules = [];
+    res = _run_save_js(client, tmp_path, r"""
       globalThis.api = async () => ({
         ok: true, status: 200,
         json: async () => ({ saved: [], conflicts: [{ slug: 'rx' }, { slug: 'ok' }] }),
       });
-      globalThis.fetchState = async () => ({ rules: [] });
-      globalThis._diffsSince = () => new Map();
-      globalThis.applyState = () => {};
       let calls = 0;  // the conflicted rules' re-apply, then the in-flight one
       globalThis._reapplyDiffs = (d, clashed) => { if (!calls++) clashed.push('rx'); return 1; };
-      globalThis.renderCards = () => {};
-      globalThis.updateButtons = () => {};
       await _doSave({ rx: {}, ok: {} }, {});
       out(_toasts);
-    """, funcs=("_doSave",))
+    """)
     msg = res[0][1]
     assert "Auto-merged your changes for ok on top" in msg
     assert "Conflict on rx: another writer also edited an entry you edited; your version is kept." in msg
@@ -1155,20 +1147,13 @@ def test_conflict_toast_names_the_rule_that_could_not_be_merged(client, tmp_path
 def test_save_toasts_a_clash_on_an_edit_typed_while_the_post_was_in_flight(client, tmp_path):
     # The in-flight re-apply passed no `clashed` array, so an edit typed
     # during the POST that another writer had also made went unreported.
-    res = _run_js(client, tmp_path, r"""
-      globalThis.setStatus = () => {};
-      globalThis.liveRules = [];
+    res = _run_save_js(client, tmp_path, r"""
       globalThis.api = async () => ({
         ok: true, status: 200, json: async () => ({ saved: ['r1'], conflicts: [] }),
       });
-      globalThis.fetchState = async () => ({ rules: [] });
-      globalThis._diffsSince = () => new Map();
-      globalThis.applyState = () => {};
       globalThis._reapplyDiffs = (d, clashed) => { clashed.push('rx'); return 1; };
-      globalThis.renderCards = () => {};
-      globalThis.updateButtons = () => {};
       await _doSave({ r1: {} }, {});
       out(_toasts);
-    """, funcs=("_doSave",))
+    """)
     assert res[-1][0] == "err"
     assert "Conflict on rx: another writer also edited an entry you edited" in res[-1][1]
