@@ -358,8 +358,8 @@ def _format_decode_trace_section(trace: "dict | None") -> list[str]:
                f"{'r#':>2}  {'T':>3}  {'search':<7}{'tokens':>6}  "
                f"{'alp':>6}  {'cr':>5}  {'nsp':>4}  {'secs':>6}  outcome")
     for w in windows:
-        at = "-" if w.get("start_s") is None else f"{w['start_s']:.2f}s"
-        span = "-" if w.get("len_s") is None else f"{w['len_s']:.2f}s"
+        at = _fmt_num(w.get("start_s"), "{:.2f}s")
+        span = _fmt_num(w.get("len_s"), "{:.2f}s")
         prefix = (f"    {w.get('n', '?'):>3}  {at:>7}  {span:>6}  "
                   f"{_fmt_secs(w.get('encode_s')):>5}   ")
         blank = " " * len(prefix)
@@ -568,9 +568,7 @@ def _stage_field(stages: "list | None", name: str, key: str):
 
 def _fmt_secs(v) -> str:
     """`12.3s` / `-` for a missing timing, right-alignable."""
-    if v is None:
-        return "-"
-    return f"{float(v):.1f}s"
+    return _fmt_num(v, "{:.1f}s")
 
 
 def _format_pipeline_section(stages: "list[dict] | None") -> list[str]:
