@@ -620,7 +620,8 @@ async def stats_jobs(
 ) -> dict[str, Any]:
     """The jobs table beyond the snapshot's last few rows: finished jobs
     newest-first, `limit` (1..200) per page, paged with `cursor` = the
-    previous page's `next_cursor` (a created_ts; null when exhausted).
+    previous page's `next_cursor` (a created_ts; null after a short page —
+    a full last page still carries one, and that cursor yields an empty page).
     Filters: `kind` (a recent-jobs kind, or a comma list: any of them —
     the page's kind chips map onto several), `status` (ok | error |
     cancelled | failed), `slow_rtf` (processing longer than that fraction
