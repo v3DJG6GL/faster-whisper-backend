@@ -10,6 +10,7 @@ from faster_whisper_backend.transcription import progress as tx_progress
 from tests._transcription_helpers import WAV_UPLOAD as _FILE
 from tests._transcription_helpers import bind_profile
 from tests._transcription_helpers import post_verbose as _post
+from tests._translation_helpers import enable_translation
 from tests.conftest import bearer
 
 _PID = "beef" * 8  # 32 hex chars — passes _PROGRESS_ID_RE
@@ -47,8 +48,7 @@ def _progress_spy(app_module, seen, pid):
 
 def test_translation_stage_populates_segments_and_response(
         client, app_module, monkeypatch):
-    monkeypatch.setattr(app_module.cfg, "TRANSLATION_ENABLED", True,
-                        raising=False)
+    enable_translation(app_module, monkeypatch)
     calls = []
     _stub_translate(monkeypatch, calls=calls)
     r = _post(client, translate_to="en,fr")
@@ -68,8 +68,7 @@ def test_translation_stage_populates_segments_and_response(
 def test_translations_kept_marks_guard_fallback_segments(
         client, app_module, monkeypatch):
     """A kept-original segment carries translations_kept in verbose_json."""
-    monkeypatch.setattr(app_module.cfg, "TRANSLATION_ENABLED", True,
-                        raising=False)
+    enable_translation(app_module, monkeypatch)
 
     async def _fake(segments, targets, **kwargs):
         # Guard fallback: the SOURCE text under every target.
@@ -92,8 +91,7 @@ def test_untranslated_segment_gets_explicit_empty_translations(
     """When targets were requested, every segment carries a translations map
     — an untranslated one an explicit empty dict, never a missing key (and
     no translations_kept when nothing was kept)."""
-    monkeypatch.setattr(app_module.cfg, "TRANSLATION_ENABLED", True,
-                        raising=False)
+    enable_translation(app_module, monkeypatch)
 
     async def _fake(segments, targets, **kwargs):
         return [{} for _ in segments], [], {
@@ -130,8 +128,7 @@ def test_translation_disabled_soft_fails_with_progress_skip(
 
 
 def test_translation_allowlist_miss_soft_fails(client, app_module, monkeypatch):
-    monkeypatch.setattr(app_module.cfg, "TRANSLATION_ENABLED", True,
-                        raising=False)
+    enable_translation(app_module, monkeypatch)
     monkeypatch.setattr(app_module.cfg, "TRANSLATION_DEFAULT_MODEL",
                         "org/default-GGUF:Q4", raising=False)
     monkeypatch.setattr(app_module.cfg, "TRANSLATION_ALLOWED_MODELS",
@@ -159,8 +156,7 @@ def test_translation_allowlist_miss_soft_fails(client, app_module, monkeypatch):
 
 def test_translate_to_clamped_to_max_targets_with_warning(
         client, app_module, monkeypatch):
-    monkeypatch.setattr(app_module.cfg, "TRANSLATION_ENABLED", True,
-                        raising=False)
+    enable_translation(app_module, monkeypatch)
     monkeypatch.setattr(app_module.cfg, "TRANSLATION_MAX_TARGETS", 3)
     # Ask for 5 (+ a malformed entry and a duplicate, both dropped silently
     # BEFORE the clamp).
@@ -177,8 +173,7 @@ def test_translate_to_clamped_to_max_targets_with_warning(
 
 def test_locked_translate_to_ignores_client_param(client, app_module,
                                                   make_user_key, monkeypatch):
-    monkeypatch.setattr(app_module.cfg, "TRANSLATION_ENABLED", True,
-                        raising=False)
+    enable_translation(app_module, monkeypatch)
     calls = []
     _stub_translate(monkeypatch, calls=calls)
     _, raw_alice = bind_profile(
@@ -196,8 +191,7 @@ def test_locked_translate_to_ignores_client_param(client, app_module,
 
 
 def test_translation_cancel_is_not_a_soft_fail(client, app_module, monkeypatch):
-    monkeypatch.setattr(app_module.cfg, "TRANSLATION_ENABLED", True,
-                        raising=False)
+    enable_translation(app_module, monkeypatch)
 
     async def _cancelled(*args, **kwargs):
         raise translation.TranslationCancelled()
@@ -207,8 +201,7 @@ def test_translation_cancel_is_not_a_soft_fail(client, app_module, monkeypatch):
 
 
 def test_translation_error_becomes_warning(client, app_module, monkeypatch):
-    monkeypatch.setattr(app_module.cfg, "TRANSLATION_ENABLED", True,
-                        raising=False)
+    enable_translation(app_module, monkeypatch)
 
     async def _boom(*args, **kwargs):
         raise translation.TranslationError(
@@ -231,8 +224,7 @@ def test_invalid_translation_mode_is_422(client):
 
 def test_captures_never_store_translated_text(client, app_module, monkeypatch):
     from faster_whisper_backend.captures import store as captures_store
-    monkeypatch.setattr(app_module.cfg, "TRANSLATION_ENABLED", True,
-                        raising=False)
+    enable_translation(app_module, monkeypatch)
     monkeypatch.setattr(app_module.cfg, "CAPTURES_RECORDING_ENABLED", True,
                         raising=False)
     _stub_translate(monkeypatch)
@@ -271,8 +263,7 @@ def test_plain_json_carries_translations_and_warnings(client, app_module,
     """The default `json` shape must deliver the translation output (and the
     soft-fail warnings) too — a caller paying for the stage should not need
     verbose_json to see either. Additive keys, like source_media_id."""
-    monkeypatch.setattr(app_module.cfg, "TRANSLATION_ENABLED", True,
-                        raising=False)
+    enable_translation(app_module, monkeypatch)
     _stub_translate(monkeypatch)
     r = _post(client, translate_to="en", response_format="json")
     assert r.status_code == 200, r.text
@@ -295,8 +286,7 @@ def test_translation_progress_forwards_target_fields_into_plan_units(
     """The stage's progress callback carries `target` / `target_progress`;
     the handler mirrors them into the progress entry and the run plan's
     units follow along."""
-    monkeypatch.setattr(app_module.cfg, "TRANSLATION_ENABLED", True,
-                        raising=False)
+    enable_translation(app_module, monkeypatch)
     seen = {}
 
     async def _fake(segments, targets, *, progress_cb=None, **kwargs):
@@ -323,8 +313,7 @@ def test_translation_progress_forwards_target_fields_into_plan_units(
 
 def test_context_segments_form_field_inherit_value_clamp(
         client, app_module, monkeypatch):
-    monkeypatch.setattr(app_module.cfg, "TRANSLATION_ENABLED", True,
-                        raising=False)
+    enable_translation(app_module, monkeypatch)
     monkeypatch.setattr(app_module.cfg, "TRANSLATION_CONTEXT_SEGMENTS", 3)
     calls = []
     _stub_translate(monkeypatch, calls=calls)
@@ -349,8 +338,7 @@ def test_context_segments_form_field_inherit_value_clamp(
 
 def test_locked_context_segments_ignores_client_value(
         client, app_module, make_user_key, monkeypatch):
-    monkeypatch.setattr(app_module.cfg, "TRANSLATION_ENABLED", True,
-                        raising=False)
+    enable_translation(app_module, monkeypatch)
     calls = []
     _stub_translate(monkeypatch, calls=calls)
     _, raw_alice = bind_profile(
