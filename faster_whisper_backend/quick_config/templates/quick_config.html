@@ -925,9 +925,7 @@ function renderTrace(entry) {
   meta.className = 'trace-meta';
   const ts = document.createElement('span');
   ts.className = 'trace-ts';
-  const _ets = entry.ts || 0;
-  ts.textContent = fmtWhen(_ets);
-  if (_ets) { ts.dataset.ts = String(_ets); ts.title = absTime(_ets); }
+  stampTs(ts, entry.ts || 0);
   meta.appendChild(ts);
   const addPill = (text, cls, title) => {
     const p = _el('span', 'pill' + (cls ? ' ' + cls : ''), text);

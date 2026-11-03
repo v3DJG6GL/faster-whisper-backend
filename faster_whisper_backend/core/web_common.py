@@ -595,7 +595,7 @@ def render_page(template: str, current: str) -> str:
                                    resolves to initial × 4)
       - {{SCALE_BOOTSTRAP_HEAD}} → tiny pre-paint script (top of <head>)
       - {{RULE_EDITOR_JS}}       → shared per-rule body editors
-      - {{TIME_HELPERS_JS}}      → absTime / relTime / fmtWhen / timeTick
+      - {{TIME_HELPERS_JS}}      → absTime / relTime / fmtWhen / stampTs / timeTick
       - {{NOT_ADMIN_LANDING_JS}} → _renderNoAccessLanding() helper
                                    (+ _renderNotAdminLanding alias)
       - {{PAGE_META}}            → <meta name="page-key" ...> carrier so
