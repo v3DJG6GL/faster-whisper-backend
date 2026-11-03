@@ -16,15 +16,11 @@ from faster_whisper_backend.streaming import routes
 
 
 @pytest.mark.parametrize("raw", [" ", "\n", ""])
-def test_env_separator_kept_verbatim_and_pinned(monkeypatch, raw):
-    try:
-        monkeypatch.setenv("WHISPER_STREAMING_HARD_BREAK_SEPARATOR", raw)
-        importlib.reload(config)
-        assert config.STREAMING_HARD_BREAK_SEPARATOR == raw
-        assert "STREAMING_HARD_BREAK_SEPARATOR" in config_store.env_pinned_fields()
-    finally:
-        monkeypatch.undo()
-        importlib.reload(config)
+def test_env_separator_kept_verbatim_and_pinned(monkeypatch, raw, restore_config):
+    monkeypatch.setenv("WHISPER_STREAMING_HARD_BREAK_SEPARATOR", raw)
+    importlib.reload(config)
+    assert config.STREAMING_HARD_BREAK_SEPARATOR == raw
+    assert "STREAMING_HARD_BREAK_SEPARATOR" in config_store.env_pinned_fields()
 
 
 # .env.example documents the newline value as '\n'. python-dotenv keeps single
@@ -34,14 +30,10 @@ def test_env_separator_kept_verbatim_and_pinned(monkeypatch, raw):
 # reader keeps it verbatim (like /settings does); the live stream decodes it.
 @pytest.mark.parametrize("raw, want", [
     ("\\n", "\n"), ("\\r\\n", "\r\n"), (" \\n", " \n"), ("\\\\n", "\\n")])
-def test_env_separator_decodes_spelled_escapes(monkeypatch, raw, want):
-    try:
-        monkeypatch.setenv("WHISPER_STREAMING_HARD_BREAK_SEPARATOR", raw)
-        importlib.reload(config)
-        assert config.STREAMING_HARD_BREAK_SEPARATOR == raw
-        assert "STREAMING_HARD_BREAK_SEPARATOR" in config_store.env_pinned_fields()
-        sc = routes._stream_config(effective_config.cfg_for)
-        assert sc.hard_break_separator == want
-    finally:
-        monkeypatch.undo()
-        importlib.reload(config)
+def test_env_separator_decodes_spelled_escapes(monkeypatch, raw, want, restore_config):
+    monkeypatch.setenv("WHISPER_STREAMING_HARD_BREAK_SEPARATOR", raw)
+    importlib.reload(config)
+    assert config.STREAMING_HARD_BREAK_SEPARATOR == raw
+    assert "STREAMING_HARD_BREAK_SEPARATOR" in config_store.env_pinned_fields()
+    sc = routes._stream_config(effective_config.cfg_for)
+    assert sc.hard_break_separator == want

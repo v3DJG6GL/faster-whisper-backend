@@ -31,32 +31,25 @@ def _reload_with_secret_file(monkeypatch, path):
     b"\xfe\xff" + "sk-from-file".encode("utf-16-be"),
     b"\xef\xbb\xbfsk-from-file\n",                 # UTF-8 with BOM
 ])
-def test_bom_files_yield_the_bare_secret(monkeypatch, tmp_path, data):
+def test_bom_files_yield_the_bare_secret(monkeypatch, tmp_path, data, restore_config):
     secret = tmp_path / "key"
     secret.write_bytes(data)
-    try:
-        _reload_with_secret_file(monkeypatch, secret)
-        assert config.BOOTSTRAP_ADMIN_KEY == "sk-from-file"
-    finally:
-        monkeypatch.undo()
-        importlib.reload(config)
+    _reload_with_secret_file(monkeypatch, secret)
+    assert config.BOOTSTRAP_ADMIN_KEY == "sk-from-file"
 
 
 @pytest.mark.parametrize("data", [
     b"\xffsk-not-utf8",                            # undecodable
     b"sk\x00from-file",                            # NUL: os.environ refuses it
 ])
-def test_unusable_file_warns_instead_of_failing_import(monkeypatch, tmp_path, data):
+def test_unusable_file_warns_instead_of_failing_import(
+        monkeypatch, tmp_path, data, restore_config):
     secret = tmp_path / "key"
     secret.write_bytes(data)
-    try:
-        _reload_with_secret_file(monkeypatch, secret)
-        assert any(m.startswith(_VAR + "_FILE=") and "could not be read" in m
-                   for m in config._ENV_WARNINGS), config._ENV_WARNINGS
-        assert "sk" not in (config.BOOTSTRAP_ADMIN_KEY or "")
-    finally:
-        monkeypatch.undo()
-        importlib.reload(config)
+    _reload_with_secret_file(monkeypatch, secret)
+    assert any(m.startswith(_VAR + "_FILE=") and "could not be read" in m
+               for m in config._ENV_WARNINGS), config._ENV_WARNINGS
+    assert "sk" not in (config.BOOTSTRAP_ADMIN_KEY or "")
 
 
 def test_helper_leaves_no_secret_behind(tmp_path):

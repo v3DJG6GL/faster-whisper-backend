@@ -4,7 +4,8 @@ the per-model override decoder, and the stdlib factory-defaults loader.
 The helper functions read os.environ at call time, so they're tested directly
 with monkeypatched env vars. The module-level env application (per-model
 scanner, schema-driven overrides) runs only at import, so those tests use
-importlib.reload and reload again in a finally to restore the clean module.
+importlib.reload, and the restore_config fixture reloads again at teardown to
+restore the clean module.
 """
 
 import importlib
@@ -128,31 +129,23 @@ def test_coerce_override_value_types():
     assert config._coerce_override_value("TEMPERATURE", "0,0.2") == "0,0.2"
 
 
-def test_per_model_env_scanner_end_to_end(monkeypatch):
+def test_per_model_env_scanner_end_to_end(monkeypatch, restore_config):
     # The encoded id is UPPERCASE on purpose: Windows upper-cases os.environ
     # keys, so only an uppercase id round-trips on every platform while still
     # exercising the right-to-left "__" boundary scanner + _decode_model_id.
     monkeypatch.setenv(
         "WHISPER_MODEL_OVERRIDE__ORG__SLASH__NAME__DOT__CT2__BEAM_SIZE", "7"
     )
-    try:
-        importlib.reload(config)
-        assert config.MODEL_OVERRIDES.get("ORG/NAME.CT2", {}).get("BEAM_SIZE") == 7
-    finally:
-        monkeypatch.undo()
-        importlib.reload(config)
+    importlib.reload(config)
+    assert config.MODEL_OVERRIDES.get("ORG/NAME.CT2", {}).get("BEAM_SIZE") == 7
 
 
-def test_env_value_is_stored_as_the_schema_normalizes_it(monkeypatch):
+def test_env_value_is_stored_as_the_schema_normalizes_it(monkeypatch, restore_config):
     # The schema accepts Python's own spelling; the runtime value (and so the
     # /settings page) is the lowercase literal, not the raw env text.
     monkeypatch.setenv("WHISPER_CONSOLE_LOG_LEVEL", "WARNING")
-    try:
-        importlib.reload(config)
-        assert config.CONSOLE_LOG_LEVEL == "warning"
-    finally:
-        monkeypatch.undo()
-        importlib.reload(config)
+    importlib.reload(config)
+    assert config.CONSOLE_LOG_LEVEL == "warning"
 
 
 def _write_cfg(tmp_path, **extra):
@@ -272,113 +265,85 @@ def _reload_with_env(monkeypatch, **env):
     importlib.reload(config)
 
 
-def test_scalar_env_overrides_apply(monkeypatch):
-    try:
-        _reload_with_env(
-            monkeypatch,
-            WHISPER_BEAM_SIZE="3",
-            WHISPER_SERVER_PORT="8123",
-            WHISPER_VAD_FILTER="0",
-            WHISPER_MODEL_DEVICE="cpu",
-        )
-        assert config.BEAM_SIZE == 3
-        assert config.SERVER_PORT == 8123
-        assert config.VAD_FILTER is False
-        assert config.MODEL_DEVICE == "cpu"
-    finally:
-        monkeypatch.undo()
-        importlib.reload(config)
+def test_scalar_env_overrides_apply(monkeypatch, restore_config):
+    _reload_with_env(
+        monkeypatch,
+        WHISPER_BEAM_SIZE="3",
+        WHISPER_SERVER_PORT="8123",
+        WHISPER_VAD_FILTER="0",
+        WHISPER_MODEL_DEVICE="cpu",
+    )
+    assert config.BEAM_SIZE == 3
+    assert config.SERVER_PORT == 8123
+    assert config.VAD_FILTER is False
+    assert config.MODEL_DEVICE == "cpu"
 
 
-def test_optional_threshold_empty_disables(monkeypatch):
-    try:
-        _reload_with_env(monkeypatch, WHISPER_NO_SPEECH_THRESHOLD="")
-        assert config.NO_SPEECH_THRESHOLD is None
-    finally:
-        monkeypatch.undo()
-        importlib.reload(config)
+def test_optional_threshold_empty_disables(monkeypatch, restore_config):
+    _reload_with_env(monkeypatch, WHISPER_NO_SPEECH_THRESHOLD="")
+    assert config.NO_SPEECH_THRESHOLD is None
 
 
-def test_default_language_empty_means_autodetect(monkeypatch):
+def test_default_language_empty_means_autodetect(monkeypatch, restore_config):
     # DEFAULT_LANGUAGE="" is a meaningful literal (auto-detect), not None.
-    try:
-        _reload_with_env(monkeypatch, WHISPER_DEFAULT_LANGUAGE="")
-        assert config.DEFAULT_LANGUAGE == ""
-    finally:
-        monkeypatch.undo()
-        importlib.reload(config)
+    _reload_with_env(monkeypatch, WHISPER_DEFAULT_LANGUAGE="")
+    assert config.DEFAULT_LANGUAGE == ""
 
 
-def test_model_and_log_file_env_are_stripped_and_blank_keeps_current(monkeypatch):
+def test_model_and_log_file_env_are_stripped_and_blank_keeps_current(monkeypatch, restore_config):
     # The schema refuses "" for both, so a blank var keeps the current value
     # like every other str instead of logging an error, and an edge space
     # from an env_file line is stripped rather than reverting the model.
-    try:
-        # The value the reload yields with the var absent, not the module's
-        # current one: another test may have repointed config.LOG_FILE.
-        monkeypatch.delenv("WHISPER_LOG_FILE", raising=False)
-        importlib.reload(config)
-        log_file = config.LOG_FILE
-        _reload_with_env(monkeypatch, WHISPER_DEFAULT_MODEL="large-v3 ",
-                         WHISPER_LOG_FILE="")
-        assert config.DEFAULT_MODEL == "large-v3"
-        assert config.LOG_FILE == log_file
-        assert not [w for w in config._ENV_WARNINGS
-                    if "DEFAULT_MODEL" in w or "LOG_FILE" in w]
-    finally:
-        monkeypatch.undo()
-        importlib.reload(config)
+    # The value the reload yields with the var absent, not the module's
+    # current one: another test may have repointed config.LOG_FILE.
+    monkeypatch.delenv("WHISPER_LOG_FILE", raising=False)
+    importlib.reload(config)
+    log_file = config.LOG_FILE
+    _reload_with_env(monkeypatch, WHISPER_DEFAULT_MODEL="large-v3 ",
+                     WHISPER_LOG_FILE="")
+    assert config.DEFAULT_MODEL == "large-v3"
+    assert config.LOG_FILE == log_file
+    assert not [w for w in config._ENV_WARNINGS
+                if "DEFAULT_MODEL" in w or "LOG_FILE" in w]
 
 
-def test_set_typed_special_cases_stay_sets(monkeypatch):
-    try:
-        _reload_with_env(
-            monkeypatch,
-            WHISPER_ALLOWED_MODELS="a,b",
-            WHISPER_CAPTURES_PIPELINE_RULES_EXCLUDE=
-            "strip-stray-symbols,strip-trailing-period",
-        )
-        assert config.ALLOWED_MODELS == {"a", "b"}
-        assert config.CAPTURES_PIPELINE_RULES_EXCLUDE == {
-            "strip-stray-symbols", "strip-trailing-period"}
-    finally:
-        monkeypatch.undo()
-        importlib.reload(config)
+def test_set_typed_special_cases_stay_sets(monkeypatch, restore_config):
+    _reload_with_env(
+        monkeypatch,
+        WHISPER_ALLOWED_MODELS="a,b",
+        WHISPER_CAPTURES_PIPELINE_RULES_EXCLUDE=
+        "strip-stray-symbols,strip-trailing-period",
+    )
+    assert config.ALLOWED_MODELS == {"a", "b"}
+    assert config.CAPTURES_PIPELINE_RULES_EXCLUDE == {
+        "strip-stray-symbols", "strip-trailing-period"}
 
 
-def test_json_model_overrides_env(monkeypatch):
-    try:
-        _reload_with_env(
-            monkeypatch,
-            WHISPER_MODEL_OVERRIDES='{"large-v2": {"BEAM_SIZE": 4}}',
-            # Windows upper-cases os.environ keys; _canonical_env_model_id
-            # maps a bare (short-name) id back to lower case, so a lowercase
-            # id in the var NAME lands under the same key on every OS.
-            WHISPER_MODEL_OVERRIDE__large__DOT__v3__BEAM_SIZE="7",
-        )
-        assert config.MODEL_OVERRIDES["large-v2"] == {"BEAM_SIZE": 4}
-        assert isinstance(config.MODEL_OVERRIDES["large-v2"], dict)
-        assert config.MODEL_OVERRIDES["large.v3"]["BEAM_SIZE"] == 7
-    finally:
-        monkeypatch.undo()
-        importlib.reload(config)
+def test_json_model_overrides_env(monkeypatch, restore_config):
+    _reload_with_env(
+        monkeypatch,
+        WHISPER_MODEL_OVERRIDES='{"large-v2": {"BEAM_SIZE": 4}}',
+        # Windows upper-cases os.environ keys; _canonical_env_model_id
+        # maps a bare (short-name) id back to lower case, so a lowercase
+        # id in the var NAME lands under the same key on every OS.
+        WHISPER_MODEL_OVERRIDE__large__DOT__v3__BEAM_SIZE="7",
+    )
+    assert config.MODEL_OVERRIDES["large-v2"] == {"BEAM_SIZE": 4}
+    assert isinstance(config.MODEL_OVERRIDES["large-v2"], dict)
+    assert config.MODEL_OVERRIDES["large.v3"]["BEAM_SIZE"] == 7
 
 
-def test_json_pipeline_rules_env(monkeypatch):
-    try:
-        _reload_with_env(
-            monkeypatch,
-            WHISPER_PIPELINE_RULES='[{"name": "x", "label": "X", "type": "terminal"}]',
-        )
-        assert isinstance(config.PIPELINE_RULES, list)
-        assert config.PIPELINE_RULES[0]["name"] == "x"
-        assert isinstance(config.PIPELINE_RULES[0], dict)
-    finally:
-        monkeypatch.undo()
-        importlib.reload(config)
+def test_json_pipeline_rules_env(monkeypatch, restore_config):
+    _reload_with_env(
+        monkeypatch,
+        WHISPER_PIPELINE_RULES='[{"name": "x", "label": "X", "type": "terminal"}]',
+    )
+    assert isinstance(config.PIPELINE_RULES, list)
+    assert config.PIPELINE_RULES[0]["name"] == "x"
+    assert isinstance(config.PIPELINE_RULES[0], dict)
 
 
-def test_json_pipeline_rules_env_upgrades_an_old_factory_entry(monkeypatch):
+def test_json_pipeline_rules_env_upgrades_an_old_factory_entry(monkeypatch, restore_config):
     """A WHISPER_PIPELINE_RULES copy written before a factory entry was fixed
     gets the fixed text (config_renames.UPGRADED_RULE_ENTRIES), with a warning."""
     import json as _json
@@ -390,34 +355,22 @@ def test_json_pipeline_rules_env_upgrades_an_old_factory_entry(monkeypatch):
                       "label": "tighten-quote-spacing"}]},
         {"name": "x", "label": "X", "type": "terminal"},
     ]
-    try:
-        _reload_with_env(monkeypatch, WHISPER_PIPELINE_RULES=_json.dumps(rules))
-        e = config.PIPELINE_RULES[0]["entries"][0]
-        assert (e["pattern"], e["replacement"]) == new
-        assert any("upgraded factory rule entries" in m for m in config._ENV_WARNINGS)
-    finally:
-        monkeypatch.undo()
-        importlib.reload(config)
+    _reload_with_env(monkeypatch, WHISPER_PIPELINE_RULES=_json.dumps(rules))
+    e = config.PIPELINE_RULES[0]["entries"][0]
+    assert (e["pattern"], e["replacement"]) == new
+    assert any("upgraded factory rule entries" in m for m in config._ENV_WARNINGS)
 
 
-def test_invalid_json_keeps_default_and_warns(monkeypatch):
-    try:
-        _reload_with_env(monkeypatch, WHISPER_PIPELINE_RULES="not json")
-        assert len(config.PIPELINE_RULES) >= 2
-        assert any("WHISPER_PIPELINE_RULES" in m for m in config._ENV_WARNINGS)
-    finally:
-        monkeypatch.undo()
-        importlib.reload(config)
+def test_invalid_json_keeps_default_and_warns(monkeypatch, restore_config):
+    _reload_with_env(monkeypatch, WHISPER_PIPELINE_RULES="not json")
+    assert len(config.PIPELINE_RULES) >= 2
+    assert any("WHISPER_PIPELINE_RULES" in m for m in config._ENV_WARNINGS)
 
 
-def test_bad_scalar_records_warning(monkeypatch):
-    try:
-        _reload_with_env(monkeypatch, WHISPER_BEAM_SIZE="ten")
-        assert config.BEAM_SIZE == 10   # default kept
-        assert any("WHISPER_BEAM_SIZE" in m for m in config._ENV_WARNINGS)
-    finally:
-        monkeypatch.undo()
-        importlib.reload(config)
+def test_bad_scalar_records_warning(monkeypatch, restore_config):
+    _reload_with_env(monkeypatch, WHISPER_BEAM_SIZE="ten")
+    assert config.BEAM_SIZE == 10   # default kept
+    assert any("WHISPER_BEAM_SIZE" in m for m in config._ENV_WARNINGS)
 
 
 def test_secret_file_indirection(monkeypatch, tmp_path):
@@ -438,22 +391,18 @@ def test_secret_file_indirection(monkeypatch, tmp_path):
         importlib.reload(config)
 
 
-def test_rejected_secret_warning_is_redacted(monkeypatch):
+def test_rejected_secret_warning_is_redacted(monkeypatch, restore_config):
     """An over-long HF_TOKEN fails AdminConfig's max_length=256 and the
     field reverts — but the warning must NOT carry the repr of the value that
     stays in force. _ENV_WARNINGS is drained into the logger and that log is
     served by the /logs viewer and /logs/stream."""
-    try:
-        _reload_with_env(monkeypatch, WHISPER_HF_TOKEN="hf_" + "z" * 300)
-        warn = [m for m in config._ENV_WARNINGS
-                if "WHISPER_HF_TOKEN" in m and "not a valid" in m]
-        assert warn, config._ENV_WARNINGS
-        msg = warn[0]
-        assert "HF_TOKEN" in msg
-        assert "keeping <redacted>" in msg
-    finally:
-        monkeypatch.undo()
-        importlib.reload(config)
+    _reload_with_env(monkeypatch, WHISPER_HF_TOKEN="hf_" + "z" * 300)
+    warn = [m for m in config._ENV_WARNINGS
+            if "WHISPER_HF_TOKEN" in m and "not a valid" in m]
+    assert warn, config._ENV_WARNINGS
+    msg = warn[0]
+    assert "HF_TOKEN" in msg
+    assert "keeping <redacted>" in msg
 
 
 def test_use_auth_token_env_alias(monkeypatch):
@@ -506,96 +455,76 @@ def test_local_overrides_migrate_use_auth_token(tmp_path):
     assert out.get("BEAM_SIZE") == 7
 
 
-def test_rejected_nonsecret_warning_still_shows_value(monkeypatch):
+def test_rejected_nonsecret_warning_still_shows_value(monkeypatch, restore_config):
     """The redaction is limited to the credential fields — an ordinary field
     still reports the value left in force, which is what makes the warning
     actionable."""
-    try:
-        _reload_with_env(monkeypatch, WHISPER_BEAM_SIZE="9999")
-        warn = [m for m in config._ENV_WARNINGS if "WHISPER_BEAM_SIZE" in m]
-        assert warn, config._ENV_WARNINGS
-        # BEAM_SIZE is the reverted (pre-env) value after the rejection.
-        assert f"keeping {config.BEAM_SIZE}" in warn[0]
-        assert "<redacted>" not in warn[0]
-    finally:
-        monkeypatch.undo()
-        importlib.reload(config)
+    _reload_with_env(monkeypatch, WHISPER_BEAM_SIZE="9999")
+    warn = [m for m in config._ENV_WARNINGS if "WHISPER_BEAM_SIZE" in m]
+    assert warn, config._ENV_WARNINGS
+    # BEAM_SIZE is the reverted (pre-env) value after the rejection.
+    assert f"keeping {config.BEAM_SIZE}" in warn[0]
+    assert "<redacted>" not in warn[0]
 
 
-def test_per_model_env_override_coerces_newer_field_types(monkeypatch):
+def test_per_model_env_override_coerces_newer_field_types(monkeypatch, restore_config):
     """DIARIZE (bool) and DIARIZATION_NUM_SPEAKERS (int) are ModelOverride
     fields that postdate the coercion frozensets — a raw string surviving here
     means bool("false") is True downstream and speaker hints reach pyannote
     as strings."""
-    try:
-        _reload_with_env(
-            monkeypatch,
-            WHISPER_MODEL_OVERRIDE__tiny__DIARIZE="false",
-            WHISPER_MODEL_OVERRIDE__tiny__DIARIZATION_NUM_SPEAKERS="3",
-        )
-        entry = config.MODEL_OVERRIDES.get("tiny", {})
-        assert entry.get("DIARIZE") is False
-        assert entry.get("DIARIZATION_NUM_SPEAKERS") == 3
-    finally:
-        monkeypatch.undo()
-        importlib.reload(config)
+    _reload_with_env(
+        monkeypatch,
+        WHISPER_MODEL_OVERRIDE__tiny__DIARIZE="false",
+        WHISPER_MODEL_OVERRIDE__tiny__DIARIZATION_NUM_SPEAKERS="3",
+    )
+    entry = config.MODEL_OVERRIDES.get("tiny", {})
+    assert entry.get("DIARIZE") is False
+    assert entry.get("DIARIZATION_NUM_SPEAKERS") == 3
 
 
-def test_per_model_env_override_unparseable_bool_is_skipped(monkeypatch):
+def test_per_model_env_override_unparseable_bool_is_skipped(monkeypatch, restore_config):
     """An unparseable per-model bool (DIARIZE=maybe) must not be coerced to
     False, a valid bool the revalidation cannot catch: it warns and leaves that
     one field out, keeping the model's other overrides."""
-    try:
-        _reload_with_env(
-            monkeypatch,
-            WHISPER_MODEL_OVERRIDE__tiny__DIARIZE="maybe",
-            WHISPER_MODEL_OVERRIDE__tiny__BEAM_SIZE="3",
-        )
-        entry = config.MODEL_OVERRIDES.get("tiny", {})
-        assert "DIARIZE" not in entry
-        assert entry.get("BEAM_SIZE") == 3
-        assert any("DIARIZE" in w and "not a valid boolean" in w
-                   for w in config._ENV_WARNINGS), config._ENV_WARNINGS
-    finally:
-        monkeypatch.undo()
-        importlib.reload(config)
+    _reload_with_env(
+        monkeypatch,
+        WHISPER_MODEL_OVERRIDE__tiny__DIARIZE="maybe",
+        WHISPER_MODEL_OVERRIDE__tiny__BEAM_SIZE="3",
+    )
+    entry = config.MODEL_OVERRIDES.get("tiny", {})
+    assert "DIARIZE" not in entry
+    assert entry.get("BEAM_SIZE") == 3
+    assert any("DIARIZE" in w and "not a valid boolean" in w
+               for w in config._ENV_WARNINGS), config._ENV_WARNINGS
 
 
-def test_per_model_env_override_accepts_verbose_bool_spellings(monkeypatch):
-    try:
-        _reload_with_env(
-            monkeypatch,
-            WHISPER_MODEL_OVERRIDE__tiny__DIARIZE="enabled",
-            WHISPER_MODEL_OVERRIDE__tiny__VAD_FILTER="n",
-        )
-        entry = config.MODEL_OVERRIDES.get("tiny", {})
-        assert entry.get("DIARIZE") is True
-        assert entry.get("VAD_FILTER") is False
-    finally:
-        monkeypatch.undo()
-        importlib.reload(config)
+def test_per_model_env_override_accepts_verbose_bool_spellings(monkeypatch, restore_config):
+    _reload_with_env(
+        monkeypatch,
+        WHISPER_MODEL_OVERRIDE__tiny__DIARIZE="enabled",
+        WHISPER_MODEL_OVERRIDE__tiny__VAD_FILTER="n",
+    )
+    entry = config.MODEL_OVERRIDES.get("tiny", {})
+    assert entry.get("DIARIZE") is True
+    assert entry.get("VAD_FILTER") is False
 
 
-def test_reader_level_env_rejection_clears_the_pin(monkeypatch):
+def test_reader_level_env_rejection_clears_the_pin(monkeypatch, restore_config):
     """A value the reader could not parse controls nothing, exactly like one
     the schema pass reverted — so it must land in _ENV_REJECTED and drop out
     of env_pinned_fields(), or the admin's /settings edit never applies."""
     from faster_whisper_backend.settings import config_store
-    try:
-        _reload_with_env(
-            monkeypatch,
-            WHISPER_BEAM_SIZE="abc",
-            WHISPER_SESSION_COOKIE_SECURE="maybe",
-        )
-        assert config.BEAM_SIZE == config._BASELINE["BEAM_SIZE"]
-        assert "BEAM_SIZE" in config._ENV_REJECTED
-        assert "SESSION_COOKIE_SECURE" in config._ENV_REJECTED
-        pinned = config_store.env_pinned_fields()
-        assert "BEAM_SIZE" not in pinned
-        assert "SESSION_COOKIE_SECURE" not in pinned
-    finally:
-        monkeypatch.undo()
-        importlib.reload(config)
+    _reload_with_env(
+        monkeypatch,
+        WHISPER_BEAM_SIZE="abc",
+        WHISPER_SESSION_COOKIE_SECURE="maybe",
+    )
+    assert config.BEAM_SIZE == config._BASELINE["BEAM_SIZE"]
+    assert "BEAM_SIZE" in config._ENV_REJECTED
+    assert "SESSION_COOKIE_SECURE" in config._ENV_REJECTED
+    pinned = config_store.env_pinned_fields()
+    assert "BEAM_SIZE" not in pinned
+    assert "SESSION_COOKIE_SECURE" not in pinned
 
 
 def test_save_overrides_migrates_use_auth_token(tmp_path):
@@ -615,71 +544,59 @@ def test_save_overrides_migrates_use_auth_token(tmp_path):
     assert on_disk.get("BEAM_SIZE") == 5
 
 
-def test_env_cross_field_triple_validates_as_a_batch(monkeypatch):
+def test_env_cross_field_triple_validates_as_a_batch(monkeypatch, restore_config):
     """A self-consistent TARGET/MAX pair set together via env must apply:
     validated per field, MAX=20 would meet the _BASELINE TARGET (26.0)
     instead of the TARGET=15 set alongside it, and be mis-rejected."""
-    try:
-        _reload_with_env(
-            monkeypatch,
-            WHISPER_CAPTURES_PROPOSER_TARGET_S="15",
-            WHISPER_CAPTURES_SAMPLE_MAX_DURATION_S="20",
-        )
-        assert config.CAPTURES_PROPOSER_TARGET_S == 15
-        assert config.CAPTURES_SAMPLE_MAX_DURATION_S == 20
-        assert not [m for m in config._ENV_WARNINGS
-                    if "CAPTURES_" in m], config._ENV_WARNINGS
-    finally:
-        monkeypatch.undo()
-        importlib.reload(config)
+    _reload_with_env(
+        monkeypatch,
+        WHISPER_CAPTURES_PROPOSER_TARGET_S="15",
+        WHISPER_CAPTURES_SAMPLE_MAX_DURATION_S="20",
+    )
+    assert config.CAPTURES_PROPOSER_TARGET_S == 15
+    assert config.CAPTURES_SAMPLE_MAX_DURATION_S == 20
+    assert not [m for m in config._ENV_WARNINGS
+                if "CAPTURES_" in m], config._ENV_WARNINGS
 
 
-def test_env_cross_field_triple_inconsistent_pair_is_reverted(monkeypatch):
+def test_env_cross_field_triple_inconsistent_pair_is_reverted(monkeypatch, restore_config):
     """The cross-field validator reports loc=(), so the attribution pass
     cannot name a field and the per-field fallback passes each half in
     isolation. The group backstop must still revert the inconsistent pair."""
-    try:
-        _reload_with_env(
-            monkeypatch,
-            WHISPER_CAPTURES_SAMPLE_MIN_DURATION_S="20",
-            WHISPER_CAPTURES_PROPOSER_TARGET_S="10",
-        )
-        assert (config.CAPTURES_SAMPLE_MIN_DURATION_S
-                == config._BASELINE["CAPTURES_SAMPLE_MIN_DURATION_S"])
-        assert (config.CAPTURES_PROPOSER_TARGET_S
-                == config._BASELINE["CAPTURES_PROPOSER_TARGET_S"])
-        assert "CAPTURES_SAMPLE_MIN_DURATION_S" in config._ENV_REJECTED
-        assert "CAPTURES_PROPOSER_TARGET_S" in config._ENV_REJECTED
-        assert [m for m in config._ENV_WARNINGS if "CAPTURES_" in m]
-    finally:
-        monkeypatch.undo()
-        importlib.reload(config)
+    _reload_with_env(
+        monkeypatch,
+        WHISPER_CAPTURES_SAMPLE_MIN_DURATION_S="20",
+        WHISPER_CAPTURES_PROPOSER_TARGET_S="10",
+    )
+    assert (config.CAPTURES_SAMPLE_MIN_DURATION_S
+            == config._BASELINE["CAPTURES_SAMPLE_MIN_DURATION_S"])
+    assert (config.CAPTURES_PROPOSER_TARGET_S
+            == config._BASELINE["CAPTURES_PROPOSER_TARGET_S"])
+    assert "CAPTURES_SAMPLE_MIN_DURATION_S" in config._ENV_REJECTED
+    assert "CAPTURES_PROPOSER_TARGET_S" in config._ENV_REJECTED
+    assert [m for m in config._ENV_WARNINGS if "CAPTURES_" in m]
 
 
-def test_env_cross_field_backstop_keeps_unrelated_env_values(monkeypatch):
+def test_env_cross_field_backstop_keeps_unrelated_env_values(monkeypatch, restore_config):
     """A loc=() model-validator error names no field, yet the backstop must
     revert only the inconsistent captures pair: unrelated env values such as
     WHISPER_SESSION_COOKIE_SECURE (else a non-Secure cookie on HTTPS) and
     WHISPER_BEAM_SIZE stay in force, unblamed."""
-    try:
-        _reload_with_env(
-            monkeypatch,
-            WHISPER_CAPTURES_SAMPLE_MIN_DURATION_S="10",
-            WHISPER_CAPTURES_PROPOSER_TARGET_S="5",
-            WHISPER_SESSION_COOKIE_SECURE="true",
-            WHISPER_BEAM_SIZE="3",
-        )
-        assert config.SESSION_COOKIE_SECURE is True
-        assert config.BEAM_SIZE == 3
-        assert "SESSION_COOKIE_SECURE" not in config._ENV_REJECTED
-        assert "BEAM_SIZE" not in config._ENV_REJECTED
-        assert ({"CAPTURES_SAMPLE_MIN_DURATION_S", "CAPTURES_PROPOSER_TARGET_S"}
-                & config._ENV_REJECTED)
-        assert not [m for m in config._ENV_WARNINGS
-                    if "WHISPER_BEAM_SIZE" in m or "WHISPER_SESSION_COOKIE_SECURE" in m]
-    finally:
-        monkeypatch.undo()
-        importlib.reload(config)
+    _reload_with_env(
+        monkeypatch,
+        WHISPER_CAPTURES_SAMPLE_MIN_DURATION_S="10",
+        WHISPER_CAPTURES_PROPOSER_TARGET_S="5",
+        WHISPER_SESSION_COOKIE_SECURE="true",
+        WHISPER_BEAM_SIZE="3",
+    )
+    assert config.SESSION_COOKIE_SECURE is True
+    assert config.BEAM_SIZE == 3
+    assert "SESSION_COOKIE_SECURE" not in config._ENV_REJECTED
+    assert "BEAM_SIZE" not in config._ENV_REJECTED
+    assert ({"CAPTURES_SAMPLE_MIN_DURATION_S", "CAPTURES_PROPOSER_TARGET_S"}
+            & config._ENV_REJECTED)
+    assert not [m for m in config._ENV_WARNINGS
+                if "WHISPER_BEAM_SIZE" in m or "WHISPER_SESSION_COOKIE_SECURE" in m]
 
 
 def test_legacy_in_repo_state_warns_when_ignored(tmp_path, monkeypatch):
@@ -917,7 +834,7 @@ def test_every_renamed_key_targets_a_live_field():
         assert not hasattr(config, old), old
 
 
-def test_per_model_env_override_invalid_keeps_stored_entry(monkeypatch):
+def test_per_model_env_override_invalid_keeps_stored_entry(monkeypatch, restore_config):
     """One bad WHISPER_MODEL_OVERRIDE__ value must revert just that field,
     not wipe the whole stored entry from config.local.json for the process
     lifetime (every other env field reverts to its pre-env value)."""
@@ -927,107 +844,85 @@ def test_per_model_env_override_invalid_keeps_stored_entry(monkeypatch):
     monkeypatch.setattr(
         config_store, "load_overrides",
         lambda path=None: {"MODEL_OVERRIDES": {"TINY": {"BEAM_SIZE": 3, "VAD_FILTER": False}}})
-    try:
-        _reload_with_env(monkeypatch, WHISPER_MODEL_OVERRIDE__TINY__BEAM_SIZE="9999")
-        assert config.MODEL_OVERRIDES["TINY"] == {"BEAM_SIZE": 3, "VAD_FILTER": False}
-        # The pre-env snapshot must not share the mutated nested entry dict.
-        assert config._ENV_PRE["MODEL_OVERRIDES"]["TINY"]["BEAM_SIZE"] == 3
-        assert any("TINY" in m and "keeping the stored entry" in m
-                   for m in config._ENV_WARNINGS), config._ENV_WARNINGS
-        assert not any("was dropped" in m for m in config._ENV_WARNINGS)
-    finally:
-        monkeypatch.undo()
-        importlib.reload(config)
+    _reload_with_env(monkeypatch, WHISPER_MODEL_OVERRIDE__TINY__BEAM_SIZE="9999")
+    assert config.MODEL_OVERRIDES["TINY"] == {"BEAM_SIZE": 3, "VAD_FILTER": False}
+    # The pre-env snapshot must not share the mutated nested entry dict.
+    assert config._ENV_PRE["MODEL_OVERRIDES"]["TINY"]["BEAM_SIZE"] == 3
+    assert any("TINY" in m and "keeping the stored entry" in m
+               for m in config._ENV_WARNINGS), config._ENV_WARNINGS
+    assert not any("was dropped" in m for m in config._ENV_WARNINGS)
 
 
-def test_per_model_env_override_invalid_unknown_field_keeps_stored_entry(monkeypatch):
+def test_per_model_env_override_invalid_unknown_field_keeps_stored_entry(
+        monkeypatch, restore_config):
     from faster_whisper_backend.settings import config_store
     monkeypatch.setattr(
         config_store, "load_overrides",
         lambda path=None: {"MODEL_OVERRIDES": {"TINY": {"BEAM_SIZE": 3, "VAD_FILTER": False}}})
-    try:
-        _reload_with_env(monkeypatch, WHISPER_MODEL_OVERRIDE__TINY__BOGUS="1")
-        assert config.MODEL_OVERRIDES["TINY"] == {"BEAM_SIZE": 3, "VAD_FILTER": False}
-        assert "BOGUS" not in config.MODEL_OVERRIDES["TINY"]
-        assert any("TINY" in m and "keeping the stored entry" in m
-                   for m in config._ENV_WARNINGS), config._ENV_WARNINGS
-        assert not any("was dropped" in m for m in config._ENV_WARNINGS)
-    finally:
-        monkeypatch.undo()
-        importlib.reload(config)
+    _reload_with_env(monkeypatch, WHISPER_MODEL_OVERRIDE__TINY__BOGUS="1")
+    assert config.MODEL_OVERRIDES["TINY"] == {"BEAM_SIZE": 3, "VAD_FILTER": False}
+    assert "BOGUS" not in config.MODEL_OVERRIDES["TINY"]
+    assert any("TINY" in m and "keeping the stored entry" in m
+               for m in config._ENV_WARNINGS), config._ENV_WARNINGS
+    assert not any("was dropped" in m for m in config._ENV_WARNINGS)
 
 
-def test_per_model_env_override_invalid_reverts_to_the_json_env_value(monkeypatch):
+def test_per_model_env_override_invalid_reverts_to_the_json_env_value(monkeypatch, restore_config):
     """A bad per-model var for a field the WHISPER_MODEL_OVERRIDES JSON var
     also sets falls back to the JSON value, not to the pre-env stored one
     (or to nothing), and the warning names the JSON entry it kept."""
     from faster_whisper_backend.settings import config_store
     monkeypatch.setattr(config_store, "load_overrides",
                         lambda path=None: {"MODEL_OVERRIDES": {"tiny": {"BEAM_SIZE": 2}}})
-    try:
-        _reload_with_env(
-            monkeypatch,
-            WHISPER_MODEL_OVERRIDES='{"tiny": {"BEAM_SIZE": 3, "BEST_OF": 2}}',
-            WHISPER_MODEL_OVERRIDE__tiny__BEAM_SIZE="999",
-        )
-        assert config.MODEL_OVERRIDES["tiny"] == {"BEAM_SIZE": 3, "BEST_OF": 2}
-        assert "tiny" not in config._ENV_OVERRIDE_VALUES
-        assert any("'tiny'" in m and "keeping the WHISPER_MODEL_OVERRIDES entry" in m
-                   for m in config._ENV_WARNINGS), config._ENV_WARNINGS
-    finally:
-        monkeypatch.undo()
-        importlib.reload(config)
+    _reload_with_env(
+        monkeypatch,
+        WHISPER_MODEL_OVERRIDES='{"tiny": {"BEAM_SIZE": 3, "BEST_OF": 2}}',
+        WHISPER_MODEL_OVERRIDE__tiny__BEAM_SIZE="999",
+    )
+    assert config.MODEL_OVERRIDES["tiny"] == {"BEAM_SIZE": 3, "BEST_OF": 2}
+    assert "tiny" not in config._ENV_OVERRIDE_VALUES
+    assert any("'tiny'" in m and "keeping the WHISPER_MODEL_OVERRIDES entry" in m
+               for m in config._ENV_WARNINGS), config._ENV_WARNINGS
 
 
-def test_per_model_env_override_invalid_without_stored_entry_is_dropped(monkeypatch):
+def test_per_model_env_override_invalid_without_stored_entry_is_dropped(
+        monkeypatch, restore_config):
     """An env-only bad entry still never goes live."""
-    try:
-        _reload_with_env(monkeypatch, WHISPER_MODEL_OVERRIDE__tiny__BEAM_SIZE="9999")
-        assert "tiny" not in config.MODEL_OVERRIDES
-        assert any("tiny" in m.lower() for m in config._ENV_WARNINGS), config._ENV_WARNINGS
-    finally:
-        monkeypatch.undo()
-        importlib.reload(config)
+    _reload_with_env(monkeypatch, WHISPER_MODEL_OVERRIDE__tiny__BEAM_SIZE="9999")
+    assert "tiny" not in config.MODEL_OVERRIDES
+    assert any("tiny" in m.lower() for m in config._ENV_WARNINGS), config._ENV_WARNINGS
 
 
-def test_per_model_env_bad_field_keeps_the_valid_env_siblings(monkeypatch):
+def test_per_model_env_bad_field_keeps_the_valid_env_siblings(monkeypatch, restore_config):
     """A blank or out-of-range per-model var reverts that field only: the
     model's other env values stay live (and stay env values), and the warning
     names only the bad field."""
     from faster_whisper_backend.settings import config_store
     monkeypatch.setattr(config_store, "load_overrides",
                         lambda path=None: {"MODEL_OVERRIDES": {"tiny": {"BEAM_SIZE": 2}}})
-    try:
-        _reload_with_env(monkeypatch,
-                         WHISPER_MODEL_OVERRIDE__tiny__BEAM_SIZE="",
-                         WHISPER_MODEL_OVERRIDE__tiny__BEST_OF="4",
-                         WHISPER_MODEL_OVERRIDE__tiny__VAD_FILTER="true")
-        assert config.MODEL_OVERRIDES["tiny"] == {
-            "BEAM_SIZE": 2, "BEST_OF": 4, "VAD_FILTER": True}
-        assert config._ENV_OVERRIDE_VALUES["tiny"] == {
-            "BEST_OF": 4, "VAD_FILTER": True}
-        assert any("for 'tiny' (BEAM_SIZE) are invalid" in m
-                   for m in config._ENV_WARNINGS), config._ENV_WARNINGS
-    finally:
-        monkeypatch.undo()
-        importlib.reload(config)
+    _reload_with_env(monkeypatch,
+                     WHISPER_MODEL_OVERRIDE__tiny__BEAM_SIZE="",
+                     WHISPER_MODEL_OVERRIDE__tiny__BEST_OF="4",
+                     WHISPER_MODEL_OVERRIDE__tiny__VAD_FILTER="true")
+    assert config.MODEL_OVERRIDES["tiny"] == {
+        "BEAM_SIZE": 2, "BEST_OF": 4, "VAD_FILTER": True}
+    assert config._ENV_OVERRIDE_VALUES["tiny"] == {
+        "BEST_OF": 4, "VAD_FILTER": True}
+    assert any("for 'tiny' (BEAM_SIZE) are invalid" in m
+               for m in config._ENV_WARNINGS), config._ENV_WARNINGS
 
 
-def test_per_model_env_unknown_slug_keeps_the_valid_env_siblings(monkeypatch):
+def test_per_model_env_unknown_slug_keeps_the_valid_env_siblings(monkeypatch, restore_config):
     """The slug check is a model validator (no field in its error loc): the
     exclude whose single revert clears it is the one reverted, not every env
     field of the model along with it."""
-    try:
-        _reload_with_env(monkeypatch,
-                         WHISPER_MODEL_OVERRIDE__tiny__PIPELINE_RULES_EXCLUDE="no-such-rule",
-                         WHISPER_MODEL_OVERRIDE__tiny__BEAM_SIZE="4")
-        assert config.MODEL_OVERRIDES["tiny"] == {"BEAM_SIZE": 4}
-        assert config._ENV_OVERRIDE_VALUES["tiny"] == {"BEAM_SIZE": 4}
-        assert any("for 'tiny' (PIPELINE_RULES_EXCLUDE) are invalid" in m
-                   for m in config._ENV_WARNINGS), config._ENV_WARNINGS
-    finally:
-        monkeypatch.undo()
-        importlib.reload(config)
+    _reload_with_env(monkeypatch,
+                     WHISPER_MODEL_OVERRIDE__tiny__PIPELINE_RULES_EXCLUDE="no-such-rule",
+                     WHISPER_MODEL_OVERRIDE__tiny__BEAM_SIZE="4")
+    assert config.MODEL_OVERRIDES["tiny"] == {"BEAM_SIZE": 4}
+    assert config._ENV_OVERRIDE_VALUES["tiny"] == {"BEAM_SIZE": 4}
+    assert any("for 'tiny' (PIPELINE_RULES_EXCLUDE) are invalid" in m
+               for m in config._ENV_WARNINGS), config._ENV_WARNINGS
 
 
 def _point_overrides_at(monkeypatch, path):
@@ -1038,43 +933,37 @@ def _point_overrides_at(monkeypatch, path):
     _repoint_path_default(monkeypatch, (config_store.load_overrides,), str(path))
 
 
-def test_env_cross_field_inconsistent_with_local_override_is_reverted(tmp_path, monkeypatch):
+def test_env_cross_field_inconsistent_with_local_override_is_reverted(
+        tmp_path, monkeypatch, restore_config):
     """env TARGET=28 + local MAX=27 is inconsistent against the EFFECTIVE
     config; the validators used to compare against _BASELINE (MAX 29.9) and
     let TARGET > MAX boot silently."""
     p = tmp_path / "config.local.json"
     p.write_text(json.dumps({"CAPTURES_SAMPLE_MAX_DURATION_S": 27}), encoding="utf-8")
     _point_overrides_at(monkeypatch, p)
-    try:
-        _reload_with_env(monkeypatch, WHISPER_CAPTURES_PROPOSER_TARGET_S="28")
-        assert config.CAPTURES_PROPOSER_TARGET_S == 26.0
-        assert config.CAPTURES_SAMPLE_MAX_DURATION_S == 27
-        assert "CAPTURES_PROPOSER_TARGET_S" in config._ENV_REJECTED
-        warns = [m for m in config._ENV_WARNINGS if "CAPTURES_" in m]
-        assert warns and any("27" in m for m in warns), config._ENV_WARNINGS
-    finally:
-        monkeypatch.undo()
-        importlib.reload(config)
+    _reload_with_env(monkeypatch, WHISPER_CAPTURES_PROPOSER_TARGET_S="28")
+    assert config.CAPTURES_PROPOSER_TARGET_S == 26.0
+    assert config.CAPTURES_SAMPLE_MAX_DURATION_S == 27
+    assert "CAPTURES_PROPOSER_TARGET_S" in config._ENV_REJECTED
+    warns = [m for m in config._ENV_WARNINGS if "CAPTURES_" in m]
+    assert warns and any("27" in m for m in warns), config._ENV_WARNINGS
 
 
-def test_env_cross_field_consistent_with_local_override_applies(tmp_path, monkeypatch):
+def test_env_cross_field_consistent_with_local_override_applies(
+        tmp_path, monkeypatch, restore_config):
     """env TARGET=29.95 + local MAX=30 is self-consistent and must apply; the
     stale-baseline comparison (MAX 29.9) used to mis-revert it."""
     p = tmp_path / "config.local.json"
     p.write_text(json.dumps({"CAPTURES_SAMPLE_MAX_DURATION_S": 30}), encoding="utf-8")
     _point_overrides_at(monkeypatch, p)
-    try:
-        _reload_with_env(monkeypatch, WHISPER_CAPTURES_PROPOSER_TARGET_S="29.95")
-        assert config.CAPTURES_PROPOSER_TARGET_S == 29.95
-        assert config.CAPTURES_SAMPLE_MAX_DURATION_S == 30
-        assert "CAPTURES_PROPOSER_TARGET_S" not in config._ENV_REJECTED
-        assert not [m for m in config._ENV_WARNINGS if "CAPTURES_" in m], config._ENV_WARNINGS
-    finally:
-        monkeypatch.undo()
-        importlib.reload(config)
+    _reload_with_env(monkeypatch, WHISPER_CAPTURES_PROPOSER_TARGET_S="29.95")
+    assert config.CAPTURES_PROPOSER_TARGET_S == 29.95
+    assert config.CAPTURES_SAMPLE_MAX_DURATION_S == 30
+    assert "CAPTURES_PROPOSER_TARGET_S" not in config._ENV_REJECTED
+    assert not [m for m in config._ENV_WARNINGS if "CAPTURES_" in m], config._ENV_WARNINGS
 
 
-def test_explicitly_empty_env_pins_fields_where_empty_is_a_value(monkeypatch):
+def test_explicitly_empty_env_pins_fields_where_empty_is_a_value(monkeypatch, restore_config):
     """WHISPER_X="" is a real value for the readers that map "" to None / ""
     / [] / set() / a fixed default (CONVERT_QUANTIZATION -> float16) — the
     var controls the field, so /settings must badge it as env-pinned (and
@@ -1082,32 +971,28 @@ def test_explicitly_empty_env_pins_fields_where_empty_is_a_value(monkeypatch):
     the next restart. A reader that treats "" as "keep current" (BEAM_SIZE)
     still does not pin."""
     from faster_whisper_backend.settings import config_store
-    try:
-        _reload_with_env(
-            monkeypatch,
-            WHISPER_NO_SPEECH_THRESHOLD="",
-            WHISPER_PRELOAD_MODELS="",
-            WHISPER_ALLOWED_MODELS="",
-            WHISPER_DEFAULT_LANGUAGE="",
-            WHISPER_CONVERT_QUANTIZATION="",
-            WHISPER_BEAM_SIZE="",
-        )
-        assert config.NO_SPEECH_THRESHOLD is None
-        assert config.PRELOAD_MODELS == []
-        assert config.ALLOWED_MODELS == set()
-        assert config.DEFAULT_LANGUAGE == ""
-        assert config.CONVERT_QUANTIZATION == "float16"
-        pinned = config_store.env_pinned_fields()
-        for f in ("NO_SPEECH_THRESHOLD", "PRELOAD_MODELS", "ALLOWED_MODELS",
-                  "DEFAULT_LANGUAGE", "CONVERT_QUANTIZATION"):
-            assert f in pinned, f
-        assert "BEAM_SIZE" not in pinned
-    finally:
-        monkeypatch.undo()
-        importlib.reload(config)
+    _reload_with_env(
+        monkeypatch,
+        WHISPER_NO_SPEECH_THRESHOLD="",
+        WHISPER_PRELOAD_MODELS="",
+        WHISPER_ALLOWED_MODELS="",
+        WHISPER_DEFAULT_LANGUAGE="",
+        WHISPER_CONVERT_QUANTIZATION="",
+        WHISPER_BEAM_SIZE="",
+    )
+    assert config.NO_SPEECH_THRESHOLD is None
+    assert config.PRELOAD_MODELS == []
+    assert config.ALLOWED_MODELS == set()
+    assert config.DEFAULT_LANGUAGE == ""
+    assert config.CONVERT_QUANTIZATION == "float16"
+    pinned = config_store.env_pinned_fields()
+    for f in ("NO_SPEECH_THRESHOLD", "PRELOAD_MODELS", "ALLOWED_MODELS",
+              "DEFAULT_LANGUAGE", "CONVERT_QUANTIZATION"):
+        assert f in pinned, f
+    assert "BEAM_SIZE" not in pinned
 
 
-def test_documented_empty_env_overrides_a_stored_value(tmp_path, monkeypatch):
+def test_documented_empty_env_overrides_a_stored_value(tmp_path, monkeypatch, restore_config):
     """.env.example documents WHISPER_TRANSLATE_TO="" as "off unless
     requested" and WHISPER_STREAMING_PARTIAL_MODEL="" as "the request's
     model"; the plain str reader read "" as "keep current", so a value stored
@@ -1119,129 +1004,103 @@ def test_documented_empty_env_overrides_a_stored_value(tmp_path, monkeypatch):
                              "STREAMING_PARTIAL_MODEL": "tiny"}),
                  encoding="utf-8")
     _point_overrides_at(monkeypatch, p)
-    try:
-        _reload_with_env(monkeypatch, WHISPER_TRANSLATE_TO="",
-                         WHISPER_STREAMING_PARTIAL_MODEL="",
-                         WHISPER_TRANSLATION_LANGUAGES="de ")
-        assert config.TRANSLATE_TO == ""
-        assert config.STREAMING_PARTIAL_MODEL == ""
-        assert config.TRANSLATION_LANGUAGES == "de"     # still stripped
-        assert not [w for w in config._ENV_WARNINGS
-                    if "TRANSLATE" in w or "PARTIAL_MODEL" in w], config._ENV_WARNINGS
-        pinned = config_store.env_pinned_fields()
-        assert "TRANSLATE_TO" in pinned
-        assert "STREAMING_PARTIAL_MODEL" in pinned
-    finally:
-        monkeypatch.undo()
-        importlib.reload(config)
+    _reload_with_env(monkeypatch, WHISPER_TRANSLATE_TO="",
+                     WHISPER_STREAMING_PARTIAL_MODEL="",
+                     WHISPER_TRANSLATION_LANGUAGES="de ")
+    assert config.TRANSLATE_TO == ""
+    assert config.STREAMING_PARTIAL_MODEL == ""
+    assert config.TRANSLATION_LANGUAGES == "de"     # still stripped
+    assert not [w for w in config._ENV_WARNINGS
+                if "TRANSLATE" in w or "PARTIAL_MODEL" in w], config._ENV_WARNINGS
+    pinned = config_store.env_pinned_fields()
+    assert "TRANSLATE_TO" in pinned
+    assert "STREAMING_PARTIAL_MODEL" in pinned
 
 
-def test_env_supplied_override_with_unknown_rule_slug_is_rejected(monkeypatch):
+def test_env_supplied_override_with_unknown_rule_slug_is_rejected(monkeypatch, restore_config):
     """The env entry points validate MODEL_OVERRIDES / OVERRIDE_PROFILES /
     CAPTURES_PIPELINE_RULES_EXCLUDE with the live slug set, like a /settings
     save: a typo'd slug is dropped with a warning instead of booting silently
     and doing nothing at runtime. A real slug still loads."""
-    try:
-        _reload_with_env(
-            monkeypatch,
-            WHISPER_MODEL_OVERRIDES=
-            '{"tiny": {"PIPELINE_RULES_EXCLUDE": ["dictashion-map"]}}',
-            WHISPER_OVERRIDE_PROFILES=
-            '{"ok": {"PIPELINE_RULES_EXCLUDE": ["strip-stray-symbols"]}}',
-            WHISPER_CAPTURES_PIPELINE_RULES_EXCLUDE="no-such-rule",
-        )
-        assert "tiny" not in config.MODEL_OVERRIDES
-        assert config.OVERRIDE_PROFILES["ok"]["PIPELINE_RULES_EXCLUDE"] == [
-            "strip-stray-symbols"]
-        assert "no-such-rule" not in config.CAPTURES_PIPELINE_RULES_EXCLUDE
-        assert "CAPTURES_PIPELINE_RULES_EXCLUDE" in config._ENV_REJECTED
-        assert any("dictashion-map" in m for m in config._ENV_WARNINGS)
-        assert any("no-such-rule" in m for m in config._ENV_WARNINGS)
-    finally:
-        monkeypatch.undo()
-        importlib.reload(config)
+    _reload_with_env(
+        monkeypatch,
+        WHISPER_MODEL_OVERRIDES=
+        '{"tiny": {"PIPELINE_RULES_EXCLUDE": ["dictashion-map"]}}',
+        WHISPER_OVERRIDE_PROFILES=
+        '{"ok": {"PIPELINE_RULES_EXCLUDE": ["strip-stray-symbols"]}}',
+        WHISPER_CAPTURES_PIPELINE_RULES_EXCLUDE="no-such-rule",
+    )
+    assert "tiny" not in config.MODEL_OVERRIDES
+    assert config.OVERRIDE_PROFILES["ok"]["PIPELINE_RULES_EXCLUDE"] == [
+        "strip-stray-symbols"]
+    assert "no-such-rule" not in config.CAPTURES_PIPELINE_RULES_EXCLUDE
+    assert "CAPTURES_PIPELINE_RULES_EXCLUDE" in config._ENV_REJECTED
+    assert any("dictashion-map" in m for m in config._ENV_WARNINGS)
+    assert any("no-such-rule" in m for m in config._ENV_WARNINGS)
 
 
-def test_env_rules_that_break_a_stored_exclude_do_not_revert_every_scalar(monkeypatch):
+def test_env_rules_that_break_a_stored_exclude_do_not_revert_every_scalar(
+        monkeypatch, restore_config):
     """A WHISPER_PIPELINE_RULES without the rules CAPTURES_PIPELINE_RULES_
     EXCLUDE names fails validation with every env scalar reverted. That error
     used to fail each isolation pass too, so every env scalar (the cookie
     flag included) was reverted and blamed for it."""
     rules = _factory_rules()
     one = [r for r in rules if r["name"] == "strip-stray-symbols"]
-    try:
-        _reload_with_env(monkeypatch, WHISPER_PIPELINE_RULES=json.dumps(one),
-                         WHISPER_BEAM_SIZE="3",
-                         WHISPER_SESSION_COOKIE_SECURE="true")
-        assert config.BEAM_SIZE == 3
-        assert config.SESSION_COOKIE_SECURE is True
-        assert "BEAM_SIZE" not in config._ENV_REJECTED
-        assert "SESSION_COOKIE_SECURE" not in config._ENV_REJECTED
-        culprit = [m for m in config._ENV_WARNINGS
-                   if "CAPTURES_PIPELINE_RULES_EXCLUDE" in m]
-        assert len(culprit) == 1, config._ENV_WARNINGS
-        assert "independently of the WHISPER_*" in culprit[0]
-    finally:
-        monkeypatch.undo()
-        importlib.reload(config)
+    _reload_with_env(monkeypatch, WHISPER_PIPELINE_RULES=json.dumps(one),
+                     WHISPER_BEAM_SIZE="3",
+                     WHISPER_SESSION_COOKIE_SECURE="true")
+    assert config.BEAM_SIZE == 3
+    assert config.SESSION_COOKIE_SECURE is True
+    assert "BEAM_SIZE" not in config._ENV_REJECTED
+    assert "SESSION_COOKIE_SECURE" not in config._ENV_REJECTED
+    culprit = [m for m in config._ENV_WARNINGS
+               if "CAPTURES_PIPELINE_RULES_EXCLUDE" in m]
+    assert len(culprit) == 1, config._ENV_WARNINGS
+    assert "independently of the WHISPER_*" in culprit[0]
 
 
-def test_env_scalar_still_reverted_next_to_a_pre_env_error(monkeypatch):
+def test_env_scalar_still_reverted_next_to_a_pre_env_error(monkeypatch, restore_config):
     rules = _factory_rules()
     one = [r for r in rules if r["name"] == "strip-stray-symbols"]
-    try:
-        _reload_with_env(monkeypatch, WHISPER_PIPELINE_RULES=json.dumps(one),
-                         WHISPER_BEAM_SIZE="9999",
-                         WHISPER_SESSION_COOKIE_SECURE="true")
-        assert "BEAM_SIZE" in config._ENV_REJECTED
-        assert config.SESSION_COOKIE_SECURE is True
-    finally:
-        monkeypatch.undo()
-        importlib.reload(config)
+    _reload_with_env(monkeypatch, WHISPER_PIPELINE_RULES=json.dumps(one),
+                     WHISPER_BEAM_SIZE="9999",
+                     WHISPER_SESSION_COOKIE_SECURE="true")
+    assert "BEAM_SIZE" in config._ENV_REJECTED
+    assert config.SESSION_COOKIE_SECURE is True
 
 
-def test_env_captures_exclude_renamed_slug_keeps_working(monkeypatch):
-    try:
-        _reload_with_env(monkeypatch,
-                         WHISPER_CAPTURES_PIPELINE_RULES_EXCLUDE="dictation-map")
-        assert config.CAPTURES_PIPELINE_RULES_EXCLUDE == {"de-dictation-map"}
-        assert "CAPTURES_PIPELINE_RULES_EXCLUDE" not in config._ENV_REJECTED
-    finally:
-        monkeypatch.undo()
-        importlib.reload(config)
+def test_env_captures_exclude_renamed_slug_keeps_working(monkeypatch, restore_config):
+    _reload_with_env(monkeypatch,
+                     WHISPER_CAPTURES_PIPELINE_RULES_EXCLUDE="dictation-map")
+    assert config.CAPTURES_PIPELINE_RULES_EXCLUDE == {"de-dictation-map"}
+    assert "CAPTURES_PIPELINE_RULES_EXCLUDE" not in config._ENV_REJECTED
 
 
-def test_per_model_env_renamed_slug_keeps_the_whole_entry(monkeypatch):
-    try:
-        _reload_with_env(
-            monkeypatch,
-            WHISPER_MODEL_OVERRIDE__tiny__PIPELINE_RULES_EXCLUDE="dictation-map",
-            WHISPER_MODEL_OVERRIDE__tiny__SEGMENT_MAX_WORDS_PER_SEC="4")
-        assert config.MODEL_OVERRIDES["tiny"] == {
-            "PIPELINE_RULES_EXCLUDE": ["de-dictation-map"],
-            "SEGMENT_MAX_WORDS_PER_S": 4.0}
-    finally:
-        monkeypatch.undo()
-        importlib.reload(config)
+def test_per_model_env_renamed_slug_keeps_the_whole_entry(monkeypatch, restore_config):
+    _reload_with_env(
+        monkeypatch,
+        WHISPER_MODEL_OVERRIDE__tiny__PIPELINE_RULES_EXCLUDE="dictation-map",
+        WHISPER_MODEL_OVERRIDE__tiny__SEGMENT_MAX_WORDS_PER_SEC="4")
+    assert config.MODEL_OVERRIDES["tiny"] == {
+        "PIPELINE_RULES_EXCLUDE": ["de-dictation-map"],
+        "SEGMENT_MAX_WORDS_PER_S": 4.0}
 
 
 @pytest.mark.parametrize("old_first", [True, False])
-def test_per_model_env_new_field_name_wins_over_the_old_one(monkeypatch, old_first):
+def test_per_model_env_new_field_name_wins_over_the_old_one(
+        monkeypatch, old_first, restore_config):
     """With both spellings set, the later os.environ entry overwrote the
     earlier one, so a stale old-name line could win depending on the
     process environment order. The new name wins, as in alias_env."""
     old = ("WHISPER_MODEL_OVERRIDE__tiny__SEGMENT_MAX_WORDS_PER_SEC", "4")
     new = ("WHISPER_MODEL_OVERRIDE__tiny__SEGMENT_MAX_WORDS_PER_S", "6")
-    try:
-        for k, v in ((old, new) if old_first else (new, old)):
-            monkeypatch.setenv(k, v)
-        importlib.reload(config)
-        assert config.MODEL_OVERRIDES["tiny"]["SEGMENT_MAX_WORDS_PER_S"] == 6
-        assert any(m.lower().startswith(old[0].lower()) and "is ignored" in m
-                   for m in config._ENV_WARNINGS), config._ENV_WARNINGS
-    finally:
-        monkeypatch.undo()
-        importlib.reload(config)
+    for k, v in ((old, new) if old_first else (new, old)):
+        monkeypatch.setenv(k, v)
+    importlib.reload(config)
+    assert config.MODEL_OVERRIDES["tiny"]["SEGMENT_MAX_WORDS_PER_S"] == 6
+    assert any(m.lower().startswith(old[0].lower()) and "is ignored" in m
+               for m in config._ENV_WARNINGS), config._ENV_WARNINGS
 
 
 def test_per_model_env_id_survives_windows_upper_casing(monkeypatch):
@@ -1265,45 +1124,37 @@ def test_per_model_env_id_survives_windows_upper_casing(monkeypatch):
     assert canon("TINY") == "TINY"
 
 
-def test_env_json_bundles_migrate_renamed_keys_and_locks(monkeypatch):
+def test_env_json_bundles_migrate_renamed_keys_and_locks(monkeypatch, restore_config):
     """WHISPER_OVERRIDE_PROFILES / WHISPER_MODEL_OVERRIDES bundles are
     extra="forbid": one pre-rename key used to drop the whole env value."""
     bundle = {"STREAMING_IDLE_TIMEOUT_SEC": 30,
               "locks": ["STREAMING_IDLE_TIMEOUT_SEC"]}
-    try:
-        _reload_with_env(monkeypatch,
-                         WHISPER_OVERRIDE_PROFILES=json.dumps({"x": bundle}),
-                         WHISPER_MODEL_OVERRIDES=json.dumps(
-                             {"TINY": {"SEGMENT_MAX_WORDS_PER_SEC": 4}}))
-        assert config.OVERRIDE_PROFILES["x"]["STREAMING_IDLE_TIMEOUT_S"] == 30
-        assert config.OVERRIDE_PROFILES["x"]["locks"] == ["STREAMING_IDLE_TIMEOUT_S"]
-        assert config.MODEL_OVERRIDES["TINY"]["SEGMENT_MAX_WORDS_PER_S"] == 4
-        assert any("renamed field" in m and "STREAMING_IDLE_TIMEOUT_SEC" in m
-                   for m in config._ENV_WARNINGS), config._ENV_WARNINGS
-    finally:
-        monkeypatch.undo()
-        importlib.reload(config)
+    _reload_with_env(monkeypatch,
+                     WHISPER_OVERRIDE_PROFILES=json.dumps({"x": bundle}),
+                     WHISPER_MODEL_OVERRIDES=json.dumps(
+                         {"TINY": {"SEGMENT_MAX_WORDS_PER_SEC": 4}}))
+    assert config.OVERRIDE_PROFILES["x"]["STREAMING_IDLE_TIMEOUT_S"] == 30
+    assert config.OVERRIDE_PROFILES["x"]["locks"] == ["STREAMING_IDLE_TIMEOUT_S"]
+    assert config.MODEL_OVERRIDES["TINY"]["SEGMENT_MAX_WORDS_PER_S"] == 4
+    assert any("renamed field" in m and "STREAMING_IDLE_TIMEOUT_SEC" in m
+               for m in config._ENV_WARNINGS), config._ENV_WARNINGS
 
 
-def test_env_model_override_naming_a_split_card_is_kept(monkeypatch):
+def test_env_model_override_naming_a_split_card_is_kept(monkeypatch, restore_config):
     """strip-whisper-punctuation was split in June (config_renames.SPLIT_RULES):
     an env bundle that excludes it used to fail the unknown-slug check, which
     dropped the whole var (BEAM_SIZE with it)."""
-    try:
-        _reload_with_env(monkeypatch, WHISPER_MODEL_OVERRIDES=json.dumps(
-            {"large-v3": {"PIPELINE_RULES_EXCLUDE": ["strip-whisper-punctuation"],
-                          "BEAM_SIZE": 3}}))
-        bundle = config.MODEL_OVERRIDES["large-v3"]
-        assert bundle["BEAM_SIZE"] == 3
-        assert set(bundle["PIPELINE_RULES_EXCLUDE"]) == {
-            "strip-trailing-period", "strip-auto-punctuation"}
-    finally:
-        monkeypatch.undo()
-        importlib.reload(config)
+    _reload_with_env(monkeypatch, WHISPER_MODEL_OVERRIDES=json.dumps(
+        {"large-v3": {"PIPELINE_RULES_EXCLUDE": ["strip-whisper-punctuation"],
+                      "BEAM_SIZE": 3}}))
+    bundle = config.MODEL_OVERRIDES["large-v3"]
+    assert bundle["BEAM_SIZE"] == 3
+    assert set(bundle["PIPELINE_RULES_EXCLUDE"]) == {
+        "strip-trailing-period", "strip-auto-punctuation"}
 
 
 def test_env_slug_lists_beside_a_local_copy_of_the_split_card_keep_naming_it(
-        tmp_path, monkeypatch):
+        tmp_path, monkeypatch, restore_config):
     """A config.local.json rule list from before June 17 still runs the old
     combined card: an env list naming it is valid there and must not be split
     onto cards that list does not hold (the unknown-slug check drops the var)."""
@@ -1316,23 +1167,19 @@ def test_env_slug_lists_beside_a_local_copy_of_the_split_card_keep_naming_it(
     p = tmp_path / "config.local.json"
     p.write_text(json.dumps({"PIPELINE_RULES": rules}), encoding="utf-8")
     _point_overrides_at(monkeypatch, p)
-    try:
-        _reload_with_env(
-            monkeypatch,
-            WHISPER_MODEL_OVERRIDES=json.dumps(
-                {"large-v3": {"PIPELINE_RULES_EXCLUDE": ["strip-whisper-punctuation"],
-                              "BEAM_SIZE": 3}}),
-            WHISPER_MODEL_OVERRIDE__tiny__PIPELINE_RULES_EXCLUDE="strip-whisper-punctuation",
-            WHISPER_CAPTURES_PIPELINE_RULES_EXCLUDE="strip-whisper-punctuation")
-        assert "strip-whisper-punctuation" in [r["name"] for r in config.PIPELINE_RULES]
-        assert config.MODEL_OVERRIDES["large-v3"] == {
-            "PIPELINE_RULES_EXCLUDE": ["strip-whisper-punctuation"], "BEAM_SIZE": 3}
-        assert config.MODEL_OVERRIDES["tiny"]["PIPELINE_RULES_EXCLUDE"] == [
-            "strip-whisper-punctuation"]
-        assert set(config.CAPTURES_PIPELINE_RULES_EXCLUDE) == {"strip-whisper-punctuation"}
-    finally:
-        monkeypatch.undo()
-        importlib.reload(config)
+    _reload_with_env(
+        monkeypatch,
+        WHISPER_MODEL_OVERRIDES=json.dumps(
+            {"large-v3": {"PIPELINE_RULES_EXCLUDE": ["strip-whisper-punctuation"],
+                          "BEAM_SIZE": 3}}),
+        WHISPER_MODEL_OVERRIDE__tiny__PIPELINE_RULES_EXCLUDE="strip-whisper-punctuation",
+        WHISPER_CAPTURES_PIPELINE_RULES_EXCLUDE="strip-whisper-punctuation")
+    assert "strip-whisper-punctuation" in [r["name"] for r in config.PIPELINE_RULES]
+    assert config.MODEL_OVERRIDES["large-v3"] == {
+        "PIPELINE_RULES_EXCLUDE": ["strip-whisper-punctuation"], "BEAM_SIZE": 3}
+    assert config.MODEL_OVERRIDES["tiny"]["PIPELINE_RULES_EXCLUDE"] == [
+        "strip-whisper-punctuation"]
+    assert set(config.CAPTURES_PIPELINE_RULES_EXCLUDE) == {"strip-whisper-punctuation"}
 
 
 def test_alias_env_ignores_the_old_name_when_either_new_spelling_is_set():
@@ -1353,29 +1200,21 @@ def test_alias_env_ignores_the_old_name_when_either_new_spelling_is_set():
     assert env["WHISPER_HF_TOKEN"] == "a" and env["WHISPER_HF_TOKEN_FILE"] == "/old"
 
 
-def test_per_model_env_override_outside_a_stored_allowlist_is_dropped(monkeypatch):
+def test_per_model_env_override_outside_a_stored_allowlist_is_dropped(monkeypatch, restore_config):
     """An env per-model entry for a model the stored ALLOWED_MODELS excludes
     used to boot silently and make every later per-model save 422."""
     from faster_whisper_backend.settings import config_store
     monkeypatch.setattr(config_store, "load_overrides",
                         lambda path=None: {"ALLOWED_MODELS": {"large-v3"}})
-    try:
-        _reload_with_env(monkeypatch, WHISPER_MODEL_OVERRIDE__tiny__BEAM_SIZE="3")
-        assert "tiny" not in config.MODEL_OVERRIDES
-        assert any("tiny" in m.lower() and "ALLOWED_MODELS" in m
-                   for m in config._ENV_WARNINGS), config._ENV_WARNINGS
-    finally:
-        monkeypatch.undo()
-        importlib.reload(config)
+    _reload_with_env(monkeypatch, WHISPER_MODEL_OVERRIDE__tiny__BEAM_SIZE="3")
+    assert "tiny" not in config.MODEL_OVERRIDES
+    assert any("tiny" in m.lower() and "ALLOWED_MODELS" in m
+               for m in config._ENV_WARNINGS), config._ENV_WARNINGS
 
 
-def test_per_model_env_values_are_recorded_for_the_save_path(monkeypatch):
-    try:
-        _reload_with_env(monkeypatch, WHISPER_MODEL_OVERRIDE__tiny__BEAM_SIZE="3")
-        assert config._ENV_OVERRIDE_VALUES == {"tiny": {"BEAM_SIZE": 3}}
-    finally:
-        monkeypatch.undo()
-        importlib.reload(config)
+def test_per_model_env_values_are_recorded_for_the_save_path(monkeypatch, restore_config):
+    _reload_with_env(monkeypatch, WHISPER_MODEL_OVERRIDE__tiny__BEAM_SIZE="3")
+    assert config._ENV_OVERRIDE_VALUES == {"tiny": {"BEAM_SIZE": 3}}
 
 
 def test_env_json_fields_apply_pipeline_rules_first(tmp_path):
@@ -1404,141 +1243,109 @@ def test_env_json_fields_apply_pipeline_rules_first(tmp_path):
         assert out.stdout.strip().splitlines()[-1] == "['p1']", (seed, out.stderr)
 
 
-def test_env_bundle_with_a_tightened_value_is_migrated_not_dropped(monkeypatch):
+def test_env_bundle_with_a_tightened_value_is_migrated_not_dropped(monkeypatch, restore_config):
     """A guard at 1 was accepted before the bundle validators tightened; the
     env bundle gets the same migration as a stored one instead of losing the
     WHOLE value (BEAM_SIZE included) behind a "not valid JSON" warning."""
-    try:
-        _reload_with_env(
-            monkeypatch, WHISPER_OVERRIDE_PROFILES=json.dumps(
-                {"p": {"SEGMENT_HEAD_ECHO_MIN_WORDS": 1, "BEAM_SIZE": 3}}))
-        assert config.OVERRIDE_PROFILES["p"] == {
-            "SEGMENT_HEAD_ECHO_MIN_WORDS": 0, "BEAM_SIZE": 3}
-        assert "WHISPER_OVERRIDE_PROFILES" not in config._ENV_UNPARSED
-    finally:
-        monkeypatch.undo()
-        importlib.reload(config)
+    _reload_with_env(
+        monkeypatch, WHISPER_OVERRIDE_PROFILES=json.dumps(
+            {"p": {"SEGMENT_HEAD_ECHO_MIN_WORDS": 1, "BEAM_SIZE": 3}}))
+    assert config.OVERRIDE_PROFILES["p"] == {
+        "SEGMENT_HEAD_ECHO_MIN_WORDS": 0, "BEAM_SIZE": 3}
+    assert "WHISPER_OVERRIDE_PROFILES" not in config._ENV_UNPARSED
 
 
-def test_env_bundle_schema_error_is_not_called_bad_json(monkeypatch):
-    try:
-        _reload_with_env(monkeypatch, WHISPER_OVERRIDE_PROFILES=json.dumps(
-            {"p": {"BEAM_SIZE": 999}}))
-        msgs = [m for m in config._ENV_WARNINGS
-                if m.startswith("WHISPER_OVERRIDE_PROFILES")]
-        assert msgs and all("not valid JSON" not in m for m in msgs), msgs
-        assert any("is not a valid OVERRIDE_PROFILES" in m for m in msgs), msgs
-        assert all("errors.pydantic.dev" not in m for m in msgs), msgs
-        _reload_with_env(monkeypatch, WHISPER_OVERRIDE_PROFILES="{not json")
-        assert any("is not valid JSON for OVERRIDE_PROFILES" in m
-                   for m in config._ENV_WARNINGS), config._ENV_WARNINGS
-    finally:
-        monkeypatch.undo()
-        importlib.reload(config)
+def test_env_bundle_schema_error_is_not_called_bad_json(monkeypatch, restore_config):
+    _reload_with_env(monkeypatch, WHISPER_OVERRIDE_PROFILES=json.dumps(
+        {"p": {"BEAM_SIZE": 999}}))
+    msgs = [m for m in config._ENV_WARNINGS
+            if m.startswith("WHISPER_OVERRIDE_PROFILES")]
+    assert msgs and all("not valid JSON" not in m for m in msgs), msgs
+    assert any("is not a valid OVERRIDE_PROFILES" in m for m in msgs), msgs
+    assert all("errors.pydantic.dev" not in m for m in msgs), msgs
+    _reload_with_env(monkeypatch, WHISPER_OVERRIDE_PROFILES="{not json")
+    assert any("is not valid JSON for OVERRIDE_PROFILES" in m
+               for m in config._ENV_WARNINGS), config._ENV_WARNINGS
 
 
-def test_env_wildcard_origin_drops_only_that_entry(monkeypatch):
+def test_env_wildcard_origin_drops_only_that_entry(monkeypatch, restore_config):
     """A legacy wildcard origin in the env var gets the same outcome as in a
     stored file: the wildcard entry goes, its valid siblings stay trusted."""
-    try:
-        _reload_with_env(
-            monkeypatch,
-            WHISPER_TRUSTED_ORIGINS="https://a.example.com,https://*.example.com",
-            WHISPER_CORS_ALLOW_ORIGINS="*,https://*.example.com")
-        assert config.TRUSTED_ORIGINS == ["https://a.example.com"]
-        assert config.CORS_ALLOW_ORIGINS == ["*"]          # bare '*' is kept
-        assert any("WHISPER_TRUSTED_ORIGINS" in m and "*.example.com" in m
-                   for m in config._ENV_WARNINGS), config._ENV_WARNINGS
-        assert "TRUSTED_ORIGINS" not in config._ENV_REJECTED
-    finally:
-        monkeypatch.undo()
-        importlib.reload(config)
+    _reload_with_env(
+        monkeypatch,
+        WHISPER_TRUSTED_ORIGINS="https://a.example.com,https://*.example.com",
+        WHISPER_CORS_ALLOW_ORIGINS="*,https://*.example.com")
+    assert config.TRUSTED_ORIGINS == ["https://a.example.com"]
+    assert config.CORS_ALLOW_ORIGINS == ["*"]          # bare '*' is kept
+    assert any("WHISPER_TRUSTED_ORIGINS" in m and "*.example.com" in m
+               for m in config._ENV_WARNINGS), config._ENV_WARNINGS
+    assert "TRUSTED_ORIGINS" not in config._ENV_REJECTED
 
 
-def test_env_origins_are_lowercased_like_stored_ones(monkeypatch):
+def test_env_origins_are_lowercased_like_stored_ones(monkeypatch, restore_config):
     """The origin validators lowercase scheme and host to the browser's
     serialisation (a stored list gets that via load_overrides); a mixed-case
     env list kept its raw spelling and missed every exact Origin match."""
-    try:
-        _reload_with_env(
-            monkeypatch,
-            WHISPER_TRUSTED_ORIGINS="https://Whisper.Example.com",
-            WHISPER_CORS_ALLOW_ORIGINS="*,http://App.Local:8000")
-        assert config.TRUSTED_ORIGINS == ["https://whisper.example.com"]
-        assert config.CORS_ALLOW_ORIGINS == ["*", "http://app.local:8000"]
-        assert "TRUSTED_ORIGINS" not in config._ENV_REJECTED
-    finally:
-        monkeypatch.undo()
-        importlib.reload(config)
+    _reload_with_env(
+        monkeypatch,
+        WHISPER_TRUSTED_ORIGINS="https://Whisper.Example.com",
+        WHISPER_CORS_ALLOW_ORIGINS="*,http://App.Local:8000")
+    assert config.TRUSTED_ORIGINS == ["https://whisper.example.com"]
+    assert config.CORS_ALLOW_ORIGINS == ["*", "http://app.local:8000"]
+    assert "TRUSTED_ORIGINS" not in config._ENV_REJECTED
 
 
-def test_env_wildcard_only_origins_are_rejected_not_pinned(monkeypatch):
+def test_env_wildcard_only_origins_are_rejected_not_pinned(monkeypatch, restore_config):
     """A var whose every entry is a wildcard controls nothing once stripped:
     it must not badge the field as env-pinned, or the /settings apply path
     skips the admin's own edit. A mixed list still pins (the valid entry)."""
     from faster_whisper_backend.settings import config_store
-    try:
-        _reload_with_env(monkeypatch, WHISPER_TRUSTED_ORIGINS="https://*.lan")
-        assert config.TRUSTED_ORIGINS == config._ENV_PRE.get("TRUSTED_ORIGINS", [])
-        assert "TRUSTED_ORIGINS" in config._ENV_REJECTED
-        assert "TRUSTED_ORIGINS" not in config_store.env_pinned_fields()
-        _reload_with_env(monkeypatch,
-                         WHISPER_TRUSTED_ORIGINS="https://a.lan,https://*.lan")
-        assert config.TRUSTED_ORIGINS == ["https://a.lan"]
-        assert "TRUSTED_ORIGINS" not in config._ENV_REJECTED
-        assert "TRUSTED_ORIGINS" in config_store.env_pinned_fields()
-    finally:
-        monkeypatch.undo()
-        importlib.reload(config)
+    _reload_with_env(monkeypatch, WHISPER_TRUSTED_ORIGINS="https://*.lan")
+    assert config.TRUSTED_ORIGINS == config._ENV_PRE.get("TRUSTED_ORIGINS", [])
+    assert "TRUSTED_ORIGINS" in config._ENV_REJECTED
+    assert "TRUSTED_ORIGINS" not in config_store.env_pinned_fields()
+    _reload_with_env(monkeypatch,
+                     WHISPER_TRUSTED_ORIGINS="https://a.lan,https://*.lan")
+    assert config.TRUSTED_ORIGINS == ["https://a.lan"]
+    assert "TRUSTED_ORIGINS" not in config._ENV_REJECTED
+    assert "TRUSTED_ORIGINS" in config_store.env_pinned_fields()
 
 
-def test_ignored_per_model_env_value_leaves_no_phantom_entry(monkeypatch):
-    try:
-        _reload_with_env(monkeypatch, WHISPER_MODEL_OVERRIDE__TINY__VAD_FILTER="maybe")
-        assert "TINY" not in config.MODEL_OVERRIDES
-        assert not any("was dropped" in m for m in config._ENV_WARNINGS)
-    finally:
-        monkeypatch.undo()
-        importlib.reload(config)
+def test_ignored_per_model_env_value_leaves_no_phantom_entry(monkeypatch, restore_config):
+    _reload_with_env(monkeypatch, WHISPER_MODEL_OVERRIDE__TINY__VAD_FILTER="maybe")
+    assert "TINY" not in config.MODEL_OVERRIDES
+    assert not any("was dropped" in m for m in config._ENV_WARNINGS)
 
 
-def test_stored_model_override_survives_an_env_only_allowlist(monkeypatch):
+def test_stored_model_override_survives_an_env_only_allowlist(monkeypatch, restore_config):
     """An env allowlist narrowed for a while must not drop (and so let the
     next per-model save erase) a stored entry the env did not supply."""
     from faster_whisper_backend.settings import config_store
     monkeypatch.setattr(config_store, "load_overrides",
                         lambda path=None: {"MODEL_OVERRIDES": {"medium": {"BEAM_SIZE": 3}}})
-    try:
-        _reload_with_env(monkeypatch, WHISPER_ALLOWED_MODELS="large-v3")
-        assert config.MODEL_OVERRIDES.get("medium") == {"BEAM_SIZE": 3}
-        assert not any("was dropped" in m for m in config._ENV_WARNINGS), \
-            config._ENV_WARNINGS
-    finally:
-        monkeypatch.undo()
-        importlib.reload(config)
+    _reload_with_env(monkeypatch, WHISPER_ALLOWED_MODELS="large-v3")
+    assert config.MODEL_OVERRIDES.get("medium") == {"BEAM_SIZE": 3}
+    assert not any("was dropped" in m for m in config._ENV_WARNINGS), \
+        config._ENV_WARNINGS
 
 
 
-def test_blank_model_overrides_var_does_not_drop_a_stored_entry(monkeypatch):
+def test_blank_model_overrides_var_does_not_drop_a_stored_entry(monkeypatch, restore_config):
     """A blank WHISPER_MODEL_OVERRIDES (compose `${X:-}` passthrough) leaves
     the stored dict in place, so its entries must keep the stored checks."""
     from faster_whisper_backend.settings import config_store
     monkeypatch.setattr(config_store, "load_overrides",
                         lambda path=None: {"MODEL_OVERRIDES": {"medium": {"BEAM_SIZE": 3}}})
-    try:
-        _reload_with_env(monkeypatch, WHISPER_ALLOWED_MODELS="large-v3",
-                         WHISPER_MODEL_OVERRIDES="  ")
-        assert config.MODEL_OVERRIDES.get("medium") == {"BEAM_SIZE": 3}
-        assert not any("was dropped" in m for m in config._ENV_WARNINGS), \
-            config._ENV_WARNINGS
-    finally:
-        monkeypatch.undo()
-        importlib.reload(config)
+    _reload_with_env(monkeypatch, WHISPER_ALLOWED_MODELS="large-v3",
+                     WHISPER_MODEL_OVERRIDES="  ")
+    assert config.MODEL_OVERRIDES.get("medium") == {"BEAM_SIZE": 3}
+    assert not any("was dropped" in m for m in config._ENV_WARNINGS), \
+        config._ENV_WARNINGS
 
 
 
 def test_stored_model_override_survives_an_env_field_outside_env_allowlist(
-        monkeypatch):
+        monkeypatch, restore_config):
     """A stored entry for a model outside the env allowlist, plus a
     WHISPER_MODEL_OVERRIDE__ var for it: the env field is ignored (the env
     allowlist refuses it), the stored fields stay instead of the whole entry
@@ -1546,22 +1353,18 @@ def test_stored_model_override_survives_an_env_field_outside_env_allowlist(
     from faster_whisper_backend.settings import config_store
     monkeypatch.setattr(config_store, "load_overrides",
                         lambda path=None: {"MODEL_OVERRIDES": {"tiny": {"BEAM_SIZE": 2}}})
-    try:
-        _reload_with_env(monkeypatch, WHISPER_ALLOWED_MODELS="large-v3",
-                         WHISPER_MODEL_OVERRIDE__tiny__BEST_OF="3")
-        assert config.MODEL_OVERRIDES.get("tiny") == {"BEAM_SIZE": 2}
-        assert any("WHISPER_MODEL_OVERRIDE__" in m and "BEST_OF" in m
-                   and "ignored" in m for m in config._ENV_WARNINGS), \
-            config._ENV_WARNINGS
-        assert not any("was dropped" in m for m in config._ENV_WARNINGS), \
-            config._ENV_WARNINGS
-    finally:
-        monkeypatch.undo()
-        importlib.reload(config)
+    _reload_with_env(monkeypatch, WHISPER_ALLOWED_MODELS="large-v3",
+                     WHISPER_MODEL_OVERRIDE__tiny__BEST_OF="3")
+    assert config.MODEL_OVERRIDES.get("tiny") == {"BEAM_SIZE": 2}
+    assert any("WHISPER_MODEL_OVERRIDE__" in m and "BEST_OF" in m
+               and "ignored" in m for m in config._ENV_WARNINGS), \
+        config._ENV_WARNINGS
+    assert not any("was dropped" in m for m in config._ENV_WARNINGS), \
+        config._ENV_WARNINGS
 
 
 def test_stored_model_override_with_unknown_slug_keeps_its_other_fields(
-        monkeypatch):
+        monkeypatch, restore_config):
     """A factory rules save that removed a rule a stored per-model exclude
     still names must not drop the whole entry (BEAM_SIZE, device, …) at boot;
     the stored entry passed load_overrides, like the allowlist case above."""
@@ -1569,17 +1372,13 @@ def test_stored_model_override_with_unknown_slug_keeps_its_other_fields(
     monkeypatch.setattr(config_store, "load_overrides", lambda path=None: {
         "MODEL_OVERRIDES": {"large-v3": {
             "BEAM_SIZE": 3, "PIPELINE_RULES_EXCLUDE": ["no-such-rule"]}}})
-    try:
-        _reload_with_env(monkeypatch)
-        assert config.MODEL_OVERRIDES.get("large-v3", {}).get("BEAM_SIZE") == 3
-        assert not any("was dropped" in m for m in config._ENV_WARNINGS), \
-            config._ENV_WARNINGS
-    finally:
-        monkeypatch.undo()
-        importlib.reload(config)
+    _reload_with_env(monkeypatch)
+    assert config.MODEL_OVERRIDES.get("large-v3", {}).get("BEAM_SIZE") == 3
+    assert not any("was dropped" in m for m in config._ENV_WARNINGS), \
+        config._ENV_WARNINGS
 
 def test_stored_model_override_survives_an_env_allowlist_over_a_stored_one(
-        monkeypatch):
+        monkeypatch, restore_config):
     """With a STORED allowlist too, a stored entry is checked against that
     one, not the narrower env allowlist: it passed load_overrides, and
     dropping it here let the next per-model save erase it for good."""
@@ -1587,37 +1386,29 @@ def test_stored_model_override_survives_an_env_allowlist_over_a_stored_one(
     monkeypatch.setattr(config_store, "load_overrides", lambda path=None: {
         "ALLOWED_MODELS": {"tiny", "large-v3"},
         "MODEL_OVERRIDES": {"tiny": {"BEAM_SIZE": 3}}})
-    try:
-        _reload_with_env(monkeypatch, WHISPER_ALLOWED_MODELS="large-v3")
-        assert config.ALLOWED_MODELS == {"large-v3"}
-        assert config.MODEL_OVERRIDES.get("tiny") == {"BEAM_SIZE": 3}
-        assert not any("was dropped" in m for m in config._ENV_WARNINGS), \
-            config._ENV_WARNINGS
-    finally:
-        monkeypatch.undo()
-        importlib.reload(config)
+    _reload_with_env(monkeypatch, WHISPER_ALLOWED_MODELS="large-v3")
+    assert config.ALLOWED_MODELS == {"large-v3"}
+    assert config.MODEL_OVERRIDES.get("tiny") == {"BEAM_SIZE": 3}
+    assert not any("was dropped" in m for m in config._ENV_WARNINGS), \
+        config._ENV_WARNINGS
 
 
 def test_env_field_outside_env_allowlist_keeps_the_stored_allowlisted_entry(
-        monkeypatch):
+        monkeypatch, restore_config):
     """Same, plus a WHISPER_MODEL_OVERRIDE__ var the env allowlist refuses:
     the env field is ignored, the stored fields stay."""
     from faster_whisper_backend.settings import config_store
     monkeypatch.setattr(config_store, "load_overrides", lambda path=None: {
         "ALLOWED_MODELS": {"tiny", "large-v3"},
         "MODEL_OVERRIDES": {"tiny": {"BEAM_SIZE": 3}}})
-    try:
-        _reload_with_env(monkeypatch, WHISPER_ALLOWED_MODELS="large-v3",
-                         WHISPER_MODEL_OVERRIDE__tiny__BEST_OF="3")
-        assert config.MODEL_OVERRIDES.get("tiny") == {"BEAM_SIZE": 3}
-        assert not any("was dropped" in m for m in config._ENV_WARNINGS), \
-            config._ENV_WARNINGS
-    finally:
-        monkeypatch.undo()
-        importlib.reload(config)
+    _reload_with_env(monkeypatch, WHISPER_ALLOWED_MODELS="large-v3",
+                     WHISPER_MODEL_OVERRIDE__tiny__BEST_OF="3")
+    assert config.MODEL_OVERRIDES.get("tiny") == {"BEAM_SIZE": 3}
+    assert not any("was dropped" in m for m in config._ENV_WARNINGS), \
+        config._ENV_WARNINGS
 
 
-def test_env_field_is_not_blamed_for_a_stored_dangling_slug(monkeypatch):
+def test_env_field_is_not_blamed_for_a_stored_dangling_slug(monkeypatch, restore_config):
     """An env BEST_OF on an entry whose STORED exclude names a removed rule
     applies; the stored slug is not checked (as for a purely stored entry),
     so the env pin is not reverted and blamed for it."""
@@ -1625,30 +1416,26 @@ def test_env_field_is_not_blamed_for_a_stored_dangling_slug(monkeypatch):
     monkeypatch.setattr(config_store, "load_overrides", lambda path=None: {
         "MODEL_OVERRIDES": {"large-v3": {
             "BEAM_SIZE": 3, "PIPELINE_RULES_EXCLUDE": ["no-such-rule"]}}})
-    try:
-        # A hyphenated model id is not a Python identifier: no **env kwarg.
-        monkeypatch.setenv("WHISPER_MODEL_OVERRIDE__large-v3__BEST_OF", "3")
-        importlib.reload(config)
-        entry = config.MODEL_OVERRIDES.get("large-v3", {})
-        assert entry.get("BEST_OF") == 3 and entry.get("BEAM_SIZE") == 3
-        assert not any("large-v3" in m for m in config._ENV_WARNINGS), \
-            config._ENV_WARNINGS
-        # An env-supplied exclude naming an unknown rule is still refused.
-        monkeypatch.setenv(
-            "WHISPER_MODEL_OVERRIDE__large-v3__PIPELINE_RULES_EXCLUDE",
-            "another-missing-rule")
-        importlib.reload(config)
-        assert "another-missing-rule" not in (
-            config.MODEL_OVERRIDES.get("large-v3", {}).get(
-                "PIPELINE_RULES_EXCLUDE") or [])
-        assert any("another-missing-rule" in m for m in config._ENV_WARNINGS), \
-            config._ENV_WARNINGS
-    finally:
-        monkeypatch.undo()
-        importlib.reload(config)
+    # A hyphenated model id is not a Python identifier: no **env kwarg.
+    monkeypatch.setenv("WHISPER_MODEL_OVERRIDE__large-v3__BEST_OF", "3")
+    importlib.reload(config)
+    entry = config.MODEL_OVERRIDES.get("large-v3", {})
+    assert entry.get("BEST_OF") == 3 and entry.get("BEAM_SIZE") == 3
+    assert not any("large-v3" in m for m in config._ENV_WARNINGS), \
+        config._ENV_WARNINGS
+    # An env-supplied exclude naming an unknown rule is still refused.
+    monkeypatch.setenv(
+        "WHISPER_MODEL_OVERRIDE__large-v3__PIPELINE_RULES_EXCLUDE",
+        "another-missing-rule")
+    importlib.reload(config)
+    assert "another-missing-rule" not in (
+        config.MODEL_OVERRIDES.get("large-v3", {}).get(
+            "PIPELINE_RULES_EXCLUDE") or [])
+    assert any("another-missing-rule" in m for m in config._ENV_WARNINGS), \
+        config._ENV_WARNINGS
 
 
-def test_env_slug_list_is_not_blamed_for_a_stored_sibling_list(monkeypatch):
+def test_env_slug_list_is_not_blamed_for_a_stored_sibling_list(monkeypatch, restore_config):
     """A valid env EXCLUDE on an entry whose STORED include names a removed
     rule applies: only the env-supplied lists are slug-checked, so the env
     pin is not reverted and blamed for the stored dangling slug."""
@@ -1656,79 +1443,63 @@ def test_env_slug_list_is_not_blamed_for_a_stored_sibling_list(monkeypatch):
     monkeypatch.setattr(config_store, "load_overrides", lambda path=None: {
         "MODEL_OVERRIDES": {"large-v3": {
             "BEAM_SIZE": 3, "PIPELINE_RULES_INCLUDE": ["no-such-rule"]}}})
-    try:
-        monkeypatch.setenv(
-            "WHISPER_MODEL_OVERRIDE__large-v3__PIPELINE_RULES_EXCLUDE",
-            "capitalize-after-terminator")
-        importlib.reload(config)
-        entry = config.MODEL_OVERRIDES.get("large-v3", {})
-        assert entry.get("PIPELINE_RULES_EXCLUDE") == [
-            "capitalize-after-terminator"]
-        assert entry.get("BEAM_SIZE") == 3
-        assert not any("large-v3" in m for m in config._ENV_WARNINGS), \
-            config._ENV_WARNINGS
-        # An env exclude naming an unknown rule is still refused.
-        monkeypatch.setenv(
-            "WHISPER_MODEL_OVERRIDE__large-v3__PIPELINE_RULES_EXCLUDE",
-            "another-missing-rule")
-        importlib.reload(config)
-        entry = config.MODEL_OVERRIDES.get("large-v3", {})
-        assert "another-missing-rule" not in (
-            entry.get("PIPELINE_RULES_EXCLUDE") or [])
-        assert entry.get("BEAM_SIZE") == 3
-        assert any("another-missing-rule" in m for m in config._ENV_WARNINGS), \
-            config._ENV_WARNINGS
-    finally:
-        monkeypatch.undo()
-        importlib.reload(config)
+    monkeypatch.setenv(
+        "WHISPER_MODEL_OVERRIDE__large-v3__PIPELINE_RULES_EXCLUDE",
+        "capitalize-after-terminator")
+    importlib.reload(config)
+    entry = config.MODEL_OVERRIDES.get("large-v3", {})
+    assert entry.get("PIPELINE_RULES_EXCLUDE") == [
+        "capitalize-after-terminator"]
+    assert entry.get("BEAM_SIZE") == 3
+    assert not any("large-v3" in m for m in config._ENV_WARNINGS), \
+        config._ENV_WARNINGS
+    # An env exclude naming an unknown rule is still refused.
+    monkeypatch.setenv(
+        "WHISPER_MODEL_OVERRIDE__large-v3__PIPELINE_RULES_EXCLUDE",
+        "another-missing-rule")
+    importlib.reload(config)
+    entry = config.MODEL_OVERRIDES.get("large-v3", {})
+    assert "another-missing-rule" not in (
+        entry.get("PIPELINE_RULES_EXCLUDE") or [])
+    assert entry.get("BEAM_SIZE") == 3
+    assert any("another-missing-rule" in m for m in config._ENV_WARNINGS), \
+        config._ENV_WARNINGS
 
 
-def test_env_guard_at_one_means_off_not_the_factory_threshold(monkeypatch):
+def test_env_guard_at_one_means_off_not_the_factory_threshold(monkeypatch, restore_config):
     """1 is no longer accepted, but older releases took it and it behaved as
     off; reverting the env value to the factory 3 / 2 turned the guard ON.
     The env layer maps it to 0, like the stored and bundle paths."""
-    try:
-        _reload_with_env(monkeypatch,
-                         WHISPER_SEGMENT_HEAD_ECHO_MIN_WORDS="1",
-                         WHISPER_SEGMENT_ZERO_LENGTH_TAIL_MIN_WORDS="1")
-        assert config.SEGMENT_HEAD_ECHO_MIN_WORDS == 0
-        assert config.SEGMENT_ZERO_LENGTH_TAIL_MIN_WORDS == 0
-        assert "SEGMENT_HEAD_ECHO_MIN_WORDS" not in config._ENV_REJECTED
-        assert any("WHISPER_SEGMENT_HEAD_ECHO_MIN_WORDS=1 is no longer accepted"
-                   in m for m in config._ENV_WARNINGS), config._ENV_WARNINGS
-    finally:
-        monkeypatch.undo()
-        importlib.reload(config)
+    _reload_with_env(monkeypatch,
+                     WHISPER_SEGMENT_HEAD_ECHO_MIN_WORDS="1",
+                     WHISPER_SEGMENT_ZERO_LENGTH_TAIL_MIN_WORDS="1")
+    assert config.SEGMENT_HEAD_ECHO_MIN_WORDS == 0
+    assert config.SEGMENT_ZERO_LENGTH_TAIL_MIN_WORDS == 0
+    assert "SEGMENT_HEAD_ECHO_MIN_WORDS" not in config._ENV_REJECTED
+    assert any("WHISPER_SEGMENT_HEAD_ECHO_MIN_WORDS=1 is no longer accepted"
+               in m for m in config._ENV_WARNINGS), config._ENV_WARNINGS
 
 
-def test_per_model_env_guard_at_one_means_off(monkeypatch):
-    try:
-        _reload_with_env(
-            monkeypatch,
-            **{"WHISPER_MODEL_OVERRIDE__large-v3__SEGMENT_HEAD_ECHO_MIN_WORDS": "1"})
-        assert config.MODEL_OVERRIDES["large-v3"]["SEGMENT_HEAD_ECHO_MIN_WORDS"] == 0
-        assert any("no longer accepted" in m and "large-v3" in m.lower()
-                   for m in config._ENV_WARNINGS), config._ENV_WARNINGS
-    finally:
-        monkeypatch.undo()
-        importlib.reload(config)
+def test_per_model_env_guard_at_one_means_off(monkeypatch, restore_config):
+    _reload_with_env(
+        monkeypatch,
+        **{"WHISPER_MODEL_OVERRIDE__large-v3__SEGMENT_HEAD_ECHO_MIN_WORDS": "1"})
+    assert config.MODEL_OVERRIDES["large-v3"]["SEGMENT_HEAD_ECHO_MIN_WORDS"] == 0
+    assert any("no longer accepted" in m and "large-v3" in m.lower()
+               for m in config._ENV_WARNINGS), config._ENV_WARNINGS
 
 
-def test_env_values_are_normalized_next_to_a_pre_env_error(monkeypatch):
+def test_env_values_are_normalized_next_to_a_pre_env_error(monkeypatch, restore_config):
     """A pre-env error fails the full normalization pass whatever the env
     values are, so a surviving mixed-case env origin stayed unmatched by the
     exact-match origin guard; each survivor is normalized on its own then."""
     rules = _factory_rules()
     one = [r for r in rules if r["name"] == "strip-stray-symbols"]
-    try:
-        _reload_with_env(monkeypatch, WHISPER_PIPELINE_RULES=json.dumps(one),
-                         WHISPER_TRUSTED_ORIGINS="https://App.Example.com",
-                         WHISPER_CONSOLE_LOG_LEVEL="WARNING")
-        assert config.TRUSTED_ORIGINS == ["https://app.example.com"]
-        assert config.CONSOLE_LOG_LEVEL == "warning"
-    finally:
-        monkeypatch.undo()
-        importlib.reload(config)
+    _reload_with_env(monkeypatch, WHISPER_PIPELINE_RULES=json.dumps(one),
+                     WHISPER_TRUSTED_ORIGINS="https://App.Example.com",
+                     WHISPER_CONSOLE_LOG_LEVEL="WARNING")
+    assert config.TRUSTED_ORIGINS == ["https://app.example.com"]
+    assert config.CONSOLE_LOG_LEVEL == "warning"
 
 
 def test_alias_env_treats_an_empty_new_name_as_unset():
@@ -1779,21 +1550,17 @@ def test_alias_env_rerun_on_its_own_output_does_not_call_the_old_name_ignored():
     assert sum("was renamed" in w for w in warns) == 3
 
 
-def test_prefixed_cookie_name_without_secure_warns_at_load(monkeypatch):
+def test_prefixed_cookie_name_without_secure_warns_at_load(monkeypatch, restore_config):
     """/settings refuses a __Host-/__Secure- name without Secure, but the env
     and file load paths skip that check (a load failure would drop every
     override) — they must at least leave a startup warning, not a silent
     login loop."""
-    try:
-        monkeypatch.delenv("WHISPER_SESSION_COOKIE_SECURE", raising=False)
-        _reload_with_env(monkeypatch, WHISPER_SESSION_COOKIE_NAME="__Host-s")
-        assert config.SESSION_COOKIE_NAME == "__Host-s"   # warned, not reverted
-        assert [m for m in config._ENV_WARNINGS
-                if m.startswith("SESSION_COOKIE_NAME '__Host-s' (from "
-                                "WHISPER_SESSION_COOKIE_NAME)")], config._ENV_WARNINGS
-        monkeypatch.setenv("WHISPER_SESSION_COOKIE_SECURE", "true")
-        importlib.reload(config)
-        assert not [m for m in config._ENV_WARNINGS if "__Host-/__Secure-" in m]
-    finally:
-        monkeypatch.undo()
-        importlib.reload(config)
+    monkeypatch.delenv("WHISPER_SESSION_COOKIE_SECURE", raising=False)
+    _reload_with_env(monkeypatch, WHISPER_SESSION_COOKIE_NAME="__Host-s")
+    assert config.SESSION_COOKIE_NAME == "__Host-s"   # warned, not reverted
+    assert [m for m in config._ENV_WARNINGS
+            if m.startswith("SESSION_COOKIE_NAME '__Host-s' (from "
+                            "WHISPER_SESSION_COOKIE_NAME)")], config._ENV_WARNINGS
+    monkeypatch.setenv("WHISPER_SESSION_COOKIE_SECURE", "true")
+    importlib.reload(config)
+    assert not [m for m in config._ENV_WARNINGS if "__Host-/__Secure-" in m]
