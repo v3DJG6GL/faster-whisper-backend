@@ -199,8 +199,9 @@ def test_hub_rejected_fetch_paints_the_cached_whoami():
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
 def test_hub_paints_when_the_chrome_answers_during_its_backoff():
-    # The hub's retry was rejected with an empty cache; the chrome's whoami
-    # answers right after. The hub paints at once and stops retrying.
+    # The hub's first fetch is rejected with an empty cache, so it backs off;
+    # the chrome's whoami answers during that backoff. The hub paints at once
+    # and stops retrying.
     hold_retries = r"""
 const fastSetTimeout = global.setTimeout;
 let held = false;
