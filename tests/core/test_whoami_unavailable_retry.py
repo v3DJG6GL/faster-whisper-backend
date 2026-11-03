@@ -1,8 +1,8 @@
 """On a 5xx/429 (or a failed fetch) from the very first /auth/whoami, both
 whoami passes retry with a capped backoff while nothing is painted, and the
 shared chrome shows a "server unavailable" notice until an answer arrives.
-Otherwise the page stays blank (no gate, no nav, #hub-body hidden) until a
-manual reload.
+Without the retry the page would stay blank (no gate, no nav, #hub-body
+hidden) until a manual reload.
 
 The scripts run under node against a minimal DOM stub and a fetch stub that
 answers whoami from a status sequence. setTimeout is wrapped so the backoff
