@@ -8,7 +8,7 @@ from tests.conftest import FakeModel
 from tests.conftest import bearer
 from tests.main.test_transcription_overrides import _bind_profile_user
 from faster_whisper_backend.transcription import models as tx_models
-from tests._transcription_helpers import post_verbose
+from tests._transcription_helpers import post_verbose, serve_model
 OV = "/settings/overrides"
 
 
@@ -58,9 +58,7 @@ def test_segment_temperature_falls_back_to_the_decoded_value(
             self.no_speech_prob = 0.01
             self.words = []
 
-    async def _loader(name, *, lease=False):
-        return FakeModel(segments=[_BareSegment()])
-    monkeypatch.setattr(tx_models, "_get_or_load_model", _loader)
+    serve_model(monkeypatch, FakeModel(segments=[_BareSegment()]))
     raw_alice = _lock_temperature_for_alice(client, make_user_key, "")
     r = post_verbose(client, bearer(raw_alice), temperature="0.9")
     assert r.status_code == 200, r.text

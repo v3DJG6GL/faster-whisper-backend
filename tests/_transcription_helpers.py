@@ -2,6 +2,7 @@
 (the stub upload, a plain / verbose_json post, a profile-bound non-admin key).
 Import as ``from tests._transcription_helpers import ...``."""
 
+from faster_whisper_backend.transcription import models as tx_models
 from tests.conftest import bearer
 
 WAV_UPLOAD = {"file": ("a.wav", b"RIFFxxxxWAVE", "audio/wav")}
@@ -47,3 +48,10 @@ def record_runs(app_module, monkeypatch):
         return real(**kw)
     monkeypatch.setattr(app_module.metrics, "record_transcription", _spy)
     return recorded
+
+
+def serve_model(monkeypatch, model):
+    """Every model load returns `model`."""
+    async def _loader(name, *, lease=False):
+        return model
+    monkeypatch.setattr(tx_models, "_get_or_load_model", _loader)

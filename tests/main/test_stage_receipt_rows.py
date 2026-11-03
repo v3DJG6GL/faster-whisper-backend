@@ -16,9 +16,8 @@ from faster_whisper_backend.audio import diarization
 from faster_whisper_backend.translation import engine as translation
 from tests.conftest import FakeModel
 from tests._translation_helpers import enable_translation
-from faster_whisper_backend.transcription import models as tx_models
 from faster_whisper_backend.transcription import receipt as tx_receipt
-from tests._transcription_helpers import WAV_UPLOAD as _FILE
+from tests._transcription_helpers import WAV_UPLOAD as _FILE, serve_model
 
 
 def _post(client, files=_FILE, **data):
@@ -217,9 +216,7 @@ def test_translation_skipped_warning_without_speech_segments(
         raise AssertionError("translate_segments() must not run")
     monkeypatch.setattr(translation, "translate_segments", _never)
 
-    async def _loader(name, *, lease=False):
-        return FakeModel(segments=[])
-    monkeypatch.setattr(tx_models, "_get_or_load_model", _loader)
+    serve_model(monkeypatch, FakeModel(segments=[]))
     r = _post(client, translate_to="en")
     assert r.status_code == 200, r.text
     assert "translation skipped: no speech segments" in r.json()["warnings"]

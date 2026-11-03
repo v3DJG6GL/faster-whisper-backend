@@ -15,7 +15,7 @@ import numpy as np
 import pytest
 
 from tests.conftest import FakeInfo, FakeModel, FakeSegment, FakeWord
-from faster_whisper_backend.transcription import models as tx_models
+from tests._transcription_helpers import serve_model
 
 
 def _wav_bytes(seconds=1.0, sr=16000):
@@ -56,9 +56,7 @@ def test_timestamps_shifted_back_to_original_timeline(client, app_module, monkey
     info.duration_after_vad = 1.2
     model = FakeModel(segments=[seg], info=info)
 
-    async def _loader(name, *, lease=False):
-        return model
-    monkeypatch.setattr(tx_models, "_get_or_load_model", _loader)
+    serve_model(monkeypatch, model)
 
     app_module.cfg.LEADING_SILENCE_PAD_MS = 500
     r = _post(client, _wav_bytes(seconds=1.0), response_format="verbose_json")
@@ -85,9 +83,7 @@ def test_live_progress_and_plan_use_the_original_timeline(
     info.duration_after_vad = 1.2
     model = FakeModel(segments=[seg], info=info)
 
-    async def _loader(name, *, lease=False):
-        return model
-    monkeypatch.setattr(tx_models, "_get_or_load_model", _loader)
+    serve_model(monkeypatch, model)
     secs = []
     real_set = run_plan.RunPlan.set_audio_seconds
 

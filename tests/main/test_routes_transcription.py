@@ -13,7 +13,8 @@ from faster_whisper_backend.transcription import models as tx_models
 from faster_whisper_backend.transcription import receipt as tx_receipt
 from faster_whisper_backend.transcription import progress as tx_progress
 from tests._transcription_helpers import (
-    WAV_UPLOAD as _FILE, post_transcription as _post, post_verbose, record_runs)
+    WAV_UPLOAD as _FILE, post_transcription as _post, post_verbose, record_runs,
+    serve_model)
 
 
 def test_default_json_returns_text_object(client):
@@ -132,10 +133,7 @@ def test_model_transcribe_raises_returns_500(client, app_module, monkeypatch):
         def transcribe(self, path, **kwargs):
             raise RuntimeError("decode blew up")
 
-    async def _loader(name, *, lease=False):
-        return BoomModel()
-
-    monkeypatch.setattr(tx_models, "_get_or_load_model", _loader)
+    serve_model(monkeypatch, BoomModel())
     r = _post(client, response_format="json")
     assert r.status_code == 500
 
@@ -565,10 +563,7 @@ def test_cuda_oom_is_classified_on_the_ledger(client, app_module, monkeypatch):
         def transcribe(self, path, **kwargs):
             raise RuntimeError("CUDA failed with error out of memory")
 
-    async def _loader(name, *, lease=False):
-        return OomModel()
-
-    monkeypatch.setattr(tx_models, "_get_or_load_model", _loader)
+    serve_model(monkeypatch, OomModel())
     r = _post(client, response_format="json")
     assert r.status_code == 500
     row = _ledger_row()
@@ -592,10 +587,7 @@ def test_unknown_failure_is_other_and_success_has_no_class(client, app_module,
         def transcribe(self, path, **kwargs):
             raise RuntimeError("decode blew up")
 
-    async def _loader(name, *, lease=False):
-        return BoomModel()
-
-    monkeypatch.setattr(tx_models, "_get_or_load_model", _loader)
+    serve_model(monkeypatch, BoomModel())
     assert _post(client, response_format="json").status_code == 500
     row = _ledger_row()
     assert (row["error_class"], row["error_stage"]) == ("other", "transcribing")
