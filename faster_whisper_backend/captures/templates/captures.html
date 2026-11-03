@@ -1138,15 +1138,8 @@
     throw new Error('unauthorized');
   }
 
-  // An error body's message: FastAPI's 422 `detail` is a list of
-  // {loc, msg, ...} objects, which a bare detail assignment toasted as
-  // "[object Object]" (same handling as the reports page).
-  function _detailMsg(j, fallback) {
-    var d = j && j.detail;
-    if (typeof d === 'string' && d) return d;
-    if (Array.isArray(d) && d.length && d[0] && d[0].msg) return String(d[0].msg);
-    return fallback;
-  }
+  // _detailMsg(j, fallback), an error body's toast text (a 422's `detail`
+  // list included), is the shared window helper from the head bootstrap.
 
   {{NOT_ADMIN_LANDING_JS}}
 

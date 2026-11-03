@@ -152,6 +152,9 @@ NAV_CSS = templates.load(__file__, "nav.css").replace("{{STAGE_TOKENS}}", _STAGE
 #   4. window._escHtml, the null-safe & < > " HTML escape (' left alone) the
 #      shared widgets and page scripts alias as esc / _uEsc: defined here so
 #      it exists before every body script, including the inlined pick list.
+#   5. window._detailMsg(j, fallback), an error body's toast text: FastAPI's
+#      `detail` string, or the first `msg` of a 422 detail list (a bare
+#      assignment toasted "[object Object]"), else `fallback`.
 SCALE_BOOTSTRAP_HEAD = (
     '<meta name="viewport" content="width=device-width, initial-scale=1">'
     '<link rel="icon" type="image/svg+xml" href="/static/favicon.svg">'
@@ -162,6 +165,10 @@ SCALE_BOOTSTRAP_HEAD = (
     "<script>window._escHtml=function(s){return String(s==null?'':s)"
     ".replace(/&/g,'&amp;').replace(/</g,'&lt;')"
     ".replace(/>/g,'&gt;').replace(/\"/g,'&quot;');};"
+    "window._detailMsg=function(j,fallback){var d=j&&j.detail;"
+    "if(typeof d==='string'&&d)return d;"
+    "if(Array.isArray(d)&&d[0]&&d[0].msg)return String(d[0].msg);"
+    "return fallback;};"
     "(function(){try{var v=localStorage.getItem('whisper-ui-fs-base');"
     "if(v)document.documentElement.style.setProperty('--fs-base',v+'px');"
     "if(localStorage.getItem('whisper-ui-width')==='fluid')"

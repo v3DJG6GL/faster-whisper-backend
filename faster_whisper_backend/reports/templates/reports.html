@@ -305,14 +305,8 @@
     }
     if (!resp.ok) {
       var msg = 'HTTP ' + resp.status;
-      try {
-        var j = await resp.json();
-        // A 422 carries `detail` as a list of error objects: new Error(list)
-        // would toast "[object Object]".
-        var d = j && j.detail;
-        if (typeof d === 'string' && d) msg = d;
-        else if (Array.isArray(d) && d[0] && d[0].msg) msg = String(d[0].msg);
-      } catch(_) {}
+      // _detailMsg (head bootstrap): a 422's `detail` list as text.
+      try { msg = _detailMsg(await resp.json(), msg); } catch(_) {}
       throw new Error(msg);
     }
     return await resp.json();

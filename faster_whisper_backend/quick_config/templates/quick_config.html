@@ -505,14 +505,9 @@ function showToast(msg, kind) {
   setTimeout(() => { el.style.display = 'none'; }, 3500);
 }
 
-// An error body's `detail` as toast text. A FastAPI 422 carries a list of
-// error objects there, which textContent rendered as "[object Object]".
-function _detailText(j, fallback) {
-  const d = j && j.detail;
-  if (typeof d === 'string' && d) return d;
-  if (Array.isArray(d) && d[0] && d[0].msg) return String(d[0].msg);
-  return fallback;
-}
+// An error body's `detail` as toast text (a 422's list included): the
+// shared head-bootstrap helper.
+var _detailText = window._detailMsg;
 
 function setStatus(s) {
   document.getElementById('status').textContent = s;
