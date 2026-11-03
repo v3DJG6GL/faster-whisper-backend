@@ -208,7 +208,7 @@ MODEL_IDLE_TIMEOUT_S = _D("MODEL_IDLE_TIMEOUT_S")
 # load order at startup.
 PRELOAD_MODELS: "list[str]" = _D("PRELOAD_MODELS")
 
-# Primary load device + precision. CUDA + float16 is the GPU path.
+# Primary load device + precision. Ships as CUDA + bfloat16.
 MODEL_DEVICE = _D("MODEL_DEVICE")
 MODEL_COMPUTE_TYPE = _D("MODEL_COMPUTE_TYPE")
 
