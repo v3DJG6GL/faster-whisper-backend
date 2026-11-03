@@ -242,7 +242,7 @@ def test_rename_revoked_key_409(client):
 
 
 def test_store_backed_handlers_run_off_the_event_loop():
-    """Every handler that touches api_keys_store is a plain `def` (FastAPI's
+    """Every handler that calls api_keys_store inline is a plain `def` (FastAPI's
     threadpool): the store's threading _lock is held by the profile-rename
     cascade for a whole scan, and an `async def` caller would wait for it on
     the event loop, freezing live streaming sockets and SSE feeds."""
