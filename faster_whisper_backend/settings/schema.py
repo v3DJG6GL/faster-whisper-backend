@@ -2562,6 +2562,8 @@ _JSON_TYPE_TO_KIND = {
     "integer": "int", "number": "float", "boolean": "bool",
     "string": "str", "array": "list",
 }
+# JSON-schema bound key → widget metadata key, in FIELD_META's key order.
+_JSON_BOUND_TO_META = (("minimum", "min"), ("maximum", "max"), ("maxLength", "maxlen"))
 
 
 def override_field_meta(
@@ -2589,12 +2591,9 @@ def override_field_meta(
             info["opts"] = v["enum"]
         else:
             info["kind"] = _JSON_TYPE_TO_KIND.get(v.get("type"), "str")
-        if "minimum" in v:
-            info["min"] = v["minimum"]
-        if "maximum" in v:
-            info["max"] = v["maximum"]
-        if "maxLength" in v:
-            info["maxlen"] = v["maxLength"]
+        for src, dst in _JSON_BOUND_TO_META:
+            if src in v:
+                info[dst] = v[src]
         out[name] = info
     return out
 
