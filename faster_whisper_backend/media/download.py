@@ -835,7 +835,7 @@ def _direct_media_probe_sync(url: str, *, timeout: float,
         if cutoff.fired or isinstance(e, (TimeoutError, socket.timeout)) or (
                 isinstance(e, urllib.error.URLError)
                 and isinstance(e.reason, (TimeoutError, socket.timeout))):
-            raise UrlTimeoutError("the site took too long to answer") from None
+            raise UrlTimeoutError(_TOO_SLOW_MSG) from None
         if isinstance(e, urllib.error.HTTPError) and e.code >= 400:
             raise UrlDownloadError(
                 f"the site refused the request (HTTP {e.code})") from None
@@ -1186,7 +1186,7 @@ def _policy_check_info(info: dict) -> None:
             f"{max_dur / 3600:.1f} h limit for link downloads")
     approx = info.get("filesize_approx") or info.get("filesize")
     if approx is not None and int(approx) > _effective_max_bytes():
-        raise UrlPolicyError("this media exceeds the server's size limit")
+        raise UrlPolicyError(_OVER_CAP_MSG)
 
 
 async def probe(url: str, *, timeout: float) -> UrlMediaInfo:
@@ -1200,7 +1200,7 @@ async def probe(url: str, *, timeout: float) -> UrlMediaInfo:
         key = await asyncio.wait_for(
             check_url_policy(url, deadline=deadline), timeout)
     except asyncio.TimeoutError:
-        raise UrlTimeoutError("the site took too long to answer") from None
+        raise UrlTimeoutError(_TOO_SLOW_MSG) from None
 
     # Fail closed BEFORE extract_info: the guard registers the RequestHandler
     # this process's YoutubeDL will pick, so it has to be in place (and
@@ -1250,7 +1250,7 @@ async def probe(url: str, *, timeout: float) -> UrlMediaInfo:
             asyncio.get_running_loop().run_in_executor(_PROBE_POOL, _extract),
             max(1.0, deadline - time.monotonic()))
     except asyncio.TimeoutError:
-        raise UrlTimeoutError("the site took too long to answer") from None
+        raise UrlTimeoutError(_TOO_SLOW_MSG) from None
     except Exception as e:  # noqa: BLE001 — classify, never forward raw
         _log_probe_failure(url, e)
         raise classified_error(str(e)) from None
@@ -1268,7 +1268,7 @@ async def probe(url: str, *, timeout: float) -> UrlMediaInfo:
                 _handoff_serves_media(_target, deadline),
                 max(0.0, deadline - time.monotonic()))
         except asyncio.TimeoutError:
-            raise UrlTimeoutError("the site took too long to answer") from None
+            raise UrlTimeoutError(_TOO_SLOW_MSG) from None
     _policy_check_extractor(key, info, handoff_is_media=handoff_is_media)
     xk = str(info.get("extractor_key") or key)
     size = info.get("filesize_approx") or info.get("filesize")
@@ -1386,9 +1386,9 @@ def _capped_get(url: str, *, max_bytes: int, timeout: float,
             if len(buf) > max_bytes:
                 raise UrlTooLargeError("the file is over the server's size limit")
             if time.monotonic() - t0 > timeout:
-                raise UrlTimeoutError("the site took too long to answer")
+                raise UrlTimeoutError(_TOO_SLOW_MSG)
         if cutoff.fired:
-            raise UrlTimeoutError("the site took too long to answer")
+            raise UrlTimeoutError(_TOO_SLOW_MSG)
         length = resp.headers.get("Content-Length")
         if (length and length.isdigit() and not getattr(resp, "chunked", False)
                 and len(buf) < int(length)):
@@ -1408,7 +1408,7 @@ async def capped_get(url: str, *, max_bytes: int, deadline: float,
     timeout = min(float(getattr(cfg, "URL_SOCKET_TIMEOUT_S", 15)),
                   deadline - time.monotonic())
     if timeout <= 0:
-        raise UrlTimeoutError("the site took too long to answer")
+        raise UrlTimeoutError(_TOO_SLOW_MSG)
     return await asyncio.wait_for(asyncio.get_running_loop().run_in_executor(
         _PROBE_POOL, lambda: _capped_get(
             url, max_bytes=max_bytes, timeout=timeout, accept=accept,
@@ -1438,6 +1438,8 @@ async def fetch_thumbnail_data_uri(
 # (substring-of-tool-output, client-safe message). Order matters: first hit
 # wins, and the more specific conditions sit above the catch-alls.
 _HANDOFF_REFUSED = "this link leads to a site the server's URL policy doesn't allow"
+_OVER_CAP_MSG = "this media exceeds the server's size limit"
+_TOO_SLOW_MSG = "the site took too long to answer"
 _ERROR_TAXONOMY: "tuple[tuple[tuple[str, ...], str], ...]" = (
     # The two guard refusals with their own needle, ABOVE the bare marker
     # they contain: neither is the site being unreachable.
@@ -1490,8 +1492,7 @@ _ERROR_TAXONOMY: "tuple[tuple[tuple[str, ...], str], ...]" = (
      "this site isn't supported by the downloader"),
     (("live event", "premieres in", "this live event"),
      "this stream hasn't finished yet — try again after it ends"),
-    (("max-filesize", "file is larger than max-filesize"),
-     "this media exceeds the server's size limit"),
+    (("max-filesize", "file is larger than max-filesize"), _OVER_CAP_MSG),
     # From here down the transport / HTTP-status rows read only the
     # non-WARNING lines (see classify_error).
     (("failed to resolve", "getaddrinfo", "timed out", "connection refused"),
@@ -2013,7 +2014,7 @@ async def _run_yt_dlp(
                 await _kill()
                 # Off the loop: the refused partial can be gigabytes.
                 await asyncio.to_thread(_discard_partials, dest_dir)
-                raise UrlPolicyError("this media exceeds the server's size limit")
+                raise UrlPolicyError(_OVER_CAP_MSG)
             if parsed:
                 last_parsed = parsed
                 now = time.monotonic()
@@ -2061,7 +2062,7 @@ async def _run_yt_dlp(
         # merged" — a server fault, not the cap. A FOUND result wins over the
         # over-cap line: that line can still be forged by site text.
         if over_cap:
-            raise UrlPolicyError("this media exceeds the server's size limit") from None
+            raise UrlPolicyError(_OVER_CAP_MSG) from None
         raise
     if result is None and filtered_out:
         # handoff_match_filters at work: the run re-extracted to a result
@@ -2070,10 +2071,10 @@ async def _run_yt_dlp(
     if result is None:
         # --max-filesize skips (exit 0, no file) on some formats instead of
         # failing — a missing output after a clean exit means the cap bit.
-        raise UrlPolicyError("this media exceeds the server's size limit")
+        raise UrlPolicyError(_OVER_CAP_MSG)
     size = os.path.getsize(result)
     if size > max_bytes:
-        raise UrlPolicyError("this media exceeds the server's size limit")
+        raise UrlPolicyError(_OVER_CAP_MSG)
     if size == 0:
         raise UrlDownloadError("the downloaded file was empty")
     logger.info("[url-dl] downloaded %.1f MB in %.1fs (host %s)",
