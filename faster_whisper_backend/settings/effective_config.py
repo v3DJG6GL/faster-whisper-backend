@@ -317,24 +317,25 @@ def _request_profile_layer(request_profile: str | None, *,
     )
 
 
+def _per_model_entry(model_id: str | None) -> dict[str, Any] | None:
+    """This model's MODEL_OVERRIDES entry, or None when it has none."""
+    mo = getattr(cfg, "MODEL_OVERRIDES", None) or {}
+    m = mo.get(model_id) if (model_id and isinstance(mo, dict)) else None
+    return m if isinstance(m, dict) else None
+
+
 def _per_model_value(model_id: str | None, field_name: str) -> Any:
     """Per-model override value for a scalar field, or UNSET."""
-    mo = getattr(cfg, "MODEL_OVERRIDES", None) or {}
-    if model_id and isinstance(mo, dict):
-        m = mo.get(model_id)
-        if isinstance(m, dict):
-            v = m.get(field_name)
-            if v is not None:
-                return v
-    return UNSET
+    m = _per_model_entry(model_id)
+    v = m.get(field_name) if m is not None else None
+    return UNSET if v is None else v
 
 
 def _per_model_rule_layer(model_id: str | None) -> dict[str, Any] | None:
     """The per-model pipeline include/exclude as a (lowest-priority) rule
     layer, or None when the model has no per-model scoping."""
-    mo = getattr(cfg, "MODEL_OVERRIDES", None) or {}
-    m = mo.get(model_id) if (model_id and isinstance(mo, dict)) else None
-    if not isinstance(m, dict):
+    m = _per_model_entry(model_id)
+    if m is None:
         return None
     # Load mapped these slugs against the file's own PIPELINE_RULES copy, but
     # WHISPER_PIPELINE_RULES may have replaced it since; re-map against the
@@ -639,14 +640,8 @@ def cfg_for(model_id: "str | None", field: str, ident=None):
     """
     if ident is not None and field in ident.values:
         return ident.values[field]
-    overrides = getattr(cfg, "MODEL_OVERRIDES", None) or {}
-    if model_id and isinstance(overrides, dict):
-        m_over = overrides.get(model_id)
-        if isinstance(m_over, dict):
-            v = m_over.get(field)
-            if v is not None:
-                return v
-    return getattr(cfg, field)
+    v = _per_model_value(model_id, field)
+    return getattr(cfg, field) if v is UNSET else v
 
 # Sentinel for _resolve_request_knob: skip the `or default` coercion entirely.
 # Needed by callers that resolve NUMERIC knobs through the same ladder, where
