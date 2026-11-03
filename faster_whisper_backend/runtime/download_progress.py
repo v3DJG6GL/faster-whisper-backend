@@ -28,7 +28,7 @@ not bytes (snapshot_download's outer per-FILE bar) are ignored.
 
 Scope: the active capture is module-global (not thread-local), because
 snapshot_download fans file downloads out to worker threads that would never
-see a thread-local. diarization/bgm serialize their loads module-wide, but
+see a thread-local. diarization serializes its loads module-wide, but
 translation serializes only per ref (`_loading[ref]`) and runs the load
 outside its `_lock`, and transcription.models' whisper pre-download
 deliberately runs *outside* `_model_load_lock` — so two different refs
