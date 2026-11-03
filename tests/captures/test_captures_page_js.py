@@ -1679,6 +1679,9 @@ function load() { events.push('load'); } function toast() {}
     assert out == ["stop", "post", "play", "stop", "hide", "load"]
 
 
+# The "ask before dropping open edits" helpers, sliced together.
+_OPEN_EDITS_FNS = ("_freshOpenEdits", "_okToDropOpenEdits", "_anyOpenDirty", "_dirtyOpenEdits")
+
 _BULK_DIRTY_STUBS = r"""
 var _openRows = {}, _openSamples = {}, _bulkBusy = false, renders = 0, asked = [];
 var answers = [], pending = [];
@@ -1704,8 +1707,7 @@ def test_bulk_action_asks_again_before_rendering_over_edits_made_meanwhile(
     edits only before their request. A card opened and edited while it ran
     lost its chips / notes to the render() after it, with no prompt."""
     fns = _js_functions(page, "_bulkStatus", "_undoBulk", "_bulkDelete",
-                        "_renderUnlessKeptOpenEdits", "_freshOpenEdits", "_okToDropOpenEdits",
-                        "_anyOpenDirty", "_dirtyOpenEdits", "_plural")
+                        "_renderUnlessKeptOpenEdits", *_OPEN_EDITS_FNS, "_plural")
     out = _run_node(tmp_path, fns + _BULK_DIRTY_STUBS + r"""
 var reply = """ + json.dumps(reply) + r""";
 async function run(keep) {
@@ -1830,8 +1832,7 @@ def test_bulk_action_asks_once_about_edits_already_agreed_to_drop(
     one the user had just agreed to drop: a second (for delete a third)
     prompt about the same edits, and a Cancel there left a stale list."""
     fns = _js_functions(page, "_bulkStatus", "_undoBulk", "_bulkDelete",
-                        "_renderUnlessKeptOpenEdits", "_freshOpenEdits", "_okToDropOpenEdits",
-                        "_anyOpenDirty", "_dirtyOpenEdits", "markDirty", "_plural")
+                        "_renderUnlessKeptOpenEdits", *_OPEN_EDITS_FNS, "markDirty", "_plural")
     out = _run_node(tmp_path, fns + _BULK_DIRTY_STUBS + r"""
 var reply = """ + json.dumps(reply) + r""";
 async function run(editMeanwhile) {
@@ -1863,8 +1864,8 @@ def test_load_more_groups_asks_once_about_edits_already_agreed_to_drop(page, tmp
     edits "Load more groups?" had covered; a Cancel there hid the groups the
     user asked for. Edits made while the page loaded still get the re-ask,
     and a page superseded by a filter change still never renders."""
-    fns = _js_functions(page, "loadMoreSamples", "_renderUnlessKeptOpenEdits", "_freshOpenEdits",
-                        "_okToDropOpenEdits", "_anyOpenDirty", "_dirtyOpenEdits", "markDirty")
+    fns = _js_functions(page, "loadMoreSamples", "_renderUnlessKeptOpenEdits", *_OPEN_EDITS_FNS,
+                        "markDirty")
     out = _run_node(tmp_path, fns + _BULK_DIRTY_STUBS + r"""
 var _samplesNext, _samplesLoading = false, _loadSeq = 0, _allSamples = [];
 function _speakerQs() { return ''; }
@@ -1903,8 +1904,7 @@ def test_load_asks_before_rendering_over_edits_made_meanwhile(page, tmp_path):
     ran lost its chips / notes to the render() after them, with no prompt.
     On a Cancel the list on screen (and its group cursor) stays as it was;
     edits the caller already agreed to drop are not asked about again."""
-    fns = _js_functions(page, "load", "_freshOpenEdits", "_okToDropOpenEdits", "_anyOpenDirty",
-                        "_dirtyOpenEdits", "markDirty")
+    fns = _js_functions(page, "load", *_OPEN_EDITS_FNS, "markDirty")
     out = _run_node(tmp_path, fns + r"""
 var cursor = { before_ts: 100, before_id: 'a1' };
 var _samplesNext, _samplesNextQs = '', _loadSeq = 0, _allSamples, _allCaptures;
@@ -1967,8 +1967,7 @@ def test_cancelled_refresh_after_a_speaker_switch_keeps_the_shown_speakers(
     Cancel on "Show the refreshed list?" kept Alice's list under Bob's
     picker and URL, so the next render hid Alice's groups and the counts
     and Load more went by Bob."""
-    fns = _js_functions(page, "load", "_speakerQs", "_freshOpenEdits", "_okToDropOpenEdits",
-                        "_anyOpenDirty", "_dirtyOpenEdits", "markDirty")
+    fns = _js_functions(page, "load", "_speakerQs", *_OPEN_EDITS_FNS, "markDirty")
     out = _run_node(tmp_path, fns + r"""
 var cursor = { before_ts: 100, before_id: 'a1' };
 var _samplesNext = cursor, _samplesNextQs = '&user_id=alice', _loadSeq = 0;
@@ -2018,8 +2017,7 @@ def test_load_after_a_request_asks_about_edits_made_during_it(
     on a running rebuild) counted as agreed and the refreshed list dropped
     it with no prompt."""
     handler = _js_after(page, anchor)
-    fns = _js_functions(page, "load", "_freshOpenEdits", "_okToDropOpenEdits", "_anyOpenDirty",
-                        "_dirtyOpenEdits", "markDirty")
+    fns = _js_functions(page, "load", *_OPEN_EDITS_FNS, "markDirty")
     out = _run_node(tmp_path, fns + r"""
 var _samplesNext = null, _samplesNextQs = '', _loadSeq = 0, _allSamples = [], _allCaptures = [];
 var _counts = {}, _totalCount = 0, _me = null, _isAdmin = true, _filtSpeakers = [];
