@@ -397,8 +397,8 @@ def test_worker_evicts_the_cold_translation_peer_it_chose_even_when_it_fits(
 def test_a_declined_singleton_load_does_not_mark_the_plan_warm(monkeypatch):
     """diarization/bgm_separation.load_unleased answer False when a running
     job holds the slot (busy, re-checked under their lock): nothing loaded,
-    so the key must not land in plan.warmed. A None (the whisper and
-    translation loaders, older stubs) still reads as loaded."""
+    so the key must not land in plan.warmed. Only an explicit False is a
+    decline: a None (a stub's bare return) still reads as loaded."""
     _enable(monkeypatch, MODEL_PRELOAD_EVICT_IDLE_MODELS=False)
     monkeypatch.setattr(preload, "_admit", lambda f, m: ("loading", None))
     monkeypatch.setattr(preload, "is_resident", lambda f, m: False)
