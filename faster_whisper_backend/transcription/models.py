@@ -251,6 +251,14 @@ def _clamp_float(v, lo, hi):
     return max(lo, min(hi, r))
 
 
+def _set_clamped(dst: dict, dkey: str, overrides: dict, okey: str, clamp, bounds) -> None:
+    """dst[dkey] = clamp(overrides[okey], *bounds) when the key was sent and parsed."""
+    if okey in overrides:
+        cv = clamp(overrides[okey], *bounds)
+        if cv is not None:
+            dst[dkey] = cv
+
+
 def _clamp_context_segments(v: "int | None") -> "int | None":
     """A request's TRANSLATION_CONTEXT_SEGMENTS, clamped to the field's own
     bounds (0–10; None = absent, inherit). Shared by the audio routes (main) and
@@ -273,16 +281,10 @@ def _apply_decode_overrides(kwargs, resolved_model, overrides, ident=None):
         overrides = {k: v for k, v in overrides.items() if k not in locked_client_keys}
         if not overrides:
             return kwargs
-    for key, (lo, hi) in _DECODE_INT_BOUNDS.items():
-        if key in overrides:
-            cv = _clamp_int(overrides[key], lo, hi)
-            if cv is not None:
-                kwargs[key] = cv
-    for key, (lo, hi) in _DECODE_FLOAT_BOUNDS.items():
-        if key in overrides:
-            cv = _clamp_float(overrides[key], lo, hi)
-            if cv is not None:
-                kwargs[key] = cv
+    for key, bounds in _DECODE_INT_BOUNDS.items():
+        _set_clamped(kwargs, key, overrides, key, _clamp_int, bounds)
+    for key, bounds in _DECODE_FLOAT_BOUNDS.items():
+        _set_clamped(kwargs, key, overrides, key, _clamp_float, bounds)
     if "temperature" in overrides:
         tv = _client_temperature(overrides["temperature"])
         if tv is not None:
@@ -346,19 +348,12 @@ def _apply_decode_overrides(kwargs, resolved_model, overrides, ident=None):
             speech_pad_ms=effective_config.cfg_for(resolved_model, "VAD_SPEECH_PAD_MS", ident),
             threshold=effective_config.cfg_for(resolved_model, "VAD_THRESHOLD", ident),
         ))
-        if "vad_min_silence_duration_ms" in overrides:
-            cv = _clamp_int(overrides["vad_min_silence_duration_ms"],
-                            *_VAD_MIN_SILENCE_BOUNDS)
-            if cv is not None:
-                vp["min_silence_duration_ms"] = cv
-        if "vad_speech_pad_ms" in overrides:
-            cv = _clamp_int(overrides["vad_speech_pad_ms"], *_VAD_SPEECH_PAD_BOUNDS)
-            if cv is not None:
-                vp["speech_pad_ms"] = cv
-        if "vad_threshold" in overrides:
-            cv = _clamp_float(overrides["vad_threshold"], *_VAD_THRESHOLD_BOUNDS)
-            if cv is not None:
-                vp["threshold"] = cv
+        _set_clamped(vp, "min_silence_duration_ms", overrides,
+                     "vad_min_silence_duration_ms", _clamp_int, _VAD_MIN_SILENCE_BOUNDS)
+        _set_clamped(vp, "speech_pad_ms", overrides, "vad_speech_pad_ms",
+                     _clamp_int, _VAD_SPEECH_PAD_BOUNDS)
+        _set_clamped(vp, "threshold", overrides, "vad_threshold",
+                     _clamp_float, _VAD_THRESHOLD_BOUNDS)
         kwargs["vad_parameters"] = vp
     return kwargs
 
