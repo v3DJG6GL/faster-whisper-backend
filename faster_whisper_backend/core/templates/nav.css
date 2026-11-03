@@ -444,7 +444,8 @@ header .subbar .filt-label { display: inline-flex; align-items: center; gap: 0.3
    driven, no width thresholds — correct at every --fs-base automatically).
    The script adds these one at a time, re-measuring after each, until the
    bar fits. Order = lowest-information pixels first; the brand is identity
-   and goes last; the jobs count and a hot severity survive every step.
+   and goes last; the jobs count and a hot severity survive every step but
+   the last resorts.
      c1a  severity word labels          c7  scale picker → "Aa" cycle button
      c1   GPU / VRAM micro-labels       c5  VRAM segment
      c2   zero severity counters        c6  GPU segment
