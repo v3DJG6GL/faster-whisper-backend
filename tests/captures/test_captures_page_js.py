@@ -52,6 +52,11 @@ def _js_function(html, name):
     return _js_block(html, start)
 
 
+def _js_functions(html, *names):
+    """The named function declarations, newline-joined."""
+    return "\n".join(_js_function(html, n) for n in names)
+
+
 _TICK_JS = "function tick() { return new Promise(function(r) { setTimeout(r, 0); }); }\n"
 
 
@@ -211,8 +216,8 @@ def test_bulk_status_ignores_a_second_click_while_in_flight(page, tmp_path):
     """A second bulk PATCH sent while the first was in flight reported the
     first's freshly written status as prev_status, and its toast replaced
     the first's Undo: the original status was unrecoverable."""
-    fns = "\n".join(_js_function(page, f) for f in (
-        "_bulkStatus", "_undoBulk", "_renderUnlessKeptOpenEdits", "_freshOpenEdits", "_dirtyOpenEdits"))
+    fns = _js_functions(page, "_bulkStatus", "_undoBulk", "_renderUnlessKeptOpenEdits",
+                        "_freshOpenEdits", "_dirtyOpenEdits")
     out = _run_node(tmp_path, "var _bulkBusy = false, _openRows = {}, _openSamples = {};\n"
                     + fns + r"""
 var calls = [], pending = [], toasts = [];
@@ -253,8 +258,8 @@ def test_undo_cancelled_at_the_open_edits_prompt_stays_on_offer(page, tmp_path):
     """Clicking Undo hides its toast, and the previous statuses live only in
     that closure: cancelling the "Undo the bulk change?" prompt (to save the
     open edits first) lost the bulk Undo for good."""
-    fns = "\n".join(_js_function(page, f) for f in (
-        "_undoBulk", "_renderUnlessKeptOpenEdits", "_freshOpenEdits", "_dirtyOpenEdits"))
+    fns = _js_functions(page, "_undoBulk", "_renderUnlessKeptOpenEdits", "_freshOpenEdits",
+                        "_dirtyOpenEdits")
     out = _run_node(tmp_path, "var _bulkBusy = false, _openRows = {}, _openSamples = {};\n"
                     + fns + r"""
 var calls = [], toasts = [], answers = [false, true];
@@ -315,7 +320,7 @@ def test_capture_save_keeps_edits_made_while_it_ran(page, tmp_path):
     """The capture Save cleared the dirty flag whatever happened during its
     PATCH, so a chip or note typed meanwhile (never sent) read as saved and
     the next filter change or refresh dropped it without a prompt."""
-    fns = "\n".join(_js_function(page, f) for f in ("onSave", "markDirty", "clearDirty"))
+    fns = _js_functions(page, "onSave", "markDirty", "clearDirty")
     out = _run_node(tmp_path, fns + r"""
 var pending = [], toasts = [];
 function api() { return new Promise(function(r) { pending.push(r); }); }
@@ -488,9 +493,8 @@ def test_range_chip_over_a_removed_word_keeps_it_out_of_wrong(page, tmp_path):
     """A shift-click range across a rule-removed filler put the raw filler
     into the chip's `wrong` ("gehe äh heim."). The exported text has no
     filler, so the chip never matched and export silently dropped it."""
-    fns = "\n".join(_js_function(page, f) for f in (
-        "_dispWord", "_dispRemoved", "spanText", "recomputeWrong",
-        "_applyChipsToText"))
+    fns = _js_functions(page, "_dispWord", "_dispRemoved", "spanText", "recomputeWrong",
+                        "_applyChipsToText")
     out = _run_node(tmp_path, fns + r"""
 var words = [{ word: ' Ich' }, { word: ' gehe' }, { word: ' äh', removed: true },
              { word: ' heim.' }];
@@ -524,9 +528,8 @@ def test_range_chip_on_served_words_keeps_the_spaces(page, tmp_path, monkeypatch
         "final": "Hallo Welt heute", "text_for_training": "Hallo Welt heute",
         "model": None,
     })
-    fns = "\n".join(_js_function(page, f) for f in (
-        "_dispWord", "_dispRemoved", "spanText", "recomputeWrong",
-        "_applyChipsToText"))
+    fns = _js_functions(page, "_dispWord", "_dispRemoved", "spanText", "recomputeWrong",
+                        "_applyChipsToText")
     out = _run_node(tmp_path, fns + r"""
 var words = """ + json.dumps(words) + r""";
 var chip = { wrong: 'HalloWelt', correct: 'Servus', idx: 0, idx_end: 1 };
@@ -541,10 +544,8 @@ console.log(JSON.stringify({ span: span, heal: chip.wrong,
 
 def _heal_fns(page):
     """renderChips and its heal helpers, with a do-nothing DOM."""
-    return _chip_max(page) + "\n".join(
-        _js_function(page, f) for f in (
-            "_dispWord", "_dispRemoved", "recomputeWrong", "renderChips",
-            "markDirty")) + r"""
+    return _chip_max(page) + _js_functions(page, "_dispWord", "_dispRemoved", "recomputeWrong",
+                                           "renderChips", "markDirty") + r"""
 function el() { return { classList: { remove: function() {} },
   appendChild: function() {}, addEventListener: function() {} }; }
 global.document = { createElement: el };
@@ -634,8 +635,7 @@ def test_chip_text_past_the_server_cap_is_refused_on_the_page(page, tmp_path):
     toasted "Saved." anyway: the export then rewrote only part of a long span
     or emitted a cut correction. Extending or clicking past the cap now
     toasts instead, and the correction input stops at the cap."""
-    fns = _heal_fns(page) + "\n".join(_js_function(page, f) for f in (
-        "extendLastChip", "spanText", "onWordClick"))
+    fns = _heal_fns(page) + _js_functions(page, "extendLastChip", "spanText", "onWordClick")
     out = _run_node(tmp_path, fns + r"""
 var toasts = [], inputs = [];
 function toast(m, err) { toasts.push(m); }
@@ -682,8 +682,7 @@ def test_heal_on_a_locked_group_marks_it_unsaved_only_for_an_admin(
     """The server 409s a non-admin's Save on a locked sample, so a heal
     left such a group card "unsaved" for good, and every filter change
     asked to drop edits nobody made. An admin can save the heal."""
-    fns = "\n".join(_js_function(page, f) for f in (
-        "applyServerSample", "_applyChipsToText", "_chipFields"))
+    fns = _js_functions(page, "applyServerSample", "_applyChipsToText", "_chipFields")
     out = _run_node(tmp_path, _SAMPLE_CARD_STUBS + fns + _heal_fns(page) + r"""
 global.document = { createElement: function() { return fake(); } };
 function clearDirty(state) { state.dirty = false; }
@@ -1128,9 +1127,8 @@ def test_batch_open_superseded_while_loading_waits_for_the_latest_reload(
     entered batch mode when it landed, on the queue left from an earlier
     session: the card showed (and auto-played) a stale proposal, live for an
     Accept that the newer reload then released mid-POST."""
-    fns = "\n".join(_js_function(page, n) for n in (
-        "_loadProposals", "_openProposeModal", "_enterBatchMode", "_renderBatchCard",
-        "_advanceBatch"))
+    fns = _js_functions(page, "_loadProposals", "_openProposeModal", "_enterBatchMode",
+                        "_renderBatchCard", "_advanceBatch")
     out = _run_node(tmp_path, fns + _BATCH_STUBS + r"""
 var _filtSpeakers = [], gets = [], cards = [], shown = false, _batchKeyHandler = null;
 _batchActive = false;
@@ -1369,9 +1367,8 @@ def test_merge_modal_preview_places_chips_by_aligned_words(page, tmp_path):
     capture card's preview, applied chips without the aligned words, so a
     chip on a repeated word after removed fillers landed on the wrong copy:
     the reviewer approved a text the export would not emit."""
-    fns = "\n".join(_js_function(page, f) for f in (
-        "_applyChipsToText", "_cjkEdge", "_buildDefaultTranscript",
-        "_renderMergePreview", "_capturePreviewText"))
+    fns = _js_functions(page, "_applyChipsToText", "_cjkEdge", "_buildDefaultTranscript",
+                        "_renderMergePreview", "_capturePreviewText")
     out = _run_node(tmp_path, _js_function(page, "_endsSentence") + "\n" + fns + r"""
 function escapeHtml(s) { return String(s); }
 var lines = [];
@@ -1401,9 +1398,8 @@ def test_merge_preview_skips_a_member_the_pipeline_blanked(page, tmp_path):
     text_for_training "" (not NULL): the merge preview used to fall back to
     the raw hallucination, as the server's transcript builder did. A legacy
     row (NULL column) still falls back to `final`."""
-    fns = "\n".join(_js_function(page, f) for f in (
-        "_endsSentence", "_applyChipsToText", "_cjkEdge",
-        "_buildDefaultTranscript"))
+    fns = _js_functions(page, "_endsSentence", "_applyChipsToText", "_cjkEdge",
+                        "_buildDefaultTranscript")
     out = _run_node(tmp_path, fns + r"""
 console.log(JSON.stringify(_buildDefaultTranscript([
   { text_for_training: '', final: '', raw: 'Untertitel im Auftrag des ZDF' },
@@ -1419,8 +1415,7 @@ def test_card_preview_keeps_a_pipeline_blanked_capture_empty(page, tmp_path):
     the chips-applied result was empty, so a hallucination a removal rule
     blanked showed as the card's label while the merge preview and the
     export left it out. A legacy row (NULL columns) still previews raw."""
-    fns = "\n".join(_js_function(page, f) for f in (
-        "_applyChipsToText", "_cjkEdge", "_capturePreviewText"))
+    fns = _js_functions(page, "_applyChipsToText", "_cjkEdge", "_capturePreviewText")
     out = _run_node(tmp_path, fns + r"""
 console.log(JSON.stringify([
   _capturePreviewText({ text_for_training: '', final: '',
@@ -1454,9 +1449,8 @@ def test_merge_preview_period_space_join_matches_the_server(
     """The JS twin of samples._build_default_transcript still put a literal
     ". " between members after the server stopped doubling a member's own
     sentence punctuation, so the preview showed "Hallo Welt.. Wie …"."""
-    fns = "\n".join(_js_function(page, f) for f in (
-        "_endsSentence", "_applyChipsToText", "_cjkEdge",
-        "_buildDefaultTranscript"))
+    fns = _js_functions(page, "_endsSentence", "_applyChipsToText", "_cjkEdge",
+                        "_buildDefaultTranscript")
     rows = [{"final": f} for f in finals]
     out = _run_node(tmp_path, fns + "\nconsole.log(JSON.stringify("
                     "_buildDefaultTranscript(" + json.dumps(rows)
@@ -1504,9 +1498,8 @@ def test_merge_preview_join_of_unspaced_members_matches_the_server(
     the server joins Han / kana with no space and closes them with "。"."""
     from faster_whisper_backend.captures.samples import _build_default_transcript
 
-    fns = "\n".join(_js_function(page, f) for f in (
-        "_endsSentence", "_applyChipsToText", "_cjkEdge",
-        "_buildDefaultTranscript"))
+    fns = _js_functions(page, "_endsSentence", "_applyChipsToText", "_cjkEdge",
+                        "_buildDefaultTranscript")
     rows = [{"final": f} for f in finals]
     out = _run_node(tmp_path, fns + "\nconsole.log(JSON.stringify("
                     "_buildDefaultTranscript(" + json.dumps(rows)
@@ -1554,8 +1547,7 @@ def test_group_members_list_places_chips_by_aligned_words(page, tmp_path):
     """The open group card's members list applied each member's chips
     without its aligned words (only raw words come with the members), so a
     chip after removed fillers moved to another copy of its word."""
-    fns = "\n".join(_js_function(page, f) for f in (
-        "applyServerSample", "_applyChipsToText", "_chipFields"))
+    fns = _js_functions(page, "applyServerSample", "_applyChipsToText", "_chipFields")
     member = {"id": "m1", "text_for_training": _KATZE_TEXT, "corrections": [_KATZE_CHIP],
               "words": _KATZE_RAW, "sample_order": 0, "audio_s": 1.0}
     merged = [dict(w, start=i * 0.1, end=i * 0.1 + 0.05, member_idx=0)
@@ -1581,9 +1573,8 @@ def test_capture_save_and_reprocess_redraw_the_card_preview(page, tmp_path):
     after a chip Save or a Reprocess it kept the old text until the next
     full render(). The PATCH reply's raw words also replaced the row's
     aligned ones, which mis-placed the chip in the next preview."""
-    fns = "\n".join(_js_function(page, f) for f in (
-        "onSave", "onReprocess", "_syncCapturePreview", "_capturePreviewText",
-        "_applyChipsToText"))
+    fns = _js_functions(page, "onSave", "onReprocess", "_syncCapturePreview", "_capturePreviewText",
+                        "_applyChipsToText")
     out = _run_node(tmp_path, fns + r"""
 var preview = { textContent: 'die Katze die Maus' }, asked = [];
 global.document = { querySelector: function(s) { asked.push(s); return preview; } };
@@ -1714,9 +1705,9 @@ def test_bulk_action_asks_again_before_rendering_over_edits_made_meanwhile(
     """The bulk status change, its Undo and bulk delete asked about open
     edits only before their request. A card opened and edited while it ran
     lost its chips / notes to the render() after it, with no prompt."""
-    fns = "\n".join(_js_function(page, f) for f in (
-        "_bulkStatus", "_undoBulk", "_bulkDelete", "_renderUnlessKeptOpenEdits", "_freshOpenEdits",
-        "_okToDropOpenEdits", "_anyOpenDirty", "_dirtyOpenEdits", "_plural"))
+    fns = _js_functions(page, "_bulkStatus", "_undoBulk", "_bulkDelete",
+                        "_renderUnlessKeptOpenEdits", "_freshOpenEdits", "_okToDropOpenEdits",
+                        "_anyOpenDirty", "_dirtyOpenEdits", "_plural")
     out = _run_node(tmp_path, fns + _BULK_DIRTY_STUBS + r"""
 var reply = """ + json.dumps(reply) + r""";
 async function run(keep) {
@@ -1752,8 +1743,7 @@ def test_group_status_click_during_save_survives_the_save_reply(page, tmp_path):
     on_status = _js_block(page, page.index(anchor))
     save_anchor = "saveTBtn.onclick = "
     on_save = _js_block(page, page.index(save_anchor) + len(save_anchor))
-    fns = "\n".join(_js_function(page, f) for f in (
-        "applyServerSample", "_applyChipsToText", "_chipFields"))
+    fns = _js_functions(page, "applyServerSample", "_applyChipsToText", "_chipFields")
     out = _run_node(tmp_path, _SAMPLE_CARD_STUBS + fns + r"""
 var g = { id: 'g1' }, _allSamples = [{ id: 'g1', status: 'new' }];
 var sampleState = { newStatus: 'new', corrections: [], adminNotes: '' };
@@ -1801,8 +1791,7 @@ def test_capture_status_click_keeps_the_aligned_words(page, tmp_path):
     removed fillers on another copy of its word."""
     build = _js_function(page, "buildBody")
     handler = _js_block(build, build.index("async function(v) {\n        // Auto-save on click."))
-    fns = "\n".join(_js_function(page, f) for f in (
-        "_syncCapturePreview", "_capturePreviewText", "_applyChipsToText"))
+    fns = _js_functions(page, "_syncCapturePreview", "_capturePreviewText", "_applyChipsToText")
     out = _run_node(tmp_path, fns + r"""
 var preview = { textContent: '' };
 global.document = { querySelector: function() { return preview; } };
@@ -1843,9 +1832,9 @@ def test_bulk_action_asks_once_about_edits_already_agreed_to_drop(
     """The re-ask after the request fired for any dirty card, including the
     one the user had just agreed to drop: a second (for delete a third)
     prompt about the same edits, and a Cancel there left a stale list."""
-    fns = "\n".join(_js_function(page, f) for f in (
-        "_bulkStatus", "_undoBulk", "_bulkDelete", "_renderUnlessKeptOpenEdits", "_freshOpenEdits",
-        "_okToDropOpenEdits", "_anyOpenDirty", "_dirtyOpenEdits", "markDirty", "_plural"))
+    fns = _js_functions(page, "_bulkStatus", "_undoBulk", "_bulkDelete",
+                        "_renderUnlessKeptOpenEdits", "_freshOpenEdits", "_okToDropOpenEdits",
+                        "_anyOpenDirty", "_dirtyOpenEdits", "markDirty", "_plural")
     out = _run_node(tmp_path, fns + _BULK_DIRTY_STUBS + r"""
 var reply = """ + json.dumps(reply) + r""";
 async function run(editMeanwhile) {
@@ -1877,9 +1866,8 @@ def test_load_more_groups_asks_once_about_edits_already_agreed_to_drop(page, tmp
     edits "Load more groups?" had covered; a Cancel there hid the groups the
     user asked for. Edits made while the page loaded still get the re-ask,
     and a page superseded by a filter change still never renders."""
-    fns = "\n".join(_js_function(page, f) for f in (
-        "loadMoreSamples", "_renderUnlessKeptOpenEdits", "_freshOpenEdits",
-        "_okToDropOpenEdits", "_anyOpenDirty", "_dirtyOpenEdits", "markDirty"))
+    fns = _js_functions(page, "loadMoreSamples", "_renderUnlessKeptOpenEdits", "_freshOpenEdits",
+                        "_okToDropOpenEdits", "_anyOpenDirty", "_dirtyOpenEdits", "markDirty")
     out = _run_node(tmp_path, fns + _BULK_DIRTY_STUBS + r"""
 var _samplesNext, _samplesLoading = false, _loadSeq = 0, _allSamples = [];
 function _speakerQs() { return ''; }
@@ -1918,9 +1906,8 @@ def test_load_asks_before_rendering_over_edits_made_meanwhile(page, tmp_path):
     ran lost its chips / notes to the render() after them, with no prompt.
     On a Cancel the list on screen (and its group cursor) stays as it was;
     edits the caller already agreed to drop are not asked about again."""
-    fns = "\n".join(_js_function(page, f) for f in (
-        "load", "_freshOpenEdits", "_okToDropOpenEdits", "_anyOpenDirty",
-        "_dirtyOpenEdits", "markDirty"))
+    fns = _js_functions(page, "load", "_freshOpenEdits", "_okToDropOpenEdits", "_anyOpenDirty",
+                        "_dirtyOpenEdits", "markDirty")
     out = _run_node(tmp_path, fns + r"""
 var cursor = { before_ts: 100, before_id: 'a1' };
 var _samplesNext, _samplesNextQs = '', _loadSeq = 0, _allSamples, _allCaptures;
@@ -1983,9 +1970,8 @@ def test_cancelled_refresh_after_a_speaker_switch_keeps_the_shown_speakers(
     Cancel on "Show the refreshed list?" kept Alice's list under Bob's
     picker and URL, so the next render hid Alice's groups and the counts
     and Load more went by Bob."""
-    fns = "\n".join(_js_function(page, f) for f in (
-        "load", "_speakerQs", "_freshOpenEdits", "_okToDropOpenEdits",
-        "_anyOpenDirty", "_dirtyOpenEdits", "markDirty"))
+    fns = _js_functions(page, "load", "_speakerQs", "_freshOpenEdits", "_okToDropOpenEdits",
+                        "_anyOpenDirty", "_dirtyOpenEdits", "markDirty")
     out = _run_node(tmp_path, fns + r"""
 var cursor = { before_ts: 100, before_id: 'a1' };
 var _samplesNext = cursor, _samplesNextQs = '&user_id=alice', _loadSeq = 0;
@@ -2035,9 +2021,8 @@ def test_load_after_a_request_asks_about_edits_made_during_it(
     on a running rebuild) counted as agreed and the refreshed list dropped
     it with no prompt."""
     handler = _js_block(page, page.index(anchor) + len(anchor))
-    fns = "\n".join(_js_function(page, f) for f in (
-        "load", "_freshOpenEdits", "_okToDropOpenEdits", "_anyOpenDirty",
-        "_dirtyOpenEdits", "markDirty"))
+    fns = _js_functions(page, "load", "_freshOpenEdits", "_okToDropOpenEdits", "_anyOpenDirty",
+                        "_dirtyOpenEdits", "markDirty")
     out = _run_node(tmp_path, fns + r"""
 var _samplesNext = null, _samplesNextQs = '', _loadSeq = 0, _allSamples = [], _allCaptures = [];
 var _counts = {}, _totalCount = 0, _me = null, _isAdmin = true, _filtSpeakers = [];
@@ -2076,8 +2061,7 @@ def test_load_more_groups_during_a_load_never_pages_the_old_cursor(page, tmp_pat
     both its GETs: a Load more meanwhile paged the OLD filter's cursor under
     the NEW seq, spliced those groups into the new list and overwrote its
     cursor, so every group between the two cursors went missing."""
-    fns = "\n".join(_js_function(page, f) for f in (
-        "load", "loadMoreSamples", "_freshOpenEdits"))
+    fns = _js_functions(page, "load", "loadMoreSamples", "_freshOpenEdits")
     out = _run_node(tmp_path, fns + r"""
 var _samplesNext = { before_ts: 100, before_id: 'a1' }, _samplesLoading = false;
 var _loadSeq = 0, _allSamples = [{ id: 'old0' }], _allCaptures = [], _counts = {};
@@ -2122,8 +2106,7 @@ def test_failed_load_keeps_the_old_lists_load_more_working(page, tmp_path):
     again on success: after a failed refresh the old list's "Load more
     groups" button silently did nothing (and a Load more that finished
     meanwhile left it hidden)."""
-    fns = "\n".join(_js_function(page, f) for f in (
-        "load", "loadMoreSamples", "_freshOpenEdits"))
+    fns = _js_functions(page, "load", "loadMoreSamples", "_freshOpenEdits")
     out = _run_node(tmp_path, fns + r"""
 var cursor = { before_ts: 100, before_id: 'a1' };
 var _samplesNext = cursor, _samplesNextQs = '', _samplesLoading = false;
@@ -2165,8 +2148,7 @@ def test_failed_load_after_a_speaker_switch_drops_the_old_lists_cursor(page, tmp
     gave the old list its cursor back, and Load more then paged Bob's
     cursor under the new filter, splicing everyone's older groups onto
     Bob's list."""
-    fns = "\n".join(_js_function(page, f) for f in (
-        "load", "loadMoreSamples", "_freshOpenEdits"))
+    fns = _js_functions(page, "load", "loadMoreSamples", "_freshOpenEdits")
     out = _run_node(tmp_path, fns + r"""
 var _samplesNext = { before_ts: 100, before_id: 'a1' }, _samplesLoading = false;
 var _samplesNextQs = '&user_id=bob';
@@ -2201,8 +2183,7 @@ global.document = { getElementById: function() { return footer; } };
 def test_header_collapse_asks_before_dropping_a_cards_unsaved_edits(page, tmp_path):
     """A header click collapsed an open capture or group card holding
     unsaved chips / notes with no prompt; the edits were gone."""
-    fns = "\n".join(_js_function(page, f) for f in (
-        "_okToCollapse", "toggleExpand", "collapse", "_toggleSampleExpand"))
+    fns = _js_functions(page, "_okToCollapse", "toggleExpand", "collapse", "_toggleSampleExpand")
     out = _run_node(tmp_path, fns + r"""
 var asked = 0, answers = [];
 async function _confirm() { asked++; return answers.shift(); }
@@ -2250,7 +2231,7 @@ def test_failed_reopen_after_render_drops_the_old_cards_state(page, tmp_path):
     in _openRows. When that GET failed the stale (dirty) state stayed:
     every refresh was skipped for "unsaved edits" no card showed, and its
     blob URL was never revoked. A first open that fails has no state."""
-    fns = "\n".join(_js_function(page, f) for f in ("toggleExpand", "collapse"))
+    fns = _js_functions(page, "toggleExpand", "collapse")
     out = _run_node(tmp_path, fns + r"""
 var revoked = [], paused = 0;
 global.URL = { revokeObjectURL: function(u) { revoked.push(u); } };
@@ -2282,7 +2263,7 @@ def test_superseded_reopen_leaves_the_live_cards_state(page, tmp_path):
     (now detached) card's GET landed last, its buildBody replaced the live
     card's dirty state in _openRows with a clean one, so the unsaved-edits
     prompt no longer fired. A card collapsed while its GET ran stays shut."""
-    fns = "\n".join(_js_function(page, f) for f in ("toggleExpand", "collapse"))
+    fns = _js_functions(page, "toggleExpand", "collapse")
     out = _run_node(tmp_path, fns + r"""
 var pending = [];
 function api() { return new Promise(function(res) { pending.push(res); }); }
@@ -2325,7 +2306,7 @@ def test_capture_status_click_during_save_or_reprocess_survives_the_reply(page, 
     render filed the card under the wrong status."""
     build = _js_function(page, "buildBody")
     handler = _js_block(build, build.index("async function(v) {\n        // Auto-save on click."))
-    fns = "\n".join(_js_function(page, f) for f in ("onSave", "onReprocess"))
+    fns = _js_functions(page, "onSave", "onReprocess")
     out = _run_node(tmp_path, fns + r"""
 var body = { parentNode: null }, slow = [];
 var statusGrp = { setValue: function() {} };
@@ -2369,8 +2350,7 @@ def test_proposal_chip_save_updates_the_list_rows(page, tmp_path):
     """A chip typed in a proposal / merge preview auto-saved to the member
     captures, but their list rows kept the old chips: the collapsed cards
     and a reopened merge modal showed the uncorrected text until Refresh."""
-    fns = "\n".join(_js_function(page, f) for f in (
-        "_saveProposalChips", "_capturePreviewText", "_applyChipsToText"))
+    fns = _js_functions(page, "_saveProposalChips", "_capturePreviewText", "_applyChipsToText")
     chip = {"wrong": "die", "correct": "Die", "idx": 4}
     out = _run_node(tmp_path, fns + r"""
 var previews = {};
@@ -2489,8 +2469,7 @@ def test_blank_chip_correction_leaves_the_final_result_preview_alone(page, tmp_p
     """Save drops a chip whose correction is only spaces (as does the
     server), but the Final-result preview applied it: "um" vanished from
     the preview while the export kept it."""
-    fns = "\n".join(_js_function(page, f) for f in (
-        "_applyChipsToText", "_renderGroundSpans"))
+    fns = _js_functions(page, "_applyChipsToText", "_renderGroundSpans")
     out = _run_node(tmp_path, fns + r"""
 global.document = { createElement: function() { return {}; } };
 var spans = [];
@@ -2539,7 +2518,7 @@ def test_final_result_preview_joins_zh_ja_members_like_the_server(page, tmp_path
     transcript and export read "我们去北京你好"."""
     from faster_whisper_backend.captures.samples import _build_default_transcript
 
-    fns = "\n".join(_js_function(page, f) for f in ("_cjkEdge", "_renderGroundSpans"))
+    fns = _js_functions(page, "_cjkEdge", "_renderGroundSpans")
     out = _run_node(tmp_path, fns + r"""
 global.document = { createElement: function() { return {}; } };
 function render(words, corrections) {
@@ -2577,7 +2556,7 @@ def test_final_result_preview_reads_a_member_past_an_opener_word_of_its_own(page
     "我们去北京。「你好」"."""
     from faster_whisper_backend.captures.samples import _build_default_transcript
 
-    fns = "\n".join(_js_function(page, f) for f in ("_cjkEdge", "_renderGroundSpans"))
+    fns = _js_functions(page, "_cjkEdge", "_renderGroundSpans")
     out = _run_node(tmp_path, fns + r"""
 global.document = { createElement: function() { return {}; } };
 function render(words) {
@@ -2609,8 +2588,7 @@ def test_karaoke_highlight_scrolls_only_the_word_strip(page, tmp_path):
     """The active word was brought on screen with scrollIntoView, which also
     scrolls the page and the merge modal: a playing card pulled the view
     back to itself on every word."""
-    fns = "\n".join(_js_function(page, f) for f in (
-        "_scrollStripTo", "_setActiveWord"))
+    fns = _js_functions(page, "_scrollStripTo", "_setActiveWord")
     out = _run_node(tmp_path, fns + r"""
 var calls = 0;
 function word(top) {
@@ -2642,8 +2620,7 @@ def test_keyboard_cursor_scrolls_only_the_word_strip(page, tmp_path):
     """The cursor word was brought on screen with scrollIntoView, and a
     Save / Regenerate / Lock reply repaints the cursor: a user who had
     scrolled away from the card was pulled back to it."""
-    fns = "\n".join(_js_function(page, f) for f in (
-        "_scrollStripTo", "_redrawCursor"))
+    fns = _js_functions(page, "_scrollStripTo", "_redrawCursor")
     out = _run_node(tmp_path, fns + r"""
 var calls = 0;
 function word(top) {
@@ -2668,8 +2645,7 @@ def test_keyboard_cursor_move_scrolls_the_page_to_the_cursor(page, tmp_path):
     cursor (the strip's key handlers preventDefault it), so with the strip
     partly below the window the cursor moved off screen and the page did
     not follow."""
-    fns = "\n".join(_js_function(page, f) for f in (
-        "_scrollStripTo", "_redrawCursor", "_moveCursor"))
+    fns = _js_functions(page, "_scrollStripTo", "_redrawCursor", "_moveCursor")
     out = _run_node(tmp_path, fns + r"""
 var calls = [];
 function word(i, top) {
@@ -2696,8 +2672,8 @@ def test_first_focus_of_the_strip_leaves_the_page_alone(page, tmp_path):
     the cursor on word 0 with a page scroll: with the strip's top above the
     window the page jumped before mouseup, and the click on a word further
     down was lost."""
-    fns = "\n".join(_js_function(page, f) for f in (
-        "_scrollStripTo", "_redrawCursor", "_moveCursor", "_bindStripKeyboard"))
+    fns = _js_functions(page, "_scrollStripTo", "_redrawCursor", "_moveCursor",
+                        "_bindStripKeyboard")
     out = _run_node(tmp_path, fns + r"""
 var calls = 0, handlers = {};
 function word() {
@@ -2725,8 +2701,8 @@ def _strip_focus_harness(page):
     """_bindStripKeyboard on a strip scrolled down by 200px (playback or the
     wheel), so word 0 sits above its visible top; `handlers` holds the
     strip's listeners."""
-    fns = "\n".join(_js_function(page, f) for f in (
-        "_scrollStripTo", "_redrawCursor", "_moveCursor", "_bindStripKeyboard"))
+    fns = _js_functions(page, "_scrollStripTo", "_redrawCursor", "_moveCursor",
+                        "_bindStripKeyboard")
     return fns + r"""
 var handlers = {};
 function word(top) {
