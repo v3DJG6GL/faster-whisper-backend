@@ -1645,9 +1645,9 @@ async def preview_save_chips_api(
     `corrections` field. Same fan-out semantics as the group-level chip
     save (patch_sample_api below).
 
-    Re-fetches every touched member and returns the canonical chips so
-    the client can reproject (via _project_member_corrections) to refresh
-    its baseline without a full /preview-words round-trip."""
+    Returns each touched member's canonical (store-cleaned) chips as
+    `members_corrections`, so the client can update those capture cards
+    without a Refresh."""
     captures, owner_user_id, _member_paths, _total_audio_ms = (
         await asyncio.to_thread(
             _validate_merge_payload, payload.member_ids,
