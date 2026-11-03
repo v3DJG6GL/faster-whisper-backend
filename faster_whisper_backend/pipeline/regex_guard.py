@@ -1653,11 +1653,7 @@ def _synthetic_fixtures(pat: str) -> "list[str]":
     # The short run must be long enough for the rule to match at all
     # (`(\d+)` x7 then `1` needs 8 characters) or every candidate looks alike.
     try:
-        try:
-            import re._parser as _reparser
-        except ImportError:  # pragma: no cover - Python < 3.11
-            import sre_parse as _reparser
-        parsed = _reparser.parse(pat)
+        parsed = _sre_modules()[0].parse(pat)
         width = parsed.getwidth()[0]
     except Exception:  # noqa: BLE001 - width analysis is best effort
         parsed, width = None, 0
@@ -1722,6 +1718,17 @@ def _run_signature(shape, c: str, t: str) -> tuple:
         for a, occs in zip(atoms, reach))
 
 
+def _sre_modules():
+    """(re._parser, re._compiler), under their pre-3.11 names on older Pythons."""
+    try:
+        import re._compiler as compiler
+        import re._parser as parser
+    except ImportError:  # pragma: no cover - Python < 3.11
+        import sre_compile as compiler
+        import sre_parse as parser
+    return parser, compiler
+
+
 def _char_atoms(parsed) -> "tuple[list, list, bool] | None":
     """Every single-character atom of a parsed pattern, compiled on its own
     with the flags in force where it sits (`(?i:euro)`), or None on a
@@ -1736,12 +1743,7 @@ def _char_atoms(parsed) -> "tuple[list, list, bool] | None":
     it reach the terminator). A lookbehind reads back over them, so its atoms
     get none."""
     try:
-        try:
-            import re._compiler as _recompiler
-            import re._parser as _reparser
-        except ImportError:  # pragma: no cover - Python < 3.11
-            import sre_compile as _recompiler
-            import sre_parse as _reparser
+        _reparser, _recompiler = _sre_modules()
         consuming = (_reparser.LITERAL, _reparser.NOT_LITERAL,
                      _reparser.ANY, _reparser.IN)
         stand_ins = {
@@ -2088,11 +2090,7 @@ def _probe(checks: list):
         # replacement analytically as well: compare the characters it always
         # contributes against the shortest string the pattern can match.
         try:
-            try:
-                import re._parser as _reparser
-            except ImportError:  # pragma: no cover - Python < 3.11
-                import sre_parse as _reparser
-            _min_match = _reparser.parse(item[0]).getwidth()[0]
+            _min_match = _sre_modules()[0].parse(item[0]).getwidth()[0]
         except Exception:  # noqa: BLE001 - width analysis is best effort
             _min_match = 0
         _mm = max(_min_match, 1)
