@@ -17,7 +17,7 @@ def test_captures_page(client):
     r = client.get("/captures")
     assert r.status_code == 200
     assert "text/html" in r.headers["content-type"]
-    # The raw-string template must ship the literal glyph, not a JS escape
+    # The template must ship the literal glyph, not a JS escape
     # that innerHTML would render verbatim as "Whisper\u2019s".
     html = r.text
     assert "Whisper’s" in html and "\\u2019" not in html
