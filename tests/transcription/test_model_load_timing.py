@@ -16,25 +16,11 @@ import pytest
 from faster_whisper_backend.runtime import model_registry
 from tests.conftest import FakeModel
 from faster_whisper_backend.transcription import models as tx_models
-
-
-def _stub_load(monkeypatch):
-    fw = types.ModuleType("faster_whisper")
-    fw.WhisperModel = lambda path, **kw: FakeModel()
-    # The short names these cases load, standing in for the size list.
-    fw.available_models = lambda: ["a", "b", "c", "x", "y"]
-    monkeypatch.setitem(sys.modules, "faster_whisper", fw)
-
-    async def _same(name):
-        return name
-    monkeypatch.setattr(tx_models, "_ensure_ct2_model", _same)
-    monkeypatch.setattr(tx_models.cfg, "ALLOWED_MODELS", set(), raising=False)
-    monkeypatch.setattr(tx_models.cfg, "LOCAL_FILES_ONLY", True, raising=False)
-    monkeypatch.setattr(tx_models.cfg, "MAX_LOADED_MODELS", 4, raising=False)
+from tests.transcription._load_helpers import stub_whisper_load as _stub_load
 
 
 def test_lock_wait_is_not_billed_as_load_time(monkeypatch):
-    _stub_load(monkeypatch)
+    _stub_load(monkeypatch, max_loaded=4)
     # A throwaway lock: contending the production global inside this test's
     # own asyncio.run() loop would leave it bound to a closed loop.
     monkeypatch.setattr(tx_models, "_model_load_lock", asyncio.Lock())
@@ -61,7 +47,7 @@ def test_load_in_progress_covers_the_conversion_outside_the_lock(monkeypatch):
     """A cold load spends its CT2 conversion / Hub pre-download with
     _model_load_lock free; load_in_progress() must still report it, or a
     preload is admitted and the job's constructor queues behind the warm-up."""
-    _stub_load(monkeypatch)
+    _stub_load(monkeypatch, max_loaded=4)
     monkeypatch.setattr(tx_models, "_model_load_lock", asyncio.Lock())
     seen = []
 
@@ -90,7 +76,7 @@ def test_cancel_during_register_keeps_the_model_cached_and_frees_the_lease(
     model must already be cached by then (no phantom registry entry), and
     the lease the cancelled caller will never release is given back."""
     import threading
-    _stub_load(monkeypatch)
+    _stub_load(monkeypatch, max_loaded=4)
     monkeypatch.setattr(tx_models, "_model_load_lock", asyncio.Lock())
     entered, go = threading.Event(), threading.Event()
     real_register = model_registry.register_loaded_model
@@ -134,7 +120,7 @@ def test_cancel_while_register_is_queued_still_registers(monkeypatch):
     the registry, never the cache)."""
     import concurrent.futures
     import threading
-    _stub_load(monkeypatch)
+    _stub_load(monkeypatch, max_loaded=4)
     monkeypatch.setattr(tx_models, "_model_load_lock", asyncio.Lock())
     gate, queued = threading.Event(), []
 
@@ -179,7 +165,7 @@ def test_cancelled_load_holds_the_lock_until_its_queued_register_lands(
     model behind it (/stats and the admin page list it as loaded)."""
     import concurrent.futures
     import threading
-    _stub_load(monkeypatch)
+    _stub_load(monkeypatch, max_loaded=4)
     monkeypatch.setattr(tx_models, "_model_load_lock", asyncio.Lock())
     gate, queued = threading.Event(), []
 
@@ -226,8 +212,6 @@ def test_cancel_during_construction_finishes_the_build_under_the_lock(
     second build of the same model. The build is finished, cached unleased,
     and the retry gets that model without a second constructor call."""
     import threading
-    _stub_load(monkeypatch)
-    monkeypatch.setattr(tx_models, "_model_load_lock", asyncio.Lock())
     entered, go = threading.Event(), threading.Event()
     built = []
 
@@ -236,10 +220,8 @@ def test_cancel_during_construction_finishes_the_build_under_the_lock(
         entered.set()
         go.wait(5)
         return FakeModel()
-    fw = types.ModuleType("faster_whisper")
-    fw.WhisperModel = _slow_model
-    fw.available_models = sys.modules["faster_whisper"].available_models
-    monkeypatch.setitem(sys.modules, "faster_whisper", fw)
+    _stub_load(monkeypatch, whisper_model=_slow_model, max_loaded=4)
+    monkeypatch.setattr(tx_models, "_model_load_lock", asyncio.Lock())
 
     async def run():
         a = asyncio.create_task(tx_models._get_or_load_model("x", lease=True))
@@ -279,7 +261,7 @@ def test_predownload_capture_scope_runs_on_the_executor_thread(monkeypatch):
 
     import huggingface_hub
     from faster_whisper_backend.runtime import download_progress
-    _stub_load(monkeypatch)
+    _stub_load(monkeypatch, max_loaded=4)
     monkeypatch.setattr(tx_models, "_model_load_lock", asyncio.Lock())
     monkeypatch.setattr(tx_models.cfg, "LOCAL_FILES_ONLY", False,
                         raising=False)
@@ -316,12 +298,10 @@ def test_hardware_change_during_a_queued_load_reaches_the_constructor(
     queued behind another model's load finds nothing cached for
     drain_then_evict to drop; the load must still build the model with the
     NEW device, not the one it would have read before it waited."""
-    _stub_load(monkeypatch)
     built = []
-    fw = types.ModuleType("faster_whisper")
-    fw.WhisperModel = lambda path, **kw: built.append(kw) or FakeModel()
-    fw.available_models = sys.modules["faster_whisper"].available_models
-    monkeypatch.setitem(sys.modules, "faster_whisper", fw)
+    _stub_load(monkeypatch,
+               whisper_model=lambda path, **kw: built.append(kw) or FakeModel(),
+               max_loaded=4)
     monkeypatch.setattr(tx_models, "_model_load_lock", asyncio.Lock())
     monkeypatch.setattr(tx_models.cfg, "MODEL_DEVICE", "cpu", raising=False)
 
@@ -345,7 +325,7 @@ def test_vram_delta_is_sampled_on_the_load_device_index(monkeypatch):
     """With DEVICE_INDEX=1 on a two-GPU host the delta must come from GPU 1:
     sampling GPU 0 would record ~0 (or another process's usage) as the
     model's measured footprint."""
-    _stub_load(monkeypatch)
+    _stub_load(monkeypatch, max_loaded=4)
     monkeypatch.setattr(tx_models, "_model_load_lock", asyncio.Lock())
     monkeypatch.setattr(tx_models.cfg, "DEVICE_INDEX", 1, raising=False)
     reads = {0: iter([500, 500]), 1: iter([1000, 4000])}

@@ -9,7 +9,6 @@ import threading
 import logging
 import sys
 import time
-import types
 
 import pytest
 from fastapi import HTTPException
@@ -17,6 +16,7 @@ from fastapi import HTTPException
 from faster_whisper_backend.runtime import model_registry
 from tests.conftest import FakeModel
 from faster_whisper_backend.transcription import models as tx_models
+from tests.transcription._load_helpers import stub_whisper_load as _stub_load
 
 _FILE = {"file": ("a.wav", b"RIFFxxxxWAVE", "audio/wav")}
 
@@ -35,22 +35,6 @@ def _register(name):
     """Put a fake model in the cache the way a successful load would."""
     tx_models._loaded_models[name] = FakeModel()
     model_registry.register_loaded_model(name, 0, "cpu", "int8")
-
-
-def _stub_load(monkeypatch):
-    """Neutralise everything _get_or_load_model needs from the native stack."""
-    fw = types.ModuleType("faster_whisper")
-    fw.WhisperModel = lambda path, **kw: FakeModel()
-    # The short names these cases load, standing in for the size list.
-    fw.available_models = lambda: ["a", "b", "c", "x", "y"]
-    monkeypatch.setitem(sys.modules, "faster_whisper", fw)
-
-    async def _same(name):
-        return name
-    monkeypatch.setattr(tx_models, "_ensure_ct2_model", _same)
-    monkeypatch.setattr(tx_models.cfg, "ALLOWED_MODELS", set(), raising=False)
-    # Skips the Hub pre-download, so the stubbed load never touches the network.
-    monkeypatch.setattr(tx_models.cfg, "LOCAL_FILES_ONLY", True, raising=False)
 
 
 def test_drop_refuses_while_leased():
@@ -76,8 +60,7 @@ def test_drop_unleased_still_drops():
 
 
 def test_lru_skips_a_leased_entry(monkeypatch):
-    _stub_load(monkeypatch)
-    monkeypatch.setattr(tx_models.cfg, "MAX_LOADED_MODELS", 2, raising=False)
+    _stub_load(monkeypatch, max_loaded=2)
     _register("a")
     _register("b")
     tx_models._model_leases["a"] = 1  # oldest, but in use
@@ -89,8 +72,7 @@ def test_lru_skips_a_leased_entry(monkeypatch):
 
 
 def test_all_leased_overflows_the_cap(monkeypatch, caplog):
-    _stub_load(monkeypatch)
-    monkeypatch.setattr(tx_models.cfg, "MAX_LOADED_MODELS", 1, raising=False)
+    _stub_load(monkeypatch, max_loaded=1)
     _register("a")
     tx_models._model_leases["a"] = 1
 
@@ -102,7 +84,7 @@ def test_all_leased_overflows_the_cap(monkeypatch, caplog):
                for r in caplog.records)
 
 
-def _stub_doomed_constructor(monkeypatch, built):
+def _doomed_constructor(built):
     """WhisperModel that raises faster-whisper's ValueError for an unknown
     short size and records every build, so a test can assert none ran."""
     def _build(path, **kw):
@@ -110,16 +92,15 @@ def _stub_doomed_constructor(monkeypatch, built):
         if path not in sys.modules["faster_whisper"].available_models():
             raise ValueError(f"Invalid model size '{path}'")
         return FakeModel()
-    monkeypatch.setattr(sys.modules["faster_whisper"], "WhisperModel", _build)
+    return _build
 
 
 def test_unknown_short_name_evicts_nothing(monkeypatch):
     """A typo'd size can only fail in the constructor, so it is rejected
     before the LRU loop and costs the hot model no cold reload."""
-    _stub_load(monkeypatch)
     built = []
-    _stub_doomed_constructor(monkeypatch, built)
-    monkeypatch.setattr(tx_models.cfg, "MAX_LOADED_MODELS", 1, raising=False)
+    _stub_load(monkeypatch, whisper_model=_doomed_constructor(built),
+               max_loaded=1)
     _register("a")
 
     with pytest.raises(HTTPException) as exc:
@@ -154,10 +135,9 @@ def test_unknown_short_name_fails_the_shared_gate(monkeypatch):
 ])
 def test_short_name_of_a_local_dir_still_loads(monkeypatch, tmp_path,
                                                field, value):
-    _stub_load(monkeypatch)
+    _stub_load(monkeypatch, max_loaded=4)
     monkeypatch.chdir(tmp_path)
     (tmp_path / "my-model").mkdir()
-    monkeypatch.setattr(tx_models.cfg, "MAX_LOADED_MODELS", 4, raising=False)
     monkeypatch.setattr(tx_models.cfg, field, value, raising=False)
 
     asyncio.run(tx_models._get_or_load_model("my-model"))
@@ -166,10 +146,9 @@ def test_short_name_of_a_local_dir_still_loads(monkeypatch, tmp_path,
 
 
 def test_an_operator_named_two_level_dir_still_loads(monkeypatch, tmp_path):
-    _stub_load(monkeypatch)
+    _stub_load(monkeypatch, max_loaded=4)
     monkeypatch.chdir(tmp_path)
     (tmp_path / "models" / "my-ft").mkdir(parents=True)
-    monkeypatch.setattr(tx_models.cfg, "MAX_LOADED_MODELS", 4, raising=False)
     monkeypatch.setattr(tx_models.cfg, "PRELOAD_MODELS", ["models/my-ft"],
                         raising=False)
 
@@ -186,14 +165,13 @@ def test_an_unconfigured_dir_fails_the_shared_gate(monkeypatch, tmp_path,
     under the server's cwd too: refused up front (preload included), not
     loaded after the LRU loop evicted the hot model for it. The two-level one
     has the org/repo shape and would skip the Hub pre-download."""
-    _stub_load(monkeypatch)
     built = []
-    _stub_doomed_constructor(monkeypatch, built)
+    _stub_load(monkeypatch, whisper_model=_doomed_constructor(built),
+               max_loaded=1)
     monkeypatch.chdir(tmp_path)
     (tmp_path / name).mkdir(parents=True)
     monkeypatch.setattr(tx_models.cfg, "DEFAULT_MODEL", "a", raising=False)
     monkeypatch.setattr(tx_models.cfg, "PRELOAD_MODELS", [], raising=False)
-    monkeypatch.setattr(tx_models.cfg, "MAX_LOADED_MODELS", 1, raising=False)
     _register("a")
 
     with pytest.raises(HTTPException) as exc:
@@ -218,11 +196,10 @@ def test_a_resident_dir_is_refused_once_default_model_moves_off_it(
     """DEFAULT_MODEL hot-applies and evicts nothing: the cache-hit fast path
     must refuse the withdrawn dir as _check_model_name does, not serve it
     until an LRU eviction or a restart."""
-    _stub_load(monkeypatch)
+    _stub_load(monkeypatch, max_loaded=4)
     monkeypatch.chdir(tmp_path)
     (tmp_path / "models" / "my-ft").mkdir(parents=True)
     name = str(tmp_path / "models" / "my-ft") if absolute else "models/my-ft"
-    monkeypatch.setattr(tx_models.cfg, "MAX_LOADED_MODELS", 4, raising=False)
     monkeypatch.setattr(tx_models.cfg, "PRELOAD_MODELS", [], raising=False)
     monkeypatch.setattr(tx_models.cfg, "DEFAULT_MODEL", name, raising=False)
     asyncio.run(tx_models._get_or_load_model(name))
@@ -245,12 +222,11 @@ def test_repo_missing_on_the_hub_evicts_nothing(monkeypatch, err):
     import httpx2
     import huggingface_hub
     from huggingface_hub import errors as hf_errors
-    _stub_load(monkeypatch)
     built = []
-    _stub_doomed_constructor(monkeypatch, built)
+    _stub_load(monkeypatch, whisper_model=_doomed_constructor(built),
+               max_loaded=1)
     monkeypatch.setattr(tx_models.cfg, "LOCAL_FILES_ONLY", False,
                         raising=False)
-    monkeypatch.setattr(tx_models.cfg, "MAX_LOADED_MODELS", 1, raising=False)
     response = httpx2.Response(404, request=httpx2.Request(
         "GET", "https://huggingface.co/api/models/org/nope"))
 
@@ -271,11 +247,10 @@ def test_repo_missing_on_the_hub_evicts_nothing(monkeypatch, err):
 def _concurrent_cold_loads(monkeypatch, snapshot, n=4):
     """n concurrent misses for one cold Hub repo; their outcomes."""
     import huggingface_hub
-    _stub_load(monkeypatch)
+    _stub_load(monkeypatch, max_loaded=4)
     monkeypatch.setattr(tx_models, "_model_load_lock", asyncio.Lock())
     monkeypatch.setattr(tx_models.cfg, "LOCAL_FILES_ONLY", False,
                         raising=False)
-    monkeypatch.setattr(tx_models.cfg, "MAX_LOADED_MODELS", 4, raising=False)
     monkeypatch.setattr(huggingface_hub, "snapshot_download", snapshot)
 
     async def run():
@@ -367,13 +342,12 @@ def test_hub_rejecting_the_token_evicts_nothing(monkeypatch, status, refused):
     import httpx2
     import huggingface_hub
     from huggingface_hub import errors as hf_errors
-    _stub_load(monkeypatch)
     built = []
-    monkeypatch.setattr(sys.modules["faster_whisper"], "WhisperModel",
-                        lambda path, **kw: built.append(path) or FakeModel())
+    _stub_load(monkeypatch,
+               whisper_model=lambda path, **kw: built.append(path) or FakeModel(),
+               max_loaded=1)
     monkeypatch.setattr(tx_models.cfg, "LOCAL_FILES_ONLY", False,
                         raising=False)
-    monkeypatch.setattr(tx_models.cfg, "MAX_LOADED_MODELS", 1, raising=False)
     response = httpx2.Response(status, request=httpx2.Request(
         "GET", "https://huggingface.co/api/models/org/public"))
 
@@ -397,8 +371,7 @@ def test_hub_rejecting_the_token_evicts_nothing(monkeypatch, status, refused):
 
 
 def test_lease_taken_on_cache_hit_and_on_load(monkeypatch):
-    _stub_load(monkeypatch)
-    monkeypatch.setattr(tx_models.cfg, "MAX_LOADED_MODELS", 4, raising=False)
+    _stub_load(monkeypatch, max_loaded=4)
     _register("a")
 
     asyncio.run(tx_models._get_or_load_model("a", lease=True))   # lock-free hit
@@ -462,8 +435,7 @@ def test_release_tolerates_a_dropped_model():
 def test_a_reload_after_drain_does_not_inherit_the_old_lease(monkeypatch):
     # R1 still decodes on the instance drain_then_evict dropped; the reload
     # nobody leased must stay evictable, or a miss for "b" overflows the cap.
-    _stub_load(monkeypatch)
-    monkeypatch.setattr(tx_models.cfg, "MAX_LOADED_MODELS", 1, raising=False)
+    _stub_load(monkeypatch, max_loaded=1)
     _register("a")
     tx_models._model_leases["a"] = 1
 
@@ -478,8 +450,7 @@ def test_a_reload_after_drain_does_not_inherit_the_old_lease(monkeypatch):
 
 
 def test_an_old_holder_release_leaves_the_reload_lease(monkeypatch):
-    _stub_load(monkeypatch)
-    monkeypatch.setattr(tx_models.cfg, "MAX_LOADED_MODELS", 1, raising=False)
+    _stub_load(monkeypatch, max_loaded=1)
     _register("a")
     old = tx_models._loaded_models["a"]
     tx_models._model_leases["a"] = 1
@@ -504,8 +475,7 @@ def test_a_reload_holder_release_leaves_the_old_holder_lease_orphaned(
     # on the drained instance when the short R2 on the reload ends. R2's
     # release must free the reload, or a miss for "b" overflows the cap for
     # the rest of R1's session.
-    _stub_load(monkeypatch)
-    monkeypatch.setattr(tx_models.cfg, "MAX_LOADED_MODELS", 1, raising=False)
+    _stub_load(monkeypatch, max_loaded=1)
     _register("a")
     old = tx_models._loaded_models["a"]
     tx_models._model_leases["a"] = 1
@@ -529,8 +499,7 @@ def test_a_failed_register_leaves_no_lease_a_cache_hit_took_meanwhile(
     # leases it while that write runs. When the write then raises, that
     # holder's release must not leave a count behind that pins the next load
     # of "a" (a miss for "b" overflowed the cap until restart).
-    _stub_load(monkeypatch)
-    monkeypatch.setattr(tx_models.cfg, "MAX_LOADED_MODELS", 1, raising=False)
+    _stub_load(monkeypatch, max_loaded=1)
     monkeypatch.setattr(tx_models, "_model_load_lock", asyncio.Lock())
     entered, go = threading.Event(), threading.Event()
     real_register = model_registry.register_loaded_model
@@ -574,8 +543,7 @@ def test_last_release_trims_a_cap_lowered_under_leases(monkeypatch):
     _register("a")
     _register("b")
     tx_models._model_leases.update({"a": 1, "b": 1})
-    _stub_load(monkeypatch)
-    monkeypatch.setattr(tx_models.cfg, "MAX_LOADED_MODELS", 1, raising=False)
+    _stub_load(monkeypatch, max_loaded=1)
 
     async def scenario():
         assert await tx_models.trim_to_cap() == []
@@ -606,14 +574,12 @@ def test_release_in_an_all_leased_overflow_keeps_the_released_model(
     # A long streaming session pins "a"; each batch request for "b" overflows
     # the cap. Its release must not evict "b" (the only unleased entry), or
     # every later "b" request is a cold reload.
-    _stub_load(monkeypatch)
     builds: "list[str]" = []
 
     def _model(path, **kw):
         builds.append(path)
         return FakeModel()
-    sys.modules["faster_whisper"].WhisperModel = _model
-    monkeypatch.setattr(tx_models.cfg, "MAX_LOADED_MODELS", 1, raising=False)
+    _stub_load(monkeypatch, whisper_model=_model, max_loaded=1)
     _register("a")
     tx_models._model_leases["a"] = 1
 
@@ -634,7 +600,6 @@ def test_a_leased_load_keeps_a_release_scheduled_trim_from_evicting(
     # "a" is pinned and "b" overflows the cap; "b"'s release schedules a trim
     # that spares it while a request for "c" is still building. Caching the
     # leased "c" must not take that protection away from "b".
-    _stub_load(monkeypatch)
     entered, gate = threading.Event(), threading.Event()
 
     def _model(path, **kw):
@@ -642,8 +607,7 @@ def test_a_leased_load_keeps_a_release_scheduled_trim_from_evicting(
             entered.set()
             gate.wait(5)
         return FakeModel()
-    sys.modules["faster_whisper"].WhisperModel = _model
-    monkeypatch.setattr(tx_models.cfg, "MAX_LOADED_MODELS", 1, raising=False)
+    _stub_load(monkeypatch, whisper_model=_model, max_loaded=1)
     _register("a")
     tx_models._model_leases["a"] = 1
 
@@ -665,15 +629,13 @@ def test_release_during_an_unleased_over_cap_load_trims_after_it(monkeypatch):
     # "a" is leased, so the preload of "b" overflows the cap; "a"'s lease goes
     # while "b" is still being built (nothing over the cap yet to trim), and
     # the unleased "b" never releases a lease. The load itself must reclaim.
-    _stub_load(monkeypatch)
     entered, gate = threading.Event(), threading.Event()
 
     def _slow_model(path, **kw):
         entered.set()
         gate.wait(5)
         return FakeModel()
-    sys.modules["faster_whisper"].WhisperModel = _slow_model
-    monkeypatch.setattr(tx_models.cfg, "MAX_LOADED_MODELS", 1, raising=False)
+    _stub_load(monkeypatch, whisper_model=_slow_model, max_loaded=1)
     _register("a")
     tx_models._model_leases["a"] = 1
 
@@ -780,8 +742,7 @@ def test_register_loaded_model_runs_off_the_loop(monkeypatch):
     """register_loaded_model persists the measurement (model_sizes.record ->
     atomic_json.save_lock + fsync) and can block for the lock timeout when
     a peer worker holds the ledger; the load path must hand it to a thread."""
-    _stub_load(monkeypatch)
-    monkeypatch.setattr(tx_models.cfg, "MAX_LOADED_MODELS", 4, raising=False)
+    _stub_load(monkeypatch, max_loaded=4)
     seen = {}
 
     def fake_register(name, **kw):
