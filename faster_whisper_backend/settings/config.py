@@ -1059,7 +1059,7 @@ QUICK_CONFIG_WORD_SUGGESTIONS_MAX: int = _D("QUICK_CONFIG_WORD_SUGGESTIONS_MAX")
 
 # Lazy-prune cadence — every Nth insert runs a single DELETE that
 # enforces both the row cap and the TTL. 0 disables lazy pruning (rows
-# accumulate until a manual /clear or the startup / hourly sweep).
+# accumulate until the startup / hourly sweep).
 RECENT_TRANSCRIPTIONS_PRUNE_EVERY = _D("RECENT_TRANSCRIPTIONS_PRUNE_EVERY")
 
 # /stats "Recent transcriptions" widget row count. The dashboard is
@@ -1109,7 +1109,7 @@ STATS_SYSTEM_METRICS_RETENTION_DAYS = _D("STATS_SYSTEM_METRICS_RETENTION_DAYS")
 # Per-key / per-user usage rollup
 # =============================================================================
 # Durable hourly rollup (one row per key per UTC hour) backing the per-user/
-# per-key usage numbers on /api-keys, the usage-over-time section on /stats, and
+# per-key usage numbers on /settings/api-keys, the usage-over-time section on /stats, and
 # the per-user "today" banner on /quick-config. Hourly UTC buckets let "today"
 # be reckoned in any timezone (the viewer's for the banner, the server's for the
 # dashboards). Kept separate from RECENT_TRANSCRIPTIONS because that store prunes
