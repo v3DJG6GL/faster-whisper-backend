@@ -127,14 +127,10 @@ def init_db(path: str) -> None:
     """Open (or create) the DB at `path` in WAL mode. Idempotent — call once
     on service startup before any other function in this module."""
     global _conn
-    if _conn is not None:
-        # A second call re-opens; don't leak the previous connection (and
-        # its WAL file handles).
-        try:
-            _conn.close()
-        except Exception:  # noqa: BLE001
-            pass
-        _conn = None
+    # A second call re-opens; don't leak the previous connection (and
+    # its WAL file handles).
+    store_common.close_quietly(_conn)
+    _conn = None
     _conn = store_common.open_wal_db(path)
     _conn.execute("PRAGMA temp_store=MEMORY;")
     _conn.executescript(_SCHEMA)
@@ -151,11 +147,7 @@ def _require_conn() -> sqlite3.Connection:
 def _reset_for_tests() -> None:
     """Drop the module connection (tests re-init onto a fresh temp file)."""
     global _conn, _insert_counter
-    if _conn is not None:
-        try:
-            _conn.close()
-        except Exception:  # noqa: BLE001
-            pass
+    store_common.close_quietly(_conn)
     _conn = None
     _insert_counter = 0
 
