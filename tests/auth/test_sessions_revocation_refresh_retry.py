@@ -1,26 +1,18 @@
 """A failed forced refresh after a sibling logout must not mark the
 'revocations' counter as seen."""
 
-import importlib.util
-import os
 import sqlite3
 
 import pytest
 
-from faster_whisper_backend.paths import REPO_ROOT
-from tests.auth._store_helpers import sibling_write
+from tests.auth._store_helpers import load_sessions_store_copy, sibling_write
 
 
 @pytest.fixture
 def worker(tmp_path):
     """An independent copy of sessions_store on its own DB file, like one
     uvicorn worker with its own connection and in-memory index."""
-    spec = importlib.util.spec_from_file_location(
-        "sessions_store_revocation_retry",
-        os.path.join(REPO_ROOT, "faster_whisper_backend", "auth", "sessions_store.py"))
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    mod.init_db(str(tmp_path / "sessions.db"))
+    mod = load_sessions_store_copy("sessions_store_revocation_retry", str(tmp_path / "sessions.db"))
     yield mod
     mod._conn.close()
     mod._conn = None

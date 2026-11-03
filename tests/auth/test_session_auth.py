@@ -9,8 +9,8 @@ follow-up requests — exactly like a browser."""
 import pytest
 from starlette.testclient import TestClient
 
+from tests.auth._store_helpers import load_sessions_store_copy
 from tests.conftest import bearer
-from faster_whisper_backend.paths import REPO_ROOT
 
 
 def _set_cookie_lines(resp):
@@ -437,13 +437,7 @@ def _worker(name, db_path):
     """Load a second, independent copy of sessions_store bound to the same DB
     file — faithful to two uvicorn workers, each with its own connection and
     its own in-memory _SESSION_INDEX."""
-    import importlib.util
-    import os
-    spec = importlib.util.spec_from_file_location(
-        name, os.path.join(REPO_ROOT, "faster_whisper_backend", "auth", "sessions_store.py"))
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    mod.init_db(db_path)
+    mod = load_sessions_store_copy(name, db_path)
     _WORKER_MODULES.append(mod)
     return mod
 

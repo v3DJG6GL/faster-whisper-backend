@@ -4,7 +4,22 @@ sessions_store, seen from a second uvicorn worker).
 Import as ``from tests.auth._store_helpers import ...``.
 """
 
+import importlib.util
+import os
 import sqlite3
+
+from faster_whisper_backend.paths import REPO_ROOT
+
+
+def load_sessions_store_copy(name, db_path):
+    """An independent copy of sessions_store on `db_path`, like one uvicorn
+    worker with its own connection and in-memory index."""
+    spec = importlib.util.spec_from_file_location(
+        name, os.path.join(REPO_ROOT, "faster_whisper_backend", "auth", "sessions_store.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    mod.init_db(db_path)
+    return mod
 
 
 def sibling_write(store, *stmts):
