@@ -1,5 +1,5 @@
 """Integration tests for GET /v1/usage — the desktop app's self-scoped usage
-statistics document: today + lifetime totals per kind, a per-kind daily
+statistics document: today + window totals per kind, a per-kind daily
 series, stage meters, the dictation breakdown, top apps, the rhythm calendar
 and streak, and the time-saved figure.
 
