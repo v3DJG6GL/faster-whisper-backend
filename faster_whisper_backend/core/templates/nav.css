@@ -724,7 +724,7 @@ header .page-link.allowed { display: inline-flex; }
    Breakpoint convention (em is relative to the BROWSER default font, NOT
    --fs-base):
        tablet  max-width: 64em  (~1024px)
-       phone   max-width: 40em  (~640px)   matches @container hdr 40rem
+       phone   max-width: 40em  (~640px)
        small   max-width: 30em  (~480px)
    Media-query em/rem do NOT track the --fs-base scale picker, so any
    width-based reflow that must follow the user's scale uses grid
