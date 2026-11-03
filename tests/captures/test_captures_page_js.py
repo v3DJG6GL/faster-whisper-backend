@@ -2484,12 +2484,10 @@ console.log(JSON.stringify([
     assert out == ["so um yes", "so um yeah", "so um yeah"]
 
 
-@needs_node
-def test_final_result_preview_joins_unspaced_words_without_a_space(page, tmp_path):
-    """Once a Chinese / Thai sentence is split among its words, the
-    Final-result preview put a space between every two of them; the space
-    between spaced words stays."""
-    out = _run_node(tmp_path, _js_functions(page, "_cjkEdge", "_renderGroundSpans") + r"""
+def _ground_spans_harness(page):
+    """_renderGroundSpans on a stand-in area: `render(words, corrections)`
+    returns the joined span text."""
+    return _js_functions(page, "_cjkEdge", "_renderGroundSpans") + r"""
 global.document = { createElement: function() { return {}; } };
 function render(words, corrections) {
   var spans = [];
@@ -2497,6 +2495,15 @@ function render(words, corrections) {
   _renderGroundSpans({ gtArea: area, words: words, corrections: corrections || [] });
   return spans.join('');
 }
+"""
+
+
+@needs_node
+def test_final_result_preview_joins_unspaced_words_without_a_space(page, tmp_path):
+    """Once a Chinese / Thai sentence is split among its words, the
+    Final-result preview put a space between every two of them; the space
+    between spaced words stays."""
+    out = _run_node(tmp_path, _ground_spans_harness(page) + r"""
 console.log(JSON.stringify([
   render([{ word: '我们', member_idx: 0 }, { word: '去', member_idx: 0 },
           { word: '北京。', member_idx: 0 }, { word: '你好', member_idx: 1 }]),
@@ -2515,15 +2522,7 @@ def test_final_result_preview_joins_zh_ja_members_like_the_server(page, tmp_path
     transcript and export read "我们去北京你好"."""
     from faster_whisper_backend.captures.samples import _build_default_transcript
 
-    fns = _js_functions(page, "_cjkEdge", "_renderGroundSpans")
-    out = _run_node(tmp_path, fns + r"""
-global.document = { createElement: function() { return {}; } };
-function render(words, corrections) {
-  var spans = [];
-  var area = { appendChild: function(e) { spans.push(e.textContent); } };
-  _renderGroundSpans({ gtArea: area, words: words, corrections: corrections || [] });
-  return spans.join('');
-}
+    out = _run_node(tmp_path, _ground_spans_harness(page) + r"""
 console.log(JSON.stringify([
   render([{ word: '我们', member_idx: 0 }, { word: '去', member_idx: 0 },
           { word: '北京', member_idx: 0 }, { word: '你好', member_idx: 1 }]),
@@ -2553,15 +2552,7 @@ def test_final_result_preview_reads_a_member_past_an_opener_word_of_its_own(page
     "我们去北京。「你好」"."""
     from faster_whisper_backend.captures.samples import _build_default_transcript
 
-    fns = _js_functions(page, "_cjkEdge", "_renderGroundSpans")
-    out = _run_node(tmp_path, fns + r"""
-global.document = { createElement: function() { return {}; } };
-function render(words) {
-  var spans = [];
-  var area = { appendChild: function(e) { spans.push(e.textContent); } };
-  _renderGroundSpans({ gtArea: area, words: words, corrections: [] });
-  return spans.join('');
-}
+    out = _run_node(tmp_path, _ground_spans_harness(page) + r"""
 function m(member, list) {
   return list.map(function(w) {
     return typeof w === 'string' ? { word: w, member_idx: member }
