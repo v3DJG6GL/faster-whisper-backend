@@ -3620,8 +3620,7 @@
       // The load() after the create rebuilds the list.
       if (!(await _okToDropOpenEdits('Create the sample?', 'Create'))) return;
       _stopAnyPreview();
-      // Server derives the transcript from members + chips on create
-      // (mirrors the locked preview).
+      // Only the ids: the server derives the transcript from members + chips.
       var payload = {
         member_ids: rows.map(function(r) { return r.id; }),
       };
