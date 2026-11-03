@@ -2089,14 +2089,7 @@
       // for a NULL column (a legacy row): "" is the pipeline blanking the
       // text (Python _training_base), not a cue to show the raw text.
       finalText: (r.text_for_training ?? r.final ?? r.raw) || '',
-      corrections: (r.corrections || []).map(function(c) {
-        return {
-          wrong: c.wrong || '',
-          correct: c.correct || '',
-          idx: typeof c.idx === 'number' ? c.idx : null,
-          idx_end: typeof c.idx_end === 'number' ? c.idx_end : null,
-        };
-      }),
+      corrections: (r.corrections || []).map(_chipFields),
       // Frozen snapshot of `corrections` at GET time. Sent back to the
       // server with the PATCH so it can three-way-merge against any
       // concurrent writes that landed between this load and the save.
@@ -2804,6 +2797,16 @@
     // markDirty here.
     state.gtArea.textContent =
       _applyChipsToText(state.finalText, state.corrections, state.words);
+  }
+
+  // One chip as the card state and the group PATCH carry it: '' text, null indices.
+  function _chipFields(c) {
+    return {
+      wrong: c.wrong || '',
+      correct: c.correct || '',
+      idx: typeof c.idx === 'number' ? c.idx : null,
+      idx_end: typeof c.idx_end === 'number' ? c.idx_end : null,
+    };
   }
 
   function markDirty(state) {
@@ -5411,14 +5414,7 @@
             d = Object.assign({}, d, { status: sampleState.newStatus });
           }
           sampleState.words = d.merged_words || [];
-          sampleState.corrections = (d.corrections || []).map(function(c) {
-            return {
-              wrong:   c.wrong   || '',
-              correct: c.correct || '',
-              idx:     typeof c.idx     === 'number' ? c.idx     : null,
-              idx_end: typeof c.idx_end === 'number' ? c.idx_end : null,
-            };
-          });
+          sampleState.corrections = (d.corrections || []).map(_chipFields);
           // The server's chip set as of now, sent back with the next PATCH so
           // the server can three-way-merge our deltas over concurrent
           // member-chip writes (another tab, or a member's own /captures card).
@@ -5546,14 +5542,7 @@
           // auto-save their own narrow PATCH, and resending it here would
           // revert a change another tab made since this view loaded.
           var payload = {
-            corrections:   sampleState.corrections.map(function(c) {
-              return {
-                wrong:   c.wrong   || '',
-                correct: c.correct || '',
-                idx:     typeof c.idx     === 'number' ? c.idx     : null,
-                idx_end: typeof c.idx_end === 'number' ? c.idx_end : null,
-              };
-            }),
+            corrections: sampleState.corrections.map(_chipFields),
             baseline_corrections: sampleState.baselineCorrections || [],
           };
           // Unchanged notes stay out: resending the GET's copy would erase

@@ -681,7 +681,7 @@ def test_heal_on_a_locked_group_marks_it_unsaved_only_for_an_admin(
     left such a group card "unsaved" for good, and every filter change
     asked to drop edits nobody made. An admin can save the heal."""
     fns = "\n".join(_js_function(page, f) for f in (
-        "applyServerSample", "_applyChipsToText"))
+        "applyServerSample", "_applyChipsToText", "_chipFields"))
     out = _run_node(tmp_path, _SAMPLE_CARD_STUBS + fns + _heal_fns(page) + r"""
 global.document = { createElement: function() { return fake(); } };
 function clearDirty(state) { state.dirty = false; }
@@ -1201,7 +1201,8 @@ def test_group_save_keeps_edits_made_while_it_ran(page, tmp_path):
     overwrote chips / notes typed meanwhile and cleared the dirty flag."""
     anchor = "saveTBtn.onclick = "
     handler = _js_block(page, page.index(anchor) + len(anchor))
-    out = _run_node(tmp_path, _js_function(page, "markDirty") + r"""
+    out = _run_node(tmp_path, _js_function(page, "markDirty") + "\n"
+                    + _js_function(page, "_chipFields") + r"""
 var chip = { wrong: 'a', correct: 'A', idx: 1, idx_end: 1 };
 var sampleState = { dirty: true, adminNotes: 'n', corrections: [chip],
   baselineCorrections: [] };
@@ -1236,7 +1237,7 @@ def test_group_save_sends_the_notes_only_when_changed(page, tmp_path):
     a chip-only Save erased a note another tab had saved since."""
     anchor = "saveTBtn.onclick = "
     handler = _js_block(page, page.index(anchor) + len(anchor))
-    out = _run_node(tmp_path, r"""
+    out = _run_node(tmp_path, _js_function(page, "_chipFields") + r"""
 var sampleState = { adminNotes: 'old', notesBaseline: 'old', corrections: [],
   baselineCorrections: [], editGen: 0 };
 var g = { id: 'g1' }, saveTBtn = {}, bodies = [];
@@ -1558,7 +1559,7 @@ def test_group_members_list_places_chips_by_aligned_words(page, tmp_path):
     without its aligned words (only raw words come with the members), so a
     chip after removed fillers moved to another copy of its word."""
     fns = "\n".join(_js_function(page, f) for f in (
-        "applyServerSample", "_applyChipsToText"))
+        "applyServerSample", "_applyChipsToText", "_chipFields"))
     member = {"id": "m1", "text_for_training": _KATZE_TEXT, "corrections": [_KATZE_CHIP],
               "words": _KATZE_RAW, "sample_order": 0, "audio_s": 1.0}
     merged = [dict(w, start=i * 0.1, end=i * 0.1 + 0.05, member_idx=0)
@@ -1758,7 +1759,7 @@ def test_group_status_click_during_save_survives_the_save_reply(page, tmp_path):
     save_anchor = "saveTBtn.onclick = "
     on_save = _js_block(page, page.index(save_anchor) + len(save_anchor))
     fns = "\n".join(_js_function(page, f) for f in (
-        "applyServerSample", "_applyChipsToText"))
+        "applyServerSample", "_applyChipsToText", "_chipFields"))
     out = _run_node(tmp_path, _SAMPLE_CARD_STUBS + fns + r"""
 var g = { id: 'g1' }, _allSamples = [{ id: 'g1', status: 'new' }];
 var sampleState = { newStatus: 'new', corrections: [], adminNotes: '' };
