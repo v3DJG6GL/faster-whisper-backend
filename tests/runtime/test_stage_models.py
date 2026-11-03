@@ -235,8 +235,8 @@ def test_preload_extras_survives_load_failures(app_module, monkeypatch):
 
 def test_translation_model_allowed_shape_checks_client_ref(app_module,
                                                           monkeypatch):
-    """An EMPTY allowlist admits any WELL-FORMED ref (the docstring's contract,
-    and what the whisper path enforces): the client value reaches
+    """An EMPTY allowlist admits any WELL-FORMED ref (_translation_model_allowed's
+    contract, and what the whisper path enforces): the client value reaches
     hf_hub_download as a repo id, so a traversal string or an unbounded blob
     must be refused — while an inherited ref is admin policy and passes."""
     cfg = app_module.cfg
