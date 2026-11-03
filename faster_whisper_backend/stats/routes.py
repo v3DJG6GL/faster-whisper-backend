@@ -339,6 +339,19 @@ def _kinds_param(raw: str | None, allowed: Collection[str]) -> list[str]:
     return kinds
 
 
+def _window_param(*, days: int | None, from_: int | None, to: int | None,
+                  all_time: bool, tz: str | None,
+                  with_: str | None = None) -> usage_store.WindowSpec:
+    """Query window → WindowSpec; days <= 0 is lifetime (v1), 422 on a bad window."""
+    if days is not None and days <= 0:
+        days, all_time = None, True
+    try:
+        return usage_store.parse_window_params(
+            days=days, from_day=from_, to_day=to, all_time=all_time, with_=with_, tz=tz)
+    except ValueError as e:
+        raise HTTPException(422, detail=str(e))
+
+
 def _unscrub(dim: str, labels: list[str], scrub: bool, caller_uid: str | None) -> list[str]:
     """The ids behind the picked labels. Admin (and own) viewers send ids.
     A non-admin "all" viewer sends the row `id` the picker / leaderboard
@@ -487,14 +500,7 @@ async def stats_usage(
         raise HTTPException(status.HTTP_403_FORBIDDEN,
                             detail="users= needs stats scope 'all'")
     key_list = _csv(keys) or ([key] if key else [])
-    if days is not None and days <= 0:
-        days, all = None, True
-    try:
-        w = usage_store.parse_window_params(
-            days=days, from_day=from_, to_day=to, all_time=all, with_=with_,
-            tz=tz)
-    except ValueError as e:
-        raise HTTPException(422, detail=str(e))
+    w = _window_param(days=days, from_=from_, to=to, all_time=all, tz=tz, with_=with_)
     jobs_retention = int(getattr(cfg, "USAGE_JOBS_RETENTION_DAYS", 365) or 0)
 
     # Everything below is store work — a handful of aggregate scans over the
@@ -574,13 +580,7 @@ async def stats_pick(
     kind_list = _kinds_param(kinds, usage_store.KINDS)
     user_list = _csv(users) if scope.scope != "own" else []
     key_list = _csv(keys)
-    if days is not None and days <= 0:
-        days, all = None, True
-    try:
-        w = usage_store.parse_window_params(
-            days=days, from_day=from_, to_day=to, all_time=all, with_=with_, tz=tz)
-    except ValueError as e:
-        raise HTTPException(422, detail=str(e))
+    w = _window_param(days=days, from_=from_, to=to, all_time=all, tz=tz, with_=with_)
 
     def _gather() -> dict[str, Any]:
         uid_filter = _one_or_many(_unscrub("user", user_list, scrub, caller_uid)) if user_list else None
@@ -705,13 +705,7 @@ async def stats_tail(
     if user_q and not is_admin:
         raise HTTPException(status.HTTP_403_FORBIDDEN, detail="user= is admin-only")
     scope = stats_scope_for(user, preview_user_id=(user_q or None) if is_admin else None)
-    if days is not None and days <= 0:
-        days, all = None, True
-    try:
-        w = usage_store.parse_window_params(days=days, from_day=from_, to_day=to,
-                                            all_time=all, tz=tz)
-    except ValueError as e:
-        raise HTTPException(422, detail=str(e))
+    w = _window_param(days=days, from_=from_, to=to, all_time=all, tz=tz)
     kind_list = _kinds_param(kind, usage_store.KINDS)
     user_list = _csv(users)
     if user_list and scope.scope == "own":
