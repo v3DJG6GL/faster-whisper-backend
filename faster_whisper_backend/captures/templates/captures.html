@@ -20,6 +20,7 @@
     --yellow: #f2cc60;
     --red: #ff7b72;
     --magenta: #d2a8ff;
+    --accent: #58a6ff;
     --active-word-bg: rgba(121, 192, 255, 0.22);
     --active-word-color: #f0f6fc;
     --selected-word-bg: rgba(255, 123, 114, 0.22);
@@ -40,7 +41,7 @@
      from the grey utility buttons. One class already outranks NAV_CSS's
      `header button`, so these win wherever they sit. */
   .proposer-action {
-    background: rgba(88, 166, 255, 0.12); color: var(--accent, #58a6ff);
+    background: rgba(88, 166, 255, 0.12); color: var(--accent);
     border: 1px solid rgba(88, 166, 255, 0.5); border-radius: 4px;
     padding: 0.3rem 0.8rem; font-size: var(--fs-md); font-weight: 600;
     font-family: var(--font-sans); line-height: 1.3; cursor: pointer;
@@ -288,7 +289,7 @@
      where ←/→ resume); the tint behind it appears only while the strip has
      focus, the cue that keystrokes land here. */
   .word-strip .word.cursor {
-    outline: 1px dashed var(--accent, #58a6ff);
+    outline: 1px dashed var(--accent);
     outline-offset: -1px;
     border-radius: 2px;
   }
@@ -648,7 +649,7 @@
     vertical-align: middle;
   }
   .proposal .meter-bar .fill {
-    display: block; height: 100%; background: var(--accent, #58a6ff);
+    display: block; height: 100%; background: var(--accent);
   }
 
   /* Shared merge-preview play button (used in propose-modal and merge-modal) */
@@ -722,17 +723,17 @@
     height: 0.25rem; background: var(--border); border-radius: 1px; border: none;
   }
   .compact-player-scrub::-moz-range-progress {
-    height: 0.25rem; background: var(--accent, #58a6ff); border-radius: 1px;
+    height: 0.25rem; background: var(--accent); border-radius: 1px;
   }
   .compact-player-scrub::-webkit-slider-thumb {
     -webkit-appearance: none; appearance: none;
     width: 0.25rem; height: 0.8rem; border-radius: 1px;
-    background: var(--accent, #58a6ff); border: none;
+    background: var(--accent); border: none;
     margin-top: -0.275rem; cursor: pointer;
   }
   .compact-player-scrub::-moz-range-thumb {
     width: 0.25rem; height: 0.8rem; border-radius: 1px;
-    background: var(--accent, #58a6ff); border: none; cursor: pointer;
+    background: var(--accent); border: none; cursor: pointer;
   }
   .compact-player-scrub:disabled { cursor: not-allowed; opacity: 0.4; }
   .compact-player-scrub:disabled::-webkit-slider-thumb { background: var(--help); }
