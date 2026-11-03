@@ -1,5 +1,5 @@
 """Helpers shared by the streaming test modules (PCM frames, the config
-handshake, WebSocket drain).
+handshake, WebSocket drain, an inert-decoder StreamSession).
 
 Kept out of conftest.py so the fixture file stays about fixtures; import as
 ``from tests._streaming_helpers import ...`` (tests/ is a package and
@@ -9,7 +9,8 @@ pytest.ini puts the repo root on sys.path).
 import numpy as np
 from starlette.websockets import WebSocketDisconnect
 
-from faster_whisper_backend.streaming.session import StreamConfig
+from faster_whisper_backend.streaming.session import StreamConfig, StreamSession
+from faster_whisper_backend.streaming.vad import EnergyEndpointer
 
 
 def const_pcm(level: int, ms: int, sample_rate: int = 16000) -> bytes:
@@ -61,6 +62,32 @@ class AlwaysSpeech:
 
     def reset(self) -> None:
         pass
+
+
+async def _no_partial(audio, prompt):
+    return []
+
+
+async def _empty_final(audio, prompt):
+    return ("", [], False)
+
+
+def inert_session(cfg=None, *, decode_partial=None, decode_final=None,
+                  endpointer=None, postprocess=lambda raw: raw, **kw):
+    """StreamSession with inert fake decoders (no partial words, an empty
+    final) unless given; ``kw`` are the optional seams (holdback, format_key,
+    diagnose, on_final). Returns ``(session, msgs)``, every emitted frame."""
+    msgs: list[dict] = []
+
+    async def emit(m):
+        msgs.append(m)
+
+    s = StreamSession(
+        config=cfg or StreamConfig(), endpointer=endpointer or EnergyEndpointer(),
+        decode_partial=decode_partial or _no_partial,
+        decode_final=decode_final or _empty_final,
+        postprocess=postprocess, emit=emit, **kw)
+    return s, msgs
 
 
 def fast_config(**over) -> StreamConfig:

@@ -16,7 +16,7 @@ import asyncio
 import numpy as np
 
 from tests._streaming_helpers import (
-    AlwaysSpeech as _AlwaysSpeech, const_pcm, fast_config, handshake, ws_drain)
+    AlwaysSpeech as _AlwaysSpeech, const_pcm, fast_config, handshake, inert_session, ws_drain)
 from faster_whisper_backend.streaming.session import StreamConfig, StreamSession
 from faster_whisper_backend.streaming.vad import FRAME_MS, FRAME_SAMPLES, EnergyEndpointer
 
@@ -356,20 +356,7 @@ def test_ceiling_finalize_keeps_trim_banked_text_when_the_rms_gate_trips():
 
 def _quiet_session(**over):
     """A session with inert decoders: for exercising the buffer directly."""
-    async def decode_partial(audio, prompt):
-        return []
-
-    async def decode_final(audio, prompt):
-        return ("", [], False)
-
-    async def emit(m):
-        pass
-
-    return StreamSession(
-        config=StreamConfig(**over), endpointer=EnergyEndpointer(),
-        decode_partial=decode_partial, decode_final=decode_final,
-        postprocess=lambda raw: raw, emit=emit,
-    )
+    return inert_session(StreamConfig(**over))[0]
 
 
 def test_lazy_buffer_reads_back_exactly_what_was_appended():

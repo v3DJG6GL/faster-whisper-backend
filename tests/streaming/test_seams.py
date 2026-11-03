@@ -20,8 +20,7 @@ import random
 import re
 
 
-from faster_whisper_backend.streaming.session import StreamConfig, StreamSession
-from faster_whisper_backend.streaming.vad import EnergyEndpointer
+from tests._streaming_helpers import inert_session
 from faster_whisper_backend.pipeline import engine as pl_engine
 
 DE = [
@@ -79,23 +78,8 @@ def _self_correction(a_words, b_words):
 
 def _run(utts, language):
     """One session over `utts`, formatted in `language` throughout."""
-    finals = []
-
-    async def emit(m):
-        if m["type"] == "final":
-            finals.append(m)
-
-    async def _dp(a, p):
-        return []
-
-    async def _df(a, p):
-        return ("", [], False)
-
-    s = StreamSession(
-        config=StreamConfig(), endpointer=EnergyEndpointer(),
-        decode_partial=_dp, decode_final=_df,
+    s, msgs = inert_session(
         postprocess=lambda raw: pl_engine._postprocess_text(raw, model_name="", language=language),
-        emit=emit,
         holdback=lambda raw: pl_engine.holdback_start(raw, model_name="", language=language),
         format_key=lambda: language,
         diagnose=lambda a, b: pl_engine.seam_culprit(a, b, model_name="", language=language),
@@ -108,7 +92,7 @@ def _run(utts, language):
         await s.close()
 
     asyncio.run(go())
-    return finals
+    return [m for m in msgs if m["type"] == "final"]
 
 
 def _splits(words, rng):

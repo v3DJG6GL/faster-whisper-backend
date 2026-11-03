@@ -16,34 +16,18 @@ import asyncio
 import pytest
 
 from tests._streaming_helpers import (
-    AlwaysSpeech as _AlwaysSpeech, const_pcm as _pcm, fast_config as _cfg)
-from faster_whisper_backend.streaming.session import CloseAbort, StreamSession
-from faster_whisper_backend.streaming.vad import EnergyEndpointer
+    AlwaysSpeech as _AlwaysSpeech, const_pcm as _pcm, fast_config as _cfg, inert_session)
+from faster_whisper_backend.streaming.session import CloseAbort
 
 
 def _session(*, decode_partial=None, decode_final=None, on_final=None, cfg=None,
              endpointer=None, postprocess=lambda raw: raw):
-    msgs: list[dict] = []
-
-    async def emit(m):
-        msgs.append(m)
-
-    async def _dp(audio, prompt):
-        return []
-
     async def _df(audio, prompt):
         return ("hallo welt.", [], False)
 
-    s = StreamSession(
-        config=cfg or _cfg(),
-        endpointer=endpointer or EnergyEndpointer(),
-        decode_partial=decode_partial or _dp,
-        decode_final=decode_final or _df,
-        postprocess=postprocess,
-        emit=emit,
-        on_final=on_final,
-    )
-    return s, msgs
+    return inert_session(cfg or _cfg(), decode_partial=decode_partial,
+                         decode_final=decode_final or _df, endpointer=endpointer,
+                         postprocess=postprocess, on_final=on_final)
 
 
 def _utt(msgs):

@@ -19,8 +19,7 @@ import asyncio
 
 import pytest
 
-from faster_whisper_backend.streaming.session import StreamConfig, StreamSession
-from faster_whisper_backend.streaming.vad import EnergyEndpointer
+from tests._streaming_helpers import inert_session
 from faster_whisper_backend.pipeline import engine as pl_engine
 
 
@@ -28,24 +27,11 @@ def _run_stream(utterances, language):
     """Drive a session through a sequence of finalized raw utterances (bypassing
     audio/VAD) and return the final frames (the last one is the closing
     document)."""
-    finals = []
-
     def pp(raw):
         return pl_engine._postprocess_text(raw, model_name="", language=language)
 
-    async def emit(m):
-        if m["type"] == "final":
-            finals.append(m)
-
-    async def _noop_dp(a, p):
-        return []
-
-    async def _noop_df(a, p):
-        return ("", [], False)
-
-    s = StreamSession(
-        config=StreamConfig(), endpointer=EnergyEndpointer(),
-        decode_partial=_noop_dp, decode_final=_noop_df, postprocess=pp, emit=emit,
+    s, msgs = inert_session(
+        postprocess=pp,
         holdback=lambda raw: pl_engine.holdback_start(raw, model_name="", language=language),
         format_key=lambda: language,
         diagnose=lambda a, b: pl_engine.seam_culprit(a, b, model_name="", language=language),
@@ -58,7 +44,7 @@ def _run_stream(utterances, language):
         await s.close()  # commit the whole document
 
     asyncio.run(run())
-    return finals
+    return [m for m in msgs if m["type"] == "final"]
 
 
 def _cases():
