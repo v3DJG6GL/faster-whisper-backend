@@ -8,6 +8,7 @@ importlib.reload, and the restore_config fixture reloads again at teardown to
 restore the clean module.
 """
 
+import copy
 import importlib
 import json
 import os
@@ -263,6 +264,15 @@ def _reload_with_env(monkeypatch, **env):
     for k, v in env.items():
         monkeypatch.setenv(k, v)
     importlib.reload(config)
+
+
+def _stub_stored(monkeypatch, raw):
+    """config.local.json holds `raw` (a fresh copy per read). config.py
+    re-imports load_overrides from config_store on reload and the path
+    default is bound at def time, so patch the function, not the path."""
+    from faster_whisper_backend.settings import config_store
+    monkeypatch.setattr(config_store, "load_overrides",
+                        lambda path=None: copy.deepcopy(raw))
 
 
 def test_scalar_env_overrides_apply(monkeypatch, restore_config):
@@ -838,12 +848,7 @@ def test_per_model_env_override_invalid_keeps_stored_entry(monkeypatch, restore_
     """One bad WHISPER_MODEL_OVERRIDE__ value must revert just that field,
     not wipe the whole stored entry from config.local.json for the process
     lifetime (every other env field reverts to its pre-env value)."""
-    from faster_whisper_backend.settings import config_store
-    # config.py re-imports load_overrides from config_store on reload and the
-    # path default is bound at def time, so patch the function, not the path.
-    monkeypatch.setattr(
-        config_store, "load_overrides",
-        lambda path=None: {"MODEL_OVERRIDES": {"TINY": {"BEAM_SIZE": 3, "VAD_FILTER": False}}})
+    _stub_stored(monkeypatch, {"MODEL_OVERRIDES": {"TINY": {"BEAM_SIZE": 3, "VAD_FILTER": False}}})
     _reload_with_env(monkeypatch, WHISPER_MODEL_OVERRIDE__TINY__BEAM_SIZE="9999")
     assert config.MODEL_OVERRIDES["TINY"] == {"BEAM_SIZE": 3, "VAD_FILTER": False}
     # The pre-env snapshot must not share the mutated nested entry dict.
@@ -855,10 +860,7 @@ def test_per_model_env_override_invalid_keeps_stored_entry(monkeypatch, restore_
 
 def test_per_model_env_override_invalid_unknown_field_keeps_stored_entry(
         monkeypatch, restore_config):
-    from faster_whisper_backend.settings import config_store
-    monkeypatch.setattr(
-        config_store, "load_overrides",
-        lambda path=None: {"MODEL_OVERRIDES": {"TINY": {"BEAM_SIZE": 3, "VAD_FILTER": False}}})
+    _stub_stored(monkeypatch, {"MODEL_OVERRIDES": {"TINY": {"BEAM_SIZE": 3, "VAD_FILTER": False}}})
     _reload_with_env(monkeypatch, WHISPER_MODEL_OVERRIDE__TINY__BOGUS="1")
     assert config.MODEL_OVERRIDES["TINY"] == {"BEAM_SIZE": 3, "VAD_FILTER": False}
     assert "BOGUS" not in config.MODEL_OVERRIDES["TINY"]
@@ -871,9 +873,7 @@ def test_per_model_env_override_invalid_reverts_to_the_json_env_value(monkeypatc
     """A bad per-model var for a field the WHISPER_MODEL_OVERRIDES JSON var
     also sets falls back to the JSON value, not to the pre-env stored one
     (or to nothing), and the warning names the JSON entry it kept."""
-    from faster_whisper_backend.settings import config_store
-    monkeypatch.setattr(config_store, "load_overrides",
-                        lambda path=None: {"MODEL_OVERRIDES": {"tiny": {"BEAM_SIZE": 2}}})
+    _stub_stored(monkeypatch, {"MODEL_OVERRIDES": {"tiny": {"BEAM_SIZE": 2}}})
     _reload_with_env(
         monkeypatch,
         WHISPER_MODEL_OVERRIDES='{"tiny": {"BEAM_SIZE": 3, "BEST_OF": 2}}',
@@ -897,9 +897,7 @@ def test_per_model_env_bad_field_keeps_the_valid_env_siblings(monkeypatch, resto
     """A blank or out-of-range per-model var reverts that field only: the
     model's other env values stay live (and stay env values), and the warning
     names only the bad field."""
-    from faster_whisper_backend.settings import config_store
-    monkeypatch.setattr(config_store, "load_overrides",
-                        lambda path=None: {"MODEL_OVERRIDES": {"tiny": {"BEAM_SIZE": 2}}})
+    _stub_stored(monkeypatch, {"MODEL_OVERRIDES": {"tiny": {"BEAM_SIZE": 2}}})
     _reload_with_env(monkeypatch,
                      WHISPER_MODEL_OVERRIDE__tiny__BEAM_SIZE="",
                      WHISPER_MODEL_OVERRIDE__tiny__BEST_OF="4",
@@ -1203,9 +1201,7 @@ def test_alias_env_ignores_the_old_name_when_either_new_spelling_is_set():
 def test_per_model_env_override_outside_a_stored_allowlist_is_dropped(monkeypatch, restore_config):
     """An env per-model entry for a model the stored ALLOWED_MODELS excludes
     used to boot silently and make every later per-model save 422."""
-    from faster_whisper_backend.settings import config_store
-    monkeypatch.setattr(config_store, "load_overrides",
-                        lambda path=None: {"ALLOWED_MODELS": {"large-v3"}})
+    _stub_stored(monkeypatch, {"ALLOWED_MODELS": {"large-v3"}})
     _reload_with_env(monkeypatch, WHISPER_MODEL_OVERRIDE__tiny__BEAM_SIZE="3")
     assert "tiny" not in config.MODEL_OVERRIDES
     assert any("tiny" in m.lower() and "ALLOWED_MODELS" in m
@@ -1320,9 +1316,7 @@ def test_ignored_per_model_env_value_leaves_no_phantom_entry(monkeypatch, restor
 def test_stored_model_override_survives_an_env_only_allowlist(monkeypatch, restore_config):
     """An env allowlist narrowed for a while must not drop (and so let the
     next per-model save erase) a stored entry the env did not supply."""
-    from faster_whisper_backend.settings import config_store
-    monkeypatch.setattr(config_store, "load_overrides",
-                        lambda path=None: {"MODEL_OVERRIDES": {"medium": {"BEAM_SIZE": 3}}})
+    _stub_stored(monkeypatch, {"MODEL_OVERRIDES": {"medium": {"BEAM_SIZE": 3}}})
     _reload_with_env(monkeypatch, WHISPER_ALLOWED_MODELS="large-v3")
     assert config.MODEL_OVERRIDES.get("medium") == {"BEAM_SIZE": 3}
     assert not any("was dropped" in m for m in config._ENV_WARNINGS), \
@@ -1333,9 +1327,7 @@ def test_stored_model_override_survives_an_env_only_allowlist(monkeypatch, resto
 def test_blank_model_overrides_var_does_not_drop_a_stored_entry(monkeypatch, restore_config):
     """A blank WHISPER_MODEL_OVERRIDES (compose `${X:-}` passthrough) leaves
     the stored dict in place, so its entries must keep the stored checks."""
-    from faster_whisper_backend.settings import config_store
-    monkeypatch.setattr(config_store, "load_overrides",
-                        lambda path=None: {"MODEL_OVERRIDES": {"medium": {"BEAM_SIZE": 3}}})
+    _stub_stored(monkeypatch, {"MODEL_OVERRIDES": {"medium": {"BEAM_SIZE": 3}}})
     _reload_with_env(monkeypatch, WHISPER_ALLOWED_MODELS="large-v3",
                      WHISPER_MODEL_OVERRIDES="  ")
     assert config.MODEL_OVERRIDES.get("medium") == {"BEAM_SIZE": 3}
@@ -1350,9 +1342,7 @@ def test_stored_model_override_survives_an_env_field_outside_env_allowlist(
     WHISPER_MODEL_OVERRIDE__ var for it: the env field is ignored (the env
     allowlist refuses it), the stored fields stay instead of the whole entry
     being dropped."""
-    from faster_whisper_backend.settings import config_store
-    monkeypatch.setattr(config_store, "load_overrides",
-                        lambda path=None: {"MODEL_OVERRIDES": {"tiny": {"BEAM_SIZE": 2}}})
+    _stub_stored(monkeypatch, {"MODEL_OVERRIDES": {"tiny": {"BEAM_SIZE": 2}}})
     _reload_with_env(monkeypatch, WHISPER_ALLOWED_MODELS="large-v3",
                      WHISPER_MODEL_OVERRIDE__tiny__BEST_OF="3")
     assert config.MODEL_OVERRIDES.get("tiny") == {"BEAM_SIZE": 2}
@@ -1368,8 +1358,7 @@ def test_stored_model_override_with_unknown_slug_keeps_its_other_fields(
     """A factory rules save that removed a rule a stored per-model exclude
     still names must not drop the whole entry (BEAM_SIZE, device, …) at boot;
     the stored entry passed load_overrides, like the allowlist case above."""
-    from faster_whisper_backend.settings import config_store
-    monkeypatch.setattr(config_store, "load_overrides", lambda path=None: {
+    _stub_stored(monkeypatch, {
         "MODEL_OVERRIDES": {"large-v3": {
             "BEAM_SIZE": 3, "PIPELINE_RULES_EXCLUDE": ["no-such-rule"]}}})
     _reload_with_env(monkeypatch)
@@ -1382,8 +1371,7 @@ def test_stored_model_override_survives_an_env_allowlist_over_a_stored_one(
     """With a STORED allowlist too, a stored entry is checked against that
     one, not the narrower env allowlist: it passed load_overrides, and
     dropping it here let the next per-model save erase it for good."""
-    from faster_whisper_backend.settings import config_store
-    monkeypatch.setattr(config_store, "load_overrides", lambda path=None: {
+    _stub_stored(monkeypatch, {
         "ALLOWED_MODELS": {"tiny", "large-v3"},
         "MODEL_OVERRIDES": {"tiny": {"BEAM_SIZE": 3}}})
     _reload_with_env(monkeypatch, WHISPER_ALLOWED_MODELS="large-v3")
@@ -1397,8 +1385,7 @@ def test_env_field_outside_env_allowlist_keeps_the_stored_allowlisted_entry(
         monkeypatch, restore_config):
     """Same, plus a WHISPER_MODEL_OVERRIDE__ var the env allowlist refuses:
     the env field is ignored, the stored fields stay."""
-    from faster_whisper_backend.settings import config_store
-    monkeypatch.setattr(config_store, "load_overrides", lambda path=None: {
+    _stub_stored(monkeypatch, {
         "ALLOWED_MODELS": {"tiny", "large-v3"},
         "MODEL_OVERRIDES": {"tiny": {"BEAM_SIZE": 3}}})
     _reload_with_env(monkeypatch, WHISPER_ALLOWED_MODELS="large-v3",
@@ -1412,8 +1399,7 @@ def test_env_field_is_not_blamed_for_a_stored_dangling_slug(monkeypatch, restore
     """An env BEST_OF on an entry whose STORED exclude names a removed rule
     applies; the stored slug is not checked (as for a purely stored entry),
     so the env pin is not reverted and blamed for it."""
-    from faster_whisper_backend.settings import config_store
-    monkeypatch.setattr(config_store, "load_overrides", lambda path=None: {
+    _stub_stored(monkeypatch, {
         "MODEL_OVERRIDES": {"large-v3": {
             "BEAM_SIZE": 3, "PIPELINE_RULES_EXCLUDE": ["no-such-rule"]}}})
     # A hyphenated model id is not a Python identifier: no **env kwarg.
@@ -1439,8 +1425,7 @@ def test_env_slug_list_is_not_blamed_for_a_stored_sibling_list(monkeypatch, rest
     """A valid env EXCLUDE on an entry whose STORED include names a removed
     rule applies: only the env-supplied lists are slug-checked, so the env
     pin is not reverted and blamed for the stored dangling slug."""
-    from faster_whisper_backend.settings import config_store
-    monkeypatch.setattr(config_store, "load_overrides", lambda path=None: {
+    _stub_stored(monkeypatch, {
         "MODEL_OVERRIDES": {"large-v3": {
             "BEAM_SIZE": 3, "PIPELINE_RULES_INCLUDE": ["no-such-rule"]}}})
     monkeypatch.setenv(
