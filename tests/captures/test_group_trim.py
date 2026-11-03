@@ -78,18 +78,19 @@ def test_trim_unavailable_vad_is_identity(monkeypatch):
     assert res["new_n_samples"] == n
 
 
+def _merge_pair(m1, m2, **kw):
+    with tempfile.TemporaryDirectory() as d:
+        p1, p2 = f"{d}/m1.wav", f"{d}/m2.wav"
+        _write_wav(p1, m1)
+        _write_wav(p2, m2)
+        return audio_merge.merge_wavs([p1, p2], f"{d}/merged.wav", **kw)
+
+
 def test_merge_trims_each_member(monkeypatch, fake_vad):
     m1, _ = _pcm([("sil", 200), ("speech", 300), ("sil", 200)])
     m2, _ = _pcm([("sil", 300), ("speech", 300), ("sil", 100)])
-    with tempfile.TemporaryDirectory() as d:
-        p1, p2 = f"{d}/m1.wav", f"{d}/m2.wav"
-        out = f"{d}/merged.wav"
-        _write_wav(p1, m1)
-        _write_wav(p2, m2)
-        res = audio_merge.merge_wavs(
-            [p1, p2], out, gap_ms=300, trim=True,
-            edge_pad_ms=50, max_internal_gap_ms=300,
-        )
+    res = _merge_pair(m1, m2, gap_ms=300, trim=True,
+                      edge_pad_ms=50, max_internal_gap_ms=300)
     assert len(res["members"]) == 2
     # Body-only: each member is its 300ms speech span (no edge pad).
     assert res["members"][0]["new_duration_ms"] == 300
@@ -107,15 +108,8 @@ def test_merge_accepts_raw_over_cap_when_trimmed_fits(monkeypatch, fake_vad):
     # trims to 13 s so the merged WAV fits (the proposer / batch case).
     m1, _ = _pcm([("sil", 1000), ("speech", 13000), ("sil", 1000)])
     m2, _ = _pcm([("sil", 1000), ("speech", 13000), ("sil", 1000)])
-    with tempfile.TemporaryDirectory() as d:
-        p1, p2 = f"{d}/m1.wav", f"{d}/m2.wav"
-        out = f"{d}/merged.wav"
-        _write_wav(p1, m1)
-        _write_wav(p2, m2)
-        res = audio_merge.merge_wavs(
-            [p1, p2], out, gap_ms=300, trim=True,
-            edge_pad_ms=50, max_internal_gap_ms=300,
-        )
+    res = _merge_pair(m1, m2, gap_ms=300, trim=True,
+                      edge_pad_ms=50, max_internal_gap_ms=300)
     # Body-only: each member is 13 s of speech; merged =
     # edge(50)+13000+join(300)+13000+edge(50) = 26400 ms.
     assert res["members"][0]["new_duration_ms"] == 13000
@@ -126,12 +120,7 @@ def test_merge_accepts_raw_over_cap_when_trimmed_fits(monkeypatch, fake_vad):
 def test_merge_trim_false_is_identity(monkeypatch):
     m1, n1 = _pcm([("sil", 100), ("speech", 100)])
     m2, n2 = _pcm([("speech", 100), ("sil", 100)])
-    with tempfile.TemporaryDirectory() as d:
-        p1, p2 = f"{d}/m1.wav", f"{d}/m2.wav"
-        out = f"{d}/merged.wav"
-        _write_wav(p1, m1)
-        _write_wav(p2, m2)
-        res = audio_merge.merge_wavs([p1, p2], out, gap_ms=300, trim=False)
+    res = _merge_pair(m1, m2, gap_ms=300, trim=False)
     assert res["members"][0]["new_duration_ms"] == 200
     assert res["members"][0]["segments"] == [[0, 200, 0]]
     # 200 + 300 gap + 200 = 700ms.
