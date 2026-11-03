@@ -187,8 +187,8 @@ def test_trim_wav_output_is_owner_only(tmp_path, monkeypatch):
     import types
     from faster_whisper_backend.captures import vad_trim as audio_vad_trim
 
-    # Fake Silero: every contiguous non-zero run is speech. Same shape as
-    # test_group_trim.py's stub, kept local so this file stays standalone.
+    # Fake Silero: one speech span from the first to the last non-zero
+    # sample, enough to give the single-run body below a real edge trim.
     def get_speech_timestamps(audio, opts, sampling_rate=RATE):
         nz = np.abs(audio) > 1e-6
         if not nz.any():
