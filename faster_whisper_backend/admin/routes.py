@@ -813,11 +813,15 @@ def _probe_chain(text: str, units: list[list[Any]],
     import sys
     import time
 
-    def _marks(out: str | bytes | None) -> dict[int, str]:
+    def _lines(out: str | bytes | None) -> list[str]:
+        # TimeoutExpired can hand the output back as bytes even with text=True.
         if isinstance(out, bytes):
             out = out.decode("utf-8", "replace")
+        return (out or "").splitlines()
+
+    def _marks(out: str | bytes | None) -> dict[int, str]:
         found: dict[int, str] = {}
-        for line in (out or "").splitlines():
+        for line in _lines(out):
             ri, _, h = line.partition(" ")
             if ri.isdigit() and len(h) == 40:
                 found[int(ri)] = h
@@ -825,9 +829,7 @@ def _probe_chain(text: str, units: list[list[Any]],
 
     def _started(err: str | bytes | None) -> float:
         # The child's "s" line: seconds from spawn to its own clock's start.
-        if isinstance(err, bytes):
-            err = err.decode("utf-8", "replace")
-        for line in (err or "").splitlines():
+        for line in _lines(err):
             tag, _, took = line.partition(" ")
             if tag == "s":
                 try:
@@ -838,10 +840,8 @@ def _probe_chain(text: str, units: list[list[Any]],
 
     def _culprit(err: str | bytes | None) -> tuple[int, float] | None:
         # The last "index start" line: the unit running when it was killed.
-        if isinstance(err, bytes):
-            err = err.decode("utf-8", "replace")
         found = None
-        for line in (err or "").splitlines():
+        for line in _lines(err):
             ui, _, at = line.partition(" ")
             try:
                 found = (int(ui), float(at))
