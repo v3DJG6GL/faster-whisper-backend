@@ -492,27 +492,20 @@
   /* Per-card colour tokens — tint the rail + a left accent; the body stays on
      the standard surface so text contrast is unaffected (colour is paired with
      rank+label, never the sole signal — WCAG 1.4.1). */
-  .rule-row[data-color="red"]    { border-left: 3px solid rgba(248,81,73,0.7); }
-  .rule-row[data-color="amber"]  { border-left: 3px solid rgba(210,153,34,0.75); }
-  .rule-row[data-color="green"]  { border-left: 3px solid rgba(63,185,80,0.7); }
-  .rule-row[data-color="teal"]   { border-left: 3px solid rgba(57,197,207,0.7); }
-  .rule-row[data-color="blue"]   { border-left: 3px solid rgba(121,192,255,0.7); }
-  .rule-row[data-color="purple"] { border-left: 3px solid rgba(188,140,255,0.7); }
-  .rule-row[data-color="pink"]   { border-left: 3px solid rgba(255,123,156,0.7); }
-  .rule-row[data-color="red"]    .rule-rail { background: linear-gradient(180deg, rgba(248,81,73,0.18), rgba(248,81,73,0.05)); }
-  .rule-row[data-color="amber"]  .rule-rail { background: linear-gradient(180deg, rgba(210,153,34,0.18), rgba(210,153,34,0.05)); }
-  .rule-row[data-color="green"]  .rule-rail { background: linear-gradient(180deg, rgba(63,185,80,0.18), rgba(63,185,80,0.05)); }
-  .rule-row[data-color="teal"]   .rule-rail { background: linear-gradient(180deg, rgba(57,197,207,0.18), rgba(57,197,207,0.05)); }
-  .rule-row[data-color="blue"]   .rule-rail { background: linear-gradient(180deg, rgba(121,192,255,0.18), rgba(121,192,255,0.05)); }
-  .rule-row[data-color="purple"] .rule-rail { background: linear-gradient(180deg, rgba(188,140,255,0.18), rgba(188,140,255,0.05)); }
-  .rule-row[data-color="pink"]   .rule-rail { background: linear-gradient(180deg, rgba(255,123,156,0.18), rgba(255,123,156,0.05)); }
-  .color-dot[data-color="red"],    .color-swatch[data-color="red"]    { background: rgba(248,81,73,0.6);  border-color: rgba(248,81,73,0.8); }
-  .color-dot[data-color="amber"],  .color-swatch[data-color="amber"]  { background: rgba(210,153,34,0.6); border-color: rgba(210,153,34,0.8); }
-  .color-dot[data-color="green"],  .color-swatch[data-color="green"]  { background: rgba(63,185,80,0.6);  border-color: rgba(63,185,80,0.8); }
-  .color-dot[data-color="teal"],   .color-swatch[data-color="teal"]   { background: rgba(57,197,207,0.6); border-color: rgba(57,197,207,0.8); }
-  .color-dot[data-color="blue"],   .color-swatch[data-color="blue"]   { background: rgba(121,192,255,0.6);border-color: rgba(121,192,255,0.8); }
-  .color-dot[data-color="purple"], .color-swatch[data-color="purple"] { background: rgba(188,140,255,0.6);border-color: rgba(188,140,255,0.8); }
-  .color-dot[data-color="pink"],   .color-swatch[data-color="pink"]   { background: rgba(255,123,156,0.6);border-color: rgba(255,123,156,0.8); }
+  .rule-row[data-color="red"], .color-dot[data-color="red"], .color-swatch[data-color="red"] { --rc: 248,81,73; }
+  .rule-row[data-color="amber"], .color-dot[data-color="amber"], .color-swatch[data-color="amber"] { --rc: 210,153,34; --rc-edge: 0.75; }
+  .rule-row[data-color="green"], .color-dot[data-color="green"], .color-swatch[data-color="green"] { --rc: 63,185,80; }
+  .rule-row[data-color="teal"], .color-dot[data-color="teal"], .color-swatch[data-color="teal"] { --rc: 57,197,207; }
+  .rule-row[data-color="blue"], .color-dot[data-color="blue"], .color-swatch[data-color="blue"] { --rc: 121,192,255; }
+  .rule-row[data-color="purple"], .color-dot[data-color="purple"], .color-swatch[data-color="purple"] { --rc: 188,140,255; }
+  .rule-row[data-color="pink"], .color-dot[data-color="pink"], .color-swatch[data-color="pink"] { --rc: 255,123,156; }
+  /* Only a coloured row carries data-color; the dot and swatch skip the
+     empty "none" token (striped rule above). :where() keeps each rule at the
+     specificity of the per-colour rules it replaces. */
+  .rule-row[data-color] { border-left: 3px solid rgba(var(--rc), var(--rc-edge, 0.7)); }
+  .rule-row[data-color] .rule-rail { background: linear-gradient(180deg, rgba(var(--rc),0.18), rgba(var(--rc),0.05)); }
+  .color-dot[data-color]:where(:not([data-color=""])),
+  .color-swatch[data-color]:where(:not([data-color=""])) { background: rgba(var(--rc),0.6); border-color: rgba(var(--rc),0.8); }
 
   /* Locked = protected, FULL contrast (not greyed like disabled). The yellow
      lock CHIP in the rail is the SOLE "locked" signal: tinting the row
