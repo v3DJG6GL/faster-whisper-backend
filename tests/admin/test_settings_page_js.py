@@ -572,6 +572,7 @@ def test_pipeline_test_panel_sends_the_sample_language(client):
         _block(html, "async function _testOneRule(rule) {", "\n}\n"),
         _block(html, "function _helpDiv(text) {", "\n}\n"),
         _block(html, "function _el(", "\n}\n"),
+        _block(html, "function _button(", "\n}\n"),
     ])
     out = _node(_FAKE_DOM + """
 const TEST_PRESETS = { 'default': 'Hallo' };
@@ -817,7 +818,8 @@ def test_prompt_lab_empty_glossary_box_uses_the_glossary_setting(client):
     html = _html(client)
     ed = (_block(html, "function translationTemplateEditor(name, v) {", "\n}\n")
           + _block(html, "function _helpDiv(text) {", "\n}\n")
-          + _block(html, "function _el(", "\n}\n"))
+          + _block(html, "function _el(", "\n}\n")
+          + _block(html, "function _button(", "\n}\n"))
     out = _node(_FAKE_DOM + """
 const state = { TRANSLATION_PROMPT_FAMILY: 'hunyuan',
                 TRANSLATION_GLOSSARY: 'Niere = kidney',
