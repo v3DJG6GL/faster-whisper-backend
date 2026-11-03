@@ -203,9 +203,10 @@ def test_stream_prompt_sentinel_inherit_clear_value(
 def test_stream_handshake_drops_lone_surrogates(
         client, make_user_key, fake_model, app_module, monkeypatch):
     """A JSON handshake can carry a lone UTF-16 surrogate (half an emoji a
-    client cut with a UTF-16 slice). In the prompt it made faster-whisper's
-    tokenizer raise on every decode of the connection — nothing was ever
-    typed — and in an output wrapper it broke the UTF-8 frame. Dropped."""
+    client cut with a UTF-16 slice). Kept in the prompt it would make
+    faster-whisper's tokenizer raise on every decode of the connection, so
+    nothing gets typed, and in an output wrapper it would break the UTF-8
+    frame, so it is dropped."""
     monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
     _, raw_alice = make_user_key("alice")
     with client.websocket_connect(
