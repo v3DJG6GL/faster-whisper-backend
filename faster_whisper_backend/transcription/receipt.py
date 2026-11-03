@@ -15,6 +15,7 @@ import time
 from faster_whisper_backend.transcription import receipt_hold
 from faster_whisper_backend.core import store_common
 from faster_whisper_backend.runtime import model_registry
+from faster_whisper_backend.runtime import preload
 from faster_whisper_backend.settings import config as cfg
 from faster_whisper_backend.stats import metrics
 
@@ -893,4 +894,18 @@ def _failed_stage(name: str, t0: float, model: "str | None",
         "model": model or None,
         "detail": "failed",
         "error": metrics.classify_error(exc, status="error", stage=name)[0],
+    }
+
+
+def _done_stage(name: str, t0: float, model: "str | None", family: str,
+                **fields) -> dict:
+    """A receipt row for a post-decode stage that ran (_failed_stage's
+    twin): its wall time since `t0`, the stage's own fields, then device +
+    load_secs from the SAME origin and keyed by the same model as the row."""
+    return {
+        "name": name,
+        "secs": round(time.perf_counter() - t0, 2),
+        "model": model,
+        **fields,
+        **_stage_extras(preload.stats_key(family, model or ""), t0),
     }

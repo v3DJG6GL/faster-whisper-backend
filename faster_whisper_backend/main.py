@@ -2454,17 +2454,11 @@ async def transcribe(
                         tmp_path = _vocals_path
                         logger.info("[bgm] separated in %.1fs",
                                     time.perf_counter() - _sep_t0)
-                        _stage_timings.append({
-                            "name": "separating",
-                            "secs": round(time.perf_counter() - _sep_t0, 2),
-                            "model": _separation_model or None,
-                            "detail": ("incl. transcode"
-                                       if _sep_wav is not None else None),
-                            **tx_receipt._stage_extras(
-                                preload.stats_key("separation",
-                                                  _separation_model or ""),
-                                _sep_t0),
-                        })
+                        _stage_timings.append(tx_receipt._done_stage(
+                            "separating", _sep_t0, _separation_model or None,
+                            "separation",
+                            detail=("incl. transcode"
+                                    if _sep_wav is not None else None)))
                         _rplan.stage_done("separating")
                     except tx_progress._ClientCancelled:
                         raise
@@ -2874,18 +2868,11 @@ async def transcribe(
                             "segments in %.1fs",
                             len(_turns), len(speakers_list), len(segments_list),
                             time.perf_counter() - _diar_t0)
-                        _stage_timings.append({
-                            "name": "diarizing",
-                            "secs": round(
-                                time.perf_counter() - _diar_t0, 2),
-                            "model": _diarization_model or None,
-                            "detail": f"{len(speakers_list)} speakers",
-                            "speakers": len(speakers_list),
-                            **tx_receipt._stage_extras(
-                                preload.stats_key("diarization",
-                                                  _diarization_model or ""),
-                                _diar_t0),
-                        })
+                        _stage_timings.append(tx_receipt._done_stage(
+                            "diarizing", _diar_t0, _diarization_model or None,
+                            "diarization",
+                            detail=f"{len(speakers_list)} speakers",
+                            speakers=len(speakers_list)))
                         _rplan.stage_done("diarizing")
                     except tx_progress._ClientCancelled:
                         raise
@@ -3035,24 +3022,16 @@ async def transcribe(
                                 "[translate] %d segments → %s in %.1fs",
                                 len(segments_list), ",".join(_translate_to),
                                 time.perf_counter() - _tr_t0)
-                            _stage_timings.append({
-                                "name": "translating",
-                                "secs": round(
-                                    time.perf_counter() - _tr_t0, 2),
-                                "model": _tr_meta.get("model"),
-                                "detail": (f"{len(segments_list)} segs → "
-                                           f"{','.join(_translate_to)}"),
-                                "targets": list(_translate_to),
+                            _stage_timings.append(tx_receipt._done_stage(
+                                "translating", _tr_t0, _tr_meta.get("model"),
+                                "translation",
+                                detail=(f"{len(segments_list)} segs → "
+                                        f"{','.join(_translate_to)}"),
+                                targets=list(_translate_to),
                                 # Segments whose guard fallback kept the
                                 # source text in at least one target.
-                                "kept_original": sum(
-                                    1 for _k in _tr_kept.values() if _k),
-                                **tx_receipt._stage_extras(
-                                    preload.stats_key(
-                                        "translation",
-                                        _tr_meta.get("model") or ""),
-                                    _tr_t0),
-                            })
+                                kept_original=sum(
+                                    1 for _k in _tr_kept.values() if _k)))
                         except tx_progress._ClientCancelled:
                             raise
                         except _tr.TranslationCancelled:
