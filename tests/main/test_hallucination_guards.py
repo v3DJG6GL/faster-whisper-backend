@@ -11,8 +11,7 @@ import numpy as np
 from tests.conftest import RATE, FakeSegment, FakeWord
 from faster_whisper_backend.transcription import guards as tx_guards
 from faster_whisper_backend.transcription import receipt as tx_receipt
-
-_FILE = {"file": ("a.wav", b"RIFFxxxxWAVE", "audio/wav")}
+from tests._transcription_helpers import WAV_UPLOAD as _FILE, post_verbose
 
 
 def _words(text: str, start: float, end: float) -> list:
@@ -68,9 +67,7 @@ def test_batch_drops_echo_segment(client, fake_model):
     real = FakeSegment("hallo welt", 0.0, 1.0,
                        words=_words("hallo welt", 0.0, 1.0))
     fake_model._segments = [real, _echo_segment()]
-    r = client.post("/v1/audio/transcriptions", files=_FILE,
-                    data={"model": "whisper-1",
-                          "response_format": "verbose_json"})
+    r = post_verbose(client)
     assert r.status_code == 200
     body = r.json()
     assert "Unterschenkel" not in body["text"]
@@ -93,9 +90,7 @@ def test_batch_guard_disabled_keeps_everything(client, app_module, fake_model):
     real = FakeSegment("hallo welt", 0.0, 1.0,
                        words=_words("hallo welt", 0.0, 1.0))
     fake_model._segments = [real, _echo_segment()]
-    r = client.post("/v1/audio/transcriptions", files=_FILE,
-                    data={"model": "whisper-1",
-                          "response_format": "verbose_json"})
+    r = post_verbose(client)
     assert r.status_code == 200
     body = r.json()
     assert "Unterschenkel" in body["text"]
@@ -120,10 +115,7 @@ def test_batch_cuts_made_up_tail_everywhere(client, fake_model, caplog):
     from faster_whisper_backend.stats import metrics
     fake_model._segments = [_loop_segment()]
     with caplog.at_level("INFO"):
-        r = client.post("/v1/audio/transcriptions", files=_FILE,
-                        data={"model": "whisper-1",
-                              "response_format": "verbose_json",
-                              "timestamp_granularities[]": "word"})
+        r = post_verbose(client, **{"timestamp_granularities[]": "word"})
     assert r.status_code == 200
     body = r.json()
     assert body["text"] == _SPOKEN
@@ -166,8 +158,7 @@ def test_batch_emptied_segment_counts_as_dropped(client, app_module, fake_model)
     real = FakeSegment("hallo welt", 0.0, 1.0, words=_words("hallo welt", 0.0, 1.0))
     pile = [FakeWord(f" x{i}", 2.0, 2.0) for i in range(12)]
     fake_model._segments = [real, FakeSegment("".join(w.word for w in pile), 2.0, 2.0, words=pile)]
-    r = client.post("/v1/audio/transcriptions", files=_FILE,
-                    data={"model": "whisper-1", "response_format": "verbose_json"})
+    r = post_verbose(client)
     body = r.json()
     assert body["text"] == "hallo welt"
     assert [s["id"] for s in body["segments"]] == [0]
@@ -213,10 +204,8 @@ def test_batch_cuts_prompt_echo_from_the_start(client, fake_model, caplog):
     from faster_whisper_backend.stats import metrics
     fake_model._segments = [_head_echo_segment()]
     with caplog.at_level("INFO"):
-        r = client.post("/v1/audio/transcriptions", files=_FILE,
-                        data={"model": "whisper-1", "prompt": _ECHO_PROMPT,
-                              "response_format": "verbose_json",
-                              "timestamp_granularities[]": "word"})
+        r = post_verbose(client, prompt=_ECHO_PROMPT,
+                         **{"timestamp_granularities[]": "word"})
     assert r.status_code == 200
     body = r.json()
     assert "Tabletten" not in body["text"] and body["text"].startswith("Morgen")
@@ -259,9 +248,7 @@ def test_batch_whole_segment_prompt_echo_is_emptied(client, app_module, fake_mod
     real = FakeSegment(" Morgen wieder.", 0.5, 1.5,
                        words=[FakeWord(" Morgen", 0.5, 1.0), FakeWord(" wieder.", 1.0, 1.5)])
     fake_model._segments = [FakeSegment(" Tabletten am Abend.", 0.0, 0.04, words=ws), real]
-    r = client.post("/v1/audio/transcriptions", files=_FILE,
-                    data={"model": "whisper-1", "prompt": _ECHO_PROMPT,
-                          "response_format": "verbose_json"})
+    r = post_verbose(client, prompt=_ECHO_PROMPT)
     body = r.json()
     assert body["text"] == "Morgen wieder"         # factory strip-trailing-period
     assert [s["id"] for s in body["segments"]] == [0]

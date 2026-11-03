@@ -10,7 +10,7 @@ kwarg entirely rather than being forwarded.
 
 import json
 
-_FILE = {"file": ("a.wav", b"RIFFxxxxWAVE", "audio/wav")}
+from tests._transcription_helpers import WAV_UPLOAD as _FILE
 
 
 def _post(client, **data):

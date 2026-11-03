@@ -18,8 +18,7 @@ from tests.conftest import FakeModel
 from tests._translation_helpers import enable_translation
 from faster_whisper_backend.transcription import models as tx_models
 from faster_whisper_backend.transcription import receipt as tx_receipt
-
-_FILE = {"file": ("a.wav", b"RIFFxxxxWAVE", "audio/wav")}
+from tests._transcription_helpers import WAV_UPLOAD as _FILE
 
 
 def _post(client, files=_FILE, **data):

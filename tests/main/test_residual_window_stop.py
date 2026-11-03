@@ -12,8 +12,7 @@ import logging
 
 from faster_whisper_backend.transcription import decode_trace as dt
 from tests.conftest import FakeInfo, FakeSegment
-
-_FILE = {"file": ("a.wav", b"RIFFxxxxWAVE", "audio/wav")}
+from tests._transcription_helpers import WAV_UPLOAD as _FILE
 
 
 def _post(client, **data):

@@ -8,8 +8,7 @@ from tests.conftest import FakeModel
 from tests.conftest import bearer
 from tests.main.test_transcription_overrides import _bind_profile_user
 from faster_whisper_backend.transcription import models as tx_models
-
-_FILE = {"file": ("a.wav", b"RIFFxxxxWAVE", "audio/wav")}
+from tests._transcription_helpers import WAV_UPLOAD as _FILE
 OV = "/settings/overrides"
 
 

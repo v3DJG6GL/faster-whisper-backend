@@ -7,8 +7,7 @@ from faster_whisper_backend.settings import config as cfg
 from faster_whisper_backend.translation import engine as translation
 from tests.conftest import bearer
 from tests._translation_helpers import enable_translation
-
-_FILE = {"file": ("a.wav", b"RIFFxxxxWAVE", "audio/wav")}
+from tests._transcription_helpers import WAV_UPLOAD as _FILE
 OV = "/settings/overrides"
 PERMS = "/settings/api-keys/api/users"
 

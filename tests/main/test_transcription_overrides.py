@@ -9,8 +9,7 @@ from tests._translation_helpers import enable_translation
 from faster_whisper_backend.transcription import models as tx_models
 from faster_whisper_backend.transcription import receipt as tx_receipt
 from faster_whisper_backend.translation import gating as tr_gating
-
-_FILE = {"file": ("a.wav", b"RIFFxxxxWAVE", "audio/wav")}
+from tests._transcription_helpers import WAV_UPLOAD as _FILE, post_verbose
 OV = "/settings/overrides"
 PERMS = "/settings/api-keys/api/users"
 
@@ -443,11 +442,7 @@ def test_explicit_speaker_range_beats_inherited_num_speakers(
     _record_diarize(monkeypatch, calls)
     monkeypatch.setattr(app_module.cfg, "DIARIZATION_ENABLED", True)
     monkeypatch.setattr(app_module.cfg, "DIARIZATION_NUM_SPEAKERS", 2)
-    r = client.post(
-        "/v1/audio/transcriptions", files=_FILE,
-        data={"model": "whisper-1", "response_format": "verbose_json",
-              "diarize": "true", "min_speakers": "3", "max_speakers": "6"},
-    )
+    r = post_verbose(client, diarize="true", min_speakers="3", max_speakers="6")
     assert r.status_code == 200, r.text
     assert calls == [{"num": None, "min": 3, "max": 6}]
 
@@ -558,10 +553,8 @@ def test_batch_decode_overrides_drop_lone_surrogates(client, fake_model):
 def test_client_output_wrappers_master_gate_off(client, app_module):
     app_module.cfg.OUTPUT_PREFIX = "[cfg] "
     app_module.cfg.ALLOW_REQUEST_DECODE_OVERRIDES = False
-    r = client.post(
-        "/v1/audio/transcriptions", files=_FILE,
-        data={"model": "whisper-1", "response_format": "verbose_json",
-              "decode_overrides": json.dumps({"output_prefix": ">> "})})
+    r = post_verbose(client,
+                     decode_overrides=json.dumps({"output_prefix": ">> "}))
     assert r.status_code == 200, r.text
     assert r.json()["text"] == "[cfg] hallo welt"
     assert r.json()["overrides_ignored"] == ["output_prefix"]

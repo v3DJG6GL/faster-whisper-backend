@@ -12,8 +12,7 @@ from faster_whisper_backend.runtime import model_registry
 from faster_whisper_backend.transcription import models as tx_models
 from faster_whisper_backend.transcription import receipt as tx_receipt
 from faster_whisper_backend.transcription import progress as tx_progress
-
-_FILE = {"file": ("a.wav", b"RIFFxxxxWAVE", "audio/wav")}
+from tests._transcription_helpers import WAV_UPLOAD as _FILE, post_verbose
 
 
 def _post(client, **data):
@@ -121,29 +120,13 @@ def test_unknown_response_format_is_refused_before_the_model_loads(
 def test_words_gated_by_config_disabled(client, app_module):
     # WORD_TIMESTAMPS_ENABLED=False beats a request asking for word granularity.
     app_module.cfg.WORD_TIMESTAMPS_ENABLED = False
-    r = client.post(
-        "/v1/audio/transcriptions",
-        files=_FILE,
-        data={
-            "model": "whisper-1",
-            "response_format": "verbose_json",
-            "timestamp_granularities[]": "word",
-        },
-    )
+    r = post_verbose(client, **{"timestamp_granularities[]": "word"})
     assert r.status_code == 200
     assert r.json().get("words") == []
 
 
 def test_words_included_with_granularity_field(client, app_module):
-    r = client.post(
-        "/v1/audio/transcriptions",
-        files=_FILE,
-        data={
-            "model": "whisper-1",
-            "response_format": "verbose_json",
-            "timestamp_granularities[]": "word",
-        },
-    )
+    r = post_verbose(client, **{"timestamp_granularities[]": "word"})
     assert r.status_code == 200
     assert [w["word"] for w in r.json()["words"]] == ["hallo", "welt"]
 
