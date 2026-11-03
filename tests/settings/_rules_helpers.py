@@ -19,3 +19,13 @@ def load_saved(tmp_path, raw):
     p = tmp_path / "config.local.json"
     p.write_text(json.dumps(raw), encoding="utf-8")
     return cs.load_overrides(str(p))
+
+
+def assert_upgrades_to_factory_once(rules, paths):
+    """Stored `rules` upgrade to config.json's factory list, reporting
+    `paths`; a second pass changes nothing."""
+    from faster_whisper_backend.settings import config_renames as renames
+    raw = {"PIPELINE_RULES": rules}
+    assert renames.upgrade_rule_entries(raw) == paths
+    assert raw["PIPELINE_RULES"] == factory_rules()
+    assert renames.upgrade_rule_entries(raw) == []

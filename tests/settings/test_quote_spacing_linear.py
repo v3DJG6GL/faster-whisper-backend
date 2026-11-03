@@ -14,7 +14,10 @@ import time
 
 from faster_whisper_backend.pipeline import engine as pl_engine
 from faster_whisper_backend.settings import config_renames as renames
-from tests.settings._rules_helpers import factory_rules as _factory_rules
+from tests.settings._rules_helpers import (
+    assert_upgrades_to_factory_once as _assert_upgrades_to_factory_once,
+    factory_rules as _factory_rules,
+)
 
 _LABEL = "tighten-quote-spacing"
 
@@ -81,7 +84,4 @@ def test_a_stored_copy_of_either_earlier_entry_is_upgraded_once():
                 *renames.EARLIER_RULE_ENTRIES[_LABEL]):
         rules = copy.deepcopy(_factory_rules())
         _entry(rules)["pattern"], _entry(rules)["replacement"] = old
-        raw = {"PIPELINE_RULES": rules}
-        assert renames.upgrade_rule_entries(raw) == [f"digit-and-whitespace-tidy/{_LABEL}"]
-        assert raw["PIPELINE_RULES"] == _factory_rules()
-        assert renames.upgrade_rule_entries(raw) == []
+        _assert_upgrades_to_factory_once(rules, [f"digit-and-whitespace-tidy/{_LABEL}"])

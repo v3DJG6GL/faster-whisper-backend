@@ -12,8 +12,10 @@ import re
 
 import pytest
 
-from faster_whisper_backend.settings import config_renames as renames
-from tests.settings._rules_helpers import factory_rules as _factory_rules
+from tests.settings._rules_helpers import (
+    assert_upgrades_to_factory_once as _assert_upgrades_to_factory_once,
+    factory_rules as _factory_rules,
+)
 
 # The entries as shipped in config.json at c4fefe2 (through 00fd42f^).
 _OLD = {
@@ -34,13 +36,10 @@ def test_stored_old_es_entries_are_upgraded_once():
     for label, (pat, rep) in _OLD.items():
         e = _entry(rules, label)
         e["pattern"], e["replacement"] = pat, rep
-    raw = {"PIPELINE_RULES": rules}
-    assert renames.upgrade_rule_entries(raw) == [
+    _assert_upgrades_to_factory_once(rules, [
         "es-punctuation/es-opening-question-mark",
         "es-punctuation/es-opening-exclamation-mark",
-    ]
-    assert raw["PIPELINE_RULES"] == _factory_rules()
-    assert renames.upgrade_rule_entries(raw) == []
+    ])
 
 
 @pytest.mark.parametrize("label,text,want", [

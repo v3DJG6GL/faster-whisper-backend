@@ -16,7 +16,10 @@ import pytest
 from faster_whisper_backend.settings import config_renames as renames
 from faster_whisper_backend import paths
 from faster_whisper_backend.pipeline import engine as pl_engine
-from tests.settings._rules_helpers import factory_rules as _factory_rules
+from tests.settings._rules_helpers import (
+    assert_upgrades_to_factory_once as _assert_upgrades_to_factory_once,
+    factory_rules as _factory_rules,
+)
 
 
 def _by_name():
@@ -234,10 +237,7 @@ def _assert_upgraded_once(label, path):
     rules = copy.deepcopy(_factory_rules())
     e = _entry(rules, label)
     e["pattern"], e["replacement"] = renames.UPGRADED_RULE_ENTRIES[label][0]
-    raw = {"PIPELINE_RULES": rules}
-    assert renames.upgrade_rule_entries(raw) == [path]
-    assert raw["PIPELINE_RULES"] == _factory_rules()
-    assert renames.upgrade_rule_entries(raw) == []
+    _assert_upgrades_to_factory_once(rules, [path])
 
 
 def test_stored_old_factory_entry_is_upgraded_once():

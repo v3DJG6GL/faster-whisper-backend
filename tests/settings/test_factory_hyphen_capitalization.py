@@ -16,7 +16,10 @@ import pytest
 from faster_whisper_backend.pipeline import engine as pl_engine
 from faster_whisper_backend.pipeline import regex_guard
 from faster_whisper_backend.settings import config_renames as renames
-from tests.settings._rules_helpers import factory_rules as _factory_rules
+from tests.settings._rules_helpers import (
+    assert_upgrades_to_factory_once as _assert_upgrades_to_factory_once,
+    factory_rules as _factory_rules,
+)
 
 _NAME = "capitalize-letter-after-hyphen"
 # As shipped from 0a9403f8 until the capital-first pattern, and before 0a9403f8.
@@ -79,10 +82,7 @@ def test_a_saved_old_factory_copy_becomes_the_factory_rule_once(old):
     r = _rule(rules)
     r["pattern"], r["note"] = old, _OLD_NOTE
     del r["repeat"]  # saved before the rule repeated
-    raw = {"PIPELINE_RULES": rules}
-    assert renames.upgrade_rule_entries(raw) == [f"{_NAME}/pattern"]
-    assert raw["PIPELINE_RULES"] == _factory_rules()
-    assert renames.upgrade_rule_entries(raw) == []
+    _assert_upgrades_to_factory_once(rules, [f"{_NAME}/pattern"])
 
 
 def test_an_edited_note_stays_while_the_old_pattern_is_upgraded():

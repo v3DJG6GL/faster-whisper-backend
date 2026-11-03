@@ -16,7 +16,10 @@ import pytest
 
 from faster_whisper_backend.pipeline import engine as pl_engine
 from faster_whisper_backend.settings import config_renames as renames
-from tests.settings._rules_helpers import factory_rules as _factory_rules
+from tests.settings._rules_helpers import (
+    assert_upgrades_to_factory_once as _assert_upgrades_to_factory_once,
+    factory_rules as _factory_rules,
+)
 
 _LABELS = ("es-opening-question-mark", "es-opening-exclamation-mark")
 
@@ -67,7 +70,4 @@ def test_a_stored_copy_of_the_previous_entries_is_upgraded_once():
     es = next(r for r in rules if r["name"] == "es-punctuation")
     for e in es["entries"]:
         e["pattern"], e["replacement"] = renames.UPGRADED_RULE_ENTRIES[e["label"]][0]
-    raw = {"PIPELINE_RULES": rules}
-    assert renames.upgrade_rule_entries(raw) == [f"es-punctuation/{x}" for x in _LABELS]
-    assert raw["PIPELINE_RULES"] == _factory_rules()
-    assert renames.upgrade_rule_entries(raw) == []
+    _assert_upgrades_to_factory_once(rules, [f"es-punctuation/{x}" for x in _LABELS])

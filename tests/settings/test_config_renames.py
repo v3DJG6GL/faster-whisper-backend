@@ -9,8 +9,11 @@ import json
 import pytest
 
 from faster_whisper_backend.settings import config_renames as renames
-from tests.settings._rules_helpers import factory_rules as _factory_rules
-from tests.settings._rules_helpers import load_saved as _load_saved
+from tests.settings._rules_helpers import (
+    assert_upgrades_to_factory_once as _assert_upgrades_to_factory_once,
+    factory_rules as _factory_rules,
+    load_saved as _load_saved,
+)
 
 
 def _rule(rules, name):
@@ -49,11 +52,8 @@ def test_stored_hyphen_rule_without_languages_becomes_german_only(stored_languag
         del r["languages"]
     else:
         r["languages"] = stored_languages
-    raw = {"PIPELINE_RULES": rules}
-    assert renames.upgrade_rule_entries(raw) == ["capitalize-letter-after-hyphen/languages",
-                                                 "capitalize-letter-after-hyphen/pattern"]
-    assert raw["PIPELINE_RULES"] == _factory_rules()
-    assert renames.upgrade_rule_entries(raw) == []
+    _assert_upgrades_to_factory_once(rules, ["capitalize-letter-after-hyphen/languages",
+                                             "capitalize-letter-after-hyphen/pattern"])
 
 
 def test_edited_hyphen_rule_keeps_its_own_scope_and_pattern():
@@ -298,10 +298,7 @@ def test_entry_saved_under_its_old_label_is_upgraded_and_relabelled(old_label, l
                 if any(e.get("label") == label for e in r.get("entries") or []))
     e = next(e for e in rule["entries"] if e.get("label") == label)
     e["label"], e["pattern"], e["replacement"] = old_label, old_pat, old_rep
-    raw = {"PIPELINE_RULES": rules}
-    assert renames.upgrade_rule_entries(raw) == [f"{rule['name']}/{label}"]
-    assert raw["PIPELINE_RULES"] == _factory_rules()
-    assert renames.upgrade_rule_entries(raw) == []
+    _assert_upgrades_to_factory_once(rules, [f"{rule['name']}/{label}"])
 
 
 def test_edited_entry_under_an_old_label_stays_the_admins():
