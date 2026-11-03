@@ -946,27 +946,37 @@ async def transcribe_stream(ws: WebSocket) -> None:
         # Locked language / prompt: the admin value stands; the client's
         # handshake value is ignored (and surfaced in the ready frame). Locked
         # decode_overrides keys are dropped in the assembler; record them here.
-        overrides_ignored = sorted(k for k in req_overrides
-                                   if k in ident.locked_client_keys)
-        _note_pinned_condition(req_overrides, overrides_ignored)
-        if _language_dropped:
-            overrides_ignored.append("language")
-        if "DEFAULT_LANGUAGE" in ident.locked:
-            _locked_lang = effective_config.cfg_for(final_model, "DEFAULT_LANGUAGE", ident) or ""
-            if req_language and req_language != _locked_lang:
+        def _apply_client_locks() -> bool:
+            """Rebuild overrides_ignored / req_language / req_prompt from the
+            client's handshake values under the CURRENT ident's locks (the
+            handshake and every _refresh_ident). Returns whether the prompt is
+            authoritative (a locked admin value always is)."""
+            nonlocal overrides_ignored, req_language, req_prompt
+            overrides_ignored = sorted(k for k in req_overrides
+                                       if k in ident.locked_client_keys)
+            _note_pinned_condition(req_overrides, overrides_ignored)
+            if _language_dropped:
                 overrides_ignored.append("language")
-            req_language = _locked_lang
-        tx_models._note_auto_detect_only(
-            req_overrides, req_language if req_language is not None
-            else effective_config.cfg_for(final_model, "DEFAULT_LANGUAGE", ident),
-            overrides_ignored)
-        tx_models._note_word_ts_only(req_overrides, gate_final_words, overrides_ignored)
-        if "DEFAULT_PROMPT" in ident.locked:
-            _locked_prompt = effective_config.cfg_for(final_model, "DEFAULT_PROMPT", ident) or ""
-            if prompt_provided and req_prompt != _locked_prompt:
-                overrides_ignored.append("prompt")
-            req_prompt = _locked_prompt
-            prompt_provided = True  # locked admin value is now authoritative
+            req_language = _client_language
+            if "DEFAULT_LANGUAGE" in ident.locked:
+                req_language = effective_config._resolve_request_knob(
+                    final_model, ident, overrides_ignored, "DEFAULT_LANGUAGE", "language",
+                    _client_language or None)
+            tx_models._note_auto_detect_only(
+                req_overrides, req_language if req_language is not None
+                else effective_config.cfg_for(final_model, "DEFAULT_LANGUAGE", ident),
+                overrides_ignored)
+            tx_models._note_word_ts_only(req_overrides, gate_final_words, overrides_ignored)
+            req_prompt = _client_prompt
+            if "DEFAULT_PROMPT" in ident.locked:
+                req_prompt = effective_config._resolve_request_knob(
+                    final_model, ident, overrides_ignored, "DEFAULT_PROMPT", "prompt",
+                    _client_prompt if _client_prompt_provided else None)
+                return True
+            return _client_prompt_provided
+
+        overrides_ignored: list[str] = []
+        prompt_provided = _apply_client_locks()
 
         async def _transcribe(model_obj, audio, kwargs, *, trace: bool = False,
                               skip_residual: bool = False,
@@ -1648,7 +1658,6 @@ async def transcribe_stream(ws: WebSocket) -> None:
             `authenticate_ws` reads only ws.headers/ws.cookies, both of which
             outlive the handshake, so re-invoking it here is enough."""
             nonlocal ident, _ident_version, out_prefix, out_suffix
-            nonlocal req_language, req_prompt, overrides_ignored
             nonlocal user, _auth_revoked
             try:
                 v = settings_version.config_version()
@@ -1682,31 +1691,7 @@ async def transcribe_stream(ws: WebSocket) -> None:
                 ident = effective_config.build_ident(user, final_model, request_profile=req_override_profile)
                 out_prefix, out_suffix = tx_models._output_wrappers(
                     final_model, ident, req_overrides)
-                overrides_ignored = sorted(k for k in req_overrides
-                                           if k in ident.locked_client_keys)
-                _note_pinned_condition(req_overrides, overrides_ignored)
-                if _language_dropped:
-                    overrides_ignored.append("language")
-                req_language = _client_language
-                if "DEFAULT_LANGUAGE" in ident.locked:
-                    _ll = effective_config.cfg_for(final_model, "DEFAULT_LANGUAGE", ident) or ""
-                    if _client_language and _client_language != _ll:
-                        overrides_ignored.append("language")
-                    req_language = _ll
-                tx_models._note_auto_detect_only(
-                    req_overrides, req_language if req_language is not None
-                    else effective_config.cfg_for(final_model, "DEFAULT_LANGUAGE", ident),
-                    overrides_ignored)
-                tx_models._note_word_ts_only(req_overrides, gate_final_words,
-                                        overrides_ignored)
-                req_prompt = _client_prompt
-                _provided = _client_prompt_provided
-                if "DEFAULT_PROMPT" in ident.locked:
-                    _lp = effective_config.cfg_for(final_model, "DEFAULT_PROMPT", ident) or ""
-                    if _client_prompt_provided and _client_prompt != _lp:
-                        overrides_ignored.append("prompt")
-                    req_prompt = _lp
-                    _provided = True
+                _provided = _apply_client_locks()
                 # The rolling prompt seed lives on the session; updating it makes a
                 # changed DEFAULT_PROMPT take effect from the next utterance's
                 # _make_prompt() (one-utterance convergence). An explicitly cleared
