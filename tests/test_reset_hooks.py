@@ -1,9 +1,8 @@
 """State reset for the modules carved out of main.py.
 
-`importlib.reload(main)` in the app_module fixture used to re-create every
-engine container, lock and cache per test. Once that state lives in its own
-module the reload no longer reaches it, so each such module owns a
-`_reset_for_tests()` registered in conftest._RESET_HOOKS. These tests pin that
+`importlib.reload(main)` in the app_module fixture does not reach state
+held in other modules, so each such module owns a `_reset_for_tests()`
+registered in conftest._RESET_HOOKS. These tests pin that
 every module-level container / lock / semaphore / lru_cache in those modules is
 covered by its hook (true constants are allowlisted with the reason), and that
 main.py no longer defines any name that moved out of it (a stale twin in main
