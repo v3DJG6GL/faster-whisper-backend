@@ -324,7 +324,7 @@
 
         // `body.role-admin` reveals admin-only chrome (/settings +
         // /settings/api-keys nav links, severity pills, in-page admin
-        // buttons); only this whoami pass may set it.
+        // buttons); quick-config and captures also set it from their own loads.
         if (isAdmin) document.body.classList.add('role-admin');
 
         // Every `.page-link` renders hidden; `.allowed` reveals the ones the
