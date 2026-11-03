@@ -34,8 +34,8 @@ RUN pip install --upgrade pip \
 # cu13 stack alongside — two CUDA userspaces in one process is asking for
 # trouble). Caveat: torch cu126 hard-pins OLDER nvidia-cublas-cu12 /
 # nvidia-cudnn-cu12 than requirements-gpu.txt's floors, so pip uninstalls
-# the 12.9/9.24 libs from the previous layer and installs torch's 12.6/9.5
-# pins (~2 min churn + the old copies linger as whiteouts).
+# the newer libs from the previous layer and installs torch's pins
+# (~2 min churn + the old copies linger as whiteouts).
 # Still cublas 12.x / cudnn 9.x, which is all ctranslate2 (and faster_whisper_backend/main.py's
 # Windows DLL preloader majors) require — accepted until the -full build
 # is restructured into a single pip resolution. audio-separator's [gpu]
