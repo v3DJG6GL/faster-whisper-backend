@@ -813,8 +813,9 @@ def test_revocation_during_the_closing_drain_still_closes_with_4401(
 
 
 def _knobs_handshake(client, monkeypatch, overrides, headers=None):
-    """Handshake with `overrides` and return (ready frame, the client values
-    _stream_config received, the endpointer threshold)."""
+    """Handshake with `overrides` and return (ready frame, seen): seen holds
+    the client values _stream_config received ("client"), the config it built
+    ("config") and the endpointer threshold ("threshold")."""
     from faster_whisper_backend.streaming import routes
     seen = {}
     real_cfg, real_ep = routes._stream_config, routes.make_endpointer
