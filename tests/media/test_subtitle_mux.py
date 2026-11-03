@@ -212,7 +212,6 @@ def test_package_no_output_is_an_error(monkeypatch):
 
 
 def test_ffmpeg_capabilities_parses_listings(monkeypatch):
-    pk._reset_for_tests()
     outs = {"-muxers": "  E  matroska        Matroska\n  E  mp4             MP4\n",
             "-encoders": " S..... srt   SubRip\n S..... mov_text  3GPP\n",
             "-version": "ffmpeg version 7.0.2-static Copyright\n"}
@@ -247,7 +246,6 @@ def test_ffmpeg_capabilities_parses_listings(monkeypatch):
 def test_a_timed_out_ffmpeg_probe_is_not_cached(monkeypatch):
     """One slow first call (cold disk, loaded host at startup) must not
     disable packaging — or the empty-CC strip — until a restart."""
-    pk._reset_for_tests()
     outs = {"-muxers": "  E  matroska        Matroska\n",
             "-encoders": " S..... srt   SubRip\n",
             "-version": "ffmpeg version 7.0.2\n",
@@ -284,7 +282,6 @@ def test_a_retried_ffmpeg_probe_is_single_flight_and_off_the_caller(monkeypatch)
     loop: a re-probe there froze the server for up to 3 x 15 s per call. The
     retry runs on its own thread, one at a time; callers get the fallback."""
     import threading
-    pk._reset_for_tests()
     monkeypatch.setattr(pk, "_probe_ffmpeg_capabilities", lambda: None)
     assert not pk.ffmpeg_capabilities().available     # the first, timed out
     gate = threading.Event()
@@ -320,7 +317,6 @@ def test_a_retry_thread_that_cannot_start_frees_the_probe_slot(monkeypatch):
     host) must neither 500 the caller nor leave busy set — that answered
     "pending" for the rest of the process."""
     import threading
-    pk._reset_for_tests()
     monkeypatch.setattr(pk, "_probe_ffmpeg_capabilities", lambda: None)
     assert not pk.ffmpeg_capabilities().available     # the first, timed out
 
@@ -340,7 +336,6 @@ def test_a_retry_thread_that_cannot_start_frees_the_probe_slot(monkeypatch):
 
 def test_a_spawn_failure_is_not_cached_but_a_missing_binary_is(monkeypatch):
     import errno
-    pk._reset_for_tests()
 
     def _eagain(argv, **kw):
         raise OSError(errno.EAGAIN, "Resource temporarily unavailable")
