@@ -674,10 +674,7 @@ def _register_plan(user_id, entries, *, plan_id, denied, stage_ahead,
             continue
         state, reason = _admit(fam, mid)
         if state == "resident":
-            with _lock:
-                plan = _plans.get(pid)
-                if plan is not None:
-                    plan.warmed.add(key)
+            _mark_warmed(pid, key)
         elif state in ("loading", "queued"):
             with _lock:
                 plan = _plans.get(pid)
@@ -893,6 +890,15 @@ def _forget_inflight(item: "tuple[str, str, str]") -> None:
             _end_job_if_settled_locked(plan)
 
 
+def _mark_warmed(plan_id: str, key: str) -> None:
+    """Record a warmed key on the plan, if it still exists: _lock was
+    released around the _admit/_load that warmed it."""
+    with _lock:
+        plan = _plans.get(plan_id)
+        if plan is not None:
+            plan.warmed.add(key)
+
+
 async def _worker_loop() -> None:
     """Single consumer. One task, not a pool: serialised loads keep the NVML
     delta clean (the same reason the whisper cache's load lock exists), bound
@@ -935,10 +941,7 @@ async def _handle(item: "tuple[str, str, str]") -> None:
     # The dequeue run of the ladder (see _admit): this verdict is the one that acts.
     state, reason = _admit(family, model_id)
     if state == "resident":
-        with _lock:
-            plan = _plans.get(plan_id)
-            if plan is not None:
-                plan.warmed.add(key)
+        _mark_warmed(plan_id, key)
         return
     if state == "deferred":
         logger.info("[preload] %s deferred: %s", key, reason)
@@ -969,10 +972,7 @@ async def _handle(item: "tuple[str, str, str]") -> None:
         logger.info("[preload] %s deferred: a running job holds the slot", key)
         return
     logger.info("[preload] warmed %s in %.1fs", key, time.perf_counter() - t0)
-    with _lock:
-        plan = _plans.get(plan_id)
-        if plan is not None:
-            plan.warmed.add(key)
+    _mark_warmed(plan_id, key)
 
 
 async def _load(family: str, model_id: str) -> bool:
