@@ -1848,12 +1848,11 @@ def _project_member_corrections(
         if n <= 0:
             continue
         for c in (m.get("corrections") or []):
-            try:
-                idx = int(c["idx"]) + offset
-            except (TypeError, ValueError, KeyError):
+            idx = _anchor_idx(c)
+            if idx is None:
                 continue
             c2 = dict(c)
-            c2["idx"] = min(idx, offset + max(0, n - 1))
+            c2["idx"] = min(idx + offset, offset + max(0, n - 1))
             if c.get("idx_end") is not None:
                 try:
                     end = int(c["idx_end"]) + offset
@@ -1893,9 +1892,8 @@ def _split_corrections_to_members(
     for c in (corrections or []):
         if not isinstance(c, dict):
             continue
-        try:
-            gidx = int(c["idx"])
-        except (TypeError, ValueError, KeyError):
+        gidx = _anchor_idx(c)
+        if gidx is None:
             continue
         target: int | None = None
         for i in range(len(members)):
@@ -1924,13 +1922,16 @@ def _split_corrections_to_members(
     return out
 
 
-def _has_anchor(c: dict[str, Any]) -> bool:
+def _anchor_idx(c: Any) -> int | None:
     """The projection/split test for a word anchor: an integer-able `idx`."""
     try:
-        int(c["idx"])
+        return int(c["idx"])
     except (TypeError, ValueError, KeyError):
-        return False
-    return True
+        return None
+
+
+def _has_anchor(c: dict[str, Any]) -> bool:
+    return _anchor_idx(c) is not None
 
 
 def _keep_anchorless(
