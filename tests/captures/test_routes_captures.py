@@ -10,15 +10,8 @@ import pytest
 from starlette.testclient import TestClient
 
 from faster_whisper_backend.pipeline import engine as pl_engine
-from tests._page_helpers import js_body
+from tests._page_helpers import js_body, js_upto
 from tests.conftest import bearer, fake_wav_transcode, write_wav
-
-
-def _js_upto(html: str, start: str, end: str) -> str:
-    """Page-script source from ``start`` up to (not including) the first
-    ``end`` after it."""
-    body = html[html.index(start):]
-    return body[:body.index(end)]
 
 
 def test_captures_page(client):
@@ -38,8 +31,8 @@ def test_captures_page_403_landing_short_circuits_for_admin(client):
     map as "permissions absent" rather than "no scope" — otherwise any 403
     (stale CSRF token) wipes <main> for the admin."""
     html = client.get("/captures").text
-    gate = _js_upto(html, "async function _renderAdminOnlyIfNonAdmin()",
-                    "_renderNoAccessLanding({ page: 'captures' })")
+    gate = js_upto(html, "async function _renderAdminOnlyIfNonAdmin()",
+                   "_renderNoAccessLanding({ page: 'captures' })")
     assert "if (j && j.is_admin) return false;" in gate
     assert "if (pages && !Object.keys(pages).length) pages = null;" in gate
     # The admin short-circuit precedes the pages-keyed test.
@@ -1455,12 +1448,12 @@ def test_page_merge_gate_cancels_a_stale_trim_estimate(client):
     selection must not re-enable Merge once the selection turns invalid (too
     many rows, mixed speakers, in-sample) or empty: both paths cancel it."""
     html = client.get("/captures").text
-    bar = _js_upto(
+    bar = js_upto(
         html, "function _updateActionBar()", "function _cancelTrimEstimate()")
     assert "if (n === 0) { _cancelTrimEstimate(); return; }" in bar
     assert bar.count("_cancelTrimEstimate();") == 2
     assert "n <= MERGE_MAX_MEMBERS" in bar and "var MERGE_MAX_MEMBERS = 30;" in html
-    cancel = _js_upto(
+    cancel = js_upto(
         html, "function _cancelTrimEstimate()", "function _fetchTrimEstimate(")
     assert "_meterEstimateToken++;" in cancel and "clearTimeout(_meterEstimateTimer)" in cancel
 
@@ -1478,7 +1471,7 @@ def test_page_translation_eligibility_mirrors_the_exporter(client):
 
 def test_page_merge_gate_mirrors_the_language_and_task_partition(client):
     html = client.get("/captures").text
-    bar = _js_upto(
+    bar = js_upto(
         html, "function _updateActionBar()", "function _cancelTrimEstimate()")
     assert "var mixedLangTask = langs.size > 1 || tasks.size > 1;" in bar
     assert "&& !mixedLangTask;" in bar
@@ -1490,7 +1483,7 @@ def test_page_unsaved_edits_guard_covers_groups_and_bulk_actions(client):
     cards, and the bulk Mark / Undo / Delete paths had no guard at all, so
     unsaved chip / notes edits vanished without a confirm."""
     html = client.get("/captures").text
-    guard = _js_upto(
+    guard = js_upto(
         html, "function _anyOpenDirty()", "async function _okToDropOpenEdits(")
     assert "_openRows[id]" in guard and "st.dirty" in guard
     assert "_openSamples[id]" in guard and "st.state && st.state.dirty" in guard
@@ -1499,7 +1492,7 @@ def test_page_unsaved_edits_guard_covers_groups_and_bulk_actions(client):
                     ("async function _bulkStatus(", "await api("),
                     ("async function _undoBulk(", "await api("),
                     ("async function _bulkDelete()", "await api(")):
-        body = _js_upto(html, fn, nxt)
+        body = js_upto(html, fn, nxt)
         assert "_okToDropOpenEdits(" in body, fn
 
 
@@ -1511,33 +1504,33 @@ def test_page_filters_and_background_reloads_ask_before_dropping_edits(client):
     and loadMoreSamples renders only through that dirty-card check, never in
     `finally`."""
     html = client.get("/captures").text
-    helper = _js_upto(html, "async function _filterChange(apply, revert)",
-                      "function _loadUnlessDirty(msg, err)")
+    helper = js_upto(html, "async function _filterChange(apply, revert)",
+                     "function _loadUnlessDirty(msg, err)")
     assert "await _okToDropOpenEdits(" in helper
     assert "if (ok) apply(); else revert();" in helper
     unless = js_body(html, "function _loadUnlessDirty(msg, err)")
     assert "if (!_anyOpenDirty()) {" in unless and "return load();" in unless
     assert unless.index("return load();") < unless.index("List not refreshed")
-    wire = _js_upto(html, "var grp = buildStatusButtonGroup(",
-                    "document.getElementById('btn-export')")
+    wire = js_upto(html, "var grp = buildStatusButtonGroup(",
+                   "document.getElementById('btn-export')")
     assert wire.count("_filterChange(") == 4
     assert "onChange: function(ids) { _filtSpeakers = ids;" not in wire
     assert ("addEventListener('click', async function() {\n"
             "    if (await _okToDropOpenEdits('Refresh the list?'") in wire
     assert "getElementById('btn-refresh').addEventListener('click', load)" not in wire
-    poll = _js_upto(
+    poll = js_upto(
         html, "function _pollJob(statusUrl, render)", "}).catch(function(e) {")
     assert "_loadUnlessDirty(failed ?" in poll
     assert "load();" not in poll and "toast(" not in poll
-    commit = _js_upto(html, "getElementById('merge-commit').onclick",
-                      "api('POST', '/captures/api/samples'")
+    commit = js_upto(html, "getElementById('merge-commit').onclick",
+                     "api('POST', '/captures/api/samples'")
     assert "await _okToDropOpenEdits(" in commit
-    dissolve = _js_upto(
+    dissolve = js_upto(
         html, "dissolveBtn.onclick = async function() {", "api('DELETE'")
     assert "await _okToDropOpenEdits(" in dissolve
     assert "        load();   // refresh main captures list" not in html
     assert "    load();              // refresh main captures list" not in html
-    more = _js_upto(
+    more = js_upto(
         html, "async function loadMoreSamples()", "async function reloadCounts()")
     fin = more[more.index("} finally {"):more.index("if (!loaded) return;")]
     assert "render();" not in fin
@@ -1549,7 +1542,7 @@ def test_page_render_drops_hidden_rows_from_the_selection(client):
     """A filter or search change kept hidden ids selected, so a bulk Dismiss /
     Delete reached rows no longer on screen."""
     html = client.get("/captures").text
-    r = _js_upto(html, "render = function() {", "list.innerHTML = '';")
+    r = js_upto(html, "render = function() {", "list.innerHTML = '';")
     assert "_selection.delete(id)" in r
     assert "if (!r.sample_id) selectable[r.id] = true;" in r
     assert "_updateActionBar();" in r
@@ -1570,15 +1563,15 @@ def test_page_load_drops_a_superseded_filter_response(client):
     """Out-of-order /list responses for two quick speaker-picker ticks must
     not leave the older filter's rows on screen."""
     html = client.get("/captures").text
-    load = _js_upto(html, "async function load(", "async function loadMoreSamples()")
+    load = js_upto(html, "async function load(", "async function loadMoreSamples()")
     assert "var seq = ++_loadSeq;" in load
     assert load.count("if (seq !== _loadSeq) return;") >= 3
-    more = _js_upto(
+    more = js_upto(
         html, "async function loadMoreSamples()", "async function reloadCounts()")
     assert "var seq = _loadSeq;" in more and "if (seq !== _loadSeq) return;" in more
     # reloadCounts (after a bulk status / undo / delete) is filter-scoped too,
     # and a total_count of 0 is a real count, not a missing field.
-    counts = _js_upto(html, "async function reloadCounts()", "reloadStats();")
+    counts = js_upto(html, "async function reloadCounts()", "reloadStats();")
     assert "var seq = _loadSeq;" in counts and "if (seq !== _loadSeq) return;" in counts
     assert "if (typeof j.total_count === 'number') _totalCount = j.total_count;" in counts
 
@@ -1589,10 +1582,10 @@ def test_page_group_autoload_skips_open_capture_cards(client):
     while one is open, and a manual load asks before dropping unsaved
     edits. Under audio_missing (no group has it) there is no footer."""
     html = client.get("/captures").text
-    foot = _js_upto(html, "function appendMoreFooter(list) {", "io.observe(more);")
+    foot = js_upto(html, "function appendMoreFooter(list) {", "io.observe(more);")
     assert "_filtStatus === 'audio_missing') return;" in foot
     assert "|| Object.keys(_openRows).length !== 0) return;" in foot
-    more = _js_upto(
+    more = js_upto(
         html, "async function loadMoreSamples()", "async function reloadCounts()")
     assert (more.index("await _okToDropOpenEdits('Load more groups?'")
             < more.index("var agreed = _dirtyOpenEdits();")
@@ -1603,7 +1596,7 @@ def test_sample_save_does_not_resend_status(client):
     """The group's status buttons auto-save a narrow PATCH; Save resending
     the status loaded with the view reverted another tab's change."""
     html = client.get("/captures").text
-    save = _js_upto(
+    save = js_upto(
         html, "saveTBtn.onclick = function() {", "saveTBtn.disabled = true;")
     assert "payload.admin_notes = sampleState.adminNotes;" in save
     assert "status:" not in save
