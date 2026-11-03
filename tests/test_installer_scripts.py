@@ -26,6 +26,12 @@ def _bash(script, env):
                           text=True, timeout=60, env=env)
 
 
+def _exe(path, body):
+    path.write_text(body, encoding="utf-8")
+    path.chmod(0o755)
+    return path
+
+
 def test_linux_installer_restarts_the_unit():
     # Re-runs must pick up the refreshed venv + rewritten unit: `enable --now`
     # is a no-op on an active unit, so the script must use an explicit restart.
@@ -52,8 +58,7 @@ def test_linux_installer_runs_venv_steps_without_sudo_as_root(tmp_path):
     helper = re.search(r"^as_user\(\) .*$", sh, re.M).group(0)
     bindir = tmp_path / "bin"
     bindir.mkdir()
-    (bindir / "sudo").write_text('#!/bin/sh\necho "sudo $*"\n', encoding="utf-8")
-    (bindir / "sudo").chmod(0o755)
+    _exe(bindir / "sudo", '#!/bin/sh\necho "sudo $*"\n')
 
     def run(user):
         out = _bash(f"set -euo pipefail\n{helper}\nas_user echo hi",
@@ -178,12 +183,9 @@ def test_linux_uninstaller_sees_an_installed_unit_in_a_long_listing(tmp_path):
     cond = re.search(r"^if .*list-unit-files.*; then$", sh, re.M).group(0)
     bindir = tmp_path / "bin"
     bindir.mkdir()
-    fake = bindir / "systemctl"
-    fake.write_text("#!/bin/sh\n"
-                    "echo 'whisper-api.service enabled enabled'\n"
-                    "yes 'zz-other.service static -' | head -c 2000000\n",
-                    encoding="utf-8")
-    fake.chmod(0o755)
+    _exe(bindir / "systemctl", "#!/bin/sh\n"
+         "echo 'whisper-api.service enabled enabled'\n"
+         "yes 'zz-other.service static -' | head -c 2000000\n")
     script = ("set -euo pipefail\nSERVICE_NAME=whisper-api\n"
               f"{cond}\n  echo installed\nelse\n  echo missing\nfi\n")
     out = _bash(script, {"PATH": f"{bindir}:/usr/bin:/bin"})
@@ -451,11 +453,8 @@ def test_linux_installer_finds_a_python314_beside_an_older_python3(tmp_path):
 
     def stub(name, version):
         ok = 0 if version >= (3, 14) else 1
-        path = bindir / name
-        path.write_text(f'#!/bin/sh\n[ "$1" = --version ] && echo "Python {version[0]}.{version[1]}.0"\n'
-                        f"exit {ok}\n", encoding="utf-8")
-        path.chmod(0o755)
-        return path
+        return _exe(bindir / name, f'#!/bin/sh\n[ "$1" = --version ] && echo "Python {version[0]}.{version[1]}.0"\n'
+                    f"exit {ok}\n")
 
     def run(**env):
         out = _bash(f'set -euo pipefail\nas_user() {{ echo "ran: $*"; }}\n{block}',
@@ -494,9 +493,7 @@ def test_linux_installer_removes_a_venv_whose_build_failed(tmp_path):
     block = _venv_block()
     bindir = tmp_path / "bin"
     bindir.mkdir()
-    py314 = bindir / "python3.14"
-    py314.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
-    py314.chmod(0o755)
+    py314 = _exe(bindir / "python3.14", "#!/bin/sh\nexit 0\n")
     venv = tmp_path / "venv"
     no_ensurepip = ('as_user() { mkdir -p "$VENV/bin"; printf "#!/bin/sh\\n" > "$PY"; '
                     'chmod +x "$PY"; echo "ensurepip is not available" >&2; return 1; }')
@@ -526,9 +523,7 @@ def test_linux_installer_rebuilds_a_venv_whose_python_is_dead_or_pipless(tmp_pat
     block = _venv_block()
     bindir = tmp_path / "bin"
     bindir.mkdir()
-    py314 = bindir / "python3.14"
-    py314.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
-    py314.chmod(0o755)
+    py314 = _exe(bindir / "python3.14", "#!/bin/sh\nexit 0\n")
     venv = tmp_path / "venv"
     (venv / "bin").mkdir(parents=True)
     (venv / "pyvenv.cfg").write_text("home = /usr/bin\n", encoding="utf-8")
@@ -544,8 +539,7 @@ def test_linux_installer_rebuilds_a_venv_whose_python_is_dead_or_pipless(tmp_pat
     py.symlink_to(tmp_path / "gone" / "python3.12")
     assert f"ran: {py314} -m venv --clear {venv}" in run()
     py.unlink()
-    py.write_text("#!/bin/sh\necho 'No module named pip' >&2\nexit 1\n", encoding="utf-8")
-    py.chmod(0o755)
+    _exe(py, "#!/bin/sh\necho 'No module named pip' >&2\nexit 1\n")
     assert f"ran: {py314} -m venv --clear {venv}" in run()
     # A working venv is kept, whatever Python it runs.
     py.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
@@ -813,11 +807,8 @@ def test_linux_legacy_captures_recipe_moves_the_audio_tree_with_its_store(tmp_pa
     section = _legacy_section(_read("install-service.sh"))
     repo, stubs = tmp_path / "repo", tmp_path / "stubs"
     stubs.mkdir()
-    (stubs / "systemctl").write_text(
-        f'#!/bin/sh\necho "$*" >> "{tmp_path}/systemctl.log"\n', encoding="utf-8")
-    (stubs / "sudo").write_text('#!/bin/sh\nshift 2\nexec "$@"\n', encoding="utf-8")
-    for stub in stubs.iterdir():
-        stub.chmod(0o755)
+    _exe(stubs / "systemctl", f'#!/bin/sh\necho "$*" >> "{tmp_path}/systemctl.log"\n')
+    _exe(stubs / "sudo", '#!/bin/sh\nshift 2\nexec "$@"\n')
     env = {"REPO_DIR": str(repo), "PY": sys.executable, "SERVICE_NAME": "w",
            "RUN_USER": "u", "PATH": f"{stubs}:/usr/bin:/bin"}
 
