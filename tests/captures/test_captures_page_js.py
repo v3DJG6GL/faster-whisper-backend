@@ -860,9 +860,7 @@ console.log(JSON.stringify({
 ])
 def test_proposals_follow_the_speaker_filter(page, tmp_path, picked, url, shown):
     """The proposals fetch ignored the speaker filter, so an admin saw every
-    user's proposals while the list (and Accept's eligibility check) held
-    only the picked speakers': Accept failed with a "try Refresh" toast
-    that Refresh could never fix."""
+    user's proposals while the list held only the picked speakers'."""
     out = _run_node(tmp_path, _js_function(page, "_loadProposals") + r"""
 var _filtSpeakers = """ + json.dumps(picked) + r""";
 var urls = [], rendered = null, _batchActive = false, _proposalsSeq = 0;
