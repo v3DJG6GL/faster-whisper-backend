@@ -504,8 +504,8 @@ def test_own_scope_toggle_restores_machine(client, app_module, monkeypatch):
 
 
 def test_nonadmin_all_scope_unchanged(client):
-    """stats="all" for a non-admin is today's behaviour: every job, machine
-    visible, identities scrubbed — plus the cancel handle on their own row."""
+    """stats="all" for a non-admin: every job, machine visible, identities
+    scrubbed — plus the cancel handle on their own row."""
     from faster_whisper_backend.stats import routes as stats_routes
     a, b = _seed_jobs()
     jobs.job_update(a, progress_id="pid-a")
