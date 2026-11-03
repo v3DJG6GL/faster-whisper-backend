@@ -1444,20 +1444,16 @@ def test_capped_get_refuses_a_short_or_cut_body(monkeypatch):
         udl._capped_get("https://e.com/a", max_bytes=9999, timeout=1.0)
 
 
-def _rebinding_server(monkeypatch, content_type):
-    """Local server + a getaddrinfo stub for "rebind.test" that answers a
-    public address on the first lookup (the _host_is_forbidden gate) and
-    loopback on every later one (what an unpinned connect would dial)."""
+def _ok_server(content_type, body, on_get=None):
+    """Loopback HTTPServer answering every GET 200 `content_type` + `body`;
+    `on_get(handler)` runs first, to record the request."""
     import http.server
-    import socket
     import threading
-
-    hits = {"n": 0}
 
     class _H(http.server.BaseHTTPRequestHandler):
         def do_GET(self):
-            hits["n"] += 1
-            body = b"INTERNAL-SECRET"
+            if on_get:
+                on_get(self)
             self.send_response(200)
             self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(body)))
@@ -1469,6 +1465,21 @@ def _rebinding_server(monkeypatch, content_type):
 
     srv = http.server.HTTPServer(("127.0.0.1", 0), _H)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return srv
+
+
+def _rebinding_server(monkeypatch, content_type):
+    """Local server + a getaddrinfo stub for "rebind.test" that answers a
+    public address on the first lookup (the _host_is_forbidden gate) and
+    loopback on every later one (what an unpinned connect would dial)."""
+    import socket
+
+    hits = {"n": 0}
+
+    def _hit(handler):
+        hits["n"] += 1
+
+    srv = _ok_server(content_type, b"INTERNAL-SECRET", _hit)
     port = srv.server_port
     real = socket.getaddrinfo
     calls = {"n": 0}
@@ -1611,25 +1622,9 @@ def test_direct_media_probe_admits_an_hls_manifest_only_for_a_hand_off(
     """CDNs answer an HLS manifest as application/vnd.apple.mpegurl, which
     no audio/ video/ prefix matches: the hand-off verdict (accept_hls) must
     take it, while a pasted link to a bare manifest stays refused."""
-    import http.server
-    import threading
     _open_loopback(monkeypatch)
-
-    class _H(http.server.BaseHTTPRequestHandler):
-        def do_GET(self):
-            body = b"#EXTM3U\n"
-            self.send_response(200)
-            self.send_header("Content-Type",
-                             "application/vnd.apple.mpegurl; charset=utf-8")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-
-        def log_message(self, *a):
-            pass
-
-    srv = http.server.HTTPServer(("127.0.0.1", 0), _H)
-    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    srv = _ok_server("application/vnd.apple.mpegurl; charset=utf-8",
+                     b"#EXTM3U\n")
     url = f"http://127.0.0.1:{srv.server_port}/live.m3u8"
     try:
         assert udl._direct_media_probe_sync(
@@ -1646,25 +1641,9 @@ def test_direct_media_probe_and_capped_get_fetch_a_raw_unicode_path(
     but http.client encodes the request line as ASCII: the probe swallowed
     its UnicodeEncodeError and refused the link as not media, and
     _capped_get raised it. Both must send the path percent-encoded."""
-    import http.server
-    import threading
     _open_loopback(monkeypatch)
     seen = []
-
-    class _H(http.server.BaseHTTPRequestHandler):
-        def do_GET(self):
-            seen.append(self.path)
-            self.send_response(200)
-            self.send_header("Content-Type", "audio/ogg")
-            self.send_header("Content-Length", "1")
-            self.end_headers()
-            self.wfile.write(b"x")
-
-        def log_message(self, *a):
-            pass
-
-    srv = http.server.HTTPServer(("127.0.0.1", 0), _H)
-    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    srv = _ok_server("audio/ogg", b"x", lambda h: seen.append(h.path))
     url = udl.validate_url(
         f"http://127.0.0.1:{srv.server_port}/M\u00fcller%20x.ogg?t=\u00e9")
     try:
@@ -1686,9 +1665,7 @@ def test_direct_media_probe_and_capped_get_send_an_idn_host_as_punycode(
     (probe said not media, _capped_get raised it). Through a plain-HTTP
     proxy the whole URL is the ASCII request line. The host must go out
     IDNA-encoded on both."""
-    import http.server
     import socket as _s
-    import threading
     from faster_whisper_backend.core import net_policy as np
     _open_loopback(monkeypatch)
     real_gai = _s.getaddrinfo
@@ -1697,21 +1674,8 @@ def test_direct_media_probe_and_capped_get_send_an_idn_host_as_punycode(
     monkeypatch.setattr(np.socket, "getaddrinfo", lambda host, *a, **kw: (
         real_gai("127.0.0.1" if host in names else host, *a, **kw)))
     seen = []
-
-    class _H(http.server.BaseHTTPRequestHandler):
-        def do_GET(self):
-            seen.append((self.headers.get("Host"), self.path))
-            self.send_response(200)
-            self.send_header("Content-Type", "audio/ogg")
-            self.send_header("Content-Length", "1")
-            self.end_headers()
-            self.wfile.write(b"x")
-
-        def log_message(self, *a):
-            pass
-
-    srv = http.server.HTTPServer(("127.0.0.1", 0), _H)
-    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    srv = _ok_server("audio/ogg", b"x",
+                     lambda h: seen.append((h.headers.get("Host"), h.path)))
     port = srv.server_port
     if via_proxy:
         monkeypatch.setenv("http_proxy", f"http://127.0.0.1:{port}")
