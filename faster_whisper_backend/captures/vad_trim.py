@@ -225,7 +225,7 @@ def trim_pcm_for_merge(
     joins is removed).
 
     Operates on in-memory PCM only; the caller never touches the original
-    capture file on disk (so ungroup still restores raw audio).
+    capture file on disk (so dissolving the sample still restores raw audio).
 
     Returns:
       {
