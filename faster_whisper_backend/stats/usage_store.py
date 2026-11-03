@@ -290,29 +290,26 @@ def init_db(path: str) -> None:
 # also be listed here or it never reaches a live database.
 _COLUMN_MIGRATIONS: dict[str, tuple[tuple[str, str], ...]] = {
     "usage_jobs": (
-        ("wait_s", "ADD COLUMN wait_s REAL NOT NULL DEFAULT 0"),
-        ("error_class", "ADD COLUMN error_class TEXT"),
-        ("error_stage", "ADD COLUMN error_stage TEXT"),
+        ("wait_s", "REAL NOT NULL DEFAULT 0"),
+        ("error_class", "TEXT"),
+        ("error_stage", "TEXT"),
     ),
     "usage_job_stages": (
-        ("error", "ADD COLUMN error TEXT"),
-        ("kept_original", "ADD COLUMN kept_original INTEGER NOT NULL DEFAULT 0"),
+        ("error", "TEXT"),
+        ("kept_original", "INTEGER NOT NULL DEFAULT 0"),
         # NULL on rows written before it: the readers fall back to the job's
         # audio there (what they always read).
-        ("audio_s", "ADD COLUMN audio_s REAL"),
+        ("audio_s", "REAL"),
     ),
     "usage_stage_hourly": (
-        ("errors", "ADD COLUMN errors INTEGER NOT NULL DEFAULT 0"),
+        ("errors", "INTEGER NOT NULL DEFAULT 0"),
     ),
 }
 
 
 def _migrate_columns(conn: sqlite3.Connection) -> None:
     for table, cols in _COLUMN_MIGRATIONS.items():
-        have = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}
-        for col, ddl in cols:
-            if col not in have:
-                conn.execute(f"ALTER TABLE {table} {ddl}")
+        store_common.add_missing_columns(conn, table, cols)
     conn.commit()
 
 

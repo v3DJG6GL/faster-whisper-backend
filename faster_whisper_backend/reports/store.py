@@ -118,15 +118,12 @@ def _ensure_columns(conn: sqlite3.Connection) -> None:
     a new column must be ALTER-ed in here. Safe to run on every init.
 
     Same convention as api_keys_store._ensure_columns."""
-    cols = {r["name"] for r in conn.execute("PRAGMA table_info(reports)")}
-    for col, ddl in (
+    store_common.add_missing_columns(conn, "reports", (
         # Job provenance: a report about a translation names its language
         # and the stages (translation model) that produced it.
-        ("language", "ADD COLUMN language TEXT"),
-        ("stages", "ADD COLUMN stages TEXT"),
-    ):
-        if col not in cols:
-            conn.execute(f"ALTER TABLE reports {ddl}")
+        ("language", "TEXT"),
+        ("stages", "TEXT"),
+    ))
 
 
 def _require_conn() -> sqlite3.Connection:

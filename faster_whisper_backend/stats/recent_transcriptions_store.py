@@ -127,16 +127,14 @@ def init_db(path: str) -> None:
         # are mutable / deletable, so resolving at read time would lie about
         # history; `wait_s` = GPU queue wait; `error_class` / `error_stage` =
         # why and where a job failed (metrics.ERROR_CLASSES).
-        for col, ddl in (
-            ("kind", "ADD COLUMN kind TEXT"),
-            ("stages", "ADD COLUMN stages TEXT"),
-            ("key_label", "ADD COLUMN key_label TEXT"),
-            ("wait_s", "ADD COLUMN wait_s REAL"),
-            ("error_class", "ADD COLUMN error_class TEXT"),
-            ("error_stage", "ADD COLUMN error_stage TEXT"),
-        ):
-            if col not in cols:
-                conn.execute(f"ALTER TABLE recent_transcriptions {ddl}")
+        store_common.add_missing_columns(conn, "recent_transcriptions", (
+            ("kind", "TEXT"),
+            ("stages", "TEXT"),
+            ("key_label", "TEXT"),
+            ("wait_s", "REAL"),
+            ("error_class", "TEXT"),
+            ("error_stage", "TEXT"),
+        ))
     except BaseException:
         conn.close()
         raise

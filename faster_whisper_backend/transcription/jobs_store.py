@@ -139,10 +139,7 @@ def init_db(path: str) -> None:
     _conn.execute("PRAGMA temp_store=MEMORY;")
     _conn.executescript(_SCHEMA)
     store_common.secure_db_file(path)
-    cols = {r["name"] for r in _conn.execute("PRAGMA table_info(jobs)")}
-    for col, ddl in _MIGRATIONS:
-        if col not in cols:
-            _conn.execute(f"ALTER TABLE jobs ADD COLUMN {col} {ddl}")
+    store_common.add_missing_columns(_conn, "jobs", _MIGRATIONS)
 
 
 def _require_conn() -> sqlite3.Connection:

@@ -143,18 +143,15 @@ def _ensure_columns(conn: sqlite3.Connection) -> None:
     tell the two apart. Non-English targets are stored for review but are
     never training data: Whisper's translate task only ever targets English.
     """
-    cols = {r["name"] for r in conn.execute("PRAGMA table_info(captures)")}
-    for col, ddl in (
-        ("translations", "ADD COLUMN translations TEXT"),
-        ("translation_model", "ADD COLUMN translation_model TEXT"),
-        ("translation_source", "ADD COLUMN translation_source TEXT"),
-        ("task", "ADD COLUMN task TEXT"),
+    store_common.add_missing_columns(conn, "captures", (
+        ("translations", "TEXT"),
+        ("translation_model", "TEXT"),
+        ("translation_source", "TEXT"),
+        ("task", "TEXT"),
         # Not a translation column: the status reconcile_on_startup gives
         # back once an audio_missing row's file returns.
-        ("status_before_missing", "ADD COLUMN status_before_missing TEXT"),
-    ):
-        if col not in cols:
-            conn.execute(f"ALTER TABLE captures {ddl}")
+        ("status_before_missing", "TEXT"),
+    ))
 
 
 def _require_conn() -> sqlite3.Connection:
