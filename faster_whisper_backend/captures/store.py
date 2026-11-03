@@ -1441,9 +1441,6 @@ def sweep_retention() -> int:
         ).fetchall()
         if not rows:
             return 0
-        # Chunked like the cap eviction: one IN-list over every over-age row
-        # can exceed SQLite's bind-variable limit (32766 on stock builds),
-        # and then every sweep raised and nothing ever expired.
         _delete_ids(conn, [r["id"] for r in rows])
     for r in rows:
         try:
