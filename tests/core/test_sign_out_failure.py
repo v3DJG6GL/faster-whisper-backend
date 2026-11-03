@@ -1,14 +1,13 @@
-"""window._signOut reloaded the page whatever /auth/logout answered: a 403
-(the cached whoami CSRF token went stale after another tab signed in again),
-a 5xx or a failed fetch reloaded into the same signed-in page with no word.
-It now reloads only on a 2xx (or a 401: no session to end), retries a 403
-once with the live CSRF cookie's token, and says so when sign-out failed.
+"""window._signOut reloads only once /auth/logout answers 2xx (or 401: no
+session to end); reloading after a 403, a 5xx or a failed fetch would land in
+the same signed-in page with no word. A 403 (the cached whoami CSRF token
+went stale after another tab signed in again) is retried once with the live
+CSRF cookie's token, and a failed sign-out says so.
 
-window._csrfToken() itself preferred that cached whoami token over the live
-cookie, so after a re-login in another tab every cookie-authenticated write
-(settings save, quick-config, captures, ...) 403'd until a reload. It now
-reads the live cookie first and falls back to the cached token only when no
-cookie is readable.
+window._csrfToken() reads the live cookie first and falls back to the cached
+whoami token only when no cookie is readable: after a re-login in another tab
+the cached token is dead and every cookie-authenticated write (settings save,
+quick-config, captures, ...) would 403 until a reload.
 
 Reuses the chrome DOM stub of test_whoami_unavailable_retry; the fetch stub
 answers whoami with a cached token S1 while the cookie carries S2."""
