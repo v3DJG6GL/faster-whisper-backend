@@ -1270,44 +1270,42 @@ async def probe(url: str, *, timeout: float) -> UrlMediaInfo:
         except asyncio.TimeoutError:
             raise UrlTimeoutError("the site took too long to answer") from None
     _policy_check_extractor(key, info, handoff_is_media=handoff_is_media)
+    xk = str(info.get("extractor_key") or key)
+    size = info.get("filesize_approx") or info.get("filesize")
+    fs = int(size) if size else None
+    ext = str(info["ext"]) if info.get("ext") else None
+    abr = float(info["abr"]) if info.get("abr") else None
     ladder: "list[dict]" = []
     if getattr(cfg, "URL_VIDEO_ENABLED", False):
         from faster_whisper_backend.runtime import stage_rates as _rates
-        _xk = str(info.get("extractor_key") or key)
         # A video rung is only ever fetched to be retained: price it
         # against what the media store can keep.
         from faster_whisper_backend.media import media_store as _ms
         ladder = build_video_ladder(
-            info, max_bytes=_ms.max_retainable_bytes(), extractor=_xk,
-            approx_ratio=lambda fam: _rates.lookup(RATIO_STAGE, _xk, fam).get("rate"))
+            info, max_bytes=_ms.max_retainable_bytes(), extractor=xk,
+            approx_ratio=lambda fam: _rates.lookup(RATIO_STAGE, xk, fam).get("rate"))
         if ladder:
-            _fs = info.get("filesize_approx") or info.get("filesize")
-            _ext = str(info["ext"]) if info.get("ext") else None
-            _abr = float(info["abr"]) if info.get("abr") else None
             ladder.append({
-                "kind": "audio", "height": None, "ext": _ext, "abr": _abr,
-                "approx_bytes": int(_fs) if _fs else None,
-                "over_cap": bool(_fs) and int(_fs) > _effective_max_bytes(),
-                "label": "audio only" + (f" · {_ext}" if _ext else "")
-                         + (f" · {int(_abr)} kbps" if _abr else ""),
+                "kind": "audio", "height": None, "ext": ext, "abr": abr,
+                "approx_bytes": fs,
+                "over_cap": fs is not None and fs > _effective_max_bytes(),
+                "label": "audio only" + (f" · {ext}" if ext else "")
+                         + (f" · {int(abr)} kbps" if abr else ""),
             })
     from faster_whisper_backend.media import segmented as _seg
     from faster_whisper_backend.media import subtitles as _subs
     tracks, sources = _subs.list_tracks(info)
     return UrlMediaInfo(
         url=url,
-        extractor_key=str(info.get("extractor_key") or key),
+        extractor_key=xk,
         title=info.get("title"),
         duration=_finite_duration(info.get("duration")),
         uploader=info.get("uploader") or info.get("channel"),
-        filesize_approx=(int(info.get("filesize_approx")
-                             or info.get("filesize"))
-                         if (info.get("filesize_approx")
-                             or info.get("filesize")) else None),
+        filesize_approx=fs,
         is_live=bool(info.get("is_live")),
         thumbnail_url=info.get("thumbnail"),
-        ext=(str(info["ext"]) if info.get("ext") else None),
-        abr=(float(info["abr"]) if info.get("abr") else None),
+        ext=ext,
+        abr=abr,
         video_ladder=ladder,
         language=_subs.language_of(info),
         subtitle_tracks=tracks,
