@@ -1740,12 +1740,11 @@ def overview(
                 add(ent(r["key_id"], label=r["key_id"], user_id=r["user_id"],
                         key_id=r["key_id"]), day, cell)
     elif by == "model":
-        where, params = _scope_where(user_id, key_id, kinds=kinds, kind_col="kind")
+        where, params = _jobs_where(user_id, key_id, kinds, start_ts, end_ts)
         for job in conn.execute(
             "SELECT model, created_ts, status, audio_s, words, processing_s, utterances"
-            " FROM usage_jobs" + where + _with_clause(with_stages)
-            + " AND created_ts >= ? AND created_ts < ?" + _no_outcome_stub(),
-            (*params, *with_stages, float(start_ts), float(end_ts)),
+            " FROM usage_jobs" + where + _with_clause(with_stages),
+            (*params, *with_stages),
         ):
             name = job["model"] or "(unknown)"
             add(ent(name, label=name),
@@ -1916,7 +1915,7 @@ def _models_in_window(conn: sqlite3.Connection, user_id: Ids,
     """Per-model totals over the window from the per-job rows (the decode
     model of each job; stage models live in usage_job_stages and are not
     folded in). Feeds the loaded-models table's audio/RTF columns."""
-    where, params = _scope_where(user_id, key_id, kinds=kinds, kind_col="kind")
+    where, params = _jobs_where(user_id, key_id, kinds, start_ts, end_ts)
     out = []
     for r in conn.execute(
         "SELECT COALESCE(model, '(unknown)') AS model, COUNT(*) AS sessions,"
@@ -1924,10 +1923,9 @@ def _models_in_window(conn: sqlite3.Connection, user_id: Ids,
         " SUM(status <> 'ok') AS errors, SUM(words) AS words,"
         " SUM(audio_s) AS audio_s, SUM(processing_s) AS processing_s"
         " FROM usage_jobs" + where + _with_clause(with_stages)
-        + " AND created_ts >= ? AND created_ts < ?" + _no_outcome_stub()
         + " GROUP BY model"
         " ORDER BY audio_s DESC, model",
-        (*params, *with_stages, float(start_ts), float(end_ts)),
+        (*params, *with_stages),
     ):
         audio = float(r["audio_s"] or 0.0)
         proc = float(r["processing_s"] or 0.0)
