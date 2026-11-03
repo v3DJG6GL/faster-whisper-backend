@@ -1165,8 +1165,8 @@ _CACHEABLE_PREFIXES = ("/static/",)
 # CSS backgrounds from data: SVGs and play audio through createObjectURL. A
 # nonce-less script-src 'self' would break all of it, starting with microphone
 # capture. These four directives are the ones that cost nothing here: no HTML
-# in the tree contains an <iframe>, there is no <base> tag, both <form>s post
-# to self, and there is no <object>/<embed>.
+# in the tree contains an <iframe>, there is no <base> tag, the one <form>
+# (the open-mode sign-in) posts to self, and there is no <object>/<embed>.
 _CSP = (
     "frame-ancestors 'none'; base-uri 'none'; "
     "form-action 'self'; object-src 'none'"
