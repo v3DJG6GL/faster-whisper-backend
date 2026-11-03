@@ -87,14 +87,13 @@ def test_stream_announces_the_utterance_lifecycle(app_module, monkeypatch):
     assert seen == [("open", 0), ("decoding", 0), ("final", 0)], msgs
 
 
-def test_dictate_page_shows_the_decode_as_transcribing(app_module):
+def test_dictate_page_shows_the_decode_as_transcribing(client):
     """The status follows the utterance frames ("decoding" shows
     "transcribing…"), but only while running, so the post-Stop drain's frames
     can't overwrite "finishing…". A dropped utterance gets no final, so the
     frame itself clears the faded partial (before the guard: harmless after
     Stop)."""
-    with TestClient(app_module.app, client=("127.0.0.1", 12345)) as client:
-        body = client.get("/dictate").text
+    body = client.get("/dictate").text
     block = body.split('m.type === "utterance"', 1)[1].split("else if (m.type", 1)[0]
     guard = block.index('if (!running || statusEl.className === "error") return;')
     decoding = block.index('m.state === "decoding") setStatus("transcribing…", "live")')
@@ -102,16 +101,15 @@ def test_dictate_page_shows_the_decode_as_transcribing(app_module):
     assert clear < guard < decoding
 
 
-def test_stream_rejects_unsupported_audio_format(app_module):
-    with TestClient(app_module.app, client=("127.0.0.1", 12345)) as client:
-        with client.websocket_connect("/v1/audio/transcriptions/stream") as ws:
-            ws.send_json({
-                "type": "config", "model": "whisper-1",
-                "audio": {"format": "g729-telephony"},  # not raw, not an ffmpeg format we allow
-            })
-            msg = ws.receive_json()
-            assert msg["type"] == "error"
-            assert msg["code"] == "unsupported_format"
+def test_stream_rejects_unsupported_audio_format(client):
+    with client.websocket_connect("/v1/audio/transcriptions/stream") as ws:
+        ws.send_json({
+            "type": "config", "model": "whisper-1",
+            "audio": {"format": "g729-telephony"},  # not raw, not an ffmpeg format we allow
+        })
+        msg = ws.receive_json()
+        assert msg["type"] == "error"
+        assert msg["code"] == "unsupported_format"
 
 
 @pytest.mark.parametrize("fmt", [["x"], {"a": 1}])
@@ -136,23 +134,21 @@ def test_stream_rejects_a_non_string_audio_format(app_module, monkeypatch, caplo
     assert not [r for r in rows if r.get("status") == "error"]
 
 
-def test_stream_treats_a_non_string_model_as_absent(app_module):
+def test_stream_treats_a_non_string_model_as_absent(client):
     """A non-string handshake `model` falls back to whisper-1 instead of riding
     into the job row and the model load."""
-    with TestClient(app_module.app, client=("127.0.0.1", 12345)) as client:
-        with client.websocket_connect("/v1/audio/transcriptions/stream") as ws:
-            ws.send_json({"type": "config", "model": ["x"],
-                          "audio": {"format": "pcm_s16le"}})
-            ready = ws.receive_json()
-            assert ready["type"] == "ready"
-            assert ready["model"] == tx_models._resolve_model_name("whisper-1")
-            ws.send_json({"type": "stop"})
-            _drain(ws)
+    with client.websocket_connect("/v1/audio/transcriptions/stream") as ws:
+        ws.send_json({"type": "config", "model": ["x"],
+                      "audio": {"format": "pcm_s16le"}})
+        ready = ws.receive_json()
+        assert ready["type"] == "ready"
+        assert ready["model"] == tx_models._resolve_model_name("whisper-1")
+        ws.send_json({"type": "stop"})
+        _drain(ws)
 
 
-def test_dictate_page_served(app_module):
-    with TestClient(app_module.app, client=("127.0.0.1", 12345)) as client:
-        r = client.get("/dictate")
+def test_dictate_page_served(client):
+    r = client.get("/dictate")
     assert r.status_code == 200
     assert "text/html" in r.headers["content-type"]
     body = r.text
@@ -164,12 +160,11 @@ def test_dictate_page_served(app_module):
     assert "startBatch" in body
 
 
-def test_dictate_page_explains_streaming_disabled_close(app_module):
+def test_dictate_page_explains_streaming_disabled_close(client):
     """Each refusal close the WS handler sends (4401/4403/4503/4429/4408 —
     4503 is STREAMING_ENABLED off) gets its own message in the page's
     onclose instead of falling through to a bare "closed"."""
-    with TestClient(app_module.app, client=("127.0.0.1", 12345)) as client:
-        body = client.get("/dictate").text
+    body = client.get("/dictate").text
     for code in ("4401", "4403", "4503", "4429", "4408"):
         assert code in body, code
     assert "live dictation is disabled on this server" in body
@@ -177,13 +172,12 @@ def test_dictate_page_explains_streaming_disabled_close(app_module):
     assert "no audio for a while" in body
 
 
-def test_dictate_page_keeps_the_socket_open_until_closing(app_module):
+def test_dictate_page_keeps_the_socket_open_until_closing(client):
     """The server emits the held final and the last document after
     {"type":"stop"} and closes the socket itself after {"type":"closing"}, so
     stop() must not close the socket / detach onmessage synchronously: it
     waits for "closing" with a fallback timer."""
-    with TestClient(app_module.app, client=("127.0.0.1", 12345)) as client:
-        body = client.get("/dictate").text
+    body = client.get("/dictate").text
     stop_body = body.split("function stop() {", 1)[1].split("\n  }\n", 1)[0]
     assert 'ws.send(JSON.stringify({ type: "stop" }))' in stop_body
     assert 'setStatus("finishing…")' in stop_body
@@ -198,14 +192,13 @@ def test_dictate_page_keeps_the_socket_open_until_closing(app_module):
     assert "releaseMic()" in closing
 
 
-def test_dictate_page_boundary_strips_the_suffix_before_the_line_break(app_module):
+def test_dictate_page_boundary_strips_the_suffix_before_the_line_break(client):
     """The server puts a configured output suffix in front of the boundary's
     separator (and repeats it as m.suffix). With the default empty separator
     the preview must still show a line break between documents, so the
     fallback applies to the separator minus the suffix — not to the raw
     separator, which the suffix alone made truthy (">> A <<>> B")."""
-    with TestClient(app_module.app, client=("127.0.0.1", 12345)) as client:
-        body = client.get("/dictate").text
+    body = client.get("/dictate").text
     block = body.split('m.type === "boundary"', 1)[1].split("else if (m.type", 1)[0]
     assert 'const suf = m.suffix || "";' in block
     assert 'const sep = (m.separator || "").slice(suf.length);' in block
@@ -213,15 +206,14 @@ def test_dictate_page_boundary_strips_the_suffix_before_the_line_break(app_modul
     assert 'docPrefix += m.separator || "\\n"' not in block
 
 
-def test_dictate_page_stop_flow_guards(app_module):
+def test_dictate_page_stop_flow_guards(client):
     """Pins the client half of the stop flow, which has no JS test harness:
     a Stop during the mic prompt / worklet load cancels the pending start
     (generation guard), Stop flushes the partly filled PCM frame first, the
     fallback timer is re-armed per frame (long window for the forced final
     decode) and says when it fired, and a server error frame stays on
     screen through the closing drain's final."""
-    with TestClient(app_module.app, client=("127.0.0.1", 12345)) as client:
-        body = client.get("/dictate").text
+    body = client.get("/dictate").text
     assert "const gen = ++startGen;" in body
     for fn, use in (("async function start(gen) {", "new WebSocket("),
                     ("async function startBatch(gen) {", "new MediaRecorder(")):
@@ -279,11 +271,10 @@ def test_dictate_page_unreadable_template_is_a_named_500(app_module, monkeypatch
     assert r.status_code == 500 and "dictate unavailable" in r.text
 
 
-def test_dictate_page_uses_the_shared_shell(app_module):
+def test_dictate_page_uses_the_shared_shell(client):
     """It renders through render_page like every other WebUI page: no
     unsubstituted placeholders, and the shared chrome is present."""
-    with TestClient(app_module.app, client=("127.0.0.1", 12345)) as client:
-        body = client.get("/dictate").text
+    body = client.get("/dictate").text
     assert "{{" not in body                       # every placeholder resolved
     assert "faster-whisper-backend · dictate" in body   # {{HEADER_TITLE}}
     assert 'class="navrow"' in body                     # {{NAV}}
@@ -291,13 +282,12 @@ def test_dictate_page_uses_the_shared_shell(app_module):
     assert "login-gate" in body                         # shared auth screen
 
 
-def test_dictate_page_carries_no_credential_field(app_module):
+def test_dictate_page_carries_no_credential_field(client):
     """The page authenticates with the session cookie the rest of the WebUI
     uses. It must not reintroduce an API-key input, a key-bearing subprotocol,
     or the /auth/login exchange that used to mint a 30-day origin-wide session
     from a chrome-less page with no way to sign out."""
-    with TestClient(app_module.app, client=("127.0.0.1", 12345)) as client:
-        body = client.get("/dictate").text
+    body = client.get("/dictate").text
     # NB: the shared login gate legitimately carries its own key input, so only
     # the page's OWN field and credential plumbing are asserted absent.
     assert 'id="key"' not in body
@@ -306,14 +296,13 @@ def test_dictate_page_carries_no_credential_field(app_module):
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node unavailable")
-def test_dictate_page_sends_a_cleared_language_as_auto_detect(app_module):
+def test_dictate_page_sends_a_cleared_language_as_auto_detect(client):
     """The server reads `language` tri-state: absent / null inherits
     DEFAULT_LANGUAGE, "" auto-detects. The page sent a cleared box as null
     (streaming) or left the field out (batch), so on a server with a default
     language set, clearing the box to get auto-detect still decoded in the
     default. Runs the page's own handshake and form-building code."""
-    with TestClient(app_module.app, client=("127.0.0.1", 12345)) as client:
-        body = client.get("/dictate").text
+    body = client.get("/dictate").text
     onopen = body.split("sock.onopen = () => {", 1)[1]
     handshake = onopen.split("sock.send(JSON.stringify(", 1)[1].split("));\n", 1)[0]
     batch = body.split("const fd = new FormData();", 1)[1].split(
@@ -870,27 +859,25 @@ def test_stream_malformed_client_job_falls_back_to_session_id(app_module, monkey
     assert len(rows[0]["job_id"]) == 32 and rows[0]["job_id"] != "../not-hex"
 
 
-def test_dictate_page_keeps_earlier_documents_across_a_hard_break(app_module):
+def test_dictate_page_keeps_earlier_documents_across_a_hard_break(client):
     """StreamSession._hard_break (STREAMING_HARD_BREAK_SILENCE_MS, 5 s by
     default) emits {"type":"boundary"} and resets the document, so the next
     final's committed/tail cover only the NEW document. The page must fold
     what is on screen into a prefix on that frame, or the full-replace final
     handler wipes everything dictated before the pause the moment the user
     resumes speaking."""
-    with TestClient(app_module.app, client=("127.0.0.1", 12345)) as client:
-        body = client.get("/dictate").text
+    body = client.get("/dictate").text
     assert 'm.type === "boundary"' in body
     assert "docPrefix + (m.committed" in body
     assert 'docPrefix = ""' in body          # reset per start()
 
 
-def test_dictate_page_resampler_seam_uses_a_real_neighbour(app_module):
+def test_dictate_page_resampler_seam_uses_a_real_neighbour(client):
     """pushSamples() must interpolate a block seam between the previous block's
     last sample (carry, index -1) and this block's first — not use the carry as
     the right neighbour of the LAST sample (128 samples stale). Invisible at
     48 kHz (integer ratio) but a ~124 Hz click train at 44.1 kHz."""
-    with TestClient(app_module.app, client=("127.0.0.1", 12345)) as client:
-        body = client.get("/dictate").text
+    body = client.get("/dictate").text
     assert "i < 0 ? resampleCarry : float32[i]" in body
     assert "float32[i + 1] : resampleCarry" not in body
 
