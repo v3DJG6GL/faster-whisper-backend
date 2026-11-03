@@ -1743,7 +1743,7 @@ def test_stats_turnaround_tooltip_and_resize_use_the_drawn_tail():
     js = _stats_js()
     ta = js[js.index("function renderTurnaround() {"):]
     ta = ta[:ta.index("\n}\n")]
-    tips = ta[ta.index("wireTips(el, '[data-tip]'"):ta.index("el._ro = new ResizeObserver")]
+    tips = ta[ta.index("wireTips(el, '[data-tip]'"):ta.index("el._ro = onResizeFrame(el")]
     assert "const tt = t;" in tips and "lastTail" not in tips
-    ro = ta[ta.index("el._ro = new ResizeObserver"):]
+    ro = ta[ta.index("el._ro = onResizeFrame(el"):]
     assert ro.index("if (!(lastDoc && _docSeq === _seq)) return;") < ro.index("renderTurnaround();")
