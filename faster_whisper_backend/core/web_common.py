@@ -85,6 +85,15 @@ SSE_HEADERS = {
     "X-Accel-Buffering": "no",
 }
 
+# Page shells that must never come from a browser/proxy cache (a stale build
+# after a service restart): HTTP/1.0 Pragma/Expires included. Shared read-only
+# (Starlette copies the mapping into the response's raw headers).
+PAGE_NO_CACHE_HEADERS = {
+    "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+    "Pragma": "no-cache",
+    "Expires": "0",
+}
+
 
 def sse_response(generator):
     """StreamingResponse preconfigured for proxy-safe Server-Sent Events."""

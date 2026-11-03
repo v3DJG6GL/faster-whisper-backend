@@ -321,11 +321,7 @@ async def settings_page() -> HTMLResponse:
             .replace("{{MULTILINE_TEXT_FIELDS_JSON}}", _MULTILINE_TEXT_FIELDS_JSON)
             .replace("{{WHISPER_LANGS_JSON}}", _WHISPER_LANGS_JSON),
             current="settings"),
-        headers={
-            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
-            "Pragma": "no-cache",
-            "Expires": "0",
-        },
+        headers=web_common.PAGE_NO_CACHE_HEADERS,
     )
 
 
@@ -348,11 +344,7 @@ async def pipeline_page() -> HTMLResponse:
             .replace("{{MULTILINE_TEXT_FIELDS_JSON}}", _MULTILINE_TEXT_FIELDS_JSON)
             .replace("{{WHISPER_LANGS_JSON}}", _WHISPER_LANGS_JSON),
             current="pipeline"),
-        headers={
-            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
-            "Pragma": "no-cache",
-            "Expires": "0",
-        },
+        headers=web_common.PAGE_NO_CACHE_HEADERS,
     )
 
 

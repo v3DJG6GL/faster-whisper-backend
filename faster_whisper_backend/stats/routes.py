@@ -300,11 +300,7 @@ async def stats_page() -> HTMLResponse:
     browser never serves a stale build after a service restart."""
     return HTMLResponse(
         web_common.render_page(_STATS_VIEWER_HTML, current="stats"),
-        headers={
-            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
-            "Pragma": "no-cache",
-            "Expires": "0",
-        },
+        headers=web_common.PAGE_NO_CACHE_HEADERS,
     )
 
 
