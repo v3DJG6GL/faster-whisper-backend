@@ -114,6 +114,15 @@ def _admit_row(
     return row
 
 
+async def _admit_sample(sid: str, user: dict[str, Any], kind: str) -> dict[str, Any]:
+    """_admit_row for sample `sid`, loaded off the loop: the samples store
+    shares the captures connection, which clear_all holds across a full VACUUM."""
+    return _admit_row(
+        await asyncio.to_thread(capture_samples_store.get_sample, sid),
+        user, kind, sid, "sample not found",
+    )
+
+
 def _audit_cross_user_read(
     user: dict[str, Any], row: dict[str, Any] | None,
     kind: str, row_id: str,
@@ -1768,13 +1777,8 @@ async def get_sample_api(
     sid: str,
     user: dict[str, Any] = Depends(get_current_user),
 ) -> JSONResponse:
-    # Off the loop: the samples store shares the captures connection, which
-    # clear_all holds across a full VACUUM.
     # 404 (not 403) on cross-user — leaking existence violates OWASP IDOR.
-    g = _admit_row(
-        await asyncio.to_thread(capture_samples_store.get_sample, sid),
-        user, "sample", sid, "sample not found",
-    )
+    g = await _admit_sample(sid, user, "sample")
     # OFF the loop, like list_samples_api: `_enrich_sample` runs
     # `_align_member_words` per member, and each of those runs the O(n*m)
     # `_align_words_to_final` DP once (twice when the training text differs
@@ -2311,12 +2315,7 @@ async def patch_sample_api(
     payload: PatchSampleIn,
     user: dict[str, Any] = Depends(get_current_user),
 ) -> JSONResponse:
-    # Off the loop: the samples store shares the captures connection, which
-    # clear_all holds across a full VACUUM.
-    g = _admit_row(
-        await asyncio.to_thread(capture_samples_store.get_sample, sid),
-        user, "sample-patch", sid, "sample not found",
-    )
+    g = await _admit_sample(sid, user, "sample-patch")
     if g["is_locked"] and not user.get("is_admin"):
         # `is_locked` is writable by any captures-scoped caller (below), so they
         # must be able to release it too, or the lock is a one-way switch only an
@@ -2444,12 +2443,7 @@ async def regenerate_sample_api(
     adopts a changed global), refresh hashes, clear `is_stale`. The stored
     transcript is re-derived from the members' chips under that join, so the
     admin's edits stay."""
-    # Off the loop: the samples store shares the captures connection, which
-    # clear_all holds across a full VACUUM.
-    g = _admit_row(
-        await asyncio.to_thread(capture_samples_store.get_sample, sid),
-        user, "sample-regenerate", sid, "sample not found",
-    )
+    g = await _admit_sample(sid, user, "sample-regenerate")
     _refuse_locked_sample(g, user)
     silence_ms = capture_samples._global_silence_ms()
     join_strategy = _global_join_strategy()
@@ -2494,12 +2488,7 @@ async def dissolve_sample_api(
     sid: str,
     user: dict[str, Any] = Depends(get_current_user),
 ) -> JSONResponse:
-    # Off the loop: the samples store shares the captures connection, which
-    # clear_all holds across a full VACUUM.
-    g = _admit_row(
-        await asyncio.to_thread(capture_samples_store.get_sample, sid),
-        user, "sample-delete", sid, "sample not found",
-    )
+    g = await _admit_sample(sid, user, "sample-delete")
     _refuse_locked_sample(g, user)
     # Off the loop: dissolve waits on the per-sid rebuild lock, which an
     # in-flight regenerate / VAD rebuild holds for seconds. The lock check is
@@ -2594,12 +2583,7 @@ async def get_sample_audio_api(
     """Stream the merged WAV, self-healing if it's missing on disk
     but reconstructable from member captures."""
     _audio_rate.hit(rate_limit.identity_key(user, request))
-    # Off the loop: the samples store shares the captures connection, which
-    # clear_all holds across a full VACUUM.
-    g = _admit_row(
-        await asyncio.to_thread(capture_samples_store.get_sample, sid),
-        user, "sample-audio", sid, "sample not found",
-    )
+    g = await _admit_sample(sid, user, "sample-audio")
     # Off the loop: this waits on a threading.Lock the VAD reprocess worker
     # holds for a whole rebuild, then runs the merge (a Silero-VAD pass per
     # member plus a WAV write) synchronously; inline it would stall every
