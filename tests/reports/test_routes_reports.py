@@ -401,7 +401,7 @@ def test_nested_string_in_steps_over_cap_422(client):
     """steps/stages are list[Any] whose max_length bounds the item count
     only; a single oversized string nested inside must hit the same 64 KB
     ceiling as intended_text/user_comment instead of being parsed whole and
-    truncated to a few KB by the store."""
+    handed to the store."""
     r = client.post(_SUBMIT, json={
         "request_id": "req-steps-big",
         "user_comment": "x",
