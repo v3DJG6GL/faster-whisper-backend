@@ -232,67 +232,52 @@ from faster_whisper_backend.stats import usage_store
 _log_safe = store_common.log_safe
 
 
+async def _hourly_sweep_loop(sweep, error_fmt: str) -> None:
+    """Run ``sweep`` off the event loop once an hour until cancelled. The
+    sweeps are blocking SQLite + filesystem work (the stores serialise
+    writers behind their own locks), so a backlog never blocks in-flight
+    transcriptions, dictation frames or SSE ticks. A failed tick logs and
+    the next one still runs; cancellation on shutdown is the normal exit."""
+    while True:
+        try:
+            await asyncio.sleep(3600)
+            await asyncio.to_thread(sweep)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.error(error_fmt, exc)
+
+
 async def _reports_retention_loop() -> None:
     """Hourly retention sweep for the reports store. The sweep reads
     cfg.REPORTS_RETENTION_DAYS each tick so admin /settings edits take
-    effect on the next cycle without a service restart. Cancellation
-    on shutdown is the normal exit path."""
-    while True:
-        try:
-            await asyncio.sleep(3600)
-            # Blocking SQLite + unlinks; off the loop like _sessions_purge_loop
-            # (the store serialises writers behind its own lock).
-            await asyncio.to_thread(reports_store.sweep_retention)
-        except asyncio.CancelledError:
-            raise
-        except Exception as _re:
-            logger.error("[reports] retention loop error: %s", _re)
+    effect on the next cycle without a service restart."""
+    await _hourly_sweep_loop(reports_store.sweep_retention,
+                             "[reports] retention loop error: %s")
 
 
 async def _captures_retention_loop() -> None:
-    """Hourly retention sweep for the captures store. Same shape as the
-    reports loop; the sweep reads cfg.CAPTURES_RETENTION_DAYS each tick."""
-    while True:
-        try:
-            await asyncio.sleep(3600)
-            # A backlog sweep (retention day boundary, lowered
-            # CAPTURES_RETENTION_DAYS) dissolves samples and unlinks up to
-            # two files per row — off the loop, never blocking in-flight
-            # transcriptions, dictation frames or SSE ticks.
-            await asyncio.to_thread(captures_store.sweep_retention)
-        except asyncio.CancelledError:
-            raise
-        except Exception as _ce:
-            logger.error("[captures] retention loop error: %s", _ce)
+    """Hourly retention sweep for the captures store; the sweep reads
+    cfg.CAPTURES_RETENTION_DAYS each tick. A backlog sweep (retention day
+    boundary, lowered CAPTURES_RETENTION_DAYS) dissolves samples and
+    unlinks up to two files per row."""
+    await _hourly_sweep_loop(captures_store.sweep_retention,
+                             "[captures] retention loop error: %s")
 
 
 async def _jobs_retention_loop() -> None:
     """Hourly retention sweep for the server-jobs store (TTL, row cap, byte
-    cap). Same shape as the captures loop; the store reads cfg.JOBS_* live
-    each tick."""
-    while True:
-        try:
-            await asyncio.sleep(3600)
-            await asyncio.to_thread(_jobs_store.sweep_retention)
-        except asyncio.CancelledError:
-            raise
-        except Exception as _je:
-            logger.error("[jobs] retention loop error: %s", _je)
+    cap); the store reads cfg.JOBS_* live each tick."""
+    await _hourly_sweep_loop(_jobs_store.sweep_retention,
+                             "[jobs] retention loop error: %s")
 
 
 async def _recent_tx_retention_loop() -> None:
     """Hourly row-cap + TTL sweep for the recent-transcriptions store. The
     lazy prune only fires every Nth insert, so without this a quiet server
-    would keep dictation text past RECENT_TRANSCRIPTIONS_RETENTION_DAYS.
-    Same shape as the reports loop."""
-    while True:
-        try:
-            await asyncio.sleep(3600)
-            await asyncio.to_thread(recent_transcriptions_store.sweep_retention)
-        except asyncio.CancelledError:
-            raise
-        except Exception as _rte:
-            logger.error("[recent-tx] retention loop error: %s", _rte)
+    would keep dictation text past RECENT_TRANSCRIPTIONS_RETENTION_DAYS."""
+    await _hourly_sweep_loop(recent_transcriptions_store.sweep_retention,
+                             "[recent-tx] retention loop error: %s")
 
 
 def _usage_sweep() -> None:
@@ -312,15 +297,8 @@ def _usage_sweep() -> None:
 async def _usage_retention_loop() -> None:
     """Hourly sweep for the usage-statistics store: closes out dictation
     sessions whose outcome never arrived and prunes the job/app rows past
-    their retention. Same shape as the reports loop."""
-    while True:
-        try:
-            await asyncio.sleep(3600)
-            await asyncio.to_thread(_usage_sweep)
-        except asyncio.CancelledError:
-            raise
-        except Exception as _ue:
-            logger.error("[usage] retention loop error: %s", _ue)
+    their retention."""
+    await _hourly_sweep_loop(_usage_sweep, "[usage] retention loop error: %s")
 
 
 async def _sessions_purge_loop() -> None:
@@ -330,18 +308,10 @@ async def _sessions_purge_loop() -> None:
     only fires for a token that is presented again, so with the 30-day
     TTL a login loop would grow both the sessions table and the in-memory
     index without bound. /auth/login mints a session for any valid key and only
-    rate-limits failures.
-    Same shape as the retention loops above."""
-    while True:
-        try:
-            await asyncio.sleep(3600)
-            # Off the loop: purge_expired rebuilds the whole session index,
-            # which is O(live sessions) and measured ~33 ms at 20 000 rows.
-            await asyncio.to_thread(sessions_store.purge_expired)
-        except asyncio.CancelledError:
-            raise
-        except Exception as _se:
-            logger.error("[sessions] purge loop error: %s", _se)
+    rate-limits failures. purge_expired rebuilds the whole session index,
+    which is O(live sessions) and measured ~33 ms at 20 000 rows."""
+    await _hourly_sweep_loop(sessions_store.purge_expired,
+                             "[sessions] purge loop error: %s")
 
 
 async def _preload_extras() -> None:
