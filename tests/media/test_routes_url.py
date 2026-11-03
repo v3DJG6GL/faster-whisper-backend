@@ -53,6 +53,12 @@ def _stub_probe(monkeypatch, **kw):
     monkeypatch.setattr(url_download, "probe", _probe)
 
 
+def _probe_raises(monkeypatch, exc):
+    async def _probe(url, *, timeout):
+        raise exc
+    monkeypatch.setattr(url_download, "probe", _probe)
+
+
 @pytest.fixture
 def url_enabled(app_module, tmp_path, monkeypatch):
     """Feature on + retention rooted in a temp dir + happy-path stubs."""
@@ -224,9 +230,8 @@ def test_me_reports_enabled_with_version(client, url_enabled):
 # --- error mapping -----------------------------------------------------------
 
 def test_policy_reject_is_client_safe_400(client, url_enabled, monkeypatch):
-    async def _reject(url, *, timeout):
-        raise UrlDownloadError("this site isn't on the server's allowed list")
-    monkeypatch.setattr(url_download, "probe", _reject)
+    _probe_raises(monkeypatch,
+                  UrlDownloadError("this site isn't on the server's allowed list"))
     r = _post_url(client)
     assert r.status_code == 400
     assert r.json()["detail"] == "this site isn't on the server's allowed list"
@@ -294,9 +299,7 @@ def test_preview_lists_tracks_never_their_urls(client, url_enabled, monkeypatch)
 
 
 def test_preview_policy_reject_400(client, url_enabled, monkeypatch):
-    async def _reject(url, *, timeout):
-        raise UrlDownloadError("live streams aren't supported")
-    monkeypatch.setattr(url_download, "probe", _reject)
+    _probe_raises(monkeypatch, UrlDownloadError("live streams aren't supported"))
     r = client.post("/v1/audio/url-preview", json={"url": _URL})
     assert r.status_code == 400
     assert "live" in r.json()["detail"]
@@ -865,9 +868,7 @@ def test_subtitles_happy_path_never_leaks_the_source(client, subs_enabled, caplo
 
 
 def test_subtitles_probe_rejection_is_400(client, subs_enabled, monkeypatch):
-    async def _reject(url, *, timeout):
-        raise UrlDownloadError("this video is private")
-    monkeypatch.setattr(url_download, "probe", _reject)
+    _probe_raises(monkeypatch, UrlDownloadError("this video is private"))
     r = client.post("/v1/audio/url-subtitles", json={"url": _URL, "tracks": ["m-de"]})
     assert r.status_code == 400 and "private" in r.json()["detail"]
 
@@ -878,9 +879,7 @@ def test_subtitles_probe_rejection_is_400(client, subs_enabled, monkeypatch):
 ])
 def test_probe_crash_is_a_generic_500(client, subs_enabled, monkeypatch, caplog,
                                       route, extra, detail):
-    async def _crash(url, *, timeout):
-        raise RuntimeError("boom in /srv/internal")
-    monkeypatch.setattr(url_download, "probe", _crash)
+    _probe_raises(monkeypatch, RuntimeError("boom in /srv/internal"))
     r = client.post(f"/v1/audio/{route}", json={"url": _URL, **extra})
     assert r.status_code == 500 and r.json()["detail"] == detail
     assert "/srv/internal" in caplog.text            # logged, never answered
