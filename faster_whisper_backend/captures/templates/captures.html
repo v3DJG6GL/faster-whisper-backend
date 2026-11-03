@@ -1258,7 +1258,7 @@
   var _counts = {};
   var _openRows = {};   // cid -> { audio, blobUrl, wordEls, words, finalText, dirty, corrections, ... }
   var _openSamples = {}; // sid -> { audio, state } — blob-URL cleanup on render() / beforeunload, dirty checks
-  var _selection = new Set();   // capture ids currently selected for merge
+  var _selection = new Set();   // capture ids selected for merge / bulk actions
   var _lastSelectId = null;     // anchor for shift-range select
 
   function _handleSelectionClick(row, shift) {
@@ -4202,7 +4202,7 @@
     var totalEl = document.createElement('span');
     totalEl.className = 'compact-player-time';
     totalEl.textContent = '0:00';
-    if (opts.inlinePlayer) controls.appendChild(toggleBtn);  // ▶ at seek-bar left
+    if (opts.inlinePlayer) controls.appendChild(toggleBtn);
     controls.appendChild(scrub);
     controls.appendChild(timeEl);
     controls.appendChild(sep);
