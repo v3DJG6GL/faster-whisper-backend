@@ -317,7 +317,7 @@ def test_rows_are_owner_bound_and_admins_read_all(client, make_user_key):
     assert [r["job_id"] for r in rows] == [_PID]
     # A non-admin's ?all=1 is silently their own list.
     assert client.get("/v1/jobs?all=1", headers=bearer(bob)).json() == {"jobs": []}
-    # Owner-less rows (open mode) never leak to a keyed caller.
+    # Owner-less rows (no production writer) never leak to a keyed caller.
     js.start(job_id="d" * 32, request_id="req", kind="transcribe",
              user_id=None, key_id=None, model="m", source_kind="file",
              source_name="a", ttl_s=3600, max_rows=100, max_bytes=0)
