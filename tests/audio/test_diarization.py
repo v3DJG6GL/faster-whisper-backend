@@ -11,14 +11,7 @@ import pytest
 
 from faster_whisper_backend.audio import diarization
 from faster_whisper_backend.runtime import hf_cache
-
-_FILE = {"file": ("a.wav", b"RIFFxxxxWAVE", "audio/wav")}
-
-
-def _post(client, **data):
-    data.setdefault("model", "whisper-1")
-    data.setdefault("response_format", "verbose_json")
-    return client.post("/v1/audio/transcriptions", files=_FILE, data=data)
+from tests._transcription_helpers import post_verbose as _post
 
 
 def _stub_turns(monkeypatch, turns, calls=None):

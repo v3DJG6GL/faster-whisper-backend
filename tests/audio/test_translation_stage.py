@@ -7,16 +7,11 @@ import json
 
 from faster_whisper_backend.translation import engine as translation
 from faster_whisper_backend.transcription import progress as tx_progress
+from tests._transcription_helpers import WAV_UPLOAD as _FILE
+from tests._transcription_helpers import post_verbose as _post
 from tests.conftest import bearer
 
-_FILE = {"file": ("a.wav", b"RIFFxxxxWAVE", "audio/wav")}
 _PID = "beef" * 8  # 32 hex chars — passes _PROGRESS_ID_RE
-
-
-def _post(client, **data):
-    data.setdefault("model", "whisper-1")
-    data.setdefault("response_format", "verbose_json")
-    return client.post("/v1/audio/transcriptions", files=_FILE, data=data)
 
 
 def _stub_translate(monkeypatch, calls=None):
