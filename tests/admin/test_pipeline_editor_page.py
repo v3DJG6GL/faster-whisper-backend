@@ -1,7 +1,8 @@
-"""Source pins for the /settings/pipeline editor script (inline JS). The
-behaviour itself was exercised in headless Chromium when it was written:
-all five sync dialogs against a local list holding an edited rule, a
-not-edited-but-outdated rule and a missing config.json rule, no JS errors.
+"""Source pins for the /settings/pipeline editor script (inline JS), plus
+node-gated tests at the end that run the real _sansRevs / _setRulesDirty /
+_postFactory. The five sync dialogs were checked once in headless Chromium
+against a local list holding an edited rule, a not-edited-but-outdated rule
+and a missing config.json rule, no JS errors.
 """
 
 import json
