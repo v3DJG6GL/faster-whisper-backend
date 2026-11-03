@@ -14,9 +14,12 @@ OV = "/settings/overrides"
 PERMS = "/settings/api-keys/api/users"
 
 
-def _profiles(client, h, profiles):
+def _admin_with_profiles(client, make_user_key, profiles):
+    _, raw_admin = make_user_key("admin", is_admin=True)
+    h = bearer(raw_admin)
     r = client.post(f"{OV}/state", headers=h, json={"OVERRIDE_PROFILES": profiles})
     assert r.status_code == 200, r.text
+    return h
 
 
 def _key_id(client, h, uid):
@@ -129,9 +132,7 @@ def test_me_translate_to_default_respects_identity_override(
         client, app_module, make_user_key, monkeypatch):
     monkeypatch.setattr(app_module.cfg, "TRANSLATION_ENABLED", True)
     monkeypatch.setattr(app_module.cfg, "TRANSLATE_TO", "en")
-    _, raw_admin = make_user_key("admin", is_admin=True)
-    h = bearer(raw_admin)
-    _profiles(client, h, {"de-fr": {"TRANSLATE_TO": "de,fr-CA"}})
+    h = _admin_with_profiles(client, make_user_key, {"de-fr": {"TRANSLATE_TO": "de,fr-CA"}})
     uid, raw_alice = make_user_key("alice")
     r = client.patch(f"{PERMS}/{uid}/permissions", headers=h, json={
         "pages": {},
@@ -175,9 +176,7 @@ def test_me_stage_model_lists_with_loaded_flags(client, app_module):
 
 
 def test_me_reflects_per_key_gate(client, make_user_key):
-    _, raw_admin = make_user_key("admin", is_admin=True)
-    h = bearer(raw_admin)
-    _profiles(client, h, {"fast": {"BEAM_SIZE": 3}})
+    h = _admin_with_profiles(client, make_user_key, {"fast": {"BEAM_SIZE": 3}})
     uid, raw_alice = make_user_key("alice")
     kid = _key_id(client, h, uid)
     _set_key_binding(client, h, uid, kid,
@@ -192,9 +191,8 @@ def test_me_reflects_per_key_gate(client, make_user_key):
 
 
 def test_me_explicit_allowlist(client, make_user_key):
-    _, raw_admin = make_user_key("admin", is_admin=True)
-    h = bearer(raw_admin)
-    _profiles(client, h, {"fast": {"BEAM_SIZE": 3}, "slow": {"BEAM_SIZE": 12}})
+    h = _admin_with_profiles(client, make_user_key,
+                             {"fast": {"BEAM_SIZE": 3}, "slow": {"BEAM_SIZE": 12}})
     uid, raw_alice = make_user_key("alice")
     kid = _key_id(client, h, uid)
     _set_key_binding(client, h, uid, kid, allowed_override_profiles=["fast"])
@@ -208,9 +206,7 @@ def test_per_key_gate_follows_session_login(client, make_user_key):
     WebUI (cookie auth), not only when the key is sent as a bearer token: the
     session stamps the login key_id, so per-key overrides/locks bind on
     cookie-authed requests instead of falling to the '(session)' sentinel."""
-    _, raw_admin = make_user_key("admin", is_admin=True)
-    h = bearer(raw_admin)
-    _profiles(client, h, {"fast": {"BEAM_SIZE": 3}})
+    h = _admin_with_profiles(client, make_user_key, {"fast": {"BEAM_SIZE": 3}})
     uid, raw_alice = make_user_key("alice")
     kid = _key_id(client, h, uid)
     _set_key_binding(client, h, uid, kid,
@@ -234,9 +230,8 @@ def test_per_key_gate_follows_session_login(client, make_user_key):
 
 
 def test_override_profiles_filtered_by_allowlist(client, make_user_key):
-    _, raw_admin = make_user_key("admin", is_admin=True)
-    h = bearer(raw_admin)
-    _profiles(client, h, {"fast": {"BEAM_SIZE": 3}, "slow": {"BEAM_SIZE": 12}})
+    h = _admin_with_profiles(client, make_user_key,
+                             {"fast": {"BEAM_SIZE": 3}, "slow": {"BEAM_SIZE": 12}})
     uid, raw_alice = make_user_key("alice")
     kid = _key_id(client, h, uid)
     _set_key_binding(client, h, uid, kid, allowed_override_profiles=["fast"])
@@ -245,20 +240,17 @@ def test_override_profiles_filtered_by_allowlist(client, make_user_key):
 
 
 def test_override_profiles_excludes_non_requestable(client, make_user_key):
-    _, raw_admin = make_user_key("admin", is_admin=True)
-    h = bearer(raw_admin)
-    _profiles(client, h, {"fast": {"BEAM_SIZE": 3},
-                          "internal": {"BEAM_SIZE": 1, "requestable": False}})
+    _admin_with_profiles(client, make_user_key, {
+        "fast": {"BEAM_SIZE": 3},
+        "internal": {"BEAM_SIZE": 1, "requestable": False}})
     _, raw_alice = make_user_key("alice")
     r = client.get("/v1/override-profiles", headers=bearer(raw_alice))
     assert r.json() == {"profiles": ["fast"]}
 
 
 def test_override_profile_detail_values_and_locks(client, make_user_key):
-    _, raw_admin = make_user_key("admin", is_admin=True)
-    h = bearer(raw_admin)
-    _profiles(client, h, {"fast": {"BEAM_SIZE": 3, "VAD_FILTER": True,
-                                   "locks": ["BEAM_SIZE"]}})
+    _admin_with_profiles(client, make_user_key, {
+        "fast": {"BEAM_SIZE": 3, "VAD_FILTER": True, "locks": ["BEAM_SIZE"]}})
     _, raw_alice = make_user_key("alice")
     r = client.get("/v1/override-profiles/fast", headers=bearer(raw_alice))
     assert r.status_code == 200, r.text
@@ -273,9 +265,7 @@ def test_override_profile_detail_exposes_prompt(client, make_user_key):
     in `values`, which holds only client decode keys) so the editor can ghost it as
     the inherited 'Vocabulary / prompt'. Its lock state rides along; a prompt-less
     profile reports null/false."""
-    _, raw_admin = make_user_key("admin", is_admin=True)
-    h = bearer(raw_admin)
-    _profiles(client, h, {
+    _admin_with_profiles(client, make_user_key, {
         "withp": {"BEAM_SIZE": 3, "DEFAULT_PROMPT": "Medizin: Anamnese",
                   "locks": ["DEFAULT_PROMPT"]},
         "nop": {"BEAM_SIZE": 5},
@@ -292,10 +282,9 @@ def test_override_profile_detail_exposes_prompt(client, make_user_key):
 
 
 def test_override_profile_detail_404_when_not_allowed(client, make_user_key):
-    _, raw_admin = make_user_key("admin", is_admin=True)
-    h = bearer(raw_admin)
-    _profiles(client, h, {"fast": {"BEAM_SIZE": 3},
-                          "internal": {"BEAM_SIZE": 1, "requestable": False}})
+    h = _admin_with_profiles(client, make_user_key, {
+        "fast": {"BEAM_SIZE": 3},
+        "internal": {"BEAM_SIZE": 1, "requestable": False}})
     uid, raw_alice = make_user_key("alice")
     kid = _key_id(client, h, uid)
     _set_key_binding(client, h, uid, kid, allowed_override_profiles=["fast"])
@@ -312,9 +301,7 @@ def test_override_profile_detail_404_when_not_allowed(client, make_user_key):
 
 
 def test_binding_roundtrip_preserves_request_gates(client, make_user_key):
-    _, raw_admin = make_user_key("admin", is_admin=True)
-    h = bearer(raw_admin)
-    _profiles(client, h, {"fast": {"BEAM_SIZE": 3}})
+    h = _admin_with_profiles(client, make_user_key, {"fast": {"BEAM_SIZE": 3}})
     uid, _ = make_user_key("alice")
     kid = _key_id(client, h, uid)
     stored = _set_key_binding(client, h, uid, kid,
@@ -334,9 +321,7 @@ def test_apply_no_profiles_roundtrip_and_suppresses_user_profile(client, make_us
     # End-to-end: a profile bound at the USER scope applies, until the per-KEY
     # apply_no_profiles force flips the key to plain defaults — through the real
     # PATCH → store → resolve path.
-    _, raw_admin = make_user_key("admin", is_admin=True)
-    h = bearer(raw_admin)
-    _profiles(client, h, {"clinic": {"BEAM_SIZE": 7}})
+    h = _admin_with_profiles(client, make_user_key, {"clinic": {"BEAM_SIZE": 7}})
     uid, _ = make_user_key("alice")
     r = client.patch(f"{PERMS}/{uid}/permissions", headers=h, json={
         "pages": {}, "config": {"overrides": {}, "profiles": ["clinic"], "locks": []}})
@@ -430,9 +415,7 @@ def test_me_server_info_url_limits_only_with_url_download(
 
 def test_me_server_info_max_targets_per_identity(
         client, app_module, make_user_key, monkeypatch):
-    _, raw_admin = make_user_key("admin", is_admin=True)
-    h = bearer(raw_admin)
-    _profiles(client, h, {"two": {"TRANSLATION_MAX_TARGETS": 2}})
+    h = _admin_with_profiles(client, make_user_key, {"two": {"TRANSLATION_MAX_TARGETS": 2}})
     uid, raw_alice = make_user_key("alice")
     r = client.patch(f"{PERMS}/{uid}/permissions", headers=h, json={
         "pages": {},
