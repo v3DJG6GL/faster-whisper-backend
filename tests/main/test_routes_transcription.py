@@ -13,7 +13,7 @@ from faster_whisper_backend.transcription import models as tx_models
 from faster_whisper_backend.transcription import receipt as tx_receipt
 from faster_whisper_backend.transcription import progress as tx_progress
 from tests._transcription_helpers import (
-    WAV_UPLOAD as _FILE, post_transcription as _post, post_verbose)
+    WAV_UPLOAD as _FILE, post_transcription as _post, post_verbose, record_runs)
 
 
 def test_default_json_returns_text_object(client):
@@ -531,13 +531,7 @@ def test_record_transcription_carries_the_key_label(client, app_module,
     make_user_key("root", is_admin=True)            # lock the server down
     uid = api_keys_store.create_user("alice", is_admin=False)
     raw, _ = api_keys_store.create_key(uid, label="alice-laptop")
-    recorded = []
-    _orig = app_module.metrics.record_transcription
-
-    def _spy(**kw):
-        recorded.append(kw)
-        return _orig(**kw)
-    monkeypatch.setattr(app_module.metrics, "record_transcription", _spy)
+    recorded = record_runs(app_module, monkeypatch)
     r = _post(client, bearer(raw), response_format="json")
     assert r.status_code == 200, r.text
     assert recorded and recorded[-1]["key_label"] == "alice-laptop"

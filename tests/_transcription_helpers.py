@@ -34,3 +34,16 @@ def bind_profile(client, make_user_key, name, fields, user="alice"):
                                       "profiles": [name], "locks": []}})
     assert r.status_code == 200, r.text
     return admin_h, raw
+
+
+def record_runs(app_module, monkeypatch):
+    """Spy on metrics.record_transcription (passing through to the real one);
+    return the list the spy appends each call's kwargs to."""
+    recorded = []
+    real = app_module.metrics.record_transcription
+
+    def _spy(**kw):
+        recorded.append(kw)
+        return real(**kw)
+    monkeypatch.setattr(app_module.metrics, "record_transcription", _spy)
+    return recorded

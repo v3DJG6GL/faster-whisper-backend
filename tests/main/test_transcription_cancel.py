@@ -6,7 +6,7 @@ from faster_whisper_backend.audio import bgm_separation
 from faster_whisper_backend.audio import diarization
 from faster_whisper_backend.transcription import models as tx_models
 from faster_whisper_backend.transcription import progress as tx_progress
-from tests._transcription_helpers import post_verbose as _post
+from tests._transcription_helpers import post_verbose as _post, record_runs
 from tests._translation_helpers import enable_translation
 
 _PID = "cafe" * 8  # 32 hex chars — passes _PROGRESS_ID_RE
@@ -77,13 +77,7 @@ def test_cancelled_run_records_status_cancelled(client, app_module,
     # The 499 raised by the _ClientCancelled arm lands in the OUTER except
     # Exception, which must not clobber the "cancelled" status the inner arm
     # set — /stats would otherwise count user cancels as server failures.
-    recorded = []
-    _orig = app_module.metrics.record_transcription
-
-    def _spy(**kw):
-        recorded.append(kw)
-        return _orig(**kw)
-    monkeypatch.setattr(app_module.metrics, "record_transcription", _spy)
+    recorded = record_runs(app_module, monkeypatch)
     tx_progress._BATCH_CANCELLED.add(_PID)
     try:
         r = _post(client, progress_id=_PID)
@@ -387,13 +381,7 @@ def test_task_cancellation_records_status_cancelled(client, app_module,
     async def _cancelled_loader(name, *, lease=False):
         raise asyncio.CancelledError()
     monkeypatch.setattr(tx_models, "_get_or_load_model", _cancelled_loader)
-    recorded = []
-    _orig = app_module.metrics.record_transcription
-
-    def _spy(**kw):
-        recorded.append(kw)
-        return _orig(**kw)
-    monkeypatch.setattr(app_module.metrics, "record_transcription", _spy)
+    recorded = record_runs(app_module, monkeypatch)
     # TestClient surfaces the handler's CancelledError as a RuntimeError.
     with pytest.raises(Exception):
         _post(client)
@@ -425,13 +413,7 @@ def test_cancel_landing_on_the_job_write_still_records_the_run(client, app_modul
     async def _cancelled_finish(pid, **kw):
         raise asyncio.CancelledError()
     monkeypatch.setattr(tx_progress, "_jobs_finish", _cancelled_finish)
-    recorded = []
-    _orig = app_module.metrics.record_transcription
-
-    def _spy(**kw):
-        recorded.append(kw)
-        return _orig(**kw)
-    monkeypatch.setattr(app_module.metrics, "record_transcription", _spy)
+    recorded = record_runs(app_module, monkeypatch)
     with pytest.raises(Exception):
         _post(client, progress_id=_PID)
     assert recorded and recorded[-1]["status"] == "ok"
