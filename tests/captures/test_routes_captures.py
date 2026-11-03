@@ -130,7 +130,6 @@ def test_merge_member_scope_guard_precedes_state_checks(
     existence + state. Regression guard for _validate_merge_payload: the
     per-member scope check must run BEFORE the already-in-sample / audio-missing
     checks."""
-    from faster_whisper_backend.auth import dependencies as auth
     from faster_whisper_backend.captures import routes as captures_routes
     from fastapi import HTTPException
 
@@ -141,24 +140,14 @@ def test_merge_member_scope_guard_precedes_state_checks(
     os.unlink(captures_store.abs_audio_path(captures_store.get_capture(cid)["audio_relpath"]))
 
     # bob: scope=own captures user, NOT the owner and NOT admin → uniform 404.
-    bob = {
-        "user_id": "bob",
-        "permissions": auth.Permissions(
-            {"pages": {"captures": "own"}}, is_admin=False),
-    }
     with pytest.raises(HTTPException) as ei:
-        captures_routes._validate_merge_payload([cid], 0, bob)
+        captures_routes._validate_merge_payload([cid], 0, _own_user("bob"))
     assert ei.value.status_code == 404
 
     # The OWNER still reaches the real state check (410), proving the guard
     # blocks only cross-user probes — not the owner's own legitimate errors.
-    alice = {
-        "user_id": "alice",
-        "permissions": auth.Permissions(
-            {"pages": {"captures": "own"}}, is_admin=False),
-    }
     with pytest.raises(HTTPException) as ei2:
-        captures_routes._validate_merge_payload([cid], 0, alice)
+        captures_routes._validate_merge_payload([cid], 0, _own_user("alice"))
     assert ei2.value.status_code == 410
 
 
@@ -249,6 +238,13 @@ def _write_silent_wav(path, frames):
         w.writeframes(b"\x00\x00" * frames)
 
 
+def _own_user(uid):
+    from faster_whisper_backend.auth import dependencies as auth
+
+    return {"user_id": uid, "permissions": auth.Permissions(
+        {"pages": {"captures": "own"}}, is_admin=False)}
+
+
 def _fake_wav_transcode(monkeypatch):
     """Route audio_transcode to a stub that writes a tiny valid WAV."""
     from faster_whisper_backend.audio import transcode as audio_transcode
@@ -278,18 +274,13 @@ def test_merge_member_404_body_uniform_missing_vs_foreign(
     the merge surface. The guard's uniform 404 STATUS is pointless if the
     body still says "capture X not found" for missing ids but "not found"
     for foreign ones — the body becomes the existence oracle."""
-    from faster_whisper_backend.auth import dependencies as auth
     from faster_whisper_backend.captures import routes as captures_routes
     from fastapi import HTTPException
 
     captures_store = captures_store_db
     cid = _audio_capture(captures_store, monkeypatch, tmp_path)
 
-    bob = {
-        "user_id": "bob",
-        "permissions": auth.Permissions(
-            {"pages": {"captures": "own"}}, is_admin=False),
-    }
+    bob = _own_user("bob")
     with pytest.raises(HTTPException) as e_missing:
         captures_routes._validate_merge_payload(["nosuchcid000"], 0, bob)
     with pytest.raises(HTTPException) as e_foreign:
