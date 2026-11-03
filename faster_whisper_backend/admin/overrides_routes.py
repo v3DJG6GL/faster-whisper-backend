@@ -514,13 +514,12 @@ def resolve(user_id: str = "", key_id: str = "", model: str = "",
         client_sim = None
         ck = effective_config._CONFIG_TO_CLIENT_KEY.get(fname)
         if ck and ck in sim_dict:
-            # The SAME gate the live decode path applies (transcription.
-            # models._apply_decode_overrides / batch+streaming overrides_ignored key off
-            # locked_client_keys): a field-level lock OR the per-identity decode
-            # master gate being off (it locks every client key via
-            # locked_client_keys, not r.locked) → ignored. An unlocked value is
-            # reported as production would use it: clamped to the client bounds,
-            # or dropped when unparsable.
+            # The SAME gate the live decode path applies (tx_models.
+            # _apply_decode_overrides, batch + streaming overrides_ignored): a
+            # field-level lock, or the per-identity decode master gate being off,
+            # which locks every client key via locked_client_keys, not r.locked.
+            # An unlocked value is reported as production would use it: clamped
+            # to the client bounds, or dropped when unparsable.
             if fname in r.locked or ck in r.locked_client_keys:
                 value, outcome = sim_dict[ck], "ignored_locked"
             else:
