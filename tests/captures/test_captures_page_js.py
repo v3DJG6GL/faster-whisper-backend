@@ -438,8 +438,7 @@ def test_shift_extend_clears_stale_inline_replacements(page, tmp_path):
     """Shift-click extending the last chip left the green `.word-replacement`
     at its old end word (and at any absorbed chip's end) in the strip, so the
     correction showed twice until the card was rebuilt."""
-    fns = (_chip_max(page) + _js_function(page, "extendLastChip") + "\n"
-           + _js_function(page, "clearReplacementInline"))
+    fns = _chip_max(page) + _js_functions(page, "extendLastChip", "clearReplacementInline")
     out = _run_node(tmp_path, fns + r"""
 var removed = [];
 var strip = { removeChild: function(n) { removed.push(n.at); } };
@@ -883,7 +882,7 @@ def test_batch_open_closed_while_loading_never_enters_batch_mode(page, tmp_path)
     """Closing "Batch review merges" before its proposals GET returned still
     entered batch mode in the hidden modal, where Ctrl+ArrowRight anywhere
     on the page accepted (POSTed) a proposal the user never saw."""
-    fns = _js_function(page, "_openProposeModal") + "\n" + _js_function(page, "_closePropose")
+    fns = _js_functions(page, "_openProposeModal", "_closePropose")
     out = _run_node(tmp_path, fns + r"""
 var shown = false, entered = 0, pending = [];
 var modal = { classList: {
@@ -940,8 +939,7 @@ global.clearInterval = function() {};
 
 
 def _batch_fns(page):
-    return (_js_function(page, "_renderBatchCard") + "\n"
-            + _js_function(page, "_advanceBatch") + "\n")
+    return _js_functions(page, "_renderBatchCard", "_advanceBatch") + "\n"
 
 
 @needs_node
@@ -1171,7 +1169,7 @@ async function _confirm() { asked++; return answers.shift(); }
 async function api() { posts++; return { sample: {} }; }
 function applyServerSample() { applied++; }
 function toast() {} function reloadCounts() {}
-""" + _js_function(page, "okToRegenerate") + "\n" + _js_function(page, "applyRegenerated")
+""" + _js_functions(page, "okToRegenerate", "applyRegenerated")
         + "\nvar onRegen = " + handler + r""";
 (async function() {
   answers.push(false);
@@ -1198,8 +1196,7 @@ def test_group_save_keeps_edits_made_while_it_ran(page, tmp_path):
     overwrote chips / notes typed meanwhile and cleared the dirty flag."""
     anchor = "saveTBtn.onclick = "
     handler = _js_block(page, page.index(anchor) + len(anchor))
-    out = _run_node(tmp_path, _js_function(page, "markDirty") + "\n"
-                    + _js_function(page, "_chipFields") + r"""
+    out = _run_node(tmp_path, _js_functions(page, "markDirty", "_chipFields") + r"""
 var chip = { wrong: 'a', correct: 'A', idx: 1, idx_end: 1 };
 var sampleState = { dirty: true, adminNotes: 'n', corrections: [chip],
   baselineCorrections: [] };
@@ -1367,9 +1364,9 @@ def test_merge_modal_preview_places_chips_by_aligned_words(page, tmp_path):
     capture card's preview, applied chips without the aligned words, so a
     chip on a repeated word after removed fillers landed on the wrong copy:
     the reviewer approved a text the export would not emit."""
-    fns = _js_functions(page, "_applyChipsToText", "_cjkEdge", "_buildDefaultTranscript",
-                        "_renderMergePreview", "_capturePreviewText")
-    out = _run_node(tmp_path, _js_function(page, "_endsSentence") + "\n" + fns + r"""
+    fns = _js_functions(page, "_endsSentence", "_applyChipsToText", "_cjkEdge",
+                        "_buildDefaultTranscript", "_renderMergePreview", "_capturePreviewText")
+    out = _run_node(tmp_path, fns + r"""
 function escapeHtml(s) { return String(s); }
 var lines = [];
 var host = { set innerHTML(v) {}, appendChild: function(l) { lines.push(l.innerHTML); } };
@@ -2427,7 +2424,7 @@ async function _confirm(o) { asked.push(o.title); return answers.shift(); }
 function api() { return new Promise(function(r) { pending.push(r); }); }
 function applyServerSample() { applied++; sampleState.dirty = false; }
 function toast(m) { toasts.push(m); } function reloadCounts() {}
-""" + _js_function(page, "okToRegenerate") + "\n" + _js_function(page, "applyRegenerated")
+""" + _js_functions(page, "okToRegenerate", "applyRegenerated")
         + "\nvar onRegen = " + handler + r""";
 async function run(answer) {
   sampleState.dirty = false;
@@ -2492,8 +2489,7 @@ def test_final_result_preview_joins_unspaced_words_without_a_space(page, tmp_pat
     """Once a Chinese / Thai sentence is split among its words, the
     Final-result preview put a space between every two of them; the space
     between spaced words stays."""
-    out = _run_node(tmp_path, _js_function(page, "_cjkEdge") + "\n"
-                    + _js_function(page, "_renderGroundSpans") + r"""
+    out = _run_node(tmp_path, _js_functions(page, "_cjkEdge", "_renderGroundSpans") + r"""
 global.document = { createElement: function() { return {}; } };
 function render(words, corrections) {
   var spans = [];
