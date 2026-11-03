@@ -85,7 +85,8 @@ def test_batch_drops_echo_segment(client, fake_model):
 def test_batch_guard_disabled_keeps_everything(client, app_module, fake_model):
     app_module.cfg.SEGMENT_MAX_WORDS_PER_S = 0
     # The tail cuts would empty the echo segment too (22 words in 0.54 s is one
-    # big burst) — "everything off" means all four guards.
+    # big burst) — "everything off" means the rate guard and all three tail cuts
+    # (no prompt here, so the head-echo cut cannot fire).
     app_module.cfg.SEGMENT_MAX_WORD_BURST_PER_S = 0
     app_module.cfg.SEGMENT_ZERO_LENGTH_TAIL_MIN_WORDS = 0
     app_module.cfg.SEGMENT_REPEAT_COLLAPSE_MIN_REPEATS = 0
