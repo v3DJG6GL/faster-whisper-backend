@@ -514,9 +514,7 @@ class StreamSession:
             buf = self.audio
             self._trimmed_audio.append(buf[:cut_samples].copy())
             self._trimmed_samples += cut_samples
-            self._trimmed_words.extend(
-                {"word": w.text, "start": w.start, "end": w.end}
-                for w in cut_words)
+            self._trimmed_words.extend(self._word_dicts(cut_words))
             self._set_audio(buf[cut_samples:])
             # Rebuilt like _make_prompt (_trimmed_text already holds cut_text):
             # capping the whole prompt string instead dropped base_prompt (the
@@ -576,8 +574,11 @@ class StreamSession:
             # agreed. la.committed spans the WHOLE utterance (pop_committed
             # only prunes the agreement buffer), so this already includes any
             # trim-banked words — do NOT prepend _trimmed_text here.
-            tail = self.la.finish()
-            raw = self.la.committed_text + self.la.text_of(tail)
+            # No decode ran, so LocalAgreement is the only word source; its
+            # words are utterance-absolute and complete (see above): the trim
+            # merge below must NOT re-base them or prepend _trimmed_words
+            # (every banked word would appear twice).
+            raw, words = self._la_transcript()
             if not raw.strip():
                 # Nothing to say for it. An utterance the client was told about
                 # still gets its terminal frame — a noise burst long enough to
@@ -587,12 +588,6 @@ class StreamSession:
                 return
             proc_dur = 0.0
             decoded = False
-            # No decode ran, so LocalAgreement is the only word source; its
-            # words are utterance-absolute and complete (see above): the trim
-            # merge below must NOT re-base them or prepend _trimmed_words
-            # (every banked word would appear twice).
-            words = [{"word": w.text, "start": w.start, "end": w.end}
-                     for w in (self.la.committed + tail)]
         else:
             decoded = True
             await self._emit_utterance("decoding")
@@ -614,12 +609,9 @@ class StreamSession:
                                "partial transcript", self.session_id[:8], type(exc).__name__)
                 decode_failed = True
                 decoded = False
-                tail = self.la.finish()
-                raw = self.la.committed_text + self.la.text_of(tail)
                 # LocalAgreement words are already utterance-absolute and hold
                 # any trim-banked prefix — see the gate path above.
-                words = [{"word": w.text, "start": w.start, "end": w.end}
-                         for w in (self.la.committed + tail)]
+                raw, words = self._la_transcript()
                 dropped_all = False
             proc_dur = time.perf_counter() - t0
             if decode_failed:
@@ -643,10 +635,7 @@ class StreamSession:
                 # any trim-banked prefix (see the gate path above) — the decode's own
                 # (empty) list would leave the final with no word timestamps, or with
                 # only the banked prefix after a trim.
-                tail = self.la.finish()
-                raw = self.la.committed_text + self.la.text_of(tail)
-                words = [{"word": w.text, "start": w.start, "end": w.end}
-                         for w in (self.la.committed + tail)]
+                raw, words = self._la_transcript()
                 words_absolute = True
             else:
                 # The decode only heard the (possibly trim-shortened) buffer: text whose
@@ -680,6 +669,17 @@ class StreamSession:
         await self._report_final(
             full_audio, forced=forced, decoded=decoded,
             decode_failed=decode_failed, proc_dur=proc_dur, raw=raw, words=words)
+
+    @staticmethod
+    def _word_dicts(words) -> list[dict]:
+        return [{"word": w.text, "start": w.start, "end": w.end} for w in words]
+
+    def _la_transcript(self) -> tuple[str, list[dict]]:
+        """LocalAgreement's whole-utterance text + utterance-absolute words
+        (committed + unconfirmed tail; any trim-banked prefix included)."""
+        tail = self.la.finish()
+        return (self.la.committed_text + self.la.text_of(tail),
+                self._word_dicts(self.la.committed + tail))
 
     def _whole_audio(self, audio: np.ndarray) -> np.ndarray:
         """The banked trim slices + the remaining buffer: the whole utterance."""
