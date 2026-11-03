@@ -68,9 +68,9 @@ env:
   PIP_ROOT_USER_ACTION: ignore
 
 jobs:
-  # What a pull request needs. Outputs 'true'
-  # or 'false'; push, tag and dispatch runs, a diff that cannot be computed
-  # and any change under .forgejo/ set both 'true'.
+  # What a pull request needs. Outputs 'true' or 'false'; push, tag and
+  # dispatch runs, a diff that cannot be computed and any change under
+  # .forgejo/ set both 'true'.
   #   suite — false only when EVERY changed file is a Dockerfile (Renovate's
   #           python base-digest PRs): the Linux leg then runs only the
   #           CI-config tests (they read the Dockerfiles), Windows is
@@ -331,9 +331,8 @@ jobs:
       # failures on a green commit). Each job has its own workspace and the
       # checkout's `git clean -x` drops the last run's .venv, so the install
       # is fresh every time; uv's wheel cache in the SYSTEM profile keeps it
-      # fast. uv runs from the venv and installs into it (--python). pwsh
-      # only reports the LAST native exit code, hence a check after each
-      # command.
+      # fast. pwsh only reports the LAST native exit code, hence a check
+      # after each command.
       - name: Install dependencies (CPU base + test tools)
         run: |
           python -m venv .venv
