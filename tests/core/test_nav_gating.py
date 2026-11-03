@@ -10,6 +10,7 @@ import re
 
 from faster_whisper_backend.core import home_routes
 from faster_whisper_backend.core import web_common
+from tests._page_helpers import js_body
 
 
 def _rule(css: str, selector: str) -> str:
@@ -116,8 +117,7 @@ def test_activity_cluster_reads_no_gpu_on_a_cpu_only_server():
     only server.gpu.present says so. Both the header readout and the popover
     must go through the present-aware accessor."""
     js = web_common.ACTIVITY_CLUSTER_JS
-    acc = js[js.index("function gpuOf(snap)"):]
-    acc = acc[:acc.index("\n  }\n")]
+    acc = js_body(js, "function gpuOf(snap)")
     assert "sg.present === false" in acc and "return null" in acc
     feed = js[js.index("function feed(snap)"):js.index("function renderPop()")]
     assert "var gpu = gpuOf(snap);" in feed

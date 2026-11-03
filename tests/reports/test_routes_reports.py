@@ -6,6 +6,7 @@ import subprocess
 
 import pytest
 
+from tests._page_helpers import js_body
 from tests.conftest import bearer
 
 _SUBMIT = "/quick-config/reports/api/submit"
@@ -129,8 +130,7 @@ def test_reports_page_notes_draft_survives_a_rerender(client):
     html = client.get("/reports").text
     assert "ta.value = _hasDraft(r.id) ? _drafts[r.id] : (r.admin_notes || '');" in html
     assert "if (changed) _drafts[r.id] = ta.value; else delete _drafts[r.id];" in html
-    save = html[html.index("async function onSaveNotes("):]
-    save = save[:save.index("\n  }\n")]
+    save = js_body(html, "async function onSaveNotes(")
     assert "btn.disabled = true;" not in save
     assert "btn.disabled = !changed;" in save
     # A render() during the PATCH: the saved notes reach the live row (a
@@ -187,8 +187,7 @@ def test_reports_page_status_and_delete_survive_a_refresh_race(client):
     (totals shifted twice) and the status on a detached row. Such an
     action now reloads instead; the latest-started load() wins."""
     html = client.get("/reports").text
-    ld = html[html.index("async function load() {"):]
-    ld = ld[:ld.index("\n  }\n")]
+    ld = js_body(html, "async function load() {")
     assert "var seq = ++_loadSeq;" in ld
     assert ld.count("if (seq !== _loadSeq) return;") == 2
     assert "_loadLanded++;" in ld
@@ -198,12 +197,11 @@ def test_reports_page_status_and_delete_survive_a_refresh_race(client):
             ("onDelete(r)",
              "if (_loadGen() !== gen || _loadsOpen || busy || _statusBusy[r.id]) load();",
              "adjustCounts(r.status, null);")):
-        body = html[html.index(f"async function {fn} {{"):]
-        body = body[:body.index("\n  }\n")]
+        body = js_body(html, f"async function {fn} {{")
         assert "var gen = _loadGen();" in body, fn
         assert (cond + "\n      else " + delta) in body, fn
-    st = html[html.index("async function onStatusChange(r, sel) {"):]
-    assert "if (sel.isConnected) {" in st[:st.index("\n  }\n")]
+    st = js_body(html, "async function onStatusChange(r, sel) {")
+    assert "if (sel.isConnected) {" in st
 
 
 def test_reports_page_actions_supersede_a_refresh_still_in_flight(client):
@@ -213,12 +211,10 @@ def test_reports_page_actions_supersede_a_refresh_still_in_flight(client):
     back, a status or saved notes reverted. load() counts open loads and
     every action reloads while one is open."""
     html = client.get("/reports").text
-    ld = html[html.index("async function load() {"):]
-    ld = ld[:ld.index("\n  }\n")]
+    ld = js_body(html, "async function load() {")
     assert "_loadsOpen++;" in ld
     assert "} finally {\n      _loadsOpen--;" in ld
-    notes = html[html.index("async function onSaveNotes(r, ta, btn, dirty) {"):]
-    notes = notes[:notes.index("\n  }\n")]
+    notes = js_body(html, "async function onSaveNotes(r, ta, btn, dirty) {")
     assert "if (_loadsOpen) load();" in notes
 
 
@@ -228,13 +224,11 @@ def test_reports_page_status_change_is_serialized_per_row(client):
     decremented the old status. The select stays disabled while its PATCH
     is in flight (also across re-renders), and such a delete reloads."""
     html = client.get("/reports").text
-    st = html[html.index("async function onStatusChange(r, sel) {"):]
-    st = st[:st.index("\n  }\n")]
+    st = js_body(html, "async function onStatusChange(r, sel) {")
     assert "_statusBusy[r.id] = true;\n    sel.disabled = true;" in st
     fin = st[st.index("} finally {"):]
     assert "delete _statusBusy[r.id];" in fin and "live.disabled = false;" in fin
-    card = html[html.index("function renderCard(r) {"):]
-    card = card[:card.index("\n  }\n")]
+    card = js_body(html, "function renderCard(r) {")
     assert "if (_statusBusy[r.id]) sel.disabled = true;" in card
 
 
@@ -244,8 +238,7 @@ def test_reports_page_status_change_resyncs_a_re_rendered_select(client):
     only re-enabled it, so the dropdown showed the old status while the
     counts and the server said the new one."""
     html = client.get("/reports").text
-    st = html[html.index("async function onStatusChange(r, sel) {"):]
-    st = st[:st.index("\n  }\n")]
+    st = js_body(html, "async function onStatusChange(r, sel) {")
     fin = st[st.index("} finally {"):]
     sync = fin[fin.index("if (live && live !== sel) {"):]
     assert "live.value = r.status;" in sync[:sync.index("}")]
@@ -257,8 +250,7 @@ def test_page_api_error_shows_a_422_detail_list_as_text(client):
     """A FastAPI 422 carries `detail` as a list of error objects;
     new Error(list) toasted "[object Object]"."""
     html = client.get("/reports").text
-    api = html[html.index("async function api(method, url, body) {"):]
-    api = api[:api.index("\n  }\n")]
+    api = js_body(html, "async function api(method, url, body) {")
     assert "if (j && j.detail) msg = j.detail;" not in api
     assert "if (typeof d === 'string' && d) msg = d;" in api
     assert ("else if (Array.isArray(d) && d[0] && d[0].msg) "

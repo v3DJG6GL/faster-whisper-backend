@@ -10,6 +10,7 @@ import pytest
 from starlette.testclient import TestClient
 
 from faster_whisper_backend.pipeline import engine as pl_engine
+from tests._page_helpers import js_body
 from tests.conftest import bearer, fake_wav_transcode, write_wav
 
 
@@ -1517,8 +1518,7 @@ def test_page_filters_and_background_reloads_ask_before_dropping_edits(client):
     helper = helper[:helper.index("function _loadUnlessDirty(msg, err)")]
     assert "await _okToDropOpenEdits(" in helper
     assert "if (ok) apply(); else revert();" in helper
-    unless = html[html.index("function _loadUnlessDirty(msg, err)"):]
-    unless = unless[:unless.index("\n  }\n")]
+    unless = js_body(html, "function _loadUnlessDirty(msg, err)")
     assert "if (!_anyOpenDirty()) {" in unless and "return load();" in unless
     assert unless.index("return load();") < unless.index("List not refreshed")
     wire = html[html.index("var grp = buildStatusButtonGroup("):]
@@ -1563,8 +1563,7 @@ def test_page_error_toasts_read_a_422_detail_list(client):
     """FastAPI's 422 `detail` is a list of {msg, ...}; assigning it to the
     toast text printed "[object Object]"."""
     html = client.get("/captures").text
-    helper = html[html.index("function _detailMsg(j, fallback)"):]
-    helper = helper[:helper.index("\n  }\n")]
+    helper = js_body(html, "function _detailMsg(j, fallback)")
     assert "typeof d === 'string'" in helper
     assert "Array.isArray(d)" in helper and "d[0].msg" in helper
     assert re.search(r"\b\w*msg = \w+\.detail;", html) is None
