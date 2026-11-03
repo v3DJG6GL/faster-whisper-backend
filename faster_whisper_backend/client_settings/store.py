@@ -129,6 +129,12 @@ def _uid_tag(user_id: str) -> str:
     return user_id if user_id.startswith("(") else user_id[:8]
 
 
+def _log_write(verb: str, user_id: str, profile: str, version: Any,
+               blob_bytes: int, dev: str | None) -> None:
+    logger.info("[client-settings] %s user=%s profile=%r v=%s bytes=%d device=%r",
+                verb, _uid_tag(user_id), profile, version, blob_bytes, dev)
+
+
 def _row_to_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:
     if row is None:
         return None
@@ -276,10 +282,7 @@ def put(
                 ).fetchall()
             except sqlite3.IntegrityError:
                 return False, _get_locked(user_id, profile)
-            logger.info(
-                "[client-settings] created user=%s profile=%r v=1 bytes=%d device=%r",
-                _uid_tag(user_id), profile, blob_bytes, dev,
-            )
+            _log_write("created", user_id, profile, 1, blob_bytes, dev)
             return True, _row_to_dict(rows[0])
 
         cur = conn.execute(
@@ -295,10 +298,7 @@ def put(
             # route's 409 body renders as the version-0 zero-state).
             return False, _get_locked(user_id, profile)
         new_row = _row_to_dict(rows[0])
-        logger.info(
-            "[client-settings] updated user=%s profile=%r v=%s bytes=%d device=%r",
-            _uid_tag(user_id), profile, new_row["version"], blob_bytes, dev,
-        )
+        _log_write("updated", user_id, profile, new_row["version"], blob_bytes, dev)
         return True, new_row
 
 
@@ -335,10 +335,7 @@ def force_put(
             " RETURNING *",
             (user_id, profile, blob_json, now, dev),
         ).fetchall()[0])
-    logger.info(
-        "[client-settings] imported user=%s profile=%r v=%s bytes=%d device=%r",
-        _uid_tag(user_id), profile, row["version"], blob_bytes, dev,
-    )
+    _log_write("imported", user_id, profile, row["version"], blob_bytes, dev)
     return row
 
 
