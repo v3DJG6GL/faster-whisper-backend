@@ -65,7 +65,7 @@ _PER_CHECK_BUDGET = 5e-3
 # Extra allowance for an entry the child also probes with a synthetic run
 # (_synthetic_fixtures): an ordinary polynomial rule pays real time on one,
 # `(\d+)\s*(\d*)\s*Euro` ~0.1 s on its 240-digit run, so a list of 20 amount
-# rules used up the 5 ms allowances and was refused as backtracking. ~2x the
+# rules would use up the 5 ms allowances and be refused as backtracking. ~2x the
 # measured cost; an explosive entry still blows through it. The allowances
 # are pooled into one child timeout, so the child also caps each entry's own
 # CPU time at _GUARD_TIMEOUT: a slow entry cannot borrow its neighbours'.
@@ -102,7 +102,7 @@ _MIN_ABS_GROWTH = 64
 # microseconds and slips through. These are the shapes that make a nested
 # repetition go exponential: one long word run, one long letter run, one long
 # digit run, one long alphanumeric run — all with no punctuation to anchor on.
-# Each is ~240 chars (a quarter of FIXTURE), so all four together cost about
+# Each is ~240 chars (about a fifth of FIXTURE), so all four together cost about
 # the same as ONE extra fixture pass per entry and can't push a legitimate
 # rule set anywhere near _GUARD_TIMEOUT; an exponential pattern, by contrast,
 # already needs longer than the age of the universe at this length.
@@ -152,8 +152,8 @@ _CHAIN_CAP = 4096
 _SYNTH_RUN = 240
 # Longest text in front of the run the synthetic probe leads it with (see
 # _lead_pattern), well past the 64 characters a chained witness is cut at: a
-# mandatory lead it cut short (`x{65}\s*…#`) matched no probe, so none
-# reached the run behind it.
+# mandatory lead cut shorter (`x{65}\s*…#`) matches no probe, so none
+# reaches the run behind it.
 _SYNTH_LEAD = 4 * _SYNTH_RUN
 # Characters tried as the terminator that forces the engine to exhaust its
 # split search (which ones are probed: see _synthetic_fixtures).
@@ -581,9 +581,9 @@ def _nested_repetition(pat: str) -> bool:
                     lookaround, j = True, k + 2
                 elif k < n and pat[k] == "(":
                     # (?(1)yes|no) / (?(name)...) — a real group whose body
-                    # starts after the condition's `)`. Treating it as
-                    # self-closing let its own `)` pop the ENCLOSING group,
-                    # so `(x)?((?(1)\w+\s?|b))+#` slipped past the screen.
+                    # starts after the condition's `)`. Read as self-closing,
+                    # its own `)` would pop the ENCLOSING group and let
+                    # `(x)?((?(1)\w+\s?|b))+#` past the screen.
                     close = pat.find(")", k)
                     conditional, j = True, (n if close == -1 else close + 1)
                 else:
@@ -823,8 +823,8 @@ def _branch_atoms(body: str, depth: int = 0) -> "list[list[tuple[str, bool, obje
         text, q = body[i:j], body[j:k]
         i = max(k, j)
         optional = _optional_quantifier(q)
-        # `{1}` / `{1,1}` matches exactly as the bare item does: reading it
-        # as a pin hid `(?:(?:,?\s?){1})+#` from _optional_only.
+        # `{1}` / `{1,1}` matches exactly as the bare item does; read as a
+        # pin it would hide `(?:(?:,?\s?){1})+#` from _optional_only.
         if re.fullmatch(r"\{0*1(?:,0*1)?\}\??", q):
             q = ""
         if possessive or variable:
@@ -1819,8 +1819,7 @@ def _witnesses(pat: str, depth: int = 0, limit: int = 16,
     """Up to ``limit`` witnesses for ``pat`` (at least one, maybe ""), each at
     most ``width`` characters: one per top-level alternative and per alternative of
     every nested group, combined. The first is ``_witness``'s — every first
-    alternative. Built the same way: one representative character per atom,
-    a repeat written three times, optional atoms omitted."""
+    alternative."""
     out: list[str] = []
     cur = [""]
     i = 0
