@@ -200,6 +200,10 @@ def _vcodec_rank(vcodec: str) -> int:
     return 0
 
 
+def _is_hdr(f: dict) -> bool:
+    return str(f.get("dynamic_range") or "SDR").upper() != "SDR"
+
+
 def mp4_carries(vcodec: "str | None", acodec: "str | None") -> bool:
     """Whether an H.264/HEVC + AAC pair fits MP4 without re-encoding."""
     v = (vcodec or "").lower()
@@ -254,7 +258,7 @@ def _fmt_rank(f: dict) -> tuple:
         int(h) if isinstance(h, (int, float)) and h > 0 else 0,
         int(w) if isinstance(w, (int, float)) and w > 0 else 0,
         float(f.get("fps") or 0),
-        str(f.get("dynamic_range") or "SDR").upper() != "SDR",
+        _is_hdr(f),
         src,
         _vcodec_rank(str(f.get("vcodec") or "")),
         float(f.get("tbr") or 0),
@@ -280,7 +284,7 @@ def _rung_spec(f: dict) -> str:
     if isinstance(h, (int, float)) and h > 0:
         fps = float(f.get("fps") or 0)
         fps_i = int(round(fps)) if fps else 0
-        hdr = str(f.get("dynamic_range") or "SDR").upper() != "SDR"
+        hdr = _is_hdr(f)
         return f"{int(h)}p{fps_i if fps_i > 30 else ''}{' HDR' if hdr else ''}"
     res = f.get("resolution")
     if isinstance(res, str) and res.strip() and res.strip().lower() != "audio only":
@@ -475,7 +479,7 @@ def _rung(f: dict, *, audio_f: "dict | None", duration: "float | None",
         str(audio_f["acodec"]) if merges and audio_f.get("acodec") else None)
     fps = float(f.get("fps") or 0)
     fps_i = int(round(fps)) if fps else None
-    hdr = str(f.get("dynamic_range") or "SDR").upper() != "SDR"
+    hdr = _is_hdr(f)
     h = f.get("height")
     width = f.get("width")
     note = _rung_note(f)
