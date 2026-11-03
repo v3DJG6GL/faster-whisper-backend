@@ -661,10 +661,9 @@ def _evict_to_cap(conn: sqlite3.Connection) -> bool:
 
 
 def _total_audio_bytes(conn: sqlite3.Connection) -> int:
-    # Restrict to non-group rows: _drop_oldest_by_bytes excludes group
-    # members from eviction (they are owned by capture_samples_store), so
-    # counting their bytes here would let the total cross the cap with
-    # nothing the evictor can drop, causing a full scan on every insert.
+    # Non-group rows only, like the eviction queries: counting group-member
+    # bytes could keep the total over the cap with nothing droppable, and
+    # every insert would then evict every ungrouped capture.
     # Include the VAD-trimmed companion: _drop_oldest_by_bytes credits its
     # size to `freed`, so this counter must also include it or the cap
     # stays loose by total-trimmed-bytes.
