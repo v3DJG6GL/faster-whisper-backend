@@ -165,7 +165,8 @@ SCALE_PICKER_HTML = (
     '<button id="scale-cycle" class="icon-btn scale-cycle" type="button" '
     'title="UI scale 100% — click for next" aria-label="UI scale">Aa</button>'
     # Page width preference (fixed 100rem canvas / fluid 150rem). Hidden by
-    # NAV_CSS while the window is narrower than the fixed canvas.
+    # NAV_CSS on non-data-canvas pages and while the window is narrower than
+    # the fixed canvas.
     '<button id="width-toggle" class="icon-btn width-toggle" type="button" '
     'aria-pressed="false" title="Page width: fixed — click for fluid" '
     'aria-label="Page width">\u27f7</button>'
