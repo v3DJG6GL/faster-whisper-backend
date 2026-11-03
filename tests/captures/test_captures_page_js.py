@@ -2052,28 +2052,34 @@ global.document = { getElementById: function() { return {}; },
     assert out == {"asked": ["Show the refreshed list?"], "renders": 0}
 
 
+def _load_paging_harness(page):
+    """load() + loadMoreSamples with the open-edits prompts answered yes and
+    no speaker filter."""
+    return _js_functions(page, "load", "loadMoreSamples", "_freshOpenEdits") + r"""
+var _totalCount = 0, _me = null, _isAdmin = true, _filtSpeakers = [];
+var _pendingModel = null, _speakerPicker = null;
+function _listUrl() { return '/captures/api/list'; }
+function _speakerQs() { return ''; }
+async function _okToDropOpenEdits() { return true; }
+function _dirtyOpenEdits() { return []; }
+async function _renderUnlessKeptOpenEdits() {}
+"""
+
+
 @needs_node
 def test_load_more_groups_during_a_load_never_pages_the_old_cursor(page, tmp_path):
     """load() bumps _loadSeq at once but replaced _samplesNext only after
     both its GETs: a Load more meanwhile paged the OLD filter's cursor under
     the NEW seq, spliced those groups into the new list and overwrote its
     cursor, so every group between the two cursors went missing."""
-    fns = _js_functions(page, "load", "loadMoreSamples", "_freshOpenEdits")
-    out = _run_node(tmp_path, fns + r"""
+    out = _run_node(tmp_path, _load_paging_harness(page) + r"""
 var _samplesNext = { before_ts: 100, before_id: 'a1' }, _samplesLoading = false;
 var _loadSeq = 0, _allSamples = [{ id: 'old0' }], _allCaptures = [], _counts = {};
-var _totalCount = 0, _me = null, _isAdmin = true, _filtSpeakers = [];
-var _pendingModel = null, _speakerPicker = null;
 var urls = [], pending = {};
 function api(m, u) { urls.push(u); return new Promise(function(res) { pending[u] = res; }); }
-function _listUrl() { return '/captures/api/list'; }
-function _speakerQs() { return ''; }
 function updateCaptureBadge() {} function rebuildModelFilter() {} function updateCounts() {}
 function _clearSelection() {} function render() {} function _syncUrl() {} function reloadStats() {}
 function toast() {}
-async function _okToDropOpenEdits() { return true; }
-function _dirtyOpenEdits() { return []; }
-async function _renderUnlessKeptOpenEdits() {}
 global.document = { getElementById: function() { return null; },
                     body: { classList: { add: function() {} } } };
 (async function() {
@@ -2103,25 +2109,17 @@ def test_failed_load_keeps_the_old_lists_load_more_working(page, tmp_path):
     again on success: after a failed refresh the old list's "Load more
     groups" button silently did nothing (and a Load more that finished
     meanwhile left it hidden)."""
-    fns = _js_functions(page, "load", "loadMoreSamples", "_freshOpenEdits")
-    out = _run_node(tmp_path, fns + r"""
+    out = _run_node(tmp_path, _load_paging_harness(page) + r"""
 var cursor = { before_ts: 100, before_id: 'a1' };
 var _samplesNext = cursor, _samplesNextQs = '', _samplesLoading = false;
 var _loadSeq = 0, _allSamples = [{ id: 'old0' }], _allCaptures = [], _counts = {};
-var _totalCount = 0, _me = null, _isAdmin = true, _filtSpeakers = [];
-var _pendingModel = null, _speakerPicker = null;
 var urls = [], toasts = [];
 function api(m, u) {
   urls.push(u);
   return u === '/captures/api/list' ? Promise.reject(new Error('HTTP 502'))
                                     : Promise.resolve({ samples: [{ id: 'g2' }], next: null });
 }
-function _listUrl() { return '/captures/api/list'; }
-function _speakerQs() { return ''; }
 function toast(m) { toasts.push(m); }
-async function _okToDropOpenEdits() { return true; }
-function _dirtyOpenEdits() { return []; }
-async function _renderUnlessKeptOpenEdits() {}
 var footer = { hidden: true };
 global.document = { getElementById: function() { return footer; } };
 (async function() {
@@ -2145,25 +2143,17 @@ def test_failed_load_after_a_speaker_switch_drops_the_old_lists_cursor(page, tmp
     gave the old list its cursor back, and Load more then paged Bob's
     cursor under the new filter, splicing everyone's older groups onto
     Bob's list."""
-    fns = _js_functions(page, "load", "loadMoreSamples", "_freshOpenEdits")
-    out = _run_node(tmp_path, fns + r"""
+    out = _run_node(tmp_path, _load_paging_harness(page) + r"""
 var _samplesNext = { before_ts: 100, before_id: 'a1' }, _samplesLoading = false;
-var _samplesNextQs = '&user_id=bob';
+var _samplesNextQs = '&user_id=bob';   // the picker then switched Bob -> anyone
 var _loadSeq = 0, _allSamples = [{ id: 'bob0' }], _allCaptures = [], _counts = {};
-var _totalCount = 0, _me = null, _isAdmin = true, _filtSpeakers = [];
-var _pendingModel = null, _speakerPicker = null;
 var urls = [];
 function api(m, u) {
   urls.push(u);
   return u === '/captures/api/list' ? Promise.reject(new Error('HTTP 502'))
                                     : Promise.resolve({ samples: [{ id: 'x' }], next: null });
 }
-function _listUrl() { return '/captures/api/list'; }
-function _speakerQs() { return ''; }   // the picker switched Bob -> anyone
 function toast() {}
-async function _okToDropOpenEdits() { return true; }
-function _dirtyOpenEdits() { return []; }
-async function _renderUnlessKeptOpenEdits() {}
 var footer = { hidden: false };
 global.document = { getElementById: function() { return footer; } };
 (async function() {
