@@ -8,9 +8,8 @@ refused) re-key it like the Plan-building path does, and a registration
 that raised answers an empty id unless the caller owns the supplied one.
 """
 
-from faster_whisper_backend.runtime import model_sizes
 from faster_whisper_backend.runtime import preload
-from tests.runtime.test_preload_registry import _enable, _fits
+from tests.runtime.test_preload_registry import _enable, _fits, _fits_raises
 
 _ALICE_PID = "ab" * 8
 
@@ -55,10 +54,7 @@ def test_early_return_keeps_the_callers_own_supplied_id(monkeypatch):
 
 def test_failure_fallback_does_not_echo_another_users_plan_id(monkeypatch):
     _alice_plan(monkeypatch)
-
-    def _boom(*a, **k):
-        raise RuntimeError("ledger on fire")
-    monkeypatch.setattr(model_sizes, "fits", _boom)
+    _fits_raises(monkeypatch)
     r = preload.register_plan("mallory", [("diarization", "p/m")],
                               plan_id=_ALICE_PID, trigger="job")
     assert r["models"][0]["state"] == "deferred"
@@ -68,10 +64,7 @@ def test_failure_fallback_does_not_echo_another_users_plan_id(monkeypatch):
 
 def test_failure_fallback_keeps_the_callers_own_supplied_id(monkeypatch):
     _enable(monkeypatch)
-
-    def _boom(*a, **k):
-        raise RuntimeError("ledger on fire")
-    monkeypatch.setattr(model_sizes, "fits", _boom)
+    _fits_raises(monkeypatch)
     r = preload.register_plan("bob", [("diarization", "p/b")],
                               plan_id="f" * 8)
     assert r["plan_id"] == "f" * 8

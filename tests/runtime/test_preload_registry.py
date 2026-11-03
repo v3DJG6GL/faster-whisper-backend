@@ -28,6 +28,13 @@ def _fits(monkeypatch, verdict=(True, None)):
                         lambda *a, **k: verdict, raising=True)
 
 
+def _fits_raises(monkeypatch):
+    """Make model_sizes.fits raise, so register_plan's failure wrapper runs."""
+    def _boom(*a, **k):
+        raise RuntimeError("ledger on fire")
+    monkeypatch.setattr(model_sizes, "fits", _boom)
+
+
 def _enable(monkeypatch, **over):
     from faster_whisper_backend.settings import config as cfg
     defaults = {
@@ -410,10 +417,7 @@ def test_failure_cleanup_finds_a_plan_rekeyed_off_a_squatted_derived_id(
     _fits(monkeypatch, (None, "size_unknown"))
     victim = preload.derive_plan_id("alice", [("diarization", "p/a")])
     preload.register_plan("mallory", [("diarization", "p/m")], plan_id=victim)
-
-    def _boom(*a, **k):
-        raise RuntimeError("ledger on fire")
-    monkeypatch.setattr(model_sizes, "fits", _boom)
+    _fits_raises(monkeypatch)
     preload.register_plan("alice", [("diarization", "p/a")])
     assert [p for p in preload._plans.values() if p.user_id == "alice"] == []
     assert preload.is_warm("pyannote:p/a") is False
@@ -466,10 +470,7 @@ def test_denied_entries_are_reported_and_never_join_the_plan(monkeypatch):
 
 def test_register_plan_never_raises(monkeypatch):
     _enable(monkeypatch)
-
-    def _boom(*a, **k):
-        raise RuntimeError("ledger on fire")
-    monkeypatch.setattr(model_sizes, "fits", _boom)
+    _fits_raises(monkeypatch)
     r = preload.register_plan("u", [("diarization", "p/x")], plan_id="f" * 8)
     # _admit has no try/except of its own: the outer register_plan wrapper
     # swallows the blowup and rewrites the response to a deferral, not a 500.
@@ -491,10 +492,7 @@ def test_register_plan_failure_cleanup_never_drops_another_users_plan(
     _enable(monkeypatch)
     _fits(monkeypatch, (None, "size_unknown"))
     preload.register_plan("alice", [("diarization", "p/a")], plan_id="c" * 8)
-
-    def _boom(*a, **k):
-        raise RuntimeError("ledger on fire")
-    monkeypatch.setattr(model_sizes, "fits", _boom)
+    _fits_raises(monkeypatch)
     r = preload.register_plan("bob", [("diarization", "p/b")], plan_id="c" * 8)
     assert r["models"][0]["state"] == "deferred"
     assert "c" * 8 in preload._plans
@@ -512,10 +510,7 @@ def test_failure_cleanup_finds_a_rekeyed_plan_with_a_refused_entry(
     _enable(monkeypatch)
     _fits(monkeypatch, (None, "size_unknown"))
     preload.register_plan("alice", [("diarization", "p/a")], plan_id="c" * 8)
-
-    def _boom(*a, **k):
-        raise RuntimeError("ledger on fire")
-    monkeypatch.setattr(model_sizes, "fits", _boom)
+    _fits_raises(monkeypatch)
     r = preload.register_plan(
         "bob", [("diarization", "p/b"), ("separation", "")], plan_id="c" * 8)
     assert {m["state"] for m in r["models"]} == {"deferred"}
