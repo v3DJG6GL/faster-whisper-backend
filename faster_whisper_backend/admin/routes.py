@@ -1578,7 +1578,6 @@ async def translation_test(
         body.text, body.target, source=body.source, model_ref=ref or None,
         family=fam, glossary=body.glossary or "", template=template)
     if body.preview:
-        # Render-only: what the model WOULD receive; nothing is loaded.
         return JSONResponse({"prompt": prompt, "warnings": []})
     cold = not prompt.get("model_loaded", False)
     # Optional progress plumbing: joins the shared _BATCH_PROGRESS registry
