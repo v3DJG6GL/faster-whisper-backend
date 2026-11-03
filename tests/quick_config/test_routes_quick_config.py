@@ -223,19 +223,27 @@ def test_recent_open_mode(client):
     assert "recent" in body
 
 
-def test_recent_query_filters_raw_and_final(client):
-    import time as _time
+def _seed_recent(*rows):
+    """record_trace each (request_id, raw, final[, user_id]) row, oldest first,
+    one second apart. Current timestamps: the store is per-test, but its
+    lazy-prune counter is process-wide, so an insert can run the prune — and
+    an epoch-era row is older than RECENT_TRANSCRIPTIONS_RETENTION_DAYS."""
+    import time
+
     from faster_whisper_backend.stats import recent_transcriptions_store
-    # Current timestamps: the store is per-test, but its lazy-prune counter
-    # is process-wide, so an insert here can run the prune — and an
-    # epoch-era row is older than RECENT_TRANSCRIPTIONS_RETENTION_DAYS.
-    _base = _time.time() + 1000.0
-    recent_transcriptions_store.record_trace(
-        request_id="q1", model="m", raw="patient hat Fieber",
-        final="Patient hat Fieber", created_ts=_base + 1.0)
-    recent_transcriptions_store.record_trace(
-        request_id="q2", model="m", raw="andere notiz",
-        final="Aspirin verordnet", created_ts=_base + 2.0)
+    base = time.time() + 1000.0
+    for i, (rid, raw, final, *uid) in enumerate(rows, 1):
+        recent_transcriptions_store.record_trace(
+            request_id=rid, model="m", raw=raw, final=final,
+            user_id=uid[0] if uid else None, created_ts=base + i)
+
+
+_Q1_Q2 = (("q1", "patient hat Fieber", "Patient hat Fieber"),
+          ("q2", "andere notiz", "Aspirin verordnet"))
+
+
+def test_recent_query_filters_raw_and_final(client):
+    _seed_recent(*_Q1_Q2)
     # The term matches the substring across raw OR final, case-insensitively.
     # It travels in the POST body, never the query string: it is dictation
     # text, and a query string is copied into every access log and into
@@ -256,18 +264,7 @@ def test_recent_query_filters_raw_and_final(client):
 def test_recent_get_no_longer_filters_by_query_string(client):
     """A dictation term must not be accepted in the URL — that is the whole
     point of the POST endpoint. A stray ?q= is ignored, not honoured."""
-    import time as _time
-    from faster_whisper_backend.stats import recent_transcriptions_store
-    # Current timestamps: an epoch-era row is a prune casualty by design
-    # (older than RECENT_TRANSCRIPTIONS_RETENTION_DAYS), so it must not be what
-    # the assertion depends on.
-    _base = _time.time() + 1000.0
-    recent_transcriptions_store.record_trace(
-        request_id="q1", model="m", raw="patient hat Fieber",
-        final="Patient hat Fieber", created_ts=_base + 1.0)
-    recent_transcriptions_store.record_trace(
-        request_id="q2", model="m", raw="andere notiz",
-        final="Aspirin verordnet", created_ts=_base + 2.0)
+    _seed_recent(*_Q1_Q2)
     r = client.get("/quick-config/recent", params={"q": "fieber"})
     assert r.status_code == 200
     assert [t["request_id"] for t in r.json()["recent"]] == ["q2", "q1"]
@@ -890,22 +887,14 @@ def test_stream_recent_rechecks_the_caller_before_the_replay(
     _REAUTH_INTERVAL_S) went out in the old "all" scope. Driven directly,
     never via TestClient streaming."""
     import asyncio
-    import time as _time
 
     from faster_whisper_backend.auth import api_keys_store
     from faster_whisper_backend.quick_config import routes as qc
-    from faster_whisper_backend.stats import recent_transcriptions_store
     from tests.conftest import bearer, fake_request
 
     make_user_key("root", is_admin=True)
     uid, raw = make_user_key("alice", pages={"quick_config": "all"})
-    _base = _time.time() + 1000.0
-    recent_transcriptions_store.record_trace(
-        request_id="foreign", model="m", raw="b", final="b",
-        user_id="someone-else", created_ts=_base + 1.0)
-    recent_transcriptions_store.record_trace(
-        request_id="own", model="m", raw="a", final="a", user_id=uid,
-        created_ts=_base + 2.0)
+    _seed_recent(("foreign", "b", "b", "someone-else"), ("own", "a", "a", uid))
     req = fake_request(headers=bearer(raw))
 
     async def drive():
