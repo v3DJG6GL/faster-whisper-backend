@@ -272,14 +272,27 @@ def test_handoff_target_with_userinfo_is_not_direct_media(monkeypatch):
         "https://user:pw@cdn.example.com/a.mp3", time.monotonic() + 5)) is False
 
 
+class _CtxResp:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+def _patch_opener(monkeypatch, opener):
+    """Serve every guarded-opener fetch from `opener` (host gate open)."""
+    monkeypatch.setattr(udl, "_host_is_forbidden", lambda h: False)
+    monkeypatch.setattr(udl.urllib.request, "build_opener",
+                        lambda *handlers: opener)
+
+
 def _probe_opener_raising(monkeypatch, exc):
     class _Opener:
         def open(self, req, timeout=None):
             raise exc
     _generic_direct_media_only(monkeypatch)
-    monkeypatch.setattr(udl, "_host_is_forbidden", lambda h: False)
-    monkeypatch.setattr(udl.urllib.request, "build_opener",
-                        lambda *handlers: _Opener())
+    _patch_opener(monkeypatch, _Opener())
 
 
 @pytest.mark.parametrize("exc, error, message", [
@@ -1207,7 +1220,7 @@ def test_probe_timeout_covers_policy_check(monkeypatch):
 def test_thumbnail_dribble_bounded_by_deadline(monkeypatch):
     """A host trickling bytes under the per-socket-op timeout must not hold
     the worker thread: the chunked read gives up at the wall-clock deadline."""
-    class _Resp:
+    class _Resp(_CtxResp):
         headers = {"Content-Type": "image/jpeg"}
 
         def read(self, n):
@@ -1215,19 +1228,11 @@ def test_thumbnail_dribble_bounded_by_deadline(monkeypatch):
             _t.sleep(0.1)
             return b"x" * 100  # never EOF, always under the socket timeout
 
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *a):
-            return False
-
     class _Opener:
         def open(self, req, timeout=None):
             return _Resp()
 
-    monkeypatch.setattr(udl, "_host_is_forbidden", lambda h: False)
-    monkeypatch.setattr(udl.urllib.request, "build_opener",
-                        lambda *handlers: _Opener())
+    _patch_opener(monkeypatch, _Opener())
 
     async def go():
         t0 = asyncio.get_event_loop().time()
@@ -1247,26 +1252,18 @@ def test_direct_media_probe_bounded_by_deadline(monkeypatch):
     "not media"."""
     import time as _t
 
-    class _Resp:
+    class _Resp(_CtxResp):
         headers = {"Content-Type": "audio/mpeg"}
 
         def read(self, n):
             return b"x"
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *a):
-            return False
 
     class _Opener:
         def open(self, req, timeout=None):
             _t.sleep(0.5)  # past the 0.2 s budget, under the 1 s op timeout
             return _Resp()
 
-    monkeypatch.setattr(udl, "_host_is_forbidden", lambda h: False)
-    monkeypatch.setattr(udl.urllib.request, "build_opener",
-                        lambda *handlers: _Opener())
+    _patch_opener(monkeypatch, _Opener())
     with pytest.raises(udl.UrlTimeoutError, match="too long"):
         udl._direct_media_probe_sync("https://example.com/a.mp3", timeout=0.2)
 
@@ -1365,27 +1362,19 @@ def test_thumbnail_fetch_runs_on_probe_pool(monkeypatch):
     import threading
     seen: dict = {}
 
-    class _Resp:
+    class _Resp(_CtxResp):
         headers = {"Content-Type": "image/jpeg"}
         _chunks = [b"x", b""]
 
         def read(self, n):
             return self._chunks.pop(0)
 
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *a):
-            return False
-
     class _Opener:
         def open(self, req, timeout=None):
             seen["thread"] = threading.current_thread().name
             return _Resp()
 
-    monkeypatch.setattr(udl, "_host_is_forbidden", lambda h: False)
-    monkeypatch.setattr(udl.urllib.request, "build_opener",
-                        lambda *handlers: _Opener())
+    _patch_opener(monkeypatch, _Opener())
     out = _run(udl.fetch_thumbnail_data_uri("https://example.com/t.jpg", timeout=1.0))
     assert isinstance(out, str) and out.startswith("data:image/jpeg;base64,")
     assert seen["thread"].startswith("url-probe")
@@ -1395,7 +1384,7 @@ def _fake_opener(monkeypatch, body: bytes, ctype: str = "text/vtt",
                  length: "int | None" = None):
     """Swap the guarded opener for one that serves `body` in 1 KB chunks
     (`length`: a Content-Length header, which may claim more)."""
-    class _Resp:
+    class _Resp(_CtxResp):
         headers = {"Content-Type": ctype,
                    **({"Content-Length": str(length)} if length else {})}
 
@@ -1408,19 +1397,11 @@ def _fake_opener(monkeypatch, body: bytes, ctype: str = "text/vtt",
         def geturl(self):
             return "https://edge.e.com/b"      # where the redirects ended
 
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *a):
-            return False
-
     class _Opener:
         def open(self, req, timeout=None):
             return _Resp()
 
-    monkeypatch.setattr(udl, "_host_is_forbidden", lambda h: False)
-    monkeypatch.setattr(udl.urllib.request, "build_opener",
-                        lambda *handlers: _Opener())
+    _patch_opener(monkeypatch, _Opener())
 
 
 def test_capped_get_caps_filters_and_refuses_hosts(monkeypatch):
