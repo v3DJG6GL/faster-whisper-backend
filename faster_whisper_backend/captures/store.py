@@ -37,7 +37,7 @@ import sqlite3
 import threading
 import time
 import uuid
-from typing import Any
+from typing import Any, Callable
 
 from faster_whisper_backend.core import store_common
 from faster_whisper_backend.core import text_corrections
@@ -533,6 +533,18 @@ def create_capture(
     return cid if survived else None
 
 
+def _largest_fitting(lo: int, hi: int, fits: Callable[[int], bool]) -> int:
+    """Largest n in [lo, hi] with fits(n), for a monotone `fits` that holds
+    at lo (upper-mid binary search)."""
+    while lo < hi:
+        mid = (lo + hi + 1) // 2
+        if fits(mid):
+            lo = mid
+        else:
+            hi = mid - 1
+    return lo
+
+
 def _truncate_json(items: list[Any], cap_bytes: int) -> str:
     """Serialize a list and trim from the tail if the blob is over the
     cap. Falls back to '[]' on serialization failure (defense against
@@ -545,14 +557,8 @@ def _truncate_json(items: list[Any], cap_bytes: int) -> str:
         return blob
     # Trim from the end — front entries carry more signal for a karaoke
     # review (the start of the clip is the most reviewed part).
-    lo, hi = 0, len(items)
-    while lo < hi:
-        mid = (lo + hi + 1) // 2
-        blob = json.dumps(items[:mid], ensure_ascii=False)
-        if len(blob) <= cap_bytes:
-            lo = mid
-        else:
-            hi = mid - 1
+    lo = _largest_fitting(0, len(items), lambda n: len(
+        json.dumps(items[:n], ensure_ascii=False)) <= cap_bytes)
     return json.dumps(items[:lo], ensure_ascii=False)
 
 
@@ -587,25 +593,13 @@ def _truncate_translations(translations: "dict[str, str] | None",
         # Binary search on the kept prefix: one dump per probe, not one per
         # dropped language (thousands of keys make that quadratic).
         keys = list(texts)
-        lo_k, hi_k = 1, len(keys)
-        while lo_k < hi_k:
-            mid = (lo_k + hi_k + 1) // 2
-            if len(json.dumps({k: texts[k] for k in keys[:mid]},
-                              ensure_ascii=False)) <= cap_bytes:
-                lo_k = mid
-            else:
-                hi_k = mid - 1
+        lo_k = _largest_fitting(1, len(keys), lambda n: len(json.dumps(
+            {k: texts[k] for k in keys[:n]}, ensure_ascii=False)) <= cap_bytes)
         texts = {k: texts[k] for k in keys[:lo_k]}
         if len(_dump(0)) > cap_bytes:
             return json.dumps({})
-    lo, hi = 0, max(len(v) for v in texts.values())
-    while lo < hi:
-        mid = (lo + hi + 1) // 2
-        if len(_dump(mid)) <= cap_bytes:
-            lo = mid
-        else:
-            hi = mid - 1
-    return _dump(lo)
+    return _dump(_largest_fitting(0, max(len(v) for v in texts.values()),
+                                  lambda n: len(_dump(n)) <= cap_bytes))
 
 
 def _evict_to_cap(conn: sqlite3.Connection) -> bool:
