@@ -611,9 +611,11 @@ def _recent_spools() -> "list[str]":
             and time.time() - os.path.getmtime(os.path.join(tmp, n)) < 5]
 
 
+_MP4_FILE = {"file": ("a.mp4", b"RIFFxxxxWAVE" + b"\0" * 64, "video/mp4")}
+
+
 def test_retain_media_keeps_the_upload_and_returns_its_id(client, package_enabled):
-    _FILE = {"file": ("a.mp4", b"RIFFxxxxWAVE" + b"\0" * 64, "video/mp4")}
-    r = client.post("/v1/audio/transcriptions", files=_FILE,
+    r = client.post("/v1/audio/transcriptions", files=_MP4_FILE,
                     data={"model": "whisper-1", "response_format": "verbose_json",
                           "retain_media": "true"})
     assert r.status_code == 200, r.text
@@ -624,7 +626,7 @@ def test_retain_media_keeps_the_upload_and_returns_its_id(client, package_enable
     assert client.get(f"/v1/audio/url-media/{mid}").content.startswith(b"RIFF")
     # Without the flag nothing is retained; the spool (whisperup-) and any
     # retained copy (urlmedia-) are gone either way.
-    r = client.post("/v1/audio/transcriptions", files=_FILE,
+    r = client.post("/v1/audio/transcriptions", files=_MP4_FILE,
                     data={"model": "whisper-1", "response_format": "verbose_json"})
     assert "source_media_id" not in r.json()
     assert not _recent_spools()
@@ -633,8 +635,7 @@ def test_retain_media_keeps_the_upload_and_returns_its_id(client, package_enable
 def test_retain_media_with_a_text_response_is_422(client, package_enabled):
     # A text body has no field for the media id: refused up front, before
     # the spool (and its hardlinked copy) is written.
-    _FILE = {"file": ("a.mp4", b"RIFFxxxxWAVE" + b"\0" * 64, "video/mp4")}
-    r = client.post("/v1/audio/transcriptions", files=_FILE,
+    r = client.post("/v1/audio/transcriptions", files=_MP4_FILE,
                     data={"model": "whisper-1", "response_format": "text",
                           "retain_media": "true"})
     assert r.status_code == 422
@@ -648,8 +649,7 @@ def test_retain_media_refused_by_the_store_leaves_no_copy(client, package_enable
     # register() answering None (store full / unwritable) leaves the copy on
     # disk: the handler must still unlink it.
     monkeypatch.setattr(ums, "register", lambda *a, **kw: None)
-    _FILE = {"file": ("a.mp4", b"RIFFxxxxWAVE" + b"\0" * 64, "video/mp4")}
-    r = client.post("/v1/audio/transcriptions", files=_FILE,
+    r = client.post("/v1/audio/transcriptions", files=_MP4_FILE,
                     data={"model": "whisper-1", "response_format": "verbose_json",
                           "retain_media": "true"})
     assert r.status_code == 200, r.text
