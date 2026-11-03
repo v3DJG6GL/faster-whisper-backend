@@ -30,6 +30,15 @@ def _make_profile(client, h, name="clinic-de", **fields):
     return r
 
 
+def _bind_user(client, h, uid, **config):
+    """PATCH {uid}'s config binding (unnamed parts empty); asserts 200."""
+    body = {"overrides": {}, "profiles": [], "locks": [], **config}
+    r = client.patch(f"{PERMS}/{uid}/permissions", headers=h,
+                     json={"pages": {}, "config": body})
+    assert r.status_code == 200, r.text
+    return r
+
+
 def test_overrides_page_renders(client):
     import re
     r = client.get(OV)
@@ -169,10 +178,7 @@ def test_delete_guard_refuses_null_profiles_payload(client, make_user_key):
     _, _, h = _admin(make_user_key)
     _make_profile(client, h, "clinic-de", DEFAULT_LANGUAGE="de")
     uid, _ = make_user_key("alice", is_admin=False)
-    r = client.patch(f"{PERMS}/{uid}/permissions", headers=h, json={
-        "pages": {}, "config": {"overrides": {}, "profiles": ["clinic-de"],
-                                "locks": []}})
-    assert r.status_code == 200, r.text
+    _bind_user(client, h, uid, profiles=["clinic-de"])
 
     r = client.post(f"{OV}/state", headers=h, json={"OVERRIDE_PROFILES": None})
     assert r.status_code == 409
@@ -188,10 +194,7 @@ def test_settings_state_refuses_override_profiles(client, make_user_key):
     _, _, h = _admin(make_user_key)
     _make_profile(client, h, "clinic-de", DEFAULT_LANGUAGE="de")
     uid, _ = make_user_key("alice", is_admin=False)
-    r = client.patch(f"{PERMS}/{uid}/permissions", headers=h, json={
-        "pages": {}, "config": {"overrides": {}, "profiles": ["clinic-de"],
-                                "locks": []}})
-    assert r.status_code == 200, r.text
+    _bind_user(client, h, uid, profiles=["clinic-de"])
 
     for body in ({"OVERRIDE_PROFILES": None}, {"OVERRIDE_PROFILES": {}}):
         r = client.post("/settings/state", headers=h, json=body)
@@ -218,10 +221,8 @@ def test_bind_user_and_resolve(client, make_user_key):
     _make_profile(client, h, "clinic-de", DEFAULT_LANGUAGE="de", BEAM_SIZE=8,
                   locks=["DEFAULT_LANGUAGE"], TEMPERATURE="0.0")
     uid, _ = make_user_key("alice", is_admin=False)
-    r = client.patch(f"{PERMS}/{uid}/permissions", headers=h, json={
-        "pages": {}, "config": {"overrides": {"BEST_OF": 7, "TEMPERATURE": "0.0"},
-                                "profiles": ["clinic-de"], "locks": ["TEMPERATURE"]}})
-    assert r.status_code == 200, r.text
+    _bind_user(client, h, uid, overrides={"BEST_OF": 7, "TEMPERATURE": "0.0"},
+               profiles=["clinic-de"], locks=["TEMPERATURE"])
 
     rj = client.get(f"{OV}/resolve", headers=h, params={
         "user_id": uid, "model": "whisper-1",
@@ -314,11 +315,8 @@ def test_resolve_sim_reports_the_live_dictation_knobs_as_the_handshake_sets_them
 
     # A LOCKED hard break is never moved: a client outer above it is dropped,
     # reported as the partner's lock (the outer field itself is not locked).
-    r = client.patch(f"{PERMS}/{uid}/permissions", headers=h, json={
-        "pages": {}, "config": {"overrides": {"STREAMING_HARD_BREAK_SILENCE_MS": 5000},
-                                "profiles": [],
-                                "locks": ["STREAMING_HARD_BREAK_SILENCE_MS"]}})
-    assert r.status_code == 200, r.text
+    _bind_user(client, h, uid, overrides={"STREAMING_HARD_BREAK_SILENCE_MS": 5000},
+               locks=["STREAMING_HARD_BREAK_SILENCE_MS"])
     f = sim(uid, streaming_vad_outer_silence_ms=6000)
     assert f["STREAMING_VAD_OUTER_SILENCE_MS"]["client_sim"] == {
         "value": 6000, "sent": 6000, "outcome": "ignored_partner_locked"}
@@ -386,11 +384,8 @@ def test_rename_profile_cascades_to_user_and_key(client, make_user_key):
     _make_profile(client, h, "clinic-de", DEFAULT_LANGUAGE="de", BEAM_SIZE=8)
     uid, _ = make_user_key("alice", is_admin=False)
     # alice references the profile in BOTH her ordered list and her allowlist
-    r = client.patch(f"{PERMS}/{uid}/permissions", headers=h, json={
-        "pages": {}, "config": {"overrides": {}, "profiles": ["clinic-de"],
-                                "locks": [],
-                                "allowed_override_profiles": ["clinic-de"]}})
-    assert r.status_code == 200, r.text
+    _bind_user(client, h, uid, profiles=["clinic-de"],
+               allowed_override_profiles=["clinic-de"])
     kid = client.get(f"{PERMS}/{uid}/keys", headers=h).json()["keys"][0]["id"]
     r = client.patch(f"{PERMS}/{uid}/keys/{kid}/config", headers=h,
                      json={"overrides": {}, "profiles": ["clinic-de"], "locks": []})
@@ -427,10 +422,7 @@ def test_rename_profile_keeps_locks_while_the_cascade_commits(
     _make_profile(client, h, "clinic-de", DEFAULT_LANGUAGE="de",
                   locks=["DEFAULT_LANGUAGE"])
     uid, _ = make_user_key("alice", is_admin=False)
-    r = client.patch(f"{PERMS}/{uid}/permissions", headers=h, json={
-        "pages": {}, "config": {"overrides": {}, "profiles": ["clinic-de"],
-                                "locks": []}})
-    assert r.status_code == 200, r.text
+    _bind_user(client, h, uid, profiles=["clinic-de"])
 
     real = api_keys_store.rename_profile_refs
     seen = {}
@@ -466,10 +458,7 @@ def test_rename_profile_failed_cascade_keeps_the_old_name(
     _make_profile(client, h, "clinic-de", DEFAULT_LANGUAGE="de",
                   locks=["DEFAULT_LANGUAGE"])
     uid, _ = make_user_key("alice", is_admin=False)
-    r = client.patch(f"{PERMS}/{uid}/permissions", headers=h, json={
-        "pages": {}, "config": {"overrides": {}, "profiles": ["clinic-de"],
-                                "locks": []}})
-    assert r.status_code == 200, r.text
+    _bind_user(client, h, uid, profiles=["clinic-de"])
 
     def _locked(old, new):
         raise sqlite3.OperationalError("database is locked")
@@ -506,10 +495,7 @@ def test_profile_save_waits_for_an_in_flight_rename(client, make_user_key, monke
     _make_profile(client, h, "clinic-de", DEFAULT_LANGUAGE="de",
                   locks=["DEFAULT_LANGUAGE"])
     uid, _ = make_user_key("alice", is_admin=False)
-    r = client.patch(f"{PERMS}/{uid}/permissions", headers=h, json={
-        "pages": {}, "config": {"overrides": {}, "profiles": ["clinic-de"],
-                                "locks": []}})
-    assert r.status_code == 200, r.text
+    _bind_user(client, h, uid, profiles=["clinic-de"])
 
     in_cascade, release, stale_saved = (threading.Event() for _ in range(3))
     real_cascade = api_keys_store.rename_profile_refs
@@ -635,10 +621,7 @@ def test_rename_profile_old_name_case_insensitive(client, make_user_key):
     _, _, h = _admin(make_user_key)
     _make_profile(client, h, "clinic-de", DEFAULT_LANGUAGE="de")
     uid, _ = make_user_key("alice", is_admin=False)
-    r = client.patch(f"{PERMS}/{uid}/permissions", headers=h, json={
-        "pages": {}, "config": {"overrides": {}, "profiles": ["clinic-de"],
-                                "locks": [], "allowed_override_profiles": []}})
-    assert r.status_code == 200, r.text
+    _bind_user(client, h, uid, profiles=["clinic-de"], allowed_override_profiles=[])
     r = client.post(f"{OV}/profiles/rename", headers=h,
                     json={"old": "CLINIC-DE", "new": "clinic-deutsch"})
     assert r.status_code == 200, r.text
