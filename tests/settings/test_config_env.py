@@ -19,6 +19,7 @@ from faster_whisper_backend.settings import config
 from tests.conftest import _repoint_path_default
 from tests.settings._rules_helpers import factory_rules as _factory_rules
 from tests.settings._rules_helpers import load_saved as _load_saved
+from tests.settings.test_config_renames import _pre_june_rules
 
 
 def test_truthy():
@@ -1158,13 +1159,7 @@ def test_env_slug_lists_beside_a_local_copy_of_the_split_card_keep_naming_it(
     """A config.local.json rule list from before June 17 still runs the old
     combined card: an env list naming it is valid there and must not be split
     onto cards that list does not hold (the unknown-slug check drops the var)."""
-    rules = _factory_rules()
-    rules = [r for r in rules
-             if r["name"] not in ("strip-trailing-period", "strip-auto-punctuation")]
-    rules.insert(-1, {"name": "strip-whisper-punctuation", "label": "Strip Whisper punctuation",
-                      "type": "regex-list",
-                      "entries": [{"pattern": "\\s*\\.+\\s*$", "replacement": ""}]})
-    _store_local(monkeypatch, tmp_path, {"PIPELINE_RULES": rules})
+    _store_local(monkeypatch, tmp_path, {"PIPELINE_RULES": _pre_june_rules()})
     _reload_with_env(
         monkeypatch,
         WHISPER_MODEL_OVERRIDES=json.dumps(

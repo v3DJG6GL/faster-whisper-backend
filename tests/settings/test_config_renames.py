@@ -354,6 +354,13 @@ _SPLIT_IN_JUNE = {
 }
 
 
+def _old_strip_whisper_punctuation():
+    """The combined card the June split replaced (config_renames.SPLIT_RULES)."""
+    return {"name": "strip-whisper-punctuation", "label": "Strip Whisper punctuation",
+            "type": "regex-list",
+            "entries": [{"pattern": "\\s*\\.+\\s*$", "replacement": ""}]}
+
+
 def test_every_split_card_names_current_factory_rules():
     names = {r["name"] for r in _factory_rules()}
     assert {k: list(v) for k, v in renames.SPLIT_RULES.items()} == _SPLIT_IN_JUNE
@@ -386,10 +393,8 @@ def test_exclude_of_a_split_card_names_every_card_that_took_it_over(tmp_path):
 def test_slug_list_beside_a_stored_copy_of_the_split_card_keeps_naming_it():
     """A stored PIPELINE_RULES copy from before the split still runs the old
     combined card; its own slug is the right one there."""
-    rules = copy.deepcopy(_factory_rules())
-    rules.insert(-1, {"name": "strip-whisper-punctuation", "label": "Strip Whisper punctuation",
-                      "type": "regex-list",
-                      "entries": [{"pattern": "\\s*\\.+\\s*$", "replacement": ""}]})
+    rules = _factory_rules()
+    rules.insert(-1, _old_strip_whisper_punctuation())
     raw = {"PIPELINE_RULES": rules,
            "CAPTURES_PIPELINE_RULES_EXCLUDE": ["strip-whisper-punctuation",
                                                "german-symbol-cleanup"],
@@ -431,11 +436,10 @@ def test_exclude_of_a_card_folded_in_8cde7fd_names_its_successor(tmp_path):
 
 
 def _pre_june_rules():
-    rules = [r for r in copy.deepcopy(_factory_rules())
+    """The factory rules as a copy saved before the June split holds them."""
+    rules = [r for r in _factory_rules()
              if r["name"] not in _SPLIT_IN_JUNE["strip-whisper-punctuation"]]
-    rules.insert(-1, {"name": "strip-whisper-punctuation", "label": "Strip Whisper punctuation",
-                      "type": "regex-list",
-                      "entries": [{"pattern": "\\s*\\.+\\s*$", "replacement": ""}]})
+    rules.insert(-1, _old_strip_whisper_punctuation())
     return rules
 
 
