@@ -1801,8 +1801,9 @@ async def get_sample_api(
     _audit_cross_user_read(user, g, "sample", sid)
     # OFF the loop, like list_samples_api: `_enrich_sample` runs
     # `_align_member_words` per member, and each of those runs the O(n*m)
-    # `_align_words_to_final` DP twice — measured 129 ms at 1000x1000 words
-    # and 1.87 s at 4000x4000, doubled per member.
+    # `_align_words_to_final` DP once (twice when the training text differs
+    # from `final`) — measured 129 ms at 1000x1000 words and 1.87 s at
+    # 4000x4000, per alignment.
     return JSONResponse({"sample": await asyncio.to_thread(_enrich_sample, g)})
 
 
