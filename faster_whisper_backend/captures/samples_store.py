@@ -129,7 +129,6 @@ def abs_path_for(relpath: str) -> str:
     """Resolve a relpath (the `groups/...` form) to an absolute path
     rooted at CAPTURES_DIR. Path-traversal defense — anything that
     escapes raises ValueError."""
-    # Imported lazily to avoid an import cycle at module load.
     from faster_whisper_backend.captures import store as captures_store
     root = os.path.abspath(captures_store._require_audio_dir())
     abs_p = os.path.abspath(os.path.join(root, relpath))
@@ -196,8 +195,8 @@ def list_samples(
     str → one owner, list → any of them (the speaker picker); a list with
     no usable id matches nothing.
     """
-    # Lazily, like abs_path_for: one owner filter for both stores, so the
-    # empty-list "matches nothing" rule cannot drift between them.
+    # One owner filter for both stores, so the empty-list "matches nothing"
+    # rule cannot drift between them.
     from faster_whisper_backend.captures import store as captures_store
     uclause, params = captures_store._user_clause(user_id)
     clauses: list[str] = [uclause] if uclause else []
