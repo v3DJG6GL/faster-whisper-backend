@@ -502,15 +502,19 @@ function renderTypeEditor(rule, commitData, opts) {
       + 'one pass sees "Hals-nasen-ohren-arzt" only up to the first hyphen it changed.'));
   }
 
+  function _saveBtn() {
+    const b = opts.makeSaveBtn();
+    b.style.minWidth = '6rem';
+    return b;
+  }
+
   // Save row for rule types without a "+ add entry" bar (regex-list and
   // cb:map put Save next to their add button instead).
   function _appendSaveRow(parent) {
     if (!opts.makeSaveBtn) return;
     const saveRow = document.createElement('div');
     saveRow.style.cssText = 'display:flex;justify-content:flex-end;margin-top:0.6rem;';
-    const btn = opts.makeSaveBtn();
-    btn.style.minWidth = '6rem';
-    saveRow.appendChild(btn);
+    saveRow.appendChild(_saveBtn());
     parent.appendChild(saveRow);
   }
 
@@ -563,11 +567,7 @@ function renderTypeEditor(rule, commitData, opts) {
     const btnRow = document.createElement('div');
     btnRow.style.cssText = 'display:flex;gap:0.5rem;align-items:stretch;margin-top:0.6rem;';
     btnRow.appendChild(addBtn);
-    if (opts.makeSaveBtn) {
-      const saveBtn = opts.makeSaveBtn();
-      saveBtn.style.minWidth = '6rem';
-      btnRow.appendChild(saveBtn);
-    }
+    if (opts.makeSaveBtn) btnRow.appendChild(_saveBtn());
     box.appendChild(btnRow);
     return box;
   }
@@ -662,11 +662,7 @@ function renderTypeEditor(rule, commitData, opts) {
     const btnRow = document.createElement('div');
     btnRow.style.cssText = 'display:flex;gap:0.5rem;align-items:stretch;margin-top:0.6rem;';
     btnRow.appendChild(addBtn);
-    if (opts.makeSaveBtn) {
-      const saveBtn = opts.makeSaveBtn();
-      saveBtn.style.minWidth = '6rem';
-      btnRow.appendChild(saveBtn);
-    }
+    if (opts.makeSaveBtn) btnRow.appendChild(_saveBtn());
     box.appendChild(btnRow);
     // Row add/remove never re-renders the editor, so repaint on DOM changes.
     // Counts <tr>s (not rule.map) so a blank just-added row counts; a
