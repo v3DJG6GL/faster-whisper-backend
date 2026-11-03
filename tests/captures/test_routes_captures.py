@@ -169,7 +169,7 @@ def test_merge_member_scope_guard_precedes_state_checks(
     assert ei2.value.status_code == 410
 
 
-def _insert_sample(conn, gs, sid, *, locked, user_id="alice"):
+def _insert_sample(conn, gs, sid, *, locked, user_id="alice", ts=1.0):
     """Insert a capture_samples row directly (no audio merge needed)."""
     conn.execute(
         "INSERT INTO capture_samples (id, user_id, created_ts,"
@@ -178,7 +178,7 @@ def _insert_sample(conn, gs, sid, *, locked, user_id="alice"):
         " inter_segment_silence_ms, is_stale, is_locked, status,"
         " admin_notes, language, member_trims)"
         " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-        (sid, user_id, 1.0, gs._relpath_for(sid), 5000, "t", "space",
+        (sid, user_id, ts, gs._relpath_for(sid), 5000, "t", "space",
          "{}", 300, 0, 1 if locked else 0, "new", "", "de", "{}"),
     )
 
@@ -442,19 +442,6 @@ def test_list_toolbar_counts_scoped_to_caller(client, make_user_key):
     assert admin_body["counts"]["new"] == 3
 
 
-def _insert_sample_at(conn, gs, sid, *, ts, user_id="alice"):
-    conn.execute(
-        "INSERT INTO capture_samples (id, user_id, created_ts,"
-        " merged_wav_relpath, merged_duration_ms, transcript,"
-        " transcript_join_strategy, member_hashes,"
-        " inter_segment_silence_ms, is_stale, is_locked, status,"
-        " admin_notes, language, member_trims)"
-        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-        (sid, user_id, ts, gs._relpath_for(sid), 5000, "t", "space",
-         "{}", 300, 0, 0, "new", "", "de", "{}"),
-    )
-
-
 def test_samples_are_paged_and_the_cursor_walks_every_row(client, make_user_key):
     from faster_whisper_backend.captures import samples_store as gs
     from faster_whisper_backend.captures import store as captures_store
@@ -468,7 +455,8 @@ def test_samples_are_paged_and_the_cursor_walks_every_row(client, make_user_key)
     # other 3.0 row.
     stamps = [5.0, 3.0, 3.0, 2.0, 1.0]
     for i, ts in enumerate(stamps):
-        _insert_sample_at(conn, gs, f"page{i}sid00000", ts=ts, user_id=uid)
+        _insert_sample(conn, gs, f"page{i}sid00000", locked=False, ts=ts,
+                       user_id=uid)
 
     h = bearer(raw)
     seen, cursor, pages = [], None, 0
@@ -500,7 +488,8 @@ def test_last_page_reports_no_cursor(client, make_user_key):
     uid, raw = make_user_key("alice", pages={"captures": "own"})
     conn = captures_store._require_conn()
     for i in range(2):
-        _insert_sample_at(conn, gs, f"exact{i}sid0000", ts=float(i), user_id=uid)
+        _insert_sample(conn, gs, f"exact{i}sid0000", locked=False,
+                       ts=float(i), user_id=uid)
 
     body = client.get("/captures/api/samples?limit=2", headers=bearer(raw)).json()
     assert len(body["samples"]) == 2
