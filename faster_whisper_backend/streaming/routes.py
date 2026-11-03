@@ -913,12 +913,10 @@ async def transcribe_stream(ws: WebSocket) -> None:
         gate_final_words = bool(effective_config.cfg_for(final_model, "WORD_TIMESTAMPS_ENABLED", ident))
         gate_partial_words = bool(effective_config.cfg_for(partial_model_name, "WORD_TIMESTAMPS_ENABLED", ident))
 
-        # ident is resolved ONCE here, then re-resolved on the next decode
-        # (partial or final) ONLY when the config version changes (see
-        # _refresh_ident) — so admin edits to a binding/profile/setting apply
-        # mid-session without a reconnect. The version was snapshotted at
-        # authentication; snapshot the client's ORIGINAL (pre-lock) handshake
-        # values here so the lock re-application stays idempotent across refreshes.
+        # _refresh_ident re-resolves ident on the next decode (partial or final)
+        # when the config version changes, so admin edits to a binding/profile/
+        # setting apply mid-session. Keep the client's ORIGINAL (pre-lock)
+        # handshake values so the lock re-application stays idempotent across refreshes.
         _client_language = req_language
         _client_prompt = req_prompt
         _client_prompt_provided = prompt_provided
@@ -1653,7 +1651,7 @@ async def transcribe_stream(ws: WebSocket) -> None:
                 if fresh is None or fresh.get("user_id") != user.get("user_id"):
                     # Revoked, rotated, signed out, or now resolving to somebody
                     # else. Latch and stop: the decode guards abort every sink on
-                    # the spot and the producer closes the socket with 4401. The
+                    # the spot and the pump closes the socket with 4401. The
                     # in-flight utterance is deliberately lost — revocation takes
                     # effect immediately, it does not wait for the sentence to end.
                     _auth_revoked = True
