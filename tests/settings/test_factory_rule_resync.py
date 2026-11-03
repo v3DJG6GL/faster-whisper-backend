@@ -20,6 +20,7 @@ import pytest
 from faster_whisper_backend import paths
 from faster_whisper_backend.settings import config_store as cs
 from tests.settings._rules_helpers import factory_rules as _factory_rules
+from tests.settings._rules_helpers import load_saved
 
 _NODE = shutil.which("node")
 _SETTINGS_HTML = os.path.join(paths.REPO_ROOT, "faster_whisper_backend", "admin",
@@ -41,9 +42,7 @@ def _older_tidy(rules):
 
 
 def _load(tmp_path, rules):
-    path = tmp_path / "config.local.json"
-    path.write_text(json.dumps({"PIPELINE_RULES": rules}), encoding="utf-8")
-    return cs.load_overrides(str(path))["PIPELINE_RULES"]
+    return load_saved(tmp_path, {"PIPELINE_RULES": rules})["PIPELINE_RULES"]
 
 
 def test_an_untouched_older_factory_copy_becomes_the_current_rule(tmp_path):
