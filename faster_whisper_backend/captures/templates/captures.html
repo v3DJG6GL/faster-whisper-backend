@@ -1805,6 +1805,14 @@
     if (text !== undefined && text !== null) e.textContent = text;
     return e;
   }
+  // A .cc-section card: h3 title plus an optional help line (a page literal).
+  function _ccSection(cls, title, helpHtml) {
+    var s = document.createElement('div');
+    s.className = cls;
+    s.innerHTML = '<h3>' + title + '</h3>'
+      + (helpHtml ? '<div class="help">' + helpHtml + '</div>' : '');
+    return s;
+  }
   function renderStats() {
     var sec = document.getElementById('stats-strip');
     var st = _stats;
@@ -2141,11 +2149,9 @@
       }
     });
 
-    var corrSec = document.createElement('div');
-    corrSec.className = 'cc-section';
-    corrSec.innerHTML = '<h3>Corrections</h3>'
-      + '<div class="help">Click a word, or use ← / → and type, to mark '
-      + 'and correct it; shift-click extends a range; Enter accepts, Del removes.</div>';
+    var corrSec = _ccSection('cc-section', 'Corrections',
+        'Click a word, or use ← / → and type, to mark '
+      + 'and correct it; shift-click extends a range; Enter accepts, Del removes.');
     var strip = document.createElement('div');
     strip.className = 'word-strip';
     state.words.forEach(function(w, i) {
@@ -2218,12 +2224,10 @@
     state.chipBox = chipBox;
     renderChips(state);
 
-    var gtSec = document.createElement('div');
-    gtSec.className = 'cc-section';
-    gtSec.innerHTML = '<h3>Final result</h3>'
-      + '<div class="help">Computed from <em>post-processing</em> + word '
+    var gtSec = _ccSection('cc-section', 'Final result',
+        'Computed from <em>post-processing</em> + word '
       + 'corrections + current pipeline rules. To change it, edit chips '
-      + 'above or update rules on /quick-config.</div>';
+      + 'above or update rules on /quick-config.');
     var gtArea = document.createElement('div');
     gtArea.className = 'cc-ground';
     gtArea.setAttribute('role', 'textbox');
@@ -2292,9 +2296,7 @@
       body.appendChild(trSec);
     }
 
-    var notesSec = document.createElement('div');
-    notesSec.className = 'cc-section cc-notes';
-    notesSec.innerHTML = '<h3>Admin notes</h3>';
+    var notesSec = _ccSection('cc-section cc-notes', 'Admin notes');
     var notesArea = document.createElement('textarea');
     notesArea.value = state.adminNotes;
     notesArea.addEventListener('input', function() {
@@ -4208,12 +4210,10 @@
 
     // Same word strip + chip list layout as the single-capture and
     // group-expand Corrections section.
-    var corrSec = document.createElement('div');
-    corrSec.className = 'cc-section merge-preview-cc';
-    corrSec.innerHTML = '<h3>Corrections</h3>'
-      + '<div class="help">Click a word to mark it; shift-click another to '
+    var corrSec = _ccSection('cc-section merge-preview-cc', 'Corrections',
+        'Click a word to mark it; shift-click another to '
       + 'extend the range; type the corrected text in the chip below. '
-      + 'Edits save automatically to the source captures.</div>';
+      + 'Edits save automatically to the source captures.');
     var stripEl = document.createElement('div');
     stripEl.className = 'merge-preview-strip word-strip';
     corrSec.appendChild(stripEl);
@@ -4225,11 +4225,9 @@
     if (externalGround) {
       gtArea = externalGround;
     } else {
-      var gtSec = document.createElement('div');
-      gtSec.className = 'cc-section merge-preview-cc';
-      gtSec.innerHTML = '<h3>Final result</h3>'
-        + '<div class="help">Computed from members\' post-processing text + '
-        + 'word corrections. To change it, edit chips above.</div>';
+      var gtSec = _ccSection('cc-section merge-preview-cc', 'Final result',
+          'Computed from members\' post-processing text + '
+        + 'word corrections. To change it, edit chips above.');
       gtArea = document.createElement('div');
       gtArea.className = 'cc-ground';
       gtArea.setAttribute('role', 'textbox');
@@ -5219,12 +5217,10 @@
           dirtyEl: null,
         };
 
-        var corrSec = document.createElement('div');
-        corrSec.className = 'cc-section';
-        corrSec.innerHTML = '<h3>Corrections</h3>'
-          + '<div class="help">Click a word, or use ← / → and type, to '
+        var corrSec = _ccSection('cc-section', 'Corrections',
+            'Click a word, or use ← / → and type, to '
           + 'mark and correct it; shift-click extends a range; Enter '
-          + 'accepts, Del removes.</div>';
+          + 'accepts, Del removes.');
         var staleHint = document.createElement('div');
         staleHint.className = 'help';
         staleHint.style.color = 'var(--cyan)';
@@ -5255,12 +5251,10 @@
         body.appendChild(corrSec);
         sampleState.chipBox = chipBox;
 
-        var gtSec = document.createElement('div');
-        gtSec.className = 'cc-section';
-        gtSec.innerHTML = '<h3>Final result</h3>'
-          + '<div class="help">Computed from members\' post-processing '
+        var gtSec = _ccSection('cc-section', 'Final result',
+            'Computed from members\' post-processing '
           + 'text + word corrections. To change it, edit chips above or '
-          + 'update rules on /quick-config.</div>';
+          + 'update rules on /quick-config.');
         gtSec.appendChild(ta);
         body.appendChild(gtSec);
 
@@ -5284,9 +5278,7 @@
           settingsHint.style.color = 'var(--help)';
         }
 
-        var notesSec = document.createElement('div');
-        notesSec.className = 'cc-section cc-notes';
-        notesSec.innerHTML = '<h3>Admin notes</h3>';
+        var notesSec = _ccSection('cc-section cc-notes', 'Admin notes');
         var notesArea = document.createElement('textarea');
         notesArea.addEventListener('input', function() {
           sampleState.adminNotes = notesArea.value;
