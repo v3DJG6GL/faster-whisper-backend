@@ -923,10 +923,13 @@ def test_per_model_env_unknown_slug_keeps_the_valid_env_siblings(monkeypatch, re
                for m in config._ENV_WARNINGS), config._ENV_WARNINGS
 
 
-def _point_overrides_at(monkeypatch, path):
-    """Repoint config_store.load_overrides at `path` the way tests/conftest.py
-    does: the module constant AND the def-time-bound default argument."""
+def _store_local(monkeypatch, tmp_path, raw):
+    """Write `raw` as tmp_path/config.local.json and repoint
+    config_store.load_overrides at it the way tests/conftest.py does: the
+    module constant AND the def-time-bound default argument."""
     from faster_whisper_backend.settings import config_store
+    path = tmp_path / "config.local.json"
+    path.write_text(json.dumps(raw), encoding="utf-8")
     monkeypatch.setattr(config_store, "OVERRIDES_PATH", str(path), raising=False)
     _repoint_path_default(monkeypatch, (config_store.load_overrides,), str(path))
 
@@ -936,9 +939,7 @@ def test_env_cross_field_inconsistent_with_local_override_is_reverted(
     """env TARGET=28 + local MAX=27 is inconsistent against the EFFECTIVE
     config; the validators used to compare against _BASELINE (MAX 29.9) and
     let TARGET > MAX boot silently."""
-    p = tmp_path / "config.local.json"
-    p.write_text(json.dumps({"CAPTURES_SAMPLE_MAX_DURATION_S": 27}), encoding="utf-8")
-    _point_overrides_at(monkeypatch, p)
+    _store_local(monkeypatch, tmp_path, {"CAPTURES_SAMPLE_MAX_DURATION_S": 27})
     _reload_with_env(monkeypatch, WHISPER_CAPTURES_PROPOSER_TARGET_S="28")
     assert config.CAPTURES_PROPOSER_TARGET_S == 26.0
     assert config.CAPTURES_SAMPLE_MAX_DURATION_S == 27
@@ -951,9 +952,7 @@ def test_env_cross_field_consistent_with_local_override_applies(
         tmp_path, monkeypatch, restore_config):
     """env TARGET=29.95 + local MAX=30 is self-consistent and must apply; the
     stale-baseline comparison (MAX 29.9) used to mis-revert it."""
-    p = tmp_path / "config.local.json"
-    p.write_text(json.dumps({"CAPTURES_SAMPLE_MAX_DURATION_S": 30}), encoding="utf-8")
-    _point_overrides_at(monkeypatch, p)
+    _store_local(monkeypatch, tmp_path, {"CAPTURES_SAMPLE_MAX_DURATION_S": 30})
     _reload_with_env(monkeypatch, WHISPER_CAPTURES_PROPOSER_TARGET_S="29.95")
     assert config.CAPTURES_PROPOSER_TARGET_S == 29.95
     assert config.CAPTURES_SAMPLE_MAX_DURATION_S == 30
@@ -997,11 +996,8 @@ def test_documented_empty_env_overrides_a_stored_value(tmp_path, monkeypatch, re
     in config.local.json silently won, with no warning and no env-pinned
     badge on /settings."""
     from faster_whisper_backend.settings import config_store
-    p = tmp_path / "config.local.json"
-    p.write_text(json.dumps({"TRANSLATE_TO": "en",
-                             "STREAMING_PARTIAL_MODEL": "tiny"}),
-                 encoding="utf-8")
-    _point_overrides_at(monkeypatch, p)
+    _store_local(monkeypatch, tmp_path, {"TRANSLATE_TO": "en",
+                                         "STREAMING_PARTIAL_MODEL": "tiny"})
     _reload_with_env(monkeypatch, WHISPER_TRANSLATE_TO="",
                      WHISPER_STREAMING_PARTIAL_MODEL="",
                      WHISPER_TRANSLATION_LANGUAGES="de ")
@@ -1162,9 +1158,7 @@ def test_env_slug_lists_beside_a_local_copy_of_the_split_card_keep_naming_it(
     rules.insert(-1, {"name": "strip-whisper-punctuation", "label": "Strip Whisper punctuation",
                       "type": "regex-list",
                       "entries": [{"pattern": "\\s*\\.+\\s*$", "replacement": ""}]})
-    p = tmp_path / "config.local.json"
-    p.write_text(json.dumps({"PIPELINE_RULES": rules}), encoding="utf-8")
-    _point_overrides_at(monkeypatch, p)
+    _store_local(monkeypatch, tmp_path, {"PIPELINE_RULES": rules})
     _reload_with_env(
         monkeypatch,
         WHISPER_MODEL_OVERRIDES=json.dumps(
