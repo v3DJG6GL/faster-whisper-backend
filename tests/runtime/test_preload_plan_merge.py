@@ -26,6 +26,20 @@ def _fits(monkeypatch, verdict=(True, None)):
                         lambda *a, **k: verdict, raising=True)
 
 
+def _record_evict_and_load(monkeypatch):
+    """Stub the worker's _evict/_load with recorders; returns (evicted, loaded)."""
+    evicted, loaded = [], []
+
+    async def _evict(family, peer):
+        evicted.append((family, peer))
+    monkeypatch.setattr(preload, "_evict", _evict)
+
+    async def _load(family, mid):
+        loaded.append((family, mid))
+    monkeypatch.setattr(preload, "_load", _load)
+    return evicted, loaded
+
+
 def _enable(monkeypatch, **over):
     from faster_whisper_backend.settings import config as cfg
     defaults = {
@@ -301,16 +315,7 @@ def test_worker_evicts_the_cold_whisper_peer_it_chose_even_when_it_fits(
     _fits(monkeypatch, (True, None))
     monkeypatch.setattr(tx_models, "_loaded_models", {"peer": object()})
     monkeypatch.setattr(tx_models, "_model_leases", {})
-    evicted = []
-    loaded = []
-
-    async def _evict(family, peer):
-        evicted.append((family, peer))
-    monkeypatch.setattr(preload, "_evict", _evict)
-
-    async def _load(family, mid):
-        loaded.append((family, mid))
-    monkeypatch.setattr(preload, "_load", _load)
+    evicted, loaded = _record_evict_and_load(monkeypatch)
 
     preload.register_plan("u", [("whisper", "large-v3")], plan_id="7" * 8)
 
@@ -325,16 +330,7 @@ def test_worker_keeps_the_cold_peer_when_an_unmeasured_model_has_a_free_slot(
     _fits(monkeypatch, (None, "size_unknown"))
     monkeypatch.setattr(tx_models, "_loaded_models", {"peer": object()})
     monkeypatch.setattr(tx_models, "_model_leases", {})
-    evicted = []
-    loaded = []
-
-    async def _evict(family, peer):
-        evicted.append((family, peer))
-    monkeypatch.setattr(preload, "_evict", _evict)
-
-    async def _load(family, mid):
-        loaded.append((family, mid))
-    monkeypatch.setattr(preload, "_load", _load)
+    evicted, loaded = _record_evict_and_load(monkeypatch)
 
     preload.register_plan("u", [("whisper", "large-v3")], plan_id="8" * 8)
 
@@ -376,16 +372,7 @@ def test_worker_evicts_the_cold_translation_peer_it_chose_even_when_it_fits(
     monkeypatch.setattr(translation, "_models", {"o/peer:Q4": object()})
     monkeypatch.setattr(translation, "_active", {})
     model_registry.set_warm_predicate(None)
-    evicted = []
-    loaded = []
-
-    async def _evict(family, peer):
-        evicted.append((family, peer))
-    monkeypatch.setattr(preload, "_evict", _evict)
-
-    async def _load(family, mid):
-        loaded.append((family, mid))
-    monkeypatch.setattr(preload, "_load", _load)
+    evicted, loaded = _record_evict_and_load(monkeypatch)
 
     preload.register_plan("u", [("translation", "o/new:Q4")], plan_id="9" * 8)
 
