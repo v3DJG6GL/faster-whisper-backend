@@ -306,9 +306,7 @@ def test_post_factory_rules_non_mapping_element_400(client, bad):
 def _seed_factory(monkeypatch, tmp_path, rules):
     """Repoint config_store's factory file at a per-test temp config.json and
     seed it with `rules`, so persisting factory-rules tests never clobber the
-    committed repo config.json. Mirrors conftest's OVERRIDES_PATH repoint:
-    FACTORY_PATH is a default ARG bound at def time, so each function's
-    __defaults__ is rewritten in addition to the module constant."""
+    committed repo config.json (module constant AND the def-time path defaults)."""
     import json
     from faster_whisper_backend.settings import config_store
 
@@ -316,9 +314,6 @@ def _seed_factory(monkeypatch, tmp_path, rules):
     with open(tmp_factory, "w", encoding="utf-8") as f:
         json.dump({"schema_version": 1, "PIPELINE_RULES": rules}, f)
     monkeypatch.setattr(config_store, "FACTORY_PATH", tmp_factory, raising=False)
-    # By NAME, not defaults[-1]: a later trailing default (save_factory_rules'
-    # overrides_path) would take the repoint and leave `path` on the REAL
-    # config.json — which the next factory-rules POST then overwrites.
     _repoint_path_default(monkeypatch, (config_store.load_factory_rules,
                                         config_store.save_factory_rules),
                           tmp_factory)
