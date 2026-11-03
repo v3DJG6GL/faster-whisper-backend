@@ -8,6 +8,7 @@ inside _load_blocking, and these tests stub either the module-level
 """
 
 import asyncio
+import contextlib
 import os
 import re
 import sys
@@ -2983,11 +2984,12 @@ def _hold_infer_mutex():
     return t, held, release
 
 
+@contextlib.contextmanager
 def _decode_in_flight(monkeypatch, llm):
     """Start one _run_completion on ``llm`` whose _complete parks until the
-    returned release Event is set, and cancel that job: like a cancelled
-    job in production, its executor thread is still inside the decode.
-    Returns (thread, release_event) once the cancel has landed."""
+    with block exits, and cancel that job: like a cancelled job in
+    production, its executor thread is still inside the decode for the
+    whole with block, which starts once the cancel has landed."""
     inside = threading.Event()
     cancelled = threading.Event()
     release = threading.Event()
@@ -3010,7 +3012,11 @@ def _decode_in_flight(monkeypatch, llm):
     t = threading.Thread(target=lambda: asyncio.run(job()), daemon=True)
     t.start()
     assert cancelled.wait(5)
-    return t, release
+    try:
+        yield
+    finally:
+        release.set()
+        t.join(5)
 
 
 def test_draining_decode_blocks_eviction(monkeypatch):
@@ -3022,14 +3028,10 @@ def test_draining_decode_blocks_eviction(monkeypatch):
     translation._models["org/drain:Q4"] = llm
     translation._last_used["org/drain:Q4"] = 0.0
     translation._params["org/drain:Q4"] = ("cpu", 1)
-    t, release = _decode_in_flight(monkeypatch, llm)
-    try:
+    with _decode_in_flight(monkeypatch, llm):
         assert translation._drop_locked("org/drain:Q4") is False
         assert "org/drain:Q4" in translation._models
         assert not llm.closed
-    finally:
-        release.set()
-        t.join(5)
     assert translation._decoding == {}
     assert translation._drop_locked("org/drain:Q4") is True
     assert llm.closed
@@ -3124,16 +3126,12 @@ def test_trim_skips_a_draining_decode(lru_env, monkeypatch):
 
     # _trim_locked(cap) frees room for ONE incoming load (evicts while
     # len >= cap): the LRU "o/a" is still draining, so the idle "o/b" goes.
-    t, release = _decode_in_flight(monkeypatch, made["o/a"])
-    try:
+    with _decode_in_flight(monkeypatch, made["o/a"]):
         translation._trim_locked(2)          # must return, not spin
         assert set(translation._models) == {"o/a"}
         assert not made["o/a"].closed and made["o/b"].closed
         translation._trim_locked(1)          # only the draining one is left
         assert set(translation._models) == {"o/a"}
-    finally:
-        release.set()
-        t.join(5)
     translation._trim_locked(1)
     assert not translation._models and made["o/a"].closed
 
@@ -3148,13 +3146,9 @@ def test_idle_peer_skips_a_draining_decode(lru_env, monkeypatch):
         await translation._get_model("o/b")
     _run(load_both())
     warm = {"o/b"}.__contains__
-    t, release = _decode_in_flight(monkeypatch, made["o/a"])
-    try:
+    with _decode_in_flight(monkeypatch, made["o/a"]):
         assert translation.idle_peer("o/c", warm) is None
         assert translation.idle_peer("o/c", lambda r: False) == "o/b"
-    finally:
-        release.set()
-        t.join(5)
     assert translation.idle_peer("o/c", warm) == "o/a"
 
 
