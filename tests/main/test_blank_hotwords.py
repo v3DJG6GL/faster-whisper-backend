@@ -10,12 +10,7 @@ kwarg entirely rather than being forwarded.
 
 import json
 
-from tests._transcription_helpers import WAV_UPLOAD as _FILE
-
-
-def _post(client, **data):
-    data.setdefault("model", "whisper-1")
-    return client.post("/v1/audio/transcriptions", files=_FILE, data=data)
+from tests._transcription_helpers import post_transcription as _post
 
 
 def test_space_hotwords_override_clears_admin_hotwords(client, app_module, fake_model):

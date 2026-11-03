@@ -12,7 +12,7 @@ from tests._streaming_helpers import handshake
 from tests.conftest import RATE, FakeSegment, FakeWord
 from faster_whisper_backend.transcription import guards as tx_guards
 from faster_whisper_backend.transcription import receipt as tx_receipt
-from tests._transcription_helpers import WAV_UPLOAD as _FILE, post_verbose
+from tests._transcription_helpers import post_transcription, post_verbose
 
 
 def _words(text: str, start: float, end: float) -> list:
@@ -136,8 +136,7 @@ def test_batch_tail_cuts_off_keep_the_tail(client, app_module, fake_model):
     app_module.cfg.SEGMENT_ZERO_LENGTH_TAIL_MIN_WORDS = 0
     app_module.cfg.SEGMENT_REPEAT_COLLAPSE_MIN_REPEATS = 0
     fake_model._segments = [_loop_segment()]
-    r = client.post("/v1/audio/transcriptions", files=_FILE,
-                    data={"model": "whisper-1"})
+    r = post_transcription(client)
     assert "abzuschliessen" in r.json()["text"]
 
 
@@ -147,8 +146,7 @@ def test_batch_whole_segment_verdict_runs_before_the_cut(client, fake_model):
     from faster_whisper_backend.stats import metrics
     real = FakeSegment("hallo welt", 0.0, 1.0, words=_words("hallo welt", 0.0, 1.0))
     fake_model._segments = [real, _echo_segment()]
-    r = client.post("/v1/audio/transcriptions", files=_FILE,
-                    data={"model": "whisper-1"})
+    r = post_transcription(client)
     assert r.json()["text"] == "hallo welt"
     assert metrics.guard_hits["word_rate"] == 1 and metrics.guard_hits["burst"] == 0
 
@@ -172,8 +170,7 @@ def test_batch_repeated_commands_survive(client, fake_model):
     # Zeile" is post-processed into one newline — a cut would leave fewer.
     text = " ".join(["Neue Zeile"] * 6)
     fake_model._segments = [FakeSegment(text, 0.0, 12.0, words=_words(text, 0.0, 12.0))]
-    r = client.post("/v1/audio/transcriptions", files=_FILE,
-                    data={"model": "whisper-1"})
+    r = post_transcription(client)
     assert r.json()["text"] == "\n" * 6
 
 
@@ -222,20 +219,17 @@ def test_batch_cuts_prompt_echo_from_the_start(client, fake_model, caplog):
 
 def test_batch_prompt_echo_off_or_without_prompt_keeps_it(client, app_module, fake_model):
     fake_model._segments = [_head_echo_segment()]
-    r = client.post("/v1/audio/transcriptions", files=_FILE,
-                    data={"model": "whisper-1"})
+    r = post_transcription(client)
     assert "Tabletten" in r.json()["text"]           # no prompt → nothing to compare
     app_module.cfg.SEGMENT_HEAD_ECHO_MIN_WORDS = 0
-    r = client.post("/v1/audio/transcriptions", files=_FILE,
-                    data={"model": "whisper-1", "prompt": _ECHO_PROMPT})
+    r = post_transcription(client, prompt=_ECHO_PROMPT)
     assert "Tabletten" in r.json()["text"]
 
 
 def test_batch_prompt_echo_only_on_the_first_segment(client, fake_model):
     first = FakeSegment(" Hallo.", 0.0, 0.4, words=[FakeWord(" Hallo.", 0.0, 0.4)])
     fake_model._segments = [first, _head_echo_segment()]
-    r = client.post("/v1/audio/transcriptions", files=_FILE,
-                    data={"model": "whisper-1", "prompt": _ECHO_PROMPT})
+    r = post_transcription(client, prompt=_ECHO_PROMPT)
     assert "Tabletten" in r.json()["text"]
 
 
@@ -287,8 +281,7 @@ def test_stream_final_cuts_prompt_echo(app_module, fake_model, monkeypatch, capl
 def test_batch_conditioning_unchanged(client, fake_model):
     # The streaming-final override must NOT leak into batch decodes: batch
     # keeps the per-model CONDITION_ON_PREVIOUS_TEXT (default true).
-    r = client.post("/v1/audio/transcriptions", files=_FILE,
-                    data={"model": "whisper-1"})
+    r = post_transcription(client)
     assert r.status_code == 200
     assert fake_model.last_kwargs["condition_on_previous_text"] is True
 
@@ -439,8 +432,7 @@ def test_log_block_no_guards_section_when_absent(app_module):
 def test_batch_request_logs_guard_setting(client, caplog):
     import logging
     with caplog.at_level(logging.INFO):
-        r = client.post("/v1/audio/transcriptions", files=_FILE,
-                        data={"model": "whisper-1"})
+        r = post_transcription(client)
     assert r.status_code == 200
     assert "segment_max_words_per_sec" in caplog.text
 

@@ -7,14 +7,12 @@ from faster_whisper_backend.settings import config as cfg
 from faster_whisper_backend.translation import engine as translation
 from tests.conftest import bearer
 from tests._translation_helpers import enable_translation
-from tests._transcription_helpers import WAV_UPLOAD as _FILE, bind_profile
+from tests._transcription_helpers import bind_profile, post_transcription
 
 
 def _post(client, headers=None, **data):
-    data.setdefault("model", "whisper-1")
     data.setdefault("response_format", "json")
-    return client.post("/v1/audio/transcriptions", files=_FILE, data=data,
-                       headers=headers or {})
+    return post_transcription(client, headers, **data)
 
 
 def test_plain_json_reports_locked_override_as_ignored(client, make_user_key,

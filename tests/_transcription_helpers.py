@@ -1,5 +1,5 @@
 """Helpers shared by the stage tests that drive POST /v1/audio/transcriptions
-(the stub upload, a verbose_json post, a profile-bound non-admin key).
+(the stub upload, a plain / verbose_json post, a profile-bound non-admin key).
 Import as ``from tests._transcription_helpers import ...``."""
 
 from tests.conftest import bearer
@@ -7,10 +7,16 @@ from tests.conftest import bearer
 WAV_UPLOAD = {"file": ("a.wav", b"RIFFxxxxWAVE", "audio/wav")}
 
 
-def post_verbose(client, **data):
+def post_transcription(client, headers=None, **data):
+    """POST the stub upload with form fields `data` (model defaults to whisper-1)."""
     data.setdefault("model", "whisper-1")
+    return client.post("/v1/audio/transcriptions", files=WAV_UPLOAD, data=data,
+                       headers=headers)
+
+
+def post_verbose(client, headers=None, **data):
     data.setdefault("response_format", "verbose_json")
-    return client.post("/v1/audio/transcriptions", files=WAV_UPLOAD, data=data)
+    return post_transcription(client, headers, **data)
 
 
 def bind_profile(client, make_user_key, name, fields):

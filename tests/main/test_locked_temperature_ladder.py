@@ -8,7 +8,7 @@ from tests.conftest import FakeModel
 from tests.conftest import bearer
 from tests.main.test_transcription_overrides import _bind_profile_user
 from faster_whisper_backend.transcription import models as tx_models
-from tests._transcription_helpers import WAV_UPLOAD as _FILE
+from tests._transcription_helpers import post_verbose
 OV = "/settings/overrides"
 
 
@@ -41,11 +41,7 @@ def test_locked_ladderless_temperature_ignores_client_form_field(
     # "," (every token blank) is a non-blank string that produces NO ladder
     # in the assembler; the lock must still bind the Form field.
     raw_alice = _lock_temperature_for_alice(client, make_user_key, ladder)
-    r = client.post(
-        "/v1/audio/transcriptions", files=_FILE, headers=bearer(raw_alice),
-        data={"model": "whisper-1", "response_format": "verbose_json",
-              "temperature": "0.97"},
-    )
+    r = post_verbose(client, bearer(raw_alice), temperature="0.97")
     assert r.status_code == 200, r.text
     assert fake_model.last_kwargs["temperature"] == 0.0
     assert "temperature" in r.json()["overrides_ignored"]
@@ -66,33 +62,21 @@ def test_segment_temperature_falls_back_to_the_decoded_value(
         return FakeModel(segments=[_BareSegment()])
     monkeypatch.setattr(tx_models, "_get_or_load_model", _loader)
     raw_alice = _lock_temperature_for_alice(client, make_user_key, "")
-    r = client.post(
-        "/v1/audio/transcriptions", files=_FILE, headers=bearer(raw_alice),
-        data={"model": "whisper-1", "response_format": "verbose_json",
-              "temperature": "0.9"},
-    )
+    r = post_verbose(client, bearer(raw_alice), temperature="0.9")
     assert r.status_code == 200, r.text
     assert r.json()["segments"][0]["temperature"] == 0.0
 
 
 def test_client_ladder_reaches_the_decoder(client, make_user_key, fake_model):
     _, raw_alice = make_user_key("alice")
-    r = client.post(
-        "/v1/audio/transcriptions", files=_FILE, headers=bearer(raw_alice),
-        data={"model": "whisper-1", "response_format": "verbose_json",
-              "decode_overrides": '{"temperature": "0,0.4,0.8"}'},
-    )
+    r = post_verbose(client, bearer(raw_alice), decode_overrides='{"temperature": "0,0.4,0.8"}')
     assert r.status_code == 200, r.text
     assert fake_model.last_kwargs["temperature"] == (0.0, 0.4, 0.8)
 
 
 def test_locked_temperature_drops_a_client_ladder(client, make_user_key, fake_model):
     raw_alice = _lock_temperature_for_alice(client, make_user_key, "0.0,0.2")
-    r = client.post(
-        "/v1/audio/transcriptions", files=_FILE, headers=bearer(raw_alice),
-        data={"model": "whisper-1", "response_format": "verbose_json",
-              "decode_overrides": '{"temperature": "0.5,1.0"}'},
-    )
+    r = post_verbose(client, bearer(raw_alice), decode_overrides='{"temperature": "0.5,1.0"}')
     assert r.status_code == 200, r.text
     assert fake_model.last_kwargs["temperature"] == (0.0, 0.2)
     assert "temperature" in r.json()["overrides_ignored"]

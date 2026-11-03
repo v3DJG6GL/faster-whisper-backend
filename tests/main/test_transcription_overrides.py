@@ -9,7 +9,7 @@ from tests._translation_helpers import enable_translation
 from faster_whisper_backend.transcription import models as tx_models
 from faster_whisper_backend.transcription import receipt as tx_receipt
 from faster_whisper_backend.translation import gating as tr_gating
-from tests._transcription_helpers import WAV_UPLOAD as _FILE, post_verbose
+from tests._transcription_helpers import WAV_UPLOAD as _FILE, post_transcription, post_verbose
 OV = "/settings/overrides"
 PERMS = "/settings/api-keys/api/users"
 
@@ -39,11 +39,8 @@ def test_identity_profile_applies_to_decode_kwargs(client, make_user_key, fake_m
     raw_alice = _bind_profile_user(client, make_user_key, "p", BEAM_SIZE=8,
                                    BEST_OF=5, locks=["BEAM_SIZE"])
 
-    r = client.post(
-        "/v1/audio/transcriptions", files=_FILE, headers=bearer(raw_alice),
-        data={"model": "whisper-1", "response_format": "verbose_json",
-              "decode_overrides": json.dumps({"beam_size": 20, "best_of": 3})},
-    )
+    r = post_verbose(client, bearer(raw_alice),
+                     decode_overrides=json.dumps({"beam_size": 20, "best_of": 3}))
     assert r.status_code == 200, r.text
     kw = fake_model.last_kwargs
     assert kw["beam_size"] == 8        # profile value; client 20 dropped (locked)
@@ -55,10 +52,7 @@ def test_locked_language_ignores_client_param(client, make_user_key, fake_model)
     raw_alice = _bind_profile_user(client, make_user_key, "de", DEFAULT_LANGUAGE="de",
                                    locks=["DEFAULT_LANGUAGE"])
 
-    r = client.post(
-        "/v1/audio/transcriptions", files=_FILE, headers=bearer(raw_alice),
-        data={"model": "whisper-1", "response_format": "verbose_json", "language": "fr"},
-    )
+    r = post_verbose(client, bearer(raw_alice), language="fr")
     assert r.status_code == 200, r.text
     assert fake_model.last_kwargs["language"] == "de"      # locked → client 'fr' ignored
     assert "language" in r.json()["overrides_ignored"]
@@ -76,9 +70,7 @@ def test_batch_language_reduces_to_a_whisper_code(client, make_user_key, fake_mo
                            ("iw_IL", "he"), ("in-ID", "id"), ("iw", "he"),
                            ("JI", "yi"), ("jv", "jw"),
                            ("haw", "haw"), ("  ", None)):
-        r = client.post(
-            "/v1/audio/transcriptions", files=_FILE, headers=bearer(raw),
-            data={"model": "whisper-1", "language": sent})
+        r = post_transcription(client, bearer(raw), language=sent)
         assert r.status_code == 200, (sent, r.text)
         assert fake_model.last_kwargs["language"] == expected, sent
 
@@ -105,10 +97,7 @@ def test_locked_language_still_ignores_an_unknown_client_code(
     # is ignored like any other value, not refused.
     raw_alice = _bind_profile_user(client, make_user_key, "de", DEFAULT_LANGUAGE="de",
                                    locks=["DEFAULT_LANGUAGE"])
-    r = client.post(
-        "/v1/audio/transcriptions", files=_FILE, headers=bearer(raw_alice),
-        data={"model": "whisper-1", "response_format": "verbose_json", "language": "xx"},
-    )
+    r = post_verbose(client, bearer(raw_alice), language="xx")
     assert r.status_code == 200, r.text
     assert fake_model.last_kwargs["language"] == "de"
     assert "language" in r.json()["overrides_ignored"]
@@ -119,11 +108,7 @@ def test_no_identity_config_is_unchanged(client, make_user_key, fake_model):
     # override applied (no lock) and no overrides_ignored field.
     _, raw_admin = make_user_key("admin", is_admin=True)
     uid, raw_alice = make_user_key("alice", is_admin=False)
-    r = client.post(
-        "/v1/audio/transcriptions", files=_FILE, headers=bearer(raw_alice),
-        data={"model": "whisper-1", "response_format": "verbose_json",
-              "decode_overrides": json.dumps({"beam_size": 7})},
-    )
+    r = post_verbose(client, bearer(raw_alice), decode_overrides=json.dumps({"beam_size": 7}))
     assert r.status_code == 200, r.text
     assert fake_model.last_kwargs["beam_size"] == 7        # client override applies
     assert "overrides_ignored" not in r.json()
@@ -136,14 +121,10 @@ def test_stream_only_keys_never_reach_batch(client, make_user_key, fake_model):
     raw_alice = _bind_profile_user(client, make_user_key, "p",
                                    STREAMING_VAD_OUTER_SILENCE_MS=1500,
                                    locks=["STREAMING_VAD_OUTER_SILENCE_MS"])
-    r = client.post(
-        "/v1/audio/transcriptions", files=_FILE, headers=bearer(raw_alice),
-        data={"model": "whisper-1", "response_format": "verbose_json",
-              "decode_overrides": json.dumps({
-                  "streaming_vad_outer_silence_ms": 3000,
-                  "streaming_vad_threshold": 0.3,
-                  "streaming_hard_break_separator": "\n"})},
-    )
+    r = post_verbose(client, bearer(raw_alice), decode_overrides=json.dumps({
+        "streaming_vad_outer_silence_ms": 3000,
+        "streaming_vad_threshold": 0.3,
+        "streaming_hard_break_separator": "\n"}))
     assert r.status_code == 200, r.text
     assert not any(k.startswith("streaming_") for k in fake_model.last_kwargs)
     assert "overrides_ignored" not in r.json()
@@ -335,10 +316,7 @@ def test_per_key_override_beats_user(client, make_user_key, fake_model):
     client.patch(f"{PERMS}/{uid}/keys/{kid}/config", headers=admin_h,
                  json={"overrides": {"BEAM_SIZE": 4}, "profiles": [], "locks": []})
 
-    r = client.post(
-        "/v1/audio/transcriptions", files=_FILE, headers=bearer(raw_alice),
-        data={"model": "whisper-1"},
-    )
+    r = post_transcription(client, bearer(raw_alice))
     assert r.status_code == 200, r.text
     assert fake_model.last_kwargs["beam_size"] == 4       # key.direct wins over user.direct
 
@@ -353,11 +331,7 @@ def test_locked_blank_temperature_ignores_client_form_field(client, make_user_ke
     raw_alice = _bind_profile_user(client, make_user_key, "t0", TEMPERATURE="",
                                    locks=["TEMPERATURE"])
 
-    r = client.post(
-        "/v1/audio/transcriptions", files=_FILE, headers=bearer(raw_alice),
-        data={"model": "whisper-1", "response_format": "verbose_json",
-              "temperature": "0.97"},
-    )
+    r = post_verbose(client, bearer(raw_alice), temperature="0.97")
     assert r.status_code == 200, r.text
     assert fake_model.last_kwargs["temperature"] == 0.0     # client 0.97 dropped
     assert "temperature" in r.json()["overrides_ignored"]
@@ -369,11 +343,7 @@ def test_unlocked_blank_temperature_still_takes_the_client_form_field(
     # (With the shipped non-empty ladder the field is masked either way.)
     app_module.cfg.TEMPERATURE = ""
     _, raw_alice = make_user_key("alice", is_admin=False)
-    r = client.post(
-        "/v1/audio/transcriptions", files=_FILE, headers=bearer(raw_alice),
-        data={"model": "whisper-1", "response_format": "verbose_json",
-              "temperature": "0.5"},
-    )
+    r = post_verbose(client, bearer(raw_alice), temperature="0.5")
     assert r.status_code == 200, r.text
     assert fake_model.last_kwargs["temperature"] == 0.5
 
@@ -384,11 +354,7 @@ def test_locked_task_ignores_client_param(client, make_user_key, fake_model):
     # the same shape as the DEFAULT_LANGUAGE lock above.
     raw_alice = _bind_profile_user(client, make_user_key, "notask", locks=["TASK"])
 
-    r = client.post(
-        "/v1/audio/transcriptions", files=_FILE, headers=bearer(raw_alice),
-        data={"model": "whisper-1", "response_format": "verbose_json",
-              "task": "translate"},
-    )
+    r = post_verbose(client, bearer(raw_alice), task="translate")
     assert r.status_code == 200, r.text
     assert "task" not in fake_model.last_kwargs      # pinned to transcribe
     assert "task" in r.json()["overrides_ignored"]
@@ -410,11 +376,7 @@ def test_locked_diarize_ignores_client_param(client, app_module, make_user_key,
     raw_alice = _bind_profile_user(client, make_user_key, "nodiar",
                                    locks=["DIARIZE"])
 
-    r = client.post(
-        "/v1/audio/transcriptions", files=_FILE, headers=bearer(raw_alice),
-        data={"model": "whisper-1", "response_format": "verbose_json",
-              "diarize": "true"},
-    )
+    r = post_verbose(client, bearer(raw_alice), diarize="true")
     assert r.status_code == 200, r.text
     assert called == []                          # pinned off
     assert "diarize" in r.json()["overrides_ignored"]
@@ -453,11 +415,8 @@ def test_locked_num_speakers_reports_dropped_client_bounds(
                                    DIARIZATION_NUM_SPEAKERS=2,
                                    locks=["DIARIZATION_NUM_SPEAKERS"])
 
-    r = client.post(
-        "/v1/audio/transcriptions", files=_FILE, headers=bearer(raw_alice),
-        data={"model": "whisper-1", "response_format": "verbose_json",
-              "diarize": "true", "min_speakers": "3", "max_speakers": "6"},
-    )
+    r = post_verbose(client, bearer(raw_alice), diarize="true", min_speakers="3",
+                     max_speakers="6")
     assert r.status_code == 200, r.text
     assert calls == [{"num": 2, "min": None, "max": None}]
     ignored = r.json()["overrides_ignored"]
@@ -501,14 +460,12 @@ def test_echoing_a_pinned_translation_model_passes_the_allowlist_gate(
 def test_multilingual_with_a_set_language_is_reported_ignored(
         client, app_module, fake_model, monkeypatch):
     monkeypatch.setattr(app_module.cfg, "DEFAULT_LANGUAGE", "", raising=False)
-    data = {"model": "whisper-1", "response_format": "verbose_json",
-            "decode_overrides": json.dumps({"multilingual": True})}
-    r = client.post("/v1/audio/transcriptions", files=_FILE, data=data)
+    overrides = json.dumps({"multilingual": True})
+    r = post_verbose(client, decode_overrides=overrides)
     assert r.status_code == 200, r.text
     assert fake_model.last_kwargs["multilingual"] is True
     assert "overrides_ignored" not in r.json()
-    r = client.post("/v1/audio/transcriptions", files=_FILE,
-                    data={**data, "language": "de"})
+    r = post_verbose(client, decode_overrides=overrides, language="de")
     assert r.status_code == 200, r.text
     assert "multilingual" not in fake_model.last_kwargs
     assert r.json()["overrides_ignored"] == ["multilingual"]
@@ -516,18 +473,14 @@ def test_multilingual_with_a_set_language_is_reported_ignored(
 
 def test_client_output_wrappers_in_batch(client, app_module):
     app_module.cfg.OUTPUT_PREFIX = "[cfg] "
-    r = client.post(
-        "/v1/audio/transcriptions", files=_FILE,
-        data={"model": "whisper-1", "response_format": "text",
-              "decode_overrides": json.dumps({"output_prefix": ">> ",
-                                              "output_suffix": " <<"})})
+    r = post_transcription(client, response_format="text",
+                           decode_overrides=json.dumps({"output_prefix": ">> ",
+                                                        "output_suffix": " <<"}))
     assert r.status_code == 200, r.text
     assert r.text == ">> hallo welt <<"
     # "" is an explicit "no prefix" over the configured one.
-    r = client.post(
-        "/v1/audio/transcriptions", files=_FILE,
-        data={"model": "whisper-1", "response_format": "text",
-              "decode_overrides": json.dumps({"output_prefix": ""})})
+    r = post_transcription(client, response_format="text",
+                           decode_overrides=json.dumps({"output_prefix": ""}))
     assert r.text == "hallo welt"
 
 
@@ -536,12 +489,10 @@ def test_batch_decode_overrides_drop_lone_surrogates(client, fake_model):
     client cut with a UTF-16 slice). In an output wrapper it made the success
     response fail to encode — a 500 after the whole file was decoded — and in
     hotwords it reached the tokenizer. Dropped, as the streaming twin does."""
-    r = client.post(
-        "/v1/audio/transcriptions", files=_FILE,
-        data={"model": "whisper-1", "response_format": "json",
-              # json.dumps escapes the surrogate as "\\ud83d", as a browser sends it.
-              "decode_overrides": json.dumps({"output_prefix": ">> \ud83d",
-                                              "hotwords": "Kardiologie \ud83d"})})
+    # json.dumps escapes the surrogate as "\\ud83d", as a browser sends it.
+    r = post_transcription(client, response_format="json",
+                           decode_overrides=json.dumps({"output_prefix": ">> \ud83d",
+                                                        "hotwords": "Kardiologie \ud83d"}))
     assert r.status_code == 200, r.text
     assert r.json()["text"] == ">> hallo welt"
     assert fake_model.last_kwargs["hotwords"] == "Kardiologie "
@@ -559,10 +510,8 @@ def test_client_output_wrappers_master_gate_off(client, app_module):
 
 def test_batch_reports_hallucination_threshold_without_word_timestamps(
         client, fake_model):
-    r = client.post(
-        "/v1/audio/transcriptions", files=_FILE,
-        data={"model": "whisper-1", "response_format": "json",
-              "decode_overrides": json.dumps({"hallucination_silence_threshold": 2})})
+    r = post_transcription(client, response_format="json",
+                           decode_overrides=json.dumps({"hallucination_silence_threshold": 2}))
     assert r.status_code == 200, r.text
     assert fake_model.last_kwargs["word_timestamps"] is False
     assert r.json()["overrides_ignored"] == ["hallucination_silence_threshold"]

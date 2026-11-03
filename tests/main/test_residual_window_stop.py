@@ -12,12 +12,7 @@ import logging
 
 from faster_whisper_backend.transcription import decode_trace as dt
 from tests.conftest import FakeInfo, FakeSegment
-from tests._transcription_helpers import WAV_UPLOAD as _FILE
-
-
-def _post(client, **data):
-    data.setdefault("model", "whisper-1")
-    return client.post("/v1/audio/transcriptions", files=_FILE, data=data)
+from tests._transcription_helpers import post_transcription as _post
 
 
 def _stopping_generator():
