@@ -4678,8 +4678,8 @@
   // that window _proposals[0] is already the next, unseen proposal while
   // the old card's buttons and Ctrl+arrows are still live.
   var _batchBusy = false;
-  // _batchBusy is held by a proposals reload (not an action), and the
-  // sequence number of the latest reload.
+  // _batchLoadHold: the _batchBusy hold belongs to a proposals reload (not
+  // an action). _proposalsSeq numbers the latest reload.
   var _batchLoadHold = false;
   var _proposalsSeq = 0;
 
