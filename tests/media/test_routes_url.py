@@ -1,7 +1,7 @@
-"""Route-level tests for transcribe-from-URL: the `source_url` branch of
-POST /v1/audio/transcriptions, POST /v1/audio/url-preview, and
-GET /v1/audio/url-media/{id}. url_download's network/subprocess halves are
-stubbed at the module boundary; everything from the handler down runs real.
+"""Route-level tests for the link routes: the `source_url` branch of
+POST /v1/audio/transcriptions and the /v1/audio/url-* routes. url_download's
+network/subprocess halves are stubbed at the module boundary; everything from
+the handler down runs real.
 """
 
 from __future__ import annotations
