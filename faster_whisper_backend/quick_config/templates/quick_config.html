@@ -2438,6 +2438,13 @@ async function doSave() {
 
 async function _doSave(patch, fingerprints) {
   setStatus('saving…');
+  // The two halves every merge toast names; `frame(slugs, note)` places them.
+  const mergeNotes = (clashed, restored, frame) =>
+    (clashed.length ? frame(clashed.join(', '), 'another writer also edited an'
+      + ' entry you edited; your version is kept') : '')
+    + (restored.length ? frame(restored.join(', '), 'another writer changed an'
+      + ' entry you deleted; their entry is back, delete it again if you still'
+      + ' want it gone') : '');
   // What this POST sends. Anything edited after this point, on any rule, is
   // NOT in the save, and the applyState() below would silently discard it,
   // so it is diffed against this snapshot and re-applied after the reload.
@@ -2493,11 +2500,7 @@ async function _doSave(patch, fingerprints) {
     renderCards();
     updateButtons();
     showToast(msg + ' — rules reloaded; your other edits were kept'
-              + (clashed.length ? ' (on ' + clashed.join(', ') + ' another writer'
-                 + ' also edited an entry you edited; your version is kept)' : '')
-              + (restored.length ? ' (on ' + restored.join(', ') + ' another writer'
-                 + ' changed an entry you deleted; their entry is back,'
-                 + ' delete it again if you still want it gone)' : '')
+              + mergeNotes(clashed, restored, (s, n) => ' (on ' + s + ' ' + n + ')')
               + ', review and Save again.', 'err');
     return;
   }
@@ -2546,11 +2549,7 @@ async function _doSave(patch, fingerprints) {
       showToast(prefix
                 + (clean.length ? 'Auto-merged your changes for ' + clean.join(', ')
                    + ' on top of the latest version. ' : '')
-                + (clashed.length ? 'Conflict on ' + clashed.join(', ') + ': another'
-                   + ' writer also edited an entry you edited; your version is kept. ' : '')
-                + (restored.length ? 'Conflict on ' + restored.join(', ') + ': another'
-                   + ' writer changed an entry you deleted; their entry is'
-                   + ' back, delete it again if you still want it gone. ' : '')
+                + mergeNotes(clashed, restored, (s, n) => 'Conflict on ' + s + ': ' + n + '. ')
                 + 'Review and Save again.',
                 'err');
     } else {
@@ -2558,11 +2557,7 @@ async function _doSave(patch, fingerprints) {
       const prefix = saved.length ? 'Saved ' + saved.length + '. ' : '';
       showToast(prefix + 'Conflict on ' + conflictSlugs.join(', ')
                 + ' could not be auto-merged (rule changed or removed).'
-                + (clashed.length ? ' On ' + clashed.join(', ') + ' another writer also'
-                   + ' edited an entry you edited; your version is kept.' : '')
-                + (restored.length ? ' On ' + restored.join(', ') + ' another writer changed'
-                   + ' an entry you deleted; their entry is back, delete it'
-                   + ' again if you still want it gone.' : ''),
+                + mergeNotes(clashed, restored, (s, n) => ' On ' + s + ' ' + n + '.'),
                 'err');
     }
     return;
@@ -2587,11 +2582,7 @@ async function _doSave(patch, fingerprints) {
   }
   if (clashed.length || restored.length) {
     showToast('Saved. '
-              + (clashed.length ? 'Conflict on ' + clashed.join(', ') + ': another writer'
-                 + ' also edited an entry you edited; your version is kept. ' : '')
-              + (restored.length ? 'Conflict on ' + restored.join(', ') + ': another writer'
-                 + ' changed an entry you deleted; their entry is back, delete'
-                 + ' it again if you still want it gone. ' : '')
+              + mergeNotes(clashed, restored, (s, n) => 'Conflict on ' + s + ': ' + n + '. ')
               + 'Review and Save again.',
               'err');
   }
