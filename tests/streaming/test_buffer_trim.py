@@ -15,7 +15,7 @@ import asyncio
 
 import numpy as np
 
-from tests._streaming_helpers import const_pcm, ws_drain
+from tests._streaming_helpers import AlwaysSpeech as _AlwaysSpeech, const_pcm, ws_drain
 from faster_whisper_backend.streaming.session import StreamConfig, StreamSession
 from faster_whisper_backend.streaming.vad import FRAME_MS, FRAME_SAMPLES, EnergyEndpointer
 
@@ -226,17 +226,6 @@ def test_short_utterance_unchanged_no_trim():
 # RMS gates, and needs a committed word to anchor its cut — so it is not a bound
 # on the buffer, just an optimisation of the usual case. max_buffer_sec is the
 # bound: checked on every frame, before every gate.
-
-
-class _AlwaysSpeech:
-    """VAD stuck on: background noise (room mic, HVAC, music) whose flicker keeps
-    resetting commit_silence_ms, so the utterance never ends on its own."""
-
-    def is_speech(self, frame):
-        return True
-
-    def reset(self) -> None:
-        pass
 
 
 def _drive_past_ceiling(cfg, level: int, feed_ms: int, *, skip_partials: bool = False):

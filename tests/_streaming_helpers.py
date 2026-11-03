@@ -35,3 +35,14 @@ def speak_and_stop(ws, limit: int = 200) -> tuple[list[dict], int | None]:
     ws.send_bytes(const_pcm(0, 1500))
     ws.send_json({"type": "stop"})
     return ws_drain(ws, limit)
+
+
+class AlwaysSpeech:
+    """VAD stuck on: background noise (room mic, HVAC, music) whose flicker keeps
+    resetting commit_silence_ms, so the utterance never ends on its own."""
+
+    def is_speech(self, frame):
+        return True
+
+    def reset(self) -> None:
+        pass

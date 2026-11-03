@@ -15,17 +15,9 @@ import asyncio
 
 import pytest
 
-from tests._streaming_helpers import const_pcm as _pcm
+from tests._streaming_helpers import AlwaysSpeech as _AlwaysSpeech, const_pcm as _pcm
 from faster_whisper_backend.streaming.session import CloseAbort, StreamConfig, StreamSession
 from faster_whisper_backend.streaming.vad import EnergyEndpointer
-
-
-class _AlwaysSpeech:
-    def is_speech(self, frame):
-        return True
-
-    def reset(self) -> None:
-        pass
 
 
 def _cfg(**over):

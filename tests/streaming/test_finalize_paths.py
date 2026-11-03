@@ -21,7 +21,8 @@ import pytest
 from starlette.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
-from tests._streaming_helpers import const_pcm as _pcm, speak_and_stop, ws_drain as _drain
+from tests._streaming_helpers import (
+    AlwaysSpeech as _AlwaysSpeech, const_pcm as _pcm, speak_and_stop, ws_drain as _drain)
 from tests.conftest import bearer
 from faster_whisper_backend.streaming.session import StreamConfig, StreamSession
 from faster_whisper_backend.streaming.vad import FRAME_MS, SAMPLE_RATE as SR, EnergyEndpointer
@@ -34,14 +35,6 @@ def _config(ws, **extra):
     ws.send_json({"type": "config", "model": "whisper-1",
                   "audio": {"format": "pcm_s16le", "sample_rate": 16000}, **extra})
     return ws.receive_json()
-
-
-class _AlwaysSpeech:
-    def is_speech(self, frame):
-        return True
-
-    def reset(self) -> None:
-        pass
 
 
 def _grid_words(start_s: float, end_s: float):
