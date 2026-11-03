@@ -304,6 +304,8 @@ function dayOfIso(iso) {
   if (!m) return null;
   return Math.floor(Date.UTC(+m[1], +m[2] - 1, +m[3]) / DAY_MS);
 }
+// A custom window: both ends known, start on or before end, under 10 years.
+const spanOk = (f, t) => Number.isFinite(f) && Number.isFinite(t) && f <= t && t - f < 3650;
 // Quartile levels over the ACTIVE slots, as usageDerive.ts quantileBreaks
 // does it (so a slot is the same shade on both): four equal-count groups,
 // each break the top of its group, a duplicate break clamped up so the steps
@@ -356,7 +358,7 @@ function parsePageQuery(search) {
   const r = p.get('range');
   if (r === 'custom') {
     const f = parseInt(p.get('from'), 10), t = parseInt(p.get('to'), 10);
-    if (Number.isFinite(f) && Number.isFinite(t) && f <= t && t - f < 3650) {
+    if (spanOk(f, t)) {
       Q.range = 'custom'; Q.from = f; Q.to = t;
     }
   } else if (r && RANGE_PRESETS.includes(r)) Q.range = r;
@@ -578,7 +580,7 @@ function wireScopeBar() {
       else if (b.id === 'sb-custom-cancel') closeCustom();
       else if (b.id === 'sb-custom-apply') {
         const f0 = dayOfIso($('sb-from').value), t0 = dayOfIso($('sb-to').value);
-        if (f0 == null || t0 == null || f0 > t0 || t0 - f0 >= 3650) return;
+        if (!spanOk(f0, t0)) return;
         Q.range = 'custom'; Q.from = f0; Q.to = t0; setSeg('sb-range', 'custom');
         closeCustom(); load();
       }
@@ -608,7 +610,7 @@ function openCustom() {
 function closeCustom() { const pop = $('sb-custom'); if (pop) pop.classList.add('hidden'); }
 function validateCustom() {
   const f0 = dayOfIso($('sb-from').value), t0 = dayOfIso($('sb-to').value);
-  const ok = f0 != null && t0 != null && f0 <= t0 && t0 - f0 < 3650;
+  const ok = spanOk(f0, t0);
   $('sb-custom-apply').disabled = !ok;
   $('sb-custom-note').textContent = ok
     ? (t0 - f0 + 1) + ' days · shown by ' + ((t0 - f0 + 1) <= 120 ? 'day' : (t0 - f0 + 1) <= 730 ? 'week' : 'month')
