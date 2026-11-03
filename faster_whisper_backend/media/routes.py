@@ -234,11 +234,7 @@ async def url_media(media_id: str,
             or getattr(cfg, "MEDIA_PACKAGE_ENABLED", True)):
         raise HTTPException(status_code=403,
                             detail="media retention is not enabled on this server")
-    if not url_media_store.MEDIA_ID_RE.match(media_id):
-        raise HTTPException(status_code=422, detail="malformed media id")
-    entry = url_media_store.resolve_entry(media_id, user_id=user.get("user_id"))
-    if entry is None:
-        raise HTTPException(status_code=404, detail="media not found")
+    entry = _owned_media_entry(media_id, user)
     path, ext = entry["path"], entry["ext"]
     if entry.get("kind") == "video":
         mime = _VIDEO_MIME.get(ext, "application/octet-stream")
@@ -613,6 +609,17 @@ def _package_gate() -> None:
                             "subtitle packaging is unavailable on this server")
 
 
+def _owned_media_entry(media_id: str, user: dict) -> dict:
+    """The caller's retained entry: 422 for a malformed id, one 404 for
+    every miss (unknown, expired, foreign owner) — no oracle."""
+    if not url_media_store.MEDIA_ID_RE.match(media_id):
+        raise HTTPException(status_code=422, detail="malformed media id")
+    entry = url_media_store.resolve_entry(media_id, user_id=user.get("user_id"))
+    if entry is None:
+        raise HTTPException(status_code=404, detail="media not found")
+    return entry
+
+
 def _media_streams_for(entry: dict, media_id: str) -> "dict | None":
     """Cached codec facts for a retained file (probed once per id)."""
     cached = url_media_store.probe_cache_get(media_id)
@@ -725,11 +732,7 @@ async def media_streams(media_id: str,
     """Codec facts for a retained file — the export panel greys out MP4 with
     the reason before anyone waits for a mux. Same 404 for every miss."""
     _package_gate()
-    if not url_media_store.MEDIA_ID_RE.match(media_id):
-        raise HTTPException(status_code=422, detail="malformed media id")
-    entry = url_media_store.resolve_entry(media_id, user_id=user.get("user_id"))
-    if entry is None:
-        raise HTTPException(status_code=404, detail="media not found")
+    entry = _owned_media_entry(media_id, user)
     facts = await asyncio.to_thread(_media_streams_for, entry, media_id)
     if facts is None:
         raise HTTPException(status_code=503,
@@ -858,9 +861,7 @@ async def package_media(media_id: str, request: Request,
     stem = (_MEDIA_FILENAME_RE.sub(
         "", unicodedata.normalize("NFC", filename)).strip()[:80]
             if isinstance(filename, str) else "") or media_id
-    entry = url_media_store.resolve_entry(media_id, user_id=user.get("user_id"))
-    if entry is None:
-        raise HTTPException(status_code=404, detail="media not found")
+    entry = _owned_media_entry(media_id, user)
     facts = await asyncio.to_thread(_media_streams_for, entry, media_id)
     if facts is None:
         raise HTTPException(status_code=503,
