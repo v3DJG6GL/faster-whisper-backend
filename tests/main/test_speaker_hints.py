@@ -4,19 +4,12 @@ Asserts the kwargs the stubbed diarize() receives + overrides_ignored."""
 
 from tests.conftest import bearer
 from tests.main.test_transcription_overrides import (
-    _FILE, PERMS, _record_diarize, _setup_profile,
+    _FILE, _bind_profile_user, _record_diarize,
 )
 
 
 def _as_profile_user(client, make_user_key, **fields):
-    _, raw_admin = make_user_key("admin", is_admin=True)
-    admin_h = bearer(raw_admin)
-    _setup_profile(client, admin_h, "spk", **fields)
-    uid, raw_alice = make_user_key("alice", is_admin=False)
-    client.patch(f"{PERMS}/{uid}/permissions", headers=admin_h,
-                 json={"pages": {}, "config": {"overrides": {},
-                       "profiles": ["spk"], "locks": []}})
-    return bearer(raw_alice)
+    return bearer(_bind_profile_user(client, make_user_key, "spk", **fields))
 
 
 def _post(client, headers=None, **hints):

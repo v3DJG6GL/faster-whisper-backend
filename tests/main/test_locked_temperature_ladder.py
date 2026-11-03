@@ -6,31 +6,16 @@ import pytest
 
 from tests.conftest import FakeModel
 from tests.conftest import bearer
+from tests.main.test_transcription_overrides import _bind_profile_user
 from faster_whisper_backend.transcription import models as tx_models
 
 _FILE = {"file": ("a.wav", b"RIFFxxxxWAVE", "audio/wav")}
 OV = "/settings/overrides"
-PERMS = "/settings/api-keys/api/users"
-
-
-def _setup_profile(client, admin_h, name, **fields):
-    r = client.post(f"{OV}/state", headers=admin_h,
-                    json={"OVERRIDE_PROFILES": {name: fields}})
-    assert r.status_code == 200, r.text
 
 
 def _lock_temperature_for_alice(client, make_user_key, ladder):
-    _, raw_admin = make_user_key("admin", is_admin=True)
-    admin_h = bearer(raw_admin)
-    _setup_profile(client, admin_h, "t0", TEMPERATURE=ladder,
-                   locks=["TEMPERATURE"])
-    uid, raw_alice = make_user_key("alice", is_admin=False)
-    r = client.patch(f"{PERMS}/{uid}/permissions", headers=admin_h,
-                     json={"pages": {}, "config": {"overrides": {},
-                                                   "profiles": ["t0"],
-                                                   "locks": []}})
-    assert r.status_code == 200, r.text
-    return raw_alice
+    return _bind_profile_user(client, make_user_key, "t0", TEMPERATURE=ladder,
+                              locks=["TEMPERATURE"])
 
 
 def test_temperature_ladder_helper(app_module):

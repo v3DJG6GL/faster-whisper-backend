@@ -20,14 +20,24 @@ def _setup_profile(client, admin_h, name, **fields):
     assert r.status_code == 200, r.text
 
 
-def test_identity_profile_applies_to_decode_kwargs(client, make_user_key, fake_model):
+def _bind_profile_user(client, make_user_key, profile, user="alice", **fields):
+    """Admin saves override profile `profile` and binds it to a fresh
+    non-admin `user`; returns that user's raw key."""
     _, raw_admin = make_user_key("admin", is_admin=True)
     admin_h = bearer(raw_admin)
-    _setup_profile(client, admin_h, "p", BEAM_SIZE=8, BEST_OF=5, locks=["BEAM_SIZE"])
-    uid, raw_alice = make_user_key("alice", is_admin=False)
+    _setup_profile(client, admin_h, profile, **fields)
+    uid, raw = make_user_key(user, is_admin=False)
     r = client.patch(f"{PERMS}/{uid}/permissions", headers=admin_h,
-                     json={"pages": {}, "config": {"overrides": {}, "profiles": ["p"], "locks": []}})
+                     json={"pages": {}, "config": {"overrides": {},
+                                                   "profiles": [profile],
+                                                   "locks": []}})
     assert r.status_code == 200, r.text
+    return raw
+
+
+def test_identity_profile_applies_to_decode_kwargs(client, make_user_key, fake_model):
+    raw_alice = _bind_profile_user(client, make_user_key, "p", BEAM_SIZE=8,
+                                   BEST_OF=5, locks=["BEAM_SIZE"])
 
     r = client.post(
         "/v1/audio/transcriptions", files=_FILE, headers=bearer(raw_alice),
@@ -42,12 +52,8 @@ def test_identity_profile_applies_to_decode_kwargs(client, make_user_key, fake_m
 
 
 def test_locked_language_ignores_client_param(client, make_user_key, fake_model):
-    _, raw_admin = make_user_key("admin", is_admin=True)
-    admin_h = bearer(raw_admin)
-    _setup_profile(client, admin_h, "de", DEFAULT_LANGUAGE="de", locks=["DEFAULT_LANGUAGE"])
-    uid, raw_alice = make_user_key("alice", is_admin=False)
-    client.patch(f"{PERMS}/{uid}/permissions", headers=admin_h,
-                 json={"pages": {}, "config": {"overrides": {}, "profiles": ["de"], "locks": []}})
+    raw_alice = _bind_profile_user(client, make_user_key, "de", DEFAULT_LANGUAGE="de",
+                                   locks=["DEFAULT_LANGUAGE"])
 
     r = client.post(
         "/v1/audio/transcriptions", files=_FILE, headers=bearer(raw_alice),
@@ -97,12 +103,8 @@ def test_locked_language_still_ignores_an_unknown_client_code(
         client, make_user_key, fake_model):
     # A locked DEFAULT_LANGUAGE drops the client's field, so a bad code there
     # is ignored like any other value, not refused.
-    _, raw_admin = make_user_key("admin", is_admin=True)
-    admin_h = bearer(raw_admin)
-    _setup_profile(client, admin_h, "de", DEFAULT_LANGUAGE="de", locks=["DEFAULT_LANGUAGE"])
-    uid, raw_alice = make_user_key("alice", is_admin=False)
-    client.patch(f"{PERMS}/{uid}/permissions", headers=admin_h,
-                 json={"pages": {}, "config": {"overrides": {}, "profiles": ["de"], "locks": []}})
+    raw_alice = _bind_profile_user(client, make_user_key, "de", DEFAULT_LANGUAGE="de",
+                                   locks=["DEFAULT_LANGUAGE"])
     r = client.post(
         "/v1/audio/transcriptions", files=_FILE, headers=bearer(raw_alice),
         data={"model": "whisper-1", "response_format": "verbose_json", "language": "xx"},
@@ -131,14 +133,9 @@ def test_stream_only_keys_never_reach_batch(client, make_user_key, fake_model):
     # Live-dictation keys ride decode_overrides like every client key, but a
     # batch request neither applies them (no model.transcribe kwarg) nor
     # reports a locked one as ignored — it was never a batch knob.
-    _, raw_admin = make_user_key("admin", is_admin=True)
-    admin_h = bearer(raw_admin)
-    _setup_profile(client, admin_h, "p", STREAMING_VAD_OUTER_SILENCE_MS=1500,
-                   locks=["STREAMING_VAD_OUTER_SILENCE_MS"])
-    uid, raw_alice = make_user_key("alice", is_admin=False)
-    r = client.patch(f"{PERMS}/{uid}/permissions", headers=admin_h,
-                     json={"pages": {}, "config": {"overrides": {}, "profiles": ["p"], "locks": []}})
-    assert r.status_code == 200, r.text
+    raw_alice = _bind_profile_user(client, make_user_key, "p",
+                                   STREAMING_VAD_OUTER_SILENCE_MS=1500,
+                                   locks=["STREAMING_VAD_OUTER_SILENCE_MS"])
     r = client.post(
         "/v1/audio/transcriptions", files=_FILE, headers=bearer(raw_alice),
         data={"model": "whisper-1", "response_format": "verbose_json",
@@ -353,12 +350,8 @@ def test_locked_blank_temperature_ignores_client_form_field(client, make_user_ke
     resolved ladder masks the field anyway; blank the ladder at the winning
     layer (a supported shape — value-less locks are documented) and the Form
     field was the one way past the lock."""
-    _, raw_admin = make_user_key("admin", is_admin=True)
-    admin_h = bearer(raw_admin)
-    _setup_profile(client, admin_h, "t0", TEMPERATURE="", locks=["TEMPERATURE"])
-    uid, raw_alice = make_user_key("alice", is_admin=False)
-    client.patch(f"{PERMS}/{uid}/permissions", headers=admin_h,
-                 json={"pages": {}, "config": {"overrides": {}, "profiles": ["t0"], "locks": []}})
+    raw_alice = _bind_profile_user(client, make_user_key, "t0", TEMPERATURE="",
+                                   locks=["TEMPERATURE"])
 
     r = client.post(
         "/v1/audio/transcriptions", files=_FILE, headers=bearer(raw_alice),
@@ -389,12 +382,7 @@ def test_locked_task_ignores_client_param(client, make_user_key, fake_model):
     # A profile that locks TASK (value-less lock pins the inherited value,
     # global default "transcribe") forbids the client's `task` form field —
     # the same shape as the DEFAULT_LANGUAGE lock above.
-    _, raw_admin = make_user_key("admin", is_admin=True)
-    admin_h = bearer(raw_admin)
-    _setup_profile(client, admin_h, "notask", locks=["TASK"])
-    uid, raw_alice = make_user_key("alice", is_admin=False)
-    client.patch(f"{PERMS}/{uid}/permissions", headers=admin_h,
-                 json={"pages": {}, "config": {"overrides": {}, "profiles": ["notask"], "locks": []}})
+    raw_alice = _bind_profile_user(client, make_user_key, "notask", locks=["TASK"])
 
     r = client.post(
         "/v1/audio/transcriptions", files=_FILE, headers=bearer(raw_alice),
@@ -420,13 +408,8 @@ def test_locked_diarize_ignores_client_param(client, app_module, make_user_key,
     monkeypatch.setattr(diarization, "diarize", _fake_diarize)
     app_module.cfg.DIARIZATION_ENABLED = True
     try:
-        _, raw_admin = make_user_key("admin", is_admin=True)
-        admin_h = bearer(raw_admin)
-        _setup_profile(client, admin_h, "nodiar", locks=["DIARIZE"])
-        uid, raw_alice = make_user_key("alice", is_admin=False)
-        client.patch(f"{PERMS}/{uid}/permissions", headers=admin_h,
-                     json={"pages": {}, "config": {"overrides": {},
-                           "profiles": ["nodiar"], "locks": []}})
+        raw_alice = _bind_profile_user(client, make_user_key, "nodiar",
+                                       locks=["DIARIZE"])
 
         r = client.post(
             "/v1/audio/transcriptions", files=_FILE, headers=bearer(raw_alice),
@@ -473,14 +456,9 @@ def test_locked_num_speakers_reports_dropped_client_bounds(
     calls = []
     _record_diarize(monkeypatch, calls)
     monkeypatch.setattr(app_module.cfg, "DIARIZATION_ENABLED", True)
-    _, raw_admin = make_user_key("admin", is_admin=True)
-    admin_h = bearer(raw_admin)
-    _setup_profile(client, admin_h, "twospk", DIARIZATION_NUM_SPEAKERS=2,
-                   locks=["DIARIZATION_NUM_SPEAKERS"])
-    uid, raw_alice = make_user_key("alice", is_admin=False)
-    client.patch(f"{PERMS}/{uid}/permissions", headers=admin_h,
-                 json={"pages": {}, "config": {"overrides": {},
-                       "profiles": ["twospk"], "locks": []}})
+    raw_alice = _bind_profile_user(client, make_user_key, "twospk",
+                                   DIARIZATION_NUM_SPEAKERS=2,
+                                   locks=["DIARIZATION_NUM_SPEAKERS"])
 
     r = client.post(
         "/v1/audio/transcriptions", files=_FILE, headers=bearer(raw_alice),
@@ -512,17 +490,9 @@ def test_echoing_a_pinned_translation_model_passes_the_allowlist_gate(
                         {"org/public-GGUF:Q4"}, raising=False)
     monkeypatch.setattr(app_module.cfg, "TRANSLATION_DEFAULT_MODEL",
                         "org/public-GGUF:Q4", raising=False)
-    _, raw_admin = make_user_key("admin", is_admin=True)
-    admin_h = bearer(raw_admin)
-    _setup_profile(client, admin_h, "pinned-mt",
-                   TRANSLATION_MODEL="org/pinned-GGUF:Q4",
-                   locks=["TRANSLATION_MODEL"])
-    uid, raw_bob = make_user_key("bob", is_admin=False)
-    r = client.patch(f"{PERMS}/{uid}/permissions", headers=admin_h,
-                     json={"pages": {}, "config": {"overrides": {},
-                                                   "profiles": ["pinned-mt"],
-                                                   "locks": []}})
-    assert r.status_code == 200, r.text
+    raw_bob = _bind_profile_user(client, make_user_key, "pinned-mt", user="bob",
+                                 TRANSLATION_MODEL="org/pinned-GGUF:Q4",
+                                 locks=["TRANSLATION_MODEL"])
     body = {"segments": [{"id": 0, "text": "Hallo"}], "targets": ["en"],
             "translation_model": "org/pinned-GGUF:Q4"}
     r = client.post("/v1/text/translations", headers=bearer(raw_bob), json=body)
