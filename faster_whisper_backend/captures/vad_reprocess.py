@@ -16,7 +16,7 @@ Scope:
   - If a sample no longer fits the cap under the new settings, it is marked
     `is_stale=true` (export already skips stale) — never truncated.
   - Member capture rows are NEVER touched (only the derived merged artifacts),
-    so ungroup/dissolve still restores raw captures + timestamps.
+    so dissolving the sample still restores raw captures + timestamps.
   - Chips / status / admin_notes are untouched.
 
 Single-worker model (mirrors captures_reapply): at most one job at a time;
