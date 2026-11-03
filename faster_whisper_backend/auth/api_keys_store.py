@@ -54,7 +54,6 @@ class LastAdminError(Exception):
 _lock = threading.Lock()
 _conn: sqlite3.Connection | None = None
 
-# In-memory hash → user row index. Rebuilt on mutation.
 _KEY_INDEX: dict[str, dict[str, Any]] = {}
 
 # Cached "an active admin key exists" — refreshed by _rebuild_index_locked()
