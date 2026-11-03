@@ -78,6 +78,7 @@ _NOT_RESET = {
         "_NAV_SPEC": "constant nav table",
         "_PAGE_KEY_BY_CURRENT": "constant page map",
         "_PAGE_PATH_BY_CURRENT": "constant page map",
+        "_PAGE_LINK_LABELS": "constant page map",
         "_HEADER_SLUG_BY_CURRENT": "constant page map",
         "_COL_CLASS_BY_CURRENT": "constant page map",
     },

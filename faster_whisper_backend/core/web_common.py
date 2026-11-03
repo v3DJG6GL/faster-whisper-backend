@@ -393,14 +393,6 @@ def nav_html(current: str) -> str:
     #   and captures also set it from their own load); the sev pills use it too.
     # - "page-link" + data-page="<X>": OPEN_MODE_BANNER_JS adds `.allowed`
     #   when /auth/whoami's permissions.pages[X] grants it (admins always do).
-    page_link_labels: dict[str, str] = {
-        "logs":     "logs",
-        "stats":    "stats",
-        "quick":    "quick_config",
-        "reports":  "reports",
-        "captures": "captures",
-    }
-    admin_only_labels = {"settings", "pipeline", "keys", "overrides"}
     # Hamburger toggle (shown only ≤40em via NAV_CSS) + the nav links. The
     # links keep their admin-only / page-link gating classes; on narrow
     # screens NAV_CSS turns the same #navrow into an off-canvas drawer and
@@ -419,11 +411,11 @@ def nav_html(current: str) -> str:
         if active:
             classes.append("active")
             extra_attr += ' aria-current="page"'
-        if label in admin_only_labels:
+        if label in _ADMIN_ONLY_LABELS:
             classes.append("admin-only")
-        elif label in page_link_labels:
+        elif label in _PAGE_LINK_LABELS:
             classes.append("page-link")
-            extra_attr += f' data-page="{page_link_labels[label]}"'
+            extra_attr += f' data-page="{_PAGE_LINK_LABELS[label]}"'
         parts.append(
             f'<a class="{" ".join(classes)}" href="{href}"{extra_attr}>'
             f'{label}</a>'
@@ -654,16 +646,20 @@ _PAGE_KEY_BY_CURRENT: dict[str, str] = {
 # permission key alone would say "No access to /api-keys" for
 # /settings/api-keys.
 _PAGE_PATH_BY_CURRENT: dict[str, str] = {
-    "logs":         "/logs",
-    "stats":        "/stats",
-    "quick-config": "/quick-config",
-    "reports":      "/reports",
-    "captures":     "/captures",
-    "settings":     "/settings",
-    "pipeline":     "/settings/pipeline",
-    "api-keys":     "/settings/api-keys",
-    "overrides":    "/settings/overrides",
+    key: href for _label, href, key, _gated in _NAV_SPEC
+    if key in _PAGE_KEY_BY_CURRENT
 }
+
+# nav_html's two visibility tracks, derived from the same page map: a
+# data page's nav label -> its permission key, and the admin-only labels.
+_PAGE_LINK_LABELS: dict[str, str] = {
+    label: _PAGE_KEY_BY_CURRENT[key] for label, _href, key, _gated in _NAV_SPEC
+    if _PAGE_KEY_BY_CURRENT.get(key, "__admin_only__") != "__admin_only__"
+}
+_ADMIN_ONLY_LABELS = frozenset(
+    label for label, _href, key, _gated in _NAV_SPEC
+    if _PAGE_KEY_BY_CURRENT.get(key) == "__admin_only__"
+)
 
 
 # Human-readable slug per page for the {{HEADER_TITLE}} <title> string
