@@ -1356,8 +1356,7 @@ def _preview_member_trims(
     if not getattr(cfg, "CAPTURES_VAD_TRIM_ENABLED_FOR_SAMPLES", False):
         return {}
     edge = capture_samples._global_edge_ms()
-    max_gap = int(getattr(cfg, "CAPTURES_VAD_MARGIN_SAMPLE_INTERNAL_MS", 300))
-    join_ms = int(capture_samples._global_silence_ms())
+    join_ms = max_gap = capture_samples._global_silence_ms()
     trims: dict[str, Any] = {}
     # Mirror merge_wavs' uniform layout: leading edge, then bodies joined by `join_ms`.
     cursor_ms = edge
@@ -1514,8 +1513,7 @@ async def preview_merge_audio_api(
                 trim=bool(getattr(
                     cfg, "CAPTURES_VAD_TRIM_ENABLED_FOR_SAMPLES", False)),
                 edge_pad_ms=capture_samples._global_edge_ms(),
-                max_internal_gap_ms=int(
-                    getattr(cfg, "CAPTURES_VAD_MARGIN_SAMPLE_INTERNAL_MS", 300)),
+                max_internal_gap_ms=capture_samples._global_silence_ms(),
             )
         )
     except Exception as e:
