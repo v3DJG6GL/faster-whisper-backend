@@ -1539,8 +1539,7 @@
     // Instant raw estimate (prefixed ~), refined to the trimmed total by the
     // debounced merge-estimate fetch below. The cap applies to TRIMMED audio,
     // so the raw sum must not gate Merge.
-    meter.textContent = 'Σ ~' + totalWithGaps.toFixed(2)
-      + ' s / ' + SAMPLE_CAP_S.toFixed(2) + ' s';
+    meter.textContent = 'Σ ~' + _fmtOverCap(totalWithGaps, SAMPLE_CAP_S);
     meter.classList.remove('amber', 'red');
 
     // Warn on cross-speaker mixes — server enforces, UI nudges.
@@ -1607,8 +1606,7 @@
           if (token !== _meterEstimateToken) return;  // superseded
           var t = j.trimmed_total_s || 0;
           var capS = j.hard_cap_s || SAMPLE_CAP_S;
-          meter.textContent = 'Σ ' + t.toFixed(2)
-            + ' s / ' + capS.toFixed(2) + ' s';
+          meter.textContent = 'Σ ' + _fmtOverCap(t, capS);
           meter.classList.remove('amber', 'red');
           if (!j.fits) meter.classList.add('red');
           else if (t > capS * 0.8) meter.classList.add('amber');
@@ -1699,6 +1697,8 @@
     return Math.round(sec) + ' s';
   }
   function _plural(n, word) { return n + ' ' + word + (n === 1 ? '' : 's'); }
+  // The merge meter's "total / cap" seconds (action bar and merge modal agree).
+  function _fmtOverCap(total, cap) { return total.toFixed(2) + ' s / ' + cap.toFixed(2) + ' s'; }
   function fmtClock(sec) {
     sec = Math.round(Number(sec) || 0);
     var m = Math.floor(sec / 60), s = sec % 60;
@@ -3582,9 +3582,8 @@
           { member_ids: rows.map(function(r) { return r.id; }) })
         .then(function(j) {
           if (token !== _summaryToken) return;
-          var cap = (j.hard_cap_s || 0).toFixed(2);
           el.textContent = n + ' segments · Σ '
-            + (j.trimmed_total_s || 0).toFixed(2) + ' s / ' + cap + ' s';
+            + _fmtOverCap(j.trimmed_total_s || 0, j.hard_cap_s || 0);
         })
         .catch(function() {});
     }
