@@ -144,8 +144,8 @@ class LocalAgreementProcessor:
     """Per-utterance driver around a :class:`HypothesisBuffer`.
 
     Accumulates the committed words for the current utterance and exposes the
-    committed/provisional split the WebSocket layer streams to the client. One
-    instance per utterance; call :meth:`reset` after finalizing.
+    committed/provisional split the WebSocket layer streams to the client. Holds
+    one utterance at a time; call :meth:`reset` after finalizing.
     """
 
     def __init__(self) -> None:
