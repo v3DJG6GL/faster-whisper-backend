@@ -189,7 +189,7 @@ from faster_whisper_backend.auth import api_keys_store
 # same-origin guard _csrf_mw runs on every unsafe method — see auth/hosts.py.
 from faster_whisper_backend.auth import hosts as auth_hosts
 # The startup TMPDIR sweep for what a hard restart orphaned (imports only
-# transcription.receipt and paths; no import-time side effects).
+# config, transcription.receipt and paths; no import-time side effects).
 from faster_whisper_backend.admin import restart_service
 
 # Text post-processing rules engine (cfg.PIPELINE_RULES). Imported here, after
@@ -283,8 +283,8 @@ async def _jobs_retention_loop() -> None:
 async def _recent_tx_retention_loop() -> None:
     """Hourly row-cap + TTL sweep for the recent-transcriptions store. The
     lazy prune only fires every Nth insert, so without this a quiet server
-    kept dictation text past RECENT_TRANSCRIPTIONS_RETENTION_DAYS. Same
-    shape as the reports loop."""
+    would keep dictation text past RECENT_TRANSCRIPTIONS_RETENTION_DAYS.
+    Same shape as the reports loop."""
     while True:
         try:
             await asyncio.sleep(3600)
@@ -328,8 +328,8 @@ async def _sessions_purge_loop() -> None:
 
     Nothing else purges them at runtime: the lazy eviction in lookup_session
     only fires for a token that is presented again, so with the 30-day
-    TTL a login loop grew both the sessions table and the in-memory index
-    without bound. /auth/login mints a session for any valid key and only
+    TTL a login loop would grow both the sessions table and the in-memory
+    index without bound. /auth/login mints a session for any valid key and only
     rate-limits failures.
     Same shape as the retention loops above."""
     while True:
