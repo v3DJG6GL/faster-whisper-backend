@@ -38,6 +38,13 @@ def _echo_result(segments, targets):
     return per_seg, [], {"model": "org/d:Q4", "source": "", "mode": "fluent"}
 
 
+def _stub_raising(monkeypatch, exc):
+    """translate_segments stub that raises ``exc`` on its call."""
+    async def _boom(*args, **kwargs):
+        raise exc
+    monkeypatch.setattr(translation, "translate_segments", _boom)
+
+
 def test_translates_and_echoes_ids_in_input_order(client, app_module,
                                                   monkeypatch):
     _enable(app_module, monkeypatch)
@@ -222,10 +229,7 @@ def test_inflight_slot_is_released_on_success(client, app_module, monkeypatch):
 def test_inflight_slot_is_released_on_every_error_path(
         client, app_module, monkeypatch, make_exc, status):
     _enable(app_module, monkeypatch)
-
-    async def _boom(*args, **kwargs):
-        raise make_exc()
-    monkeypatch.setattr(translation, "translate_segments", _boom)
+    _stub_raising(monkeypatch, make_exc())
     assert client.post(URL, json=_body()).status_code == status
     assert tr_routes._translate_inflight._counts == {}
 
@@ -709,11 +713,8 @@ def test_held_receipt_survives_a_queued_translation(client, app_module,
 
 def test_translation_error_maps_to_400(client, app_module, monkeypatch):
     _enable(app_module, monkeypatch)
-
-    async def _boom(*args, **kwargs):
-        raise translation.TranslationError(
-            "no translation model configured (TRANSLATION_DEFAULT_MODEL)")
-    monkeypatch.setattr(translation, "translate_segments", _boom)
+    _stub_raising(monkeypatch, translation.TranslationError(
+        "no translation model configured (TRANSLATION_DEFAULT_MODEL)"))
     r = client.post(URL, json=_body())
     assert r.status_code == 400
     assert "TRANSLATION_DEFAULT_MODEL" in r.json()["detail"]
@@ -721,10 +722,7 @@ def test_translation_error_maps_to_400(client, app_module, monkeypatch):
 
 def test_unexpected_error_maps_to_generic_500(client, app_module, monkeypatch):
     _enable(app_module, monkeypatch)
-
-    async def _boom(*args, **kwargs):
-        raise RuntimeError("/secret/path/model.gguf exploded")
-    monkeypatch.setattr(translation, "translate_segments", _boom)
+    _stub_raising(monkeypatch, RuntimeError("/secret/path/model.gguf exploded"))
     r = client.post(URL, json=_body())
     assert r.status_code == 500
     assert r.json()["detail"] == "translation failed"     # never the raw text
@@ -822,10 +820,8 @@ def test_progress_endpoint_serves_last_text(client, app_module):
 
 def test_failure_logs_terminal_line(client, app_module, monkeypatch, caplog):
     _enable(app_module, monkeypatch)
-
-    async def _boom(*args, **kwargs):
-        raise translation.TranslationError("no translation model configured")
-    monkeypatch.setattr(translation, "translate_segments", _boom)
+    _stub_raising(monkeypatch, translation.TranslationError(
+        "no translation model configured"))
     with caplog.at_level(logging.INFO, logger="whisper-api"):
         r = client.post(URL, json=_body())
     assert r.status_code == 400
@@ -971,10 +967,7 @@ def test_translation_error_records_status_error(client, app_module,
     # and metrics.py's default — never "failed": both land in the same
     # recent_transcriptions.status column rendered verbatim by /stats.
     _enable(app_module, monkeypatch)
-
-    async def _boom(*a, **kw):
-        raise translation.TranslationError("nope")
-    monkeypatch.setattr(translation, "translate_segments", _boom)
+    _stub_raising(monkeypatch, translation.TranslationError("nope"))
     recorded = []
     _orig = app_module.metrics.record_transcription
 
