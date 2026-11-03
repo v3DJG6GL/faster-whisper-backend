@@ -204,7 +204,7 @@ jobs:
       # python:<ver>-trixie ships neither node nor ffmpeg, and the suite does
       # not fail without them — it SKIPS its two real guards:
       # test_inline_scripts_parse (`node --check` over the inline <script>
-      # blocks of /settings/pipeline, /quick-config and /settings) and the
+      # blocks of /settings/pipeline, /quick-config, /settings and /logs) and the
       # WebM/Opus transport tests (the only ones decoding MediaRecorder-shaped
       # input). A silently skipped guard is not coverage, so install both.
       # Not for a Dockerfile-only PR: the CI-config tests need neither.
