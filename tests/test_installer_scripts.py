@@ -438,14 +438,19 @@ def test_installers_require_python_314():
     assert "Python 3.10" not in ps1
 
 
+def _venv_block():
+    """install-service.sh's venv bootstrap, up to the service stop."""
+    sh = _read("install-service.sh")
+    return sh[sh.index('VENV="$REPO_DIR/venv"'):sh.index("\n# Stop a running service")]
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="bash installer")
 def test_linux_installer_finds_a_python314_beside_an_older_python3(tmp_path):
     # Debian 13 / Ubuntu 24.04 keep python3 older than 3.14 (apt needs it) and
     # ship 3.14 beside it as python3.14: a fresh clone must build its venv on
     # that, or on PYTHON=, never tell the operator to replace python3. Run the
     # script's own venv block against stub interpreters only.
-    sh = _read("install-service.sh")
-    block = sh[sh.index('VENV="$REPO_DIR/venv"'):sh.index("\n# Stop a running service")]
+    block = _venv_block()
     bindir = tmp_path / "bin"
     bindir.mkdir()
 
@@ -494,8 +499,7 @@ def test_linux_installer_removes_a_venv_whose_build_failed(tmp_path):
     # Without python3.14-venv, `python3.14 -m venv` writes bin/python and then
     # fails in ensurepip. A re-run after installing the package must build the
     # venv again, not keep the pip-less one because bin/python is executable.
-    sh = _read("install-service.sh")
-    block = sh[sh.index('VENV="$REPO_DIR/venv"'):sh.index("\n# Stop a running service")]
+    block = _venv_block()
     bindir = tmp_path / "bin"
     bindir.mkdir()
     py314 = bindir / "python3.14"
@@ -529,8 +533,7 @@ def test_linux_installer_rebuilds_a_venv_whose_python_is_dead_or_pipless(tmp_pat
     # an older installer's failed build left an executable but pip-less one.
     # Both die at `$PY -m pip` on every re-run unless rebuilt, and with --clear:
     # `python -m venv` keeps an existing bin/python link as it is.
-    sh = _read("install-service.sh")
-    block = sh[sh.index('VENV="$REPO_DIR/venv"'):sh.index("\n# Stop a running service")]
+    block = _venv_block()
     bindir = tmp_path / "bin"
     bindir.mkdir()
     py314 = bindir / "python3.14"
