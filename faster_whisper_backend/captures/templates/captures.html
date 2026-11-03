@@ -1813,6 +1813,14 @@
       + (helpHtml ? '<div class="help">' + helpHtml + '</div>' : '');
     return s;
   }
+  // Read-only text box (Final result / translation): the a11y role lives here.
+  function _readonlyBox(cls) {
+    var e = document.createElement('div');
+    e.className = cls;
+    e.setAttribute('role', 'textbox');
+    e.setAttribute('aria-readonly', 'true');
+    return e;
+  }
   function renderStats() {
     var sec = document.getElementById('stats-strip');
     var st = _stats;
@@ -2228,10 +2236,7 @@
         'Computed from <em>post-processing</em> + word '
       + 'corrections + current pipeline rules. To change it, edit chips '
       + 'above or update rules on /quick-config.');
-    var gtArea = document.createElement('div');
-    gtArea.className = 'cc-ground';
-    gtArea.setAttribute('role', 'textbox');
-    gtArea.setAttribute('aria-readonly', 'true');
+    var gtArea = _readonlyBox('cc-ground');
     gtArea.textContent = state.finalText;
     gtSec.appendChild(gtArea);
     body.appendChild(gtSec);
@@ -2284,10 +2289,7 @@
         tag.className = 'cc-tr-lang' + (eligible && lg === enKey ? ' cc-tr-eligible' : '');
         tag.textContent = lg.toUpperCase();
         if (!(eligible && lg === enKey)) tag.title = 'review only — not training data';
-        var val = document.createElement('div');
-        val.className = 'cc-ground cc-tr-text';
-        val.setAttribute('role', 'textbox');
-        val.setAttribute('aria-readonly', 'true');
+        var val = _readonlyBox('cc-ground cc-tr-text');
         val.textContent = trs[lg] || '';
         trRow.appendChild(tag);
         trRow.appendChild(val);
@@ -4228,10 +4230,7 @@
       var gtSec = _ccSection('cc-section merge-preview-cc', 'Final result',
           'Computed from members\' post-processing text + '
         + 'word corrections. To change it, edit chips above.');
-      gtArea = document.createElement('div');
-      gtArea.className = 'cc-ground';
-      gtArea.setAttribute('role', 'textbox');
-      gtArea.setAttribute('aria-readonly', 'true');
+      gtArea = _readonlyBox('cc-ground');
       gtSec.appendChild(gtArea);
     }
 
@@ -5192,10 +5191,7 @@
 
         // Read-only Final result (gtArea): derived from members + chips, so
         // it changes only through the chips.
-        var ta = document.createElement('div');
-        ta.className = 'cc-ground';
-        ta.setAttribute('role', 'textbox');
-        ta.setAttribute('aria-readonly', 'true');
+        var ta = _readonlyBox('cc-ground');
 
         var sampleState = {
           sid: detail.id,
