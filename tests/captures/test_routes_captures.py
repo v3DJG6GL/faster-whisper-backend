@@ -5,6 +5,7 @@
 import json
 import os
 import re
+import wave
 
 import pytest
 from starlette.testclient import TestClient
@@ -230,18 +231,20 @@ def test_member_delete_respects_sample_lock(captures_store_db, groups_store_db):
         captures_store.get_capture("free0000cid"), _user(False))
 
 
+def _write_silent_wav(path, frames):
+    with wave.open(path, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(16000)
+        w.writeframes(b"\x00\x00" * frames)
+
+
 def _fake_wav_transcode(monkeypatch):
     """Route audio_transcode to a stub that writes a tiny valid WAV."""
-    import wave
-
     from faster_whisper_backend.audio import transcode as audio_transcode
 
     def _fake(src_path, dst_path):
-        with wave.open(dst_path, "wb") as w:
-            w.setnchannels(1)
-            w.setsampwidth(2)
-            w.setframerate(16000)
-            w.writeframes(b"\x00\x00" * 100)
+        _write_silent_wav(dst_path, 100)
         return 1234
 
     monkeypatch.setattr(
@@ -594,7 +597,6 @@ def test_preview_merge_audio_is_not_cacheable(client, make_user_key,
     alone sends only ETag/Last-Modified, which makes the body heuristically
     cacheable by any shared cache in front of the app — the two sibling audio
     routes both send Cache-Control: no-store."""
-    import wave
     from faster_whisper_backend.captures import merge as audio_merge
     from faster_whisper_backend.captures import routes as captures_routes
 
@@ -605,11 +607,7 @@ def test_preview_merge_audio_is_not_cacheable(client, make_user_key,
         lambda ids, silence_ms, user: ([], "root", ["/nonexistent.wav"], 0))
 
     def _fake_merge(paths, dst, **kw):
-        with wave.open(dst, "wb") as w:
-            w.setnchannels(1)
-            w.setsampwidth(2)
-            w.setframerate(16000)
-            w.writeframes(b"\x00\x00" * 16)
+        _write_silent_wav(dst, 16)
         return {"duration_ms": 1}
 
     monkeypatch.setattr(audio_merge, "merge_wavs", _fake_merge)
@@ -626,7 +624,6 @@ def test_preview_merge_audio_is_not_cacheable(client, make_user_key,
 def test_preview_merge_audio_removes_its_temp_file(
         client, make_user_key, monkeypatch):
     """The merged WAV is gone once the preview answer is sent."""
-    import wave
     from faster_whisper_backend.captures import merge as audio_merge
     from faster_whisper_backend.captures import routes as captures_routes
 
@@ -638,11 +635,7 @@ def test_preview_merge_audio_removes_its_temp_file(
 
     def _fake_merge(paths, dst, **kw):
         written.append(dst)
-        with wave.open(dst, "wb") as w:
-            w.setnchannels(1)
-            w.setsampwidth(2)
-            w.setframerate(16000)
-            w.writeframes(b"\x00\x00" * 16)
+        _write_silent_wav(dst, 16)
         return {"duration_ms": 1}
 
     monkeypatch.setattr(audio_merge, "merge_wavs", _fake_merge)
@@ -1655,7 +1648,6 @@ def test_sample_save_does_not_resend_status(client):
 def _mixed_pair(task_b=None, lang_b="de"):
     """Two same-user captures with real WAVs on disk, differing in the second
     member's task / language."""
-    import wave
     from faster_whisper_backend.captures import store as captures_store
 
     conn = captures_store._require_conn()
@@ -1665,11 +1657,7 @@ def _mixed_pair(task_b=None, lang_b="de"):
         p = captures_store.abs_audio_path(
             os.path.join(cid[0:2], cid[2:4], f"{cid}.wav"))
         os.makedirs(os.path.dirname(p), exist_ok=True)
-        with wave.open(p, "wb") as w:
-            w.setnchannels(1)
-            w.setsampwidth(2)
-            w.setframerate(16000)
-            w.writeframes(b"\x00\x00" * 1600)
+        _write_silent_wav(p, 1600)
     conn.execute("UPDATE captures SET task = ?, language = ? WHERE id = ?",
                  (task_b, lang_b, ids[1]))
     return ids
