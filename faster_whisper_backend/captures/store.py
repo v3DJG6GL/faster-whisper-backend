@@ -231,6 +231,18 @@ def _safe_unlink(abs_path: str) -> bool:
     return False
 
 
+def _invalidate_proposals(*uids: str | None) -> None:
+    """Best-effort drop of the cached merge proposals for each uid (None =
+    every key). Lazy import: merge_proposer imports this module, so a
+    top-level import would loop."""
+    try:
+        from faster_whisper_backend.captures import merge_proposer as captures_merge_proposer
+        for uid in uids:
+            captures_merge_proposer.invalidate(uid)
+    except Exception:
+        pass
+
+
 def _row_to_dict(row: sqlite3.Row, include_words: bool = True) -> dict[str, Any]:
     """Materialize a row, decoding the JSON-bearing columns. With
     include_words=False the heavy fields (words, segments)
@@ -512,11 +524,7 @@ def create_capture(
     # the next Auto-propose-merges call instead of waiting up to TTL_S. The
     # cap eviction drops OTHER identities' rows too, so then every user's
     # cached proposals may name deleted captures.
-    try:
-        from faster_whisper_backend.captures import merge_proposer as captures_merge_proposer
-        captures_merge_proposer.invalidate(None if evicted_any else user_id)
-    except Exception:
-        pass
+    _invalidate_proposals(None if evicted_any else user_id)
     return cid if survived else None
 
 
@@ -1091,13 +1099,8 @@ def update_capture(cid: str, patch: dict[str, Any]) -> dict[str, Any] | None:
         if cur.rowcount == 0:
             return None
     row = get_capture(cid)
-    # Lazy import — captures_merge_proposer imports this module; a top-
-    # level import would loop. Safe to call with None on a missing row.
-    try:
-        from faster_whisper_backend.captures import merge_proposer as captures_merge_proposer
-        captures_merge_proposer.invalidate(row.get("user_id") if row else None)
-    except Exception:
-        pass
+    # Safe to call with None on a missing row.
+    _invalidate_proposals(row.get("user_id") if row else None)
     return row
 
 
@@ -1159,12 +1162,7 @@ def bulk_update_status(ids: list[str], new_status: str) -> list[dict[str, Any]]:
                 conn.execute("ROLLBACK")
             raise
     owners = {r["user_id"] for r in prev}
-    try:
-        from faster_whisper_backend.captures import merge_proposer as captures_merge_proposer
-        for uid in owners:
-            captures_merge_proposer.invalidate(uid)
-    except Exception:
-        pass
+    _invalidate_proposals(*owners)
     return [{"id": r["id"], "prev_status": r["status"]} for r in prev]
 
 
@@ -1222,11 +1220,7 @@ def delete_capture(cid: str, *, refuse_locked: bool = False) -> bool:
                 "[captures] auto-dissolve of sid=%s failed: %s",
                 sid[:8], _e,
             )
-    try:
-        from faster_whisper_backend.captures import merge_proposer as captures_merge_proposer
-        captures_merge_proposer.invalidate(uid)
-    except Exception:
-        pass
+    _invalidate_proposals(uid)
     logger.info("[captures] deleted id=%s", cid[:8])
     return True
 
@@ -1293,11 +1287,7 @@ def clear_all(reporter_host: str = "") -> int:
                     os.rmdir(sub_path)
                 except OSError:
                     pass
-    try:
-        from faster_whisper_backend.captures import merge_proposer as captures_merge_proposer
-        captures_merge_proposer.invalidate(None)
-    except Exception:
-        pass
+    _invalidate_proposals(None)
     logger.warning(
         "[captures] admin from %s cleared %d captures + %d groups",
         reporter_host or "<unknown>", n, n_groups,
@@ -1453,12 +1443,8 @@ def sweep_retention() -> int:
             except ValueError:
                 pass
     # Aged rows of every identity are gone: a cached proposal naming one
-    # would 404 on accept. Lazy import + best-effort, as in clear_all.
-    try:
-        from faster_whisper_backend.captures import merge_proposer as captures_merge_proposer
-        captures_merge_proposer.invalidate(None)
-    except Exception:
-        pass
+    # would 404 on accept. Best-effort, as in clear_all.
+    _invalidate_proposals(None)
     logger.warning(
         "[captures] retention sweep deleted %d rows older than %d days",
         len(rows), days,

@@ -351,11 +351,7 @@ def dissolve_sample(sid: str, *, refuse_locked: bool = False) -> None:
     capture_samples._release_rebuild_lock(sid)
     if g is None:
         return
-    try:
-        from faster_whisper_backend.captures import merge_proposer as captures_merge_proposer
-        captures_merge_proposer.invalidate(g.get("user_id"))
-    except Exception:
-        pass
+    captures_store._invalidate_proposals(g.get("user_id"))
     logger.info("[groups] dissolved sid=%s", sid[:8])
 
 
