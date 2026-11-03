@@ -1,10 +1,10 @@
 """Post-decode guard helpers shared by the batch route and both streaming
 decodes: the word-rate drop (segment_exceeds_word_rate; batch and the streaming
 FINAL decode only), the tail-cut / head-echo settings resolved per model +
-identity (tail_guard_limits,
-head_echo_min_words), their receipt rows (tail_guard_rows, tail_cut_rows,
-head_echo_rows) and the /stats counter (record_tail_cut). The cut rules
-themselves live in transcription/segment_guards.py.
+identity (tail_guard_limits, head_echo_min_words), their receipt rows
+(tail_guard_rows, tail_cut_rows, head_echo_rows) and the /stats counter
+(record_tail_cut). The cut rules themselves live in
+transcription/segment_guards.py.
 """
 from faster_whisper_backend.transcription import segment_guards
 from faster_whisper_backend.settings import effective_config
