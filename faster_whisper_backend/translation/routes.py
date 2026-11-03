@@ -50,13 +50,8 @@ _translate_inflight = _rl.InFlight(
     message="you already have {limit} translations running — "
             "wait for one to finish",
 )
-_text_translate_rate = _rl.FixedWindow(
-    config_field="TRANSLATE_RATE_PER_MIN",
-    window_s=60.0,
-    default_max=120,
-    message="too many translation requests — slow down "
-            "({limit}/min; retry in {retry_after}s)",
-)
+_text_translate_rate = _rl.per_minute(
+    "TRANSLATE_RATE_PER_MIN", 120, "translation requests")
 
 
 # Request-shape ceilings: entry count and total characters. The 4 MiB JSON
