@@ -26,3 +26,12 @@ def ws_drain(ws, limit: int = 200) -> tuple[list[dict], int | None]:
     except WebSocketDisconnect as exc:
         return msgs, exc.code
     return msgs, None
+
+
+def speak_and_stop(ws, limit: int = 200) -> tuple[list[dict], int | None]:
+    """One ~2.5 s loud utterance, ~1.5 s silence (finalizes it), then stop;
+    returns ``ws_drain``'s ``(msgs, close_code)``."""
+    ws.send_bytes(const_pcm(8000, 2500))
+    ws.send_bytes(const_pcm(0, 1500))
+    ws.send_json({"type": "stop"})
+    return ws_drain(ws, limit)

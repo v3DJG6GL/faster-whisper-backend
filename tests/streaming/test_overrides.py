@@ -9,7 +9,7 @@ import time
 import pytest
 
 from faster_whisper_backend.settings import effective_config
-from tests._streaming_helpers import const_pcm, ws_drain
+from tests._streaming_helpers import const_pcm, speak_and_stop, ws_drain
 from tests.conftest import bearer
 from faster_whisper_backend.transcription import models as tx_models
 
@@ -66,10 +66,7 @@ def test_final_decode_uses_profile_beam(client, make_user_key, fake_model,
         ws.send_json({"type": "config", "model": "whisper-1",
                       "audio": {"format": "pcm_s16le", "sample_rate": 16000}})
         assert ws.receive_json()["type"] == "ready"
-        ws.send_bytes(_pcm(8000, 2500))   # speech → partials
-        ws.send_bytes(_pcm(0, 1500))      # silence → finalize
-        ws.send_json({"type": "stop"})
-        _drain(ws)
+        speak_and_stop(ws)
 
     # The final decode is the last transcribe call; it uses the assembler with
     # the profile's BEAM_SIZE (partials force STREAMING_PARTIAL_BEAM instead).
@@ -95,10 +92,7 @@ def test_stream_request_override_profile_applies(
         ready = ws.receive_json()
         assert ready["type"] == "ready"
         assert ready["profile_applied"] == "fast"
-        ws.send_bytes(_pcm(8000, 2500))
-        ws.send_bytes(_pcm(0, 1500))
-        ws.send_json({"type": "stop"})
-        _drain(ws)
+        speak_and_stop(ws)
 
     assert fake_model.last_kwargs["beam_size"] == 9
 
@@ -132,10 +126,7 @@ def test_stream_picks_up_binding_change_without_reconnect(
         api_keys_store.set_user_permissions(
             uid, {"pages": {}, "config": {"overrides": {}, "profiles": ["p3"], "locks": []}})
         # utterance 2 must pick up p3 (beam 3) on the same connection
-        ws.send_bytes(_pcm(8000, 2500))
-        ws.send_bytes(_pcm(0, 1500))
-        ws.send_json({"type": "stop"})
-        _drain(ws)
+        speak_and_stop(ws)
 
     assert fake_model.last_kwargs["beam_size"] == 3
 
@@ -161,10 +152,7 @@ def test_final_drops_low_confidence_hallucination_segment(
         ws.send_json({"type": "config", "model": "whisper-1",
                       "audio": {"format": "pcm_s16le", "sample_rate": 16000}})
         assert ws.receive_json()["type"] == "ready"
-        ws.send_bytes(_pcm(8000, 2500))
-        ws.send_bytes(_pcm(0, 1500))
-        ws.send_json({"type": "stop"})
-        msgs = _drain(ws)
+        msgs = speak_and_stop(ws)[0]
 
     finals = [m for m in msgs if m["type"] == "final"]
     doc = (finals[-1]["committed"] + finals[-1]["tail"]) if finals else ""
@@ -189,10 +177,7 @@ def test_stream_prompt_sentinel_inherit_clear_value(
                           "audio": {"format": "pcm_s16le", "sample_rate": 16000},
                           **conf_extra})
             assert ws.receive_json()["type"] == "ready"
-            ws.send_bytes(_pcm(8000, 2500))
-            ws.send_bytes(_pcm(0, 1500))
-            ws.send_json({"type": "stop"})
-            _drain(ws)
+            speak_and_stop(ws)
         return fake_model.last_kwargs.get("initial_prompt")
 
     assert _run({}) == "SERVER PROMPT"
@@ -217,10 +202,7 @@ def test_stream_handshake_drops_lone_surrogates(
             "decode_overrides": {"output_prefix": ">> \ud83d"},
             "audio": {"format": "pcm_s16le", "sample_rate": 16000}}))
         assert ws.receive_json()["type"] == "ready"
-        ws.send_bytes(_pcm(8000, 2500))
-        ws.send_bytes(_pcm(0, 1500))
-        ws.send_json({"type": "stop"})
-        msgs = _drain(ws)
+        msgs = speak_and_stop(ws)[0]
     assert fake_model.last_kwargs.get("initial_prompt") == "Kardiologie"
     finals = [m for m in msgs if m.get("type") == "final"
               and (m.get("committed") or m.get("tail"))]
@@ -472,10 +454,7 @@ def test_handshake_drops_unknown_decode_override_keys(
         ready = ws.receive_json()
         assert ready["type"] == "ready"
         assert "overrides_ignored" not in ready   # nothing LOCKED, so nothing surfaced
-        ws.send_bytes(_pcm(8000, 2500))
-        ws.send_bytes(_pcm(0, 1500))
-        ws.send_json({"type": "stop"})
-        _drain(ws)
+        speak_and_stop(ws)
 
     assert fake_model.last_kwargs["beam_size"] == 5
     assert "not_a_real_key" not in fake_model.last_kwargs
@@ -498,10 +477,7 @@ def test_handshake_language_that_is_not_a_code_is_treated_as_absent(
         ws.send_json({"type": "config", "model": "whisper-1", "language": language,
                       "audio": {"format": "pcm_s16le", "sample_rate": 16000}})
         assert ws.receive_json()["type"] == "ready"
-        ws.send_bytes(_pcm(8000, 2500))
-        ws.send_bytes(_pcm(0, 1500))
-        ws.send_json({"type": "stop"})
-        _drain(ws)
+        speak_and_stop(ws)
 
     assert "language" in fake_model.last_kwargs   # a decode ran
     assert fake_model.last_kwargs["language"] is None
@@ -548,10 +524,7 @@ def test_handshake_language_reaches_the_model_as_a_whisper_code(
         assert ready["type"] == "ready"
         # An unusable value is reported, not silently swapped.
         assert ("language" in ready.get("overrides_ignored", [])) == (expected is None)
-        ws.send_bytes(_pcm(8000, 2500))
-        ws.send_bytes(_pcm(0, 1500))
-        ws.send_json({"type": "stop"})
-        _drain(ws)
+        speak_and_stop(ws)
 
     assert "language" in fake_model.last_kwargs   # a decode ran
     assert fake_model.last_kwargs["language"] == expected
@@ -730,10 +703,7 @@ def test_stream_does_not_reauthenticate_without_a_version_bump(
         ws.send_json({"type": "config", "model": "whisper-1",
                       "audio": {"format": "pcm_s16le", "sample_rate": 16000}})
         assert ws.receive_json()["type"] == "ready"
-        ws.send_bytes(_pcm(8000, 2500))    # several partials
-        ws.send_bytes(_pcm(0, 1500))       # silence → final
-        ws.send_json({"type": "stop"})
-        msgs, _code = _drain_with_code(ws)
+        msgs, _code = speak_and_stop(ws)
 
     assert any(m.get("type") == "final" for m in msgs), msgs
     assert len(calls) == 1, f"re-authenticated {len(calls)}x with no version bump"
@@ -1035,10 +1005,7 @@ def test_stream_client_output_wrappers_survive_a_refresh(
         # Any config bump makes the next utterance re-resolve ident.
         api_keys_store.set_user_permissions(
             uid, {"pages": {}, "config": {"overrides": {}, "profiles": [], "locks": []}})
-        ws.send_bytes(_pcm(8000, 2500))
-        ws.send_bytes(_pcm(0, 1500))
-        ws.send_json({"type": "stop"})
-        msgs = _drain(ws)
+        msgs = speak_and_stop(ws)[0]
     finals = [m for m in msgs if m.get("type") == "final"]
     assert len(finals) >= 2
     assert all((f.get("committed") or f.get("tail") or "").startswith(">> ")
@@ -1074,10 +1041,7 @@ def test_stream_output_wrappers_change_only_at_a_document_boundary(
             uid, {"pages": {}, "config": {"overrides": {}, "profiles": [], "locks": []}})
         ws.send_bytes(_pcm(8000, 2500))
         ws.send_bytes(_pcm(0, 3000))        # final, then the hard break
-        ws.send_bytes(_pcm(8000, 2500))
-        ws.send_bytes(_pcm(0, 1500))
-        ws.send_json({"type": "stop"})
-        msgs = early + _drain(ws)
+        msgs = early + speak_and_stop(ws)[0]
     boundaries = [i for i, m in enumerate(msgs) if m.get("type") == "boundary"]
     assert len(boundaries) == 1
     texts = [(m.get("committed") or "") + (m.get("tail") or "")
@@ -1111,10 +1075,7 @@ def test_stream_output_suffix_closes_every_document_at_a_hard_break(
         assert ws.receive_json()["type"] == "ready"
         ws.send_bytes(_pcm(8000, 2500))
         ws.send_bytes(_pcm(0, 3000))        # final, then the hard break
-        ws.send_bytes(_pcm(8000, 2500))
-        ws.send_bytes(_pcm(0, 1500))        # final, no second break
-        ws.send_json({"type": "stop"})
-        msgs = _drain(ws)
+        msgs = speak_and_stop(ws)[0]      # final, no second break
     boundaries = [i for i, m in enumerate(msgs) if m.get("type") == "boundary"]
     assert len(boundaries) == 1
     assert msgs[boundaries[0]]["separator"] == " <<\n"
@@ -1143,9 +1104,6 @@ def test_stream_client_output_wrappers_master_gate_off(
                       "audio": {"format": "pcm_s16le", "sample_rate": 16000}})
         ready = ws.receive_json()
         assert ready["overrides_ignored"] == ["output_prefix"]
-        ws.send_bytes(_pcm(8000, 2500))
-        ws.send_bytes(_pcm(0, 1500))
-        ws.send_json({"type": "stop"})
-        msgs = _drain(ws)
+        msgs = speak_and_stop(ws)[0]
     final = next(m for m in msgs if m.get("type") == "final" and m.get("committed"))
     assert final["committed"].startswith("[cfg] ")

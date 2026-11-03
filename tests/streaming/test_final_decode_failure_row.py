@@ -2,7 +2,7 @@
 partial-committed text, and the ledger row must say the decode failed (an
 error row, classified like the identical batch failure), not a success."""
 
-from tests._streaming_helpers import const_pcm as _pcm, ws_drain as _drain
+from tests._streaming_helpers import speak_and_stop
 
 _STREAM_URL = "/v1/audio/transcriptions/stream"
 
@@ -30,10 +30,7 @@ def test_failed_final_decode_is_recorded_as_a_classified_error(
         ws.send_json({"type": "config", "model": "whisper-1",
                       "audio": {"format": "pcm_s16le", "sample_rate": 16000}})
         assert ws.receive_json()["type"] == "ready"
-        ws.send_bytes(_pcm(8000, 2500))
-        ws.send_bytes(_pcm(0, 1500))
-        ws.send_json({"type": "stop"})
-        msgs, _code = _drain(ws)
+        msgs, _code = speak_and_stop(ws)
     assert any(m["type"] == "final" for m in msgs), msgs
     rows = _stream_rows()
     assert rows, "the fallback utterance wrote no ledger row"
@@ -59,10 +56,7 @@ def test_failed_final_decode_receipt_says_the_decode_failed(
             ws.send_json({"type": "config", "model": "whisper-1",
                           "audio": {"format": "pcm_s16le", "sample_rate": 16000}})
             assert ws.receive_json()["type"] == "ready"
-            ws.send_bytes(_pcm(8000, 2500))
-            ws.send_bytes(_pcm(0, 1500))
-            ws.send_json({"type": "stop"})
-            _drain(ws)
+            speak_and_stop(ws)
     receipts = [r.getMessage() for r in caplog.records
                 if _STREAM_URL in r.getMessage() and "═" in r.getMessage()]
     assert receipts, "no receipt was logged"
@@ -78,10 +72,7 @@ def test_decoded_utterance_stays_an_ok_row(client, app_module, monkeypatch):
         ws.send_json({"type": "config", "model": "whisper-1",
                       "audio": {"format": "pcm_s16le", "sample_rate": 16000}})
         assert ws.receive_json()["type"] == "ready"
-        ws.send_bytes(_pcm(8000, 2500))
-        ws.send_bytes(_pcm(0, 1500))
-        ws.send_json({"type": "stop"})
-        _drain(ws)
+        speak_and_stop(ws)
     rows = _stream_rows()
     assert rows
     assert rows[0]["status"] == "ok"
@@ -111,10 +102,7 @@ def test_failed_final_decode_with_no_fallback_text_still_records_the_error(
         ws.send_json({"type": "config", "model": "whisper-1",
                       "audio": {"format": "pcm_s16le", "sample_rate": 16000}})
         assert ws.receive_json()["type"] == "ready"
-        ws.send_bytes(_pcm(8000, 2500))
-        ws.send_bytes(_pcm(0, 1500))
-        ws.send_json({"type": "stop"})
-        msgs, _code = _drain(ws)
+        msgs, _code = speak_and_stop(ws)
     assert not any(m["type"] == "final" and (m.get("committed") or m.get("tail"))
                    for m in msgs), msgs
     assert any(m["type"] == "utterance" and m.get("reason") == "error" for m in msgs), msgs
@@ -145,10 +133,7 @@ def test_failed_final_decode_broadcasts_an_error_entry(client, app_module, monke
             ws.send_json({"type": "config", "model": "whisper-1",
                           "audio": {"format": "pcm_s16le", "sample_rate": 16000}})
             assert ws.receive_json()["type"] == "ready"
-            ws.send_bytes(_pcm(8000, 2500))
-            ws.send_bytes(_pcm(0, 1500))
-            ws.send_json({"type": "stop"})
-            _drain(ws)
+            speak_and_stop(ws)
         entries = []
         while not q.empty():
             item = q.get_nowait()

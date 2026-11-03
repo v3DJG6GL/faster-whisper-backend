@@ -21,7 +21,7 @@ import pytest
 from starlette.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
-from tests._streaming_helpers import const_pcm as _pcm, ws_drain as _drain
+from tests._streaming_helpers import const_pcm as _pcm, speak_and_stop, ws_drain as _drain
 from tests.conftest import bearer
 from faster_whisper_backend.streaming.session import StreamConfig, StreamSession
 from faster_whisper_backend.streaming.vad import FRAME_MS, SAMPLE_RATE as SR, EnergyEndpointer
@@ -351,10 +351,7 @@ def test_translate_expect_is_ignored_when_translation_is_disabled(
     with client.websocket_connect(_STREAM_URL) as ws:
         ready = _config(ws, translate_expect={"targets": ["en"], "per_utterance": True})
         assert ready["type"] == "ready"
-        ws.send_bytes(_pcm(8000, 2500))
-        ws.send_bytes(_pcm(0, 1500))
-        ws.send_json({"type": "stop"})
-        msgs, _code = _drain(ws)
+        msgs, _code = speak_and_stop(ws)
     assert any(m["type"] == "final" for m in msgs)
     assert not any(m.get("type") == "captured" for m in msgs), msgs
     assert receipt_hold.pending() == 0
@@ -374,19 +371,9 @@ def test_translate_expect_parks_when_translation_is_enabled(
     with client.websocket_connect(_STREAM_URL) as ws:
         ready = _config(ws, translate_expect={"targets": ["en"], "per_utterance": True})
         assert ready["type"] == "ready"
-        ws.send_bytes(_pcm(8000, 2500))
-        ws.send_bytes(_pcm(0, 1500))
-        ws.send_json({"type": "stop"})
-        msgs, _code = _drain(ws)
+        msgs, _code = speak_and_stop(ws)
     assert any(m.get("type") == "captured" for m in msgs), msgs
     assert receipt_hold.pending() >= 1
-
-
-def _dictate_one(ws):
-    ws.send_bytes(_pcm(8000, 2500))
-    ws.send_bytes(_pcm(0, 1500))
-    ws.send_json({"type": "stop"})
-    return _drain(ws)
 
 
 def test_a_full_capture_store_still_records_and_leaves_eviction_to_the_store(
@@ -408,7 +395,7 @@ def test_a_full_capture_store_still_records_and_leaves_eviction_to_the_store(
 
     with client.websocket_connect(_STREAM_URL) as ws:
         assert _config(ws)["type"] == "ready"
-        msgs, _code = _dictate_one(ws)
+        msgs, _code = speak_and_stop(ws)
     assert any(m["type"] == "final" for m in msgs)
     assert len(created) == 1
 
@@ -428,7 +415,7 @@ def test_a_store_full_of_ready_captures_skips_the_stream_capture(
 
     with client.websocket_connect(_STREAM_URL) as ws:
         assert _config(ws)["type"] == "ready"
-        msgs, _code = _dictate_one(ws)
+        msgs, _code = speak_and_stop(ws)
     assert any(m["type"] == "final" for m in msgs)
     assert created == []
 
@@ -450,7 +437,7 @@ def test_turning_capture_recording_off_mid_session_stops_recording(
         assert _config(ws)["type"] == "ready"
         monkeypatch.setattr(app_module.cfg, "CAPTURES_RECORDING_ENABLED", False,
                             raising=False)
-        msgs, _code = _dictate_one(ws)
+        msgs, _code = speak_and_stop(ws)
     assert any(m["type"] == "final" for m in msgs)
     assert created == []
 

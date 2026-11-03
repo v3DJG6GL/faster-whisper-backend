@@ -16,7 +16,7 @@ import pytest
 from starlette.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
-from tests._streaming_helpers import const_pcm, ws_drain
+from tests._streaming_helpers import const_pcm, speak_and_stop, ws_drain
 from tests.conftest import bearer
 from faster_whisper_backend.transcription import models as tx_models
 
@@ -42,10 +42,9 @@ def test_stream_happy_path_partials_then_final(app_module, monkeypatch):
             assert ready["type"] == "ready"
             assert ready["sample_rate"] == 16000
 
-            ws.send_bytes(_pcm(8000, 2500))   # ~2.5 s speech → ≥2 partials
-            ws.send_bytes(_pcm(0, 1500))      # ~1.5 s silence → finalize (held, no terminator)
-            ws.send_json({"type": "stop"})    # → close flushes the held final
-            msgs = _drain(ws)
+            # ~2.5 s speech → ≥2 partials; the silence finalizes (held, no
+            # terminator) and the stop's close flushes the held final.
+            msgs = speak_and_stop(ws)[0]
 
     partials = [m for m in msgs if m["type"] == "partial"]
     finals = [m for m in msgs if m["type"] == "final"]
@@ -73,10 +72,7 @@ def test_stream_announces_the_utterance_lifecycle(app_module, monkeypatch):
             assert ready["type"] == "ready"
             assert ready["utterance_frames"] is True
 
-            ws.send_bytes(_pcm(8000, 2500))
-            ws.send_bytes(_pcm(0, 1500))
-            ws.send_json({"type": "stop"})
-            msgs = _drain(ws)
+            msgs = speak_and_stop(ws)[0]
 
     seen = []
     for m in msgs:
@@ -415,10 +411,7 @@ def test_stream_records_trace_text_per_utterance(app_module, monkeypatch):
             ws.send_json({"type": "config", "model": "whisper-1",
                           "audio": {"format": "pcm_s16le", "sample_rate": 16000}})
             assert ws.receive_json()["type"] == "ready"
-            ws.send_bytes(_pcm(8000, 2500))   # speech
-            ws.send_bytes(_pcm(0, 1500))      # silence → finalize
-            ws.send_json({"type": "stop"})
-            _drain(ws)
+            speak_and_stop(ws)
         rows = recent_transcriptions_store.list_recent(limit=10)
         after = recent_transcriptions_store.count()
     assert after > before, "no recent-transcription row recorded for the utterance"
@@ -441,10 +434,7 @@ def test_stream_records_the_key_label_on_the_trace_row(
     raw, _rec = api_keys_store.create_key(uid, label="alice-laptop")
     with client.websocket_connect(_STREAM_URL, headers=bearer(raw)) as ws:
         assert _handshake(ws)["type"] == "ready"
-        ws.send_bytes(_pcm(8000, 2500))   # speech
-        ws.send_bytes(_pcm(0, 1500))      # silence → finalize
-        ws.send_json({"type": "stop"})
-        _drain(ws)
+        speak_and_stop(ws)
     rows = metrics.metrics_snapshot(include_identity=True)["recent_transcriptions"]
     assert rows, "no recent-transcription row recorded for the utterance"
     assert rows[0]["key_label"] == "alice-laptop"
@@ -830,10 +820,7 @@ def _dictate_one_utterance(client, conf_extra):
                       "audio": {"format": "pcm_s16le", "sample_rate": 16000},
                       **conf_extra})
         assert ws.receive_json()["type"] == "ready"
-        ws.send_bytes(_pcm(8000, 2500))   # speech
-        ws.send_bytes(_pcm(0, 1500))      # silence → finalize
-        ws.send_json({"type": "stop"})
-        _drain(ws)
+        speak_and_stop(ws)
 
 
 def test_stream_client_job_names_the_usage_job(app_module, monkeypatch):
@@ -1023,10 +1010,7 @@ def _stream_once(app_module, monkeypatch):
             ws.send_json({"type": "config", "model": "whisper-1",
                           "audio": {"format": "pcm_s16le", "sample_rate": 16000}})
             assert ws.receive_json()["type"] == "ready"
-            ws.send_bytes(_pcm(8000, 2500))
-            ws.send_bytes(_pcm(0, 1500))
-            ws.send_json({"type": "stop"})
-            return _drain(ws)
+            return speak_and_stop(ws)[0]
 
 
 def test_stream_final_and_previews_cut_the_made_up_tail(app_module, fake_model,
