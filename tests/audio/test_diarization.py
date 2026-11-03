@@ -19,6 +19,13 @@ def diar_on(app_module, monkeypatch):
     monkeypatch.setattr(app_module.cfg, "DIARIZATION_ENABLED", True, raising=False)
 
 
+def _seed(monkeypatch, pipe=None, key=None, leases=None, orphans=None):
+    monkeypatch.setattr(diarization, "_pipeline", pipe)
+    monkeypatch.setattr(diarization, "_pipeline_key", key)
+    monkeypatch.setattr(diarization, "_leases", {} if leases is None else leases)
+    monkeypatch.setattr(diarization, "_orphans", {} if orphans is None else orphans)
+
+
 def _stub_turns(monkeypatch, turns, calls=None):
     async def _fake_diarize(path, *, num_speakers=None, min_speakers=None,
                             max_speakers=None, model_id=None,
@@ -348,10 +355,7 @@ def test_release_drops_the_lease_even_while_the_lock_is_held(monkeypatch):
     and pin the pipeline against idle eviction forever)."""
     import asyncio
     pipe = object()
-    monkeypatch.setattr(diarization, "_pipeline", pipe)
-    monkeypatch.setattr(diarization, "_pipeline_key", ("m1", "cpu", 4))
-    monkeypatch.setattr(diarization, "_leases", {"m1": 1})
-    monkeypatch.setattr(diarization, "_orphans", {})
+    _seed(monkeypatch, pipe, ("m1", "cpu", 4), {"m1": 1})
 
     async def _main():
         lock = asyncio.Lock()
@@ -374,10 +378,7 @@ def test_cancel_during_diarize_still_drops_the_lease(monkeypatch):
     monkeypatch.setattr(cfg, "DIARIZATION_EMBEDDING_BATCH_SIZE", 4,
                         raising=False)
     pipe = object()
-    monkeypatch.setattr(diarization, "_pipeline", pipe)
-    monkeypatch.setattr(diarization, "_pipeline_key", ("m1", "cpu", 4))
-    monkeypatch.setattr(diarization, "_leases", {})
-    monkeypatch.setattr(diarization, "_orphans", {})
+    _seed(monkeypatch, pipe, ("m1", "cpu", 4))
 
     async def _fake_diarize_with(pipe, path, **kw):
         assert diarization._leases == {"m1": 1}
@@ -406,10 +407,7 @@ def test_idle_drop_waits_for_a_same_id_orphan(monkeypatch):
     then idled: dropping the reload must leave the stats row and teardown
     to the orphan's last release (job 1 is still running on A)."""
     from faster_whisper_backend.runtime import model_registry
-    monkeypatch.setattr(diarization, "_pipeline", object())
-    monkeypatch.setattr(diarization, "_pipeline_key", ("A", "cpu", 4))
-    monkeypatch.setattr(diarization, "_leases", {})
-    monkeypatch.setattr(diarization, "_orphans", {"A": 1})
+    _seed(monkeypatch, object(), ("A", "cpu", 4), orphans={"A": 1})
     unregistered: "list[str]" = []
     monkeypatch.setattr(model_registry, "unregister_loaded_model",
                         unregistered.append)
@@ -433,10 +431,7 @@ def test_diarize_does_not_touch_a_model_it_never_leased(monkeypatch):
     cfg = diarization.cfg
     monkeypatch.setattr(cfg, "DIARIZATION_MODEL", "m1", raising=False)
     monkeypatch.setattr(cfg, "DIARIZATION_DEVICE", "cpu", raising=False)
-    monkeypatch.setattr(diarization, "_pipeline", None)
-    monkeypatch.setattr(diarization, "_pipeline_key", None)
-    monkeypatch.setattr(diarization, "_leases", {})
-    monkeypatch.setattr(diarization, "_orphans", {})
+    _seed(monkeypatch)
 
     class _Ann:
         def itertracks(self, yield_label=True):
@@ -551,10 +546,7 @@ def _model_a(monkeypatch, batch=4):
     monkeypatch.setattr(cfg, "DIARIZATION_MODEL", "A", raising=False)
     monkeypatch.setattr(cfg, "DIARIZATION_DEVICE", "cpu", raising=False)
     monkeypatch.setattr(cfg, "DIARIZATION_EMBEDDING_BATCH_SIZE", batch, raising=False)
-    monkeypatch.setattr(diarization, "_pipeline", None)
-    monkeypatch.setattr(diarization, "_pipeline_key", None)
-    monkeypatch.setattr(diarization, "_leases", {})
-    monkeypatch.setattr(diarization, "_orphans", {})
+    _seed(monkeypatch)
 
 
 def test_cancel_during_register_keeps_the_pipeline_its_row_describes(monkeypatch):
@@ -693,10 +685,7 @@ def test_idle_drop_waits_for_a_zombie_inference(monkeypatch):
     import asyncio
     import threading
     from faster_whisper_backend.runtime import model_registry
-    monkeypatch.setattr(diarization, "_pipeline", object())
-    monkeypatch.setattr(diarization, "_pipeline_key", ("m1", "cpu", 4))
-    monkeypatch.setattr(diarization, "_leases", {})
-    monkeypatch.setattr(diarization, "_orphans", {})
+    _seed(monkeypatch, object(), ("m1", "cpu", 4))
     unregistered: "list[str]" = []
     monkeypatch.setattr(model_registry, "unregister_loaded_model",
                         unregistered.append)
@@ -731,10 +720,7 @@ def test_preload_declines_under_the_lock_when_a_job_holds_another_pipeline(
     monkeypatch.setattr(cfg, "DIARIZATION_EMBEDDING_BATCH_SIZE", 4,
                         raising=False)
     held = object()
-    monkeypatch.setattr(diarization, "_pipeline", held)
-    monkeypatch.setattr(diarization, "_pipeline_key", ("p/a", "cpu", 4))
-    monkeypatch.setattr(diarization, "_leases", {"p/a": 1})
-    monkeypatch.setattr(diarization, "_orphans", {})
+    _seed(monkeypatch, held, ("p/a", "cpu", 4), {"p/a": 1})
     loads: list = []
     monkeypatch.setattr(diarization, "_load_blocking",
                         lambda m, d, b: loads.append(m) or object())
@@ -744,10 +730,7 @@ def test_preload_declines_under_the_lock_when_a_job_holds_another_pipeline(
     assert diarization._pipeline is held
     assert diarization._leases == {"p/a": 1} and diarization._orphans == {}
     # A draining orphan declines too.
-    monkeypatch.setattr(diarization, "_pipeline", None)
-    monkeypatch.setattr(diarization, "_pipeline_key", None)
-    monkeypatch.setattr(diarization, "_leases", {})
-    monkeypatch.setattr(diarization, "_orphans", {"p/a": 1})
+    _seed(monkeypatch, orphans={"p/a": 1})
     assert asyncio.run(diarization.load_unleased("p/b")) is False
     assert loads == []
 
@@ -763,10 +746,7 @@ def test_a_zombie_inference_makes_the_singleton_busy(monkeypatch):
     monkeypatch.setattr(cfg, "DIARIZATION_EMBEDDING_BATCH_SIZE", 4,
                         raising=False)
     held = object()
-    monkeypatch.setattr(diarization, "_pipeline", held)
-    monkeypatch.setattr(diarization, "_pipeline_key", ("p/a", "cpu", 4))
-    monkeypatch.setattr(diarization, "_leases", {})
-    monkeypatch.setattr(diarization, "_orphans", {})
+    _seed(monkeypatch, held, ("p/a", "cpu", 4))
     loads: list = []
     monkeypatch.setattr(diarization, "_load_blocking",
                         lambda m, d, b: loads.append(m) or object())
