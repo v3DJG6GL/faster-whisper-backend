@@ -49,8 +49,8 @@ def test_non_admin_200_on_permitted_page(client, make_user_key):
 
 
 def test_non_admin_403_on_unpermitted_page(client, make_user_key):
-    # New non-admins default to quick_config/reports/captures="own"; explicitly
-    # revoke quick_config to "none" to exercise the require_page 403 path.
+    # New non-admins default to quick_config="own"; revoke it to "none" to
+    # exercise the require_page 403 path.
     make_user_key("root", is_admin=True)
     _uid, raw = make_user_key(
         "alice", is_admin=False, pages={"quick_config": "none"}
