@@ -1405,10 +1405,7 @@ async def transcribe_stream(ws: WebSocket) -> None:
                         segments=list(segments),
                         user_id=user.get("user_id"))
                 finally:
-                    try:
-                        os.unlink(wav_path)
-                    except OSError:
-                        pass
+                    store_common.unlink_quietly(wav_path)
             except Exception as _ce:  # noqa: BLE001 — never let a capture failure break dictation
                 logger.warning("[stream %s] capture failed: %s", session_id[:8], _ce)
                 return None

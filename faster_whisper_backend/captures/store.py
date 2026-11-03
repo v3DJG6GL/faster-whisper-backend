@@ -431,11 +431,7 @@ def create_capture(
             audio_src_path, tmp_path,
         )
     except Exception as e:
-        try:
-            if os.path.exists(tmp_path):
-                os.unlink(tmp_path)
-        except OSError:
-            pass
+        store_common.unlink_quietly(tmp_path)
         raise RuntimeError(f"audio transcode failed: {e}") from e
 
     # No fsync: the transcoder already closed its write fd, and a read-only

@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
-import contextlib
 import functools
 import io
 import json
@@ -1472,11 +1471,8 @@ async def create_sample_api(
         ))
     except Exception:
         # Drop the orphan WAV so a retry of the same merge starts clean.
-        try:
-            os.unlink(capture_samples_store.abs_path_for(
-                capture_samples_store._relpath_for(sid)))
-        except OSError:
-            pass
+        store_common.unlink_quietly(capture_samples_store.abs_path_for(
+            capture_samples_store._relpath_for(sid)))
         raise
     return JSONResponse({"sample_id": sid})
 
@@ -1492,8 +1488,7 @@ class _TempFileResponse(FileResponse):
         try:
             await super().__call__(scope, receive, send)
         finally:
-            with contextlib.suppress(OSError):
-                os.unlink(self.path)
+            store_common.unlink_quietly(self.path)
 
 
 @router.post(
@@ -1536,8 +1531,7 @@ async def preview_merge_audio_api(
             )
         )
     except Exception as e:
-        with contextlib.suppress(OSError):
-            os.unlink(tmp_path)
+        store_common.unlink_quietly(tmp_path)
         if isinstance(e, ValueError):  # incl. audio_merge.WavFormatError
             raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e))
         raise

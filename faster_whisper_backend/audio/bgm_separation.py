@@ -26,6 +26,7 @@ from collections.abc import Callable
 from faster_whisper_backend.settings import config as cfg
 from faster_whisper_backend.runtime import model_registry
 from faster_whisper_backend.runtime import system_stats
+from faster_whisper_backend.core import store_common
 from faster_whisper_backend.core.loop_lock import LoopLock
 
 logger = logging.getLogger("whisper-server")
@@ -794,7 +795,7 @@ async def _separate_with(sep, path: str, *, progress_cb, cancel_check) -> str:
             if not handoff["abandoned"]:
                 handoff["out"] = out
                 return out
-        _unlink_quietly(out)
+        store_common.unlink_quietly(out)
         raise BgmCancelled()
 
     loop = asyncio.get_running_loop()
@@ -806,7 +807,7 @@ async def _separate_with(sep, path: str, *, progress_cb, cancel_check) -> str:
             done_out = handoff["out"]
         if done_out:
             # _run finished but the result never reached us.
-            _unlink_quietly(done_out)
+            store_common.unlink_quietly(done_out)
         raise
     except BgmCancelled:
         logger.info("[bgm] separation cancelled by client")
@@ -821,13 +822,6 @@ async def _separate_with(sep, path: str, *, progress_cb, cancel_check) -> str:
     # finally), which is gated on the LEASED key — _separator_key here may
     # already name a different model a concurrent load swapped in.
     return result
-
-
-def _unlink_quietly(path: str) -> None:
-    try:
-        os.unlink(path)
-    except OSError:
-        pass
 
 
 async def drop_separator(*, force: bool = True) -> bool:

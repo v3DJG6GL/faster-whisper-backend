@@ -232,13 +232,6 @@ from faster_whisper_backend.stats import usage_store
 _log_safe = store_common.log_safe
 
 
-def _unlink_quietly(path: str) -> None:
-    try:
-        os.unlink(path)
-    except OSError:
-        pass
-
-
 async def _hourly_sweep_loop(sweep, error_fmt: str) -> None:
     """Run ``sweep`` off the event loop once an hour until cancelled. The
     sweeps are blocking SQLite + filesystem work (the stores serialise
@@ -2391,7 +2384,7 @@ async def transcribe(
                                     "skipping separation" if _refused else
                                     "separator will decode the original")
                                 if _sep_wav is not None:
-                                    _unlink_quietly(_sep_wav)
+                                    store_common.unlink_quietly(_sep_wav)
                                     _sep_wav = None
                                 if _refused:
                                     # Never hand a refused input to the
@@ -2431,8 +2424,8 @@ async def transcribe(
                             # even on cancel/failure (it's ~10× the source;
                             # leaking one per request adds up fast).
                             if _sep_wav is not None:
-                                _unlink_quietly(_sep_wav)
-                        _unlink_quietly(tmp_path)
+                                store_common.unlink_quietly(_sep_wav)
+                        store_common.unlink_quietly(tmp_path)
                         tmp_path = _vocals_path
                         logger.info("[bgm] separated in %.1fs",
                                     time.perf_counter() - _sep_t0)
@@ -3527,9 +3520,9 @@ async def transcribe(
                 else:
                     tx_progress._progress_close(_pid)
             if tmp_path:
-                _unlink_quietly(tmp_path)
+                store_common.unlink_quietly(tmp_path)
             if _retained_upload:
-                _unlink_quietly(_retained_upload)
+                store_common.unlink_quietly(_retained_upload)
             # URL flow: the private download dir (partials, fragments) goes
             # on every path — cancel, 4xx, 500 included. The retained copy
             # (url_media_store) has its own TTL lifecycle. Off the loop and

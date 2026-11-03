@@ -272,11 +272,7 @@ def merge_wavs(
             pass
         replace_with_retry(tmp_path, dst_path)
     except Exception:
-        try:
-            if os.path.exists(tmp_path):
-                os.unlink(tmp_path)
-        except OSError:
-            pass
+        store_common.unlink_quietly(tmp_path)
         raise
 
     # No outer trim of the merged WAV: with a trimmer each member was trimmed

@@ -188,6 +188,14 @@ def close_quietly(conn: sqlite3.Connection | None) -> None:
             pass
 
 
+def unlink_quietly(path: str) -> None:
+    """Best-effort os.unlink: any OSError (incl. already gone) is ignored."""
+    try:
+        os.unlink(path)
+    except OSError:
+        pass
+
+
 @contextlib.contextmanager
 def transaction(conn: sqlite3.Connection, begin: str = "BEGIN") -> Iterator[None]:
     """One explicit transaction on an autocommit (open_wal_db) connection,

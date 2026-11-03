@@ -21,6 +21,7 @@ from __future__ import annotations
 import os
 
 from faster_whisper_backend.audio import ffmpeg as audio_ffmpeg
+from faster_whisper_backend.core import store_common
 
 _OUT_FORMAT = "s16"
 _OUT_CODEC = "pcm_s16le"     # WAV's native uncompressed codec
@@ -243,11 +244,7 @@ def transcode_to_wav(src_path: str, dst_path: str, *,
                 out_container = None
         except Exception:
             pass
-        try:
-            if os.path.exists(dst_path):
-                os.unlink(dst_path)
-        except OSError:
-            pass
+        store_common.unlink_quietly(dst_path)
         raise
     finally:
         try:

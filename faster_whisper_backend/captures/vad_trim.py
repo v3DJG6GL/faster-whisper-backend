@@ -160,11 +160,7 @@ def trim_wav(
             pass
         audio_merge.replace_with_retry(tmp_path, dst_path)
     except Exception:
-        try:
-            if os.path.exists(tmp_path):
-                os.unlink(tmp_path)
-        except OSError:
-            pass
+        store_common.unlink_quietly(tmp_path)
         raise
 
     lead_ms = int(leading_trimmed * 1000 / _REQ_RATE)
