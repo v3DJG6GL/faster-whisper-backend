@@ -61,9 +61,8 @@ _conn: sqlite3.Connection | None = None
 _DB_READY: bool = False
 
 # token_hash → session row (lifecycle: module docstring; _fetch_on_miss
-# inserts too). INVARIANT: any incremental insert must carry exactly the keys
-# _rebuild_index_locked() produces (user_id, key_id, csrf_token, created_ts,
-# expires_ts).
+# inserts too). Every entry is built by _index_rec, so all inserts carry the
+# same five keys.
 _SESSION_INDEX: dict[str, dict[str, Any]] = {}
 
 # Last `PRAGMA data_version` observed on _conn — same role as in
@@ -184,14 +183,21 @@ def _rebuild_index_locked() -> None:
     ).fetchall()
     _DATA_VERSION = version
     _SESSION_INDEX = {
-        r["token_hash"]: {
-            "user_id": r["user_id"],
-            "key_id": r["key_id"],
-            "csrf_token": r["csrf_token"],
-            "created_ts": float(r["created_ts"]),
-            "expires_ts": float(r["expires_ts"]),
-        }
+        r["token_hash"]: _index_rec(r["user_id"], r["key_id"], r["csrf_token"],
+                                    r["created_ts"], r["expires_ts"])
         for r in rows
+    }
+
+
+def _index_rec(user_id: str, key_id: str | None, csrf_token: str,
+               created_ts: float, expires_ts: float) -> dict[str, Any]:
+    """The one shape of a _SESSION_INDEX entry."""
+    return {
+        "user_id": user_id,
+        "key_id": key_id,
+        "csrf_token": csrf_token,
+        "created_ts": float(created_ts),
+        "expires_ts": float(expires_ts),
     }
 
 
@@ -248,15 +254,8 @@ def _fetch_on_miss(th: str) -> dict[str, Any] | None:
             return None
         if r is None:
             return None
-        # Same five keys as _rebuild_index_locked (see the _SESSION_INDEX
-        # invariant).
-        rec = {
-            "user_id": r["user_id"],
-            "key_id": r["key_id"],
-            "csrf_token": r["csrf_token"],
-            "created_ts": float(r["created_ts"]),
-            "expires_ts": float(r["expires_ts"]),
-        }
+        rec = _index_rec(r["user_id"], r["key_id"], r["csrf_token"],
+                         r["created_ts"], r["expires_ts"])
         _SESSION_INDEX[th] = rec
         return rec
 
@@ -317,13 +316,7 @@ def create_session(user_id: str, ttl_s: float,
         # move PRAGMA data_version on this connection, so _DATA_VERSION stays
         # valid without a re-stamp; the pre-write check above keeps the
         # sibling-detection contract in _refresh_if_sibling_committed.
-        _SESSION_INDEX[th] = {
-            "user_id": user_id,
-            "key_id": key_id,
-            "csrf_token": csrf_token,
-            "created_ts": now,
-            "expires_ts": expires,
-        }
+        _SESSION_INDEX[th] = _index_rec(user_id, key_id, csrf_token, now, expires)
     logger.info("[auth] session created user=%s ttl=%.0fs", user_id[:8], ttl_s)
     return raw_token, csrf_token
 
