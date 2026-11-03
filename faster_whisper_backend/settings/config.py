@@ -305,9 +305,8 @@ LOG_VIEWER_DOM_MAX = _D("LOG_VIEWER_DOM_MAX")
 # LOG_SEGMENT_ROWS_MAX — how many per-segment rows the receipt writes to
 # the log FILE. The viewer can only ever reveal what was written, so this
 # is the real ceiling on "show more". 0 = unlimited. A 31-minute
-# interview is ~612 rows ≈ 55 KB; the default covers a typical hour-long
-# file completely and truncates longer ones with an honest "(N not
-# logged)" note rather than silently.
+# interview is ~612 rows ≈ 55 KB; rows past the cap are summed up in an
+# honest "(N not logged)" note rather than dropped silently.
 LOG_SEGMENT_ROWS_MAX = _D("LOG_SEGMENT_ROWS_MAX")
 #
 # LOG_SEGMENT_ROWS_SHOWN — how many of those rows the /logs viewer shows
@@ -360,9 +359,9 @@ MEDIA_MAX_BYTES = _D("MEDIA_MAX_BYTES")
 # Service-wide ceiling on any request body, checked against Content-Length
 # before the body is read. Deliberately ABOVE MEDIA_MAX_BYTES so the more
 # specific media cap is what an oversized upload hits. Only multipart uploads
-# to /v1/audio/transcriptions and /translations get this full ceiling: every
-# other non-JSON body keeps a 256 MiB backstop in main._max_body_mw, and JSON
-# bodies a 4 MiB one. 10 GiB.
+# to /v1/audio/transcriptions and /translations get this full ceiling;
+# main._max_body_mw caps the raw video upload at MEDIA_MAX_BYTES, other
+# non-JSON bodies at 256 MiB and JSON bodies at MAX_JSON_BODY_BYTES. 10 GiB.
 MAX_REQUEST_BYTES = _D("MAX_REQUEST_BYTES")
 
 
@@ -1960,9 +1959,7 @@ if _env_convert_quant is not None:
 # --- Per-model overrides via env (WHISPER_MODEL_OVERRIDE__<id>__<FIELD>) ----
 # Convention: model id is encoded by replacing "/" with "__SLASH__" and "." with
 # "__DOT__" so HF-style ids round-trip cleanly through env var names. Field
-# names are UPPER_CASE matching the AdminConfig field. Values are coerced by
-# _coerce_override_value (bool / int / float / slug list by field name, else
-# the raw string); the validation pass below rejects what does not fit.
+# names are UPPER_CASE matching the AdminConfig field.
 def _decode_model_id(s: str) -> str:
     return s.replace("__SLASH__", "/").replace("__DOT__", ".")
 
