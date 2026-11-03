@@ -70,12 +70,16 @@ class _Seg:
 class _Model:
     """Mirrors the faster-whisper call shape: one encode + one
     generate_with_fallback per window, generate per rung. `plan` is a list of
-    windows, each a list of rung scripts (tokens, score, nsp)."""
+    windows, each a list of rung scripts (tokens, score, nsp); `windows` is
+    what transcribe() pads, decodes and yields; `attrs` override the class
+    defaults below."""
 
-    def __init__(self, plan, thresholds):
+    def __init__(self, plan, windows, **attrs):
         self.model = _CT2([rung for window in plan for rung in window])
         self.plan = plan
-        self.thr = thresholds
+        self.thr = _THR
+        self.windows = windows
+        vars(self).update(attrs)
 
     def encode(self, features):
         return "enc"
@@ -139,10 +143,8 @@ def _incident_model():
         [(loop, -0.3, 0.71), (loop, -0.5, 0.71), (loop, -0.6, 0.71),
          (loop, -0.8, 0.71), (loop, -0.9, 0.71), (loop, -1.9, 0.71)],  # tail window
     ]
-    m = _Model(plan, _THR)
-    m.windows = [{"frames": 219, "seek": 0, "yield": 1},
-                 {"frames": 47, "seek": 172, "yield": 0}]
-    return m
+    return _Model(plan, [{"frames": 219, "seek": 0, "yield": 1},
+                         {"frames": 47, "seek": 172, "yield": 0}])
 
 
 def test_install_is_noop_for_fakes_and_idempotent():
@@ -345,11 +347,9 @@ def test_unfinished_last_segment_is_re_decoded_not_refused():
     the re-decode (single-timestamp ending) still arms the stop."""
     plan = [[([_TS, 5, _TS + 100, _TS + 100, 6], -0.5, 0.01)],
             [([_TS, 6, _TS + 50], -0.5, 0.01)]]
-    m = _Model(plan, _THR)
-    m.duration = 3.2
-    m.windows = [{"frames": 319, "seek": 0, "yield": 1},
-                 {"frames": 119, "seek": 200, "yield": 1},
-                 {"frames": 20, "seek": 300, "yield": 0}]
+    m = _Model(plan, [{"frames": 319, "seek": 0, "yield": 1},
+                      {"frames": 119, "seek": 200, "yield": 1},
+                      {"frames": 20, "seek": 300, "yield": 0}], duration=3.2)
     dt.install(m)
     segs, t = _run_stop(m, skip_residual=True)
     assert len(segs) == 2
@@ -365,9 +365,8 @@ def test_unfinished_last_segment_is_re_decoded_not_refused():
 def test_finished_output_still_arms_the_residual_stop(tokens):
     """Output faster-whisper keeps in full: the window after it is the
     leftover the stop exists for (the 43 s incident), still refused."""
-    m = _Model([[(tokens, -0.5, 0.01)]], _THR)
-    m.windows = [{"frames": 219, "seek": 0, "yield": 1},
-                 {"frames": 47, "seek": 172, "yield": 0}]
+    m = _Model([[(tokens, -0.5, 0.01)]], [{"frames": 219, "seek": 0, "yield": 1},
+                                          {"frames": 47, "seek": 172, "yield": 0}])
     dt.install(m)
     segs, t = _run_stop(m, skip_residual=True)
     assert len(segs) == 1 and len(m.model.calls) == 1
@@ -408,12 +407,10 @@ def test_full_windows_of_a_long_file_are_never_refused():
     """A 65 s file: two full 30 s windows, a 5 s last window, then the
     residual after its last word. Only the residual is refused."""
     plan = [[([5, 6, 7], -0.5, 0.01)]] * 3 + [[([9], -0.5, 0.01)]]
-    m = _Model(plan, _THR)
-    m.duration = 65.0
-    m.windows = [{"frames": 3000, "seek": 0, "yield": 1},
-                 {"frames": 3000, "seek": 2900, "yield": 1},
-                 {"frames": 500, "seek": 6000, "yield": 1},   # 65 s − 5 s
-                 {"frames": 60, "seek": 6440, "yield": 0}]
+    m = _Model(plan, [{"frames": 3000, "seek": 0, "yield": 1},
+                      {"frames": 3000, "seek": 2900, "yield": 1},
+                      {"frames": 500, "seek": 6000, "yield": 1},   # 65 s − 5 s
+                      {"frames": 60, "seek": 6440, "yield": 0}], duration=65.0)
     dt.install(m)
     segs, t = _run_stop(m, skip_residual=True)
     assert len(segs) == 3
@@ -430,12 +427,10 @@ def test_full_middle_window_without_text_claims_no_foreign_seek():
     """A 95 s file whose second window yielded nothing: it stays unplaced with
     0 segments, and the window after it still finds its own seek."""
     plan = [[([5, 6, 7], -0.5, 0.01)]] * 4
-    m = _Model(plan, _THR)
-    m.duration = 95.0
-    m.windows = [{"frames": 3000, "seek": 0, "yield": 1},
-                 {"frames": 3000, "seek": 3000, "yield": 0},
-                 {"frames": 3000, "seek": 6000, "yield": 2},
-                 {"frames": 500, "seek": 9000, "yield": 1}]
+    m = _Model(plan, [{"frames": 3000, "seek": 0, "yield": 1},
+                      {"frames": 3000, "seek": 3000, "yield": 0},
+                      {"frames": 3000, "seek": 6000, "yield": 2},
+                      {"frames": 500, "seek": 9000, "yield": 1}], duration=95.0)
     t = _run(dt.install(m))
     w1, w2, w3, w4 = t["windows"]
     assert w2["start_s"] is None and w2["segments"] == 0
@@ -461,12 +456,10 @@ def test_full_window_length_follows_the_feature_extractor():
     class FE:
         nb_max_frames = 1000
     plan = [[([5, 6, 7], -0.5, 0.01)]] * 3
-    m = _Model(plan, _THR)
-    m.feature_extractor = FE()
-    m.duration = 25.0
-    m.windows = [{"frames": 1000, "seek": 0, "yield": 1},
-                 {"frames": 1000, "seek": 1000, "yield": 1},
-                 {"frames": 500, "seek": 2000, "yield": 1}]
+    m = _Model(plan, [{"frames": 1000, "seek": 0, "yield": 1},
+                      {"frames": 1000, "seek": 1000, "yield": 1},
+                      {"frames": 500, "seek": 2000, "yield": 1}],
+               feature_extractor=FE(), duration=25.0)
     dt.install(m)
     segs, t = _run_stop(m, skip_residual=True)
     assert len(segs) == 3 and t["skipped_windows"] == 0
@@ -541,12 +534,9 @@ def _looping_model(prompt_len=224):
     """The 2026-09-19 shape: ONE 7.06 s window; the beam rung loops to the
     limit and is discarded, the first sampled rung returns the sentence."""
     loop = list(range(100, 100 + 440))
-    m = _Model([[(loop, -0.22, 0.01), ([5] * 17, -0.22, 0.01)]], _THR)
-    m.windows = [{"frames": 706, "seek": 0, "yield": 1}]
-    m.duration = 7.06
-    m.max_length = 448
-    m.prompt = tuple(range(prompt_len))
-    return m
+    return _Model([[(loop, -0.22, 0.01), ([5] * 17, -0.22, 0.01)]],
+                  [{"frames": 706, "seek": 0, "yield": 1}], duration=7.06,
+                  max_length=448, prompt=tuple(range(prompt_len)))
 
 
 def test_looping_rung_stops_at_the_cap_and_says_so():
