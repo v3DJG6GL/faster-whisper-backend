@@ -1466,9 +1466,9 @@ async def transcribe_stream(ws: WebSocket) -> None:
                     _maybe_capture, rid, info, raw_text, final_text, words,
                     fw_info, cap_segs)
 
-            # One `transcribing` stage per live utterance — but none at all when
-            # the gate skipped the decode: a 0.00 s stage that never ran would
-            # skew the /stats dictation timing aggregates.
+            # One `transcribing` stage per decoded utterance — none when the
+            # gate skipped the decode (a 0.00 s stage that never ran would skew
+            # the /stats dictation timing aggregates) or the decode failed.
             stages = ([{"name": "transcribing",
                         "secs": round(float(info["proc_dur"] or 0.0), 2),
                         "model": final_model}]
