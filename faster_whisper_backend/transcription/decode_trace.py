@@ -401,6 +401,15 @@ def _unbound(orig, model, model_ref):
     return lambda *args, **kwargs: func(model_ref(), *args, **kwargs)
 
 
+def _try_setattr(obj, name: str, value) -> bool:
+    """setattr that never raises; True when it took."""
+    try:
+        setattr(obj, name, value)
+        return True
+    except Exception:
+        return False
+
+
 def install(model):
     """Hook a loaded ``WhisperModel`` in place (idempotent). Returns ``model``.
 
@@ -418,11 +427,7 @@ def install(model):
 
     inner = getattr(model, "model", None)
     if inner is not None and hasattr(inner, "generate") and not isinstance(inner, _GenerateProxy):
-        try:
-            model.model = _GenerateProxy(inner)
-            installed_any = True
-        except Exception:
-            pass
+        installed_any |= _try_setattr(model, "model", _GenerateProxy(inner))
 
     orig_encode = getattr(model, "encode", None)
     if callable(orig_encode):
@@ -434,11 +439,7 @@ def install(model):
             out = _orig(features)
             tr.note_encode(time.perf_counter() - t0)
             return out
-        try:
-            model.encode = encode
-            installed_any = True
-        except Exception:
-            pass
+        installed_any |= _try_setattr(model, "encode", encode)
 
     orig_fb = getattr(model, "generate_with_fallback", None)
     if callable(orig_fb):
@@ -474,18 +475,11 @@ def install(model):
                 pass
             tr.close_window(w, chosen)
             return result
-        try:
-            model.generate_with_fallback = generate_with_fallback
-            installed_any = True
-        except Exception:
-            pass
+        installed_any |= _try_setattr(model, "generate_with_fallback", generate_with_fallback)
 
     _install_pad_hook()
     if installed_any:
-        try:
-            setattr(model, _INSTALLED_FLAG, True)
-        except Exception:
-            pass
+        _try_setattr(model, _INSTALLED_FLAG, True)
     return model
 
 
