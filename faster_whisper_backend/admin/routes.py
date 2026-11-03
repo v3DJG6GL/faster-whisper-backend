@@ -1312,7 +1312,8 @@ async def test_pipeline(payload: dict[str, Any]) -> JSONResponse:
             if rtype == "callback:map":
                 m = rule.get("map", {}) or {}
                 # Editor rules skip pl_apply._PIPELINE_RULE_ADAPTER: a list/str map
-                # would survive to m.items() below and 500 the whole dry run.
+                # would reach compile_map's m.items() and surface as a raw
+                # AttributeError instead of this message.
                 if not isinstance(m, dict):
                     return {**common, "after": text,
                             "error": "map must be an object"}
