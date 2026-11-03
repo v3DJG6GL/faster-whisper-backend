@@ -90,6 +90,20 @@ def samples_to_ms(samples: int) -> int:
     return int(round(samples * 1000 / _REQ_RATE))
 
 
+def replace_with_retry(src_path: str, dst_path: str) -> None:
+    """os.replace with the Windows-AV-lock retry: 3 attempts, 0.1 s apart.
+    Raises the last OSError; the caller owns removing src_path."""
+    last_err: OSError | None = None
+    for _attempt in range(3):
+        try:
+            os.replace(src_path, dst_path)
+            return
+        except OSError as e:
+            last_err = e
+            time.sleep(0.1)
+    raise last_err
+
+
 def merge_wavs(
     src_paths: list[str],
     dst_path: str,
@@ -223,8 +237,8 @@ def merge_wavs(
 
     out_pcm = b"".join(pieces)
 
-    # Atomic write: tmp + fsync + os.replace, with the same 3-retry
-    # Windows-AV-lock loop captures_store uses.
+    # Atomic write: tmp + fsync + replace_with_retry (the Windows-AV-lock
+    # loop captures_store and audio_vad_trim share).
     # `or "."` so a bare-filename dst_path (no dirname) doesn't pass "" to
     # os.makedirs, which raises FileNotFoundError on some platforms.
     dst_dir = os.path.dirname(dst_path) or "."
@@ -256,22 +270,7 @@ def merge_wavs(
                 os.fsync(fp.fileno())
         except OSError:
             pass
-        last_err: Exception | None = None
-        for attempt in range(3):
-            try:
-                os.replace(tmp_path, dst_path)
-                last_err = None
-                break
-            except OSError as e:
-                last_err = e
-                time.sleep(0.1)
-        if last_err is not None:
-            try:
-                if os.path.exists(tmp_path):
-                    os.unlink(tmp_path)
-            except OSError:
-                pass
-            raise last_err
+        replace_with_retry(tmp_path, dst_path)
     except Exception:
         try:
             if os.path.exists(tmp_path):

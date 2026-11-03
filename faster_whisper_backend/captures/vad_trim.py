@@ -18,7 +18,6 @@ from __future__ import annotations
 import logging
 import os
 import tempfile
-import time
 import wave
 
 from faster_whisper_backend.captures import merge as audio_merge
@@ -159,22 +158,7 @@ def trim_wav(
                 os.fsync(fp.fileno())
         except OSError:
             pass
-        last_err: Exception | None = None
-        for _attempt in range(3):
-            try:
-                os.replace(tmp_path, dst_path)
-                last_err = None
-                break
-            except OSError as e:
-                last_err = e
-                time.sleep(0.1)
-        if last_err is not None:
-            try:
-                if os.path.exists(tmp_path):
-                    os.unlink(tmp_path)
-            except OSError:
-                pass
-            raise last_err
+        audio_merge.replace_with_retry(tmp_path, dst_path)
     except Exception:
         try:
             if os.path.exists(tmp_path):

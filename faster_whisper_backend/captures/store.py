@@ -415,6 +415,7 @@ def create_capture(
     (Firefox on Linux ships no AAC decoder, so we can't store .m4a)
     and Whisper's native input rate, so fine-tuning loses no quality."""
     from faster_whisper_backend.audio import transcode as audio_transcode
+    from faster_whisper_backend.captures import merge as audio_merge
 
     if ready_fills_cap():
         logger.info("[captures] not recorded: ready rows fill CAPTURES_MAX")
@@ -442,18 +443,11 @@ def create_capture(
     # re-open to fsync is a no-op on Windows (fsync needs write access).
     # .tmp + os.replace keeps a partial file invisible; a crash before the
     # row insert leaves an orphan WAV that reconcile_on_startup unlinks.
-    last_err: Exception | None = None
-    for attempt in range(3):
-        try:
-            os.replace(tmp_path, abs_path)
-            last_err = None
-            break
-        except OSError as e:
-            last_err = e
-            time.sleep(0.1)
-    if last_err is not None:
+    try:
+        audio_merge.replace_with_retry(tmp_path, abs_path)
+    except OSError:
         _safe_unlink(tmp_path)
-        raise last_err
+        raise
 
     now = time.time()
     raw_t = (raw or "")[:_CAP_RAW]
