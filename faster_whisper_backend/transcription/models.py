@@ -1172,10 +1172,9 @@ async def _get_or_load_model(name: str, *, lease: bool = False) -> "WhisperModel
 
     cached = _loaded_models.get(name)
     if cached is not None:
-        # Tolerate the race against _drop_loaded_model from _idle_evictor
-        # or drain_then_evict, both of which hold _model_load_lock; this
-        # cache-hit fast path runs lock-free so move_to_end can KeyError
-        # if the entry was popped between .get() and here.
+        # Defensive only: this fast path runs without _model_load_lock, but
+        # nothing awaits between .get() and here and every eviction pops on
+        # the loop, so no KeyError can occur today.
         try:
             _loaded_models.move_to_end(name)
         except KeyError:
