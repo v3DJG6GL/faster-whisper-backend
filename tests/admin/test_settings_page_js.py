@@ -85,6 +85,18 @@ function find(el, pred) {
 }
 """
 
+# disableEnvPinnedEditor() needs el.matches() / el.querySelectorAll() over the
+# form controls under an element.
+_CONTROL_QSA = r"""
+const CONTROL = ['INPUT', 'SELECT', 'TEXTAREA', 'BUTTON'];
+El.prototype.matches = function () { return CONTROL.includes(this.tagName); };
+El.prototype.querySelectorAll = function () {
+  const out = [];
+  (function walk(n) { n.children.forEach(c => { if (c.matches()) out.push(c); walk(c); }); })(this);
+  return out;
+};
+"""
+
 
 def _captures_harness(html, body, real_list=False):
     """makeEditor()'s captures branch. By default makeRuleListEditor is
@@ -776,14 +788,7 @@ def test_env_pinned_plain_field_cannot_be_typed_into(client):
         _block(html, "function textareaEditor(name, v) {", "\n}\n"),
         _block(html, "function disableEnvPinnedEditor(el) {", "\n}\n"),
     ])
-    out = _node(_FAKE_DOM + """
-const CONTROL = ['INPUT', 'SELECT', 'TEXTAREA', 'BUTTON'];
-El.prototype.matches = function () { return CONTROL.includes(this.tagName); };
-El.prototype.querySelectorAll = function () {
-  const out = [];
-  (function walk(n) { n.children.forEach(c => { if (c.matches()) out.push(c); walk(c); }); })(this);
-  return out;
-};
+    out = _node(_FAKE_DOM + _CONTROL_QSA + """
 const state = { DEFAULT_PROMPT: 'p', DEFAULT_LANGUAGE: 'de' };
 function currentValue(n) { return state[n]; }
 function setDirty(n, v) { state[n] = v; }
@@ -1125,14 +1130,7 @@ def test_env_pinned_rule_list_cards_still_open_for_reading(client):
                "\n    });\n"),
         _block(html, "function disableEnvPinnedEditor(el) {", "\n}\n"),
     ])
-    out = _node(_FAKE_DOM + """
-const CONTROL = ['INPUT', 'SELECT', 'TEXTAREA', 'BUTTON'];
-El.prototype.matches = function () { return CONTROL.includes(this.tagName); };
-El.prototype.querySelectorAll = function () {
-  const out = [];
-  (function walk(n) { n.children.forEach(c => { if (c.matches()) out.push(c); walk(c); }); })(this);
-  return out;
-};
+    out = _node(_FAKE_DOM + _CONTROL_QSA + """
 const rule = { name: 'a', type: 'regex' };
 const name = 'PIPELINE_RULES';
 const isChecklist = false;
@@ -1246,15 +1244,8 @@ def test_env_pinned_editor_keeps_its_view_only_controls_live(client):
     what matches" switch change no value, but disableEnvPinnedEditor() disabled
     them too, so a pinned field could not even be inspected."""
     html = _html(client)
-    out = _node(_captures_harness(html, """
-const CONTROL = ['INPUT', 'SELECT', 'TEXTAREA', 'BUTTON'];
-El.prototype.matches = function () { return CONTROL.includes(this.tagName); };
-El.prototype.querySelectorAll = function () {
-  const out = [];
-  (function walk(n) { n.children.forEach(c => { if (c.matches()) out.push(c); walk(c); }); })(this);
-  return out;
-};
-""" + _block(html, "function disableEnvPinnedEditor(el) {", "\n}\n") + """
+    out = _node(_captures_harness(html, _CONTROL_QSA
+                                  + _block(html, "function disableEnvPinnedEditor(el) {", "\n}\n") + """
 state.PIPELINE_RULES = [{ name: 'a', type: 'regex', enabled: true }];
 state.CAPTURES_PIPELINE_RULES_EXCLUDE = [];
 const wrap = makeEditor('CAPTURES_PIPELINE_RULES_EXCLUDE');
