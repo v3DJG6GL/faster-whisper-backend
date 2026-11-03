@@ -663,6 +663,14 @@ def _seed_usage(alice, bob, alice_key, bob_key):
                     status="ok", hour=h)
 
 
+def _usage_now(key_id, user_id, audio_s, words, job_id, kind, processing_s=1.0):
+    """One "ok" usage row in the current hour (the list-filter / picker tests)."""
+    from faster_whisper_backend.stats import usage_store as us
+    us.record_usage(key_id=key_id, user_id=user_id, audio_s=audio_s, words=words,
+                    status="ok", hour=us.now_hour(), processing_s=processing_s,
+                    job_id=job_id, kind=kind)
+
+
 def _two_users(make_user_key):
     from faster_whisper_backend.auth import api_keys_store
     _, raw_admin = make_user_key("root", is_admin=True)
@@ -1265,17 +1273,10 @@ def test_stats_usage_list_filters_kinds_users_keys(client):
     `keys` keep only those owners / keys (an IN clause), every filter is
     echoed under `filter`, and /stats/pick lists the pickable users ranked
     by the measure with the same labels the leaderboard uses."""
-    import time
-    from faster_whisper_backend.stats import usage_store as us
-    h = int(time.time() // 3600)
-    us.record_usage(key_id="ka", user_id="alice", audio_s=100.0, words=10,
-                    status="ok", hour=h, processing_s=2.0, job_id="a1", kind="file")
-    us.record_usage(key_id="ka", user_id="alice", audio_s=50.0, words=5,
-                    status="ok", hour=h, processing_s=1.0, job_id="a2", kind="dictation")
-    us.record_usage(key_id="kb", user_id="bob", audio_s=30.0, words=3,
-                    status="ok", hour=h, processing_s=1.0, job_id="b1", kind="url")
-    us.record_usage(key_id="kc", user_id="carla", audio_s=20.0, words=2,
-                    status="ok", hour=h, processing_s=1.0, job_id="c1", kind="file")
+    _usage_now("ka", "alice", 100.0, 10, "a1", "file", processing_s=2.0)
+    _usage_now("ka", "alice", 50.0, 5, "a2", "dictation")
+    _usage_now("kb", "bob", 30.0, 3, "b1", "url")
+    _usage_now("kc", "carla", 20.0, 2, "c1", "file")
     everything = client.get("/stats/usage?by=user").json()
     assert everything["totals"]["all"]["audio_s"] == 200.0
     assert everything["filter"]["kinds"] == [] and everything["filter"]["users"] == []
@@ -1313,17 +1314,12 @@ def test_stats_usage_list_filters_respect_scope(client, make_user_key):
     """Own-scope users cannot widen to other users (users= is 403, and so is
     the user picker); a non-admin 'all' viewer sends the opaque labels it
     was shown and gets the matching rows back."""
-    import time
     from tests.conftest import bearer
-    from faster_whisper_backend.stats import usage_store as us
-    h = int(time.time() // 3600)
     make_user_key("root", is_admin=True)
     alice_uid, alice_raw = make_user_key("alice", pages={"stats": "own"})
     _, viewer_raw = make_user_key("viewer", pages={"stats": "all"})
-    us.record_usage(key_id="ka", user_id=alice_uid, audio_s=100.0, words=10,
-                    status="ok", hour=h, processing_s=2.0, job_id="a1", kind="file")
-    us.record_usage(key_id="kb", user_id="bob", audio_s=30.0, words=3,
-                    status="ok", hour=h, processing_s=1.0, job_id="b1", kind="url")
+    _usage_now("ka", alice_uid, 100.0, 10, "a1", "file", processing_s=2.0)
+    _usage_now("kb", "bob", 30.0, 3, "b1", "url")
     hdr = bearer(alice_raw)
     assert client.get("/stats/usage?users=bob", headers=hdr).status_code == 403
     assert client.get("/stats/pick?dim=user", headers=hdr).status_code == 403
@@ -1343,16 +1339,12 @@ def test_stats_scrubbed_viewer_sees_sentinel_ids_literally(client, make_user_key
     """The open-mode sentinel names nobody, so a non-admin 'all' viewer sees
     "(open-mode)" on the user and key pickers, not an opaque label that reads
     like a real person; real users stay scrubbed."""
-    import time
     from tests.conftest import bearer
     from faster_whisper_backend.stats import usage_store as us
-    h = int(time.time() // 3600)
     make_user_key("root", is_admin=True)
     _, viewer_raw = make_user_key("viewer", pages={"stats": "all"})
-    us.record_usage(key_id=None, user_id=None, audio_s=5.0, words=1,
-                    status="ok", hour=h, processing_s=1.0, job_id="o1", kind="file")
-    us.record_usage(key_id="kb", user_id="bob", audio_s=30.0, words=3,
-                    status="ok", hour=h, processing_s=1.0, job_id="b1", kind="url")
+    _usage_now(None, None, 5.0, 1, "o1", "file")
+    _usage_now("kb", "bob", 30.0, 3, "b1", "url")
     hdr = bearer(viewer_raw)
     users = {r["id"]: r["label"] for r in
              client.get("/stats/pick?dim=user", headers=hdr).json()["rows"]}
@@ -1369,19 +1361,13 @@ def test_stats_usage_scrubbed_viewer_filters_by_picked_row_id(client, make_user_
     """A non-admin 'all' viewer filters by the row `id` /stats/pick and the
     leaderboard hand it (static/stats.js sends Q.users/Q.keys, never labels)
     — for other users, other keys and its own key alike."""
-    import time
     from tests.conftest import bearer
-    from faster_whisper_backend.stats import usage_store as us
-    h = int(time.time() // 3600)
     make_user_key("root", is_admin=True)
     alice_uid, _ = make_user_key("alice", pages={"stats": "own"})
     viewer_uid, viewer_raw = make_user_key("viewer", pages={"stats": "all"})
-    us.record_usage(key_id="ka", user_id=alice_uid, audio_s=100.0, words=10,
-                    status="ok", hour=h, processing_s=2.0, job_id="a1", kind="file")
-    us.record_usage(key_id="kb", user_id="bob", audio_s=30.0, words=3,
-                    status="ok", hour=h, processing_s=1.0, job_id="b1", kind="url")
-    us.record_usage(key_id="kv", user_id=viewer_uid, audio_s=7.0, words=3,
-                    status="ok", hour=h, processing_s=1.0, job_id="v1", kind="url")
+    _usage_now("ka", alice_uid, 100.0, 10, "a1", "file", processing_s=2.0)
+    _usage_now("kb", "bob", 30.0, 3, "b1", "url")
+    _usage_now("kv", viewer_uid, 7.0, 3, "v1", "url")
     hdr = bearer(viewer_raw)
     pick = client.get("/stats/pick?dim=user", headers=hdr).json()
     bob_id = next(r["id"] for r in pick["rows"] if r["label"] != "viewer" and r["value"] == 30.0)
@@ -1507,15 +1493,9 @@ def test_stats_jobs_kind_accepts_the_chips_comma_list(client):
 def test_stats_pick_who_honours_the_keys_filter(client):
     """The who picker sends the filter slice minus its own dimension, keys
     included: the users' bars rank by the picked keys only."""
-    import time
-    from faster_whisper_backend.stats import usage_store as us
-    h = int(time.time() // 3600)
-    us.record_usage(key_id="ka", user_id="alice", audio_s=100.0, words=10,
-                    status="ok", hour=h, processing_s=2.0, job_id="a1", kind="file")
-    us.record_usage(key_id="kb", user_id="alice", audio_s=5.0, words=1,
-                    status="ok", hour=h, processing_s=1.0, job_id="a2", kind="file")
-    us.record_usage(key_id="kc", user_id="bob", audio_s=30.0, words=3,
-                    status="ok", hour=h, processing_s=1.0, job_id="b1", kind="file")
+    _usage_now("ka", "alice", 100.0, 10, "a1", "file", processing_s=2.0)
+    _usage_now("kb", "alice", 5.0, 1, "a2", "file")
+    _usage_now("kc", "bob", 30.0, 3, "b1", "file")
     rows = client.get("/stats/pick?dim=user&metric=audio_s&keys=kb,kc").json()["rows"]
     assert [(r["id"], r["value"]) for r in rows] == [("bob", 30.0), ("alice", 5.0)]
     rows = client.get("/stats/pick?dim=user&metric=audio_s").json()["rows"]
