@@ -219,16 +219,10 @@ def build_word_suggestions(user: dict[str, Any], *, max_words: int) -> list[str]
         rows = recent_transcriptions_store.list_recent(limit=scan, user_id_filter=user_filter)
     except Exception:
         return []
-    seen: dict[str, str] = {}
-    for row in rows:
-        for word in list(row.get("tokens") or []) + list(row.get("bigrams") or []):
-            ws = str(word)
-            key = ws.lower()
-            if key and key not in seen:
-                seen[key] = ws
-                if len(seen) >= max_words:
-                    return list(seen.values())
-    return list(seen.values())
+    return qc_recent_feed.dedup_first_casing(
+        (str(word) for row in rows
+         for word in list(row.get("tokens") or []) + list(row.get("bigrams") or [])),
+        max_words)
 
 
 # The regex-guard reasons (settings/schema.py's compile/template checks and

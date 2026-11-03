@@ -27,6 +27,7 @@ import logging
 import re
 import time
 import unicodedata
+from collections.abc import Iterable, Iterator
 from typing import Any
 
 from faster_whisper_backend.core.unicode_marks import JOINERS as _JOINERS
@@ -87,20 +88,25 @@ _subscribers: list[asyncio.Queue] = []
 _SUBSCRIBER_QUEUE_MAX = 64
 
 
+def dedup_first_casing(words: Iterable[str], cap: int) -> list[str]:
+    """Case-insensitive de-dup of `words` (first-seen casing wins, empty
+    strings dropped), insertion-ordered, stopping once `cap` (>= 1) are kept.
+    Pass a generator: the early stop then also stops producing candidates."""
+    seen: dict[str, str] = {}
+    for w in words:
+        key = w.lower()
+        if key and key not in seen:
+            seen[key] = w
+            if len(seen) >= cap:
+                break
+    return list(seen.values())
+
+
 def _tokenize(text: str) -> list[str]:
     """Content tokens, de-duped case-insensitively (first-seen casing wins),
     insertion-ordered, capped at _TOKEN_CAP."""
-    seen: dict[str, str] = {}
-    for m in _TOKEN_RE.finditer(text or ""):
-        tok = m.group(0)
-        if not _is_content(tok):
-            continue
-        key = tok.lower()
-        if key not in seen:
-            seen[key] = tok
-            if len(seen) >= _TOKEN_CAP:
-                break
-    return list(seen.values())
+    toks = (m.group(0) for m in _TOKEN_RE.finditer(text or ""))
+    return dedup_first_casing((t for t in toks if _is_content(t)), _TOKEN_CAP)
 
 
 def _extract_bigrams(text: str) -> list[str]:
@@ -118,22 +124,18 @@ def _extract_bigrams(text: str) -> list[str]:
     anyway, which blocks "und Anna")."""
     src = text or ""
     matches = list(_TOKEN_RE.finditer(src))
-    seen: dict[str, str] = {}
-    for a, b in zip(matches, matches[1:]):
-        ta, tb = a.group(0), b.group(0)
-        if not (_is_content(ta) and _is_content(tb)):
-            continue
-        between = src[a.end():b.start()]
-        if between.strip():
-            continue
-        phrase = f"{ta} {tb}"
-        key = phrase.lower()
-        if key in seen:
-            continue
-        seen[key] = phrase
-        if len(seen) >= _BIGRAM_CAP:
-            break
-    return list(seen.values())
+
+    def _pairs() -> Iterator[str]:
+        for a, b in zip(matches, matches[1:]):
+            ta, tb = a.group(0), b.group(0)
+            if not (_is_content(ta) and _is_content(tb)):
+                continue
+            between = src[a.end():b.start()]
+            if between.strip():
+                continue
+            yield f"{ta} {tb}"
+
+    return dedup_first_casing(_pairs(), _BIGRAM_CAP)
 
 
 def record_trace(
