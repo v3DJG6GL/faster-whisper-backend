@@ -15,6 +15,10 @@ a lock one live loop holds is never swapped out from under it by another
 are pruned. It does NOT exclude two live loops from each other — nothing
 built on ``asyncio.Lock`` can; with one loop it is exactly an
 ``asyncio.Lock``.
+
+``CancelLatch`` is the model caches' other shared primitive: it finishes an
+un-stoppable load / registry write under such a lock and defers the
+caller's cancellation until it has landed.
 """
 
 from __future__ import annotations
@@ -64,3 +68,29 @@ class LoopLock:
 
     async def __aexit__(self, *exc) -> None:
         self.release()
+
+
+class CancelLatch:
+    """Await executor / to_thread futures to their end through cancellations.
+
+    ``wait`` shields ``fut`` and keeps awaiting it when the caller is
+    cancelled, remembering the FIRST such ``CancelledError`` in
+    ``cancelled`` for the caller to re-raise once its cleanup is done; it
+    re-raises at once when ``fut`` itself was cancelled, and ``fut``'s own
+    exception propagates unchanged. One latch shared across several awaits
+    keeps one first cancellation for all of them.
+    """
+
+    __slots__ = ("cancelled",)
+
+    def __init__(self) -> None:
+        self.cancelled: asyncio.CancelledError | None = None
+
+    async def wait(self, fut):
+        while True:
+            try:
+                return await asyncio.shield(fut)
+            except asyncio.CancelledError as c:
+                if fut.cancelled():
+                    raise
+                self.cancelled = self.cancelled or c

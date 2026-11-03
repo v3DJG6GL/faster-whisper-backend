@@ -26,7 +26,7 @@ from faster_whisper_backend.settings import config as cfg
 from faster_whisper_backend.runtime import hf_cache
 from faster_whisper_backend.runtime import model_registry
 from faster_whisper_backend.runtime import system_stats
-from faster_whisper_backend.core.loop_lock import LoopLock
+from faster_whisper_backend.core.loop_lock import CancelLatch, LoopLock
 
 logger = logging.getLogger("whisper-server")
 
@@ -405,19 +405,12 @@ async def _get_pipeline(model_id: "str | None" = None, *, lease: bool = False,
         # default executor (a cached pipeline /stats never lists), and a
         # drop slipped in before a running write lands would leave that
         # write a phantom row.
-        _cancelled: "asyncio.CancelledError | None" = None
+        latch = CancelLatch()
         reg_fut = asyncio.ensure_future(asyncio.to_thread(
             model_registry.register_loaded_model,
             _STATS_PREFIX + model_id, vram, device, "torch", load_secs))
         try:
-            while True:
-                try:
-                    await asyncio.shield(reg_fut)
-                    break
-                except asyncio.CancelledError as c:
-                    if reg_fut.cancelled():
-                        raise
-                    _cancelled = _cancelled or c
+            await latch.wait(reg_fut)
         except BaseException as e:
             # The caller never receives the pipeline, so never releases.
             if lease:
@@ -426,15 +419,15 @@ async def _get_pipeline(model_id: "str | None" = None, *, lease: bool = False,
                 # A failed register leaves nothing cached (a cancel keeps it).
                 _pipeline = None
                 _pipeline_key = None
-                if _cancelled is not None:
-                    raise _cancelled from e
+                if latch.cancelled is not None:
+                    raise latch.cancelled from e
             raise
-        if _cancelled is not None:
+        if latch.cancelled is not None:
             # Cancelled during the register: the caller never receives the
             # pipeline, so never releases; it stays cached and registered.
             if lease:
                 _release_locked(model_id, pipe)
-            raise _cancelled
+            raise latch.cancelled
         logger.info("[diarize] pipeline %s loaded on %s in %.1fs",
                     model_id, device, load_secs)
         try:

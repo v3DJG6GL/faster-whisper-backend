@@ -57,7 +57,7 @@ from faster_whisper_backend.runtime import system_stats
 from faster_whisper_backend.core.languages import (
     _NAMES, ZH_HANT_REGIONS, _normalise_code, canonical_code, language_codes,
     language_label, language_name, lookup, same_language)
-from faster_whisper_backend.core.loop_lock import LoopLock
+from faster_whisper_backend.core.loop_lock import CancelLatch, LoopLock
 from faster_whisper_backend.translation import gating as tr_gating
 
 logger = logging.getLogger("whisper-server")
@@ -918,22 +918,15 @@ async def _get_model(ref: str, *, lease: bool = False, download_cb=None):
         # request start a second load of the same model next to it (twice the
         # peak VRAM, a polluted VRAM delta) — so the build is finished under
         # the lock, cached unleased, and the cancellation re-raised once it is
-        # registered (same shape as transcription.models' _construct).
-        _cancelled: "asyncio.CancelledError | None" = None
+        # registered (CancelLatch, as in transcription.models' _construct).
+        latch = CancelLatch()
         fut = loop.run_in_executor(
             None, _load_blocking, ref, device, family, download_cb)
         try:
-            while True:
-                try:
-                    llm = await asyncio.shield(fut)
-                    break
-                except asyncio.CancelledError as c:
-                    if fut.cancelled():
-                        raise
-                    _cancelled = _cancelled or c
+            llm = await latch.wait(fut)
         except Exception as e:
-            if _cancelled is not None:
-                raise _cancelled from e
+            if latch.cancelled is not None:
+                raise latch.cancelled from e
             raise
         finally:
             _loads_in_flight -= 1
@@ -952,7 +945,7 @@ async def _get_model(ref: str, *, lease: bool = False, download_cb=None):
             _params[ref] = params
             _last_used[ref] = time.monotonic()
             # A cancelled caller never receives the model: it stays unleased.
-            leased = lease and _cancelled is None
+            leased = lease and latch.cancelled is None
             if leased:
                 _active[ref] = _active.get(ref, 0) + 1
         # Shielded and awaited to the end under the per-ref lock even when
@@ -963,22 +956,15 @@ async def _get_model(ref: str, *, lease: bool = False, download_cb=None):
             model_registry.register_loaded_model,
             _STATS_PREFIX + ref, vram, device, "gguf", load_secs))
         try:
-            while True:
-                try:
-                    await asyncio.shield(reg_fut)
-                    break
-                except asyncio.CancelledError as c:
-                    if reg_fut.cancelled():
-                        raise
-                    _cancelled = _cancelled or c
+            await latch.wait(reg_fut)
         except BaseException as e:
             if leased:
                 _release_model(ref)   # the caller never receives the model
-            if _cancelled is not None and \
+            if latch.cancelled is not None and \
                     not isinstance(e, asyncio.CancelledError):
-                raise _cancelled from e
+                raise latch.cancelled from e
             raise
-        if _cancelled is not None and leased:
+        if latch.cancelled is not None and leased:
             _release_model(ref)   # cancelled during the register
         if _models.get(ref) is not llm:
             # An unleased load (preload / load_unleased) was trimmed or
@@ -994,8 +980,8 @@ async def _get_model(ref: str, *, lease: bool = False, download_cb=None):
             metrics.record_model_load(_STATS_PREFIX + ref, load_secs)
         except Exception:  # noqa: BLE001 — stats only
             pass
-        if _cancelled is not None:
-            raise _cancelled
+        if latch.cancelled is not None:
+            raise latch.cancelled
         return llm
 
 

@@ -30,6 +30,7 @@ from fastapi import HTTPException
 from faster_whisper_backend.transcription import decode_trace as _decode_trace
 from faster_whisper_backend.core import jobs
 from faster_whisper_backend.core import languages
+from faster_whisper_backend.core.loop_lock import CancelLatch
 from faster_whisper_backend.core.store_common import log_safe
 from faster_whisper_backend.runtime import model_registry
 from faster_whisper_backend.runtime import system_stats
@@ -1412,19 +1413,11 @@ async def _load_on_miss(name: str, *, lease: bool) -> "WhisperModel":
         # of the same model next to it: twice the peak VRAM, an OOM down the
         # CPU fallback, a polluted VRAM delta), cached unleased, and the
         # cancellation re-raised once it is registered.
-        _cancelled: "asyncio.CancelledError | None" = None
+        latch = CancelLatch()
 
         async def _construct(kw: dict):
-            nonlocal _cancelled
-            fut = loop.run_in_executor(None,
-                                       lambda: WhisperModel(load_path, **kw))
-            while True:
-                try:
-                    return await asyncio.shield(fut)
-                except asyncio.CancelledError as c:
-                    if fut.cancelled():
-                        raise
-                    _cancelled = _cancelled or c
+            return await latch.wait(loop.run_in_executor(
+                None, lambda: WhisperModel(load_path, **kw)))
 
         try:
             # `load_path` is `name` for already-CT2 / local repos; for
@@ -1433,9 +1426,9 @@ async def _load_on_miss(name: str, *, lease: bool) -> "WhisperModel":
             _decode_trace.install(new_model)
             logger.info("Model loaded on %s: %s", primary_device, name)
         except Exception as e:
-            if _cancelled is not None:
+            if latch.cancelled is not None:
                 # Nobody is waiting for this model: no fallback build.
-                raise _cancelled from e
+                raise latch.cancelled from e
             logger.error("%s load failed for %s, falling back to %s: %s",
                          primary_device, name, fallback_device, e)
             fallback_kwargs = {
@@ -1465,7 +1458,7 @@ async def _load_on_miss(name: str, *, lease: bool) -> "WhisperModel":
         # entry with no cached model is a phantom nothing ever unregisters.
         _loaded_models[name] = new_model
         # A cancelled caller never receives the model: it stays unleased.
-        leased = lease and _cancelled is None
+        leased = lease and latch.cancelled is None
         # A lease released while this was building scheduled no trim (the
         # cache was not over the cap yet), and an unleased load (preload, a
         # cancelled caller) has no release of its own to reclaim the excess.
@@ -1492,14 +1485,7 @@ async def _load_on_miss(name: str, *, lease: bool) -> "WhisperModel":
             load_secs=load_secs,
         ))
         try:
-            while True:
-                try:
-                    await asyncio.shield(reg_fut)
-                    break
-                except asyncio.CancelledError as c:
-                    if reg_fut.cancelled():
-                        raise
-                    _cancelled = _cancelled or c
+            await latch.wait(reg_fut)
         except BaseException as e:
             # The caller never receives the model, so never releases.
             if leased:
@@ -1510,14 +1496,14 @@ async def _load_on_miss(name: str, *, lease: bool) -> "WhisperModel":
                 # write: that holder's lease turns orphaned, so its release
                 # cannot leave a count pinning the next load of name.
                 _drop_loaded_model(name, force=True)
-                if _cancelled is not None:
-                    raise _cancelled from e
+                if latch.cancelled is not None:
+                    raise latch.cancelled from e
             raise
-        if _cancelled is not None:
+        if latch.cancelled is not None:
             if leased:
                 # Cancelled during the register: the caller never gets the model to release it.
                 _release_model_lease(name, new_model)
-            raise _cancelled
+            raise latch.cancelled
         return new_model
 
 
