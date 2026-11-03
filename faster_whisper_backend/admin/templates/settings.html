@@ -963,6 +963,12 @@ function currentValue(name) {
     : fieldDef(name).value;
 }
 
+// currentValue() of a list field, or [] when it holds anything else.
+function _listValue(name) {
+  const v = currentValue(name);
+  return Array.isArray(v) ? v : [];
+}
+
 // Disable every form control inside an env-pinned field's editor so the value
 // can't be edited from the GUI (the env var wins at runtime). Belt-and-braces
 // with the setDirty() guard below + the greyed .env-pinned row styling.
@@ -1497,8 +1503,7 @@ function modelOverridesEditor(name, v) {
 
   function renderSidebar() {
     sidebar.innerHTML = '';
-    const allowed = Array.isArray(currentValue('ALLOWED_MODELS'))
-      ? currentValue('ALLOWED_MODELS') : [];
+    const allowed = _listValue('ALLOWED_MODELS');
     // List every key in overrides, even those with 0 fields (admin just added
     // an entry). German-aware, case-insensitive order (model IDs are mixed-case).
     const ids = Object.keys(overrides).sort(_coll.compare);
@@ -1924,11 +1929,8 @@ function modelDropdownEditor(name, v, lists) {
   const wrap = document.createElement('div');
   function render() {
     wrap.innerHTML = '';
-    const allowed = Array.isArray(currentValue(lists.allowed))
-      ? currentValue(lists.allowed) : [];
-    const preload = new Set(lists.preload
-      && Array.isArray(currentValue(lists.preload))
-      ? currentValue(lists.preload) : []);
+    const allowed = _listValue(lists.allowed);
+    const preload = new Set(lists.preload ? _listValue(lists.preload) : []);
     const cur = currentValue(name) || '';
 
     if (allowed.length === 0) {
@@ -1987,10 +1989,8 @@ function modelMultiSelectEditor(name, v, lists) {
   const wrap = document.createElement('div');
   function render() {
     wrap.innerHTML = '';
-    const allowed = Array.isArray(currentValue(lists.allowed))
-      ? currentValue(lists.allowed) : [];
-    const preload = Array.isArray(currentValue(name))
-      ? currentValue(name) : [];
+    const allowed = _listValue(lists.allowed);
+    const preload = _listValue(name);
     const preloadSet = new Set(preload);
 
     if (allowed.length === 0) {
@@ -2021,7 +2021,7 @@ function modelMultiSelectEditor(name, v, lists) {
       cb.type = 'checkbox';
       cb.checked = preloadSet.has(m);
       cb.addEventListener('change', () => {
-        const next = new Set(Array.isArray(currentValue(name)) ? currentValue(name) : []);
+        const next = new Set(_listValue(name));
         if (cb.checked) next.add(m); else next.delete(m);
         setDirty(name, [...next]);
       });
