@@ -1304,7 +1304,7 @@ _TMP_SUFFIX_RE = re.compile(r"\A\.[A-Za-z0-9_-]{1,15}\Z")
 
 # A lone UTF-16 surrogate, dropped from decode_overrides' string values (see
 # the batch route).
-_LONE_SURROGATE_RE = re.compile(r"[\ud800-\udfff]")
+_LONE_SURROGATE_RE = store_common.LONE_SURROGATE_RE
 
 
 def _safe_tmp_suffix(filename: "str | None") -> str:

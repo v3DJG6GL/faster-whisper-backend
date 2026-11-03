@@ -747,7 +747,7 @@ def _require_lang_code(value, field: str) -> str:
 # A lone UTF-16 surrogate survives json parsing ("\ud800") but not UTF-8
 # encoding: in the SRT size check, or os.fsencode of ffmpeg's argv (a
 # title=/handler_name= label), it is a bare 500 instead of a 422.
-_SURROGATE_RE = re.compile(r"[\ud800-\udfff]")
+_SURROGATE_RE = store_common.LONE_SURROGATE_RE
 
 
 def _clean_label(value) -> str:

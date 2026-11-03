@@ -192,7 +192,7 @@ _CLIENT_OVERRIDE_KEYS: frozenset[str] = frozenset(
 # client cut with a UTF-16 slice) but not the tokenizer — every partial and
 # final decode of the connection raises — nor UTF-8 encoding of a frame that
 # echoes it (output_prefix / output_suffix, the hard-break separator).
-_SURROGATE_RE = re.compile(r"[\ud800-\udfff]")
+_SURROGATE_RE = store_common.LONE_SURROGATE_RE
 
 
 # The handshake `language`: a Whisper code (`de`, `haw`) or a BCP-47-ish tag,

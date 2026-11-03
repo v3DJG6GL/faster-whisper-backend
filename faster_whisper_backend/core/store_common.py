@@ -3,6 +3,7 @@
 - `secure_db_file()` / `secure_file()` / `secure_dir()`: filesystem hardening.
 - `log_safe()` / `LOG_FIELD_MAX`: cap + control-character screen for
   caller-supplied labels in log lines (used well beyond the stores).
+- `LONE_SURROGATE_RE`: the lone-UTF-16-surrogate screen for client strings.
 - `BUSY_TIMEOUT_S` / `open_wal_db()`: the one way a store opens its WAL DB.
 - `job_columns_ddl()` / `missing_job_columns()`: the job-label columns shared
   by usage_jobs and recent_transcriptions.
@@ -48,6 +49,11 @@ def log_safe(s, *, keep_end: bool = False) -> str:
     "ERROR: ...", ffmpeg's last line) comes at the end."""
     safe = _LOG_UNSAFE_RE.sub("?", s or "")
     return safe[-LOG_FIELD_MAX:] if keep_end else safe[:LOG_FIELD_MAX]
+
+
+# A lone UTF-16 surrogate: json.loads keeps one ("\ud800"), but the tokenizer
+# and UTF-8 encoding raise on it. Each client-string screen strips or rejects it.
+LONE_SURROGATE_RE = re.compile(r"[\ud800-\udfff]")
 
 # How long a statement waits for another connection's write lock before
 # raising "database is locked". Within one process each store's _lock already
