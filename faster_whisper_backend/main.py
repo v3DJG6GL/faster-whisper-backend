@@ -3940,8 +3940,8 @@ if _include_router("preload", "faster_whisper_backend.runtime.preload_routes"):
                 bool(getattr(cfg, "MODEL_PRELOAD_ENABLED", True)))
 
 
-# /settings admin WebUI. Off by default: registered only when
-# cfg.ADMIN_UI_ENABLED is True (set in config.py or via WHISPER_ADMIN_UI=1).
+# /settings admin WebUI, registered only when cfg.ADMIN_UI_ENABLED (on in the
+# factory config.json; WHISPER_ADMIN_UI overrides it).
 # Auth on the endpoints themselves is per-user API keys (require_admin) layered
 # on top of cfg.ADMIN_WEBUI_ALLOWED_HOSTS.
 # In OPEN mode (no admin key in DB) every caller is the synthetic admin so the
