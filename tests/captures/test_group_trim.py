@@ -73,7 +73,7 @@ def test_trim_no_speech_is_identity(monkeypatch, fake_vad):
 def test_trim_all_speech_is_noop(monkeypatch, fake_vad):
     pcm, n = _pcm([("speech", 500)])
     res = audio_vad_trim.trim_pcm_for_merge(pcm, n, edge_pad_ms=50)
-    # Nothing meaningful to cut (pad covers the whole clip) → identity.
+    # No silence to remove → identity.
     assert res["trimmed"] is False
     assert res["new_duration_ms"] == 500
 
