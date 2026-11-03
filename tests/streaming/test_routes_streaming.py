@@ -625,7 +625,7 @@ def test_stream_idle_timeout_not_tripped_while_audio_flows(app_module, monkeypat
                 "audio": {"format": "pcm_s16le", "sample_rate": 16000},
             })
             assert ws.receive_json()["type"] == "ready"
-            for _ in range(12):           # 3 s of audio: 1.5x the idle timeout
+            for _ in range(12):           # 3 s of streaming: 1.5x the idle timeout
                 time.sleep(0.25)
                 ws.send_bytes(_pcm(0, 100))   # silent PCM is still AUDIO
             ws.send_json({"type": "stop"})
