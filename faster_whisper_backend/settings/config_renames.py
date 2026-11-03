@@ -515,7 +515,7 @@ def _regex_rule_to_list(rule: Any) -> None:
 def migrate_rule_slugs(raw: dict[str, Any], known: Any = None) -> dict[str, Any]:
     """Apply RENAMED_RULES to a stored overrides dict (in place; also
     returned): the `name` of each stored PIPELINE_RULES entry and the
-    top-level slug lists (SPLIT_RULES too, there; `known` as in
+    top-level slug lists (SPLIT_RULES and MERGED_RULES too, there; `known` as in
     migrate_bundle_keys). The slug lists inside OVERRIDE_PROFILES /
     MODEL_OVERRIDES bundles are migrate_bundle's job (via migrate_bundle_keys,
     which every caller also runs). A stored rule already using the new name
