@@ -373,8 +373,7 @@ def save_factory_rules(rules: list[Any], path: str = FACTORY_PATH, *,
 
     The WebUI's "Defaults" mode always sends the FULL rule list (not a dirty
     diff like save_overrides()), so this replaces the entire PIPELINE_RULES
-    array wholesale — but it read-modify-writes config.json (see below) to
-    preserve the sibling scalar factory defaults that now also live there.
+    array wholesale; the sibling scalar factory defaults in config.json stay.
 
     Every rule is normalised to `seeded=True` — a rule living in the committed
     factory file IS a factory default by definition; this keeps the editor's
