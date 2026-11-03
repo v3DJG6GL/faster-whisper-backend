@@ -170,7 +170,8 @@ async def whoami_capabilities(user: dict = Depends(_get_current_user_dep)):
     caps["url_video_enabled"] = bool(
         caps["url_download_enabled"] and getattr(cfg, "URL_VIDEO_ENABLED", False))
     if caps["url_video_enabled"]:
-        # No server-side height ceiling in this release: null = best available.
+        # No server default: null = best available (a client's
+        # video_max_height is still clamped, media/video.py).
         caps["url_video_default_max_height"] = None
     # Gates POST /v1/audio/url-language.
     caps["url_language_check_enabled"] = bool(
