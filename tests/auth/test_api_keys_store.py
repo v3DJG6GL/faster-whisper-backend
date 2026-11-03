@@ -7,6 +7,7 @@ import threading
 import pytest
 
 from faster_whisper_backend.auth import api_keys_store
+from tests.auth._store_helpers import sibling_write
 
 
 def test_hash_key_deterministic_hex():
@@ -616,25 +617,18 @@ def test_bootstrap_admin_from_env_accepts_a_key_a_sibling_worker_registered(
     # this worker refuse to start over a key that is in fact registered.
     import time
     import uuid
-    db_path = api_keys_db._require_conn().execute(
-        "PRAGMA database_list").fetchone()["file"]
     h = api_keys_db.hash_key(_BOOTSTRAP_KEY)
-    sibling = sqlite3.connect(db_path)
-    try:
-        uid = uuid.uuid4().hex
-        with sibling:
-            sibling.execute(
-                "INSERT INTO users (id, username, is_admin, created_ts,"
-                " revoked_ts, permissions) VALUES (?,?,1,?,NULL,'{}')",
-                (uid, "bootstrap-admin", time.time()))
-            sibling.execute(
-                "INSERT INTO api_keys (id, user_id, key_hash, key_prefix,"
-                " key_last4, label, created_ts, revoked_ts, last_used_ts)"
-                " VALUES (?,?,?,?,?,?,?,NULL,NULL)",
-                (uuid.uuid4().hex, uid, h, "bootstra", "1234",
-                 "bootstrap (env)", time.time()))
-    finally:
-        sibling.close()
+    uid = uuid.uuid4().hex
+    sibling_write(
+        api_keys_db,
+        ("INSERT INTO users (id, username, is_admin, created_ts,"
+         " revoked_ts, permissions) VALUES (?,?,1,?,NULL,'{}')",
+         (uid, "bootstrap-admin", time.time())),
+        ("INSERT INTO api_keys (id, user_id, key_hash, key_prefix,"
+         " key_last4, label, created_ts, revoked_ts, last_used_ts)"
+         " VALUES (?,?,?,?,?,?,?,NULL,NULL)",
+         (uuid.uuid4().hex, uid, h, "bootstra", "1234",
+          "bootstrap (env)", time.time())))
     assert api_keys_db._KEY_INDEX.get(h) is None   # this worker's stale index
 
     caplog.set_level(logging.DEBUG, logger=api_keys_store.logger.name)
@@ -846,15 +840,8 @@ def test_sibling_revoke_still_seen_after_a_failed_rebuild(api_keys_db,
     uid = ak.create_user("root", is_admin=True)
     raw, rec = ak.create_key(uid)
     ak.create_key(uid)
-    db_path = ak._require_conn().execute(
-        "PRAGMA database_list").fetchone()["file"]
-    sibling = sqlite3.connect(db_path)
-    try:
-        with sibling:
-            sibling.execute("UPDATE api_keys SET revoked_ts = 1 WHERE id = ?",
-                            (rec["id"],))
-    finally:
-        sibling.close()
+    sibling_write(ak, ("UPDATE api_keys SET revoked_ts = 1 WHERE id = ?",
+                       (rec["id"],)))
 
     real = ak._require_conn()
 

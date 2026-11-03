@@ -8,6 +8,7 @@ import sqlite3
 import pytest
 
 from faster_whisper_backend.paths import REPO_ROOT
+from tests.auth._store_helpers import sibling_write
 
 
 @pytest.fixture
@@ -28,17 +29,9 @@ def worker(tmp_path):
 def _sibling_logout(w):
     """Revoke every session and bump the counter from a second connection,
     as revoke_session does on a sibling worker."""
-    db_path = w._require_conn().execute(
-        "PRAGMA database_list").fetchone()["file"]
-    sibling = sqlite3.connect(db_path)
-    try:
-        with sibling:
-            sibling.execute("UPDATE sessions SET revoked_ts = 1")
-            sibling.execute(
-                "INSERT INTO meta (k, v) VALUES ('revocations', 1)"
-                " ON CONFLICT(k) DO UPDATE SET v = v + 1")
-    finally:
-        sibling.close()
+    sibling_write(w, ("UPDATE sessions SET revoked_ts = 1",),
+                  ("INSERT INTO meta (k, v) VALUES ('revocations', 1)"
+                   " ON CONFLICT(k) DO UPDATE SET v = v + 1",))
 
 
 def _fail_rebuild(w, monkeypatch):
@@ -139,17 +132,9 @@ def test_own_logout_skips_the_forced_rebuild(worker, monkeypatch):
     assert rebuilds == []
     assert w.lookup_session(mine) is None
     # A sibling revokes `victim` (gap of two once ours lands on top).
-    db_path = w._require_conn().execute(
-        "PRAGMA database_list").fetchone()["file"]
-    sibling = sqlite3.connect(db_path)
-    try:
-        with sibling:
-            sibling.execute(
-                "UPDATE sessions SET revoked_ts = 1 WHERE user_id = 'victim'")
-            sibling.execute(
-                "UPDATE meta SET v = v + 1 WHERE k = 'revocations'")
-    finally:
-        sibling.close()
+    sibling_write(w,
+                  ("UPDATE sessions SET revoked_ts = 1 WHERE user_id = 'victim'",),
+                  ("UPDATE meta SET v = v + 1 WHERE k = 'revocations'",))
     monkeypatch.setattr(w, "_data_version_locked", lambda: w._DATA_VERSION)
     w.revoke_session(other)
     assert rebuilds == []

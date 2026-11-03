@@ -7,6 +7,7 @@ import sqlite3
 import pytest
 
 from faster_whisper_backend.paths import REPO_ROOT
+from tests.auth._store_helpers import sibling_write
 
 
 @pytest.fixture
@@ -31,14 +32,7 @@ def test_sibling_logout_still_seen_after_a_failed_rebuild(worker, monkeypatch):
     w = worker
     raw, _csrf = w.create_session("victim", 3600.0)
     assert w.lookup_session(raw) is not None
-    db_path = w._require_conn().execute(
-        "PRAGMA database_list").fetchone()["file"]
-    sibling = sqlite3.connect(db_path)
-    try:
-        with sibling:
-            sibling.execute("UPDATE sessions SET revoked_ts = 1")
-    finally:
-        sibling.close()
+    sibling_write(w, ("UPDATE sessions SET revoked_ts = 1",))
 
     real = w._require_conn()
 
