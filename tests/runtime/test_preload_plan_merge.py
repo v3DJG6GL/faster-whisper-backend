@@ -289,7 +289,7 @@ def test_whisper_full_cache_with_only_a_warm_peer_is_family_busy(monkeypatch):
                                                      ("queued", None))
 
     # A cold peer, but eviction switched off: refused rather than letting
-    # main's LRU loop pick the victim.
+    # the loader's LRU loop pick the victim.
     _enable(monkeypatch, MAX_LOADED_MODELS=1,
             MODEL_PRELOAD_EVICT_IDLE_MODELS=False)
     assert preload._admit("whisper", "large-v3") == ("deferred", "family_busy")
