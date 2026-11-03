@@ -7,6 +7,7 @@
 - `BUSY_TIMEOUT_S` / `open_wal_db()`: the one way a store opens its WAL DB.
 - `job_columns_ddl()` / `missing_job_columns()`: the job-label columns shared
   by usage_jobs and recent_transcriptions.
+- `rename_columns()`: the legacy column-rename migration every store runs.
 
 Every store creates its DB at the process umask (0644 file / 0755 dir on a
 typical Linux box) and nothing narrows it afterwards, yet those files hold
@@ -23,6 +24,7 @@ from __future__ import annotations
 import os
 import re
 import sqlite3
+from collections.abc import Iterable
 
 # Cap and control-character screen for a CALLER-supplied label that goes into a
 # log line. Lives here rather than in main so the stores can reach it without an
@@ -121,6 +123,19 @@ def missing_job_columns(conn: sqlite3.Connection, table: str) -> dict[str, str]:
         elif have[name] != typ:
             out[name] = f"type {have[name]!r} != {typ!r}"
     return out
+
+
+def rename_columns(conn: sqlite3.Connection, table: str,
+                   pairs: Iterable[tuple[str, str]]) -> None:
+    """Rename legacy columns in place (RENAME COLUMN keeps the data); a pair
+    whose old name is gone or whose new name already exists is skipped. Run
+    before CREATE TABLE IF NOT EXISTS so it never sees the old name as the
+    live one."""
+    have = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}
+    for old, new in pairs:
+        if old in have and new not in have:
+            conn.execute(f"ALTER TABLE {table} RENAME COLUMN {old} TO {new}")
+    conn.commit()
 
 
 def open_wal_db(path: str) -> sqlite3.Connection:

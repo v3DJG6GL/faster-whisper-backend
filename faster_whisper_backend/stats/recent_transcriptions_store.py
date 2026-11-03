@@ -110,14 +110,11 @@ def init_db(path: str) -> None:
         # (audio_s / processing_s / words, the JSON columns without `_json`,
         # as the wire always emitted). RENAME COLUMN keeps the data and
         # rewrites the indexes.
-        cols = {r["name"] for r in conn.execute("PRAGMA table_info(recent_transcriptions)")}
-        for old, new in (("audio_dur_s", "audio_s"), ("proc_dur_s", "processing_s"),
-                         ("words_count", "words"),
-                         ("steps_json", "steps"), ("tokens_json", "tokens"),
-                         ("bigrams_json", "bigrams"), ("stages_json", "stages")):
-            if old in cols and new not in cols:
-                conn.execute(f"ALTER TABLE recent_transcriptions RENAME COLUMN {old} TO {new}")
-        conn.commit()
+        store_common.rename_columns(conn, "recent_transcriptions", (
+            ("audio_dur_s", "audio_s"), ("proc_dur_s", "processing_s"),
+            ("words_count", "words"),
+            ("steps_json", "steps"), ("tokens_json", "tokens"),
+            ("bigrams_json", "bigrams"), ("stages_json", "stages")))
         cols = {r["name"] for r in conn.execute("PRAGMA table_info(recent_transcriptions)")}
         # Pre-`source` DBs: the 'file' default makes old rows read as
         # file-upload transcriptions.

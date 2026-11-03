@@ -321,10 +321,7 @@ def _rename_columns(conn: sqlite3.Connection) -> None:
     (CREATE TABLE IF NOT EXISTS would otherwise leave the old name in
     place); RENAME COLUMN keeps the data."""
     for table in ("usage_hourly", "usage_jobs"):
-        have = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}
-        if "proc_s" in have and "processing_s" not in have:
-            conn.execute(f"ALTER TABLE {table} RENAME COLUMN proc_s TO processing_s")
-    conn.commit()
+        store_common.rename_columns(conn, table, (("proc_s", "processing_s"),))
 
 
 def _park_legacy_hourly(conn: sqlite3.Connection) -> None:

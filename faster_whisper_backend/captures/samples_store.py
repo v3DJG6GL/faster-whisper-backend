@@ -86,12 +86,9 @@ def init_db(conn: sqlite3.Connection, captures_audio_root: str) -> None:
     # always emitted the bare names); a pre-existing DB is renamed in place,
     # before _SCHEMA_CORE so CREATE TABLE IF NOT EXISTS never sees the old
     # name as the live one.
-    have = {r["name"] for r in _conn.execute("PRAGMA table_info(capture_samples)")}
-    for old, new in (("member_hashes_json", "member_hashes"),
-                     ("member_trims_json", "member_trims")):
-        if old in have and new not in have:
-            _conn.execute(f"ALTER TABLE capture_samples RENAME COLUMN {old} TO {new}")
-    _conn.commit()
+    store_common.rename_columns(_conn, "capture_samples",
+                                (("member_hashes_json", "member_hashes"),
+                                 ("member_trims_json", "member_trims")))
     _conn.executescript(_SCHEMA_CORE)
 
 

@@ -106,9 +106,8 @@ def init_db(path: str) -> None:
     _conn = store_common.open_wal_db(path)
     # Legacy updated_at column rename: every other store stamps its times *_ts.
     # (open_wal_db is autocommit, so the ALTER is durable once execute returns.)
-    have = {r["name"] for r in _conn.execute("PRAGMA table_info(client_settings)")}
-    if "updated_at" in have and "updated_ts" not in have:
-        _conn.execute("ALTER TABLE client_settings RENAME COLUMN updated_at TO updated_ts")
+    store_common.rename_columns(_conn, "client_settings",
+                                (("updated_at", "updated_ts"),))
     _conn.executescript(_SCHEMA)
     store_common.secure_db_file(path)
     _DB_READY = True

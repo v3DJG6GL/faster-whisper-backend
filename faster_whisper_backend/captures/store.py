@@ -120,15 +120,12 @@ def _rename_columns(conn: sqlite3.Connection) -> None:
     old name as the live one; RENAME COLUMN keeps the data.
     The JSON-bearing columns dropped their `_json` suffix the same way (the
     wire has always emitted the bare names)."""
-    have = {r["name"] for r in conn.execute("PRAGMA table_info(captures)")}
-    for old, new in (("duration_seconds", "audio_s"), ("raw", "raw_text"),
-                     ("final", "final_text"),
-                     ("words_json", "words"), ("segments_json", "segments"),
-                     ("corrections_json", "corrections"),
-                     ("translations_json", "translations")):
-        if old in have and new not in have:
-            conn.execute(f"ALTER TABLE captures RENAME COLUMN {old} TO {new}")
-    conn.commit()
+    store_common.rename_columns(conn, "captures", (
+        ("duration_seconds", "audio_s"), ("raw", "raw_text"),
+        ("final", "final_text"),
+        ("words_json", "words"), ("segments_json", "segments"),
+        ("corrections_json", "corrections"),
+        ("translations_json", "translations")))
 
 
 def _ensure_columns(conn: sqlite3.Connection) -> None:

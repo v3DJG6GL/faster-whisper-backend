@@ -103,13 +103,10 @@ def init_db(path: str) -> None:
     _conn = store_common.open_wal_db(path)
     # Rename legacy columns (raw / final, *_json) in place, before _SCHEMA so
     # CREATE TABLE IF NOT EXISTS never sees the old names as the live ones.
-    have = {r["name"] for r in _conn.execute("PRAGMA table_info(reports)")}
-    for old, new in (("raw", "raw_text"), ("final", "final_text"),
-                     ("steps_json", "steps"), ("corrections_json", "corrections"),
-                     ("stages_json", "stages")):
-        if old in have and new not in have:
-            _conn.execute(f"ALTER TABLE reports RENAME COLUMN {old} TO {new}")
-    _conn.commit()
+    store_common.rename_columns(_conn, "reports", (
+        ("raw", "raw_text"), ("final", "final_text"),
+        ("steps_json", "steps"), ("corrections_json", "corrections"),
+        ("stages_json", "stages")))
     _conn.executescript(_SCHEMA)
     _ensure_columns(_conn)
     store_common.secure_db_file(path)
