@@ -16,6 +16,7 @@ import pytest
 from faster_whisper_backend.settings import config
 from tests.conftest import _repoint_path_default
 from tests.settings._rules_helpers import factory_rules as _factory_rules
+from tests.settings._rules_helpers import load_saved as _load_saved
 
 
 def test_truthy():
@@ -499,11 +500,7 @@ def test_local_overrides_migrate_use_auth_token(tmp_path):
     """A config.local.json from before the rename still carries USE_AUTH_TOKEN;
     load_overrides must migrate the key instead of failing validation (which
     would silently drop EVERY stored override)."""
-    from faster_whisper_backend.settings import config_store
-    p = tmp_path / "config.local.json"
-    p.write_text(json.dumps({"USE_AUTH_TOKEN": "hf_stored", "BEAM_SIZE": 7}),
-                 encoding="utf-8")
-    out = config_store.load_overrides(str(p))
+    out = _load_saved(tmp_path, {"USE_AUTH_TOKEN": "hf_stored", "BEAM_SIZE": 7})
     assert out.get("HF_TOKEN") == "hf_stored"
     assert "USE_AUTH_TOKEN" not in out
     assert out.get("BEAM_SIZE") == 7
@@ -853,12 +850,8 @@ def test_renamed_keys_alias_test_leaves_no_alias_behind():
 def test_local_overrides_migrate_renamed_keys(tmp_path):
     """A stored config.local.json still carrying a renamed key is migrated
     for every RENAMED_KEYS entry; a present new key wins over the old one."""
-    from faster_whisper_backend.settings import config_store
-    p = tmp_path / "config.local.json"
-    p.write_text(json.dumps({"RECENT_TRANSCRIPTIONS_TTL_DAYS": 5,
-                             "USE_AUTH_TOKEN": "hf_old", "HF_TOKEN": "hf_new"}),
-                 encoding="utf-8")
-    out = config_store.load_overrides(str(p))
+    out = _load_saved(tmp_path, {"RECENT_TRANSCRIPTIONS_TTL_DAYS": 5,
+                                 "USE_AUTH_TOKEN": "hf_old", "HF_TOKEN": "hf_new"})
     assert out.get("RECENT_TRANSCRIPTIONS_RETENTION_DAYS") == 5
     assert "RECENT_TRANSCRIPTIONS_TTL_DAYS" not in out
     assert out.get("HF_TOKEN") == "hf_new"
@@ -872,11 +865,7 @@ def test_local_overrides_survive_legacy_size_cap_keys(tmp_path, old, new, value)
     """The size caps that were folded into MEDIA_MAX_BYTES /
     RETAINED_MEDIA_MAX_BYTES shipped in config.json, so a stored file holds
     them. One such key must not make validation drop every other override."""
-    from faster_whisper_backend.settings import config_store
-    p = tmp_path / "config.local.json"
-    p.write_text(json.dumps({old: value, "BEAM_SIZE": 5,
-                             "DEFAULT_LANGUAGE": "de"}), encoding="utf-8")
-    out = config_store.load_overrides(str(p))
+    out = _load_saved(tmp_path, {old: value, "BEAM_SIZE": 5, "DEFAULT_LANGUAGE": "de"})
     assert out.get(new) == value
     assert old not in out
     assert out.get("BEAM_SIZE") == 5 and out.get("DEFAULT_LANGUAGE") == "de"
@@ -886,12 +875,10 @@ def test_local_overrides_drop_removed_key_and_keep_siblings(tmp_path, capsys):
     """URL_MAX_BYTES has no successor (its shipped 0 = 'inherit' is not a
     legal MEDIA_MAX_BYTES): it is dropped with a stderr note, never mapped,
     and the rest of the file survives."""
-    from faster_whisper_backend.settings import config_renames, config_store
+    from faster_whisper_backend.settings import config_renames
     assert "URL_MAX_BYTES" in config_renames.REMOVED_KEYS
-    p = tmp_path / "config.local.json"
-    p.write_text(json.dumps({"URL_MAX_BYTES": 0, "MAX_UPLOAD_BYTES": 200000000,
-                             "BEAM_SIZE": 5}), encoding="utf-8")
-    out = config_store.load_overrides(str(p))
+    out = _load_saved(tmp_path, {"URL_MAX_BYTES": 0, "MAX_UPLOAD_BYTES": 200000000,
+                                 "BEAM_SIZE": 5})
     assert out == {"MEDIA_MAX_BYTES": 200000000, "BEAM_SIZE": 5}
     assert "URL_MAX_BYTES" in capsys.readouterr().err
 

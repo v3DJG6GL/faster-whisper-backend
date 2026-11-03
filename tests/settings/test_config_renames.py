@@ -10,6 +10,7 @@ import pytest
 
 from faster_whisper_backend.settings import config_renames as renames
 from tests.settings._rules_helpers import factory_rules as _factory_rules
+from tests.settings._rules_helpers import load_saved as _load_saved
 
 
 def _rule(rules, name):
@@ -83,12 +84,9 @@ def test_load_overrides_upgrades_a_stored_old_factory_pattern(tmp_path, name):
     kept the old pattern forever: the cubic capitalize-after-terminator froze
     /transcribe on a run of paragraph breaks, and "45-jährige" still became
     "45-Jährige"."""
-    from faster_whisper_backend.settings import config_store as cs
     rules = _factory_rules()
     _rule(rules, name)["pattern"] = renames.UPGRADED_RULE_PATTERNS[name][0][1]
-    p = tmp_path / "config.local.json"
-    p.write_text(json.dumps({"PIPELINE_RULES": rules}), encoding="utf-8")
-    out = cs.load_overrides(str(p))
+    out = _load_saved(tmp_path, {"PIPELINE_RULES": rules})
     factory = _rule(_factory_rules(), name)
     stored = _rule(out["PIPELINE_RULES"], name)
     assert (stored["pattern"], stored["languages"]) == (
@@ -175,12 +173,9 @@ def test_upgraded_rules_end_equal_to_the_factory_rule_notes_included():
 
 
 def test_load_overrides_scopes_a_stored_hyphen_rule_to_german(tmp_path):
-    from faster_whisper_backend.settings import config_store as cs
     rules = _pre_scope_rules()
     _rule(rules, "capitalize-letter-after-hyphen")["languages"] = []
-    p = tmp_path / "config.local.json"
-    p.write_text(json.dumps({"PIPELINE_RULES": rules}), encoding="utf-8")
-    out = cs.load_overrides(str(p))
+    out = _load_saved(tmp_path, {"PIPELINE_RULES": rules})
     assert _rule(out["PIPELINE_RULES"], "capitalize-letter-after-hyphen")["languages"] == ["de"]
 
 
@@ -190,7 +185,6 @@ _DE_SCOPED_IN_C4FEFE2 = ("de-strip-and-lowercase-non-noun",
 
 
 def test_rules_scoped_to_german_in_c4fefe2_upgrade_a_stored_copy(tmp_path):
-    from faster_whisper_backend.settings import config_store as cs
     rules = copy.deepcopy(_factory_rules())
     for name in _DE_SCOPED_IN_C4FEFE2:
         r = _rule(rules, name)
@@ -198,9 +192,7 @@ def test_rules_scoped_to_german_in_c4fefe2_upgrade_a_stored_copy(tmp_path):
         if name == "de-dictation-map":
             r["name"] = "dictation-map"  # its slug before c4fefe2
             del r["map"]["Neuenzeile"]  # the factory map of 518ee09..923d171
-    p = tmp_path / "config.local.json"
-    p.write_text(json.dumps({"PIPELINE_RULES": rules}), encoding="utf-8")
-    out = cs.load_overrides(str(p))
+    out = _load_saved(tmp_path, {"PIPELINE_RULES": rules})
     for name in _DE_SCOPED_IN_C4FEFE2:
         assert _rule(out["PIPELINE_RULES"], name)["languages"] == ["de"], name
 
@@ -213,18 +205,15 @@ _RENAMED_IN_097C9B4 = {"strip-and-lowercase-non-noun": "de-strip-and-lowercase-n
 def test_copy_saved_before_097c9b4_renames_is_migrated_and_scoped(tmp_path):
     """097c9b4 renamed two factory rules; a copy saved before that still
     holds the old slugs, and the scope upgrades are keyed by the new ones."""
-    from faster_whisper_backend.settings import config_store as cs
     rules = _pre_scope_rules()
     for old, new in _RENAMED_IN_097C9B4.items():
         r = _rule(rules, new)
         r["name"] = old
         del r["languages"]
-    p = tmp_path / "config.local.json"
-    p.write_text(json.dumps({
+    out = _load_saved(tmp_path, {
         "PIPELINE_RULES": rules,
         "CAPTURES_PIPELINE_RULES_EXCLUDE": list(_RENAMED_IN_097C9B4),
-    }), encoding="utf-8")
-    out = cs.load_overrides(str(p))
+    })
     assert [r["name"] for r in out["PIPELINE_RULES"]] == [
         r["name"] for r in _factory_rules()]
     for new in _RENAMED_IN_097C9B4.values():
@@ -289,14 +278,11 @@ def test_copy_saved_before_f940127_rename_is_migrated_and_scoped(tmp_path):
     """f940127 renamed split-dictation-keywords (entries unchanged); a copy
     saved June 15-17 kept the old slug, and the c4fefe2 scope is keyed by the
     new one, so the rule ran on every language."""
-    from faster_whisper_backend.settings import config_store as cs
     rules = copy.deepcopy(_factory_rules())
     r = _rule(rules, "de-split-punctuation-keywords")
     r["name"] = "split-dictation-keywords"
     del r["languages"]
-    p = tmp_path / "config.local.json"
-    p.write_text(json.dumps({"PIPELINE_RULES": rules}), encoding="utf-8")
-    out = cs.load_overrides(str(p))
+    out = _load_saved(tmp_path, {"PIPELINE_RULES": rules})
     assert [r["name"] for r in out["PIPELINE_RULES"]] == [
         r["name"] for r in _factory_rules()]
     assert _rule(out["PIPELINE_RULES"], "de-split-punctuation-keywords")["languages"] == ["de"]
@@ -332,19 +318,16 @@ def test_old_factory_copy_beside_its_renamed_rule_is_dropped_with_its_excludes(t
     beside the old copy): every exclude of the old slug now names the new
     one, so a kept old copy would run unexcluded on every language
     ("well-known" -> "well-Known" on English)."""
-    from faster_whisper_backend.settings import config_store as cs
     rules = _pre_scope_rules()
     for old, new in _RENAMED_IN_097C9B4.items():
         # before trim-edges: the terminal rule must stay last
         rules.insert(-1, dict(copy.deepcopy(_rule(rules, new)), name=old, languages=[]))
-    p = tmp_path / "config.local.json"
-    p.write_text(json.dumps({
+    out = _load_saved(tmp_path, {
         "PIPELINE_RULES": rules,
         "CAPTURES_PIPELINE_RULES_EXCLUDE": list(_RENAMED_IN_097C9B4),
         "MODEL_OVERRIDES": {"large-v3": {
             "PIPELINE_RULES_EXCLUDE": list(_RENAMED_IN_097C9B4)}},
-    }), encoding="utf-8")
-    out = cs.load_overrides(str(p))
+    })
     assert [r["name"] for r in out["PIPELINE_RULES"]] == [
         r["name"] for r in _factory_rules()]
     want = set(_RENAMED_IN_097C9B4.values())
@@ -382,9 +365,7 @@ def test_exclude_of_a_split_card_names_every_card_that_took_it_over(tmp_path):
     """An exclude saved before the June splits named a card that no longer
     exists: inert on load (the identity got the punctuation stripped again),
     and the next save of the bundle 422'd on a slug /settings cannot show."""
-    from faster_whisper_backend.settings import config_store as cs
-    p = tmp_path / "config.local.json"
-    p.write_text(json.dumps({
+    out = _load_saved(tmp_path, {
         "CAPTURES_PIPELINE_RULES_EXCLUDE": ["german-symbol-cleanup"],
         "MODEL_OVERRIDES": {"large-v3": {
             "PIPELINE_RULES_EXCLUDE": ["strip-whisper-punctuation"],
@@ -392,8 +373,7 @@ def test_exclude_of_a_split_card_names_every_card_that_took_it_over(tmp_path):
         "OVERRIDE_PROFILES": {"p": {
             "PIPELINE_RULES_INCLUDE": ["strip-whisper-punctuation",
                                        "strip-auto-punctuation"]}},
-    }), encoding="utf-8")
-    out = cs.load_overrides(str(p))
+    })
     assert out["MODEL_OVERRIDES"]["large-v3"]["BEAM_SIZE"] == 3
     assert set(out["MODEL_OVERRIDES"]["large-v3"]["PIPELINE_RULES_EXCLUDE"]) == set(
         _SPLIT_IN_JUNE["strip-whisper-punctuation"])
@@ -432,16 +412,13 @@ def test_exclude_of_a_card_folded_in_8cde7fd_names_its_successor(tmp_path):
     """8cde7fd folded single-rule cards into regex-list cards: an exclude
     saved before it named a slug that no longer exists, so it did nothing on
     load and an env value naming it was refused whole (BEAM_SIZE lost too)."""
-    from faster_whisper_backend.settings import config_store as cs
-    p = tmp_path / "config.local.json"
-    p.write_text(json.dumps({
+    out = _load_saved(tmp_path, {
         "CAPTURES_PIPELINE_RULES_EXCLUDE": ["strip-non-keep-punct",
                                             "strip-only-terminators-and-commas"],
         "MODEL_OVERRIDES": {"large-v3": {
             "PIPELINE_RULES_EXCLUDE": ["trim-trailing-period", "tidy-newlines"],
             "BEAM_SIZE": 3}},
-    }), encoding="utf-8")
-    out = cs.load_overrides(str(p))
+    })
     assert set(out["CAPTURES_PIPELINE_RULES_EXCLUDE"]) == {
         "strip-stray-symbols", "strip-auto-punctuation"}
     # tidy-newlines shares final-cleanup with another entry: left as it is.
@@ -467,15 +444,12 @@ def test_local_slug_lists_follow_the_env_rule_list_in_force(
     """WHISPER_PIPELINE_RULES is applied after config.local.json: with no
     local rule copy, whether a local exclude still names a split card is up
     to the env list (still holding the old card here), not config.json."""
-    from faster_whisper_backend.settings import config_store as cs
     monkeypatch.setenv("WHISPER_PIPELINE_RULES", json.dumps(_pre_june_rules()))
-    p = tmp_path / "config.local.json"
-    p.write_text(json.dumps({
+    out = _load_saved(tmp_path, {
         "CAPTURES_PIPELINE_RULES_EXCLUDE": ["strip-whisper-punctuation"],
         "MODEL_OVERRIDES": {"large-v3": {
             "PIPELINE_RULES_EXCLUDE": ["strip-whisper-punctuation"], "BEAM_SIZE": 3}},
-    }), encoding="utf-8")
-    out = cs.load_overrides(str(p))
+    })
     assert set(out["CAPTURES_PIPELINE_RULES_EXCLUDE"]) == {"strip-whisper-punctuation"}
     assert out["MODEL_OVERRIDES"]["large-v3"] == {
         "PIPELINE_RULES_EXCLUDE": ["strip-whisper-punctuation"], "BEAM_SIZE": 3}
@@ -486,16 +460,13 @@ def test_local_slug_lists_ignore_an_env_rule_list_config_rejects(
     """An env list that fails the schema is rejected by config.py, and the
     factory split cards stay in force: a local exclude naming the old card
     still maps to them instead of naming a card no live rule has."""
-    from faster_whisper_backend.settings import config_store as cs
     rules = _pre_june_rules() + [{"name": "broken", "type": "bogus-type"}]
     monkeypatch.setenv("WHISPER_PIPELINE_RULES", json.dumps(rules))
-    p = tmp_path / "config.local.json"
-    p.write_text(json.dumps({
+    out = _load_saved(tmp_path, {
         "CAPTURES_PIPELINE_RULES_EXCLUDE": ["strip-whisper-punctuation"],
         "MODEL_OVERRIDES": {"large-v3": {
             "PIPELINE_RULES_EXCLUDE": ["strip-whisper-punctuation"]}},
-    }), encoding="utf-8")
-    out = cs.load_overrides(str(p))
+    })
     split = _SPLIT_IN_JUNE["strip-whisper-punctuation"]
     assert set(out["CAPTURES_PIPELINE_RULES_EXCLUDE"]) == set(split)
     assert out["MODEL_OVERRIDES"]["large-v3"]["PIPELINE_RULES_EXCLUDE"] == split
@@ -505,14 +476,11 @@ def test_local_slug_lists_ignore_an_env_rule_list_config_rejects(
 def test_old_copy_running_beside_its_switched_off_renamed_rule_keeps_running(tmp_path, old, new):
     """An admin who saw the duplicate and switched off the NEW card kept the
     old one running: dropping the old copy would stop the rule silently."""
-    from faster_whisper_backend.settings import config_store as cs
     rules = _pre_scope_rules()
     _rule(rules, new)["enabled"] = False
     rules.insert(-1, dict(copy.deepcopy(_rule(rules, new)), name=old,
                           languages=[], enabled=True))
-    p = tmp_path / "config.local.json"
-    p.write_text(json.dumps({"PIPELINE_RULES": rules}), encoding="utf-8")
-    out = cs.load_overrides(str(p))["PIPELINE_RULES"]
+    out = _load_saved(tmp_path, {"PIPELINE_RULES": rules})["PIPELINE_RULES"]
     kept = [r for r in out if r["name"] in (old, new)]
     assert [(r["name"], r["enabled"], r["languages"]) for r in kept] == [(new, True, ["de"])]
 
@@ -521,15 +489,12 @@ def test_switched_off_renamed_rule_the_admin_edited_keeps_the_edits_and_runs(tmp
     """The old copy may take the switched-off new card's slot only while that
     card is still factory content: an edited one keeps the admin's words and
     note, and runs in place of the dropped copy."""
-    from faster_whisper_backend.settings import config_store as cs
     old, new = "strip-and-lowercase-non-noun", "de-strip-and-lowercase-non-noun"
     rules = copy.deepcopy(_factory_rules())
     edited = _rule(rules, new)
     rules.insert(-1, dict(copy.deepcopy(edited), name=old, languages=[], enabled=True))
     edited.update(enabled=False, note="mine", wordlist=[*edited["wordlist"], "zzzadminword"])
-    p = tmp_path / "config.local.json"
-    p.write_text(json.dumps({"PIPELINE_RULES": rules}), encoding="utf-8")
-    out = cs.load_overrides(str(p))["PIPELINE_RULES"]
+    out = _load_saved(tmp_path, {"PIPELINE_RULES": rules})["PIPELINE_RULES"]
     kept = [r for r in out if r["name"] in (old, new)]
     assert [(r["name"], r["enabled"], r["note"]) for r in kept] == [(new, True, "mine")]
     assert "zzzadminword" in kept[0]["wordlist"]
@@ -540,16 +505,13 @@ def test_stored_single_regex_rule_becomes_a_one_entry_regex_list(tmp_path):
     before it (May 21 - June 15) failed validation and took EVERY override
     with it; its rules are one-entry lists now, labelled with their slug, so
     the factory text fixes keyed by those old labels reach them too."""
-    from faster_whisper_backend.settings import config_store as cs
     rules = copy.deepcopy(_factory_rules())
     rules.insert(-1, {"name": "replace-szet-lc", "label": "Replace ß → ss",
                       "enabled": True, "seeded": True, "note": "why",
                       "type": "regex", "pattern": "ß", "replacement": "ss"})
     rules.insert(-1, {"name": "replace-and", "label": "Replace ,- AND .-",
                       "type": "regex", "pattern": "(?:,|\\.)(- |-)", "replacement": ""})
-    p = tmp_path / "config.local.json"
-    p.write_text(json.dumps({"PIPELINE_RULES": rules, "BEAM_SIZE": 3}), encoding="utf-8")
-    out = cs.load_overrides(str(p))
+    out = _load_saved(tmp_path, {"PIPELINE_RULES": rules, "BEAM_SIZE": 3})
     assert out["BEAM_SIZE"] == 3
     szet = _rule(out["PIPELINE_RULES"], "replace-szet-lc")
     assert (szet["type"], szet["note"], szet["entries"]) == ("regex-list", "why", [
