@@ -601,7 +601,7 @@ def test_apply_no_profiles_suppresses_user_bound_profile(monkeypatch):
     # The per-key admin force suppresses profiles bound at the USER scope too.
     _set_profiles(monkeypatch, {"clinic": {"BEAM_SIZE": 7}})
     _bindings(monkeypatch, user={"direct": {}, "profiles": ["clinic"]})
-    assert ec.resolve("m", key_id="k", user_id="u").values["BEAM_SIZE"] == 7  # applies
+    assert ec.resolve("m", key_id="k", user_id="u").values["BEAM_SIZE"] == 7
     _bindings(monkeypatch, key={"direct": {}, "profiles": [], "apply_no_profiles": True},
               user={"direct": {}, "profiles": ["clinic"]})
     r = ec.resolve("m", key_id="k", user_id="u")
