@@ -202,7 +202,6 @@ def record_trace(
     }
     if request_id:
         try:
-            from faster_whisper_backend.settings import config as cfg
             from faster_whisper_backend.stats import recent_transcriptions_store
             recent_transcriptions_store.record_trace(
                 request_id=request_id,
@@ -217,9 +216,7 @@ def record_trace(
                 user_id=user_id,
                 username=username,
                 created_ts=created_ts,
-                prune_every=int(getattr(cfg, "RECENT_TRANSCRIPTIONS_PRUNE_EVERY", 50)),
-                max_rows=int(getattr(cfg, "RECENT_TRANSCRIPTIONS_MAX", 500)),
-                ttl_days=float(getattr(cfg, "RECENT_TRANSCRIPTIONS_RETENTION_DAYS", 30)),
+                **recent_transcriptions_store.lazy_prune_settings(),
             )
         except Exception as e:
             logger.warning("[recent-tx] persist failed: %s", e)
