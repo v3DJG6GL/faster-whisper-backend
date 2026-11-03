@@ -714,6 +714,16 @@ def _export_manifest(only_status="ready"):
     return [json.loads(line) for line in text.splitlines() if line]
 
 
+def _mark_trimmed(captures_store, cid, trimmed_rel):
+    """A legacy VAD trim of a 12.4 s capture: 2 s lead + 1.3 s trail, 9.1 s left."""
+    with captures_store._lock:
+        with captures_store._require_conn() as conn:
+            conn.execute(
+                "UPDATE captures SET audio_s = 12.4, audio_trimmed_relpath = ?,"
+                " audio_trim_lead_ms = 2000, audio_trim_trail_ms = 1300"
+                " WHERE id = ?", (trimmed_rel, cid))
+
+
 def _ready_capture(captures_store, monkeypatch, tmp_path, *, language, translations):
     cid = _audio_capture(
         captures_store, monkeypatch, tmp_path, language=language,
@@ -792,12 +802,7 @@ def test_export_duration_describes_the_trimmed_companion(
     trimmed_rel = row["audio_relpath"] + ".trim.wav"
     shutil.copyfile(captures_store.abs_audio_path(row["audio_relpath"]),
                     captures_store.abs_audio_path(trimmed_rel))
-    with captures_store._lock:
-        with captures_store._require_conn() as conn:
-            conn.execute(
-                "UPDATE captures SET audio_s = 12.4, audio_trimmed_relpath = ?,"
-                " audio_trim_lead_ms = 2000, audio_trim_trail_ms = 1300"
-                " WHERE id = ?", (trimmed_rel, cid))
+    _mark_trimmed(captures_store, cid, trimmed_rel)
     rows = _export_manifest()
     assert [r["task"] for r in rows] == ["transcribe", "translate"]
     assert [r["duration"] for r in rows] == [pytest.approx(9.1)] * 2
@@ -817,12 +822,7 @@ def test_export_falls_back_to_the_original_when_the_trimmed_file_is_gone(
     cid = _ready_capture(captures_store, monkeypatch, tmp_path,
                          language="de", translations={})
     row = captures_store.get_capture(cid)
-    with captures_store._lock:
-        with captures_store._require_conn() as conn:
-            conn.execute(
-                "UPDATE captures SET audio_s = 12.4, audio_trimmed_relpath = ?,"
-                " audio_trim_lead_ms = 2000, audio_trim_trail_ms = 1300"
-                " WHERE id = ?", (row["audio_relpath"] + ".trim.wav", cid))
+    _mark_trimmed(captures_store, cid, row["audio_relpath"] + ".trim.wav")
     rows = _export_manifest()
     assert [r["duration"] for r in rows] == [pytest.approx(12.4)]
     blob = b"".join(captures_routes._build_export_stream("ready", True))
@@ -1023,12 +1023,7 @@ def test_detail_keeps_original_timeline_when_the_trimmed_file_is_gone(
                {"word": " zehn", "start": 10.0, "end": 10.5}],
     )
     rel = captures_store.get_capture(cid)["audio_relpath"]
-    with captures_store._lock:
-        with captures_store._require_conn() as conn:
-            conn.execute(
-                "UPDATE captures SET audio_trimmed_relpath = ?,"
-                " audio_trim_lead_ms = 2000, audio_trim_trail_ms = 1300"
-                " WHERE id = ?", (rel + ".trim.wav", cid))
+    _mark_trimmed(captures_store, cid, rel + ".trim.wav")
 
     cap = client.get(f"/captures/api/{cid}").json()["capture"]
     assert cap["effective_audio_s"] == pytest.approx(12.4)
