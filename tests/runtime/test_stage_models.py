@@ -15,6 +15,7 @@ from faster_whisper_backend.translation import engine as translation
 from faster_whisper_backend.translation import gating as tr_gating
 from faster_whisper_backend.transcription import progress as tx_progress
 from tests._transcription_helpers import WAV_UPLOAD as _FILE
+from tests._transcription_helpers import bind_profile as _bind_profile
 from tests._transcription_helpers import post_verbose as _post
 
 
@@ -64,20 +65,9 @@ def test_locked_diarization_model_ignores_client_param(client, app_module,
                         raising=False)
     calls = []
     _stub_diarize(monkeypatch, calls)
-    _, raw_admin = make_user_key("admin", is_admin=True)
-    admin_h = bearer(raw_admin)
-    r = client.post("/settings/overrides/state", headers=admin_h,
-                    json={"OVERRIDE_PROFILES": {"pin-diar": {
-                        "DIARIZATION_MODEL":
-                            "pyannote/speaker-diarization-community-1",
-                        "locks": ["DIARIZATION_MODEL"]}}})
-    assert r.status_code == 200, r.text
-    uid, raw_alice = make_user_key("alice", is_admin=False)
-    r = client.patch(
-        f"/settings/api-keys/api/users/{uid}/permissions", headers=admin_h,
-        json={"pages": {}, "config": {"overrides": {},
-                                      "profiles": ["pin-diar"], "locks": []}})
-    assert r.status_code == 200, r.text
+    _, raw_alice = _bind_profile(client, make_user_key, "pin-diar", {
+        "DIARIZATION_MODEL": "pyannote/speaker-diarization-community-1",
+        "locks": ["DIARIZATION_MODEL"]})
 
     r = client.post(
         "/v1/audio/transcriptions", files=_FILE, headers=bearer(raw_alice),
@@ -307,22 +297,6 @@ def test_allowlist_never_blocks_the_config_inherited_default(
     assert len(calls) == 1
     assert calls[0]["model_id"] == "pyannote/speaker-diarization-community-1"
     assert "warnings" not in r.json()
-
-
-def _bind_profile(client, make_user_key, name, fields):
-    from tests.conftest import bearer
-    _, raw_admin = make_user_key("admin", is_admin=True)
-    admin_h = bearer(raw_admin)
-    r = client.post("/settings/overrides/state", headers=admin_h,
-                    json={"OVERRIDE_PROFILES": {name: fields}})
-    assert r.status_code == 200, r.text
-    uid, raw_alice = make_user_key("alice", is_admin=False)
-    r = client.patch(
-        f"/settings/api-keys/api/users/{uid}/permissions", headers=admin_h,
-        json={"pages": {}, "config": {"overrides": {},
-                                      "profiles": [name], "locks": []}})
-    assert r.status_code == 200, r.text
-    return admin_h, raw_alice
 
 
 def test_allowlist_admits_the_identity_effective_model_when_echoed(
