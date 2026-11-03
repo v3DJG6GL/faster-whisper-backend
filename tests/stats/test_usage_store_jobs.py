@@ -616,7 +616,6 @@ def test_window_forms_days_from_to_and_all(usage_store_db):
                     now=now)
     with pytest.raises(ValueError):
         us.document("u", with_stages=("decoding",), tz=_UTC, tz_name="UTC", now=now)
-    # No usage at all.
     doc = us.document("nobody", all_time=True, tz=_UTC, tz_name="UTC", now=now)
     assert doc["range"]["from"] == today and doc["range"]["first_day"] is None
 
