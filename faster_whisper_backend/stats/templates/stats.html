@@ -141,9 +141,9 @@
     border: 1px solid var(--border); border-radius: 4px; padding: 0.1rem 0.3rem;
     font: inherit; font-size: var(--fs-xs); }
   .sb-custom .spans { display: inline-flex; gap: 0.25rem; flex-wrap: wrap; }
-  .sb-custom button { font: inherit; font-size: var(--fs-xs); background: var(--bg);
-    color: var(--dim); border: 1px solid var(--border); border-radius: 4px;
-    padding: 0.1rem 0.45rem; cursor: pointer; }
+  .sb-custom button, .usage-error button, .rj-foot button { font: inherit; font-size: var(--fs-xs);
+    background: var(--bg); border: 1px solid var(--border); border-radius: 4px; cursor: pointer; }
+  .sb-custom button { color: var(--dim); padding: 0.1rem 0.45rem; }
   .sb-custom button:hover { color: var(--fg); }
   .sb-custom button.primary { color: var(--cyan); border-color: #1f3a5a; }
   .sb-custom button:disabled { opacity: .4; cursor: not-allowed; }
@@ -179,9 +179,7 @@
   .chips.flash, .picker.flash { border-radius: 6px; }
   @media (prefers-reduced-motion: reduce) { .card .win.pulse, .seg-ctrl.flash, .chips.flash, .picker.flash { animation: none; } }
   .usage-error { font-size: var(--fs-xs); color: var(--yellow); }
-  .usage-error button { font: inherit; font-size: var(--fs-xs); color: var(--fg);
-    background: var(--bg); border: 1px solid var(--border); border-radius: 4px;
-    padding: 0 0.4rem; cursor: pointer; margin-left: 0.3rem; }
+  .usage-error button { color: var(--fg); padding: 0 0.4rem; margin-left: 0.3rem; }
   .usage-chart:focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; }
   .usage-empty { position: absolute; inset: 0; display: flex; align-items: center;
     justify-content: center; text-align: center; padding: 1rem; color: var(--dim);
@@ -433,9 +431,7 @@
   .pipe i.preload      { background: var(--help); }
   tr.rj-expand td { background: rgba(110, 118, 129, 0.06); }
   .rj-foot { display: flex; align-items: center; gap: 0.6rem; margin-top: 0.3rem; }
-  .rj-foot button { font: inherit; font-size: var(--fs-xs); color: var(--fg);
-    background: var(--bg); border: 1px solid var(--border); border-radius: 4px;
-    padding: 0.1rem 0.5rem; cursor: pointer; }
+  .rj-foot button { color: var(--fg); padding: 0.1rem 0.5rem; }
   .rj-foot button:hover { border-color: var(--dim); }
   .rj-cancel { font: inherit; font-size: 0.667rem; border: 1px solid var(--border);
     background: transparent; color: var(--dim); border-radius: 4px;
