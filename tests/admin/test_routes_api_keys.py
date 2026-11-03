@@ -30,12 +30,8 @@ def test_list_users_surfaces_activity_fields(client):
     # The user-card header reads both batched fields straight off /api/users:
     # active_key_count and (server-computed) last_used_ts. An unused key yields
     # a null last_used_ts (the header renders "—" / a grey dot).
-    r = client.post(
-        "/settings/api-keys/api/users",
-        json={"username": "dave", "is_admin": False},
-    )
-    uid = r.json()["user_id"]
-    client.post(f"/settings/api-keys/api/users/{uid}/keys", json={"label": "k1"})
+    uid = _new_user(client, "dave")
+    _new_key(client, uid)
     users = client.get("/settings/api-keys/api/users").json()["users"]
     u = next(x for x in users if x["id"] == uid)
     assert u["active_key_count"] == 1
@@ -103,11 +99,7 @@ def test_delete_last_admin_409(client, make_user_key):
 
 
 def test_patch_permissions_invalid_scope_400(client):
-    r = client.post(
-        "/settings/api-keys/api/users",
-        json={"username": "dan", "is_admin": False},
-    )
-    uid = r.json()["user_id"]
+    uid = _new_user(client, "dan")
     # "bogus" is not a valid scope -> set_user_permissions raises ValueError -> 400.
     r = client.patch(
         f"/settings/api-keys/api/users/{uid}/permissions",
@@ -117,11 +109,7 @@ def test_patch_permissions_invalid_scope_400(client):
 
 
 def test_patch_permissions_unknown_field_422(client):
-    r = client.post(
-        "/settings/api-keys/api/users",
-        json={"username": "eve", "is_admin": False},
-    )
-    uid = r.json()["user_id"]
+    uid = _new_user(client, "eve")
     r = client.patch(
         f"/settings/api-keys/api/users/{uid}/permissions",
         json={"pages": {}, "nope": True},
