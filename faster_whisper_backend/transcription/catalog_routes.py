@@ -435,6 +435,13 @@ async def get_decode_defaults(model: str = "", override_profile: str = "",
         return {"value": value, "source": source, "label": label,
                 "locked": bool(locked)}
 
+    def _cfg_entry(field: str, coerce) -> dict:
+        return _entry(field, coerce(effective_config.cfg_for(model_name, field, ident)),
+                      field in ident.locked)
+
+    def _stripped(v) -> str:
+        return (v or "").strip()
+
     # The silence gates as a session runs them: fitted as a set, so a
     # profile outer above the global hard break reports the moved hard break.
     silence, _ = effective_config.session_silence_gates(ident)
@@ -458,31 +465,14 @@ async def get_decode_defaults(model: str = "", override_profile: str = "",
         # The per-run defaults a file/link run inherits for its form fields
         # (not decode keys — locked by config name like the prompt), resolved
         # the way the run resolves them.
-        "language": _entry("DEFAULT_LANGUAGE",
-                           effective_config.cfg_for(model_name, "DEFAULT_LANGUAGE", ident) or "",
-                           "DEFAULT_LANGUAGE" in ident.locked),
-        "word_timestamps": _entry(
-            "WORD_TIMESTAMPS_ENABLED",
-            bool(effective_config.cfg_for(model_name, "WORD_TIMESTAMPS_ENABLED", ident)),
-            "WORD_TIMESTAMPS_ENABLED" in ident.locked),
-        "diarize": _entry("DIARIZE", bool(effective_config.cfg_for(model_name, "DIARIZE", ident)),
-                          "DIARIZE" in ident.locked),
-        "separate_bgm": _entry("SEPARATE_BGM",
-                               bool(effective_config.cfg_for(model_name, "SEPARATE_BGM", ident)),
-                               "SEPARATE_BGM" in ident.locked),
-        "diarization_model": _entry(
-            "DIARIZATION_MODEL",
-            (effective_config.cfg_for(model_name, "DIARIZATION_MODEL", ident) or "").strip(),
-            "DIARIZATION_MODEL" in ident.locked),
-        "separation_model": _entry(
-            "BGM_SEPARATION_UVR_MODEL",
-            (effective_config.cfg_for(model_name, "BGM_SEPARATION_UVR_MODEL", ident) or "").strip(),
-            "BGM_SEPARATION_UVR_MODEL" in ident.locked),
+        "language": _cfg_entry("DEFAULT_LANGUAGE", lambda v: v or ""),
+        "word_timestamps": _cfg_entry("WORD_TIMESTAMPS_ENABLED", bool),
+        "diarize": _cfg_entry("DIARIZE", bool),
+        "separate_bgm": _cfg_entry("SEPARATE_BGM", bool),
+        "diarization_model": _cfg_entry("DIARIZATION_MODEL", _stripped),
+        "separation_model": _cfg_entry("BGM_SEPARATION_UVR_MODEL", _stripped),
         "translation": {
-            "context_segments": _entry(
-                "TRANSLATION_CONTEXT_SEGMENTS",
-                int(effective_config.cfg_for(model_name, "TRANSLATION_CONTEXT_SEGMENTS", ident) or 0),
-                "TRANSLATION_CONTEXT_SEGMENTS" in ident.locked),
+            "context_segments": _cfg_entry("TRANSLATION_CONTEXT_SEGMENTS", lambda v: int(v or 0)),
         },
         # Live dictation's final decode pins condition_on_previous_text (a
         # client override is ignored, streaming/routes.py) and defaults best_of
