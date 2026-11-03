@@ -22,7 +22,7 @@
   // readable CSRF cookie: it is set together with the session cookie, so it
   // stays paired with the session the browser sends even after another tab
   // signed in again (the cached whoami token then belongs to the dead
-  // session and every write 403'd). It is named by whoami's csrf_cookie once
+  // session, so every write would 403). It is named by whoami's csrf_cookie once
   // that is cached (SESSION_CSRF_COOKIE_NAME may rename it) and whisper_csrf
   // before that; the cached whoami token is the fallback when no cookie is
   // readable. The HttpOnly session cookie is sent automatically.
