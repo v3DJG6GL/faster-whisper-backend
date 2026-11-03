@@ -18,13 +18,18 @@ def db(tmp_path):
     js._reset_for_tests()
 
 
-def _start(db, job_id="a" * 32, **kw):
-    args = dict(job_id=job_id, request_id="req", kind="transcribe",
+def _start_args(**kw):
+    args = dict(job_id="a" * 32, request_id="req", kind="transcribe",
                 user_id="u1", key_id="k1", model="large-v3",
                 source_kind="file", source_name="meeting.m4a",
                 task="transcribe", response_format="verbose_json",
                 ttl_s=_TTL, max_rows=100, max_bytes=0, prune_every=0)
     args.update(kw)
+    return args
+
+
+def _start(db, job_id="a" * 32, **kw):
+    args = _start_args(job_id=job_id, **kw)
     db.start(**args)
     return args["job_id"]
 
@@ -114,10 +119,7 @@ def test_start_replaces_a_finished_row_under_the_same_id(db):
     jid = _start(db)
     db.finish(job_id=jid, state="done", result={"text": "1"}, ttl_s=_TTL)
     # The owner's own re-use: start() reports the row written.
-    args = dict(job_id=jid, request_id="req2", kind="transcribe",
-                user_id="u1", key_id="k1", model="large-v3",
-                source_kind="file", source_name="meeting.m4a",
-                ttl_s=_TTL, max_rows=100, max_bytes=0, prune_every=0)
+    args = _start_args(job_id=jid, request_id="req2")
     assert db.start(**args) is True
     row = db.get(jid)
     assert row["state"] == "running" and row["request_id"] == "req2"
@@ -129,10 +131,8 @@ def test_start_refuses_a_foreign_row(db):
     # destroy her stored result or take the id over.
     jid = _start(db, user_id="alice", key_id="ka")
     db.finish(job_id=jid, state="done", result={"text": "alice"}, ttl_s=_TTL)
-    args = dict(job_id=jid, request_id="req-bob", kind="transcribe",
-                user_id="bob", key_id="kb", model="large-v3",
-                source_kind="file", source_name="x.m4a",
-                ttl_s=_TTL, max_rows=100, max_bytes=0, prune_every=0)
+    args = _start_args(job_id=jid, request_id="req-bob", user_id="bob",
+                       key_id="kb", source_name="x.m4a")
     assert db.start(**args) is False
     row = db.get(jid)
     assert row["user_id"] == "alice" and row["state"] == "done"
