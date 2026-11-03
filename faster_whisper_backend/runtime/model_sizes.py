@@ -213,6 +213,10 @@ def _record_locked(k: str, vram_bytes: int, measured: bool, src: str,
     _write_locked(models, path)
 
 
+def _size_row(nbytes, src: str, n=0, ts=None) -> dict:
+    return {"bytes": int(nbytes), "src": src, "n": _count(n), "ts": ts}
+
+
 def lookup(name: str, device: str, compute_type: str) -> dict | None:
     """Best known size WITH its provenance: `{bytes, src, n, ts}` where src is
     "measured" (an NVML delta for exactly this placement), "disk" (the live
@@ -234,10 +238,10 @@ def lookup(name: str, device: str, compute_type: str) -> dict | None:
         if not _is_measured(exact, rec):
             size = disk_size(name)
             if size is not None:
-                return {"bytes": int(size), "src": "disk", "n": 0, "ts": None}
-        return {"bytes": int(rec["bytes"]),
-                "src": "measured" if _is_measured(exact, rec) else "disk",
-                "n": _count(rec.get("n")), "ts": rec.get("ts")}
+                return _size_row(size, "disk")
+        return _size_row(rec["bytes"],
+                         "measured" if _is_measured(exact, rec) else "disk",
+                         rec.get("n"), rec.get("ts"))
     # Any-device fallback: a cpu/int8 measurement is a poor proxy for a
     # cuda/float16 load, but a rough number beats no check at all — and the
     # exact record replaces it the first time that placement is measured.
@@ -263,8 +267,7 @@ def lookup(name: str, device: str, compute_type: str) -> dict | None:
             best = (cand, v)
     if best is not None and best[0][0] > -2:   # rank 0/1: a measurement
         v = best[1]
-        return {"bytes": int(v["bytes"]), "src": "proxy",
-                "n": _count(v.get("n")), "ts": v.get("ts")}
+        return _size_row(v["bytes"], "proxy", v.get("n"), v.get("ts"))
     # Never measured anywhere. Fall back to what the model WEIGHS ON DISK,
     # which for a GGUF or an ONNX file is a solid lower bound on its resident
     # size, and for a CT2 directory is close enough to decide whether a load
@@ -281,9 +284,8 @@ def lookup(name: str, device: str, compute_type: str) -> dict | None:
         if best is None:
             return None
         v = best[1]
-        return {"bytes": int(v["bytes"]), "src": "disk",
-                "n": _count(v.get("n")), "ts": v.get("ts")}
-    return {"bytes": int(size), "src": "disk", "n": 0, "ts": None}
+        return _size_row(v["bytes"], "disk", v.get("n"), v.get("ts"))
+    return _size_row(size, "disk")
 
 
 def estimate(name: str, device: str, compute_type: str) -> int | None:
