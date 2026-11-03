@@ -27,6 +27,26 @@ def _by_name():
     return {r["name"]: r for r in _factory_rules()}
 
 
+_TRIM = {"name": "trim-edges", "label": "Trim", "type": "terminal"}
+
+
+def _install(app_module, rules):
+    app_module.cfg.PIPELINE_RULES = rules
+    pl_engine.rebuild_caches()
+
+
+def _install_factory(app_module):
+    _install(app_module, copy.deepcopy(_factory_rules()))
+
+
+def _install_one(app_module, name):
+    _install(app_module, [copy.deepcopy(_by_name()[name]), dict(_TRIM)])
+
+
+def _pp(text, language="de"):
+    return pl_engine._postprocess_text(text, model_name="", language=language)
+
+
 def _entry(rules, label):
     return next(e for r in rules for e in (r.get("entries") or [])
                 if e.get("label") == label)
@@ -57,11 +77,8 @@ def test_punct_before_hyphen_still_removed_after_a_word():
 
 
 def test_date_range_survives_the_whole_factory_pipeline(app_module):
-    app_module.cfg.PIPELINE_RULES = copy.deepcopy(_factory_rules())
-    pl_engine.rebuild_caches()
-    out = pl_engine._postprocess_text(
-        " Die Patientin ist vom 3.-10 Oktober abwesend Punkt",
-        model_name="", language="de")
+    _install_factory(app_module)
+    out = _pp(" Die Patientin ist vom 3.-10 Oktober abwesend Punkt")
     assert out == "Die Patientin ist vom 3.-10 Oktober abwesend."
 
 
@@ -73,12 +90,10 @@ def test_capitalize_after_terminator_is_fast_on_a_run_of_paragraph_breaks(app_mo
     started at every newline of the run and scanned to its end. A match now
     starts only at the last newline of a run."""
     rule = _by_name()["capitalize-after-terminator"]
-    app_module.cfg.PIPELINE_RULES = [
-        copy.deepcopy(rule), {"name": "trim-edges", "label": "Trim", "type": "terminal"}]
-    pl_engine.rebuild_caches()
+    _install(app_module, [copy.deepcopy(rule), dict(_TRIM)])
     for text in ("Befund" + "\n" * 40000 + "Ende", "Befund" + "\n \n" * 20000 + "Ende"):
         t0 = time.perf_counter()
-        out = pl_engine._postprocess_text(text, model_name="", language="de")
+        out = _pp(text)
         assert time.perf_counter() - t0 < 1.0
         assert out == text
     for old in (r"([.?!]\s+|\n+\s*)([a-zäöüß])", r"([.?!]\s+|\n\s*)([a-zäöüß])"):
@@ -103,11 +118,8 @@ def test_language_specific_rules_are_tagged():
 def test_hyphen_capitalization_is_german_only(app_module):
     """It exists for the German ' Bindestrich ' compounds; untagged, it ran on
     every language and turned 'well-known' into 'well-Known'."""
-    app_module.cfg.PIPELINE_RULES = [
-        copy.deepcopy(_by_name()["capitalize-letter-after-hyphen"]),
-        {"name": "trim-edges", "label": "Trim", "type": "terminal"}]
-    pl_engine.rebuild_caches()
-    run = lambda t, lang: pl_engine._postprocess_text(t, model_name="", language=lang)
+    _install_one(app_module, "capitalize-letter-after-hyphen")
+    run = _pp
     assert run("A well-known x-ray", "en") == "A well-known x-ray"
     assert run("Una niña franco-alemana", "es") == "Una niña franco-alemana"
     assert run("Eisen-infusion", "de") == "Eisen-Infusion"
@@ -123,17 +135,13 @@ def test_hyphen_capitalization_is_german_only(app_module):
 def test_hyphen_capitalization_leaves_a_digit_compound_lowercase(app_module, text, want):
     """A German digit compound ("45-jährige", "3-mal") is lowercase after the
     hyphen; the rule capitalised it ("45-Jährige")."""
-    app_module.cfg.PIPELINE_RULES = copy.deepcopy(_factory_rules())
-    pl_engine.rebuild_caches()
-    assert pl_engine._postprocess_text(text, model_name="", language="de") == want
+    _install_factory(app_module)
+    assert _pp(text) == want
 
 
 def test_spanish_opening_marks(app_module):
-    app_module.cfg.PIPELINE_RULES = [
-        copy.deepcopy(_by_name()["es-punctuation"]),
-        {"name": "trim-edges", "label": "Trim", "type": "terminal"}]
-    pl_engine.rebuild_caches()
-    run = lambda t, lang: pl_engine._postprocess_text(t, model_name="", language=lang)
+    _install_one(app_module, "es-punctuation")
+    run = _pp
     assert run("Qué hora es? No lo sé. Qué bien!", "es") == "¿Qué hora es? No lo sé. ¡Qué bien!"
     assert run("¿Ya está? ¡Sí!", "es") == "¿Ya está? ¡Sí!", "existing marks are not doubled"
     assert run("Wie spät ist es?", "de") == "Wie spät ist es?", "German is untouched"
@@ -142,11 +150,8 @@ def test_spanish_opening_marks(app_module):
 def test_spanish_opening_marks_on_consecutive_sentences(app_module):
     """The sentence-start anchor is zero-width: a consumed terminator made the
     scan resume past it, so only every other question got its opening mark."""
-    app_module.cfg.PIPELINE_RULES = [
-        copy.deepcopy(_by_name()["es-punctuation"]),
-        {"name": "trim-edges", "label": "Trim", "type": "terminal"}]
-    pl_engine.rebuild_caches()
-    run = lambda t: pl_engine._postprocess_text(t, model_name="", language="es")
+    _install_one(app_module, "es-punctuation")
+    run = lambda t: _pp(t, "es")
     assert run("Qué? Cómo?") == "¿Qué? ¿Cómo?"
     assert run("Hola! Adiós!") == "¡Hola! ¡Adiós!"
     assert run("Qué hora es? Y luego? Vale.") == "¿Qué hora es? ¿Y luego? Vale."
@@ -166,23 +171,20 @@ def test_spanish_marks_survive_the_whole_factory_pipeline(app_module):
     """es-punctuation runs ahead of strip-auto-punctuation, which takes an
     opening mark along with its closing one: no ¿/¡ lands on the wrong
     sentence or is left orphaned."""
-    app_module.cfg.PIPELINE_RULES = copy.deepcopy(_factory_rules())
-    pl_engine.rebuild_caches()
-    run = lambda t: pl_engine._postprocess_text(t, model_name="", language="es")
+    _install_factory(app_module)
+    run = lambda t: _pp(t, "es")
     assert run("Hola. Tienes 3?") == "Hola ¿Tienes 3?"
     assert run("Cuántos son? 25!") == "Cuántos son ¡25!"
     assert run("¿Qué hora es?") == "Qué hora es"
     off = copy.deepcopy(_factory_rules())
     next(r for r in off if r["name"] == "strip-auto-punctuation")["enabled"] = False
-    app_module.cfg.PIPELINE_RULES = off
-    pl_engine.rebuild_caches()
+    _install(app_module, off)
     assert run("Qué hora es? Qué bien!") == "¿Qué hora es? ¡Qué bien!"
 
 
 def test_german_map_does_not_touch_spanish(app_module):
-    app_module.cfg.PIPELINE_RULES = copy.deepcopy(_factory_rules())
-    pl_engine.rebuild_caches()
-    assert "Punkt" in pl_engine._postprocess_text("El Punkt rojo", model_name="", language="es")
+    _install_factory(app_module)
+    assert "Punkt" in _pp("El Punkt rojo", "es")
 
 
 def test_rule_rename_migrates_every_stored_reference():
@@ -274,9 +276,8 @@ def test_stray_symbols_strip_both_halves_of_a_typographic_quote(app_module):
     """The strip took the German opening „ but not its closing “, so a quote
     Whisper wrote as „…“ kept an orphaned closing mark; a stored copy of the
     old entry is upgraded."""
-    app_module.cfg.PIPELINE_RULES = copy.deepcopy(_factory_rules())
-    pl_engine.rebuild_caches()
-    run = lambda t, lang: pl_engine._postprocess_text(t, model_name="", language=lang)
+    _install_factory(app_module)
+    run = _pp
     assert run(" Er sagte „Hallo“ zu mir.", "de") == "Er sagte Hallo zu mir"
     assert run(" Il a dit «Bonjour» à moi.", "fr") == "Il a dit Bonjour à moi"
     rules = copy.deepcopy(_factory_rules())
@@ -327,9 +328,8 @@ def test_every_separator_of_a_digit_chain_is_tightened(app_module, text, want):
     re.sub could not start the next match on it and every second separator
     of a chain kept its spaces: "3 Schrägstrich 4 Schrägstrich 2026" became
     "3/4 / 2026"."""
-    app_module.cfg.PIPELINE_RULES = copy.deepcopy(_factory_rules())
-    pl_engine.rebuild_caches()
-    out = pl_engine._postprocess_text(text, model_name="", language="de")
+    _install_factory(app_module)
+    out = _pp(text)
     assert want in out.split()
 
 
@@ -350,9 +350,8 @@ def test_a_dictated_decimal_or_split_date_is_joined_by_default(app_module, text,
     mark. A comma arm that skipped a number after a minus or a range end left
     "- 2, 5" and "3,5-5, 0", and merge-digit-pair entries that skipped a
     number inside a / group left "12/0 3/2026"."""
-    app_module.cfg.PIPELINE_RULES = copy.deepcopy(_factory_rules())
-    pl_engine.rebuild_caches()
-    assert pl_engine._postprocess_text(text, model_name="", language="de") == want
+    _install_factory(app_module)
+    assert _pp(text) == want
 
 
 def test_stored_old_digit_separator_entry_is_upgraded_once():
@@ -374,9 +373,8 @@ def test_every_hyphen_of_a_digit_chain_becomes_a_slash(app_module, text, want):
     """normalize-digit-range consumed the digit after the hyphen, so with a
     one-digit day or month every second hyphen stayed: "3-4-2026" became
     "3/4-2026"."""
-    app_module.cfg.PIPELINE_RULES = copy.deepcopy(_factory_rules())
-    pl_engine.rebuild_caches()
-    out = pl_engine._postprocess_text(text, model_name="", language="de")
+    _install_factory(app_module)
+    out = _pp(text)
     assert want in out.split()
 
 
@@ -416,9 +414,8 @@ def test_a_dictated_line_break_between_two_numbers_is_kept(app_module, text, wan
     took the line break a dictated "Neue Zeile" / "Neuer Absatz" left after a
     number: the next list item glued onto it as a range or fraction
     ("Ramipril 5-2 Tabletten", "Score 12/4")."""
-    app_module.cfg.PIPELINE_RULES = copy.deepcopy(_factory_rules())
-    pl_engine.rebuild_caches()
-    assert pl_engine._postprocess_text(text, model_name="", language="de") == want
+    _install_factory(app_module)
+    assert _pp(text) == want
 
 
 def test_digit_range_keeps_a_line_break_between_two_numbers():
@@ -429,11 +426,9 @@ def test_digit_range_keeps_a_line_break_between_two_numbers():
 
 
 def _assert_silence_loop_is_fast(app_module, unit, n):
-    app_module.cfg.PIPELINE_RULES = copy.deepcopy(_factory_rules())
-    pl_engine.rebuild_caches()
+    _install_factory(app_module)
     t0 = time.perf_counter()
-    out = pl_engine._postprocess_text(" Das war es " + unit * n + "Danke.",
-                                      model_name="", language="de")
+    out = _pp(" Das war es " + unit * n + "Danke.")
     assert time.perf_counter() - t0 < 1.0
     assert out == "Das war es Danke"
 
@@ -524,11 +519,9 @@ def test_tidy_newlines_is_fast_on_a_symbol_loop_with_the_whitespace_card_off(app
     items took 2 s, 4000 took minutes."""
     rules = copy.deepcopy(_factory_rules())
     next(r for r in rules if r.get("name") == "digit-and-whitespace-tidy")["enabled"] = False
-    app_module.cfg.PIPELINE_RULES = rules
-    pl_engine.rebuild_caches()
+    _install(app_module, rules)
     t0 = time.perf_counter()
-    out = pl_engine._postprocess_text(" Das war es " + "* " * 2000 + "Danke.",
-                                      model_name="", language="de")
+    out = _pp(" Das war es " + "* " * 2000 + "Danke.")
     assert time.perf_counter() - t0 < 1.0
     assert out.split() == ["Das", "war", "es", "Danke"]
 
