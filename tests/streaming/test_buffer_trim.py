@@ -115,8 +115,8 @@ def test_trim_preserves_committed_opening_in_final_document():
 
     # Capture alignment: on_final reassembles the WHOLE utterance — the banked
     # audio slices plus the remaining buffer — so audio, audio_dur, raw_text
-    # and words all span the full ~3.5 s of speech fed (a trimmed buffer alone
-    # would be shorter than the trim threshold's keep window).
+    # and words all span the full ~3.5 s of speech fed (the trimmed buffer
+    # alone stays under buffer_trim_sec, ~1-2 s here).
     assert info["audio_dur"] >= 3.2
     assert abs(info["audio"].shape[0] / SR - info["audio_dur"]) < 1e-6
     # Words merge banked (absolute) + decode (shifted) entries onto one timeline.
