@@ -286,24 +286,29 @@ console.log(JSON.stringify(overrides.m));
     assert out == expect
 
 
+def _rule_status_harness(html, stubs, body):
+    """A rule card's debounced status refresh, the debounce firing at once;
+    `stubs` declares `rule` and _testOneRule, `body` drives refresh()."""
+    block = _block(html, "      let timer = null;\n", "        }, 250);\n      };\n")
+    return _FAKE_DOM + """
+const tick = () => new Promise(r => setTimeout(r, 0));
+(async function () {
+  function setTimeout(f) { f(); return 1; }
+  function clearTimeout() {}
+  const status = document.createElement('div');
+""" + stubs + "  let refresh;\n" + block + body + "})();\n"
+
+
 @needs_node
 def test_rule_status_badge_ignores_a_stale_reply(client):
     """The 250 ms debounce only cancels calls not yet sent: a slow reply for
     the old pattern landed after the fresh one and repainted the badge."""
-    block = _block(_html(client, "/settings/pipeline"),
-                   "      let timer = null;\n", "        }, 250);\n      };\n")
-    out = _node(_FAKE_DOM + """
-const tick = () => new Promise(r => setTimeout(r, 0));
-(async function () {
-  // The debounce fires at once here; the replies resolve by hand.
-  function setTimeout(f) { f(); return 1; }
-  function clearTimeout() {}
-  const status = document.createElement('div');
+    # The replies resolve by hand.
+    out = _node(_rule_status_harness(_html(client, "/settings/pipeline"), """
   const rule = { name: 'r', type: 'regex', enabled: true };
   const pending = [];
   function _testOneRule() { return new Promise(res => pending.push(res)); }
-  let refresh;
-""" + block + """
+""", """
   refresh();   // backtracking pattern: its reply takes the full 2 s
   refresh();   // the fixed pattern
   pending[1]({ type: 'regex', matches: 1 });
@@ -311,8 +316,7 @@ const tick = () => new Promise(r => setTimeout(r, 0));
   pending[0]({ type: 'regex', slow: true });
   await tick();
   console.log(JSON.stringify(status.textContent));
-})();
-""")
+"""))
     assert out == "✓ valid · 1 match in sample"
 
 
@@ -321,26 +325,17 @@ def test_rule_status_names_the_passes_of_a_repeating_rule(client):
     """A step of a rule with `repeat` on names the passes that changed the
     text (test-pipeline `passes`); one that changed it once or not at all
     says nothing about passes, like a non-repeating rule's."""
-    block = _block(_html(client, "/settings/pipeline"),
-                   "      let timer = null;\n", "        }, 250);\n      };\n")
-    out = _node(_FAKE_DOM + """
-const tick = () => new Promise(r => setTimeout(r, 0));
-(async function () {
-  function setTimeout(f) { f(); return 1; }
-  function clearTimeout() {}
-  const status = document.createElement('div');
+    out = _node(_rule_status_harness(_html(client, "/settings/pipeline"), """
   const rule = { name: 'r', type: 'callback:upper', enabled: true, repeat: true };
   const replies = [{ type: 'callback:upper', matches: 3, passes: 3 },
                    { type: 'callback:upper', matches: 1, passes: 1 },
                    { type: 'callback:upper', matches: 0, passes: 0 }];
   function _testOneRule() { return Promise.resolve(replies.shift()); }
-  let refresh;
-""" + block + """
+""", """
   const seen = [];
   for (let i = 0; i < 3; i++) { refresh(); await tick(); seen.push(status.textContent); }
   console.log(JSON.stringify(seen));
-})();
-""")
+"""))
     assert out == ["✓ valid · 3 matches in sample · 3 passes", "✓ valid · 1 match in sample",
                    "✓ valid · 0 matches in sample"]
 
@@ -610,23 +605,15 @@ async function api(m, url, body) {
 def test_rule_status_says_the_language_skipped_it(client):
     """A step the sample's language skipped read "∅ empty pattern — rule
     skipped" on an enabled rule whose pattern is anything but empty."""
-    block = _block(_html(client, "/settings/pipeline"),
-                   "      let timer = null;\n", "        }, 250);\n      };\n")
-    out = _node(_FAKE_DOM + """
-document.getElementById = id => id === 'pipeline-test-language' ? { value: 'en' } : null;
-(async function () {
-  function setTimeout(f) { f(); return 1; }
-  function clearTimeout() {}
-  const status = document.createElement('div');
+    out = _node(_rule_status_harness(_html(client, "/settings/pipeline"), """
+  document.getElementById = id => id === 'pipeline-test-language' ? { value: 'en' } : null;
   const rule = { name: 'r', type: 'regex', enabled: true, languages: ['de', 'es'] };
   async function _testOneRule() { return { type: 'regex', skipped: true, skipped_language: true }; }
-  let refresh;
-""" + block + """
+""", """
   refresh();
   await new Promise(r => globalThis.setTimeout(r, 0));
   console.log(JSON.stringify(status.textContent));
-})();
-""")
+"""))
     assert out == ("∅ skipped — language: the rule runs only for de, es, "
                    "the test sample is en")
 
