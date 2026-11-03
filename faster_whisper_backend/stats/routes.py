@@ -451,8 +451,9 @@ async def stats_usage(
     Filters (comma lists, echoed under `filter`): `kinds` keeps only those
     job kinds (422 on an unknown one); `users` / `keys` keep only those
     owners / keys — as picked in the page's who / keys pickers, so a
-    non-admin "all" viewer sends the opaque labels it was shown and they
-    are mapped back here. `users` needs the "all" scope (403 for own)."""
+    non-admin "all" viewer sends the row ids the picker gave it (older
+    links: the opaque labels it was shown) and they are mapped back here.
+    `users` needs the "all" scope (403 for own)."""
 
     # Normalise BEFORE the scope check: an unknown `by` collapses to "user"
     # and must not slip past the own-scope refusal below.
