@@ -14,14 +14,8 @@ from faster_whisper_backend.pipeline import apply as pl_apply
 from faster_whisper_backend.translation import engine as translation
 from faster_whisper_backend.translation import gating as tr_gating
 from faster_whisper_backend.transcription import progress as tx_progress
-
-_FILE = {"file": ("a.wav", b"RIFFxxxxWAVE", "audio/wav")}
-
-
-def _post(client, **data):
-    data.setdefault("model", "whisper-1")
-    data.setdefault("response_format", "verbose_json")
-    return client.post("/v1/audio/transcriptions", files=_FILE, data=data)
+from tests._transcription_helpers import WAV_UPLOAD as _FILE
+from tests._transcription_helpers import post_verbose as _post
 
 
 def _stub_diarize(monkeypatch, calls):

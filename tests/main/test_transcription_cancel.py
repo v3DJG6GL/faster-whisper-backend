@@ -6,16 +6,10 @@ from faster_whisper_backend.audio import bgm_separation
 from faster_whisper_backend.audio import diarization
 from faster_whisper_backend.transcription import models as tx_models
 from faster_whisper_backend.transcription import progress as tx_progress
+from tests._transcription_helpers import post_verbose as _post
 from tests._translation_helpers import enable_translation
 
-_FILE = {"file": ("a.wav", b"RIFFxxxxWAVE", "audio/wav")}
 _PID = "cafe" * 8  # 32 hex chars — passes _PROGRESS_ID_RE
-
-
-def _post(client, **data):
-    data.setdefault("model", "whisper-1")
-    data.setdefault("response_format", "verbose_json")
-    return client.post("/v1/audio/transcriptions", files=_FILE, data=data)
 
 
 def test_cancel_malformed_id_is_422(client):
