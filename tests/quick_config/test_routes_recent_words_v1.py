@@ -69,14 +69,9 @@ def test_v1_recent_words_limit_param_clamps(client, app_module):
 
 
 def test_v1_recent_words_scoped_per_user(client, make_user_key):
-    from faster_whisper_backend.auth import api_keys_store
     make_user_key("root", is_admin=True)  # flips lockdown
-    uid_a = api_keys_store.create_user("alice", is_admin=False)
-    api_keys_store.set_user_permissions(uid_a, {"pages": {"quick_config": "own"}})
-    raw_a, _ = api_keys_store.create_key(uid_a)
-    uid_b = api_keys_store.create_user("bob", is_admin=False)
-    api_keys_store.set_user_permissions(uid_b, {"pages": {"quick_config": "own"}})
-    raw_b, _ = api_keys_store.create_key(uid_b)
+    uid_a, raw_a = make_user_key("alice", pages={"quick_config": "own"})
+    uid_b, raw_b = make_user_key("bob", pages={"quick_config": "own"})
 
     _seed(uid_a, ["alpha-word"], request_id="ra")
     _seed(uid_b, ["bravo-word"], request_id="rb")
