@@ -16,8 +16,7 @@ Two backends behind one interface:
     faster-whisper not importable, as on a deps-free CI/dev box) and in tests.
 
 ``"auto"`` (the default) uses bundled Silero when faster-whisper is present and
-silently falls back to the energy gate otherwise — so it works on every deployment
-without an extra package.
+falls back to the energy gate, with a logged warning, otherwise.
 """
 
 import logging
