@@ -278,9 +278,9 @@ def _fixed_count_product(pat: str) -> int:
                 lo, comma, hi = pat[j + 1:end].partition(",")
                 if ((_ascii_digits(lo) or (comma and not lo))
                         and (_ascii_digits(hi) or not hi)):
-                    # Ten digits already exceed the engine's MAXREPEAT —
-                    # but only SIGNIFICANT ones: the engine reads
-                    # `{00000000003000}` as 3000, so leading zeros go first.
+                    # Ten significant digits already exceed _MAX_FIXED_COUNT,
+                    # so the cap changes no verdict. Strip leading zeros first:
+                    # the engine reads `{00000000003000}` as 3000.
                     return max(int(lo.lstrip("0")[:10] or "0"), 1), end + 1
         return 1, j
 
