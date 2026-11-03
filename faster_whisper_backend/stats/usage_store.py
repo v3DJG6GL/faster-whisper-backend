@@ -1021,7 +1021,8 @@ def sweep(
             "hourly": pruned_hourly}
 
 
-def _window_clause(start_hour: int | None, end_hour: int | None,
+def _window_clause(start_hour: int | None, end_hour: int | None, *,
+                   user_id: str | None = None, key_id: str | None = None,
                    ) -> tuple[str, list[Any]]:
     clauses: list[str] = []
     params: list[Any] = []
@@ -1031,6 +1032,8 @@ def _window_clause(start_hour: int | None, end_hour: int | None,
     if end_hour is not None:
         clauses.append("hour <= ?")
         params.append(int(end_hour))
+    _in_clause("user_id", user_id, clauses, params)
+    _in_clause("key_id", key_id, clauses, params)
     return (" WHERE " + " AND ".join(clauses)) if clauses else "", params
 
 
@@ -1044,10 +1047,7 @@ def totals_by_key(
     """Summed usage per key over an optional [start_hour, end_hour] window,
     optionally restricted to one user. Rows survive key/user revocation."""
     conn = _require_conn()
-    where, params = _window_clause(start_hour, end_hour)
-    if user_id is not None:
-        where = (where + " AND user_id = ?") if where else " WHERE user_id = ?"
-        params.append(user_id)
+    where, params = _window_clause(start_hour, end_hour, user_id=user_id)
     cur = conn.execute(
         "SELECT key_id, user_id,"
         " SUM(requests) AS requests, SUM(errors) AS errors,"
@@ -1094,6 +1094,8 @@ def totals_for_user(
     for a per-viewer-local 'today'."""
     conn = _require_conn()
     where, params = _window_clause(start_hour, end_hour)
+    # Not _window_clause(user_id=...): that drops the filter for None, where
+    # this one always filters (a None user matches no row).
     where = (where + " AND user_id = ?") if where else " WHERE user_id = ?"
     params.append(user_id)
     row = conn.execute(
@@ -1125,13 +1127,8 @@ def series(
     `day*86400` is UTC midnight of that date. bucket='week' groups into 7-day blocks
     (day - day % 7). user_id / key_id None => global (all keys)."""
     conn = _require_conn()
-    where, params = _window_clause(start_hour, end_hour)
-    if user_id is not None:
-        where = (where + " AND user_id = ?") if where else " WHERE user_id = ?"
-        params.append(user_id)
-    if key_id is not None:
-        where = (where + " AND key_id = ?") if where else " WHERE key_id = ?"
-        params.append(key_id)
+    where, params = _window_clause(start_hour, end_hour, user_id=user_id,
+                                   key_id=key_id)
     cur = conn.execute(
         "SELECT hour, requests, errors, words, audio_s, processing_s, sessions"
         " FROM usage_hourly" + where,
@@ -1173,10 +1170,7 @@ def leaderboard(
     if metric not in _METRICS:
         metric = "audio_s"
     conn = _require_conn()
-    where, params = _window_clause(start_hour, end_hour)
-    if user_id is not None:
-        where += (" AND" if where else " WHERE") + " user_id = ?"
-        params = params + [user_id]
+    where, params = _window_clause(start_hour, end_hour, user_id=user_id)
     if by == "key":
         group, cols = "key_id", "key_id, user_id"
     else:
