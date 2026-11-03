@@ -2298,11 +2298,7 @@ function _uDur(sec) {
   if (sec < 86400) return (sec / 3600).toFixed(1).replace(/\.0$/, '') + 'h';
   return (sec / 86400).toFixed(1).replace(/\.0$/, '') + 'd';
 }
-function _uEsc(s) {
-  return String(s == null ? '' : s)
-    .replace(/&/g, '&amp;').replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-}
+var _uEsc = window._escHtml;
 async function loadMyUsage() {
   const el = document.getElementById('qc-usage');
   if (!el) return;

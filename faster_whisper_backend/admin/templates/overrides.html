@@ -372,11 +372,7 @@ window._renderWaterfall = (function () {
 <script>
 (function () {
   'use strict';
-  function esc(s) {
-    return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) {
-      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c];
-    });
-  }
+  var esc = window._escHtml;
   function _el(tag, cls, text) {
     var e = document.createElement(tag);
     if (cls) e.className = cls;

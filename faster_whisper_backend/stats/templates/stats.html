@@ -1462,11 +1462,7 @@ function fmtSec(s) {
   if (s < 86400) return (s / 3600).toFixed(1) + ' h';
   return (s / 86400).toFixed(1) + ' d';
 }
-function esc(s) {
-  return String(s == null ? '' : s)
-    .replace(/&/g, '&amp;').replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-}
+var esc = window._escHtml;
 function setBar(barEl, pct) {
   const bar = barEl.querySelector('i');
   bar.style.width = Math.max(0, Math.min(100, pct)).toFixed(1) + '%';

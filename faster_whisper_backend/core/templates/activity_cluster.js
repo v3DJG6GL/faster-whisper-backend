@@ -22,9 +22,7 @@
   // whisper:auth-changed instead of retrying every 30 s forever.
   var denied = false;
 
-  function esc(s){ return String(s == null ? '' : s)
-    .replace(/&/g,'&amp;').replace(/</g,'&lt;')
-    .replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+  var esc = window._escHtml;
   function onStats(){ return window.__current_page === 'stats'; }
   function gb(mb){ return ((mb || 0) / 1024).toFixed(1); }
   // Job-kind → accent class. Keep in step with jobs.KINDS and the /stats

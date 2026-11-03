@@ -149,6 +149,9 @@ NAV_CSS = templates.load(__file__, "nav.css").replace("{{STAGE_TOKENS}}", _STAGE
 #      apple-touch-icon. All brand-mark assets live in static/.
 #   3. a bootstrap script that applies the persisted UI scale BEFORE the
 #      page's CSS parses, avoiding a flash-of-default-size on navigation.
+#   4. window._escHtml, the null-safe & < > " HTML escape (' left alone) the
+#      shared widgets and page scripts alias as esc / _uEsc: defined here so
+#      it exists before every body script, including the inlined pick list.
 SCALE_BOOTSTRAP_HEAD = (
     '<meta name="viewport" content="width=device-width, initial-scale=1">'
     '<link rel="icon" type="image/svg+xml" href="/static/favicon.svg">'
@@ -156,7 +159,10 @@ SCALE_BOOTSTRAP_HEAD = (
     '<link rel="icon" type="image/png" sizes="16x16" href="/static/favicon-16.png">'
     '<link rel="icon" href="/static/favicon.ico" sizes="any">'
     '<link rel="apple-touch-icon" href="/static/apple-touch-icon.png">'
-    "<script>(function(){try{var v=localStorage.getItem('whisper-ui-fs-base');"
+    "<script>window._escHtml=function(s){return String(s==null?'':s)"
+    ".replace(/&/g,'&amp;').replace(/</g,'&lt;')"
+    ".replace(/>/g,'&gt;').replace(/\"/g,'&quot;');};"
+    "(function(){try{var v=localStorage.getItem('whisper-ui-fs-base');"
     "if(v)document.documentElement.style.setProperty('--fs-base',v+'px');"
     "if(localStorage.getItem('whisper-ui-width')==='fluid')"
     "document.documentElement.classList.add('pref-fluid');}catch(e){}})();</script>"
