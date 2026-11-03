@@ -568,9 +568,9 @@ def test_record_transcription_carries_the_key_label(client, app_module,
 def test_upload_spool_carries_the_reclaim_prefix(client, app_module,
                                                  monkeypatch):
     # The upload temp file is named "whisperup-*" so the hard-restart sweep
-    # (_reclaim_hard_restart_orphans) can tell it from every other process's
-    # "tmp*" tempfile; tempfile's default prefix was structurally
-    # unreclaimable.
+    # (restart_service.reclaim_hard_restart_orphans) can tell it from every
+    # other process's "tmp*" tempfile; tempfile's default prefix was
+    # structurally unreclaimable.
     seen = []
     _orig = app_module.tempfile.NamedTemporaryFile
 
