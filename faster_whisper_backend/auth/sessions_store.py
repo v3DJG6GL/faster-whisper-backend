@@ -152,7 +152,7 @@ def _migrate_add_key_id(conn: sqlite3.Connection) -> None:
         try:
             conn.execute("ALTER TABLE sessions ADD COLUMN key_id TEXT")
         except sqlite3.Error:
-            pass  # best-effort; a fresh DB already has the column
+            pass  # best-effort: a sibling worker may have added it first
 
 
 def _require_conn() -> sqlite3.Connection:
