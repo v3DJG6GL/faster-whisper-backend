@@ -58,6 +58,7 @@ from faster_whisper_backend.core.languages import (
     _NAMES, ZH_HANT_REGIONS, _normalise_code, canonical_code, language_codes,
     language_label, language_name, lookup, same_language)
 from faster_whisper_backend.core.loop_lock import LoopLock
+from faster_whisper_backend.translation import gating as tr_gating
 
 logger = logging.getLogger("whisper-server")
 
@@ -445,8 +446,7 @@ def render_prompt(text: str, target: str, *, source: "str | None" = None,
     UNSAVED select value); ``template`` renders the custom family with THAT
     template. Returns a JSON-shaped dict: chat families carry ``messages``,
     raw-completion families carry ``text``."""
-    ref = (model_ref or "").strip() or \
-        (getattr(cfg, "TRANSLATION_DEFAULT_MODEL", "") or "").strip()
+    ref = (model_ref or "").strip() or tr_gating._translation_default_model()
     fam_name = (family or "").strip().lower()
     if fam_name not in _FAMILIES:
         fam_name = "custom" if template is not None else resolve_family(ref)
@@ -1756,8 +1756,7 @@ async def translate_segments(
     ``download_cb(done_bytes, total_bytes)`` receives byte progress when a
     cold model also has to download its weights.
     """
-    ref = (model_ref or "").strip() or \
-        (getattr(cfg, "TRANSLATION_DEFAULT_MODEL", "") or "").strip()
+    ref = (model_ref or "").strip() or tr_gating._translation_default_model()
     if not ref:
         raise TranslationError(
             "no translation model configured (TRANSLATION_DEFAULT_MODEL)")
