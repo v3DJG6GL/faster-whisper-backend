@@ -455,7 +455,7 @@ def reconcile_on_startup() -> tuple[int, int, int]:
          crash-recovery edge cases; without this, the capture is
          effectively unreachable (UI filters grouped captures from the
          flat list, and merge attempts are rejected with "already in
-         a group").
+         a sample").
 
     Returns (rows_with_missing_wav, files_unlinked, orphan_fks_cleared).
     """
