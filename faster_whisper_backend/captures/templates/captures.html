@@ -2012,8 +2012,8 @@
         // A newer render() replaced this card, or it was collapsed, while
         // the GET ran: building now would take _openRows from the live card.
         if (!card.isConnected || !card.classList.contains('open')) return;
-        // Merge full row into our list-state so the toolbar counts stay
-        // current when we change status, etc.
+        // The list row lacks the detail fields: later list-level reads (the
+        // preview after a render(), the merge modal) need its aligned words.
         Object.assign(r, full);
         buildBody(body, r);
         body.dataset.built = '1';
@@ -2472,10 +2472,9 @@
     return c.idx <= idx && idx <= end;
   }
   function spanText(state, a, b) {
-    // Verbatim concat of the words in [a..b]. Whisper's word.word
-    // carries leading space + trailing punctuation, so the joined
-    // string preserves the original spacing/punctuation. Rule-removed
-    // words are skipped: the exported text no longer has them.
+    // Each token carries its own leading space and punctuation, so a plain
+    // join keeps the spacing. Rule-removed words are skipped: the exported
+    // text no longer has them.
     var parts = [];
     for (var i = a; i <= b; i++) {
       if (!_dispRemoved(state.words[i])) parts.push(_dispWord(state.words[i]));
