@@ -251,9 +251,10 @@ def test_page_api_error_shows_a_422_detail_list_as_text(client):
     html = client.get("/reports").text
     api = js_body(html, "async function api(method, url, body) {")
     assert "if (j && j.detail) msg = j.detail;" not in api
-    assert "if (typeof d === 'string' && d) msg = d;" in api
-    assert ("else if (Array.isArray(d) && d[0] && d[0].msg) "
-            "msg = String(d[0].msg);") in api
+    assert "try { msg = _detailMsg(await resp.json(), msg); } catch(_) {}" in api
+    helper = html[html.index("window._detailMsg=function(j,fallback){"):]
+    assert "if(typeof d==='string'&&d)return d;" in helper
+    assert "if(Array.isArray(d)&&d[0]&&d[0].msg)return String(d[0].msg);" in helper
 
 
 def test_patch_report_invalid_status_422(client):

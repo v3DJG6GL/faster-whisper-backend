@@ -87,6 +87,7 @@ global.window = globalThis;
 const winListeners = {};
 window.addEventListener = (t, f) => { (winListeners[t] = winListeners[t] || []).push(f); };
 window._csrfToken = () => 't';
+window._escHtml = s => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 global.MutationObserver = function () { this.observe = () => {}; };
 global.setInterval = () => 0;
 const streams = [];

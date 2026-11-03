@@ -1544,11 +1544,12 @@ def test_page_error_toasts_read_a_422_detail_list(client):
     """FastAPI's 422 `detail` is a list of {msg, ...}; assigning it to the
     toast text printed "[object Object]"."""
     html = client.get("/captures").text
-    helper = js_body(html, "function _detailMsg(j, fallback)")
-    assert "typeof d === 'string'" in helper
+    helper = html[html.index("window._detailMsg=function(j,fallback){"):]
+    assert "typeof d==='string'" in helper
     assert "Array.isArray(d)" in helper and "d[0].msg" in helper
     assert re.search(r"\b\w*msg = \w+\.detail;", html) is None
     assert html.count("_detailMsg(await ") == 4
+    assert "function _detailMsg(" not in html
 
 
 def test_page_load_drops_a_superseded_filter_response(client):
