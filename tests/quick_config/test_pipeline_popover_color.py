@@ -11,32 +11,17 @@ strings (same approach as test_routes_pipeline_page.py). A final test runs the
 inline scripts through `node --check` to catch syntax breakage inside the
 template files (no Python-side check parses the JS)."""
 
-import copy
 import re
 import shutil
 import subprocess
 
 import pytest
 
-
-def _expose_first_regex_list_rule(app_module, color=None):
-    """Expose (and optionally colour) the first regex-list rule so it shows on
-    /quick-config."""
-    rules = copy.deepcopy(list(app_module.cfg.PIPELINE_RULES))
-    slug = None
-    for r in rules:
-        if isinstance(r, dict) and r.get("type") == "regex-list":
-            r["exposed"] = True
-            if color is not None:
-                r["color"] = color
-            slug = r["name"]
-            break
-    app_module.cfg.PIPELINE_RULES = rules
-    return slug
+from tests.quick_config._rules_helpers import expose_first as _expose_first
 
 
 def test_quick_config_state_includes_color(client, app_module):
-    slug = _expose_first_regex_list_rule(app_module, color="blue")
+    slug = _expose_first(app_module, "regex-list", color="blue")
     assert slug is not None
     r = client.get("/quick-config/state")
     assert r.status_code == 200

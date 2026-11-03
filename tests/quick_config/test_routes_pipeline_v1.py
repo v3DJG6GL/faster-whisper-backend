@@ -13,21 +13,12 @@ import copy
 from faster_whisper_backend.settings import schema as settings_schema
 from faster_whisper_backend.quick_config import routes as quick_config_routes
 from tests.conftest import bearer
+from tests.quick_config._rules_helpers import expose_first as _expose_first
 
 
 def _expose_first_regex_list_rule(app_module):
-    """Mark the first regex-list rule exposed (no tags = visible to all).
-    Returns its slug. Mutates a deep copy assigned back onto cfg so the per-test
-    config reload restores it."""
-    rules = copy.deepcopy(list(app_module.cfg.PIPELINE_RULES))
-    slug = None
-    for r in rules:
-        if isinstance(r, dict) and r.get("type") == "regex-list":
-            r["exposed"] = True
-            slug = r["name"]
-            break
-    app_module.cfg.PIPELINE_RULES = rules
-    return slug
+    """Expose the first regex-list rule (no tags = visible to all)."""
+    return _expose_first(app_module, "regex-list")
 
 
 def _expose_tagged(app_module):
