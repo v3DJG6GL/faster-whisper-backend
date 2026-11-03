@@ -684,31 +684,9 @@
   // all=amber), .status-btn-group styling comes from web_common.NAV_CSS.
   var SCOPE_LABEL = { none: 'None', own: 'Own', all: 'All' };
   function _permSeg(page, allowed, cur, tr) {
-    var grp = document.createElement('span');
-    grp.className = 'status-btn-group';
+    var grp = _ovSeg(allowed.map(function (s) { return [s, SCOPE_LABEL[s] || s, s]; }), cur,
+                     function () { recomputePermDirty(tr); });
     grp.dataset.page = page;
-    grp.setAttribute('role', 'radiogroup');
-    allowed.forEach(function(s) {
-      var b = document.createElement('button');
-      b.type = 'button';
-      b.className = 'status-btn' + (s === cur ? ' active' : '');
-      b.dataset.val = s;
-      b.dataset.tone = s;
-      b.textContent = SCOPE_LABEL[s] || s;
-      b.setAttribute('role', 'radio');
-      b.setAttribute('aria-checked', s === cur ? 'true' : 'false');
-      b.addEventListener('click', function() {
-        if (b.classList.contains('active')) return;
-        grp.querySelectorAll('.status-btn').forEach(function(x) {
-          x.classList.remove('active');
-          x.setAttribute('aria-checked', 'false');
-        });
-        b.classList.add('active');
-        b.setAttribute('aria-checked', 'true');
-        recomputePermDirty(tr);
-      });
-      grp.appendChild(b);
-    });
     return grp;
   }
 
