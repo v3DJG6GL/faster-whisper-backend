@@ -46,10 +46,6 @@ summing the hours that fall inside that timezone's local day:
   - the admin /settings/api-keys usage window reckons in the SERVER's
     local timezone (the operator's perspective), via local_day_start_hour().
 
-`series()` aggregates hours into server-local days and returns days-since-epoch,
-so `day * 86400` is still UTC midnight of that calendar date and the WebUI's
-`new Date(day*86400*1000).toISOString().slice(0,10)` renders the right label.
-
 Hour granularity is exact for whole-hour UTC offsets (CET/CEST = +1/+2). For
 half-hour-offset zones (e.g. IST +5:30) a transcription in the partial hour at
 a day boundary can land in the adjacent day — acceptable at this grain.
