@@ -121,7 +121,7 @@ def _count(n) -> int:
 
 def _write_locked(models: dict[str, dict], path: str = PATH) -> None:
     """The write itself; the caller holds atomic_json.save_lock(path)
-    (a plain threading.Lock per path, NOT reentrant — never nest)."""
+    (a per-path thread lock plus a file lock, NOT reentrant — never nest)."""
     global _cache, _cache_mtime
     doc = {"version": SCHEMA_VERSION, "models": models}
     atomic_json.atomic_write_json(doc, path, sort_keys=True, tmp_prefix=".model_sizes")
