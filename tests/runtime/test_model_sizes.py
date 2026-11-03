@@ -14,6 +14,13 @@ from faster_whisper_backend.runtime import model_sizes
 GB = 1024 ** 3
 
 
+def _symlink_or_skip(src, dst):
+    try:
+        os.symlink(src, dst)
+    except OSError:
+        pytest.skip("no symlink support")
+
+
 @pytest.fixture
 def ledger(model_sizes_ledger):
     """The conftest model_sizes_ledger (PATH + the def-time path defaults)."""
@@ -225,11 +232,8 @@ def test_disk_size_counts_snapshot_symlinks_once(ledger, tmp_path, monkeypatch):
     (repo / "blobs").mkdir(parents=True)
     (repo / "snapshots" / "rev").mkdir(parents=True)
     (repo / "blobs" / "a").write_bytes(b"x" * 1000)
-    try:
-        os.symlink(os.path.join("..", "..", "blobs", "a"),
-                   repo / "snapshots" / "rev" / "a")
-    except OSError:
-        pytest.skip("no symlink support")
+    _symlink_or_skip(os.path.join("..", "..", "blobs", "a"),
+                     repo / "snapshots" / "rev" / "a")
     monkeypatch.setenv("HF_HOME", str(hf))
 
     assert model_sizes.disk_size("pyannote:org/repo") == 1000
@@ -246,10 +250,7 @@ def test_disk_size_counts_a_symlink_that_points_out_of_the_tree(ledger,
     elsewhere.mkdir()
     (elsewhere / "model.bin").write_bytes(b"x" * 100_000)
     (model / "config.json").write_bytes(b"{}  ")
-    try:
-        os.symlink(elsewhere / "model.bin", model / "model.bin")
-    except OSError:
-        pytest.skip("no symlink support")
+    _symlink_or_skip(elsewhere / "model.bin", model / "model.bin")
     assert model_sizes.disk_size(str(model)) == 100_004
 
 
@@ -262,12 +263,9 @@ def test_disk_size_sizes_an_all_symlink_dir(ledger, tmp_path):
     rev.mkdir(parents=True)
     (blobs / "a").write_bytes(b"x" * 1000)
     (blobs / "b").write_bytes(b"x" * 24)
-    try:
-        os.symlink(blobs / "a", rev / "model.bin")
-        os.symlink(blobs / "b", rev / "config.json")
-        os.symlink(tmp_path / "gone", rev / "dangling")   # skipped, not fatal
-    except OSError:
-        pytest.skip("no symlink support")
+    _symlink_or_skip(blobs / "a", rev / "model.bin")
+    _symlink_or_skip(blobs / "b", rev / "config.json")
+    _symlink_or_skip(tmp_path / "gone", rev / "dangling")   # skipped, not fatal
     assert model_sizes.disk_size(str(rev)) == 1024
 
 
@@ -335,10 +333,7 @@ def test_disk_size_sizes_the_gguf_the_loader_opens_after_a_rename(
         blob.write_bytes(b"x" * size)
         snap = repo / "snapshots" / rev
         snap.mkdir(parents=True)
-        try:
-            os.symlink(os.path.join("..", "..", "blobs", rev[:8]), snap / name)
-        except OSError:
-            pytest.skip("no symlink support")
+        _symlink_or_skip(os.path.join("..", "..", "blobs", rev[:8]), snap / name)
         os.utime(blob, (t, t))
     (repo / "refs").mkdir()
     (repo / "refs" / "main").write_text("b" * 40)
