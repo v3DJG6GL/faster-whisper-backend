@@ -1782,9 +1782,9 @@ def test_stats_page_status_pill_keeps_the_stream_state(client):
 
 
 def test_stats_turnaround_tooltip_and_resize_use_the_drawn_tail():
-    """The tooltip re-read lastTail and the resize redraw re-rendered it,
-    while the bars still showed the old window (lastTail already holds the
-    next one while its usage document is in flight)."""
+    """The tooltip uses the tail the bars were drawn from, never lastTail, and
+    the resize redraw waits for the current usage document: lastTail already
+    holds the next window while its usage document is in flight."""
     js = pathlib.Path(REPO_ROOT, "static", "stats.js").read_text(encoding="utf-8")
     ta = js[js.index("function renderTurnaround() {"):]
     ta = ta[:ta.index("\n}\n")]
