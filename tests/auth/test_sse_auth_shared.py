@@ -10,18 +10,11 @@ from fastapi import HTTPException
 
 from tests.conftest import bearer
 from tests.conftest import fake_request as _fake_request
+from tests.conftest import status_of as _status_of
 from faster_whisper_backend.auth import dependencies as auth
 
 
 _REMOTE = ("203.0.113.9", 1234)  # TEST-NET-3, outside the admin allowlist
-
-
-def _status_of(fn, *args, **kwargs):
-    try:
-        fn(*args, **kwargs)
-    except HTTPException as e:
-        return e.status_code
-    return 200
 
 
 def test_bearer_header_admits_with_page_access(client, make_user_key):

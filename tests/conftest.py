@@ -781,3 +781,13 @@ def fake_request(headers=None, client=("127.0.0.1", 12345)):
         "query_string": b"",
         "client": client,
     })
+
+
+def status_of(fn, *args, **kwargs):
+    """Call an auth dependency; its HTTPException status, or 200 if it passed."""
+    from fastapi import HTTPException
+    try:
+        fn(*args, **kwargs)
+    except HTTPException as e:
+        return e.status_code
+    return 200

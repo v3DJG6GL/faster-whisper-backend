@@ -4,6 +4,7 @@ non-admin keys, host gate, cross-user 404, and the SSE credential carriers."""
 from starlette.testclient import TestClient
 
 from tests.conftest import bearer
+from tests.conftest import status_of as _status_of
 from faster_whisper_backend.admin import logs_routes
 
 
@@ -130,31 +131,19 @@ def test_sse_key_query_param_rejected(client, make_user_key):
     # ?key= is not a credential carrier: the raw key would land in every
     # access log that records the request line.
     from faster_whisper_backend.quick_config import routes as quick_config_routes
-    from fastapi import HTTPException
 
     make_user_key("root", is_admin=True)
     _uid, raw = make_user_key("alice", pages={"quick_config": "own"})
     req = _fake_request(query=f"key={raw}".encode())
-    try:
-        quick_config_routes.require_user_or_admin_sse(req)
-    except HTTPException as e:
-        assert e.status_code == 401
-    else:
-        raise AssertionError("expected 401 HTTPException")
+    assert _status_of(quick_config_routes.require_user_or_admin_sse, req) == 401
 
 
 def test_sse_missing_key_rejected_when_locked(client, make_user_key):
     from faster_whisper_backend.quick_config import routes as quick_config_routes
-    from fastapi import HTTPException
 
     make_user_key("root", is_admin=True)
     req = _fake_request()  # no bearer, no cookie
-    try:
-        quick_config_routes.require_user_or_admin_sse(req)
-    except HTTPException as e:
-        assert e.status_code == 401
-    else:
-        raise AssertionError("expected 401 HTTPException")
+    assert _status_of(quick_config_routes.require_user_or_admin_sse, req) == 401
 
 
 # Admin tier (ADMIN_WEBUI_ALLOWED_HOSTS, loopback default): /docs, /redoc are
