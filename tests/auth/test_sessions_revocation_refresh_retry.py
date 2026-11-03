@@ -6,7 +6,7 @@ import sqlite3
 import pytest
 
 from tests.auth._store_helpers import (
-    failing_rebuild_conn, load_sessions_store_copy, sibling_write)
+    count_rebuilds, failing_rebuild_conn, load_sessions_store_copy, sibling_write)
 
 
 @pytest.fixture
@@ -109,10 +109,7 @@ def test_own_logout_skips_the_forced_rebuild(worker, monkeypatch):
     victim, _ = w.create_session("victim", 3600.0)
     other, _ = w.create_session("other", 3600.0)
     assert w.revocation_generation() == 0
-    rebuilds = []
-    real_rebuild = w._rebuild_index_locked
-    monkeypatch.setattr(w, "_rebuild_index_locked",
-                        lambda: (rebuilds.append(1), real_rebuild())[1])
+    rebuilds = count_rebuilds(w)
     w.revoke_session(mine)
     assert w.revocation_generation() == 1
     assert rebuilds == []

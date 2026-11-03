@@ -22,6 +22,20 @@ def load_sessions_store_copy(name, db_path):
     return mod
 
 
+def count_rebuilds(store):
+    """Wrap `store`'s _rebuild_index_locked; the returned list gains one entry
+    per rebuild."""
+    calls = []
+    real = store._rebuild_index_locked
+
+    def _counting():
+        calls.append(1)
+        real()
+
+    store._rebuild_index_locked = _counting
+    return calls
+
+
 def sibling_write(store, *stmts):
     """Commit `stmts` ((sql,) or (sql, params)) in one transaction on a second
     connection to `store`'s DB file, the way a sibling worker would."""

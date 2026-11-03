@@ -9,7 +9,7 @@ follow-up requests — exactly like a browser."""
 import pytest
 from starlette.testclient import TestClient
 
-from tests.auth._store_helpers import load_sessions_store_copy
+from tests.auth._store_helpers import count_rebuilds, load_sessions_store_copy
 from tests.conftest import bearer
 
 
@@ -498,14 +498,7 @@ def test_lookup_sibling_check_is_throttled(tmp_path):
     w = _worker("sessions_store_throttle", db)
     raw, _csrf = w.create_session("u", 3600.0)
 
-    calls = []
-    orig = w._rebuild_index_locked
-
-    def counting_rebuild():
-        calls.append(1)
-        orig()
-
-    w._rebuild_index_locked = counting_rebuild
+    calls = count_rebuilds(w)
     w._LAST_REFRESH_TS = float("-inf")
     for _ in range(50):
         w._DATA_VERSION = -999          # every check that runs must rebuild
@@ -579,14 +572,7 @@ def test_index_miss_after_sibling_commit_does_not_rebuild(tmp_path):
     b = _worker("sessions_store_miss_b", db)
     b._REFRESH_MIN_INTERVAL_S = 3600.0   # every later HIT stays throttled
     assert b.lookup_session("junk-0") is None          # stamps the throttle
-    calls = []
-    orig = b._rebuild_index_locked
-
-    def counting_rebuild():
-        calls.append(1)
-        orig()
-
-    b._rebuild_index_locked = counting_rebuild
+    calls = count_rebuilds(b)
     for i in range(5):
         a.create_session(f"u{i}", 3600.0)               # sibling commit
         assert b.lookup_session(f"junk-{i + 1}") is None
