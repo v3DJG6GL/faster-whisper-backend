@@ -2649,6 +2649,7 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
     return null;
   }
   function _factoryHas(slug) { return _factoryRule(slug) !== null; }
+  const _count = (n, noun) => n + ' ' + noun + (n === 1 ? '' : 's');
   // Deep key-sort so two rules with equal content but different key order
   // (a freshly-added rule vs the server-canonicalized copy) compare equal.
   function _sortDeep(o) {
@@ -3745,7 +3746,7 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
       const effective = (r.enabled && !forcedOut) || forcedIn;
       if (effective) active++;
     }
-    return total + ' rule' + (total === 1 ? '' : 's') + ' total · '
+    return _count(total, 'rule') + ' total · '
       + active + ' active for this model';
   }
   if (isChecklist) {
@@ -3842,8 +3843,7 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
     const txt = document.createElement('div');
     txt.className = 'sync-notice-text';
     const b = document.createElement('b');
-    b.textContent = 'config.json has ' + missing.length + ' rule'
-      + (missing.length === 1 ? '' : 's') + ' this server does not have yet.';
+    b.textContent = 'config.json has ' + _count(missing.length, 'rule') + ' this server does not have yet.';
     const names = document.createElement('div');
     names.className = 'sync-notice-names';
     names.textContent = missing.map(m => m.label || m.name).join(', ');
@@ -4191,7 +4191,7 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
         const sp = document.createElement('span'); sp.className = 'rv-grp-sp';
         const cnt = document.createElement('span');
         cnt.className = 'rv-chip';
-        cnt.textContent = g.rows.length + (g.rows.length === 1 ? ' change' : ' changes');
+        cnt.textContent = _count(g.rows.length, 'change');
         sum.appendChild(sp); sum.appendChild(cnt);
         det.appendChild(sum);
         det.appendChild(_rvTable(g.rows, g.left || o.left, g.right || o.right));
@@ -4261,8 +4261,8 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
     rowsList.forEach(rows => rows.forEach(r => { if (c[r.kind] !== undefined) c[r.kind]++; }));
     // Rows run this-server -> config.json, so "removed" = something only here.
     const parts = [];
-    if (c.removed) parts.push(c.removed + ' item' + (c.removed === 1 ? '' : 's') + ' that exist only here');
-    if (c.changed) parts.push(c.changed + ' edited field' + (c.changed === 1 ? '' : 's'));
+    if (c.removed) parts.push(_count(c.removed, 'item') + ' that exist only here');
+    if (c.changed) parts.push(_count(c.changed, 'edited field'));
     if (!parts.length) return '';
     return 'You lose ' + parts.join(' and ') + '. After Save this cannot be undone.';
   }
@@ -4323,14 +4323,14 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
       right: ['After reset', 'the config.json version'],
       groups,
       lose: 'Rules with your own edits start unchecked. Rules that exist only on this server are never touched.',
-      confirm: n => '↓ Reset ' + n + ' selected rule' + (n === 1 ? '' : 's'),
+      confirm: n => '↓ Reset ' + _count(n, 'selected rule'),
       confirmClass: 'solid-danger',
       onConfirm: (ids) => {
         const pick = new Set(ids);
         rules = rules.map(r => pick.has(r.name)
           ? JSON.parse(JSON.stringify(_factoryRule(r.name))) : r);
         commitFull();
-        _toast('Reset ' + ids.length + ' rule' + (ids.length === 1 ? '' : 's') + ' — press Save to apply it on this server.');
+        _toast('Reset ' + _count(ids.length, 'rule') + ' — press Save to apply it on this server.');
       },
     });
   }
@@ -4352,7 +4352,7 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
       return null;
     };
     _reviewDialog({
-      title: 'Add ' + missing.length + ' rule' + (missing.length === 1 ? '' : 's') + ' from config.json to this server?',
+      title: 'Add ' + _count(missing.length, 'rule') + ' from config.json to this server?',
       up: false, verb: 'adds to',
       left: ['This server now', 'rule does not exist'],
       right: ['After adding', 'copied from config.json'],
@@ -4363,7 +4363,7 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
           meta: 'new · goes before “' + (nx ? (nx.label || nx.name) : 'the last step') + '” · ' + langs,
           rows: _ruleDiffRows(null, b) };
       }),
-      confirm: n => '↓ Add ' + n + ' rule' + (n === 1 ? '' : 's'),
+      confirm: n => '↓ Add ' + _count(n, 'rule'),
       confirmClass: 'solid-down',
       onConfirm: (ids) => {
         const pick = new Set(ids);
@@ -4374,7 +4374,7 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
           rules.splice(at, 0, JSON.parse(JSON.stringify(b)));
         });
         commitFull();
-        _toast('Added ' + ids.length + ' rule' + (ids.length === 1 ? '' : 's') + ' — press Save to apply it on this server.');
+        _toast('Added ' + _count(ids.length, 'rule') + ' — press Save to apply it on this server.');
       },
     });
   }
@@ -4608,7 +4608,7 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
       groups,
       extraEls: [_seededOrderDirty() ? _orderChangeEl() : null],
       warn: [
-        nDiverged ? nDiverged + ' rule' + (nDiverged === 1 ? '' : 's')
+        nDiverged ? _count(nDiverged, 'rule')
           + ' also changed in config.json since last sync (or have no sync'
           + ' record) and start'
           + ' unticked: ticking one replaces those newer config.json changes'
@@ -4621,9 +4621,8 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
         const rm = sel.filter(g => g.id.startsWith('rm:')).length;
         const up = n - rm;
         const parts = [];
-        if (up || !rm) parts.push('↑ Promote ' + up + ' selected rule' + (up === 1 ? '' : 's'));
-        if (rm) parts.push((up ? 'remove ' : '↑ Remove ') + rm + ' rule' + (rm === 1 ? '' : 's')
-          + ' from config.json');
+        if (up || !rm) parts.push('↑ Promote ' + _count(up, 'selected rule'));
+        if (rm) parts.push((up ? 'remove ' : '↑ Remove ') + _count(rm, 'rule') + ' from config.json');
         return parts.join(' · ');
       },
       confirmClass: 'solid-up',
