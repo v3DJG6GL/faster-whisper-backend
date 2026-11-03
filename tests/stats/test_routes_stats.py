@@ -1011,13 +1011,9 @@ def test_snapshot_carries_slot_busy(client):
 def test_stats_tail_shape_and_scope(client, app_module, make_user_key):
     from faster_whisper_backend.stats import usage_store as us
     from tests.conftest import bearer
-    from faster_whisper_backend.auth import api_keys_store
-    _, raw_admin = make_user_key("root", is_admin=True)
-    alice, raw_alice = make_user_key("alice", pages={"stats": "own"})
-    bob, raw_bob = make_user_key("bob", pages={"stats": "all"})
-    ka = api_keys_store.list_keys(alice)[0]["id"]
+    raw_admin, alice, raw_alice, bob, raw_bob, keys = _two_users(make_user_key)
     h = us.now_hour()
-    us.record_usage(key_id=ka, user_id=alice, audio_s=10.0, words=5, status="error",
+    us.record_usage(key_id=keys[alice], user_id=alice, audio_s=10.0, words=5, status="error",
                     hour=h, processing_s=2.0, job_id="a1", kind="file", wait_s=3.0,
                     error_class="cuda_oom", error_stage="transcribing")
     us.record_usage(key_id="kb", user_id=bob, audio_s=4.0, words=5, status="ok",
@@ -1075,9 +1071,7 @@ def test_stats_jobs_pages_with_cursor_and_filters(client):
 
 def test_stats_jobs_scope_rules(client, make_user_key):
     from tests.conftest import bearer
-    _, raw_admin = make_user_key("root", is_admin=True)
-    alice, raw_alice = make_user_key("alice", pages={"stats": "own"})
-    bob, raw_bob = make_user_key("bob", pages={"stats": "all"})
+    raw_admin, alice, raw_alice, bob, raw_bob, _ = _two_users(make_user_key)
     _seed_jobs_pages(2, user_id=alice)
     _seed_jobs_pages(3, user_id=bob)
     a = jobs.job_start("transcribe", model="m", user="alice", user_id=alice)
@@ -1106,9 +1100,7 @@ def test_stats_jobs_users_filter(client, make_user_key):
     the cursor walks inside the filter, own scope is refused, and a scrubbed
     viewer's unknown value hits the no-match path."""
     from tests.conftest import bearer
-    _, raw_admin = make_user_key("root", is_admin=True)
-    alice, raw_alice = make_user_key("alice", pages={"stats": "own"})
-    bob, raw_bob = make_user_key("bob", pages={"stats": "all"})
+    raw_admin, alice, raw_alice, bob, raw_bob, _ = _two_users(make_user_key)
     _seed_jobs_pages(2, user_id=alice)
     _seed_jobs_pages(3, user_id=bob)
     hdr = bearer(raw_admin)
@@ -1133,9 +1125,7 @@ def test_stats_usage_echoes_display_names_for_picked_users(client, make_user_key
     match nothing. The usage doc echoes the names; a scrubbed viewer gets
     only their own."""
     from tests.conftest import bearer
-    _, raw_admin = make_user_key("root", is_admin=True)
-    alice, _ = make_user_key("alice", pages={"stats": "own"})
-    bob, raw_bob = make_user_key("bob", pages={"stats": "all"})
+    raw_admin, alice, _, bob, raw_bob, _ = _two_users(make_user_key)
     doc = client.get(f"/stats/usage?by=kind&users={alice},{bob}",
                      headers=bearer(raw_admin)).json()
     assert doc["filter"]["user_labels"] == {alice: "alice", bob: "bob"}
