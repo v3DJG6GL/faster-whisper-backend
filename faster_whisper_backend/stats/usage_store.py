@@ -2429,7 +2429,7 @@ def _fill_from_jobs(conn, doc, user_id, tz, today, with_stages,
     words_by_slot: dict[tuple[int, int], dict[str, int]] = {}
     extra_by_slot: dict[tuple[int, int], dict[str, dict[str, Any]]] = {}
     words_all_days: dict[datetime.date, dict[str, int]] = {}
-    activation, delivery, translation = _outcome_buckets()
+    buckets = _outcome_buckets()
     apps: dict[str, dict[str, int]] = {}
     window_jobs: list[str] = []
     where, params = _scope_where(user_id, key_id, kinds=kinds, kind_col="kind")
@@ -2457,12 +2457,7 @@ def _fill_from_jobs(conn, doc, user_id, tz, today, with_stages,
         slot = _slot_of(ts, tz)
         _add_words(words_by_slot.setdefault(slot, _words_split()), kind, words)
         _add_slot_extra(extra_by_slot.setdefault(slot, _slot_extra()), kind, cell)
-        if job["activation"] in activation:
-            activation[job["activation"]] += 1
-        if job["delivery"] in delivery:
-            delivery[job["delivery"]] += 1
-        if job["translation"] in translation:
-            translation[job["translation"]] += 1
+        _count_outcome(buckets, job, 1)
         if job["app_id"]:
             a = apps.setdefault(job["app_id"], {"sessions": 0, "words": 0})
             a["sessions"] += 1
@@ -2470,7 +2465,7 @@ def _fill_from_jobs(conn, doc, user_id, tz, today, with_stages,
     doc["total"] = _rounded(window)
     doc["today"] = _rounded(today_split)
     doc["dictation"] = {
-        **_dictation_summary(window["dictation"], activation, delivery, translation),
+        **_dictation_summary(window["dictation"], *buckets),
         "targets": _dictation_targets(conn, user_id, start_ts, end_ts, with_stages,
                                       key_id=key_id, kinds=kinds),
     }
@@ -2595,7 +2590,7 @@ def _stages(conn: sqlite3.Connection, user_id: str | None, start_hour: int,
 
 def _dictation(conn: sqlite3.Connection, user_id: str | None, start_hour: int,
                end_hour: int, cell: dict[str, Any]) -> dict[str, Any]:
-    activation, delivery, translation = _outcome_buckets()
+    buckets = _outcome_buckets()
     where, params = _scope_where(user_id)
     for r in conn.execute(
         "SELECT activation, delivery, translation, SUM(sessions) AS sessions"
@@ -2603,20 +2598,23 @@ def _dictation(conn: sqlite3.Connection, user_id: str | None, start_hour: int,
         " GROUP BY activation, delivery, translation",
         (*params, start_hour, end_hour),
     ):
-        n = int(r["sessions"] or 0)
-        if r["activation"] in activation:
-            activation[r["activation"]] += n
-        if r["delivery"] in delivery:
-            delivery[r["delivery"]] += n
-        if r["translation"] in translation:
-            translation[r["translation"]] += n
-    return _dictation_summary(cell, activation, delivery, translation)
+        _count_outcome(buckets, r, int(r["sessions"] or 0))
+    return _dictation_summary(cell, *buckets)
 
 
 def _outcome_buckets() -> tuple[dict[str, int], dict[str, int], dict[str, int]]:
     """Zeroed activation / delivery / translation counters."""
     return ({a: 0 for a in ACTIVATIONS}, {d: 0 for d in DELIVERIES},
             {t: 0 for t in TRANSLATIONS})
+
+
+def _count_outcome(buckets: tuple[dict[str, int], dict[str, int], dict[str, int]],
+                   row: sqlite3.Row, n: int) -> None:
+    """Add `n` to the row's activation / delivery / translation buckets (a
+    value outside the bucket set is skipped)."""
+    for col, counts in zip(("activation", "delivery", "translation"), buckets):
+        if row[col] in counts:
+            counts[row[col]] += n
 
 
 def _dictation_summary(cell: dict[str, Any], activation: dict[str, int],
