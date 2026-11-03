@@ -11,9 +11,9 @@ it apply to the next request with no restart and no bucket reset. A ceiling of
 0 means unlimited and short-circuits before any bookkeeping, so a single-user
 box pays nothing for machinery it does not want.
 
-SINGLE PROCESS ONLY. All state is a module-level dict, so with
-SERVER_WORKERS > 1 each worker enforces its own copy and every budget here is
-effectively multiplied by the worker count. WITHIN a process the counters are
+SINGLE PROCESS ONLY. All state lives in per-instance dicts in process memory,
+so with SERVER_WORKERS > 1 each worker enforces its own copy and every budget
+here is effectively multiplied by the worker count. WITHIN a process the counters are
 thread-safe (each instance guards its state with a threading.Lock), so a
 `def` route or dependency running in the threadpool may call them alongside
 the async callers. The threat model is "runaway script / accidental
