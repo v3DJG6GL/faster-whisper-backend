@@ -31,8 +31,6 @@ def _stub_load(monkeypatch):
     monkeypatch.setattr(tx_models.cfg, "ALLOWED_MODELS", set(), raising=False)
     monkeypatch.setattr(tx_models.cfg, "LOCAL_FILES_ONLY", True, raising=False)
     monkeypatch.setattr(tx_models.cfg, "MAX_LOADED_MODELS", 4, raising=False)
-    tx_models._loaded_models.clear()
-    model_registry._loaded_models.clear()
 
 
 def test_lock_wait_is_not_billed_as_load_time(monkeypatch):
@@ -53,14 +51,10 @@ def test_lock_wait_is_not_billed_as_load_time(monkeypatch):
             tx_models._model_load_lock.release()
         await task
 
-    try:
-        asyncio.run(run())
-        assert "x" in recorded
-        assert recorded["x"] < 0.1
-        assert model_registry._loaded_models["x"]["load_secs"] < 0.1
-    finally:
-        tx_models._loaded_models.clear()
-        model_registry._loaded_models.clear()
+    asyncio.run(run())
+    assert "x" in recorded
+    assert recorded["x"] < 0.1
+    assert model_registry._loaded_models["x"]["load_secs"] < 0.1
 
 
 def test_load_in_progress_covers_the_conversion_outside_the_lock(monkeypatch):
@@ -77,21 +71,17 @@ def test_load_in_progress_covers_the_conversion_outside_the_lock(monkeypatch):
         return name
     monkeypatch.setattr(tx_models, "_ensure_ct2_model", _converting)
 
-    try:
-        assert tx_models.load_in_progress() is False
-        asyncio.run(tx_models._get_or_load_model("x"))
-        assert seen == [(False, True)]
-        assert tx_models.load_in_progress() is False
-        # A failed load releases the count too.
-        async def _boom(name):
-            raise RuntimeError("convert failed")
-        monkeypatch.setattr(tx_models, "_ensure_ct2_model", _boom)
-        with pytest.raises(RuntimeError):
-            asyncio.run(tx_models._get_or_load_model("y"))
-        assert tx_models._loads_in_flight == 0
-    finally:
-        tx_models._loaded_models.clear()
-        model_registry._loaded_models.clear()
+    assert tx_models.load_in_progress() is False
+    asyncio.run(tx_models._get_or_load_model("x"))
+    assert seen == [(False, True)]
+    assert tx_models.load_in_progress() is False
+    # A failed load releases the count too.
+    async def _boom(name):
+        raise RuntimeError("convert failed")
+    monkeypatch.setattr(tx_models, "_ensure_ct2_model", _boom)
+    with pytest.raises(RuntimeError):
+        asyncio.run(tx_models._get_or_load_model("y"))
+    assert tx_models._loads_in_flight == 0
 
 
 def test_cancel_during_register_keeps_the_model_cached_and_frees_the_lease(
@@ -134,9 +124,6 @@ def test_cancel_during_register_keeps_the_model_cached_and_frees_the_lease(
         assert tx_models._model_leases.get("x", 0) == 0
     finally:
         go.set()
-        tx_models._model_leases.pop("x", None)
-        tx_models._loaded_models.clear()
-        model_registry._loaded_models.clear()
 
 
 def test_cancel_while_register_is_queued_still_registers(monkeypatch):
@@ -182,8 +169,6 @@ def test_cancel_while_register_is_queued_still_registers(monkeypatch):
         assert "x" in model_registry._loaded_models
     finally:
         gate.set()
-        tx_models._loaded_models.clear()
-        model_registry._loaded_models.clear()
 
 
 def test_cancelled_load_holds_the_lock_until_its_queued_register_lands(
@@ -232,8 +217,6 @@ def test_cancelled_load_holds_the_lock_until_its_queued_register_lands(
         assert "x" not in model_registry._loaded_models
     finally:
         gate.set()
-        tx_models._loaded_models.clear()
-        model_registry._loaded_models.clear()
 
 
 def test_cancel_during_construction_finishes_the_build_under_the_lock(
@@ -284,9 +267,6 @@ def test_cancel_during_construction_finishes_the_build_under_the_lock(
         assert tx_models._model_leases.get("x", 0) == 1    # B's lease only
     finally:
         go.set()
-        tx_models._model_leases.pop("x", None)
-        tx_models._loaded_models.clear()
-        model_registry._loaded_models.clear()
 
 
 def test_predownload_capture_scope_runs_on_the_executor_thread(monkeypatch):
@@ -323,15 +303,11 @@ def test_predownload_capture_scope_runs_on_the_executor_thread(monkeypatch):
         seen["loop"] = threading.get_ident()
         await tx_models._get_or_load_model("org/x")
 
-    try:
-        asyncio.run(run())
-        assert seen["enter"] == seen["snapshot"] == seen["exit"]
-        assert seen["enter"] != seen["loop"]
-        assert seen["kwargs"]["repo_id"] == "org/x"
-        assert seen["kwargs"]["tqdm_class"] == "T"
-    finally:
-        tx_models._loaded_models.clear()
-        model_registry._loaded_models.clear()
+    asyncio.run(run())
+    assert seen["enter"] == seen["snapshot"] == seen["exit"]
+    assert seen["enter"] != seen["loop"]
+    assert seen["kwargs"]["repo_id"] == "org/x"
+    assert seen["kwargs"]["tqdm_class"] == "T"
 
 
 def test_hardware_change_during_a_queued_load_reaches_the_constructor(
@@ -361,12 +337,8 @@ def test_hardware_change_during_a_queued_load_reaches_the_constructor(
             tx_models._model_load_lock.release()
         await task
 
-    try:
-        asyncio.run(run())
-        assert [kw["device"] for kw in built] == ["cuda"]
-    finally:
-        tx_models._loaded_models.clear()
-        model_registry._loaded_models.clear()
+    asyncio.run(run())
+    assert [kw["device"] for kw in built] == ["cuda"]
 
 
 def test_vram_delta_is_sampled_on_the_load_device_index(monkeypatch):
@@ -382,12 +354,8 @@ def test_vram_delta_is_sampled_on_the_load_device_index(monkeypatch):
     seen = {}
     monkeypatch.setattr(model_registry, "register_loaded_model",
                         lambda name, **kw: seen.__setitem__(name, kw))
-    try:
-        asyncio.run(tx_models._get_or_load_model("x"))
-        assert seen["x"]["vram_bytes"] == 3000
-    finally:
-        tx_models._loaded_models.clear()
-        model_registry._loaded_models.clear()
+    asyncio.run(tx_models._get_or_load_model("x"))
+    assert seen["x"]["vram_bytes"] == 3000
 
 
 def _run_one_evictor_tick(monkeypatch):
@@ -428,19 +396,14 @@ def test_evictor_does_not_claim_an_unload_it_was_refused(monkeypatch, caplog):
     monkeypatch.setattr(model_registry, "is_warm", _is_warm)
     collected = []
     monkeypatch.setattr(gc, "collect", lambda *a: collected.append(1))
-    try:
-        with caplog.at_level(logging.INFO, logger="whisper-api"):
-            _run_one_evictor_tick(monkeypatch)
-        assert seen["n"] == 2, "the tick reached the locked drop"
-        assert "a" in tx_models._loaded_models
-        msgs = [r.getMessage() for r in caplog.records]
-        assert not any("[idle-evict] unload" in m for m in msgs)
-        assert any("eviction deferred" in m for m in msgs)
-        assert collected == []
-    finally:
-        tx_models._model_leases.pop("a", None)
-        tx_models._loaded_models.clear()
-        model_registry._loaded_models.clear()
+    with caplog.at_level(logging.INFO, logger="whisper-api"):
+        _run_one_evictor_tick(monkeypatch)
+    assert seen["n"] == 2, "the tick reached the locked drop"
+    assert "a" in tx_models._loaded_models
+    msgs = [r.getMessage() for r in caplog.records]
+    assert not any("[idle-evict] unload" in m for m in msgs)
+    assert any("eviction deferred" in m for m in msgs)
+    assert collected == []
 
 
 def test_evictor_prescan_skips_a_leased_model(monkeypatch, caplog):
@@ -449,21 +412,16 @@ def test_evictor_prescan_skips_a_leased_model(monkeypatch, caplog):
     tx_models._model_leases["a"] = 1
     collected = []
     monkeypatch.setattr(gc, "collect", lambda *a: collected.append(1))
-    try:
-        with caplog.at_level(logging.INFO, logger="whisper-api"):
-            _run_one_evictor_tick(monkeypatch)
-        assert "a" in tx_models._loaded_models
-        msgs = [r.getMessage() for r in caplog.records]
-        assert not any("[idle-evict] unload" in m for m in msgs)
-        # The pre-scan skips a leased model outright: a long decode must not
-        # log a deferred eviction (and take the load lock) on every tick.
-        assert not any("eviction deferred" in m for m in msgs)
-        # Nothing was unloaded, so nothing to reclaim: no full gc on the loop.
-        assert collected == []
-    finally:
-        tx_models._model_leases.pop("a", None)
-        tx_models._loaded_models.clear()
-        model_registry._loaded_models.clear()
+    with caplog.at_level(logging.INFO, logger="whisper-api"):
+        _run_one_evictor_tick(monkeypatch)
+    assert "a" in tx_models._loaded_models
+    msgs = [r.getMessage() for r in caplog.records]
+    assert not any("[idle-evict] unload" in m for m in msgs)
+    # The pre-scan skips a leased model outright: a long decode must not
+    # log a deferred eviction (and take the load lock) on every tick.
+    assert not any("eviction deferred" in m for m in msgs)
+    # Nothing was unloaded, so nothing to reclaim: no full gc on the loop.
+    assert collected == []
 
 
 def test_evictor_logs_the_unload_it_performed(monkeypatch, caplog):
@@ -472,16 +430,12 @@ def test_evictor_logs_the_unload_it_performed(monkeypatch, caplog):
     tx_models._model_leases.pop("b", None)
     collected = []
     monkeypatch.setattr(gc, "collect", lambda *a: collected.append(1))
-    try:
-        with caplog.at_level(logging.INFO, logger="whisper-api"):
-            _run_one_evictor_tick(monkeypatch)
-        assert "b" not in tx_models._loaded_models
-        assert collected == [1]
-        assert any("[idle-evict] unloaded b after 1s idle" == r.getMessage()
-                   for r in caplog.records)
-    finally:
-        tx_models._loaded_models.clear()
-        model_registry._loaded_models.clear()
+    with caplog.at_level(logging.INFO, logger="whisper-api"):
+        _run_one_evictor_tick(monkeypatch)
+    assert "b" not in tx_models._loaded_models
+    assert collected == [1]
+    assert any("[idle-evict] unloaded b after 1s idle" == r.getMessage()
+               for r in caplog.records)
 
 
 class _ImportRecorder:
@@ -505,14 +459,10 @@ def test_evictor_does_not_cold_import_torch(monkeypatch):
     monkeypatch.delitem(sys.modules, "torch", raising=False)
     recorder = _ImportRecorder()
     monkeypatch.setattr(sys, "meta_path", [recorder, *sys.meta_path])
-    try:
-        _run_one_evictor_tick(monkeypatch)
-        assert "c" not in tx_models._loaded_models
-        assert "torch" not in recorder.names
-        assert "torch" not in sys.modules
-    finally:
-        tx_models._loaded_models.clear()
-        model_registry._loaded_models.clear()
+    _run_one_evictor_tick(monkeypatch)
+    assert "c" not in tx_models._loaded_models
+    assert "torch" not in recorder.names
+    assert "torch" not in sys.modules
 
 
 def test_evictor_empties_an_already_imported_torch_cache(monkeypatch):
@@ -525,10 +475,6 @@ def test_evictor_empties_an_already_imported_torch_cache(monkeypatch):
     torch.cuda = types.SimpleNamespace(
         is_available=lambda: True, empty_cache=lambda: emptied.append(1))
     monkeypatch.setitem(sys.modules, "torch", torch)
-    try:
-        _run_one_evictor_tick(monkeypatch)
-        assert "d" not in tx_models._loaded_models
-        assert emptied == [1]
-    finally:
-        tx_models._loaded_models.clear()
-        model_registry._loaded_models.clear()
+    _run_one_evictor_tick(monkeypatch)
+    assert "d" not in tx_models._loaded_models
+    assert emptied == [1]
