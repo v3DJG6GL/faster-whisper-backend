@@ -2707,13 +2707,11 @@
   }
 
   // Render the Final-result preview as per-word spans (not plain text) so it
-  // gets the same word-level karaoke highlight as the Corrections strip. Base
-  // tokens are state.words (the merged/aligned words); index-based chip
-  // corrections collapse their covered range into a single span carrying the
-  // chip's `correct` text, and the wordToGround map (merged-word index → its
-  // span) lets _setActiveWord light the right span while audio plays. Only
-  // used by surfaces that opt in via state.karaokeGround (group + proposal
-  // preview); the single-capture card keeps its plain-text ground.
+  // gets the same word-level karaoke highlight as the Corrections strip:
+  // wordToGround (merged-word index → its span) lets _setActiveWord light
+  // the right span while audio plays. Only surfaces that opt in via
+  // state.karaokeGround use it (group + proposal preview); the single-capture
+  // card keeps its plain-text ground.
   function _renderGroundSpans(state) {
     var area = state.gtArea;
     if (!area) return;
