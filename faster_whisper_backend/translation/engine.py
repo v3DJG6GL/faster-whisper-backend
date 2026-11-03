@@ -457,20 +457,10 @@ def render_prompt(text: str, target: str, *, source: "str | None" = None,
         fam_name = "custom" if template is not None else resolve_family(ref)
     # An unknown source stays EMPTY, exactly as translate_segments passes
     # it (each builder handles that itself). Both codes take the run's fold
-    # (_prompt_target).
-    source_code = _prompt_target((source or "").strip())
-    target = _prompt_target(target)
+    # (_prompt_target, inside _build_prompt).
     fam = _FAMILIES[fam_name]
-    if fam_name == "custom":
-        tpl = template if template is not None else \
-            (getattr(cfg, "TRANSLATION_PROMPT_TEMPLATE", "") or "")
-        prompt = [{"role": "user", "content": _render_custom_template(
-            tpl, text, language_name(source_code), language_label(target),
-            context, glossary)}]
-    else:
-        prompt = fam.build(
-            text, source_code, language_name(source_code), target,
-            language_label(target), context, glossary)
+    prompt = _build_prompt(fam_name, text, (source or "").strip(), target,
+                           context, glossary, template)
     out: dict = {
         "family": fam_name,
         "chat": fam.chat,
@@ -1627,6 +1617,26 @@ def _prompt_target(code: str) -> str:
     return _normalise_code(code) or code
 
 
+def _build_prompt(family: str, text: str, source_code: str, target_code: str,
+                  context: str, glossary: str,
+                  template: "str | None" = None):
+    """The one prompt build for the run (_run_completion) and the prompt
+    lab's preview (render_prompt). ``template`` (custom family only)
+    renders THAT template instead of cfg.TRANSLATION_PROMPT_TEMPLATE."""
+    source_code = _prompt_target(source_code or "")
+    target_code = _prompt_target(target_code)
+    # The target's name keeps its region ("pt-BR" → "Portuguese (BR)"): a
+    # region is a target of its own (language_codes), so "pt-BR" and "pt-PT"
+    # must not get byte-identical prompts.
+    if template is not None and family == "custom":
+        return [{"role": "user", "content": _render_custom_template(
+            template, text, language_name(source_code),
+            language_label(target_code), context, glossary)}]
+    return _FAMILIES[family].build(
+        text, source_code, language_name(source_code), target_code,
+        language_label(target_code), context, glossary)
+
+
 _CONTEXT_OVERFLOW = "input too long for the model's context window"
 
 
@@ -1637,20 +1647,8 @@ async def _run_completion(llm, family: str, text: str, source_code: str,
     executor (via the _complete seam). ``template_override`` (custom family
     only) renders THAT template instead of cfg.TRANSLATION_PROMPT_TEMPLATE —
     the admin template-test path, never persisted."""
-    fam = _FAMILIES[family]
-    source_code = _prompt_target(source_code or "")
-    target_code = _prompt_target(target_code)
-    # The target's name keeps its region ("pt-BR" → "Portuguese (BR)"): a
-    # region is a target of its own (language_codes), so "pt-BR" and "pt-PT"
-    # must not get byte-identical prompts.
-    if template_override is not None and family == "custom":
-        prompt = [{"role": "user", "content": _render_custom_template(
-            template_override, text, language_name(source_code),
-            language_label(target_code), context, glossary)}]
-    else:
-        prompt = fam.build(
-            text, source_code, language_name(source_code), target_code,
-            language_label(target_code), context, glossary)
+    prompt = _build_prompt(family, text, source_code, target_code, context,
+                           glossary, template_override)
     # Context counts toward the budget: a context-echoing model (the guard
     # catches it) must not ALSO be truncated mid-sentence into a secondary
     # guard failure.
