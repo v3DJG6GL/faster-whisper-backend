@@ -196,7 +196,8 @@ def _build_sample_score(members: list[dict[str, Any]], gap_s: float,
 
     # Peak at target_s, decays linearly to 0 at 0 or 2*target_s.
     fill_score = max(0.0, 1.0 - abs(total_dur - target_s) / target_s)
-    # Neutral for solos and pairs: their packed/wall ratio is trivially ~1.0.
+    # Neutral below 3 members: for a solo or a pair, packed/wall measures the
+    # trim and at most one gap, not how dense the session is.
     density_score = 0.5 if n < 3 else max(0.0, min(1.0, total_dur / wall_dur))
     # Peak at 4 members, decays by 1/8 per step in either direction.
     member_score = max(0.0, 1.0 - abs(n - 4) / 8.0)
