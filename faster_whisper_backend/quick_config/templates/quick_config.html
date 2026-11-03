@@ -615,18 +615,14 @@ function renderCards() {
     const h3 = document.createElement('h3');
     const labelText = document.createTextNode(rule.label || rule.name);
     h3.appendChild(labelText);
-    const pill = document.createElement('span');
-    pill.className = 'type-pill';
-    pill.textContent = _typePill(rule.type);
+    const pill = _el('span', 'type-pill', _typePill(rule.type));
     h3.appendChild(pill);
     // A rule the admin froze is read-only for everyone but an admin — the
     // server refuses the patch (403), so say so up front rather than let the
     // edit be composed and rejected on Save.
     const isLocked = !!rule.locked && !_isAdmin();
     if (isLocked) {
-      const lockPill = document.createElement('span');
-      lockPill.className = 'type-pill lock-pill';
-      lockPill.textContent = '\u{1F512} locked';
+      const lockPill = _el('span', 'type-pill lock-pill', '\u{1F512} locked');
       lockPill.title = 'locked by an administrator — read-only';
       h3.appendChild(lockPill);
     }
@@ -722,6 +718,13 @@ function _matchesSearch(entry) {
     .toLowerCase().indexOf(q) !== -1;
 }
 
+function _el(tag, cls, text) {
+  const e = document.createElement(tag);
+  e.className = cls;
+  e.textContent = text;
+  return e;
+}
+
 function escapeHtml(s) {
   const div = document.createElement('div');
   div.textContent = s == null ? '' : String(s);
@@ -750,13 +753,9 @@ function traceTextBlock(tagLabel, text, extraClass) {
   const wrap = document.createElement('div');
   const div = document.createElement('div');
   div.className = 'trace-text ' + extraClass;
-  const tag = document.createElement('span');
-  tag.className = 'trace-tag';
-  tag.textContent = tagLabel;
+  const tag = _el('span', 'trace-tag', tagLabel);
   div.appendChild(tag);
-  const span = document.createElement('span');
-  span.className = 'ws-region';
-  span.textContent = text;
+  const span = _el('span', 'ws-region', text);
   div.appendChild(span);
   wrap.appendChild(div);
   if (text.length > TRACE_CLAMP_CHARS) {
@@ -931,9 +930,7 @@ function renderTrace(entry) {
   if (_ets) { ts.dataset.ts = String(_ets); ts.title = absTime(_ets); }
   meta.appendChild(ts);
   const addPill = (text, cls, title) => {
-    const p = document.createElement('span');
-    p.className = 'pill' + (cls ? ' ' + cls : '');
-    p.textContent = text;
+    const p = _el('span', 'pill' + (cls ? ' ' + cls : ''), text);
     if (title) p.title = title;
     meta.appendChild(p);
     return p;
@@ -1042,9 +1039,8 @@ function renderTrace(entry) {
   // replaces them; the action row below still renders, because a failed job
   // is exactly the kind of thing worth reporting.
   if ((failed || cancelled) && noText) {
-    const none = document.createElement('div');
-    none.className = 'trace-notext';
-    none.textContent = 'No transcript recorded \u2014 the job did not finish.';
+    const none = _el('div', 'trace-notext',
+                     'No transcript recorded \u2014 the job did not finish.');
     item.appendChild(none);
   } else {
     item.appendChild(traceTextBlock('raw', entry.raw || '', 'trace-raw'));
@@ -1077,28 +1073,20 @@ function renderTrace(entry) {
     det.className = 'trace-steps';
     if (startOpen) det.open = true;
     const sum = document.createElement('summary');
-    const chev = document.createElement('span');
-    chev.className = 'steps-chev';
-    chev.textContent = '\u25b8';
+    const chev = _el('span', 'steps-chev', '\u25b8');
     sum.appendChild(chev);
-    const show = document.createElement('span');
-    show.className = 'steps-lbl-show';
-    show.textContent = changed.length ? 'Show all pipeline diffs' : 'Show pipeline steps';
+    const show = _el('span', 'steps-lbl-show',
+                     changed.length ? 'Show all pipeline diffs' : 'Show pipeline steps');
     sum.appendChild(show);
-    const hide = document.createElement('span');
-    hide.className = 'steps-lbl-hide';
-    hide.textContent = changed.length ? 'Hide pipeline diffs' : 'Hide pipeline steps';
+    const hide = _el('span', 'steps-lbl-hide',
+                     changed.length ? 'Hide pipeline diffs' : 'Hide pipeline steps');
     sum.appendChild(hide);
     if (changed.length) {
-      const c1 = document.createElement('span');
-      c1.className = 'steps-cnt';
-      c1.textContent = changed.length + ' changed';
+      const c1 = _el('span', 'steps-cnt', changed.length + ' changed');
       sum.appendChild(c1);
     }
     if (steps.length > changed.length) {
-      const c2 = document.createElement('span');
-      c2.className = 'steps-cnt dim';
-      c2.textContent = (steps.length - changed.length) + ' unchanged';
+      const c2 = _el('span', 'steps-cnt dim', (steps.length - changed.length) + ' unchanged');
       sum.appendChild(c2);
     }
     det.appendChild(sum);
@@ -1148,14 +1136,11 @@ function renderTrace(entry) {
       const foot = document.createElement('div');
       foot.className = 'step-excerpt';
       if (regions.length > TRACE_DIFF_SAMPLE) {
-        const more = document.createElement('span');
-        more.className = 'dx-count';
-        more.textContent = '+ ' + fmtCount(regions.length - TRACE_DIFF_SAMPLE) + ' more \u00b7 ';
+        const more = _el('span', 'dx-count',
+                         '+ ' + fmtCount(regions.length - TRACE_DIFF_SAMPLE) + ' more \u00b7 ');
         foot.appendChild(more);
       }
-      const full = document.createElement('span');
-      full.className = 'dx-full';
-      full.textContent = 'show full before/after';
+      const full = _el('span', 'dx-full', 'show full before/after');
       full.addEventListener('click', () => {
         const fullEl = document.createElement('div');
         fullEl.innerHTML =
@@ -1187,9 +1172,7 @@ function renderTrace(entry) {
                   + 'Use this form for issues larger than a single word.';
   reportBtn.addEventListener('click', () => toggleReportForm(item, entry));
   actions.appendChild(reportBtn);
-  const badge = document.createElement('span');
-  badge.className = 'trace-reported-badge';
-  badge.textContent = '✓ reported';
+  const badge = _el('span', 'trace-reported-badge', '✓ reported');
   badge.style.display = isReported(entry.request_id) ? 'inline-flex' : 'none';
   actions.appendChild(badge);
   item.appendChild(actions);
@@ -1537,12 +1520,8 @@ function _renderCorrections(form) {
     const chip = document.createElement('div');
     chip.className = 'rep-correction';
     chip.dataset.idx = String(c.idx);
-    const w = document.createElement('span');
-    w.className = 'rep-wrong';
-    w.textContent = c.wrong;
-    const a = document.createElement('span');
-    a.className = 'rep-arrow';
-    a.textContent = '→';
+    const w = _el('span', 'rep-wrong', c.wrong);
+    const a = _el('span', 'rep-arrow', '→');
     const inp = document.createElement('input');
     inp.type = 'text';
     inp.className = 'rep-correct';
@@ -1801,11 +1780,9 @@ async function reloadRecent() {
   for (const entry of live) pushTrace(entry);
   _oldestLoadedTs = j && j.next_before_ts ? j.next_before_ts : null;
   if (!list.querySelector('.trace-item')) {
-    const d = document.createElement('div');
-    d.className = 'empty-recent';
-    d.textContent = q
+    const d = _el('div', 'empty-recent', q
       ? 'No transcriptions match your search.'
-      : "No transcriptions yet — they'll appear here as you dictate.";
+      : "No transcriptions yet — they'll appear here as you dictate.");
     list.appendChild(d);
   }
   if (btn) btn.style.display = _oldestLoadedTs ? '' : 'none';
