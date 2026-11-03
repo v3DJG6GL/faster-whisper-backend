@@ -1,8 +1,8 @@
-"""The no-access landing built its "Pages you can access" list only from the
-per-scope pages, so it left out /dictate, which every signed-in identity can
-reach (an ungated navlink, tier "any" on the hub). A key with every page
-scope at 'none' was told "no other pages are available either" while the nav
-bar on the same page still linked /dictate.
+"""The no-access landing's "Pages you can access" list adds /dictate to the
+per-scope pages: every signed-in identity can reach it (an ungated navlink,
+tier "any" on the hub), so a key with every page scope at 'none' is offered
+/dictate instead of "no other pages are available either" while the nav bar
+on the same page links it.
 
 The landing script runs under node against a minimal DOM stub; the test
 reads back the action buttons it rendered into <main>."""
