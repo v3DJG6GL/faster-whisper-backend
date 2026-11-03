@@ -647,11 +647,10 @@ def save_overrides(
                              "strict_origins", "silence_pair_check")})
         to_write = validated.model_dump(exclude_none=True, mode="json")
 
-        atomic_json.atomic_write_json(to_write, path, sort_keys=True, tmp_prefix=".config.local.")
         # Enforce the documented 0600 guarantee rather than inheriting it from
         # mkstemp's default mode on the replaced tempfile.
-        from faster_whisper_backend.core import store_common
-        store_common.secure_file(path)
+        atomic_json.atomic_write_private_json(
+            to_write, path, sort_keys=True, tmp_prefix=".config.local.")
     settings_version.bump_config_version()   # let live consumers (streaming idents) re-resolve
 
     # Dropping the local rules copy also rewrote the slug refs migrated above,

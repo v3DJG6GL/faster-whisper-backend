@@ -121,11 +121,9 @@ _count = atomic_json.json_count
 
 def _write_locked(rates: dict[str, dict]) -> None:
     global _cache, _cache_mtime
-    from faster_whisper_backend.core import store_common
     path = _path()
-    atomic_json.atomic_write_json({"version": SCHEMA_VERSION, "rates": rates}, path,
-                       sort_keys=True, tmp_prefix=".stage_rates")
-    store_common.secure_file(path)
+    atomic_json.atomic_write_private_json({"version": SCHEMA_VERSION, "rates": rates}, path,
+                                          sort_keys=True, tmp_prefix=".stage_rates")
     _cache = rates
     try:
         _cache_mtime = os.path.getmtime(path)

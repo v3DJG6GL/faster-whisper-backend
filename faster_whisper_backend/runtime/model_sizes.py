@@ -113,9 +113,7 @@ def _write_locked(models: dict[str, dict], path: str = PATH) -> None:
     (a per-path thread lock plus a file lock, NOT reentrant — never nest)."""
     global _cache, _cache_mtime
     doc = {"version": SCHEMA_VERSION, "models": models}
-    atomic_json.atomic_write_json(doc, path, sort_keys=True, tmp_prefix=".model_sizes")
-    from faster_whisper_backend.core import store_common
-    store_common.secure_file(path)
+    atomic_json.atomic_write_private_json(doc, path, sort_keys=True, tmp_prefix=".model_sizes")
     _cache = models
     try:
         _cache_mtime = os.path.getmtime(path)

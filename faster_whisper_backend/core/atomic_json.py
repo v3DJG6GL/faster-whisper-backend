@@ -119,6 +119,19 @@ def atomic_write_json(obj: Any, path: str, *, sort_keys: bool, tmp_prefix: str) 
                 pass
 
 
+def atomic_write_private_json(obj: Any, path: str, *, sort_keys: bool,
+                              tmp_prefix: str) -> None:
+    """atomic_write_json, then chmod the destination 0600 (best-effort): the
+    write for config.local.json and the runtime ledgers, so none relies on
+    mkstemp's default mode surviving the replace. config.json, committed to
+    the repo, keeps calling atomic_write_json directly. Goes through the
+    module-global atomic_write_json so a patch of it sees every write."""
+    atomic_write_json(obj, path, sort_keys=sort_keys, tmp_prefix=tmp_prefix)
+    # Lazy: keep this module stdlib-only at import.
+    from faster_whisper_backend.core import store_common
+    store_common.secure_file(path)
+
+
 def positive_number(x) -> bool:
     """A JSON-read value that is a real, finite, positive number: json.load
     accepts Infinity / NaN and a bool is an int. Raises OverflowError on an
