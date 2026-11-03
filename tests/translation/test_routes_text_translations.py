@@ -10,6 +10,7 @@ import pytest
 from faster_whisper_backend.translation import engine as translation
 from faster_whisper_backend.translation import gating as tr_gating
 from faster_whisper_backend.transcription import progress as tx_progress
+from tests._transcription_helpers import bind_profile
 from tests._translation_helpers import (
     enable_translation as _enable,
     stub_translate as _stub_translate,
@@ -820,28 +821,14 @@ def test_locked_translation_model_applies_to_the_text_endpoint(
         client, app_module, make_user_key, monkeypatch):
     """Per-identity locks bind HERE too — otherwise a key locked to a small
     model on the batch path just switches endpoints."""
-    monkeypatch.setattr(app_module.cfg, "TRANSLATION_ENABLED", True,
-                        raising=False)
     # Open allowlist: this test is about the lock, not the allowlist gate
     # (the shipped config allowlists two real models).
-    monkeypatch.setattr(app_module.cfg, "TRANSLATION_ALLOWED_MODELS", set(),
-                        raising=False)
+    _enable(app_module, monkeypatch, TRANSLATION_ALLOWED_MODELS=set())
     calls = []
     _stub_translate(monkeypatch, calls=calls)
-    _, raw_admin = make_user_key("admin", is_admin=True)
-    admin_h = bearer(raw_admin)
-    r = client.post("/settings/overrides/state", headers=admin_h,
-                    json={"OVERRIDE_PROFILES": {
-                        "small-mt": {
-                            "TRANSLATION_MODEL": "org/small:Q4_K_M",
-                            "locks": ["TRANSLATION_MODEL"]}}})
-    assert r.status_code == 200, r.text
-    uid, raw_bob = make_user_key("bob", is_admin=False)
-    r = client.patch(
-        f"/settings/api-keys/api/users/{uid}/permissions", headers=admin_h,
-        json={"pages": {}, "config": {"overrides": {},
-                                      "profiles": ["small-mt"], "locks": []}})
-    assert r.status_code == 200, r.text
+    _, raw_bob = bind_profile(client, make_user_key, "small-mt", {
+        "TRANSLATION_MODEL": "org/small:Q4_K_M",
+        "locks": ["TRANSLATION_MODEL"]})
 
     r = client.post(
         "/v1/text/translations", headers=bearer(raw_bob),
@@ -902,28 +889,14 @@ def test_admin_pinned_model_passes_the_allowlist_gate(
     """The allowlist constrains only the CLIENT-requested value (the
     diarization/separation stance): an admin who pins TRANSLATION_MODEL in a
     profile need not also add it to the global allowlist."""
-    monkeypatch.setattr(app_module.cfg, "TRANSLATION_ENABLED", True,
-                        raising=False)
-    monkeypatch.setattr(app_module.cfg, "TRANSLATION_ALLOWED_MODELS",
-                        {"org/public-GGUF:Q4"}, raising=False)
-    monkeypatch.setattr(app_module.cfg, "TRANSLATION_DEFAULT_MODEL",
-                        "org/public-GGUF:Q4", raising=False)
+    _enable(app_module, monkeypatch,
+            TRANSLATION_ALLOWED_MODELS={"org/public-GGUF:Q4"},
+            TRANSLATION_DEFAULT_MODEL="org/public-GGUF:Q4")
     calls = []
     _stub_translate(monkeypatch, calls=calls)
-    _, raw_admin = make_user_key("admin", is_admin=True)
-    admin_h = bearer(raw_admin)
-    r = client.post("/settings/overrides/state", headers=admin_h,
-                    json={"OVERRIDE_PROFILES": {
-                        "pinned-mt": {
-                            "TRANSLATION_MODEL": "org/pinned-GGUF:Q4",
-                            "locks": ["TRANSLATION_MODEL"]}}})
-    assert r.status_code == 200, r.text
-    uid, raw_bob = make_user_key("bob", is_admin=False)
-    r = client.patch(
-        f"/settings/api-keys/api/users/{uid}/permissions", headers=admin_h,
-        json={"pages": {}, "config": {"overrides": {},
-                                      "profiles": ["pinned-mt"], "locks": []}})
-    assert r.status_code == 200, r.text
+    admin_h, raw_bob = bind_profile(client, make_user_key, "pinned-mt", {
+        "TRANSLATION_MODEL": "org/pinned-GGUF:Q4",
+        "locks": ["TRANSLATION_MODEL"]})
 
     # No translation_model in the request: the pinned (admin-policy) model
     # resolves and passes even though it is not on the allowlist.
@@ -935,7 +908,7 @@ def test_admin_pinned_model_passes_the_allowlist_gate(
 
     # A CLIENT asking for a non-allowlisted model is still refused.
     r = client.post(
-        "/v1/text/translations", headers=bearer(raw_admin),
+        "/v1/text/translations", headers=admin_h,
         json={"segments": [{"id": 0, "text": "Hallo"}], "targets": ["en"],
               "translation_model": "org/evil-GGUF:Q8"})
     assert r.status_code == 400, r.text
