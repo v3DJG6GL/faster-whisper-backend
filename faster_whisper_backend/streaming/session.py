@@ -124,7 +124,7 @@ def _common_prefix_len(a: str, b: str) -> int:
 @dataclass
 class StreamConfig:
     """Streaming parameters. Defaults are the validated German-dictation /
-    12–16 GB-GPU set; every field is overridden from ``WHISPER_STREAMING_*`` config."""
+    12–16 GB-GPU set; most fields are overridden from ``WHISPER_STREAMING_*`` config."""
 
     sample_rate: int = SAMPLE_RATE
     min_chunk_ms: int = 1000          # partial cadence: new audio before re-decoding
@@ -639,11 +639,10 @@ class StreamSession:
                 # all as hallucinations (dropped_all), the empty result is authoritative:
                 # the partials run at a fixed temperature and so never trip the drop —
                 # i.e. they still hold the hallucination — so keep the empty result.
-                # la.committed spans the WHOLE utterance (pop_committed only prunes the
-                # agreement buffer), so this path already includes any trim-banked words.
-                # The words come from the same source as the text — the decode's
-                # own (empty) list would leave the final with no word timestamps,
-                # or with only the banked prefix after a trim.
+                # Text and words both come from LocalAgreement, which already holds
+                # any trim-banked prefix (see the gate path above) — the decode's own
+                # (empty) list would leave the final with no word timestamps, or with
+                # only the banked prefix after a trim.
                 tail = self.la.finish()
                 raw = self.la.committed_text + self.la.text_of(tail)
                 words = [{"word": w.text, "start": w.start, "end": w.end}
