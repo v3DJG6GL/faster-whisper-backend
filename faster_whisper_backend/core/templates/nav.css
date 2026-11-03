@@ -214,8 +214,8 @@ header .brand-sep { flex-shrink: 0; width: 1px; align-self: stretch;
   margin: 0.15rem 0.35rem; background: var(--border); }
 /* fixed gap only: #navrow absorbs the slack in the single row */
 header .spacer { flex: 0 0 0.25rem; }
-/* right-side utility cluster: severity pills + scale picker (same everywhere).
-   Self-aligns right: in drawer mode #navrow is out of flow and nothing grows. */
+/* right-side utility cluster (same on every page). Self-aligns right:
+   in drawer mode #navrow is out of flow and nothing grows. */
 header .hdr-right { display: flex; align-items: center; gap: 0.5rem; flex-shrink: 0;
   margin-left: auto; }
 /* Status rail — activity cluster + severity pills read as ONE segmented chip.
