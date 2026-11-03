@@ -67,13 +67,7 @@ async def transcription_cancel(progress_id: str,
 # foreign, expired or unknown id is one 404 (no existence oracle); admins
 # read all.
 
-_jobs_rate = _rl.FixedWindow(
-    config_field="JOBS_RATE_PER_MIN",
-    window_s=60.0,
-    default_max=120,
-    message="too many job requests — slow down "
-            "({limit}/min; retry in {retry_after}s)",
-)
+_jobs_rate = _rl.per_minute("JOBS_RATE_PER_MIN", 120, "job requests")
 
 _JOB_STATES = ("running", "done", "failed", "cancelled")
 
