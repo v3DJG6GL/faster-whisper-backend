@@ -189,8 +189,8 @@ async def whoami_capabilities(user: dict = Depends(_get_current_user_dep)):
     # The flag is always present; the detail block rides only when the
     # feature is on — its `reason` says why ffmpeg cannot (a stripped build).
     _pk_on = bool(getattr(cfg, "MEDIA_PACKAGE_ENABLED", True))
-    # Off the loop: a probe that timed out at startup is not cached, so this
-    # call can run ffmpeg (seconds) instead of hitting the cache.
+    # Off the loop: without the lifespan warm, the first call runs the three
+    # ffmpeg probes inline (later re-probes already go to their own thread).
     _pk_caps = (await asyncio.to_thread(_pk.ffmpeg_capabilities)
                 if _pk_on else None)
     caps["media_package_enabled"] = bool(_pk_on and _pk_caps and _pk_caps.available)
