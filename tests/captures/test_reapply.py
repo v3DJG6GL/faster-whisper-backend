@@ -152,6 +152,18 @@ def _insert(conn, cid, *, language, raw="hello", final="hello"):
         "'[]','new','alice')", (cid, language, raw, final))
 
 
+def _insert_sample(conn, gs, sid, *, locked=0):
+    # OR IGNORE: the mid-pass callers run once per pass.
+    conn.execute(
+        "INSERT OR IGNORE INTO capture_samples (id, user_id, created_ts,"
+        " merged_wav_relpath, merged_duration_ms, transcript,"
+        " transcript_join_strategy, member_hashes,"
+        " inter_segment_silence_ms, is_stale, is_locked, status,"
+        " admin_notes, language, member_trims)"
+        " VALUES (?,'alice',1.0,?,5000,'old','space','{}',300,0,?,'new','',"
+        "'de','{}')", (sid, gs._relpath_for(sid), locked))
+
+
 def test_run_passes_the_row_language_and_updates_the_capture(
         captures_store_db, fake_pipeline, monkeypatch, caplog):
     """The rows are sqlite3.Row, which has no .get(): `r.get("language")`
@@ -354,14 +366,7 @@ def test_run_rebuilds_a_group_transcript_with_chips_on_their_aligned_word(
                         lambda m, ident_cache=None: aligned)
     conn = captures_store_db._require_conn()
     gs = groups_store_db
-    conn.execute(
-        "INSERT INTO capture_samples (id, user_id, created_ts,"
-        " merged_wav_relpath, merged_duration_ms, transcript,"
-        " transcript_join_strategy, member_hashes,"
-        " inter_segment_silence_ms, is_stale, is_locked, status,"
-        " admin_notes, language, member_trims)"
-        " VALUES (?,'alice',1.0,?,5000,'old','space','{}',300,0,0,'new','',"
-        "'de','{}')", ("reapplysid000001", gs._relpath_for("reapplysid000001")))
+    _insert_sample(conn, gs, "reapplysid000001")
     _insert(conn, "reapplychip1", language="de", raw="die katze die",
             final="old")
     conn.execute(
@@ -387,14 +392,7 @@ def test_run_leaves_the_members_of_a_locked_sample_alone(
                         raising=False)
     conn = captures_store_db._require_conn()
     gs = groups_store_db
-    conn.execute(
-        "INSERT INTO capture_samples (id, user_id, created_ts,"
-        " merged_wav_relpath, merged_duration_ms, transcript,"
-        " transcript_join_strategy, member_hashes,"
-        " inter_segment_silence_ms, is_stale, is_locked, status,"
-        " admin_notes, language, member_trims)"
-        " VALUES (?,'alice',1.0,?,5000,'old','space','{}',300,0,1,'new','',"
-        "'de','{}')", ("reapplylocked001", gs._relpath_for("reapplylocked001")))
+    _insert_sample(conn, gs, "reapplylocked001", locked=1)
     _insert(conn, "reapplylock1", language="de", final="old")
     conn.execute("UPDATE captures SET sample_id = 'reapplylocked001',"
                  " sample_order = 0 WHERE id = 'reapplylock1'")
@@ -440,14 +438,7 @@ def test_run_reads_the_shared_connection_under_the_store_locks(
                         raising=False)
     cs, gs = captures_store_db, groups_store_db
     conn = cs._require_conn()
-    gs._require_conn().execute(
-        "INSERT INTO capture_samples (id, user_id, created_ts,"
-        " merged_wav_relpath, merged_duration_ms, transcript,"
-        " transcript_join_strategy, member_hashes,"
-        " inter_segment_silence_ms, is_stale, is_locked, status,"
-        " admin_notes, language, member_trims)"
-        " VALUES (?,'alice',1.0,?,5000,'old','space','{}',300,0,0,'new','',"
-        "'de','{}')", ("reapplysidlock01", gs._relpath_for("reapplysidlock01")))
+    _insert_sample(gs._require_conn(), gs, "reapplysidlock01")
     _insert(conn, "reapplyread1", language="de")
     conn.execute("UPDATE captures SET sample_id = 'reapplysidlock01',"
                  " sample_order = 0 WHERE id = 'reapplyread1'")
@@ -476,14 +467,7 @@ def test_run_leaves_a_sample_locked_mid_pass_alone(
                         raising=False)
     conn = captures_store_db._require_conn()
     gs = groups_store_db
-    conn.execute(
-        "INSERT INTO capture_samples (id, user_id, created_ts,"
-        " merged_wav_relpath, merged_duration_ms, transcript,"
-        " transcript_join_strategy, member_hashes,"
-        " inter_segment_silence_ms, is_stale, is_locked, status,"
-        " admin_notes, language, member_trims)"
-        " VALUES (?,'alice',1.0,?,5000,'old','space','{}',300,0,0,'new','',"
-        "'de','{}')", ("reapplymidlock01", gs._relpath_for("reapplymidlock01")))
+    _insert_sample(conn, gs, "reapplymidlock01")
     _insert(conn, "reapplymid01", language="de", final="old")
     conn.execute("UPDATE captures SET sample_id = 'reapplymidlock01',"
                  " sample_order = 0 WHERE id = 'reapplymid01'")
@@ -524,15 +508,7 @@ def test_run_leaves_a_capture_merged_into_a_locked_sample_mid_pass_alone(
     def merge_lock_then_run(text, **kw):
         # The admin merges this capture into a sample and locks it while the
         # pass is on it.
-        conn.execute(
-            "INSERT OR IGNORE INTO capture_samples (id, user_id, created_ts,"
-            " merged_wav_relpath, merged_duration_ms, transcript,"
-            " transcript_join_strategy, member_hashes,"
-            " inter_segment_silence_ms, is_stale, is_locked, status,"
-            " admin_notes, language, member_trims)"
-            " VALUES (?,'alice',1.0,?,5000,'old','space','{}',300,0,1,'new',"
-            "'','de','{}')",
-            ("reapplymrglock1", gs._relpath_for("reapplymrglock1")))
+        _insert_sample(conn, gs, "reapplymrglock1", locked=1)
         conn.execute("UPDATE captures SET sample_id = 'reapplymrglock1',"
                      " sample_order = 0 WHERE id = 'reapplymrg01'")
         return real(text, **kw)
@@ -563,15 +539,7 @@ def test_run_rebuilds_a_sample_a_capture_joined_mid_pass(
     real = pl_engine._postprocess_text
 
     def merge_then_run(text, **kw):
-        conn.execute(
-            "INSERT OR IGNORE INTO capture_samples (id, user_id, created_ts,"
-            " merged_wav_relpath, merged_duration_ms, transcript,"
-            " transcript_join_strategy, member_hashes,"
-            " inter_segment_silence_ms, is_stale, is_locked, status,"
-            " admin_notes, language, member_trims)"
-            " VALUES (?,'alice',1.0,?,5000,'old','space','{}',300,0,0,'new',"
-            "'','de','{}')",
-            ("reapplyjoinsid1", gs._relpath_for("reapplyjoinsid1")))
+        _insert_sample(conn, gs, "reapplyjoinsid1")
         conn.execute("UPDATE captures SET sample_id = 'reapplyjoinsid1',"
                      " sample_order = 0 WHERE id = 'reapplyjoin1'")
         return real(text, **kw)
