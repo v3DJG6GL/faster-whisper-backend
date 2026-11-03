@@ -73,6 +73,7 @@ _NOT_RESET = {
         "_SEVERITY_LOG": "process-lifetime log-level ring the logging handler "
                          "feeds; the tests that read it substitute their own",
         "SSE_HEADERS": "constant response headers",
+        "PAGE_NO_CACHE_HEADERS": "constant response headers",
         "STAGE_COLORS": "constant stage → colour map",
         "KIND_COLORS": "constant kind → colour map",
         "_NAV_SPEC": "constant nav table",
