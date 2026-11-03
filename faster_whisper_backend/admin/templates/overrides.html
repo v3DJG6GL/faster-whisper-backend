@@ -377,6 +377,10 @@ window._renderWaterfall = (function () {
       return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c];
     });
   }
+  // Set/unset dot shared by the sidebar, the pane head and the field rows.
+  function dotHtml(on) {
+    return '<span class="ov-dot ' + (on ? 'on' : 'off') + '">' + (on ? '●' : '○') + '</span>';
+  }
   var coll = new Intl.Collator('de', { sensitivity: 'base', numeric: true });
 
   async function api(method, path, body) {
@@ -470,16 +474,14 @@ window._renderWaterfall = (function () {
       var item = document.createElement('div');
       item.className = 'ov-item' + (isSel ? ' active' : '');
       if (isSel && uiRenaming) {
-        item.innerHTML = '<span class="ov-dot ' + (cnt ? 'on' : 'off') + '">'
-          + (cnt ? '●' : '○') + '</span>';
+        item.innerHTML = dotHtml(cnt);
         item.appendChild(inlineInput(name,
           function (nn) { commitRename(name, nn); },
           function () { uiRenaming = false; setStatus(''); render(); }));
         listEl.appendChild(item);
         return;
       }
-      item.innerHTML = '<span class="ov-dot ' + (cnt ? 'on' : 'off') + '">'
-        + (cnt ? '●' : '○') + '</span>'
+      item.innerHTML = dotHtml(cnt)
         + '<span class="nm">' + esc(name) + '</span>'
         + '<span class="ov-count">' + cnt + '</span>';
       item.onclick = function () {
@@ -650,8 +652,7 @@ window._renderWaterfall = (function () {
     var p = profiles[sel];
     var cnt = overrideCount(p);
     var head = document.createElement('div'); head.className = 'ov-pane-head';
-    head.innerHTML = '<span class="ov-dot ' + (cnt ? 'on' : 'off') + '">'
-      + (cnt ? '●' : '○') + '</span><span class="pname">' + esc(sel) + '</span>';
+    head.innerHTML = dotHtml(cnt) + '<span class="pname">' + esc(sel) + '</span>';
     mainEl.appendChild(head);
     mainEl.appendChild(accessSection(p));
     (S.groups || []).forEach(function (g) {
@@ -726,8 +727,7 @@ window._renderWaterfall = (function () {
     var meta = (S.field_meta || {})[name] || { kind: 'str' };
     var row = document.createElement('div');
     row.className = 'ov-row' + (isSet(p, name) ? ' is-set' : '');
-    var dot = '<span class="ov-dot ' + (isSet(p, name) ? 'on' : 'off') + '">'
-      + (isSet(p, name) ? '●' : '○') + '</span>';
+    var dot = dotHtml(isSet(p, name));
     row.innerHTML = dot + '<span class="ov-name" title="' + esc(name) + '">' + esc(name) + '</span>';
     var valCell = document.createElement('span'); valCell.className = 'ov-val';
     var lockCell = document.createElement('button'); lockCell.className = 'ov-lock';
