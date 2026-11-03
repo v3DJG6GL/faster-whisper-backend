@@ -2,13 +2,10 @@
 stage row bills and claims, and which receipt sections appear, must follow
 what the stage actually did — not the shape of its result."""
 
-import io
 import os
 import tempfile
 import time
-import wave
 
-import numpy as np
 import pytest
 
 from faster_whisper_backend.audio import bgm_separation
@@ -17,23 +14,13 @@ from faster_whisper_backend.translation import engine as translation
 from tests.conftest import FakeModel
 from tests._translation_helpers import enable_translation
 from faster_whisper_backend.transcription import receipt as tx_receipt
-from tests._transcription_helpers import WAV_UPLOAD as _FILE, serve_model
+from tests._transcription_helpers import WAV_UPLOAD as _FILE, serve_model, wav_bytes as _wav_bytes
 
 
 def _post(client, files=_FILE, **data):
     data.setdefault("model", "whisper-1")
     data.setdefault("response_format", "verbose_json")
     return client.post("/v1/audio/transcriptions", files=files, data=data)
-
-
-def _wav_bytes(seconds=1.0, sr=16000):
-    buf = io.BytesIO()
-    with wave.open(buf, "wb") as w:
-        w.setnchannels(1)
-        w.setsampwidth(2)
-        w.setframerate(sr)
-        w.writeframes(np.full(int(seconds * sr), 8000, dtype="<i2").tobytes())
-    return buf.getvalue()
 
 
 def _capture_receipt(app_module, monkeypatch, seen):

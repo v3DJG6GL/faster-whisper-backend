@@ -8,26 +8,11 @@ prepends the pad, and shifts every reported time back so the response,
 /captures rows, and word timestamps stay on the ORIGINAL audio's timeline.
 """
 
-import io
-import wave
-
 import numpy as np
 import pytest
 
 from tests.conftest import FakeInfo, FakeModel, FakeSegment, FakeWord
-from tests._transcription_helpers import serve_model
-
-
-def _wav_bytes(seconds=1.0, sr=16000):
-    """A decodable 16 kHz mono PCM WAV with constant nonzero amplitude, so the
-    injected zero-pad is distinguishable from the payload."""
-    buf = io.BytesIO()
-    with wave.open(buf, "wb") as w:
-        w.setnchannels(1)
-        w.setsampwidth(2)
-        w.setframerate(sr)
-        w.writeframes(np.full(int(seconds * sr), 8000, dtype="<i2").tobytes())
-    return buf.getvalue()
+from tests._transcription_helpers import serve_model, wav_bytes as _wav_bytes
 
 
 def _post(client, wav, **data):

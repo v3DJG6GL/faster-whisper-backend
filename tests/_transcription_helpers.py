@@ -1,9 +1,14 @@
 """Helpers shared by the stage tests that drive POST /v1/audio/transcriptions
-(the stub upload, a plain / verbose_json post, a profile-bound non-admin key).
+(the stub upload, a plain / verbose_json post, a profile-bound non-admin key,
+the record_transcription spy, a fixed model loader, a constant-tone WAV).
 Import as ``from tests._transcription_helpers import ...``."""
 
+import io
+
+import numpy as np
+
 from faster_whisper_backend.transcription import models as tx_models
-from tests.conftest import bearer
+from tests.conftest import bearer, write_wav
 
 WAV_UPLOAD = {"file": ("a.wav", b"RIFFxxxxWAVE", "audio/wav")}
 
@@ -55,3 +60,11 @@ def serve_model(monkeypatch, model):
     async def _loader(name, *, lease=False):
         return model
     monkeypatch.setattr(tx_models, "_get_or_load_model", _loader)
+
+
+def wav_bytes(seconds=1.0, sr=16000):
+    """A decodable mono PCM WAV with constant nonzero amplitude, so an
+    injected zero-pad is distinguishable from the payload."""
+    buf = io.BytesIO()
+    write_wav(buf, np.full(int(seconds * sr), 8000, dtype="<i2").tobytes(), rate=sr)
+    return buf.getvalue()
