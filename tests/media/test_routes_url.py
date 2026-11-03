@@ -32,6 +32,10 @@ def _post_url(client, **data):
     return client.post("/v1/audio/transcriptions", data=data)
 
 
+def _video_ids():
+    return [m for m, e in list(url_media_store._REG.items()) if e.get("kind") == "video"]
+
+
 def _info(**kw):
     base = dict(url=_URL, extractor_key="Youtube", title="A talk",
                 duration=90.0, uploader="chan", filesize_approx=4096,
@@ -429,8 +433,7 @@ def test_keep_video_response_carries_video_id_when_the_task_finishes(
         # of returning early, so the assertions below run on every schedule.
         import time as _time
         for _ in range(300):
-            ids = [m for m, e in url_media_store._REG.items()
-                   if e.get("kind") == "video"]
+            ids = _video_ids()
             if ids:
                 break
             _time.sleep(0.01)
@@ -476,7 +479,7 @@ def test_keep_video_pending_then_progress_reports_done(client, video_enabled):
         _time.sleep(0.01)
     assert prog.get("stage") == "unknown"
     assert _PID not in media_video._VIDEO_TASKS
-    ids = [m for m, e in url_media_store._REG.items() if e.get("kind") == "video"]
+    ids = _video_ids()
     assert len(ids) == 1
     r = client.get(f"/v1/audio/url-media/{ids[0]}")
     assert r.status_code == 200
@@ -500,7 +503,7 @@ def test_keep_video_finishing_late_lands_in_the_stored_job_result(
         if body.get("source_video_media_id"):
             break
         _time.sleep(0.01)
-    ids = [m for m, e in url_media_store._REG.items() if e.get("kind") == "video"]
+    ids = _video_ids()
     assert body.get("source_video_media_id") == ids[0]
     assert body["source_video_container"] == "mkv"
     assert "source_video_pending" not in body
@@ -587,8 +590,7 @@ def test_keep_video_without_progress_id_is_rejected(client, video_enabled):
     assert r.status_code == 422
     assert "progress_id" in r.json()["detail"]
     assert video_enabled._video_calls == []
-    assert not [m for m, e in url_media_store._REG.items()
-                if e.get("kind") == "video"]
+    assert not _video_ids()
 
 
 def test_keep_video_with_an_upload_is_422(client, video_enabled):
@@ -1211,8 +1213,7 @@ def test_video_id_dropped_during_the_run_is_not_advertised(
             if _PID not in media_video._VIDEO_TASKS:
                 break
             _time.sleep(0.01)
-        vids = [m for m, e in list(url_media_store._REG.items())
-                if e.get("kind") == "video"]
+        vids = _video_ids()
         assert vids, "the video task never retained its file"
         for m in vids:
             url_media_store._REG.pop(m)                     # sweep / eviction

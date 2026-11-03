@@ -16,6 +16,7 @@ import pytest
 
 from faster_whisper_backend.media import media_store as ums
 from faster_whisper_backend.media import subtitle_mux as pk
+from tests.media.test_routes_url import _video_ids
 from tests.media.test_subtitle_mux import run_ffmpeg
 
 _ID = "a" * 32
@@ -119,7 +120,7 @@ def test_upload_over_cap_413_leaves_no_file(client, package_enabled, monkeypatch
                     headers={"Content-Type": "application/octet-stream"})
     assert r.status_code == 413
     assert not any(n.startswith("upload-") for n in os.listdir(ums.staging_dir()))
-    assert not [m for m, e in ums._REG.items() if e.get("kind") == "video"]
+    assert not _video_ids()
 
 
 def test_upload_declared_length_over_cap_is_an_early_413(client, package_enabled,
@@ -639,7 +640,7 @@ def test_retain_media_with_a_text_response_is_422(client, package_enabled):
     assert r.status_code == 422
     assert "retain_media" in r.json()["detail"]
     assert not _recent_spools()
-    assert not [m for m, e in ums._REG.items() if e.get("kind") == "video"]
+    assert not _video_ids()
 
 
 def test_retain_media_refused_by_the_store_leaves_no_copy(client, package_enabled,
