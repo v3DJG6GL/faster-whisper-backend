@@ -215,6 +215,7 @@ def test_model_override_seeds_from_the_current_global_value(client):
     html = _html(client)
     row_fn = (_block(html, "function _el(", "\n}\n")
               + _block(html, "function _button(", "\n}\n")
+              + _block(html, "  function paintDot(")
               + _block(html, "  function renderFieldRow(field) {"))
     out = _node(_FAKE_DOM + """
 let selectedId = 'm';

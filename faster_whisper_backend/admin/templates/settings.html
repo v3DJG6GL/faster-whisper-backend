@@ -1437,6 +1437,12 @@ function modelOverridesEditor(name, v) {
     el.appendChild(lbl); el.appendChild(val);
   }
 
+  // The .mo-dot marker: filled while `on` (the model overrides it), hollow otherwise.
+  function paintDot(dot, on) {
+    dot.classList.toggle('override', on);
+    dot.classList.toggle('inherit', !on);
+  }
+
   // Patch the sidebar and per-row markers in place, without rebuilding any
   // input widget, so typing focus survives. `field` limits the row pass to it.
   function refreshMarkers(field) {
@@ -1447,10 +1453,7 @@ function modelOverridesEditor(name, v) {
       const cnt = li.querySelector('.mo-count');
       if (cnt) cnt.textContent = n ? '(' + n + ')' : '';
       const dot = li.querySelector('.mo-dot');
-      if (dot) {
-        dot.classList.toggle('override', n > 0);
-        dot.classList.toggle('inherit',  n === 0);
-      }
+      if (dot) paintDot(dot, n > 0);
     }
 
     const rows = mainpane.querySelectorAll('.mo-row[data-mo-field]');
@@ -1464,10 +1467,7 @@ function modelOverridesEditor(name, v) {
         JSON.stringify(overrideVal) === JSON.stringify(globalVal);
       row.dataset.matchesGlobal = matches ? 'true' : 'false';
       const dot = row.querySelector('.mo-dot');
-      if (dot) {
-        dot.classList.toggle('override', isOverridden);
-        dot.classList.toggle('inherit',  !isOverridden);
-      }
+      if (dot) paintDot(dot, isOverridden);
       // Only a not-overridden row has a .mo-inherits hint to follow the
       // global; an overridden row's input already shows its own value.
       const inh = row.querySelector('.mo-inherits');
@@ -1538,7 +1538,8 @@ function modelOverridesEditor(name, v) {
       // server's ModelId pattern, so `id` is not a validated token here. Same
       // rule the /settings/pipeline test rows follow.
       const dot = document.createElement('span');
-      dot.className = 'mo-dot ' + (n > 0 ? 'override' : 'inherit');
+      dot.className = 'mo-dot';
+      paintDot(dot, n > 0);
       // Long HF-style ids would blow the sidebar width — let CSS truncate.
       const lbl = document.createElement('span');
       lbl.className = 'mo-list-label';
@@ -1695,7 +1696,8 @@ function modelOverridesEditor(name, v) {
     row.dataset.matchesGlobal = matches ? 'true' : 'false';
 
     const dot = document.createElement('span');
-    dot.className = 'mo-dot ' + (isOverridden ? 'override' : 'inherit');
+    dot.className = 'mo-dot';
+    paintDot(dot, isOverridden);
     row.appendChild(dot);
 
     const labelWrap = _el('span', 'mo-name', field);
