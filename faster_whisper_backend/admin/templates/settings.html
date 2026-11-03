@@ -2929,12 +2929,6 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
       const isTerminal = rule.type === 'terminal';
 
       if (isTerminal) row.classList.add('terminal');
-      if (forcedOut) row.classList.add('excluded');
-      if (!globallyEnabled && !forcedIn) row.classList.add('globally-disabled');
-      // Diff-to-global hook: a rule whose slug is in neither EXCLUDE nor
-      // INCLUDE is "functionally inherited" — same contract as .mo-row's
-      // data-matches-global. The diff-mode CSS dims rows tagged 'true'.
-      row.dataset.matchesGlobal = (!forcedOut && !forcedIn) ? 'true' : 'false';
 
       const head = document.createElement('div');
       head.className = 'row-header';
@@ -2961,10 +2955,7 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
           + 'in stored training text (live /transcribe still trims).';
         cb.addEventListener('change', () => {
           if (opts.onToggle) opts.onToggle(rule.name, cb.checked, globallyEnabled);
-          const newForcedOut = !cb.checked;
-          row.classList.toggle('excluded', newForcedOut);
-          row.dataset.matchesGlobal = newForcedOut ? 'false' : 'true';
-          status.textContent = newForcedOut ? 'EXCLUDED' : '';
+          paintState(!cb.checked, false);
           if (footer) footer.textContent = _footerText();
         });
       } else if (!globallyEnabled && !opts.includeSet) {
@@ -2991,14 +2982,7 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
           // Local re-class without a full repaint — keeps focus / scroll.
           const newForcedOut = globallyEnabled && !cb.checked;
           const newForcedIn  = !globallyEnabled && cb.checked;
-          row.classList.toggle('excluded', newForcedOut);
-          row.classList.toggle('globally-disabled', !globallyEnabled && !newForcedIn);
-          // Keep data-matches-global in step, or the diff-mode dim keeps the
-          // render-time value.
-          row.dataset.matchesGlobal = (!newForcedOut && !newForcedIn) ? 'true' : 'false';
-          status.textContent = newForcedOut ? 'EXCLUDED' : '';
-          if (gdTag) gdTag.style.display = (!globallyEnabled && !newForcedIn) ? '' : 'none';
-          if (fiTag) fiTag.style.display = (!globallyEnabled && newForcedIn) ? '' : 'none';
+          paintState(newForcedOut, newForcedIn);
           if (footer) footer.textContent = _footerText();
         });
       }
@@ -3054,21 +3038,35 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
         gdTag.textContent = 'globally disabled';
         gdTag.title = 'This rule is disabled in the global pipeline. '
                     + 'Check the box to force-enable it for this model only.';
-        gdTag.style.display = (!globallyEnabled && !forcedIn) ? '' : 'none';
         head.appendChild(gdTag);
 
         fiTag = document.createElement('span');
         fiTag.className = 'rule-force-included-tag';
         fiTag.textContent = 'force-included';
         fiTag.title = 'Globally disabled but force-enabled for this model.';
-        fiTag.style.display = (!globallyEnabled && forcedIn) ? '' : 'none';
         head.appendChild(fiTag);
       }
 
       const status = document.createElement('span');
       status.className = 'rule-checklist-status';
-      status.textContent = forcedOut ? 'EXCLUDED' : '';
       head.appendChild(status);
+
+      // The row's inclusion state from (forcedOut, forcedIn), painted here and
+      // by the change handlers above, which skip a full repaint: one copy, so
+      // a toggle cannot leave e.g. data-matches-global at its render-time
+      // value. That attribute is the diff-to-global hook: a rule whose slug is
+      // in neither EXCLUDE nor INCLUDE is "functionally inherited" — same
+      // contract as .mo-row's data-matches-global. The diff-mode CSS dims
+      // rows tagged 'true'.
+      const paintState = (fo, fi) => {
+        row.classList.toggle('excluded', fo);
+        row.classList.toggle('globally-disabled', !globallyEnabled && !fi);
+        row.dataset.matchesGlobal = (!fo && !fi) ? 'true' : 'false';
+        status.textContent = fo ? 'EXCLUDED' : '';
+        if (gdTag) gdTag.style.display = (!globallyEnabled && !fi) ? '' : 'none';
+        if (fiTag) fiTag.style.display = (!globallyEnabled && fi) ? '' : 'none';
+      };
+      paintState(forcedOut, forcedIn);
 
       row.appendChild(head);
       return row;
