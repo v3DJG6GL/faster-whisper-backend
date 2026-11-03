@@ -449,12 +449,7 @@ def test_delete_member_auto_dissolves_group(captures_store_db, groups_store_db, 
     cid = _make(cs, monkeypatch, tmp_path)
     conn = cs._require_conn()
     sid = "g0123456789abcdef"
-    conn.execute(
-        "INSERT INTO capture_samples (id, user_id, created_ts,"
-        " merged_wav_relpath, merged_duration_ms, transcript,"
-        " member_hashes) VALUES (?,?,?,?,?,?,?)",
-        (sid, "u1", 1.0, gs._relpath_for(sid), 1000, "t", "{}"),
-    )
+    _seed_sample(conn, gs, sid)
     conn.execute(
         "UPDATE captures SET sample_id=?, sample_order=0 WHERE id=?", (sid, cid),
     )
@@ -529,12 +524,7 @@ def test_clear_all_drops_a_sample_merged_after_the_samples_wipe(
     def clear_then_merge():
         n = real_clear()
         conn = cs._require_conn()
-        conn.execute(
-            "INSERT INTO capture_samples (id, user_id, created_ts,"
-            " merged_wav_relpath, merged_duration_ms, transcript,"
-            " member_hashes) VALUES (?,?,?,?,?,?,?)",
-            (sid, "u1", 1.0, gs._relpath_for(sid), 1000, "t", "{}"),
-        )
+        _seed_sample(conn, gs, sid)
         conn.execute(
             "UPDATE captures SET sample_id=?, sample_order=0 WHERE id=?", (sid, cid),
         )
@@ -605,12 +595,7 @@ def test_evict_excludes_group_members(captures_store_db, groups_store_db, monkey
     other = _make(cs, monkeypatch, tmp_path)
     sid = "gmemberexcl00000"
     conn = cs._require_conn()
-    conn.execute(
-        "INSERT INTO capture_samples (id, user_id, created_ts,"
-        " merged_wav_relpath, merged_duration_ms, transcript,"
-        " member_hashes) VALUES (?,?,?,?,?,?,?)",
-        (sid, "u1", 1.0, gs._relpath_for(sid), 1000, "t", "{}"),
-    )
+    _seed_sample(conn, gs, sid)
     # member is the oldest, but it's in a group → must be protected.
     conn.execute("UPDATE captures SET sample_id=?, sample_order=0, created_ts=1 WHERE id=?", (sid, member))
     conn.execute("UPDATE captures SET created_ts=2 WHERE id=?", (other,))
@@ -977,14 +962,18 @@ def test_sweep_retention_deletes_more_ids_than_one_in_list_chunk(
     assert cs.count() == 0
 
 
-def _group_one(cs, gs, sid, member, sample_ts, member_ts):
-    conn = cs._require_conn()
+def _seed_sample(conn, gs, sid, created_ts=1.0):
     conn.execute(
         "INSERT INTO capture_samples (id, user_id, created_ts,"
         " merged_wav_relpath, merged_duration_ms, transcript,"
         " member_hashes) VALUES (?,?,?,?,?,?,?)",
-        (sid, "u1", sample_ts, gs._relpath_for(sid), 1000, "t", "{}"),
+        (sid, "u1", created_ts, gs._relpath_for(sid), 1000, "t", "{}"),
     )
+
+
+def _group_one(cs, gs, sid, member, sample_ts, member_ts):
+    conn = cs._require_conn()
+    _seed_sample(conn, gs, sid, sample_ts)
     conn.execute(
         "UPDATE captures SET sample_id=?, sample_order=0, created_ts=? WHERE id=?",
         (sid, member_ts, member),
