@@ -683,12 +683,8 @@ def _total_audio_bytes(conn: sqlite3.Connection) -> int:
 def _delete_ids(conn: sqlite3.Connection, ids: list[str]) -> None:
     """DELETE rows by id, chunked to stay under SQLite's bind-variable limit
     (a byte pass with CAPTURES_MAX=0 can drop tens of thousands of rows)."""
-    for off in range(0, len(ids), 500):
-        chunk = ids[off:off + 500]
-        conn.execute(
-            f"DELETE FROM captures WHERE id IN ({','.join('?' * len(chunk))})",
-            chunk,
-        )
+    for chunk, marks in store_common.id_chunks(ids):
+        conn.execute(f"DELETE FROM captures WHERE id IN ({marks})", chunk)
 
 
 def _drop_oldest_with_status(
@@ -875,11 +871,10 @@ def get_captures_light(ids: list[str]) -> dict[str, dict[str, Any]]:
     if not ids:
         return out
     conn = _require_conn()
-    for off in range(0, len(ids), 500):
-        chunk = ids[off:off + 500]
+    for chunk, marks in store_common.id_chunks(ids):
         cur = conn.execute(
             "SELECT id, user_id, status, sample_id, audio_relpath"
-            f" FROM captures WHERE id IN ({','.join('?' * len(chunk))})", chunk,
+            f" FROM captures WHERE id IN ({marks})", chunk,
         )
         for r in cur.fetchall():
             out[r["id"]] = {"id": r["id"], "user_id": r["user_id"],
@@ -1090,10 +1085,9 @@ def bulk_update_status(ids: list[str], new_status: str) -> list[dict[str, Any]]:
         return []
     conn = _require_conn()
     now = time.time()
-    # Chunked like _delete_ids / get_captures_light: BulkStatusIn admits 1000
-    # ids, past the classic 999 bind-variable limit. The UPDATE chunks share
-    # one transaction so the pass stays all-or-nothing.
-    chunks = [ids[off:off + 500] for off in range(0, len(ids), 500)]
+    # Chunked by store_common.id_chunks: BulkStatusIn admits 1000 ids, past
+    # the classic 999 bind-variable limit. The UPDATE chunks share one
+    # transaction so the pass stays all-or-nothing.
     # Both store locks for the BEGIN..COMMIT span, samples-then-captures as in
     # samples_store.dissolve_sample: the stores share one autocommit
     # connection, so a samples_store.update_sample from a rebuild thread
@@ -1101,10 +1095,10 @@ def bulk_update_status(ids: list[str], new_status: str) -> list[dict[str, Any]]:
     from faster_whisper_backend.captures import samples_store as capture_samples_store
     with capture_samples_store._lock, _lock:
         prev: list[sqlite3.Row] = []
-        for chunk in chunks:
+        for chunk, marks in store_common.id_chunks(ids):
             prev.extend(conn.execute(
-                f"SELECT id, status, user_id FROM captures"
-                f" WHERE id IN ({','.join('?' * len(chunk))})", chunk,
+                f"SELECT id, status, user_id FROM captures WHERE id IN ({marks})",
+                chunk,
             ).fetchall())
         if not prev:
             return []
@@ -1118,11 +1112,9 @@ def bulk_update_status(ids: list[str], new_status: str) -> list[dict[str, Any]]:
         else:
             sql, head = "UPDATE captures SET status = ?, reviewed_ts = ?", [new_status, now]
         with store_common.transaction(conn):
-            for off in range(0, len(found), 500):
-                chunk = found[off:off + 500]
+            for chunk, marks in store_common.id_chunks(found):
                 conn.execute(
-                    f"{sql} WHERE id IN ({','.join('?' * len(chunk))})"
-                    f" AND status != ?",
+                    f"{sql} WHERE id IN ({marks}) AND status != ?",
                     [*head, *chunk, new_status],
                 )
     owners = {r["user_id"] for r in prev}

@@ -537,9 +537,7 @@ def prune(*, ttl_s: float, max_rows: int, max_bytes: int) -> int:
                         break
                     victims.append(r["job_id"])
                     total -= int(r["result_bytes"] or 0)
-                for i in range(0, len(victims), 500):
-                    chunk = victims[i:i + 500]
-                    marks = ",".join("?" * len(chunk))
+                for chunk, marks in store_common.id_chunks(victims):
                     cur = conn.execute(
                         f"DELETE FROM jobs WHERE job_id IN ({marks})", chunk)
                     deleted += cur.rowcount or 0

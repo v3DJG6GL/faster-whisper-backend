@@ -2489,9 +2489,7 @@ def _stages_from_jobs(conn: sqlite3.Connection, job_ids: list[str],
     targets: dict[str, dict[str, int]] = {}
     # Chunk the IN list: SQLite's default variable limit is generous but
     # a year of jobs can exceed it.
-    for i in range(0, len(job_ids), 500):
-        chunk = job_ids[i:i + 500]
-        marks = ",".join("?" * len(chunk))
+    for chunk, marks in store_common.id_chunks(job_ids):
         for r in conn.execute(
             "SELECT s.stage, s.secs, s.targets, s.speakers, s.retained,"
             " s.kept_original, COALESCE(s.audio_s, j.audio_s) AS audio_s"

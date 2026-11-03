@@ -7,7 +7,8 @@
 - `BUSY_TIMEOUT_S` / `open_wal_db()`: the one way a store opens its WAL DB;
   `close_quietly()` drops the previous one on a re-init; `transaction()`
   wraps an explicit BEGIN..COMMIT on it; `require_init()` is every store's
-  "init_db() was not called" guard.
+  "init_db() was not called" guard; `id_chunks()` splits an `IN (?,…)` id
+  list into SQL_ID_CHUNK-sized pieces.
 - `job_columns_ddl()` / `missing_job_columns()`: the job-label columns shared
   by usage_jobs and recent_transcriptions.
 - `rename_columns()` / `add_missing_columns()`: the legacy column-rename and
@@ -30,6 +31,7 @@ import os
 import re
 import sqlite3
 from collections.abc import Iterable, Iterator
+from typing import Any
 
 # Cap and control-character screen for a CALLER-supplied label that goes into a
 # log line. Lives here rather than in main so the stores can reach it without an
@@ -183,6 +185,20 @@ def require_init[T](value: T | None, store: str) -> T:
     if value is None:
         raise RuntimeError(f"{store}.init_db() was not called before use.")
     return value
+
+
+# Ids per `WHERE id IN (?,?,…)` statement: under SQLite's classic 999
+# bind-variable limit (a bulk request admits 1000 ids; a cap prune can drop
+# tens of thousands of rows).
+SQL_ID_CHUNK = 500
+
+
+def id_chunks(ids: list[Any], size: int = SQL_ID_CHUNK) -> Iterator[tuple[list[Any], str]]:
+    """Yield (chunk, "?,?,…") for an `IN (…)` over `ids`, `size` at a time,
+    in order. The SQL around the marks stays at the caller."""
+    for off in range(0, len(ids), size):
+        chunk = ids[off:off + size]
+        yield chunk, ",".join("?" * len(chunk))
 
 
 def close_quietly(conn: sqlite3.Connection | None) -> None:
