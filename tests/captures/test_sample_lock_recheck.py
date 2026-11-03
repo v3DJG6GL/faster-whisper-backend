@@ -1,5 +1,5 @@
 """Sample writes re-check a non-admin's lock guard under the lock they wait
-on (Ungroup / Regenerate under the per-sid rebuild lock, the chip save under
+on (Dissolve / Regenerate under the per-sid rebuild lock, the chip save under
 the corrections write lock), and member deletes re-check it after their guard:
 a sample locked (from another tab) in that window must stay intact. The lock
 toggle itself runs under the rebuild lock, so the re-check is authoritative."""
