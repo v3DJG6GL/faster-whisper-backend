@@ -7,9 +7,7 @@ from faster_whisper_backend.settings import config as cfg
 from faster_whisper_backend.translation import engine as translation
 from tests.conftest import bearer
 from tests._translation_helpers import enable_translation
-from tests._transcription_helpers import WAV_UPLOAD as _FILE
-OV = "/settings/overrides"
-PERMS = "/settings/api-keys/api/users"
+from tests._transcription_helpers import WAV_UPLOAD as _FILE, bind_profile
 
 
 def _post(client, headers=None, **data):
@@ -24,22 +22,14 @@ def test_plain_json_reports_locked_override_as_ignored(client, make_user_key,
     # Mirrors test_transcription_overrides::test_locked_task_ignores_client_param
     # with the default response_format — the /v1/audio/translations docstring
     # promises overrides_ignored: ["task"] on its own default shape.
-    _, raw_admin = make_user_key("admin", is_admin=True)
-    admin_h = bearer(raw_admin)
-    r = client.post(f"{OV}/state", headers=admin_h,
-                    json={"OVERRIDE_PROFILES": {"notask": {"locks": ["TASK"]}}})
-    assert r.status_code == 200, r.text
-    uid, raw_alice = make_user_key("alice", is_admin=False)
-    client.patch(f"{PERMS}/{uid}/permissions", headers=admin_h,
-                 json={"pages": {}, "config": {"overrides": {},
-                                                "profiles": ["notask"],
-                                                "locks": []}})
+    admin_h, raw_alice = bind_profile(client, make_user_key, "notask",
+                                      {"locks": ["TASK"]})
     r = _post(client, headers=bearer(raw_alice), task="translate")
     assert r.status_code == 200, r.text
     assert "task" not in fake_model.last_kwargs
     assert "task" in r.json()["overrides_ignored"]
     # Nothing locked and no profile asked for: the plain shape stays plain.
-    r = _post(client, headers=bearer(raw_admin))
+    r = _post(client, headers=admin_h)
     assert r.status_code == 200, r.text
     assert "overrides_ignored" not in r.json()
     assert "profile_applied" not in r.json()
