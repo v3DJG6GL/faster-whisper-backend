@@ -294,6 +294,15 @@ def _usage_sweep() -> None:
         logger.info("[usage] sweep: %s", counts)
 
 
+def _startup_step(fn, what: str) -> None:
+    """A best-effort one-time startup step on an already-open store: a
+    failure logs and the lifespan goes on (the hourly loop still starts)."""
+    try:
+        fn()
+    except Exception as e:
+        logger.warning("Startup %s failed: %s", what, e)
+
+
 async def _usage_retention_loop() -> None:
     """Hourly sweep for the usage-statistics store: closes out dictation
     sessions whose outcome never arrived and prunes the job/app rows past
@@ -386,10 +395,8 @@ async def lifespan(app: FastAPI):
     # The startup sweep is its own best-effort step: the store is open, so a
     # failing first sweep must not keep the hourly loop from starting.
     if recent_tx_ready:
-        try:
-            recent_transcriptions_store.sweep_retention()
-        except Exception as _te:
-            logger.warning("Startup recent-transcriptions sweep failed: %s", _te)
+        _startup_step(recent_transcriptions_store.sweep_retention,
+                      "recent-transcriptions sweep")
 
     # Open the system-metrics store (the /stats history charts and the
     # GPU-busy share). Rolling telemetry, its own file. Adopts the
@@ -429,10 +436,7 @@ async def lifespan(app: FastAPI):
     # often than that never applied the retention: sweep once now, its own
     # best-effort step like the recent-transcriptions one above.
     if usage_store_ready:
-        try:
-            _usage_sweep()
-        except Exception as _ue:
-            logger.warning("Startup usage sweep failed: %s", _ue)
+        _startup_step(_usage_sweep, "usage sweep")
 
     # Placed BEFORE the preload loop and before any long-lived task is
     # created: its failure is fatal, and @asynccontextmanager never reaches
@@ -595,10 +599,7 @@ async def lifespan(app: FastAPI):
     except Exception as _re:
         logger.error("Failed to initialize reports store: %s", _re)
     else:
-        try:
-            reports_store.sweep_retention()
-        except Exception as _re:
-            logger.warning("Startup reports sweep failed: %s", _re)
+        _startup_step(reports_store.sweep_retention, "reports sweep")
 
     # Open the desktop-client settings-sync store (one opaque blob per
     # account, served at /v1/synced-client-settings). Non-fatal: sync
@@ -644,11 +645,7 @@ async def lifespan(app: FastAPI):
         for _step in (captures_store.reconcile_on_startup,
                       capture_samples_store.reconcile_on_startup,
                       captures_store.sweep_retention):
-            try:
-                _step()
-            except Exception as _ce:
-                logger.warning("Startup captures step %s failed: %s",
-                               _step.__qualname__, _ce)
+            _startup_step(_step, f"captures step {_step.__qualname__}")
 
     # Server jobs: the durable job resource. A row still `running` now was
     # interrupted by the previous process's death — flip it, or it reads as
@@ -667,10 +664,7 @@ async def lifespan(app: FastAPI):
                         _n_interrupted)
         except Exception as _je:
             logger.warning("Startup jobs reconcile failed: %s", _je)
-        try:
-            _jobs_store.sweep_retention()
-        except Exception as _je:
-            logger.warning("Startup jobs sweep failed: %s", _je)
+        _startup_step(_jobs_store.sweep_retention, "jobs sweep")
 
     yield
 
