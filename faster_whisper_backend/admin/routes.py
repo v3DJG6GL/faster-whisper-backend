@@ -692,6 +692,11 @@ def _field_max_length(field: Any) -> int | None:
     return _first_max_length(field.metadata)
 
 
+def _bad_request(msg: str) -> JSONResponse:
+    """400 with the {"error": msg} body the admin dry-run endpoints share."""
+    return JSONResponse(status_code=status.HTTP_400_BAD_REQUEST, content={"error": msg})
+
+
 _TEST_PIPELINE_MAX_RULES = _pipeline_rules_max()
 _TEST_PIPELINE_MAX_SAMPLE = 8192
 # A saved rule cannot carry a longer regex-list replacement or map value than
@@ -1020,26 +1025,14 @@ async def test_pipeline(payload: dict[str, Any]) -> JSONResponse:
     sample = str(payload.get("sample") or "")
     rules = payload.get("rules") or []
     if not isinstance(rules, list):
-        return JSONResponse(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            content={"error": "rules must be a list of rule dicts"},
-        )
+        return _bad_request("rules must be a list of rule dicts")
     if len(rules) > _TEST_PIPELINE_MAX_RULES:
-        return JSONResponse(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            content={"error": f"too many rules (max {_TEST_PIPELINE_MAX_RULES})"},
-        )
+        return _bad_request(f"too many rules (max {_TEST_PIPELINE_MAX_RULES})")
     if len(sample) > _TEST_PIPELINE_MAX_SAMPLE:
-        return JSONResponse(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            content={"error": f"sample too long (max {_TEST_PIPELINE_MAX_SAMPLE} chars)"},
-        )
+        return _bad_request(f"sample too long (max {_TEST_PIPELINE_MAX_SAMPLE} chars)")
     language = payload.get("language")
     if language is not None and not isinstance(language, str):
-        return JSONResponse(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            content={"error": "language must be a string or null"},
-        )
+        return _bad_request("language must be a string or null")
     language = (language or "").strip().lower() or None
     for idx, rule in enumerate(rules):
         if not isinstance(rule, dict):
@@ -1049,27 +1042,18 @@ async def test_pipeline(payload: dict[str, Any]) -> JSONResponse:
                 e.get("pattern") for e in (entries if isinstance(entries, list) else ())
                 if isinstance(e, dict))):
             if isinstance(pat, str) and len(pat) > _TEST_PIPELINE_MAX_PATTERN:
-                return JSONResponse(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    content={"error": f"rule {idx + 1}: pattern too long "
-                                      f"(max {_TEST_PIPELINE_MAX_PATTERN} chars)"},
-                )
+                return _bad_request(f"rule {idx + 1}: pattern too long "
+                                    f"(max {_TEST_PIPELINE_MAX_PATTERN} chars)")
         for entry in entries if isinstance(entries, list) else ():
             er = entry.get("replacement") if isinstance(entry, dict) else None
             if isinstance(er, str) and len(er) > _TEST_PIPELINE_MAX_REPLACEMENT:
-                return JSONResponse(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    content={"error": f"rule {idx + 1}: replacement too long "
-                                      f"(max {_TEST_PIPELINE_MAX_REPLACEMENT} chars)"},
-                )
+                return _bad_request(f"rule {idx + 1}: replacement too long "
+                                    f"(max {_TEST_PIPELINE_MAX_REPLACEMENT} chars)")
         m = rule.get("map") if rule.get("type") == "callback:map" else None
         for v in m.values() if isinstance(m, dict) else ():
             if isinstance(v, str) and len(v) > _TEST_PIPELINE_MAX_MAP_VALUE:
-                return JSONResponse(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    content={"error": f"rule {idx + 1}: map value too long "
-                                      f"(max {_TEST_PIPELINE_MAX_MAP_VALUE} chars)"},
-                )
+                return _bad_request(f"rule {idx + 1}: map value too long "
+                                    f"(max {_TEST_PIPELINE_MAX_MAP_VALUE} chars)")
 
     def _language_skipped(rule: dict) -> bool:
         """Engine parity (pl_engine._rule_runs): a rule scoped to languages
@@ -1552,16 +1536,13 @@ async def translation_test(
                             "translation is disabled (TRANSLATION_ENABLED)")
     fam = (body.family or "").strip().lower() or None
     if fam is not None and fam != "auto" and fam not in translation._FAMILIES:
-        return JSONResponse(status_code=status.HTTP_400_BAD_REQUEST,
-                            content={"error": f"unknown prompt family '{fam}'"})
+        return _bad_request(f"unknown prompt family '{fam}'")
     # Same admission rule as the request path (tr_gating._translation_model_allowed
     # owns the allowlist semantics).
     ref = (body.model or "").strip()
     default = (getattr(cfg, "TRANSLATION_DEFAULT_MODEL", "") or "").strip()
     if ref and not tr_gating._translation_model_allowed(ref, requested=ref):
-        return JSONResponse(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            content={"error": "model is not in TRANSLATION_ALLOWED_MODELS"})
+        return _bad_request("model is not in TRANSLATION_ALLOWED_MODELS")
     # An explicit "auto" (the lab's UNSAVED select) is name detection, not
     # resolve_family: that returns the SAVED pin, a family no request uses
     # once "auto" is saved.
@@ -1616,8 +1597,7 @@ async def translation_test(
                     total_bytes=total or None))
     except translation.TranslationError as e:
         # str(e) is client-safe by the module's failure contract.
-        return JSONResponse(status_code=status.HTTP_400_BAD_REQUEST,
-                            content={"error": str(e)})
+        return _bad_request(str(e))
     finally:
         # The helper also leaves the _PROGRESS_CLOSED tombstone, so a straggling
         # download_cb tick from the load thread cannot re-create the entry
