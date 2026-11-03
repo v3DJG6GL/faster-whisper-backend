@@ -19,6 +19,14 @@ def _post(client, headers=None, **data):
                        headers=headers or {})
 
 
+def _start_row(job_id=_PID, ttl_s=3600, **kw):
+    args = dict(job_id=job_id, request_id="req", kind="transcribe",
+                user_id=None, key_id=None, model="m", source_kind="file",
+                source_name="a", ttl_s=ttl_s, max_rows=100, max_bytes=0)
+    args.update(kw)
+    return js.start(**args)
+
+
 @pytest.mark.parametrize("fmt", ["json", "text", "verbose_json", "srt", "vtt"])
 def test_post_with_progress_id_stores_the_verbatim_payload(client, fmt):
     r = _post(client, progress_id=_PID, response_format=fmt)
@@ -152,10 +160,7 @@ def test_text_translation_failure_records_failed(client, app_module,
 
 
 def _seed_running(app_module, pid=_PID, owner=None):
-    js.start(job_id=pid, request_id="req", kind="transcribe",
-             user_id=owner, key_id=None, model="whisper-1",
-             source_kind="file", source_name="a.wav", ttl_s=3600,
-             max_rows=100, max_bytes=0)
+    _start_row(pid, user_id=owner, model="whisper-1", source_name="a.wav")
     entry = {"stage": "transcribing", "progress": 0.4, "updated": 0}
     if owner:
         entry["owner"] = owner
@@ -199,9 +204,7 @@ def test_delete_running_flags_cancel_then_the_post_lands_cancelled(client,
 
 
 def test_delete_running_without_a_live_entry_answers_false(client, app_module):
-    js.start(job_id=_PID, request_id="req", kind="transcribe", user_id=None,
-             key_id=None, model="m", source_kind="file", source_name="a",
-             ttl_s=3600, max_rows=100, max_bytes=0)
+    _start_row()
     assert client.delete(f"/v1/jobs/{_PID}").json() == {"cancelled": False}
     assert _PID not in tx_progress._BATCH_CANCELLED
 
@@ -223,10 +226,8 @@ def test_delete_spares_a_row_reposted_between_read_and_delete(client,
 
     def _get_then_repost(job_id, **kw):
         row = real_get(job_id, **kw)
-        js.start(job_id=job_id, request_id="req2", kind="transcribe",
-                 user_id=row["user_id"], key_id=row["key_id"], model="m",
-                 source_kind="file", source_name="a", ttl_s=3600,
-                 max_rows=100, max_bytes=0)
+        _start_row(job_id, request_id="req2", user_id=row["user_id"],
+                   key_id=row["key_id"])
         return row
     monkeypatch.setattr(js, "get", _get_then_repost)
     assert client.delete(f"/v1/jobs/{_PID}").json() == {"deleted": False}
@@ -261,9 +262,7 @@ def test_me_reports_jobs_caps(client, app_module, monkeypatch):
 
 
 def test_expired_row_reads_as_unknown(client):
-    js.start(job_id=_PID, request_id="req", kind="transcribe", user_id=None,
-             key_id=None, model="m", source_kind="file", source_name="a",
-             ttl_s=0.0, max_rows=100, max_bytes=0)
+    _start_row(ttl_s=0.0)
     js.finish(job_id=_PID, state="failed", ttl_s=0.0)
     time.sleep(0.01)
     assert client.get(f"/v1/jobs/{_PID}").status_code == 404
@@ -273,9 +272,7 @@ def test_expired_row_reads_as_unknown(client):
 def test_a_running_row_past_a_short_ttl_is_still_found(client, monkeypatch):
     """JOBS_TTL_S counts from the finish: a run that outlives a short TTL
     must not 404 (a re-attaching client would decide its job is gone)."""
-    js.start(job_id=_PID, request_id="req", kind="transcribe", user_id=None,
-             key_id=None, model="m", source_kind="file", source_name="a",
-             ttl_s=600.0, max_rows=100, max_bytes=0)
+    _start_row(ttl_s=600.0)
     real = time.time
     monkeypatch.setattr(time, "time", lambda: real() + 700)
     assert client.get(f"/v1/jobs/{_PID}").status_code == 200
@@ -318,9 +315,7 @@ def test_rows_are_owner_bound_and_admins_read_all(client, make_user_key):
     # A non-admin's ?all=1 is silently their own list.
     assert client.get("/v1/jobs?all=1", headers=bearer(bob)).json() == {"jobs": []}
     # Owner-less rows (no production writer) never leak to a keyed caller.
-    js.start(job_id="d" * 32, request_id="req", kind="transcribe",
-             user_id=None, key_id=None, model="m", source_kind="file",
-             source_name="a", ttl_s=3600, max_rows=100, max_bytes=0)
+    _start_row("d" * 32)
     assert client.get(f"/v1/jobs/{'d' * 32}", headers=bearer(alice)).status_code == 404
 
 
@@ -402,9 +397,7 @@ def test_result_refreshes_a_live_media_expiry(client, tmp_path):
 
 
 def test_lifespan_marks_interrupted_runs_failed(client, app_module):
-    js.start(job_id=_PID, request_id="req", kind="transcribe", user_id=None,
-             key_id=None, model="m", source_kind="file", source_name="a",
-             ttl_s=3600, max_rows=100, max_bytes=0)
+    _start_row()
     from starlette.testclient import TestClient
     with TestClient(app_module.app, client=("127.0.0.1", 12345)) as c:
         row = c.get(f"/v1/jobs/{_PID}").json()
