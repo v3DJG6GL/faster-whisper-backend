@@ -13,6 +13,8 @@ from tests.settings._rules_helpers import (
     assert_upgrades_to_factory_once as _assert_upgrades_to_factory_once,
     factory_rules as _factory_rules,
     load_saved as _load_saved,
+    old_strip_whisper_punctuation as _old_strip_whisper_punctuation,
+    pre_june_rules as _pre_june_rules,
 )
 
 
@@ -351,13 +353,6 @@ _SPLIT_IN_JUNE = {
 }
 
 
-def _old_strip_whisper_punctuation():
-    """The combined card the June split replaced (config_renames.SPLIT_RULES)."""
-    return {"name": "strip-whisper-punctuation", "label": "Strip Whisper punctuation",
-            "type": "regex-list",
-            "entries": [{"pattern": "\\s*\\.+\\s*$", "replacement": ""}]}
-
-
 def test_every_split_card_names_current_factory_rules():
     names = {r["name"] for r in _factory_rules()}
     assert {k: list(v) for k, v in renames.SPLIT_RULES.items()} == _SPLIT_IN_JUNE
@@ -430,14 +425,6 @@ def test_exclude_of_a_card_folded_in_8cde7fd_names_its_successor(tmp_path):
     # A copy from before 8cde7fd still runs the old card under its old slug.
     assert renames.rename_slugs(["trim-trailing-period"], {"trim-trailing-period"}) == [
         "trim-trailing-period"]
-
-
-def _pre_june_rules():
-    """The factory rules as a copy saved before the June split holds them."""
-    rules = [r for r in _factory_rules()
-             if r["name"] not in _SPLIT_IN_JUNE["strip-whisper-punctuation"]]
-    rules.insert(-1, _old_strip_whisper_punctuation())
-    return rules
 
 
 def test_local_slug_lists_follow_the_env_rule_list_in_force(

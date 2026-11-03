@@ -16,6 +16,9 @@ from faster_whisper_backend.settings import config as cs_config
 from faster_whisper_backend.settings import config_store as cs
 from faster_whisper_backend.settings import schema as settings_schema
 from faster_whisper_backend.core import atomic_json
+from tests.settings._rules_helpers import (
+    old_strip_whisper_punctuation as _old_strip_whisper_punctuation,
+)
 
 
 def _ok(**fields):
@@ -1225,9 +1228,7 @@ def test_removing_a_local_copy_of_a_split_card_writes_its_refs_as_the_successors
     # the next load maps the slug to: the clear must not 422 on it.
     split = ["strip-trailing-period", "strip-auto-punctuation"]
     rules = [r for r in cs.load_factory_rules() if r["name"] not in split]
-    rules.insert(-1, {"name": "strip-whisper-punctuation", "label": "Strip Whisper punctuation",
-                      "type": "regex-list",
-                      "entries": [{"pattern": "\\s*\\.+\\s*$", "replacement": ""}]})
+    rules.insert(-1, _old_strip_whisper_punctuation())
     p = tmp_path / "config.local.json"
     _write_json(p, {
         "PIPELINE_RULES": rules,

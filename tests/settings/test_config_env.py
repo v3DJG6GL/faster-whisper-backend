@@ -19,7 +19,7 @@ from faster_whisper_backend.settings import config
 from tests.conftest import _repoint_path_default
 from tests.settings._rules_helpers import factory_rules as _factory_rules
 from tests.settings._rules_helpers import load_saved as _load_saved
-from tests.settings.test_config_renames import _pre_june_rules
+from tests.settings._rules_helpers import pre_june_rules as _pre_june_rules
 
 
 def test_truthy():

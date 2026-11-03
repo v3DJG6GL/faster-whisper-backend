@@ -29,3 +29,18 @@ def assert_upgrades_to_factory_once(rules, paths):
     assert renames.upgrade_rule_entries(raw) == paths
     assert raw["PIPELINE_RULES"] == factory_rules()
     assert renames.upgrade_rule_entries(raw) == []
+
+
+def old_strip_whisper_punctuation():
+    """The combined card the June split replaced (config_renames.SPLIT_RULES)."""
+    return {"name": "strip-whisper-punctuation", "label": "Strip Whisper punctuation",
+            "type": "regex-list",
+            "entries": [{"pattern": "\\s*\\.+\\s*$", "replacement": ""}]}
+
+
+def pre_june_rules():
+    """The factory rules as a copy saved before the June split holds them."""
+    rules = [r for r in factory_rules()
+             if r["name"] not in ("strip-trailing-period", "strip-auto-punctuation")]
+    rules.insert(-1, old_strip_whisper_punctuation())
+    return rules
