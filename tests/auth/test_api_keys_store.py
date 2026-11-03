@@ -176,8 +176,9 @@ def test_rename_profile_refs_cascades_lists_allowlist_and_wildcard(api_keys_db):
 
 def test_rename_profile_refs_is_all_or_nothing(api_keys_db, monkeypatch):
     """The overrides route rolls the profile rename back when the cascade
-    raises; on the autocommit connection a mid-scan error used to leave the
-    rows already rewritten pointing at a profile name that no longer exists."""
+    raises, so the cascade must be all-or-nothing: on the autocommit
+    connection a mid-scan error would leave the rows already rewritten
+    pointing at a profile name that no longer exists."""
     import json
     ak = api_keys_db
     conn = ak._require_conn()
