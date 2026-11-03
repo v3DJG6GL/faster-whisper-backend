@@ -157,7 +157,7 @@ async def whoami_capabilities(user: dict = Depends(_get_current_user_dep)):
     # The transcription ceiling (an upload or a link's audio for a run), so
     # the client can size its own local copies and refuse an oversized file
     # before sending it. Always present: uploads are capped too.
-    caps["media_max_bytes"] = int(getattr(cfg, "MEDIA_MAX_BYTES", 10_000_000_000))
+    caps["media_max_bytes"] = url_media_store.media_max_bytes()
     # The cap for a file the server KEEPS (POST /v1/audio/media, a link's
     # video) — media_store.max_retainable_bytes(), at most
     # media_max_bytes and lower when RETAINED_MEDIA_MAX_BYTES is. A

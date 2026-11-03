@@ -996,7 +996,7 @@ async def _max_body_mw(request: Request, call_next):
     if request.method == "POST":
         _path = request.url.path
         if _path == "/v1/audio/media":
-            max_body = int(getattr(cfg, "MEDIA_MAX_BYTES", 10_000_000_000))
+            max_body = url_media_store.media_max_bytes()
         elif _MEDIA_PACKAGE_PATH_RE.match(_path):
             max_body = _media_package_max_body_bytes()
         elif _path in _SELF_PARSED_JSON_PATHS:
@@ -1610,7 +1610,7 @@ async def transcribe(
         # Upload ceiling. Content-Length is advisory (absent on chunked
         # bodies), so it only buys us an early exit before the model load —
         # the chunked read below is what actually enforces the bound.
-        max_upload = int(getattr(cfg, "MEDIA_MAX_BYTES", 10_000_000_000))
+        max_upload = url_media_store.media_max_bytes()
         _clen = request.headers.get("content-length")
         if _clen and _clen.isdigit() and int(_clen) > max_upload:
             raise HTTPException(status_code=413, detail="upload too large")

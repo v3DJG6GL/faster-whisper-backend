@@ -608,7 +608,8 @@ def validate_url(url: str) -> str:
 
 def _effective_max_bytes() -> int:
     """The one media ceiling: a link can never admit more than an upload."""
-    return int(getattr(cfg, "MEDIA_MAX_BYTES", 10_000_000_000))
+    from faster_whisper_backend.media import media_store as _ms
+    return _ms.media_max_bytes()
 
 
 def match_extractor(url: str) -> str:
