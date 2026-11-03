@@ -4,7 +4,8 @@
 - `log_safe()` / `LOG_FIELD_MAX`: cap + control-character screen for
   caller-supplied labels in log lines (used well beyond the stores).
 - `LONE_SURROGATE_RE`: the lone-UTF-16-surrogate screen for client strings.
-- `BUSY_TIMEOUT_S` / `open_wal_db()`: the one way a store opens its WAL DB.
+- `BUSY_TIMEOUT_S` / `open_wal_db()`: the one way a store opens its WAL DB;
+  `close_quietly()` drops the previous one on a re-init.
 - `job_columns_ddl()` / `missing_job_columns()`: the job-label columns shared
   by usage_jobs and recent_transcriptions.
 - `rename_columns()` / `add_missing_columns()`: the legacy column-rename and
@@ -171,6 +172,18 @@ def open_wal_db(path: str) -> sqlite3.Connection:
     conn.execute("PRAGMA journal_mode=WAL;")
     conn.execute("PRAGMA synchronous=NORMAL;")
     return conn
+
+
+def close_quietly(conn: sqlite3.Connection | None) -> None:
+    """Close a store connection that a re-init is replacing; a failed close
+    is ignored (the re-init must not leak the old handle plus its WAL/-shm
+    files, nor fail over it). The caller still unbinds its global before
+    opening the new one, so a failed open leaves no closed handle bound."""
+    if conn is not None:
+        try:
+            conn.close()
+        except sqlite3.Error:
+            pass
 
 
 # WAL keeps recently written rows in the -wal sidecar until a checkpoint, and

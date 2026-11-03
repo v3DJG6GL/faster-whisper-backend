@@ -124,13 +124,8 @@ def init_db(db_path: str) -> None:
         _SESSION_INDEX = {}
     # Close the previous handle before rebinding (mirrors api_keys_store), or
     # every re-init leaks a connection plus its WAL/-shm handles.
-    if _conn is not None:
-        try:
-            _conn.close()
-        except sqlite3.Error:
-            pass
-        finally:
-            _conn = None
+    store_common.close_quietly(_conn)
+    _conn = None
     _conn = store_common.open_wal_db(db_path)
     _conn.executescript(_SCHEMA)
     _migrate_add_key_id(_conn)

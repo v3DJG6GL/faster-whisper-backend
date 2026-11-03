@@ -95,14 +95,10 @@ def init_db(path: str) -> None:
     IF NOT EXISTS. Call before any other function in this module."""
     global _conn, _DB_READY
     _DB_READY = False
-    if _conn is not None:
-        # Mirrors api_keys_store: a re-init must not leak the previous
-        # connection (plus its WAL/-shm handles).
-        try:
-            _conn.close()
-        except sqlite3.Error:
-            pass
-        _conn = None
+    # Mirrors api_keys_store: a re-init must not leak the previous
+    # connection (plus its WAL/-shm handles).
+    store_common.close_quietly(_conn)
+    _conn = None
     _conn = store_common.open_wal_db(path)
     # Legacy updated_at column rename: every other store stamps its times *_ts.
     # (open_wal_db is autocommit, so the ALTER is durable once execute returns.)

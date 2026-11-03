@@ -156,13 +156,8 @@ def init_db(db_path: str) -> None:
     # Close the previous handle before rebinding, or every re-init leaks a
     # connection (plus its WAL/-shm handles). Safe here: _DB_READY is already
     # False, so a caller racing in fails closed via _require_conn().
-    if _conn is not None:
-        try:
-            _conn.close()
-        except sqlite3.Error:
-            pass
-        finally:
-            _conn = None
+    store_common.close_quietly(_conn)
+    _conn = None
     _conn = store_common.open_wal_db(db_path)
     _conn.executescript(_SCHEMA)
     _ensure_columns(_conn)
