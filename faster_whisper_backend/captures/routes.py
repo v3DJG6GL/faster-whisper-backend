@@ -717,9 +717,8 @@ def _bulk_guard(
     rows: list[dict[str, Any]] = []
     skipped: list[dict[str, str]] = []
     wanted = list(dict.fromkeys(i for i in ids if isinstance(i, str) and i))
-    # One light lookup (id / user_id / status / sample_id — all the checks
-    # below read) instead of a get_capture per id, which json.loads the
-    # words + segments blobs of up to 1000 rows just to discard them.
+    # Light lookup, not a get_capture per id: that json.loads the words +
+    # segments blobs of up to 1000 rows just to discard them.
     light = captures_store.get_captures_light(wanted)
     # Sample-lock verdict per sample_id: members of one group share it.
     lock_memo: dict[str, bool] = {}
@@ -2806,7 +2805,7 @@ def _build_export_stream(only_status: str | None, include_audio: bool):
                     continue
 
                 # No single model / request_id for a multi-member group; the
-                # per-member audit is the group's GET /members endpoint.
+                # per-member values are in GET /api/samples/{sid}'s `members`.
                 manifest_lines.write(json.dumps(_build_manifest_row(
                     audio_filepath=audio_name,
                     text=text,
