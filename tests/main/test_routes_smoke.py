@@ -1,4 +1,4 @@
-"""Smoke test validating the app_client harness drives the real app."""
+"""Smoke test validating the `client` harness fixture drives the real app."""
 
 
 def test_v1_models_open_mode(client):
