@@ -1157,13 +1157,11 @@ def _policy_check_extractor(key: str, info: dict, *,
     if xk == key:
         return
     if key == "Generic" and not getattr(cfg, "URL_ALLOW_GENERIC", False):
-        raise UrlPolicyError(
-            "this link leads to a site the server's URL policy doesn't allow")
+        raise UrlPolicyError(_HANDOFF_REFUSED)
     if (xk == "Generic" and not getattr(cfg, "URL_ALLOW_GENERIC", False)
             and not (handoff_is_media
                      and getattr(cfg, "URL_ALLOW_DIRECT_MEDIA", True))):
-        raise UrlPolicyError(
-            "this link leads to a site the server's URL policy doesn't allow")
+        raise UrlPolicyError(_HANDOFF_REFUSED)
     allowed = _allowed_extractor_keys()
     if allowed and xk.lower() not in allowed:
         raise UrlPolicyError(
