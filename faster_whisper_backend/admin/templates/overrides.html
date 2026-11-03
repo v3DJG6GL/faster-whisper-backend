@@ -490,9 +490,8 @@ window._renderWaterfall = (function () {
         var u = (S.usage || {})[name] || { users: [], keys: [] };
         var us = document.createElement('div');
         us.className = 'ov-usage';
-        us.textContent = 'used by ' + u.users.length + ' user'
-          + (u.users.length === 1 ? '' : 's') + ' · ' + u.keys.length + ' key'
-          + (u.keys.length === 1 ? '' : 's');
+        us.textContent = 'used by ' + plural(u.users.length, 'user') + ' · '
+          + plural(u.keys.length, 'key');
         listEl.appendChild(us);
       }
     });
@@ -598,8 +597,7 @@ window._renderWaterfall = (function () {
     sel = profiles[newName] ? newName : (profileNames()[0] || null);
     render(); refreshButtons();
     var n = (j && j.bindings_updated) || 0;
-    setStatus('renamed' + (n ? ' · ' + n + ' binding' + (n === 1 ? '' : 's')
-                                  + ' updated' : ''), 'ok');
+    setStatus('renamed' + (n ? ' · ' + plural(n, 'binding') + ' updated' : ''), 'ok');
   }
   function startDelete() {
     if (!sel) return;
@@ -697,12 +695,14 @@ window._renderWaterfall = (function () {
 
   function isSet(p, f) { return p[f] !== null && p[f] !== undefined; }
 
+  function plural(n, noun) { return n + ' ' + noun + (n === 1 ? '' : 's'); }
+
   // Format an inherited value for the dim "inherits <value>" hint — identical to
   // the /settings per-model page's fmtValue so the two pages read the same.
   function fmtVal(v) {
     if (v === null || v === undefined) return '∅';
     if (typeof v === 'boolean') return v ? '☑ on' : '☐ off';
-    if (Array.isArray(v)) return '[' + v.length + ' item' + (v.length === 1 ? '' : 's') + ']';
+    if (Array.isArray(v)) return '[' + plural(v.length, 'item') + ']';
     if (typeof v === 'string') return v === '' ? '""' : v;
     return String(v);
   }
