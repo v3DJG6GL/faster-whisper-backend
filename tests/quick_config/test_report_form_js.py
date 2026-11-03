@@ -588,8 +588,7 @@ def test_conflict_merge_keeps_the_other_writers_regex_list_entries(client, tmp_p
     # put back the user's whole load-time list plus their edit and the other
     # writer's new entry was dropped by the next save, under an "Auto-merged"
     # toast.
-    page = client.get("/quick-config").text
-    res = _run_js(client, tmp_path, _olist_consts(page) + r"""
+    res = _run_olist_js(client, tmp_path, r"""
       const e = (p) => ({ pattern: p, replacement: p.toUpperCase() });
       const base = [e('a'), e('b'), e('c')];
       // The user moved c to the top, dropped b and appended y; meanwhile the
@@ -602,8 +601,7 @@ def test_conflict_merge_keeps_the_other_writers_regex_list_entries(client, tmp_p
       const merged2 = _applyFieldDiff([e('b'), e('c'), e('z')], d);
       out({ merged: merged.map(x => x.pattern), merged2: merged2.map(x => x.pattern),
             noop: _fieldDiff(base, base.map(x => ({ ...x })), _diffKindFor('entries')) });
-    """, funcs=("_stringify", "_olistKeyed", "_olistAlign", "_fieldDiff", "_applyFieldDiff",
-                "_diffKindFor"))
+    """)
     assert res["merged"] == ["c", "a", "x", "y"]
     assert res["merged2"] == ["c", "z", "y"]
     assert res["noop"] is None
