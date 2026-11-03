@@ -147,7 +147,7 @@ _REPORT_FUNCS = (
     "_wordifyFinal", "_buildReportForm", "_chipCovers", "_wordSpan", "_selectWord",
     "_setReplacementInline", "_clearReplacementInline", "_spanText",
     "_focusLastInput", "_removeChip", "_extendLastChip", "toggleCorrection",
-    "_renderCorrections", "_reportedKey", "getReportedIds", "isReported",
+    "_renderCorrections", "_reportedKey", "getReportedIds", "isReported", "_rowEntry",
 )
 
 

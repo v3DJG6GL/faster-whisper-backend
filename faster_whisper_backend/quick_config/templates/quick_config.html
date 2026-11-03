@@ -703,6 +703,11 @@ function _entryKey(entry) {
   if (entry.id != null) return 'i:' + entry.id;
   return '';
 }
+// A rendered row's stash (renderTrace's dataset.entry); {} when absent or unparsable.
+function _rowEntry(item) {
+  try { return JSON.parse(item.dataset.entry || '{}') || {}; }
+  catch (_) { return {}; }
+}
 function _seenTrace(entry) {
   const k = _entryKey(entry);
   if (!k) return false;
@@ -1254,9 +1259,7 @@ function syncReportedBadges() {
   // Runs after each /state load over every rendered row (badge + any open
   // form's Remove button). Cheap: each row's stash is a few small fields.
   document.querySelectorAll('.trace-item').forEach((item) => {
-    let rid = '';
-    try { rid = (JSON.parse(item.dataset.entry || '{}') || {}).request_id || ''; }
-    catch (_) {}
+    const rid = _rowEntry(item).request_id || '';
     const reported = isReported(rid);
     const badge = item.querySelector('.trace-reported-badge');
     if (badge) badge.style.display = reported ? 'inline-flex' : 'none';
@@ -1821,12 +1824,7 @@ async function loadOlder() {
   if (_oldestLoadedTs == null) {
     // Bootstrap: derive cursor from the oldest .trace-item currently rendered.
     const items = list.querySelectorAll('.trace-item');
-    if (items.length) {
-      try {
-        const data = JSON.parse(items[items.length - 1].dataset.entry || '{}');
-        _oldestLoadedTs = data.ts || null;
-      } catch (_) {}
-    }
+    if (items.length) _oldestLoadedTs = _rowEntry(items[items.length - 1]).ts || null;
   }
   if (_oldestLoadedTs == null) { btn.style.display = 'none'; return; }
   const gen = _recentGen;
@@ -1865,9 +1863,7 @@ function rebuildDatalist() {
   // Iterate trace items newest → oldest. First-seen wins (= newest casing).
   const seen = new Map();
   document.querySelectorAll('.trace-item').forEach(item => {
-    let data;
-    try { data = JSON.parse(item.dataset.entry || '{}'); }
-    catch (_) { return; }
+    const data = _rowEntry(item);
     for (const t of data.tokens || []) {
       const k = String(t).toLowerCase();
       if (!seen.has(k)) seen.set(k, t);
