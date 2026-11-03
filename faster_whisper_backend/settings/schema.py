@@ -2549,9 +2549,9 @@ class OverrideProfile(_CallTimeOverrideMixin, _StreamingOverrideMixin):
     # the profile may still be admin-applied via a per-key/per-user binding, but
     # is never offered to clients and a request naming it is silently refused.
     # This is profile-library metadata, NOT a per-field override or a lockable
-    # field, so it is excluded from the per-identity `direct` blob (validate_
-    # binding strips it) and rendered as a profile-level control, not in the
-    # decode-field grid.
+    # field, so it is excluded from the per-identity `direct` blob
+    # (validate_binding strips it) and rendered as a profile-level control, not
+    # in the decode-field grid.
     requestable: bool | None = None
 
     @field_validator("locks")
