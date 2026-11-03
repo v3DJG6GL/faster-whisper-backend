@@ -3,8 +3,9 @@
 //
 // Loaded as a classic script right after the grid markup and BEFORE the
 // page's inline dashboard IIFE, so the top-level declarations here
-// (GS_LAYOUT_KEY, grid, onSeg) are the globals that IIFE reads; the usage section
-// is an IIFE of its own and only touches its own elements.
+// (GS_LAYOUT_KEY, grid, onSeg, restartClass, flashCtl) are the globals that
+// IIFE reads; the usage section is an IIFE of its own and only touches its
+// own elements.
 //
 // Cache-busting: the page links this file as /static/stats.js?v=<version>;
 // /static answers with ETag/Last-Modified and no no-store, so a new build
@@ -106,6 +107,13 @@ function onSeg(id, fn) {
     if (!b || !g.contains(b)) return;
     fn(b.dataset.v, b);
   });
+}
+// Re-run a one-shot CSS animation: the forced reflow makes the re-added class start it over.
+function restartClass(el, cls) { el.classList.remove(cls); void el.offsetWidth; el.classList.add(cls); }
+function flashCtl(id) {
+  const el = document.getElementById(id); if (!el) return;
+  el.scrollIntoView({ block: 'nearest' });
+  restartClass(el, 'flash');
 }
 (() => {
   let initial = 'both';
@@ -1024,13 +1032,8 @@ function renderWindowChips() {
   document.querySelectorAll('.card .win[data-win="usage"]').forEach(el => {
     el.innerHTML = el.hasAttribute('data-nostage') ? htmlNoStage : html;
     el.title = title + ' — click to jump to the range control';
-    if (pulse) { el.classList.remove('pulse'); void el.offsetWidth; el.classList.add('pulse'); }
+    if (pulse) restartClass(el, 'pulse');
   });
-}
-function flashCtl(id) {
-  const el = $(id); if (!el) return;
-  el.scrollIntoView({ block: 'nearest' });
-  el.classList.remove('flash'); void el.offsetWidth; el.classList.add('flash');
 }
 // Flash the range control and every filter control that is currently
 // narrowing the window — the chip's ⏷ n counts them, so a click has to

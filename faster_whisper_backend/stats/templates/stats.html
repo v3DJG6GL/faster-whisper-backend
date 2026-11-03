@@ -1138,11 +1138,6 @@ function _clock(ts, secs) {
   const t = new Date(ts * 1000), p2 = n => ('0' + n).slice(-2);
   return p2(t.getHours()) + ':' + p2(t.getMinutes()) + (secs ? ':' + p2(t.getSeconds()) : '');
 }
-function flashCtl(id) {
-  const el = $(id); if (!el) return;
-  el.scrollIntoView({ block: 'nearest' });
-  el.classList.remove('flash'); void el.offsetWidth; el.classList.add('flash');
-}
 // The ring cards' window chips (see .card .win): live / paused at a
 // clock time / the history window. Clicking a paused chip returns to live;
 // otherwise it flashes the rings control so the reader finds it.
@@ -1841,7 +1836,7 @@ function renderJobsChip(flt) {
   _rjChipSig = sig;
   el.innerHTML = html;
   el.classList.toggle('on', parts.length > 0);
-  if (pulse) { el.classList.remove('pulse'); void el.offsetWidth; el.classList.add('pulse'); }
+  if (pulse) restartClass(el, 'pulse');
 }
 document.addEventListener('click', (e) => {
   const chip = e.target.closest('.win[data-win="jobs"]'); if (!chip) return;
