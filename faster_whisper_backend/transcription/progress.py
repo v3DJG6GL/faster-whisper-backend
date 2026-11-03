@@ -87,7 +87,7 @@ _PROGRESS_ID_RE = re.compile(r"\A[0-9a-f]{8,64}\Z")
 # progress_id here so every _progress_set call (all stages already flow
 # through it) mirrors stage/progress into the central registry for free.
 # last_text is deliberately NOT mirrored — job rows never carry transcript
-# text (see jobs.jobs_snapshot's scrubbing contract).
+# text (see core/jobs.py's module docstring).
 _JOB_BY_PID: "dict[str, str]" = {}
 _JOB_MIRROR_FIELDS = ("stage", "progress", "step", "model", "total_bytes")
 
