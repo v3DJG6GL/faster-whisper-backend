@@ -574,9 +574,9 @@ def test_propose_does_not_cache_a_sweep_invalidated_mid_flight(
 
 def test_propose_cache_write_cannot_outrun_an_invalidate(
         captures_store_db, monkeypatch, trim_disabled):
-    """The _GEN guard was check-then-write: an invalidate() landing between
-    the check and the store popped a key that was not there yet, and the
-    pre-write proposals were then cached as fresh for a whole TTL."""
+    """An invalidate() landing between the _GEN check and the cache store
+    pops a key that is not there yet; the store must still not keep the
+    pre-write proposals as fresh for a whole TTL."""
     cs = captures_store_db
     _insert_eligible(cs, "caprace00000001", ts=1000.0, text="alpha")
     _insert_eligible(cs, "caprace00000002", ts=1001.0, text="bravo")
