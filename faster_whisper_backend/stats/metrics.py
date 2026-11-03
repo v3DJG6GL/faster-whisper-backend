@@ -243,7 +243,7 @@ def classify_error(exc: "BaseException | None", *, status: str,
     """`(error_class, error_stage)` for a finished job: (None, None) when it
     succeeded, else one of ERROR_CLASSES and the stage it was in. An
     exception may pre-classify itself via an `error_class` attribute
-    (url_download.UrlPolicyError does). A wrapper's cause chain is read
+    (media.download.UrlPolicyError does). A wrapper's cause chain is read
     before the wrapper's own message, and a wrapper raised `from` a cause
     is not taken for an OOM on its own text (the diarization load wrapper
     says "out of memory or unavailable" over any placement failure)."""
