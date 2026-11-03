@@ -7,7 +7,7 @@ import threading
 import pytest
 
 from faster_whisper_backend.auth import api_keys_store
-from tests.auth._store_helpers import sibling_write
+from tests.auth._store_helpers import failing_rebuild_conn, sibling_write
 
 
 def test_hash_key_deterministic_hex():
@@ -843,15 +843,8 @@ def test_sibling_revoke_still_seen_after_a_failed_rebuild(api_keys_db,
     sibling_write(ak, ("UPDATE api_keys SET revoked_ts = 1 WHERE id = ?",
                        (rec["id"],)))
 
-    real = ak._require_conn()
-
-    class _FailingRebuild:
-        def execute(self, sql, *args):
-            if sql.startswith("SELECT k.key_hash"):
-                raise sqlite3.OperationalError("database is locked")
-            return real.execute(sql, *args)
-
-    monkeypatch.setattr(ak, "_require_conn", _FailingRebuild)
+    monkeypatch.setattr(ak, "_require_conn",
+                        failing_rebuild_conn(ak, "SELECT k.key_hash"))
     with pytest.raises(sqlite3.OperationalError):
         ak.lookup_by_raw_key(raw)
     monkeypatch.undo()

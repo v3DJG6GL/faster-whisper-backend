@@ -4,7 +4,8 @@ import sqlite3
 
 import pytest
 
-from tests.auth._store_helpers import load_sessions_store_copy, sibling_write
+from tests.auth._store_helpers import (
+    failing_rebuild_conn, load_sessions_store_copy, sibling_write)
 
 
 @pytest.fixture
@@ -26,16 +27,9 @@ def test_sibling_logout_still_seen_after_a_failed_rebuild(worker, monkeypatch):
     assert w.lookup_session(raw) is not None
     sibling_write(w, ("UPDATE sessions SET revoked_ts = 1",))
 
-    real = w._require_conn()
-
-    class _FailingRebuild:
-        def execute(self, sql, *args):
-            if sql.startswith("SELECT token_hash"):
-                raise sqlite3.OperationalError("database is locked")
-            return real.execute(sql, *args)
-
     w._REFRESH_MIN_INTERVAL_S = 0.0     # "the interval has elapsed"
-    monkeypatch.setattr(w, "_require_conn", _FailingRebuild)
+    monkeypatch.setattr(w, "_require_conn",
+                        failing_rebuild_conn(w, "SELECT token_hash"))
     with pytest.raises(sqlite3.OperationalError):
         w.lookup_session(raw)
     monkeypatch.undo()
