@@ -134,15 +134,7 @@ def test_merge_member_scope_guard_precedes_state_checks(
     from fastapi import HTTPException
 
     captures_store = captures_store_db
-    _fake_wav_transcode(monkeypatch)
-
-    src = tmp_path / "src.bin"
-    src.write_bytes(b"junk")
-    cid = captures_store.create_capture(
-        audio_src_path=str(src), request_id="r1", model="small",
-        language="de", audio_s=1.0, raw="r", final="f",
-        words=[], segments=[], user_id="alice",
-    )
+    cid = _audio_capture(captures_store, monkeypatch, tmp_path)
     # Audio gone: the state check would 410 ("audio is missing") and leak that
     # the row exists, so the scope guard must 404 a non-owner first.
     os.unlink(captures_store.abs_audio_path(captures_store.get_capture(cid)["audio_relpath"]))
@@ -256,6 +248,17 @@ def _fake_wav_transcode(monkeypatch):
         audio_transcode, "transcode_to_wav_16k_mono", _fake)
 
 
+def _audio_capture(captures_store, monkeypatch, tmp_path, **fields):
+    """create_capture over a stub-transcoded source; `fields` override the defaults."""
+    _fake_wav_transcode(monkeypatch)
+    src = tmp_path / "src.bin"
+    src.write_bytes(b"junk")
+    return captures_store.create_capture(audio_src_path=str(src), **{
+        "request_id": "r1", "model": "small", "language": "de", "audio_s": 1.0,
+        "raw": "r", "final": "f", "words": [], "segments": [],
+        "user_id": "alice", **fields})
+
+
 def test_merge_member_404_body_uniform_missing_vs_foreign(
         captures_store_db, monkeypatch, tmp_path):
     """Missing id and another-user's id must yield the SAME 404 template on
@@ -267,14 +270,7 @@ def test_merge_member_404_body_uniform_missing_vs_foreign(
     from fastapi import HTTPException
 
     captures_store = captures_store_db
-    _fake_wav_transcode(monkeypatch)
-    src = tmp_path / "src.bin"
-    src.write_bytes(b"junk")
-    cid = captures_store.create_capture(
-        audio_src_path=str(src), request_id="r1", model="small",
-        language="de", audio_s=1.0, raw="r", final="f",
-        words=[], segments=[], user_id="alice",
-    )
+    cid = _audio_capture(captures_store, monkeypatch, tmp_path)
 
     bob = {
         "user_id": "bob",
@@ -301,14 +297,8 @@ def test_capture_404_body_uniform_missing_vs_foreign(
     owner_uid, _raw_owner = make_user_key("alice", pages={"captures": "own"})
     _uid, raw_bob = make_user_key("bob", pages={"captures": "own"})
 
-    _fake_wav_transcode(monkeypatch)
-    src = tmp_path / "src.bin"
-    src.write_bytes(b"junk")
-    cid = captures_store.create_capture(
-        audio_src_path=str(src), request_id="r1", model="small",
-        language="de", audio_s=1.0, raw="r", final="f",
-        words=[], segments=[], user_id=owner_uid,
-    )
+    cid = _audio_capture(captures_store, monkeypatch, tmp_path,
+                         user_id=owner_uid)
 
     r_missing = client.get(
         "/captures/api/does-not-exist", headers=bearer(raw_bob))
@@ -731,14 +721,10 @@ def _export_manifest(only_status="ready"):
 
 
 def _ready_capture(captures_store, monkeypatch, tmp_path, *, language, translations):
-    _fake_wav_transcode(monkeypatch)
-    src = tmp_path / "src.bin"
-    src.write_bytes(b"junk")
-    cid = captures_store.create_capture(
-        audio_src_path=str(src), request_id="r1", model="small",
-        language=language, audio_s=1.0, raw="r", final="quelle",
-        words=[], segments=[], user_id="alice", translations=translations,
-        translation_model="HY-MT", translation_source="cascade-mt",
+    cid = _audio_capture(
+        captures_store, monkeypatch, tmp_path, language=language,
+        final="quelle", translations=translations, translation_model="HY-MT",
+        translation_source="cascade-mt",
     )
     captures_store.update_capture(cid, {"status": "ready"})
     return cid
@@ -790,13 +776,9 @@ def test_export_skips_a_capture_whose_training_text_the_pipeline_blanked(
     """A removal rule that blanked a Whisper hallucination over near-silence
     leaves text_for_training "" (not NULL): the export used to fall back to
     the raw hallucination and train the model to emit it over silence."""
-    _fake_wav_transcode(monkeypatch)
-    src = tmp_path / "src.bin"
-    src.write_bytes(b"junk")
-    cid = captures_store_db.create_capture(
-        audio_src_path=str(src), request_id="r1", model="small",
-        language="de", audio_s=1.0, raw="Untertitel im Auftrag des ZDF",
-        final="", text_for_training="", words=[], segments=[], user_id="alice",
+    cid = _audio_capture(
+        captures_store_db, monkeypatch, tmp_path,
+        raw="Untertitel im Auftrag des ZDF", final="", text_for_training="",
     )
     captures_store_db.update_capture(cid, {"status": "ready"})
     assert _export_manifest() == []
@@ -1040,15 +1022,11 @@ def test_detail_keeps_original_timeline_when_the_trimmed_file_is_gone(
     timeline only while the trimmed file the audio route serves exists."""
     from faster_whisper_backend.captures import store as captures_store
 
-    _fake_wav_transcode(monkeypatch)
-    src = tmp_path / "src.bin"
-    src.write_bytes(b"junk")
-    cid = captures_store.create_capture(
-        audio_src_path=str(src), request_id="trim-gone", model="small",
-        language="de", audio_s=12.4, raw="eins zehn", final="eins zehn",
+    cid = _audio_capture(
+        captures_store, monkeypatch, tmp_path, request_id="trim-gone",
+        audio_s=12.4, raw="eins zehn", final="eins zehn",
         words=[{"word": "eins", "start": 3.0, "end": 3.5},
                {"word": " zehn", "start": 10.0, "end": 10.5}],
-        segments=[], user_id="alice",
     )
     rel = captures_store.get_capture(cid)["audio_relpath"]
     with captures_store._lock:
