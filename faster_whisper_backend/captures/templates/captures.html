@@ -1897,10 +1897,10 @@
       (r.text_for_training ?? r.final ?? r.raw) || '', r.corrections || [], words)
       || '(empty)';
   }
-  // Redraw an open card's preview after Save / Reprocess changed its chips
-  // or text, and keep the aligned words on the row: the PATCH / reprocess
-  // reply carries the raw words, which would mis-place chips in the next
-  // render's preview and the merge modal.
+  // Redraw an open card's preview after a PATCH / reprocess reply was merged
+  // into its row, and keep the aligned words on the row: that reply carries
+  // the raw words, which would mis-place chips in the next render's preview
+  // and the merge modal.
   function _syncCapturePreview(state, r) {
     if (state.words && state.words.length) r.words = state.words;
     var el = document.querySelector(
