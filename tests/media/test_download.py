@@ -1518,6 +1518,14 @@ def _no_proxy(monkeypatch):
         monkeypatch.delenv(var, raising=False)
 
 
+def _open_loopback(monkeypatch):
+    """Let the real opener dial the loopback server under test."""
+    from faster_whisper_backend.core import net_policy as np
+    monkeypatch.setattr(udl, "_host_is_forbidden", lambda h: False)
+    monkeypatch.setattr(np, "address_is_forbidden", lambda a: False)
+    _no_proxy(monkeypatch)
+
+
 def _dribbling_server(header: bytes, interval: float):
     """A loopback server that sends `header` one byte per `interval`, i.e.
     always under a per-socket-op timeout, never finishing in a hurry.
@@ -1556,10 +1564,7 @@ def test_direct_media_probe_cuts_a_dribbled_header(monkeypatch):
     wall-clock cutoff must free it at `timeout`, through the REAL opener
     and connection classes."""
     import time as _t
-    from faster_whisper_backend.core import net_policy as np
-    monkeypatch.setattr(udl, "_host_is_forbidden", lambda h: False)
-    monkeypatch.setattr(np, "address_is_forbidden", lambda a: False)
-    _no_proxy(monkeypatch)
+    _open_loopback(monkeypatch)
     srv, accepted = _dribbling_server(
         b"HTTP/1.1 200 OK\r\nContent-Type: audio/mpeg\r\nContent-Length: 1\r\n\r\nx",
         0.1)
@@ -1583,10 +1588,7 @@ def test_thumbnail_cuts_a_dribbled_header(monkeypatch):
     the pool thread stays wedged for the whole ~7 s dribble."""
     import http.client
     import time as _t
-    from faster_whisper_backend.core import net_policy as np
-    monkeypatch.setattr(udl, "_host_is_forbidden", lambda h: False)
-    monkeypatch.setattr(np, "address_is_forbidden", lambda a: False)
-    _no_proxy(monkeypatch)
+    _open_loopback(monkeypatch)
     srv, accepted = _dribbling_server(
         b"HTTP/1.1 200 OK\r\nContent-Type: image/jpeg\r\nContent-Length: 1\r\n\r\nx",
         0.1)
@@ -1611,10 +1613,7 @@ def test_direct_media_probe_admits_an_hls_manifest_only_for_a_hand_off(
     take it, while a pasted link to a bare manifest stays refused."""
     import http.server
     import threading
-    from faster_whisper_backend.core import net_policy as np
-    monkeypatch.setattr(udl, "_host_is_forbidden", lambda h: False)
-    monkeypatch.setattr(np, "address_is_forbidden", lambda a: False)
-    _no_proxy(monkeypatch)
+    _open_loopback(monkeypatch)
 
     class _H(http.server.BaseHTTPRequestHandler):
         def do_GET(self):
@@ -1649,10 +1648,7 @@ def test_direct_media_probe_and_capped_get_fetch_a_raw_unicode_path(
     _capped_get raised it. Both must send the path percent-encoded."""
     import http.server
     import threading
-    from faster_whisper_backend.core import net_policy as np
-    monkeypatch.setattr(udl, "_host_is_forbidden", lambda h: False)
-    monkeypatch.setattr(np, "address_is_forbidden", lambda a: False)
-    _no_proxy(monkeypatch)
+    _open_loopback(monkeypatch)
     seen = []
 
     class _H(http.server.BaseHTTPRequestHandler):
@@ -1694,9 +1690,7 @@ def test_direct_media_probe_and_capped_get_send_an_idn_host_as_punycode(
     import socket as _s
     import threading
     from faster_whisper_backend.core import net_policy as np
-    monkeypatch.setattr(udl, "_host_is_forbidden", lambda h: False)
-    monkeypatch.setattr(np, "address_is_forbidden", lambda a: False)
-    _no_proxy(monkeypatch)
+    _open_loopback(monkeypatch)
     real_gai = _s.getaddrinfo
     names = {"müller.example", "xn--mller-kva.example",
              "例え.jp", "xn--r8jz45g.jp"}
