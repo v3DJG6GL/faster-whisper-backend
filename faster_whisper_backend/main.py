@@ -2087,6 +2087,13 @@ async def transcribe(
                 _rplan.skip(stage)
                 _ps(skipped=list(_skipped))
 
+            def _stage_soft_failed(stage: str, t0: float, model, exc: Exception,
+                                   warning: str) -> None:
+                _warnings.append(warning)
+                _stage_timings.append(
+                    tx_receipt._failed_stage(stage, t0, model, exc))
+                _rplan.stage_failed(stage)
+
             _separate = bool(effective_config._resolve_request_knob(
                 resolved_model, ident, ignored,
                 "SEPARATE_BGM", "separate_bgm", _form_bool(separate_bgm),
@@ -2467,19 +2474,15 @@ async def transcribe(
                         raise tx_progress._ClientCancelled() from None
                     except _bgm_separation.BgmSeparationError as _se:
                         # str(_se) is client-safe by the module's contract.
-                        _warnings.append(str(_se))
-                        _stage_timings.append(tx_receipt._failed_stage(
-                            "separating", _sep_t0, _separation_model, _se))
-                        _rplan.stage_failed("separating")
+                        _stage_soft_failed("separating", _sep_t0,
+                                           _separation_model, _se, str(_se))
                     except Exception as _se:  # noqa: BLE001 — soft-fail
                         logger.error("[bgm] unexpected failure: %s",
                                      _log_safe(str(_se)))
-                        _warnings.append(
+                        _stage_soft_failed(
+                            "separating", _sep_t0, _separation_model, _se,
                             "music separation failed; transcribing the "
                             "original audio")
-                        _stage_timings.append(tx_receipt._failed_stage(
-                            "separating", _sep_t0, _separation_model, _se))
-                        _rplan.stage_failed("separating")
 
             # CT2 releases the GIL, so concurrent requests on different models
             # decode in parallel threads (subject to GPU compute scheduling).
@@ -2892,19 +2895,15 @@ async def transcribe(
                         raise tx_progress._ClientCancelled() from None
                     except _diarization.DiarizationError as _de:
                         # str(_de) is client-safe by the module's contract.
-                        _warnings.append(str(_de))
-                        _stage_timings.append(tx_receipt._failed_stage(
-                            "diarizing", _diar_t0, _diarization_model, _de))
-                        _rplan.stage_failed("diarizing")
+                        _stage_soft_failed("diarizing", _diar_t0,
+                                           _diarization_model, _de, str(_de))
                     except Exception as _de:  # noqa: BLE001 — soft-fail
                         logger.error("[diarize] unexpected failure: %s",
                                      _log_safe(str(_de)))
-                        _warnings.append(
+                        _stage_soft_failed(
+                            "diarizing", _diar_t0, _diarization_model, _de,
                             "diarization failed; the transcript has no "
                             "speaker labels")
-                        _stage_timings.append(tx_receipt._failed_stage(
-                            "diarizing", _diar_t0, _diarization_model, _de))
-                        _rplan.stage_failed("diarizing")
             elif _diarize:
                 _warnings.append("diarization skipped: no speech segments")
                 _skip("diarizing")
@@ -3062,19 +3061,15 @@ async def transcribe(
                             raise tx_progress._ClientCancelled() from None
                         except _tr.TranslationError as _te:
                             # str(_te) is client-safe by the module's contract.
-                            _warnings.append(str(_te))
-                            _stage_timings.append(tx_receipt._failed_stage(
-                                "translating", _tr_t0, _tr_model, _te))
-                            _rplan.stage_failed("translating")
+                            _stage_soft_failed("translating", _tr_t0,
+                                               _tr_model, _te, str(_te))
                         except Exception as _te:  # noqa: BLE001 — soft-fail
                             logger.error("[translate] unexpected failure: %s",
                                          _log_safe(str(_te)))
-                            _warnings.append(
+                            _stage_soft_failed(
+                                "translating", _tr_t0, _tr_model, _te,
                                 "translation failed; the transcript is "
                                 "untranslated")
-                            _stage_timings.append(tx_receipt._failed_stage(
-                                "translating", _tr_t0, _tr_model, _te))
-                            _rplan.stage_failed("translating")
             elif _translate_to:
                 _warnings.append("translation skipped: no speech segments")
                 _skip("translating")
