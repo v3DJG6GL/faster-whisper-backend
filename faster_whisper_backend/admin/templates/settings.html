@@ -3089,7 +3089,6 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
 
     // Card chrome: a left rail (drag grip + rank stepper + padlock: ordering and
     // protection in one place) beside the main column (header + body).
-    // data-color tints the rail/accent via CSS.
     row.classList.add('rule-card');
     if (rule.color) row.dataset.color = rule.color;
     const rail = document.createElement('div');
