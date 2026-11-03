@@ -67,11 +67,9 @@ def _read_chain_window(active_path: str, skip: int, want: int) -> "tuple[list[st
     # Oldest-first: each older file's lines are prepended as the walk goes back.
     collected: list[str] = []
     chain = _rotated_chain(active_path)
-    # When we break out of the file loop because `target` is satisfied
-    # without opening every file, older rotated files still on disk
-    # remain unread — `exhausted` must account for that or the caller
-    # ("Load older" UI) loses access to anything beyond the first file
-    # whenever its line count meets `target` exactly.
+    # The break on `target` can leave older rotated files unread; without
+    # this flag `exhausted` would end "Load older" there whenever the files
+    # read so far hold exactly `target` lines.
     more_files_after_break = False
     for i, path in enumerate(chain):
         try:
