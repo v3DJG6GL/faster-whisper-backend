@@ -1033,21 +1033,16 @@ def update_capture(cid: str, patch: dict[str, Any]) -> dict[str, Any] | None:
             # the pre-update row, so `status` here is still the old value.
             sets.append("reviewed_ts = CASE WHEN status = ? THEN reviewed_ts ELSE ? END")
             params.extend([new_status, time.time()])
-    if "corrected_text" in patch:
-        text = str(patch["corrected_text"] or "")[:_CAP_CORRECTED]
-        sets.append("corrected_text = ?")
-        params.append(text)
     if "corrections" in patch:
         cleaned = text_corrections.clean_corrections(patch["corrections"])
         sets.append("corrections = ?")
         params.append(json.dumps(cleaned, ensure_ascii=False))
-    if "admin_notes" in patch:
-        notes = str(patch["admin_notes"] or "")[:_CAP_ADMIN_NOTES]
-        sets.append("admin_notes = ?")
-        params.append(notes)
-    if "final" in patch:
-        sets.append("final_text = ?")
-        params.append(str(patch["final"] or "")[:_CAP_FINAL])
+    for key, col, cap in (("corrected_text", "corrected_text", _CAP_CORRECTED),
+                          ("admin_notes", "admin_notes", _CAP_ADMIN_NOTES),
+                          ("final", "final_text", _CAP_FINAL)):
+        if key in patch:
+            sets.append(f"{col} = ?")
+            params.append(str(patch[key] or "")[:cap])
     if "text_for_training" in patch:
         sets.append("text_for_training = ?")
         val = patch["text_for_training"]
