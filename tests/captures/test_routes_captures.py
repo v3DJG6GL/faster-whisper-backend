@@ -1,5 +1,5 @@
 """Integration tests for /captures routes. Audio-backed rows use
-`_fake_wav_transcode` (a stub WAV writer) instead of a real ffmpeg transcode.
+`install_fake_wav_transcode` (a stub WAV writer) instead of a real ffmpeg transcode.
 """
 
 import json
@@ -11,7 +11,7 @@ from starlette.testclient import TestClient
 
 from faster_whisper_backend.pipeline import engine as pl_engine
 from tests._page_helpers import js_body, js_upto
-from tests.conftest import bearer, fake_wav_transcode, write_wav
+from tests.conftest import bearer, install_fake_wav_transcode, write_wav
 
 
 def test_captures_page(client):
@@ -243,17 +243,9 @@ def _own_user(uid):
         {"pages": {"captures": "own"}}, is_admin=False)}
 
 
-def _fake_wav_transcode(monkeypatch):
-    """Route audio_transcode to a stub that writes a tiny valid WAV."""
-    from faster_whisper_backend.audio import transcode as audio_transcode
-
-    monkeypatch.setattr(
-        audio_transcode, "transcode_to_wav_16k_mono", fake_wav_transcode)
-
-
 def _audio_capture(captures_store, monkeypatch, tmp_path, **fields):
     """create_capture over a stub-transcoded source; `fields` override the defaults."""
-    _fake_wav_transcode(monkeypatch)
+    install_fake_wav_transcode(monkeypatch)
     src = tmp_path / "src.bin"
     src.write_bytes(b"junk")
     return captures_store.create_capture(audio_src_path=str(src), **{

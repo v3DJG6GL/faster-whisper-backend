@@ -3,12 +3,8 @@
 the event loop."""
 
 from faster_whisper_backend.settings import effective_config
-from tests.conftest import bearer, fake_wav_transcode
+from tests.conftest import bearer, install_fake_wav_transcode
 
-
-def _fake_transcode(monkeypatch):
-    from faster_whisper_backend.audio import transcode as audio_transcode
-    monkeypatch.setattr(audio_transcode, "transcode_to_wav_16k_mono", fake_wav_transcode)
 
 
 def _make_capture(tmp_path, user_id):
@@ -23,7 +19,7 @@ def _make_capture(tmp_path, user_id):
 
 def test_reprocess_resolves_owner_not_caller(client, make_user_key, app_module,
                                              monkeypatch, tmp_path):
-    _fake_transcode(monkeypatch)
+    install_fake_wav_transcode(monkeypatch)
     _, raw_admin = make_user_key("admin", is_admin=True)
     uid_alice, _ = make_user_key("alice")
     cid = _make_capture(tmp_path, user_id=uid_alice)
@@ -44,7 +40,7 @@ def test_reprocess_resolves_owner_not_caller(client, make_user_key, app_module,
 
 
 def test_reprocess_ownerless_capture_ok(client, make_user_key, monkeypatch, tmp_path):
-    _fake_transcode(monkeypatch)
+    install_fake_wav_transcode(monkeypatch)
     _, raw_admin = make_user_key("admin", is_admin=True)
     cid = _make_capture(tmp_path, user_id=None)
     r = client.post(f"/captures/api/{cid}/reprocess", headers=bearer(raw_admin))
@@ -59,7 +55,7 @@ def test_reprocess_runs_the_pipeline_off_the_event_loop(client, make_user_key,
 
     from faster_whisper_backend.pipeline import engine as pl_engine
 
-    _fake_transcode(monkeypatch)
+    install_fake_wav_transcode(monkeypatch)
     _, raw_admin = make_user_key("admin", is_admin=True)
     cid = _make_capture(tmp_path, user_id=None)
     on_loop = []

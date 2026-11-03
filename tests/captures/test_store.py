@@ -7,20 +7,12 @@ import sqlite3
 
 import pytest
 
-from tests.conftest import fake_wav_transcode
-
-
-def _fake_transcode(cs, monkeypatch):
-    """Patch transcode_to_wav_16k_mono to write a minimal valid WAV at dst and
-    return a byte count, so create_capture's insert path runs without ffmpeg."""
-    from faster_whisper_backend.audio import transcode as audio_transcode
-
-    monkeypatch.setattr(audio_transcode, "transcode_to_wav_16k_mono", fake_wav_transcode)
+from tests.conftest import install_fake_wav_transcode
 
 
 def _make(cs, monkeypatch, tmp_path, **over):
     """Create a capture row through the real create_capture (transcode faked)."""
-    _fake_transcode(cs, monkeypatch)
+    install_fake_wav_transcode(monkeypatch)
     src = tmp_path / "src_in.bin"
     src.write_bytes(b"junk")
     kw = dict(
@@ -205,7 +197,7 @@ def test_create_capture_transcode_failure_cleans_tmp(captures_store_db, monkeypa
 
 def test_create_capture_insert_failure_unlinks_audio(captures_store_db, monkeypatch, tmp_path):
     cs = captures_store_db
-    _fake_transcode(cs, monkeypatch)
+    install_fake_wav_transcode(monkeypatch)
     # Force the INSERT to fail after the WAV is in place.
     real_conn = cs._require_conn()
 
@@ -754,7 +746,7 @@ def test_a_store_full_of_ready_rows_records_nothing(
     monkeypatch.setattr(config, "CAPTURES_MAX_MB", 0, raising=False)
     _seed_rows(cs._require_conn(), [f"ready{i:07d}" for i in range(10)], "ready")
     assert cs.ready_fills_cap() is True
-    _fake_transcode(cs, monkeypatch)
+    install_fake_wav_transcode(monkeypatch)
     src = tmp_path / "src_in.bin"
     src.write_bytes(b"junk")
     calls = []

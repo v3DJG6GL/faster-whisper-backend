@@ -8,7 +8,7 @@ tests/reports/test_reports_store_migrations.py."""
 import contextlib
 import sqlite3
 
-from tests.conftest import fake_wav_transcode as _fake_wav_transcode
+from tests.conftest import install_fake_wav_transcode
 
 
 def _cols(conn, table):
@@ -111,11 +111,8 @@ def test_captures_translations_round_trip_as_a_keyed_map(
     """The point of the column: the exporter must be able to pick ONE
     language out. Whisper's translate task targets English only, so a joined
     blob would be unusable."""
-    from faster_whisper_backend.audio import transcode as audio_transcode
-
     captures_store = captures_store_db
-    monkeypatch.setattr(audio_transcode, "transcode_to_wav_16k_mono",
-                        _fake_wav_transcode)
+    install_fake_wav_transcode(monkeypatch)
     src = tmp_path / "in.bin"
     src.write_bytes(b"junk")
 
@@ -139,8 +136,6 @@ def test_captures_list_projection_carries_the_new_columns(
         tmp_path, monkeypatch, captures_store_db):
     """_LIST_COLUMNS is a hand-maintained projection: a column missing from it
     vanishes from /captures/api/list while still being present in the table."""
-    from faster_whisper_backend.audio import transcode as audio_transcode
-
     captures_store = captures_store_db
     # _LIST_COLUMNS is one comma-separated string; parse it into real column
     # names (a substring check would pass on any renamed superstring).
@@ -149,8 +144,7 @@ def test_captures_list_projection_carries_the_new_columns(
             "translation_source", "task"} <= cols
 
     # And end-to-end: a listed row actually carries the public keys.
-    monkeypatch.setattr(audio_transcode, "transcode_to_wav_16k_mono",
-                        _fake_wav_transcode)
+    install_fake_wav_transcode(monkeypatch)
     src = tmp_path / "in.bin"
     src.write_bytes(b"junk")
     captures_store.create_capture(

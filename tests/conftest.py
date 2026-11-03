@@ -407,6 +407,13 @@ def fake_wav_transcode(src_path, dst_path):
     return 1234
 
 
+def install_fake_wav_transcode(monkeypatch):
+    """Route audio_transcode.transcode_to_wav_16k_mono to fake_wav_transcode,
+    so create_capture's insert path runs without ffmpeg."""
+    from faster_whisper_backend.audio import transcode as audio_transcode
+    monkeypatch.setattr(audio_transcode, "transcode_to_wav_16k_mono", fake_wav_transcode)
+
+
 # ---------------------------------------------------------------------------
 # Timezone control (usage_store day/week bucketing is server-local time)
 # ---------------------------------------------------------------------------
