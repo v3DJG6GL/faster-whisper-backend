@@ -120,10 +120,7 @@ def require_user_or_admin_sse(request: Request) -> dict[str, Any]:
     return auth.resolve_user_for_page_sse(request, "quick_config")
 
 
-# Wall-clock ceiling between re-resolves when the config version does not
-# move: a cookie session reaching SESSION_TTL_S bumps nothing (expiry is only
-# checked at lookup), so a version-only check streamed past it forever.
-_REAUTH_INTERVAL_S = 60.0
+_REAUTH_INTERVAL_S = settings_version.REAUTH_INTERVAL_S
 
 
 def _reauth_on_version_change(request: Request, seen_version: int,
@@ -138,11 +135,10 @@ def _reauth_on_version_change(request: Request, seen_version: int,
     access, which ends the stream — otherwise a revoked user's open tab kept
     receiving every new trace in its old scope until the browser closed the
     EventSource."""
-    current = settings_version.config_version()
-    now = time.monotonic()
-    if current == seen_version and now - resolved_at < _REAUTH_INTERVAL_S:
+    due = settings_version.reauth_due(seen_version, resolved_at)
+    if due is None:
         return None
-    return require_user_or_admin_sse(request), current, now
+    return require_user_or_admin_sse(request), *due
 
 
 class QuickPatchPayload(BaseModel):

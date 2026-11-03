@@ -260,10 +260,7 @@ def _build_payload(scope: StatsScope = ADMIN_SCOPE, *,
     }
 
 
-# Wall-clock ceiling between re-resolves when the config version does not
-# move: a cookie session reaching SESSION_TTL_S bumps nothing (expiry is only
-# checked at lookup), so a version-only check would stream past it forever.
-_REAUTH_INTERVAL_S = 60.0
+_REAUTH_INTERVAL_S = settings_version.REAUTH_INTERVAL_S
 
 
 def _rescope_on_version_change(request: Request, seen_version: int,
@@ -280,12 +277,11 @@ def _rescope_on_version_change(request: Request, seen_version: int,
     every sibling commit — including a key's debounced last_used_ts touch —
     bumps the version, and an ended stream makes the page discard its
     two-minute sparkline history on reconnect."""
-    current = settings_version.config_version()
-    now = time.monotonic()
-    if current == seen_version and now - resolved_at < _REAUTH_INTERVAL_S:
+    due = settings_version.reauth_due(seen_version, resolved_at)
+    if due is None:
         return None
     fresh = auth.resolve_user_for_page_sse(request, "stats")
-    return stats_scope_for(fresh), current, now
+    return stats_scope_for(fresh), *due
 
 
 @router.get(

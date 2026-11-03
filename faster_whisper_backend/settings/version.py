@@ -94,3 +94,21 @@ def config_version() -> int:
     """Current config version — see :func:`bump_config_version`."""
     _bump_if_sibling_committed()
     return _CONFIG_VERSION
+
+
+# Wall-clock ceiling between an SSE stream's re-resolves when the config
+# version does not move: a cookie session reaching SESSION_TTL_S bumps nothing
+# (expiry is only checked at lookup), so a version-only check streamed past it
+# forever.
+REAUTH_INTERVAL_S = 60.0
+
+
+def reauth_due(seen_version: int, resolved_at: float) -> tuple[int, float] | None:
+    """(current_version, now) when an SSE stream must re-resolve its caller:
+    the config version moved since `seen_version`, or REAUTH_INTERVAL_S passed
+    since `resolved_at` (time.monotonic()). None when nothing is due."""
+    current = config_version()
+    now = time.monotonic()
+    if current == seen_version and now - resolved_at < REAUTH_INTERVAL_S:
+        return None
+    return current, now

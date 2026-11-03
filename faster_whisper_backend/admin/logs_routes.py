@@ -5,7 +5,6 @@ template is templates/log_viewer.html.
 import asyncio
 import io
 import os
-import time
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse
@@ -107,10 +106,7 @@ def _read_chain_window(active_path: str, skip: int, want: int) -> "tuple[list[st
     return list(reversed(window)), next_skip
 
 
-# Wall-clock ceiling between re-resolves when the config version does not
-# move: a cookie session reaching SESSION_TTL_S bumps nothing (expiry is only
-# checked at lookup), so a version-only check streamed past it forever.
-_REAUTH_INTERVAL_S = 60.0
+_REAUTH_INTERVAL_S = settings_version.REAUTH_INTERVAL_S
 
 
 def _logs_stream_reauth(request: Request, seen_version: int,
@@ -127,12 +123,11 @@ def _logs_stream_reauth(request: Request, seen_version: int,
     this an open tab kept receiving every new request block (raw + final
     text of every user) after the admin revoked it, until the browser closed
     the EventSource."""
-    current = settings_version.config_version()
-    now = time.monotonic()
-    if current == seen_version and now - resolved_at < _REAUTH_INTERVAL_S:
+    due = settings_version.reauth_due(seen_version, resolved_at)
+    if due is None:
         return seen_version, resolved_at
     _require_logs_page_sse(auth_dependencies.resolve_user_for_page_sse(request, "logs"))
-    return current, now
+    return due
 
 
 async def _stream_log_lines(request: Request):
