@@ -89,6 +89,10 @@ def _upload(client, data=b"video-bytes" * 16, ext="mp4", headers=None):
                                 **(headers or {})})
 
 
+def _package(client, mid, body, **kw):
+    return client.post(f"/v1/audio/media/{mid}/package", json=body, **kw)
+
+
 def _tracks():
     return [{"lang": "en", "label": "English · original",
              "srt": "1\n00:00:00,000 --> 00:00:01,000\nHi\n"},
@@ -248,8 +252,7 @@ def test_ffconcat_upload_naming_a_retained_video_is_unreadable(
     id_b = _upload(client, data=playlist, ext="mp4").json()["media_id"]
     r = client.get(f"/v1/audio/media/{id_b}/streams")
     assert r.status_code == 200 and r.json()["unreadable"] is True, r.text
-    r = client.post(f"/v1/audio/media/{id_b}/package",
-                    json={"container": "mkv", "subtitles": _tracks()})
+    r = _package(client, id_b, {"container": "mkv", "subtitles": _tracks()})
     assert r.status_code == 422 and r.json()["detail"]["code"] == "unreadable"
 
 
@@ -261,15 +264,14 @@ def test_package_forwards_original_track_and_audio_language(client, package_enab
         return [sys.executable, "-c", f"open({out_path!r}, 'wb').write(b'video-bytes')"]
     monkeypatch.setattr(pk, "build_package_argv", _argv)
     mid = _upload(client).json()["media_id"]
-    r = client.post(f"/v1/audio/media/{mid}/package",
-                    json={"container": "mkv", "subtitles": _tracks(), "default_track": 0,
-                          "original_track": 0, "audio_lang": " de ", "audio_label": "Ger\x01man"})
+    r = _package(client, mid, {"container": "mkv", "subtitles": _tracks(), "default_track": 0,
+                               "original_track": 0, "audio_lang": " de ",
+                               "audio_label": "Ger\x01man"})
     assert r.status_code == 200, r.text
     assert seen == {"default_track": 0, "original_track": 0,
                     "audio_lang": "de", "audio_label": "German"}
     for bad in ({"original_track": 5}, {"original_track": True}, {"audio_lang": "German"}):
-        r = client.post(f"/v1/audio/media/{mid}/package",
-                        json={"container": "mkv", "subtitles": _tracks(), **bad})
+        r = _package(client, mid, {"container": "mkv", "subtitles": _tracks(), **bad})
         assert r.status_code == 422, (bad, r.text)
 
 
@@ -285,8 +287,7 @@ def test_package_forwards_per_track_flags(client, package_enabled, monkeypatch):
     subs = _tracks()
     subs[0].update(default=True, original=True)
     subs[1].update(hearing_impaired=True)
-    r = client.post(f"/v1/audio/media/{mid}/package",
-                    json={"container": "mkv", "subtitles": subs, "original_track": 1})
+    r = _package(client, mid, {"container": "mkv", "subtitles": subs, "original_track": 1})
     assert r.status_code == 200, r.text
     # Absent booleans are off; the legacy index travels alongside untouched.
     assert seen == {"flags": [(True, True, False), (False, False, True)],
@@ -295,17 +296,15 @@ def test_package_forwards_per_track_flags(client, package_enabled, monkeypatch):
         for bad in (1, "true", None):
             subs = _tracks()
             subs[0][k] = bad
-            r = client.post(f"/v1/audio/media/{mid}/package",
-                            json={"container": "mkv", "subtitles": subs})
+            r = _package(client, mid, {"container": "mkv", "subtitles": subs})
             assert r.status_code == 422 and f"subtitles[0].{k}" in r.text, (k, bad, r.text)
 
 
 def test_package_mkv_happy_path_streams_the_file_and_cleans_up(client, package_enabled):
     mid = _upload(client).json()["media_id"]
     before = {n for n in os.listdir(tempfile.gettempdir()) if n.startswith("fwb-pkg-")}
-    r = client.post(f"/v1/audio/media/{mid}/package",
-                    json={"container": "mkv", "subtitles": _tracks(),
-                          "default_track": 0, "filename": "My talk: final?"})
+    r = _package(client, mid, {"container": "mkv", "subtitles": _tracks(),
+                               "default_track": 0, "filename": "My talk: final?"})
     assert r.status_code == 200, r.text
     assert r.headers["content-type"].startswith("video/x-matroska")
     assert "My%20talk%20final.mkv" in r.headers["content-disposition"]
@@ -321,10 +320,9 @@ def test_package_filename_keeps_non_ascii_letters(client, package_enabled):
     letters in any script survive (sent as RFC 5987 filename*), a decomposed
     Ü included, while separators and bidi marks still go."""
     mid = _upload(client).json()["media_id"]
-    r = client.post(f"/v1/audio/media/{mid}/package",
-                    json={"container": "mkv", "subtitles": _tracks(),
-                          "default_track": 0,
-                          "filename": "Vortrag U\u0308bung/\u202e日本"})
+    r = _package(client, mid, {"container": "mkv", "subtitles": _tracks(),
+                               "default_track": 0,
+                               "filename": "Vortrag U\u0308bung/\u202e日本"})
     assert r.status_code == 200, r.text
     assert ("filename*=utf-8''Vortrag%20%C3%9Cbung%E6%97%A5%E6%9C%AC.mkv"
             in r.headers["content-disposition"])
@@ -338,8 +336,8 @@ def test_package_range_refusal_still_removes_the_workdir(client, package_enabled
     file. Either way the workdir — a full copy of the video — must go."""
     mid = _upload(client).json()["media_id"]
     before = {n for n in os.listdir(tempfile.gettempdir()) if n.startswith("fwb-pkg-")}
-    r = client.post(f"/v1/audio/media/{mid}/package", headers={"Range": rng},
-                    json={"container": "mkv", "subtitles": _tracks()})
+    r = _package(client, mid, {"container": "mkv", "subtitles": _tracks()},
+                 headers={"Range": rng})
     assert r.status_code in (status, 200), r.text
     if r.status_code == 200:
         assert r.content.endswith(b"|muxed:mkv:2")
@@ -350,8 +348,7 @@ def test_package_range_refusal_still_removes_the_workdir(client, package_enabled
 def test_package_mp4_when_the_streams_fit_else_422_with_code(client, package_enabled,
                                                             monkeypatch):
     mid = _upload(client).json()["media_id"]
-    r = client.post(f"/v1/audio/media/{mid}/package",
-                    json={"container": "mp4", "subtitles": _tracks()[:1]})
+    r = _package(client, mid, {"container": "mp4", "subtitles": _tracks()[:1]})
     assert r.status_code == 200, r.text
     assert r.headers["content-type"].startswith("video/mp4")
     assert r.content.endswith(b"|muxed:mp4:1")
@@ -359,19 +356,17 @@ def test_package_mp4_when_the_streams_fit_else_422_with_code(client, package_ena
         video_codec="vp9", audio_codec="opus", mp4_ok=False,
         mp4_reason="MP4 can't carry VP9 video without re-encoding — choose MKV"))
     mid2 = _upload(client).json()["media_id"]
-    r = client.post(f"/v1/audio/media/{mid2}/package",
-                    json={"container": "mp4", "subtitles": []})
+    r = _package(client, mid2, {"container": "mp4", "subtitles": []})
     assert r.status_code == 422
     assert r.json()["detail"]["code"] == "mp4_incompatible"
     assert "VP9" in r.json()["detail"]["message"]
-    assert client.post(f"/v1/audio/media/{mid2}/package",
-                       json={"container": "mkv"}).status_code == 200
+    assert _package(client, mid2, {"container": "mkv"}).status_code == 200
 
 
 def test_package_no_video_stream_422(client, package_enabled, monkeypatch):
     monkeypatch.setattr(pk, "probe_streams", lambda p: _streams(video_codec=None))
     mid = _upload(client).json()["media_id"]
-    r = client.post(f"/v1/audio/media/{mid}/package", json={"container": "mkv"})
+    r = _package(client, mid, {"container": "mkv"})
     assert r.status_code == 422
     assert r.json()["detail"]["code"] == "no_video"
 
@@ -382,7 +377,7 @@ def test_package_unreadable_source_is_not_reported_as_no_video(
         raise ValueError("moov atom not found")
     monkeypatch.setattr(pk, "probe_streams", _boom)
     mid = _upload(client).json()["media_id"]
-    r = client.post(f"/v1/audio/media/{mid}/package", json={"container": "mkv"})
+    r = _package(client, mid, {"container": "mkv"})
     assert r.status_code == 422
     assert r.json()["detail"] == {"code": "unreadable",
                                   "message": pk.UNREADABLE_REASON}
@@ -393,7 +388,7 @@ def test_package_cover_art_only_says_so(client, package_enabled, monkeypatch):
     monkeypatch.setattr(pk, "probe_streams", lambda p: _streams(
         video_codec=None, cover_art_only=True))
     mid = _upload(client).json()["media_id"]
-    r = client.post(f"/v1/audio/media/{mid}/package", json={"container": "mkv"})
+    r = _package(client, mid, {"container": "mkv"})
     assert r.status_code == 422
     assert r.json()["detail"]["code"] == "no_video"
     assert "cover art" in r.json()["detail"]["message"]
@@ -409,7 +404,7 @@ def test_package_maps_the_probed_video_index(client, package_enabled, monkeypatc
     monkeypatch.setattr(pk, "build_package_argv", _argv)
     monkeypatch.setattr(pk, "probe_streams", lambda p: _streams(video_index=1))
     mid = _upload(client).json()["media_id"]
-    r = client.post(f"/v1/audio/media/{mid}/package", json={"container": "mkv"})
+    r = _package(client, mid, {"container": "mkv"})
     assert r.status_code == 200, r.text
     assert seen == [1]
 
@@ -425,8 +420,7 @@ def test_package_body_cap_covers_every_limit_compliant_request(
     cue = "1\n00:00:00,000 --> 00:00:01,000\n"
     srt = cue + "x" * (pk.MAX_SRT_BYTES - len(cue) - 1) + "\n"
     subs = [{"lang": "en", "srt": srt} for _ in range(pk.MAX_TRACKS)]
-    r = client.post(f"/v1/audio/media/{mid}/package",
-                    json={"container": "mkv", "subtitles": subs})
+    r = _package(client, mid, {"container": "mkv", "subtitles": subs})
     assert r.status_code == 200, r.text[:200]
 
 
@@ -457,7 +451,7 @@ def test_upload_whose_spool_vanished_is_a_deliberate_500(
 ])
 def test_package_validation_422(client, package_enabled, body):
     mid = _upload(client).json()["media_id"]
-    r = client.post(f"/v1/audio/media/{mid}/package", json=body)
+    r = _package(client, mid, body)
     assert r.status_code == 422, r.text
 
 
@@ -500,26 +494,23 @@ def test_package_lone_surrogates_are_422_or_stripped_never_500(
 def test_package_srt_over_the_size_cap_422(client, package_enabled):
     mid = _upload(client).json()["media_id"]
     big = "1\n00:00:00,000 --> 00:00:01,000\n" + "x" * (pk.MAX_SRT_BYTES + 1)
-    r = client.post(f"/v1/audio/media/{mid}/package",
-                    json={"container": "mkv", "subtitles": [{"lang": "en", "srt": big}]})
+    r = _package(client, mid, {"container": "mkv", "subtitles": [{"lang": "en", "srt": big}]})
     assert r.status_code == 422
     assert "larger" in r.json()["detail"]
 
 
 def test_package_unknown_id_404_and_disabled_403_and_no_ffmpeg_503(
         client, package_enabled, monkeypatch):
-    assert client.post(f"/v1/audio/media/{_ID}/package",
-                       json={"container": "mkv"}).status_code == 404
+    assert _package(client, _ID, {"container": "mkv"}).status_code == 404
     monkeypatch.setattr(pk, "ffmpeg_capabilities",
                         lambda: pk.FfmpegCaps(False, False, False, "no ffmpeg binary", None))
-    r = client.post(f"/v1/audio/media/{_ID}/package", json={"container": "mkv"})
+    r = _package(client, _ID, {"container": "mkv"})
     assert r.status_code == 503 and "ffmpeg" in r.json()["detail"]
     body = client.get("/v1/me").json()
     assert body["media_package_enabled"] is False
     assert body["media_package"]["reason"] == "no ffmpeg binary"
     monkeypatch.setattr(package_enabled.cfg, "MEDIA_PACKAGE_ENABLED", False, raising=False)
-    assert client.post(f"/v1/audio/media/{_ID}/package",
-                       json={"container": "mkv"}).status_code == 403
+    assert _package(client, _ID, {"container": "mkv"}).status_code == 403
     body = client.get("/v1/me").json()
     assert body["media_package_enabled"] is False and "media_package" not in body
 
@@ -529,10 +520,8 @@ def test_package_foreign_owner_404(client, package_enabled, make_user_key):
     _ua, key_a = make_user_key("alice", is_admin=True)
     _ub, key_b = make_user_key("bob", is_admin=True)
     mid = _upload(client, headers=bearer(key_a)).json()["media_id"]
-    assert client.post(f"/v1/audio/media/{mid}/package", json={"container": "mkv"},
-                       headers=bearer(key_b)).status_code == 404
-    assert client.post(f"/v1/audio/media/{mid}/package", json={"container": "mkv"},
-                       headers=bearer(key_a)).status_code == 200
+    assert _package(client, mid, {"container": "mkv"}, headers=bearer(key_b)).status_code == 404
+    assert _package(client, mid, {"container": "mkv"}, headers=bearer(key_a)).status_code == 200
 
 
 def test_package_inflight_limit_and_release(client, package_enabled, tmp_path):
@@ -543,8 +532,7 @@ def test_package_inflight_limit_and_release(client, package_enabled, tmp_path):
     result: dict = {}
 
     def _first():
-        result["r"] = client.post(f"/v1/audio/media/{mid}/package",
-                                  json={"container": "mkv"})
+        result["r"] = _package(client, mid, {"container": "mkv"})
     t = threading.Thread(target=_first, daemon=True)
     t.start()
     try:
@@ -554,7 +542,7 @@ def test_package_inflight_limit_and_release(client, package_enabled, tmp_path):
         while not os.path.exists(latch + ".started"):
             assert time.monotonic() < deadline, "the first package never started"
             time.sleep(0.02)
-        r = client.post(f"/v1/audio/media/{mid}/package", json={"container": "mkv"})
+        r = _package(client, mid, {"container": "mkv"})
         assert r.status_code == 429
         # The in-flight guard's wording — the rate limiter's 429 also says
         # "video export".
@@ -565,8 +553,7 @@ def test_package_inflight_limit_and_release(client, package_enabled, tmp_path):
         t.join(timeout=30)
         package_enabled._package_latch["path"] = None
     assert result["r"].status_code == 200
-    assert client.post(f"/v1/audio/media/{mid}/package",
-                       json={"container": "mkv"}).status_code == 200
+    assert _package(client, mid, {"container": "mkv"}).status_code == 200
 
 
 def test_package_timeout_504(client, package_enabled, monkeypatch, tmp_path):
@@ -576,7 +563,7 @@ def test_package_timeout_504(client, package_enabled, monkeypatch, tmp_path):
     open(latch, "w").close()
     package_enabled._package_latch["path"] = latch
     try:
-        r = client.post(f"/v1/audio/media/{mid}/package", json={"container": "mkv"})
+        r = _package(client, mid, {"container": "mkv"})
         assert r.status_code == 504
     finally:
         os.unlink(latch)
