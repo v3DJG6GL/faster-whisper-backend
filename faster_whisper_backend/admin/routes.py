@@ -32,6 +32,7 @@ import json
 import logging
 import re
 import time
+from collections.abc import Iterable
 from typing import Annotated, Any, Literal, get_args, get_origin
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
@@ -647,6 +648,15 @@ async def clear_local_pipeline_override(request: Request) -> JSONResponse:
 # above any realistic transcript the test panel sends.
 
 
+def _first_max_length(constraints: Iterable[Any]) -> int | None:
+    """The first int `max_length` among pydantic constraint objects, or None."""
+    for m in constraints:
+        ml = getattr(m, "max_length", None)
+        if isinstance(ml, int):
+            return ml
+    return None
+
+
 def _pipeline_rules_max_or_none() -> int | None:
     """AdminConfig.PIPELINE_RULES' max_length, read off the schema; None
     when the walk finds no constraint.
@@ -657,11 +667,9 @@ def _pipeline_rules_max_or_none() -> int | None:
     carrying a MaxLen constraint."""
     field = settings_schema.AdminConfig.model_fields["PIPELINE_RULES"]
     for arm in (field.annotation, *get_args(field.annotation)):
-        for fi in getattr(arm, "__metadata__", ()):
-            for m in (*getattr(fi, "metadata", ()), fi):
-                ml = getattr(m, "max_length", None)
-                if isinstance(ml, int):
-                    return ml
+        ml = _str_max_length(arm)
+        if ml is not None:
+            return ml
     return None
 
 
@@ -675,21 +683,13 @@ def _pipeline_rules_max() -> int:
 
 def _str_max_length(annotation: Any) -> int | None:
     """The max_length on an `Annotated[str, Field(max_length=...)]`, or None."""
-    for fi in getattr(annotation, "__metadata__", ()):
-        for m in (*getattr(fi, "metadata", ()), fi):
-            ml = getattr(m, "max_length", None)
-            if isinstance(ml, int):
-                return ml
-    return None
+    return _first_max_length(m for fi in getattr(annotation, "__metadata__", ())
+                             for m in (*getattr(fi, "metadata", ()), fi))
 
 
 def _field_max_length(field: Any) -> int | None:
     """max_length of a model field whose constraint landed in `.metadata`."""
-    for m in field.metadata:
-        ml = getattr(m, "max_length", None)
-        if isinstance(ml, int):
-            return ml
-    return None
+    return _first_max_length(field.metadata)
 
 
 _TEST_PIPELINE_MAX_RULES = _pipeline_rules_max()
