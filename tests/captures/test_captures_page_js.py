@@ -721,6 +721,16 @@ console.log(JSON.stringify([first.cursorIdx, second.cursorIdx]));
     assert out == [0, 1]
 
 
+def _stop_any_preview_js(page):
+    """_stopAnyPreview with its module globals (and the proposal save chain
+    the ▶ handler reads)."""
+    return r"""
+var _previewAudio = null, _previewBlobUrl = null, _previewActivePanel = null,
+    _previewBound = null, _previewGen = 0;
+var _proposalSaveChain = Promise.resolve(), _proposalSaveFlush = null;
+""" + _js_function(page, "_stopAnyPreview")
+
+
 def _preview_click_handler(page):
     anchor = "toggleBtn.addEventListener('click', async function() {"
     return _js_block(page, page.index(anchor) + len("toggleBtn.addEventListener('click', "))
@@ -732,11 +742,7 @@ def test_preview_load_superseded_while_in_flight_never_binds(page, tmp_path):
     ▶, batch advance or close) bound and played anyway: its blob URL and
     shared-<audio> listeners leaked and it played under the wrong card, or
     with the batch modal already closed."""
-    out = _run_node(tmp_path, r"""
-var _previewAudio = null, _previewBlobUrl = null, _previewActivePanel = null,
-    _previewBound = null, _previewGen = 0;
-var _proposalSaveChain = Promise.resolve(), _proposalSaveFlush = null;
-""" + _js_function(page, "_stopAnyPreview") + r"""
+    out = _run_node(tmp_path, _stop_any_preview_js(page) + r"""
 var played = 0, bound = 0, blobs = 0, pending = [];
 var audio = { paused: true, play: async function() { played++; }, pause: function() {},
   removeAttribute: function() {}, load: function() {} };
@@ -777,11 +783,7 @@ def test_preview_load_waits_for_another_cards_pending_chip_save(page, tmp_path):
     (or the batch advance's auto-play) within the 250 ms debounce or while
     the save ran read the members' chips first. An overlapping member then
     showed the old chips, and the next edit wrote them back over the save."""
-    out = _run_node(tmp_path, r"""
-var _previewAudio = null, _previewBlobUrl = null, _previewActivePanel = null,
-    _previewBound = null, _previewGen = 0;
-var _proposalSaveChain = Promise.resolve(), _proposalSaveFlush = null;
-""" + _js_function(page, "_stopAnyPreview") + r"""
+    out = _run_node(tmp_path, _stop_any_preview_js(page) + r"""
 var log = [], saves = [];
 var audio = { paused: true, play: async function() {}, pause: function() {},
   removeAttribute: function() {}, load: function() {} };
@@ -831,10 +833,7 @@ def test_preview_panel_hidden_really_hides_and_keeps_the_inline_play(page, tmp_p
     hiding effective, stopping an inline-player card must fold only its
     editing sections: its ▶ lives inside the panel."""
     assert ".merge-preview-panel[hidden] { display: none; }" in page
-    out = _run_node(tmp_path, r"""
-var _previewAudio = null, _previewBlobUrl = null, _previewBound = null,
-    _previewGen = 0, _previewActivePanel = null;
-""" + _js_function(page, "_stopAnyPreview") + r"""
+    out = _run_node(tmp_path, _stop_any_preview_js(page) + r"""
 function mk(inline) {
   return { hidden: false, _inline: inline, _corrSec: { hidden: false },
     _gtSec: { hidden: false },
