@@ -27,6 +27,11 @@ def _make_src(tmp_path, name="dl.m4a", size=100):
     return str(p)
 
 
+def _age(path, seconds):
+    t = time.time() - seconds
+    os.utime(path, (t, t))
+
+
 def test_register_resolve_roundtrip(tmp_path):
     mid = ums.register(_make_src(tmp_path), user_id="u1")
     assert mid and len(mid) == 32
@@ -65,8 +70,7 @@ def test_ttl_expiry(tmp_path, monkeypatch):
     # Resolving runs on the event loop: expiry drops only the row, and the
     # janitor's sweep (off the loop) unlinks the now-orphaned file.
     assert mid not in ums._REG and os.path.exists(entry_path)
-    old = time.time() - 3600
-    os.utime(entry_path, (old, old))
+    _age(entry_path, 3600)
     ums.sweep()
     assert not os.path.exists(entry_path)
 
@@ -186,9 +190,7 @@ def test_sweep_reclaims_file_whose_unlink_failed(tmp_path, monkeypatch):
     # must never be mistaken for an orphan
     ums.sweep()
     assert os.path.exists(retained)
-    import time
-    old = time.time() - 3600
-    os.utime(retained, (old, old))
+    _age(retained, 3600)
     ums.sweep()
     assert not os.path.exists(retained)
 
@@ -229,8 +231,7 @@ def test_register_refreshes_mtime_for_orphan_guard(tmp_path):
     # PLACEMENT time, or a slow cross-device move lands already "old".
     import time
     src = _make_src(tmp_path)
-    old = time.time() - 3600
-    os.utime(src, (old, old))
+    _age(src, 3600)
     mid = ums.register(src, user_id=None)
     retained = ums._REG[mid]["path"]
     assert time.time() - os.path.getmtime(retained) < 60
@@ -312,8 +313,7 @@ def test_staging_job_is_inside_the_retention_dir_and_stale_jobs_are_reaped(
     monkeypatch.setattr(ums.cfg, "URL_VIDEO_DOWNLOAD_TIMEOUT_S", 10, raising=False)
     monkeypatch.setattr(ums.cfg, "URL_DOWNLOAD_TIMEOUT_S", 10, raising=False)
     old = ums.new_staging_job()
-    stale = time.time() - 700
-    os.utime(old, (stale, stale))
+    _age(old, 700)
     ums.sweep()
     assert os.path.isdir(job) and not os.path.isdir(old)
 
@@ -325,12 +325,10 @@ def test_a_live_audio_job_outlasting_the_video_clock_is_not_reaped(monkeypatch):
     monkeypatch.setattr(ums.cfg, "URL_VIDEO_DOWNLOAD_TIMEOUT_S", 600, raising=False)
     monkeypatch.setattr(ums.cfg, "URL_DOWNLOAD_TIMEOUT_S", 7200, raising=False)
     job = ums.new_staging_job()
-    running = time.time() - 3600       # past 600 + margin, within 7200
-    os.utime(job, (running, running))
+    _age(job, 3600)  # past 600 + margin, within 7200
     ums.sweep()
     assert os.path.isdir(job)
-    dead = time.time() - (7200 + 700)
-    os.utime(job, (dead, dead))
+    _age(job, 7200 + 700)
     ums.sweep()
     assert not os.path.isdir(job)
 
@@ -347,12 +345,10 @@ def test_stalled_upload_part_survives_the_sweep_until_the_idle_bound():
     part = os.path.join(ums.staging_dir(), "upload-deadbeef.mp4.part")
     with open(part, "wb") as f:
         f.write(b"x")
-    stalled = time.time() - 600
-    os.utime(part, (stalled, stalled))
+    _age(part, 600)
     ums.sweep()
     assert os.path.exists(part)
-    dead = time.time() - (ums._UPLOAD_IDLE_MAX_SEC + 100)
-    os.utime(part, (dead, dead))
+    _age(part, ums._UPLOAD_IDLE_MAX_SEC + 100)
     ums.sweep()
     assert not os.path.exists(part)
 
@@ -365,8 +361,7 @@ def test_sweep_reaps_a_renamed_but_unregistered_upload():
     for p in (fresh, old):
         with open(p, "wb") as f:
             f.write(b"x")
-    dead = time.time() - (ums._UPLOAD_IDLE_MAX_SEC + 100)
-    os.utime(old, (dead, dead))
+    _age(old, ums._UPLOAD_IDLE_MAX_SEC + 100)
     ums.sweep()
     assert os.path.exists(fresh) and not os.path.exists(old)
 
@@ -375,8 +370,7 @@ def test_staging_is_reaped_even_when_the_retention_dir_cannot_be_listed(monkeypa
     old = ums.new_staging_job()
     monkeypatch.setattr(ums.cfg, "URL_VIDEO_DOWNLOAD_TIMEOUT_S", 10, raising=False)
     monkeypatch.setattr(ums.cfg, "URL_DOWNLOAD_TIMEOUT_S", 10, raising=False)
-    stale = time.time() - 700
-    os.utime(old, (stale, stale))
+    _age(old, 700)
     real_listdir = os.listdir
 
     def _listdir(path):
