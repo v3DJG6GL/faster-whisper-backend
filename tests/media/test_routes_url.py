@@ -10,6 +10,7 @@ import asyncio
 import copy
 import os
 import threading
+import time
 
 import pytest
 
@@ -51,6 +52,17 @@ def _stub_probe(monkeypatch, **kw):
     async def _probe(url, *, timeout):
         return _info(url=url, **copy.deepcopy(kw))
     monkeypatch.setattr(url_download, "probe", _probe)
+
+
+def _poll(fetch, done=bool, tries=300):
+    """fetch() every 10 ms until done(value) holds or `tries` run out; the
+    last value read."""
+    for _ in range(tries):
+        value = fetch()
+        if done(value):
+            return value
+        time.sleep(0.01)
+    return value
 
 
 def _probe_raises(monkeypatch, exc):
@@ -438,12 +450,7 @@ def test_keep_video_response_carries_video_id_when_the_task_finishes(
         assert body.get("source_video_pending") is True
         # ...and the task then retains it: wait for the registry row instead
         # of returning early, so the assertions below run on every schedule.
-        import time as _time
-        for _ in range(300):
-            ids = _video_ids()
-            if ids:
-                break
-            _time.sleep(0.01)
+        ids = _poll(_video_ids)
         assert len(ids) == 1, "the pending video task never retained its file"
         vid = ids[0]
         entry = url_media_store._REG[vid]
@@ -463,8 +470,6 @@ def test_keep_video_response_carries_video_id_when_the_task_finishes(
 
 
 def test_keep_video_pending_then_progress_reports_done(client, video_enabled):
-    import time as _time
-
     release = threading.Event()
     video_enabled._video_gate["release"] = release
     r = _post_url(client, keep_video="true", progress_id=_PID)
@@ -479,11 +484,8 @@ def test_keep_video_pending_then_progress_reports_done(client, video_enabled):
     assert prog["video"]["state"] == "downloading"
     # Release the download: the task registers the file and pops the entry.
     release.set()
-    for _ in range(300):
-        prog = client.get(f"/v1/audio/transcriptions/progress/{_PID}").json()
-        if prog.get("stage") == "unknown":
-            break
-        _time.sleep(0.01)
+    prog = _poll(lambda: client.get(f"/v1/audio/transcriptions/progress/{_PID}").json(),
+                 lambda p: p.get("stage") == "unknown")
     assert prog.get("stage") == "unknown"
     assert _PID not in media_video._VIDEO_TASKS
     ids = _video_ids()
@@ -495,8 +497,6 @@ def test_keep_video_pending_then_progress_reports_done(client, video_enabled):
 
 def test_keep_video_finishing_late_lands_in_the_stored_job_result(
         client, video_enabled):
-    import time as _time
-
     release = threading.Event()
     video_enabled._video_gate["release"] = release
     r = _post_url(client, keep_video="true", progress_id=_PID)
@@ -504,12 +504,8 @@ def test_keep_video_finishing_late_lands_in_the_stored_job_result(
     release.set()
     # Re-attaching after the fetch ended: the stored result names the video
     # (the progress entry that reported it is gone by then).
-    body: dict = {}
-    for _ in range(300):
-        body = client.get(f"/v1/jobs/{_PID}/result").json()
-        if body.get("source_video_media_id"):
-            break
-        _time.sleep(0.01)
+    body = _poll(lambda: client.get(f"/v1/jobs/{_PID}/result").json(),
+                 lambda b: b.get("source_video_media_id"))
     ids = _video_ids()
     assert body.get("source_video_media_id") == ids[0]
     assert body["source_video_container"] == "mkv"
@@ -521,8 +517,6 @@ def test_keep_video_attach_runs_while_the_progress_entry_is_open(
     """/result keeps `source_video_pending` only while the progress entry is
     open; closing it before the attach left a poll in between with neither
     the flag nor the video keys, and the client stopped waiting."""
-    import time as _time
-
     open_at_attach: list = []
     real_attach = media_video._jobs_attach_video_sync
 
@@ -535,10 +529,7 @@ def test_keep_video_attach_runs_while_the_progress_entry_is_open(
     r = _post_url(client, keep_video="true", progress_id=_PID)
     assert r.status_code == 200 and r.json().get("source_video_pending") is True
     release.set()
-    for _ in range(300):
-        if _PID not in tx_progress._BATCH_PROGRESS and open_at_attach:
-            break
-        _time.sleep(0.01)
+    _poll(lambda: _PID not in tx_progress._BATCH_PROGRESS and open_at_attach)
     assert open_at_attach == [True]
     assert _PID not in tx_progress._BATCH_PROGRESS   # closed after it
     assert client.get(f"/v1/jobs/{_PID}/result").json().get(
@@ -638,17 +629,12 @@ def test_keep_video_falls_back_to_the_best_rung_under_the_size_cap(
     # Same fallback as the on-demand route: "best" is over the retention
     # cap but 720p fits, so the run keeps 720p instead of reporting the
     # video as too large.
-    import time as _time
-
     ladder = [dict(_LADDER[0], over_cap=True), dict(_LADDER[1]), dict(_LADDER[2])]
     _stub_probe(monkeypatch, video_ladder=ladder)
     r = _post_url(client, keep_video="true", progress_id=_PID)
     assert r.status_code == 200, r.text
     assert "source_video_error" not in r.json()
-    for _ in range(300):
-        if video_enabled._video_calls:
-            break
-        _time.sleep(0.01)
+    _poll(lambda: video_enabled._video_calls)
     assert video_enabled._video_calls[-1]["max_height"] == 720
     assert video_enabled._video_calls[-1]["container"] == "mp4"
 
@@ -1180,17 +1166,12 @@ def test_video_id_dropped_during_the_run_is_not_advertised(
     """The keep_video id is fixed when the side download lands, usually long
     before the transcript: an eviction in between must not leave the client
     a video id whose GET 404s."""
-    import time as _time
-
     real = fake_model.transcribe
 
     def _evict_video_then_decode(path, **kw):
         # The task pops its _VIDEO_TASKS slot in its last step: once it is
         # gone the task is done before the handler builds the response.
-        for _ in range(500):
-            if _PID not in media_video._VIDEO_TASKS:
-                break
-            _time.sleep(0.01)
+        _poll(lambda: _PID not in media_video._VIDEO_TASKS, tries=500)
         vids = _video_ids()
         assert vids, "the video task never retained its file"
         for m in vids:
