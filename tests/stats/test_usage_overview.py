@@ -134,8 +134,8 @@ def test_overview_by_model_from_jobs(usage_store_db):
 
 def test_overview_by_model_half_hour_zone_lines_match_the_board(usage_store_db):
     """In Asia/Kolkata (+5:30) a job at 23:30 the night before the window
-    used to reach the leaderboard while its day had no slot on the axis, and
-    one at 23:30 on the last day was left out of both."""
+    stays off the leaderboard as well as the axis, and one at 23:30 on the
+    last day counts in both."""
     us = usage_store_db
     ist = zoneinfo.ZoneInfo("Asia/Kolkata")
     for iso, words in (("2025-06-01", 10), ("2025-06-03", 5)):
@@ -282,8 +282,8 @@ def test_overview_compare_rebuckets_prev_onto_the_current_week_axis(usage_store_
 
 def test_overview_by_model_leaves_out_outcome_stubs(usage_store_db):
     """record_outcome's stub (a dictation session with no utterance) is not a
-    decode: _jobs_where already kept it out of the tail, but the by=model
-    breakdown and the models table counted it as an "(unknown)" session."""
+    decode: like the tail, the by=model breakdown and the models table leave
+    it out rather than count an "(unknown)" session."""
     us = usage_store_db
     us.record_usage(key_id="k1", user_id="alice", audio_s=10.0, words=5,
                     status="ok", kind="dictation", processing_s=1.0,
@@ -298,9 +298,9 @@ def test_overview_by_model_leaves_out_outcome_stubs(usage_store_db):
 
 def test_overview_all_time_models_reach_jobs_older_than_the_hourly_retention(usage_store_db):
     """usage_jobs prunes on its own (longer) clock: with the rollups kept 90
-    days and the jobs 365, the All time models table used to start at the
-    oldest rollup and leave a 200-day-old job still on disk out, while the
-    tail's per-model table next to it counted it."""
+    days and the jobs 365, the All time models table starts at the oldest
+    job, not the oldest rollup, so a 200-day-old job still on disk counts
+    there as it does in the tail's per-model table."""
     us = usage_store_db
     old = us.now_hour() - 200 * 24
     for jid, hour in (("o" * 32, old), ("n" * 32, None)):
