@@ -64,6 +64,17 @@ def _guard(monkeypatch):
     yield
 
 
+def _reexec(monkeypatch):
+    """Arm the restart and fire its callback with os.execve recorded; return
+    the {path, argv, env} it was called with."""
+    captured = {}
+    monkeypatch.setattr(restart_service.os, "execve",
+                        lambda path, argv, env: captured.update(path=path, argv=argv, env=env))
+    restart_service.trigger_self_restart(delay_sec=0.1)
+    _FakeTimer.instances[0].function()
+    return captured
+
+
 def test_reexec_label_and_timer_armed(monkeypatch):
     monkeypatch.setattr(restart_service.sys, "platform", "linux")
     label = restart_service.trigger_self_restart(delay_sec=2.5)
@@ -77,15 +88,7 @@ def test_reexec_label_and_timer_armed(monkeypatch):
 
 def test_reexec_callback_invokes_execv(monkeypatch):
     monkeypatch.setattr(restart_service.sys, "platform", "linux")
-    captured = {}
-
-    def fake_execv(path, argv, env):
-        captured["path"] = path
-        captured["argv"] = argv
-
-    monkeypatch.setattr(restart_service.os, "execve", fake_execv)
-    restart_service.trigger_self_restart(delay_sec=0.1)
-    _FakeTimer.instances[0].function()
+    captured = _reexec(monkeypatch)
     assert captured["path"] == restart_service.sys.executable
     assert captured["argv"][0] == restart_service.sys.executable
 
@@ -100,11 +103,7 @@ def test_reexec_replays_the_original_command_line_not_sys_argv(monkeypatch):
                         ["/usr/bin/python3", "-X", "dev", "-m", "faster_whisper_backend"])
     monkeypatch.setattr(restart_service.sys, "argv",
                         ["/repo/faster_whisper_backend/__main__.py"])
-    captured = {}
-    monkeypatch.setattr(restart_service.os, "execve",
-                        lambda path, argv, env: captured.update(path=path, argv=argv))
-    restart_service.trigger_self_restart(delay_sec=0.1)
-    _FakeTimer.instances[0].function()
+    captured = _reexec(monkeypatch)
     assert captured["argv"] == [restart_service.sys.executable,
                                 "-X", "dev", "-m", "faster_whisper_backend"]
     assert "__main__.py" not in " ".join(captured["argv"])
@@ -124,12 +123,7 @@ def test_reexec_rereads_rotated_secret_files(monkeypatch, tmp_path):
     try:
         importlib.reload(config)
         assert os.environ["WHISPER_BOOTSTRAP_ADMIN_KEY"] == "sk-old"
-        captured = {}
-        monkeypatch.setattr(restart_service.os, "execve",
-                            lambda path, argv, env: captured.update(env=env))
-        restart_service.trigger_self_restart(delay_sec=0.1)
-        _FakeTimer.instances[0].function()
-        env = captured["env"]
+        env = _reexec(monkeypatch)["env"]
         assert "WHISPER_BOOTSTRAP_ADMIN_KEY" not in env
         assert env["WHISPER_BOOTSTRAP_ADMIN_KEY_FILE"] == str(secret)
         assert env["WHISPER_HF_TOKEN"] == "hf_plain"
@@ -150,11 +144,7 @@ def test_reexec_rereads_the_dotenv(monkeypatch):
     monkeypatch.setattr(config, "_ENV_FROM_DOTENV", {"WHISPER_BEAM_SIZE"})
     monkeypatch.setenv("WHISPER_BEAM_SIZE", "5")
     monkeypatch.setenv("WHISPER_DEFAULT_PROMPT", "real")   # environment's: kept
-    captured = {}
-    monkeypatch.setattr(restart_service.os, "execve",
-                        lambda path, argv, env: captured.update(env=env))
-    restart_service.trigger_self_restart(delay_sec=0.1)
-    _FakeTimer.instances[0].function()
+    captured = _reexec(monkeypatch)
     assert "WHISPER_BEAM_SIZE" not in captured["env"]
     assert captured["env"]["WHISPER_DEFAULT_PROMPT"] == "real"
 
@@ -168,11 +158,7 @@ def test_reexec_does_not_restore_a_dotenv_hf_token(monkeypatch):
     monkeypatch.setattr(pl_apply, "_ENV_HF_TOKEN", "hf_dotenv")
     monkeypatch.setenv("HF_TOKEN", "hf_dotenv")
     monkeypatch.setenv(pl_apply.SERVICE_HF_TOKEN_ENV, "hf_dotenv")
-    captured = {}
-    monkeypatch.setattr(restart_service.os, "execve",
-                        lambda path, argv, env: captured.update(env=env))
-    restart_service.trigger_self_restart(delay_sec=0.1)
-    _FakeTimer.instances[0].function()
+    captured = _reexec(monkeypatch)
     assert "HF_TOKEN" not in captured["env"]
     assert pl_apply.SERVICE_HF_TOKEN_ENV not in captured["env"]
 
@@ -188,11 +174,7 @@ def test_reexec_drops_an_empty_hf_token_record(monkeypatch):
     monkeypatch.setattr(pl_apply, "_ENV_HF_TOKEN", None)
     monkeypatch.delenv("HF_TOKEN", raising=False)
     monkeypatch.setenv(pl_apply.SERVICE_HF_TOKEN_ENV, "")
-    captured = {}
-    monkeypatch.setattr(restart_service.os, "execve",
-                        lambda path, argv, env: captured.update(env=env))
-    restart_service.trigger_self_restart(delay_sec=0.1)
-    _FakeTimer.instances[0].function()
+    captured = _reexec(monkeypatch)
     assert pl_apply.SERVICE_HF_TOKEN_ENV not in captured["env"]
 
 
@@ -205,11 +187,7 @@ def test_reexec_drops_the_hf_token_promoted_from_config(monkeypatch):
     monkeypatch.setattr(restart_service.sys, "platform", "linux")
     monkeypatch.setattr(pl_apply, "_ENV_HF_TOKEN", None)
     monkeypatch.setenv("HF_TOKEN", "hf_promoted")
-    captured = {}
-    monkeypatch.setattr(restart_service.os, "execve",
-                        lambda path, argv, env: captured.update(env=env))
-    restart_service.trigger_self_restart(delay_sec=0.1)
-    _FakeTimer.instances[0].function()
+    captured = _reexec(monkeypatch)
     assert "HF_TOKEN" not in captured["env"]
 
 
@@ -220,11 +198,7 @@ def test_reexec_restores_the_service_environments_hf_token(monkeypatch):
     monkeypatch.setattr(restart_service.sys, "platform", "linux")
     monkeypatch.setattr(pl_apply, "_ENV_HF_TOKEN", "hf_service")
     monkeypatch.setenv("HF_TOKEN", "hf_promoted")
-    captured = {}
-    monkeypatch.setattr(restart_service.os, "execve",
-                        lambda path, argv, env: captured.update(env=env))
-    restart_service.trigger_self_restart(delay_sec=0.1)
-    _FakeTimer.instances[0].function()
+    captured = _reexec(monkeypatch)
     assert captured["env"]["HF_TOKEN"] == "hf_service"
 
 
