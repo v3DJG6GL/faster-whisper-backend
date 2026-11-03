@@ -821,7 +821,9 @@ const $ = (id) => document.getElementById(id);
 
 // Blocked site data makes the localStorage getter itself throw SecurityError;
 // a bare read inside render() blanked the whole page. null = the defaults.
+// Writes go through _lsSet: a blocked or full store drops the write.
 function _lsGet(k) { try { return localStorage.getItem(k); } catch (_) { return null; } }
+function _lsSet(k, v) { try { localStorage.setItem(k, v); } catch (_) {} }
 
 function toast(msg, isErr) {
   const el = $('toast');
@@ -1545,9 +1547,7 @@ function modelOverridesEditor(name, v) {
       item.addEventListener('click', () => {
         if (selectedId === id) {
           const isCollapsed = (_lsGet('mo.detail.' + id) === '0');
-          try {
-            localStorage.setItem('mo.detail.' + id, isCollapsed ? '1' : '0');
-          } catch (_) {}
+          _lsSet('mo.detail.' + id, isCollapsed ? '1' : '0');
           applyCollapseState();
           const indEl = item.querySelector('.mo-collapse-ind');
           if (indEl) indEl.textContent = isCollapsed ? '▾' : '▸';
@@ -1680,9 +1680,7 @@ function modelOverridesEditor(name, v) {
       det.appendChild(sum);
       const lsKey = 'mo.adv.' + sec.id;
       det.open = _lsGet(lsKey) === '1';
-      det.addEventListener('toggle', () => {
-        try { localStorage.setItem(lsKey, det.open ? '1' : '0'); } catch (_) {}
-      });
+      det.addEventListener('toggle', () => _lsSet(lsKey, det.open ? '1' : '0'));
       const advWrap = document.createElement('div');
       for (const f of sec.adv) advWrap.appendChild(renderFieldRow(f));
       det.appendChild(advWrap);
@@ -2582,7 +2580,7 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
   }
   const _saveExpanded = () => {
     if (isChecklist) return;
-    try { localStorage.setItem('pipeline.expanded', JSON.stringify([...expandedNames])); } catch (_) {}
+    _lsSet('pipeline.expanded', JSON.stringify([...expandedNames]));
   };
 
   // Delegated list-level drag handlers; per-row handlers only do
@@ -5088,7 +5086,7 @@ function expandSectionContaining(el) {
   const det = sec.querySelector(':scope > details.section-details');
   if (det && !det.open) {
     det.open = true;
-    try { if (det.dataset.lsKey) localStorage.setItem(det.dataset.lsKey, '1'); } catch (_) {}
+    if (det.dataset.lsKey) _lsSet(det.dataset.lsKey, '1');
     refreshSectionToggleAllLabel();
   }
 }
@@ -5126,7 +5124,7 @@ function _anySectionOpen() {
 function setAllSections(open) {
   document.querySelectorAll('main details.section-details').forEach(d => {
     d.open = open;
-    try { if (d.dataset.lsKey) localStorage.setItem(d.dataset.lsKey, open ? '1' : '0'); } catch (_) {}
+    if (d.dataset.lsKey) _lsSet(d.dataset.lsKey, open ? '1' : '0');
   });
   refreshSectionToggleAllLabel();
 }
@@ -5242,7 +5240,7 @@ function render() {
     secDet.dataset.lsKey = secKey;
     secDet.open = _lsGet(secKey) !== '0';
     secDet.addEventListener('toggle', () => {
-      try { localStorage.setItem(secKey, secDet.open ? '1' : '0'); } catch (_) {}
+      _lsSet(secKey, secDet.open ? '1' : '0');
       refreshSectionToggleAllLabel();
     });
     const secSum = document.createElement('summary');
@@ -5291,9 +5289,7 @@ function render() {
         det.appendChild(fieldsWrap);
         const lsKey = 'adv.global.' + g.title + '.' + sub.title;
         det.open = _lsGet(lsKey) === '1';
-        det.addEventListener('toggle', () => {
-          try { localStorage.setItem(lsKey, det.open ? '1' : '0'); } catch (_) {}
-        });
+        det.addEventListener('toggle', () => _lsSet(lsKey, det.open ? '1' : '0'));
         body.appendChild(det);
       } else {
         body.appendChild(fieldsWrap);

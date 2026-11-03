@@ -96,6 +96,7 @@ def _captures_harness(html, body, real_list=False):
         rle += """
 function fieldDef(n) { return { value: state[n], default_value: [] }; }
 function _lsGet() { return null; }
+function _lsSet() {}
 function _typePill(t) { return t; }
 """
     else:
