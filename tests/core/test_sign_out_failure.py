@@ -1,8 +1,8 @@
 """window._signOut reloads only once /auth/logout answers 2xx (or 401: no
 session to end); reloading after a 403, a 5xx or a failed fetch would land in
-the same signed-in page with no word. A 403 (the cached whoami CSRF token
-went stale after another tab signed in again) is retried once with the live
-CSRF cookie's token, and a failed sign-out says so.
+the same signed-in page with no word. A 403 because another tab
+signed in again while the POST was in flight (the CSRF cookie rotated) is
+retried once with the new cookie's token, and a failed sign-out says so.
 
 window._csrfToken() reads the live cookie first and falls back to the cached
 whoami token only when no cookie is readable: after a re-login in another tab
