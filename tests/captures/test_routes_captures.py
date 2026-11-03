@@ -5,13 +5,12 @@
 import json
 import os
 import re
-import wave
 
 import pytest
 from starlette.testclient import TestClient
 
 from faster_whisper_backend.pipeline import engine as pl_engine
-from tests.conftest import bearer, fake_wav_transcode
+from tests.conftest import bearer, fake_wav_transcode, write_wav
 
 
 def test_captures_page(client):
@@ -231,11 +230,7 @@ def _on_loop():
 
 
 def _write_silent_wav(path, frames):
-    with wave.open(path, "wb") as w:
-        w.setnchannels(1)
-        w.setsampwidth(2)
-        w.setframerate(16000)
-        w.writeframes(b"\x00\x00" * frames)
+    write_wav(path, b"\x00\x00" * frames)
 
 
 def _own_user(uid):

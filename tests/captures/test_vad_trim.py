@@ -11,8 +11,7 @@ import wave
 import pytest
 
 from faster_whisper_backend.captures import vad_trim as audio_vad_trim
-
-RATE = 16000
+from tests.conftest import RATE
 
 
 def _read_wav_params(path):

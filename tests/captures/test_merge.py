@@ -11,17 +11,8 @@ import numpy as np
 import pytest
 
 from faster_whisper_backend.captures import merge as audio_merge
-
-RATE = 16000
-
-
-def _write_wav(path, pcm, *, nchannels=1, sampwidth=2, rate=RATE):
-    with wave.open(path, "wb") as w:
-        w.setnchannels(nchannels)
-        w.setsampwidth(sampwidth)
-        w.setframerate(rate)
-        w.writeframes(pcm)
-    return path
+from tests.conftest import RATE
+from tests.conftest import write_wav as _write_wav
 
 
 def _pcm(ms, val=4000):

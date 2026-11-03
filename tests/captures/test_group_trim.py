@@ -18,7 +18,6 @@ unless fastapi (the full app stack) is present.
 
 import sys
 import tempfile
-import wave
 
 import pytest
 
@@ -26,16 +25,7 @@ from faster_whisper_backend.captures import merge as audio_merge
 from faster_whisper_backend.captures import samples as capture_samples
 from faster_whisper_backend.captures import vad_trim as audio_vad_trim
 from tests.conftest import _pcm_from_spec as _pcm
-
-RATE = 16000
-
-
-def _write_wav(path, pcm):
-    with wave.open(path, "wb") as w:
-        w.setnchannels(1)
-        w.setsampwidth(2)
-        w.setframerate(RATE)
-        w.writeframes(pcm)
+from tests.conftest import write_wav as _write_wav
 
 
 def test_trim_collapses_internal_gap_and_edges(monkeypatch, fake_vad):

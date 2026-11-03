@@ -387,24 +387,23 @@ def wav_factory(tmp_path):
         if pcm is None:
             pcm, _ = _pcm_from_spec(spec)
         counter["n"] += 1
-        path = str(tmp_path / f"w{counter['n']}.wav")
-        with wave.open(path, "wb") as w:
-            w.setnchannels(1)
-            w.setsampwidth(2)
-            w.setframerate(RATE)
-            w.writeframes(pcm)
-        return path
+        return write_wav(str(tmp_path / f"w{counter['n']}.wav"), pcm)
 
     return _write
 
 
+def write_wav(path, pcm, *, nchannels=1, sampwidth=2, rate=RATE):
+    with wave.open(path, "wb") as w:
+        w.setnchannels(nchannels)
+        w.setsampwidth(sampwidth)
+        w.setframerate(rate)
+        w.writeframes(pcm)
+    return path
+
+
 def fake_wav_transcode(src_path, dst_path):
     """Stand-in for transcode_to_wav_16k_mono: a tiny valid WAV, 1234 bytes reported."""
-    with wave.open(dst_path, "wb") as w:
-        w.setnchannels(1)
-        w.setsampwidth(2)
-        w.setframerate(RATE)
-        w.writeframes(b"\x00\x00" * 100)
+    write_wav(dst_path, b"\x00\x00" * 100)
     return 1234
 
 
