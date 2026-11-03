@@ -2128,9 +2128,9 @@ async def transcribe(
                 "SEPARATE_BGM", "separate_bgm", _form_bool(separate_bgm),
                 default=False))
             # Per-request stage models (pyannote pipeline id / UVR model): a
-            # non-empty allowlist that misses the resolved value soft-fails by
-            # skipping THAT stage — before its enabled gate, so the warning
-            # names the actual reason.
+            # client value the allowlist misses soft-fails by skipping THAT
+            # stage — before its enabled gate, so the warning names the
+            # actual reason.
             _dm_req = (diarization_model or "").strip() or None
             _diarization_model = effective_config._resolve_request_knob(
                 resolved_model, ident, ignored,
