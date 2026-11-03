@@ -1335,7 +1335,8 @@ class AdminConfig(BaseModel):
     # All hot: the limiters re-read cfg on every call, so an edit takes effect
     # on the next request with no restart and no bucket reset. Every one of
     # them treats 0 as "unlimited" — the escape hatch for a single-user box.
-    # Budgets are per PROCESS: SERVER_WORKERS > 1 splits each one N ways.
+    # Budgets are per PROCESS: with SERVER_WORKERS > 1 each worker keeps its
+    # own copy, so every budget is effectively multiplied by the worker count.
     TRANSLATE_MAX_INFLIGHT_PER_USER: Annotated[
         int, Field(ge=0, le=64)
     ] | None = _F(
