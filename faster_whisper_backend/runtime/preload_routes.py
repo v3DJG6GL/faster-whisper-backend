@@ -150,17 +150,13 @@ def _allowed(family: str, model_id: str,
             return False
         return True
     if family == "diarization":
-        allow = set(getattr(cfg, "DIARIZATION_ALLOWED_MODELS", None) or ())
-        # Only a SET value joins: an unset one must not make "" allowed.
-        allow.update(v for v in (getattr(cfg, "DIARIZATION_MODEL", ""),
-                                 effective.get("DIARIZATION_MODEL")) if v)
-        return bool(model_id) and model_id in allow
+        return preload.stage_model_allowed(
+            model_id, "DIARIZATION_ALLOWED_MODELS", "DIARIZATION_MODEL",
+            effective.get("DIARIZATION_MODEL"))
     if family == "separation":
-        allow = set(getattr(cfg, "BGM_SEPARATION_ALLOWED_MODELS", None) or ())
-        allow.update(v for v in (getattr(cfg, "BGM_SEPARATION_UVR_MODEL", ""),
-                                 effective.get("BGM_SEPARATION_UVR_MODEL"))
-                     if v)
-        return bool(model_id) and model_id in allow
+        return preload.stage_model_allowed(
+            model_id, "BGM_SEPARATION_ALLOWED_MODELS", "BGM_SEPARATION_UVR_MODEL",
+            effective.get("BGM_SEPARATION_UVR_MODEL"))
     # requested=model_id makes it the CLIENT-value rule: a bare call would
     # let any ref through as admin policy.
     return tr_gating._translation_model_allowed(

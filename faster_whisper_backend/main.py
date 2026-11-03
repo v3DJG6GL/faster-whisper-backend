@@ -2118,13 +2118,12 @@ async def transcribe(
             # passes) and always admits the configured default (global AND
             # the identity/per-model effective value) — so an EMPTY
             # allowlist means "the configured model only", never "anything".
-            _diar_allowed = set(
-                getattr(cfg, "DIARIZATION_ALLOWED_MODELS", []) or [])
-            _diar_allowed.add(getattr(cfg, "DIARIZATION_MODEL", "") or "")
-            _diar_allowed.add(effective_config.cfg_for(resolved_model, "DIARIZATION_MODEL", ident) or "")
             if (_diarize and _dm_req is not None
                     and _diarization_model == _dm_req
-                    and _diarization_model not in _diar_allowed):
+                    and not preload.stage_model_allowed(
+                        _diarization_model, "DIARIZATION_ALLOWED_MODELS",
+                        "DIARIZATION_MODEL", effective_config.cfg_for(
+                            resolved_model, "DIARIZATION_MODEL", ident))):
                 _warnings.append(
                     "requested diarization model is not allowed on this "
                     "server (DIARIZATION_ALLOWED_MODELS)")
@@ -2134,13 +2133,12 @@ async def transcribe(
             _separation_model = effective_config._resolve_request_knob(
                 resolved_model, ident, ignored,
                 "BGM_SEPARATION_UVR_MODEL", "separation_model", _sm_req)
-            _sep_allowed = set(
-                getattr(cfg, "BGM_SEPARATION_ALLOWED_MODELS", []) or [])
-            _sep_allowed.add(getattr(cfg, "BGM_SEPARATION_UVR_MODEL", "") or "")
-            _sep_allowed.add(effective_config.cfg_for(resolved_model, "BGM_SEPARATION_UVR_MODEL", ident) or "")
             if (_separate and _sm_req is not None
                     and _separation_model == _sm_req
-                    and _separation_model not in _sep_allowed):
+                    and not preload.stage_model_allowed(
+                        _separation_model, "BGM_SEPARATION_ALLOWED_MODELS",
+                        "BGM_SEPARATION_UVR_MODEL", effective_config.cfg_for(
+                            resolved_model, "BGM_SEPARATION_UVR_MODEL", ident))):
                 _warnings.append(
                     "requested separation model is not allowed on this "
                     "server (BGM_SEPARATION_ALLOWED_MODELS)")

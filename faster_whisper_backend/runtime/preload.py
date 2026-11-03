@@ -155,6 +155,20 @@ def normalize_id(family: str, model_id: str) -> str:
     return model_id
 
 
+def stage_model_allowed(ref: "str | None", allowed_key: str, default_key: str,
+                        effective: "str | None") -> bool:
+    """May a client request diarization/separation model `ref`? The allowlist
+    (cfg `allowed_key`) always admits the configured default (cfg
+    `default_key`) and the identity/per-model `effective` value, so an EMPTY
+    allowlist means "the configured model only", never "anything" (unlike
+    translation's tr_gating rule). Shared by the batch stage and the preload
+    route so the preload never admits what the stage refuses."""
+    allow = set(getattr(cfg, allowed_key, None) or ())
+    # Only a SET value joins: an unset one must not make "" allowed.
+    allow.update(v for v in (getattr(cfg, default_key, ""), effective) if v)
+    return bool(ref) and ref in allow
+
+
 def stats_key(family: str, model_id: str) -> str:
     """The model_registry key — the shared namespace the warm leases,
     the size ledger and the idle evictors all speak."""
