@@ -309,9 +309,7 @@ def _family_busy(family: str, model_id: str) -> bool:
             # model and never consults the warm predicate, so a preload that
             # reached it could be the thing that drops another plan's warm
             # model.
-            if _cache_full(family) and (
-                    not bool(getattr(cfg, "MODEL_PRELOAD_EVICT_IDLE_MODELS", True))
-                    or _idle_peer(family, model_id) is None):
+            if _cache_full(family) and not _can_drop_peer(family, model_id):
                 return True
             return False
         # The singletons have one slot: loading a different model drops the
@@ -321,15 +319,13 @@ def _family_busy(family: str, model_id: str) -> bool:
         if family == "diarization":
             from faster_whisper_backend.audio import diarization
             return diarization.busy(mid) or (
-                diarization.holds_other(mid) and (
-                    not bool(getattr(cfg, "MODEL_PRELOAD_EVICT_IDLE_MODELS", True))
-                    or _idle_peer(family, model_id) is None))
+                diarization.holds_other(mid)
+                and not _can_drop_peer(family, model_id))
         if family == "separation":
             from faster_whisper_backend.audio import bgm_separation
             return bgm_separation.busy(mid) or (
-                bgm_separation.holds_other(mid) and (
-                    not bool(getattr(cfg, "MODEL_PRELOAD_EVICT_IDLE_MODELS", True))
-                    or _idle_peer(family, model_id) is None))
+                bgm_separation.holds_other(mid)
+                and not _can_drop_peer(family, model_id))
         if family == "translation":
             from faster_whisper_backend.translation import engine as translation
             # Same refusal as whisper's running load (see
@@ -339,9 +335,7 @@ def _family_busy(family: str, model_id: str) -> bool:
                 return True
             # Same shape as whisper: the translation cache's trim drops the
             # first unleased ref without consulting the warm predicate.
-            if _cache_full(family) and (
-                    not bool(getattr(cfg, "MODEL_PRELOAD_EVICT_IDLE_MODELS", True))
-                    or _idle_peer(family, model_id) is None):
+            if _cache_full(family) and not _can_drop_peer(family, model_id):
                 return True
             return False
     except Exception:  # noqa: BLE001 — unknown state is not a reason to load
@@ -402,6 +396,12 @@ def _idle_peer(family: str, model_id: str) -> "str | None":
         return None
 
 
+def _can_drop_peer(family: str, model_id: str) -> bool:
+    """Preload-driven eviction is on and an idle peer exists to drop."""
+    return (bool(getattr(cfg, "MODEL_PRELOAD_EVICT_IDLE_MODELS", True))
+            and _idle_peer(family, model_id) is not None)
+
+
 def _admit(family: str, model_id: str) -> "tuple[str, str | None]":
     """The admission ladder: (state, reason) with state in
     resident|loading|queued|deferred.
@@ -436,8 +436,7 @@ def _admit(family: str, model_id: str) -> "tuple[str, str | None]":
     if ok is True:
         return (_pending_state(), None)
     if (reason in ("insufficient_vram", "insufficient_ram")
-            and bool(getattr(cfg, "MODEL_PRELOAD_EVICT_IDLE_MODELS", True))
-            and _idle_peer(family, model_id) is not None):
+            and _can_drop_peer(family, model_id)):
         return (_pending_state(), None)
     if ok is None and reason == "size_unknown":
         # None means "cannot say", not no. Refusing it would mean an
