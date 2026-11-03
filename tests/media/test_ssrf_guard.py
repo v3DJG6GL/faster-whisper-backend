@@ -103,6 +103,12 @@ def _serve(handler, host):
     return srv
 
 
+def _inproc_guard():
+    """The guard module guard_self_check loaded in-process."""
+    udl.guard_self_check(force=True)
+    return sys.modules["fwb_ssrf_guard_inproc"]
+
+
 @pytest.fixture
 def servers():
     """(public_url_base, internal_url) with a clean INTERNAL hit log."""
@@ -226,8 +232,7 @@ def test_guard_refuses_ffmpeg_delegation_of_an_aes128_manifest(monkeypatch, tmp_
 
 
 def test_guard_is_not_installed_without_the_downloader_refusal(monkeypatch):
-    udl.guard_self_check(force=True)
-    guard = sys.modules["fwb_ssrf_guard_inproc"]
+    guard = _inproc_guard()
     from yt_dlp.downloader import external, rtmp
     assert guard.is_installed()
     for cls in (external.ExternalFD, rtmp.RtmpFD):
@@ -241,8 +246,7 @@ def test_https_through_a_connect_proxy_verifies_the_target_not_the_proxy():
     """With an http(s)_proxy in the environment every HTTPS fetch tunnels via
     CONNECT; SNI / certificate verification must then name the URL's host
     (_tunnel_host), not the proxy the socket was dialled to."""
-    udl.guard_self_check(force=True)
-    guard = sys.modules["fwb_ssrf_guard_inproc"]
+    guard = _inproc_guard()
     seen: dict = {}
 
     class FakeCtx:
@@ -278,8 +282,7 @@ def test_guard_resolve_pinned_fails_closed_on_a_host_idna_cannot_encode():
     """`a..com` (empty label) or a 64-char label makes getaddrinfo raise
     UnicodeError, not OSError; inside the yt-dlp child it must still end as
     the guard's RequestError (fail closed), never an unhandled error."""
-    udl.guard_self_check(force=True)
-    guard = sys.modules["fwb_ssrf_guard_inproc"]
+    guard = _inproc_guard()
     from yt_dlp.networking.exceptions import RequestError
     for host in ("a..com", "a" * 64 + ".com"):
         with pytest.raises(RequestError, match=guard.MARKER):
@@ -538,8 +541,7 @@ def test_url_download_uses_net_policy_directly():
 
 
 def test_guard_uses_the_same_net_policy_module():
-    udl.guard_self_check(force=True)
-    guard = sys.modules["fwb_ssrf_guard_inproc"]
+    guard = _inproc_guard()
     assert guard.net_policy is net_policy
     assert guard.MARKER == udl.GUARD_MARKER
 
@@ -635,8 +637,7 @@ def test_classify_error_maps_a_guard_refusal_without_leaking():
 def test_classify_error_tells_an_external_downloader_refusal_apart():
     """The site WAS reached: a format only an external program could fetch
     is refused by the guard, which is no reason to retry."""
-    udl.guard_self_check(force=True)
-    guard = sys.modules["fwb_ssrf_guard_inproc"]
+    guard = _inproc_guard()
     assert guard.EXTERNAL_FD_MARKER == udl.GUARD_EXTERNAL_FD_MARKER
     from yt_dlp.downloader import external
     with pytest.raises(Exception) as ei:
@@ -713,8 +714,7 @@ def test_net_policy_trusts_the_proxy_hop_but_not_a_direct_private_host(private_p
 
 def test_guard_trusts_the_proxy_hop_but_not_a_direct_private_host(private_proxy):
     """Same contract in yt-dlp's opener (the guard copy of the pin)."""
-    udl.guard_self_check(force=True)
-    guard = sys.modules["fwb_ssrf_guard_inproc"]
+    guard = _inproc_guard()
     from yt_dlp.networking.exceptions import RequestError
 
     direct = guard._PinnedHTTPConnection("proxy.example", 3128)
@@ -749,8 +749,7 @@ def test_pinned_handlers_stamp_via_proxy_from_the_request(monkeypatch):
     udl._PinnedHTTPHandler().http_open(proxied)
     assert built["conn"].via_proxy is True
 
-    udl.guard_self_check(force=True)
-    guard = sys.modules["fwb_ssrf_guard_inproc"]
+    guard = _inproc_guard()
     handler = guard._GuardedHTTPHandler(context=None, source_address=None)
     handler.http_open(plain)
     assert built["conn"].via_proxy is False
